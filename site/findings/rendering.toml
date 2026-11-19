@@ -972,11 +972,11 @@ source = """docs/ANDROID_ODIN_BACKLOG.md Player reports on SMOOTH 60, EDRAM pass
 group = """Shaders, textures and models"""
 base = """0x82417418"""
 name = """procedural models"""
-what = """`proceduralGeometry::CProceduralModels` owns procedurally placed items (vegetation, crowds and props) drawn through display lists; its per-record helper `0x82417418` is where each record can be read. One point-to-point race event produced no vegetation items, so the family is absent in some events."""
-how = """RTTI, construction and destruction traces; scene capture runs."""
+what = """`proceduralGeometry::CProceduralModels` owns procedurally placed items (vegetation, crowds and props) drawn through display lists; its per-record helper `0x82417418` is where each record can be read. One point-to-point race event produced no vegetation items, so the family is absent in some events. Its data comes from kind-7 .pgeo tiles: the instance matrices there are the placements of fences, trees and other local-space render models."""
+how = """RTTI, construction and destruction traces; scene capture runs; for the data source, the RF-7 placement match and memory snapshot (2026-11-19)."""
 confidence = """probable"""
-note = """What a record's mesh and material are is not established."""
-source = """docs/native-renderer/RESEARCH.md Procedural models, visibility and batching, Rayman and scene-native era"""
+note = """What a record's mesh and material are is not established; the model ID lists in the .pgeo model records are the lead."""
+source = """docs/native-renderer/RESEARCH.md Procedural models, visibility and batching, Rayman and scene-native era; docs/formats/WORLD_GEOMETRY.md#pgeo-tiles"""
 
 [[finding]]
 group = """Shaders, textures and models"""
@@ -1086,3 +1086,14 @@ what = """At night in free roam the game issues no viz queries (no `PM4_VIZ_QUER
 how = """Counters of viz query packets, probe draws, conditional draws and `REG_TO_MEM` registers over 600-frame windows, parked and driving at 23:00; guest CPU access traps on every resolved range (`fh1_trace_resolve_cpu_accesses`)."""
 confidence = """confirmed"""
 source = """docs/native-renderer/HEADLIGHT_FLICKER.md Lights through the car and terrain"""
+
+[[finding]]
+group = """Shaders, textures and models"""
+id = """pgeo-resource-classes"""
+base = """0x82E1E998 (factory), 0x82E099D0 (common header reader), 0x82002B5C (CProceduralModels vtable), 0x82E0D240 (its data reader, vtable +0x78), 0x82E1C9A0 (its constructor)"""
+name = """procedural-geometry resource and its kind factory"""
+what = """The track's procedural-geometry resource reads the common .pgeo header (with an optional byte-swap, so the data can be either endianness), then a factory switches on the kind word at +0x30 and constructs one class per kind; kind 7 is CProceduralModels, whose virtual data reader parses the model records, groups and instances. The other classes in that family by RTTI include vegetation, billboards, points and light maps; their kind numbers are not checked."""
+how = """Ghidra on the base executable: RTTI names, the vtable's xrefs to the constructor and factory, the factory's switch targets. RF-7, 2026-11-19."""
+confidence = """probable"""
+note = """v4 addresses not mapped. The format path strings for Ribbon_NN .pvs and __R00Z .pvsz files have no code xrefs (built at run time)."""
+source = """docs/formats/WORLD_GEOMETRY.md#pgeo-tiles"""

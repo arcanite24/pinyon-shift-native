@@ -15,13 +15,21 @@ directory, past the wrapped 16-bit entry count).
   world-geometry.py stats <members dir> [--limit N]
   world-geometry.py dump-obj <members dir> --box X0 Z0 X1 Z1 [--out FILE]
   world-geometry.py dump-obj <members dir> --members a.rmb.bin,b.rmb.bin
+  world-geometry.py dump-obj <members dir> --box X0 Z0 X1 Z1 --props
+  world-geometry.py pgeo <members dir> [--verbose]
   world-geometry.py match-dump <members dir> <file.fh1frame> [--box ...] [--verbose]
+                               [--members @names.txt] [--pgeo <members dir>]
   world-geometry.py overlay <members dir> <file.fh1frame> <capture.ppm> [--box ...]
 
 `dump-obj` writes every world-space model whose header box overlaps the
 X/Z rectangle (one "sector") to an OBJ, by default .local/re/world/sector.obj.
-Instanced (local-space) models are left out: their placement is not in the
-member. `match-dump` ties the selected models to the draws of a frame dump:
+Instanced (local-space) models are left out unless `--props` is given:
+their placements are in the kind-7 procedural-geometry tiles
+(`__R00GNNNNN.pgeo`, read by `pgeo`), which `--props` links to render
+models by header box (provisional: the tiles name models by ID lists not
+yet resolved), and in the `.pvsz` zone files, which are only searched
+(by `match-dump --pgeo`), not placed. `--members @file` reads the
+comma-separated names from a file. `match-dump` ties the selected models to the draws of a frame dump:
 a mesh object is tied to a draw when the draw fetches its vertex block
 (same bytes, address and size) and reads one of its index lists (same
 bytes, address, count and primitive type).
@@ -267,7 +275,11 @@ def overlaps(box_min, box_max, rect) -> bool:
 
 def select(root: str, args) -> list[str]:
     if getattr(args, "members", None):
-        return [os.path.join(root, name) for name in args.members.split(",")]
+        names = args.members
+        if names.startswith("@"):   # long selections overflow the Windows command line
+            with open(names[1:], encoding="utf-8") as f:
+                names = f.read()
+        return [os.path.join(root, name.strip()) for name in names.split(",") if name.strip()]
     files = rmb_files(root)
     if getattr(args, "box", None):
         files = [f for f in files if overlaps(*read_header_box(f), args.box)]
@@ -343,24 +355,306 @@ def cmd_dump_obj(args) -> int:
         if args.box:
             obj.write("# rectangle x %.1f..%.1f z %.1f..%.1f\n"
                       % (args.box[0], args.box[2], args.box[1], args.box[3]))
-        for path in files:
-            model = read_rmb(path)
-            if model.placement != "world" and not args.members:
-                skipped += 1   # instanced: its placement is not in the member
-                continue
+        def emit(label, model, transform=None):
+            nonlocal base
             for k, mesh in enumerate(model.objects):
-                obj.write(f"o {os.path.basename(path)}#{k}:{mesh.name}\n")
-                for x, y, z in mesh.positions():
+                obj.write(f"o {label}#{k}:{mesh.name}\n")
+                for v in mesh.positions():
+                    x, y, z = transform(v) if transform else v
                     obj.write(f"v {x:.4f} {y:.4f} {z:.4f}\n")
                 for sub in mesh.submeshes:
                     obj.write(f"g {mesh.name}:{sub.material_name}\n")
                     for a, b, c in sub.triangles():
                         obj.write(f"f {a + base} {b + base} {c + base}\n")
                 base += mesh.vertex_count
+
+        for path in files:
+            model = read_rmb(path)
+            if model.placement != "world" and not args.members:
+                skipped += 1   # instanced: placed from the .pgeo files below
+                continue
+            emit(os.path.basename(path), model)
             written += 1
+        placed = ambiguous = unlinked = 0
+        if args.props:
+            if not args.box:
+                raise SystemExit("--props needs --box")
+            by_box = rmb_box_index(args.root)
+            cache = {}
+            for pgeo_path in sorted(glob.glob(os.path.join(args.root, PGEO_GLOB))):
+                tile = read_pgeo(pgeo_path)
+                if tile is None or tile.kind != PGEO_MODELS:
+                    continue
+                for group in tile.groups:
+                    inside = [inst for inst in group.instances
+                              if args.box[0] <= inst.file_translation[0] <= args.box[2]
+                              and args.box[1] <= inst.file_translation[2] <= args.box[3]]
+                    if not inside:
+                        continue
+                    candidates = by_box.get(box_key(*tile.models[group.model].box), [])
+                    if not candidates:
+                        unlinked += len(inside)
+                        continue
+                    if len(candidates) > 1:
+                        ambiguous += len(inside)
+                    member = candidates[0]
+                    if member not in cache:
+                        cache[member] = read_rmb(os.path.join(args.root, member))
+                    for inst in inside:
+                        emit(f"{os.path.basename(pgeo_path)}:{member}", cache[member],
+                             inst.to_file_frame)
+                        placed += 1
     print(f"wrote {written} models, {base - 1} vertices to {out}"
-          + (f"; left out {skipped} instanced (local-space) models" if skipped else ""))
+          + (f"; left out {skipped} instanced (local-space) models" if skipped and not args.props
+             else ""))
+    if args.props:
+        print(f"placed {placed} instances from .pgeo model groups ({ambiguous} with a model "
+              f"chosen among several of the same box); {unlinked} instances have no render "
+              f"model of their group's box")
     return 0
+
+
+# --- procedural geometry (.pgeo) --------------------------------------------
+
+PGEO_GLOB = "__R00G*.pgeo"
+PGEO_MODELS = 7     # the header word that marks a placed-models tile
+
+
+def align(value: int, step: int) -> int:
+    return (value + step - 1) & ~(step - 1)
+
+
+@dataclass
+class PgeoModel:
+    box: tuple[tuple[float, ...], tuple[float, ...]]
+    ids: list[list[int]]        # up to three ID lists (LODs, probable)
+    word: int
+
+
+@dataclass
+class PgeoInstance:
+    rows: list[tuple[float, float, float]]   # images of the local axes, game frame
+    translation: tuple[float, float, float]  # game frame (z = -file z)
+
+    @property
+    def file_translation(self) -> tuple[float, float, float]:
+        x, y, z = self.translation
+        return (x, y, -z)
+
+    def to_file_frame(self, v):
+        """A model-space vertex (file frame) to the world file frame: the
+        stored rows act on the vertex with z negated, the result's z is
+        negated back."""
+        x, y, z = v[0], v[1], -v[2]
+        r = self.rows
+        g = [x * r[0][k] + y * r[1][k] + z * r[2][k] + self.translation[k] for k in range(3)]
+        return (g[0], g[1], -g[2])
+
+
+@dataclass
+class PgeoGroup:
+    model: int
+    key: int
+    counts: tuple[int, int, int]   # 96-byte instances, 40-byte and 32-byte records
+    distances: tuple[float, ...]
+    instances: list[PgeoInstance] = field(default_factory=list)
+
+
+@dataclass
+class PgeoTile:
+    path: str
+    kind: int
+    name: str
+    box: tuple[tuple[float, ...], tuple[float, ...]]
+    models: list[PgeoModel] = field(default_factory=list)
+    refs: list[int] = field(default_factory=list)
+    groups: list[PgeoGroup] = field(default_factory=list)
+    end: int = 0
+
+
+def read_pgeo(path: str) -> PgeoTile | None:
+    """Reads a `.pgeo` tile. The common part (header, name, model records
+    and their ID lists, a reference list) is read for every kind; the
+    groups and their placements only for kind 7. Layout:
+    docs/formats/WORLD_GEOMETRY.md, "Placements of local-space models"."""
+    data = Path(path).read_bytes()
+    if data[:4] != b"OEGP":
+        return None
+    u32 = lambda at: struct.unpack_from(">I", data, at)[0]
+    f32 = lambda at, n: struct.unpack_from(f">{n}f", data, at)
+    tile = PgeoTile(path, u32(0x30), "", (f32(0x10, 3), f32(0x20, 3)))
+    pos = 0x60 + (0x38 if u32(0x58) else 0)
+    name_size = u32(0x3C)
+    tile.name = data[pos:pos + name_size].split(b"\0")[0].decode("latin-1")
+    pos += name_size
+    if u32(0x44):
+        pos = align(pos, 4)
+        table = pos
+        pos += u32(0x44) * 8
+        for k in range(u32(0x44)):
+            pos += u32(table + 8 * k + 4)
+    if u32(0x54):
+        pos = align(pos, 16)
+        table = pos
+        pos += u32(0x54) * 0x40
+        strings = 0
+        for k in range(u32(0x54)):
+            record = table + 0x40 * k
+            ids = []
+            for slot in range(3):
+                count = u32(record + 0x24 + 8 * slot)
+                if count:
+                    pos = align(pos, 4)
+                ids.append(list(struct.unpack_from(f">{count}I", data, pos)))
+                pos += 4 * count
+            strings += u32(record + 0x20)
+            tile.models.append(PgeoModel((f32(record, 3), f32(record + 16, 3)), ids,
+                                         u32(record + 0x3C)))
+        pos += strings
+    if u32(0x40):
+        pos = align(pos, 4)
+        table = pos
+        pos += u32(0x40) * 8
+        for k in range(u32(0x40)):
+            tile.refs.append(u32(table + 8 * k))
+            if u32(table + 8 * k + 4):
+                raise FormatError(f"{path}: reference with a sub-block (not seen in the disc)")
+    if tile.kind != PGEO_MODELS:
+        return tile
+    pos = align(pos, 4)
+    group_count = u32(pos + 0xC)
+    pos = align(pos + 0x14, 4)
+    for g in range(group_count):
+        record = pos + 0x5C * g
+        tile.groups.append(PgeoGroup(model=u32(record + 0x2C), key=u32(record),
+                                     counts=(u32(record + 0x30), u32(record + 0x34),
+                                             u32(record + 0x38)),
+                                     distances=f32(record + 0x3C, 4)))
+    pos += 0x5C * group_count
+    for group in tile.groups:
+        if group.counts[0]:
+            pos = align(pos, 16)
+            for k in range(group.counts[0]):
+                record = pos + 0x60 * k
+                group.instances.append(PgeoInstance([f32(record + 16 * r, 3) for r in range(3)],
+                                                    f32(record + 0x30, 3)))
+            pos += 0x60 * group.counts[0]
+        if group.counts[2]:
+            pos = align(pos, 4) + 0x20 * group.counts[2]
+    tile.end = pos
+    if pos + u32(0x50) != len(data):
+        raise FormatError(f"{path}: groups end at {pos:#x}, 40-byte block {u32(0x50):#x}, "
+                          f"size {len(data):#x}")
+    return tile
+
+
+def box_key(box_min, box_max) -> tuple[float, ...]:
+    return tuple(round(v, 3) for v in (*box_min, *box_max))
+
+
+def rmb_box_index(root: str) -> dict[tuple[float, ...], list[str]]:
+    """Render models by header box: the provisional link from a .pgeo
+    model record to a member (the ID lists are not resolved yet)."""
+    index = collections.defaultdict(list)
+    for path in rmb_files(root):
+        index[box_key(*read_header_box(path))].append(os.path.basename(path))
+    return index
+
+
+def cmd_pgeo(args) -> int:
+    kinds = collections.Counter()
+    instances = models = 0
+    for path in sorted(glob.glob(os.path.join(args.root, PGEO_GLOB))):
+        tile = read_pgeo(path)
+        if tile is None:
+            continue
+        kinds[tile.kind] += 1
+        if tile.kind == PGEO_MODELS:
+            models += len(tile.models)
+            instances += sum(len(g.instances) for g in tile.groups)
+            if args.verbose:
+                print(f"{os.path.basename(path)} {tile.name}: {len(tile.groups)} groups, "
+                      f"{sum(len(g.instances) for g in tile.groups)} instances")
+    print("tiles by kind:", dict(sorted(kinds.items())))
+    print(f"kind {PGEO_MODELS}: {models} model records, {instances} placed instances")
+    return 0
+
+
+def check_placements_against_pgeo(root: str, instances: dict) -> None:
+    """Compares the main-view placements of a frame dump with the
+    instances stored in kind-7 .pgeo tiles (translation within 1 cm,
+    rotation within 0.001)."""
+    stored = []
+    for path in sorted(glob.glob(os.path.join(root, PGEO_GLOB))):
+        tile = read_pgeo(path)
+        if tile is None or tile.kind != PGEO_MODELS:
+            continue
+        for g, group in enumerate(tile.groups):
+            for inst in group.instances:
+                stored.append((os.path.basename(path), g, inst))
+    found = collections.Counter()
+    for (member, _), (n, rotation, t) in sorted(instances.items(), key=lambda kv: kv[1][0]):
+        hit = None
+        for name, g, inst in stored:
+            ft = inst.file_translation
+            if max(abs(ft[k] - t[k]) for k in range(3)) > 0.01:
+                continue
+            # file rotation = F * transpose(rows) * F, F = diag(1, 1, -1)
+            flip = (1, 1, -1)
+            ok = all(abs(flip[r] * flip[c] * inst.rows[c][r] - rotation[r][c]) < 1e-3
+                     for r in range(3) for c in range(3))
+            if ok:
+                hit = (name, g)
+                break
+        found[member, hit is not None] += 1
+        print(f"  draw {n}: {member} at {t[0]:.3f} {t[1]:.3f} {t[2]:.3f}: "
+              + (f"{hit[0]} group {hit[1]}" if hit else "no stored instance"))
+    matched = sum(v for (m, ok), v in found.items() if ok)
+    print(f"placements found in .pgeo model tiles: {matched} of {sum(found.values())}")
+
+
+PVSZ_GLOB = "__R00Z*.pvsz"
+
+
+def check_placements_against_pvsz(root: str, instances: dict) -> None:
+    """Looks for the main-view placements of a frame dump in the .pvsz
+    zone files. A placement there is a big-endian f32 position in the game
+    frame at any byte offset, followed by nine big-endian half floats that
+    hold the game-frame rotation transposed with the third column negated.
+    Only the position and rotation are checked: how a record is framed and
+    which model it names are not decoded (provisional)."""
+    flip = (1, 1, -1)
+    targets = []
+    for (member, _), (n, rotation, t) in sorted(instances.items(), key=lambda kv: kv[1][0]):
+        game = (t[0], t[1], -t[2])
+        lo, hi = (struct.pack(">f", game[0] + d)[:3] for d in (-0.01, 0.01))
+        targets.append((n, member, rotation, game, {lo, hi}))
+    prefixes = {}
+    for k, target in enumerate(targets):
+        for prefix in target[4]:
+            prefixes.setdefault(prefix, []).append(k)
+    hits = {}
+    for path in sorted(glob.glob(os.path.join(root, PVSZ_GLOB))):
+        data = Path(path).read_bytes()
+        for prefix, ks in prefixes.items():
+            start = data.find(prefix)
+            while start >= 0 and len(ks) > len([k for k in ks if k in hits]):
+                if start + 30 <= len(data):
+                    pos = struct.unpack_from(">3f", data, start)
+                    for k in ks:
+                        n, member, rotation, game, _ = targets[k]
+                        if k in hits or max(abs(pos[i] - game[i]) for i in range(3)) > 0.01:
+                            continue
+                        h = struct.unpack_from(">9e", data, start + 12)
+                        # half matrix H[i][j] = file rotation R[j][i] * flip[j]
+                        if all(abs(h[3 * i + j] - rotation[j][i] * flip[j]) < 4e-3
+                               for i in range(3) for j in range(3)):
+                            hits[k] = (os.path.basename(path), start)
+                start = data.find(prefix, start + 1)
+    for k, (n, member, rotation, game, _) in enumerate(targets):
+        where = f"{hits[k][0]} +0x{hits[k][1]:x}" if k in hits else "not found"
+        print(f"  draw {n}: {member}: {where}")
+    print(f"placements found in .pvsz zone files: {len(hits)} of {len(targets)}")
 
 
 # --- frame dumps ------------------------------------------------------------
@@ -537,6 +831,37 @@ def project(mvp, point, width: int, height: int):
             clip[2] / clip[3])
 
 
+def solve3(a, b) -> list[float]:
+    """x with a x = b for a 3x3 matrix (Cramer's rule)."""
+    def det(m):
+        return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+    d = det(a)
+    out = []
+    for c in range(3):
+        m = [row[:] for row in a]
+        for r in range(3):
+            m[r][c] = b[r]
+        out.append(det(m) / d)
+    return out
+
+
+def placement_xyw(scene, mvp) -> tuple[list[list[float]], list[float]]:
+    """A local-space draw's placement in the file frame, from the clip x, y
+    and w rows of the scene matrix and the draw's matrix only. The clip z
+    row of instanced draws differs slightly from the scene matrix's (a
+    different depth mapping), so the full 4x4 inverse puts instances about
+    0.2-0.5 m off; x, y and w alone give the stored placement exactly.
+    Returns (rotation as rows, translation)."""
+    rows = (0, 1, 3)
+    a = [[scene[4 * r + c] for c in range(3)] for r in rows]
+    t = solve3(a, [mvp[4 * r + 3] - scene[4 * r + 3] for r in rows])
+    columns = [solve3(a, [mvp[4 * r + c] for r in rows]) for c in range(3)]
+    rotation = [[columns[c][r] for c in range(3)] for r in range(3)]
+    return rotation, t
+
+
 def placed_in_scene(scene, mvp) -> bool:
     """True when a draw's matrix is the scene matrix times a rigid
     placement: the instance is drawn in the main view."""
@@ -633,7 +958,6 @@ def scene_matrix(draws, tied):
 def cmd_match_dump(args) -> int:
     draws, tied, totals = tie_draws(args)
     scene = scene_matrix(draws, tied)
-    inverse = invert4(scene) if scene else None
     kinds = collections.Counter()
     instances = {}
     for n, (model, k, sub) in sorted(tied.items()):
@@ -644,9 +968,9 @@ def cmd_match_dump(args) -> int:
                     else "another view")
         kinds[(model.placement, view)] += 1
         if model.placement == "local" and scene and placed_in_scene(scene, draws[n]["mvp"]):
-            placed = multiply4(inverse, draws[n]["mvp"])
-            instances.setdefault((os.path.basename(model.path), tuple(round(v, 2) for v in
-                                  (placed[3], placed[7], placed[11]))), n)
+            rotation, t = placement_xyw(scene, draws[n]["mvp"])
+            instances.setdefault((os.path.basename(model.path), tuple(round(v, 2) for v in t)),
+                                 (n, rotation, t))
     if args.verbose:
         for n in sorted(tied):
             model, k, sub = tied[n]
@@ -655,8 +979,8 @@ def cmd_match_dump(args) -> int:
             if draws[n]["mvp"] == scene:
                 line += "scene matrix"
             elif model.placement == "local" and scene and placed_in_scene(scene, draws[n]["mvp"]):
-                placed = multiply4(inverse, draws[n]["mvp"])
-                line += f"instance at {placed[3]:.2f} {placed[7]:.2f} {placed[11]:.2f} (file frame)"
+                _, t = placement_xyw(scene, draws[n]["mvp"])
+                line += f"instance at {t[0]:.2f} {t[1]:.2f} {t[2]:.2f} (file frame)"
             else:
                 line += "other matrix"
             print(line)
@@ -667,10 +991,13 @@ def cmd_match_dump(args) -> int:
     for (placement, matrix), value in sorted(kinds.items()):
         print(f"  {placement}-space models, {matrix}: {value}")
     print(f"distinct main-view instance placements of local-space models: {len(instances)}")
+    if getattr(args, "pgeo", None):
+        check_placements_against_pgeo(args.pgeo, instances)
+        check_placements_against_pvsz(args.pgeo, instances)
     for key, value in totals.items():
         print(f"{key}: {value}")
     if scene:
-        print("scene matrix:", " ".join(f"{v:.4f}" for v in scene))
+        print("scene matrix:", " ".join(f"{v!r}" for v in scene))
         print("camera position (file frame): %.2f %.2f %.2f" % camera_position(scene))
     return 0
 
@@ -793,7 +1120,7 @@ def main(argv: list[str] | None = None) -> int:
     def add_selection(sub):
         sub.add_argument("root", help="directory of extracted bin.zip members")
         sub.add_argument("--box", type=float, nargs=4, metavar=("X0", "Z0", "X1", "Z1"))
-        sub.add_argument("--members", help="comma-separated member names")
+        sub.add_argument("--members", help="comma-separated member names, or @file holding them")
 
     stats = commands.add_parser("stats")
     stats.add_argument("root")
@@ -802,11 +1129,20 @@ def main(argv: list[str] | None = None) -> int:
     dump = commands.add_parser("dump-obj")
     add_selection(dump)
     dump.add_argument("--out")
+    dump.add_argument("--props", action="store_true",
+                      help="also place local-space models from the kind-7 .pgeo tiles "
+                           "(instances whose origin lies in --box)")
     dump.set_defaults(run=cmd_dump_obj)
+    pgeo = commands.add_parser("pgeo")
+    pgeo.add_argument("root")
+    pgeo.add_argument("--verbose", action="store_true")
+    pgeo.set_defaults(run=cmd_pgeo)
     match = commands.add_parser("match-dump")
     add_selection(match)
     match.add_argument("dump")
     match.add_argument("--verbose", action="store_true", help="list every tied draw")
+    match.add_argument("--pgeo", metavar="DIR",
+                       help="check every main-view placement against the .pgeo and .pvsz files in DIR")
     match.set_defaults(run=cmd_match_dump)
     overlay = commands.add_parser("overlay")
     add_selection(overlay)
