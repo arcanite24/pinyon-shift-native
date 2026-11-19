@@ -30,7 +30,9 @@ readers, and a car drawn from the game's own files.
 | Path | What |
 | --- | --- |
 | `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms) |
+| `libs/data` | Game database rules (SPEC-EVENT-RESTRICTIONS): decodes and re-encodes `EventRestrictions.Value` strings into per-bucket restriction sets, and tests a car against a set |
 | `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses |
+| `apps/event-restrictions-corpus` | Decodes every `EventRestrictions` row of the player's `media/db/gamedb.slt` (opened read-only) and checks each round-trips; prints counts only |
 | `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, one pipeline, depth, 4x MSAA, one texture, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG |
 | `tests` | Unit tests on synthetic bytes |
 | `tools` | Windows build script, shader regeneration |
@@ -73,6 +75,10 @@ with `python tools/regenerate-shaders.py [--compiler path]`.
 ```sh
 # Corpus test: every archive, every .carbin and .xds member
 fh1data-corpus --game-root <game> [--verbose] [--filter cars/]
+
+# Event restrictions: every row decodes and re-encodes to the same Value
+# (--game-root, or the SHIFT_GAME_ROOT environment variable)
+event-restrictions-corpus --game-root <game>
 
 # Window
 carview --game-root <game> --car AST_DB5Vantage_64

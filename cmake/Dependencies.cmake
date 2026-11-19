@@ -20,6 +20,24 @@ else()
 endif()
 set_target_properties(shift_mspack_lzxd PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# SQLite, the official amalgamation, for reading the game database
+# (media/db/gamedb.slt) read-only. Public domain.
+FetchContent_Declare(sqlite3
+  URL https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip
+  URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR _no_cmake_)
+FetchContent_MakeAvailable(sqlite3)
+add_library(shift_sqlite3 STATIC "${sqlite3_SOURCE_DIR}/sqlite3.c")
+target_include_directories(shift_sqlite3 PUBLIC "${sqlite3_SOURCE_DIR}")
+target_compile_definitions(shift_sqlite3 PRIVATE SQLITE_THREADSAFE=0 SQLITE_OMIT_LOAD_EXTENSION
+  SQLITE_DEFAULT_MEMSTATUS=0 SQLITE_DQS=0)
+if(MSVC)
+  target_compile_options(shift_sqlite3 PRIVATE /w)
+else()
+  target_compile_options(shift_sqlite3 PRIVATE -w)
+endif()
+
 if(SHIFT_BUILD_CARVIEW)
   # Vulkan headers and the volk loader: no Vulkan SDK needed to build.
   FetchContent_Declare(vulkan_headers
