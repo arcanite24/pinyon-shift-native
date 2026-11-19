@@ -91,6 +91,19 @@ car's physics data, which is not read yet) are hidden unless `--all-parts`.
 Interior parts sample the exterior atlas for now, and glass is drawn
 opaque.
 
+## Status (RI-0.3, 2026-11-19)
+
+- Corpus on the base disc (Windows and the Steam Deck give the same
+  counts): 524 archives, 258,936 members; all 15,081 `.carbin`/`.xds`
+  members decompress with matching CRCs. All 1,883 car models of the 179
+  `cars/` archives parse (118,629 sub-sections, no index outside its
+  pool). All 9,656 `.xds` decode (one linear texture's mips are not laid
+  out yet). Not decoded: the `stripped_*` twins, and the 1,372 livery
+  decal and 2 brake `.carbin` files, which use another layout.
+- carview draws a car headless on Windows (RTX 4080, validation layer
+  clean, windowed path too) and on the Steam Deck LCD (RADV, Linux build
+  from WSL Ubuntu 24.04, GCC 13, static libstdc++, X11 window support).
+
 ## Licence
 
 BSD-3-Clause (`LICENSE`), copyright Brandon G. Neri. **The licence is still
