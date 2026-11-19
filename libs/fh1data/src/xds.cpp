@@ -12,7 +12,7 @@ namespace {
 constexpr size_t kHeaderSize = 0x34;
 constexpr size_t kFetchOffset = 0x1C;
 
-enum class Kind { k8888, kDxt1, kDxt3, kDxt5, kDxn, kDxt3a, kDxt5a, k8, k88, k565, k4444, k1555 };
+enum class Kind { k8888, kDxt1, kDxt3, kDxt5, kDxn, kDxt3a, kDxt5a };
 
 struct Format {
   uint32_t number;
@@ -24,13 +24,8 @@ struct Format {
 
 // Xenos TextureFormat numbers. The _AS_16_16_16_16 variants store the same
 // blocks as their base formats.
-constexpr std::array<Format, 16> kFormats = {{
-    {2, Kind::k8, 1, 1, "k_8"},
-    {3, Kind::k1555, 1, 2, "k_1_5_5_5"},
-    {4, Kind::k565, 1, 2, "k_5_6_5"},
+constexpr std::array<Format, 11> kFormats = {{
     {6, Kind::k8888, 1, 4, "k_8_8_8_8"},
-    {10, Kind::k88, 1, 2, "k_8_8"},
-    {15, Kind::k4444, 1, 2, "k_4_4_4_4"},
     {18, Kind::kDxt1, 4, 8, "k_DXT1"},
     {19, Kind::kDxt3, 4, 16, "k_DXT2_3"},
     {20, Kind::kDxt5, 4, 16, "k_DXT4_5"},
@@ -103,30 +98,6 @@ void decode_block(Kind kind, const uint8_t* b, std::array<Texel, 16>& texels) {
     case Kind::k8888:
       texels[0] = {b[0], b[1], b[2], b[3]};
       return;
-    case Kind::k8:
-      texels[0] = {b[0], b[0], b[0], b[0]};
-      return;
-    case Kind::k88:
-      texels[0] = {b[0], b[1], 0, 255};
-      return;
-    case Kind::k565: {
-      const uint32_t v = load_le16(b);
-      const uint32_t x = v & 0x1F, y = (v >> 5) & 0x3F, z = v >> 11;
-      texels[0] = {uint8_t(x << 3 | x >> 2), uint8_t(y << 2 | y >> 4), uint8_t(z << 3 | z >> 2), 255};
-      return;
-    }
-    case Kind::k4444: {
-      const uint32_t v = load_le16(b);
-      texels[0] = {uint8_t((v & 0xF) * 17), uint8_t(((v >> 4) & 0xF) * 17),
-                   uint8_t(((v >> 8) & 0xF) * 17), uint8_t((v >> 12) * 17)};
-      return;
-    }
-    case Kind::k1555: {
-      const uint32_t v = load_le16(b);
-      auto e = [](uint32_t c) { return uint8_t(c << 3 | c >> 2); };
-      texels[0] = {e(v & 0x1F), e((v >> 5) & 0x1F), e((v >> 10) & 0x1F), uint8_t(v >> 15 ? 255 : 0)};
-      return;
-    }
     case Kind::kDxt3a:
     case Kind::kDxt5a:
       // One-channel formats: the value in every component.
@@ -326,6 +297,8 @@ XdsResult decode_xds(std::span<const uint8_t> data, bool all_levels) {
   std::vector<Level> levels;
   const size_t needed = layout(h, *f, levels);
   const auto payload = data.subspan(kHeaderSize);
+  r.layout_bytes = needed;
+  r.payload_bytes = payload.size();
   RgbaImage base;
   if (!decode_level(payload, h, *f, levels[0], base)) {
     r.error = "data shorter than the base level";

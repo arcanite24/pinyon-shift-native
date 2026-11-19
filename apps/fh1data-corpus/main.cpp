@@ -2,6 +2,7 @@
 // folder and reports what parses (RF-6 corpus test).
 //
 //   fh1data-corpus --game-root <dir> [--threads N] [--verbose] [--filter text]
+//                  [--all-members]   (also decompress and CRC every other member)
 //   fh1data-corpus --dump <archive.zip> <member>        (carbin summary)
 //   fh1data-corpus --extract <archive.zip> <member> <out>
 //
@@ -57,6 +58,13 @@ struct Stats {
   uint64_t xds_ok = 0, xds_base_only = 0, xds_unsupported = 0, xds_failed = 0, xds_levels = 0;
   std::map<std::string, uint64_t> xds_formats;      // "name/dimension" -> count
   std::map<std::string, uint64_t> xds_unsupported_why;
+  uint64_t xds_layout_exact = 0, xds_layout_padded = 0;  // payload == / != layout size
+  std::map<std::string, uint64_t> xds_padded_shapes;
+  // every member (--all-members) and the archive structure
+  uint64_t no_local_header = 0, no_extra_offset = 0;
+  uint64_t all_read_ok = 0, all_read_failed = 0, all_deflate_skipped = 0;
+  uint64_t no_local_read_ok = 0;
+  std::map<int, uint64_t> lzx_windows;
   // car archives
   uint64_t car_archives = 0, car_archives_ok = 0;
   std::vector<std::string> failures;
@@ -75,6 +83,12 @@ struct Stats {
     for (auto& [k, v] : o.xds_formats) xds_formats[k] += v;
     for (auto& [k, v] : o.xds_unsupported_why) xds_unsupported_why[k] += v;
     car_archives += o.car_archives; car_archives_ok += o.car_archives_ok;
+    xds_layout_exact += o.xds_layout_exact; xds_layout_padded += o.xds_layout_padded;
+    for (auto& [k, v] : o.xds_padded_shapes) xds_padded_shapes[k] += v;
+    no_local_header += o.no_local_header; no_extra_offset += o.no_extra_offset;
+    all_read_ok += o.all_read_ok; all_read_failed += o.all_read_failed;
+    all_deflate_skipped += o.all_deflate_skipped; no_local_read_ok += o.no_local_read_ok;
+    for (auto& [k, v] : o.lzx_windows) lzx_windows[k] += v;
     failures.insert(failures.end(), o.failures.begin(), o.failures.end());
   }
 };
@@ -130,6 +144,19 @@ bool check_member(const std::string& where, const std::string& name,
     s.xds_formats[std::string(fh1::xenos_format_name(r.header.format)) + "(" +
                   std::to_string(r.header.format) + ")/" + dimension_name(r.header.dimension) +
                   (r.header.tiled ? "/tiled" : "/linear")]++;
+    if (r.layout_bytes && r.status != fh1::XdsStatus::kFailed) {
+      if (r.payload_bytes == r.layout_bytes) {
+        ++s.xds_layout_exact;
+      } else {
+        ++s.xds_layout_padded;
+        s.xds_padded_shapes[std::to_string(r.header.width) + "x" + std::to_string(r.header.height) +
+                            " levels " + std::to_string(r.header.levels) +
+                            (r.header.packed_mips ? " packed" : "") +
+                            (r.header.tiled ? "" : " linear") +
+                            (r.payload_bytes > r.layout_bytes ? " (payload larger)"
+                                                              : " (payload shorter)")]++;
+      }
+    }
     switch (r.status) {
       case fh1::XdsStatus::kOk:
         ++s.xds_ok;
@@ -153,6 +180,8 @@ bool check_member(const std::string& where, const std::string& name,
   return true;
 }
 
+bool g_all_members = false;
+
 void check_archive(const fs::path& path, const fs::path& media, Stats& s) {
   const std::string rel = fs::relative(path, media).generic_string();
   const bool in_cars = lower(rel).rfind("cars/", 0) == 0;
@@ -169,9 +198,28 @@ void check_archive(const fs::path& path, const fs::path& media, Stats& s) {
   s.members += archive->members().size();
   for (const auto& m : archive->members()) {
     s.methods[m.method]++;
+    const bool local = archive->has_local_header(m);
+    if (!local) ++s.no_local_header;
+    if (!m.payload_offset) ++s.no_extra_offset;
     const std::string ext = extension(m.name);
-    if (ext != "carbin" && ext != "xds") continue;
+    const bool decoded_type = ext == "carbin" || ext == "xds";
+    if (!decoded_type && !g_all_members) continue;
+    if (m.method == uint16_t(fh1::ZipMethod::kDeflate)) {
+      ++s.all_deflate_skipped;
+      continue;
+    }
     fh1::ReadResult r = archive->read(m);
+    if (r.ok()) {
+      ++s.all_read_ok;
+      if (!local) ++s.no_local_read_ok;
+      if (r.lzx_window_bits) s.lzx_windows[r.lzx_window_bits]++;
+    } else {
+      ++s.all_read_failed;
+    }
+    if (!decoded_type) {
+      if (!r.ok()) s.failures.push_back("read " + rel + ":" + m.name + ": " + r.error);
+      continue;
+    }
     if (!r.ok()) {
       ++s.read_failed;
       all_ok = false;
@@ -242,9 +290,11 @@ int main(int argc, char** argv) {
     if (args[i] == "--game-root" && i + 1 < args.size()) root = args[++i];
     else if (args[i] == "--threads" && i + 1 < args.size()) threads = std::stoul(args[++i]);
     else if (args[i] == "--verbose") verbose = true;
+    else if (args[i] == "--all-members") g_all_members = true;
     else if (args[i] == "--filter" && i + 1 < args.size()) filter = lower(args[++i]);
     else {
       std::cerr << "usage: fh1data-corpus --game-root <dir> [--threads N] [--verbose] [--filter text]\n"
+                   "                      [--all-members]\n"
                    "       fh1data-corpus --dump <archive.zip> <member>\n"
                    "       fh1data-corpus --extract <archive.zip> <member> <out>\n";
       return 2;
@@ -320,6 +370,22 @@ int main(int argc, char** argv) {
   };
   print_xds("archived", s);
   print_xds("loose", loose_stats);
+  std::printf("xds layout vs payload: %llu exact, %llu differ\n",
+              (unsigned long long)(s.xds_layout_exact + loose_stats.xds_layout_exact),
+              (unsigned long long)(s.xds_layout_padded + loose_stats.xds_layout_padded));
+  for (auto& [k, v] : s.xds_padded_shapes)
+    std::printf("    %-48s %llu\n", k.c_str(), (unsigned long long)v);
+  std::printf("members without a local header: %llu; without extra field 0x1123: %llu\n",
+              (unsigned long long)s.no_local_header, (unsigned long long)s.no_extra_offset);
+  std::printf("%s members read: %llu ok (%llu of them without a local header), %llu failed, "
+              "%llu deflated skipped\n",
+              g_all_members ? "all" : "carbin/xds", (unsigned long long)s.all_read_ok,
+              (unsigned long long)s.no_local_read_ok, (unsigned long long)s.all_read_failed,
+              (unsigned long long)s.all_deflate_skipped);
+  std::printf("  LZX window that decoded each XMem member:");
+  for (auto& [k, v] : s.lzx_windows)
+    std::printf(" %d KiB=%llu", (1 << k) / 1024, (unsigned long long)v);
+  std::printf("\n");
   std::printf("car archives: %llu of %llu parse completely\n", (unsigned long long)s.car_archives_ok,
               (unsigned long long)s.car_archives);
   std::printf("time: %.1f s on %u threads\n", seconds, threads);

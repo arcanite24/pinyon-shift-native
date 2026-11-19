@@ -29,7 +29,7 @@ readers, and a car drawn from the game's own files.
 
 | Path | What |
 | --- | --- |
-| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A, 8888 and some 16-bit formats, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms) |
+| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms) |
 | `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses |
 | `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, one pipeline, depth, 4x MSAA, one texture, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG |
 | `tests` | Unit tests on synthetic bytes |
@@ -95,10 +95,18 @@ opaque.
 
 - Corpus on the base disc (Windows and the Steam Deck give the same
   counts): 524 archives, 258,936 members; all 15,081 `.carbin`/`.xds`
-  members decompress with matching CRCs. All 1,883 car models of the 179
+  members decompress with matching CRCs. With `--all-members`, 258,521
+  of the 258,537 stored and XMem members decompress with matching CRCs
+  (231,270 of them have no local header); every XMem member needed a
+  128 KiB LZX window. 16 fail in libmspack's lzxd (development JPGs in
+  `UI.zip`, two `.pgeo`, four `.gr2`), cause unknown; the 399 deflated
+  members are not read yet. 329 members lack extra field `0x1123`. All 1,883 car models of the 179
   `cars/` archives parse (118,629 sub-sections, no index outside its
-  pool). All 9,656 `.xds` decode (one linear texture's mips are not laid
-  out yet). Not decoded: the `stripped_*` twins, and the 1,372 livery
+  pool). All 9,656 `.xds` (all 2D) decode; for 9,653 the level layout
+  accounts for the payload exactly, the other three are a linear texture
+  (mips not laid out) and two narrow textures of 16 texels or less whose
+  layout is unverified. DXN decodes to clean normal maps, but which block
+  is X and which Y is not checked. Not decoded: the `stripped_*` twins, and the 1,372 livery
   decal and 2 brake `.carbin` files, which use another layout.
 - carview draws a car headless on Windows (RTX 4080, validation layer
   clean, windowed path too) and on the Steam Deck LCD (RADV, Linux build

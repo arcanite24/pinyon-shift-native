@@ -104,13 +104,15 @@ bool lzx_decode(std::span<const uint8_t> lzx, std::span<uint8_t> output, int win
 
 std::optional<std::vector<uint8_t>> xmem_decompress(std::span<const uint8_t> compressed,
                                                     size_t uncompressed_size,
-                                                    std::optional<uint32_t> expected_crc) {
+                                                    std::optional<uint32_t> expected_crc,
+                                                    int* window_bits_used) {
   std::vector<uint8_t> lzx;
   if (!xmem_unframe(compressed, uncompressed_size, lzx)) return std::nullopt;
   std::vector<uint8_t> output(uncompressed_size);
-  for (int window_bits : {16, 17, 15}) {
+  for (int window_bits : {17, 16, 15}) {
     if (!lzx_decode(lzx, output, window_bits)) continue;
     if (expected_crc && crc32(output) != *expected_crc) continue;
+    if (window_bits_used) *window_bits_used = window_bits;
     return output;
   }
   return std::nullopt;

@@ -141,6 +141,11 @@ const ArchiveMember* Archive::find(std::string_view name) const {
   return it == index_.end() ? nullptr : &members_[it->second];
 }
 
+bool Archive::has_local_header(const ArchiveMember& member) {
+  std::vector<uint8_t> local;
+  return read_range(member.header_offset, 4, local) && load_le32(local.data()) == kLocalHeaderSignature;
+}
+
 std::optional<uint64_t> Archive::resolve_payload(const ArchiveMember& member, std::string* error) {
   std::vector<uint8_t> local;
   const bool has_local = read_range(member.header_offset, kLocalHeaderSize, local) &&
@@ -180,7 +185,8 @@ ReadResult Archive::read(const ArchiveMember& member) {
       result.data = std::move(compressed);
       break;
     case ZipMethod::kXmem: {
-      auto data = xmem_decompress(compressed, size_t(member.size), member.crc32);
+      auto data = xmem_decompress(compressed, size_t(member.size), member.crc32,
+                                  &result.lzx_window_bits);
       if (!data) {
         result.error = "XMem LZX decode failed";
         return result;

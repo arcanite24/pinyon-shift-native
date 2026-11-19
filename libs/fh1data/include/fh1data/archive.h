@@ -36,6 +36,7 @@ struct ArchiveMember {
 struct ReadResult {
   std::vector<uint8_t> data;
   std::string error;  // empty on success
+  int lzx_window_bits = 0;  // XMem members: the window that decoded it
   bool ok() const { return error.empty(); }
 };
 
@@ -56,6 +57,9 @@ class Archive {
   // Reads, decompresses and CRC-checks one member. Not thread-safe.
   ReadResult read(const ArchiveMember& member);
   ReadResult read(std::string_view name);
+
+  // Whether a local file header sits at the member's directory offset.
+  bool has_local_header(const ArchiveMember& member);
 
   // Where the member's payload starts, as read() resolves it, or an error.
   std::optional<uint64_t> resolve_payload(const ArchiveMember& member, std::string* error);

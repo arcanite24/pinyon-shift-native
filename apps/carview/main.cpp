@@ -4,6 +4,7 @@
 //           [--headless --out file.png] [--yaw deg] [--pitch deg]
 //           [--distance m] [--paint r,g,b] [--msaa N] [--validation]
 //           [--no-cockpit] [--all-parts] [--frames N]
+//   carview --xds-png <archive.zip> <member.xds> <out.png> [level]
 //
 // Windowed: drag with the left mouse button (or the left stick) to orbit,
 // wheel (or the triggers) to zoom, Esc to quit. Headless renders one frame
@@ -26,6 +27,8 @@
 #include <stb_image_write.h>
 
 #include "car_model.h"
+#include "fh1data/archive.h"
+#include "fh1data/xds.h"
 #include "renderer.h"
 
 namespace {
@@ -116,7 +119,39 @@ void usage() {
 
 }  // namespace
 
+// carview --xds-png <archive.zip> <member.xds> <out.png> [level]: writes one
+// decoded texture level, for checking the decoder by eye.
+int xds_png(int argc, char** argv) {
+  std::string error;
+  auto archive = fh1::Archive::open(argv[2], &error);
+  if (!archive) {
+    std::fprintf(stderr, "carview: %s\n", error.c_str());
+    return 1;
+  }
+  auto bytes = archive->read(argv[3]);
+  if (!bytes.ok()) {
+    std::fprintf(stderr, "carview: %s\n", bytes.error.c_str());
+    return 1;
+  }
+  const fh1::XdsResult texture = fh1::decode_xds(bytes.data, true);
+  const size_t level = argc > 5 ? size_t(std::atoi(argv[5])) : 0;
+  if (level >= texture.levels.size()) {
+    std::fprintf(stderr, "carview: %s (%zu levels)\n", texture.error.c_str(), texture.levels.size());
+    return 1;
+  }
+  const fh1::RgbaImage& image = texture.levels[level];
+  std::printf("%s: format %u (%s), %ux%u, %zu levels, swizzle %03o, endian %u\n", argv[3],
+              texture.header.format, fh1::xenos_format_name(texture.header.format),
+              texture.header.width, texture.header.height, texture.levels.size(),
+              texture.header.swizzle, texture.header.endian);
+  return stbi_write_png(argv[4], int(image.width), int(image.height), 4, image.rgba.data(),
+                        int(image.width * 4))
+             ? 0
+             : 1;
+}
+
 int main(int argc, char** argv) {
+  if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
   std::filesystem::path game_root;
   std::string car, out = "carview.png";
   int lod = 0;

@@ -51,6 +51,8 @@ struct XdsResult {
   XdsHeader header;
   std::vector<RgbaImage> levels;  // levels[0] is the base
   std::string error;
+  size_t layout_bytes = 0;   // payload size the level layout needs (2D, known format)
+  size_t payload_bytes = 0;  // bytes after the header
 };
 
 // Reads the header only. Returns false (with a reason) if it is not one.
