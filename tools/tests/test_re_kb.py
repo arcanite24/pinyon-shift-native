@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,6 +30,19 @@ class KnowledgeBaseTests(unittest.TestCase):
         self.assertEqual(len(KB.lint([listing])), 1)
         dump = {"where": "test", "name": "x", "how": " ".join(["4E"] * 24)}
         self.assertEqual(len(KB.lint([dump])), 1)
+
+    def test_lint_checks_clean_room_specs(self):
+        self.assertEqual(KB.lint_specs(), [])
+        fence = "`" * 3
+        with tempfile.TemporaryDirectory() as folder:
+            spec = Path(folder) / "BAD.md"
+            bad = ["# Spec", "", fence + "cpp", "int x;", fence, "", "The loop reads ctx.r3 first.", ""]
+            spec.write_text("\n".join(bad), encoding="utf-8")
+            problems = KB.lint_specs((Path(folder),))
+            self.assertEqual(len(problems), 2, problems)
+            good = ["# Spec", "", fence + "text", "[a] -> [b]", fence, ""]
+            spec.write_text("\n".join(good), encoding="utf-8")
+            self.assertEqual(KB.lint_specs((Path(folder),)), [])
 
     def test_address_table_names_generated_functions(self):
         table = KB.address_table(self.records, self.symbols)

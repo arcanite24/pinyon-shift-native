@@ -16,6 +16,9 @@ with a confidence and its evidence), the mod API's names in
             exists, v4);
   lint      refuses records whose text contains what docs/LEGAL.md keeps out of
             the repository: runs of disassembled instructions or hex dumps.
+            It also checks the clean-room specs in docs/specs and
+            docs/formats (docs/CLEAN_ROOM.md): no code blocks other than
+            `text`, no listings, hex dumps or generated-code idioms.
 
 `check` and `lint` exit 1 with one line per problem; tools/tests/test_re_kb.py
 runs both.
@@ -56,6 +59,13 @@ INSTRUCTION = re.compile(
     r"stvx|vmaddfp|lwarx|stwcx\.?|srawi|subf|add|neg|andi\.|and|or|xor)\b[ \t]+(?:[rfv]\d{1,3}|cr\d)\b",
     re.IGNORECASE)
 HEX_DUMP = re.compile(r"(?:\b[0-9A-Fa-f]{2}\b[ ,:]*){24,}")
+
+# Clean-room specs (docs/CLEAN_ROOM.md): prose, tables, equations and `text`
+# diagrams only. Generated-code idioms mean text was copied from the
+# translation.
+SPEC_DIRS = (ROOT / "docs" / "specs", ROOT / "docs" / "formats")
+FENCE = re.compile(r"^(```|~~~)[ \t]*([\w+-]*)", re.MULTILINE)
+GENERATED_IDIOM = re.compile(r"\bctx\.(?:r|f|v|cr|lr|ctr)\d*\b|\bREX_(?:LOAD|STORE)_|\b__imp__sub_|\bPPC_FUNC")
 
 
 def load_findings() -> list[dict]:
@@ -187,6 +197,29 @@ def lint(records: list[dict]) -> list[str]:
     return problems
 
 
+def lint_specs(spec_dirs=SPEC_DIRS) -> list[str]:
+    problems = []
+    for directory in spec_dirs:
+        for path in sorted(directory.glob("*.md")) if directory.is_dir() else []:
+            text = path.read_text(encoding="utf-8")
+            where = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.name
+            opening = True
+            for match in FENCE.finditer(text):
+                if opening and match.group(2) not in ("text", ""):
+                    problems.append(f"{where}: a `{match.group(2)}` code block (specs allow `text` blocks only)")
+                elif opening and match.group(2) == "":
+                    problems.append(f"{where}: an untagged code block (tag diagrams as `text`)")
+                opening = not opening
+            if len(INSTRUCTION.findall(text)) >= 3:
+                problems.append(f"{where}: reads like a disassembly listing")
+            if HEX_DUMP.search(text):
+                problems.append(f"{where}: contains a hex dump")
+            idiom = GENERATED_IDIOM.search(text)
+            if idiom:
+                problems.append(f"{where}: contains generated-code text `{idiom.group(0)}`")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -208,7 +241,7 @@ def main() -> int:
             print(text)
         return 0
     problems = check(records, symbols, args.generated, args.generated_v4) if args.command == "check" \
-        else lint(records)
+        else lint(records) + lint_specs()
     for problem in problems:
         print(problem, file=sys.stderr)
     if not problems:

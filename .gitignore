@@ -82,6 +82,9 @@ private/
 !/docs/CONSOLE_ERA_RESEARCH.md
 !/docs/FULL_FRAME_RENDERER.md
 !/docs/REIMPLEMENTATION_PLAN.md
+!/docs/CLEAN_ROOM.md
+!/docs/specs/
+!/docs/formats/
 
 # Build output and tooling state.
 build/
