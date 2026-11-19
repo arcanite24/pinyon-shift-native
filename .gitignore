@@ -81,6 +81,7 @@ private/
 !/docs/BEYOND_RECOMP_RESEARCH.md
 !/docs/CONSOLE_ERA_RESEARCH.md
 !/docs/FULL_FRAME_RENDERER.md
+!/docs/REIMPLEMENTATION_PLAN.md
 
 # Build output and tooling state.
 build/

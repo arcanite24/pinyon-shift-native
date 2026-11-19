@@ -218,6 +218,9 @@ desktop frame, at about 3-3.6 ms.
 
 ### B6. Decompilation and an open reimplementation (effort 100)
 
+The plan for this step, its reverse-engineering foundations and its
+gates is [REIMPLEMENTATION_PLAN.md](REIMPLEMENTATION_PLAN.md) (2026-11-19).
+
 This is what B5 adds once the game logic is ours too: physics, AI,
 streaming, the UI, audio through our own mixer, and our own file loaders
 reading the player's extracted assets.
