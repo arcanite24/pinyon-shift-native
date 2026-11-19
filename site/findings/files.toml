@@ -114,10 +114,10 @@ source = """docs/MODDING.md Asset mods; docs/NATIVE_PORT_BACKLOG.md NP-10.1; doc
 group = """Archives"""
 id = """member-types"""
 name = """archive member types"""
-what = """Inside the archives: `.bin` (115,538, mostly track geometry and scenery), `.bix` (43,589 scenery models), `.pgeo` (41,884), `.fiz` (17,035), `.xds` textures (9,646), `.xml` (6,433), `.carbin` (5,435 car and part models), `.sh` (4,768), `.soundscape` (4,724), `.pvsz` visibility zones (3,551), `.str` string tables (2,481), and UI scenes as `.bgf`/`.bsg`/`.fbf` triples (about 300 each). Five Lua scripts and one Python file ship inside archives."""
-how = """Extension census over every archive's central directory."""
+what = """Inside the archives: `.bin` (115,538; in Colorado's `bin.zip` the scenery render models are the `.rmb.bin` members, and `_0x*.bin` are CAFF texture containers with `.data` and `.gpu` sections), `.bix` (43,589 textures: a BIX1 header with width, height, level count and GPU format, then block-compressed texels; the `_B.bix` twin is headerless texels), `.pgeo` (41,884), `.fiz` (17,035), `.xds` textures (9,646), `.xml` (6,433), `.carbin` (5,435 car and part models), `.sh` (4,768), `.soundscape` (4,724), `.pvsz` visibility zones (3,551), `.str` string tables (2,481), and UI scenes as `.bgf`/`.bsg`/`.fbf` triples (about 300 each). Five Lua scripts and one Python file ship inside archives."""
+how = """Extension census over every archive's central directory; `.bix`, `.bin` and `.rmb.bin` contents from RI-0.4 (docs/formats/WORLD_GEOMETRY.md)."""
 confidence = """confirmed"""
-note = """what `.fiz`, `.pgeo` and `.sh` hold is not established"""
+note = """The counts are confirmed. The `.bix`, `.bix` twin and `_0x*.bin` texture identification is probable (header fields against payload sizes, strings); `.bundle` members also hold texel payloads. `.fiz`, `.pgeo` and `.sh` are not vertex data (RI-0.4), but what they hold is not established."""
 
 # --- String tables ----------------------------------------------------------
 
@@ -318,3 +318,60 @@ what = """All 9,656 `.xds` textures on the base disc are 2D: there are no cube o
 how = """The native engine's format library (shift-engine `libs/fh1data`, written from these records and the project's own tools) and its corpus test, RI-0.3, 2026-11-19, on Windows and the Steam Deck with identical counts; its model dumps matched `fh1_carbin.py dump` on two models, and headless renders of three cars were checked by eye."""
 confidence = """confirmed"""
 source = """docs/REIMPLEMENTATION_PLAN.md RI-0.3"""
+
+[[finding]]
+group = """Textures and models"""
+id = """rmb-render-model"""
+base = """media/tracks/colorado/bin.zip"""
+name = """Colorado render model (coloradoout.NNNNN.rmb.bin)"""
+what = """The scenery render geometry: every draw a free-roam frame made with the main view's world matrix (820) reads one of these. 14,291 members of media/tracks/colorado/bin.zip. Big-endian, packed records: a header (kind 6, model box, identity matrix, object count), then mesh objects (box, node name, vertex count, stride 16-36, the raw GPU vertex buffer with a float3 position first, then submeshes), each submesh a material name, primitive type (6 strip with 0xFFFF restarts, 4 list), material index, sphere, index count and size and the raw GPU index buffer. Material, shader path and shader blob records follow the objects (28.9 % of the bytes, not decoded)."""
+how = """Static parse of every member to its last index list; byte equality with 1,761 draws of a free-roam frame dump (vertex and index buffers, counts and primitive types). RI-0.4, 2026-11-19, base build on Vulkan, one free-roam frame."""
+confidence = """confirmed"""
+note = """Vertex bytes after the position are not decoded. Header constants (4,4,0,1; vertex format 3; submesh word 4) and the per-list trailer word (5/13/6/2/0) have unknown meaning. The 1,094 indexed draws of the frame that tie to no member are, by sample, cars and people, other views and screen passes; they are not all classified."""
+source = """docs/formats/WORLD_GEOMETRY.md; tools/re/world-geometry.py"""
+
+[[finding]]
+group = """Textures and models"""
+id = """rmb-world-local"""
+base = """media/tracks/colorado/bin.zip"""
+name = """World-space and local-space render models"""
+what = """World-space models (11,898: terrain, road, river, building) store world positions and are drawn with the main view matrix alone. Local-space models (2,393: props, fences, signs, trees) sit around the origin and are drawn once per instance with a per-draw placement; 130 instance placements were recovered from one frame as the inverse scene matrix times the draw matrix."""
+how = """Model box heuristic (local when the box is within 200 m of the origin), confirmed by which draws use the scene matrix and which a rigid placement on top of it. RI-0.4, 2026-11-19, base build on Vulkan, one free-roam frame."""
+confidence = """probable"""
+note = """Where the game stores instance placements is not found (see the negative record)."""
+source = """docs/formats/WORLD_GEOMETRY.md#coordinate-frames-and-draws"""
+
+[[finding]]
+group = """Textures and models"""
+id = """rmb-instance-placement-not-found"""
+base = """media/tracks/colorado/bin.zip"""
+name = """Instance placements are not plain float triples in the track files"""
+what = """Placements of local-space models recovered from the dump (for example a fence at about x 2006.2, y 141.5, z -937.2 in the file frame, and with z negated) do not occur as float32 triples within 0.05 m in any bin.zip member, Ribbon_00 file or loose Colorado file. CollObjs.xml GraphicsName "#N" is the object's own index, not a render-model number."""
+how = """Placements recovered from one free-roam frame dump (base build, Vulkan), then a float search over all extracted members and loose files. RI-0.4, 2026-11-19."""
+confidence = """confirmed"""
+negative = true
+note = """Candidates: quantised or zone-relative data in .pvs/.pvsz or .fiz, another archive. Next step: a file-read trace, then Ghidra on what writes the per-draw matrix."""
+source = """docs/formats/WORLD_GEOMETRY.md#open-questions-and-next-steps"""
+
+[[finding]]
+group = """Textures and models"""
+id = """track-nongeometry-members"""
+base = """media/tracks/colorado/bin.zip"""
+name = """.pgeo, .sh, .fiz and .pvsz are not vertex data"""
+what = """None of their bytes appear in any vertex buffer of a free-roam frame. .pgeo (7,970) are 128 m X/Z tiles with a LightMap_X_Y name and a 16-bit quadtree; .sh are per-cell lighting data by name; .fiz carry an X/Z box and two spacings; .pvsz are lists of 32-bit entries with the top bit as a flag."""
+how = """Search of the dump's vertex buffers; header look. RI-0.4, 2026-11-19, base build on Vulkan, one free-roam frame."""
+confidence = """confirmed"""
+negative = true
+note = """Their uses are guesses. Colorado_00.pvs (FPVS) has a 16-bit header field equal to 7,970, the .pgeo count: a lead for the PVS work."""
+source = """docs/formats/WORLD_GEOMETRY.md#archive-and-member-names"""
+
+[[finding]]
+group = """Archives"""
+id = """colorado-bin-zip-count"""
+base = """media/tracks/colorado/bin.zip"""
+name = """Colorado bin.zip overflows the 16-bit entry count"""
+what = """bin.zip has 230,057 directory entries (43,546 names compared ignoring case; a name repeats up to 33 times with the same CRC-32 and size). The end record's 16-bit count holds 33,449, so readers that trust it (Fh1Archive, fh1_archive_extract --archive-all) stop there and miss 10,097 names, 4,337 of them render models."""
+how = """Full directory walk by its size; CRC and size comparison of every repeated name. RI-0.4, 2026-11-19."""
+confidence = """confirmed"""
+note = """Not fixed. Ribbon_00/FilenameMap_00.dat lists the same 43,546 names (big-endian offset table, then NUL-terminated names)."""
+source = """src/ui/hostui/fh1_archive.cpp; docs/formats/WORLD_GEOMETRY.md#archive-and-member-names"""

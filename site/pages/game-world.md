@@ -15,7 +15,7 @@ The track folder, with what each file is known to hold (unmarked names are not y
 
 ```text
 media/tracks/colorado/
-  bin.zip                    230,057 members: .bin, .bix models, .pgeo, .fiz
+  bin.zip                    230,057 members: .rmb.bin models, .bix textures, .pgeo, .fiz
   TrackSettings.xml          grass, crowd, lightmap and depth-pass distances, tone map, wind
   SmashableObjectTypes.xml   object types the car may smash: Fence, Flyer, Mailbox, RaceActivation
   PVSZoneSpeeds.dat          per-zone data for the visibility system

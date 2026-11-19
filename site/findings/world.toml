@@ -359,3 +359,22 @@ how = """String scan and archive listing; the bloom-scale hook site."""
 confidence = """confirmed"""
 negative = true
 source = """docs/NATIVE_PORT_BACKLOG.md NP-8.4; src/pinyon_shift_runtime_hooks.cpp PinyonShiftBloomScale; docs/REVERSE_ENGINEERING.md@a72a92a5f215 Developer options and leftover systems"""
+
+[[finding]]
+group = """Track data and scenery visibility"""
+id = """vs-c128-draw-matrix"""
+name = """Vertex shader constants c128-c131 hold the per-draw clip matrix"""
+what = """Each scenery draw sets its full model-view-projection in c128-c131 (rows are the clip components). World-space draws share one scene matrix equal to the main projection times view times a z negation, so the game's world is the file frame with z negated. c8-c11 are stale for these draws."""
+how = """PM4 constant replay of a frame dump; projection of file positions with each draw's matrix onto the capture. RI-0.4, 2026-11-19, base build on Vulkan, one free-roam frame."""
+confidence = """confirmed"""
+source = """docs/formats/WORLD_GEOMETRY.md#coordinate-frames-and-draws"""
+
+[[finding]]
+group = """Track data and scenery visibility"""
+id = """main-view-half-turn"""
+name = """The main view is drawn rotated by a half turn"""
+what = """The scene projection has negative x and y scales with an ordinary viewport (640/-360 at 1280x720); the presented image maps screen x = (1 - x/w) W/2 and screen y = (1 + y/w) H/2. Reflection or cube faces and shadow passes reuse the same models with other matrices."""
+how = """Overlay of projected file triangles on the capture: only this mapping lines up the flag, barriers and ridges. RI-0.4, 2026-11-19, base build on Vulkan, one free-roam frame."""
+confidence = """probable"""
+note = """Where the image is turned upright later in the frame is not identified."""
+source = """docs/formats/WORLD_GEOMETRY.md#coordinate-frames-and-draws"""
