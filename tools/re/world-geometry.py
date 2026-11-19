@@ -20,6 +20,8 @@ directory, past the wrapped 16-bit entry count).
   world-geometry.py match-dump <members dir> <file.fh1frame> [--box ...] [--verbose]
                                [--members @names.txt] [--pgeo <members dir>]
   world-geometry.py overlay <members dir> <file.fh1frame> <capture.ppm> [--box ...]
+  world-geometry.py depth-skips <members dir> <file.fh1frame> <replay runtime.log>
+  world-geometry.py depth-compare <engine z/w .pfm> <frame file> <resolve>... [--shift DX DY]
 
 `dump-obj` writes every world-space model whose header box overlaps the
 X/Z rectangle (one "sector") to an OBJ, by default .local/re/world/sector.obj.
@@ -33,6 +35,15 @@ comma-separated names from a file. `match-dump` ties the selected models to the 
 a mesh object is tied to a draw when the draw fetches its vertex block
 (same bytes, address and size) and reads one of its index lists (same
 bytes, address, count and primitive type).
+
+`depth-skips` and `depth-compare` measure the RI-0.4 depth clause: a
+replay of the dump (tools/replay-fh1-frame.py) writes every resolve with
+--fh1_resolve_dump_dir; `depth-skips` prints the executor draw numbers
+that write the main view's depth other than the world-space scene-matrix
+draws, for --fh1_debug_skip_draws on a second replay; `depth-compare`
+decodes that replay's resolved depth (reversed 24-bit float, tiled,
+turned by a half turn) and compares it with the engine's z/w image in
+view-space metres.
 """
 from __future__ import annotations
 
@@ -727,15 +738,19 @@ ALU, FETCH = 0x4000, 0x4800
 CONSTANT_BASES = {0: 0x4000, 1: 0x4800, 2: 0x4900, 3: 0x4908, 4: 0x2000}
 
 
-def walk_draws(registers, packets, memory: GuestMemory):
+def walk_draws(registers, packets, memory: GuestMemory, predicate: bool = False):
     """Replays the register writes of the packet stream (PM4 types 0, 1, 3;
     constants set inline or loaded from memory) and returns one record per
     draw: primitive type, index source, count and address, the vertex
     fetch constants and vertex shader constants 0-63 at that draw. Packet
     and register numbering follow the public Xenos documentation and the
-    SDK's command processor."""
+    SDK's command processor. With `predicate`, type-3 packets predicated
+    off by the bin mask and select (the tiled main pass replays its
+    commands once per screen band) are left out, as the GPU does; without
+    it every draw of every band is listed (the counts match-dump reports)."""
     regs = list(registers)
     draws = []
+    bin_mask = bin_select = (1 << 64) - 1
     i = 0
     while i < len(packets):
         header = packets[i]
@@ -757,6 +772,22 @@ def walk_draws(registers, packets, memory: GuestMemory):
         else:
             opcode, count = (header >> 8) & 0x7F, ((header >> 16) & 0x3FFF) + 1
             body = packets[i + 1:i + 1 + count]
+            if opcode in (0x50, 0x51):               # SET_BIN_MASK, SET_BIN_SELECT (hi, lo)
+                value = (body[0] << 32) | body[1]
+                if opcode == 0x50:
+                    bin_mask = value
+                else:
+                    bin_select = value
+            elif opcode in (0x60, 0x61, 0x62, 0x63):  # their LO and HI halves
+                shift = 32 if opcode & 1 else 0
+                keep = ((1 << 64) - 1) ^ (0xFFFFFFFF << shift)
+                if opcode < 0x62:
+                    bin_mask = (bin_mask & keep) | (body[0] << shift)
+                else:
+                    bin_select = (bin_select & keep) | (body[0] << shift)
+            if predicate and header & 1 and not bin_mask & bin_select:
+                i += 1 + count
+                continue
             if opcode == 0x2D:                       # SET_CONSTANT
                 base = CONSTANT_BASES.get((body[0] >> 16) & 0xFF)
                 if base is not None:
@@ -790,6 +821,14 @@ def walk_draws(registers, packets, memory: GuestMemory):
                     "mvp": struct.unpack("<16f", struct.pack("<16I", *regs[ALU + 512:ALU + 528])),
                     # PA_CL_VPORT_XSCALE, XOFFSET, YSCALE, YOFFSET
                     "viewport": struct.unpack("<4f", struct.pack("<4I", *regs[0x210F:0x2113])),
+                    # PA_CL_VPORT_ZSCALE, ZOFFSET; RB_DEPTHCONTROL; RB_DEPTH_INFO
+                    "zviewport": struct.unpack("<2f", struct.pack("<2I", *regs[0x2113:0x2115])),
+                    "depth_control": regs[0x2200],
+                    "depth_info": regs[0x2002],
+                    # RB_SURFACE_INFO; PA_SC_WINDOW_SCISSOR_TL, _BR
+                    "surface_info": regs[0x2000],
+                    "window_scissor": (regs[0x2081], regs[0x2082]),
+                    "vtx_cntl": regs[0x2302],   # PA_SU_VTX_CNTL (bit 0: pixel centre)
                 })
             i += 1 + count
     return draws
@@ -905,7 +944,7 @@ def tie_draws(args):
     Returns the draws, {draw: (model, object index, submesh)} and counters."""
     registers, packets, blocks = read_frame_dump(args.dump)
     memory = GuestMemory(blocks)
-    draws = walk_draws(registers, packets, memory)
+    draws = walk_draws(registers, packets, memory, getattr(args, "predicate", False))
     models = [read_rmb(path) for path in select(args.root, args)]
     by_head = collections.defaultdict(list)
     for model in models:
@@ -1045,6 +1084,235 @@ def cmd_overlay(args) -> int:
     return 0
 
 
+# --- depth ------------------------------------------------------------------
+
+def logged_draws(path: str) -> list[tuple]:
+    """(executor draw number, EDRAM mode, then the alignment key: primitive,
+    index count, surface info, depth control, window scissor) from a replay
+    log written with --fh1_debug_log_draws=true."""
+    import re
+    pattern = re.compile(r"FH1 debug draw (\d+) mode=(\d+) prim=(\d+) indices=(\d+) .*?"
+                         r"surface=(\w+) .*? depth=(\w+) .*?window_scissor=(\w+)/(\w+) ")
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for m in pattern.finditer(handle.read()):
+            g = m.groups()
+            out.append((int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[4], 16),
+                        int(g[5], 16), (int(g[6], 16), int(g[7], 16))))
+    return out
+
+
+def executor_numbers(draws, logged) -> list[int | None]:
+    """The executor's number for each walked draw. The executor leaves out
+    the draws predicated off for the current tile of the tiled main pass
+    (244 in the free-roam frame), which a plain packet walk sees, so the two
+    sequences are aligned in order by primitive, index count, surface,
+    depth control and window scissor."""
+    numbers, j = [], 0
+    for draw in draws:
+        key = (draw["primitive"], draw["count"], draw["surface_info"], draw["depth_control"],
+               draw["window_scissor"])
+        if j < len(logged) and key == logged[j][2:]:
+            numbers.append(logged[j][0])
+            j += 1
+        else:
+            numbers.append(None)
+    if j != len(logged):
+        raise FormatError(f"aligned {j} of {len(logged)} logged draws")
+    return numbers
+
+
+def ranges(numbers) -> str:
+    out, numbers = [], sorted(numbers)
+    for n in numbers:
+        if out and n == out[-1][1] + 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return ",".join(f"{a}-{b}" for a, b in out)
+
+
+def cmd_depth_skips(args) -> int:
+    """Prints the --fh1_debug_skip_draws ranges that leave, among the draws
+    writing the main view's depth targets, only the world-space draws with
+    the scene matrix: a replay with them skipped resolves the game's depth
+    of exactly the world-space models (no car, props, people or HUD)."""
+    draws, tied, _ = tie_draws(args)
+    scene = scene_matrix(draws, tied)
+    logged = logged_draws(args.draw_log)
+    numbers = executor_numbers(draws, logged)
+    modes = {entry[0]: entry[1] for entry in logged}
+    keep = {n for n, (model, _, _) in tied.items()
+            if model.placement == "world" and draws[n]["mvp"] == scene}
+    targets = {draws[n]["depth_info"] for n in keep}
+    # Geometry that writes depth: z enable and z write, and a depth test
+    # other than "always" (the band's full-screen depth clear uses always
+    # and must stay).
+    writes = lambda d: d["depth_control"] & 6 == 6 and (d["depth_control"] >> 4) & 7 != 7
+    skip = [numbers[n] for n, d in enumerate(draws)
+            if numbers[n] is not None and modes[numbers[n]] != 6 and n not in keep
+            and d["depth_info"] in targets and writes(d)]
+    print(f"world-space scene-matrix draws kept: {len(keep)}; depth targets "
+          + ", ".join(f"0x{t:08x}" for t in sorted(targets)))
+    print(f"other depth-writing draws into those targets (skipped): {len(skip)}")
+    print(ranges(skip))
+    return 0
+
+
+def float20e4(value: int) -> float:
+    """The Xenos 24-bit float depth (4-bit exponent, 20-bit mantissa, no
+    sign) as a float."""
+    exponent, mantissa = value >> 20, value & 0xFFFFF
+    if exponent == 0:
+        return mantissa / float(1 << 20) * 2.0 ** -14
+    return (1.0 + mantissa / float(1 << 20)) * 2.0 ** (exponent - 15)
+
+
+def read_resolved_depth(paths: list[str], width: int, height: int, fmt: str) -> list[float]:
+    """Depth of a resolved 32-bit depth-stencil target, row-major from the
+    top. The resolve writes a 2D tiled surface of big-endian words, depth in
+    the upper 24 bits; a target resolved in bands (the game's tiled 4x MSAA
+    pass) is the bands' files in order, since each band is a whole number
+    of 32-row tiles. The main view is drawn rotated by a half turn (see
+    project()), so presented pixel (x, y) is target pixel
+    (width - 1 - x, height - 1 - y)."""
+    data = b"".join(Path(p).read_bytes() for p in paths)
+    pitch = (width + 31) & ~31
+    out = [0.0] * (width * height)
+    for y in range(height):
+        for x in range(width):
+            at = tiled_offset_2d(width - 1 - x, height - 1 - y, pitch, 2)
+            word = struct.unpack_from(">I", data, at)[0]
+            d24 = word >> 8
+            out[y * width + x] = float20e4(d24) if fmt == "float" else d24 / float(0xFFFFFF)
+    return out
+
+
+def tiled_offset_2d(x: int, y: int, pitch: int, bytes_per_block_log2: int) -> int:
+    """Byte offset of block (x, y) in a Xenos 2D tiled surface (as
+    tools/inspect-fh1-ui.py)."""
+    pitch = (pitch + 31) & ~31
+    macro = ((x >> 5) + (y >> 5) * (pitch >> 5)) << (bytes_per_block_log2 + 7)
+    micro = ((x & 7) + ((y & 0xE) << 2)) << bytes_per_block_log2
+    offset = macro + ((micro & ~0xF) << 1) + (micro & 0xF) + ((y & 1) << 4)
+    return (((offset & ~0x1FF) << 3) + ((y & 16) << 7) + ((offset & 0x1C0) << 2)
+            + (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3F))
+
+
+def read_pfm(path: str) -> tuple[int, int, list[float]]:
+    """A greyscale PFM, returned row-major from the top (PFM stores rows
+    from the bottom)."""
+    data = Path(path).read_bytes()
+    magic, size, scale, rest = data.split(b"\n", 3)
+    if magic != b"Pf":
+        raise FormatError("not a greyscale PFM")
+    width, height = map(int, size.split())
+    order = "<" if float(scale) < 0 else ">"
+    values = struct.unpack(f"{order}{width * height}f", rest[:4 * width * height])
+    rows = [values[y * width:(y + 1) * width] for y in range(height)]
+    return width, height, [v for row in reversed(rows) for v in row]
+
+
+def percentile(values: list[float], q: float) -> float:
+    values = sorted(values)
+    return values[min(len(values) - 1, int(q * len(values)))] if values else float("nan")
+
+
+def cmd_depth_compare(args) -> int:
+    """Compares the game's resolved main-view depth with the engine's z/w
+    image of the same camera, in view-space metres. The game's depth is
+    reversed (viewport z scale -1, offset 1: stored depth = 1 - z/w, depth
+    test greater-or-equal); both images then use the scene matrix's z and w
+    rows, z = k w + b, so w = b / (z/w - k)."""
+    import re
+    text = Path(args.frame).read_text(encoding="utf-8")
+    m = [float(v) for v in re.search(r"^matrix (.*)$", text, re.M).group(1).split()]
+    ignore = [tuple(map(int, line.split()[1:5])) for line in text.splitlines()
+              if line.startswith("ignore ")]
+    zrow, wrow = m[8:12], m[12:16]
+    k = sum(a * b for a, b in zip(zrow[:3], wrow[:3])) / sum(b * b for b in wrow[:3])
+    b = zrow[3] - k * wrow[3]
+    # z/w is 0 at w = -b/k and 1 at w = b/(1 - k): with stored = 1 - z/w,
+    # the near plane stores 1 and the far plane 0.
+    print(f"scene matrix z row = {k:.9f} w row + {b:.6f}: z/w = 0 at {-b / k:.4f} m, "
+          f"1 at {b / (1 - k):.1f} m")
+    width, height, ours = read_pfm(args.engine)
+    game = read_resolved_depth(args.resolve, width, height, args.format)
+
+    def view_depth(zw):
+        return b / (zw - k) if zw < k else float("inf")
+
+    dx, dy = args.shift
+
+    def ours_at(x, y):
+        """The engine's z/w at the game's sample point: pixel (x, y) moved
+        by the shift, interpolated bilinearly (z/w is affine across a
+        triangle on screen); None on sky or where the four texels straddle
+        a depth step (their view depths differ by more than 2 %)."""
+        if not dx and not dy:
+            return ours[y * width + x]
+        fx, fy = x + dx, y + dy
+        x0, y0 = int(fx // 1), int(fy // 1)
+        if not (0 <= x0 < width - 1 and 0 <= y0 < height - 1):
+            return None
+        tx, ty = fx - x0, fy - y0
+        q = [ours[(y0 + j) * width + x0 + i] for j in (0, 1) for i in (0, 1)]
+        if max(q) >= 1.0 or view_depth(max(q)) > 1.02 * view_depth(min(q)):
+            return None
+        return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty
+
+    diffs, rel = [], []
+    bands = [[lo, hi, [], []] for lo, hi in ((0, 40), (40, 200), (200, 1000), (1000, 1e9))]
+    game_sky = our_sky = only_one = both = stepped = 0
+    for y in range(height):
+        for x in range(width):
+            if any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in ignore):
+                continue
+            g, o = game[y * width + x], ours[y * width + x]
+            g_empty, o_empty = g <= 0.0, o >= 1.0
+            game_sky += g_empty
+            our_sky += o_empty
+            only_one += g_empty != o_empty
+            if g_empty or o_empty:
+                continue
+            o = ours_at(x, y)
+            if o is None:
+                stepped += 1
+                continue
+            gw, ow = view_depth(1.0 - g), view_depth(o)
+            both += 1
+            d = abs(gw - ow)
+            diffs.append(d)
+            rel.append(d / gw)
+            for band in bands:
+                if band[0] <= gw < band[1]:
+                    band[2].append(d)
+                    band[3].append(d / gw)
+    print(f"pixels outside the ignore boxes compared: {both} (shift {dx:+.2f}, {dy:+.2f} px), "
+          f"left out at depth steps: {stepped}; empty in the game's depth: {game_sky}, "
+          f"in ours: {our_sky}, in only one: {only_one}")
+    print(f"|view depth difference|: median {percentile(diffs, 0.5):.4f} m, "
+          f"95th {percentile(diffs, 0.95):.4f} m; relative median {percentile(rel, 0.5):.2e}, "
+          f"95th {percentile(rel, 0.95):.2e}")
+    for lo, hi, metres, relative in bands:
+        print(f"  {lo:g} <= w < {hi:g} m: {len(metres)} px, median {percentile(metres, 0.5):.4f} m, "
+              f"95th {percentile(metres, 0.95):.4f} m; relative median "
+              f"{percentile(relative, 0.5):.2e}, 95th {percentile(relative, 0.95):.2e}")
+    if args.out:
+        # Signed difference image: grey 128 = equal, +-1 m per 8 grey levels.
+        image = bytearray()
+        for y in range(height):
+            for x in range(width):
+                g, o = game[y * width + x], ours[y * width + x]
+                if g <= 0.0 or o >= 1.0:
+                    image += b"\x00\x00\x40"
+                    continue
+                v = max(0, min(255, int(128 + 8 * (view_depth(1.0 - g) - view_depth(o)))))
+                image += bytes((v, v, v))
+        Path(args.out).write_bytes(b"P6\n%d %d\n255\n" % (width, height) + bytes(image))
+    return 0
+
+
 def cmd_extract(args) -> int:
     """Extract every distinct member of bin.zip, past the 16-bit count.
 
@@ -1150,6 +1418,23 @@ def main(argv: list[str] | None = None) -> int:
     overlay.add_argument("image", help="a binary PPM capture of the same frame")
     overlay.add_argument("--out")
     overlay.set_defaults(run=cmd_overlay)
+    skips = commands.add_parser("depth-skips")
+    add_selection(skips)
+    skips.add_argument("dump")
+    skips.add_argument("draw_log", help="a replay log written with --fh1_debug_log_draws=true")
+    skips.set_defaults(run=cmd_depth_skips, predicate=True)
+    depth = commands.add_parser("depth-compare")
+    depth.add_argument("engine", help="the engine's z/w image (greyscale PFM)")
+    depth.add_argument("frame", help="the engine's frame file (scene matrix, ignore boxes)")
+    depth.add_argument("resolve", nargs="+",
+                       help="resolved depth files (fh1_resolve_dump_dir), bands in order")
+    depth.add_argument("--format", choices=("float", "unorm"), default="float",
+                       help="the target's depth format (RB_DEPTH_INFO bit 16: float)")
+    depth.add_argument("--shift", type=float, nargs=2, default=(0.0, 0.0), metavar=("DX", "DY"),
+                       help="compare with the engine's depth this many pixels right and down "
+                            "(0.5 0.5: the game's pixel centres sit half a pixel off ours)")
+    depth.add_argument("--out", help="write a signed difference image (PPM)")
+    depth.set_defaults(run=cmd_depth_compare)
     args = parser.parse_args(argv)
     return args.run(args)
 

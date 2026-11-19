@@ -31,6 +31,12 @@ reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
     Which model a `.pvsz` placement names is not decoded yet. Collidable
     props are also listed, with the same position and orientation and a
     physics type name, in `Ribbon_00/CollObjs.xml` (59 of the 107).
+- Drawn at the dumped camera from these files, the 73 world-space models
+  of one frame match the game's own main-view depth to a median 0.024 %
+  of the view depth (95th percentile 0.10 %), sampled at the game's pixel
+  centres; see [Depth check](#depth-check-ri-04-gate). The game's depth is
+  reversed 24-bit float, and its pixel centres sit half a pixel off an
+  ordinary rasteriser's ([Coordinate frames](#coordinate-frames-and-draws)).
 - `.bix`, the `_0x*.bin` members and `.bundle` hold textures; `.pgeo`,
   `.fiz`, `.sh` and `.pvsz` bytes appear in no vertex buffer of the frame.
   The census record calling `.bix` "scenery models" and `.bin` "track
@@ -184,6 +190,27 @@ positions.
   frame. In the presented image, x falls as clip x grows and y grows with
   clip y (measured: only this mapping puts the flag, crowd barriers and
   ridge lines over the capture).
+- **Depth.** The main view's depth is reversed: the stored value is
+  1 − z/w (viewport z scale −1, offset 1), the depth test is
+  greater-or-equal, and the target is cleared to 0. It is the 24-bit
+  float depth format (4-bit exponent, 20-bit mantissa, values 0 to 1).
+  With the scene matrix's z row equal to 1.000015 times its w row minus
+  0.29995 m, z/w is 0 at 0.3 m and 1 at about 19,957 m; the w row is the
+  view depth in metres. A world-space depth prepass at 1× fills a
+  1280×720 target first; the colour pass then draws at 4× MSAA in three
+  bands of 256, 256 and 208 rows (predicated tiling: the same command
+  stream runs once per band, and a packet walk that ignores the bin mask
+  and select sees 3,974 draws where the GPU runs 3,730). Confirmed by
+  reading both depth targets back from a replay of the dump (Evidence).
+- **Pixel centres.** The game rasterises with Direct3D 9 pixel centres
+  (on integer window coordinates, not half-integers). After the half
+  turn, the game's sample for presented pixel (x, y) lies half a pixel
+  right of and below the centre an ordinary (Vulkan or Direct3D 10+)
+  rasteriser uses. An engine that wants the game's pixels shifts its
+  projection by half a pixel; without it, near edges move by half a
+  pixel and depth at grazing angles differs by about 0.2 % (Evidence).
+  Confirmed: the pixel-centre setting on every scene draw, and the depth
+  comparison is best at exactly that shift.
 - **Other views.** The same models are also drawn into other views:
   reflection or cube-map faces (`TERR_CUBE_*` models, matrices with 0/±1
   rows) and shadow or other passes. 98 world-space and 328 local-space
@@ -309,7 +336,7 @@ the frame read, so long buffers can be partial).
 
 | Measure | Whole frame | Sector (below) |
 | --- | --- | --- |
-| draws / indexed draws | 3,974 / 2,855 | |
+| draws / indexed draws (packet walk, all bands) | 3,974 / 2,855 (3,730 run on the GPU; the rest are predicated off for the band) | |
 | draws tied to render models | 1,761 (135 models, 189 mesh objects) | 532 (43 models) |
 | world-space draws with the scene matrix | 820 (every draw using that matrix) | 434 |
 | world-space draws in other views | 98 | 98 |
@@ -335,10 +362,52 @@ triangles and the draw's own matrix, over the capture: the road edges,
 terrain ridges, flag, barriers and guard rail line up with the image
 (`.local/re/world/png/overlay-frame.png`, local only).
 
-What this does not show yet: a depth comparison. The dump records the
-front buffer, not the depth buffer, so "depth within tolerance" needs a
-dump of the depth target or a render of the exported sector compared
-against a depth capture.
+### Depth check (RI-0.4 gate)
+
+Measured 2026-11-19. The dump holds no depth image, but replaying it
+offline (`tools/replay-fh1-frame.py`, Vulkan, same build) re-runs the
+frame's commands, camera included, and the replay can write every
+resolve's output (`--fh1_resolve_dump_dir`). The game resolves both depth
+targets in the frame: the 1× prepass once, and the 4× main pass once per
+band (the first sample of each pixel). The draw log
+(`--fh1_debug_log_draws`) tells which resolve is which.
+
+To compare only what the engine draws, a second replay skips every draw
+that writes those depth targets other than the 820 world-space draws with
+the scene matrix (`depth-skips` lists them: 1,959 draws, the car, props,
+people and trees among them; the bands' full-screen depth clears stay).
+`depth-compare` then decodes the main pass's three bands (untiled, turned
+back by the half turn, float depth, 1 − stored = z/w), converts both
+images to view depth with the scene matrix's z and w rows, and compares
+pixel by pixel. The engine image is shift-engine `d55ed64` drawing the 73
+world-space models the dump tied to the main view (carview `--world`, one
+sample, z/w). The car, minimap, speedometer and event-banner boxes of the
+engine's frame file are left out.
+
+| Pixels compared | Median | 95th | Median, relative | 95th, relative |
+| --- | --- | --- | --- | --- |
+| all, game sample point (half-pixel shift) | 0.006 m | 1.05 m | 0.024 % | 0.10 % |
+| view depth under 40 m | 0.001 m | 0.008 m | 0.022 % | 0.064 % |
+| 40 to 200 m | 0.010 m | 0.065 m | 0.012 % | 0.069 % |
+| 200 to 1,000 m | 0.20 m | 0.75 m | 0.025 % | 0.092 % |
+| over 1,000 m | 0.42 m | 7.8 m | 0.033 % | 0.15 % |
+| all, our own pixel centres (no shift) | 0.15 m | 3.5 m | 0.16 % | 0.96 % |
+
+569,343 pixels compared at the shifted sample point; 39,012 more (6 %) are
+left out because the four engine pixels around the sample straddle a
+depth step of more than 2 %. Coverage agrees: 82,829 pixels are empty
+(sky) in the game's image and 83,294 in ours, and only 467 are covered in
+one image but not the other. The far residual grows with distance as a
+fixed fraction (the 4× pass stores its first sample, which is not at the
+pixel centre). Against the 1× prepass, which holds only the nearer world
+(348,148 pixels), the median is 0.001 m (0.011 %) and the 95th under
+40 m 0.0075 m.
+
+What this rests on: the replayed depth is the recompilation's (Vulkan,
+float depth converted to the 24-bit format at the resolve), not a console
+readback; the model set came from the dump's draw list, not from a
+selection rule (open question 3); and the comparison covers world-space
+models only (props need the model IDs, open question 1).
 
 ## Open questions and next steps
 
@@ -360,9 +429,11 @@ against a depth capture.
 4. **Depth check** for the RI-0.4 gate. The engine now draws the sector
    at the dumped camera (shift-engine `d55ed64`): near features land
    within a median 1 px of the capture, but far terrain and the skyline
-   were off: the skyline by a mean 8 px, ridges by 40 to 50 px. Drawing exactly the 73 world-space models the dump tied to the main view, with the matrix at full precision, puts the skyline a median 3-4 px (mean 6 px) from the capture and the near silhouettes 1 px. Only 39 of those 73 lie in the 1 km box, and limiting the draw to them puts the skyline back to a mean 8 px. The ridges come from models outside the sector, and the sector's other 238 models are not drawn by the game. Given the game's draw list, the format and matrix reproduce the frame; the selection rule is question 3. The
-   depth match is by construction (same positions, same matrix); a dump
-   of the depth target would measure it. `match-dump` printed the scene
+   were off: the skyline by a mean 8 px, ridges by 40 to 50 px. Drawing exactly the 73 world-space models the dump tied to the main view, with the matrix at full precision, puts the skyline a median 3-4 px (mean 6 px) from the capture and the near silhouettes 1 px. Only 39 of those 73 lie in the 1 km box, and limiting the draw to them puts the skyline back to a mean 8 px. The ridges come from models outside the sector, and the sector's other 238 models are not drawn by the game. Given the game's draw list, the format and matrix reproduce the frame; the selection rule is question 3. Depth
+   is now measured against the game's own depth targets (see
+   [Depth check](#depth-check-ri-04-gate)): at the game's sample point the
+   view depth agrees to a median 0.024 % and a 95th percentile of 0.10 %.
+   `match-dump` printed the scene
    matrix to 4 decimals, which moves near geometry by several pixels; it
    now prints full precision.
 5. Header constants (4, 4, 0, 1; vertex format 3; the fourth submesh word
@@ -396,6 +467,13 @@ python -I tools/re/world-geometry.py match-dump .local/re/world/all <dump.fh1fra
 python -I tools/re/world-geometry.py match-dump .local/re/world/all <dump.fh1frame> \
     --members @<names file> --pgeo .local/re/world/all
 python -I tools/re/world-geometry.py overlay .local/re/world/all <dump.fh1frame> <capture.ppm>
+python tools/replay-fh1-frame.py <dump.fh1frame> --state-root <seed> --hidden \
+    --game-argument=--gpu_backend=vulkan --game-argument=--fh1_debug_log_draws=true \
+    --game-argument=--fh1_resolve_dump_dir=<dir>
+python -I tools/re/world-geometry.py depth-skips <drawn members> <dump.fh1frame> <runtime.log>
+    (replay again with --fh1_debug_skip_draws=<the printed ranges>)
+python -I tools/re/world-geometry.py depth-compare <world-depth.pfm> <frame file> \
+    <band 1> <band 2> <band 3> --shift 0.5 0.5
 ```
 
 `--members @file` reads the comma-separated names from a file (the

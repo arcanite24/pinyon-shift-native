@@ -207,11 +207,10 @@ source = """docs/UPSCALING_BACKLOG.md UP-1.3"""
 [[finding]]
 group = """Frame structure and views"""
 name = """scene turned 180 degrees with reversed depth"""
-what = """The main scene is drawn turned 180 degrees: its clip x and y are the screen's negated, so a screen pixel's scene depth is at the opposite pixel of the 1280x720 surface, and a later pass turns the picture back. Its stored depth is reversed (1 near, 0 at the far plane), but the matrix's clip z is the usual D3D depth; the reversal is 1 minus it, so it comes from the depth range, not the projection. The scene depth is the 1280-pitch `D24FS8` area at EDRAM base `0x400`, one 256-row band per predicated tile."""
-how = """Copying each tile's depth band at its resolve and comparing it with the frame: it matches only turned 180 degrees. Motion vectors from the matrices are right only with the clip x and y negated and z = 1 - stored depth."""
+what = """The main scene is drawn turned 180 degrees: its clip x and y are the screen's negated, so a screen pixel's scene depth is at the opposite pixel of the 1280x720 surface, and a later pass turns the picture back. Its stored depth is reversed (1 near, 0 at the far plane), but the matrix's clip z is the usual D3D depth; the reversal is 1 minus it, so it comes from the depth range, not the projection: every scene draw sets viewport z scale -1 and offset 1 (`PA_CL_VPORT_ZSCALE`/`ZOFFSET`), depth test greater-or-equal (`RB_DEPTHCONTROL` 0x087087E7), and the matrix gives z/w = 0 at 0.3 m and 1 at about 19,957 m. The scene depth is the 1280-pitch `D24FS8` area at EDRAM base `0x400`, one 256-row band per predicated tile; a 1x world depth prepass at EDRAM base 0 is resolved before it. Pixel centres are Direct3D 9's (`PA_SU_VTX_CNTL` pix_center 0)."""
+how = """Copying each tile's depth band at its resolve and comparing it with the frame: it matches only turned 180 degrees. Motion vectors from the matrices are right only with the clip x and y negated and z = 1 - stored depth. RI-0.4 (2026-11-19): register replay of a free-roam frame dump (`world-geometry.py walk_draws`) and the replay's resolved depth against the file geometry; the comparison is best with the game's sample half a pixel right of and below the presented pixel centre."""
 confidence = """confirmed"""
-note = """The register setting that reverses the depth range was not looked up; "comes from the depth range" is inferred from the matrix."""
-source = """docs/UPSCALING_BACKLOG.md UP-1.3; ShiftGlue src/graphics/vulkan/command_processor.cpp kSwapCameraSource"""
+source = """docs/UPSCALING_BACKLOG.md UP-1.3; docs/formats/WORLD_GEOMETRY.md#coordinate-frames-and-draws; ShiftGlue src/graphics/vulkan/command_processor.cpp kSwapCameraSource"""
 
 # ---------------------------------------------------------------------------
 # Render targets and EDRAM
