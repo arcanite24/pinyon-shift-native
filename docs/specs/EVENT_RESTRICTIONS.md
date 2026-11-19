@@ -105,9 +105,11 @@ not give (see Errors), rather than guess.
 
 ### Bit 34
 
-Bit 34 is set on 75 of the 120 rows and has width 0. Clearing it changed
-nothing that could be seen: the Gauntlet still read OPEN and accepted the
-same cars. Keep it as a decoded flag with no effect until its use is known.
+Bit 34 is set on 75 of the 120 rows and has width 0. Those 75 are exactly
+the rows whose value isn't all zero, so the flag may mean "this set has
+restrictions". Clearing it changed nothing that could be seen: the
+Gauntlet still read OPEN and accepted the same cars. Keep it as a decoded
+flag with no effect until its use is known.
 
 ## The decoded result
 
@@ -138,7 +140,24 @@ The decoder rejects:
 
 The engine logs the event ID and treats a rejected value as "no
 restrictions". That is what the game does when the decode is skipped: its
-record set-up starts with every limit at "none".
+record set-up starts with every limit at "none". When several errors
+apply, which one is reported doesn't matter: the result is the same.
+
+## Questions from the implementation side
+
+Asked on 2026-11-19 by the first implementation. The answers below are
+what the records support. Where they say "engine's choice", the game's
+behaviour is unknown and doesn't matter for the disc.
+
+| Question | Answer |
+| --- | --- |
+| How do buckets 0 to 3 of one event combine? | Unknown: the disc uses bucket 0 only. Apply bucket 0 and log any event that has rows in other buckets |
+| A `BucketId` outside 0 to 3 | Not on the disc. Engine's choice: ignore the row and log it |
+| Two rows for the same event and bucket | Not on the disc. Engine's choice: the last row wins, and it is logged |
+| Is the hex case significant? | The disc writes upper case. Accept both, write upper case |
+| Are the 4-byte fields signed? | Unknown. Every value on the disc is positive and below 2^31, so unsigned 32-bit is safe |
+| A minimum above its maximum | Not on the disc. It admits no car; it is not an error |
+| Can a car lack a property? | No. All 176 cars in `Data_Car` on the base disc have a year, base cost, body family, region, country, make, model family and drive type, none empty |
 
 ## Tests
 

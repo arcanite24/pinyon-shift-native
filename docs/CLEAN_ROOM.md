@@ -66,4 +66,4 @@ spec:
 
 | Spec | Subsystem | Status | Implemented by |
 | --- | --- | --- | --- |
-| [SPEC-EVENT-RESTRICTIONS](specs/EVENT_RESTRICTIONS.md) | event rules | complete for the disc's bits | `shift-engine` `data/event_restrictions` |
+| [SPEC-EVENT-RESTRICTIONS](specs/EVENT_RESTRICTIONS.md) | event rules | complete for the disc's bits | `shift-engine` `libs/data` (`event_restrictions`), commit `34a4804` |
