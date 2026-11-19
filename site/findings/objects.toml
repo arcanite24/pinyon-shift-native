@@ -215,7 +215,7 @@ group = """Car dynamics"""
 base = """sub_82D46EF8, sub_82D3A528, sub_82D38A68, sub_82D1E268, sub_82D0C078"""
 v4 = """sub_82E08FF8, sub_82DFC608, sub_82DFAB90, sub_82DE01B0, sub_82DCDEE0"""
 name = """per-body physics step and its two paths"""
-what = """The physics-world step calls `sub_82D46EF8(world, body, dt, ..., r6)` once per car body per simulation tick: 8.33 ms steps at 120 fps on the desktop, one 16.67 ms step a frame at 60 fps on the Deck (so there are no substeps to drop). A car's `ICarDynamics` (car+0x2D90) is body+0xAD0. The step clears bit 1 of byte body+2731, runs `sub_82D0C078(body)`, then takes one of two paths on the word at body+2756: zero runs the full dynamics step `sub_82D3A528` (the 77-function subtree under it is most of physics); non-zero runs the light step `sub_82D38A68` only if the byte at body+20520 (read by `sub_82D1E268`) is set, otherwise nothing. The player's body always takes the full step; AI bodies move between the two during a race (2 to 6 of 7 on the full step on the Deck). The word is written from many places, so it is a state, not a simple flag. Running the AI bodies' full step on alternate ticks with the summed dt (staggered) skipped 9 % of body steps on the Deck, about 0.7 full steps a frame, and changed no thread's CPU beyond the A/A spread (simulation thread +0.1 ms, workers within noise); the physics harness still passed on desktop and Deck (AI mean distance +2.0 % and -1.6 %)."""
+what = """The physics-world step calls `sub_82D46EF8(world, body, dt, ..., r6)` once per car body per simulation tick: 8.33 ms steps at 120 fps on the desktop, one 16.67 ms step a frame at 60 fps on the Deck. Inside, the full step divides its dt into substeps at about 360 Hz (see "physics substeps" below), so the AI interval trick here only drops whole frame steps. A car's `ICarDynamics` (car+0x2D90) is body+0xAD0. The step clears bit 1 of byte body+2731, runs `sub_82D0C078(body)`, then takes one of two paths on the word at body+2756: zero runs the full dynamics step `sub_82D3A528` (the 77-function subtree under it is most of physics); non-zero runs the light step `sub_82D38A68` only if the byte at body+20520 (read by `sub_82D1E268`) is set, otherwise nothing. The player's body always takes the full step; AI bodies move between the two during a race (2 to 6 of 7 on the full step on the Deck). The word is written from many places, so it is a state, not a simple flag. Running the AI bodies' full step on alternate ticks with the summed dt (staggered) skipped 9 % of body steps on the Deck, about 0.7 full steps a frame, and changed no thread's CPU beyond the A/A spread (simulation thread +0.1 ms, workers within noise); the physics harness still passed on desktop and Deck (AI mean distance +2.0 % and -1.6 %)."""
 how = """`pinyon_shift_physics_body_probe` (src/guest_native/car_physics.cpp) logging bodies, calls, path and dt each second beside the car vector; `pinyon_shift_physics_ai_step_interval` in-run A/B on the Deck and `tools/physics-behaviour.py` on the sustained race (2026-11-13)."""
 confidence = """confirmed"""
 negative = true
@@ -396,3 +396,61 @@ confidence = """probable"""
 note = """Which owner frees the object while it is queued is not found. A guard at the consumer would only hide the freed object, so the producer or the owner's release is the place to look. The v4 address of the consumer is not known."""
 issue = """#737 #843 #844 #711 #1083"""
 source = """src/pinyon_shift_runtime_hooks.cpp PinyonShiftGuardQueueAppend"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D3A528, sub_82D3A490, 0x834AA3B8, 0x834AA3BC"""
+name = """physics substeps (about 360 Hz)"""
+what = """The full dynamics step `sub_82D3A528(body, dt, 1.0, ...)` clamps dt to ±0.1 s and divides it into n = ceil(|dt| × rate) equal substeps (at least one), where rate is the word at `0x834AA3B8` (359 at run time, zero in the image; the word after it, 60, is used instead when `body+0x5018` is 1). Each substep runs `sub_82D3A438`, `sub_82D3A490` (the wheels and tyres), `sub_82D359D8` and `sub_82D2AE38` with dt/n; n is stored at `body+0x502C`. So the per-body step runs at about 360 Hz whatever the frame rate: 3 substeps at 8.33 ms (120 fps), 6 at 16.67 ms (60 fps), 4 to 7 at the 10 to 19 ms steps of a hidden 75 fps run. 359 rather than 360 may be there to keep 120 fps at 3 substeps rather than 4 when dt rounds up (a guess)."""
+how = """Static reading of the step's loop and its count; then `pinyon_shift_physics_oracle` traces of the player's body: body+0x502C equalled ceil(previous dt × 359) on 240 of 240 steps with the game's dt and with a fixed 8.33 ms dt (always 3). The race probe build counts agree: 798,604 entries of sub_82D3A490 against 165,867 of sub_82D3A528, 4.81 substeps per full step on average."""
+confidence = """confirmed"""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5; src/guest_native/car_physics.cpp (oracle); .local/re/probe/race-summary.json"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D2F348, sub_82D36DF8, sub_82D39360, sub_82D3A350"""
+name = """tyre model call rate"""
+what = """The tyre model runs once per wheel in contact per substep. Each substep (`sub_82D3A490`) calls `sub_82D3A350`, which calls `sub_82D39360`; that loops over the four wheel blocks at body+0x1A30 (1024 bytes apart) and calls `sub_82D36DF8` for each, and `sub_82D36DF8` calls `sub_82D2F348` only when the wheel's contact byte (wheel+796) is set; otherwise it zeroes the wheel's force outputs. With four wheels down that is 12 tyre evaluations per 8.33 ms tick and 24 per 16.67 ms tick, about 1,440 a second per car on the full step. One tyre evaluation per wheel per substep suggests a single contact point per wheel (inferred from the call count, not from the tyre model's inside)."""
+how = """Call graph (each function in the chain has one caller) and the contact test before the call; race probe build entry counts: 798,604 substeps, 3,194,416 calls of sub_82D36DF8 (exactly four per substep) and 3,192,486 of sub_82D2F348 (99.94 % of wheel calls in contact)."""
+confidence = """confirmed"""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5; .local/re/probe/race-summary.json"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D46EF8"""
+name = """car body state extent and determinism"""
+what = """A car body's dynamic state lies within the 0x5040 bytes the full step prefetches from the body (body+0 to body+0x5040). Copying those bytes at a step entry and writing them back into the same body 5 s later and about 125 m further on, makes the next 2 s repeat bit for bit when the body is stepped with a fixed dt: no state word differed on any of 241 steps in three injections (stock R34, full throttle, 18.7 to 24.8 m/s with a first-to-second shift in the window, no steering, all wheels down, no other car touched). So for that case the step is deterministic given the body bytes, dt and the driver's input, and no state outside the range differed between snapshot and injection in a way that mattered; state outside the body that was the same at both times would not show. With the game's variable dt (10 to 19 ms) the windows drift instead: two left tolerance after 1.0 s, when a wheel read another surface index, and one after 0.2 s, when the car lost 10 m/s in one step (an impact, most likely free-roam traffic). Within the range: position at body+0x4EA0 (float3, world, m), linear velocity at body+0xC0 (float3, m/s), float3 rows at body+0x70, +0x80, +0x90 that form a rotation matrix, the mass at body+0x160 (15.6 for 1,560 kg: the body works in units of 100 kg) and its inverse at +0x164, and a symmetric 3×3 at body+0x10 to +0x3C that changes with orientation (probably the world inertia tensor in the same scaled units). In 240 steps of driving, 754 of the 5,136 words change."""
+how = """`pinyon_shift_physics_oracle` snapshot, inject and trace (src/guest_native/car_physics.cpp) on the fh1-physics-inject-aa route, compared with tools/re/physics-inject-compare.py; position confirmed by |Δposition|/dt = speed (25.18 against 25.14 m/s), velocity by its magnitude = dyn+3128 speed."""
+confidence = """confirmed"""
+note = """Confirmed for the tested case only (held throttle, no steering, car already driving). The words that differ without being state: the unused w lanes at body+0xCC and its copy at body+0x15EC, an unidentified word at body+0xAC8 (differs on 11 steps without effect), and the controls at dyn+3904 (see the next record). The step's real input has not been located."""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5; docs/native-renderer/FH1_RENDER_TEST_AUTOMATION.md (Body snapshot, injection and short-horizon traces)"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D46EF8"""
+name = """controls at step entry are not the step's input"""
+what = """Read at the entry of the player's body step with the trigger held fully, the gas control at dyn+3904 is 0 on about one step in five, on different steps from run to run, and the step's results do not change: two windows whose gas read differently on 32 to 39 steps traced identical bodies. The input side rewrites and clears the controls between steps, so the step takes its input from elsewhere or before the clear; a native step must not read dyn+3904 at its entry as the driver's input."""
+how = """Fixed-dt oracle traces (ri05-aa3), comparing the gas word with every other body word across injection windows."""
+confidence = """probable"""
+negative = true
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D36DF8"""
+name = """wheel-block units"""
+what = """Measured on a stock R34 (1,560 kg): wheel+12 is the wheel's angular speed in rad/s; times the rolling radius (0.323 m front, 0.319 m rear) it equals the car's speed. wheel+0 is the suspension position in metres and wheel+860 its rest point (-0.2058); (wheel+0 − wheel+860) × wheel+828 equals wheel+676 at rest within 2 %, so +676 is the spring force, and the four sum to 152.8 at rest, the car's weight (15.3 kN) in units of 100 N, matching the body's mass unit of 100 kg (body+0x160 = 15.6); +828 (855 front, 645 rear) is then the spring rate in 100 N/m. The front pair carries 57.5 % of the weight, which confirms wheels 0 and 1 as the front axle. wheel+716 is equal and opposite on the two wheels of each axle (±0.21 front, ±0.12 rear at rest, up to ±6.5 over bumps), which fits an anti-roll bar force rather than a preload; wheel+700 is not antisymmetric (0.08 on both front wheels, 0.148 on both rear in one sample, zero in others). wheel+52 (119.5 to 120.9, rising under wheelspin) behaves like a tyre temperature and wheel+68 (29.98 to 30.00, rising with it) like a tyre pressure in psi. wheel+208 and +224 hold a world position next to the car (the contact point). wheel+492 and +496 are ratios without a unit."""
+how = """Oracle traces of the player's body at rest and accelerating (ri05-aa1, ri05-aa2): speed / wheel speed for the radius, the spring equation from the suspension record, the static load sum against m·g."""
+confidence = """probable"""
+note = """The "suspension position and spring" record above names +716 a preload; these equal-and-opposite readings say anti-roll bar, so one of the two is wrong until the suspension model is read again. The temperature and pressure readings are guesses."""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D46EF8"""
+name = """a body snapshot taken at spawn does not restore"""
+what = """A snapshot of the player's body taken while the car was still dropping onto the road after free roam loaded (wheels not in contact, speed 0) cannot be injected later. With eight words left alone (body+0x10, +0x18, +0x30, +0x38 and wheel+68 of each wheel, skipped by a pointer test since dropped) the car landed in three injections and then sat at the limiter (about 900 rad/s) with its wheels still under full throttle, while after the snapshot itself it had pulled away. With the whole range restored (fixed dt) the game crashed at the first injection: the physics world's step (guest lr 0x82D4D630) read body+0xAAB through a null body pointer, so the body holds the world's bookkeeping for it (a list or island link) that changes while the car spawns and settles. Snapshots for injection have to be taken once the car is driving; the spawn sequence also keeps state outside the body."""
+how = """`pinyon_shift_physics_oracle` with the snapshot at route frame 1160 (ri05-aa1 with the pointer test, ri05-aa4 without it and with a fixed dt; crash report in .local/runs/ri05-aa4.state/reports), 2026-11-19. Which words carry the link was not located."""
+confidence = """probable"""
+negative = true
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5"""

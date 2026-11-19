@@ -312,6 +312,55 @@ R34 at 5.3 s from position captures every 0.1 s timed from frame 1100; the
 speed field read here gives 5.8 s from the throttle press, so compare runs
 measured the same way only.
 
+### Body snapshot, injection and short-horizon traces (RF-5)
+
+Whole runs drift with thread timing, so a physics replacement is checked
+over short horizons instead ([REIMPLEMENTATION_PLAN.md](../REIMPLEMENTATION_PLAN.md)
+RF-5, RI-0.5). `--pinyon_shift_physics_oracle=true` copies the player's car
+body (the 0x5040 bytes the per-body step works on, `CCarDynamics`) at the
+first step at or after `--pinyon_shift_physics_oracle_snapshot_frame`,
+writes it back at each frame of `--pinyon_shift_physics_oracle_inject_frames`
+(comma-separated), and writes the body's bytes at every step entry for
+`--pinyon_shift_physics_oracle_trace_ticks` steps (240) after each, to
+`physics-oracle.bin` in the route's output directory. Ranges a restore must
+leave alone go in `--pinyon_shift_physics_oracle_skip` (hex body offsets).
+`--pinyon_shift_physics_oracle_fixed_dt=0.008333333` steps that body with a
+constant dt, which makes the step repeatable; with the game's own dt the
+step sizes differ between windows. All of it is off by default.
+
+```powershell
+python tools/run-fh1-render-test.py config/render-tests/fh1-physics-inject-aa.fh1test `
+  --state-root .local/render-seeds/acc9-stock --output .local/runs/aa --hidden `
+  --game-argument=--pinyon_shift_physics_oracle=true `
+  --game-argument=--pinyon_shift_physics_oracle_snapshot_frame=1500 `
+  --game-argument=--pinyon_shift_physics_oracle_inject_frames=1800,2100,2400 `
+  --game-argument=--pinyon_shift_physics_oracle_fixed_dt=0.008333333
+python tools/re/physics-inject-compare.py .local/runs/aa/physics-oracle.bin
+```
+
+The comparator checks each injection window against the window after the
+snapshot, by simulated time, field by field (position, velocity, angular
+velocity, engine speed, gear, speed and the wheel fields), and holds the
+state each injection replaced against the snapshot as the negative
+control. On multivac (2026-11-19, stock R34 under full throttle, 18.7 to
+24.8 m/s with a shift from first to second gear inside the window, all four
+wheels on the ground) the three fixed-dt windows repeated the snapshot's
+2 s bit for bit: no state word differed on any of 241 steps, while every
+control failed. That covers held throttle, no steering and no contact
+with other cars; state outside the body that was the same at the snapshot
+and the injection would not show. With the game's dt (10 to 19 ms at about
+75 fps hidden, on a bumpier stretch) two windows stayed within tolerance
+for 1.0 s (a wheel then read another surface index at a surface edge); in
+the third the car lost 10 m/s in one step at 0.2 s, an impact, most likely
+free-roam traffic, which the route does not control. Use the fixed dt for
+A/A and comparisons. Take the snapshot once the car is driving: one taken
+while it was still dropping onto the road at spawn crashed the game when
+restored (the world's step then met a null body, so the body holds the
+world's links to it), and with a few words left alone the injected car
+sat at the limiter without moving.
+`--discover` lists the words that change while driving and the substep
+counts.
+
 ## Frame dumps and offline replay
 
 A frame dump records one frame's command packets, starting registers, bin

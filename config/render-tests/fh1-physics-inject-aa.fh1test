@@ -1,0 +1,32 @@
+pinyon-shift-fh1-render-test-v1
+# Physics oracle A/A (RF-5, docs/REIMPLEMENTATION_PLAN.md RI-0.5). Free
+# roam on acc9-stock (stock R34) as fh1-physics-accel: wake the car, then
+# full throttle from frame 1100 until 2700 at a fixed 60 Hz clock (the car
+# only pulls away near frame 1320). The player's body is snapshot at frame
+# 1500 (about 3 s into the launch, still accelerating in a low gear) and is
+# restored at 1800, 2100 and 2400, so it never drives more than 8 s; each
+# window traces 240 steps. Run with
+#   --game-argument=--pinyon_shift_physics_oracle=true
+#   --game-argument=--pinyon_shift_physics_oracle_snapshot_frame=1500
+#   --game-argument=--pinyon_shift_physics_oracle_inject_frames=1800,2100,2400
+# (add --pinyon_shift_physics_oracle_fixed_dt=0.008333333 to step the body
+# with a constant dt), then compare the windows with
+# tools/re/physics-inject-compare.py <output>/physics-oracle.bin.
+# Each injection also records the state it replaced: the negative control.
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 375 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 495 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 615 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 735 0000 0 0 0 0 0 0
+input 780 0000 0 0 0 0 0 0
+wait 900 3000 vehicle
+capture 1090 start
+input 1100 0000 0 255 0 0 0 0
+capture 2700 end
+input 2700 0000 0 0 0 0 0 0
+stop 2710
