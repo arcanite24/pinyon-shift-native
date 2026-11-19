@@ -360,7 +360,7 @@ against a depth capture.
 4. **Depth check** for the RI-0.4 gate. The engine now draws the sector
    at the dumped camera (shift-engine `d55ed64`): near features land
    within a median 1 px of the capture, but far terrain and the skyline
-   are 8 to 50 px off, which points at the LOD choice (question 3). The
+   were 8 to 50 px off. Drawn from only the 73 world-space models the dump tied to the main view, with the matrix at full precision, the skyline lands a median 3-4 px from the capture and the near silhouettes 1 px, so the miss came from drawing every overlapping LOD (question 3). The
    depth match is by construction (same positions, same matrix); a dump
    of the depth target would measure it. `match-dump` printed the scene
    matrix to 4 decimals, which moves near geometry by several pixels; it
