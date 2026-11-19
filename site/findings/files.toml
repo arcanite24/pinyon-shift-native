@@ -75,8 +75,8 @@ source = """docs/NATIVE_PORT_BACKLOG.md Loading times on modern storage; docs/DE
 group = """Archives"""
 id = """compression-methods"""
 name = """compression methods in use"""
-what = """99.3 % of archive members (257,122) use method 21, the Xbox XMem LZX codec; 1,415 are stored (method 0) and 399 deflated (method 8). Every member carries extra field `0x1123`, which the game reads for the absolute payload offset."""
-how = """Central directory census; the `0x1123` role is described in `tools/patch-fh1-archive.py`."""
+what = """99.3 % of archive members (257,122) use method 21, the Xbox XMem LZX codec; 1,415 are stored (method 0) and 399 deflated (method 8). All but 329 members carry extra field `0x1123`, which the game reads for the absolute payload offset. The XMem LZX streams need a 128 KiB window: none decodes with 64 KiB. Decoded with libmspack, 258,521 of 258,537 members (every one but the 399 deflated) match their CRC-32, 231,270 of them without a local header; 16 fail with every window size although their frames look well formed (10 development JPEGs in `UI.zip`, two `.pgeo`, four `.gr2`)."""
+how = """Central directory census; the `0x1123` role is described in `tools/patch-fh1-archive.py`. The 329, the window and the CRC results from the native engine's corpus test (`fh1data-corpus --all-members`, RI-0.3, 2026-11-19), the same on Windows and the Steam Deck."""
 confidence = """confirmed"""
 
 [[finding]]
@@ -309,3 +309,12 @@ what = """All 12 movies (9 on the disc, 3 in the DLC) are WMV9 (`wmv3`) video at
 how = """tools/re/media-decode-check.py (RI-0.6, 2026-11-19): every .wmv decoded to null; 299 samples from 5 banks per category and codec decoded with the project's decoder and with FFmpeg, compared by SNR (XMA 57-65 dB, MPEG 67-80 dB). The SDK decoder is itself libavcodec's, so the XMA agreement is not independent; the exact lengths and zero errors are the evidence. The 69 FSBs inside archives were not decoded."""
 confidence = """confirmed"""
 source = """docs/REIMPLEMENTATION_PLAN.md RI-0.6"""
+
+[[finding]]
+group = """Textures and models"""
+base = """media/**/*.xds, media/cars/*.zip"""
+name = """every disc texture and car model decodes natively"""
+what = """All 9,656 `.xds` textures on the base disc are 2D: there are no cube or 3D textures in that format (the cube maps are `.xpr`). Untiled and byte-swapped with every mip level and the packed tail, 9,653 lay out their payload exactly; the exceptions are one linear texture whose mips are not laid out and two packed textures 16 texels wide or less whose layout is unverified. Every one of the 179 car archives parses completely: 1,883 car models and 118,629 sub-sections, the same counts as tools/fh1_carbin.py, with no index outside its vertex pool. The 1,372 livery decal `.carbin` files and 2 brake `.carbin` files use a different layout and are not decoded."""
+how = """The native engine's format library (shift-engine `libs/fh1data`, written from these records and the project's own tools) and its corpus test, RI-0.3, 2026-11-19, on Windows and the Steam Deck with identical counts; its model dumps matched `fh1_carbin.py dump` on two models, and headless renders of three cars were checked by eye."""
+confidence = """confirmed"""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.3"""
