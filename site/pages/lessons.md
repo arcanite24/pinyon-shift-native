@@ -143,6 +143,24 @@ A faster clock exposed one more console assumption: the simulation steps on the 
 
 ## Methods that held up
 
+- **Tie a format to a frame dump byte for byte.** Many 360 games upload
+  vertex and index buffers exactly as the file stores them. Matching a
+  dump's buffers (size, every recorded byte, index count, primitive type)
+  against archive members found Colorado's scenery models in one run, and
+  drawing the members with each draw's own matrix checked the layout
+  without reading any loader code
+  ([WORLD_GEOMETRY.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/formats/WORLD_GEOMETRY.md)).
+- **Recover a placement from the clip rows the draw shares.** An instanced
+  draw's matrix is the scene matrix times the placement, but its clip z
+  row can differ from the scene's (another depth mapping). Inverting the
+  whole 4x4 put every placement 0.2-0.5 m off, and a search for those
+  positions in the files found nothing; solving from the x, y and w rows
+  found all of them.
+- **Don't trust a ZIP's 16-bit entry count.** FH1's Colorado `bin.zip`
+  has 230,057 directory entries, and the end record's count wraps.
+  Readers that stop at the count miss a quarter of the names; walk the
+  central directory by its byte size instead.
+
 - **Prove the check before trusting a clean result.** A comparison that
   never fails may not be looking. The region oracle (#749) ran each seeded
   fault (a dropped store, two stores swapped, a changed volatile register)
