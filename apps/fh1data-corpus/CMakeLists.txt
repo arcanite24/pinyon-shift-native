@@ -1,0 +1,6 @@
+add_executable(fh1data-corpus main.cpp)
+target_link_libraries(fh1data-corpus PRIVATE fh1data)
+if(NOT WIN32)
+  find_package(Threads REQUIRED)
+  target_link_libraries(fh1data-corpus PRIVATE Threads::Threads)
+endif()

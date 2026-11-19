@@ -1,0 +1,11 @@
+# Build trees
+/build*/
+/out/
+# Renders and reports come from the player's game data: never commit them.
+*.png
+*.log
+/corpus-report*.txt
+# Editors
+/.vs/
+/.vscode/
+*.user
