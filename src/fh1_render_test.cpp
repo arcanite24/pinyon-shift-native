@@ -65,6 +65,12 @@ REXCVAR_DEFINE_BOOL(cs_schedule_auto_confirm, false, "Diagnostics",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 #endif
 
+REXCVAR_DEFINE_BOOL(pinyon_shift_snapshot_virtual, false, "Pinyon Shift",
+                    "Render-test snapshots also write <name>.vmem: every readable 4 KiB "
+                    "page of the guest's virtual address space as (address, size, bytes) "
+                    "records, for finding where game data lives (RF-7)")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_BOOL(fh1_render_test_memory_ledger, false, "Pinyon Shift",
                     "Render tests on Linux and Android: at every capture, copy the process's "
                     "smaps, smaps_rollup, status and KGSL per-process memory files into "
@@ -1180,8 +1186,63 @@ bool ObserveOutput(
                                   {"value", std::to_string(step.poke_value)}});
       } else {
         const auto path = g_test.output / (step.snapshot + ".mem");
-        std::ofstream(path, std::ios::binary)
-            .write(reinterpret_cast<const char*>(memory->TranslatePhysical(0)), 0x20000000);
+        {
+          // Unallocated physical pages are not committed on the host, and a
+          // single write that touches one fails as a whole (an empty file):
+          // write readable pages and zeros for the rest.
+          std::ofstream stream(path, std::ios::binary);
+          auto* physical = memory->GetPhysicalHeap();
+          static const std::vector<char> zeros(4096, 0);
+          for (uint32_t page = 0; page < 0x20000000u; page += 4096) {
+            const bool readable = physical->QueryRangeAccess(page, page + 4095) !=
+                                  rex::memory::PageAccess::kNoAccess;
+            stream.write(readable ? reinterpret_cast<const char*>(memory->TranslatePhysical(page))
+                                  : zeros.data(),
+                         4096);
+          }
+        }
+        if (REXCVAR_GET(pinyon_shift_snapshot_virtual)) {
+          // Records: u32 guest address, u32 size (little-endian), then the
+          // bytes (guest order), one per run of readable 4 KiB pages.
+          std::ofstream stream(g_test.output / (step.snapshot + ".vmem"), std::ios::binary);
+          stream.write("PSVM0001", 8);
+          uint64_t run_start = 0, run_size = 0;
+          auto flush = [&] {
+            if (!run_size) return;
+            const uint32_t header[2] = {uint32_t(run_start), uint32_t(run_size)};
+            stream.write(reinterpret_cast<const char*>(header), sizeof(header));
+            stream.write(reinterpret_cast<const char*>(
+                             memory->TranslateVirtual(uint32_t(run_start))),
+                         std::streamsize(run_size));
+            run_size = 0;
+          };
+          for (uint64_t page = 0; page < 0x100000000ull; page += 4096) {
+            auto* heap = memory->LookupHeap(uint32_t(page));
+            bool readable =
+                heap && heap->QueryRangeAccess(uint32_t(page), uint32_t(page + 4095)) !=
+                            rex::memory::PageAccess::kNoAccess;
+#ifdef _WIN32
+            if (readable) {
+              // The guest page table can list pages the host never committed.
+              MEMORY_BASIC_INFORMATION info{};
+              readable = VirtualQuery(memory->TranslateVirtual(uint32_t(page)), &info,
+                                      sizeof(info)) == sizeof(info) &&
+                         info.State == MEM_COMMIT &&
+                         !(info.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+            }
+#endif
+            if (readable && run_size && run_start + run_size == page && run_size < (64u << 20)) {
+              run_size += 4096;
+            } else {
+              flush();
+              if (readable) {
+                run_start = page;
+                run_size = 4096;
+              }
+            }
+          }
+          flush();
+        }
         diagnostics::RecordEvent("fh1.render_test.snapshot",
                                  {{"name", step.snapshot},
                                   {"output_frame", std::to_string(context.frame_sequence)}});
