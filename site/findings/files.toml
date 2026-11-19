@@ -7,8 +7,8 @@
 group = """Media layout and file access"""
 id = """media-census"""
 name = """media folder census"""
-what = """`media/` on the disc is 7.18 GB in 2,385 files: 524 ZIP archives with 258,936 members, 984 loose FMOD sound banks (`.fsb`) and 34 event files (`.fev`), 431 loose XML files, 174 compiled effects (`.fxobj`), 120 loose `.carbin` models and the SQLite game database. By size: `tracks` 2.9 GB (Colorado's `bin.zip` alone 2.9 GB, 230,057 members), `cars` 1.5 GB, `audio` 1.4 GB, `ui` 0.7 GB, `wheels` 135 MB."""
-how = """Directory walk and ZIP central directories of the base disc."""
+what = """`media/` on the disc is 7.18 GB in 2,385 files: 524 ZIP archives with 258,936 members, 984 loose FMOD sound banks (`.fsb`) and 34 event files (`.fev`), 431 loose XML files, 174 compiled effects (`.fxobj`), 120 loose `.carbin` models and the SQLite game database. By size: `tracks` 2.9 GB (Colorado's `bin.zip` alone 2.9 GB, 230,057 members), `cars` 1.5 GB, `audio` 1.4 GB, `ui` 0.7 GB, `wheels` 135 MB. Counting archive members, the disc holds 260,797 files and members, 18.46 GB uncompressed and 7.16 GB stored, but only 70,019 distinct contents (same CRC-32 and size), 11.0 GB. Colorado's `bin.zip` is most of the repetition: entries 0 to 43,545 have unique names, and the 186,511 after them are 33 further runs that each repeat earlier names with the same CRC-32 and size, as separate copies at increasing offsets (2.93 GB stored, 0.62 GB distinct; perhaps so each streaming region reads contiguously from the DVD, a guess). Its end record's 16-bit entry count, 33,449, is 230,057 modulo 65,536 (no ZIP64), which is the manifest mismatch noted under Archives. By uncompressed bytes the largest types are `.bin` 27 % (102,027 of 115,545 entries are `.rmb.bin`), `.xds` 27 %, `.carbin` 10 %, `.fsb` 8 %, `.bix` 8 %, `.bundle` 5 %, `.fiz` 3 %, `.pgeo` 3 %, `.wmv` 3 %, `.pvsz` 2 %. Of the distinct bytes, the undecoded world formats (`.bix`, `.bin`, `.pgeo`, `.fiz`, `.sh`, `.rmb`, `.bundle`, `.hex`, `.owt`, PVS) are about 18 %, textures 43 % and car models 16 %."""
+how = """Directory walk and ZIP central directories of the base disc; the repeat, distinct-content and per-type counts from tools/re/disc-census.py (RI-0.2, 2026-11-19), which reproduces the `.bix` and `.bin` entry counts above exactly."""
 confidence = """confirmed"""
 
 [[finding]]
@@ -300,3 +300,12 @@ how = """String cross-references in the base image; the cache folder of the refe
 confidence = """probable"""
 note = """A count of `cache:` writes during boot would confirm (CE-0.4)."""
 source = """docs/CONSOLE_ERA_RESEARCH.md Recorded and not pursued"""
+
+[[finding]]
+group = """Other formats"""
+base = """media/**/*.wmv, *.fsb"""
+name = """movies and sound samples decode with stock FFmpeg"""
+what = """All 12 movies (9 on the disc, 3 in the DLC) are WMV9 (`wmv3`) video at 1280x720 and about 30 fps with `wmapro` audio (`MSGS_Logo` uses `wmav2`), and stock FFmpeg 8.1.1 decodes every frame of each; `Forza_Tone.wmv` reports three corrupt frames and still decodes to the end. The loose FSB4 banks hold XMA and MPEG samples only (no PCM16, no XMA sample above two channels): car engine banks are all XMA (13,080 samples), radio all MPEG (2,271), speech mostly MPEG. Stock FFmpeg decodes the XMA samples once each is wrapped as a RIFF XMA2 stream (format 0x166, 2048-byte packets), to exactly the length the sample header gives; its output starts 384 frames later than the SDK decoder's. Short radio MPEG samples with padding between frames need the padding removed first, as tools/fh1_audio_decode.cpp does. So a native engine can transcode movies and samples at install time with FFmpeg alone."""
+how = """tools/re/media-decode-check.py (RI-0.6, 2026-11-19): every .wmv decoded to null; 299 samples from 5 banks per category and codec decoded with the project's decoder and with FFmpeg, compared by SNR (XMA 57-65 dB, MPEG 67-80 dB). The SDK decoder is itself libavcodec's, so the XMA agreement is not independent; the exact lengths and zero errors are the evidence. The 69 FSBs inside archives were not decoded."""
+confidence = """confirmed"""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.6"""

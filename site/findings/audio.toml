@@ -413,3 +413,12 @@ how = """Reading the XML; Pinyon's unlock sound hook on a render route (`achieve
 confidence = """probable"""
 note = """The cue is created and play is called; that it is audible has not been checked with an audio capture."""
 source = """src/pinyon_shift_runtime_hooks.cpp UpdateUiSounds; docs/ACHIEVEMENTS_UI_BACKLOG.md AC-0.4"""
+
+[[finding]]
+group = """Mixer and output"""
+base = """tools/fh1_audio_decode.cpp (SDK DecodeXma)"""
+name = """one long ambience sample decodes short through the SDK decoder"""
+what = """One long stereo XMA ambience sample in a `tracks` bank decodes to 423,232 frames through the SDK's XMA path against the 499,328 its header declares, while FFmpeg's own XMA2 decoder produces the full length; the two outputs then differ (about -4 dB SNR). Probably frames lost at packet boundaries where no frame starts. Whether the running game is affected (it decodes XMA through the same SDK code on its worker) is not checked."""
+how = """tools/re/media-decode-check.py sample comparison, 2026-11-19 (RI-0.6)."""
+confidence = """probable"""
+source = """docs/REIMPLEMENTATION_PLAN.md RI-0.6"""

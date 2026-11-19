@@ -7,7 +7,7 @@ description: Forza Horizon's Colorado world: its track data and precomputed scen
 
 # World and tracks
 
-The game ships one open world, Colorado, plus small UI "tracks" for the Autoshow, workshop and photo studios. Colorado's scenery is about 230,000 model files in one 2.9 GB archive (`media/tracks/colorado/bin.zip`), named through a filename map and made visible per **precomputed visibility zone** (PVS). What can be seen from where was baked when the track was built.
+The game ships one open world, Colorado, plus small UI "tracks" for the Autoshow, workshop and photo studios. Colorado's scenery is about 10,500 distinct model files in one 2.9 GB archive (`media/tracks/colorado/bin.zip`; its 230,057 entries repeat most files many times), named through a filename map and made visible per **precomputed visibility zone** (PVS). What can be seen from where was baked when the track was built.
 
 That answers the most asked question about this world: there is no draw distance to raise. The search for one ([#421](https://github.com/arcanite24/pinyon-shift/issues/421)) traced every distance-like setting the game reads, and each one either belongs to something else (the minimap, a car shader) or changed nothing visible when pushed to extremes. Those negative results are kept below so the search does not have to be repeated.
 
