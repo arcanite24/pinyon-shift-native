@@ -26,6 +26,13 @@ not a classification to trust per function.
         --entered config/performance/symbol-order-base.txt --json .local/re/census-base.json
     python -I tools/re/live-code-census.py --v4 --tree .local/generated-v4/default \
         --entered config/performance/symbol-order-v4.txt
+    python -I tools/re/live-code-census.py --v4 --tree .local/generated-v4/default \
+        --entered .local/re/probe-v4/*/probe.json --json .local/re/census-v4-routes.json
+
+With several lists it prints, in the order given, what each one entered and
+added to the lists before it; the census counts their union. "Entered
+instructions" are the sizes of functions entered at least once, an upper
+bound on the code that ran.
 
 It reads generated code only to count instructions and find call targets;
 it prints addresses and counts, never code.
@@ -116,20 +123,39 @@ def parse_tree(tree: Path):
     return sizes, calls
 
 
-def read_entered(paths: list[Path]) -> set[int]:
+def read_list(path: Path) -> set[int]:
+    """One entered list: a symbol-order .txt, a probe build's probe.json
+    (`calls` is a list of [address, count]) or probe-summary.py --json
+    (`calls` is a dict of address -> count)."""
     entered: set[int] = set()
-    for path in paths:
-        text = path.read_text(encoding="utf-8")
-        if path.suffix == ".json":
-            data = json.loads(text)
-            counts = data.get("functions") or data.get("calls") or data
-            for key, value in (counts.items() if isinstance(counts, dict) else []):
-                m = ADDR_RE.search(str(key))
-                if m and (not isinstance(value, (int, float)) or value > 0):
-                    entered.add(int(m.group(1), 16))
-        else:
-            for m in re.finditer(r"sub_([0-9A-F]{8})", text):
-                entered.add(int(m.group(1), 16))
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".json":
+        calls = json.loads(text).get("calls", {})
+        pairs = calls.items() if isinstance(calls, dict) else calls
+        for address, count in pairs:
+            if count > 0:
+                entered.add(int(str(address).removeprefix("0x"), 16))
+    else:
+        for m in re.finditer(r"sub_([0-9A-F]{8})", text):
+            entered.add(int(m.group(1), 16))
+    if not entered:
+        sys.exit(f"{path}: no entered functions read")
+    return entered
+
+
+def read_entered(paths: list[Path], sizes: dict[int, int]) -> set[int]:
+    """The union of the lists, with what each list adds in the order given."""
+    entered: set[int] = set()
+    lists = [(path, read_list(path)) for path in paths]
+    for index, (path, functions) in enumerate(lists):
+        others = set().union(*(f for i, (_, f) in enumerate(lists) if i != index))
+        new = functions - entered
+        # A run's probe.json sits in <run>.state/logs/: name it by the run.
+        label = path.parents[1].name if path.name == "probe.json" and len(path.parents) > 1 else path.name
+        print(f"  {label}: entered {len(functions):,} ({sum(sizes.get(a, 0) for a in functions):,} instr), "
+              f"new vs. earlier lists {len(new):,} ({sum(sizes.get(a, 0) for a in new):,} instr), "
+              f"only in this list {len(functions - others):,}")
+        entered |= functions
     return entered
 
 
@@ -234,7 +260,7 @@ def main() -> int:
     args = parser.parse_args()
 
     sizes, calls = parse_tree(args.tree)
-    entered = read_entered(args.entered)
+    entered = read_entered(args.entered, sizes)
     seeds = finding_labels(args.v4, sizes)
     sources = collections.Counter({"finding": len(seeds)})
     for addr, label in class_labels(args.classes or args.tree / "classes.json", sizes).items():
