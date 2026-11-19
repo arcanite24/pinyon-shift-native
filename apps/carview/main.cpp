@@ -3,7 +3,7 @@
 //   carview --game-root <dir> --car <MediaName> [--lod 0-5] [--size WxH]
 //           [--headless --out file.png] [--yaw deg] [--pitch deg]
 //           [--distance m] [--paint r,g,b] [--msaa N] [--validation]
-//           [--no-cockpit] [--all-parts]
+//           [--no-cockpit] [--all-parts] [--frames N]
 //
 // Windowed: drag with the left mouse button (or the left stick) to orbit,
 // wheel (or the triggers) to zoom, Esc to quit. Headless renders one frame
@@ -111,7 +111,7 @@ void usage() {
                "usage: carview --game-root <dir> --car <MediaName> [--lod 0-5] [--size WxH]\n"
                "               [--headless --out file.png] [--yaw deg] [--pitch deg]\n"
                "               [--distance m] [--paint r,g,b] [--msaa N] [--validation]\n"
-               "               [--no-cockpit] [--all-parts]\n");
+               "               [--no-cockpit] [--all-parts] [--frames N]\n");
 }
 
 }  // namespace
@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
   std::filesystem::path game_root;
   std::string car, out = "carview.png";
   int lod = 0;
-  uint32_t width = 1280, height = 720, msaa = 4;
+  uint32_t width = 1280, height = 720, msaa = 4, max_frames = 0;
   bool headless = false, validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   Camera camera;
   carview::LoadOptions load_options;
@@ -133,6 +133,7 @@ int main(int argc, char** argv) {
     else if (a == "--validation") validation = true;
     else if (a == "--no-cockpit") load_options.cockpit = false;
     else if (a == "--all-parts") load_options.all_parts = true;
+    else if (a == "--frames" && (v = next())) max_frames = uint32_t(std::atoi(v));
     else if (a == "--game-root" && (v = next())) game_root = v;
     else if (a == "--car" && (v = next())) car = v;
     else if (a == "--out" && (v = next())) out = v;
@@ -223,7 +224,7 @@ int main(int argc, char** argv) {
       bool dragging = false, running = true;
       float zoom = 1.0f;
       uint64_t last = SDL_GetTicksNS();
-      while (running) {
+      for (uint32_t frame = 0; running && (!max_frames || frame < max_frames); ++frame) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
           switch (e.type) {
@@ -287,6 +288,8 @@ int main(int argc, char** argv) {
         }
       }
       for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+      if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
+      if (status == 0 && renderer.validation_messages()) status = 3;
     }
   }
   SDL_DestroyWindow(window);
