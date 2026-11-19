@@ -381,6 +381,21 @@ bool Renderer::upload_buffer(const void* data, VkDeviceSize size, VkBufferUsageF
   return ok;
 }
 
+bool Renderer::replace_geometry(const CarModel& model, std::string& error) {
+  vkDeviceWaitIdle(device_);
+  destroy_buffer(vertex_buffer_);
+  destroy_buffer(index_buffer_);
+  if (!upload_buffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
+                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer_) ||
+      !upload_buffer(model.indices.data(), model.indices.size() * sizeof(uint32_t),
+                     VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_)) {
+    error = "mesh upload failed";
+    return false;
+  }
+  index_count_ = uint32_t(model.indices.size());
+  return true;
+}
+
 bool Renderer::upload(const CarModel& model, std::string& error) {
   if (!upload_buffer(model.vertices.data(), model.vertices.size() * sizeof(Vertex),
                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer_) ||
@@ -584,9 +599,10 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     error = "MSAA colour target";
     return false;
   }
-  if (!create_image(width, height, 1, depth_format_, samples_,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                        VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+  const VkImageUsageFlags depth_usage =
+      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+      (depth_readable_ ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+  if (!create_image(width, height, 1, depth_format_, samples_, depth_usage,
                     VK_IMAGE_ASPECT_DEPTH_BIT, depth_)) {
     error = "depth target";
     return false;
@@ -638,7 +654,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   depth.imageView = depth_.view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
   depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.storeOp = depth_readable_ ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.clearValue.depthStencil = {1.0f, 0};
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
   rendering.renderArea = {{0, 0}, {target_width_, target_height_}};
@@ -662,6 +678,12 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
   vkCmdEndRendering(cmd);
+  if (depth_readable_) {
+    image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
+                  VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  depth_stages, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+  }
 
   if (final_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -675,7 +697,13 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
 }
 
 bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width, uint32_t height,
-                                std::vector<uint8_t>& rgba, std::string& error) {
+                                std::vector<uint8_t>& rgba, std::string& error,
+                                std::vector<float>* depth) {
+  if (depth && (samples_ != VK_SAMPLE_COUNT_1_BIT || depth_format_ != VK_FORMAT_D32_SFLOAT)) {
+    error = "depth readback needs one sample and a D32_SFLOAT depth buffer";
+    return false;
+  }
+  depth_readable_ = depth != nullptr;
   if (!create_targets(width, height, error)) return false;
   Image output;
   if (!create_image(width, height, 1, color_format_, VK_SAMPLE_COUNT_1_BIT,
@@ -686,7 +714,8 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
   }
   Buffer readback;
   const VkDeviceSize bytes = VkDeviceSize(width) * height * 4;
-  if (!create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+  const VkDeviceSize readback_bytes = depth ? bytes * 2 : bytes;  // RGBA8, then f32 depth
+  if (!create_buffer(readback_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      readback)) {
     destroy_image(output);
@@ -700,6 +729,14 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     copy.imageExtent = {width, height, 1};
     vkCmdCopyImageToBuffer(cmd, output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            readback.buffer, 1, &copy);
+    if (depth) {
+      VkBufferImageCopy depth_copy{};
+      depth_copy.bufferOffset = bytes;
+      depth_copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      depth_copy.imageExtent = {width, height, 1};
+      vkCmdCopyImageToBuffer(cmd, depth_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             readback.buffer, 1, &depth_copy);
+    }
     VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -712,14 +749,22 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
   });
   if (ok) {
     void* mapped = nullptr;
-    vkMapMemory(device_, readback.memory, 0, bytes, 0, &mapped);
+    vkMapMemory(device_, readback.memory, 0, readback_bytes, 0, &mapped);
     rgba.assign(static_cast<uint8_t*>(mapped), static_cast<uint8_t*>(mapped) + bytes);
+    if (depth) {
+      depth->resize(size_t(width) * height);
+      std::memcpy(depth->data(), static_cast<uint8_t*>(mapped) + bytes, size_t(bytes));
+    }
     vkUnmapMemory(device_, readback.memory);
   } else {
     error = "offscreen render submission failed";
   }
   destroy_buffer(readback);
   destroy_image(output);
+  if (depth_readable_) {
+    destroy_targets();
+    depth_readable_ = false;
+  }
   return ok;
 }
 

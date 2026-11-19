@@ -39,10 +39,14 @@ class Renderer {
 
   bool init(const Options& options, std::string& error);
   bool upload(const CarModel& model, std::string& error);
+  // Replaces the vertices and indices of an uploaded model; the texture stays.
+  bool replace_geometry(const CarModel& model, std::string& error);
 
-  // Headless: renders one frame of `width` x `height` and reads it back as RGBA8.
+  // Headless: renders one frame of `width` x `height` and reads it back as
+  // RGBA8, and with `depth` also the depth buffer (one sample, D32_SFLOAT).
   bool render_offscreen(const FrameConstants& constants, uint32_t width, uint32_t height,
-                        std::vector<uint8_t>& rgba, std::string& error);
+                        std::vector<uint8_t>& rgba, std::string& error,
+                        std::vector<float>* depth = nullptr);
   // Windowed: renders and presents one frame. Returns false on a fatal error.
   bool draw_frame(const FrameConstants& constants, std::string& error);
 
@@ -111,6 +115,7 @@ class Renderer {
   Image texture_;
 
   uint32_t target_width_ = 0, target_height_ = 0;
+  bool depth_readable_ = false;
   Image msaa_color_, depth_;
 
   // Windowed.

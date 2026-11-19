@@ -5,11 +5,16 @@
 //                  [--all-members]   (also decompress and CRC every other member)
 //   fh1data-corpus --dump <archive.zip> <member>        (carbin summary)
 //   fh1data-corpus --extract <archive.zip> <member> <out>
+//   fh1data-corpus --names <archive.zip> [members-dir]  (directory census)
+//   fh1data-corpus --render-models <dir|archive.zip>    (render model census)
 //
 // <dir> is the extracted disc root containing media/ (or media itself).
 // Exit code 0 when every car archive parses.
 
 #include <algorithm>
+#include <cmath>
+#include <memory>
+#include <set>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -24,6 +29,7 @@
 
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
+#include "fh1data/rmb.h"
 #include "fh1data/xds.h"
 
 namespace fs = std::filesystem;
@@ -267,11 +273,175 @@ int dump(const fs::path& zip, const std::string& member) {
   return 0;
 }
 
+// --names <archive.zip> [members-dir]: the directory as the reader sees it,
+// distinct names compared ignoring case, and (with a directory) whether the
+// extracted tree holds the same names.
+int names(const fs::path& zip, const fs::path& dir) {
+  std::string error;
+  auto archive = fh1::Archive::open(zip, &error);
+  if (!archive) { std::cerr << error << "\n"; return 1; }
+  std::map<std::string, std::pair<uint32_t, uint64_t>> first;  // name -> crc, size
+  std::set<std::string> spellings;
+  uint64_t disagreeing = 0;
+  for (const auto& m : archive->members()) {
+    spellings.insert(m.name);
+    const auto [it, added] = first.emplace(fh1::normalize_member_name(m.name),
+                                           std::pair{m.crc32, m.size});
+    if (!added && it->second != std::pair{m.crc32, m.size}) ++disagreeing;
+  }
+  std::printf("%s: %zu directory entries, %zu distinct names (ignoring case), %zu spellings, "
+              "%llu repeats with another CRC or size\n",
+              zip.filename().string().c_str(), archive->members().size(), first.size(),
+              spellings.size(), (unsigned long long)disagreeing);
+  if (dir.empty()) return 0;
+  std::set<std::string> on_disk;
+  for (const auto& e : fs::recursive_directory_iterator(dir)) {
+    if (e.is_regular_file())
+      on_disk.insert(fh1::normalize_member_name(fs::relative(e.path(), dir).generic_string()));
+  }
+  size_t only_archive = 0, only_disk = 0;
+  for (const auto& [name, _] : first) only_archive += !on_disk.count(name);
+  for (const auto& name : on_disk) only_disk += !first.count(name);
+  std::printf("%s: %zu files; %zu names only in the archive, %zu only on disk\n",
+              dir.string().c_str(), on_disk.size(), only_archive, only_disk);
+  return only_archive || only_disk ? 1 : 0;
+}
+
+// --render-models <dir|archive.zip>: parses every *.rmb.bin to its last
+// index list and prints the census the format spec quotes.
+int render_models(const fs::path& source) {
+  std::unique_ptr<fh1::Archive> archive;
+  std::vector<fs::path> files;
+  std::vector<const fh1::ArchiveMember*> members;
+  if (fs::is_directory(source)) {
+    for (const auto& e : fs::recursive_directory_iterator(source)) {
+      const std::string n = lower(e.path().filename().string());
+      if (e.is_regular_file() && n.size() > 8 && n.compare(n.size() - 8, 8, ".rmb.bin") == 0)
+        files.push_back(e.path());
+    }
+    std::sort(files.begin(), files.end());
+  } else {
+    std::string error;
+    archive = fh1::Archive::open(source, &error);
+    if (!archive) { std::cerr << error << "\n"; return 1; }
+    std::set<std::string> seen;
+    for (const auto& m : archive->members()) {
+      const std::string n = fh1::normalize_member_name(m.name);
+      if (n.size() > 8 && n.compare(n.size() - 8, 8, ".rmb.bin") == 0 && seen.insert(n).second)
+        members.push_back(&m);
+    }
+  }
+  const size_t total = archive ? members.size() : files.size();
+  uint64_t ok = 0, failed = 0, bytes = 0, geometry_bytes = 0, objects = 0, submeshes = 0;
+  uint64_t vertices = 0, indices = 0, triangles = 0, outside_box = 0, odd_constants = 0;
+  uint64_t world = 0, local = 0;
+  uint32_t min_objects = UINT32_MAX, max_objects = 0;
+  std::map<uint32_t, uint64_t> strides, primitives, index_sizes, trailers;
+  std::vector<std::string> failures, wide_lists;
+  for (size_t i = 0; i < total; ++i) {
+    std::string name;
+    std::vector<uint8_t> data;
+    if (archive) {
+      name = members[i]->name;
+      auto r = archive->read(*members[i]);
+      if (!r.ok()) {
+        ++failed;
+        failures.push_back(name + ": read: " + r.error);
+        continue;
+      }
+      data = std::move(r.data);
+    } else {
+      name = files[i].filename().string();
+      data = read_file(files[i]);
+    }
+    fh1::RenderModel model;
+    std::string error;
+    bytes += data.size();
+    if (!fh1::parse_render_model(data, model, &error)) {
+      ++failed;
+      failures.push_back(name + ": " + error);
+      continue;
+    }
+    ++ok;
+    geometry_bytes += model.geometry_end;
+    const uint32_t n = uint32_t(model.objects.size());
+    min_objects = std::min(min_objects, n);
+    max_objects = std::max(max_objects, n);
+    objects += n;
+    bool constants = model.header_words == std::array<uint32_t, 4>{4, 4, 0, 1};
+    for (int k = 0; k < 16; ++k) constants &= model.matrix[k] == (k % 5 == 0 ? 1.0f : 0.0f);
+    ++(fh1::rmb_is_world_space(model) ? world : local);
+    for (const auto& o : model.objects) {
+      vertices += o.vertex_count;
+      strides[o.stride]++;
+      constants &= o.vertex_format == 3;
+      for (uint32_t v = 0; v < o.vertex_count; ++v) {
+        const auto p = o.position(v);
+        for (int a = 0; a < 3; ++a) {
+          const float slack = 1e-3f * std::max(1.0f, std::fabs(p[a]));
+          if (!(p[a] >= model.box_min[a] - slack && p[a] <= model.box_max[a] + slack)) {
+            ++outside_box;
+            break;
+          }
+        }
+      }
+      for (const auto& s : o.submeshes) {
+        ++submeshes;
+        indices += s.indices.size();
+        primitives[s.primitive]++;
+        index_sizes[s.index_size]++;
+        trailers[s.trailer]++;
+        triangles += fh1::rmb_triangle_list(s).size() / 3;
+        constants &= s.colour == std::array<float, 4>{1, 1, 1, 1};
+        if (s.index_size == 4)
+          wide_lists.push_back(name + " " + o.name + ": " + std::to_string(o.vertex_count) +
+                               " vertices, primitive " + std::to_string(s.primitive) + ", " +
+                               std::to_string(s.indices.size()) + " indices");
+      }
+    }
+    if (!constants) ++odd_constants;
+  }
+  auto histogram = [](const char* what, const std::map<uint32_t, uint64_t>& h) {
+    std::printf("%s:", what);
+    for (const auto& [k, v] : h) std::printf(" %u (%llu)", k, (unsigned long long)v);
+    std::printf("\n");
+  };
+  std::printf("render models: %zu found, %llu parsed to their last index list, %llu failed\n",
+              total, (unsigned long long)ok, (unsigned long long)failed);
+  std::printf("mesh objects: %llu (%u to %u per model); submeshes %llu; vertices %llu; "
+              "indices %llu; triangles %llu\n",
+              (unsigned long long)objects, min_objects == UINT32_MAX ? 0 : min_objects, max_objects,
+              (unsigned long long)submeshes,
+              (unsigned long long)vertices, (unsigned long long)indices,
+              (unsigned long long)triangles);
+  histogram("vertex strides (objects)", strides);
+  histogram("primitive types (submeshes)", primitives);
+  histogram("index sizes (submeshes)", index_sizes);
+  histogram("trailers (submeshes)", trailers);
+  for (const auto& w : wide_lists) std::printf("32-bit list: %s\n", w.c_str());
+  std::printf("geometry: %llu of %llu bytes (%.1f %%) up to the last index list\n",
+              (unsigned long long)geometry_bytes, (unsigned long long)bytes,
+              bytes ? 100.0 * double(geometry_bytes) / double(bytes) : 0.0);
+  std::printf("vertices outside their model's header box: %llu\n",
+              (unsigned long long)outside_box);
+  std::printf("models with a constant field off its usual value: %llu\n",
+              (unsigned long long)odd_constants);
+  std::printf("world-space models: %llu; local-space (box within %.0f m of the origin in X/Z): "
+              "%llu\n",
+              (unsigned long long)world, double(fh1::kRmbLocalRadius), (unsigned long long)local);
+  for (size_t i = 0; i < failures.size() && i < 20; ++i)
+    std::printf("FAIL %s\n", failures[i].c_str());
+  return failed ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   std::vector<std::string> args(argv + 1, argv + argc);
   if (args.size() == 3 && args[0] == "--dump") return dump(args[1], args[2]);
+  if ((args.size() == 2 || args.size() == 3) && args[0] == "--names")
+    return names(args[1], args.size() == 3 ? fs::path(args[2]) : fs::path());
+  if (args.size() == 2 && args[0] == "--render-models") return render_models(args[1]);
   if (args.size() == 4 && args[0] == "--extract") {
     std::string error;
     auto archive = fh1::Archive::open(args[1], &error);
@@ -296,7 +466,9 @@ int main(int argc, char** argv) {
       std::cerr << "usage: fh1data-corpus --game-root <dir> [--threads N] [--verbose] [--filter text]\n"
                    "                      [--all-members]\n"
                    "       fh1data-corpus --dump <archive.zip> <member>\n"
-                   "       fh1data-corpus --extract <archive.zip> <member> <out>\n";
+                   "       fh1data-corpus --extract <archive.zip> <member> <out>\n"
+                   "       fh1data-corpus --names <archive.zip> [members-dir]\n"
+                   "       fh1data-corpus --render-models <dir|archive.zip>\n";
       return 2;
     }
   }

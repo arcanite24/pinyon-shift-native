@@ -29,11 +29,11 @@ readers, and a car drawn from the game's own files.
 
 | Path | What |
 | --- | --- |
-| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms) |
+| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms), Colorado render models `coloradoout.NNNNN.rmb.bin` (WORLD-GEOMETRY: header box, mesh objects, raw vertices with the position decoded, strip or list submeshes, 16- or 32-bit indices) |
 | `libs/data` | Game database rules (SPEC-EVENT-RESTRICTIONS): decodes and re-encodes `EventRestrictions.Value` strings into per-bucket restriction sets, and tests a car against a set |
-| `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses |
+| `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models |
 | `apps/event-restrictions-corpus` | Decodes every `EventRestrictions` row of the player's `media/db/gamedb.slt` (opened read-only) and checks each round-trips; prints counts only |
-| `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, one pipeline, depth, 4x MSAA, one texture, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG |
+| `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, one pipeline, depth, 4x MSAA, one texture, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
 | `tests` | Unit tests on synthetic bytes |
 | `tools` | Windows build script, shader regeneration |
 
@@ -88,7 +88,19 @@ carview --game-root <game> --car AST_DB5Vantage_64 --headless --out car.png --si
 
 # Options: --lod 0-5, --yaw/--pitch degrees, --distance m, --paint r,g,b,
 # --msaa N, --no-cockpit, --all-parts, --validation (or SHIFT_VALIDATION=1)
+
+# Render models: the archive's directory, then every model parsed
+fh1data-corpus --names <game>/media/tracks/colorado/bin.zip [extracted-dir]
+fh1data-corpus --render-models <game>/media/tracks/colorado/bin.zip
+
+# One sector at a game camera (the frame file holds numbers measured from
+# a game frame: keep it, and the outputs, out of the repository)
+carview --world <bin.zip or extracted dir> --frame frame.txt --out-dir out \
+        --capture frame.ppm [--nearest-lod --skip uberlod --skip terr_cube]
 ```
+
+The frame file format and every option are described at the top of
+`apps/carview/world_view.cpp`.
 
 LOD 0 draws `<car>_lod0.carbin` plus `<car>_cockpit.carbin` (which holds
 the hood, headlights, windscreen and cabin) with `nodamage_LOD0.xds`.
@@ -117,6 +129,23 @@ opaque.
 - carview draws a car headless on Windows (RTX 4080, validation layer
   clean, windowed path too) and on the Steam Deck LCD (RADV, Linux build
   from WSL Ubuntu 24.04, GCC 13, static libstdc++, X11 window support).
+
+## Status (RI-0.4 world geometry, 2026-11-19)
+
+- All 14,291 render models of Colorado's `bin.zip` parse to their last
+  index list, read from the archive or from an extracted folder: 18,340
+  mesh objects, 48,053 submeshes, 18.6 M vertices, no index outside its
+  object, every vertex inside its model's box, 71.1 % of the bytes
+  geometry. The archive reader sees all 230,057 directory entries (43,546
+  names) although the end record's count wraps.
+- `carview --world` draws the 277 world-space models of the spec's 1 km
+  sector at the camera of a frame dump. The edges of the road-line
+  strips, guard rails and rocks lie a median 1 px from the capture's
+  edges (mean about 1-2 px); far silhouettes (mid-distance terrain) do
+  not line up and are unverified. A matrix printed with four decimals
+  is not enough for a pixel-exact check. Which LOD the game draws is not
+  known yet, so drawing every model overlapping the sector puts far LODs
+  over near ones.
 
 ## Licence
 

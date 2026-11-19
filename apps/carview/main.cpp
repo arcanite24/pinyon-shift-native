@@ -5,6 +5,7 @@
 //           [--distance m] [--paint r,g,b] [--msaa N] [--validation]
 //           [--no-cockpit] [--all-parts] [--frames N]
 //   carview --xds-png <archive.zip> <member.xds> <out.png> [level]
+//   carview --world <members-dir|bin.zip> --frame <frame.txt> ...  (world_view.cpp)
 //
 // Windowed: drag with the left mouse button (or the left stick) to orbit,
 // wheel (or the triggers) to zoom, Esc to quit. Headless renders one frame
@@ -30,6 +31,7 @@
 #include "fh1data/archive.h"
 #include "fh1data/xds.h"
 #include "renderer.h"
+#include "world_view.h"
 
 namespace {
 
@@ -152,6 +154,7 @@ int xds_png(int argc, char** argv) {
 
 int main(int argc, char** argv) {
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
+  if (argc >= 2 && std::strcmp(argv[1], "--world") == 0) return carview::run_world(argc, argv);
   std::filesystem::path game_root;
   std::string car, out = "carview.png";
   int lod = 0;

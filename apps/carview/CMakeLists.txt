@@ -46,6 +46,7 @@ add_executable(carview
   main.cpp
   car_model.cpp
   renderer.cpp
+  world_view.cpp
   ${shader_headers})
 target_include_directories(carview PRIVATE "${generated}")
 target_link_libraries(carview PRIVATE fh1data shift_volk SDL3::SDL3-static shift_stb)
