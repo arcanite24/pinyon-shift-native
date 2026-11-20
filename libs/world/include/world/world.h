@@ -54,7 +54,10 @@ bool ground_object(const std::string& object);
 // (road decals, vertex-blend decals, the lake). Other effects named _OPAC
 // also get alpha to coverage (ours: H_VBLND_NORM_MASK_OPAC_BIAS_LM's texture
 // has cut-out alpha; the frame showed none of its draws).
-enum class Blend : uint8_t { kOpaque, kCoverage, kAlpha };
+// kAdditive (interim, ours): DIFF_GLOW_* glow cards, added unlit over what
+// is behind with no depth write, until WORLD-MATERIALS gives their blend
+// state (their textures are black where nothing glows).
+enum class Blend : uint8_t { kOpaque, kCoverage, kAlpha, kAdditive };
 Blend effect_blend(const std::string& effect);
 
 // A gathered material: its effect and the texture records (indices into

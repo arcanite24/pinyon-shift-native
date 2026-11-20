@@ -56,6 +56,7 @@ add_executable(carview
   showroom.cpp
   showroom_main.cpp
   contact_log.cpp
+  safe_reset.cpp
   traffic_view.cpp
   world_view.cpp
   ${shader_headers})

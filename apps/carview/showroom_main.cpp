@@ -50,6 +50,7 @@
 #include "world/stream.h"
 #include "world/world.h"
 #include "contact_log.h"
+#include "safe_reset.h"
 
 namespace carview {
 
@@ -895,7 +896,8 @@ void drive_usage() {
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound\n"
-               "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near) --skip-masked-walls\n"
+               "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
+               "           --skip-masked-walls | --keep-masked-walls (default: skipped in the window)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
                "           --menu-png file.png\n"
@@ -949,9 +951,11 @@ int run_drive(int argc, char** argv) {
   // --contacts-log (ours, debugging): every hard body contact against the
   // collision, and per gather the walls nothing drawn stands near.
   std::filesystem::path contacts_log_path;
-  // --skip-masked-walls (ours, opt-in): leave out the collision triangles
-  // whose undecoded word lacks 0x8000 (world::Collision::collides).
-  bool skip_masked_walls = false;
+  // Masked walls (interim, ours; world::Collision::collides): the steep
+  // collision triangles whose undecoded word lacks 0x8000 (event road
+  // closures, by the look) are left out in the window, kept headless (the
+  // gates). --skip-masked-walls / --keep-masked-walls choose.
+  int masked_walls_flag = -1;  // -1: the default
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -1005,7 +1009,8 @@ int run_drive(int argc, char** argv) {
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--contacts-log") contacts_log_path = next();
-    else if (a == "--skip-masked-walls") skip_masked_walls = true;
+    else if (a == "--skip-masked-walls") masked_walls_flag = 1;
+    else if (a == "--keep-masked-walls") masked_walls_flag = 0;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -1344,7 +1349,8 @@ int run_drive(int argc, char** argv) {
         const char* how = "";
         if (!colorado.open(world_dir, cache_path, &error)) {
           status = 1;
-        } else if (collision.set_skip_masked(skip_masked_walls), !render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
+        } else if (collision.set_skip_masked(masked_walls_flag < 0 ? !headless : masked_walls_flag == 1),
+                   !render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
                                                      &error, &warning)) {
           status = 1;
         } else {
@@ -1423,6 +1429,17 @@ int run_drive(int argc, char** argv) {
       }
       // One fixed step, then the stream: gathers again (and swaps the
       // ground and the scenery) once the car is far from the last centre.
+      // R and the headless driver's "stuck": a clear spot on the nav road.
+      carview::SafeReset safe_reset;
+      bool safe_reset_ok = false;
+      if (status == 0 && streamer) {
+        std::string why;
+        safe_reset_ok = safe_reset.open(world_dir.parent_path().parent_path().parent_path(), &why);
+        if (!safe_reset_ok) std::fprintf(stderr, "carview: note: reset on the nearest road triangle (%s)\n", why.c_str());
+        if (collision.skip_masked())
+          std::fprintf(stderr, "carview: note: interim: steep collision triangles without 0x8000 in the .fiz word "
+                       "left out (--keep-masked-walls keeps them)\n");
+      }
       // The contacts log: a hard contact is one point pushing with more than
       // half the car's weight; one line when it starts or moves on 3 m.
       struct ContactLog {
@@ -1581,10 +1598,13 @@ int run_drive(int argc, char** argv) {
         // nearest road (the windowed mode has R).
         if (headless && follower.stuck(vehicle, in)) {
           const drive::Vec3 at = vehicle.position();
-          world::Spawn sp;
-          if (world::recover(*streamer, vehicle, &sp))
+          double away = 0;
+          if (safe_reset_ok && safe_reset.place(*streamer, vehicle, &away))
             std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away\n", vehicle.time(), at.x,
-                        at.y, at.z, sp.distance);
+                        at.y, at.z, away);
+          else if (world::Spawn sp; world::recover(*streamer, vehicle, &sp))
+            std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away (nearest road "
+                        "triangle)\n", vehicle.time(), at.x, at.y, at.z, sp.distance);
         }
         bool changed = false;
         const drive::Vec3 at = vehicle.position();
@@ -2003,8 +2023,12 @@ int run_drive(int argc, char** argv) {
         // R or Start: back on the nearest road (with a world), else to the start.
         auto put_back = [&]() {
           world::Spawn where;
-          if (streamer && world::recover(*streamer, vehicle, &where))
-            std::printf("t %.2f s: put back on the road %.1f m away\n", vehicle.time(), where.distance);
+          double away = 0;
+          if (streamer && safe_reset_ok && safe_reset.place(*streamer, vehicle, &away))
+            std::printf("t %.2f s: put back on the road %.1f m away\n", vehicle.time(), away);
+          else if (streamer && world::recover(*streamer, vehicle, &where))
+            std::printf("t %.2f s: put back on the road %.1f m away (nearest road triangle)\n", vehicle.time(),
+                        where.distance);
           else
             vehicle.reset(start, start_heading);
           camera_pull = CameraPull{};

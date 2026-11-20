@@ -1629,7 +1629,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   VkDescriptorSet bound_set = VK_NULL_HANDLE;
   for (const auto& d : world_draws_) {
     // Blended draws (decals, the lake) and the uncullable sky cast none.
-    if (!d.cull || d.blend == 2 || outside(d)) continue;
+    if (!d.cull || d.blend >= 2 || outside(d)) continue;  // blended and additive draws cast nothing
     ++shadow_drawn_;
     const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
     if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
@@ -2424,7 +2424,8 @@ void Showroom::record_world(VkCommandBuffer cmd) {
         r_.mark(cmd, kGroup[std::min(group, 2)]);
         group = d.blend;
       }
-      const VkPipeline pipeline = d.blend == 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : world_opaque_;
+      // Additive (3) shares the blended pipeline: its fragments carry alpha 0.
+      const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : world_opaque_;
       if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
       ShowroomPush push = d.push;

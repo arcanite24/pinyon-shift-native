@@ -876,3 +876,33 @@ headless car, and the drive with `--no-post`).
   0.88 ms, frame p95 4.90 ms off and 5.84 ms high. Masked PSNR against
   the free-roam reference: 15.92 dB with the post chain alone, 15.41 dB
   with the shadows from the track's shadow light (a number, not a goal).
+
+## Q43 (play-test): invisible walls, glow cards and the reset
+
+- **Masked collision walls (interim, ours):** the `.fiz` triangle's u16 at
+  offset 2 (COLLISION.md: not decoded) is a bit mask. 0x8000 is set on
+  every road, terrain, guard rail and Invisible triangle; the 110,702 core
+  triangles without it (54 values: 1, 2, 4 ... 4096 and unions) are 97 %
+  upright Asphalt sheets standing on the roads, by the look event road
+  closures, and every cruise contact with nothing drawn within 1 m hit
+  one. The drive leaves out the steep ones (|normal y| < 0.5) in the
+  window and keeps them headless (the gates); `--skip-masked-walls` /
+  `--keep-masked-walls` choose. The 3,340 masked triangles that face up
+  stay: nothing else lies under them. Open: what each bit selects and
+  which are active in free roam; the edge word at offset 28.
+  `--contacts-log file` logs hard contacts and the car-height walls with
+  nothing drawn near.
+- **Glow cards (interim, ours):** `DIFF_GLOW_1` (the black slab by the
+  festival road, coloradoout.06509) has no blend state in WORLD-MATERIALS
+  and a black texture where nothing glows; it is drawn unlit and added
+  (ONE, ONE) with no depth write, casting no shadow. Open: its blend
+  state and whether glow cards draw by day.
+- **Reset (ours):** R, Start and the headless driver's "stuck" put the car
+  on the nearest nav road's centre line (SPEC-TRAFFIC roads), stepping
+  4 m along it out to 60 m for a spot whose ground is within 2 m of the
+  road's height, faces up, and has no wall within 3 m at bonnet height;
+  the old nearest-road-triangle placement is the fallback. The body
+  contacts probe from the box's centre, so a car placed straddling a thin
+  wall was pushed out through it (a fall through the world, then a
+  non-finite state); headless runs now stop when the state is not
+  finite. A swept contact is still to do.

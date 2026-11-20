@@ -147,6 +147,7 @@ bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* e
 
 Blend effect_blend(const std::string& e) {
   auto starts = [&](const char* prefix) { return e.rfind(prefix, 0) == 0; };
+  if (starts("DIFF_GLOW")) return Blend::kAdditive;  // interim (ours), see Blend
   if ((starts("H_ROAD") && e.find("_BLEND_") != std::string::npos) || starts("H_VBLND_DECAL") || starts("LAKE"))
     return Blend::kAlpha;
   // Props and trees drew with alpha to coverage in the frame; other effects

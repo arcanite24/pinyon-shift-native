@@ -44,7 +44,7 @@ layout(location = 4) in vec4 v_colour;
 
 layout(location = 0) out vec4 out_color;
 
-const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u;
+const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
            kFlagBillboard = 32u, kFlagAlphaTest = 64u;
 
@@ -113,6 +113,12 @@ void main() {
     }
   } else {
     t = vec4(draw.tint.rgb, 1.0);
+  }
+  // Glow cards (interim, ours): the texture unlit, added over what is behind
+  // (alpha 0 under ONE, ONE_MINUS_SRC_ALPHA).
+  if (blend == kAdditive) {
+    out_color = vec4(out_rgb(t.rgb * draw.up.w), 0.0);
+    return;
   }
   // Tree sprites: the atlas colour times the record's tint, 2 x RGB.
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * v_colour.rgb;
