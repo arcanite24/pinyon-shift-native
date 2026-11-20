@@ -5,6 +5,7 @@
 #include <cctype>
 
 #include "fh1data/bytes.h"
+#include "fh1data/inflate.h"
 #include "fh1data/xmem.h"
 
 namespace fh1 {
@@ -194,9 +195,15 @@ ReadResult Archive::read(const ArchiveMember& member) {
       result.data = std::move(*data);
       break;
     }
-    case ZipMethod::kDeflate:
-      result.error = "deflate (method 8) is not supported yet";
-      return result;
+    case ZipMethod::kDeflate: {
+      auto data = inflate_raw(compressed, size_t(member.size));
+      if (!data) {
+        result.error = "deflate decode failed";
+        return result;
+      }
+      result.data = std::move(*data);
+      break;
+    }
     default:
       result.error = "unknown method " + std::to_string(member.method);
       return result;

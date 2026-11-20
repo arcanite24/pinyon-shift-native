@@ -11,6 +11,19 @@ namespace {
 
 constexpr uint32_t kPartMarker = 5;
 constexpr uint32_t kVertexStride = 28;
+constexpr size_t kFooterSize = 24;
+constexpr uint32_t kMaxListEntries = 4096;
+
+template <size_t N>
+void take(BeReader& r, std::array<uint8_t, N>& out) {
+  auto bytes = r.raw(N);
+  std::memcpy(out.data(), bytes.data(), N);
+}
+
+std::vector<uint8_t> take_vector(BeReader& r, size_t n) {
+  auto bytes = r.raw(n);
+  return {bytes.begin(), bytes.end()};
+}
 
 bool floats_sane(std::span<const uint8_t> data, size_t at, int count) {
   for (int i = 0; i < count; ++i) {
@@ -25,10 +38,10 @@ CarbinPool read_pool(BeReader& r) {
   CarbinPool pool;
   pool.count = r.i32();
   pool.stride = r.u32();
-  pool.bone_weights = r.u32();
-  if (pool.bone_weights) pool.part_id = r.u32();
+  pool.buffer_flag = r.u32();
+  if (pool.buffer_flag) pool.buffer_id = r.u32();
   if (pool.stride > 256) throw FormatError("pool stride " + std::to_string(pool.stride));
-  const size_t count = pool.count > 0 ? size_t(pool.count) : 0;
+  const size_t count = pool.vertex_count();
   auto body = r.raw(count * pool.stride);
   pool.raw_bytes = body.size();
   if (pool.stride == kVertexStride) {
@@ -42,22 +55,24 @@ CarbinPool read_pool(BeReader& r) {
       for (int k = 0; k < 4; ++k) v.frame[k] = int16_t(load_be16(p + 16 + 2 * k));
       for (int k = 0; k < 4; ++k) v.lighting[k] = p[24 + k];
     }
+  } else {
+    pool.raw.assign(body.begin(), body.end());
   }
   return pool;
 }
 
 CarbinSubsection read_subsection(BeReader& r) {
   CarbinSubsection s;
-  r.skip(5);  // not decoded
+  take(r, s.head);
   for (float& f : s.uv_transform) f = r.f32();
-  r.skip(36);  // not decoded
+  take(r, s.unknown1);
   const uint32_t name_size = r.u32();
   if (name_size > 256) throw FormatError("sub-section name of " + std::to_string(name_size) + " bytes");
   auto name = r.raw(name_size);
   s.material.assign(name.begin(), name.end());
   s.lod = r.i32();
   s.index_type = r.u32();
-  r.skip(56);  // 14 floats, not decoded
+  take(r, s.unknown2);
   s.version_words = {r.u32(), r.u32()};
   const uint32_t count = r.u32();
   s.index_size = r.u32();
@@ -67,7 +82,7 @@ CarbinSubsection read_subsection(BeReader& r) {
   s.indices.resize(count);
   for (uint32_t i = 0; i < count; ++i)
     s.indices[i] = s.index_size == 2 ? load_be16(&bytes[2 * i]) : load_be32(&bytes[4 * i]);
-  r.skip(4);
+  take(r, s.end);
   return s;
 }
 
@@ -75,31 +90,50 @@ CarbinPart read_part(BeReader& r) {
   if (r.u32() != kPartMarker) throw FormatError("no part marker at " + std::to_string(r.at() - 4));
   CarbinPart part;
   for (float& f : part.bounds) f = r.f32();
-  r.skip(28);                       // mass, centre of mass, damage fields: not decoded
-  r.skip(size_t(r.u32()) * 16);     // 16-byte records (glass parts)
-  r.skip(4);
-  r.skip(size_t(r.u32()) * 2);      // shorts
-  r.skip(12);
+  take(r, part.unknown1);
+  {
+    const size_t start = r.at();
+    const uint32_t n = r.u32();
+    if (n > (1u << 20)) throw FormatError("record count " + std::to_string(n));
+    r.skip(size_t(n) * 16);
+    r.seek(start);
+    part.records = take_vector(r, 4 + size_t(n) * 16);
+  }
+  take(r, part.unknown2);
+  {
+    const size_t start = r.at();
+    const uint32_t n = r.u32();
+    if (n > (1u << 20)) throw FormatError("short count " + std::to_string(n));
+    r.skip(size_t(n) * 2);
+    r.seek(start);
+    part.shorts = take_vector(r, 4 + size_t(n) * 2);
+  }
+  take(r, part.unknown3);
   auto name = r.raw(r.u8());
   part.name.assign(name.begin(), name.end());
   part.version = r.u32();
   part.lod_pool = read_pool(r);
-  r.skip(4);
+  take(r, part.unknown4);
   const uint32_t count = r.u32();
   if (count > 4096) throw FormatError(std::to_string(count) + " sub-sections in " + part.name);
   part.subsections.reserve(count);
   for (uint32_t i = 0; i < count; ++i) part.subsections.push_back(read_subsection(r));
-  r.skip(4);
+  take(r, part.unknown5);
   part.lod0_pool = read_pool(r);
   part.tail_word = r.u32();
   part.damage_flag = r.u8();
   for (int block = 0; block < 2; ++block) {  // LOD, then LOD0
-    r.u32();  // kind
-    const uint32_t n = r.u32(), stride = r.u32(), extra = r.u32();
-    if (n > (1u << 22) || stride > 64 || extra > (1u << 16))
-      throw FormatError("damage block " + std::to_string(n) + "x" + std::to_string(stride) +
+    CarbinDamageBlock d;
+    d.kind = r.u32();
+    d.count = r.u32();
+    d.stride = r.u32();
+    d.extra = r.u32();
+    if (d.count > (1u << 22) || d.stride > 64 || d.extra > (1u << 16))
+      throw FormatError("damage block " + std::to_string(d.count) + "x" + std::to_string(d.stride) +
                         " in " + part.name);
-    r.skip(size_t(n) * stride + size_t(extra) * 4);
+    d.table = take_vector(r, size_t(d.count) * d.stride);
+    d.words = take_vector(r, size_t(d.extra) * 4);
+    part.damage.push_back(std::move(d));
   }
   return part;
 }
@@ -119,6 +153,102 @@ bool plausible_part(std::span<const uint8_t> data, size_t at) {
   }
 }
 
+// After the lists of a draw-list block starting at `at`: the offset of the
+// word 1, or SIZE_MAX when the lists do not parse.
+size_t lists_end(std::span<const uint8_t> data, size_t at, uint32_t lods) {
+  size_t p = at + 12;
+  for (uint32_t i = 0; i < 2 * lods; ++i) {
+    if (p + 4 > data.size()) return SIZE_MAX;
+    const uint32_t count = load_be32(&data[p]);
+    if (count > kMaxListEntries || p + 4 + size_t(count) * 4 > data.size()) return SIZE_MAX;
+    p += 4 + size_t(count) * 4;
+  }
+  return p;
+}
+
+class BeWriter {
+ public:
+  std::vector<uint8_t> out;
+  void u8(uint8_t v) { out.push_back(v); }
+  void u16(uint16_t v) {
+    out.push_back(uint8_t(v >> 8));
+    out.push_back(uint8_t(v));
+  }
+  void u32(uint32_t v) {
+    for (int s = 24; s >= 0; s -= 8) out.push_back(uint8_t(v >> s));
+  }
+  void f32(float f) {
+    uint32_t bits;
+    std::memcpy(&bits, &f, 4);
+    u32(bits);
+  }
+  void bytes(std::span<const uint8_t> b) { out.insert(out.end(), b.begin(), b.end()); }
+};
+
+void write_pool(BeWriter& w, const CarbinPool& pool) {
+  w.u32(uint32_t(pool.count));
+  w.u32(pool.stride);
+  w.u32(pool.buffer_flag);
+  if (pool.buffer_flag) w.u32(pool.buffer_id.value_or(0));
+  if (pool.stride == kVertexStride) {
+    for (const CarbinVertex& v : pool.vertices) {
+      for (int16_t c : v.position) w.u16(uint16_t(c));
+      w.u16(v.uv0[0]);
+      w.u16(v.uv0[1]);
+      w.u16(v.uv1[0]);
+      w.u16(v.uv1[1]);
+      for (int16_t c : v.frame) w.u16(uint16_t(c));
+      w.bytes(v.lighting);
+    }
+  } else {
+    w.bytes(pool.raw);
+  }
+}
+
+void write_part(BeWriter& w, const CarbinPart& part) {
+  w.u32(kPartMarker);
+  for (float f : part.bounds) w.f32(f);
+  w.bytes(part.unknown1);
+  w.bytes(part.records);
+  w.bytes(part.unknown2);
+  w.bytes(part.shorts);
+  w.bytes(part.unknown3);
+  w.u8(uint8_t(part.name.size()));
+  w.bytes({reinterpret_cast<const uint8_t*>(part.name.data()), part.name.size()});
+  w.u32(part.version);
+  write_pool(w, part.lod_pool);
+  w.bytes(part.unknown4);
+  w.u32(uint32_t(part.subsections.size()));
+  for (const CarbinSubsection& s : part.subsections) {
+    w.bytes(s.head);
+    for (float f : s.uv_transform) w.f32(f);
+    w.bytes(s.unknown1);
+    w.u32(uint32_t(s.material.size()));
+    w.bytes({reinterpret_cast<const uint8_t*>(s.material.data()), s.material.size()});
+    w.u32(uint32_t(s.lod));
+    w.u32(s.index_type);
+    w.bytes(s.unknown2);
+    w.u32(s.version_words[0]);
+    w.u32(s.version_words[1]);
+    w.u32(uint32_t(s.indices.size()));
+    w.u32(s.index_size);
+    for (uint32_t i : s.indices) s.index_size == 2 ? w.u16(uint16_t(i)) : w.u32(i);
+    w.bytes(s.end);
+  }
+  w.bytes(part.unknown5);
+  write_pool(w, part.lod0_pool);
+  w.u32(part.tail_word);
+  w.u8(part.damage_flag);
+  for (const CarbinDamageBlock& d : part.damage) {
+    w.u32(d.kind);
+    w.u32(d.count);
+    w.u32(d.stride);
+    w.u32(d.extra);
+    w.bytes(d.table);
+    w.bytes(d.words);
+  }
+}
+
 }  // namespace
 
 bool CarbinPart::empty_box() const {
@@ -127,40 +257,70 @@ bool CarbinPart::empty_box() const {
   return false;
 }
 
+std::vector<size_t> carbin_scan_part_count(std::span<const uint8_t> data) {
+  std::vector<size_t> found;
+  for (size_t at = 0; at + 12 <= data.size(); at += 4) {
+    if (load_be32(&data[at]) != 4 || load_be32(&data[at + 4]) != 4) continue;
+    const uint32_t lods = load_be32(&data[at + 8]);
+    if (lods > 8) continue;
+    const size_t p = lists_end(data, at, lods);
+    if (p == SIZE_MAX || p + 8 > data.size() || load_be32(&data[p]) != 1) continue;
+    const uint32_t count = load_be32(&data[p + 4]);
+    if ((count == 0 && data.size() - (p + 8) == kFooterSize) ||
+        (count > 0 && count <= 4096 && plausible_part(data, p + 8)))
+      found.push_back(p + 4);
+  }
+  return found;
+}
+
 bool parse_carbin(std::span<const uint8_t> data, Carbin& out, std::string* error) {
   out = Carbin{};
-  // The part count is the first u32 in 1..1024 followed by a part that
-  // parses (the header's strings are not padded, so it can be unaligned).
-  size_t count_at = SIZE_MAX;
-  uint32_t count = 0;
-  for (size_t at = 0; at + 48 < data.size(); ++at) {
-    const uint32_t n = load_be32(&data[at]);
-    if (n >= 1 && n <= 1024 && plausible_part(data, at + 4)) {
-      count_at = at;
-      count = n;
-      break;
-    }
-  }
-  if (count_at == SIZE_MAX) {
-    // A header-only model (the F-350 Super Duty's lod0 has no parts).
-    if (data.size() >= 4 && data.size() <= 4096 && load_be32(data.data()) == kPartMarker) {
-      out.head_size = data.size();
-      return true;
-    }
-    if (error) *error = "no parts found";
+  auto fail = [&](const std::string& why) {
+    if (error) *error = why;
     return false;
-  }
+  };
+  if (data.size() < 4) return fail("shorter than a header");
+  const auto found = carbin_scan_part_count(data);
+  if (found.size() != 1)
+    return fail("the draw-list scan finds " + std::to_string(found.size()) + " positions");
+  const size_t count_at = found[0];
+  out.kind = load_be32(data.data());
+  out.head.assign(data.begin(), data.begin() + std::ptrdiff_t(count_at));
   out.head_size = count_at;
+  // Walk the draw-list block again from its start, which ends at count_at.
+  for (size_t at = 0; at + 12 <= count_at; at += 4) {
+    if (load_be32(&data[at]) != 4 || load_be32(&data[at + 4]) != 4) continue;
+    const uint32_t lods = load_be32(&data[at + 8]);
+    if (lods > 8 || lists_end(data, at, lods) + 4 != count_at) continue;
+    out.draw_list_lods = lods;
+    BeReader r(data, at + 12);
+    for (uint32_t i = 0; i < 2 * lods; ++i) {
+      std::vector<uint32_t> list(r.u32());
+      for (uint32_t& e : list) e = r.u32();
+      (i < lods ? out.transparent_lists : out.opaque_lists).push_back(std::move(list));
+    }
+    break;
+  }
+  const uint32_t count = load_be32(&data[count_at]);
   try {
     BeReader r(data, count_at + 4);
     out.parts.reserve(count);
     for (uint32_t i = 0; i < count; ++i) out.parts.push_back(read_part(r));
-    out.footer_size = r.remaining();
+    out.footer = take_vector(r, r.remaining());
   } catch (const FormatError& e) {
-    if (error) *error = std::string("part ") + std::to_string(out.parts.size()) + ": " + e.what();
-    return false;
+    return fail("part " + std::to_string(out.parts.size()) + ": " + e.what());
   }
+  out.footer_size = out.footer.size();
   return true;
+}
+
+std::vector<uint8_t> encode_carbin(const Carbin& carbin) {
+  BeWriter w;
+  w.bytes(carbin.head);
+  w.u32(uint32_t(carbin.parts.size()));
+  for (const CarbinPart& part : carbin.parts) write_part(w, part);
+  w.bytes(carbin.footer);
+  return std::move(w.out);
 }
 
 size_t carbin_bad_indices(const Carbin& carbin) {
@@ -169,7 +329,7 @@ size_t carbin_bad_indices(const Carbin& carbin) {
     for (const CarbinSubsection& s : part.subsections) {
       const CarbinPool& pool = s.lod == 0 ? part.lod0_pool : part.lod_pool;
       const uint32_t restart = s.index_size == 2 ? 0xFFFFu : 0x00FFFFFFu;
-      const uint32_t limit = pool.count > 0 ? uint32_t(pool.count) : 0;
+      const uint32_t limit = uint32_t(pool.vertex_count());
       for (uint32_t i : s.indices) {
         if (s.index_type == uint32_t(CarbinIndexType::kTriangleStrip) && i == restart) continue;
         if (i >= limit) ++bad;
@@ -177,6 +337,39 @@ size_t carbin_bad_indices(const Carbin& carbin) {
     }
   }
   return bad;
+}
+
+bool carbin_draw_lists_cover(const Carbin& carbin) {
+  std::vector<std::vector<int>> seen(carbin.parts.size());
+  for (size_t p = 0; p < carbin.parts.size(); ++p) seen[p].assign(carbin.parts[p].subsections.size(), 0);
+  const uint32_t n = carbin.draw_list_lods;
+  const int lod_base = n == 5 ? 1 : 0;
+  for (int kind = 0; kind < 2; ++kind) {
+    const auto& lists = kind == 0 ? carbin.transparent_lists : carbin.opaque_lists;
+    for (size_t k = 0; k < lists.size(); ++k) {
+      for (uint32_t e : lists[k]) {
+        const uint32_t part = e >> 16, sub = e & 0xFFFF;
+        if (part >= carbin.parts.size() || sub >= carbin.parts[part].subsections.size()) return false;
+        if (carbin.parts[part].subsections[sub].lod != int32_t(k) + lod_base) return false;
+        ++seen[part][sub];
+      }
+    }
+  }
+  for (const auto& part : seen)
+    for (int s : part)
+      if (s != 1) return false;
+  return true;
+}
+
+std::vector<std::vector<bool>> carbin_transparent_flags(const Carbin& carbin) {
+  std::vector<std::vector<bool>> flags(carbin.parts.size());
+  for (size_t p = 0; p < carbin.parts.size(); ++p) flags[p].assign(carbin.parts[p].subsections.size(), false);
+  for (const auto& list : carbin.transparent_lists)
+    for (uint32_t e : list) {
+      const uint32_t part = e >> 16, sub = e & 0xFFFF;
+      if (part < flags.size() && sub < flags[part].size()) flags[part][sub] = true;
+    }
+  return flags;
 }
 
 std::array<float, 3> carbin_position(const CarbinPart& part, const CarbinVertex& v) {
@@ -209,7 +402,7 @@ std::vector<uint32_t> carbin_triangle_list(const CarbinSubsection& s) {
   std::vector<uint32_t> out;
   const auto& idx = s.indices;
   if (s.index_type != uint32_t(CarbinIndexType::kTriangleStrip)) {
-    out.assign(idx.begin(), idx.end() - (idx.size() % 3));
+    out.assign(idx.begin(), idx.end() - std::ptrdiff_t(idx.size() % 3));
     return out;
   }
   const uint32_t restart = s.index_size == 2 ? 0xFFFFu : 0x00FFFFFFu;

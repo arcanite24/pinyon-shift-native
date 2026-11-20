@@ -10,8 +10,10 @@
 #include <string>
 #include <vector>
 
+#include "cars/sources.h"
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
+#include "fh1data/inflate.h"
 #include "fh1data/placements.h"
 #include "fh1data/rmb.h"
 #include "fh1data/xds.h"
@@ -668,7 +670,280 @@ void test_lod_part() {
 
 }  // namespace
 
+// Raw deflate streams of two synthetic inputs (made with zlib at level 9):
+// a short text (fixed Huffman) and repeated byte runs (dynamic Huffman).
+void test_inflate() {
+  const std::string text = "hello hello hello hello, deflate";
+  const std::vector<uint8_t> a = {203,72,205,201,201,87,200,64,39,117,20,82,82,211,114,18,75,82,1};
+  auto out = fh1::inflate_raw(a, text.size());
+  CHECK(out && std::string(out->begin(), out->end()) == text);
+  std::vector<uint8_t> expect;
+  for (int r = 0; r < 20; ++r)
+    for (int i = 0; i < 256; ++i) expect.push_back(uint8_t(i));
+  for (int r = 0; r < 50; ++r) expect.insert(expect.end(), {'a', 'b', 'c', 'a', 'b', 'c', 'a', 'b', 'c'});
+  const std::vector<uint8_t> b = {99,96,100,98,102,97,101,99,231,224,228,226,230,225,229,227,23,16,20,18,22,17,21,19,151,144,148,146,150,145,149,147,87,80,84,82,86,81,85,83,215,208,212,210,214,209,213,211,55,48,52,50,54,49,53,51,183,176,180,178,182,177,181,179,119,112,116,114,118,113,117,115,247,240,244,242,246,241,245,243,15,8,12,10,14,9,13,11,143,136,140,138,142,137,141,139,79,72,76,74,78,73,77,75,207,200,204,202,206,201,205,203,47,40,44,42,46,41,45,43,175,168,172,170,174,169,173,171,111,104,108,106,110,105,109,107,239,232,236,234,238,233,237,235,159,48,113,210,228,41,83,167,77,159,49,115,214,236,57,115,231,205,95,176,112,209,226,37,75,151,45,95,177,114,213,234,53,107,215,173,223,176,113,211,230,45,91,183,109,223,177,115,215,238,61,123,247,237,63,112,240,208,225,35,71,143,29,63,113,242,212,233,51,103,207,157,191,112,241,210,229,43,87,175,93,191,113,243,214,237,59,119,239,221,127,240,240,209,227,39,79,159,61,127,241,242,213,235,55,111,223,189,255,240,241,211,231,47,95,191,125,255,241,243,215,239,63,127,255,253,103,24,245,255,168,255,71,253,63,234,255,81,255,143,250,127,212,255,163,254,31,245,255,168,255,71,253,63,234,255,81,255,143,250,127,212,255,163,254,31,245,255,168,255,135,177,255,129,206,27,69,67,26,1,0};
+  out = fh1::inflate_raw(b, expect.size());
+  CHECK(out && *out == expect);
+  CHECK(!fh1::inflate_raw(b, expect.size() - 1));  // wrong size is an error
+  // A stored block.
+  const std::vector<uint8_t> stored = {1, 3, 0, 0xFC, 0xFF, 'x', 'y', 'z'};
+  out = fh1::inflate_raw(stored, 3);
+  CHECK(out && std::string(out->begin(), out->end()) == "xyz");
+}
+
+void put32(std::vector<uint8_t>& v, uint32_t x) {
+  for (int s = 24; s >= 0; s -= 8) v.push_back(uint8_t(x >> s));
+}
+
+// A kind-5 model: a header with a draw-list block of one LOD (one opaque
+// sub-section of part 0, one transparent of part 1), a part with a 16-bit
+// strip, a glass part with a 32-bit strip, an empty part, and the footer.
+fh1::Carbin synthetic_carbin() {
+  fh1::Carbin c;
+  std::vector<uint8_t> head;
+  put32(head, 5);
+  for (int i = 0; i < 9; ++i) put32(head, 0x3F800000u + i);  // filler words
+  put32(head, 4); put32(head, 4); put32(head, 1);
+  put32(head, 1); put32(head, 0x00010000u);  // transparent list: part 1, sub 0
+  put32(head, 1); put32(head, 0x00000000u);  // opaque list: part 0, sub 0
+  put32(head, 1);
+  c.head = head;
+  c.head_size = head.size();
+  auto make_part = [](const char* name, uint32_t index_size, std::vector<uint32_t> indices, const char* material) {
+    fh1::CarbinPart p;
+    p.bounds = {0, 0.5f, 0, -1, -0.5f, -2, 1, 0.5f, 2};
+    p.records = {0, 0, 0, 0};
+    p.shorts = {0, 0, 0, 1, 0, 7};
+    p.name = name;
+    p.version = 3;
+    p.lod_pool.stride = 0;
+    fh1::CarbinSubsection s;
+    s.uv_transform = {0, 1, 0, 1, 0, 1, 0, 1};
+    s.material = material;
+    s.lod = 0;
+    s.index_type = 6;
+    s.version_words = {4, 0};
+    s.index_size = index_size;
+    s.indices = std::move(indices);
+    p.subsections.push_back(s);
+    p.lod0_pool.count = 5;
+    p.lod0_pool.stride = 28;
+    p.lod0_pool.buffer_flag = 1;
+    p.lod0_pool.buffer_id = 9;
+    for (int i = 0; i < 5; ++i) {
+      fh1::CarbinVertex v{};
+      v.position = {int16_t(i * 1000), 0, 32767, int16_t(10000 + i)};
+      v.frame = {0, 0, 0, 32767};
+      v.lighting = {100, 1, 2, 3};
+      p.lod0_pool.vertices.push_back(v);
+    }
+    p.tail_word = 1;
+    for (int b = 0; b < 2; ++b) {
+      fh1::CarbinDamageBlock d;
+      d.kind = 3;
+      p.damage.push_back(d);
+    }
+    return p;
+  };
+  // 16-bit strip with a restart and an odd number of triangles; 32-bit strip
+  // with the 0x00FFFFFF restart.
+  c.parts.push_back(make_part("body", 2, {0, 1, 2, 3, 0xFFFF, 2, 3, 4}, "body"));
+  c.parts.push_back(make_part("glassF", 4, {0, 1, 2, 0x00FFFFFF, 2, 3, 4}, "window"));
+  fh1::CarbinPart empty;
+  const float m = 3.402823466e38f;
+  empty.bounds = {m, m, m, -m, -m, -m, m, m, m};
+  empty.records = {0, 0, 0, 0};
+  empty.shorts = {0, 0, 0, 0};
+  empty.name = "empty";
+  empty.version = 3;
+  empty.tail_word = 1;
+  for (int b = 0; b < 2; ++b) empty.damage.push_back({});
+  c.parts.push_back(empty);
+  // The empty part has no sub-sections, so the lists still cover every one.
+  c.footer = {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0};
+  return c;
+}
+
+void test_carbin_round_trip() {
+  const fh1::Carbin model = synthetic_carbin();
+  const auto bytes = fh1::encode_carbin(model);
+  CHECK(fh1::carbin_scan_part_count(bytes).size() == 1);
+  fh1::Carbin back;
+  std::string error;
+  CHECK(fh1::parse_carbin(bytes, back, &error));
+  CHECK(back.parts.size() == 3);
+  CHECK(back.kind == 5);
+  CHECK(back.draw_list_lods == 1);
+  CHECK(fh1::encode_carbin(back) == bytes);
+  CHECK(fh1::carbin_draw_lists_cover(back));
+  const auto transparent = fh1::carbin_transparent_flags(back);
+  CHECK(!transparent[0][0] && transparent[1][0]);
+  CHECK(back.parts[2].empty_box());
+  CHECK(fh1::carbin_bad_indices(back) == 0);
+  // 16-bit strip: 0,1,2 / 2,1,3 / restart / 2,3,4 (an odd count of three).
+  CHECK((fh1::carbin_triangle_list(back.parts[0].subsections[0]) ==
+         std::vector<uint32_t>{0, 1, 2, 2, 1, 3, 2, 3, 4}));
+  CHECK(fh1::carbin_triangle_list(back.parts[1].subsections[0]).size() == 6);
+
+  // A model with no parts: the n = 0 form (4, 4, 0, 1, 0 and the footer).
+  std::vector<uint8_t> empty;
+  put32(empty, 1);
+  put32(empty, 4); put32(empty, 4); put32(empty, 0); put32(empty, 1); put32(empty, 0);
+  empty.insert(empty.end(), model.footer.begin(), model.footer.end());
+  fh1::Carbin none;
+  CHECK(fh1::parse_carbin(empty, none, &error));
+  CHECK(none.parts.empty() && none.kind == 1);
+  CHECK(fh1::encode_carbin(none) == empty);
+}
+
+// A synthetic .xds header: format, size, header pitch (texels), levels,
+// tiled and packed-tail flags, identity swizzle, endian mode 1.
+std::vector<uint8_t> xds_header(uint32_t format, uint32_t w, uint32_t h, uint32_t pitch, uint32_t levels) {
+  std::vector<uint8_t> v;
+  put32(v, 3);
+  for (uint32_t x : {1u, 0u, 0u, 0u, 0xFFFF0000u, 0xFFFF0000u}) put32(v, x);
+  put32(v, 2u | ((pitch / 32) << 22) | (1u << 31));
+  put32(v, format | (1u << 6));
+  put32(v, (w - 1) | ((h - 1) << 13));
+  put32(v, (0u | 1u << 3 | 2u << 6 | 3u << 9) << 1);
+  put32(v, (levels - 1) << 6);
+  put32(v, (1u << 9) | (1u << 11));
+  return v;
+}
+
+void test_xds_layout() {
+  fh1::XdsHeader h;
+  std::string error;
+  // All tail (16 x 8, shorter side 8): one region whose pitch and rows come
+  // from the size rounded up to powers of two (4 x 2 blocks -> 32 x 32), not
+  // from the header pitch of 256 texels: 32 x 32 x 16 bytes.
+  auto small = xds_header(53, 16, 8, 256, 1);
+  CHECK(fh1::parse_xds_header(small, h, &error));
+  CHECK(fh1::xds_layout_bytes(h) == 16384);
+  // Not a power of two: 100 x 60 with the full chain. The base level uses
+  // the header pitch (128 texels = 32 blocks), 15 rows rounded to 32; level
+  // 1 is 64 x 32 rounded down from 128 x 64 -> 16 x 8 blocks -> 32 x 32;
+  // levels from max(S - 4, 0) = 2 on share the tail tile.
+  auto npot = xds_header(53, 100, 60, 128, 7);
+  CHECK(fh1::parse_xds_header(npot, h, &error));
+  CHECK(fh1::xds_layout_bytes(h) == 3 * 16384);
+
+  // Untiling: fill each block of a 32 x 32-block DXT1 level with its own
+  // index at its tiled offset (bytes swapped in pairs, endian mode 1) and
+  // read it back in row order.
+  auto tex = xds_header(18, 128, 128, 128, 1);
+  const size_t payload = 32 * 32 * 8;
+  std::vector<uint8_t> data(tex.size() + payload, 0);
+  std::copy(tex.begin(), tex.end(), data.begin());
+  for (int y = 0; y < 32; ++y)
+    for (int x = 0; x < 32; ++x) {
+      const size_t at = tex.size() + size_t(fh1::xenos_tiled_offset_2d(x, y, 32, 3));
+      const uint16_t id = uint16_t(y * 32 + x);
+      data[at] = uint8_t(id >> 8);  // stored swapped: host bytes are (lo, hi)
+      data[at + 1] = uint8_t(id);
+    }
+  fh1::XdsBlocks blocks;
+  CHECK(fh1::extract_xds_blocks(data, blocks, &error));
+  CHECK(blocks.format == fh1::XdsBlockFormat::kBc1);
+  CHECK(blocks.levels.size() == 1 && blocks.levels[0].blocks.size() == payload);
+  bool ordered = true;
+  for (int i = 0; i < 32 * 32; ++i) {
+    const uint8_t* b = &blocks.levels[0].blocks[size_t(i) * 8];
+    if (uint16_t(b[0] | b[1] << 8) != i) ordered = false;
+  }
+  CHECK(ordered);
+  CHECK((blocks.swizzle == std::array<uint8_t, 4>{0, 1, 2, 3}));
+}
+
+// A package's offer ZIP with one car folder whose members are stored,
+// deflated and LZX (XMem), found through the install layout and read back.
+void test_dlc_folder() {
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "shift-engine-dlc-test";
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  fs::create_directories(root / "game" / "media" / "cars");
+  const fs::path zips = root / "state" / "user" / "0000000000000000" / "4D5309C9" / "00000002" /
+                        "ABCDEF" / "Media" / "DLCZips";
+  fs::create_directories(zips);
+  const std::string text = "hello hello hello hello, deflate";
+  const std::vector<uint8_t> plain(text.begin(), text.end());
+  const std::vector<uint8_t> deflated = {203,72,205,201,201,87,200,64,39,117,20,82,82,211,114,18,75,82,1};
+  std::vector<uint8_t> big(40000);
+  for (size_t i = 0; i < big.size(); ++i) big[i] = uint8_t(i * 31 >> 2);
+  struct Member {
+    std::string name;
+    uint16_t method;
+    std::vector<uint8_t> data, packed;
+  };
+  const std::vector<Member> members = {
+      {"Media/cars/Test_Car/a.carbin", 0, plain, plain},
+      {"Media/cars/Test_Car/b.xds", 8, plain, deflated},
+      {"Media/cars/Test_Car/LiveryMasks/c.tga", 21, big, xmem_stored(big)},
+      {"Media/wheels/Test_Wheel/w.carbin", 0, plain, plain},
+  };
+  std::vector<uint8_t> zip, directory;
+  for (const Member& m : members) {
+    const uint32_t crc = fh1::crc32(m.data), offset = uint32_t(zip.size());
+    put_le32(zip, 0x04034B50);
+    for (uint32_t v : {20u, 0u, uint32_t(m.method), 0u, 0u}) put_le16(zip, v);
+    put_le32(zip, crc);
+    put_le32(zip, uint32_t(m.packed.size()));
+    put_le32(zip, uint32_t(m.data.size()));
+    put_le16(zip, uint32_t(m.name.size()));
+    put_le16(zip, 0);
+    zip.insert(zip.end(), m.name.begin(), m.name.end());
+    zip.insert(zip.end(), m.packed.begin(), m.packed.end());
+    put_le32(directory, 0x02014B50);
+    for (uint32_t v : {20u, 20u, 0u, uint32_t(m.method), 0u, 0u}) put_le16(directory, v);
+    put_le32(directory, crc);
+    put_le32(directory, uint32_t(m.packed.size()));
+    put_le32(directory, uint32_t(m.data.size()));
+    for (uint32_t v : {uint32_t(m.name.size()), 0u, 0u, 0u, 0u}) put_le16(directory, v);
+    put_le32(directory, 0);
+    put_le32(directory, offset);
+    directory.insert(directory.end(), m.name.begin(), m.name.end());
+  }
+  const uint32_t directory_offset = uint32_t(zip.size());
+  zip.insert(zip.end(), directory.begin(), directory.end());
+  put_le32(zip, 0x06054B50);
+  for (uint32_t v : {0u, 0u, uint32_t(members.size()), uint32_t(members.size())}) put_le16(zip, v);
+  put_le32(zip, uint32_t(directory.size()));
+  put_le32(zip, directory_offset);
+  put_le16(zip, 0);
+  {
+    std::ofstream f(zips / "1000_pri_65.zip", std::ios::binary);
+    f.write(reinterpret_cast<const char*>(zip.data()), std::streamsize(zip.size()));
+    std::ofstream g(zips / "StringTables_pri_70.zip", std::ios::binary);  // not content
+  }
+  cars::Install install;
+  std::string error;
+  CHECK(cars::discover_install(root / "game", root / "state", {}, install, &error));
+  CHECK(install.packages.size() == 1);
+  if (install.packages.size() == 1) {
+    CHECK(install.packages[0].priority == 65);
+    CHECK(install.packages[0].archives.size() == 1);
+  }
+  const auto car = install.find_car("TEST_CAR");
+  CHECK(car.has_value());
+  CHECK(install.find_wheel("test_wheel").has_value());
+  if (car) {
+    cars::Folder folder;
+    CHECK(folder.open(*car, &error));
+    CHECK((folder.names() == std::vector<std::string>{"a.carbin", "b.xds", "liverymasks/c.tga"}));
+    std::vector<uint8_t> out;
+    CHECK(folder.read("a.carbin", out, &error) && out == plain);
+    CHECK(folder.read("B.XDS", out, &error) && out == plain);
+    CHECK(folder.read("LiveryMasks/c.tga", out, &error) && out == big);
+  }
+  fs::remove_all(root, ec);
+}
+
 int main() {
+  test_dlc_folder();
+  test_xds_layout();
+  test_inflate();
+  test_carbin_round_trip();
   test_crc();
   test_xmem();
   test_strip();

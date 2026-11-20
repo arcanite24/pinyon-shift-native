@@ -1,6 +1,7 @@
 add_library(fh1data STATIC
   src/archive.cpp
   src/xmem.cpp
+  src/inflate.cpp
   src/xds.cpp
   src/carbin.cpp
   src/rmb.cpp

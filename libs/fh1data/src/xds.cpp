@@ -166,9 +166,17 @@ size_t layout(const XdsHeader& h, const Format& f, std::vector<Level>& levels) {
   const uint32_t bt = f.block;
   const uint32_t log2 = uint32_t(std::bit_width(f.block_bytes) - 1);
   const uint32_t tail = h.packed_mips ? packed_level(h.width, h.height) : h.levels;
-  const uint32_t base_pitch = align_up(std::max(std::max(h.pitch, h.width) / bt, 1u), 32);
-  const size_t base_size =
-      align_up(uint32_t(size_t(base_pitch) * align_up((h.height + bt - 1) / bt, 32) << log2), 4096);
+  // A texture that is all tail (its shorter side, rounded up to a power of
+  // two, is 16 texels or less) takes its one region's pitch and height from
+  // the size rounded up to powers of two, not from the header pitch.
+  const bool all_tail = h.packed_mips && tail == 0;
+  const uint32_t base_pitch =
+      all_tail ? align_up(std::max((1u << log2_ceil(h.width)) / bt, 1u), 32)
+               : align_up(std::max(std::max(h.pitch, h.width) / bt, 1u), 32);
+  const uint32_t base_rows =
+      all_tail ? align_up(std::max((1u << log2_ceil(h.height)) / bt, 1u), 32)
+               : align_up((h.height + bt - 1) / bt, 32);
+  const size_t base_size = align_up(uint32_t(size_t(base_pitch) * base_rows << log2), 4096);
   std::vector<std::pair<size_t, uint32_t>> starts{{0, base_pitch}};
   size_t at = base_size;
   for (uint32_t stored = 1; stored <= std::min(h.levels - 1, tail); ++stored) {
@@ -229,7 +237,85 @@ bool decode_level(std::span<const uint8_t> payload, const XdsHeader& h, const Fo
   return true;
 }
 
+// Copies one level's blocks into row-major order, byte-swapped to host order.
+bool copy_level_blocks(std::span<const uint8_t> payload, const XdsHeader& h, const Format& f,
+                       const Level& lv, std::vector<uint8_t>& out) {
+  const uint32_t mask = kEndianMasks[h.endian & 3];
+  const uint32_t log2 = uint32_t(std::bit_width(f.block_bytes) - 1);
+  out.assign(size_t(lv.width_blocks) * lv.height_blocks * f.block_bytes, 0);
+  for (uint32_t by = 0; by < lv.height_blocks; ++by) {
+    for (uint32_t bx = 0; bx < lv.width_blocks; ++bx) {
+      const size_t offset =
+          lv.start + (h.tiled ? size_t(xenos_tiled_offset_2d(int32_t(bx + lv.x), int32_t(by + lv.y),
+                                                             lv.pitch, log2))
+                              : (size_t(by + lv.y) * lv.pitch + bx + lv.x) * f.block_bytes);
+      if (offset + f.block_bytes > payload.size()) return false;
+      uint8_t* dst = &out[(size_t(by) * lv.width_blocks + bx) * f.block_bytes];
+      for (uint32_t i = 0; i < f.block_bytes; ++i) dst[i] = payload[offset + (i ^ mask)];
+    }
+  }
+  return true;
+}
+
 }  // namespace
+
+bool extract_xds_blocks(std::span<const uint8_t> data, XdsBlocks& out, std::string* error) {
+  out = XdsBlocks{};
+  auto fail = [&](const std::string& why) {
+    if (error) *error = why;
+    return false;
+  };
+  if (!parse_xds_header(data, out.header, error)) return false;
+  const XdsHeader& h = out.header;
+  if (h.dimension != XdsDimension::k2D) return fail("not a 2D texture");
+  const Format* f = find_format(h.format);
+  if (!f) return fail("format " + std::to_string(h.format));
+  // What each stored channel (X, Y, Z, W after decoding) is in the block
+  // format's sampled result (0-3 = R, G, B, A; 4 = 0; 5 = 1).
+  std::array<uint8_t, 4> channel{0, 1, 2, 3};
+  switch (f->kind) {
+    case Kind::k8888: out.format = XdsBlockFormat::kRgba8; break;
+    case Kind::kDxt1: out.format = XdsBlockFormat::kBc1; break;
+    case Kind::kDxt3: out.format = XdsBlockFormat::kBc2; break;
+    case Kind::kDxt5: out.format = XdsBlockFormat::kBc3; break;
+    case Kind::kDxn:
+      out.format = XdsBlockFormat::kBc5;
+      channel = {0, 1, 4, 5};
+      break;
+    case Kind::kDxt5a:
+      out.format = XdsBlockFormat::kBc4;
+      channel = {0, 0, 0, 0};
+      break;
+    case Kind::kDxt3a: return fail("DXT3A has no block format equivalent");
+  }
+  for (int c = 0; c < 4; ++c) {
+    const uint32_t sel = (h.swizzle >> (3 * c)) & 7;
+    out.swizzle[size_t(c)] = sel < 4 ? channel[sel] : (sel == 5 ? 5 : 4);
+  }
+  out.block_bytes = f->block_bytes;
+  out.block_texels = f->block;
+  std::vector<Level> levels;
+  out.layout_bytes = layout(h, *f, levels);
+  const auto payload = data.subspan(kHeaderSize);
+  // Mips of a linear texture are not laid out: keep its base level only.
+  const size_t count = h.tiled && payload.size() >= out.layout_bytes ? levels.size() : 1;
+  for (size_t i = 0; i < count; ++i) {
+    XdsBlockLevel level;
+    level.width = levels[i].width;
+    level.height = levels[i].height;
+    if (!copy_level_blocks(payload, h, *f, levels[i], level.blocks))
+      return fail("level " + std::to_string(i) + " outside the data");
+    out.levels.push_back(std::move(level));
+  }
+  return true;
+}
+
+size_t xds_layout_bytes(const XdsHeader& h) {
+  const Format* f = find_format(h.format);
+  if (!f || h.dimension != XdsDimension::k2D) return 0;
+  std::vector<Level> levels;
+  return layout(h, *f, levels);
+}
 
 int32_t xenos_tiled_offset_2d(int32_t x, int32_t y, uint32_t pitch, uint32_t log2_block_bytes) {
   pitch = (pitch + 31) & ~31u;
