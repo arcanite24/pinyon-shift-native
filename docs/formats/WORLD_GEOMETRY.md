@@ -42,8 +42,9 @@ reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
   centres; see [Depth check](#depth-check-ri-04-gate). With the frame's
   opaque, still props added (the alpha-tested fence and pine and the
   animated flag left out on both sides), the prop pixels agree to a
-  median 0.015 % and a 95th percentile of 0.12 % (0.107 % away from
-  their edges), and the whole image to 0.024 % and 0.10 %. The game's depth is
+  median 0.015 % and a 95th percentile of 0.12 %, against the world's
+  0.10 %, and the whole image to 0.024 % and 0.10 %. The excess lies
+  where the engine's own depth changes inside one pixel. The game's depth is
   reversed 24-bit float, and its pixel centres sit half a pixel off an
   ordinary rasteriser's ([Coordinate frames](#coordinate-frames-and-draws)).
 - `.bix`, the `_0x*.bin` members and `.bundle` hold textures; `.pgeo`,
@@ -565,10 +566,15 @@ the capture. Two sets are compared, each the same on both sides:
   skipped).
 
 `depth-compare --split` sorts each compared pixel by whether the props
-change the engine's depth there (against the world-only image above);
-"away from edges" drops the prop pixels within 1 px of a world pixel and
-the world pixels within 1 px of a prop pixel (a scratch measure, not a
-tool option).
+change the engine's depth there (against the world-only image above).
+For the pixels over 0.1 % it also counts those whose game depth lies
+inside the range of the engine's four texels around the sample point
+(0.1 % margin): there the two images hold the same surfaces and differ
+only in where on a slope or step inside the pixel the depth is taken.
+`--step` sets how large a step between those four texels leaves a pixel
+out (2 % by default). "Away from edges" drops the prop pixels within
+1 px of a world pixel and the world pixels within 1 px of a prop pixel
+(a scratch measure, not a tool option).
 
 | Opaque props | Pixels | Median | 95th | Median, relative | 95th, relative |
 | --- | --- | --- | --- | --- | --- |
@@ -577,8 +583,30 @@ tool option).
 | props | 18,678 | 0.002 m | 0.074 m | 0.015 % | 0.12 % |
 | props, under 40 m | 17,362 | 0.002 m | 0.011 m | 0.014 % | 0.105 % |
 | props, 200 to 1,000 m | 1,274 | 0.13 m | 1.9 m | 0.024 % | 0.32 % |
+| props, over 1,000 m | 39 | 2.15 m | 10.7 m | 0.21 % | 1.05 % |
 | props, away from edges | 18,356 | 0.002 m | 0.061 m | 0.015 % | 0.107 % |
+| props, away from edges, 200 to 1,000 m | 1,203 | 0.11 m | | 0.023 % | 0.23 % |
 | world, away from edges | 540,872 | 0.007 m | 1.09 m | 0.024 % | 0.10 % |
+
+Over 0.1 %, and how many of those lie inside the engine's four texels'
+range:
+
+| Opaque props, `--step` | Class | Pixels | Over 0.1 % | Of those, inside the range | Outside, share of the class |
+| --- | --- | --- | --- | --- | --- |
+| 0.02 | world | 546,414 | 27,887 (5.1 %) | 23,863 | 0.74 % |
+| 0.02 | props | 18,678 | 1,205 (6.5 %) | 1,126 | 0.42 % |
+| 0.002 | world | 52,824 | 4,294 | 2,589 | 3.2 % |
+| 0.002 | props | 9,604 | 78 | 68 | 0.10 % |
+
+With `--step 0.002` (only pixels whose engine texels lie within 0.2 % of
+each other, 62,428 in all), by view depth:
+
+| Band | World pixels | World 95th | Prop pixels | Prop median | Prop 95th |
+| --- | --- | --- | --- | --- | --- |
+| under 40 m | 1,142 | 0.12 % | 8,863 | 0.013 % | 0.045 % |
+| 40 to 200 m | 2,911 | 0.047 % | 1 | | |
+| 200 to 1,000 m | 13,086 | 0.085 % | 736 | 0.020 % | 0.069 % |
+| over 1,000 m | 35,685 | 0.14 % | 4 | | |
 
 | All props | Pixels | Median | 95th | Median, relative | 95th, relative |
 | --- | --- | --- | --- | --- | --- |
@@ -593,18 +621,25 @@ and coverage differs in 467 and 677 pixels. What is left over:
 
 - **Opaque props meet the world's tolerance in the median** (0.015 %
   against the world's 0.024 %) **and miss it at the 95th percentile by
-  0.02 points** (0.12 % against 0.10 %). The excess is in thin, far
-  props: the 1,274 prop pixels at 200 to 1,000 m have a 95th of 0.32 %
-  against the world's 0.09 % in the same band, and 224 of them, in a
-  row across the screen just below the horizon, are over 0.1 %, the game
-  a median 0.66 m farther. That is the game's depth showing the world
-  behind a prop the engine covers, which fits the 4× pass storing its
-  first sample, not the pixel centre: on props a pixel or two wide the
-  two images sample different surfaces. Away from the edges the prop
-  95th is 0.107 % against the world's 0.101 %. A residual of 39 pixels
-  over 1 km (one small object near the skyline, the game a median
-  1.7 m, 0.21 %, farther) and 3 scattered edge pixels at 40 to 200 m
-  remain; they do not move the percentiles.
+  0.02 points** (0.12 % against 0.10 %). The excess is where the
+  engine's own image changes depth inside one pixel: of the 1,205 prop
+  pixels over 0.1 %, 1,126 have the game's depth inside the range of the
+  engine's four texels, and only 79 (0.42 % of the prop pixels) do not,
+  fewer than in the world (0.74 %). Where the engine's texels lie within
+  0.2 % of each other, the props are at 0.014 % and 0.047 %, at or under
+  the world in every band. Props have more such pixels than the world
+  (6.5 % of them over 0.1 % against 5.1 %), and they are not only on
+  silhouettes: dropping the pixels within 1 px of the world leaves the
+  prop 95th at 0.107 %, and at 200 to 1,000 m at 0.23 % against the
+  world's 0.09 %. Which sample position inside the pixel the game's 4×
+  pass keeps has not been measured, so this says where the excess is,
+  not yet why.
+- **Small residuals.** 39 prop pixels over 1 km sit at one small object
+  near the skyline (median 2.15 m, 0.21 %); 30 of the 36 over 0.1 % match
+  the world-only image, so the game shows the world there. Three pixels
+  at 40 to 200 m, spread across the screen, are 25 m off (the engine a
+  prop at about 16 m, the game about 44 m; two of them match the
+  world-only image); erosion keeps them, so they are not edge pixels. Neither moves the percentiles.
 - **All props** keep the world's numbers on the world pixels but not on
   the props: the chain-link fence and the pine are alpha-tested (the game
   writes depth only on opaque texels, the engine over whole triangles)
@@ -692,7 +727,7 @@ python -I tools/re/world-geometry.py depth-skips <drawn members> <dump.fh1frame>
     [--props [--leave-out chainlinkfence,pine,flag]]
     (replay again with --fh1_debug_skip_draws=<the printed ranges>)
 python -I tools/re/world-geometry.py depth-compare <world-depth.pfm> <frame file> \
-    <band 1> <band 2> <band 3> --shift 0.5 0.5 [--split <world-only depth.pfm>]
+    <band 1> <band 2> <band 3> --shift 0.5 0.5 [--split <world-only depth.pfm>] [--step 0.002]
 ```
 
 With props, the members file is the 73 world-space models plus the 47 local-space models

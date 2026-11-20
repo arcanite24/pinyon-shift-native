@@ -1475,18 +1475,21 @@ def cmd_depth_compare(args) -> int:
         """The engine's z/w at the game's sample point: pixel (x, y) moved
         by the shift, interpolated bilinearly (z/w is affine across a
         triangle on screen); None on sky or where the four texels straddle
-        a depth step (their view depths differ by more than 2 %)."""
+        a depth step (their view depths differ by more than --step). Also
+        returns the four texels' z/w range."""
         if not dx and not dy:
-            return ours[y * width + x]
+            o = ours[y * width + x]
+            return o, o, o
         fx, fy = x + dx, y + dy
         x0, y0 = int(fx // 1), int(fy // 1)
         if not (0 <= x0 < width - 1 and 0 <= y0 < height - 1):
             return None
         tx, ty = fx - x0, fy - y0
         q = [ours[(y0 + j) * width + x0 + i] for j in (0, 1) for i in (0, 1)]
-        if max(q) >= 1.0 or view_depth(max(q)) > 1.02 * view_depth(min(q)):
+        if max(q) >= 1.0 or view_depth(max(q)) > (1.0 + args.step) * view_depth(min(q)):
             return None
-        return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty
+        o = (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty
+        return o, min(q), max(q)
 
     base = read_pfm(args.split)[2] if args.split else None
 
@@ -1502,13 +1505,16 @@ def cmd_depth_compare(args) -> int:
 
     classes = {}
 
+    over = {}
+
     def stats(name):
         if name not in classes:
             classes[name] = ([], [], [[lo, hi, [], []] for lo, hi in
                                      ((0, 40), (40, 200), (200, 1000), (1000, 1e9))])
+            over[name] = [0, 0]
         return classes[name]
 
-    diffs, rel, bands = stats("all")
+    stats("all")
     game_sky = our_sky = only_one = both = stepped = 0
     for y in range(height):
         for x in range(width):
@@ -1521,18 +1527,27 @@ def cmd_depth_compare(args) -> int:
             only_one += g_empty != o_empty
             if g_empty or o_empty:
                 continue
-            o = ours_at(x, y)
-            if o is None:
+            sample = ours_at(x, y)
+            if sample is None:
                 stepped += 1
                 continue
+            o, o_min, o_max = sample
             gw, ow = view_depth(1.0 - g), view_depth(o)
             both += 1
             d = abs(gw - ow)
+            # Over 0.1 %: is the game's depth inside the range the engine's
+            # four texels span (0.1 % margin)? Then the two differ in where
+            # the sample falls on a slope or step inside the pixel.
+            bracketed = (d > 1e-3 * gw
+                         and view_depth(o_min) / 1.001 <= gw <= view_depth(o_max) * 1.001)
             names = ["all"] + ([("prop" if is_prop(x, y) else "world")] if base else [])
             for name in names:
                 c_diffs, c_rel, c_bands = stats(name)
                 c_diffs.append(d)
                 c_rel.append(d / gw)
+                if d > 1e-3 * gw:
+                    over[name][0] += 1
+                    over[name][1] += bracketed
                 for band in c_bands:
                     if band[0] <= gw < band[1]:
                         band[2].append(d)
@@ -1543,7 +1558,9 @@ def cmd_depth_compare(args) -> int:
     for name, (c_diffs, c_rel, c_bands) in classes.items():
         print(f"{name} pixels, |view depth difference|: {len(c_diffs)} px, median "
               f"{percentile(c_diffs, 0.5):.4f} m, 95th {percentile(c_diffs, 0.95):.4f} m; "
-              f"relative median {percentile(c_rel, 0.5):.2e}, 95th {percentile(c_rel, 0.95):.2e}")
+              f"relative median {percentile(c_rel, 0.5):.2e}, 95th {percentile(c_rel, 0.95):.2e}; "
+              f"over 0.1 %: {over[name][0]} px, {over[name][1]} of them within the engine's "
+              f"four texels' depth range")
         for lo, hi, metres, relative in c_bands:
             print(f"  {lo:g} <= w < {hi:g} m: {len(metres)} px, median "
                   f"{percentile(metres, 0.5):.4f} m, 95th {percentile(metres, 0.95):.4f} m; "
@@ -1693,6 +1710,9 @@ def main(argv: list[str] | None = None) -> int:
     depth.add_argument("--shift", type=float, nargs=2, default=(0.0, 0.0), metavar=("DX", "DY"),
                        help="compare with the engine's depth this many pixels right and down "
                             "(0.5 0.5: the game's pixel centres sit half a pixel off ours)")
+    depth.add_argument("--step", type=float, default=0.02,
+                       help="with --shift, leave out pixels whose four engine texels' view depths "
+                            "differ by more than this fraction (default 0.02)")
     depth.add_argument("--out", help="write a signed difference image (PPM)")
     depth.add_argument("--split", metavar="PFM",
                        help="the engine's z/w image without props: pixels where it differs "
