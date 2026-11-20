@@ -13,16 +13,12 @@ fetches these projects with CMake FetchContent, pinned in
 | [SQLite](https://www.sqlite.org) | `3.50.4` amalgamation (2025-07-30), SHA-256 pinned | reads the game database read-only (`event-restrictions-corpus`) | public domain |
 | [stb](https://github.com/nothings/stb) | `f58f558c` (2025-05-26) | `stb_image_write.h`, PNG output | MIT or public domain |
 
-## libmspack and the licence decision
+## libmspack
 
 libmspack is LGPL-2.1, and `fh1data` links its LZX decoder statically.
-Distributing binaries built that way carries LGPL obligations (the
-library's source, and the means to relink against a modified version),
-which a BSD-3-Clause project would not otherwise have. This matters for
-the open licence decision (see README): before any binary release, either
-keep libmspack and meet those terms (for example by building it as a
-shared library), or replace it with an LZX decoder written for this
-project from the public LZX format description.
+The project is GPL-3.0-or-later, which the LGPL permits, so a binary
+built this way is distributed under the GPL with libmspack's own notice
+kept.
 
 The shaders under `apps/carview/shaders` are this project's own; the
 SPIR-V in `shaders/prebuilt` is compiled from them.

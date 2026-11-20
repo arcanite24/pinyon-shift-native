@@ -205,6 +205,5 @@ opaque.
 
 ## Licence
 
-BSD-3-Clause (`LICENSE`), copyright Brandon G. Neri. **The licence is still
-an open decision** of the reimplementation plan. The LGPL-2.1 libmspack
-dependency bears on it; see `THIRD_PARTY_NOTICES.md`.
+GPL-3.0-or-later (`LICENSE`), copyright Brandon G. Neri. The LGPL-2.1
+libmspack dependency is compatible with it; see `THIRD_PARTY_NOTICES.md`.
