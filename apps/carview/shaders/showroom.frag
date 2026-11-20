@@ -17,6 +17,7 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 options;
   vec4 tint_light;
   vec4 reflect_tint;
+  mat4 transparent_view_projection;  // glass and lamp covers
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 

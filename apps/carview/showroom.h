@@ -31,8 +31,9 @@ struct ShowroomFrame {
   float options[4];  // exposure, environment intensity, livery overlay, metallic paint's metal share
   float tint[4];     // light colour (linear rgb) for diffuse light: environment and both lights
   float reflect_tint[4];  // colour of environment reflections (linear rgb)
+  float transparent_view_projection[16];  // glass and lamp covers; usually view_projection
 };
-static_assert(sizeof(ShowroomFrame) == 160);
+static_assert(sizeof(ShowroomFrame) == 224);
 
 // Per-draw push constants.
 struct ShowroomPush {

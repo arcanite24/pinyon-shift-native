@@ -1,7 +1,9 @@
 #include "reference.h"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -212,6 +214,21 @@ bool read_reference(const std::filesystem::path& path, Reference& out, std::stri
       return false;
     }
     out.clip_from_car[i] = float(matrix->array[i].number);
+  }
+  // The transparent pass's matrix (checks.transparent_clip_from_car); the
+  // main one when absent.
+  std::copy(std::begin(out.clip_from_car), std::end(out.clip_from_car), std::begin(out.transparent_clip_from_car));
+  out.has_transparent = false;
+  if (const Json* checks = get("checks"); checks && checks->type == Json::kObject) {
+    auto it = checks->object.find("transparent_clip_from_car");
+    if (it != checks->object.end() && it->second.type == Json::kArray && it->second.array.size() == 16) {
+      bool numbers = true;
+      for (const auto& v : it->second.array) numbers &= v.type == Json::kNumber;
+      if (numbers) {
+        for (size_t i = 0; i < 16; ++i) out.transparent_clip_from_car[i] = float(it->second.array[i].number);
+        out.has_transparent = true;
+      }
+    }
   }
   const std::filesystem::path folder = path.parent_path();
   if (const std::string image = text_field("image"); !image.empty()) out.image = folder / image;

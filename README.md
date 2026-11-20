@@ -253,13 +253,16 @@ opaque.
   baked occlusion. Glass is blended last, far to near.
 - 14 cars have no real LOD0 body and 6 have stand-in parts; they draw
   from the LOD1-5 model (Q6).
-- Reference mode reads AUTOSHOW_REFERENCE v1. Over the eight current
-  references (`tools/m1-report.py`): silhouette IoU 0.968-0.996 (mean
-  0.989), seven of eight at or above 0.97; masked PSNR against the
-  car-only captures 14.4-18.8 dB (median 17.2, none more than 6 dB under
-  it); edge overlap 0.47-0.81. Under 0.97, so M1's numeric rule is not
-  yet met: `ALF_ZagatoTZ3Stradale_12` (0.968): the game draws smaller
-  tyres than its `Data_Car` sizes give (Q10).
+- Reference mode reads AUTOSHOW_REFERENCE v1, draws the mask by its
+  6/255 rule at the silhouette and the glass with the transparent pass's
+  matrix. Over the 30 references captured so far (`tools/m1-report.py`):
+  silhouette IoU mean 0.976, 23 of 30 at or above 0.97; masked PSNR
+  against the car-only captures 12.1-19.3 dB (median 17.1, none more
+  than 6 dB under it). M1's numeric rule is not met yet: six cars miss
+  0.97 by the lamp and highlight glows the captures' masks include and
+  the engine does not draw (Q11; without the glow every one is at 0.973
+  or above), and one capture (`AUD_RS4Avant_13`) has stage lights in its
+  car-only image. The TZ3's tyres are also smaller in the game (Q10).
 - The lighting's free settings (exposure, environment, key and fill
   strengths, the diffuse and reflection tints, metallic paint's share)
   were fitted to those references for median masked PSNR, keeping the

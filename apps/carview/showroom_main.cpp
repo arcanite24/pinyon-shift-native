@@ -144,6 +144,7 @@ ShowroomFrame orbit_frame(const Showroom& s, const Orbit& o, float aspect, bool 
   projection[14] = near_z * far_z / (near_z - far_z);
   ShowroomFrame frame{};
   multiply4(projection, view, frame.view_projection);
+  std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
   frame.eye[0] = eye.x;
   frame.eye[1] = eye.y;
   frame.eye[2] = eye.z;
@@ -322,7 +323,12 @@ int run_showroom(int argc, char** argv) {
           frame = ShowroomFrame{};
           // Direct3D clip (+y up) to Vulkan clip (+y down): negate row 1.
           std::memcpy(frame.view_projection, reference.clip_from_car, sizeof frame.view_projection);
-          for (int c = 0; c < 4; ++c) frame.view_projection[c * 4 + 1] = -frame.view_projection[c * 4 + 1];
+          std::memcpy(frame.transparent_view_projection, reference.transparent_clip_from_car,
+                      sizeof frame.transparent_view_projection);
+          for (int c = 0; c < 4; ++c) {
+            frame.view_projection[c * 4 + 1] = -frame.view_projection[c * 4 + 1];
+            frame.transparent_view_projection[c * 4 + 1] = -frame.transparent_view_projection[c * 4 + 1];
+          }
           float eye[3] = {0, 0, 0};
           if (!clip_eye(reference.clip_from_car, eye))
             std::fprintf(stderr, "carview: the reference matrix has no camera centre; lighting from the origin\n");

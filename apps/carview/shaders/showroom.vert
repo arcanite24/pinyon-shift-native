@@ -16,6 +16,7 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 options;     // x exposure, y environment intensity, z livery overlay
   vec4 tint_light;
   vec4 reflect_tint;
+  mat4 transparent_view_projection;  // glass and lamp covers
 } frame;
 
 layout(push_constant) uniform Draw {
@@ -64,5 +65,7 @@ void main() {
   v_uv1 = vec2(draw.uv1.x + draw.uv1.y * in_uv1.x, draw.uv1.z + draw.uv1.w * in_uv1.y);
   // The first lighting byte behaves as occlusion: about 100 open to the sky.
   v_occlusion = clamp(in_light.x * 255.0 / 100.0, 0.0, 1.0);
-  gl_Position = frame.view_projection * world;
+  // Glass and lamp covers (class 2) are drawn in the game's transparent
+  // pass with their own matrix (AUTOSHOW_REFERENCE, up to about 1 px off).
+  gl_Position = (uint(draw.params.x + 0.5) == 2u ? frame.transparent_view_projection : frame.view_projection) * world;
 }

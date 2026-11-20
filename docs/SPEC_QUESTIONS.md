@@ -167,22 +167,29 @@ questions are also sent to the specification session.
   outside the body).
 - **Engine:** Data_Car sizes and the row's centre, no offset.
 
-## Q11 (blocks the M1 numeric pass): the lit headlamps' glow is in the mask
+## Q11 (blocks the M1 numeric pass): glows are in the mask
 
 - **Spec:** AUTOSHOW_REFERENCE's mask counts every pixel a car-only
   replay changes by 6/255 or more; the faint glow halo round the body
-  drops out, but the captures show a bright glow round each lit
-  headlamp, and that glow is in the mask.
-- **Measured:** over the first 12 references the largest connected
-  reference-only region of each mask difference is that glow on the
-  front corner nearest the camera: 14,238 px on `AST_DBS_09`, 9,591 on
-  `AST_Vanquish_13`, 5,379 on `AST_One77_10`, 2,488 on the Abarth.
-  Without it the IoUs are DBS 0.957 -> 0.990, Vanquish 0.960 -> 0.982,
-  TZ3 0.968 -> 0.973: every car would pass.
-- **Needed:** what draws the glow (a sprite or flare per lamp point, with
-  the car's matrix?), its size and colour, and whether lamp points 0 to 3
-  of `CarPartPositions` are where it sits.
-- **Engine:** draws no lamp glow.
+  drops out, but the captures show bright glows that stay in: round each
+  lit headlamp, and on `AUD_RS4_06` a flare above the roof where the
+  stage's light catches the window frame.
+- **Measured (30 references, 2026-11-19):** six cars are under 0.97
+  besides the broken capture below, and on each the largest connected
+  reference-only region of the mask difference is such a glow. Without it:
+  `AST_DBS_09` 0.957 -> 0.990, `AST_Vanquish_13` 0.960 -> 0.982,
+  `BMW_M3E92_08` 0.966 -> 0.984, `BEN_CONTINENTALGT_11` 0.966 -> 0.977,
+  `AUD_RS4_06` 0.965 -> 0.992, `ALF_ZagatoTZ3Stradale_12` 0.968 -> 0.973.
+- **Needed:** what draws the glows (a sprite or flare per lamp point, or a
+  glare pass on bright highlights; with the car's matrix?), their size
+  and colour, and whether lamp points 0 to 3 of `CarPartPositions` place
+  the lamp ones. Or, if they are not part of the car, whether the mask
+  should leave them out.
+- **Engine:** draws no glow.
+- **Also:** the `AUD_RS4Avant_13` (1681) capture's car-only image holds a
+  black band and the stage's purple floor lights, so its mask covers
+  121,633 px that are not the car (IoU 0.785; 0.998 without that region).
+  Reported to the capture side.
 
 ## Q12 (not blocking): holes in the captured masks
 

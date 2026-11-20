@@ -15,6 +15,8 @@
 //                   the pixels a car-only replay changes by 6/255 or more)
 //   image_car_only  the car-only replay (optional)
 //   paint_rgb       the colour shown (sRGB 0-255; the first Combo_Colors row)
+//   checks.transparent_clip_from_car
+//                   the glass and lamp covers' matrix (optional)
 #pragma once
 
 #include <array>
@@ -30,6 +32,10 @@ struct Reference {
   int64_t car_id = 0;
   uint32_t width = 0, height = 0;
   float clip_from_car[16] = {};
+  // Glass and lamp covers: checks.transparent_clip_from_car, or a copy of
+  // clip_from_car when the reference has none.
+  float transparent_clip_from_car[16] = {};
+  bool has_transparent = false;
   // Resolved against the JSON's folder; empty if absent. image_car_only is
   // the replay with only the car's draws (the masked-PSNR target).
   std::filesystem::path image, mask, image_car_only;

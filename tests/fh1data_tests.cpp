@@ -1037,6 +1037,23 @@ void test_reference() {
   float eye[3];
   CHECK(carview::clip_eye(ref.clip_from_car, eye));
   CHECK(std::fabs(eye[0]) < 1e-4f && std::fabs(eye[1]) < 1e-4f && std::fabs(eye[2] - 5) < 1e-4f);
+  // Without checks.transparent_clip_from_car the glass uses the main matrix.
+  CHECK(!ref.has_transparent && ref.transparent_clip_from_car[14] == ref.clip_from_car[14]);
+  {
+    // With it, the glass matrix is read from checks (here: m with x moved).
+    std::FILE* out = std::fopen((dir / "glass.json").string().c_str(), "wb");
+    std::fprintf(out, "{\"schema\": \"shift-engine.m1-reference.v1\", \"width\": 64, \"height\": 32,\n"
+                      " \"checks\": {\"mask_threshold\": 6, \"transparent_clip_from_car\": [");
+    for (int i = 0; i < 16; ++i) std::fprintf(out, "%s%.9g", i ? ", " : "", double(i == 12 ? m[i] + 0.25f : m[i]));
+    std::fprintf(out, "]}, \"clip_from_car\": [");
+    for (int i = 0; i < 16; ++i) std::fprintf(out, "%s%.9g", i ? ", " : "", double(m[i]));
+    std::fprintf(out, "]}\n");
+    std::fclose(out);
+  }
+  carview::Reference glass;
+  CHECK(carview::read_reference(dir / "glass.json", glass, error));
+  CHECK(glass.has_transparent && std::fabs(glass.transparent_clip_from_car[12] - (m[12] + 0.25f)) < 1e-5f &&
+        std::fabs(glass.clip_from_car[12] - m[12]) < 1e-5f);
   {
     std::FILE* out = std::fopen((dir / "bad.json").string().c_str(), "wb");
     std::fprintf(out, "{\"schema\": \"other\", \"width\": 1, \"height\": 1, \"clip_from_car\": []}");
