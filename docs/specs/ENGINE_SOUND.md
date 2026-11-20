@@ -21,9 +21,12 @@ the spec says so and gives a default.
 A car's engine is not an FMOD event. The game reads a set of loops, each
 recorded at one steady rpm, straight from an FSB4 bank and crossfades and
 pitches them itself, every audio update. Turbo, supercharger, transmission
-whine, exhaust noise, backfires and burbles, the engine's low-frequency
-channel, damage and the electric motor are FMOD Ex event projects (`.fev`
-with a bank), which this spec does not cover. **M3 needs only the engine
+whine, exhaust noise, the engine's low-frequency channel, damage and the
+electric motor are FMOD Ex event projects: 13 `.fev` projects with their
+banks under `media/audio/cars` (also active aero, horns, reflections,
+suspension, tyres and wind). Backfires and burbles are 6 sequence banks in
+`Engines/Soundbanks/Burbles`, named by the harmonic tuning's `Burble`
+element. This spec does not cover them. **M3 needs only the engine
 loops.**
 
 Inputs, all from data the engine already has:
@@ -80,8 +83,9 @@ All paths are under `media/`. A package adds tuning members in its
 `Media/DLCZips/<offer>_pri_<n>.zip` under `media/audio/cars/` and its banks
 as loose files in `Media/DLCZips/<offer>_pri_<n>/Media/audio/cars/Engines/Soundbanks/LOD1/`.
 v4's `media.zip` replaces four engine tunings (`audio/cars/engines/enginetuning/`).
-Resolve members in the order the title uses for other archives: v4 over the
-packages (by ascending priority) over the disc. The archives use the same
+Resolve members with v4 over the packages (by ascending priority) over the
+disc. That order is assumed, not traced for these folders; it matters only
+for v4's four engine tunings. The archives use the same
 LZX and deflate members as the rest of the disc
 ([FORMAT-CARS](../formats/CARS.md)).
 
@@ -247,7 +251,9 @@ falling edge  (R > rpm_min of loop i+1):   t = (rpm_maxᵢ − R) / (rpm_maxᵢ 
 gainᵢ = log2(1 + t) on an edge, 1 elsewhere in the range
 ```
 
-The first loop has no rising edge, and the last has no falling edge (the
+When both edge conditions hold (a loop narrower than its overlaps), the
+rising edge wins. The first loop has no rising edge, and the last has no
+falling edge (the
 game uses 0 and 32,000 as the missing neighbour's edges). log2(1 + t)
 rises from 0 to 1. At the middle of an overlap each loop has gain
 log2 1.5 = 0.585: the pair sums to 1.17 in amplitude and 0.68 in power,
@@ -296,9 +302,12 @@ for M3:
 - throttle is the pedal after input shaping, 0..1;
 - posTorque is the engine's load when it drives, 0..1 (the load of
   SPEC-CAR-PHYSICS, "Engine": its positive part);
-- negTorque is the load when it brakes, as a negative number (−1..0), so
-  that the subtraction raises x under engine braking. If tunings sound wrong
-  under lift-off, try the magnitude.
+- negTorque is the load when it brakes. Its sign is open: the game's
+  loop audition mode drives all three of throttle, posTorque and
+  negTorque at +1, which suggests a magnitude (0..1, lowering x under
+  engine braking), while the curves that weight NegTorque rise as if it
+  raised x. Make the sign a switch, start with the magnitude, and choose by
+  ear on lift-off.
 
 ### Which parameters M3 needs
 
@@ -375,7 +384,7 @@ over about 150 ms (the game's × 0.2 per update).
 | Unknown | Confidence of the rule given | Do meanwhile |
 | --- | --- | --- |
 | The physics rpm range of the rpm map (`StallRPM`, `RedlineRPM`) | probable | use them; the capture check below settles it |
-| The scale and sign of throttle, posTorque and negTorque | probable | the defaults above |
+| The scale of throttle and posTorque; the sign of negTorque | probable; open for the sign | the defaults above; a switch for the sign |
 | Group order 0 and 1 (intake, ambient) | probable | as in the table; both use the same rule |
 | The engine tuning's `HarmonicTunings` against the harmonic tuning's `DSP` | probable (engine tuning wins) | as above |
 | Which upgrade selects `L1` to `L3` | probable (intake and exhaust upgrades) | `L0` for stock |
@@ -422,7 +431,9 @@ over about 150 ms (the game's × 0.2 per update).
   y = 0.7.
 
 **The R34 at 4,000 rpm, full load** (car 445, stock, `L0`;
-`tools/re/engine-sound.py loops --car 445 --rpm 4000`):
+`tools/re/engine-sound.py loops --car 445 --rpm 4000`). These rows assume
+the rpm map's physics range is `StallRPM` to `RedlineRPM` (probable, see
+Unknowns); they change if it is not:
 
 | Group | Loops sounding (of the set) | Crossfade gain | Pitch ratio |
 | --- | --- | --- | --- |
@@ -433,12 +444,23 @@ over about 150 ms (the game's × 0.2 per update).
 The audio rpm there is 3,911. Without the rpm map (audio rpm = physics rpm)
 the exhaust and engine would instead crossfade loops 5 and 6 at 0.880
 and 0.214. So this case also tells whether an implementation applies the
-map. At 7,000 physics rpm (audio 6,828) the engine and exhaust crossfade
-loops 10 and 11 at 0.523 and 0.644, and the intake plays loop 11 alone.
+map. At 7,000 physics rpm (audio 6,828, under the same assumption) the engine
+and exhaust crossfade loops 10 and 11 at 0.523 and 0.644, and the intake
+plays loop 11 alone.
 
-**Pending, measured check** (needs a game run): drive the R34 at full
-throttle in second gear from the physics oracle's scenario A with every mix
-category but the engine at 0, and take `audiocapture` with the physics
-trace. Compare the exhaust's firing fundamental (for the RB26, three
-pulses a revolution, so rpm / 20 Hz) with the trace's rpm × 3,911 / 4,000
-(the map) against rpm itself. That settles the rpm map's physics range.
+**Pending, measured check** (needs a game run). The map is pinned at its
+ends: physics idle gives `audio_rpm_idle` and physics redline gives
+`audio_rpm_redline`. Steady tones there settle the physics range without
+aligning a trace. With every mix category but the engine at 0 and
+`audiocapture`:
+
+- hold the R34 on the limiter in neutral or first gear. Its exhaust
+  fundamental (the RB26 fires three times a revolution, so rpm / 20 Hz)
+  should sit at the audio redline, 7,800 / 20 = 390 Hz, under the map,
+  against 400 Hz if the game used the physics rpm;
+- let a car idle whose `audio_rpm_idle` differs from its `StallRPM`
+  (106 of the 239 cars; car 365 differs by 450 rpm) and compare the
+  idle tone the same way.
+
+A full-throttle sweep cannot decide it: at 4,000 rpm the two readings
+differ by 2.2 %, about the tolerance.
