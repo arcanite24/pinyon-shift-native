@@ -1059,6 +1059,13 @@ bool Showroom::upload(std::string& error) {
   return true;
 }
 
+void Showroom::set_background(float r, float g, float b) {
+  r_.scene_.clear[0] = r;
+  r_.scene_.clear[1] = g;
+  r_.scene_.clear[2] = b;
+  r_.scene_.clear[3] = 1.0f;
+}
+
 void Showroom::update_frame(VkCommandBuffer cmd) {
   VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -1116,7 +1123,7 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
 }
 
 bool Showroom::render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>& mask,
-                           std::string& error) {
+                           std::string& error, bool fraction) {
   // Drawn at the colour pass's MSAA and resolved; a pixel is covered when
   // any of its samples is, as the reference masks count every pixel the
   // car's draws change after the resolve (AUTOSHOW_REFERENCE, Mask).
@@ -1209,7 +1216,7 @@ bool Showroom::render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>
     vkMapMemory(r_.device_, readback.memory, 0, bytes, 0, &mapped);
     const uint8_t* src = static_cast<const uint8_t*>(mapped);
     mask.resize(size_t(bytes));
-    for (size_t i = 0; i < mask.size(); ++i) mask[i] = src[i] != 0 ? 255 : 0;
+    for (size_t i = 0; i < mask.size(); ++i) mask[i] = fraction ? src[i] : (src[i] != 0 ? 255 : 0);
     vkUnmapMemory(r_.device_, readback.memory);
   } else {
     error = "mask render submission failed";

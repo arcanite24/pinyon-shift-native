@@ -166,3 +166,31 @@ questions are also sent to the specification session.
   sideways (the rear centres at x = +-0.848 m put a 345 mm tread 6 cm
   outside the body).
 - **Engine:** Data_Car sizes and the row's centre, no offset.
+
+## Q11 (blocks the M1 numeric pass): the lit headlamps' glow is in the mask
+
+- **Spec:** AUTOSHOW_REFERENCE's mask counts every pixel a car-only
+  replay changes by 6/255 or more; the faint glow halo round the body
+  drops out, but the captures show a bright glow round each lit
+  headlamp, and that glow is in the mask.
+- **Measured:** over the first 12 references the largest connected
+  reference-only region of each mask difference is that glow on the
+  front corner nearest the camera: 14,238 px on `AST_DBS_09`, 9,591 on
+  `AST_Vanquish_13`, 5,379 on `AST_One77_10`, 2,488 on the Abarth.
+  Without it the IoUs are DBS 0.957 -> 0.990, Vanquish 0.960 -> 0.982,
+  TZ3 0.968 -> 0.973: every car would pass.
+- **Needed:** what draws the glow (a sprite or flare per lamp point, with
+  the car's matrix?), its size and colour, and whether lamp points 0 to 3
+  of `CarPartPositions` are where it sits.
+- **Engine:** draws no lamp glow.
+
+## Q12 (not blocking): holes in the captured masks
+
+- **Observed:** the 6/255 rule leaves out car pixels whose colour is
+  within 6/255 of the empty frame's grey (95, 95, 95): mid-grey grilles,
+  vents and trim on `AST_One77_10` show as holes inside the reference
+  mask (its edge overlap is 0.26 against 0.47-0.82 for the rest).
+- **Engine:** counts every fully covered pixel and applies the 6/255
+  rule only to partly covered silhouette pixels, so shading near the
+  background grey (a material difference) does not cut holes in our mask.
+  The holes cost the One-77 some IoU and most of its edge score.

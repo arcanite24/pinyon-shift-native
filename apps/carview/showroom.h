@@ -66,11 +66,15 @@ class Showroom {
   // must be initialised. Installs itself as the renderer's scene.
   bool upload(std::string& error);
   void set_frame(const ShowroomFrame& frame) { frame_ = frame; }
+  // The colour the scene clears to, as stored in the 8-bit target (0-1).
+  void set_background(float r, float g, float b);
 
   // Renders the car-coverage mask (every car draw, no depth test, at the
   // colour pass's MSAA) at the current frame: 255 where any sample of the
-  // pixel is covered.
-  bool render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>& mask, std::string& error);
+  // pixel is covered, or with `fraction` the resolved share of covered
+  // samples (0-255, 255 fully covered).
+  bool render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>& mask, std::string& error,
+                   bool fraction = false);
 
   const cars::bake::CarInfo& car() const { return car_.car; }
   const std::array<float, 3>& bounds_min() const { return bounds_min_; }
