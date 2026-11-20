@@ -1361,8 +1361,29 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     for (int k = 0; k < 3; ++k) d.push.tint[k] = tint[size_t(k)];
     d.push.tint[3] = 1;
     d.push.params[0] = float(mat.blend);
-    d.push.params[1] = mat.texture != kNoWorldTexture ? 1.0f : 0.0f;  // world.frag's kFlagTextured
+    // world.frag's flags: 1 textured, 4 vertex-blended layers, 8 splat
+    // layers, 16 decal alpha from the vertex colour's R; a textured draw's
+    // tint holds the layers' tilings.
+    uint32_t flags = mat.texture != kNoWorldTexture ? 1 : 0;
+    if (flags && mat.layer_b != kNoWorldTexture) {
+      if (mat.layers == 1) {
+        flags |= 4;
+        d.texture_b = mat.layer_b;
+      } else if (mat.layers == 2 && mat.splat != kNoWorldTexture) {
+        flags |= 8;
+        d.texture_b = mat.layer_b;
+        d.splat = mat.splat;
+      }
+    }
+    if (flags && mat.layers == 3) flags |= 16;
+    if (flags) std::memcpy(d.push.tint, mat.tiling.data(), sizeof d.push.tint);
+    d.push.params[1] = float(flags);
     d.push.params[2] = float(mat.far);                                 // world.vert's depth push
+    // Light gain (world.frag): WORLD-MATERIALS has something brighten the
+    // vertex-blended hills that its shading does not show, and says to
+    // scale them to the reference; 2.5 brings their median near the
+    // frame's (ours).
+    d.push.params[3] = (flags & 4) ? 2.5f : 1.0f;
     out.draws.push_back(d);
   }
   return out;
@@ -1667,6 +1688,34 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
   return true;
 }
 
+VkDescriptorSet Showroom::world_layer_set(const std::array<uint32_t, 3>& records) {
+  const auto it = world_layer_sets_.find(records);
+  if (it != world_layer_sets_.end()) return it->second;
+  VkDescriptorImageInfo images[3];
+  VkWriteDescriptorSet writes[3];
+  for (uint32_t b = 0; b < 3; ++b) {
+    VkImageView view = gpu_textures_.empty() ? VK_NULL_HANDLE : gpu_textures_[0].view;
+    if (records[b] != kNoWorldTexture) {
+      const auto t = world_textures_.find(records[b]);
+      if (t == world_textures_.end()) return VK_NULL_HANDLE;
+      view = t->second.view;
+    }
+    images[b] = {sampler_, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[b].descriptorCount = 1;
+    writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[b].dstBinding = b;
+    writes[b].pImageInfo = &images[b];
+  }
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  std::string error;
+  if (!allocate_world_set(set, error)) return VK_NULL_HANDLE;
+  for (auto& w : writes) w.dstSet = set;
+  vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
+  world_layer_sets_[records] = set;
+  return set;
+}
+
 VkDescriptorSet Showroom::world_set(uint32_t record) const {
   const auto it = world_sets_.find(record);
   return it == world_sets_.end() ? VK_NULL_HANDLE : it->second;
@@ -1686,6 +1735,11 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
       ShowroomPush push = d.push;
+      if (set && d.texture_b != kNoWorldTexture) {
+        VkDescriptorSet layered = world_layer_set({d.texture, d.texture_b, d.splat});
+        if (layered) set = layered;
+        else push.params[1] = 1;  // a layer did not upload: slot 0 alone
+      }
       if (!set) {
         set = world_white_set_;
         if (push.params[1] == 1) push.params[1] = 0;  // the texture did not upload: flat

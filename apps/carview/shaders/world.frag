@@ -20,6 +20,8 @@ layout(set = 0, binding = 0) uniform Frame {
 } frame;
 
 layout(set = 1, binding = 0) uniform sampler2D albedo;
+layout(set = 1, binding = 1) uniform sampler2D layer_b;    // Blend_B
+layout(set = 1, binding = 2) uniform sampler2D splat_map;  // Splat
 
 layout(push_constant) uniform Draw {
   mat4 model;
@@ -38,7 +40,7 @@ layout(location = 4) in vec4 v_colour;
 layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u;
-const uint kFlagTextured = 1u, kFlagSky = 2u;
+const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u;
 
 // The sky gradient (ours, linear): pale haze at the horizon to blue above.
 const vec3 kSkyHorizon = vec3(0.477, 0.604, 0.708);
@@ -63,7 +65,21 @@ void main() {
     out_color = vec4(encode_srgb(sky * (h < 0.0 ? 0.85 : 1.0)), 1.0);
     return;
   }
-  vec4 t = (flags & kFlagTextured) != 0u ? texture(albedo, v_uv0) : vec4(draw.tint.rgb, 1.0);
+  // Terrain layers (WORLD-MATERIALS, Terrain shading): tint holds the
+  // tilings, Blend_A's in xy and Blend_B's in zw; the weight is the vertex
+  // colour's R (H_VBLND, baked from c4) or Splat's R (H_BLND2/3, uv1
+  // pre-tiled). Blend_C is not drawn (its weight is not settled).
+  vec4 t;
+  if ((flags & kFlagTextured) != 0u) {
+    t = texture(albedo, v_uv0 * draw.tint.xy);
+    if ((flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
+      vec4 b = texture(layer_b, v_uv0 * draw.tint.zw);
+      float w = (flags & kFlagSplat) != 0u ? texture(splat_map, v_uv1).r : v_colour.r;
+      t = mix(t, b, w);
+    }
+  } else {
+    t = vec4(draw.tint.rgb, 1.0);
+  }
 
   vec3 up = normalize(draw.up.xyz);
   // The authored normal (not turned to the eye: terrain and leaf cards above
@@ -71,14 +87,16 @@ void main() {
   vec3 n = dot(v_normal, v_normal) > 1e-6 ? normalize(v_normal) : up;
   vec3 sun = normalize(draw.sun.xyz);
   vec3 light = kSunColour * max(dot(n, sun), 0.0) + mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up));
-  vec3 colour = t.rgb * light * draw.up.w;
+  vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
 
   float alpha = 1.0;
   if (blend == kCoverage) {
     // Alpha to coverage, sharpened to the texel edge.
     alpha = clamp((t.a - 0.5) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
   } else if (blend == kAlpha) {
-    alpha = t.a * v_colour.a;
+    // H_VBLND_DECAL: the diffuse alpha times the vertex fade (baked into R);
+    // road decals: times the vertex colour's alpha (the likely source).
+    alpha = t.a * ((flags & kFlagVertexFade) != 0u ? v_colour.r : v_colour.a);
   }
   vec3 encoded = encode_srgb(colour);
   // Blended draws are premultiplied (ONE, ONE_MINUS_SRC_ALPHA).

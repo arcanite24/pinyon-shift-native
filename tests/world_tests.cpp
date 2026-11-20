@@ -93,10 +93,19 @@ int main() {
           mesh.normals.size() == mesh.positions.size());
     std::set<uint32_t> textures;
     size_t untextured = 0;
+    size_t vertex_blend = 0, splat = 0;
     for (const auto& m : mesh.materials) {
       if (m.albedo != world::kNoTexture) textures.insert(m.albedo);
       else ++untextured;
+      // Terrain layers (WORLD-MATERIALS, Terrain shading): Blend_B and
+      // Splat decode too.
+      if (m.layer_b != world::kNoTexture) textures.insert(m.layer_b);
+      if (m.splat != world::kNoTexture) textures.insert(m.splat);
+      vertex_blend += m.layers == world::Layers::kVertexBlend && m.layer_b != world::kNoTexture;
+      splat += m.layers == world::Layers::kSplat && m.splat != world::kNoTexture;
     }
+    std::printf("terrain layers: %zu vertex-blended materials with Blend_B, %zu with a Splat\n", vertex_blend, splat);
+    CHECK(vertex_blend > 0 && splat > 0);
     size_t decoded = 0;
     for (uint32_t r : textures) {
       fh1::WorldTexture t;

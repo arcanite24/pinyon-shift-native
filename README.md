@@ -89,8 +89,9 @@ background as you drive. The first run builds `out\world\colorado.index`
 
 The scenery is drawn with its own textures (WORLD_MATERIALS.md's first
 pass: each material's main texture lit by the sun and sky of the
-reference frame; terrain shows its first layer only, so near slopes
-probably read as grey rock for that reason). Beyond 400 m the far ring
+reference frame; terrain blends its Blend_A and Blend_B layers by
+vertex colour or Splat, and the forest-covered hills are brightened to
+the reference). Beyond 400 m the far ring
 draws the terrain's MIDDIST and UberLOD objects within 3 km (tree-covered
 slopes, the snowy peaks) under a sky gradient. Textures decode as the
 world streams in, so a regather can stall the window briefly.

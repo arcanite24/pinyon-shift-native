@@ -551,3 +551,42 @@ models draw the hills, the distant tree cover and the sky:
 - **Far plane.** The drive camera's far plane is 16 km (was 4 km).
 - **Census.** `fh1data-corpus --render-models bin.zip --objects` lists
   every mesh object with its model's box and effects.
+
+## Q38 (polish): terrain layers after WORLD-MATERIALS 1c08e550
+
+Built from the spec's Terrain shading section:
+
+- **Layers.** `H_VBLND*` (not `DECAL`): lerp(`Blend_A` at TEXCOORD0 x
+  c0.xy, `Blend_B` at TEXCOORD0 x c0.zw, w); `H_BLND2*` and `H_BLND3*`:
+  the same layers, w = `Splat`'s R at TEXCOORD1 x c1.zw; `H_BLND1*`:
+  `Blend_A` at c0.xy. `Blend_B` is slot 1 and `Splat` slot 2: slot 1
+  resolves to `_0x000036A1` on the `MIDDIST` hills, as the spec names.
+  `Blend_C` is not drawn (its weight is open). At the reference camera,
+  28 vertex-blended materials and 90 splat materials.
+- **COLOR.x is the first stored byte.** With the second stored byte (R
+  in A, R, G, B) the road-paint decals (`H_VBLND_DECAL_MASK_BIAS_LM`,
+  c4.x 3.5 to 10) fade to nothing: their R is about 0 and their first
+  byte about 234. With the first byte they draw where the frame shows
+  them. So w = saturate((first byte / 255 - 0.5) x c4.x + 0.5) for the
+  hills' weight and the decal fade (ours, from that evidence; the spec
+  calls the byte order probable). On the hills c4.x is 1 and the first
+  byte is mostly 255: they draw mostly `Blend_B`.
+- **AO** stays off (type-1 slots: AO = 1, as the spec says; the per-model
+  AO maps are not applied yet).
+- **Brightness.** Vertex-blended materials take a light gain of 2.5
+  (the spec: scale the hills to the reference). Hill luma medians at
+  the reference camera, game / ours: 81 / 57, 61 / 42, 59 / 56 (34, 28,
+  34 before).
+- **Non-power-of-two CAFF.** The decoder already takes ceil(width / 4)
+  blocks per row; the upload keeps the stated size, so the crop is the
+  image's own.
+- **Trees.** Not drawn: the billboard record's fields are open
+  (WORLD-MATERIALS open question 8). On `__R00G07021.pgeo`'s trailing
+  block (361 records, tile box 304 x 148 x 309 m), the half floats at
+  +24 read as (2.5 to 3.5, 5.7 to 7.8, -1000, 2500), which looks like a
+  quad size and two distances (2,500 is the tile's +0x38), and +32 as an
+  ARGB tint near (255, 124, 128, 132). No 32-bit word read as 10_11_11
+  or 11_11_10 unsigned within the tile's box gives terrain-smooth
+  positions (median height change to the nearest record 1.9 to 3 m per
+  m); +4, +16 and +20 are near-constant. Needed: the position field and
+  its frame (the draws' instance matrix?), the atlas cell.

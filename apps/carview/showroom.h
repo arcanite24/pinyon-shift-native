@@ -79,6 +79,10 @@ struct WorldTriangles {
     uint32_t texture = kNoWorldTexture;  // texture record of slot 0
     uint8_t blend = 0;                   // world::Blend: opaque, coverage, alpha
     uint8_t far = 0;                     // world::MeshMaterial::far: pushed back in depth
+    uint8_t layers = 0;                  // world::Layers: one, vertex blend, splat
+    uint32_t layer_b = kNoWorldTexture;  // Blend_B
+    uint32_t splat = kNoWorldTexture;    // Splat
+    std::array<float, 4> tiling{1, 1, 1, 1};  // Blend_A's UV tiling in xy, Blend_B's in zw
   };
   std::vector<std::array<float, 3>> normals;
   std::vector<std::array<float, 2>> uv0, uv1;
@@ -107,6 +111,7 @@ struct WorldGeometry {
     uint32_t first_index = 0, index_count = 0;
     ShowroomPush push{};
     uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
+    uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers
     uint8_t blend = 0;
   };
   bool textured = false;
@@ -238,6 +243,9 @@ class Showroom {
   bool upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
                              std::string& error);
   VkDescriptorSet world_set(uint32_t record) const;
+  // The set binding three uploaded textures (kNoWorldTexture: white), made
+  // on first use; null when one of them did not upload.
+  VkDescriptorSet world_layer_set(const std::array<uint32_t, 3>& records);
   void update_frame(VkCommandBuffer cmd);
 
   Renderer& r_;
@@ -290,6 +298,8 @@ class Showroom {
   VkPipeline world_opaque_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
   std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
   std::map<uint32_t, VkDescriptorSet> world_sets_;   // by texture record
+  // Sets for terrain draws: slot 0, Blend_B and Splat (bindings 0 to 2).
+  std::map<std::array<uint32_t, 3>, VkDescriptorSet> world_layer_sets_;
   VkDescriptorSet world_white_set_ = VK_NULL_HANDLE;  // untextured materials
   std::vector<VkDescriptorPool> world_pools_;
   uint32_t world_pool_left_ = 0;

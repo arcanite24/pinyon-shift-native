@@ -61,15 +61,29 @@ Blend effect_blend(const std::string& effect);
 // World::textures(), kNoTexture when the slot names no file) of the slots
 // drawn so far.
 constexpr uint32_t kNoTexture = 0xFFFFFFFFu;
+// How a material's layers combine (WORLD-MATERIALS, Terrain shading).
+enum class Layers : uint8_t {
+  kOne,          // slot 0 alone
+  kVertexBlend,  // H_VBLND: lerp(Blend_A, Blend_B, the vertex colour's R)
+  kSplat,        // H_BLND2, H_BLND3: lerp(Blend_A, Blend_B, Splat's R at uv1)
+  kVertexFade,   // H_VBLND_DECAL: slot 0, its alpha times the vertex colour's R
+};
+
 struct MeshMaterial {
   std::string effect;               // upper case, e.g. H_ROAD_DIFF3_NORM1_NOISE_AO_LM
   uint32_t albedo = kNoTexture;     // slot 0: Diffuse_Texture or Blend_A
   Blend blend = Blend::kOpaque;
+  Layers layers = Layers::kOne;
+  uint32_t layer_b = kNoTexture;    // slot 1: Blend_B (kVertexBlend, kSplat)
+  uint32_t splat = kNoTexture;      // slot 2: Splat (kSplat)
+  // Pixel constant 0: Blend_A's UV tiling in xy, Blend_B's in zw (terrain
+  // effects; 1 elsewhere).
+  std::array<float, 4> tiling{1, 1, 1, 1};
   // The far ring (ours): 0 near scenery, 1 a MIDDIST object, 2 an UberLOD
   // one. The renderer pushes far levels back in depth so the near terrain
   // wins where both are drawn.
   uint8_t far = 0;
-  auto key() const { return std::make_tuple(effect, albedo, far); }
+  auto key() const { return std::make_tuple(effect, albedo, far, layer_b, splat, tiling); }
 };
 
 struct Mesh {
@@ -83,6 +97,11 @@ struct Mesh {
   // the lightmap UV (dequantised with the submesh's uvOffsetScale), the
   // vertex colour (R, G, B, A; white when none); per triangle its material.
   std::vector<std::array<float, 3>> normals;
+  // uv1: the lightmap UV, or for kSplat materials TEXCOORD1 times the
+  // Splat tiling (pixel constant 1's zw). colours: as stored, except on
+  // H_VBLND effects, whose R is the layer weight (or the decal fade)
+  // saturate((COLOR.x - 0.5) x c4.x + 0.5), COLOR.x the first stored byte
+  // (A here).
   std::vector<std::array<float, 2>> uv0, uv1;
   std::vector<std::array<uint8_t, 4>> colours;
   std::vector<uint32_t> material;  // per triangle: index into materials

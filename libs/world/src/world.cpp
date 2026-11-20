@@ -234,7 +234,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   GatherStats& st = stats ? *stats : local;
   out = {};
 
-  std::map<std::tuple<std::string, uint32_t, uint8_t>, uint32_t> material_index;
+  std::map<decltype(MeshMaterial{}.key()), uint32_t> material_index;
   // far_pass: the far ring's objects only (the near pass skips them).
   auto add_triangles = [&](const fh1::RenderModel& model, uint32_t model_index, const fh1::Placement* placement,
                            const std::map<std::string, int>* lowest, bool far_pass = false) {
@@ -288,6 +288,9 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         fh1::RmbVertexLayout layout;
         std::array<float, 4> uv{0, 0, 1, 1};
         int lightmap = -1;
+        int splat_uv = -1;          // kSplat: TEXCOORD1, times splat_tiling
+        std::array<float, 2> splat_tiling{1, 1};
+        float weight_gain = -1;     // H_VBLND: c4.x of the vertex-colour weight
         if (options.render_data) {
           if (s.material_index < model.materials.size()) {
             const fh1::RmbMaterial& m = model.materials[s.material_index];
@@ -295,31 +298,55 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             mm.far = far;
             mm.effect = model.effects[m.effect];
             mm.blend = effect_blend(mm.effect);
-            const int32_t slot0 = m.slots.empty() ? -2 : m.slots[0];
-            if (slot0 >= 0 && texture_list && size_t(slot0) < texture_list->size()) {
-              const uint32_t record = (*texture_list)[size_t(slot0)];
+            // A slot's texture record when it has a file (types 4 and 0).
+            auto slot_record = [&](size_t slot) {
+              const int32_t v = slot < m.slots.size() ? m.slots[slot] : -2;
+              if (v < 0 || !texture_list || size_t(v) >= texture_list->size()) return kNoTexture;
+              const uint32_t record = (*texture_list)[size_t(v)];
               if (record < impl_->table.textures.size() &&
                   (impl_->table.textures[record].type == fh1::kPvsTextureBix ||
                    impl_->table.textures[record].type == fh1::kPvsTextureCaff))
-                mm.albedo = record;
-            }
+                return record;
+              return kNoTexture;
+            };
+            mm.albedo = slot_record(0);
             if (mm.effect.rfind("LAKE", 0) == 0) mm.albedo = kNoTexture;  // slot 0 is a cube map there
+            // Terrain layers (WORLD-MATERIALS, Terrain shading): pixel
+            // constants 0 and 1 are the tilings, 4's x the vertex weight's
+            // gain; Blend_B in slot 1, Splat in slot 2.
+            auto constant = [&](size_t i) {
+              return i < m.pixel_constants.size() ? m.pixel_constants[i] : std::array<float, 4>{1, 1, 1, 1};
+            };
+            const bool vblend = mm.effect.rfind("H_VBLND", 0) == 0;
+            const bool decal = mm.effect.rfind("H_VBLND_DECAL", 0) == 0;
+            const bool splat = mm.effect.rfind("H_BLND2", 0) == 0 || mm.effect.rfind("H_BLND3", 0) == 0;
+            if (vblend) weight_gain = constant(4)[0];
+            if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
+            if (decal) mm.layers = Layers::kVertexFade;
+            if (vblend && !decal) {
+              mm.layers = Layers::kVertexBlend;
+              mm.layer_b = slot_record(1);
+            } else if (splat) {
+              mm.layers = Layers::kSplat;
+              mm.layer_b = slot_record(1);
+              mm.splat = slot_record(2);
+              splat_uv = 1;
+              splat_tiling = {constant(1)[2], constant(1)[3]};
+            }
             auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
             if (fresh) out.materials.push_back(mm);
             mat = it->second;
             layout = fh1::rmb_vertex_layout(mm.effect, o.stride);
             if (mm.effect.ends_with("_LM") || mm.effect.find("_AO") != std::string::npos)
               lightmap = layout.last_texcoord();
+            if (splat_uv >= 0) lightmap = -1;  // uv1 carries the Splat UV instead
             if (first_submesh + si < model.uv_offset_scale.size()) uv = model.uv_offset_scale[first_submesh + si];
           } else {
             ++st.no_material;
-            auto [it, fresh] = material_index.emplace(std::make_tuple(std::string(), kNoTexture, uint8_t(far)),
-                                                      uint32_t(out.materials.size()));
-            if (fresh) {
-              MeshMaterial none;
-              none.far = far;
-              out.materials.push_back(none);
-            }
+            MeshMaterial none;
+            none.far = far;
+            auto [it, fresh] = material_index.emplace(none.key(), uint32_t(out.materials.size()));
+            if (fresh) out.materials.push_back(none);
             mat = it->second;
           }
         }
@@ -345,9 +372,22 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             return std::array<float, 2>{uv[0] + uv[2] * t[0], uv[1] + uv[3] * t[1]};
           };
           out.uv0.push_back(texcoord(0));
-          out.uv1.push_back(texcoord(lightmap));
-          out.colours.push_back(layout.colour >= 0 ? fh1::rmb_colour(v + layout.colour)
-                                                   : std::array<uint8_t, 4>{255, 255, 255, 255});
+          if (splat_uv >= 0) {
+            const auto s = texcoord(splat_uv);
+            out.uv1.push_back({s[0] * splat_tiling[0], s[1] * splat_tiling[1]});
+          } else {
+            out.uv1.push_back(texcoord(lightmap));
+          }
+          auto c = layout.colour >= 0 ? fh1::rmb_colour(v + layout.colour)
+                                      : std::array<uint8_t, 4>{255, 255, 255, 255};
+          if (weight_gain >= 0) {
+            // COLOR.x is the first stored byte (rmb_colour's A; ours, from
+            // the road-paint decals: c4.x is 3.5 to 10 there and only that
+            // byte leaves them visible, as the frame shows them).
+            const double w = std::clamp((c[3] / 255.0 - 0.5) * weight_gain + 0.5, 0.0, 1.0);
+            c[0] = uint8_t(std::lround(w * 255));
+          }
+          out.colours.push_back(c);
         };
         size_t added = 0;
         for (size_t t = 0; t + 2 < tri.size(); t += 3) {

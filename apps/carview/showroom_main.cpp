@@ -668,7 +668,8 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.uv1 = mesh.uv1;
     w.vertex_colours = mesh.colours;
     w.material = mesh.material;
-    for (const auto& m : mesh.materials) w.materials.push_back({m.albedo, uint8_t(m.blend), m.far});
+    for (const auto& m : mesh.materials)
+      w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(m.layers), m.layer_b, m.splat, m.tiling});
   }
   return w;
 }
@@ -682,30 +683,34 @@ struct WorldTextureLoader {
   // Decodes the textures `w` names that are new; a texture that does not
   // decode leaves its materials flat.
   void load(world::World& colorado, WorldTriangles& w) {
-    for (auto& m : w.materials) {
-      if (m.texture == kNoWorldTexture || done.count(m.texture)) continue;
-      if (failed.count(m.texture)) {
-        m.texture = kNoWorldTexture;
-        continue;
+    for (auto& m : w.materials)
+      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat}) load_one(colorado, w, *slot);
+  }
+  void load_one(world::World& colorado, WorldTriangles& w, uint32_t& record) {
+    {
+      if (record == kNoWorldTexture || done.count(record)) return;
+      if (failed.count(record)) {
+        record = kNoWorldTexture;
+        return;
       }
       fh1::WorldTexture t;
       std::string e;
-      if (!colorado.read_texture(m.texture, t, &e)) {
-        failed.insert(m.texture);
-        m.texture = kNoWorldTexture;
-        continue;
+      if (!colorado.read_texture(record, t, &e)) {
+        failed.insert(record);
+        record = kNoWorldTexture;
+        return;
       }
-      if (fh1::world_texture_has_cutout(t)) cutout.insert(m.texture);
+      if (fh1::world_texture_has_cutout(t)) cutout.insert(record);
       auto d = std::make_shared<WorldTextureData>();
-      d->record = m.texture;
+      d->record = record;
       d->srgb = t.format.gamma;
       char name[40];
-      std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[m.texture].id);
+      std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[record].id);
       d->texture.name = name;
       d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
       d->texture.swizzle = t.blocks.swizzle;
       for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
-      done.insert(m.texture);
+      done.insert(record);
       w.textures.push_back(std::move(d));
       ++decoded;
     }
@@ -1127,9 +1132,21 @@ int run_drive(int argc, char** argv) {
           for (auto& [m, v] : spans) {
             std::sort(v.begin(), v.end());
             const auto& mm = mesh.materials[m];
-            std::printf("  material %u %s texture %u blend %d cut-out %d: %zu triangles, UV per metre %.4g\n", m,
-                        mm.effect.c_str(), mm.albedo, int(mm.blend), int(texture_loader.cutout.count(mm.albedo)),
-                        v.size(), v[v.size() / 2]);
+            double sum[4] = {};
+            size_t corners = 0;
+            for (size_t t = 0; t < mesh.material.size(); ++t)
+              if (mesh.material[t] == m)
+                for (int k = 0; k < 3; ++k, ++corners)
+                  for (int c = 0; c < 4; ++c) sum[c] += mesh.colours[t * 3 + size_t(k)][size_t(c)];
+            if (corners)
+              std::printf("  material %u vertex colour mean %.0f %.0f %.0f %.0f\n", m, sum[0] / corners,
+                          sum[1] / corners, sum[2] / corners, sum[3] / corners);
+            auto id = [&](uint32_t r) { return r < colorado.textures().size() ? colorado.textures()[r].id : 0u; };
+            std::printf("  material %u %s texture %u (_0x%08X) layers %d B _0x%08X splat _0x%08X tiling %.3g %.3g "
+                        "%.3g %.3g far %d blend %d cut-out %d: %zu triangles, UV per metre %.4g\n",
+                        m, mm.effect.c_str(), mm.albedo, id(mm.albedo), int(mm.layers), id(mm.layer_b), id(mm.splat),
+                        mm.tiling[0], mm.tiling[1], mm.tiling[2], mm.tiling[3], int(mm.far), int(mm.blend),
+                        int(texture_loader.cutout.count(mm.albedo)), v.size(), v[v.size() / 2]);
           }
         }
       }
