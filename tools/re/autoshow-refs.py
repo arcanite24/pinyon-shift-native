@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -53,9 +54,12 @@ A, B, RIGHT = "1000", "2000", "0008"
 CAROUSEL_AT = 2160      # first make press (the carousel is up by 2100)
 STEP = 30               # frames between carousel presses
 LIST_WAIT = 300         # A on a make to the car list
-REF_DELAY = 390         # A on a car to the reference frame (pilot)
-BACK_AT = 450           # A on a car to B (still in the standard view)
-BACK_WAIT = 240         # B to the car list again
+REF_DELAY = 420         # A on a car to the reference frame, mid standard view:
+                        # the view holds from about 200 to 640 frames after A,
+                        # then the UI hides and the beauty camera cuts begin
+BACK_AT = 480           # A on a car to B; B is ignored in the intro and only
+                        # restores the UI in the beauty camera
+BACK_WAIT = 300         # B to the car list again
 
 
 class Route:
@@ -109,7 +113,7 @@ def make_route(makes: list[tuple[int, list[dict]]], dump_dir: Path) -> tuple[str
             r.press(a + BACK_AT, B, 12)
             t = a + BACK_AT + BACK_WAIT
             plan.append({"car_id": cid, "media_name": car["media_name"], "make_index": make_index,
-                         "list_index": car["autoshow_list_index"], "a_frame": a,
+                         "list_index": car["autoshow_list_index"], "a_frame": a, "after_a": REF_DELAY,
                          "dump": str(dump), "capture": f"{cid}-ref"})
         r.press(t, B, 12)           # car list back to the carousel
         t += BACK_WAIT
@@ -146,10 +150,13 @@ def cmd_routes(args) -> int:
     cars = [c for c in data["cars"] if c["screen"] == "autoshow"]
     if args.unicorns:
         cars = with_unicorns(data["cars"])
+    if args.only:
+        only = {int(i) for i in args.only.split(",")}
+        cars = [c for c in cars if c["id"] in only]
     by_make: dict[int, list[dict]] = {}
     for car in cars:
         by_make.setdefault(car["autoshow_make_index"], []).append(car)
-    wanted = sorted(by_make) if not args.makes else [int(m) for m in args.makes.split(",")]
+    wanted = sorted(by_make) if not args.makes else [int(m) for m in args.makes.split(",") if int(m) in by_make]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     groups, group = [], []
@@ -233,7 +240,7 @@ def replay_one(dump: Path, skip: str, out: Path, work: Path, log: bool) -> tuple
         arguments.append("--game-argument=--fh1_debug_log_draws=true")
     process = subprocess.run(
         [PYTHON, str(ROOT / "tools/replay-fh1-frame.py"), str(dump), "--state-root", str(SEED),
-         "--build-directory", str(BUILD), "--work", str(work), "--timeout", "240", *arguments],
+         "--build-directory", str(BUILD), "--work", str(work), "--timeout", "240", "--hidden", *arguments],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     if log:
         lines = [line for line in (work / "logs/runtime.log").read_text(
@@ -324,6 +331,17 @@ def diff_mask(a: bytes, b: bytes, threshold: int = MASK_THRESHOLD) -> bytes:
     return bytes(out)
 
 
+STANDARD_VIEW_DISTANCE = 6.58   # camera to car origin in the standard view, metres
+
+
+def camera_distance(m: dict) -> float:
+    """Distance from the camera to the car's origin, from the column-major view
+    and car_to_world matrices."""
+    v, c = m["view"], m["car_to_world"]
+    camera = [-sum(v[i * 4 + k] * v[12 + k] for k in range(3)) for i in range(3)]
+    return math.dist(camera, (c[12], c[13], c[14]))
+
+
 def cmd_build(args) -> int:
     """Reference JSON, image, car-only image and mask for each replayed dump."""
     import autoshow_dump as ad
@@ -354,6 +372,13 @@ def cmd_build(args) -> int:
         aligned = bool(logged) and all(n == d["executor"] for n, d in zip(numbers, a["draws"]))
         mask = diff_mask(car_only, empty[2])
         cid = car["id"]
+        m = ad.matrices(a, width, height)
+        distance = camera_distance(m)
+        if abs(distance - STANDARD_VIEW_DISTANCE) > 0.5:
+            # The intro and beauty cameras sit closer; only the standard view is a reference.
+            print(cid, car["media_name"], f"REJECT camera {distance:.2f} m from the car, "
+                  "not the standard view", flush=True)
+            continue
         _ppm.write_png(refs / f"{cid}.png", width, height, image)
         _ppm.write_png(refs / f"{cid}.car.png", width, height, car_only)
         _ppm.write_png(refs / f"{cid}.mask.png", width, height, mask, channels=1)
@@ -361,7 +386,6 @@ def cmd_build(args) -> int:
         source = car["row_origin"]
         if source == "dlc":
             source = "dlc:" + car["row_packages"][0]
-        m = ad.matrices(a, width, height)
         covered = sum(1 for v in mask if v)
         xs = [i % width for i, v in enumerate(mask) if v]
         ys = [i // width for i, v in enumerate(mask) if v]
@@ -372,7 +396,7 @@ def cmd_build(args) -> int:
             "files": car["files"][0]["path"],
             "image": f"{cid}.png", "image_car_only": f"{cid}.car.png", "mask": f"{cid}.mask.png",
             "width": width, "height": height,
-            "frame": {"after_a": REF_DELAY, "dump_swap": dump_swap(dump)},
+            "frame": {"after_a": entry.get("after_a", 390), "dump_swap": dump_swap(dump)},
             "clip_from_car": m["clip_from_car"], "view": m["view"], "proj": m["proj"],
             "car_to_world": m["car_to_world"], "near": m["near"], "half_pixel_removed": True,
             "paint_rgb": rgb, "paint_metallic": metallic,
@@ -381,7 +405,7 @@ def cmd_build(args) -> int:
                        "ui_draws_left_out": len(a["ui"]), "draw_numbers_match_replay_log": aligned,
                        "empty_frames_agree": empty_agree, "mask_threshold": MASK_THRESHOLD,
                        "viewport": a["viewport"], "z_viewport": a["zviewport"],
-                       "mask_pixels": covered,
+                       "mask_pixels": covered, "camera_distance": round(distance, 3),
                        "mask_box": [min(xs), min(ys), max(xs), max(ys)] if xs else None},
         }
         (refs / f"{cid}.json").write_text(json.dumps(reference, indent=1) + "\n",
@@ -409,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--unicorns", action="store_true",
                    help="route the unicorn rows only, for a seed whose database clears IsUnicorn")
     p.add_argument("--prefix", default="m1refs")
+    p.add_argument("--only", help="comma-separated car ids: route just these cars")
     p.set_defaults(func=cmd_routes)
     p = sub.add_parser("prepare")
     p.add_argument("plan", nargs="+")
