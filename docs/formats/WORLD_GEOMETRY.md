@@ -1,7 +1,8 @@
 # World geometry: Colorado render models
 
 Status: RI-0.4 probe, RF-7 placement search, RI-0.4 depth check and
-object table, specification role, 2026-11-19. Our own reading of
+object table, specification role, 2026-11-19; vertex, materials and
+textures in [WORLD_MATERIALS.md](WORLD_MATERIALS.md) (2026-11-20). Our own reading of
 the player's files and of one frame dump; no disassembly, decompiled
 code or game data is reproduced here ([LEGAL.md](../LEGAL.md)). The
 reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
@@ -76,8 +77,8 @@ model is a member number in the [object table](#object-table).
 | Members | Count (names) | What they are | Confidence | How |
 | --- | --- | --- | --- | --- |
 | `coloradoout.NNNNN.rmb.bin` | 14,291 | render models (this page) | confirmed | layout parse of every member, frame-dump match |
-| `_0xXXXXXXXX.bix`, `_0xXXXXXXXX_B.bix` | 5,234 each | textures: `BIX1` header with width, height, level count and a GPU format word, then block-compressed texels; the `_B` twin has no header and a power-of-two size | probable | header fields against payload sizes; texel blocks recognised |
-| `_0xXXXXXXXX.bin` | 2,966 | texture containers: a `CAFF` header with a version string, a `.data` and a `.gpu` section, the type string `texture` and a source path under a `textures` folder | probable | headers and strings |
+| `_0xXXXXXXXX.bix`, `_0xXXXXXXXX_B.bix` | 5,234 each | textures: `BIX1` header with width, height, level count and a GPU format word, then the mip chain; the `_B` twin is the base level ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#texture-payloads)) | confirmed | every pair fits the tiled layout to the byte and decodes; the frame binds their bytes |
+| `_0xXXXXXXXX.bin` | 2,966 | texture containers: a `CAFF` header with a version string, a `.data` section (format, size, levels) and a `.gpu` section (the texels) | confirmed (2,962 decoded) | headers, layout sizes, the frame's bindings |
 | `_0xXXXXXXXX.bundle` | 146 | block-compressed texel payloads behind a small header (texture arrays, perhaps lightmaps; guess) | guess | payload look |
 | `__R00GNNNNN.pgeo` | 7,970 | "procedural geometry" tiles (`OEGP` magic) of seven kinds by a header word (2-8); kind 7 (2,031 tiles) places models: 12,044 model records and 174,803 instance matrices. No vertex data | confirmed (kind 7 layout); probable (kind word); guess (other kinds) | full parse of every kind-7 tile to its stated size; exact match to drawn placements; runtime snapshot; class names in the executable |
 | `*__shdata__<x>_<z>.sh` | 1,421 | lighting data per X/Z cell, by its name (spherical harmonics is a guess from `shdata`) | guess | names |
@@ -135,13 +136,13 @@ model share its space.
 
 **Vertex contents.** Bytes 0-11 are the position, three f32 (confirmed:
 the positions, projected with each draw's matrix, land on the drawn
-surfaces in the capture; see Evidence). The other 4 to 24 bytes (normal,
-tangent frame, texture coordinates, colour; by stride) are **not
-decoded**. They are not the car format: carbin positions are four 16-bit
-integers (direction and length), scenery positions are plain floats. The
-next step is to read the vertex fetch instructions of the vertex shader
-each tied draw binds (the dump holds the shaders), which gives every
-element's offset and format per stride.
+surfaces in the capture; see Evidence). They are not the car format:
+carbin positions are four 16-bit integers (direction and length),
+scenery positions are plain floats. The rest of the vertex (normal,
+texture coordinates, tangent, colour) is the material's effect's vertex
+declaration packed in order, decoded in
+[WORLD_MATERIALS.md](WORLD_MATERIALS.md#vertex-layout) (confirmed over
+every submesh and against the frame's vertex fetches).
 
 ### Submesh (one index list, one material)
 
@@ -167,13 +168,13 @@ triangle list, so that case is a guess and does not arise.
 
 ### After the objects
 
-Material records (a count, then per material a block of floats that
-looks like shader parameters), a list of shader paths
-(`shaders\track\h_road_diff3_norm1_noise_ao_lm.fx` and similar), then
-what looks like compiled shader microcode. 71.1 % of the render-model
-bytes are geometry (up to the last index list); the remaining 28.9 % are
-these records, not decoded. They matter for materials, not for
-positions.
+Material records, a list of shader (effect) paths
+(`shaders\track\h_road_diff3_norm1_noise_ao_lm.fx` and similar), then a
+command section of pre-built GPU register writes that holds, among
+others, each submesh's texture-coordinate scale. All three are decoded
+in [WORLD_MATERIALS.md](WORLD_MATERIALS.md#materials). 71.1 % of the
+render-model bytes are geometry (up to the last index list); the
+remaining 28.9 % are these records.
 
 ## Coordinate frames and draws
 
@@ -393,8 +394,8 @@ one 18-byte record per object ID. The first big-endian u16 of a record
 is the member number of the object's render model, `coloradoout.NNNNN`.
 The other fields (a signed u16, two flag-like u16s, a u32 that is 0 or
 an index, a u32 that is −1 or a small count, a u16 that is usually all
-ones) are not decoded. The file goes on with the clustered boxes
-(see [Ruled out](#ruled-out)).
+ones) are not decoded. The file goes on with one texture list per
+render model ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#from-a-texture-slot-to-a-file)).
 
 For an object with LODs, the table names one member of the LOD set, not
 always LOD00. The set is the run of consecutive members whose first mesh
@@ -430,14 +431,16 @@ no render model in `bin.zip` (found by the implementation's reader and
 reproduced here; why is not known).
 
 The 28-byte records before the shader names follow a u32 count of
-19,613. A record is a u32 that increases with gaps, the record number,
-two f32 (1.0 in every record), ten zero bytes, a flag byte and a type
-byte. The type counts match the texture members exactly (5,234 of type
-4, the `.bix` pairs; 2,965 of type 0, the `_0x*.bin` containers; 11,409
-of type 1; 5 of type 3), so this is
-presumably the texture and material resource list; how an entry names a
-file is not found (neither index is a filename-map position or a
-texture's hex name beyond chance).
+19,613. A record is a texture ID, the record number, two f32 (1.0 in
+every record), ten zero bytes, a flag byte and a type byte. The type
+counts match the texture members exactly (5,234 of type 4, the `.bix`
+pairs; 2,965 of type 0, the `_0x*.bin` containers; 11,409 of type 1; 5
+of type 3), and the texture ID is the member's hex name: `_0x<ID>.bix`
+or `_0x<ID>.bin` (confirmed: the textures a frame binds are the files
+the records name). Corrected 2026-11-20: this page said earlier that no
+link to file names was found. The materials reach these records through
+per-model lists; see
+[WORLD_MATERIALS.md](WORLD_MATERIALS.md#from-a-texture-slot-to-a-file).
 
 ### Ruled out
 
@@ -450,8 +453,10 @@ texture's hex name beyond chance).
   object IDs, and a scan of the loose track files for other ID-indexed
   tables at common strides found only false hits. They are object IDs
   (above).
-- The roughly 14,560 oriented boxes with ID lists in `Colorado_00.pvs`
-  (from about 0x199000) are clusters, not instances.
+- The 14,560 oriented boxes with ID lists in `Colorado_00.pvs` (from
+  about 0x199000) are not instances. They are not clusters either, as
+  first thought: each is one render model's list of effects and texture
+  records ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#from-a-texture-slot-to-a-file)).
 - The 40-byte `.pgeo` records are packed bitfields, not positions.
 - The file-open log of the free-roam route showed only `colorado_00.pvs`
   and `bin.zip` opened for the track during the logged span (the
@@ -666,8 +671,8 @@ ambiguous; `dc76af7` reads the halves by columns and removes it.
    around the position and the LOD each object draws (question 3).
    `CollObjs.xml`'s `GraphicsName="#N"` is the object's own index, not a
    render-model number.
-2. **Vertex attributes** after the position: read the bound vertex
-   shaders' fetch instructions in the dump, per stride.
+2. **Vertex attributes** after the position (resolved 2026-11-20): see
+   [WORLD_MATERIALS.md](WORLD_MATERIALS.md#vertex-layout).
 3. **Which LOD is drawn.** Models come as `_LOD00`/`_LOD01`/`_LOD02`,
    `_NoLOD`, `_MIDDIST`, `UberLOD`, `_CUBE`; the choice is the PVS and
    streaming work.
