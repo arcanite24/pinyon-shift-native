@@ -650,9 +650,6 @@ the interim noted here until a later polish sweep.
   drive straight into a rail; headless runs put it back.
 - **The F12 screenshot.** F12 saves the pose but not an image yet (the
   window has no swapchain read-back).
-- **The UHD 620 low preset.** GPU p95 is 16.4 ms against 11.8 ms before
-  the wider gathers (models 900 m, props 600 m). A low preset with
-  smaller gather radii would win it back.
 
 ## Licence
 

@@ -967,6 +967,9 @@ constexpr double kTreeRadius = 2000;
 // lag behind it, the props' LOD distance and cross-fade bands, and how long
 // a regathered scenery dithers in over the old one.
 constexpr double kModelRadius = 900, kPropRadius = 600, kRegather = 200, kSwapLag = 50;
+// The low preset's gathers (ours): the M2 UHD 620 gate (GPU p95 under
+// 16 ms at 1280x720); props still fade out before every gather's edge.
+constexpr double kLowModelRadius = 600, kLowPropRadius = 500;
 constexpr double kPropLod0 = 80, kPropLodBand = 20, kPropEdgeBand = 40, kSwapFadeSeconds = 0.5;
 // The scene's scale into the filmic curve (ours: the track's filmicTone
 // exposure, 0.31 on Colorado, applies to a scene the game lights more
@@ -1506,12 +1509,13 @@ int run_drive(int argc, char** argv) {
             // props fade out by kPropRadius - step - lag, where every gather
             // still holds them, and LOD00 is gathered to the LOD band's end
             // plus that much.
-            gather_options.radius = kModelRadius;
-            gather_options.prop_radius = kPropRadius;
+            const double prop_radius = low_preset ? kLowPropRadius : kPropRadius;
+            gather_options.radius = low_preset ? kLowModelRadius : kModelRadius;
+            gather_options.prop_radius = prop_radius;
             gather_options.prop_near_radius = kPropLod0 + kPropLodBand + kRegather + kSwapLag;
             showroom.set_world_fade(float(kPropLod0), float(kPropLodBand),
-                                    float(kPropRadius - kRegather - kSwapLag - kPropEdgeBand),
-                                    float(kPropRadius - kRegather - kSwapLag));
+                                    float(prop_radius - kRegather - kSwapLag - kPropEdgeBand),
+                                    float(prop_radius - kRegather - kSwapLag));
             // SHIFT_WORLD_FADE="lod band start end" overrides them (checks).
             if (const char* e = std::getenv("SHIFT_WORLD_FADE")) {
               float f[4];
