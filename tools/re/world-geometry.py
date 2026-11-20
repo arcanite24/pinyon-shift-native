@@ -1700,7 +1700,8 @@ def cmd_prop_selection(args) -> int:
 
     match = Path(args.match).read_text(encoding="utf-8")
     hits = re.findall(r"(__R00Z\d+\.pvsz) \+0x([0-9a-f]+)", match)
-    groups = {(tile, int(g)) for tile, g in re.findall(r"(__R00G\d+\.pgeo) group (\d+)", match)}
+    placed = [tuple(map(float, xyz)) for xyz in
+              re.findall(r"at ([-\d.]+) ([-\d.]+) ([-\d.]+): __R00G\d+\.pgeo group", match)]
     cache = {}
 
     def zone(name):
@@ -1749,14 +1750,18 @@ def cmd_prop_selection(args) -> int:
         tile = read_pgeo(path)
         if tile is None or tile.kind != PGEO_MODELS:
             continue
-        for g, group in enumerate(tile.groups):
-            n = sum(1 for i in group.instances
-                    if on_screen(i.file_translation) and near(i.file_translation))
-            if n:
-                label = "always" if tile.tags is None else ("route 0" if tile.free_roam else "events")
-                kinds[label, (os.path.basename(path), g) in groups] += n
-    for (label, was_drawn), n in sorted(kinds.items()):
-        print(f"kind-7 instances on screen, {label} tiles, group {'drawn' if was_drawn else 'not drawn'}: {n}")
+        label = "always" if tile.tags is None else ("route 0" if tile.free_roam else "events")
+        for group in tile.groups:
+            for i in group.instances:
+                p = i.file_translation
+                if on_screen(p) and near(p):
+                    was_drawn = any(math.dist(p, q) < 0.3 for q in placed)
+                    inside = math.dist(p, camera) <= group.distances[0] + 0.1
+                    kinds[label, inside, was_drawn] += 1
+    for (label, inside, was_drawn), n in sorted(kinds.items()):
+        print(f"kind-7 instances on screen, {label} tiles, "
+              f"{'within' if inside else 'beyond'} the group's first distance, "
+              f"{'drawn' if was_drawn else 'not drawn'}: {n}")
     return 0
 
 

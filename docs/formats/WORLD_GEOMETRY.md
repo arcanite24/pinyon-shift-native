@@ -478,9 +478,13 @@ Every placement has one of three states:
 Evidence that the bytes are route numbers (probable): of the 83 distinct
 values in `.pvsz` lists, 81 are numbers of the 243 `TrackRoute` files (15
 and 203 have no file); of the 110 in tile lists, 109 (15 again). The
-grandstand, marquees, tent and flags at the camera carry routes 134 and
-210, and those two routes' first start locations are 18 m and 20 m from
-the camera; the `e3_reset_*` marker objects carry only route 170. No code
+base rate is high, since 168 of the 256 byte values are route numbers
+(55 of 83 expected by chance). The grandstand, marquees, tent and flags at
+the camera carry routes 134 and 210, and those two routes' first start
+locations are 18 m and 20 m from the camera. The gantry's routes, 157 and
+160, start 0.96 and 1.5 km away and have no stored transform within 380 m
+of it, so its link to them is not shown here. The `e3_reset_*` marker
+objects carry only route 170. No code
 was found that compares the list with a route, so the mechanism is
 inferred from the data.
 
@@ -488,9 +492,12 @@ inferred from the data.
 by the zone file the camera is in (the [PVS zones](#pvsz-zone-files)):
 the union of all zones adds shown spots the frame does not draw. Two
 zones list all 105 objects at the spots the frame drew, `__R00Z01063` and `__R00Z01093`; the rule is
-exact with the first, so it is presumably the camera's zone. How the
-camera position selects a zone (`PVSZLookup_00.dat`, 1,434 pairs of a
-key and a zone number) is not decoded.
+exact with the first, so it is presumably the camera's zone: it was
+picked because it fits, not found from the camera position. How the
+camera position selects a zone is not decoded. It is not
+`PVSZLookup_00.dat`: its 1,434 pairs map each zone file's index in
+`FilenameMap_00.dat` to the zone number (all 1,434 check), a name
+lookup rather than a spatial one.
 
 **Counts.** Placements whose origin projects inside the 1280 × 720
 reference image; a `.pvsz` spot (one position, one object per LOD level)
@@ -499,31 +506,36 @@ when any of its objects passes the rule:
 
 | Set | Spots | Drawn, shown | Not drawn, hidden | Drawn, hidden | Not drawn, shown |
 | --- | --- | --- | --- | --- | --- |
-| zone `01063`, within 470 m | 206 | 70 | 136 | 0 | 0 |
 | zone `01063`, any distance | 325 | 97 | 215 | 0 | 13 |
+| zone `01063`, within 470 m | 206 | 70 | 136 | 0 | 0 |
 | zone `01093`, within 470 m | 246 | 70 | 147 | 0 | 29 |
 | every zone, within 470 m | 282 | 70 | 159 | 0 | 53 |
 
-All four rows count the marker below as hidden. No drawn spot is hidden
-by the rule. The 13 shown but not drawn beyond 470 m (buildings, a barn,
+All four rows count the marker below as hidden (a guess, from one
+object). No drawn spot is hidden by the rule; the drawn set is the
+frame's 130 distinct main-view placements, the same number when all
+2,393 local-space models are matched (`match-all.txt`). The 13 shown but not drawn beyond 470 m (buildings, a barn,
 road signs, two flyer signs, festival speakers and floodlights, a bin, a
 telegraph pole) are not explained: the record's third distance is
 not a draw limit, since 48 drawn objects lie beyond it (fences at 213 m
 with 200, signs at 629 m with 150), and the top bit of the zone's object
-ID does not separate them either (records within 470 m in zone `01063`: drawn, 64 clear and 10 set; not
-drawn, 124 clear and 40 set).
+ID is not the event switch (records within 470 m in zone `01063`:
+drawn spots, 64 clear and 10 set; other records, 124 clear and 40 set).
+The drawn count includes every LOD sibling at a drawn spot, so whether
+the bit picks the LOD level is not tested.
 
 Kind-7 instances on screen within 470 m: 467 in six event tiles (none
-drawn; 121 of them the concrete barriers of
+drawn, 38 of them within their group's first distance; 121 of them the concrete barriers of
 `models_proc_clrd_barrier_reds_004_005_006_shared_0`, routes 134, 157,
 160 and 210); 15 in two `[freeroam]` tree tiles; 444 in untagged tiles,
-of which the frame drew 41 (the chain-link fence and the pine). The rule
-hides the event tiles, but it does not say which instances of the shown
-tiles are drawn: about 80 shrub and tree instances inside their group's
-first distance are not tied to a draw, while 10 fence and 5 pine
-instances beyond it are. The first group distance is therefore not a
-cut-off either; vegetation (and whether its draws escape the tie) is
-open.
+of which the frame drew 23 (22 chain-link fence panels and the pine).
+The rule hides the event tiles. Within the shown tiles, the group's first
+distance behaves as a cut-off, matched per instance: all 23 drawn
+instances lie within it (the farthest fence panel at 80.0 m, its group's
+first distance being 80; the pine at 185 m with 220, drawn as LOD01), and
+none of the 336 instances beyond it is drawn. Inside it, 85 shrub and
+tree instances are not tied to a draw; whether they are drawn another
+way (instanced vegetation that escapes the tie) is open.
 
 **The three items in the engine's frame**, all `.pvsz` objects at the
 event start of `FR06` (the frame's "The Gauntlet" sign-up) and all hidden
