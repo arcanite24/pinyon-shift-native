@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "cars/bake.h"
+#include "cars/bake_format.h"
 #include "cars/sources.h"
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
@@ -939,7 +941,65 @@ void test_dlc_folder() {
   fs::remove_all(root, ec);
 }
 
+// The baked format: a car bake encodes, decodes and encodes to the same
+// bytes, and materials are classed from technique names and draw lists.
+void test_bake_format() {
+  using namespace cars::bake;
+  Bake b;
+  b.kind = Kind::kCar;
+  b.car.media_name = "Test_Car";
+  b.car.car_id = 7;
+  b.car.colours.push_back({7001, 1, true, 0x123456, "nodamage_lod0.xds", "nodamage.xds"});
+  b.car.wheel_centres[0] = {-0.8f, 0.3f, -1.2f};
+  b.car.notes = {"a note"};
+  Model m;
+  m.name = "test_car_lod0.carbin";
+  m.role = Role::kLod0;
+  Part p;
+  p.name = "body";
+  p.lod0_vertices.push_back({{1, 2, 3}, {0, 0, 0, 32767}, {1, 2}, {3, 4}, {100, 1, 2, 3}});
+  Subsection s;
+  s.technique = "body";
+  s.material = MaterialClass::kPaint;
+  s.slots = {"@atlas", ""};
+  s.indices = {0, 0, 0};
+  p.subsections.push_back(s);
+  m.parts.push_back(p);
+  b.models.push_back(m);
+  b.textures.push_back({"t.xds", TextureFormat::kBc3, {0, 1, 2, 3}, {{4, 4, std::vector<uint8_t>(16, 9)}}});
+  b.livery.push_back({"Front", true, -1, 1, -2, 2, 0, 0, 1, 1, 0, "-x", "+y"});
+  const auto bytes = encode(b);
+  Bake back;
+  std::string error;
+  CHECK(decode(bytes, back, &error));
+  CHECK(encode(back) == bytes);
+  CHECK(back.car.colours.size() == 1 && back.car.colours[0].rgb == 0x123456);
+  auto truncated = bytes;
+  truncated.pop_back();
+  CHECK(!decode(truncated, back, &error));
+
+  CHECK(cars::classify("body", false, Role::kLod0) == MaterialClass::kPaint);
+  CHECK(cars::classify("window", true, Role::kLod0) == MaterialClass::kGlass);
+  CHECK(cars::classify("blur_rim", true, Role::kWheel) == MaterialClass::kHidden);
+  CHECK(cars::classify("hub", false, Role::kWheel) == MaterialClass::kRim);
+  CHECK(cars::classify("hub", false, Role::kRotor) == MaterialClass::kOpaque);
+  CHECK(cars::classify("tail_light_lod0", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("leather", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("plastic2", false, Role::kLod0) == MaterialClass::kOpaque);
+
+  // TGA: a 2 x 2 RLE image stored bottom row first.
+  const std::vector<uint8_t> tga = {0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 8,
+                                    0x81, 1, 2, 3, 4,         // bottom row: two of (b1 g2 r3 a4)
+                                    0x01, 5, 6, 7, 8, 9, 10, 11, 12};  // top row: raw pair
+  uint32_t w = 0, h = 0;
+  std::vector<uint8_t> rgba;
+  CHECK(cars::decode_tga(tga, w, h, rgba, &error));
+  CHECK(w == 2 && h == 2 && rgba.size() == 16);
+  CHECK(rgba[0] == 7 && rgba[3] == 8 && rgba[8] == 3 && rgba[11] == 4);
+}
+
 int main() {
+  test_bake_format();
   test_dlc_folder();
   test_xds_layout();
   test_inflate();
