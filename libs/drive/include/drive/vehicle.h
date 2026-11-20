@@ -1,11 +1,11 @@
 // The engine's own car physics for M3 (REIMPLEMENTATION_PLAN M3).
 //
-// One rigid body with four raycast wheels, stepped at a fixed 1/120 s (the
-// step RI-0.5 found deterministic in the oracle) with substeps. Everything
-// here is our own placeholder model: the parameters and their defaults are
-// the engine's choices until CAR_PHYSICS.md (FORMAT-CAR-PHYSICS, being
-// written) gives the game's, and the wheel geometry comes from the baked
-// car (FORMAT-CARS, Wheels).
+// One rigid body with four raycast wheels, stepped at a fixed 1/120 s split
+// into n = ceil(dt x CarPhysicsUpdateHz) substeps (SPEC-CAR-PHYSICS, Step
+// and rates: 3 at 1/120 s). The parameters come from the car's database
+// rows (from_physics.h, SPEC-CAR-PHYSICS items 4 to 6); the wheel geometry
+// from the baked car (FORMAT-CARS, Wheels). A CarParams left at its
+// defaults is a synthetic car of the engine's own (no game data), for tests.
 //
 // Frame: the game's body frame, +X right, +Y up, +Z forward (FORMAT-CARS,
 // the model-to-body pose mirrors the model's z). The world uses the same
@@ -39,8 +39,7 @@ Vec3 rotate_inverse(const Quat& q, const Vec3& v);
 
 // The ground the wheels stand on. raycast returns the distance along dir
 // (unit) from origin to the first hit within max_distance, with the
-// surface normal and a grip factor (1 for tarmac until COLLISION.md gives
-// surfaces).
+// surface normal and a grip factor (the surface's FrictionScale).
 struct Hit {
   double distance = 0;
   Vec3 normal{0, 1, 0};
@@ -62,77 +61,146 @@ class FlatGround : public Ground {
   double height_;
 };
 
-// Wheels in the order LF, RF, LR, RR.
+// Wheels in the order LF, RF, LR, RR. Axle 0 is the front, 1 the rear.
 inline constexpr int kWheels = 4;
+inline int axle_of(int wheel) { return wheel < 2 ? 0 : 1; }
 
-// Everything the model needs about one car. Geometry is filled from the
-// bake (from_bake.h); the rest are the engine's placeholders, to be
-// replaced from CAR_PHYSICS.md.
+// SPEC-CAR-PHYSICS, Step and rates: the substeps for an outer step dt
+// (clamped to 0.1 s): ceil(dt x hz), at least 1.
+int substeps_for(double dt, double hz);
+
+// A friction curve (List_TireFrictionCurve): values at evenly spaced slips
+// from 0 to max_slip (slip ratio, or slip angle in degrees).
+struct FrictionCurve {
+  double max_slip = 0;
+  std::vector<double> values;
+  // The slip of the largest sample (the later one on a tie).
+  double peak_slip() const;
+  // The value at `slip` on the curve's axis stretched by `stretch`.
+  double at(double slip, double stretch) const;
+};
+// List_TireFrictionMultiCurve: the curve at a light and a heavy load (kgf),
+// blended linearly by load between them.
+struct TyreCurves {
+  FrictionCurve light, heavy;
+  double light_load_kgf = 10.1972, heavy_load_kgf = 1019.72, load_clamp_kgf = 5000;
+  double blend(double load_kgf) const;  // 0 at the light load, 1 at the heavy
+  double peak_slip(double load_kgf, double stretch) const;
+  double value(double slip, double load_kgf, double stretch) const;
+};
+// The engine's own stand-in curve for the synthetic car: rises to 1 at
+// `peak`, falls to `tail` at the end (no game data).
+FrictionCurve synthetic_curve(double max_slip, double peak, double tail);
+
+// Everything the model needs about one car. See from_physics.h for where
+// each comes from on a real car; the defaults are the synthetic car's.
 struct CarParams {
   // Geometry (body frame, at rest on flat ground).
   std::array<Vec3, kWheels> wheel_centres{};  // y = the tyre's outer radius
   std::array<double, kWheels> tyre_radius{};  // outer radius, m
-  double wheel_inertia = 1.2;                 // kg m^2 per wheel (placeholder)
 
-  // Body (placeholders).
-  double mass = 1400;   // kg
-  Vec3 centre_of_mass{0, 0.5, 0};  // body frame; z set to mid-wheelbase by from_bake
-  Vec3 inertia{0, 0, 0};           // principal moments about x, y, z; 0 = from mass and size
-  Vec3 size{1.8, 1.3, 4.3};        // box for the default inertia, m
-  // Body contacts (ours, placeholders until CAR_PHYSICS.md): 26 points on
-  // the box from the sill to the roof (corners, edge and face middles),
-  // each probed by a ray from the box's centre, are pushed out of whatever
-  // surface they pass (floor, wall, barrier, ceiling) along its normal by a
-  // stiff damped spring with friction. A car that rolls, lands on its body
-  // or meets a wall stays on the surface. The constants are per corner: the
-  // force per point is scaled by 8/26.
+  // Body.
+  double mass = 1400;               // kg
+  Vec3 centre_of_mass{0, 0.5, 0};   // body frame; from_bake puts z at mid-wheelbase
+  Vec3 inertia{0, 0, 0};            // principal moments about x, y, z; 0 = a box of `inertia_box`
+  Vec3 inertia_box{1.8, 1.3, 4.3};  // SPEC-CAR-PHYSICS: the mass as a solid box of these sides, m
+  Vec3 size{1.8, 1.3, 4.3};         // the body contacts' box, m (ours)
+  double gravity = 9.8;             // the spec's weight: 15.6 x 9.8
+  double airborne_gravity_scale = 1.15, per_tyre_off_gravity_scale = 1.05;
+  // Body contacts (ours, until the collision spec gives the car's shape):
+  // 26 points on the box from the sill to the roof (corners, edge and face
+  // middles), each probed by a ray from the box's centre, are pushed out of
+  // whatever surface they pass along its normal by a stiff damped spring
+  // with friction. The constants are per corner: the force per point is
+  // scaled by 8/26.
   double sill_height = 0.25;      // m above the ground at rest
   double body_stiffness = 150;    // N/m per kg of mass, per corner
   double body_damping = 12;       // N s/m per kg of mass, per corner
-  double body_friction = 0.6;     // COLLISION.md: the Car-row FrictionCoefficient later
+  double body_friction = 0.6;
 
-  // Suspension (placeholders): the wheel hangs `rest_length` below its
-  // hardpoint at rest; the spring is preloaded so the car rests exactly
-  // there on flat ground.
-  double rest_length = 0.3;   // m
-  double bump_travel = 0.12;  // m of compression available from rest
-  double droop_travel = 0.15; // m of extension available from rest
+  // Suspension per axle (0 front, 1 rear). The wheel rests where the bake
+  // stands it; the spring is preloaded to carry the static load there and
+  // reaches its free length `static load / rate` below.
+  double rest_length = 0.3;                  // m, hardpoint above the wheel centre (ours)
+  std::array<double, 2> spring_rate{60000, 50000};    // N/m
+  std::array<double, 2> bump_rate{4000, 3500};        // N s/m, compressing
+  std::array<double, 2> rebound_rate{6000, 5000};     // N s/m, extending
+  std::array<double, 2> damper_clamp{14000, 14000};   // N, the damper force's limit
+  std::array<double, 2> bump_travel{0.08, 0.08};      // m of compression from rest to the bump stop
+  std::array<double, 2> max_droop{0.5, 0.5};          // m, extension limit from rest
+  std::array<double, 2> bumpstop_rate{280000, 280000};  // N/m
+  std::array<double, 2> bumpstop_damping{2800, 2800};   // N s/m
+  std::array<double, 2> antiroll_rate{13000, 9000};     // N/m on the compression difference
+  std::array<double, 2> antiroll_damping{2800, 2800};   // N s/m
   // The suspension rays start this far above the hardpoints, so a wheel
-  // driven into rising ground (or below a step) still finds the surface
-  // and the bump stop lifts it, instead of the ray starting underground.
-  // Ours, for the stand-in ground. A wheel whose suspension points less
-  // than ~78 degrees from straight down finds no ground (rolled over).
+  // driven into rising ground still finds the surface (ours).
   double probe_height = 1.0;  // m
-  double frequency = 1.6;     // Hz, sets the spring rate per corner
-  double damping_ratio = 0.35;
 
-  // Tyres (placeholder: linear to a peak, then flat, on a friction circle).
-  double friction = 1.1;           // peak force / load
-  double peak_slip_ratio = 0.10;
-  double peak_slip_angle = 0.14;   // rad
-  double rolling_resistance = 0.012;
+  // Tyres (SPEC-CAR-PHYSICS, Tyre model).
+  TyreCurves longitudinal{synthetic_curve(1.1, 0.15, 0.85), synthetic_curve(1.1, 0.13, 0.85)};
+  TyreCurves lateral{synthetic_curve(49.5, 7.5, 0.85), synthetic_curve(49.5, 6.0, 0.85)};
+  std::array<double, 2> sidewall_stretch{1.2, 1.2};  // per axle
+  double lateral_peak_min_deg = 4, lateral_peak_max_deg = 18;
+  std::array<double, 2> long_scale{1, 1}, lat_scale{1, 1};  // the body's friction scales per axle
+  // Under drive: accel_scale0 at accel_speed0 m/s to accel_scale1 at accel_speed1, clamped.
+  double accel_scale0 = 1.2, accel_scale1 = 1.1, accel_speed0 = 5, accel_speed1 = 15;
+  double long_misc_scale = 1.01;   // the spec's unidentified constant
+  double lateral_fit = 0.915;      // the spec's measured lateral factor
+  // Rear lateral FixListing multiplier: `rear_fix_scale` faded in between
+  // normalised slips fix_slip0..1 and out by the steering input fix_steer0..1.
+  double rear_fix_scale = 1, fix_slip0 = 0.5, fix_slip1 = 1, fix_steer0 = 0.5, fix_steer1 = 1;
+  double slip_speed_floor = 1.0;   // m/s, v_min in the slips (ours)
+  double wheel_inertia = 1.6;      // kg m^2 per wheel
+  // EXPERIMENT (not in the spec): the tyre's braking torque back on the
+  // wheel x this, the body force unscaled. 1 = off.
+  double brake_reaction_scale = 1;
 
-  // Drivetrain (placeholders).
+  // Engine.
+  std::vector<double> torque_curve;     // normalised samples, sentinel removed; empty = synthetic
+  double torque_curve_max_rpm = 9000;   // rpm of the curve's last sample slot (n-1 spacing over the full row)
+  double torque_curve_slots = 0;        // NumTorqueValues - 1 (the spacing's divisor); 0 = values.size() - 1
+  double torque_scale = 380;            // N m at the curve's 1.0
+  double engine_braking = 120;          // N m at the redline with the throttle shut (ours, shape)
+  double idle_rpm = 800, redline_rpm = 7000;
+  double launch_rpm = 4000;             // the clutch bites from rest once the engine passes it
+  double engine_inertia = 0.2;          // kg m^2, engine + flywheel
+
+  // Drivetrain.
   enum class Layout { kRear, kFront, kAll } layout = Layout::kRear;
-  double peak_torque = 420;       // N m, flat from 1,500 rpm to 6,000 rpm
-  double idle_rpm = 900, redline_rpm = 7000;
+  double rear_split = 0.7;  // AWD torque share to the rear
   std::vector<double> gears{3.30, 2.13, 1.55, 1.21, 1.00, 0.82};
-  double reverse_gear = 3.4;
+  double reverse_gear = 3.4;  // magnitude
   double final_drive = 3.70;
-  double drivetrain_efficiency = 0.88;
-  double shift_up_rpm = 6600, shift_down_rpm = 2600;
-  double shift_time = 0.25;  // s without drive while shifting
+  double gearbox_inertia = 0.014, driveline_inertia = 0.004;  // kg m^2
+  double gear_shift_time = 0.16, clutch_in_time = 0.15, clutch_out_time = 0.3;  // s
+  double clutch_max_torque = 900;  // N m
+  double upshift_fraction = 0.96;  // of the redline
+  double downshift_brake_fraction = 0.79;  // braking: down when the lower gear sits under this x redline (ours)
 
-  // Brakes (placeholders).
-  double brake_torque = 3200;      // N m per front wheel at full brake
-  double brake_rear_share = 0.65;  // rear torque / front torque
-  double handbrake_torque = 2500;  // N m per rear wheel
+  // Brakes.
+  double front_brake_torque = 3500;  // N m per front wheel at full press
+  double rear_brake_torque = 3100;   // N m per rear wheel at full press
+  double handbrake_torque = 2500;    // N m per rear wheel
+  bool abs = true;
+  double abs_front_no_steer = 3.0, abs_front_full_steer = 0.5;
+  double abs_rear_no_steer = 2.5, abs_rear_full_steer = 2.0;
+  double abs_duration = 0.05;  // s
+  double abs_min_speed = 2.0;  // m/s: below it the ABS does not release (ours)
+  bool brake_opens_clutch = false;  // true: braking hard opens the automatic clutch (ours, off: the spec has the driveline in gear)
 
-  // Steering and aero (placeholders).
-  double max_steer = 0.61;          // rad at the front wheels (35 degrees)
-  double steer_speed_falloff = 25;  // m/s at which lock halves
-  double drag_area = 0.70;          // Cd x A, m^2
-  double air_density = 1.225;
+  // Input shaping (SPEC-CAR-PHYSICS, Throttle, brake and steering).
+  double throttle_rate = 5, brake_rate = 20, handbrake_rate = 12;  // full travels per second
+  double max_steer = 0.733;          // rad at the road wheels (42 degrees)
+  double steer_rate = 1.83;          // rad/s towards the target
+  double straighten_rate = 1.83;     // rad/s back towards centre
+  double steer_max_gees = 1.0;       // the lock narrows with speed to hold this (ours, from the column's name)
+  double steer_min_lock = 0.087;     // rad, the narrowest lock
+
+  // Resistance: F = drag_quadratic v^2 + drag_constant, against the motion
+  // (the spec's fit; the constant fades in over the first 1 m/s, ours).
+  double drag_quadratic = 0.21, drag_constant = 240;
+
+  double physics_hz = 359;  // PhysicsSettings.ini CarPhysicsUpdateHz
 };
 
 // Raw input, as the player gives it: steer -1 (left) to +1 (right),
@@ -149,6 +217,9 @@ struct WheelState {
   double spin = 0;          // rad, rolling forward is positive
   double omega = 0;         // rad/s
   double load = 0;          // N
+  double slip_ratio = 0;    // normalised (1 = the curve's peak), signed: negative locking
+  double slip_angle = 0;    // normalised, signed
+  double brake = 0;         // the brake fraction this wheel got (0 while the ABS releases it)
   bool contact = false;
   Vec3 centre{};            // body frame, rest centre moved by the travel
 };
@@ -156,7 +227,6 @@ struct WheelState {
 class Vehicle {
  public:
   static constexpr double kStep = 1.0 / 120.0;
-  static constexpr int kSubsteps = 10;
 
   explicit Vehicle(const CarParams& params);
 
@@ -169,42 +239,68 @@ class Vehicle {
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
+  Vec3 centre_of_mass() const { return pos_; }
   Quat orientation() const { return rot_; }
   Vec3 velocity() const { return vel_; }
   Vec3 angular_velocity() const { return ang_; }
   double speed() const;               // m/s along the body's forward axis
-  double rpm() const { return rpm_; }
+  double rpm() const;                 // engine speed
   int gear() const { return gear_; }  // -1 reverse, 0 neutral, 1..n
+  double clutch() const { return clutch_; }  // engagement 0..1
+  bool shifting() const { return phase_ != Phase::kNone; }
+  bool abs_active() const { return abs_flag_; }  // a wheel was released this step
+  int substeps() const { return substeps_; }
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
+  double steer_angle() const { return steer_angle_; }  // road wheels, rad
   double time() const { return time_; }
   // The body contacts' total force in the last substep (N): 0 while only
   // the tyres touch the ground.
   double body_contact_force() const { return body_force_; }
+  // The static load the springs are preloaded with, per wheel (N).
+  double static_load(int wheel) const { return preload_[wheel]; }
 
  private:
+  enum class Phase { kNone, kClutchIn, kShift, kClutchOut };
   void substep(double dt, const Ground& ground);
   void shape_input(const Input& raw, double dt);
   void update_gearbox(double dt);
-  double engine_torque(double rpm) const;
+  double engine_torque(double rpm, double throttle) const;
+  double ratio(int gear) const;  // gear x final drive, signed (reverse negative)
+  double input_omega() const;    // the gearbox output side's speed in wheel rad/s (diff-weighted)
 
   CarParams p_;
   Vec3 com_local_{};
   Vec3 inertia_{};
-  double spring_rate_[kWheels]{}, damping_[kWheels]{}, preload_[kWheels]{};
+  double preload_[kWheels]{}, droop_[kWheels]{};
+  double weight_[kWheels]{};  // the differential's share of each wheel (sums to 1)
+  int substeps_ = 3;
   Vec3 pos_{}, vel_{}, ang_{};  // centre of mass (world), its velocity, angular velocity (world)
   Quat rot_{};
   std::array<WheelState, kWheels> w_{};
+  double prev_compression_[kWheels]{};
   Input raw_{}, shaped_{};
-  int gear_ = 1;
-  double shift_timer_ = 0, rpm_ = 0, time_ = 0;
+  double steer_angle_ = 0;
+  int gear_ = 1, target_gear_ = 1;
+  Phase phase_ = Phase::kNone;
+  double phase_timer_ = 0;
+  double clutch_ = 0;          // engagement
+  bool launching_ = false;     // the clutch is biting from rest
+  bool locked_ = false;        // the clutch is not slipping
+  double engine_omega_ = 0;    // rad/s
+  double abs_timer_[kWheels]{};
+  bool abs_flag_ = false;
+  double time_ = 0;
   double body_force_ = 0;
 };
 
-// One line of a trace (CSV header and row), for the determinism check and
-// later for tools/physics-behaviour.py once its format is specified.
+// One line of a trace (CSV header and row), for the determinism check.
 std::string trace_header();
 std::string trace_row(const Vehicle& v);
+
+// SPEC-CAR-PHYSICS, The trace format: one fh1.physics_trace event (JSONL)
+// for the player's car, `frame` = round(sim time x clock_hz).
+std::string physics_trace_event(const Vehicle& v, int64_t car_id, double clock_hz, int mode = 17);
 
 // A scripted input: piecewise constant from each line's time.
 //   # comment

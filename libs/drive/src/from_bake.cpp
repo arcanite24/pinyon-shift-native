@@ -18,6 +18,7 @@ CarParams params_from_bake(const cars::bake::CarInfo& car) {
   const double track = std::fabs(p.wheel_centres[1].x - p.wheel_centres[0].x);
   if (track > 0.5) p.size.x = track + 0.2;
   if (std::fabs(z_front - z_rear) > 1) p.size.z = std::fabs(z_front - z_rear) + 1.6;
+  p.inertia_box = p.size;  // the synthetic car until apply_physics
   return p;
 }
 

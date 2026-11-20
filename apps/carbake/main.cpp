@@ -30,6 +30,7 @@
 #include "cars/bake.h"
 #include "cars/bake_format.h"
 #include "cars/database.h"
+#include "cars/physics.h"
 #include "cars/sources.h"
 #include "cars/util.h"
 
@@ -205,6 +206,7 @@ int main(int argc, char** argv) {
   fs::path game, state, dlc_extracted, out_dir;
   unsigned threads = 0;
   std::set<std::string> only;
+  bool physics_only = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -213,12 +215,13 @@ int main(int argc, char** argv) {
     else if (a == "--dlc-extracted") dlc_extracted = next();
     else if (a == "--out") out_dir = next();
     else if (a == "--threads") threads = unsigned(std::stoul(next()));
+    else if (a == "--physics-only") physics_only = true;
     else if (a == "--cars") {
       std::stringstream list(next());
       for (std::string n; std::getline(list, n, ',');) only.insert(cars::lower(n));
     } else {
       std::fprintf(stderr, "usage: carbake --game-root <dir> --state-root <dir> --out <dir> "
-                           "[--dlc-extracted <dir>] [--threads N] [--cars a,b]\n");
+                           "[--dlc-extracted <dir>] [--threads N] [--cars a,b] [--physics-only]\n");
       return 2;
     }
   }
@@ -243,6 +246,32 @@ int main(int argc, char** argv) {
     const std::string key = cars::lower(r.media_name);
     auto& slot = chosen[key];
     if (!slot || (r.selectable && !slot->selectable)) slot = &r;
+  }
+  // Each car's physics rows and the game-wide settings, as text beside its
+  // bake (SPEC-CAR-PHYSICS: the drive reads them; they are the player's own
+  // data, like the bake).
+  {
+    std::vector<int64_t> ids;
+    std::vector<std::string> keys;
+    for (const auto& [key, row] : chosen) {
+      if (!only.empty() && !only.count(key)) continue;
+      ids.push_back(row->id);
+      keys.push_back(key);
+    }
+    cars::PhysicsSettings settings;
+    std::vector<cars::CarPhysics> rows;
+    if (!cars::load_physics_settings(install.media / "physics.zip", settings, &error) ||
+        !cars::load_car_physics(install, ids, rows, &error)) {
+      std::fprintf(stderr, "carbake: physics: %s\n", error.c_str());
+      return 1;
+    }
+    std::error_code ec;
+    fs::create_directories(out_dir / "cars", ec);
+    for (size_t i = 0; i < rows.size(); ++i)
+      std::ofstream(out_dir / "cars" / (keys[i] + ".physics.txt"), std::ios::binary)
+          << cars::physics_to_text(rows[i], settings);
+    std::printf("carbake: physics rows for %zu cars\n", rows.size());
+    if (physics_only) return 0;
   }
   std::vector<Job> jobs;
   std::vector<std::string> problems;

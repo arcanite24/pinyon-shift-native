@@ -35,6 +35,7 @@
 #include "renderer.h"
 #include "showroom.h"
 #include "drive/from_bake.h"
+#include "drive/from_physics.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
 #include "world/stream.h"
@@ -780,7 +781,9 @@ int run_drive(int argc, char** argv) {
       status = 1;
     } else {
       const auto& info = showroom.car();
-      drive::Vehicle vehicle(drive::params_from_bake(info));
+      std::vector<std::string> physics_notes;
+      drive::Vehicle vehicle(drive::params_for_baked_car(info, bake_dir, &physics_notes));
+      for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
       const drive::FlatGround flat;
       const drive::Ground* ground = &flat;
       world::World colorado;

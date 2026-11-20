@@ -62,7 +62,7 @@ void test_rest_pose() {
   }
   double load = 0;
   for (const auto& w : v.wheels()) load += w.load;
-  CHECK(std::fabs(load - p.mass * 9.81) < 1.0);
+  CHECK(std::fabs(load - p.mass * p.gravity) < 1.0);
 }
 
 void test_determinism() {

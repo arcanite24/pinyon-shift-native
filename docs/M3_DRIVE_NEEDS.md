@@ -51,11 +51,15 @@ Built at the spec side's request ("playable first") while COLLISION.md and
 CAR_PHYSICS.md are written. Every one is ours, marked as a placeholder in
 the code, and meant to be swapped out:
 
-- **Physics** (`libs/drive`): a rigid body at a fixed 1/120 s step (ten
-  substeps), raycast suspension, a friction-circle tyre, an automatic
-  gearbox that shifts on road speed (not wheelspin), brakes, drag, and
-  eight body-corner contacts so a rolled car stays on the surface. Every
-  constant sits in `drive::CarParams`, to be filled from CAR_PHYSICS.md.
+- **Physics** (`libs/drive`): since CAR_PHYSICS.md (a76cfa08) no longer a
+  stand-in. A rigid body stepped at CarPhysicsUpdateHz (359 Hz substeps),
+  raycast suspension with the stock springs, dampers, bump stops and
+  anti-roll bars, the multi-curve tyre with the sidewall factor, the
+  engine's torque curve, clutch and gearbox with shift phases, ABS, and
+  the brake input curve and controller delays. A car's rows come from
+  `carbake --physics-only` (`cars/<key>.physics.txt`); without them the
+  synthetic car is used. `drive --physics-trace` writes the gate's JSONL.
+  Scenario results and the open questions: SPEC_QUESTIONS Q20 to Q26.
 - **Ground** (`drive::MeshGround`): a static BVH over triangles behind
   the `drive::Ground` interface. Since COLLISION.md it holds the game's
   collision (`world::Collision`): the `.fiz` tiles whose 100 m cell lies
@@ -103,7 +107,8 @@ the code, and meant to be swapped out:
 
 ## Specs needed, in order
 
-Items 1 to 3 are answered by COLLISION.md (43346e1d); kept for the record.
+Items 1 to 3 are answered by COLLISION.md (43346e1d), items 4 to 7 by
+CAR_PHYSICS.md (a76cfa08); kept for the record.
 
 1. **Collision geometry (blocking).** Where Colorado's collision lives
    (separate files or the render models, which members of `bin.zip` or

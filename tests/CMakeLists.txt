@@ -31,3 +31,11 @@ add_executable(collision_tests collision_tests.cpp)
 target_link_libraries(collision_tests PRIVATE shift_world)
 add_test(NAME collision_tests COMMAND collision_tests)
 set_tests_properties(collision_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 LABELS corpus)
+
+# SPEC-CAR-PHYSICS on the R34's rows: unit checks and scenarios A, B and the
+# turn circle on the analytic ground (skipped, exit 77, without
+# SHIFT_GAME_ROOT).
+add_executable(physics_tests physics_tests.cpp)
+target_link_libraries(physics_tests PRIVATE shift_drive)
+add_test(NAME physics_tests COMMAND physics_tests)
+set_tests_properties(physics_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)

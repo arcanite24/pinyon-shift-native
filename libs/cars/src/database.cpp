@@ -1,5 +1,9 @@
 #include "cars/database.h"
 
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -8,6 +12,8 @@
 #include <set>
 
 #include <sqlite3.h>
+
+#include "cars/physics.h"
 
 namespace cars {
 namespace fs = std::filesystem;
@@ -119,15 +125,26 @@ class Query {
     return t ? reinterpret_cast<const char*>(t) : "";
   }
   bool null(int c) const { return sqlite3_column_type(st_, c) == SQLITE_NULL; }
+  int count() const { return st_ ? sqlite3_column_count(st_) : 0; }
+  std::string name(int c) const { return sqlite3_column_name(st_, c); }
+  int type(int c) const { return sqlite3_column_type(st_, c); }
+  void bind(int index, int64_t v) { sqlite3_bind_int64(st_, index, v); }
 
  private:
   sqlite3_stmt* st_ = nullptr;
 };
 
-}  // namespace
+// The merged database: v4's (or the disc's) with every package's merge
+// databases applied as whole rows by key, in package priority order.
+struct Merged {
+  sqlite3* db = nullptr;
+  std::set<int64_t> base_ids, v4_ids;
+  std::map<int64_t, std::string> added_by;
+  std::vector<std::string> merges_applied;
+  ~Merged() { sqlite3_close(db); }
+};
 
-bool load_database(const Install& install, Database& out, std::string* error) {
-  out = Database{};
+bool open_merged(const Install& install, Merged& m, std::string* error) {
   std::vector<uint8_t> base_bytes, v4_bytes;
   if (!read_file(install.media / "db" / "gamedb.slt", base_bytes)) {
     if (error) *error = "cannot read " + (install.media / "db" / "gamedb.slt").string();
@@ -138,26 +155,19 @@ bool load_database(const Install& install, Database& out, std::string* error) {
   } else {
     v4_bytes = base_bytes;
   }
-  sqlite3* db = nullptr;
-  if (sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_MEMORY, nullptr) != SQLITE_OK) {
+  if (sqlite3_open_v2(":memory:", &m.db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_MEMORY, nullptr) != SQLITE_OK) {
     if (error) *error = "sqlite3_open_v2 failed";
     return false;
   }
-  struct Closer {
-    sqlite3* db;
-    ~Closer() { sqlite3_close(db); }
-  } closer{db};
+  sqlite3* db = m.db;
   if (!deserialize(db, "main", v4_bytes, error)) return false;
   if (!exec(db, "ATTACH DATABASE ':memory:' AS base", error) ||
       !deserialize(db, "base", base_bytes, error))
     return false;
-  const std::set<int64_t> base_ids = car_ids(db, "base");
-  const std::set<int64_t> v4_ids = car_ids(db, "main");
-  out.base_rows = base_ids.size();
-  out.v4_rows = v4_ids.size();
+  m.base_ids = car_ids(db, "base");
+  m.v4_ids = car_ids(db, "main");
   if (!exec(db, "DETACH DATABASE base", error)) return false;
 
-  std::map<int64_t, std::string> added_by;
   const auto main_tables = tables(db, "main");
   for (const Package& p : install.packages) {
     for (const auto& [where, member] : p.merges) {
@@ -179,12 +189,28 @@ bool load_database(const Install& install, Database& out, std::string* error) {
                   error))
           return false;
         if (table == "Data_Car")
-          for (int64_t id : car_ids(db, "m")) added_by[id] = p.id;
+          for (int64_t id : car_ids(db, "m")) m.added_by[id] = p.id;
       }
       if (!exec(db, "DETACH DATABASE m", error)) return false;
-      out.merges_applied.push_back(p.id + ":" + (member.empty() ? where.filename().string() : member));
+      m.merges_applied.push_back(p.id + ":" + (member.empty() ? where.filename().string() : member));
     }
   }
+  return true;
+}
+
+}  // namespace
+
+bool load_database(const Install& install, Database& out, std::string* error) {
+  out = Database{};
+  Merged merged;
+  if (!open_merged(install, merged, error)) return false;
+  sqlite3* db = merged.db;
+  const std::set<int64_t>& base_ids = merged.base_ids;
+  const std::set<int64_t>& v4_ids = merged.v4_ids;
+  const std::map<int64_t, std::string>& added_by = merged.added_by;
+  out.base_rows = base_ids.size();
+  out.v4_rows = v4_ids.size();
+  out.merges_applied = merged.merges_applied;
 
   std::map<int64_t, std::string> wheels;
   {
@@ -301,6 +327,147 @@ bool load_database(const Install& install, Database& out, std::string* error) {
       r.part_positions[size_t(part)] = p;
       r.has_part_position[size_t(part)] = true;
     }
+  }
+  return true;
+}
+
+namespace {
+
+// One row into `values` under `group.`, numeric columns only. Returns
+// whether a row was found; `rows` counts them (a stock row must be one).
+bool row_into(sqlite3* db, const std::string& sql, int64_t key, const std::string& group,
+              std::map<std::string, double>& values, int* rows = nullptr) {
+  Query q(db, sql);
+  if (!q.ok()) return false;
+  q.bind(1, key);
+  int n = 0;
+  while (q.step()) {
+    if (n++ == 0)
+      for (int c = 0; c < q.count(); ++c)
+        if (q.type(c) == SQLITE_INTEGER || q.type(c) == SQLITE_FLOAT) values[group + "." + q.name(c)] = q.d(c);
+  }
+  if (rows) *rows = n;
+  return n > 0;
+}
+
+// v0..v(count-1) of the current row, with `count` from the named column;
+// the row's other numeric columns go to `values` under `group.` when given.
+std::vector<double> samples_of(const Query& q, const char* count_column, const std::string& group,
+                               std::map<std::string, double>* values) {
+  int n = 0;
+  for (int c = 0; c < q.count(); ++c)
+    if (q.name(c) == count_column) n = int(q.i(c));
+  std::vector<double> samples(size_t(std::max(n, 0)));
+  for (int c = 0; c < q.count(); ++c) {
+    const std::string name = q.name(c);
+    if (name.size() > 1 && name[0] == 'v' && std::isdigit(static_cast<unsigned char>(name[1]))) {
+      const int i = std::atoi(name.c_str() + 1);
+      if (i < n) samples[size_t(i)] = q.d(c);
+    } else if (values && (q.type(c) == SQLITE_INTEGER || q.type(c) == SQLITE_FLOAT)) {
+      (*values)[group + "." + name] = q.d(c);
+    }
+  }
+  return samples;
+}
+
+}  // namespace
+
+bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, std::vector<CarPhysics>& out,
+                      std::string* error) {
+  out.clear();
+  Merged merged;
+  if (!open_merged(install, merged, error)) return false;
+  sqlite3* db = merged.db;
+  for (int64_t id : ids) {
+    CarPhysics car;
+    car.car_id = id;
+    auto& v = car.values;
+    auto fail = [&](const std::string& what) {
+      if (error) *error = "car " + std::to_string(id) + ": " + what;
+      return false;
+    };
+    {
+      Query q(db, "SELECT MediaName FROM Data_Car WHERE Id = ?");
+      q.bind(1, id);
+      if (!q.step()) return fail("no Data_Car row");
+      car.media_name = q.s(0);
+    }
+    row_into(db, "SELECT * FROM Data_Car WHERE Id = ?", id, "Data_Car", v);
+    // The stock row of each per-car upgrade table (SPEC-CAR-PHYSICS: by
+    // IsStock, not by Level). A required table without exactly one fails.
+    struct Table {
+      const char* name;
+      bool required;
+    };
+    for (const Table t : {Table{"List_UpgradeCarBody", true}, Table{"List_UpgradeEngine", true},
+                          Table{"List_UpgradeDrivetrain", true}, Table{"List_UpgradeBrakes", true},
+                          Table{"List_UpgradeSpringDamper", true}, Table{"List_UpgradeAntiSwayFront", true},
+                          Table{"List_UpgradeAntiSwayRear", true}, Table{"List_UpgradeTireCompound", true},
+                          Table{"List_UpgradeRearWing", false}, Table{"List_UpgradeRimSizeFront", false},
+                          Table{"List_UpgradeRimSizeRear", false}}) {
+      int rows = 0;
+      row_into(db, std::string("SELECT * FROM ") + t.name + " WHERE Ordinal = ? AND IsStock = 1", id, t.name, v,
+               &rows);
+      if (t.required && rows != 1) return fail(std::string(t.name) + ": " + std::to_string(rows) + " stock rows");
+    }
+    const auto key = [&](const std::string& k) { return int64_t(std::llround(car.get(k, -1))); };
+    const int64_t body = key("List_UpgradeCarBody.CarBodyID");
+    row_into(db, "SELECT * FROM Data_CarBody WHERE Id = ?", body, "Data_CarBody", v);
+    if (!row_into(db, "SELECT * FROM List_UpgradeCarBodyWeight WHERE CarBodyId = ? AND IsStock = 1", body,
+                  "List_UpgradeCarBodyWeight", v))
+      return fail("no stock List_UpgradeCarBodyWeight row");
+    row_into(db, "SELECT * FROM List_UpgradeCarBodyChassisStiffness WHERE CarBodyId = ? AND IsStock = 1", body,
+             "List_UpgradeCarBodyChassisStiffness", v);
+    const int64_t engine = key("List_UpgradeEngine.EngineID");
+    row_into(db, "SELECT * FROM Data_Engine WHERE EngineID = ?", engine, "Data_Engine", v);
+    if (!row_into(db, "SELECT * FROM List_UpgradeEngineCamshaft WHERE EngineID = ? AND IsStock = 1", engine,
+                  "List_UpgradeEngineCamshaft", v))
+      return fail("no stock camshaft");
+    for (const char* t : {"List_UpgradeEngineFlywheel", "List_UpgradeEngineTurboSingle", "List_UpgradeEngineTurboTwin",
+                          "List_UpgradeEngineDSC", "List_UpgradeEngineCSC"})
+      row_into(db, std::string("SELECT * FROM ") + t + " WHERE EngineID = ? AND IsStock = 1", engine, t, v);
+    {
+      Query q(db, "SELECT * FROM List_TorqueCurve WHERE TorqueCurveID = ?");
+      q.bind(1, key("List_UpgradeEngineCamshaft.TorqueCurveFullThrottleID"));
+      if (!q.step()) return fail("no torque curve");
+      car.curves["torque"] = samples_of(q, "NumTorqueValues", "List_TorqueCurve", &v);
+    }
+    const int64_t drivetrain = key("List_UpgradeDrivetrain.DrivetrainID");
+    row_into(db, "SELECT * FROM Data_Drivetrain WHERE DrivetrainID = ?", drivetrain, "Data_Drivetrain", v);
+    for (const char* t : {"List_UpgradeDrivetrainTransmission", "List_UpgradeDrivetrainDifferential",
+                          "List_UpgradeDrivetrainClutch", "List_UpgradeDrivetrainDriveline"})
+      if (!row_into(db, std::string("SELECT * FROM ") + t + " WHERE DrivetrainID = ? AND IsStock = 1", drivetrain, t,
+                    v))
+        return fail(std::string("no stock ") + t);
+    for (const std::string a : {"Front", "Rear"}) {
+      if (!row_into(db, "SELECT * FROM List_SpringDamperPhysics WHERE SpringDamperPhysicsID = ?",
+                    key("List_UpgradeSpringDamper." + a + "SpringDamperPhysicsID"), a + "SpringDamper", v))
+        return fail("no " + a + " spring damper");
+      if (!row_into(db, "SELECT * FROM List_AntiSwayPhysics WHERE AntiSwayPhysicsID = ?",
+                    key("List_UpgradeAntiSway" + a + ".AntiSwayPhysicsID"), a + "AntiSway", v))
+        return fail("no " + a + " anti-roll bar");
+    }
+    if (!row_into(db, "SELECT * FROM List_TireCompound WHERE TireCompoundID = ?",
+                  key("List_UpgradeTireCompound.TireCompoundID"), "List_TireCompound", v))
+      return fail("no tyre compound");
+    struct Dir {
+      const char* group;
+      const char* column;
+      const char* curve;
+    };
+    for (const Dir d : {Dir{"LatMultiCurve", "List_TireCompound.FrictionMultiCurveLateralID", "lat"},
+                        Dir{"LongMultiCurve", "List_TireCompound.FrictionMultiCurveLongitudinalID", "long"}}) {
+      if (!row_into(db, "SELECT * FROM List_TireFrictionMultiCurve WHERE FrictionMultiCurveID = ?", key(d.column),
+                    d.group, v))
+        return fail(std::string("no ") + d.group);
+      for (int c = 0; c < 2; ++c) {
+        Query q(db, "SELECT * FROM List_TireFrictionCurve WHERE FrictionCurveID = ?");
+        q.bind(1, key(std::string(d.group) + ".TireFrictionCurveID" + std::to_string(c)));
+        if (!q.step()) return fail(std::string("no friction curve for ") + d.group);
+        car.curves[d.curve + std::to_string(c)] = samples_of(q, "NumCurveValues", "", nullptr);
+      }
+    }
+    out.push_back(std::move(car));
   }
   return true;
 }

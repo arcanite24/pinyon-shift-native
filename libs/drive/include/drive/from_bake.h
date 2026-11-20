@@ -1,6 +1,6 @@
 // CarParams from a baked car: the wheel geometry FORMAT-CARS gives (the
 // body-frame wheel centres and the tyre sizes per axle); every other
-// parameter stays at the engine's placeholder until CAR_PHYSICS.md.
+// parameter stays at the synthetic car until apply_physics (from_physics.h).
 #pragma once
 
 #include "cars/bake_format.h"

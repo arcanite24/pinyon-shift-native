@@ -3,7 +3,7 @@
 // collision (COLLISION.md `.fiz` tiles).
 //
 //   drive --bake <dir> --car <media name> [--script <file> | --run <name>]
-//         [--seconds N] [--trace <file.csv>]
+//         [--seconds N] [--trace <file.csv>] [--physics-trace <file.jsonl> [--every N]]
 //         [--world <colorado dir> [--cache <index file>] [--near x z]
 //          [--spawn x y z heading] [--materials] [--render-ground]]
 //
@@ -13,6 +13,9 @@
 // with z negated), or at --spawn; the car is dropped onto the collision
 // below the point. --render-ground drives on the earlier stand-in (the
 // render triangles) instead of the collision.
+// --physics-trace writes SPEC-CAR-PHYSICS's fh1.physics_trace events (JSONL),
+// one every --every frames (default 6) of a 60 Hz clock on the sim time:
+// frame = round(sim time x 60).
 // --grade G drives on a plane mesh (drive::MeshGround) rising G (rise over
 // run) towards +z, instead of the flat ground.
 // --run cruise (with --world) drives itself along the road at --speed km/h
@@ -39,6 +42,7 @@
 #include "cars/bake_format.h"
 #include "cars/sources.h"
 #include "drive/from_bake.h"
+#include "drive/from_physics.h"
 #include "drive/mesh_ground.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
@@ -61,7 +65,8 @@ const std::map<std::string, std::string> kRuns = {
 }  // namespace
 
 int main(int argc, char** argv) {
-  fs::path bake_dir, script_path, trace_path, world_dir, cache_path;
+  fs::path bake_dir, script_path, trace_path, world_dir, cache_path, physics_trace_path;
+  int physics_every = 6;
   std::string car, run = "launch";
   double seconds = 20;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
@@ -78,6 +83,8 @@ int main(int argc, char** argv) {
     else if (a == "--run") run = next();
     else if (a == "--seconds") seconds = std::stod(next());
     else if (a == "--trace") trace_path = next();
+    else if (a == "--physics-trace") physics_trace_path = next();
+    else if (a == "--every") physics_every = std::max(1, std::stoi(next()));
     else if (a == "--world") world_dir = next();
     else if (a == "--cache") cache_path = next();
     else if (a == "--materials") materials = true;
@@ -101,6 +108,7 @@ int main(int argc, char** argv) {
     } else {
       std::fprintf(stderr, "usage: drive --bake <dir> --car <name> [--script <file> | --run "
                            "rest|launch|brake|circle|reverse] [--seconds N] [--trace <csv>]\n"
+                           "             [--physics-trace <jsonl> [--every N]]\n"
                            "             [--world <colorado dir> [--cache <file>] [--near x z] "
                            "[--spawn x y z heading] [--materials] [--render-ground]]\n");
       return 2;
@@ -134,7 +142,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const drive::CarParams params = drive::params_from_bake(bake.car);
+  std::vector<std::string> physics_notes;
+  const drive::CarParams params = drive::params_for_baked_car(bake.car, bake_dir, &physics_notes);
+  for (const auto& n : physics_notes) std::fprintf(stderr, "drive: physics: %s\n", n.c_str());
   drive::Vehicle v(params);
   const drive::FlatGround flat;
   const drive::Ground* ground = &flat;
@@ -241,6 +251,9 @@ int main(int argc, char** argv) {
     trace.open(trace_path, std::ios::binary);
     trace << drive::trace_header() << "\n";
   }
+  std::ofstream physics_trace;
+  if (!physics_trace_path.empty()) physics_trace.open(physics_trace_path, std::ios::binary);
+  long long last_frame = -1;
   const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
   double t100 = -1, top = 0, brake_start = -1;
   drive::Vec3 brake_from{};
@@ -285,10 +298,16 @@ int main(int argc, char** argv) {
     if (t100 < 0 && v.speed() >= 100 / 3.6) t100 = v.time();
     top = std::max(top, v.speed());
     if (trace) trace << drive::trace_row(v) << "\n";
+    if (physics_trace.is_open()) {
+      const long long frame = std::llround(v.time() * 60);
+      if (frame != last_frame && frame % physics_every == 0)
+        physics_trace << drive::physics_trace_event(v, bake.car.car_id, 60) << "\n";
+      last_frame = frame;
+    }
     if (braking && std::fabs(v.speed()) < 0.05) break;
   }
   const drive::Vec3 p = v.position();
-  std::printf("car %s, run %s, %.2f s simulated (placeholder physics)\n", bake.car.media_name.c_str(),
+  std::printf("car %s, run %s, %.2f s simulated (SPEC-CAR-PHYSICS)\n", bake.car.media_name.c_str(),
               script_path.empty() ? run.c_str() : script_path.string().c_str(), v.time());
   if (t100 > 0) std::printf("0-100 km/h: %.2f s\n", t100);
   std::printf("top speed: %.1f km/h, final speed %.1f km/h, gear %d, %.0f rpm\n", top * 3.6, v.speed() * 3.6,
