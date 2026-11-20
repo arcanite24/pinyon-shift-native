@@ -153,7 +153,11 @@ std::optional<Fh1Archive> Fh1Archive::Open(const std::filesystem::path& path) {
   Fh1Archive archive;
   archive.path_ = path;
   size_t at = 0;
-  for (uint16_t index = 0; index < entry_count; ++index) {
+  // The record's 16-bit entry count wraps on large archives (Colorado's
+  // bin.zip has 230,057 entries), so walk the directory by its byte size and
+  // use the count only as a check of the low 16 bits.
+  uint64_t walked = 0;
+  while (at < directory.size()) {
     if (directory.size() - at < kCentralHeaderSize ||
         Read32(&directory[at]) != kCentralHeaderSignature) {
       return std::nullopt;
@@ -175,6 +179,10 @@ std::optional<Fh1Archive> Fh1Archive::Open(const std::filesystem::path& path) {
       archive.names_.emplace_back(name);
     }
     at += kCentralHeaderSize + variable_size;
+    ++walked;
+  }
+  if (uint16_t(walked) != entry_count) {
+    return std::nullopt;
   }
   return archive;
 }

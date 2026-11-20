@@ -202,6 +202,50 @@ void TestArchive() {
   }
   archive = Fh1Archive::Open(path);
   CHECK(archive && !archive->Read(name));
+  // More than 65,535 directory entries: the end record's count wraps, and
+  // the reader must still see the last names (Colorado's bin.zip).
+  {
+    zip.resize(directory_offset);
+    zip[30 + name.size()] ^= 0xFF;  // undo the corruption
+    const uint32_t big_offset = uint32_t(zip.size());
+    uint32_t entries = 0;
+    auto central = [&](const std::string& entry) {
+      PutLe32(zip, 0x02014B50);
+      for (uint16_t value : {20, 20, 0, 0, 0, 0}) PutLe16(zip, value);
+      PutLe32(zip, crc);
+      PutLe32(zip, uint32_t(body.size()));
+      PutLe32(zip, uint32_t(body.size()));
+      for (uint16_t value : {uint16_t(entry.size()), uint16_t(0), uint16_t(0), uint16_t(0),
+                             uint16_t(0)}) {
+        PutLe16(zip, value);
+      }
+      PutLe32(zip, 0);
+      PutLe32(zip, 0);
+      zip.insert(zip.end(), entry.begin(), entry.end());
+      ++entries;
+    };
+    for (int copy = 0; copy < 65536; ++copy) central(name);
+    central("Fonts/Last.dt");
+    const uint32_t big_size = uint32_t(zip.size()) - big_offset;
+    PutLe32(zip, 0x06054B50);
+    for (uint16_t value : {uint16_t(0), uint16_t(0), uint16_t(entries), uint16_t(entries)}) {
+      PutLe16(zip, value);
+    }
+    PutLe32(zip, big_size);
+    PutLe32(zip, big_offset);
+    PutLe16(zip, 0);
+    {
+      std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(zip.data()),
+                                                  std::streamsize(zip.size()));
+    }
+    archive = Fh1Archive::Open(path);
+    CHECK(archive && archive->member_count() == 2);
+    CHECK(archive && archive->Contains("fonts/last.dt"));
+    if (archive) {
+      auto read = archive->Read("Fonts/Last.dt");
+      CHECK(read && *read == body);
+    }
+  }
   std::filesystem::remove(path);
 }
 
