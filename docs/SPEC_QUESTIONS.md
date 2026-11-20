@@ -74,7 +74,7 @@ questions are also sent to the specification session.
 - **Engine:** draws every cockpit part whose name the LOD0 model does not
   have, the needles at `_min` only.
 
-## Q6 (not blocking): stand-in LOD0 and cockpit models
+## Q6 (answered): stand-in LOD0 and cockpit models
 
 - **Observed:** some models hold stand-ins instead of geometry: cubes of
   exactly 17 vertices about 0.2 m across (506 such pools over the 240
@@ -90,8 +90,10 @@ questions are also sent to the specification session.
   `VOL_XC70_12`); 6 have stand-in parts next to real ones
   (`CHR_PTCruiser_04` 23, `VW_Beetle_04` 18, `TOY_Prius_11` 13,
   `FOR_TaurusSHO_10` 12, `NIS_240SX_94` 3, `FER_599XX_10` 2).
-- **Needed:** does the game's showroom draw the LOD1-5 model for these
-  cars or parts? None is among the reference cars yet.
+- **Answer (spec session, 2026-11-19):** the 14 cars are traffic or
+  non-selectable cars (mostly among `car-list.json`'s 23 non-selectable
+  rows), so the Autoshow never shows them and no reference covers them.
+  Keep the engine's default.
 - **Engine:** does not draw stand-in pools; draws each such part from its
   lowest real LOD, and the whole LOD1-5 exterior when LOD0 has no real
   part. Where a part has variants `a`-`h`, the first with real geometry is
