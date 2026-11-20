@@ -107,8 +107,18 @@ placed props out, `--no-far` the far ring.
 | Handbrake | Space | A |
 | Back on the nearest road | R | Start |
 | Chase or front view | V | Back |
+| Look around | | right stick |
+| Look back (held) | C | Y |
+| Choose another car (shown in the title) | [ and ] | LB and RB |
+| Drive the chosen car (from where this one stands) | Enter | X |
 | Hide or show the HUD | H | |
 | Quit | Esc | |
+
+The pad's sticks and triggers are rescaled from an inside to an outside
+deadzone (steering 0.10 to 0.95, triggers 0.03 to 0.97; ours, the rule is
+CAR_PHYSICS's). The chase camera's heading trails the car's by 0.2 s and
+its distance follows the car's size. Picking a car restarts the drive
+with it (a few seconds: the car, its sound and the world load again).
 
 The HUD in the bottom-right corner shows the speed, the rpm with a
 tachometer bar (red from 90 % of the redline), the gear (R in reverse)

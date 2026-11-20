@@ -594,9 +594,36 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
 // out over about a third of a second once clear. `pull` keeps the fraction
 // of the full distance between frames (1 = full); `dt` is the time since
 // the last frame.
+// The chase camera's state between frames (ours): how far it is pulled in
+// by the collision, its heading, which trails the car's, and a look-around
+// angle from the right stick.
 struct CameraPull {
   double fraction = 1;
+  bool started = false;
+  double yaw = 0;   // the camera's heading, radians
+  double look = 0;  // added to it (right stick or look back), radians
+  double look_target = 0;
 };
+
+std::string lower_ascii(std::string v) {
+  for (char& c : v) c = char(std::tolower(static_cast<unsigned char>(c)));
+  return v;
+}
+
+// The signed angle from a to b, in (-pi, pi].
+double angle_to(double a, double b) {
+  const double d = std::remainder(b - a, 2 * 3.14159265358979323846);
+  return d;
+}
+
+// A stick or trigger value rescaled from its inside to its outside deadzone
+// to 0..1 and clamped, the sign kept (CAR_PHYSICS "Throttle, brake and
+// steering from the pad": the rule is probable; the deadzone values are
+// ours, ForzaProfile's defaults are not read).
+double deadzone(double v, double inside, double outside) {
+  const double m = std::clamp((std::fabs(v) - inside) / (outside - inside), 0.0, 1.0);
+  return v < 0 ? -m : m;
+}
 
 ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, bool front,
                           const drive::Ground* ground = nullptr, CameraPull* pull = nullptr, double dt = 0) {
@@ -605,13 +632,34 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
   invert_affine(model_to_world, world_to_model);
   const drive::Vec3 p = v.position();
   const drive::Vec3 fwd = drive::rotate(v.orientation(), {0, 0, 1});
-  const float yaw = float(std::atan2(fwd.x, fwd.z));
+  const double car_yaw = std::atan2(fwd.x, fwd.z);
+  // The chase heading trails the car's (time constant 0.2 s, ours) so a
+  // slide or spin does not whip the view; the look angle eases to its
+  // target in 0.1 s. Headless frames (dt of a second or more) settle.
+  double yaw_d = car_yaw;
+  if (pull) {
+    if (!pull->started || dt <= 0) {
+      pull->yaw = car_yaw;
+      pull->look = pull->look_target;
+      pull->started = true;
+    } else {
+      pull->yaw += angle_to(pull->yaw, car_yaw) * (1 - std::exp(-dt / 0.2));
+      pull->look += (pull->look_target - pull->look) * (1 - std::exp(-dt / 0.1));
+    }
+    yaw_d = pull->yaw + pull->look;
+  }
+  const float yaw = float(front ? car_yaw : yaw_d);
   const V3 dir{std::sin(yaw), 0, std::cos(yaw)};
   const V3 base{float(p.x), float(p.y), float(p.z)};
   const V3 left{-dir.z, 0, dir.x};
+  // Distance and height from the car's size (ours): 4.5 m back and 1.6 m
+  // up for a 4.3 m, 1.3 m car.
+  const auto& size = v.params().size;
+  const float back = float(1.9 + 0.6 * size.z), up = float(0.6 + 0.77 * size.y);
   const V3 eye = front ? add(add(add(base, mul(dir, 4.0f)), mul(left, 3.0f)), V3{0, 0.9f, 0})
-                       : add(add(base, mul(dir, -4.5f)), V3{0, 1.6f, 0});
-  const V3 target = front ? add(base, V3{0, 0.5f, 0}) : add(add(base, mul(dir, 1.5f)), V3{0, 0.7f, 0});
+                       : add(add(base, mul(dir, -back)), V3{0, up, 0});
+  const V3 target = front ? add(base, V3{0, 0.5f, 0})
+                          : add(add(base, mul(dir, float(0.35 * size.z))), V3{0, 0.7f, 0});
   V3 eye_used = eye;
   if (ground && pull) {
     const drive::Vec3 from{target.x, target.y, target.z};
@@ -904,6 +952,18 @@ int run_drive(int argc, char** argv) {
     }
   }
   int status = 0;
+  // The car picker (ours): the baked cars by key; picking one restarts the
+  // drive with it where the last car stood (window and SDL kept).
+  std::vector<std::string> baked_cars;
+  {
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(bake_dir / "cars", ec))
+      if (e.path().extension() == ".shiftbake") baked_cars.push_back(e.path().stem().string());
+    std::sort(baked_cars.begin(), baked_cars.end());
+  }
+  std::string next_car;
+  for (bool again = true; again;) {
+  again = false;
   {
     Renderer renderer;
     Showroom showroom(renderer);
@@ -1276,9 +1336,36 @@ int run_drive(int argc, char** argv) {
         double accumulator = 0;
         bool running = true;
         std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
-                    "Space handbrake, R put back on the road, V chase/front view, H hide/show the HUD, Esc quit.\n"
-                    "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, Start put "
-                    "back on the road, Back view.\n");
+                    "Space handbrake, R put back on the road, V chase/front view, C (held) look back, H hide/show "
+                    "the HUD, Esc quit.\n"
+                    "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, right stick "
+                    "look around, Y (held) look back, Start put back on the road, Back view.\n"
+                    "car picker: [ and ] (LB and RB) choose among the %zu baked cars, Enter (X) drives it.\n",
+                    baked_cars.size());
+        // The picker's choice, shown in the title until it is taken.
+        size_t pick = 0;
+        bool picking = false;
+        for (size_t k = 0; k < baked_cars.size(); ++k)
+          if (baked_cars[k] == lower_ascii(car)) pick = k;
+        auto browse = [&](int by) {
+          if (baked_cars.empty()) return;
+          pick = (pick + baked_cars.size() + size_t(by + int(baked_cars.size()))) % baked_cars.size();
+          picking = true;
+          title_at = 0;  // show it now
+        };
+        auto take_pick = [&]() {
+          if (!picking || baked_cars.empty()) return;
+          // Restart with that car where this one stands.
+          const drive::Vec3 at = vehicle.position();
+          const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          spawn[0] = at.x;
+          spawn[1] = at.y;
+          spawn[2] = at.z;
+          spawn[3] = std::atan2(fwd.x, fwd.z);
+          have_spawn = true;
+          next_car = baked_cars[pick];
+          running = false;
+        };
         bool show_hud = true;
         // The engine sound's stream: about 60 ms queued ahead.
         SDL_AudioStream* audio_stream = nullptr;
@@ -1306,6 +1393,9 @@ int run_drive(int argc, char** argv) {
               if (e.key.key == SDLK_ESCAPE) running = false;
               if (e.key.key == SDLK_R) put_back();
               if (e.key.key == SDLK_V) front = !front;
+              if (e.key.key == SDLK_LEFTBRACKET) browse(-1);
+              if (e.key.key == SDLK_RIGHTBRACKET) browse(1);
+              if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) take_pick();
               if (e.key.key == SDLK_H) {
                 show_hud = !show_hud;
                 if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0);
@@ -1314,6 +1404,9 @@ int run_drive(int argc, char** argv) {
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) put_back();
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) front = !front;
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) browse(1);
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) take_pick();
             }
             if (e.type == SDL_EVENT_GAMEPAD_ADDED)
               if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) {
@@ -1336,15 +1429,21 @@ int run_drive(int argc, char** argv) {
           in.throttle = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W] ? 1.0 : 0.0;
           in.brake = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S] ? 1.0 : 0.0;
           in.handbrake = keys[SDL_SCANCODE_SPACE];
+          // Look around: the right stick turns the chase camera up to half a
+          // turn, Y (or C held) looks back.
+          camera_pull.look_target = keys[SDL_SCANCODE_C] ? 3.14159265358979 : 0.0;
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
-            const double sx = axis(SDL_GAMEPAD_AXIS_LEFTX);
-            const double steer = std::fabs(sx) < 0.12 ? 0.0 : sx;
-            const double throttle = axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), brake = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-            if (steer != 0 || throttle > 0.02 || brake > 0.02 || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
+            const double steer = deadzone(axis(SDL_GAMEPAD_AXIS_LEFTX), 0.10, 0.95);
+            const double throttle = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), 0.03, 0.97);
+            const double brake = deadzone(axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), 0.03, 0.97);
+            const double look = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) camera_pull.look_target = 3.14159265358979;
+            else if (look != 0) camera_pull.look_target = -look * 3.14159265358979;
+            if (steer != 0 || throttle > 0 || brake > 0 || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
               in.steer = steer;
-              in.throttle = std::max(0.0, throttle);
-              in.brake = std::max(0.0, brake);
+              in.throttle = throttle;
+              in.brake = brake;
               in.handbrake = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
               break;
             }
@@ -1364,12 +1463,17 @@ int run_drive(int argc, char** argv) {
           }
           if (now - title_at > 100000000) {  // the speedometer, ten times a second
             title_at = now;
-            char title[160], gear[8];
+            char title[320], gear[8];
             if (vehicle.gear() < 0) std::snprintf(gear, sizeof gear, "R");
             else if (vehicle.gear() == 0) std::snprintf(gear, sizeof gear, "N");
             else std::snprintf(gear, sizeof gear, "%d", vehicle.gear());
             std::snprintf(title, sizeof title, "carview drive - %s - %3.0f km/h  gear %s  %5.0f rpm%s", car.c_str(),
                           std::fabs(vehicle.speed()) * 3.6, gear, vehicle.rpm(), vehicle.abs_active() ? "  ABS" : "");
+            if (picking) {
+              const size_t n = std::strlen(title);
+              std::snprintf(title + n, sizeof title - n, "   |   pick %zu/%zu: %s (Enter or X to drive it)", pick + 1,
+                            baked_cars.size(), baked_cars[pick].c_str());
+            }
             SDL_SetWindowTitle(window, title);
           }
           if (audio_stream) {
@@ -1402,6 +1506,13 @@ int run_drive(int argc, char** argv) {
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
     }
+  }
+  if (status == 0 && !next_car.empty()) {
+    car = next_car;
+    next_car.clear();
+    again = true;
+    SDL_SetWindowTitle(window, ("carview drive - loading " + car).c_str());
+  }
   }
   if (window) {
     SDL_DestroyWindow(window);

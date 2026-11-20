@@ -98,7 +98,15 @@ the code, and meant to be swapped out:
   camera that pulls in when a ray from its look-at point to the eye meets
   the collision (and eases back out). Headless, it writes frames.
   Windowed (keyboard or gamepad, speed in the title), it is written but
-  has not been run here.
+  has not been run here. Pad deadzones rescale as CAR_PHYSICS describes
+  (values ours); the chase camera trails the car's heading (0.2 s), sits
+  by the car's size, and looks around on the right stick or back on Y/C;
+  [ ] (LB RB) and Enter (X) pick any of the baked cars, restarting the
+  drive with it where the last car stood.
+- **Walls:** the car stops at the `.fiz` barriers and guardrails; a
+  world_tests case drives into the concrete barrier by the spawn at about
+  50 km/h and checks that it loses speed sharply and never crosses an
+  upright collision triangle.
 - **Streaming off the step:** in the window (and headless with
   `--async-stream`), gathers after the first run on a worker thread:
   render models, collision tiles, the ground's BVH and the scenery's draw

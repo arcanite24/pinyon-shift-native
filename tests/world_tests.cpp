@@ -17,6 +17,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
@@ -220,6 +221,38 @@ int main() {
   CHECK(path > 400);
   CHECK(longest_airborne < 120);
   CHECK(up.y > 0.8);
+
+  // Walls: from the spawn, full throttle and steering right after 2 s puts
+  // the car into the concrete barrier at about 50 km/h. It must hit it (a
+  // sharp loss of speed) and never cross a wall: no upright collision
+  // triangle between its centre at one step and the next (the body's
+  // contact points against the collision).
+  {
+    drive::Vehicle wv(test_car());
+    wv.reset({spawn.position[0], spawn.position[1], spawn.position[2]}, spawn.heading);
+    double sharpest = 0;  // the largest speed loss over 0.25 s, km/h
+    int crossings = 0;
+    std::vector<double> kmh;
+    for (int i = 0; i < 120 * 8; ++i) {
+      drive::Input in;
+      in.throttle = i < 240 ? 1.0 : 0.8;
+      in.steer = i < 240 ? 0.0 : 0.6;
+      const drive::Vec3 before = wv.position();
+      wv.step(in, stream.ground());
+      const drive::Vec3 now = wv.position();
+      const drive::Vec3 from{before.x, before.y + 0.4, before.z};
+      const drive::Vec3 d{now.x - before.x, now.y - before.y, now.z - before.z};
+      const double len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+      drive::Hit h;
+      if (len > 1e-6 && stream.ground().raycast(from, d * (1 / len), len, h) && std::fabs(h.normal.y) < 0.5)
+        ++crossings;
+      kmh.push_back(std::fabs(wv.speed()) * 3.6);
+      if (kmh.size() > 30) sharpest = std::max(sharpest, kmh[kmh.size() - 31] - kmh.back());
+    }
+    std::printf("wall: sharpest speed loss %.1f km/h in 0.25 s, %d wall crossings\n", sharpest, crossings);
+    CHECK(sharpest > 20);
+    CHECK(crossings == 0);
+  }
 
   // A background gather: the car keeps the old ground until the new one is
   // swapped in by an update, then the centre and ground are the new ones.
