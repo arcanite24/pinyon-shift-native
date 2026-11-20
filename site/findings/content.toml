@@ -234,7 +234,7 @@ how = """Listing the parts and techniques of base cars' carbins; an AC AMG GT3 o
 confidence = """confirmed"""
 issue = """#496"""
 source = """branch feat/ac-car-inspect tools/ac_car_body.py fh1_techniques, RED_LAMPS; docs/formats/CARS.md"""
-note = """Unlit, the same lamps look pale in daylight; the shader's unlit colour was not traced. Inside the `body` part, `black` draws a lamp texture nearly black and `window` tints a lamp cover dark, so converted headlamps are drawn as `chrome` behind `detail_glass_clear` (GT40, F40 and R34 in the Autoshow, 2026-11-06). `window` drawn in the `body` part is dark and has no reflections; in a glass part (`glassF`) it looks like the stock car's windscreen, sampling the same texel (white, alpha 0)."""
+note = """Unlit, the same lamps look pale in daylight; the shader's unlit colour was not traced. Inside the `body` part, `black` draws a lamp texture nearly black and `window` tints a lamp cover dark, so converted headlamps are drawn as `chrome` behind `detail_glass_clear` (GT40, F40 and R34 in the Autoshow, 2026-11-06). `window` drawn in the `body` part is dark and has no reflections; in a glass part (`glassF`) it looks like the stock car's windscreen, sampling the same texel (white, alpha 0). Mid-engined cars put a `window` part flat over the engine deck: the F40 Competizione's `lexanR` and the F50's `glassR` (1,310 and 2,239 LOD0 vertices), which brighten the dark deck behind them by 6 to 15 levels in the Autoshow references (2026-11-20)."""
 
 [[finding]]
 group = """Cars"""
@@ -311,7 +311,7 @@ what = """A factory stripe or decal is in the car's body atlas: texels with alph
 how = """Pixel-shader constants of the Abarth 500's Autoshow frame dump against its exception row; atlas texels sampled at the vertices of each technique; a diff of its two atlases; counts over the merged database (2026-11-19)."""
 confidence = """probable"""
 source = """docs/formats/CARS.md Paint"""
-note = """The stripe constant was matched on one car; the blend at intermediate alpha and the value cars without an exception receive are not traced. 674 exception rows on 61 cars (661 with `HasStripe`), 21 of the 250 merged first colour rows have a stripe; 229 colour rows on 30 cars name another atlas."""
+note = """The stripe constant was matched on one car; the blend at intermediate alpha and the value cars without an exception receive are not traced. 674 exception rows on 61 cars (661 with `HasStripe`), 21 of the 250 merged first colour rows have a stripe; 229 colour rows on 30 cars name another atlas. A stripe can look another colour in the references: the Challenger SRT8 392's white row has a near-black `ColorStripe` (23, 25, 25) and black stripe texels, and its blue hood and roof stripes are the showroom's blue light on a dark gloss (no blue texel in its atlases; its vertical stripes stay dark; other dark cars show the same blue, 2026-11-20)."""
 
 [[finding]]
 group = """Upgrades, colours and liveries"""

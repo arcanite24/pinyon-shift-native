@@ -499,6 +499,15 @@ paint and the tinted texel (the blend at intermediate alpha is probable).
 Without an exception, show the texel colour. Use the row's `BaseTexture`
 atlas. Never apply paint or the body atlas to glass techniques.
 
+The stripe colour can look different from `ColorStripe` in the
+references: the Challenger SRT8 392's showroom row is white with a
+`ColorStripe` of (23, 25, 25), near black, and its atlas's stripe texels
+are black, yet the reference shows blue stripes on the hood and roof. No
+texel in either of its atlases is blue, the vertical bumper stripes stay
+dark, and other dark cars in the same showroom show the same blue on
+upward-facing panels: it is the showroom's blue light reflected in a
+dark gloss, not a stripe colour. Black stripes are right for M1.
+
 ## Livery masks
 
 `LiveryMasks/Masks.xml` lists six planes (Front, Back, Top, Left, Right,
@@ -577,6 +586,16 @@ tables do not apply).
   effect's (probable). Glass draws take no paint and no body-atlas
   texels: the Abarth 500's windscreen UVs land on red atlas texels at its
   top edge, which the game does not show (see [Paint](#paint)).
+  Every LOD0 part with a transparent technique is drawn, including the
+  rear windows of mid-engined cars, which sit flat over the engine deck
+  between the roof and the wing: the F40 Competizione's `lexanR` (1,310
+  LOD0 vertices) and the F50's `glassR` (2,239), both `window`. They are
+  not engine-bay, variant or cockpit parts, and each has LOD1 to LOD5
+  twins. In the Autoshow references the dark deck behind them reads 6 to
+  15 levels (of 255) brighter where the window covers it, so the glass
+  adds a faint reflection; an engine whose glass leaves the pixel
+  unchanged loses the part. The F40's `trunk` part also carries louvres
+  on an alpha-tested technique (`grille1_alpha`).
 - **Shadow.** v4's `shaders/cars` has `dropshadow` and the car effect a
   `dropShadow` technique, and no shadow model is in the car files. The
   Autoshow frame dumps put no car geometry in a depth-only or shadow
@@ -593,6 +612,7 @@ tables do not apply).
 | `CarTrackOffsets`, `WheelNormOffsets` and `WheelExceptions` (no measured car has rows) and one rim whose header bounds are ±FLT_MAX | a few cars' wheels may sit off | the rule under [Wheels](#wheels); log the car |
 | metallic finish; the stripe blend at intermediate alpha and the stripe constant of a car without an exception | colours right, finish approximate | flat paint; stripes as under [Paint](#paint) |
 | back-face culling for glass and the cockpit | visual | cull opaque techniques, draw transparent ones two-sided |
+| a lighter rectangle the engine draws on the Challenger SRT8 392's rear door and quarter, absent in the game | visual, one car | not a paint-rule case: the LOD0 and cockpit `body` and `body_2` triangles sample only transparent (paint) texels or the dark stripe texels of the atlas, none opaque white, so the patch comes from the engine's draw (another part or technique overlapping, or a UV or alpha read); check which part the engine draws there |
 | livery decal and vinyl models | none (no liveries in M1) | reject with a message |
 | whether the v4 or the disc copy of the car effect wins, and which package copy of a duplicated car loads | none (copies are identical for the official set) | disc first, then packages |
 | a model whose draw-list scan (including the `n` = 0 form) finds no or several positions | none in the corpus | reject the model and name it |

@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Spec ID | `SPEC-CAR-PHYSICS` |
-| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia, the step and straight-line ABS confirmed on one car; lateral tyre, low-speed steering, drag, front brake torque and the torque chain measured fits; collision, surfaces and the lap gate open |
+| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia, the step, straight-line ABS, the braking friction scale and the gearbox and launch timing confirmed on one car; the launch-controller rule probable; lateral tyre, low-speed steering, drag, front brake torque and the torque chain measured fits; collision, surfaces and the lap gate open |
 | Written | 2026-11-20, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | [objects findings](../../site/findings/objects.toml), group "Car dynamics"; [content findings](../../site/findings/content.toml), group "Game database" |
 | Implements it | `shift-engine`, physics module (not yet) |
@@ -166,11 +166,115 @@ by `RearToqueSplit`.
 | Differentials | `List_UpgradeDrivetrainDifferential`: `Front`/`Rear`/`CenterLimitedSlipTorqueAccel` and `…Decel` (N·m of locking torque), `…RelVelClamp`, `…AccelDefInputTorque`, `RearToqueSplit` (sic; AWD share to the rear) | limited-slip torques probable from the names. The AWD split is confirmed: the R34's rear tyres made 67 % of the traced drive force, within 3 points of the column |
 | Wheel inertia | `List_TireCompound.MomentInertia` | kg·m² per wheel (one value on every compound) |
 
+### Clutch and gearbox states
+
+The clutch value c runs from 1 (open) to 0 (locked). The transmitted
+torque was measured at five points of the R34's launch as
+(1 − c) × `ClutchMaxTorque` × about 0.78, within 1 to 4 %; 0.78 matches
+the car's `GameTorqueScale` (0.775), but one car cannot tell whether
+that is the factor (measured fit). The gearbox is a small state machine,
+and each state sets how c moves:
+
+| State | What it does | Clutch rate |
+| --- | --- | --- |
+| Open | standing start, or reverse just selected | c = 1 |
+| Launch | slips the clutch to hold the engine at a falling target (below) | servo |
+| Engaged | normal driving | c falls to 0 at 1/`ClutchOutTime` if not already 0 |
+| Clutch in | a shift was requested; the throttle is closed | c rises at 1/`ClutchInTime` |
+| Gear change | the gear number changes at the end | c = 1 for `GearShiftTime` |
+| Rev-match | the engine is driven towards the new gear's speed | c = 1, about 0.05 s |
+| Clutch out | power comes back | c falls at 1/`ClutchOutTime` |
+
+In the rev-match and clutch-out states the throttle the engine sees is
+the blend of the driver's throttle and the gearbox's own request by c,
+so power returns as the clutch closes.
+
+**Launch.** From open, the box enters the launch state when the throttle
+is above 0.1, the brake below 0.1, the clutch output speed (driven-wheel
+speed × gear × final drive) at most 700 rpm and the engine speed above
+lerp(S₀, `StartRPM`, throttle), where S₀ = idle + 0.2 × (`StartRPM` −
+idle) and idle is `StallRPM`. Rolling faster than 700 rpm at the clutch
+it goes to rev-match instead. In the launch state, with τ = the time in
+the state over 1.5 s (clamped to 1), the engine target is
+lerp(L, H, throttle), with
+
+- H = lerp(`StartRPM` + 0.2 × (`RedlineRPM` − `StartRPM`),
+  idle + 0.3 × (`StartRPM` − idle), τ): 5,485 falling to 2,017 rpm on
+  the R34;
+- L = lerp(idle + 0.2 × (`StartRPM` − idle), idle + 0.01 × (`StartRPM` −
+  idle), τ).
+
+The clutch rate is 53 × (target − (ω + 0.04 s × dω/dt)) / `RedlineRPM`
+per second (ω the engine speed in rpm, dω/dt its rate), so c opens when
+the engine is below the target and closes when it is above. The launch
+ends, into clutch out, when the clutch output speed passes the target
+and the mean |normalised slip| of the driven wheels is under 0.7; a
+brake above 0.1 returns it to open. Confidence: the rule and constants
+from the data flow, probable; the timing below confirmed on one car in
+three runs.
+
+Measured on the R34 at full throttle (scenario A, sim time from the
+throttle onset):
+
+| t (s) | km/h | State | c | Engine rpm | Clutch output rpm | Rear slip | Front slip |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.0 | 0.0 | open | 1.00 | 791 | 0 | 0.00 | 0.00 |
+| 0.3 | 0.4 | open | 1.00 | 2,395 | 44 | 0 | 0 |
+| 0.5 | 0.6 | open | 1.00 | 4,857 | 71 | 0 | 0 |
+| 0.6 | 2.1 | launch | 0.65 | 5,874 | 353 | 0.21 | 0.13 |
+| 0.7 | 5.7 | launch | 0.43 | 5,334 | 929 | 0.73 | 0.22 |
+| 0.9 | 12.7 | launch | 0.58 | 4,623 | 1,525 | 0.32 | 0.11 |
+| 1.1 | 19.2 | launch | 0.53 | 4,203 | 2,291 | 0.45 | 0.13 |
+| 1.3 | 25.8 | launch | 0.56 | 3,726 | 3,018 | 0.39 | 0.12 |
+| 1.4 | 28.9 | launch | 0.54 | 3,562 | 3,320 | 0.29 | 0.09 |
+| 1.5 | 31.1 | clutch out | 0.25 | 3,535 | 3,530 | 0.23 | 0.12 |
+| 1.6 | 33.1 | engaged | 0 | 3,776 | 3,776 | 0.22 | 0.06 |
+| 2.0 | 42.6 | engaged | 0 | 4,867 | 4,867 | 0.23 | 0.07 |
+| 2.5 | 54.0 | engaged | 0 | 6,146 | 6,146 | 0.20 | 0.06 |
+| 3.0 | 64.4 | engaged | 0 | 7,276 | 7,276 | 0.16 | 0.06 |
+
+(Slip is the mean normalised slip ratio of the axle.) The clutch stays
+fully open for 0.5 s while the engine revs to `StartRPM`; the car only
+creeps on the grade. The launch then holds the engine 80 to 100 rpm above
+the falling target with c between 0.43 and 0.58, the rears slipping at
+0.2 to 0.47 (peaks of 0.72 and 0.86 on single wheels near 0.7 s). At
+about 1.42 s and 29.6 km/h the clutch output speed passes the target
+(3,394 against 3,364 rpm) and the clutch closes over `ClutchOutTime`, locked
+by 1.58 s at 32.7 km/h. The engine's effective throttle (its load over
+the curve) is 0.3 at 0.1 s, 0.6 at 0.2 to 0.3 s, 0.83 at 0.5 s and 1 by
+0.9 s, which looks like boost build-up (probable).
+
+**Up-shift.** The automatic box requests a shift at about 0.96 ×
+`RedlineRPM`. On the R34 (three runs, within 0.02 s): request at
+3.20 s (68.1 km/h, 7,680 rpm); clutch in for 0.17 s with the throttle
+closed, so the engine brakes (this is the power cut); gear change for
+0.18 s, the gear number changing at its end, 3.55 s, which is the time
+scenario A quotes; rev-match 0.05 s; clutch out 0.30 s, locked at
+3.91 s, full power again by about 4.0 s.
+
+**Braking.** The clutch stays locked under the brake; the box shifts
+down and, near the stop, into reverse:
+
+- On the R34 the 2→1 downshift starts 0.18 s after the press (75 km/h,
+  3,570 rpm) and runs the same states as an up-shift: the gear becomes
+  1 at +0.50 s (59.8 km/h), the rev-match blips the engine to about
+  5,500 rpm, and the clutch is locked again at +1.02 s (36.7 km/h).
+- With the brake held and the speed below
+  `PhysicsSettings.ini` `MaxForwardVelShiftReverseMPH` (15 mph,
+  24.1 km/h), the box selects reverse (clutch open), and the pedals swap:
+  the brake pedal becomes the reverse throttle and the wheel brakes
+  release. On the R34 this came at 22.8 and 23.0 km/h in the two stops,
+  1.31 to 1.36 s after the press. The car then coasts for about 0.39 s
+  while the engine revs, a reverse launch spins the rears backwards, and
+  the clutch locks near 4 km/h, which stops the car 2.57 to 2.65 s after
+  the press.
+
 ### Brakes
 
 | Quantity | Column of `List_UpgradeBrakes` | Unit and rule |
 | --- | --- | --- |
-| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). The rear wheels decelerate with the driveline in gear, so their torque does not separate from the trace; use the bias to set it. The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it |
+| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 to 4,000 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). Each wheel carries a brake torque value, constant through both stops: the rears' is 0.41 × the fronts' on the R34 (both sliders at 0.5, both brakes 11 in, four pistons front and two rear), so take the rear as 0.41 × the front for M3 (measured on one car; the bias rule is open). The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it |
+| Braking friction | `List_TireCompound.TorqueFreeLongFrictionScaleBrake` × `GameFrictionScaleBraking` | the tyre's longitudinal friction scale on a wheel whose applied torque slows it (brake, or engine braking through the driveline): 1.8 × 1.0025 = 1.805 on the R34, against the speed-blended `…Accel0`/`…Accel1` scale (1.25 to 1.15) when the wheel is driven or free. The tyre's F_x already includes the scale, and its torque on the wheel is F_x × the rolling radius with no further factor. Confirmed on one car |
 | Bias | `BrakeBiasSlider` and `PhysicsSettings.ini` `BrakeBiasOffsetRear` | fraction |
 | Handbrake | `BiasHandbrake` | probable: handbrake strength |
 | ABS | `ReleasePointABS`, `DurationABS`, `ReleasePointABSFrontNoSteer`, `…FrontFullSteer`, `…RearNoSteer`, `…RearFullSteer` | see Assists |
@@ -356,8 +460,8 @@ off, automatic gears. M3 implements that set.
 
 ### ABS
 
-Each step, for each wheel: when the smoothed normalised slip ratio passes
-the release point (locking, so the slip is negative), the brake on that
+Each step, for each wheel: when the smoothed normalised slip ratio (the
+mean of the wheel's last five substep values) passes the release point (locking, so the slip is negative), the brake on that
 wheel goes to 0, and it is applied again after `DurationABS` seconds. The
 release point is blended by the steering input between the `NoSteer` and
 `FullSteer` columns of the axle (`ReleasePointABSFrontNoSteer`,
@@ -370,7 +474,12 @@ Measured on the R34's straight stops (no steering): the fronts released at
 a normalised slip of −2.9 to −3.3 and the rears at −2.4 to −2.7, which are
 the two `NoSteer` columns within the step size; each release lasted 0.045
 to 0.06 s against `DurationABS`, after which the brake went straight back
-to 1. So a straight ABS stop lets the wheels run to two or three times the
+to 1 with no ramp. Three releases checked against the trace came one step
+after the five-substep mean passed −3.0 (means −3.00, −2.86 and −2.96
+just before). Over the ABS part of the stop (the press to the reverse
+selection) the fronts were braked on 50 to 54 % of steps and the rears on
+74 to 81 %; an engine that releases far more often stops short of the
+oracle's deceleration. So a straight ABS stop lets the wheels run to two or three times the
 peak slip before it releases, which is why the mean deceleration (0.87 g)
 sits well below the tyre's peak grip: the gate number depends on these
 release points and on the curve past its peak. Confidence: the straight-
@@ -408,7 +517,7 @@ out for M3.
 | Brake ramp | `ControllerDelays\BrakeDelaySpeed`, `HandBrakeDelaySpeed` | the same rule. Measured: the traced brake control reads 1.0 on the first step of a full press, but the wheels' brake value ramps 0, 0.38, 0.68, 1.0 over 0.05 s, which is `BrakeDelaySpeed` full travels per second; the handbrake rate is probable |
 | Brake pedal curve | `PhysicsSettings.ini` `BrakeInputScale` (`…Input0`…`3`, `…Output0`…`3`) | a piecewise-linear map from the brake input to the brake torque fraction, probable |
 | Steering | `Data_Car.Steer*`, `PhysicsSettings.ini` `SteeringWheelFilter\*`, `SteerDefCountersteerRate`, `SteerDefDynSteerFindPeakRate` | measured at walking pace: the traced steer control steps straight to the stick (−1 at full left), so the shaping acts after it. The car's yaw then builds linearly over 0.40 s, the lock divided by `SteerMaxAngVelTurning`. At full lock the path radius (3.37 m) gives a kinematic road-wheel angle of 41.5°, which is `SteerMaxAngle` within 1°. So at low speed the road-wheel angle moves towards stick × `SteerMaxAngle` at `SteerMaxAngVelTurning` degrees per second, probable. With speed the lock narrows through the `SteerSpeedSensitive*` columns towards `SteerMaxAngleFiltered` (probable, not traced at speed). The counter-steer and find-peak rates belong to the assisted steering (`Steering` 1) and were not traced |
-| Gears | `Shifting` 0 | automatic: it shifts up at about 0.96 × `RedlineRPM` (1→2 at 7,690 rpm and 67.8 km/h, the same in three runs). A shift takes 0.60 to 0.66 s from the shift-state change to power back, which is `ClutchInTime` + `GearShiftTime` + `ClutchOutTime` within 0.05 s. Under braking it shifts down (2→1 near 58 km/h). With the brake held at low speed it selects reverse: at 23 km/h in one stop, at the stop in the other |
+| Gears | `Shifting` 0 | automatic: it shifts up at about 0.96 × `RedlineRPM` (1→2 requested at 7,680 rpm and 68.1 km/h, the same in three runs). A shift takes about 0.70 s from the request to the clutch locking, which is `ClutchInTime` + `GearShiftTime` + `ClutchOutTime` plus the short rev-match, with the throttle cut while the clutch opens. Under braking it shifts down (2→1, gear changed near 60 km/h). With the brake held below `MaxForwardVelShiftReverseMPH` it selects reverse and the brake pedal becomes the throttle (23 km/h in both stops). See "Clutch and gearbox states" |
 
 ## Oracle comparison (item 7)
 
@@ -487,14 +596,18 @@ Oracle numbers (sim time from the launch, from the body trace):
 
 What happens on the way:
 
-- **Clutch phase:** for the first 0.55 s the clutch slips while the engine
-  revs from idle to about 5,800 rpm; the car has moved off at 0.36 m/s
-  after 0.57 s. This phase sets most of 0-20, and an engine that lets the
-  clutch bite at once will be quicker there.
+- **Clutch phase:** for the first 0.5 s the clutch is open while the
+  engine revs from idle to `StartRPM`; the launch controller then slips
+  it, holding the engine above a falling target, until about 1.42 s and
+  29.6 km/h, and it is locked from 1.58 s (32.7 km/h). The table and the
+  rule are under "Clutch and gearbox states". This phase sets 0-20 and
+  most of 0-40 and 0-60: an engine that locks the clutch later is slow
+  there, and one that lets it bite at once is quick.
 - **First gear:** rear normalised slip ratio up to 0.79, front 0.25, no
   traction-control action.
-- **1→2 shift** at 67.8 km/h, 3.55 s after the launch, taking about 0.6 s
-  (see Gears).
+- **1→2 shift:** requested at 3.20 s (68.1 km/h); the gear number changes
+  at 3.55 s, and the clutch locks at 3.91 s (see "Clutch and gearbox
+  states"). Gate the gear change, not the request.
 - The physics-behaviour summary of the same routes (frame clock) gives
   0-60 2.62 to 2.69 s and 0-100 5.68 to 5.82 s; do not gate on those (see
   the trace notes).
@@ -524,7 +637,16 @@ tyres themselves make about 0.91 g. The fronts reach the ABS release
 point within 0.09 s of the press and the rears within 0.25 s, and the ABS
 then cycles each wheel between about −3 (front) or −2.5 (rear) and near 0
 until the stop (see ABS). The gearbox drops to first and then reverse on the way
-(see Gears). The engine runs the same inputs and compares the stop from
+(see "Clutch and gearbox states"), and the stop has two phases:
+
+| Phase | Run B1 | Run B2 |
+| --- | --- | --- |
+| ABS braking, press to reverse selection | 1.355 s, 81.7 → 22.8 km/h, 12.06 m/s² | 1.313 s, 79.4 → 23.0 km/h, 11.92 m/s² |
+| Reverse: coast, then reverse launch to the stop | 1.29 s, about 4.9 m/s² | 1.26 s, about 5.1 m/s² |
+
+The 8.57 m/s² mean depends on both: an engine that keeps braking to the
+stop with the ABS alone will be quicker than the oracle, so it needs the
+reverse selection with the pedal swap. The engine runs the same inputs and compares the stop from
 its own onset speed v₀: stopping distance v₀² / (2 × 8.57 m/s²).
 
 ### The lap
@@ -574,16 +696,23 @@ Checks on this ground:
 | Static normal loads | sum to the weight, front pair 57.5 % | 1 % |
 | 0-20, 0-40, 0-60, 0-80 km/h | scenario A's table | 2 % or 0.05 s, the larger |
 | 0-100 km/h | 5.84 s (5.837 and 5.851 in two runs) | 2 % (5.72 to 5.96 s) |
-| 1→2 shift | 67.8 km/h, 3.55 s | 2 % |
+| 1→2 gear change | 68 km/h, 3.55 s | 2 % |
 | Stop from scenario B's onset speed | 8.57 m/s² mean | 2 % |
 | Full-lock circle at 2 to 3 m/s (route `fh1-physics-steer`) | 3.37 m path radius | 2 % |
+
+The turn circle's inputs: full throttle for about 0.6 s of motion, then
+the gas released with full lock at about 3 m/s. The car coasts in first
+with the clutch locked and no throttle, the engine idling down from
+1,100 to 816 rpm, and the speed decays from 2.84 to 2.08 m/s over 3.5 s
+(about 0.22 m/s²). There is no creep throttle.
 
 ## Unknowns
 
 | Part | State | What closes it |
 | --- | --- | --- |
 | Lateral tyre value | over-predicted 7 to 11 %; a measured factor stands in | trace the lateral path at higher slip angles; the steer route at speed |
-| Brake torque | front measured at full press (about 3,500 N·m a wheel), formula and rear not decoded | a light brake press in a route; the rear in neutral |
+| Brake torque | front measured at full press (3,500 to 4,000 N·m a wheel), rear 0.41 × front on one car; the formula and bias rule not decoded | a light brake press in a route; a car with other brake columns |
+| Clutch capacity factor | (1 − c) × `ClutchMaxTorque` × 0.78 measured on one car | the same fit on a car with another `GameTorqueScale` |
 | Drag and rolling resistance | noisy fit, unit of the drag column open | a coasting route in neutral |
 | Boost and `GameTorqueScale` | net 1.00 on one car | the same fit on a naturally aspirated car and a supercharged one |
 | Differentials | limited-slip columns named only | a cornering trace under power |
