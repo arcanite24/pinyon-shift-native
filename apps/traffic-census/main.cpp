@@ -53,7 +53,7 @@ struct Phase {
 
 struct Result {
   Phase noon, night, cruise;
-  int car_samples = 0, off_road = 0, two_way = 0, right = 0;
+  int car_samples = 0, off_road = 0, two_way = 0, right = 0, one_way = 0, node_order = 0;
   std::vector<double> offsets, straight_speeds;
   traffic::PopulationStats stats;
   int bodies_max = 0, contacts = 0, player_contacts = 0, body_steps = 0;
@@ -84,11 +84,13 @@ double median(std::vector<double> v) {
   return v[v.size() / 2];
 }
 
+traffic::P3 g_spot{2002.9, 143.8, 960.0};
+
 Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, uint64_t seed, bool verbose,
            Physics* physics) {
   Result out;
   traffic::Population pop(roads, config, seed);
-  traffic::P3 player{2002.9, 143.8, 960.0}, velocity{0, 0, 0};
+  traffic::P3 player = g_spot, velocity{0, 0, 0};
   std::unique_ptr<traffic::Bodies> bodies;
   std::unique_ptr<drive::Vehicle> me;
   if (physics) {
@@ -177,15 +179,24 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
         continue;
       }
       const auto& r = roads.roads()[size_t(c.road)];
-      if (!r.oneway) {
-        // Its offset right of the centre line, in its direction of travel.
+      const auto& near_road = roads.roads()[size_t(h.road)];
+      if (!near_road.oneway) {
+        // Its offset right of the nearest road's centre line, in the
+        // direction its heading runs along that road (independent of the
+        // population's own road and arc length).
         out.two_way++;
         std::array<double, 2> d;
-        const auto p = roads.point_at(c.road, c.s, nullptr, &d);
-        const auto rt = traffic::right_of(d[0] * c.dir, d[1] * c.dir);
-        const double lat = (c.position.x - p.x) * rt[0] + (c.position.z - p.z) * rt[1];
+        roads.point_at(h.road, h.s, nullptr, &d);
+        const double along = std::sin(c.heading) * d[0] + std::cos(c.heading) * d[1];
+        const double lat = along >= 0 ? h.lateral : -h.lateral;
         out.right += lat > 0;
         out.offsets.push_back(lat);
+      } else {
+        // One-way: travelling in node order.
+        std::array<double, 2> d;
+        roads.point_at(h.road, h.s, nullptr, &d);
+        out.one_way++;
+        out.node_order += std::sin(c.heading) * d[0] + std::cos(c.heading) * d[1] > 0;
       }
       // Straight road: no bend under 300 m within 60 m either way.
       bool straight = true;
@@ -217,7 +228,7 @@ int main(int argc, char** argv) {
   std::string player_car = "NIS_SkylineGTRVSpecII_02";
   uint64_t seed = 1;
   int seeds = 10;
-  bool verbose = false;
+  bool verbose = false, check_models = false, freeway = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -227,6 +238,12 @@ int main(int argc, char** argv) {
     else if (a == "--verbose") verbose = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") player_car = next();
+    else if (a == "--at") {
+      g_spot.x = std::atof(next().c_str());
+      g_spot.y = std::atof(next().c_str());
+      g_spot.z = std::atof(next().c_str());
+    } else if (a == "--models") check_models = true;
+    else if (a == "--freeway") freeway = true;
     else {
       std::fprintf(stderr, "usage: traffic-census --game-root <disc> [--seed N] [--seeds N] [--verbose]\n");
       return 2;
@@ -248,6 +265,22 @@ int main(int argc, char** argv) {
   }
   traffic::Roads roads;
   roads.build(map);
+  if (freeway) {
+    // The middle of the longest one-way freeway way (density 4), 12 m to
+    // its left (off the carriageway).
+    int best = -1;
+    for (int i = 0; i < int(roads.roads().size()); ++i) {
+      const auto& r = roads.roads()[size_t(i)];
+      if (r.oneway && r.traffic && r.density == 4 && (best < 0 || r.length > roads.roads()[size_t(best)].length))
+        best = i;
+    }
+    std::array<double, 2> d;
+    const auto p = roads.point_at(best, roads.roads()[size_t(best)].length / 2, nullptr, &d);
+    const auto rt = traffic::right_of(d[0], d[1]);
+    g_spot = {p.x - rt[0] * 12, p.y, p.z - rt[1] * 12};
+    std::printf("freeway spot: road %d (%.0f m), at %.1f %.1f %.1f\n", best, roads.roads()[size_t(best)].length,
+                g_spot.x, g_spot.y, g_spot.z);
+  }
   std::unique_ptr<Physics> physics;
   if (!bake_dir.empty()) {
     physics = std::make_unique<Physics>();
@@ -260,7 +293,7 @@ int main(int argc, char** argv) {
     }
     physics->streamer = std::make_unique<world::Streamer>(physics->colorado, world::GatherOptions{}, 200,
                                                           &physics->collision);
-    if (!physics->streamer->update(2002.9, 960.0, nullptr, &error)) {
+    if (!physics->streamer->update(g_spot.x, g_spot.z, nullptr, &error)) {
       std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
       return 2;
     }
@@ -306,10 +339,42 @@ int main(int argc, char** argv) {
     }
     std::printf("bodies: %zu of %zu traffic models baked, torque scale %.2f\n", physics->params.size(),
                 config.models.size(), physics->torque_scale);
+    if (check_models) {
+      // Each model as a body on flat ground: its mass and box, then 8 s
+      // launched at 30 mph holding it with the traffic controls' caps.
+      int bad = 0;
+      const drive::FlatGround flat;
+      for (const auto& [id, p] : physics->params) {
+        drive::Vehicle v(p);
+        v.set_ai_controls(true);
+        v.launch({0, 0, 0}, 0, 13.41);
+        double up = 1, slowest = 1e9, fastest = 0;
+        for (int i = 0; i < int(8 / drive::Vehicle::kStep); ++i) {
+          drive::Input in;
+          traffic::BodiesOptions bo;
+          bo.accel_max_input = config.accel_max_input;
+          bo.brake_max_input = config.brake_max_input;
+          traffic::Bodies::speed_input(13.41, v.speed(), bo, in);
+          v.step(in, flat);
+          if (verbose && i % 60 == 0)
+            std::printf("    %lld t %.1f v %.2f gear %d rpm %.0f thr %.2f brk %.2f clutch %.2f\n", (long long)id,
+                        v.time(), v.speed(), v.gear(), v.rpm(), in.throttle, in.brake, v.clutch());
+          up = std::min(up, drive::rotate(v.orientation(), {0, 1, 0}).y);
+          if (i * drive::Vehicle::kStep > 2) slowest = std::min(slowest, v.speed()), fastest = std::max(fastest, v.speed());
+        }
+        const bool ok = up > 0.95 && slowest > 12.4 && fastest < 14.4;
+        bad += !ok;
+        std::printf("  model %4lld: mass %6.0f kg, box %.2f x %.2f x %.2f m; 2-8 s at %.2f to %.2f m/s, up %.3f%s\n",
+                    (long long)id, p.mass, p.size.x, p.size.y, p.size.z, slowest, fastest, up, ok ? "" : "  MISS");
+      }
+      std::printf("models: %d miss(es)\n", bad);
+      return bad ? 1 : 0;
+    }
   }
 
   Phase noon, night, cruise;
-  int samples = 0, off_road = 0, two_way = 0, right = 0, spawned = 0, away = 0, despawned = 0;
+  int samples = 0, off_road = 0, two_way = 0, right = 0, spawned = 0, away = 0, despawned = 0, one_way = 0,
+      node_order = 0;
   std::vector<double> offsets, speeds, spawn_d, despawn_d;
   for (int k = 0; k < seeds; ++k) {
     const Result r = run(roads, config, seed + uint64_t(k), verbose && k == 0, physics.get());
@@ -325,6 +390,7 @@ int main(int argc, char** argv) {
     night.sum += r.night.mean(), night.samples++;
     cruise.sum += r.cruise.mean(), cruise.samples++;
     samples += r.car_samples, off_road += r.off_road, two_way += r.two_way, right += r.right;
+    one_way += r.one_way, node_order += r.node_order;
     spawned += r.stats.spawned, away += r.stats.spawned_away, despawned += r.stats.despawned;
     offsets.insert(offsets.end(), r.offsets.begin(), r.offsets.end());
     speeds.insert(speeds.end(), r.straight_speeds.begin(), r.straight_speeds.end());
@@ -339,8 +405,9 @@ int main(int argc, char** argv) {
   std::printf("  02:00 parked   %.2f cars (0.9)\n", night.mean());
   std::printf("  noon cruising  %.2f cars (4.4)\n", cruise.mean());
   std::printf("  moving samples %d, off road (> 15 m) %d\n", samples, off_road);
-  std::printf("  two-way: right of the centre line %.1f %%, median offset %.2f m\n",
+  std::printf("  two-way (nearest road, by heading): right of the centre line %.1f %%, median offset %.2f m\n",
               two_way ? 100.0 * right / two_way : 0.0, median(offsets));
+  std::printf("  one-way samples %d, in node order %d\n", one_way, node_order);
   std::printf("  spawns %d at %.0f to %.0f m (5-95 %%), %.0f %% away (5 of 21)\n", spawned, pct(spawn_d, 0.05),
               pct(spawn_d, 0.95), spawned ? 100.0 * away / spawned : 0.0);
   std::printf("  despawns %d at %.0f to %.0f m\n", despawned, pct(despawn_d, 0.05), pct(despawn_d, 0.95));
@@ -354,6 +421,7 @@ int main(int argc, char** argv) {
   gate(std::fabs(night.mean() - 0.9) <= 0.3 * 0.9, "02:00 count within 30 % of 0.9");
   gate(off_road == 0, "every car within 15 m of a traffic road");
   gate(two_way == 0 || right >= 0.95 * two_way, "right of the centre line in 95 % of samples");
+  gate(node_order == one_way, "one-way roads driven in node order");
   gate(std::fabs(median(offsets) - 2.2) <= 0.5, "offset 2.2 +- 0.5 m");
   gate(pct(spawn_d, 0.05) >= 317 - 30 && pct(spawn_d, 0.95) <= 347 + 30, "spawns within 30 m of 317-347 m");
   gate(despawn_d.empty() || (pct(despawn_d, 0.05) >= 392 - 30 && pct(despawn_d, 0.95) <= 395 + 30),

@@ -258,6 +258,9 @@ bool Renderer::create_device(std::string& error) {
   VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   f13.dynamicRendering = VK_TRUE;
   f13.synchronization2 = VK_TRUE;
+  // The car shaders' alpha-tested discards compile to demote (a Vulkan 1.3
+  // required feature, but it must still be enabled).
+  f13.shaderDemoteToHelperInvocation = VK_TRUE;
   VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   f2.pNext = &f13;
   std::vector<const char*> extensions;

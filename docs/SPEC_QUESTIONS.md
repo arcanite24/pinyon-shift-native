@@ -751,4 +751,17 @@ question Q38)" and "Colour byte order"). Built:
   density: no day/night lighting. Not done: festival cars, fades,
   indicators and hazard lights, lane changes (one lane each way), the
   give-way slowing at junctions, the gear caps (GearMaxSpeed1st to 4th)
-  and SteeringMultiplier.
+  and SteeringMultiplier, and the dead / reanimate behaviour (a car left
+  stopped off its line stays a body until it despawns).
+- **Checks after review.** The census with bodies (10 seeds): noon 4.82,
+  02:00 1.43 (the night miss is larger than kinematic's 1.25), cruising
+  2.95. The lane check now takes the nearest traffic road and the car's
+  heading, independent of the population's own road: 100 % right at a
+  median 2.20 m (10,985 samples). Beside the longest one-way freeway way
+  (`--freeway`): 7,186 of 7,186 samples in node order, 26.78 m/s (60 mph is
+  26.82), none off road. All 17 models as bodies (`--models`): stock mass
+  (1,045 to 5,000 kg), their own boxes (the bus 2.39 x 9.90 m), upright;
+  13 hold 30 mph within 0.5 m/s at AccelMaxInput 0.2, but the Prius, Leaf,
+  Focus and Corolla lose about 0.3 m/s each second at that throttle (the
+  Corolla at 2,500 to 3,000 rpm in 2nd). Open: whether AccelMaxInput is a
+  cap on the throttle (as read here) or on its rate.

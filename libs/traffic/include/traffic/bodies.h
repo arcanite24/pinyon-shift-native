@@ -45,6 +45,10 @@ class Bodies {
   // handed back.
   void step(const drive::Ground& ground, drive::Vehicle* player);
 
+  // The throttle and brake for a target speed (ours: proportional with a
+  // small hold, capped at the options' inputs).
+  static void speed_input(double target, double speed, const BodiesOptions& o, drive::Input& in);
+
   const drive::Vehicle* body(uint32_t car) const;
   size_t count() const { return bodies_.size(); }
   int contacts() const { return contacts_; }  // since the start

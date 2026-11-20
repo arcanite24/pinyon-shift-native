@@ -163,6 +163,8 @@ void TrafficView::update_guests() {
     ++uploads_;
     params_[id] = drive::params_for_baked_car(s->car(), bake_dir_);
     g.showroom = std::move(s);
+    std::printf("traffic: t %.1f s: model %lld (%s) uploaded in %.0f ms\n", population_->time(), (long long)id,
+                media_[id].c_str(), ms);
   }
   // Models neither loaded nor driving: dropped (out of the instances first).
   for (auto it = guests_.begin(); it != guests_.end();) {
@@ -172,6 +174,8 @@ void TrafficView::update_guests() {
     }
     host_.set_instances({});
     params_.erase(it->first);
+    std::printf("traffic: t %.1f s: model %lld (%s) dropped\n", population_->time(), (long long)it->first,
+                media_[it->first].c_str());
     it = guests_.erase(it);
   }
 }

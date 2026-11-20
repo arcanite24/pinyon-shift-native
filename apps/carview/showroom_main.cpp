@@ -1243,7 +1243,7 @@ int run_drive(int argc, char** argv) {
       }
       std::unique_ptr<TrafficView> traffic;
       if (status == 0 && streamer && (traffic_flag == 1 || (traffic_flag < 0 && !headless))) {
-        traffic = std::make_unique<TrafficView>(renderer, showroom, bake_dir, headless);
+        traffic = std::make_unique<TrafficView>(renderer, showroom, bake_dir, headless && !async_stream);
         const auto game_root = world_dir.parent_path().parent_path().parent_path();
         if (!traffic->open(game_root, &ground, hour, traffic_seed, error)) {
           std::fprintf(stderr, "carview: note: no traffic: %s\n", error.c_str());

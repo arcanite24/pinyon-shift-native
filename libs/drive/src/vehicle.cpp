@@ -149,11 +149,13 @@ void Vehicle::launch(const Vec3& position, double heading, double speed, double 
   pos_ = position + rotate(rot_, com_local_);
   vel_ = rotate(rot_, Vec3{0, 0, speed});
   for (int i = 0; i < kWheels; ++i) w_[i].omega = p_.tyre_radius[i] > 0 ? speed / p_.tyre_radius[i] : 0;
+  // The highest gear that keeps the engine above the floor and below the
+  // up-shift point (first gear when none does).
   int gear = 1;
+  const double floor = std::max(p_.idle_rpm * 1.5, 0.35 * p_.redline_rpm);
   for (int g = 1; g <= int(p_.gears.size()); ++g) {
     const double rpm = speed / std::max(1e-3, p_.tyre_radius[2]) * ratio(g) * kRpm;
-    if (rpm < p_.upshift_fraction * p_.redline_rpm) gear = g;
-    if (rpm < std::max(p_.idle_rpm * 1.2, 0.3 * p_.redline_rpm)) break;
+    if (rpm < p_.upshift_fraction * p_.redline_rpm && rpm >= floor) gear = g;
   }
   gear_ = target_gear_ = gear_before_ = gear;
   clutch_ = 1;

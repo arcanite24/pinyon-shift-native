@@ -71,10 +71,16 @@ drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const 
   // Pure pursuit: the road-wheel angle onto the arc through the aim point.
   const double delta = d2 > 1e-6 ? std::atan(2 * wheelbase * local.x / d2) : 0;
   in.steer = std::clamp(delta / std::max(0.05, p.max_steer), -1.0, 1.0);
-  const double err = car.target - speed;
-  if (err > 0) in.throttle = std::clamp(0.08 * err + 0.05, 0.0, o_.accel_max_input);
-  else if (err < -0.3 || car.target < 0.5) in.brake = std::clamp(-0.2 * err + (car.target < 0.5 ? 0.1 : 0), 0.0, o_.brake_max_input);
+  speed_input(car.target, speed, o_, in);
   return in;
+}
+
+void Bodies::speed_input(double target, double speed, const BodiesOptions& o, drive::Input& in) {
+  const double err = target - speed;
+  in.throttle = in.brake = 0;
+  if (target < 0.5) in.brake = o.brake_max_input;  // stop and hold
+  else if (err > -0.2) in.throttle = std::clamp(0.25 * err + 0.1, 0.0, o.accel_max_input);
+  else if (err < -0.6) in.brake = std::clamp(-0.2 * err, 0.0, o.brake_max_input);
 }
 
 bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b) {
