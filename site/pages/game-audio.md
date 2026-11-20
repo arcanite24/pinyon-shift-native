@@ -11,6 +11,8 @@ All of the game's sound goes through **FMOD Ex**: event projects (`.fev`) name c
 
 The radio is simpler than it looks. All its music is one 680 MB bank of plain MP3 samples, `Radio_Music.fsb`, and an XML file lists the stations and which samples each may play. That is why custom stations are possible as data mods ([Modding](modding.md#custom-radio-stations)), while adding a fourth selectable station is not: the station names and their icons are in the executable.
 
+The three stations behave like one radio with three dials. D-pad right steps Bass Arena, Pulse, Rocks, off and round again, and left goes back. Each station keeps its own place in its own shuffled playlist, and all of them move on together while any station is playing; turning the radio off stops all of them. A track runs to its `IdentStart` marker, where a station ident starts over its last seconds, and the next track starts a fixed time into the ident; a DJ line then talks over the new track's intro. This was measured by matching 40 and 60 s recordings of the game's output against the decoded tracks. The rules and measurements are in [RADIO.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/specs/RADIO.md), and `tools/re/radio.py` lists and decodes each station from the player's files.
+
 An FSB4 bank's header lists its samples, and each radio sample carries three named sync points. This reads them without decoding any audio:
 
 ```python
@@ -89,3 +91,7 @@ Three emission groups sound for most cars: intake, engine (ambient) and exhaust 
 ## Radio presentation
 
 {{findings:audio/Radio presentation}}
+
+## Radio playback
+
+{{findings:audio/Radio playback}}

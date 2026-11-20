@@ -423,6 +423,85 @@ how = """tools/re/media-decode-check.py sample comparison, 2026-11-19 (RI-0.6)."
 confidence = """probable"""
 source = """docs/REIMPLEMENTATION_PLAN.md RI-0.6"""
 
+[[finding]]
+group = """Radio banks and playlists"""
+base = """RadioSoundbankInfo_Music.xml, RadioSoundbankInfo_VO_<lang>.xml SoundBankIndex"""
+v4 = """same"""
+name = """clip names resolve through the info files, not the bank's names"""
+what = """FSB4 keeps only 29 characters of a sample name, so many DJ lines in `Radio_VO_EN.fsb` share a truncated name. A station's clip name resolves through the info file's `SoundBankIndex` instead: with that, all 125 playlist entries, all ident and DJ names of the nine stations and the 29 `FestivalUpdate` lines resolve, against 127 music and 536 VO samples. Two music samples (`Autoshow_R1_LetMeGo`, `Paintshop_R3_BackOfYourNeck`) and 47 English VO samples are referenced by no station. The disc has VO banks for EN, BR, FR and MX only, but info files for 15 languages."""
+how = """`tools/re/radio.py census` over the disc; FFmpeg decoded the first track and ident of every station to the declared length (18 of 18 exact)."""
+confidence = """confirmed"""
+note = """Which bank a language without its own VO bank uses was not traced."""
+source = """docs/specs/RADIO.md; tools/re/radio.py"""
+
+[[finding]]
+group = """Radio banks and playlists"""
+base = """RadioSystem.xml System, Idents, DJ dialogue groups"""
+v4 = """same"""
+name = """station contents and system levels"""
+what = """Radio1-3 hold 22, 23 and 22 tracks (about 123, 99 and 82 minutes), 11, 10 and 14 idents (three shared by all three), and per DJ (Scott Tyler, Holly Cruz, Phoenix Fox) 72, 65 and 79 regular lines, 29 special lines (barn-find and location hints), 21 immediate lines (story), and 10 festival lead-ins and 10 lead-outs. The DJ bookend groups hold only `DJ_Blank`. `Radio4_Silent` (`isOffStation`) plays two blank tracks with blank idents and blank DJ lines. Every track's four time-of-day likelihoods are 1. `System` sets `maxTracksBetweenDJ` 1, `musicLevel` 0.85, `identLevel` 0.3, `dialogueLevel` 1, `duckValue` 0.3 with 0.1 s down and 0.5 s up, `stationChangeFadeTimeUser` 0.25 s, and new-track HUD delays of 2 s (free roam) and 4 s (race). `RadioSystem.xml` is not strict XML: bare `&` and an attribute named `3dPanLevel`."""
+how = """Reading the file with `tools/re/radio.py census`."""
+confidence = """confirmed"""
+note = """The file's values are confirmed; how the levels, duck and HUD delays apply is probable (SPEC-RADIO)."""
+source = """docs/specs/RADIO.md; tools/re/radio.py"""
+
+# ------------------------------------------------------------- Radio playback
+
+[[finding]]
+group = """Radio playback"""
+base = """D-pad left and right in free roam"""
+v4 = """not checked"""
+name = """station cycle order"""
+what = """D-pad right steps Bass Arena, Pulse, Rocks, off and back to Bass Arena; D-pad left steps the other way (off to Rocks, Bass Arena to off). Off is a stop in the cycle, not a separate button. The flows can set a station by name (`CSetRadioStation` with `bass_arena`, `pulse`, `2_eleven`, `radio_off`) and lock switching (`CEnableRadioStationSwitching`, used while the story's radio is broken)."""
+how = """Hidden route runs `fh1-radio-cycle` (five presses right, two left) and `fh1-radio-switchback` from the `acc9-stock` seed, read from the station popups; the flow files in `gamemodes.zip`."""
+confidence = """confirmed"""
+note = """The station at the start of free roam differed between two runs from the same seed (off once, Rocks once); the rule is open."""
+source = """docs/specs/RADIO.md; config/render-tests/fh1-radio-cycle.fh1test"""
+
+[[finding]]
+group = """Radio playback"""
+base = """station positions while away"""
+v4 = """not checked"""
+name = """stations advance only while the radio is on"""
+what = """Every station keeps its own track and position. While any station is selected, all of them advance in real time; while the radio is off, none does. Rocks left mid-track and selected again after 10 s of off resumed within 0.1 s of where it was; left for 61 s, of which 20 s were on Bass Arena, it came back 20.2 s further on; another time 45 s of Bass Arena moved it on by 45 s into its next track. One Bass Arena return landed 5 s later than this rule gives, across a DJ line and ident (open). When the radio first came on in one run, the three stations stood at different points of different tracks (88, 73 and 39 % of the way through), so a station's start is a random track and point."""
+how = """Each 40 or 60 s native-mix capture was matched against every decoded station track and clip by cross-correlation (`tools/re/radio.py match`, 1 to 4 s windows, scores 0.9 to 0.99 on music); positions compared across switches."""
+confidence = """probable"""
+source = """docs/specs/RADIO.md; .local/runs m4radio-a and m4radio-b"""
+
+[[finding]]
+group = """Radio playback"""
+base = """track, ident and DJ order"""
+v4 = """not checked"""
+name = """shuffle, idents on sync points and DJ lines over the next intro"""
+what = """A track plays to its `IdentStart` sync point, where an ident starts over its tail (overlap median 2 s); the next track starts at the ident's `OffsetStartNextTrack` (3.8 to 13.2 s into idents of 5.2 to 13.9 s), so the ident overlaps the next track's start. No crossfade was heard. In both observed changes a DJ regular line started within 0.2 s of the next track and talked over its intro. The next track is not the playlist's next entry (16 to 4 on Bass Arena, 1 to 20 on Rocks): the order is a shuffle."""
+how = """Cross-correlation of the captures against the decoded tracks, idents and DJ lines, with the sync points from the info files."""
+confidence = """probable"""
+note = """Two transitions with a DJ line and one with an ident only were observed; whether a DJ line follows every track (`maxTracksBetweenDJ` 1) and whether the music ducks under it were not measured."""
+source = """docs/specs/RADIO.md"""
+
+[[finding]]
+group = """Radio playback"""
+base = """native mix, radio and engine"""
+v4 = """not checked"""
+name = """radio level and channels"""
+what = """The radio stations play stereo on the front left and right speakers only. Parked at idle in free roam with the default mix, the radio measured 0.08 to 0.10 RMS on the front channels against 0.008 for the idling engine alone (radio off), about 20 dB louder. Snapshots in the `Radio` group lower the player's engine to 0.4 while a DJ speaks (`RadioDJSpeaking`, `RadioFestivalUpdate`), and `SatNavPlaying` and `VOPlaying` lower the music to 0.25."""
+how = """Per-channel RMS of the 6-channel native captures with every other mix category at 0; the snapshot levels from `AudioMixerSnapshots.xml`."""
+confidence = """probable"""
+note = """One seed, idle only; the level under throttle was not captured."""
+source = """docs/specs/RADIO.md"""
+
+[[finding]]
+group = """Radio presentation"""
+base = """station popup timing and layout"""
+v4 = """not checked"""
+name = """the station popup"""
+what = """A station change shows the station's `RS_*` logo with the current track's title and artist under it (white title, artist on a pink label), right-aligned at the right of the screen above the speedometer: at 1280x720 the logo spans about x 1075 to 1210 and y 368 to 412, the two text lines end near x 1207 and y 470. Switching to off shows a muted-speaker icon and RADIO OFF on one line in the title's place. RADIO OFF is fully shown 20 frames (60 Hz) after the press and gone by about 190; a station's popup starts fading in 36 to 48 frames after the press, is full by 54 to 100, fades out from about 190 and is gone by 220 to 240. So it shows for about 2.5 s plus fades of about 0.2 s."""
+how = """HUD captures 10 to 360 frames after each press on the two radio routes, read by eye."""
+confidence = """probable"""
+note = """The extra delay of a station's popup over RADIO OFF is probably the wait for the track's name; the timer behind it was not traced."""
+issue = """#445"""
+source = """docs/specs/RADIO.md"""
+
 # ---------------------------------------------------------------- Engine sound
 
 [[finding]]
