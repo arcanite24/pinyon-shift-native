@@ -1388,6 +1388,11 @@ int run_drive(int argc, char** argv) {
             showroom.set_world_fade(float(kPropLod0), float(kPropLodBand),
                                     float(kPropRadius - kRegather - kSwapLag - kPropEdgeBand),
                                     float(kPropRadius - kRegather - kSwapLag));
+            // SHIFT_WORLD_FADE="lod band start end" overrides them (checks).
+            if (const char* e = std::getenv("SHIFT_WORLD_FADE")) {
+              float f[4];
+              if (std::sscanf(e, "%f %f %f %f", &f[0], &f[1], &f[2], &f[3]) == 4) showroom.set_world_fade(f[0], f[1], f[2], f[3]);
+            }
             // Headless frames repeat: their swaps stay instant.
             if (!headless || std::getenv("SHIFT_SWAP_FADE")) showroom.set_world_swap_fade(kSwapFadeSeconds);
           }

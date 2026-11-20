@@ -179,7 +179,7 @@ class Showroom {
   // The caller's camera and lighting; the stripe colour is the car's own.
   void set_frame(const ShowroomFrame& frame) {
     frame_ = frame;
-    for (int i = 0; i < 4; ++i) frame_.stripe[i] = stripe_[i];
+    for (int i = 0; i < 4; ++i) frame_.stripe[i] = stripe_[i], frame_.world_fade[i] = world_fade_[i];
   }
   // Moves the wheels, rotors and callipers (LF, RF, LR, RR). Until it is
   // called they stand at the car's rest centres, as the showroom shows them.
@@ -239,8 +239,8 @@ class Showroom {
   // and how long a swapped-in scenery takes to dither in over the one it
   // replaces (0: swapped at once). Both ours.
   void set_world_fade(float lod, float band, float edge_start, float edge_end) {
-    frame_.world_fade[0] = lod, frame_.world_fade[1] = band;
-    frame_.world_fade[2] = edge_start, frame_.world_fade[3] = edge_end;
+    world_fade_[0] = lod, world_fade_[1] = band, world_fade_[2] = edge_start, world_fade_[3] = edge_end;
+    for (int i = 0; i < 4; ++i) frame_.world_fade[i] = world_fade_[i];
   }
   void set_world_swap_fade(double seconds) { swap_fade_seconds_ = seconds; }
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
@@ -413,6 +413,7 @@ class Showroom {
     std::vector<WorldGeometry::Draw> draws;
     double origin[2] = {0, 0};
   };
+  float world_fade_[4] = {0, 0, 0, 0};  // set_world_fade's, kept over set_frame
   bool fading_on_ = false;
   FadingWorld fading_;
   std::chrono::steady_clock::time_point fade_start_{};
