@@ -254,6 +254,7 @@ Showroom::~Showroom() {
   r_.destroy_buffer(frame_buffer_);
   r_.destroy_buffer(shadow_frame_buffer_);
   drop_pending_world();
+  drop_fading_world(true);
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
   for (auto& [record, t] : world_textures_) r_.destroy_image(t);
@@ -1882,6 +1883,9 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     if (flags && mat.layers == 3) flags |= 16;
     if (flags && mat.layers == 4) flags |= 32;  // tree sprite: turned to the camera in world.vert
     if (flags) std::memcpy(d.push.tint, mat.tiling.data(), sizeof d.push.tint);
+    // The distance cross-fade (world.frag): 128 a prop's LOD00, 256 its
+    // LOD02, 512 a prop of one level.
+    if (mat.fade >= 1 && mat.fade <= 3) flags |= 64u << mat.fade;
     d.push.params[1] = float(flags);
     d.push.params[2] = float(mat.far);                                 // world.vert's depth push
     // Light gain (world.frag): WORLD-MATERIALS has something brighten the
@@ -1964,6 +1968,7 @@ bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
 
 bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   vkDeviceWaitIdle(r_.device_);
+  drop_fading_world(true);
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
   world_draws_.clear();
@@ -2240,11 +2245,24 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
   }
   // The scenery in use may still be read by the frame in flight: it goes
-  // once that frame is done, off this thread (no device wait here).
-  retire([this, v = world_vertices_, i = world_indices_]() mutable {
-    r_.destroy_buffer(v);
-    r_.destroy_buffer(i);
-  });
+  // once that frame is done, off this thread (no device wait here). With a
+  // swap fade it is kept and drawn dithered under the new one first (ours:
+  // a regather's changes cross-fade rather than pop).
+  drop_fading_world(false);
+  if (swap_fade_seconds_ > 0 && world_textured_ && p.staged.textured && world_vertices_.buffer && p.vertices.buffer) {
+    fading_.vertices = world_vertices_;
+    fading_.indices = world_indices_;
+    fading_.draws = std::move(world_draws_);
+    fading_.origin[0] = world_origin_[0];
+    fading_.origin[1] = world_origin_[1];
+    fading_on_ = true;
+    fade_start_ = std::chrono::steady_clock::now();
+  } else {
+    retire([this, v = world_vertices_, i = world_indices_]() mutable {
+      r_.destroy_buffer(v);
+      r_.destroy_buffer(i);
+    });
+  }
   world_vertices_ = p.vertices;
   world_indices_ = p.indices;
   p.vertices = {};
@@ -2266,6 +2284,23 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
 
 bool Showroom::set_world(StagedWorld staged, std::string& error) {
   return begin_world(std::move(staged), error) && poll_world(true, nullptr);
+}
+
+void Showroom::drop_fading_world(bool now) {
+  if (!fading_on_) return;
+  fading_on_ = false;
+  fading_.draws.clear();
+  if (now) {
+    r_.destroy_buffer(fading_.vertices);
+    r_.destroy_buffer(fading_.indices);
+  } else {
+    retire([this, v = fading_.vertices, i = fading_.indices]() mutable {
+      r_.destroy_buffer(v);
+      r_.destroy_buffer(i);
+    });
+  }
+  fading_.vertices = {};
+  fading_.indices = {};
 }
 
 void Showroom::set_world_transform(const float transform[16]) {
@@ -2388,11 +2423,49 @@ void Showroom::record_world(VkCommandBuffer cmd) {
   vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
   if (world_textured_) {
+    world_stats_ = {};
+    float swap = 2.0f;
+    if (fading_on_) {
+      const double t =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - fade_start_).count() / swap_fade_seconds_;
+      if (t >= 1.0) drop_fading_world(false);
+      else swap = float(std::max(t, 0.0));
+    }
+    record_world_textured(cmd, world_draws_, world_transform_, swap, false);
+    if (fading_on_) {
+      // The outgoing scenery's positions are relative to its own origin:
+      // shifted by the origins' difference into the transform.
+      const float dx = float(fading_.origin[0] - world_origin_[0]), dz = float(fading_.origin[1] - world_origin_[1]);
+      float m[16];
+      std::memcpy(m, world_transform_, sizeof m);
+      for (int r = 0; r < 4; ++r) m[12 + r] += world_transform_[r] * dx + world_transform_[8 + r] * dz;
+      VkDeviceSize zero = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &fading_.vertices.buffer, &zero);
+      vkCmdBindIndexBuffer(cmd, fading_.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
+      record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true);
+    }
+    return;
+  }
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &material_sets_[0], 0,
+                          nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque_);
+  for (const auto& d : world_draws_) {
+    ShowroomPush push = d.push;
+    std::memcpy(push.model, world_transform_, sizeof push.model);
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ShowroomPush), &push);
+    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+  }
+}
+
+void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<WorldGeometry::Draw>& draws,
+                                     const float transform[16], float swap, bool outgoing) {
+  {
     VkPipeline bound = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     // The benchmark's split (Renderer::mark): the sky, then each blend group.
     static const char* const kGroup[] = {"world opaque", "world cut-outs", "world blended"};
-    int group = -1;
+    int group = outgoing ? 99 : -1;  // the outgoing scenery adds no marks
     // The view's side planes in the scenery's frame (clip = view_projection
     // x the scenery's transform, column-major): w + x, w - x, w + y, w - y.
     // A box wholly outside one of them is not drawn. The near and far
@@ -2401,7 +2474,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
     for (int c = 0; c < 4; ++c)
       for (int r = 0; r < 4; ++r) {
         float s = 0;
-        for (int k = 0; k < 4; ++k) s += frame_.view_projection[k * 4 + r] * world_transform_[c * 4 + k];
+        for (int k = 0; k < 4; ++k) s += frame_.view_projection[k * 4 + r] * transform[c * 4 + k];
         clip[c * 4 + r] = s;
       }
     float planes[4][4];
@@ -2420,8 +2493,8 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       return false;
     };
     int bias = -1;  // the depth bias set: -1 none yet, else the decal flag
-    world_stats_ = {};
-    for (const auto& d : world_draws_) {
+    for (const auto& d : draws) {
+      if (outgoing && !d.cull) continue;  // the sky: the incoming one's is drawn whole
       if (d.cull && world_cull_ && outside(d)) {
         ++world_stats_.culled;
         continue;
@@ -2433,7 +2506,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
         r_.mark(cmd, "sky");
         group = 0;
       }
-      if (group >= 0 && d.blend != group) {
+      if (group >= 0 && group < 99 && d.blend != group) {
         r_.mark(cmd, kGroup[std::min(group, 2)]);
         group = d.blend;
       }
@@ -2467,25 +2540,15 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       // Cut-outs without MSAA: world.frag's alpha test (flag 64).
       if (d.blend == 1 && r_.samples_ == VK_SAMPLE_COUNT_1_BIT)
         push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 64u);
-      std::memcpy(push.model, world_transform_, sizeof push.model);
+      std::memcpy(push.model, transform, sizeof push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+      push.uv0[3] = swap;  // world.frag's swap dither
       std::memcpy(push.uv1, world_up_, sizeof push.uv1);
       vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
     }
-    if (group >= 0) r_.mark(cmd, kGroup[std::min(group, 2)]);
-    return;
-  }
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &material_sets_[0], 0,
-                          nullptr);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque_);
-  for (const auto& d : world_draws_) {
-    ShowroomPush push = d.push;
-    std::memcpy(push.model, world_transform_, sizeof push.model);
-    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(ShowroomPush), &push);
-    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+    if (group >= 0 && group < 99) r_.mark(cmd, kGroup[std::min(group, 2)]);
   }
 }
 

@@ -21,6 +21,7 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 shadow_matrix;  // the frame's space to the shadow map's clip
   vec4 shadow;
   vec4 shadow_bias;
+  vec4 world_fade;  // prop LOD distance, its band; the edge fade's start and end
 } frame;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 
@@ -46,7 +47,14 @@ layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
-           kFlagBillboard = 32u, kFlagAlphaTest = 64u;
+           kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u;
+
+// The screen-door threshold of this pixel (interleaved gradient noise): one
+// pattern shared by every draw, so fades that split a pixel between two
+// draws by it leave neither a gap nor a double (ours).
+float dither_threshold() {
+  return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+}
 
 // The sky gradient (ours, linear): pale haze at the horizon to blue above.
 const vec3 kSkyHorizon = vec3(0.477, 0.604, 0.708);
@@ -98,6 +106,19 @@ void main() {
     vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(clamp(h, 0.0, 1.0), 0.6));
     out_color = vec4(out_rgb(sky * (h < 0.0 ? 0.85 : 1.0)), 1.0);
     return;
+  }
+  // Cross-fades by the screen door (ours). A swapped-in scenery takes the
+  // pixels under t, the one it replaces the rest (sun.w: 2 none, t, 3 + t).
+  // A prop's LOD00 gives way to its LOD02 over the LOD band, and the far
+  // levels fade out before the gather's edge, by distance from the eye.
+  float door = dither_threshold();
+  float swap = draw.sun.w;
+  if (swap < 1.5 ? door >= swap : swap > 2.5 && door < swap - 3.0) discard;
+  if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && frame.world_fade.y > 0.0) {
+    float d = length(v_position - frame.eye.xyz);
+    float s = smoothstep(frame.world_fade.x, frame.world_fade.x + frame.world_fade.y, d);
+    float e = smoothstep(frame.world_fade.z, frame.world_fade.w, d);
+    if ((flags & kFlagLodNear) != 0u ? door < s : door < e || ((flags & kFlagLodFar) != 0u && door >= s)) discard;
   }
   // Terrain layers (WORLD-MATERIALS, Terrain shading): tint holds the
   // tilings, Blend_A's in xy and Blend_B's in zw; the weight is the vertex

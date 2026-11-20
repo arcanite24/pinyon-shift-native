@@ -246,7 +246,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   std::map<decltype(MeshMaterial{}.key()), uint32_t> material_index;
   // far_pass: the far ring's objects only (the near pass skips them).
   auto add_triangles = [&](const fh1::RenderModel& model, uint32_t model_index, const fh1::Placement* placement,
-                           const std::map<std::string, int>* lowest, bool far_pass = false) {
+                           const std::map<std::string, int>* lowest, bool far_pass = false, uint8_t fade = 0) {
     // The model's texture list (WORLD-MATERIALS): list j for member j + 1.
     const std::vector<uint32_t>* texture_list = nullptr;
     if (options.render_data && model_index < models_.size()) {
@@ -306,6 +306,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             const fh1::RmbMaterial& m = model.materials[s.material_index];
             MeshMaterial mm;
             mm.far = far;
+            mm.fade = fade;
             mm.effect = model.effects[m.effect];
             mm.blend = effect_blend(mm.effect);
             // A slot's texture record when it has a file (types 4 and 0).
@@ -358,6 +359,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             ++st.no_material;
             MeshMaterial none;
             none.far = far;
+            none.fade = fade;
             auto [it, fresh] = material_index.emplace(none.key(), uint32_t(out.materials.size()));
             if (fresh) out.materials.push_back(none);
             mat = it->second;
@@ -586,27 +588,53 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           }
         }
       }
-      const int level = d2 < options.prop_lod0 * options.prop_lod0 ? 0 : 2;
-      const int64_t member = impl_->prop_models->model(m) ? impl_->prop_models->lod_member(m, level) : -1;
-      const fh1::RenderModel* model = member >= 0 ? impl_->prop_models->model(uint32_t(member)) : nullptr;
-      if (!model) {
-        ++st.prop_unresolved;
-        continue;
+      const bool fading = options.render_data && options.prop_near_radius > 0;
+      const bool resolvable = impl_->prop_models->model(m) != nullptr;
+      // The levels drawn here, with their fade classes.
+      struct Level {
+        int64_t member = -1;
+        uint8_t fade = 0;
+      } levels[2];
+      if (resolvable && fading) {
+        const int64_t far_member = impl_->prop_models->lod_member(m, 2);
+        const int64_t near_member = impl_->prop_models->lod_member(m, 0);
+        if (near_member == far_member) {
+          levels[0] = {far_member, uint8_t(3)};
+        } else {
+          levels[0] = {far_member, uint8_t(2)};
+          if (d2 < options.prop_near_radius * options.prop_near_radius) levels[1] = {near_member, uint8_t(1)};
+        }
+      } else if (resolvable) {
+        levels[0] = {impl_->prop_models->lod_member(m, d2 < options.prop_lod0 * options.prop_lod0 ? 0 : 2), uint8_t(0)};
       }
-      if (!once.insert({member, std::llround(t[0] * 100), std::llround(t[1] * 100), std::llround(t[2] * 100)})
-               .second)
-        continue;
       // The gameplay beacon column (WORLD-MATERIALS item 7: coloradoout.06509,
       // the only DIFF_GLOW_1 model, 105 placements) never drew in the frames
       // checked, day or night: interim rule, not drawn.
-      if (fh1::PropModels::member_name(uint32_t(member)) == "coloradoout.06509.rmb.bin" ||
-          fh1::PropModels::member_name(m) == "coloradoout.06509.rmb.bin") {
+      if (fh1::PropModels::member_name(m) == "coloradoout.06509.rmb.bin") {
         ++st.props_beacons;
         continue;
       }
-      const auto it = index_of.find(fh1::PropModels::member_name(uint32_t(member)));
-      add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr);
-      ++st.props;
+      bool drawn = false, beacon = false;
+      for (const auto& [member, fade] : levels) {
+        const fh1::RenderModel* model = member >= 0 ? impl_->prop_models->model(uint32_t(member)) : nullptr;
+        if (!model) continue;
+        if (!once.insert({member, std::llround(t[0] * 100), std::llround(t[1] * 100), std::llround(t[2] * 100)})
+                 .second) {
+          drawn = true;  // the same spot's other LOD object
+          continue;
+        }
+        if (fh1::PropModels::member_name(uint32_t(member)) == "coloradoout.06509.rmb.bin") {
+          beacon = true;
+          continue;
+        }
+        const auto it = index_of.find(fh1::PropModels::member_name(uint32_t(member)));
+        add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr, false, fade);
+        drawn = true;
+        if (fade != 1) ++st.props;
+        else ++st.props_near_lod;
+      }
+      if (beacon) ++st.props_beacons;
+      else if (!drawn) ++st.prop_unresolved;
     }
   }
   return true;

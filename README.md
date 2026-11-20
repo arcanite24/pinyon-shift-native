@@ -611,6 +611,13 @@ Where the code is shaped per object for no reason, it is listed here.
 - **Streaming starts a `std::async` per gather.** Target: a persistent
   job system shared by gathers, texture decode, the traffic model loads
   and (next) the radio's decode.
+- **Regathers rebuild the whole scenery every 200 m.** The drive now
+  hides it (props cross-fade by eye distance over both LODs, and the old
+  scenery dithers out under the new one for 0.5 s, drawing both), but the
+  fade costs a second scenery's draws during the swap and LOD00 is held for
+  every prop within 350 m. Target: per-cell residency with per-instance
+  LOD picked on the GPU (the culling pass above), so only cells that change
+  stream and no frame draws two sceneries.
 - **The bloom runs as three full-screen fragment passes.** A compute
   down-sample and blur would do the same in fewer passes. It is small
   today (under 1 ms on the UHD 620), so it comes last.

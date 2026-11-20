@@ -95,7 +95,12 @@ struct MeshMaterial {
   // one. The renderer pushes far levels back in depth so the near terrain
   // wins where both are drawn.
   uint8_t far = 0;
-  auto key() const { return std::make_tuple(effect, albedo, far, layer_b, splat, tiling); }
+  // The distance cross-fade (ours; GatherOptions::prop_near_radius): 0
+  // always drawn, 1 a prop's LOD00 (faded out past the LOD distance), 2 its
+  // LOD02 (faded in there, out at the gather's edge), 3 a prop with one
+  // level (faded out at the edge).
+  uint8_t fade = 0;
+  auto key() const { return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade); }
 };
 
 struct Mesh {
@@ -133,6 +138,11 @@ struct GatherOptions {
   double radius = 600;       // world-space models whose header box comes within this (x-z)
   double prop_radius = 250;  // props placed within this
   double prop_lod0 = 80;     // props nearer than this use LOD00, the rest LOD02 (or their last)
+  // Above 0 (ours; needs render_data): every prop takes LOD02 (or its last)
+  // and, within this, LOD00 as well, their materials marked for the
+  // renderer's distance cross-fade (MeshMaterial::fade) in place of the
+  // switch at prop_lod0.
+  double prop_near_radius = 0;
   bool props = true;
   bool render_data = false;  // fill the Mesh's normals, UVs, colours and materials
   // The far ring (ours; needs render_data): the MIDDIST and UberLOD terrain
@@ -157,6 +167,7 @@ struct GatherStats {
   size_t props_off_route = 0, trees_off_route = 0;  // left out by the route rule
   size_t props_markers = 0;  // placements of the Temp_Arrow_Pointer marker, left out
   size_t props_beacons = 0;  // placements of the gameplay beacon (coloradoout.06509), left out
+  size_t props_near_lod = 0;  // with prop_near_radius: the LOD00 copies added beside LOD02
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name
   // With render_data: models drawn without a uvOffsetScale (given offset 0

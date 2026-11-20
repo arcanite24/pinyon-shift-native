@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -54,8 +55,12 @@ struct ShowroomFrame {
   float shadow_matrix[16];
   float shadow[4];
   float shadow_bias[4];
+  // The world's distance cross-fade (world.frag; ours): the prop LOD
+  // distance and its band, and where the props fade out at the gather's
+  // edge (start, end), in metres from the eye. Band 0: off.
+  float world_fade[4];
 };
-static_assert(sizeof(ShowroomFrame) == 336);
+static_assert(sizeof(ShowroomFrame) == 352);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -99,6 +104,7 @@ struct WorldTriangles {
     uint32_t layer_b = kNoWorldTexture;  // Blend_B
     uint32_t splat = kNoWorldTexture;    // Splat
     std::array<float, 4> tiling{1, 1, 1, 1};  // Blend_A's UV tiling in xy, Blend_B's in zw
+    uint8_t fade = 0;                    // world::MeshMaterial::fade: the distance cross-fade class
   };
   std::vector<std::array<float, 3>> normals;
   std::vector<std::array<float, 2>> uv0, uv1;
@@ -227,6 +233,14 @@ class Showroom {
   WorldDrawStats world_draw_stats() const { return world_stats_; }
   // Frustum culling of the world's draws (on by default).
   void set_world_culling(bool on) { world_cull_ = on; }
+  // The props' distance cross-fade (ShowroomFrame::world_fade; band 0 off)
+  // and how long a swapped-in scenery takes to dither in over the one it
+  // replaces (0: swapped at once). Both ours.
+  void set_world_fade(float lod, float band, float edge_start, float edge_end) {
+    frame_.world_fade[0] = lod, frame_.world_fade[1] = band;
+    frame_.world_fade[2] = edge_start, frame_.world_fade[3] = edge_end;
+  }
+  void set_world_swap_fade(double seconds) { swap_fade_seconds_ = seconds; }
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
   void set_background(float r, float g, float b);
   // The textured world's light, in the frame's space: towards the sun, up,
@@ -322,6 +336,11 @@ class Showroom {
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
   void record_world(VkCommandBuffer cmd);
+  // One scenery's textured draws; swap: world.frag's dither (2 none, t in
+  // 0-1 the incoming scenery, 3 + t the outgoing one).
+  void record_world_textured(VkCommandBuffer cmd, const std::vector<WorldGeometry::Draw>& draws,
+                             const float transform[16], float swap, bool outgoing);
+  void drop_fading_world(bool now);
   // Uploads the textures not in the cache and gives each a material set.
   bool upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
                              std::string& error);
@@ -385,6 +404,17 @@ class Showroom {
   std::vector<VkDescriptorSet> material_sets_;
   // Scenery.
   Renderer::Buffer world_vertices_, world_indices_;
+  // The scenery being swapped out, drawn dithered under the new one until
+  // the swap fade ends (ours).
+  struct FadingWorld {
+    Renderer::Buffer vertices, indices;
+    std::vector<WorldGeometry::Draw> draws;
+    double origin[2] = {0, 0};
+  };
+  bool fading_on_ = false;
+  FadingWorld fading_;
+  std::chrono::steady_clock::time_point fade_start_{};
+  double swap_fade_seconds_ = 0;
   std::vector<WorldGeometry::Draw> world_draws_;
   size_t world_triangles_ = 0;
   WorldDrawStats world_stats_;

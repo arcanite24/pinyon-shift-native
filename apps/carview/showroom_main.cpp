@@ -733,7 +733,7 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.material = mesh.material;
     for (const auto& m : mesh.materials)
       w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(world::decal_effect(m.effect) ? 1 : 0),
-                             uint8_t(m.layers), m.layer_b, m.splat, m.tiling});
+                             uint8_t(m.layers), m.layer_b, m.splat, m.tiling, m.fade});
   }
   return w;
 }
@@ -843,6 +843,11 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 // How far out the tree sprites are gathered (ours; each record's own far
 // distance also applies).
 constexpr double kTreeRadius = 2000;
+// Popping (ours): the drive's gather radii, the regather step and the swap's
+// lag behind it, the props' LOD distance and cross-fade bands, and how long
+// a regathered scenery dithers in over the old one.
+constexpr double kModelRadius = 900, kPropRadius = 600, kRegather = 200, kSwapLag = 50;
+constexpr double kPropLod0 = 80, kPropLodBand = 20, kPropEdgeBand = 40, kSwapFadeSeconds = 0.5;
 // The scene's scale into the filmic curve (ours: the track's filmicTone
 // exposure, 0.31 on Colorado, applies to a scene the game lights more
 // brightly than ours; set so the free-roam reference frame's mean is met).
@@ -1365,7 +1370,23 @@ int run_drive(int argc, char** argv) {
           gather_options.props = !no_props;
           if (!flat_world && !no_far) gather_options.far_radius = 3000;
           if (!flat_world && !no_trees) gather_options.tree_radius = kTreeRadius;
-          streamer = std::make_unique<world::Streamer>(colorado, gather_options, 200,
+          if (!flat_world) {
+            // Popping (ours): the gather reaches further and the props
+            // cross-fade by distance from the eye. The eye can be a regather
+            // step (plus the swap's lag) from the gather's centre, so the
+            // props fade out by kPropRadius - step - lag, where every gather
+            // still holds them, and LOD00 is gathered to the LOD band's end
+            // plus that much.
+            gather_options.radius = kModelRadius;
+            gather_options.prop_radius = kPropRadius;
+            gather_options.prop_near_radius = kPropLod0 + kPropLodBand + kRegather + kSwapLag;
+            showroom.set_world_fade(float(kPropLod0), float(kPropLodBand),
+                                    float(kPropRadius - kRegather - kSwapLag - kPropEdgeBand),
+                                    float(kPropRadius - kRegather - kSwapLag));
+            // Headless frames repeat: their swaps stay instant.
+            if (!headless || std::getenv("SHIFT_SWAP_FADE")) showroom.set_world_swap_fade(kSwapFadeSeconds);
+          }
+          streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        render_ground ? nullptr : &collision);
           // Gathers after the first run on a worker in the window (and with
           // --async-stream headless), with the scenery's draw data built
