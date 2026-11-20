@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Spec ID | `SPEC-CAR-PHYSICS` |
-| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia, the step, straight-line ABS, the braking friction scale and the gearbox and launch timing confirmed on one car; the launch-controller rule probable; lateral tyre, low-speed steering, drag, front brake torque and the torque chain measured fits; collision, surfaces and the lap gate open |
+| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia, the step, straight-line ABS, the braking friction scale and the gearbox and launch timing confirmed on one car; the launch-controller rule probable; lateral tyre, low-speed steering, drag, front brake torque and the torque chain measured fits; the oracle lap for the M3 gate measured (38.78 s, two runs within 0.04 %); collision and surface friction in other specs |
 | Written | 2026-11-20, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | [objects findings](../../site/findings/objects.toml), group "Car dynamics"; [content findings](../../site/findings/content.toml), group "Game database" |
 | Implements it | `shift-engine`, physics module (not yet) |
@@ -577,7 +577,7 @@ the controls after input shaping.
 the route's fixed clock (frame / clock-hz) and reports 0-60 and 0-100
 km/h from the **launch**, the first sample with gas above 0.05 at a speed
 below 1 m/s, interpolated at the crossing, plus distance and top speed per
-car, and the race time when a Rally stage finished. `compare` fails when
+car, and the race time when a race or Rally stage finished. `compare` fails when
 the player's 0-60, 0-100 or race time differs by more than 2 % (or the AI
 field's mean distance by more than 3 %). The engine writes the same
 events, and `compare` can compare the two files once the engine's frame
@@ -785,22 +785,8 @@ its own onset speed v₀: stopping distance v₀² / (2 × 8.57 m/s²).
 
 ### The lap
 
-**Not specified yet; the lap gate is open.** Three things block it:
-
-- `compare` gates only a Rally stage's race time, and a stage needs the
-  world's collision and surfaces (M3 needs items 1 to 3), which this spec
-  does not cover.
-- The oracle can drive a stage only with its test AI driver at the
-  player's wheel (Rally route 1: 171.26 and 171.22 s in two runs,
-  [FH1_RENDER_TEST_AUTOMATION](../native-renderer/FH1_RENDER_TEST_AUTOMATION.md)).
-  The engine would need the same driver, or a replay of the traced
-  controls, which drifts off the line without closed-loop steering.
-- A free-roam segment has no gated time in `compare`.
-
-Until then M3's handling gate is scenarios A and B plus the turn circle
-(below), and the play test. When collision lands, the next step is a
-recorded-control replay of a short stage, compared as distance along the
-line against time.
+See "Oracle lap for the M3 gate" below: a one-lap solo circuit race
+driven by the title's AI, with its trace, gate and lap time.
 
 ### Drive on analytic ground (no world collision)
 
@@ -840,6 +826,155 @@ with the clutch locked and no throttle, the engine idling down from
 1,100 to 816 rpm, and the speed decays from 2.84 to 2.08 m/s over 3.5 s
 (about 0.22 m/s²). There is no creep throttle.
 
+## Oracle lap for the M3 gate
+
+The plan's M3 gate compares the engine's lap with the oracle's within 2 %
+(`tools/physics-behaviour.py compare`). This section gives the oracle's
+lap: one clean standing-start lap of a short asphalt circuit by the stock
+R34. The title's own AI drives the car, so the lap repeats. The engine
+follows the oracle's line, replays its pedals by distance and steers by
+pure pursuit.
+
+### Method
+
+| | |
+| --- | --- |
+| Seed | `tools/create-oracle-lap-seed.py --seed .local/render-seeds/acc9-stock --output .local/render-seeds/m3-lap-r34`. It copies the pinned seed, including its modded profile, which holds the stock R34 (car 445, `NIS_SkylineGTRVSpecII_02`), and adds the mod `m3_oracle_lap` |
+| Event | the mod's database script copies festival race `FR06` into a new event `M3_ORACLE_LAP`: no other drivers, no prize, no restriction rows, one lap on track 158. A generic-activity portal at FR06's trigger enters it; the seed's car stands at that trigger, and FR06's own trigger is switched off |
+| Driver | the race flow's pre-race clean-up hands the car to the title's AI (`global.enable_ai_player_car_control`, the node `create-rally-stage-seed.py --autopilot` adds). The car stays the player's car (driver type 0) with the player's physics and ABS setting |
+| Route | `config/render-tests/fh1-oracle-lap.fh1test`, run hidden, with `--pinyon_shift_physics_trace=6`, `--pinyon_shift_physics_oracle=true`, `--pinyon_shift_physics_oracle_snapshot_frame=1800` and `--pinyon_shift_physics_oracle_trace_ticks=9000` (no inject frames, the game's own dt). The race loads at route frame 1780 and starts near 2750 |
+| Trace | the body oracle writes the whole player body at every physics step with the step's dt (`physics-oracle.bin`). `tools/re/oracle-lap.py <run> --repeat <run> --meta <json> --output .local/re/physics/oracle-lap` resamples it at 60 Hz of simulated time |
+
+**Simulated time** is the sum of the steps' dt, here 5 to 31 ms a step,
+14.4 ms on average. t = 0 is the start signal: the finish crossing minus
+the race time the game reports. Three checks hold that clock against the
+game's own: the AI's gas opens 0.0035 and 0.0052 s after t = 0, the
+gate crossing falls at the reported race time, and race time and the race
+manager's clock advance together (their difference is constant through
+the race).
+
+**Same physics as a player's car.** Under the AI the car keeps driver
+type 0, mass 15.6 (1,560 kg) and ABS setting 1. Its launch from idle at
+the start signal crosses 20, 40, 60 and 80 km/h at 1.06, 1.84, 2.73 and
+4.46 s from the gas, and 100 km/h at 5.76 s; scenario A on another road
+gave 1.12, 1.89, 2.78, 4.56 and 5.84 s. A control run without the AI
+(full throttle from route frame 2780, before the start signal, no
+steering) is quicker off the line by 0.08 to 0.15 s, because the engine
+is already revved when the clutch bites. That comes from the input, not
+from different physics. The control run's car leaves the asphalt at 4.7 s.
+
+### The race
+
+| | |
+| --- | --- |
+| Event | `M3_ORACLE_LAP`, a solo copy of `FR06` |
+| Track | `Tracks` row 158, `FESTIVAL_FEST_007`: a circuit (`RibbonConfiguration` 0) at the festival site, route file `Ribbon_00/TrackRoute158.xml`; database length 1,173 m |
+| Laps | 1, standing start; no checkpoints (a circuit). The route file's five `route_waypoint` transforms are for the map |
+| Surfaces | asphalt (surface 0) on 92.7 % of wheel samples; the AI cuts the two slow corners over dirt (surface 1, `Dirt`) on 7.3 % |
+| Distance | 1,159.4 m and 1,158.9 m along the body point's path from the grid to the finish; the grid is 12.7 m behind the line |
+| Top speed | 146.8 km/h, fourth gear |
+
+**Gate.** The start/finish line is the vertical plane through the route
+file's `start_gantry_cannon_00` transform, across its facing: point
+(x, z) = (−1802.75, 1866.28), crossed along (−0.9919, 0.1267) in the game
+frame. The car's body reference point crosses it 2.17 s after the start
+and again at the finish. The route file gives the line no width; the car
+crossed 0.85 to 1.15 m to the right of the point. Measured: the gas opens
+0.0035 to 0.0052 s after race time 0, and the finish crossing falls at the
+race time. So the race clock runs from the start signal to the moment the
+body point crosses this plane, within one step. Confirmed on this track;
+on other circuits the start gantry is probable.
+
+**Lap time** (`dlc.rally.race_trace` `time_72`, the race statistics
+record's race time, at `started` 1, `ended` 1, `end_reason` 1):
+
+| Run | Race time | Trace |
+| --- | --- | --- |
+| A (`.local/runs/m3lap-a`) | 38.757 s | snapshot at frame 3700, after the start: race time only |
+| **B (`.local/runs/m3lap-b`, the reference trace)** | **38.784 s** | whole lap |
+| C (`.local/runs/m3lap-c`) | 38.798 s | whole lap |
+
+B and C differ by 0.014 s (0.035 %); all three span 0.041 s (0.11 %),
+which is well inside the 2 % gate. `physics-behaviour.py compare` passes B
+against C, at 0-100 km/h 5.76 and 5.77 s. After the finish the AI keeps
+lapping. Its flying laps, gantry to gantry, took 33.7 to 34.1 s; they
+are not gated.
+
+### Start state
+
+| | |
+| --- | --- |
+| Grid | the pole, `start_location_00` of the route file. The body reference point rests at (−1790.46, 34.614, 1863.44) in the game frame |
+| Heading | forward (−0.9901, −0.0413, 0.1344), yaw −82.27° (from +z towards +x), the grid transform's facing |
+| Start | standing, at rest, first gear, engine idling at 800 rpm. The car is dropped onto the grid when the race loads and settles about 18 s before the start |
+| Throttle | the AI opens the gas within 0.005 s of the start signal. The clutch phase of scenario A follows, and the car first moves 0.52 s after the start |
+
+### Settings
+
+| | |
+| --- | --- |
+| Car, tune, tyres | car 445, stock, no upgrades, stock tyres; mass 1,560 kg |
+| ABS | on: the setting word reads 1. It released a wheel on 62 and 66 steps of the lap |
+| Traction and stability control | not read for the AI-driven car. In the player's runs both flags stayed 0 (above). M3 keeps the defaults of "Assists and input shaping" |
+| Gearbox | automatic: 1→2 at 3.49 s; second to fourth over the lap |
+| Line | none shown; the AI follows its own racing line |
+| Input | no pad. The AI writes the car's controls: gas and brake from 0 to 1, steer from −1 to 1, the same fields `fh1.physics_trace` reports. Steer stays within about ±0.3: at speed the lock is narrowed after this value (see steering) |
+
+### Files and format
+
+The engine reads `.local/re/physics/oracle-lap/` on multivac (copy it
+beside the engine's oracle data):
+
+- **`lap.jsonl`**: one line per 1/60 s of simulated time, from 2 s before
+  the start to 1 s after the finish (frames −120 to 2,387), then the
+  run's final `dlc.rally.race_trace` event. Each sample is an
+  `fh1.physics_trace` event that `physics-behaviour.py` reads as it stands
+  (`summary lap.jsonl --clock-hz 60`), with `mode` 3 and `frame` =
+  round(t × 60). It adds these keys:
+
+| Key | Meaning |
+| --- | --- |
+| `t_s` | simulated time from the start signal, s |
+| `cars` | `0:R34:0:speed:rpm:gear:gas:brake:steer`, the nine fields of the trace format (speed in m/s; gear −1 reverse, 0 neutral) |
+| `x`, `y`, `z` | the body reference point in the game frame of [FORMAT-COLLISION](../formats/COLLISION.md#coordinate-frame-and-units), m |
+| `yaw_deg` | heading, the angle of the body's forward axis from +z towards +x |
+| `forward`, `up` | the body's z and y rows (unit vectors) |
+| `vx`, `vy`, `vz` | velocity, m/s, world |
+| `a_long`, `a_lat` | acceleration along the forward axis and along the body's x row, m/s², from the velocity 1/120 s either side. `a_lat` is negative while `yaw_deg` falls |
+| `clutch`, `handbrake` | the other two control words |
+| `distance_m` | path length of the body point from t = 0 |
+| `surfaces`, `contact` | each wheel's surface index and contact flag (front left, front right, rear right, rear left, probable) |
+
+- **`lap.json`**: race, gate, start state, settings (the tables above) and,
+  per run, the checks: race and lap time, launch delay, gate crossings,
+  ABS steps, peak accelerations, surface shares, step dt range and how
+  many control words were repaired.
+
+**Control words.** The controls read at a step's entry are cleared
+between steps now and then (finding "controls at step entry are not the
+step's input"). A lone exact zero between two non-zero neighbours is
+replaced by their mean: 713 and 748 words in runs B and C. Positions and
+speeds need no repair. Take gas and brake against `distance_m` for the
+replay.
+
+**Clean lap.** No wall or car contact: the field is empty, and no sample
+shows a speed loss beyond braking. The peaks are 1.73 g longitudinal under
+braking at 40 m/s (brake 0.45) and 1.3 to 1.8 g lateral in
+the two slow corners, with single 60 Hz samples up to 3.0 g over the dirt
+edges. Those peaks match the yaw rate times the speed (17.3 m/s² against
+17.5 at 31 s), so they are cornering. The 1.7 to 1.8 g figures fit the
+tyre's peak F/load of about 1.8 under "Scenario B".
+
+### What the engine must reproduce
+
+- **Gate:** the race time from its own start signal to its body point
+  crossing the plane above, within 2 % of 38.78 s (38.01 to 39.56 s).
+  Report the run in `physics-behaviour.py compare` against `lap.jsonl`.
+- The engine needs friction for asphalt and dirt (surfaces 0 and 1): the
+  AI's line cuts two corners onto dirt.
+- The engine's start is the same standing start: idle, first gear, gas at
+  t = 0. Its own clutch phase sets the first 0.5 s.
+
 ## Unknowns
 
 | Part | State | What closes it |
@@ -856,7 +991,8 @@ with the clutch locked and no throttle, the engine idling down from
 | Temperature, pressure, wear, camber | stay within 1 % of 1 on these drives | not needed for M3 |
 | Aligning torque | outputs seen, not used here | steering feel, after M3 |
 | Other surfaces | grass (surface 2) seen past 110 m | the surface spec |
-| Collision shape, the lap | out of scope here | the collision spec, then the lap |
+| Collision shape | out of scope here | [FORMAT-COLLISION](../formats/COLLISION.md) |
+| Dirt friction | the oracle lap puts 7 % of wheel samples on surface 1 | the surface columns of `surfaceTypes.xml` (FORMAT-COLLISION) |
 
 ## Tolerances
 
@@ -885,6 +1021,11 @@ Oracle side (multivac, run lock, hidden, a copy of the pinned seed):
 - The same with `config/render-tests/fh1-physics-accel.fh1test` (scenario A's
   0-100; Run C), and with `config/render-tests/fh1-physics-steer.fh1test`, trace
   N = 1 and 600 trace ticks (the turn circle).
+- The oracle lap: `tools/create-oracle-lap-seed.py` (above), then
+  `config/render-tests/fh1-oracle-lap.fh1test` on that seed with the trace
+  and oracle arguments of "Oracle lap for the M3 gate", twice, and
+  `tools/re/oracle-lap.py <run B> --repeat <run C> --meta <json> --output
+  .local/re/physics/oracle-lap`. The two race times agree within 0.1 %.
 - `tools/physics-behaviour.py summary <result.json>` for the frame-clock
   summary; `tools/re/physics-inject-compare.py` reads the body trace.
 
@@ -897,3 +1038,5 @@ Engine side, as unit tests on the R34's rows:
   factor, against the longitudinal check.
 - Scenarios A and B and the turn circle on the analytic ground, against
   the tolerances.
+- The oracle lap on the world's collision: the race time from the start
+  signal to the gate within 2 % of 38.78 s, following `lap.jsonl`.

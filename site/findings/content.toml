@@ -407,6 +407,17 @@ source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
 
 [[finding]]
 group = """Events and career"""
+base = """Events, Races, EventRestrictions"""
+v4 = """not tested"""
+name = """solo race from a copied event"""
+what = """A copy of a festival race's `Events` and `Races` rows (new `Id` and `HorizonEventID`, `NumberOfDrivers` 0, another `TrackId`, `NumLaps` 1), with its `EventUIColors`, `Event_Music` and `EventRecommendedCars` rows and no `EventRestrictions` row, loads as a solo race on the new track: the world's car vector holds only the player. A generic activity entered through `CLoadIntoCareerRace` starts it. With no restriction row the event took a car whose class is above the copied event's ceiling (the R34 at class 5 in the seed's database). After the finish, a car under the AI keeps lapping the circuit."""
+how = """Database script and activity portal of tools/create-oracle-lap-seed.py (FR06 copied onto circuit 158). Four runs entered and finished the race; fh1.physics_trace counted one car."""
+confidence = """confirmed"""
+note = """That an event without restriction rows accepts every car was shown for one car."""
+source = """tools/create-oracle-lap-seed.py; docs/specs/CAR_PHYSICS.md#oracle-lap-for-the-m3-gate"""
+
+[[finding]]
+group = """Events and career"""
 base = """TrackRoute%03d.xml, aiopenworld.zip route_NNN.owt"""
 v4 = """same"""
 name = """routes and AI lines"""

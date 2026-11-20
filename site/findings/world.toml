@@ -362,6 +362,17 @@ source = """docs/formats/COLLISION.md#spawn-point"""
 
 [[finding]]
 group = """Placements and routes"""
+base = """Ribbon_00/TrackRoute158.xml start_gantry_cannon_00, start_location_00"""
+v4 = """same"""
+name = """circuit start and finish line"""
+what = """On circuit track 158 (`FESTIVAL_FEST_007`) the race clock runs from the start signal to the moment the car's body reference point crosses the vertical plane through the route file's `start_gantry_cannon_00` position, normal to its horizontal facing, in the facing's direction. The route gives the line no width. The pole grid slot `start_location_00` is 12.7 m behind it, and a car settles exactly on that slot's x and z, facing the slot's facing. A one-lap race from the pole covers 1,159 m of the body point's path, against the track row's `Length` of 1,173."""
+how = """Body oracle traces of two AI-driven laps of a solo copy of FR06 on track 158 (M3 oracle lap). The finish crossing of that plane, taken from the step when the gas opens, matches the race statistics time within 0.004 s in both runs."""
+confidence = """confirmed"""
+note = """One circuit. The start gantry as the line on other circuits is probable."""
+source = """docs/specs/CAR_PHYSICS.md#oracle-lap-for-the-m3-gate; tools/re/oracle-lap.py"""
+
+[[finding]]
+group = """Placements and routes"""
 name = """Owned Rally route-zero descriptor"""
 what = """The accepted Rally database merge has one Tracks row with MediaName ColoradoDirt, DevName DirtFreeRoam and RouteId 0 (ID 1112). The ordinary base free-roam loader selects track 317. A private probe copies the entire owned descriptor into that slot, retaining its environment and route settings, and derives a valid initial spawn from route 001's start_location_00. The package also supplies ColoradoDirt.nav and TrackRoute000.xml. Its merge tables omit the primary-key constraints of the otherwise matching base columns."""
 how = """Read-only SQLite/archive inventory of the verified imported package; an independently authored private seed builder, tested with synthetic databases and immutable input/save checks."""
