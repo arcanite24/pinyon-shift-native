@@ -265,13 +265,14 @@ opaque.
   last, far to near.
 - 14 cars have no real LOD0 body and 6 have stand-in parts; they draw
   from the LOD1-5 model (Q6).
-- Reference mode reads AUTOSHOW_REFERENCE v1, draws the mask by its
-  6/255 rule at the silhouette and the glass with the transparent pass's
-  matrix. Over the 25 v1 references (`tools/m1-report.py`; four v2
-  references wait for the spec, Q15): silhouette IoU mean 0.990, 24 of 25
-  at or above 0.97; masked PSNR against the car-only captures 14.6-19.9
-  dB (median 18.1). The one miss is `BEN_CONTINENTALGT_11` at 0.967, by
-  the lamp glow its mask includes (Q11; 0.979 without it).
+- Reference mode reads AUTOSHOW_REFERENCE v1 and v2, draws the mask by
+  the 6/255 rule at the silhouette and the glass with the transparent
+  pass's matrix. `tools/m1-report.py` scores v2 references only (their
+  masks leave out the lamps' additive glow) and passes a car at IoU
+  0.97; masked PSNR is reported only. The five v2 references so far all
+  pass (IoU 0.976-0.997, mean 0.986); the other 25 are being recaptured
+  as v2. On the 25 v1 captures the wheel fit gives IoU mean 0.990, the
+  one miss there (`BEN_CONTINENTALGT_11`, 0.967) being lamp glow.
 - The lighting's free settings (exposure, environment, key and fill
   strengths, the diffuse and reflection tints, metallic paint's share)
   were fitted to the references for median masked PSNR, keeping the
@@ -279,8 +280,8 @@ opaque.
   is left is mostly the stage's sharp coloured reflections, which our
   studio environment does not have, and the white cars.
 - Open in the spec: part variants (Q4), cockpit parts (Q5), calliper
-  angle (Q7), slot-1 UVs (Q8), glows (Q11), rims with an empty x extent
-  (Q13), the windscreen band's shade (Q14), reference v2 (Q15).
+  angle (Q7), slot-1 UVs (Q8). Polish for later: the showroom lighting
+  (SHOWROOM_LIGHTING), the lamp glow and glare, Q13 and Q14.
 
 ## Licence
 

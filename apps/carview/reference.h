@@ -1,7 +1,9 @@
 // carview reference mode: the per-car reference JSON and the M1 metric.
 //
-// Schema `shift-engine.m1-reference.v1` (AUTOSHOW_REFERENCE, "Reference
-// files"): one JSON per car at .local/re/cars/refs/<car_id>.json, with the
+// Schemas `shift-engine.m1-reference.v1` and `.v2` (AUTOSHOW_REFERENCE,
+// "Reference files"; v2 changes only the mask: drawn without the lamps'
+// additive glow, enclosed holes filled, glare far outside the car's box
+// cut): one JSON per car at .local/re/cars/refs/<car_id>.json, with the
 // captured image and the car-coverage mask beside it. The fields read here:
 //
 //   media_name      the car's folder (Data_Car.MediaName)
@@ -17,6 +19,7 @@
 //   paint_rgb       the colour shown (sRGB 0-255; the first Combo_Colors row)
 //   checks.transparent_clip_from_car
 //                   the glass and lamp covers' matrix (optional)
+//   checks.glow_px  v2: pixels the additive glow changes outside the mask
 #pragma once
 
 #include <array>
@@ -29,7 +32,9 @@ namespace carview {
 
 struct Reference {
   std::string schema, media_name;
+  int version = 0;  // 1 or 2
   int64_t car_id = 0;
+  int64_t glow_px = -1;  // checks.glow_px (v2), -1 when absent
   uint32_t width = 0, height = 0;
   float clip_from_car[16] = {};
   // Glass and lamp covers: checks.transparent_clip_from_car, or a copy of

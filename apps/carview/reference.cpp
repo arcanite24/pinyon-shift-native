@@ -184,8 +184,12 @@ bool read_reference(const std::filesystem::path& path, Reference& out, std::stri
   };
   const Json* schema = get("schema");
   out.schema = schema && schema->type == Json::kString ? schema->string : "";
-  if (out.schema != "shift-engine.m1-reference.v1") {
-    error = path.string() + ": schema \"" + out.schema + "\" is not shift-engine.m1-reference.v1";
+  if (out.schema == "shift-engine.m1-reference.v1") {
+    out.version = 1;
+  } else if (out.schema == "shift-engine.m1-reference.v2") {
+    out.version = 2;
+  } else {
+    error = path.string() + ": schema \"" + out.schema + "\" is not shift-engine.m1-reference.v1 or v2";
     return false;
   }
   auto text_field = [&](const char* key) -> std::string {
@@ -220,6 +224,8 @@ bool read_reference(const std::filesystem::path& path, Reference& out, std::stri
   std::copy(std::begin(out.clip_from_car), std::end(out.clip_from_car), std::begin(out.transparent_clip_from_car));
   out.has_transparent = false;
   if (const Json* checks = get("checks"); checks && checks->type == Json::kObject) {
+    if (auto g = checks->object.find("glow_px"); g != checks->object.end() && g->second.type == Json::kNumber)
+      out.glow_px = int64_t(g->second.number);
     auto it = checks->object.find("transparent_clip_from_car");
     if (it != checks->object.end() && it->second.type == Json::kArray && it->second.array.size() == 16) {
       bool numbers = true;

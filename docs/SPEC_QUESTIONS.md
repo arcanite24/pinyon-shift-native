@@ -136,44 +136,28 @@ questions are also sent to the specification session.
 - **Answer:** the sizes are right; the row's y had put the wheel too low.
   With the centre rule of Q9 the TZ3 scores IoU 0.990 (from 0.968).
 
-## Q11 (blocks the M1 numeric pass): glows are in the mask
+## Q11 (answered in AUTOSHOW_REFERENCE v2, 86590f50): glows in the mask
 
-- **Spec:** AUTOSHOW_REFERENCE's mask counts every pixel a car-only
-  replay changes by 6/255 or more; the faint glow halo round the body
-  drops out, but the captures show bright glows that stay in: round each
-  lit headlamp, and on `AUD_RS4_06` a flare above the roof where the
-  stage's light catches the window frame.
-- **Measured (30 references, 2026-11-19):** six cars are under 0.97
-  besides the broken capture below, and on each the largest connected
-  reference-only region of the mask difference is such a glow. Without it:
-  `AST_DBS_09` 0.957 -> 0.990, `AST_Vanquish_13` 0.960 -> 0.982,
-  `BMW_M3E92_08` 0.966 -> 0.984, `BEN_CONTINENTALGT_11` 0.966 -> 0.977,
-  `AUD_RS4_06` 0.965 -> 0.992, `ALF_ZagatoTZ3Stradale_12` 0.968 -> 0.973.
-- **Now (25 v1 references, wheels by FORMAT-CARS f193075f):** only
-  `BEN_CONTINENTALGT_11` is under 0.97 (0.967; 0.979 without its glow).
-- **Needed:** what draws the glows (a sprite or flare per lamp point, or a
-  glare pass on bright highlights; with the car's matrix?), their size
-  and colour, and whether lamp points 0 to 3 of `CarPartPositions` place
-  the lamp ones. Or, if they are not part of the car, whether the mask
-  should leave them out.
-- **Engine:** draws no glow.
-- **Also:** the `AUD_RS4Avant_13` (1681) capture's car-only image holds a
-  black band and the stage's purple floor lights, so its mask covers
-  121,633 px that are not the car (IoU 0.785; 0.998 without that region).
-  Reported to the capture side.
+- **Asked:** the v1 masks held lamp glows and highlight glare the engine
+  does not draw, which put six cars under 0.97.
+- **Answer:** the lamp glow is the car's additive draws (ONE + ONE, no
+  depth write); v2 masks are built without them (`checks.glow_px`,
+  `checks.mask_draws_left_out`), and glare more than 32 px outside the
+  car's projected box is cut (`checks.mask_outside_box`). The car-only
+  image keeps the glow. The glow and the post chain's glare are polish
+  (bloom over HDR highlights; SHOWROOM_LIGHTING), not part of M1.
+- **Engine:** draws no additive glow, so its mask already matches v2's.
+  The report scores v2 references only; IoU-g stays as a report column.
 
-## Q12 (not blocking): holes in the captured masks
+## Q12 (answered in AUTOSHOW_REFERENCE v2): holes in the captured masks
 
-- **Observed:** the 6/255 rule leaves out car pixels whose colour is
-  within 6/255 of the empty frame's grey (95, 95, 95): mid-grey grilles,
-  vents and trim on `AST_One77_10` show as holes inside the reference
-  mask (its edge overlap is 0.26 against 0.47-0.82 for the rest).
-- **Engine:** counts every fully covered pixel and applies the 6/255
-  rule only to partly covered silhouette pixels, so shading near the
-  background grey (a material difference) does not cut holes in our mask.
-  The holes cost the One-77 some IoU and most of its edge score.
+- **Answer:** v2 fills enclosed holes where the full stage changes with
+  the car present (`checks.holes_filled_px`; 4,342 px on the One-77). A
+  near-grey part on the silhouette's edge can still be missed.
+- **Engine:** unchanged: every fully covered pixel counts, the 6/255 rule
+  only at partly covered silhouette pixels.
 
-## Q13 (not blocking): rims whose header x extent is empty
+## Q13 (closed as polish): rims whose header x extent is empty
 
 - **Spec:** FORMAT-CARS "Wheels": the tyre's lateral scale is the rim's
   lateral scale x the rim's x extent (header floats at bytes 32 and 40),
@@ -190,8 +174,9 @@ questions are also sent to the specification session.
 - **Needed:** how the game sizes these cars' tyres across.
 - **Engine:** uses the design faces in place of the extent and notes the
   car. `ult_gtr_12` (no finite design width) is drawn unscaled across.
+- **Decision (spec session):** keep the default; not worth more spec time.
 
-## Q14 (not blocking): the windscreen band and other opaque glass techniques
+## Q14 (closed as polish): the windscreen band and other opaque glass techniques
 
 - **Spec:** FORMAT-CARS "Paint": glass draws take no paint and do not
   sample the body atlas; the windscreen's tinted band is the glass
@@ -200,12 +185,12 @@ questions are also sent to the specification session.
   (`black_glass`, the windscreen's top band) and whose slot 0 is the body
   atlas is drawn flat dark grey (linear 0.02) without the atlas. Needed:
   the band's shade, and whether `black_glass` is the band.
+- **Decision (spec session):** keep the default; not worth more spec time.
 
-## Q15 (not blocking): reference schema v2
+## Q15 (answered): reference schema v2
 
-- **Observed:** four references (1081, 1181, 1681, 1683) are now
-  `shift-engine.m1-reference.v2`, with `checks.glow_px` and
-  `checks.holes_filled_px`; AUTOSHOW_REFERENCE on `recomp-research` still
-  describes v1 only.
-- **Engine:** reads v1 only, so the report scores the 25 v1 references.
-  It will read v2 once the spec defines it.
+- **Answer:** AUTOSHOW_REFERENCE 86590f50 defines
+  `shift-engine.m1-reference.v2`: the same fields, a new mask (Q11, Q12).
+- **Engine:** reads v1 and v2; `tools/m1-report.py` scores v2 only and
+  lists the v1 leftovers (`--include-v1` scores them too). Masked PSNR is
+  reported, not part of the pass (playable first, polish later).

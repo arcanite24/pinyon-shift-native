@@ -8,7 +8,7 @@
 //   carview --bake <dir> --reference <car_id.json> [--car <media>] --out file.png
 //           [--mask mask.png] [--against ref.png --against-mask ref_mask.png]
 //
-// The reference mode (AUTOSHOW_REFERENCE schema v1) renders at the
+// The reference mode (AUTOSHOW_REFERENCE schema v1 or v2) renders at the
 // reference's camera, size and paint, writes the PNG and the car-coverage
 // mask (255 inside), and prints the M1 metric (silhouette IoU, masked PSNR,
 // edge overlap) against the reference's own image and mask, or --against. --write-reference

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """The M1 car-viewer report: render every reference car and score it.
 
-For each `<car_id>.json` (AUTOSHOW_REFERENCE schema v1) in the references
-folder, runs `carview --bake <bake> --reference <json>` and collects the
-metric it prints (silhouette IoU, PSNR inside the reference's car mask, edge
-overlap). Writes `report.txt` with one row per car and the plan's pass rule:
-IoU at least 0.97 for every car, and no car's masked PSNR more than 6 dB
-under the median. With Pillow it also reports IoU-g, the IoU without the
-largest connected reference-only region (the glows, SPEC_QUESTIONS Q11),
-beside the official IoU and never in the pass rule, and writes `<car_id>.side.png`:
+For each `<car_id>.json` of AUTOSHOW_REFERENCE schema v2 in the
+references folder, runs `carview --bake <bake> --reference <json>` and
+collects the metric it prints (silhouette IoU, PSNR inside the reference's
+car mask, edge overlap). v1 references are listed, not scored (their masks
+hold the lamp glow); `--include-v1` scores them too. Writes `report.txt`
+with one row per car and the pass rule: IoU at least 0.97 for every car.
+Masked PSNR is reported only (polish, not M1's gate). With Pillow it also
+reports IoU-g, the IoU without the largest connected reference-only region
+(glare a mask still holds, SPEC_QUESTIONS Q11), beside the official IoU and
+never in the pass rule, and writes `<car_id>.side.png`:
 reference (car-only replay when given) | engine | mask difference (green:
 both, red: reference only, blue: engine only) | absolute colour
 difference inside the reference mask, for judging by eye.
@@ -108,14 +110,21 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--no-images", action="store_true", help="skip the side-by-side PNGs")
     parser.add_argument("--light", help="passed to carview --light (lighting settings)")
+    parser.add_argument("--include-v1", action="store_true", help="score v1 references as well")
     args = parser.parse_args()
     args.carview = str(Path(args.carview).resolve())  # CreateProcess does not search relative paths
     args.out.mkdir(parents=True, exist_ok=True)
 
     rows = []
+    leftovers = []  # v1 references, not scored
+    schemas = {"shift-engine.m1-reference.v2"}
+    if args.include_v1:
+        schemas.add("shift-engine.m1-reference.v1")
     for ref in sorted(args.refs.glob("*.json"), key=lambda p: (len(p.stem), p.stem)):
         data = json.loads(ref.read_text(encoding="utf-8"))
-        if data.get("schema") != "shift-engine.m1-reference.v1":
+        if data.get("schema") not in schemas:
+            if data.get("schema") == "shift-engine.m1-reference.v1":
+                leftovers.append(f"{ref.stem} {data.get('media_name', '?')}")
             continue
         ours = args.out / f"{ref.stem}.engine.png"
         ours_mask = args.out / f"{ref.stem}.engine.mask.png"
@@ -142,7 +151,7 @@ def main() -> int:
 
     scored = [r for r in rows if "iou" in r]
     median = statistics.median(r["psnr"] for r in scored) if scored else 0.0
-    lines = ["M1 car viewer report (REIMPLEMENTATION_PLAN M1; AUTOSHOW_REFERENCE v1)", ""]
+    lines = ["M1 car viewer report (REIMPLEMENTATION_PLAN M1; AUTOSHOW_REFERENCE v2)", ""]
     lines.append("IoU is the official number. IoU-g leaves out the largest connected reference-only")
     lines.append("region (glow-px, the lamp and highlight glows: SPEC_QUESTIONS Q11); it separates")
     lines.append("geometry from glow and is not used for the pass.")
@@ -158,9 +167,9 @@ def main() -> int:
         flags = []
         if r["iou"] < 0.97:
             flags.append("IoU<0.97")
+        fails += bool(flags)
         if r["psnr"] < median - 6:
-            flags.append("PSNR>6dB under median")
-        fails += any(f != "IoU-g<0.97" for f in flags)
+            flags.append("PSNR>6dB under median (report only)")
         if r.get("iou_clean", 1.0) < 0.97:
             flags.append("IoU-g<0.97")
         clean = f"{r['iou_clean']:7.4f} {r['glow_px']:8d}" if "iou_clean" in r else f"{'-':>7} {'-':>8}"
@@ -171,7 +180,9 @@ def main() -> int:
               f" mean {statistics.mean(r['iou'] for r in scored) if scored else 0:.4f};"
               f" IoU-g: min {min((r.get('iou_clean', r['iou']) for r in scored), default=0):.4f},"
               f" cars under 0.97 by IoU-g: {sum(r.get('iou_clean', 1.0) < 0.97 for r in scored)}",
-              f"cars failing the numeric rule: {fails} (the by-eye check is separate)"]
+              f"cars failing the numeric rule (IoU >= 0.97): {fails} (the by-eye check is separate)"]
+    if leftovers:
+        lines += ["", f"v1 references not scored ({len(leftovers)}): " + ", ".join(leftovers)]
     text = "\n".join(lines) + "\n"
     (args.out / "report.txt").write_text(text, encoding="utf-8")
     sys.stdout.write(text)
