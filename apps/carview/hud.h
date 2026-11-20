@@ -18,6 +18,24 @@ struct HudState {
   // A line of text over the panel (the car, the picker's choice), shown in
   // upper case; empty: none.
   std::string banner;
+  // The pause menu (ours): a title and its items at twice the size, above
+  // the banner, the selected one marked; empty: closed.
+  std::string menu_title;
+  std::vector<std::string> menu;
+  int menu_selected = 0;
+};
+
+// The windowed drive's pause menu: Esc or Start opens it; the items move
+// with up and down and wrap.
+struct PauseMenu {
+  enum Item { kResume, kChangeCar, kReset, kQuit, kCount };
+  bool open = false;
+  int selected = kResume;
+  static const char* label(int item);
+  void show() { open = true, selected = kResume; }
+  void move(int by) { selected = ((selected + by) % kCount + kCount) % kCount; }
+  // Fills the HUD's menu fields (nothing while closed).
+  void fill(HudState& st) const;
 };
 
 struct HudImage {

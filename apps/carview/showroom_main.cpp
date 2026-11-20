@@ -42,6 +42,7 @@
 #include "showroom.h"
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
+#include "drive/save.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
 #include "world/stream.h"
@@ -847,6 +848,12 @@ int run_drive(int argc, char** argv) {
   double seconds = 6, every = 1;
   bool headless = false;
   bool hud = false;  // headless: draw the HUD into the frames (windowed: always, H toggles)
+  // The drive's save (drive/save.h): the window's default is our own
+  // user-data folder (SDL's pref path, shift-engine/drive); --save names
+  // the file (headless too), --no-save turns it off. --menu-png writes the
+  // HUD with the pause menu open and exits (a headless check of the menu).
+  std::filesystem::path save_path, menu_png;
+  bool no_save = false;
   const bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
   std::filesystem::path sound_dir = "out/sound", audio_out;
@@ -892,6 +899,12 @@ int run_drive(int argc, char** argv) {
     } else if (a == "--spawn") {
       for (double& v : spawn) v = std::atof(next());
       have_spawn = true;
+    } else if (a == "--save") {
+      save_path = next();
+    } else if (a == "--no-save") {
+      no_save = true;
+    } else if (a == "--menu-png") {
+      menu_png = next();
     }
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
@@ -901,9 +914,43 @@ int run_drive(int argc, char** argv) {
       return 2;
     }
   }
+  if (!menu_png.empty()) {
+    // The HUD with the pause menu open, the second item chosen, at scale 3.
+    HudState st;
+    st.kmh = 87;
+    st.gear = 3;
+    st.rpm = 5400;
+    st.redline_rpm = 8000;
+    st.banner = "NIS_SkylineGTRVSpecII_02 - [ ] pick a car  R back on the road";
+    PauseMenu menu;
+    menu.show();
+    menu.move(1);
+    menu.fill(st);
+    const HudImage img = draw_hud(st, 3);
+    if (!write_png(menu_png.string(), img.width, img.height, 4, img.rgba.data())) return 1;
+    std::printf("menu: %ux%u to %s\n", img.width, img.height, menu_png.string().c_str());
+    return 0;
+  }
+  const bool car_given = !car.empty();
   // The play test's defaults for a window: the bake in out/bake (or
   // out/bake1), the R34, Colorado from SHIFT_GAME_ROOT or the sibling
   // horizon1-recomp checkout, at the free-roam spawn, 1600 x 900.
+  if (!headless && !no_save && save_path.empty()) {
+    if (char* pref = SDL_GetPrefPath("shift-engine", "drive")) {
+      save_path = std::filesystem::path(pref) / "save.txt";
+      SDL_free(pref);
+    }
+  }
+  if (no_save) save_path.clear();
+  // The save: its car when none was given (and it is baked), and where it
+  // stood when no spawn was given and the car is the same.
+  drive::DriveSave saved;
+  bool have_saved = false;
+  if (!save_path.empty()) {
+    std::string e;
+    have_saved = drive::read_save(save_path, saved, &e);
+    if (!have_saved && !e.empty()) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
+  }
   if (!headless) {
     std::error_code ec;
     if (bake_dir.empty())
@@ -912,6 +959,10 @@ int run_drive(int argc, char** argv) {
           bake_dir = d;
           break;
         }
+    if (car.empty() && have_saved) {
+      std::error_code e2;
+      if (std::filesystem::exists(bake_dir / "cars" / (lower_ascii(saved.car) + ".shiftbake"), e2)) car = saved.car;
+    }
     if (car.empty()) car = "NIS_SkylineGTRVSpecII_02";
     if (world_dir.empty()) {
       std::vector<std::filesystem::path> roots;
@@ -928,6 +979,13 @@ int run_drive(int argc, char** argv) {
     if (!size_given) width = 1600, height = 900;
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
+  }
+  if (have_saved && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
+    spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
+    spawn[3] = saved.heading;
+    have_spawn = true;
+    std::printf("save: %s, %s at %.1f %.1f %.1f\n", save_path.string().c_str(), saved.car.c_str(), spawn[0],
+                spawn[1], spawn[2]);
   }
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
@@ -1158,6 +1216,11 @@ int run_drive(int argc, char** argv) {
           start = {sp.position[0], sp.position[1], sp.position[2]};
           start_heading = sp.heading;
           vehicle.reset(start, start_heading);
+          // "Back to the start" keeps the saved spawn, not where the save left the car.
+          if (have_saved && saved.has_spawn) {
+            start = {saved.spawn[0], saved.spawn[1], saved.spawn[2]};
+            start_heading = saved.spawn_heading;
+          }
           ground = &streamer->ground();
           follower.set_ground(&streamer->ground());
           if (!set_staged_world())  // and the follower's road points
@@ -1218,16 +1281,35 @@ int run_drive(int argc, char** argv) {
         rotate_direction(m, up_game, up);
         showroom.set_world_light(sun, up, 1.0f);
       };
+      // Writes where the car stands (drive/save.h); the start is the last spawn.
+      auto save_now = [&](const char* why) {
+        if (save_path.empty() || status != 0) return;
+        drive::DriveSave s;
+        s.car = car;
+        const drive::Vec3 at = vehicle.position();
+        const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        s.position = {at.x, at.y, at.z};
+        s.heading = std::atan2(fwd.x, fwd.z);
+        s.has_spawn = streamer != nullptr;
+        s.spawn = {start.x, start.y, start.z};
+        s.spawn_heading = start_heading;
+        std::string e;
+        if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
+        else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);
+        saved = s;
+        have_saved = true;
+      };
       WheelPose poses[4];
       CameraPull camera_pull;
       // The car's name and the keys, over the HUD for the first seconds.
       constexpr double kIntroSeconds = 6;
       // (The display name is a string-table key: the media name is shown.)
-      const std::string intro = car + " - [ ] pick a car  R back on the road";
+      const std::string intro = car + " - [ ] pick a car  R back on the road  Esc menu";
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
-      auto set_hud = [&](int height, const std::string& banner) {
+      auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
+        if (menu) menu->fill(st);
         st.kmh = vehicle.speed() * 3.6;
         st.gear = vehicle.gear();
         st.rpm = vehicle.rpm();
@@ -1518,7 +1600,7 @@ int run_drive(int argc, char** argv) {
                     "Space handbrake, R put back on the road, V chase/front view, C (held) look back, H hide/show "
                     "the HUD, Esc quit.\n"
                     "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, right stick "
-                    "look around, Y (held) look back, Start put back on the road, Back view.\n"
+                    "look around, Y (held) look back, Start pause menu, Back view.\n"
                     "car picker: [ and ] (LB and RB) choose among the %zu baked cars, Enter (X) drives it.\n",
                     baked_cars.size());
         // The picker's choice, shown in the title until it is taken.
@@ -1546,6 +1628,8 @@ int run_drive(int argc, char** argv) {
           running = false;
         };
         bool show_hud = true;
+        PauseMenu menu;
+        double next_save = 30;  // s of drive time: the save is also written every 30 s
         // The engine sound's stream: about 60 ms queued ahead.
         SDL_AudioStream* audio_stream = nullptr;
         if (engine_sound) {
@@ -1564,12 +1648,46 @@ int run_drive(int argc, char** argv) {
             vehicle.reset(start, start_heading);
           camera_pull = CameraPull{};
         };
+        // The chosen item: resume, the picker, back on the road, or quit.
+        auto choose = [&]() {
+          const int item = menu.selected;
+          menu.open = false;
+          if (item == PauseMenu::kChangeCar) browse(0);
+          if (item == PauseMenu::kReset) put_back();
+          if (item == PauseMenu::kQuit) running = false;
+        };
+        auto open_menu = [&]() {
+          menu.show();
+          picking = false;
+          save_now("pause");
+        };
         while (running) {
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
+            // The pause menu takes the keys and buttons while open.
+            if (menu.open) {
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE) menu.open = false;
+                if (k == SDLK_UP || k == SDLK_W) menu.move(-1);
+                if (k == SDLK_DOWN || k == SDLK_S) menu.move(1);
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) choose();
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) menu.open = false;
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) menu.move(-1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) menu.move(1);
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) choose();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-              if (e.key.key == SDLK_ESCAPE) running = false;
+              if (e.key.key == SDLK_ESCAPE) {
+                if (picking) picking = false;
+                else open_menu();
+              }
               if (e.key.key == SDLK_R) put_back();
               if (e.key.key == SDLK_V) front = !front;
               if (e.key.key == SDLK_LEFTBRACKET) browse(-1);
@@ -1581,7 +1699,7 @@ int run_drive(int argc, char** argv) {
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) put_back();
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) front = !front;
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) browse(1);
@@ -1629,9 +1747,14 @@ int run_drive(int argc, char** argv) {
           }
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
-          accumulator += frame_dt;
+          // Paused: the car holds still (no steps, no time to catch up).
+          if (!menu.open) accumulator += frame_dt;
           last = now;
-          while (accumulator >= drive::Vehicle::kStep) {
+          if (vehicle.time() >= next_save) {
+            save_now("timer");
+            next_save = vehicle.time() + 30;
+          }
+          while (!menu.open && accumulator >= drive::Vehicle::kStep) {
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
               status = 1;
@@ -1672,7 +1795,7 @@ int run_drive(int argc, char** argv) {
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
                             baked_cars[pick].c_str());
-            set_hud(h, picking ? std::string(line) : vehicle.time() < kIntroSeconds ? intro : std::string());
+            set_hud(h, picking ? std::string(line) : vehicle.time() < kIntroSeconds ? intro : std::string(), &menu);
           }
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
@@ -1688,6 +1811,7 @@ int run_drive(int argc, char** argv) {
         for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
         if (audio_stream) SDL_DestroyAudioStream(audio_stream);
       }
+      save_now("end");
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
     }

@@ -116,14 +116,29 @@ placed props out, `--no-far` the far ring, `--no-trees` the tree sprites.
 | Brake (held at a stop: reverse, then it is the throttle) | S or Down | left trigger |
 | Steer | A/D or Left/Right | left stick |
 | Handbrake | Space | A |
-| Back on the nearest road | R | Start |
+| Back on the nearest road | R | |
+| Pause menu: resume, change car, reset to road, quit | Esc | Start |
+| In the menu: choose, take, close | Up/Down (W/S), Enter or Space, Esc | D-pad, A, B or Start |
 | Chase or front view | V | Back |
 | Look around | | right stick |
 | Look back (held) | C | Y |
 | Choose another car (shown in the title) | [ and ] | LB and RB |
 | Drive the chosen car (from where this one stands) | Enter | X |
 | Hide or show the HUD | H | |
-| Quit | Esc | |
+
+The pause menu stops the car and is drawn over the HUD; "change car"
+opens the picker (Esc closes it without a change), "quit" closes the
+window.
+
+**Save.** The drive keeps its own small save (ours: `drive/save.h`, a
+versioned text file with the car, its position and heading, and the last
+spawn) in our user-data folder, `%APPDATA%\shift-engine\drive\save.txt`
+on Windows; it reads nothing of the game's profile. It is written when the
+menu opens, every 30 s of driving and on quit, and read at start: with no
+`--car` the saved car drives, and with no `--spawn` it starts where it
+stood (when the car is the same). `--save <file>` names another file
+(headless runs too), `--no-save` neither reads nor writes one.
+`--menu-png <file>` writes the HUD with the menu open and exits.
 
 The pad's sticks and triggers are rescaled from an inside to an outside
 deadzone (steering 0.10 to 0.95, triggers 0.03 to 0.97; ours, the rule is

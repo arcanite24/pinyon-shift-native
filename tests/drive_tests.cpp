@@ -5,12 +5,14 @@
 // radius; the body frame is +X right, +Z forward), REIMPLEMENTATION_PLAN M3.
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "drive/from_bake.h"
 #include "drive/mesh_ground.h"
 #include "drive/oracle_lap.h"
+#include "drive/save.h"
 #include "drive/vehicle.h"
 
 namespace {
@@ -251,9 +253,43 @@ void test_oracle_lap() {
   CHECK(end.find("\"ended\":\"1\"") != std::string::npos && end.find("\"time_72\":\"38.500000\"") != std::string::npos);
 }
 
+// The drive's save: round trip through text and a file, the version and
+// the required lines, and an unknown key skipped.
+void test_save() {
+  drive::DriveSave s;
+  s.car = "NIS_SkylineGTRVSpecII_02";
+  s.position = {-1790.46, 34.163, 1863.44};
+  s.heading = -1.4358;
+  s.has_spawn = true;
+  s.spawn = {2002.96, 143.84, 960.0};
+  s.spawn_heading = 2.2008;
+  drive::DriveSave back;
+  std::string error;
+  CHECK(drive::save_from_text(drive::save_to_text(s), back, &error));
+  CHECK(back.car == s.car && back.has_spawn);
+  CHECK(std::fabs(back.position[0] - s.position[0]) < 1e-5 && std::fabs(back.position[2] - s.position[2]) < 1e-5);
+  CHECK(std::fabs(back.heading - s.heading) < 1e-6 && std::fabs(back.spawn_heading - s.spawn_heading) < 1e-6);
+  CHECK(drive::save_from_text("shift-drive-save 1\ncar X\nposition 1 2 3\nheading 0.5\nfuture 7\n", back, &error));
+  CHECK(back.car == "X" && !back.has_spawn && back.position[1] == 2);
+  CHECK(!drive::save_from_text("shift-drive-save 2\ncar X\nposition 1 2 3\nheading 0\n", back, &error));
+  CHECK(!drive::save_from_text("shift-drive-save 1\ncar X\nheading 0\n", back, &error));
+  CHECK(!drive::save_from_text("something else\n", back, &error));
+  const auto dir = std::filesystem::temp_directory_path() / "shift-drive-save-test";
+  std::filesystem::remove_all(dir);
+  const auto path = dir / "sub" / "save.txt";
+  CHECK(!drive::read_save(path, back, &error) && error.empty());  // none yet: not an error
+  CHECK(drive::write_save(path, s, &error));
+  s.car = "Second";
+  CHECK(drive::write_save(path, s, &error));  // replaces it
+  CHECK(drive::read_save(path, back, &error) && back.car == "Second");
+  CHECK(!std::filesystem::exists(std::filesystem::path(path).concat(".tmp")));
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
+  test_save();
   test_rest_pose();
   test_determinism();
   test_launch_and_brake();

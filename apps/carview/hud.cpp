@@ -63,6 +63,7 @@ constexpr Glyph kFont[] = {
     {':', {".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."}},
     {'[', {".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###."}},
     {']', {".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###."}},
+    {'>', {".#...", "..#..", "...#.", "....#", "...#.", "..#..", ".#..."}},
 };
 
 const Glyph* glyph(char c) {
@@ -99,6 +100,24 @@ struct Canvas {
 
 int hud_scale(int height) { return std::max(1, height / 300); }
 
+const char* PauseMenu::label(int item) {
+  switch (item) {
+    case kResume: return "resume";
+    case kChangeCar: return "change car";
+    case kReset: return "reset to road";
+    case kQuit: return "quit";
+  }
+  return "";
+}
+
+void PauseMenu::fill(HudState& st) const {
+  if (!open) return;
+  st.menu_title = "paused";
+  st.menu.clear();
+  for (int k = 0; k < kCount; ++k) st.menu.push_back(label(k));
+  st.menu_selected = selected;
+}
+
 HudImage draw_hud(const HudState& state, int scale) {
   scale = std::max(1, scale);
   // Font pixels: the panel, widened for the banner, which takes a line
@@ -106,8 +125,21 @@ HudImage draw_hud(const HudState& state, int scale) {
   constexpr int kPanel = 140, kPanelHeight = 35, kBannerHeight = 11;
   std::string banner = state.banner;
   for (char& ch : banner) ch = char(std::toupper(static_cast<unsigned char>(ch)));
-  const int top = banner.empty() ? 0 : kBannerHeight;
-  const int kWidth = std::max(kPanel, 6 * int(banner.size()) + 7), kHeight = kPanelHeight + top;
+  // The menu: its title and items at size 2 (18 font pixels a line), with
+  // room for the marker.
+  constexpr int kMenuLine = 18;
+  std::vector<std::string> menu;
+  if (!state.menu.empty()) {
+    menu.push_back(state.menu_title);
+    for (const auto& m : state.menu) menu.push_back(m);
+    for (auto& m : menu)
+      for (char& ch : m) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  }
+  int menu_width = 0;
+  for (const auto& m : menu) menu_width = std::max(menu_width, 12 * int(m.size()) + 26);
+  const int menu_height = menu.empty() ? 0 : kMenuLine * int(menu.size()) + 6;
+  const int top = menu_height + (banner.empty() ? 0 : kBannerHeight);
+  const int kWidth = std::max({kPanel, 6 * int(banner.size()) + 7, menu_width}), kHeight = kPanelHeight + top;
   HudImage img;
   img.width = uint32_t(kWidth * scale);
   img.height = uint32_t(kHeight * scale);
@@ -117,8 +149,15 @@ HudImage draw_hud(const HudState& state, int scale) {
                            kAmber[3] = {255, 176, 32}, kTrack[3] = {48, 52, 60}, kBar[3] = {90, 200, 120},
                            kRed[3] = {235, 64, 52};
   c.rect(0, 0, kWidth, kHeight, kBack);
+  for (size_t k = 0; k < menu.size(); ++k) {
+    const int y = 4 + kMenuLine * int(k);
+    const bool title = k == 0, chosen = !title && int(k) - 1 == state.menu_selected;
+    if (chosen) c.text(4, y, ">", 2, kAmber);
+    c.text(title ? 4 : 18, y, menu[k].c_str(), 2, title ? kDim : chosen ? kAmber : kText);
+  }
+  if (!menu.empty()) c.rect(0, menu_height - 1, kWidth, 1, kTrack);
   if (!banner.empty()) {
-    c.text(4, 3, banner.c_str(), 1, kAmber);
+    c.text(4, menu_height + 3, banner.c_str(), 1, kAmber);
     c.rect(0, top - 1, kWidth, 1, kTrack);
   }
   // The panel's rows, right-aligned under a wider banner.
