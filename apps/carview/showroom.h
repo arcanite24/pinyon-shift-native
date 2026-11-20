@@ -260,6 +260,10 @@ class Showroom {
   }
   // Whether the car is drawn (the world reference frame leaves it out).
   void set_draw_car(bool draw) { draw_car_ = draw; }
+  // The brake lamps: 0 off, 1 full (the tail-lamp parts' lamp and red
+  // cover draws glow; an interim, FORMAT-CARS leaves the lit state to the
+  // effect).
+  void set_braking(float glow);
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no
@@ -309,6 +313,7 @@ class Showroom {
     std::array<uint32_t, 3> textures{};  // slot 0, slot 1, livery (gpu_textures_ indices)
     uint32_t descriptor = 0;
     bool glass = false;
+    bool brake_lamp = false;  // a tail-lamp part's lamp or red cover
     std::array<float, 3> centre{};  // car space, for sorting glass
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
     bool spins = false;  // rims, tyres and rotors roll; callipers do not

@@ -36,7 +36,8 @@ namespace {
 
 // Flags in ShowroomPush::params.y (showroom.vert / showroom.frag).
 constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagLivery = 8, kFlagStripe = 32, kFlagFlat = 64,
-                   kFlagNoSlot0 = 16, kFlagRaceLivery = 128, kFlagGrille = 256, kFlagCutout = 512;
+                   kFlagNoSlot0 = 16, kFlagRaceLivery = 128, kFlagGrille = 256, kFlagCutout = 512,
+                   kFlagCover = 1024;
 
 std::string lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -761,6 +762,22 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         flags |= kFlagFlat;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = 0.02f;
       }
+      // Lamp covers (detail_glass_red, _amber, _clear): coloured glass by
+      // the technique's name, not the cabin glass's dark tint (an interim:
+      // the glass constants are not known).
+      bool red_cover = false;
+      if (s.material == MaterialClass::kGlass && technique.rfind("detail_glass_", 0) == 0) {
+        const std::string hue = technique.substr(13);
+        float c[3] = {0.55f, 0.58f, 0.6f};
+        if (hue.rfind("red", 0) == 0) c[0] = 0.22f, c[1] = 0.006f, c[2] = 0.005f, red_cover = true;
+        else if (hue.rfind("amber", 0) == 0) c[0] = 0.6f, c[1] = 0.22f, c[2] = 0.01f;
+        flags |= kFlagCover;
+        std::memcpy(d.push.tint, c, sizeof c);
+      }
+      // The brake lamps: the red covers (the R34's sit on glassLTL,
+      // glassRTL and the trunk's high stop) and the tail-lamp techniques.
+      d.brake_lamp = red_cover || (s.material == MaterialClass::kLamp && (technique.rfind("taillight", 0) == 0 ||
+                                                                         technique.rfind("tail_light", 0) == 0));
       d.push.tint[3] = 1;
       d.push.params[0] = float(uint32_t(s.material));
       d.push.params[1] = float(flags);
@@ -772,6 +789,11 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
     }
     if (drawn) drawn_parts_.push_back(model.name + "/" + part.name);
   }
+}
+
+void Showroom::set_braking(float glow) {
+  for (Draw& d : draws_)
+    if (d.brake_lamp) d.push.params[2] = glow;
 }
 
 void Showroom::set_wheel_poses(const WheelPose poses[4]) {

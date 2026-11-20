@@ -801,6 +801,16 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
                     float(view.near_clip));
 }
 
+// The brake lamps' glow (an interim: FORMAT-CARS leaves the lit state to
+// the effect): on while a front wheel gets the brake or the ABS works;
+// SHIFT_BRAKE_GLOW (0 to 1) holds it for a render.
+float brake_glow(const drive::Vehicle& v) {
+  static const char* held = std::getenv("SHIFT_BRAKE_GLOW");
+  if (held) return float(std::atof(held));
+  const auto& w = v.wheels();
+  return w[0].brake > 0.02 || w[1].brake > 0.02 || v.abs_active() ? 1.0f : 0.0f;
+}
+
 void wheel_poses(const drive::Vehicle& v, WheelPose poses[4]) {
   for (int i = 0; i < 4; ++i) {
     const auto& w = v.wheels()[size_t(i)];
@@ -2094,6 +2104,7 @@ int run_drive(int argc, char** argv) {
           const auto p0 = std::chrono::steady_clock::now();
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
+          showroom.set_braking(brake_glow(vehicle));
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), 2 * drive::Vehicle::kStep));
           const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
@@ -2199,6 +2210,7 @@ int run_drive(int argc, char** argv) {
           if (s % stride != 0) continue;
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
+          showroom.set_braking(brake_glow(vehicle));
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), every));
           if (hud) set_hud(int(height), vehicle.time() < kIntroSeconds ? intro : std::string());
@@ -2483,6 +2495,7 @@ int run_drive(int argc, char** argv) {
           }
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
+          showroom.set_braking(brake_glow(vehicle));
           place_world();
           showroom.set_frame(drive_frame(h > 0 ? float(w) / float(h) : 1.0f, frame_dt));
           if (!renderer.draw_frame(FrameConstants{}, error)) {
