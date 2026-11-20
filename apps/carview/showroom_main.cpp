@@ -850,7 +850,9 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.uv1 = mesh.uv1;
     w.vertex_colours = mesh.colours;
     w.material = mesh.material;
-    w.instance = mesh.instance;
+    // Prop origins in the scenery's frame, like the positions.
+    w.instance.reserve(mesh.instance.size());
+    for (const auto& p : mesh.instance) w.instance.push_back({float(p[0] - origin_x), p[1], float(p[2] - origin_z)});
     for (const auto& m : mesh.materials)
       w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(world::decal_effect(m.effect) ? 1 : 0),
                              uint8_t(m.layers), m.layer_b, m.splat, m.tiling, m.fade});
