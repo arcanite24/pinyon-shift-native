@@ -396,11 +396,15 @@ opaque.
   parts and factory liveries: IoU mean 0.986, min 0.922; 213 of 216 pass
   by IoU-g, 30 are under 0.97 by IoU (on the 200: mean 0.9848 -> 0.9863,
   misses 7 -> 3, under 0.97 31 -> 27; the 16 unicorns all pass, mean
-  0.984). The three misses: the RX-8 Mazdaspeed (its kit is gone; what
-  is left is headlamp glow, IoU-g 0.964), the Huayra (two glow regions,
-  0.9700) and the FJ Cruiser (its tyres: the per-car tyre choice is not
-  traced, 0.9685). The 24 baked cars with no stock Autoshow view are
-  listed by the report.
+  0.984). With the six hidden and showcase cars (222 references, 18
+  traffic models with no usable Autoshow view): IoU mean 0.986, 219 of
+  222 pass by IoU-g. The three misses: the RX-8 Mazdaspeed (its kit is
+  gone; what is left is headlamp glow, IoU-g 0.964), the Huayra (two glow
+  regions, 0.9700) and the FJ Cruiser (its own tyre draws larger than the
+  reference; its sizing is open, Q39: 0.963).
+- Grilles draw their Shared tile on the tiled UV0, cut out on the
+  `_alpha` techniques (ours, Q39). The six models with their own tyre set
+  draw `TireA<MediaName>` from their package, sized as the shared tyre.
 - Stock parts (FORMAT-CARS): each Data_Car row's IsStock upgrade rows
   name the parts drawn; other members of those families, race parts and
   the roll cage are hidden, exhausts take letter a, a missing or

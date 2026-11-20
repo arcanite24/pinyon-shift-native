@@ -33,7 +33,7 @@ namespace {
 
 // Flags in ShowroomPush::params.y (showroom.vert / showroom.frag).
 constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagLivery = 8, kFlagStripe = 32, kFlagFlat = 64,
-                   kFlagNoSlot0 = 16, kFlagRaceLivery = 128;
+                   kFlagNoSlot0 = 16, kFlagRaceLivery = 128, kFlagGrille = 256, kFlagCutout = 512;
 
 std::string lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -77,9 +77,9 @@ float srgb_to_linear(float c) {
 }
 
 // The model's own name for a sheet, e.g. "tyre:sidewall" with tyre textures
-// "tirea" -> "sidewalla_clr.xds".
+// "tirea" (or a car's own "tireatoy_fjcruiser_12") -> "sidewalla_clr.xds".
 std::string tyre_texture_member(const std::string& sheet, const std::string& tyre_media) {
-  const char letter = tyre_media.empty() ? 'a' : tyre_media.back();
+  const char letter = tyre_media.size() > 4 ? tyre_media[4] : 'a';
   return sheet + letter + "_clr.xds";
 }
 
@@ -465,6 +465,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   const bake::Model* tyre = nullptr;
   for (const auto& m : tyre_.models)
     if (m.role == Role::kTyre) tyre = &m;
+  // A model's own tyre set (FORMAT-CARS, Wheels) is one unit wide like
+  // the shared tyre and carries the same two targets (on the FJ Cruiser and
+  // the Raptor-sized sets target A is the modelled radius, on the Wrangler
+  // it grows the tyre): ours, until its sizing is settled, it is sized as
+  // the shared tyre is (spec question Q39).
+  if (info.tyre_media.size() > 5) notes_.push_back("own tyre set " + info.tyre_media + ": sized as the shared tyre");
   bool header_ok = false, extent_ok = false;
   if (rim) {
     const auto& hb = rim->header_bounds;
@@ -641,9 +647,12 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
     // bounds (debugging which part draws where).
     if (std::getenv("CARVIEW_SECTIONS"))
       for (const auto& s : part.subsections)
-        std::printf("section %s/%s lod %d (best %d) %s class %s, %zu indices\n", model.name.c_str(),
-                    part.name.c_str(), int(s.lod), int(best), s.technique.c_str(), bake::material_class_name(s.material),
-                    s.indices.size());
+        std::printf("section %s/%s lod %d (best %d) %s class %s, %zu indices, slots [%s] [%s], uv0 %g %g x %g %g, "
+                    "uv1 %g %g x %g %g\n",
+                    model.name.c_str(), part.name.c_str(), int(s.lod), int(best), s.technique.c_str(),
+                    bake::material_class_name(s.material), s.indices.size(), s.slots[0].c_str(), s.slots[1].c_str(),
+                    s.uv_transform[0], s.uv_transform[1], s.uv_transform[2], s.uv_transform[3], s.uv_transform[4],
+                    s.uv_transform[5], s.uv_transform[6], s.uv_transform[7]);
     for (const auto& s : part.subsections) {
       if (s.lod != best || s.indices.empty()) continue;
       if (s.material == MaterialClass::kHidden) continue;
@@ -734,6 +743,13 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         d.push.tint[0] = float((rgb >> 16) & 0xFF) / 255.0f;
         d.push.tint[1] = float((rgb >> 8) & 0xFF) / 255.0f;
         d.push.tint[2] = float(rgb & 0xFF) / 255.0f;
+      }
+      // A grille shows its Shared tile (slot 1) on the tiled UV0; the
+      // alpha-tested techniques (FORMAT-CARS: grille1_alpha) cut it out.
+      const std::string technique = lower(s.technique);
+      if (t1 != UINT32_MAX && technique.rfind("grille", 0) == 0) {
+        flags |= kFlagGrille;
+        if (ends_with(technique, "_alpha")) flags |= kFlagCutout;
       }
       if (flat_glass) {
         flags |= kFlagFlat;

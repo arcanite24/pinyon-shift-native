@@ -154,7 +154,13 @@ void assign_slots(bake::Subsection& s, Role role, const std::set<std::string>& o
     default:
       if (t == "numplate") s.slots[1] = own_ref("lights_lod0.xds", "lights.xds");
       if (t == "bumper_frame") s.slots[1] = shared_ref("bumper_frame.xds");
-      if (t == "grille1") s.slots[1] = shared_ref("grille1_alpha.xds");
+      // The grilles: FORMAT-CARS gives grille1 the Shared grille1_alpha in
+      // slot 1 (frame dump). Ours: grille1_alpha, grille2 and grille2_alpha
+      // take their family's alpha texture the same way, since every grille
+      // section's UV0 tiles (4 to 77 times), which fits the 64 x 64 Shared
+      // tile and not the atlas.
+      if (t == "grille1" || t == "grille1_alpha") s.slots[1] = shared_ref("grille1_alpha.xds");
+      if (t == "grille2" || t == "grille2_alpha") s.slots[1] = shared_ref("grille2_alpha.xds");
       break;
   }
 }

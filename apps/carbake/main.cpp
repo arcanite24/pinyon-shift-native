@@ -45,6 +45,7 @@ struct Job {
   const cars::CarRow* row = nullptr;
   std::vector<cars::FolderRef> others;  // further copies of a car folder
   std::vector<const cars::CarRow*> rows;  // every Data_Car row of the model (stock parts)
+  std::string tyre;  // the model's own tyre set TireA<MediaName> (lower case), when it has one
 };
 
 struct Result {
@@ -80,6 +81,7 @@ void run(const Job& job, const fs::path& out_dir, Result& r) {
   switch (job.kind) {
     case Job::Kind::kCar:
       ok = cars::bake_car(job.ref, *job.row, b, &error);
+      if (ok && !job.tyre.empty()) b.car.tyre_media = b.car.tyre_texture_media = job.tyre;
       // Each row's stock parts and factory-livery flag, the baked row first.
       if (ok) {
         std::vector<const cars::CarRow*> rows = {job.row};
@@ -307,6 +309,13 @@ int main(int argc, char** argv) {
       continue;
     }
     job.ref = *ref;
+    // FORMAT-CARS, Wheels: a model with its own tyre set (in its package or
+    // on the disc) draws TireA<MediaName>; every other model the shared tyre.
+    const std::string own_tyre = std::string(cars::kTyreTextures) + key;
+    if (auto t = install.find_wheel(own_tyre)) {
+      job.tyre = own_tyre;
+      if (wheels.insert(own_tyre).second) jobs.push_back({Job::Kind::kTyre, own_tyre, *t, nullptr, {}, {}});
+    }
     jobs.push_back(std::move(job));
     ++car_jobs;
     const std::string wheel = cars::lower(row->wheel_media);

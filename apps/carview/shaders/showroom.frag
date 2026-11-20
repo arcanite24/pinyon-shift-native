@@ -46,7 +46,7 @@ layout(location = 0) out vec4 out_color;
 const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, kGauge = 5u,
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
 const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
-           kFlagRaceLivery = 128u;
+           kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -76,6 +76,12 @@ void main() {
   float metal = 0.0;
   float alpha = 1.0;
   vec3 emissive = vec3(0.0);
+  // A grille: its Shared tile on the tiled UV0, cut out on the alpha
+  // techniques.
+  if ((flags & kFlagGrille) != 0u) {
+    if ((flags & kFlagCutout) != 0u && t1.a < 0.5) discard;
+    base = t1.rgb;
+  }
 
   if (klass == kPaint) {
     // Alpha-255 texels show the texel; on a striped colour row they are

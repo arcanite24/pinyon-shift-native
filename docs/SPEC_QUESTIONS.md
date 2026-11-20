@@ -619,3 +619,24 @@ question Q38)" and "Colour byte order"). Built:
 - **Colour byte order.** The `H_VBLND` layer weight now comes from
   COLOR.x, the second stored byte; the decal fade stays on the first
   (COLOR.w). The decal's noise term is not drawn yet.
+
+## Q39 (polish, M1): grille textures and per-car tyre sizing
+
+- **Grilles.** FORMAT-CARS gives `grille1` the Shared `grille1_alpha` in
+  slot 1 (one frame dump) and calls `grille1_alpha` alpha-tested, but not
+  which UV set samples which slot, nor the slots of `grille1_alpha`,
+  `grille2` and `grille2_alpha`. Every grille section's UV0 transform
+  tiles 4 to 77 times (380 sections over the 240 models), which fits the
+  64 x 64 Shared tile and not the atlas: sampling the atlas there drew
+  coarse squares (the RX-8's front, for one). Ours: every grille
+  technique takes its family's Shared `grilleN_alpha` in slot 1, the draw
+  shows that tile on UV0, and the `_alpha` techniques discard texels under
+  alpha 0.5. Open: the slots and UV sets of the four techniques, the
+  alpha reference, and what slot 0 (the atlas) contributes.
+- **Per-car tyres.** A model's own tyre set (`TireA<MediaName>`) is
+  drawn. Its sizing is open (FORMAT-CARS, Wheels): it is modelled at the
+  car's tyre radius (the FJ Cruiser's 0.401 m is its 265/75 R16) and,
+  like the shared tyre, one unit wide. Ours: no outer-radius target, the
+  shared tyre's rim target and lateral fit. On the FJ Cruiser (1651) this
+  draws the tyre larger than the reference along its bottom and outer
+  side (IoU-g 0.963 against 0.969 with the shared tyre).
