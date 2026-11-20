@@ -85,7 +85,10 @@ def read_steps(path: Path) -> list[dict]:
                 # The cockpit lights' sources (finding "ABS, traction and
                 # stability flags"): TCS intervention amount, STM active.
                 tcs=f32(blob, DYN + 3004), stm=struct.unpack_from(">i", blob, DYN + 3016)[0],
-                abs_setting=struct.unpack_from(">I", blob, DYN + 3436)[0]))
+                abs_setting=struct.unpack_from(">I", blob, DYN + 3436)[0],
+                # The AI-only grip factor on the front and rear axles (finding
+                # "AI off-road grip factor"): 1 unless a wheel is on dirt.
+                ai_grip=(f32(blob, wheels[0] + 0x4C), f32(blob, wheels[2] + 0x4C))))
             t += abs(dt)
     return steps
 
@@ -173,6 +176,7 @@ def interpolate(steps: list[dict], times: list[float], t: float) -> dict:
                 axes=[lerp(p, q) for p, q in zip(a["axes"], b["axes"])],
                 speed=a["speed"] + (b["speed"] - a["speed"]) * u, rpm=a["rpm"] + (b["rpm"] - a["rpm"]) * u,
                 controls=list(lerp(a["controls"], b["controls"])), gear=near["gear"],
+                ai_grip=list(lerp(a["ai_grip"], b["ai_grip"])),
                 surface=near["surface"], contact=near["contact"])
 
 
@@ -245,7 +249,8 @@ def analyse(run: Path, route_xml: Path) -> dict:
             vx=round(s["vel"][0], 4), vy=round(s["vel"][1], 4), vz=round(s["vel"][2], 4),
             a_long=round(a_long, 3), a_lat=round(a_lat, 3), clutch=round(clutch, 3),
             handbrake=round(handbrake, 3), distance_m=round(distance, 3) if k >= 0 else 0.0,
-            surfaces=s["surface"], contact=s["contact"]))
+            surfaces=s["surface"], contact=s["contact"],
+            ai_grip=[round(v, 4) for v in s["ai_grip"]]))
         previous = s if k >= 0 else None
     lap = [x for x in samples if 0 <= x["t_s"] <= race_s]
     # At 60 Hz (the velocity differenced over 1/60 s) the step-to-step

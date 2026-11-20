@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Spec ID | `SPEC-CAR-PHYSICS` |
-| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia, the step, straight-line ABS, the braking friction scale and the gearbox and launch timing confirmed on one car; the launch-controller rule probable; lateral tyre, low-speed steering, drag, front brake torque and the torque chain measured fits; the oracle lap for the M3 gate measured (38.78 s, two runs within 0.04 %); collision and surface friction in other specs |
+| Status | draft: parameters resolve for all 240 cars; longitudinal and lateral tyre, suspension units and anti-roll bars, inertia, the step, straight-line ABS, the braking friction scale and the gearbox and launch timing confirmed on one car; the launch-controller rule probable; low-speed steering, drag, front brake torque and the torque chain measured fits; the oracle lap for the M3 gate measured (38.78 s, two runs within 0.04 %); collision and surface friction in other specs |
 | Written | 2026-11-20, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | [objects findings](../../site/findings/objects.toml), group "Car dynamics"; [content findings](../../site/findings/content.toml), group "Game database" |
 | Implements it | `shift-engine`, physics module (not yet) |
@@ -117,7 +117,7 @@ In SI, a spring rate in N/m is `DefSpringRate` × mass in kg.
 | Travel | `MaxCompressHeight`, `MaxStretchDeltaFromRideHeight` | metres | probable from the names |
 | Bump stop | `BumpstopStiffness`, `BumpstopDamping` | probably per mass like the springs | guess |
 | Geometry | `StaticCamber`, `StaticToe`, `Caster` (degrees), `CamberChangeRatioCompression`, `CamberChangeRatioExpansion`, `ChassisPivotX`, `TirePivotX`, `SteerRotAxisTireOffsetX` | | names only; not needed on flat ground |
-| Anti-roll bar | `List_AntiSwayPhysics.DefSwaybarStiffness`, `SwaybarDamping` | probably per mass like the springs | the traced anti-roll force is equal and opposite on an axle's two wheels; its rate was not checked |
+| Anti-roll bar | `List_AntiSwayPhysics.DefSwaybarStiffness` (`SwaybarDamping` not checked) | × mass (kg) → N/m. The force is the rate × the difference of the two wheels' compression, added to the more compressed wheel's load and taken from the other's | confirmed: over the oracle lap's first corner the traced bar force over the travel difference is 143.9 front and 96.0 rear (100 N/m), against 9.2352 × 15.6 = 144.1 and 6.1568 × 15.6 = 96.05 |
 
 The spring force is the rate × the compression from the rest point, and
 the damper force the bump or rebound rate (by the sign of the suspension
@@ -407,14 +407,22 @@ control and the HUD read).
 
 - **Slip ratio** σ = |ω·r − v_x| / max(|v_x|, v_min), with a small v_min
   floor at standstill.
-- **Slip angle** α = atan2(|v_y|, |v_x|), in degrees. Below about 1 m/s
-  the angle is blended towards a linear term in v_y, and at a near
-  standstill it is that linear term only, so the force fades smoothly
-  instead of jumping.
+- **Slip angle** α = atan2(|v_y|, |v_x|), where v is the velocity of the
+  body at the wheel's contact point (the body velocity plus the angular
+  velocity × the arm), v_x its part along the wheel's forward axis and
+  v_y its part across it in the contact plane. The forward axis is the
+  road wheel's: it includes the steer angle and the inner wheel's extra
+  lock, and no toe (the fronts read 41.85° × steer within 0.06°, the
+  rears 0°). The code works in radians; the curve axis below is in
+  degrees. Rebuilt this way from the body state, the angle matches the
+  tyre's own within 0.02° to 0.1° (median) on all four wheels. Below
+  about 1 m/s the angle is blended towards a linear term in v_y, and at a
+  near standstill it is that linear term only, so the force fades
+  smoothly instead of jumping.
 - **Normalised slips:** s_x = σ / σ_peak(N) and s_y = α / α_peak(N), so
   1 is the peak of each curve.
-- **Combined slip:** s = max(√(s_x² + s_y²), s_min), with a small floor.
-  This is a friction circle in normalised slip.
+- **Combined slip:** s = max(√(s_x² + s_y²), 10⁻⁴). This is a friction
+  circle in normalised slip.
 
 Signs follow the velocities; the forces oppose the slip.
 
@@ -426,9 +434,20 @@ The longitudinal and the lateral curve each come from one
 
 - `TireFrictionCurveID0` is the curve at the light load `MinLoadCurve`,
   `TireFrictionCurveID1` the curve at the heavy load `MaxLoadCurve`. The
-  loads are in kilograms-force (the same pair on every row). Between them
-  the curves are blended linearly by load in kgf; outside, the load is
-  clamped (`LoadClamp`, which a road car does not reach).
+  loads are in kilograms-force (the same pair on every row: 10.2 and
+  1,019.7 kgf, which is 100 N and 10 kN). Between them the curves are
+  blended linearly by load in kgf, and outside they hold the end curve.
+  The force itself takes the unclamped load (the outer front reached
+  11.9 kN in the lap's first corner); `LoadClamp` (5,000 kgf) is out of
+  reach.
+- Each curve's values are multiplied by its row's
+  `List_TireFrictionCurve.FrictionScale` (on the R34's lateral row 1.09
+  for the light-load curve and 0.86 for the heavy one, so grip falls with
+  load; longitudinal 1.14 and 0.98), and the blended value by a tyre-width
+  scale: `List_TireCompound.TireFricScale0` at `TireFricWidth0` to
+  `TireFricScale1` at `TireFricWidth1`, linear in the tyre's width in mm
+  (`Data_Car.FrontTireWidthMM`, `RearTireWidthMM`), clamped, probable.
+  On the R34 (245 mm, 0.8625 at 150 to 1.2 at 650) it is 0.9266.
 - A `List_TireFrictionCurve` row is `NumCurveValues` (100) friction values
   `v0`…`v99` at evenly spaced slips from 0 to `MaxSlip`: slip ratio for the
   longitudinal curve, slip angle in degrees for the lateral one. The values rise from 0 to a peak of 1.0 and fall off past it.
@@ -454,26 +473,51 @@ F_x = mu_x · (s_x / s) · N · k_x        each direction takes its share of the
 F_y = mu_y · (s_y / s) · N · k_y
 ```
 
-curve(x, N) reads both load curves at slip x (on the stretched slip axis)
-and blends them by load. The scales are products:
+curve(x, N) reads both load curves at slip x (on the stretched slip axis),
+each times its `FrictionScale`, blends them by load and multiplies by the
+width scale (see "Curves and where they live"). N is the wheel's whole
+normal load: spring, damper and anti-roll bar. The scales are products:
 
 | Scale | Longitudinal k_x | Lateral k_y |
 | --- | --- | --- |
-| Surface friction | the surface's `FrictionScale` (1 on asphalt) | same |
-| Body | `List_UpgradeCarBodyChassisStiffness.FrontLongFrictionScale` / `RearLongFrictionScale` | `…FrontLatFrictionScale` / `RearLatFrictionScale` |
-| Compound | under drive, `List_TireCompound.TorqueFreeLongFrictionScaleAccel0` at `…AccelSpeed0` m/s to `…Accel1` at `…AccelSpeed1`, clamped (the trace reads 1.15 above 15 m/s) | none found; see "What was checked" for the measured lateral factor |
-| Off-road | 1 + the surface's `OffRoadness` × a constant | — |
-| Rear | — | the surface's `RearGripMultiplier`, and on the rear wheels the `Data_Car.FixListing*` multiplier: `FixListingRearFricScale` faded in between the normalised slips `FixListingNormSlip0`, `…1` and out by the steering input between `FixListingSteerAngle0`, `…1`, probable |
+| Surface friction | the surface's `FrictionScale` (1 on asphalt, 0.95 on dirt) | same |
+| Body | `List_UpgradeCarBodyChassisStiffness.FrontLongFrictionScale` / `RearLongFrictionScale` | `…FrontLatFrictionScale` / `RearLatFrictionScale` (0.985 and 0.9925 on the R34) |
+| Compound | under drive, `List_TireCompound.TorqueFreeLongFrictionScaleAccel0` at `…AccelSpeed0` m/s to `…Accel1` at `…AccelSpeed1`, clamped (the trace reads 1.15 above 15 m/s); on a wheel whose torque slows it, `TorqueFreeLongFrictionScaleBrake` × `GameFrictionScaleBraking` (see Brakes) | `List_TireCompound.TorqueFreeLatFrictionScale` (1.8 on the R34's compound), confirmed. The tyre reads one value for the car and checks that the four wheels agree |
+| Off-road | none: the code's 1 + `OffRoadness` × a constant has the constant 0 | none |
+| Rear | the surface's `RearGripMultiplier` (1 on asphalt, 0.93 on dirt) on the rear wheels | the same, and on the rear wheels the `Data_Car.FixListing*` multiplier below |
 | Handbrake | the surface's `HandbrakeGripMultiplier` on the rear wheels while the handbrake is held | same |
-| Misc | a constant near 1 (1.01 on the R34; the source is not identified) | |
+| AI grip | under the AI only: a factor on both forces while a wheel is on dirt (see "What the AI's controls mean") | same |
+| Misc | a constant near 1 (1.01 on the R34; the source is not identified) | same |
 
-`List_TireFrictionCurve.FrictionScale` (a different value on each load
-curve) does not appear in the traced values: the curve value in the trace matches the blended samples without
-it. An implementation leaves it out.
+**Rear-grip fix.** On each rear wheel the lateral force is multiplied by
+g + d × (1 − g). g is `FixListingRearFricScale` (1.35 on the R34) while
+the normalised slip angle |s_y| is at most `FixListingNormSlip0` (0.5),
+falls linearly to 1 at `FixListingNormSlip1` (1.0) and is 1 beyond. d is
+0 while the absolute road-wheel steer angle is at most
+`FixListingSteerAngle0` (0.5°), rises linearly to 1 at
+`FixListingSteerAngle1` (1.0°) and is 1 beyond. So a rear tyre at a small
+slip angle has 35 % more lateral grip while the front wheels point within
+0.5° of straight, and none of it once they are turned past 1°. Confirmed:
+with it, near-straight rear wheels rebuild within 2 % on 99 % of 3,325
+lap samples and 329 no-AI samples.
 
-Surface off-road behaviour (`OffRoadness`, `OffRoadDryPeakSA`) pulls the
-lateral peak slip towards the surface's own peak; on asphalt it does
-nothing. The surface table itself is the surface spec's (M3 needs item 2).
+**Off-road surfaces.** A surface with `OffRoadness` moves the lateral
+peak slip towards its `OffRoadDryPeakSA` (degrees, not stretched by the
+sidewall): α_peak = α_peak,road + `OffRoadness` × (`OffRoadDryPeakSA` −
+α_peak,road), 18° on dirt (`OffRoadness` 1). The normalised angle s_y and
+the combined slip use that peak, but the curve is still read at
+s × α_peak,road. So on dirt the same slip angle gives a smaller s and less
+force; with `FrictionScale` and `RearGripMultiplier` that is the whole
+dirt rule for the lateral force (confirmed on the lap's dirt samples). The
+surface's `MinimumArcadeGripValue` (0.3 on dirt) blends the tyre towards a
+second, arcade curve, which on the R34 gives the same values; the
+longitudinal peak's dirt rule was not checked. The surface table itself is
+the surface spec's.
+
+**Not seen.** A further multiplier on both forces applies only when a
+dynamics byte is clear and a wheel word passes a threshold. The byte is 1
+on the lap and 0 in pad runs, but the forces rebuild without the
+multiplier in both, so it was never active here.
 
 Temperature, pressure, wear and camber act through `List_TireAffectCurve`
 rows named by the compound (`AffectCurve…ID`) and the `PhysicsSettings.ini`
@@ -484,20 +528,22 @@ R34's drive they stay within 1 % of 1 (the lateral scale read 0.982 to
 
 ### What was checked
 
-Against the R34's oracle trace (stock compound, asphalt):
+Against the R34's oracle traces (stock compound 5):
 
 | Check | Result | Confidence |
 | --- | --- | --- |
-| Longitudinal curve value | the load-blended, sidewall-stretched curve at the traced slip gives the traced μ within 1 % at four points between μ 0.02 and 0.60 | confirmed |
+| Curve value, both directions | the load-blended, sidewall-stretched curve with each row's `FrictionScale` and the width scale gives the traced μ to four digits on 1,760 longitudinal and 1,000 lateral wheel samples, asphalt and dirt; without the width scale the ratio is a constant 0.9266 | confirmed |
 | Longitudinal force | F_x = μ_x × N × the compound scale × the misc scale × the affect scale, exact to the printed precision | confirmed |
-| Sidewall factor | 1.27 on the R34's tyres, applied to both the peak slips and the curve's slip axis | confirmed |
-| Lateral curve value | the same construction **over-predicts** the traced lateral value by 7 to 11 % (three points) | open |
-| Lateral measured fit | multiply the lateral curve value by **0.915** (the three ratios are 0.907, 0.907 and 0.930) | measured, three points |
+| Sidewall factor | 1.27 on the R34's tyres, applied to both the peak slips and the curve's slip axis; the lateral peak rebuilt from the curves is within 0.4 % of the traced one | confirmed |
+| Lateral force | rebuilt from the rebuilt slip angle, the slip ratio and the load: within 2 % of the traced F_y on 95 % of the oracle lap's 28,391 wheel samples and within 10 % on 98.6 % (the rest are the AI grip factor's one-step lag and slow wheels); within 2 % on 98 % of `m3-steer-speed` and 99 % of the no-AI lap. Median ratio 1.002 to 1.004, the small excess probably the camber affect on the body scale | confirmed |
 | Low-speed turn | at full lock and 2 to 3 m/s, coasting (the throttle released with the steer input, measured from 0.8 s after it), the car's path radius is 3.37 m, steady for 3 s | measured |
 
-The lateral gap may come from the lateral peak clamp, a different stretch
-on the angle axis or a camber term. The fit is enough for M3's play test;
-the lateral gate is the turn circle and the lap.
+Earlier drafts left out `FrictionScale` and the width scale and stood a
+0.915 factor in for them, and had no compound scale on the lateral force.
+Their longitudinal match without the two scales was a coincidence:
+1.14 × (1 − f) + 0.98 × f is about 1.076 at mid loads, and 1.076 × 0.9266
+is 0.997. The missing `TorqueFreeLatFrictionScale` (1.8) halved the
+lateral force (see "Check: the first corner" under the oracle lap).
 
 ### Step and rates
 
@@ -1011,6 +1057,7 @@ lap must feed them in at these stages:
 | `steer` | the road wheels (the same one-step offset in the trace as the brake) | the mean angle of the two front wheels is 41.85° × steer (`SteerMaxAngle` is 42°), at every speed from 0 to 45 m/s, with no speed narrowing and no rate limit: over 7,329 AI steps the residual is under 0.01° on 99 % of steps, and the wheels follow jumps of the steer value within one step. The inner wheel turns about 4 % more than the outer (median ratio 1.042 above 3°) | the lock narrows with speed and the wheels move at a limited rate (see "Throttle, brake and steering from the pad") |
 | `gas` | the engine's throttle | not ramped: it jumps between 1.0 and about 0.01 within one 11 to 13 ms step (up to 90 per second; 415 of 6,266 AI steps change faster than 5 per second), where `AccelDelaySpeed` (5 per second) would take 0.2 s. The engine's own load value lags it (boost and the closed-throttle term), so do not build a torque map from that value | ramped at about 5 per second |
 | gears | — | the AI does not shift: the automatic box does, with the same thresholds as in pad runs ("Clutch and gearbox states") | the same |
+| grip on dirt | a factor on both tyre forces of every wheel (the tyre's "AI grip" scale) | above 1 only while a wheel is on dirt (279 of the 287 active lap steps; the other 8 the step after leaving it), and not on every dirt step (52 stay at 1). The two fronts share one value and the two rears another, with the rear's excess over 1 exactly 1.1 × the front's; at most 1.50 front and 1.55 rear. A step uses the value written in the step before. Its size, 1.0 to 1.5, has no rule found (it falls with speed and rises with steer). The lap file gives it per sample as `ai_grip`; an engine replays it by distance like the pedals | none: 1 in every pad run and the no-AI lap, on grass and dirt alike |
 
 So the lap's `steer` is a fraction of `SteerMaxAngle` at the road
 wheels, `brake` a fraction of the AI's linear brake torque, and `gas` the
@@ -1058,6 +1105,53 @@ steer −0.06 to −0.20). The road wheels read 2.6° to 9.5°, which is
 acceleration is 11 to 13 m/s² with single samples to 22 (path radius about 47 m). Under the pad's
 speed-narrowed lock the same steer values would give under 1°.
 
+**Check: the first corner** (300 to 400 m, 12.1 to 16.0 s, 24.2 to
+30.4 m/s, second gear, mostly at part or full throttle). The car turns
+left. From 12.9 s the AI cuts the inside over dirt: the front left wheel
+is on surface 1 for 43 % of the window and the rear left for 41 %. The
+tyre's per-wheel state (medians, N; α from the contact velocities above;
+the inside wheels leave the ground on 19 and 12 of 258 steps):
+
+| Wheel | 12.1 to 12.6 s, all on asphalt: load | α | s_y | μ_y | \|F_y\| | F_y / load | Whole window: load | α | \|F_y\| |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| front left (inner) | 2,107 | 3.86° | 0.40 | 0.80 | 2,889 | 1.42 | 2,688 | 2.76° | 2,973 |
+| front right (outer) | 6,179 | 4.16° | 0.48 | 0.79 | 8,411 | 1.41 | 6,432 | 2.71° | 8,260 |
+| rear right (outer) | 4,344 | 3.80° | 0.42 | 0.78 | 6,074 | 1.40 | 5,358 | 2.15° | 6,313 |
+| rear left (inner) | 1,669 | 3.94° | 0.40 | 0.82 | 2,443 | 1.44 | 2,537 | 2.19° | 2,412 |
+
+The tyre law above, fed the oracle's slip angles, slip ratios, loads and
+surfaces, gives each wheel's traced F_y with a median ratio of 1.002 to
+1.004 (5th to 95th percentile 1.001 to 1.02) over the window. The four
+lateral forces sum to 12.5 m/s² of the car's mass (traced 12.47, rebuilt
+12.50, median). Projected on the body's lateral axis with the fronts'
+steer, the tyre forces give −12.7 m/s² over 12.1 to 12.6 s, where the
+lap's `a_lat` reads −12.4. No tyre is near its peak: s_y is 0.2 to 0.5,
+where F_y / load is 1.1 to 1.4 against a peak of about 1.66.
+
+Two terms carry the corner. **The compound's `TorqueFreeLatFrictionScale`
+(1.8)**: without it the same slips give 6.9 m/s², which is the 5 to
+8 m/s² an engine without it reaches, with its front axle saturating at
+8 to 15° of lock. **The AI's grip factor on dirt** (see "What the AI's
+controls mean"): without it the window gives 11.1 m/s² (about 11 % less
+from 322 to 365 m, where a wheel is on dirt).
+
+**Load transfer in the corner.** Over 12.1 to 12.6 s each front wheel's
+load moves by 2,080 N from the inner to the outer wheel and each rear
+wheel's by 1,540 N, so the front axle takes 57 % of the lateral load
+transfer (56 % over the window, quartiles 54 to 62 %). The roll stiffness
+from the springs and bars predicts 58 %: per axle the springs give
+k_s × t² / 2 and the bar k_bar × t², with k_s = 855 and 645 (100 N/m),
+k_bar = 144.1 and 96.05 (100 N/m), and tracks t = 1.541 and 1.530 m,
+which is 1,358 front against 980 rear (100 N·m/rad). The bars carry 22 %
+of the front's transfer and 21 % of the rear's (traced; 25 and 23 %
+predicted). The front's share is about its 57.5 % share of the weight, so
+the split does not overload the front. The size of the transfer matches
+an arm of 0.28 m (0.27 to 0.29 m) between the tyre forces and the centre
+of mass, the same as the 0.27 m pitch arm of scenario B, not the 0.47 m
+of a force at the contact patch. An engine that applies lateral tyre
+forces at the contact patch moves 1.7 times too much load onto the outer
+wheels, which saturates the outer front first.
+
 ### Files and format
 
 The engine reads `.local/re/physics/oracle-lap/` on multivac (copy it
@@ -1082,6 +1176,7 @@ beside the engine's oracle data):
 | `clutch`, `handbrake` | the other two control words |
 | `distance_m` | path length of the body point from t = 0 |
 | `surfaces`, `contact` | each wheel's surface index and contact flag (front left, front right, rear right, rear left, probable) |
+| `ai_grip` | the AI's grip factor on dirt, front axle and rear axle, interpolated like the positions (1 off dirt) |
 
 - **`lap.json`**: race, gate, start state, settings (the tables above) and,
   per run, the checks: race and lap time, launch delay, gate crossings,
@@ -1111,8 +1206,10 @@ tyre's peak F/load of about 1.8 under "Scenario B".
   crossing the plane above, within 2 % of 38.78 s (38.01 to 39.56 s).
   Report the run in `physics-behaviour.py compare` against `lap.jsonl`.
 - The engine needs friction for asphalt and dirt (surfaces 0 and 1): the
-  AI's line cuts two corners onto dirt, and how the tyre uses the surface
-  columns is still open (FORMAT-COLLISION). The 2 % gate depends on it.
+  AI's line cuts two corners onto dirt. The tyre's lateral use of the
+  surface columns is under "Off-road surfaces" (confirmed on this lap);
+  the engine also needs the AI's grip factor on dirt (`ai_grip`). The 2 %
+  gate depends on both.
 - For `compare` to see a race time, the engine's own file needs `mode` 3
   samples and a final `dlc.rally.race_trace` event with `started`,
   `ended` and `end_reason` the strings "1" and `time_72` its race time.
@@ -1125,7 +1222,8 @@ tyre's peak F/load of about 1.8 under "Scenario B".
 
 | Part | State | What closes it |
 | --- | --- | --- |
-| Lateral tyre value | over-predicted 7 to 11 %; a measured factor stands in | trace the lateral path at higher slip angles; the steer route at speed |
+| Lateral tyre | confirmed on one compound at slip angles up to about 0.5 of the peak; the width scale's clamping and the arcade curve not checked | a second compound and a corner near the peak |
+| AI grip factor on dirt | on while a wheel of the AI-driven car is on dirt, size 1.0 to 1.5 with no rule found; replayed from the lap file | the code that writes it |
 | Brake torque | the pad's curve confirmed at partial presses and the AI's linear map measured; the per-wheel constant's formula and the bias rule not decoded; one trace unit is about 1,200 N·m by steady partial braking, while full-press stops balance lower on the fronts | a car with other brake columns; the brake model's torque code |
 | AI-input mode | the flag, the AI's brake, ABS and steering paths measured on one lap; the flag's writer and the switch in the code not decoded | the code that reads the flag in the brake and steering models; a second AI-driven car |
 | Gearbox thresholds | up-shift at about 0.945 × `RedlineRPM` (third about 40 rpm later), braking down-shift at about 6,400 rpm in the lower gear; whether a lift or the brake withdraws a request, and the full-throttle down-shift, open | the gearbox state machine's engaged-state compares |
@@ -1140,7 +1238,7 @@ tyre's peak F/load of about 1.8 under "Scenario B".
 | Aligning torque | outputs seen, not used here | steering feel, after M3 |
 | Other surfaces | grass (surface 2) seen past 110 m | the surface spec |
 | Collision shape | out of scope here | [FORMAT-COLLISION](../formats/COLLISION.md) |
-| Dirt friction | the oracle lap puts 7 % of wheel samples on surface 1 | the surface columns of `surfaceTypes.xml` (FORMAT-COLLISION) |
+| Dirt friction | lateral rule confirmed on the oracle lap (`FrictionScale`, `OffRoadness`, `OffRoadDryPeakSA`, `RearGripMultiplier`); the longitudinal peak on dirt not checked | a braking or launch trace on dirt |
 
 ## Tolerances
 
@@ -1150,7 +1248,7 @@ tyre's peak F/load of about 1.8 under "Scenario B".
 - The M3 gate is 2 % on 0-100 km/h (sim time) and on scenario B's mean
   deceleration; the intermediate crossings take 2 % or 0.05 s, the larger,
   because the clutch phase dominates the first second.
-- Quantities marked measured fit (drag, the lateral factor) carry their own
+- Quantities marked measured fit (drag) carry their own
   spread; a miss within those spreads is not an implementation bug.
 - Bit-exact agreement is not a goal; the step only has to keep the
   oracle's rate of about 360 Hz (an engine may use 1/120 s with three
