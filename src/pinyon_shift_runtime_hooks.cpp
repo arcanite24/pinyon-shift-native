@@ -6436,6 +6436,7 @@ static void QueuePhysicsTrace() {
     // "|". Driver 0 is the player, 1 a race AI, 4 the cars around free
     // roam; the vector's order changes as cars come and go.
     std::string cars;
+    std::string poses;
     uint32_t count = 0;
     for (uint32_t entry = begin; entry < end; entry += 4) {
       const uint32_t car = pointer(entry, cd::kDriverType + 4);
@@ -6452,12 +6453,23 @@ static void QueuePhysicsTrace() {
                           LoadGuestF32(controls + cd::kControlGas),
                           LoadGuestF32(controls + cd::kControlBrake),
                           LoadGuestF32(controls + cd::kControlSteer));
+      // index:x:y:z:mass:path:light per car (SPEC-TRAFFIC): the body's
+      // world position (m), its mass (100 kg units), the step path word
+      // (0 = full dynamics step) and the light-step byte.
+      const uint32_t body = dyn - 0xAD0u;
+      if (PinyonShiftGuestRangeReadable(body, 0x5040)) {
+        if (!poses.empty()) poses += '|';
+        poses += fmt::format("{}:{:.2f}:{:.2f}:{:.2f}:{:.3f}:{}:{}", (entry - begin) / 4,
+                             LoadGuestF32(body + 0x4EA0), LoadGuestF32(body + 0x4EA4),
+                             LoadGuestF32(body + 0x4EA8), LoadGuestF32(body + 0x160),
+                             LoadGuestU32(body + 2756), LoadGuestU8(body + 20520));
+      }
       ++count;
     }
     pinyon_shift::diagnostics::RecordEvent("fh1.physics_trace", {
         {"frame", fmt::format("{}", frame)}, {"t_ms", fmt::format("{:.1f}", t_ms)},
         {"mode", fmt::format("{}", mode)},
-        {"count", fmt::format("{}", count)}, {"cars", cars}});
+        {"count", fmt::format("{}", count)}, {"cars", cars}, {"poses", poses}});
   });
 }
 
