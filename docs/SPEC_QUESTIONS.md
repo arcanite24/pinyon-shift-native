@@ -846,22 +846,33 @@ headless car, and the drive with `--no-post`).
   night filmicTone values (the drive uses the day curve at every hour);
   the spec's probable bright-pass cutoff and blur sizes against ours; the
   composite order. The windowed path was not run (headless only).
-- **Sun shadow (ours):** one orthographic map from the sun (WORLD-MATERIALS'
-  sunDir, the light world.frag already uses), its box centred half a
+- **Sun shadow (ours):** one orthographic map, its box centred half a
   radius ahead of the eye along the view, snapped to whole texels from
-  the scenery's origin, 800 m deep along the sun. Casters: the scenery's
-  opaque and cut-out draws culled against the box (blended draws and the
-  sky cast none), tree sprites turned to the sun, the car and the traffic
-  within the box (glass casts none). Receivers: the scenery's sun term
-  only, times `mix(0.35, 1, lit)` (TrackSettings ShadowColor 0.35, read
-  as the sun's share left in shadow; ours). Tree sprites and the cars do
-  not receive: sprites face the eye in the colour pass and the sun in the
-  shadow pass, and the car's key light is fixed to the car, not the sun.
-  `--shadows off | low | high`: low 1024 texels over 80 m, one filtered
-  compare (`--preset low`'s default); high 2048 over 120 m, four.
-  Open: the game's own cascades (ShadowEnds Near 25, InGameShadowEnd 202,
-  ShadowMipBias, ShadowLightDirection with its override) and how
-  ShadowColor applies.
-- **Shadow costs (UHD 620, 1280x720, GPU p50 of the pass):** low 1.29 ms,
-  high 1.80 ms; frame p95 low 11.55 ms, high 16.04 ms (blindvac's runs
-  vary about 1 ms with its temperature). Masked PSNR with shadows 16.00 dB.
+  the scenery's origin, 800 m deep along the light. It casts from the
+  track's shadow light when TrackSettings overrides it
+  (OverrideShadowLightDirection 1: towards the light is
+  ShadowLightDirection negated, (-0.75, 0.65, -0.59) on Colorado, about
+  34 degrees up), else from WORLD-MATERIALS' sunDir. Against the
+  free-roam reference the override's barrier shadows fall the game's
+  way (down and to the left); with z negated, and from sunDir, they do
+  not. Casters: the scenery's opaque and cut-out draws culled against
+  the box (blended draws and the sky cast none), tree sprites turned to
+  the light, the car and the traffic within the box (glass casts none).
+  Receivers: the scenery's sun term only, times `mix(0.35, 1, lit)`
+  (TrackSettings ShadowColor 0.35, read as the sun's share left in
+  shadow; ours). Tree sprites and the cars do not receive: sprites face
+  the eye in the colour pass and the light in the shadow pass, and the
+  car's key light is fixed to the car. `--shadows off | low | high`: low
+  1024 texels over 80 m, one filtered compare (`--preset low`'s
+  default); high 2048 over 120 m, four. Open: the game's own cascades
+  (ShadowEnds Near 25, InGameShadowEnd 202, ShadowMipBias) and how
+  ShadowColor applies; the shading still lights with sunDir (61 degrees
+  up), so the shadows' light and the shading's differ.
+- **Shadow costs (UHD 620, 1280x720, two runs each):** the pass's GPU p50
+  1.69 ms on low, 2.41 to 2.54 ms on high; frame p95 11.93 to 11.95 ms on
+  low (before the post chain and shadows 11.97), 16.54 to 17.31 ms on
+  high (before 11.87; high is over 16 ms on this GPU). Steam Deck
+  (headless over ssh, not at Steam's clocks, 1280x800 MSAA 4): the pass
+  0.88 ms, frame p95 4.90 ms off and 5.84 ms high. Masked PSNR against
+  the free-roam reference: 15.92 dB with the post chain alone, 15.41 dB
+  with the shadows from the track's shadow light (a number, not a goal).

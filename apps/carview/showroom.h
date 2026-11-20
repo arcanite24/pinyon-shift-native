@@ -226,6 +226,13 @@ class Showroom {
   // The textured world's light, in the frame's space: towards the sun, up,
   // and an exposure (WORLD-MATERIALS' sunDir is in the game frame).
   void set_world_light(const float sun[3], const float up[3], float exposure);
+  // The direction the sun shadow is cast from (towards the light, the
+  // frame's space); null: the world light's sun.
+  void set_shadow_direction(const float* towards_light) {
+    shadow_direction_set_ = towards_light != nullptr;
+    if (towards_light)
+      for (int k = 0; k < 3; ++k) shadow_direction_[k] = towards_light[k];
+  }
   // Whether the car is drawn (the world reference frame leaves it out).
   void set_draw_car(bool draw) { draw_car_ = draw; }
 
@@ -244,6 +251,8 @@ class Showroom {
   size_t world_texture_count() const { return world_textures_.size(); }
   // The world draws the last frame's shadow pass drew (0 without shadows).
   size_t shadow_draw_count() const { return shadow_drawn_; }
+  // The traffic cars it drew.
+  size_t shadow_car_count() const { return shadow_cars_; }
 
   // Renders the car-coverage mask (every car draw, no depth test, at the
   // colour pass's MSAA) at the current frame: 255 where any sample of the
@@ -364,7 +373,9 @@ class Showroom {
   VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
   ShowroomFrame shadow_frame_{};
   VkPipeline shadow_world_ = VK_NULL_HANDLE, shadow_cutout_ = VK_NULL_HANDLE, shadow_car_ = VK_NULL_HANDLE;
-  size_t shadow_drawn_ = 0;
+  size_t shadow_drawn_ = 0, shadow_cars_ = 0;
+  float shadow_direction_[3] = {0, 1, 0};
+  bool shadow_direction_set_ = false;
   std::vector<VkDescriptorSet> material_sets_;
   // Scenery.
   Renderer::Buffer world_vertices_, world_indices_;

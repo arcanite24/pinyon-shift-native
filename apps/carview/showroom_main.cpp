@@ -865,6 +865,24 @@ void read_post_settings(const std::filesystem::path& world_dir, PostSettings& s)
   if (const auto* c = root.find("bloom/scale")) s.bloom_scale = float(c->number("value", s.bloom_scale));
 }
 
+// The track's shadow light (TrackSettings: ShadowLightDirection, the
+// direction the light travels in the game frame, used when
+// OverrideShadowLightDirection is set). False without it.
+bool read_shadow_direction(const std::filesystem::path& world_dir, float travel[3]) {
+  std::ifstream in(world_dir / "TrackSettings.xml", std::ios::binary);
+  if (!in) return false;
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  audio::XmlNode root;
+  if (!audio::parse_xml(text, root, nullptr)) return false;
+  const auto* on = root.child("OverrideShadowLightDirection");
+  const auto* d = root.child("ShadowLightDirection");
+  if (!on || !d || on->number("value", 0) < 0.5) return false;
+  travel[0] = float(d->number("x", 0));
+  travel[1] = float(d->number("y", -1));
+  travel[2] = float(d->number("z", 0));
+  return true;
+}
+
 int run_drive(int argc, char** argv) {
   // The post chain (on unless --no-post); --exposure overrides ours,
   // --bloom / --no-bloom the preset's choice.
@@ -1101,7 +1119,8 @@ int run_drive(int argc, char** argv) {
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
                          "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] [--no-far] [--no-trees] "
                          "[--world-reference file.json]] [--headless --out prefix.png [--hud] "
-                         "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH]\n");
+                         "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH] [--preset low|high] "
+                         "[--no-post] [--bloom | --no-bloom] [--exposure x] [--shadows off|low|high]\n");
     return 2;
   }
   if (view != "chase" && view != "front") {
@@ -1199,6 +1218,14 @@ int run_drive(int argc, char** argv) {
       ShadowSettings& shadow = render_options.shadow;
       if (level == "low") shadow.size = 1024, shadow.radius = 40, shadow.taps = 1;
       else if (level == "high") shadow.size = 2048, shadow.radius = 60, shadow.taps = 4;
+    }
+    // The shadow pass casts from the track's shadow light when it overrides
+    // the sun (towards the light: the travel direction negated).
+    float shadow_light_game[3] = {0, 1, 0};
+    bool have_shadow_light = false;
+    if (!world_dir.empty() && read_shadow_direction(world_dir, shadow_light_game)) {
+      have_shadow_light = true;
+      for (float& c : shadow_light_game) c = -c;
     }
     if (!showroom.load(bake_dir, car, options, error) || !renderer.init(render_options, error) ||
         !showroom.upload(error)) {
@@ -1415,6 +1442,11 @@ int run_drive(int argc, char** argv) {
         rotate_direction(m, kSunGame, sun);
         rotate_direction(m, up_game, up);
         showroom.set_world_light(sun, up, 1.0f);
+        if (have_shadow_light) {
+          float towards[3];
+          rotate_direction(m, shadow_light_game, towards);
+          showroom.set_shadow_direction(towards);
+        }
       };
       // Writes where the car stands (drive/save.h); the start is the last spawn.
       auto save_now = [&](const char* why) {
@@ -1526,6 +1558,11 @@ int run_drive(int argc, char** argv) {
         rotate_direction(to_file, kSunGame, sun);
         rotate_direction(to_file, up_game, up);
         showroom.set_world_light(sun, up, 1.0f);
+        if (have_shadow_light) {
+          float towards[3];
+          rotate_direction(to_file, shadow_light_game, towards);
+          showroom.set_shadow_direction(towards);
+        }
         ShowroomFrame frame{};
         std::memcpy(frame.view_projection, world_reference.clip_from_world, sizeof frame.view_projection);
         for (int c = 0; c < 4; ++c) frame.view_projection[c * 4 + 1] = -frame.view_projection[c * 4 + 1];
@@ -1573,7 +1610,7 @@ int run_drive(int argc, char** argv) {
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
         std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms, pose_ms;
         // The world's draws per frame: recorded, culled, indices drawn.
-        double draws_sum = 0, culled_sum = 0, indices_sum = 0, shadow_sum = 0;
+        double draws_sum = 0, culled_sum = 0, indices_sum = 0, shadow_sum = 0, shadow_cars_sum = 0;
         std::vector<std::string> stage_names;
         std::vector<std::vector<double>> stage_ms;  // per stage, per frame
         double sim = 0;
@@ -1608,6 +1645,7 @@ int run_drive(int argc, char** argv) {
             const auto ws = showroom.world_draw_stats();
             draws_sum += double(ws.drawn), culled_sum += double(ws.culled), indices_sum += double(ws.indices);
             shadow_sum += double(showroom.shadow_draw_count());
+            shadow_cars_sum += double(showroom.shadow_car_count());
           }
           for (const auto& [name, ms] : renderer.stage_ms()) {
             size_t k = 0;
@@ -1665,7 +1703,8 @@ int run_drive(int argc, char** argv) {
                       draws_sum / double(n), culled_sum / double(n), indices_sum / double(n) / 3000.0,
                       double(showroom.world_triangle_count()) / 1000.0);
         if (n && shadow_sum > 0)
-          std::printf("bench: shadow casters per frame %.0f world draws\n", shadow_sum / double(n));
+          std::printf("bench: shadow casters per frame %.0f world draws, %.2f traffic cars\n", shadow_sum / double(n),
+                      shadow_cars_sum / double(n));
         std::printf("bench: process CPU %.2f s over %.2f s wall: %.2f ms per frame, %.0f%% of one core\n", cpu, wall,
                     n ? cpu * 1000 / double(n) : 0.0, wall > 0 ? cpu / wall * 100 : 0.0);
       } else if (headless) {

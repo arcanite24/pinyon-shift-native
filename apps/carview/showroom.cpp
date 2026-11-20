@@ -1381,7 +1381,7 @@ bool Showroom::upload(std::string& error) {
       std::memset(frame_.shadow_matrix, 0, sizeof frame_.shadow_matrix);
       std::memset(frame_.shadow, 0, sizeof frame_.shadow);
       std::memset(frame_.shadow_bias, 0, sizeof frame_.shadow_bias);
-      shadow_drawn_ = 0;
+      shadow_drawn_ = shadow_cars_ = 0;
     }
     update_frame(cmd);
     // Each guest's frame block: this car's camera and light, its own stripe.
@@ -1504,7 +1504,8 @@ void Showroom::place_shadow() {
     out[1] = a[2] * b[0] - a[0] * b[2];
     out[2] = a[0] * b[1] - a[1] * b[0];
   };
-  float sun[3] = {world_sun_[0], world_sun_[1], world_sun_[2]};
+  const float* from = shadow_direction_set_ ? shadow_direction_ : world_sun_;
+  float sun[3] = {from[0], from[1], from[2]};
   float up[3] = {world_up_[0], world_up_[1], world_up_[2]};
   if (!normalise(sun)) sun[0] = 0, sun[1] = 1, sun[2] = 0;
   if (!normalise(up)) up[0] = 0, up[1] = 1, up[2] = 0;
@@ -1619,7 +1620,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     }
     return false;
   };
-  shadow_drawn_ = 0;
+  shadow_drawn_ = shadow_cars_ = 0;
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -1661,6 +1662,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     const float y = vp[1] * t[0] + vp[5] * t[1] + vp[9] * t[2] + vp[13];
     if (std::fabs(x) > reach || std::fabs(y) > reach) continue;
     in.car->record_shadow_car(cmd, in.model);
+    ++shadow_cars_;
   }
   vkCmdEndRendering(cmd);
 
