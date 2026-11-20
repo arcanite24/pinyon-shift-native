@@ -75,7 +75,7 @@ install it.
 | Screen | Cars | How a reference is taken |
 | --- | ---: | --- |
 | Autoshow | 200 | Make carousel, then the car list, then the showroom (below) |
-| Garage, when owned (unicorn) | 16 | Nine barn finds and seven gifts. The Autoshow leaves unicorn cars out. Use the garage of a save that owns them, or a test database mod that clears the unicorn flag (the #895 method) |
+| Garage, when owned (unicorn) | 16 | Nine barn finds and seven gifts. The Autoshow leaves unicorn cars out. A test database mod that clears the unicorn flag (the #895 method) lists them; all 16 references are taken that way ([below](#cars-outside-the-stock-lists)) |
 | Same model as a selectable car | 10 | Rally's event-only twins. No reference of their own: the selectable car's covers the model |
 | Not selectable | 23 | Traffic, the placeholder and four showcase variants. Not shown in the stock game. The showcase four can be sold with the `hidden_cars` mod |
 | Not entitled | 1 | The Season Pass Focus SVT: Rally's licence does not cover its offer |
@@ -239,6 +239,7 @@ car's frame dump. The images sit beside it. Everything stays under
 | `display_name`, `make`, `year` | | for reports only |
 | `source` | string | where the row comes from: `base`, `v4`, or `dlc:<package id>` |
 | `files` | string | the car folder the game read: disc archive or package folder, as `car-list.json` gives it |
+| `seed` | string | the render seed the route ran on: `m1-autoshow-v4` (stock lists) or a seed with a test database mod that adds cars to the lists, which shifts the list places ([Cars outside the stock lists](#cars-outside-the-stock-lists)) |
 | `image` | string | PNG of the dumped frame without the UI, path relative to the JSON |
 | `image_car_only` | string | PNG of the same frame with only the car's draws, relative path (below) |
 | `mask` | string | PNG car-coverage mask, same size, relative path (below) |
@@ -378,11 +379,8 @@ mask as one-pixel lines; they are car geometry, not stage leak.
    automation, Frame dumps). Each dump is replayed three times (image,
    car only, and the empty frame for the first and last dump), and the
    dump is deleted once its reference is built.
-3. **Unicorns.** Use a test database mod in the seed that clears the
-   unicorn flag (the method of the Autoshow price tests), so the 16
-   unicorns appear in their makes; record that their references come
-   from a modified list, and recompute the list places for that seed,
-   since the unicorns shift the cars after them.
+3. **Unicorns.** Done (2026-11-20): all 16 have references from the seed
+   `m1-autoshow-v4-unicorn-db` ([below](#cars-outside-the-stock-lists)).
 4. **Not in the Autoshow.** The ten event-only twins share a model with
    a selectable car and need no reference. The 23 non-selectable base
    rows get no stock reference; the four showcase variants can be shown
@@ -397,6 +395,39 @@ mask as one-pixel lines; they are car geometry, not stage leak.
    Dodge, Volkswagen and Ford twice); `car-list.py` orders such pairs by
    ID, which the game does not promise. Keep captures and dumps under
    `.local/re/cars/`.
+
+## Cars outside the stock lists
+
+A car the stock Autoshow leaves out can be shown by a test database mod
+in a copy of the reference seed: a `db/*.sql` script, listed in the
+seed's `enabled_mods`, that the launcher applies to v4's own database in
+the `zz-archive-patches` update overlay (v4 reads no other copy;
+[MODDING.md](../MODDING.md#database-patches)). The mod changes the
+lists, so `autoshow-refs.py routes` recomputes every place for the cars
+it routes (`--unicorns`, `--shown <ids>`), and each reference records
+its seed in `seed`. The seeds are local test copies; the reference save
+itself is never modded.
+
+**Unicorns** (seed `m1-autoshow-v4-unicorn-db`, mod `m1_unicorn_db`:
+`update Data_Car set IsUnicorn = 0 where IsUnicorn = 1`). All 16 rows
+then appear in their makes at the places predicted by the stock order
+(class, performance index, ID), with a price and the usual showroom, and
+Plymouth becomes a new make (58 makes). One route of 16 cars: every list
+capture named the expected car, every dump read the expected model, and
+all 16 references passed the camera (6.577 to 6.578 m), alignment, leak
+(0 px) and stray-mask checks (at most 2,115 px outside the box, the
+S5S Raptor).
+
+| Car | Make, place | Car | Make, place |
+| --- | --- | --- | --- |
+| 1105 Aston Martin DB5 Vantage | 4, 0 | 1386 Aston Martin DBR1 | 4, 1 |
+| 1040 BMW M1 | 7, 3 | 1219 Bugatti EB110 SS | 9, 0 |
+| 326 Ferrari Dino 246 GT | 16, 0 | 1154 Ferrari 250 Testa Rossa | 16, 2 |
+| 1082 Ford Fiesta Zetec S | 17, 3 | 320 Honda CR-X SiR | 21, 2 |
+| 1301 Jaguar D-Type | 25, 1 | 330 Lotus Elan Sprint | 33, 0 |
+| 1233 Mazda MX-5 Superlight | 35, 2 | 251 Mercedes-Benz 300SL | 37, 0 |
+| 1488 MINI John Cooper Works Coupe | 38, 2 | 1277 Plymouth Cuda 426 | 44, 0 |
+| 1197 Saleen S5S Raptor | 48, 0 | 1155 Shelby Cobra Daytona | 50, 1 |
 
 ## Unknowns
 

@@ -78,7 +78,8 @@ class Route:
         return "\n".join(lines + [r for _, r in rows]) + "\n"
 
 
-def make_route(makes: list[tuple[int, list[dict]]], dump_dir: Path) -> tuple[str, list[dict]]:
+def make_route(makes: list[tuple[int, list[dict]]], dump_dir: Path,
+               seed: str = "m1-autoshow-v4") -> tuple[str, list[dict]]:
     """One route over consecutive makes: walk the carousel to the first
     make, and for each make open its list, show each car in list order,
     dump it, go back; B twice returns to the carousel for the next make."""
@@ -114,25 +115,26 @@ def make_route(makes: list[tuple[int, list[dict]]], dump_dir: Path) -> tuple[str
             t = a + BACK_AT + BACK_WAIT
             plan.append({"car_id": cid, "media_name": car["media_name"], "make_index": make_index,
                          "list_index": car["autoshow_list_index"], "a_frame": a, "after_a": REF_DELAY,
-                         "dump": str(dump), "capture": f"{cid}-ref"})
+                         "dump": str(dump), "capture": f"{cid}-ref", "seed": seed})
         r.press(t, B, 12)           # car list back to the carousel
         t += BACK_WAIT
     r.events.append((t, f"capture {t} end"))
     ids = ",".join(str(p["car_id"]) for p in plan)
-    header = [f"# M1 Autoshow references (seed m1-autoshow-v4, v4 build): makes "
+    header = [f"# M1 Autoshow references (seed {seed}, v4 build): makes "
               f"{','.join(str(m) for m, _ in makes)}; one dump per car, {REF_DELAY} frames after A.",
               "# dlc-car-trace", f"# dlc-car-ids {ids}"]
     text = r.text(header).rstrip("\n") + f"\nstop {t + 30}\n"
     return text, plan
 
 
-def with_unicorns(rows: list[dict]) -> list[dict]:
-    """The unicorn rows placed in the Autoshow's lists as a seed whose
-    database clears IsUnicorn shows them: makes sorted by name without
-    case, each make's cars by class, performance index and ID, as
-    car-list.py orders the stock lists. Returns only the unicorn rows,
-    with their make and list indices recomputed."""
-    shown = [dict(c) for c in rows if c["screen"] == "autoshow" or c["screen"].startswith("garage")]
+def with_extra(rows: list[dict], extra: set[int]) -> list[dict]:
+    """The `extra` rows placed in the Autoshow's lists as a seed whose
+    database mod lists them (clearing IsUnicorn, setting IsSelectable)
+    shows them: makes sorted by name without case, each make's cars by
+    class, performance index and ID, as car-list.py orders the stock
+    lists. Returns only the extra rows, with their make and list indices
+    recomputed."""
+    shown = [dict(c) for c in rows if c["screen"] == "autoshow" or c["id"] in extra]
     makes = sorted({c["make"] for c in shown}, key=str.casefold)
     out = []
     for m, make in enumerate(makes):
@@ -140,7 +142,7 @@ def with_unicorns(rows: list[dict]) -> list[dict]:
                        key=lambda c: (c["flags"]["ClassID"], c["performance_index"], c["id"]))
         for k, car in enumerate(group):
             car["autoshow_make_index"], car["autoshow_list_index"] = m, k
-            if car["screen"].startswith("garage"):
+            if car["id"] in extra:
                 out.append(car)
     return out
 
@@ -148,8 +150,11 @@ def with_unicorns(rows: list[dict]) -> list[dict]:
 def cmd_routes(args) -> int:
     data = json.loads(Path(args.car_list).read_text(encoding="utf-8"))
     cars = [c for c in data["cars"] if c["screen"] == "autoshow"]
+    extra = {int(i) for i in args.shown.split(",")} if args.shown else set()
     if args.unicorns:
-        cars = with_unicorns(data["cars"])
+        extra |= {c["id"] for c in data["cars"] if c["screen"].startswith("garage")}
+    if extra:
+        cars = with_extra(data["cars"], extra)
     if args.only:
         only = {int(i) for i in args.only.split(",")}
         cars = [c for c in cars if c["id"] in only]
@@ -170,7 +175,7 @@ def cmd_routes(args) -> int:
     for group in groups:
         name = f"{args.prefix}-{group[0]:02d}-{group[-1]:02d}"
         dump_dir = Path(args.dump_root).resolve() / name
-        text, plan = make_route([(m, by_make[m]) for m in group], dump_dir)
+        text, plan = make_route([(m, by_make[m]) for m in group], dump_dir, args.seed)
         (out / f"{name}.fh1test").write_text(text, encoding="utf-8", newline="\n")
         (out / f"{name}.plan.json").write_text(json.dumps(plan, indent=1) + "\n",
                                                 encoding="utf-8", newline="\n")
@@ -491,6 +496,7 @@ def cmd_build(args) -> int:
             "car_id": cid, "media_name": car["media_name"], "display_name": car["display_name"],
             "make": car["make"], "year": car["year"], "source": source,
             "files": car["files"][0]["path"],
+            "seed": entry.get("seed", "m1-autoshow-v4"),
             "image": f"{cid}.png", "image_car_only": f"{cid}.car.png", "mask": f"{cid}.mask.png",
             "width": width, "height": height,
             "frame": {"after_a": entry.get("after_a", 390), "dump_swap": dump_swap(dump)},
@@ -533,6 +539,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dump-root", default=str(ROOT / ".local/re/cars/dumps"))
     p.add_argument("--unicorns", action="store_true",
                    help="route the unicorn rows only, for a seed whose database clears IsUnicorn")
+    p.add_argument("--shown", help="comma-separated car ids a seed's database mod lists "
+                   "(IsSelectable set): route these, with the list places that adds")
+    p.add_argument("--seed", default="m1-autoshow-v4",
+                   help="render seed the route runs on, recorded in the plan and each reference")
     p.add_argument("--prefix", default="m1refs")
     p.add_argument("--only", help="comma-separated car ids: route just these cars")
     p.set_defaults(func=cmd_routes)
