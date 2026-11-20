@@ -56,7 +56,7 @@ add_executable(carview
   world_view.cpp
   ${shader_headers})
 target_include_directories(carview PRIVATE "${generated}")
-target_link_libraries(carview PRIVATE fh1data shift_cars shift_volk SDL3::SDL3-static shift_stb)
+target_link_libraries(carview PRIVATE fh1data shift_cars shift_drive shift_volk SDL3::SDL3-static shift_stb)
 if(NOT WIN32)
   find_package(Threads REQUIRED)
   target_link_libraries(carview PRIVATE Threads::Threads)

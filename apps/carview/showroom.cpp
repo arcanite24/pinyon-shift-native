@@ -364,6 +364,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     }
   }
 
+  // The inverse pose: model = R (body - (0, lift, 0)); R is its own inverse.
+  const float cp = std::cos(info.pitch), sp = std::sin(info.pitch);
+  const float pose[16] = {1, 0, 0, 0, 0, cp, sp, 0, 0, sp, -cp, 0, 0, -cp * info.lift, -sp * info.lift, 1};
+  std::memcpy(body_to_model_, pose, sizeof pose);
+  const float* body_to_model = body_to_model_;
+
   // Brakes: each corner's rotor and calliper, centred on the hub.
   static constexpr bake::Corner kCorners[4] = {bake::Corner::kLF, bake::Corner::kRF, bake::Corner::kLR,
                                                bake::Corner::kRR};
@@ -380,8 +386,15 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     translate_scale(info.wheel_centres[size_t(corner)], {1, 1, 1}, m4);
     std::vector<std::string> parts;
     for (const auto& p : m.parts) parts.push_back(p.name);
+    // For set_wheel_poses: the brake model about its hub in the body frame
+    // is the pose's linear part (the models are authored in the model frame).
+    pending_wheel_ = corner;
+    pending_spins_ = m.role == Role::kRotor;
+    std::memcpy(pending_local_, pose, sizeof pose);
+    pending_local_[13] = pending_local_[14] = 0;
     add_model(m, parts, m4, car_, corner < 2 ? 0 : 1);
   }
+  pending_wheel_ = -1;
   if (info.caliper_angle[0] != 0 || info.caliper_angle[1] != 0)
     notes_.push_back("calliper angles not applied (spec question)");
 
@@ -414,12 +427,6 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     if (!morph) notes_.push_back("rim has no morph target: drawn as authored");
     if (!lod0) notes_.push_back("rim drawn from LOD1 (its LOD0 pool is missing or a stand-in)");
   }
-  // The inverse pose: model = R (body - (0, lift, 0)); R is its own inverse.
-  const float cp = std::cos(info.pitch), sp = std::sin(info.pitch);
-  float body_to_model[16] = {1, 0, 0, 0, 0, cp, sp, 0, 0, sp, -cp, 0, 0, 0, 0, 1};
-  body_to_model[12] = 0;
-  body_to_model[13] = -cp * info.lift;
-  body_to_model[14] = -sp * info.lift;
   // Morph a copy of a wheel model: each drawn pool's targets at the weights.
   auto morphed = [](const bake::Model& model, const std::array<float, 2>& weights) {
     bake::Model out = model;
@@ -463,7 +470,11 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       local[0] = turn * sx;
       local[10] = turn;
       const auto& cb = info.wheel_centres_body[size_t(c)];
-      local[12] = cb[0] + turn * dx;
+      local[12] = turn * dx;
+      std::memcpy(pending_local_, local, sizeof local);  // about the centre (set_wheel_poses)
+      pending_wheel_ = c;
+      pending_spins_ = true;
+      local[12] += cb[0];
       local[13] = cb[1];
       local[14] = cb[2];
       multiply(body_to_model, local, m4);
@@ -492,6 +503,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       add_model(sized, parts, m4, tyre_, axle);
     }
   }
+  pending_wheel_ = -1;
   if (!rim) notes_.push_back("no rim model in " + info.wheel_media);
   if (!tyre) notes_.push_back("no tyre model in " + info.tyre_media);
   if (draws_.empty()) {
@@ -604,6 +616,9 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       for (int k = 0; k < 3; ++k) d.centre[size_t(k)] = sum[size_t(k)] / float(s.indices.size());
       indices_.insert(indices_.end(), s.indices.begin(), s.indices.end());
       std::memcpy(d.push.model, transform, sizeof d.push.model);
+      d.wheel = pending_wheel_;
+      d.spins = pending_spins_;
+      std::memcpy(d.local, pending_local_, sizeof d.local);
       std::memcpy(d.push.uv0, &s.uv_transform[0], 4 * sizeof(float));
       std::memcpy(d.push.uv1, &s.uv_transform[4], 4 * sizeof(float));
       uint32_t flags = 0;
@@ -652,6 +667,31 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       drawn = true;
     }
     if (drawn) drawn_parts_.push_back(model.name + "/" + part.name);
+  }
+}
+
+void Showroom::set_wheel_poses(const WheelPose poses[4]) {
+  for (Draw& d : draws_) {
+    if (d.wheel < 0) continue;
+    const WheelPose& p = poses[d.wheel];
+    // Body frame: centre, steer about y, spin about x (outside the right
+    // wheels' half turn, so every wheel rolls forward), then the draw's own
+    // local matrix; then the inverse pose to the model frame.
+    const float cs = std::cos(p.steer), ss = std::sin(p.steer);
+    const float steer[16] = {cs, 0, -ss, 0, 0, 1, 0, 0, ss, 0, cs, 0, p.centre[0], p.centre[1], p.centre[2], 1};
+    float spin[16];
+    identity(spin);
+    if (d.spins) {
+      const float cr = std::cos(p.spin), sr = std::sin(p.spin);
+      spin[5] = cr;
+      spin[6] = sr;
+      spin[9] = -sr;
+      spin[10] = cr;
+    }
+    float a[16], b[16];
+    multiply(steer, spin, a);
+    multiply(a, d.local, b);
+    multiply(body_to_model_, b, d.push.model);
   }
 }
 

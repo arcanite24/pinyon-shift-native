@@ -22,6 +22,15 @@
 
 namespace carview {
 
+// One wheel's pose for set_wheel_poses, in the body frame (FORMAT-CARS:
+// +X right, +Y up, +Z forward): the hub centre, the steer angle about y
+// (positive towards +x) and the rolling angle about x (positive rolling
+// forward).
+struct WheelPose {
+  float centre[3] = {0, 0, 0};
+  float steer = 0, spin = 0;
+};
+
 // The frame's uniform block (showroom.vert / showroom.frag, set 0 binding 0).
 struct ShowroomFrame {
   float view_projection[16];  // car space to Vulkan clip, column-major
@@ -72,6 +81,9 @@ class Showroom {
     frame_ = frame;
     for (int i = 0; i < 4; ++i) frame_.stripe[i] = stripe_[i];
   }
+  // Moves the wheels, rotors and callipers (LF, RF, LR, RR). Until it is
+  // called they stand at the car's rest centres, as the showroom shows them.
+  void set_wheel_poses(const WheelPose poses[4]);
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
   void set_background(float r, float g, float b);
 
@@ -106,6 +118,9 @@ class Showroom {
     uint32_t descriptor = 0;
     bool glass = false;
     std::array<float, 3> centre{};  // car space, for sorting glass
+    int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
+    bool spins = false;  // rims, tyres and rotors roll; callipers do not
+    float local[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // about the hub, body frame
   };
   using GpuTexture = Renderer::Image;
 
@@ -123,6 +138,10 @@ class Showroom {
   ShowroomOptions options_;
   ShowroomFrame frame_{};
   float stripe_[4] = {1, 1, 1, 1};
+  float body_to_model_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  int pending_wheel_ = -1;  // what add_model records on the draws it makes
+  bool pending_spins_ = false;
+  float pending_local_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   std::vector<cars::bake::Vertex> vertices_;
   std::vector<uint32_t> indices_;
   std::vector<Draw> draws_;

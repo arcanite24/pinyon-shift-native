@@ -104,6 +104,12 @@ carview --bake out/bake --reference <refs>/1115.json --out 1115.png --mask 1115_
 # rule, and reference | engine | mask-difference PNGs (keep out/ local)
 python tools/m1-report.py --carview build/apps/carview/carview.exe --bake out/bake --refs <refs> --out out/m1
 
+# M3 drive (placeholder physics, flat ground): headless trace, then
+# chase-camera frames (--view front shows the wheels' steer and spin);
+# without --headless it opens a window driven by keyboard or gamepad
+drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --trace launch.csv
+carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --run slalom --every 0.5 --out out/drive/slalom.png
+
 # Corpus test: every archive, every .carbin and .xds member
 fh1data-corpus --game-root <game> [--verbose] [--filter cars/]
 

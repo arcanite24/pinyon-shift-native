@@ -1,5 +1,5 @@
 // carview --bake: the showroom over carbake's output, windowed or headless,
-// and the reference mode.
+// the reference mode, and the drive mode (carview --drive, below).
 //
 //   carview --bake <dir> --car <media> [--colour N] [--livery] [--all-variants]
 //           [--size WxH] [--yaw deg] [--pitch deg] [--distance m] [--msaa N]
@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -31,6 +32,8 @@
 #include "reference.h"
 #include "renderer.h"
 #include "showroom.h"
+#include "drive/from_bake.h"
+#include "drive/vehicle.h"
 
 namespace carview {
 
@@ -504,6 +507,294 @@ int run_showroom(int argc, char** argv) {
       }
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
+    }
+  }
+  if (window) {
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+  }
+  return status;
+}
+
+namespace {
+
+// Column-major 4x4 inverse of an affine matrix (3x3 linear part, then
+// translation).
+void invert_affine(const float* m, float* out) {
+  const float a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], k = m[10];
+  const float det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+  const float id = det != 0 ? 1.0f / det : 0.0f;
+  float inv[9] = {(e * k - f * h) * id, (c * h - b * k) * id, (b * f - c * e) * id,
+                  (f * g - d * k) * id, (a * k - c * g) * id, (c * d - a * f) * id,
+                  (d * h - e * g) * id, (b * g - a * h) * id, (a * e - b * d) * id};  // row-major
+  std::memset(out, 0, 16 * sizeof(float));
+  for (int r = 0; r < 3; ++r)
+    for (int col = 0; col < 3; ++col) out[col * 4 + r] = inv[r * 3 + col];
+  for (int r = 0; r < 3; ++r)
+    out[12 + r] = -(inv[r * 3 + 0] * m[12] + inv[r * 3 + 1] * m[13] + inv[r * 3 + 2] * m[14]);
+  out[15] = 1;
+}
+V3 transform(const float* m, V3 p, float w) {
+  return {m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12] * w, m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13] * w,
+          m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14] * w};
+}
+
+// A camera at eye looking at target, in the car's model frame.
+ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
+  const float fovy = 55.0f * kPi / 180.0f;
+  const V3 f = norm(sub(target, eye));
+  const V3 side = norm(cross3(f, up));
+  const V3 u = cross3(side, f);
+  const float view[16] = {side.x, u.x, -f.x, 0, side.y, u.y, -f.y, 0, side.z, u.z, -f.z, 0,
+                          -dot3(side, eye), -dot3(u, eye), dot3(f, eye), 1};
+  const float near_z = 0.1f, far_z = 500.0f;
+  const float t = 1.0f / std::tan(fovy / 2);
+  float projection[16] = {};
+  projection[0] = t / aspect;
+  projection[5] = -t;  // Vulkan clip: +y down
+  projection[10] = far_z / (near_z - far_z);
+  projection[11] = -1;
+  projection[14] = near_z * far_z / (near_z - far_z);
+  ShowroomFrame frame{};
+  multiply4(projection, view, frame.view_projection);
+  std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
+  frame.eye[0] = eye.x;
+  frame.eye[1] = eye.y;
+  frame.eye[2] = eye.z;
+  frame.eye[3] = 1;
+  lighting(frame, livery);
+  return frame;
+}
+
+// Our chase camera (placeholder values until a camera spec): behind and
+// above the car, following its heading but not its pitch and roll, so the
+// body's motion on its springs shows. Built in the world and taken into the
+// model frame, where the showroom draws.
+// --view front: a fixed front three-quarter view from the car's left, low,
+// for checking the wheels' steer and spin.
+ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, bool front) {
+  float model_to_world[16], world_to_model[16];
+  drive::model_to_world(car, v, model_to_world);
+  invert_affine(model_to_world, world_to_model);
+  const drive::Vec3 p = v.position();
+  const drive::Vec3 fwd = drive::rotate(v.orientation(), {0, 0, 1});
+  const float yaw = float(std::atan2(fwd.x, fwd.z));
+  const V3 dir{std::sin(yaw), 0, std::cos(yaw)};
+  const V3 base{float(p.x), float(p.y), float(p.z)};
+  const V3 left{-dir.z, 0, dir.x};
+  const V3 eye = front ? add(add(add(base, mul(dir, 4.0f)), mul(left, 3.0f)), V3{0, 0.9f, 0})
+                       : add(add(base, mul(dir, -4.5f)), V3{0, 1.6f, 0});
+  const V3 target = front ? add(base, V3{0, 0.5f, 0}) : add(add(base, mul(dir, 1.5f)), V3{0, 0.7f, 0});
+  return look_frame(transform(world_to_model, eye, 1), transform(world_to_model, target, 1),
+                    norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false);
+}
+
+void wheel_poses(const drive::Vehicle& v, WheelPose poses[4]) {
+  for (int i = 0; i < 4; ++i) {
+    const auto& w = v.wheels()[size_t(i)];
+    poses[i].centre[0] = float(w.centre.x);
+    poses[i].centre[1] = float(w.centre.y);
+    poses[i].centre[2] = float(w.centre.z);
+    poses[i].steer = float(w.steer);
+    poses[i].spin = float(w.spin);
+  }
+}
+
+const char* kDriveRuns[][2] = {
+    {"rest", "0 0 0 0\n"},
+    {"launch", "0 0 1 0\n"},
+    {"slalom", "0 0 0.6 0\n2 0.8 0.5 0\n3 -0.8 0.5 0\n4 0.8 0.5 0\n5 -0.8 0.5 0\n6 0 0 0.6\n"},
+    {"circle", "0 0 0 0\n1 0.5 0.35 0\n"},
+};
+
+}  // namespace
+
+// carview --drive: one car on flat ground with the engine's placeholder
+// physics (libs/drive), M3's first slice. Headless, it runs a built-in or
+// scripted input and writes chase-camera frames every --every seconds;
+// windowed, it is driven with the keyboard (arrows or WASD, space for the
+// handbrake) or a gamepad (left stick, triggers, A), with speed, gear and
+// rpm in the title.
+//
+//   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle
+//           | --script file] [--view chase|front] [--seconds N] [--every S]
+//           [--headless --out prefix.png] [--size WxH]
+int run_drive(int argc, char** argv) {
+  std::filesystem::path bake_dir, script_path;
+  std::string car, out, run = "slalom", view = "chase";
+  uint32_t width = 960, height = 540;
+  double seconds = 6, every = 1;
+  bool headless = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::string a = argv[i];
+    auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
+    if (a == "--drive") continue;
+    if (a == "--headless") headless = true;
+    else if (a == "--bake") bake_dir = next();
+    else if (a == "--car") car = next();
+    else if (a == "--out") out = next();
+    else if (a == "--run") run = next();
+    else if (a == "--view") view = next();
+    else if (a == "--script") script_path = next();
+    else if (a == "--seconds") seconds = std::atof(next());
+    else if (a == "--every") every = std::atof(next());
+    else if (a == "--size") {
+      if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
+    } else {
+      std::fprintf(stderr, "carview --drive: unknown option %s\n", a.c_str());
+      return 2;
+    }
+  }
+  if (bake_dir.empty() || car.empty()) {
+    std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
+                         "[--view chase|front] [--seconds N] [--every S] [--headless --out prefix.png] [--size WxH]\n");
+    return 2;
+  }
+  if (view != "chase" && view != "front") {
+    std::fprintf(stderr, "carview --drive: --view is chase or front\n");
+    return 2;
+  }
+  const bool front = view == "front";
+  if (headless && out.empty()) out = car + "_drive.png";
+  std::string text, error;
+  if (!script_path.empty()) {
+    std::ifstream in(script_path, std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    text = ss.str();
+  } else {
+    for (const auto& r : kDriveRuns)
+      if (run == r[0]) text = r[1];
+    if (text.empty()) {
+      std::fprintf(stderr, "carview --drive: no run named %s\n", run.c_str());
+      return 2;
+    }
+  }
+  std::vector<drive::ScriptLine> script;
+  if (!drive::parse_script(text, script, &error)) {
+    std::fprintf(stderr, "carview --drive: %s\n", error.c_str());
+    return 1;
+  }
+
+  SDL_Window* window = nullptr;
+  if (!headless) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+      std::fprintf(stderr, "carview: SDL_Init: %s\n", SDL_GetError());
+      return 1;
+    }
+    window = SDL_CreateWindow(("carview drive - " + car).c_str(), int(width), int(height),
+                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (!window) {
+      std::fprintf(stderr, "carview: SDL_CreateWindow: %s\n", SDL_GetError());
+      SDL_Quit();
+      return 1;
+    }
+  }
+  int status = 0;
+  {
+    Renderer renderer;
+    Showroom showroom(renderer);
+    ShowroomOptions options;
+    if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, false, 4}, error) ||
+        !showroom.upload(error)) {
+      std::fprintf(stderr, "carview: %s\n", error.c_str());
+      status = 1;
+    } else {
+      const auto& info = showroom.car();
+      drive::Vehicle vehicle(drive::params_from_bake(info));
+      const drive::FlatGround ground;
+      WheelPose poses[4];
+      if (headless) {
+        const std::filesystem::path prefix(out);
+        const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
+        const int stride = std::max(1, int(std::lround(every / drive::Vehicle::kStep)));
+        for (int s = 0; s <= steps && status == 0; ++s) {
+          if (s > 0) vehicle.step(drive::script_input(script, vehicle.time()), ground);
+          if (s % stride != 0) continue;
+          wheel_poses(vehicle, poses);
+          showroom.set_wheel_poses(poses);
+          showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front));
+          std::vector<uint8_t> rgba;
+          if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+            std::fprintf(stderr, "carview: %s\n", error.c_str());
+            status = 1;
+            break;
+          }
+          for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+          char name[32];
+          std::snprintf(name, sizeof name, "_%05d.png", int(std::lround(vehicle.time() * 100)));
+          const std::string path = (prefix.parent_path() / (prefix.stem().string() + name)).string();
+          if (!write_png(path, width, height, 4, rgba.data())) {
+            std::fprintf(stderr, "carview: cannot write %s\n", path.c_str());
+            status = 1;
+          }
+          const auto& wl = vehicle.wheels()[0];
+          std::printf("t %.2f s: %.1f km/h, gear %d, %.0f rpm, LF steer %.3f rad compression %.3f m -> %s\n",
+                      vehicle.time(), vehicle.speed() * 3.6, vehicle.gear(), vehicle.rpm(), wl.steer, wl.compression,
+                      path.c_str());
+        }
+      } else {
+        std::vector<SDL_Gamepad*> pads;
+        uint64_t last = SDL_GetTicksNS(), title_at = 0;
+        double accumulator = 0;
+        bool running = true;
+        while (running) {
+          SDL_Event e;
+          while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_EVENT_QUIT) running = false;
+            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) running = false;
+            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_R) vehicle.reset({0, 0, 0});
+            if (e.type == SDL_EVENT_GAMEPAD_ADDED)
+              if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) pads.push_back(pad);
+          }
+          // Keyboard, then the first gamepad with any input.
+          const bool* keys = SDL_GetKeyboardState(nullptr);
+          drive::Input in;
+          in.steer = (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D] ? 1.0 : 0.0) -
+                     (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A] ? 1.0 : 0.0);
+          in.throttle = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W] ? 1.0 : 0.0;
+          in.brake = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S] ? 1.0 : 0.0;
+          in.handbrake = keys[SDL_SCANCODE_SPACE];
+          for (SDL_Gamepad* pad : pads) {
+            auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
+            const double sx = axis(SDL_GAMEPAD_AXIS_LEFTX);
+            const double steer = std::fabs(sx) < 0.12 ? 0.0 : sx;
+            const double throttle = axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), brake = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+            if (steer != 0 || throttle > 0.02 || brake > 0.02 || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
+              in.steer = steer;
+              in.throttle = std::max(0.0, throttle);
+              in.brake = std::max(0.0, brake);
+              in.handbrake = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
+              break;
+            }
+          }
+          const uint64_t now = SDL_GetTicksNS();
+          accumulator += std::min(0.25, double(now - last) * 1e-9);
+          last = now;
+          while (accumulator >= drive::Vehicle::kStep) {
+            vehicle.step(in, ground);
+            accumulator -= drive::Vehicle::kStep;
+          }
+          if (now - title_at > 100000000) {  // the speedometer, ten times a second
+            title_at = now;
+            char title[128];
+            std::snprintf(title, sizeof title, "carview drive - %s - %.0f km/h  gear %d  %.0f rpm", car.c_str(),
+                          std::fabs(vehicle.speed()) * 3.6, vehicle.gear(), vehicle.rpm());
+            SDL_SetWindowTitle(window, title);
+          }
+          int w = 0, h = 0;
+          SDL_GetWindowSizeInPixels(window, &w, &h);
+          wheel_poses(vehicle, poses);
+          showroom.set_wheel_poses(poses);
+          showroom.set_frame(chase_frame(info, vehicle, h > 0 ? float(w) / float(h) : 1.0f, front));
+          if (!renderer.draw_frame(FrameConstants{}, error)) {
+            std::fprintf(stderr, "carview: %s\n", error.c_str());
+            status = 1;
+            break;
+          }
+        }
+        for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+      }
     }
   }
   if (window) {

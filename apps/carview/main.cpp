@@ -8,6 +8,8 @@
 //   carview --world <members-dir|bin.zip> --frame <frame.txt> ...  (world_view.cpp)
 //   carview --bake <carbake-output> --car <media> ...  (showroom_main.cpp: the
 //           showroom over baked cars, and the reference mode)
+//   carview --drive --bake <carbake-output> --car <media> ...  (showroom_main.cpp:
+//           one car on flat ground with the placeholder physics of libs/drive)
 //
 // Windowed: drag with the left mouse button (or the left stick) to orbit,
 // wheel (or the triggers) to zoom, Esc to quit. Headless renders one frame
@@ -39,6 +41,7 @@
 
 namespace carview {
 int run_showroom(int argc, char** argv);
+int run_drive(int argc, char** argv);
 }
 
 namespace {
@@ -163,6 +166,11 @@ int xds_png(int argc, char** argv) {
 int main(int argc, char** argv) {
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "--world") == 0) return carview::run_world(argc, argv);
+  for (int i = 1; i < argc; ++i)
+    if (std::strcmp(argv[i], "--drive") == 0) {
+      SDL_SetMainReady();
+      return carview::run_drive(argc, argv);
+    }
   for (int i = 1; i < argc; ++i)
     if (std::strcmp(argv[i], "--bake") == 0) {
       SDL_SetMainReady();
