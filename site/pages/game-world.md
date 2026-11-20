@@ -68,6 +68,8 @@ those loaded values so resetting preserves another mod's tuning too.
 
 `CollObjs.xml`, `GameObjs.xml` and the `TrackRoute*.xml` files in the ribbon folder place everything the player interacts with. They are plain XML. Free-roam activities are listed under [Cars, events and DLC](game-content.md#events-and-career); their objects, and the trackside crowd, under [Game objects](game-objects.md).
 
+Free-roam traffic drives on the road graph in the loose `colorado.nav`, not on the race routes' racing lines. The file is a road map in the OpenStreetMap style: 12,036 nodes with positions in the physics world frame, 459 ways listing them in order, and key-value tags. The 426 ways with a `road_type` are the roads (238 km); their `traffic_density` tag picks an entry in `AIOpenWorld.xml` that gives the road's car density range, its speed in mph and its spawn distances. A time-of-day factor moves every density between its night minimum and daytime maximum, and a registry cap limits the total. In a measured cruise on a town B-road, about six cars drove around the player at noon and one at 02:00. They spawned about 330 m away and were removed at about 393 m. They drove 2.2 m right of the centre line at the road's 30 mph, and only the cars within 30 m of the player took full physics steps. The layout, the rules and the measurements are in [TRAFFIC.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/specs/TRAFFIC.md).
+
 {{findings:world/Placements and routes}}
 
 ## Time and weather

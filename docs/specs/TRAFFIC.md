@@ -79,8 +79,11 @@ trailer word equal to the first header word.
 
 Node ids rise with the index but skip 1,382 numbers; references use the
 index. Every node-way reference points back at its node (all 13,238
-checked). A node with two or more ways is a junction: 1,022 nodes (873
-with two ways, 119 with three, 29 with four, one with five).
+checked). 1,022 nodes are on two or more ways, but many of those are
+only where one way ends and the next begins. Counted by incident road
+segments, 446 nodes are junctions (367 with three segments, 74 with four,
+5 with five), 10,840 nodes are plain points on a road and 16 are road
+ends.
 
 Positions are in the physics world frame, y up, metres: the M3 oracle
 lap's body positions lie a median 3.0 m and at most 8.9 m from the
@@ -93,7 +96,7 @@ nearest road segment (2,508 samples).
 | `road_type` | ways | `a`, `b`, `freeway`, `dirt`, `shortcut`, `none` | a way with this tag is a road. Ways without it (33, including the long map outlines) are map areas and labels (`text`, `area_type`) and carry no traffic |
 | `traffic_density` | ways | a density id, 2 to 17 | which `Density` entry of `AIOpenWorld.xml` applies |
 | `traffic_disabled`, `ai_disabled` | ways | `true` | no traffic on the way (both make the way unusable here) |
-| `oneway` | ways | `true` | one direction only, in node order |
+| `oneway` | ways | `true` | one direction only, in node order (probable: on all 154 sampled freeway segments the opposite carriageway lies to the left of node-order travel, as right-hand driving needs; no one-way way was driven in the oracle) |
 | `display_name` | ways | a name | map label |
 | `allowedfordemo`, `first_time_flow_disabled`, `iefestivaldrive`, `grid_control` | ways | | demo, first-run and festival-drive flags; no traffic effect known |
 | `deadend` | nodes | `true` | the road ends here (219 nodes) |
@@ -179,18 +182,22 @@ Each `Density` entry of a `DensityList` (`cartype="traffic"` or
 d = min + (max − min) · v
 ```
 
-A way without a density id, or with an id the list lacks, takes the
-list's first entry (id 1, which is zero). `AI/Traffic/Density/
+A way without a density id, or with an id the list lacks, takes a
+default entry; that it is the list's first entry (id 1, which is zero)
+is a guess, and an engine should give such ways no traffic. `AI/Traffic/Density/
 UseOverrideValues` replaces every road's range by the registry's
 `AI/Traffic/Density/MinTraffic` and `MaxTraffic` (festival: `MinFestival`,
 `MaxFestival`); it is off on the disc.
 
-The **local density** D is the sum of d over the roads around the
-player. The game walks the road graph outwards from the player's way, in
-both directions, and adds each way it reaches once. The measured counts
-fit d read as **cars per 100 m of road within the spawn-out distance**
-(the noon count within 2 % and the night count within 0.3 cars, see
-Tests; probable, since the walk's exact limit is not decoded).
+The **local density** D is a sum of d over the roads around the
+player: the game walks the road graph outwards from the player's way, in
+both directions, and adds each way it reaches (confirmed). How far the
+walk goes and whether a way counts once or by its length was not
+decoded. Two readings fit the one oracle road (Tests): d as cars per
+100 m of road within the spawn-out distance (6.2 and 0.6 cars predicted
+for 6.1 and 0.9 observed at noon and 02:00), or d once per way within
+about 500 m (5.0 and 0.5). The engine should use the per-100 m reading
+until a second site separates them.
 
 Every `AI/Spawning/Density/DensityTestInterval` seconds the local density
 is measured again and smoothed:
@@ -229,15 +236,15 @@ active traffic cars.
 - **Direction.** A spawned car drives towards the player or away from
   him; `spawnAwayChance` (per density id) and `AI/Spawning/
   SpawnAwayChanceMin`, `Max` and `LerpSpeed` set the chance it drives
-  away. Measured with the player parked: 4 of 17 drove away (0.24, close
-  to `SpawnAwayChanceMin`), so the chance probably rises with the player's
-  speed towards the road's value (probable).
+  away. Measured: 5 of 21 spawns drove away from the player, most with
+  him parked (close to `SpawnAwayChanceMin`), so the chance probably rises
+  with the player's speed towards the road's value (probable).
 - **Spacing.** No spawn within `AI/Spawning/MinDistanceFromOtherCars` of
-  another car (12 m), scaled up to `MaxDistanceFromOtherCars` at
+  another car, scaled up to `MaxDistanceFromOtherCars` at
   `SpeedAtMaxDistanceFromOtherCars` (probable reading of the keys).
 - **Despawn.** A car farther than the spawn-out distance
   (`spawnOutDistance` or `AI/Spawning/SpawnOutDistance`, 370 m) is
-  removed. Measured: 17 despawns at 392 to 395 m, so the test runs on a
+  removed. Measured: 13 despawns at 392 to 395 m, so the test runs on a
   slightly larger radius or at an interval (`AI/Traffic/VehicleManager/
   OverspawnCheckTime`, 4 s); an engine may despawn at 390 m.
 - **Fade.** A new car fades in over `AI/Traffic/Vehicle/FadeInTime`
@@ -267,8 +274,9 @@ livery stress-test list and is not used by free roam.
 ### Driving a lane
 
 - **Lane.** Traffic drives on the right. A car on a two-way road keeps
-  about 2.2 m right of the way's centre line (median of 3,434 moving
-  samples, 98 % on the right); on a one-way way it drives in node order.
+  about 2.2 m right of the way's centre line (median of 2,883 moving
+  samples, 99 % on the right); on a one-way way it drives in node order
+  (probable, see `oneway`).
   The file has no lane count or width: take one lane each way on two-way
   roads, centred 2.2 m from the centre line, and on one-way freeway
   carriageways the lanes offset the same way (lane count open).
@@ -319,16 +327,25 @@ livery stress-test list and is not used by free roam.
 ### Physics and level of detail
 
 Every traffic car is a full car body in the physics world, with its
-model's own physics and mass. Each simulation tick a traffic body takes
-either the full dynamics step (the same step as the player's car,
-[SPEC-CAR-PHYSICS](CAR_PHYSICS.md)) or a light step that places it on
-its line. Measured on the cruise: every body in full physics was within
-28 m of the player and every body on the light step was 32 m or more
+model's own physics and mass, but only some take physics steps. Each
+simulation tick a body either takes the full dynamics step (the same
+step as the player's car, [SPEC-CAR-PHYSICS](CAR_PHYSICS.md)) or is left
+alone by the physics world: in every sample of active traffic not on the
+full step, the body's step-path word was set and its light-step flag
+clear, the state in which the physics world does nothing for the body.
+Those cars are placed on their lane line kinematically by the traffic
+system (the interpolation above), at the simulation tick.
+
+Which cars get full physics (probable): on the cruise every full-step
+body was within 28 m of the player and every other one 32 m or more
 away, which matches `AI/Traffic/VehiclePosition/MaxHighLodDistance`
-(30 m); a few full-step bodies farther out appeared briefly after spawns
-and stops (confidence: probable). The light step runs at the simulation
-tick, like the full one. `MaxMediumLodDistance` (120 m) is the next
-level, probably for drawing.
+(30 m). While parked at noon, three cars also took the full step at up
+to 238 m, each moving at 18 to 20 m/s instead of the road's 13.4 and one
+slowing to 1.8 m/s: cars pushed off their line (festival cars passed at
+30 to 50 m/s) stay in full physics until they rejoin it. Engine rule:
+full physics within 30 m of the player and for a car knocked off its
+line until it is back on it; kinematic otherwise.
+`MaxMediumLodDistance` is the next level, probably for drawing.
 
 A full-physics traffic car drives with the controls a driver would use:
 throttle and brake inputs limited by `VehicleControls/AccelMaxInput` and
@@ -353,11 +370,11 @@ and leave `CollisionBiasTraffic` at an even share.
 
 ## Rates and timing
 
-- Population: density test every `DensityTestInterval` (0.1 s), spawn
-  attempts on the interval rule, despawn checks within a few seconds.
+- Population: density test every `DensityTestInterval`, spawn attempts
+  on the interval rule, despawn checks within a few seconds.
 - Driving: every simulation tick (8.33 ms at 120 fps on the desktop),
   full step or light step per body. Path prediction runs every
-  `AI/Traffic/PathPrediction/UpdateIntervalFrames` frames (8).
+  `AI/Traffic/PathPrediction/UpdateIntervalFrames` frames.
 - Model rotation every 30 s; time of day from the world clock.
 
 ## Unknowns
@@ -366,7 +383,9 @@ and leave `CollisionBiasTraffic` at an even share.
 | --- | --- | --- |
 | Exact extent and weighting of the local density walk | the per-100 m reading fits the noon and night counts on one road | sum d per 100 m of traffic road within the spawn-out distance |
 | Lane count and width per road type | 2.2 m right of the centre line measured on one road type | one lane each way at 2.2 m; one-way ways the same |
-| Junction way choice and give-way rules | names only | uniform choice among allowed ways, slow to give way at junction nodes with three or more ways |
+| Junction way choice and give-way rules | names only | uniform choice among allowed ways, slow to give way at junction nodes with three or more road segments |
+| Local density walk: extent, per way or per length | two readings fit one road | per 100 m within the spawn-out distance |
+| One-way direction | consistent with the data, not driven | node order |
 | Model pick weights | at most four loaded, rotation 30 s | uniform among the loaded set, respecting `maxactive` and the density's groups |
 | Reaction to the player (brake, swerve) | key names | brake to keep the look-ahead gap, no swerve |
 | Despawn radius above 370 m | measured 392 to 395 m | despawn at 390 m |
@@ -377,8 +396,9 @@ and leave `CollisionBiasTraffic` at an even share.
 ## Tolerances
 
 - Road choice: every traffic car within 15 m of a road segment whose way
-  allows traffic (the oracle: all 3,434 moving samples).
-- Direction: on one-way ways, node order always; on two-way roads, right
+  allows traffic (the oracle: 2,883 moving samples of driver type 4, none
+  farther than 15 m from a road).
+- Direction: on one-way ways, node order; on two-way roads, right
   of the centre line in at least 95 % of samples, offset 2.2 ± 0.5 m.
 - Density: the mean active count over a minute within 30 % of the
   oracle's at the same place and hour.
@@ -413,9 +433,14 @@ Traffic counts are cars of driver type 4 within 1 km of the player
 
 Density check at noon: within 370 m of the player the network holds
 746 m of density-5 road and 68 m of density-2 road. At v = 1 the
-per-100 m reading predicts 0.8 × 7.46 + 0.4 × 0.68 = 6.2 cars against
+per-100 m reading (density 5's range is 0.08 to 0.8, density 2's 0.04
+to 0.4) predicts 0.8 × 7.46 + 0.4 × 0.68 = 6.2 cars against
 6.1 observed; at 02:00 (v = 0) it predicts 0.6 against 0.9 observed.
-Spawns at 317 to 347 m (17), despawns at 392 to 395 m (17), initial
-spawn of 4 cars, speeds 13.1 to 13.7 m/s, all moving samples on
-density-5 ways (a few on a shortcut beside it), 98 % right of the
-centre line at a median 2.2 m.
+Within 500 m the network has five density-5 ways, one of id 3 and one
+of id 2, so the once-per-way reading predicts 5.0 and 0.5. Spawns at 317
+to 347 m (17, after an initial spawn of 4 cars at 52 to 289 m), 5 of the
+21 driving away from the player, despawns at 392 to 395 m (13), speeds
+13.1 to 13.7 m/s (median 13.4), all 2,883 moving samples within 15 m of
+a road, on density-5 ways (21 on a shortcut beside them), 99 % right of
+the centre line at a median 2.2 m. Steps: no active traffic body took the
+light step; off the full step, every one was left unstepped.
