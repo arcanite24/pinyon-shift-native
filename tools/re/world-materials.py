@@ -912,8 +912,10 @@ def cmd_check_dump(args) -> int:
             if rec is None:
                 binding[(f"list value {value}", f"bound {size[0]}x{size[1]}")] += 1
             elif rec.type == 1:
+                block = memory.read(address, 8) if fc[0] & 3 == 2 else None
                 binding[("record type 1 (no file)", f"bound {size[0]}x{size[1]}",
-                         "named" if got else "not named")] += 1
+                         "named" if got else "not named", f"slot {slot}",
+                         f"format {fc[1] & 0x3F}", f"first block {block.hex() if block else None}")] += 1
             elif got is None:
                 binding[("bound texture not named", f"record type {rec.type}",
                          f"bound {size[0]}x{size[1]}" + (f", listed {listed.width}x{listed.height}"

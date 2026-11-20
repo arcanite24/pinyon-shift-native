@@ -368,8 +368,15 @@ decoded.
 The `.xds` rules of [CARS.md](CARS.md) ("`.xds`: textures") apply, with
 these differences:
 
-- Every world texture is a power of two on each side (8 to 1,024) and
-  has the packed-tail layout; the header pitch is not stored: use the
+- Every `.bix` texture is a power of two on each side (8 to 1,024).
+  Twelve CAFF textures are not: ten are 768 wide (768 × 256 or
+  768 × 128), `_0x000010F2` is 255 × 256 and `_0x00004578` is 7 × 256.
+  These are the stored sizes, not misreads: the level counts (10 for
+  the 768-wide ones, 9 for the other two) are those of the stated
+  largest side, the payloads fit the layout with a pitch of whole
+  32-block tiles, and `_0x000010F2` decodes to a coherent picture with
+  its last column. Decode ceil(width / 4) blocks per row and crop. All
+  have the packed-tail layout; the header pitch is not stored: use the
   width.
 - **The last region is trimmed.** Each level up to the tail gets a
   region of whole 32 × 32-block tiles rounded to 4,096 bytes, as for
@@ -410,17 +417,23 @@ is not known and any reasonable choice will do for now.
    surface UV, as sRGB when its format word says gamma (confirmed slot
    and texture; probable that slot 0 alone uses the plain surface UV).
    Roads and terrain blend two or three layers (`Blend_A`, `Blend_B`,
-   `Blend_C`); for a first pass `Blend_A` alone is enough. The weights
-   are, by the data, the `Splat` texture's channels on `H_BLND*`
-   (which UV it uses is not checked; most texels have R + G + B well
-   under 1, so they read as "how much of B and C over A", not as
-   normalised weights) and the
-   vertex colour's R, G, B on roads (R + G + B is 255 on many road
-   vertices): a guess, not checked against pixels. The pixel constants'
-   per-layer tiling is not applied in this recipe.
-3. **Ambient occlusion.** Multiply by `AO` or `AOMap` (linear) sampled
-   at the lightmap UV (probable: per-model textures, unit UVs, white
-   where open).
+   `Blend_C`), each tiled by the material's pixel constants; the
+   terrain rules (UVs, tilings, `Splat` at TEXCOORD1, vertex-colour
+   weights on `H_VBLND`) are in
+   [Terrain shading](#terrain-shading). The road weights (vertex
+   colour R, G, B, which sum to 255 on many road vertices) are still a
+   guess.
+3. **Ambient occlusion.** `AO` or `AOMap` (linear) at the lightmap UV
+   (per-model textures, unit UVs, white where open). On the terrain
+   effects it scales the light by 0.05 + 0.95 × AO (see
+   [Terrain shading](#terrain-shading)); multiplying the albedo by it is
+   the simpler stand-in. Its slot follows from the sampler names, which
+   the engine can read from the `.fxobj` constant table: `AOMap` is
+   always slot 5; `AO` is slot 5, or 6 when slot 5 is `Blend_C` (17
+   effects), or 4 when slots 5 and 6 are `Blend_C` and `Modulate`
+   (4 road effects, `H_ROAD_DIFF3_*NOISE_MODULATE_AO*`); 89 of the 172
+   effects with samplers have neither. `world-materials.py samplers
+   --verbose` lists every effect's slots.
 4. **Lighting.** The effects are lit by a sun and a two-colour sky. The
    frame's values (daytime, read from the constants of the colour draws
    checked; the census did not compare them across all 761):
@@ -465,12 +478,158 @@ is not known and any reasonable choice will do for now.
    the shader's output alpha is the diffuse alpha is probable. An
    engine without multisampling can alpha-test at 0.5 the draws whose
    slot-0 texture has alpha (DXT3, DXT5, or DXT1 with transparent
-   texels), and draw the rest opaque (engine's choice). Which alpha the
-   decals use (diffuse or the vertex colour's A, about 0.5 on decal
-   strips) is not known.
+   texels), and draw the rest opaque (engine's choice). The decal
+   alpha (`H_VBLND_DECAL*`, and `H_ROAD_*_BLEND_*` alike by the same
+   shader structure) is the diffuse alpha times a vertex-colour fade,
+   saturate((COLOR.x − 0.5) × c4.x + 0.5) by our reading of the shader:
+   probable. `ADD_DIFF_OPAC_RGBA` (not drawn in this frame, so its blend
+   state was not seen) writes colour only, from a diffuse texture
+   scrolled with time, an `opacity` texture and a sun tint; by its name
+   and the missing alpha output it is additive (one, one): probable.
 
 The blend state per family is from `check-dump` (confirmed for the
 frame); the formulas in 2 to 4 are not.
+
+## Terrain, far scenery, trees and sky
+
+Measured 2026-11-20 on the same free-roam frame: which draws cover which
+part of the reference image, and how the terrain effects shade. The
+shading below is our reading of the effects' pixel shaders (their
+constant tables name the inputs; the order of operations is read from
+the shader code and not yet tested against pixels), so it is probable
+unless a line says otherwise.
+
+### What draws the hills
+
+A depth-tested raster of the 73 world-space models the frame drew, with
+`clip_from_world` at 320 × 180, owns the upper 42 % of the image
+(the hills and the sky line) as follows: about 9 % is no geometry
+(sky), and nearly all the rest is terrain, mostly
+`TERR_CLRD_ZONE02_AREA3_MIDDIST_*` and `TERR_CLRD_ZONE02_AREA6_*`
+models with effect `H_VBLND_NORM_AO_LM` (600 m to 1.4 km away), then
+near `Redstone_Area01_Terrain_*` and `TERR_*_PATCH_*` models
+(`H_BLND2B`/`H_BLND3`, under 700 m), and two `UberLOD23_LOD00` and
+`UberLOD24_LOD00` models (`H_BLND1_SPEC`, 5.8 and 7.4 km) for the far
+snowy peaks.
+
+| Kind of model | Drawn in the main view | Not drawn (all views) |
+| --- | --- | --- |
+| `*_MIDDIST_*` terrain | 17 (all within 3 km, a mix of `_NoLOD`, `_LOD01` and `_LOD02`) | 316 |
+| `UberLOD*` (not `_CAGE`) | 2 | 65 |
+| `*_CAGE_*` | 0 | 24 |
+| `TERR_CUBE_*` | 0; 4 models drew 96 draws with other matrices (cube-map or reflection views) | 1,524 |
+
+So the `_CAGE` walls do not draw at all in this frame, and `TERR_CUBE`
+models draw only into the other views; an engine leaves both out of the
+main view (confirmed for this frame). Which `MIDDIST` level and which
+`UberLOD` patch the game picks for a camera is not known (WORLD_GEOMETRY
+open question 3): within 3 km the frame drew 17 of the 73 `MIDDIST`
+objects, and it drew different LOD suffixes side by side, so a nearest
+level by distance is an engine choice, not the game's rule.
+
+The far `H_DIFF_1` objects (`Zone2_Area3_6_middistance_*`, the `UberLOD`
+patches and the `_CAGE` walls) all list a slot-0 texture with a file: all
+58 such materials name a type-4 record whose `.bix` pair exists (for
+example `_0x00002CA9`, `_0x0000474D`). An engine that finds no file for
+them is probably reading model j's list instead of list j − 1.
+
+### Terrain shading
+
+All the terrain effects take the material's pixel constants as tilings
+(`c360_0` to `c360_5` in their constant tables are the material's pixel
+vec4s 0 to 5) and sample `AO` and `Light_Map` at TEXCOORD2, the unit
+lightmap coordinate:
+
+| Effect family | Layers and their UVs | Layer weights |
+| --- | --- | --- |
+| `H_VBLND*` (middle-distance hills, verges) | `Blend_A` at TEXCOORD0 × c0.xy, `Blend_B` at TEXCOORD0 × c0.zw | lerp(A, B, w), w = saturate((COLOR.x − 0.5) × c4.x + 0.5); c4.x is 1 on the hills, so w is the colour channel itself |
+| `H_BLND2*`, `H_BLND3*` (near terrain) | `Blend_A` at TEXCOORD0 × c0.xy, `Blend_B` at TEXCOORD0 × c0.zw, `Blend_C` at TEXCOORD0 × c1.xy, `Splat` at TEXCOORD1 × c1.zw | lerp(A, B, Splat.R), then `Blend_C` over that with a weight that involves `Blend_C`'s alpha (form not settled) |
+| `H_BLND1_SPEC` (`UberLOD`) | `Blend_A` at TEXCOORD0 × c0.xy (c0.xy is 1: an atlas laid out for the patch) | one layer |
+
+(COLOR.x is the first component the shader reads from the colour
+element; which stored byte that is follows the colour byte order, which
+is itself probable.) The middle-distance textures are aerial forest
+photographs: `Blend_A` `_0x000036A0` (256², luma median 18 of 255) and
+`Blend_B` `_0x000036A1` (512², median 28) on most `MIDDIST` materials,
+with tilings 0.3 to 0.5. **The distant tree cover is in these textures**:
+the hills carry no tree geometry past the billboards below.
+
+Lighting in these shaders, with the frame's literal constants
+(c254 = (1/256, 0.05, 0, 1/3), c255 = (0.5, 0.95, 0.1, 1)):
+
+```text
+ambient = mix(groundColor, skyColor, 0.5 + 0.5 * N.y) * (0.05 + 0.95 * AO)
+sun     = sunColor * saturate(dot(N, sunDir)) * shadow * (0.05 + 0.95 * AO)
+colour  = albedo * (ambient + sun) + specular
+        + Light_Map * max(EmissiveSwitchOnThreshold.y, c3.w)
+colour  = colour * fog.w + fog.rgb        (fog from the vertex shader)
+output  = sqrt(colour)
+```
+
+- N and sunDir are in the game frame; `shadow` is the screen-space
+  shadow mask (sampler 13), 1 for a first pass.
+- AO multiplies only the light, through 0.05 + 0.95 × AO. On the
+  `MIDDIST` hills the `AO` and `Light_Map` slots name type-1 records,
+  which the frame binds as all-zero 4 × 4 DXT1 textures (8 `AO` and
+  3 `Light_Map` bindings checked), so their factor is 0.05, not 1.
+  That the sun term takes the same factor is the least certain line
+  here: if the hills come out near black, apply it to the ambient
+  term only.
+- `EmissiveSwitchOnThreshold.y` is 0 by day, so `Light_Map` drops out
+  (this settles the recipe's lightmap reading for these effects).
+- Specular: sunColor × saturate(N·H)^sunColor.w (w = 20), scaled by
+  `TimeGain.w` (8 in the frame), the shadow and a mask from the blended
+  layers' luminance × c5; it can be left out of a first pass.
+- The shader writes √colour: the colour target holds gamma-2 values,
+  decoded by later passes (exposure and grading are not covered here).
+  The layer textures are dark in sRGB (luma medians 18 to 28 on the
+  forest textures, 54 to 91 on the near layers): the brightness of the
+  game's image comes from the light and those later passes, not from the
+  albedo.
+
+Colour spread of the near-terrain layers the engine asked about
+(record index → texture, decoded base level, sRGB 0-255):
+
+| Record | Texture | Size | Mean RGB | Luma 5th / 50th / 95th |
+| --- | --- | --- | --- | --- |
+| 11,180 | `_0x00002CAC` | 512² DXT1 gamma | (66, 63, 34) olive grass and litter | 25 / 54 / 84 |
+| 4,314 | `_0x000010FE` | 512² DXT1 gamma | (90, 84, 76) grey-brown rock | 28 / 87 / 125 |
+| 11,408 | `_0x00002D95` | 512² DXT1 gamma | (109, 94, 72) sand and dirt | 68 / 91 / 116 |
+| (UberLOD) | `_0x00004767` | 512² DXT1 gamma | (68, 70, 63) atlas of rock and snow patches | 10 / 29 / 232 |
+
+### Trees
+
+Two systems, both found in the frame:
+
+- **Near trees** are render models with `TREE_DIFF_OPAC_*` and
+  `DIFF_TREEBEND_*` effects, placed through the kind-7 `.pgeo` tiles
+  (WORLD_GEOMETRY), drawn with alpha to coverage (above).
+- **Mid and far trees and grass are billboards.** The frame has 3 × 167
+  non-indexed quad-list draws (one set per main-pass band, 3,537 quads
+  per set, plus grass sets), drawn with a rigid instance matrix and
+  sampling a 2 × 2 sprite atlas: `_0x00005013` (512² DXT5, four whole
+  trees: two autumn, one yellow, one conifer; 55 % of texels
+  transparent) for trees, `_0x00005007` (256² DXT5) for grass. These
+  textures are records 19,580 to 19,613, at the end of the record table
+  and in no model's texture list. The quads' per-draw data is the
+  trailing block of 40-byte packed records of a kind-7 `.pgeo` tile:
+  the bytes the first sampled draw reads (33 quads, 1,320 bytes) are in
+  `__R00G07021.pgeo` (confirmed for that draw; one 40-byte record per
+  quad, probable). The record's fields (position, size, atlas cell) are
+  not decoded yet. The billboards draw opaque with no alpha test and no
+  alpha to coverage, so their cut-out is made in the pixel shader
+  (probable).
+
+### Sky
+
+The track has no sky model: no render model covers the sky pixels
+(about 9 % of the image, which the depth targets leave empty).
+`media/realtimesky.zip` holds a procedural sky's data: `CloudDefs.xml`,
+near and far cloud density and ambient maps (front and back, full size
+and small), a far-cloud mask, sun, moon phases, `Stars.bin` and a dither
+texture, all `.xds`. Its shaders are not in the track's effects. Which
+draw of the frame paints the sky was not isolated. An engine's own
+gradient dome is the right stand-in until that sky is specified.
 
 ## Reference frame
 
@@ -554,11 +713,21 @@ Corpus counts come from `census` over the extracted members.
    textures for them (runtime placeholders or generated textures).
 4. The 3 CAFF textures with a 196,604-byte payload; the 146 `.bundle`
    members (texel payloads, not referenced by any texture record seen).
-5. The pixel constants' meaning per effect, and the shading formulas
-   (layer weights, lighting, fog): the recipe's are a stand-in.
-6. What alpha the decal and road-blend draws use, and whether
-   `Light_Map` is the night lighting (a night dump would settle it).
+5. The pixel constants' meaning beyond the terrain tilings; the
+   `Blend_C` weight on near terrain and the road weights; whether the
+   sun term takes the AO factor. Testing the terrain reading against
+   the reference frame's pixels would settle it.
+6. Whether `Light_Map` is night lighting (a night dump would settle
+   it; by day the terrain shaders switch it off).
 7. A HUD-free reference image.
+8. The billboard record (40 bytes per quad in kind-7 `.pgeo` tiles):
+   position, size, atlas cell, and which tiles draw at which distance.
+9. Which `MIDDIST` level and `UberLOD` patch the game draws for a
+   camera (WORLD_GEOMETRY open question 3).
+10. The sky: the draw that paints it and its parameters
+    (`realtimesky.zip`).
+11. Which placements the game shows (event props): see WORLD_GEOMETRY's
+    selection question.
 
 ## Reproduce
 
