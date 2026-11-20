@@ -1028,6 +1028,8 @@ void drive_usage() {
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound\n"
+               "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
+               "           its spawn line goes back in as --spawn x y z heading); the title shows the position\n"
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
@@ -2261,7 +2263,7 @@ int run_drive(int argc, char** argv) {
         bool running = true;
         std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
                     "Space handbrake, R put back on the road, V chase/front view, C (held) look back, H hide/show "
-                    "the HUD, Esc pause menu.\n"
+                    "the HUD, F12 save the pose (carview-pose-N.txt), Esc pause menu.\n"
                     "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, right stick "
                     "look around, Y (held) look back, Start pause menu, Back view.\n"
                     "car picker: [ and ] (LB and RB) choose among the %zu baked cars, Enter (X) drives it.\n",
@@ -2373,6 +2375,29 @@ int run_drive(int argc, char** argv) {
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
+              // F12: the pose for a report (carview-pose-N.txt in the working
+              // folder): where, which way, when and in what.
+              if (e.key.key == SDLK_F12) {
+                static int shot = 0;
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                char name[64], line_buf[96];
+                std::snprintf(name, sizeof name, "carview-pose-%d.txt", ++shot);
+                if (FILE* pf = std::fopen(name, "w")) {
+                  std::fprintf(pf, "car %s\nposition %.2f %.2f %.2f\nheading %.1f deg\nspeed %.1f km/h\n"
+                               "time %.2f s\nhour %s\ncamera %s\nspawn %.2f %.2f %.2f %.4f\n",
+                               car.c_str(), at.x, at.y, at.z, std::atan2(f.x, f.z) * 57.29578, vehicle.speed() * 3.6,
+                               vehicle.time(), traffic ? std::to_string(traffic->hour()).c_str() : "12 (no traffic)",
+                               have_rig ? drive::camera_mode_name(rig.mode()) : (front ? "front" : "chase"), at.x, at.y, at.z,
+                               std::atan2(f.x, f.z));
+                  std::fclose(pf);
+                  std::snprintf(line_buf, sizeof line_buf, "pose saved: %s", name);
+                } else {
+                  std::snprintf(line_buf, sizeof line_buf, "cannot write %s", name);
+                }
+                notice = line_buf;
+                notice_until = vehicle.time() + 3;
+              }
               if (e.key.key == SDLK_H) {
                 show_hud = !show_hud;
                 if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0);
@@ -2464,8 +2489,14 @@ int run_drive(int argc, char** argv) {
             if (vehicle.gear() < 0) std::snprintf(gear, sizeof gear, "R");
             else if (vehicle.gear() == 0) std::snprintf(gear, sizeof gear, "N");
             else std::snprintf(gear, sizeof gear, "%d", vehicle.gear());
-            std::snprintf(title, sizeof title, "carview drive - %s - %3.0f km/h  gear %s  %5.0f rpm%s", car.c_str(),
-                          std::fabs(vehicle.speed()) * 3.6, gear, vehicle.rpm(), vehicle.abs_active() ? "  ABS" : "");
+            {
+              const drive::Vec3 at = vehicle.position();
+              const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+              std::snprintf(title, sizeof title,
+                            "carview drive - %s - %3.0f km/h  gear %s  %5.0f rpm%s   at %.0f %.0f %.0f heading %.0f",
+                            car.c_str(), std::fabs(vehicle.speed()) * 3.6, gear, vehicle.rpm(),
+                            vehicle.abs_active() ? "  ABS" : "", at.x, at.y, at.z, std::atan2(f.x, f.z) * 57.29578);
+            }
             if (picking) {
               const size_t n = std::strlen(title);
               std::snprintf(title + n, sizeof title - n, "   |   pick %zu/%zu: %s (Enter or X to drive it)", pick + 1,

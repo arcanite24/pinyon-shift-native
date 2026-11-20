@@ -622,6 +622,38 @@ Where the code is shaped per object for no reason, it is listed here.
   down-sample and blur would do the same in fewer passes. It is small
   today (under 1 ms on the UHD 620), so it comes last.
 
+## Polish backlog
+
+These are known gaps that don't block driving or features. Each runs on
+the interim noted here until a later polish sweep.
+
+- **World bundle textures** (Q44 a). Type-1 and type-3 slots resolve
+  through the 146 `.bundle` members of Colorado's bin.zip. Interim: a 4×4
+  fallback, so the power-line cables (record 4203, about (33, 34, 33))
+  draw flat. The bundles also hold low mips for far LOD.
+- **Warm hill shading** (Q44 c). The game shades lerp(Blend_A, Blend_B,
+  R/255) under the warm sun (0.97, 0.84, 0.58). Interim: the current
+  terrain shading, which leaves grey bands. Reference pose: camera
+  (2243.8, 119.8, 706.9).
+- **Camera details** (Q45). The slope term, pitch sign, speed-FOV factor
+  and cockpit interior. Interim: as in `libs/drive/src/cameras.cpp`.
+- **Lamps.** CARS.md gives no brake-lamp rule. Interim: red covers and
+  tail-lamp techniques glow while a front wheel brakes. Cover tints
+  (red, amber, clear) are picked by technique name.
+- **Handbrake torque.** CAR_PHYSICS only names `BiasHandbrake` as
+  probable. Interim: 2500 N m per rear wheel; it locks the rears and holds
+  a 10 % grade (`handbrake_tests`).
+- **Traffic junctions.** No crossing check (`Junctions/
+  MaxCollisionCheckDistance`) and no steer-aside for the player. Two cars
+  can meet at a junction.
+- **The cruise test driver's junction choice.** At T junctions it can
+  drive straight into a rail; headless runs put it back.
+- **The F12 screenshot.** F12 saves the pose but not an image yet (the
+  window has no swapchain read-back).
+- **The UHD 620 low preset.** GPU p95 is 16.4 ms against 11.8 ms before
+  the wider gathers (models 900 m, props 600 m). A low preset with
+  smaller gather radii would win it back.
+
 ## Licence
 
 GPL-3.0-or-later (`LICENSE`), copyright Brandon G. Neri. The LGPL-2.1
