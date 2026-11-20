@@ -183,10 +183,10 @@ struct CarParams {
   double gear_shift_time = 0.16, clutch_in_time = 0.15, clutch_out_time = 0.3;  // s
   double clutch_max_torque = 900;  // N m
   double clutch_torque_factor = 0.72;  // capacity = engagement x ClutchMaxTorque x this (measured fit)
-  double upshift_fraction = 0.96;  // of the redline
-  // Braking: down when the lower gear would sit under this x the redline
-  // (ours, from the R34's 2->1 at 75 km/h).
-  double downshift_brake_fraction = 0.73;
+  double upshift_fraction = 0.945;  // of the redline (7,560 on the R34)
+  // Braking: down when the lower gear would put the clutch output under
+  // this x the redline (6,400 on the R34; SPEC-CAR-PHYSICS, Gearbox).
+  double downshift_brake_fraction = 0.8;
   double reverse_select_speed = 6.7056;  // m/s: MaxForwardVelShiftReverseMPH (15 mph)
   // The launch controller (SPEC-CAR-PHYSICS, Clutch and gearbox states).
   double launch_max_output_rpm = 700;  // the clutch output speed under which a start is a launch
@@ -210,14 +210,29 @@ struct CarParams {
   double abs_rear_no_steer = 2.5, abs_rear_full_steer = 2.0;
   double abs_duration = 0.05;  // s
   int abs_smoothing = 5;       // substeps in the slip mean the ABS tests
+  // The AI's brakes (SPEC-CAR-PHYSICS, "What the AI's controls mean"):
+  // linear torque, ai_brake_scale x the full-press torque per unit of brake
+  // (6,970 and 2,850 N m on the R34: 1.59 x 4,390 and 1,790), and one ABS
+  // release point for both axles (ReleasePointABS) with no steering blend,
+  // releasing for one step.
+  double ai_brake_scale = 1.59;
+  double abs_ai_release = 0.71;
 
   // Input shaping (SPEC-CAR-PHYSICS, Throttle, brake and steering).
   double throttle_rate = 5, brake_rate = 20, handbrake_rate = 12;  // full travels per second
   double max_steer = 0.733;          // rad at the road wheels (42 degrees)
   double steer_rate = 1.83;          // rad/s towards the target
   double straighten_rate = 1.83;     // rad/s back towards centre
-  double steer_max_gees = 1.0;       // the lock narrows with speed to hold this (ours, from the column's name)
+  double steer_max_gees = 1.0;       // SteerSpeedSensitiveMaxGees
+  // The pad's lock at speed: atan(steer_gees_fit x steer_max_gees x g x
+  // wheelbase / v^2), the measured 2,410 / v^2 degrees per unit on the R34
+  // at 19 to 22 m/s (the rule is open: a placeholder, SPEC_QUESTIONS Q40).
+  double steer_gees_fit = 1.61;
   double steer_min_lock = 0.087;     // rad, the narrowest lock
+  // At speed the wheels also turn slower: the rate scales with the lock's
+  // share of the full lock, down to this share (20 to 38 deg/s measured at
+  // 19 to 22 m/s, against 105 at walking pace; placeholder).
+  double steer_rate_min_share = 0.25;
 
   // Resistance: F = drag_quadratic v^2 + drag_constant, against the motion
   // (the spec's fit; the constant fades in over the first 1 m/s, ours).
@@ -261,6 +276,12 @@ class Vehicle {
   void place(const Vec3& position, double heading = 0);
   // Advances one fixed step with the given raw input.
   void step(const Input& input, const Ground& ground);
+  // The AI's input mode (SPEC-CAR-PHYSICS, "What the AI's controls mean"):
+  // gas and brake unshaped, the steer a fraction of SteerMaxAngle at the
+  // road wheels (no narrowing, no rate), the brakes linear with the AI's
+  // ABS. Off by default (the pad's path).
+  void set_ai_controls(bool on) { ai_ = on; }
+  bool ai_controls() const { return ai_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -338,6 +359,7 @@ class Vehicle {
   double engine_omega_ = 0;    // rad/s
   double abs_timer_[kWheels]{};
   bool abs_flag_ = false;
+  bool ai_ = false;
   double time_ = 0;
   double body_force_ = 0;
 };

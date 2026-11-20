@@ -185,12 +185,13 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.clutch_torque_factor = 0.72;
   p.reverse_select_speed = s.get("MaxForwardVelShiftReverseMPH", 15) * 0.44704;
 
-  // Brakes (SPEC-CAR-PHYSICS, Brakes): the measured full-press torque per
-  // front wheel (3,800 to 4,050 N m from the wheel balance; the formula is
-  // not decoded), the rear 1,750 N m = 0.45 x the front by the same wheel
-  // balance (measured on the R34; the bias rule is open).
-  p.front_brake_torque = 3900;
-  p.rear_brake_torque = 0.45 * p.front_brake_torque;
+  // Brakes (SPEC-CAR-PHYSICS, Brakes): one unit of the wheels' brake
+  // torque value is 1,200 N m on both axles, so a full press is 4,390 N m
+  // per front wheel and 1,790 per rear (measured on the R34; the formula
+  // and the bias rule are open).
+  p.front_brake_torque = 4390;
+  p.rear_brake_torque = 1790;
+  p.abs_ai_release = get("List_UpgradeBrakes.ReleasePointABS", p.abs_ai_release);
   // The tyre's longitudinal scale on a wheel whose applied torque slows it.
   p.brake_friction_scale = get("List_TireCompound.TorqueFreeLongFrictionScaleBrake", 1) *
                            get("List_UpgradeBrakes.GameFrictionScaleBraking", 1);

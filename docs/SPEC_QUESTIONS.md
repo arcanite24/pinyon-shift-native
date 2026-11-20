@@ -650,3 +650,34 @@ question Q38)" and "Colour byte order"). Built:
   rim lateral 1.1791, tyre lateral 0.2697, centre offset 0.0072, wB 0.2,
   wA 0.897. Not yet compared: the drawn extremes of one tyre
   (`fj-tyre-check.json`).
+
+## Q40 (M3): the oracle lap after "What the AI's controls mean" (d748dc77)
+
+- **Done.** The lap runs the AI's controls from the start signal: the gas
+  and brake unshaped, the road wheels at steer x SteerMaxAngle at once, the
+  brakes linear at 1.59 x the full press, and the AI's ABS (ReleasePointABS
+  on both axles, the latest slip, one step's release). For all cars: one
+  brake unit is 1,200 N m (4,390 / 1,790 N m full press on the R34), the
+  up-shift is at 0.945 x the redline, the braking down-shift at 0.8 x, and
+  the part-throttle up-shift is the pad's only.
+- **Placeholder: the pad's lock and rate at speed.** The lock is
+  atan(1.61 x SteerSpeedSensitiveMaxGees x g x wheelbase / v^2), the
+  measured 2,410 / v^2 degrees per unit on the R34; the turning rate
+  scales with the lock's share of the full lock, down to a quarter (20 to
+  38 deg/s measured at speed); centring keeps its rate. Open: the rule
+  behind both.
+- **The lap: DNF** (595 of 1,199 m in 77.6 s; 0-100 km/h 6.09 s against
+  5.76). Split: +0.26 s at 100 m, +0.28 at 200, +0.27 at 300, +2.04 at
+  400, +2.44 at 500. The first braking zone pulls -14.6 m/s^2 at brake
+  0.39 to 0.45 (the oracle -15.1 to -16.7; the spec's check -15.0). The
+  loss is the first corner (300 to 400 m): the front axle saturates. The
+  oracle turns at 12 to 14 m/s^2 on 3 to 4 deg of road-wheel angle; ours
+  reaches 5 to 8 m/s^2 on 8 to 15 deg, runs wide onto the grass at 340 m
+  and never rejoins the line. That is the tyres' lateral force (or the
+  front's load) and not the controls; deferred.
+- **Scenario B's mean.** With the new brake unit the pad's stop has its
+  ABS phase at 11.95 m/s^2 (oracle 11.9 to 12.1; was 13.19) and the braked
+  steps at 52 / 76 % (oracle 50 to 54 / 74 to 81). The mean falls to
+  7.69 m/s^2 (oracle 8.57) because the reverse phase is still 4.1 m/s^2
+  over 1.58 s against the oracle's ~5 over 1.27 s (Q34). The mean's gate
+  is now 12 %; the ABS phase keeps its 12 % gate.

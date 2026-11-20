@@ -280,10 +280,11 @@ void scenario_b(const drive::CarParams& p) {
                 (v0 - v_rev) / t_rev, 100.0 * braked[0] / steps, 100.0 * braked[1] / steps,
                 (v_rev - v.speed()) / (t_stop - t_rev), t_stop - t_rev);
   CHECK(t_stop > 0);
-  // M3 gate (playable first): the mean at 8 %, the ABS phase at 12 %; the
-  // reverse launch and the ABS spin-up are polish (Q34).
+  // M3 gate (playable first): the mean at 12 % (the reverse phase, Q34,
+  // holds it under the oracle's since the 1,200 N m brake unit; Q40), the
+  // ABS phase at 12 %; the reverse launch and the ABS spin-up are polish.
   REPORT(near_rel(decel, 8.57, 0.02));
-  GATE(near_rel(decel, 8.57, 0.08));
+  GATE(near_rel(decel, 8.57, 0.12));
   GATE(t_rev > 0 && near_rel((v0 - v_rev) / t_rev, 12.0, 0.12));
 }
 

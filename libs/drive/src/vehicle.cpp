@@ -190,6 +190,16 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // SPEC-CAR-PHYSICS, Throttle, brake and steering from the pad: the
   // pedals move towards the input at their ControllerDelays rates; the
   // road-wheel angle moves towards stick x lock at SteerMaxAngVelTurning.
+  if (ai_) {
+    // The AI's controls skip the shaping: the road wheels at steer x
+    // SteerMaxAngle at once.
+    shaped_.throttle = std::clamp(raw.throttle, 0.0, 1.0);
+    shaped_.brake = std::clamp(raw.brake, 0.0, 1.0);
+    shaped_.steer = std::clamp(raw.steer, -1.0, 1.0);
+    shaped_.handbrake = raw.handbrake;
+    steer_angle_ = shaped_.steer * p_.max_steer;
+    return;
+  }
   shaped_.throttle = approach(shaped_.throttle, std::clamp(raw.throttle, 0.0, 1.0), p_.throttle_rate, dt);
   shaped_.brake = approach(shaped_.brake, std::clamp(raw.brake, 0.0, 1.0), p_.brake_rate, dt);
   shaped_.steer = std::clamp(raw.steer, -1.0, 1.0);  // the traced steer control steps to the stick
@@ -197,17 +207,21 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // The lock narrows with speed to hold steer_max_gees of kinematic lateral
   // acceleration (ours, after SteerSpeedSensitiveMaxGees), never below
   // steer_min_lock. At walking pace it is the full SteerMaxAngle.
-  const double target = shaped_.steer * steer_lock();
+  const double lock = steer_lock();
+  const double target = shaped_.steer * lock;
   const bool centring = std::fabs(target) < std::fabs(steer_angle_) && target * steer_angle_ >= 0;
-  steer_angle_ = approach(steer_angle_, target, centring ? p_.straighten_rate : p_.steer_rate, dt);
+  // Turning slows with the narrowed lock (placeholder); centring does not
+  // (140 to 190 deg/s measured at speed).
+  const double share = p_.max_steer > 0 ? std::clamp(lock / p_.max_steer, p_.steer_rate_min_share, 1.0) : 1.0;
+  steer_angle_ = approach(steer_angle_, target, centring ? p_.straighten_rate : p_.steer_rate * share, dt);
 }
 
 double Vehicle::steer_lock() const {
   const double wheelbase = std::fabs((p_.wheel_centres[0].z + p_.wheel_centres[1].z) / 2 -
                                      (p_.wheel_centres[2].z + p_.wheel_centres[3].z) / 2);
   const double v = std::fabs(speed());
-  if (v <= 0.1) return p_.max_steer;
-  return std::clamp(std::atan(p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
+  if (ai_ || v <= 0.1) return p_.max_steer;
+  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
                     std::min(p_.steer_min_lock, p_.max_steer), p_.max_steer);
 }
 
@@ -350,8 +364,10 @@ void Vehicle::update_gearbox(double dt) {
       const int top = int(p_.gears.size());
       const double up_at = lerp(0.5, p_.upshift_fraction, std::clamp(drive_pedal, 0.0, 1.0)) * red;
       const double next_rpm = gear_ >= 1 && gear_ < top ? road * ratio(gear_ + 1) / ratio(gear_) : 0;
-      if (gear_ >= 1 && gear_ < top && locked_ &&
-          (rpm_now >= p_.upshift_fraction * red || (rpm_now >= up_at && next_rpm >= 0.4 * red))) {
+      // The part-throttle rule is the pad's: the AI's lap shows no early
+      // shift on a lift (7,100 rpm in third at gas 0.3).
+      const bool part = !ai_ && rpm_now >= up_at && next_rpm >= 0.4 * red;
+      if (gear_ >= 1 && gear_ < top && locked_ && (rpm_now >= p_.upshift_fraction * red || part)) {
         start_shift(gear_ + 1);
       } else if (gear_ > 1) {
         const double lower = road * ratio(gear_ - 1) / ratio(gear_);
@@ -491,6 +507,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
       break;
     }
   if (brake_in <= 0) brake_frac = 0;
+  // The AI's brake is linear, ai_brake_scale x the full press per unit.
+  if (ai_) brake_frac = brake_in * p.ai_brake_scale;
   const double stick = std::fabs(shaped_.steer);
   // A wheel whose smoothed normalised slip ratio (the mean of its last
   // abs_smoothing substeps) passes the release point, blended by the
@@ -508,9 +526,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
         double mean = 0;
         for (int k = 0; k < hist_n; ++k) mean += slip_hist_[i][k];
         mean /= hist_n;
-        const double release = a == 0 ? lerp(p.abs_front_no_steer, p.abs_front_full_steer, stick)
-                                      : lerp(p.abs_rear_no_steer, p.abs_rear_full_steer, stick);
-        if (mean < -release) abs_timer_[i] = p.abs_duration;
+        const double release = ai_ ? p.abs_ai_release
+                               : a == 0 ? lerp(p.abs_front_no_steer, p.abs_front_full_steer, stick)
+                                        : lerp(p.abs_rear_no_steer, p.abs_rear_full_steer, stick);
+        if ((ai_ ? w.slip_ratio : mean) < -release) abs_timer_[i] = ai_ ? kStep : p.abs_duration;
       }
       if (abs_timer_[i] > 0) {
         frac = 0;

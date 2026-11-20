@@ -337,7 +337,10 @@ int main(int argc, char** argv) {
       // Held on the handbrake until the start signal (the brake at rest
       // selects reverse).
       drive::Input in{0, 0, 0, true};
-      if (racing) in = follower.input(v);
+      if (racing) {
+        v.set_ai_controls(true);  // the oracle lap is the AI driving (SPEC-CAR-PHYSICS)
+        in = follower.input(v);
+      }
       v.step(in, *ground);
       const double t = v.time() - settle;
       const drive::Vec3 at = v.position();
