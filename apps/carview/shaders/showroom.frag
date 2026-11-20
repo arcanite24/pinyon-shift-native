@@ -7,7 +7,8 @@
 // that show through (alpha 255) by the stripe colour. Lighting: a fixed environment cube (the
 // disc's lobby faces, or a gradient) for diffuse and reflections, a key and
 // a fill light, and the vertex's baked occlusion. Glass is tinted and
-// see-through. Output is encoded to sRGB here (the targets are UNORM).
+// see-through. Output is encoded to sRGB here (UNORM targets) or linear for
+// the drive's post chain (kLinearOut).
 // Spec: FORMAT-CARS (Materials, Paint, Brakes, Lights, glass and shadow).
 
 layout(set = 0, binding = 0) uniform Frame {
@@ -52,6 +53,11 @@ vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
+
+// The drive renders linear HDR for its post chain (post.frag), clipped at
+// 4.0 as the game's resolve is; the showroom encodes sRGB here.
+layout(constant_id = 0) const bool kLinearOut = false;
+vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
 
 vec3 env(vec3 dir, float lod) {
   return textureLod(environment, dir, lod).rgb * frame.options.y;
@@ -154,5 +160,5 @@ void main() {
     alpha = clamp(alpha + fresnel * 0.5, 0.0, 1.0);
   }
   colour *= frame.options.x;
-  out_color = vec4(encode_srgb(colour), alpha);
+  out_color = vec4(out_rgb(colour), alpha);
 }

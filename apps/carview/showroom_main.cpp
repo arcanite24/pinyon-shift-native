@@ -35,6 +35,7 @@
 #include <stb_image_write.h>
 
 #include "audio/bake.h"
+#include "audio/xml.h"
 #include "hud.h"
 #include "process_time.h"
 #include "reference.h"
@@ -833,8 +834,44 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 // How far out the tree sprites are gathered (ours; each record's own far
 // distance also applies).
 constexpr double kTreeRadius = 2000;
+// The scene's scale into the filmic curve (ours: the track's filmicTone
+// exposure, 0.31 on Colorado, applies to a scene the game lights more
+// brightly than ours; set so the free-roam reference frame's mean is met).
+constexpr double kPostExposure = 0.8;
+
+// The post chain's constants from the track's TrackSettings.xml
+// (SHOWROOM_LIGHTING, Post chain: filmicTone's day curve, DesaturateAmount,
+// DesatLuminosity, bloom cutoff and scale). Without the file PostSettings'
+// defaults (Colorado's values) stay. The exposure is ours (see the caller).
+void read_post_settings(const std::filesystem::path& world_dir, PostSettings& s) {
+  std::ifstream in(world_dir / "TrackSettings.xml", std::ios::binary);
+  if (!in) return;
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  audio::XmlNode root;
+  if (!audio::parse_xml(text, root, nullptr)) return;
+  if (const auto* f = root.child("filmicTone")) {
+    s.white = float(f->number("white", s.white));
+    const char* keys[6] = {"shoulderStrength", "linearStrength", "linearAngle", "toeStrength", "toeNumerator",
+                           "toeDenominator"};
+    for (int i = 0; i < 6; ++i) s.hable[i] = float(f->number(keys[i], s.hable[i]));
+  }
+  if (const auto* d = root.child("DesaturateAmount")) s.desaturate = float(d->number("value", s.desaturate));
+  if (const auto* l = root.child("DesatLuminosity")) {
+    s.luminance[0] = float(l->number("r", s.luminance[0]));
+    s.luminance[1] = float(l->number("g", s.luminance[1]));
+    s.luminance[2] = float(l->number("b", s.luminance[2]));
+  }
+  if (const auto* c = root.find("bloom/cutoff")) s.bloom_cutoff = float(c->number("value", s.bloom_cutoff));
+  if (const auto* c = root.find("bloom/scale")) s.bloom_scale = float(c->number("value", s.bloom_scale));
+}
 
 int run_drive(int argc, char** argv) {
+  // The post chain (on unless --no-post); --exposure overrides ours,
+  // --bloom / --no-bloom the preset's choice.
+  bool post_on = true;
+  int bloom_flag = -1;
+  double exposure_given = 0;
+  bool low_preset = false;
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
@@ -891,10 +928,16 @@ int run_drive(int argc, char** argv) {
     else if (a == "--bench") bench = headless = async_stream = true;  // streams like the window
     else if (a == "--msaa") msaa = uint32_t(std::atoi(next()));
     else if (a == "--preset") {
-      // low (ours): no MSAA, cut-outs alpha-tested; high: the default 4x.
+      // low (ours): no MSAA, cut-outs alpha-tested, no bloom; high: the
+      // default 4x, bloom.
       const std::string p = next();
       msaa = p == "low" ? 1 : 4;
+      low_preset = p == "low";
     }
+    else if (a == "--no-post") post_on = false;
+    else if (a == "--bloom") bloom_flag = 1;
+    else if (a == "--no-bloom") bloom_flag = 0;
+    else if (a == "--exposure") exposure_given = std::atof(next());
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
     else if (a == "--sound") sound_dir = next(), sound_given = true;
@@ -1132,7 +1175,15 @@ int run_drive(int argc, char** argv) {
     // SHIFT_NO_CULL=1: every world draw, for comparison with the culled frame.
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options;
-    if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, validation, msaa}, error) ||
+    Renderer::Options render_options{window, validation, msaa};
+    if (post_on) {
+      PostSettings& post = render_options.post;
+      post.enabled = true;
+      if (!world_dir.empty()) read_post_settings(world_dir, post);
+      post.exposure = float(exposure_given > 0 ? exposure_given : kPostExposure);
+      post.bloom = bloom_flag >= 0 ? bloom_flag == 1 : !low_preset;
+    }
+    if (!showroom.load(bake_dir, car, options, error) || !renderer.init(render_options, error) ||
         !showroom.upload(error)) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;

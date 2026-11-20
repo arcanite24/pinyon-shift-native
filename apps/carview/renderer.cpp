@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -11,6 +12,8 @@
 #include "car_frag_spv.h"
 #include "car_model.h"
 #include "car_vert_spv.h"
+#include "post_frag_spv.h"
+#include "post_vert_spv.h"
 
 namespace carview {
 
@@ -72,6 +75,12 @@ Renderer::~Renderer() {
     destroy_buffer(overlay_buffer_);
     destroy_image(texture_);
     destroy_image(bench_output_);
+    if (post_quarter_) vkDestroyPipeline(device_, post_quarter_, nullptr);
+    if (post_final_) vkDestroyPipeline(device_, post_final_, nullptr);
+    if (post_layout_) vkDestroyPipelineLayout(device_, post_layout_, nullptr);
+    if (post_set_layout_) vkDestroyDescriptorSetLayout(device_, post_set_layout_, nullptr);
+    if (post_pool_) vkDestroyDescriptorPool(device_, post_pool_, nullptr);
+    if (post_sampler_) vkDestroySampler(device_, post_sampler_, nullptr);
     if (timestamps_) vkDestroyQueryPool(device_, timestamps_, nullptr);
     if (image_ready_) vkDestroySemaphore(device_, image_ready_, nullptr);
     if (frame_fence_) vkDestroyFence(device_, frame_fence_, nullptr);
@@ -116,7 +125,7 @@ bool Renderer::init(const Options& options, std::string& error) {
   } else {
     color_format_ = VK_FORMAT_R8G8B8A8_UNORM;
   }
-  return create_pipeline(color_format_, error);
+  return create_pipeline(scene_format(), error);
 }
 
 bool Renderer::create_instance(std::string& error) {
@@ -609,7 +618,7 @@ bool Renderer::create_pipeline(VkFormat color_format, std::string& error) {
 bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& error) {
   destroy_targets();
   if (samples_ != VK_SAMPLE_COUNT_1_BIT &&
-      !create_image(width, height, 1, color_format_, samples_,
+      !create_image(width, height, 1, scene_format(), samples_,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, msaa_color_)) {
     error = "MSAA colour target";
@@ -623,14 +632,213 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     error = "depth target";
     return false;
   }
+  if (options_.post.enabled) {
+    // The resolved HDR scene and the bloom pair at a quarter of the size.
+    bloom_width_ = std::max(1u, width / 4);
+    bloom_height_ = std::max(1u, height / 4);
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!create_image(width, height, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                      hdr_) ||
+        !create_image(bloom_width_, bloom_height_, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, bloom_a_) ||
+        !create_image(bloom_width_, bloom_height_, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, bloom_b_)) {
+      error = "post targets";
+      return false;
+    }
+    if (!create_post(error)) return false;
+    const VkImageView sources[4][2] = {
+        {hdr_.view, hdr_.view}, {bloom_a_.view, bloom_a_.view}, {bloom_b_.view, bloom_b_.view}, {hdr_.view, bloom_a_.view}};
+    VkDescriptorImageInfo images[4][2];
+    VkWriteDescriptorSet writes[8];
+    for (int s = 0; s < 4; ++s)
+      for (int b = 0; b < 2; ++b) {
+        images[s][b] = {post_sampler_, sources[s][b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet& w = writes[s * 2 + b];
+        w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = post_sets_[s];
+        w.dstBinding = uint32_t(b);
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &images[s][b];
+      }
+    vkUpdateDescriptorSets(device_, 8, writes, 0, nullptr);
+  }
   target_width_ = width;
   target_height_ = height;
   return true;
 }
 
+bool Renderer::create_post(std::string& error) {
+  if (post_final_) return true;
+  VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
+  sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  VK_TRY(vkCreateSampler(device_, &sampler, nullptr, &post_sampler_), "post sampler");
+  const VkDescriptorSetLayoutBinding bindings[2] = {
+      {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+  VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  set.bindingCount = 2;
+  set.pBindings = bindings;
+  VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
+  VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80};
+  VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  layout.setLayoutCount = 1;
+  layout.pSetLayouts = &post_set_layout_;
+  layout.pushConstantRangeCount = 1;
+  layout.pPushConstantRanges = &push;
+  VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
+  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8};
+  VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  pool.maxSets = 4;
+  pool.poolSizeCount = 1;
+  pool.pPoolSizes = &size;
+  VK_TRY(vkCreateDescriptorPool(device_, &pool, nullptr, &post_pool_), "post descriptor pool");
+  const VkDescriptorSetLayout layouts[4] = {post_set_layout_, post_set_layout_, post_set_layout_, post_set_layout_};
+  VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  alloc.descriptorPool = post_pool_;
+  alloc.descriptorSetCount = 4;
+  alloc.pSetLayouts = layouts;
+  VK_TRY(vkAllocateDescriptorSets(device_, &alloc, post_sets_), "post descriptor sets");
+
+  auto make_module = [&](const uint32_t* code, size_t bytes, VkShaderModule& module) {
+    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info.codeSize = bytes;
+    info.pCode = code;
+    return vkCreateShaderModule(device_, &info, nullptr, &module);
+  };
+  VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+  VK_TRY(make_module(kPost_vert_spv, sizeof(kPost_vert_spv), vert), "post vertex shader");
+  VK_TRY(make_module(kPost_frag_spv, sizeof(kPost_frag_spv), frag), "post fragment shader");
+  const VkPipelineShaderStageCreateInfo stages[2] = {
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main",
+       nullptr},
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main",
+       nullptr}};
+  VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+  assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+  viewport.viewportCount = viewport.scissorCount = 1;
+  VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  VkPipelineColorBlendAttachmentState attachment{};
+  attachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+  blend.attachmentCount = 1;
+  blend.pAttachments = &attachment;
+  const VkDynamicState dynamic_states[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic.dynamicStateCount = 2;
+  dynamic.pDynamicStates = dynamic_states;
+  VkResult result = VK_SUCCESS;
+  for (int k = 0; k < 2 && result == VK_SUCCESS; ++k) {
+    const VkFormat format = k == 0 ? scene_format() : color_format_;
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &format;
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    info.pNext = &rendering;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertex_input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pDepthStencilState = &depth;
+    info.pColorBlendState = &blend;
+    info.pDynamicState = &dynamic;
+    info.layout = post_layout_;
+    result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, k == 0 ? &post_quarter_ : &post_final_);
+  }
+  vkDestroyShaderModule(device_, vert, nullptr);
+  vkDestroyShaderModule(device_, frag, nullptr);
+  VK_TRY(result, "post pipelines");
+  return true;
+}
+
+void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
+  const PostSettings& s = options_.post;
+  struct {
+    float mode[4], abc[4], def[4], desat[4], bloom[4];
+  } push = {{0, 0, 0, 0},
+            {s.hable[0], s.hable[1], s.hable[2], s.white},
+            {s.hable[3], s.hable[4], s.hable[5], s.exposure},
+            {s.luminance[0], s.luminance[1], s.luminance[2], s.desaturate},
+            {s.bloom_cutoff, s.bloom_scale, s.bloom ? 1.0f : 0.0f, 0}};
+  static_assert(sizeof(push) == 80);
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  auto to_read = [&](const Image& i) {
+    image_barrier(cmd, i.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read);
+  };
+  auto to_write = [&](const Image& i) {
+    image_barrier(cmd, i.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+  };
+  auto pass = [&](VkImageView target, uint32_t w, uint32_t h, VkPipeline pipeline, VkDescriptorSet set, float mode,
+                  float dx, float dy) {
+    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    color.imageView = target;
+    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea = {{0, 0}, {w, h}};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &color;
+    vkCmdBeginRendering(cmd, &rendering);
+    VkViewport viewport{0, 0, float(w), float(h), 0.0f, 1.0f};
+    VkRect2D scissor{{0, 0}, {w, h}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout_, 0, 1, &set, 0, nullptr);
+    push.mode[0] = mode, push.mode[1] = dx, push.mode[2] = dy;
+    vkCmdPushConstants(cmd, post_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+  };
+  to_read(hdr_);
+  if (s.bloom) {
+    to_write(bloom_a_);
+    pass(bloom_a_.view, bloom_width_, bloom_height_, post_quarter_, post_sets_[0], 0, 1.0f / float(target_width_),
+         1.0f / float(target_height_));
+    to_read(bloom_a_);
+    to_write(bloom_b_);
+    pass(bloom_b_.view, bloom_width_, bloom_height_, post_quarter_, post_sets_[1], 1, 1.0f / float(bloom_width_), 0);
+    to_read(bloom_b_);
+    image_barrier(cmd, bloom_a_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read, color_stage, color_write);
+    pass(bloom_a_.view, bloom_width_, bloom_height_, post_quarter_, post_sets_[2], 1, 0, 1.0f / float(bloom_height_));
+    to_read(bloom_a_);
+  } else {
+    // The composite's set still names the bloom image: give it a defined layout.
+    to_write(bloom_a_);
+    to_read(bloom_a_);
+  }
+  pass(final_view, target_width_, target_height_, post_final_, post_sets_[3], 2, 0, 0);
+  mark(cmd, "post");
+}
+
 void Renderer::destroy_targets() {
   destroy_image(msaa_color_);
   destroy_image(depth_);
+  destroy_image(hdr_);
+  destroy_image(bloom_a_);
+  destroy_image(bloom_b_);
   target_width_ = target_height_ = 0;
 }
 
@@ -648,6 +856,14 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
                   color_stage, color_write);
   }
+  // Under the post chain the scene goes to the HDR image (resolved into
+  // it with MSAA), and the composite writes the final image.
+  const bool post = options_.post.enabled && hdr_.view;
+  const VkImageView scene_view = post ? hdr_.view : final_view;
+  if (post)
+    image_barrier(cmd, hdr_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_NONE,
+                  color_stage, color_write);
   const auto depth_stages =
       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
   image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -657,14 +873,20 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
   VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  color.imageView = msaa ? msaa_color_.view : final_view;
+  color.imageView = msaa ? msaa_color_.view : scene_view;
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   color.storeOp = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color = {{scene_.clear[0], scene_.clear[1], scene_.clear[2], scene_.clear[3]}};
+  if (post)
+    for (int k = 0; k < 3; ++k) {
+      // The clear colour is display (sRGB) encoded: linear for the HDR scene.
+      const float c = scene_.clear[k];
+      color.clearValue.color.float32[k] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
   if (msaa) {
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
-    color.resolveImageView = final_view;
+    color.resolveImageView = scene_view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   }
   VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -699,6 +921,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
   }
   vkCmdEndRendering(cmd);
+  if (post) record_post(cmd, final_view);
   if (depth_readable_) {
     image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

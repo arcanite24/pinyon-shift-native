@@ -5,7 +5,8 @@
 // blends, AO, lightmaps or fog yet. Cut-outs (props, trees) write their
 // diffuse alpha for alpha to coverage; decals and the lake blend with the
 // texture's alpha times the vertex colour's (ours: which alpha the game
-// uses is open). Output is encoded to sRGB here (the targets are UNORM).
+// uses is open). Output is encoded to sRGB here (UNORM targets) or linear
+// for the drive's post chain (kLinearOut).
 
 layout(set = 0, binding = 0) uniform Frame {
   mat4 view_projection;
@@ -57,13 +58,18 @@ vec3 encode_srgb(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
 
+// The drive renders linear HDR for its post chain (post.frag), clipped at
+// 4.0 as the game's resolve is; the showroom encodes sRGB here.
+layout(constant_id = 0) const bool kLinearOut = false;
+vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
+
 void main() {
   uint blend = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
   if ((flags & kFlagSky) != 0u) {
     float h = dot(normalize(v_position), normalize(draw.up.xyz));
     vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(clamp(h, 0.0, 1.0), 0.6));
-    out_color = vec4(encode_srgb(sky * (h < 0.0 ? 0.85 : 1.0)), 1.0);
+    out_color = vec4(out_rgb(sky * (h < 0.0 ? 0.85 : 1.0)), 1.0);
     return;
   }
   // Terrain layers (WORLD-MATERIALS, Terrain shading): tint holds the
@@ -103,7 +109,7 @@ void main() {
     // road decals: times the vertex colour's alpha (the likely source).
     alpha = t.a * ((flags & kFlagVertexFade) != 0u ? v_colour.r : v_colour.a);
   }
-  vec3 encoded = encode_srgb(colour);
+  vec3 encoded = out_rgb(colour);
   // Blended draws are premultiplied (ONE, ONE_MINUS_SRC_ALPHA).
   out_color = blend == kAlpha ? vec4(encoded * alpha, alpha) : vec4(encoded, alpha);
 }

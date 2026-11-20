@@ -35,12 +35,28 @@ struct SceneHooks {
   float clear[4] = {0.16f, 0.18f, 0.21f, 1.0f};
 };
 
+// The drive's post chain (SHOWROOM_LIGHTING, Post chain): the scene is
+// drawn as linear HDR (RGBA16F), then a composite tone-maps it into the
+// output. The defaults are Colorado's TrackSettings.xml (filmicTone,
+// DesaturateAmount, DesatLuminosity, bloom cutoff and scale).
+struct PostSettings {
+  bool enabled = false;
+  bool bloom = true;                                              // ours: a quarter-size bright pass and blur
+  float hable[6] = {0.700001f, 0.038f, 0.634f, 0.220001f, 0.003f, 0.107f};  // A, B, C, D, E, F
+  float white = 1.0f;
+  float exposure = 0.31f;  // times the scene before the curve
+  float desaturate = 0.9f;  // the colour's share; the rest is its luminance
+  float luminance[3] = {0.2126f, 0.7152f, 0.0722f};
+  float bloom_cutoff = 1.0f, bloom_scale = 1.0f;
+};
+
 class Renderer {
  public:
   struct Options {
     SDL_Window* window = nullptr;  // null: headless
     bool validation = false;
     uint32_t msaa = 4;
+    PostSettings post;
   };
 
   Renderer() = default;
@@ -69,6 +85,10 @@ class Renderer {
   const std::vector<std::pair<std::string, double>>& stage_ms() const { return stage_ms_; }
   // Ends a stage of a timed frame at this point of `cmd` (nothing otherwise).
   void mark(VkCommandBuffer cmd, const char* label);
+  // The format the scene's pipelines draw into: the output's, or RGBA16F
+  // under the post chain.
+  VkFormat scene_format() const { return options_.post.enabled ? VK_FORMAT_R16G16B16A16_SFLOAT : color_format_; }
+  bool post() const { return options_.post.enabled; }
   // The MSAA sample count in use (1 when off).
   uint32_t sample_count() const { return uint32_t(samples_); }
   // Windowed: renders and presents one frame. Returns false on a fatal error.
@@ -104,6 +124,8 @@ class Renderer {
   bool create_device(std::string& error);
   bool create_pipeline(VkFormat color_format, std::string& error);
   bool create_targets(uint32_t width, uint32_t height, std::string& error);
+  bool create_post(std::string& error);  // the post pipelines and sets (once)
+  void record_post(VkCommandBuffer cmd, VkImageView final_view);
   void destroy_targets();
   bool create_swapchain(std::string& error);
   void destroy_swapchain(bool keep_handle);
@@ -167,6 +189,15 @@ class Renderer {
   std::vector<std::pair<std::string, double>> stage_ms_;
   bool depth_readable_ = false;
   Image msaa_color_, depth_;
+  // The post chain: the resolved HDR scene and the quarter-size bloom pair.
+  Image hdr_, bloom_a_, bloom_b_;
+  uint32_t bloom_width_ = 0, bloom_height_ = 0;
+  VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
+  VkPipeline post_quarter_ = VK_NULL_HANDLE, post_final_ = VK_NULL_HANDLE;
+  VkDescriptorPool post_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet post_sets_[4] = {};  // bright (hdr), blur x (a), blur y (b), composite (hdr, a)
+  VkSampler post_sampler_ = VK_NULL_HANDLE;
 
   // Windowed.
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;

@@ -813,3 +813,36 @@ question Q38)" and "Colour byte order"). Built:
   later than the oracle's. Open: the interval's shortening with the
   player's speed (3.1 to 6.0 s cruising; Interval/SpeedFactor and
   SpeedMax not decoded), so the cruise count stays low (2.6, 4.4).
+
+## Q42 (polish): the drive's post chain and sun shadows
+
+The drive renders the scene to a float target (RGBA16F) and resolves it
+through SHOWROOM_LIGHTING's post chain; the showroom (M1) path is
+unchanged, byte for byte (references 1006 and 1115, their masks, the
+headless car, and the drive with `--no-post`).
+
+- **From the spec (confirmed):** the scene clipped at 4.0; the Hable
+  filmic curve over its white point; desaturation towards the luminance
+  (`s·c + (1−s)·L(c)`). The constants are the track's TrackSettings.xml
+  values, not the spec's printed showroom ones (Colorado: filmicTone day
+  A 0.700001, B 0.038, C 0.634, D 0.220001, E 0.003, F 0.107, white 1.0;
+  DesaturateAmount 0.9; DesatLuminosity 0.2126 / 0.7152 / 0.0722; bloom
+  cutoff 1.0, scale 1.0).
+- **Ours:** the exposure, 0.8 (`--exposure`), set once so the free-roam
+  reference frame's masked mean luminance matches the game's (118.3
+  against 117.5), not swept for PSNR; the track's filmicTone exposure
+  (0.31) applies to a scene the game lights more brightly than ours. The
+  bloom: a bright pass over the cutoff into a quarter-size target and a
+  separable Gaussian (sigma about 2 texels), added before the curve. The
+  order exposure, bloom, curve, desaturation, sRGB. `--preset low` has no
+  bloom; `--bloom` / `--no-bloom` / `--no-post` override.
+- **Measured:** masked PSNR against the reference frame 14.96 dB before,
+  15.92 dB after (a number, not a goal); mean rgb 122 / 119 / 97 against
+  the game's 128 / 117 / 91, std 69 against 56 (ours has more contrast).
+  The bloom adds nothing to that frame: our shading (sun colour below 1)
+  leaves no pixel above the cutoff after the exposure.
+- **Open:** DesatPostMod (1.04, 1.02, 1.0) and where it applies; the
+  adaptive exposure (ToneMapAdaptiveExposure, CameraExposureRange); the
+  night filmicTone values (the drive uses the day curve at every hour);
+  the spec's probable bright-pass cutoff and blur sizes against ours; the
+  composite order. The windowed path was not run (headless only).

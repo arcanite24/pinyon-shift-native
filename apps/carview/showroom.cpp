@@ -1106,6 +1106,11 @@ bool Showroom::create_pipelines(std::string& error) {
   dynamic.dynamicStateCount = 2;
   dynamic.pDynamicStates = dynamic_states;
 
+  // Under the drive's post chain the scene shaders write linear HDR
+  // (constant 0 of showroom.frag and world.frag).
+  const VkBool32 linear_out = r_.post() ? VK_TRUE : VK_FALSE;
+  const VkSpecializationMapEntry spec_entry{0, 0, sizeof(VkBool32)};
+  const VkSpecializationInfo spec{1, &spec_entry, sizeof(VkBool32), &linear_out};
   auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
                    bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out,
                    VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
@@ -1114,7 +1119,7 @@ bool Showroom::create_pipelines(std::string& error) {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
          vertex ? vertex : vert, "main", nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
-         fragment, "main", nullptr}};
+         fragment, "main", fragment == mask ? nullptr : &spec}};
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = samples;
     multisample.alphaToCoverageEnable = coverage && samples != VK_SAMPLE_COUNT_1_BIT;
@@ -1157,8 +1162,8 @@ bool Showroom::create_pipelines(std::string& error) {
     info.layout = pipeline_layout_;
     return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
   };
-  VkResult result = build(frag, r_.color_format_, r_.samples_, true, true, false, opaque_);
-  if (result == VK_SUCCESS) result = build(frag, r_.color_format_, r_.samples_, true, false, true, glass_);
+  VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, false, opaque_);
+  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, true, glass_);
   if (result == VK_SUCCESS)
     result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, false, mask_);
   // The textured world (world.vert / world.frag): opaque, opaque with alpha
@@ -1179,13 +1184,13 @@ bool Showroom::create_pipelines(std::string& error) {
   world_input.vertexAttributeDescriptionCount = 5;
   world_input.pVertexAttributeDescriptions = world_attributes;
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.color_format_, r_.samples_, true, true, false, world_opaque_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_opaque_, world_vert,
                    &world_input);
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.color_format_, r_.samples_, true, true, false, world_coverage_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_coverage_, world_vert,
                    &world_input, true);
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.color_format_, r_.samples_, true, false, true, world_alpha_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, true, world_alpha_, world_vert,
                    &world_input);
   if (world_vert) vkDestroyShaderModule(r_.device_, world_vert, nullptr);
   if (world_frag) vkDestroyShaderModule(r_.device_, world_frag, nullptr);

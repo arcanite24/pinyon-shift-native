@@ -293,7 +293,10 @@ python <horizon1-recomp>/tools/physics-behaviour.py compare <oracle-lap>/lap.jso
 
 # Performance (M2): the cruise from the spawn, every frame at 60 Hz of game
 # time rendered and timed, no images: frame CPU, GPU by stage (timestamps)
-# and process CPU. --preset low: no MSAA, cut-outs alpha-tested.
+# and process CPU. --preset low: no MSAA, cut-outs alpha-tested, no bloom.
+# The drive renders HDR through the post chain (the track's filmic curve and
+# desaturation, our bloom; SPEC_QUESTIONS Q42): --no-post, --no-bloom,
+# --bloom, --exposure <x> (ours 0.8).
 carview --drive --bench --preset low --size 1280x720 --bake out/bake --car NIS_SkylineGTRVSpecII_02 \
         --world <game>/media/tracks/colorado --run cruise --seconds 60 --no-sound
 
