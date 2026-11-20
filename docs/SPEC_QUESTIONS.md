@@ -14,11 +14,16 @@ questions are also sent to the specification session.
   the half pixel removed; the mask is every pixel the resolved image
   changes by the car's draws.
 - **Engine:** reads v1 (`apps/carview/reference.h`), draws the mask with
-  the colour pass's MSAA and counts any resolved coverage, and prints IoU,
+  the colour pass's MSAA and counts any resolved coverage (the spec's
+  mask is now the pixels a car-only replay changes by 6/255 or more, so
+  ours may be a fraction of a pixel wider), compares colour with
+  `image_car_only` when present, and prints IoU,
   masked PSNR and the edge-overlap score (reference edge pixels with an
   engine edge pixel within 1 px; the plan reports it without a threshold).
+  Not used yet: `checks.transparent_clip_from_car`, the glass and lamp
+  covers' own matrix (about 1 px off), so glass may sit 1 px off.
 
-## Q2 (not blocking): which copy of a car present on the disc and in a package
+## Q2 (answered): which copy of a car present on the disc and in a package
 
 - **Specs:** FORMAT-CARS "Rule" says take the disc copy first;
   AUTOSHOW_REFERENCE "Some models exist twice" says a bake should prefer
@@ -26,6 +31,8 @@ questions are also sent to the specification session.
 - **Engine:** the bake takes the disc copy, hashes every package copy of
   the same media name, and reports any difference. For the official set
   FORMAT-CARS says they are identical, so the choice changes nothing.
+- **Answer (spec session):** bake the disc copy; all 31 multi-copy media
+  names are byte-identical, member for member.
 
 ## Q3 (not blocking): tyre model
 
@@ -138,17 +145,24 @@ questions are also sent to the specification session.
   or above its earlier score. Front and rear sizes follow the swapped
   rows.
 
-## Q10 (not blocking): ALF_ZagatoTZ3Stradale_12 (car 1656) is under 0.97
+## Q10 (blocks the M1 numeric pass for one car): ALF_ZagatoTZ3Stradale_12 (car 1656) at IoU 0.968
 
-- **Observed:** IoU 0.968 after Q3 and Q9. The rest of the body matches.
-  Two places differ:
-  - its rear wheel-centre rows are at x = ±0.848 m (front ±0.809); with
-    the 345 mm rear tyre the tread reaches 1.026 m, about 6 cm outside
-    the 0.97 m body, where the capture's tyre sits inside the arch.
-  - the capture shows the roof higher over the rear side windows than
-    any part the engine draws.
-- **Needed:** whether the wheel draw offsets the wheel sideways
-  (FORMAT-CARS lists `WheelNormOffsets`, `WheelExceptions` and
-  `List_Wheels.BrakeDrawOffset` with unknown meaning), and what the
-  roof is (a part variant, or a part from another model).
-- **Engine:** places the wheel at the row's centre with no offset.
+- **Observed:** IoU 0.968 after Q3 and Q9; the body matches, the wheels
+  do not. The capture shows a large rim in a thin tyre, the engine a
+  smaller rim in a taller tyre that reaches lower and further out.
+- **Measured:** the references' `checks.model_to_body` lifts the model
+  by a height that, on seven of the nine cars, equals the Data_Car tyre's
+  outer radius less the wheel centre's height to within 1 mm, i.e. the
+  ground under the stock tyres. On the TZ3 the lift (0.0787 m) puts the
+  ground 0.016 m inside the front tyre (295/30 R18, outer 0.317 m) and
+  0.030 m inside the rear (345/30 R19, 0.345 m): the game draws smaller
+  tyres than those columns give, about 0.301 and 0.315 m. (`AST_DBS_09`
+  and `AST_Virage_12` are 0.02 m inside as well, and still score 0.99.)
+  The wheel model's own LOD1 tyre has a 0.261 m rim and 0.331 m outer,
+  a ratio near the capture's.
+- **Needed:** where the game takes this car's wheel sizes from, if not
+  the `Data_Car` front and rear columns (`List_Wheels`, an upgrade or
+  wheel table, `WheelNormOffsets`), and whether a wheel is offset
+  sideways (the rear centres at x = +-0.848 m put a 345 mm tread 6 cm
+  outside the body).
+- **Engine:** Data_Car sizes and the row's centre, no offset.

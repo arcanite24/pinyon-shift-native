@@ -258,7 +258,9 @@ opaque.
   0.989), eight of nine at or above 0.97; masked PSNR 8.9-12.6 dB
   (median 10.8, none more than 6 dB under it); edge overlap 0.47-0.81.
   The low PSNR is the lighting: the engine's studio is brighter than the
-  Autoshow stage. Under 0.97: `ALF_ZagatoTZ3Stradale_12` (0.968, Q10).
+  Autoshow stage. Under 0.97, so M1's numeric rule is not yet met:
+  `ALF_ZagatoTZ3Stradale_12` (0.968): the game draws smaller tyres than
+  its `Data_Car` sizes give (Q10).
 - Two departures from FORMAT-CARS, both from the references: wheel-centre
   z is negated (Q9), and rims are scaled by their own authored radius
   (Q3).

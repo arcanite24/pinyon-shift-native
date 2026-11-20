@@ -7,8 +7,9 @@ metric it prints (silhouette IoU, PSNR inside the reference's car mask, edge
 overlap). Writes `report.txt` with one row per car and the plan's pass rule:
 IoU at least 0.97 for every car, and no car's masked PSNR more than 6 dB
 under the median. With Pillow installed it also writes `<car_id>.side.png`:
-reference | engine | mask difference (green: both, red: reference only,
-blue: engine only), for judging by eye.
+reference (car-only replay when given) | engine | mask difference (green:
+both, red: reference only, blue: engine only) | absolute colour
+difference inside the reference mask, for judging by eye.
 
   python tools/m1-report.py --carview build/apps/carview/carview.exe \\
       --bake out/bake --refs <horizon1-recomp>/.local/re/cars/refs --out out/m1
@@ -46,8 +47,12 @@ def side_by_side(ref_png: Path, ref_mask: Path, ours_png: Path, ours_mask: Path,
         for x in range(w):
             r, e = pa[x, y] > 0, pb[x, y] > 0
             pd[x, y] = (0, 160, 0) if r and e else (220, 40, 40) if r else (40, 90, 230) if e else (0, 0, 0)
-    sheet = Image.new("RGB", (w * 3, h))
-    for i, im in enumerate((a, b, diff)):
+    # Absolute colour difference inside the reference mask (black outside).
+    from PIL import ImageChops
+    absdiff = Image.composite(ImageChops.difference(a, b), Image.new("RGB", (w, h)),
+                              ma.point(lambda v: 255 if v else 0))
+    sheet = Image.new("RGB", (w * 4, h))
+    for i, im in enumerate((a, b, diff, absdiff)):
         sheet.paste(im, (i * w, 0))
     sheet.save(out)
 
