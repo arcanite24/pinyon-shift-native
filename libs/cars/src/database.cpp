@@ -440,6 +440,68 @@ std::vector<double> samples_of(const Query& q, const char* count_column, const s
 
 }  // namespace
 
+namespace {
+
+// The value of attribute `name` in the first `<tag ...>` element of `xml`.
+bool xml_attribute(const std::string& xml, const std::string& tag, const std::string& name, double& out) {
+  const size_t at = xml.find("<" + tag);
+  if (at == std::string::npos) return false;
+  const size_t end = xml.find('>', at);
+  const std::string element = xml.substr(at, end == std::string::npos ? std::string::npos : end - at);
+  const std::string key = " " + name + "=\"";
+  const size_t k = element.find(key);
+  if (k == std::string::npos) return false;
+  out = std::strtod(element.c_str() + k + key.size(), nullptr);
+  return true;
+}
+
+}  // namespace
+
+bool load_car_camera(const Install& install, int64_t car_id, const std::string& media, CarCameraRow& out,
+                     std::string* error) {
+  out = {};
+  {
+    Merged merged;
+    if (!open_merged(install, merged, error)) return false;
+    Query q(merged.db, "SELECT * FROM CameraOverrides WHERE CarId = ?");
+    if (q.ok()) {
+      q.bind(1, car_id);
+      if (q.step()) {
+        out.has_overrides = true;
+        for (int c = 0; c < q.count(); ++c)
+          if (q.type(c) == SQLITE_INTEGER || q.type(c) == SQLITE_FLOAT) out.overrides[q.name(c)] = q.d(c);
+      }
+    }
+  }
+  const auto ref = install.find_car(lower(media));
+  if (!ref) {
+    if (error) *error = "no car folder for " + media;
+    return false;
+  }
+  Folder folder;
+  std::vector<uint8_t> bytes;
+  if (!folder.open(*ref, error) || !folder.read("physics/maxdata.xml", bytes, error)) return false;
+  const std::string xml(bytes.begin(), bytes.end());
+  const char* names[6] = {"MinX", "MinY", "MinZ", "MaxX", "MaxY", "MaxZ"};
+  out.has_box = true;
+  for (int i = 0; i < 6; ++i) out.has_box = out.has_box && xml_attribute(xml, "BoundingBox", names[i], out.box[size_t(i)]);
+  if (!out.has_box && error) *error = media + ": no Collision/BoundingBox in MAXData.xml";
+  return out.has_box;
+}
+
+bool load_camera_files(const Install& install, std::string& settings_ini, std::string& physics_xml,
+                       std::string* error) {
+  std::vector<uint8_t> bytes;
+  if (!read_member(install.media / "camera.zip", "CameraSettings.ini", bytes, error)) return false;
+  settings_ini.assign(bytes.begin(), bytes.end());
+  if (install.v4_media_zip.empty() ||
+      !read_member(install.v4_media_zip, "camera/CameraPhysics.xml", bytes, nullptr)) {
+    if (!read_member(install.media / "camera.zip", "CameraPhysics.xml", bytes, error)) return false;
+  }
+  physics_xml.assign(bytes.begin(), bytes.end());
+  return true;
+}
+
 bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, std::vector<CarPhysics>& out,
                       std::string* error) {
   out.clear();

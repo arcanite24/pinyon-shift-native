@@ -46,6 +46,13 @@ target_link_libraries(physics_tests PRIVATE shift_drive)
 add_test(NAME physics_tests COMMAND physics_tests)
 set_tests_properties(physics_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
 
+# SPEC-CAMERAS: the five driving cameras of two cars parked, from the
+# player's files (skipped, exit 77, without SHIFT_GAME_ROOT).
+add_executable(camera_tests camera_tests.cpp)
+target_link_libraries(camera_tests PRIVATE shift_drive)
+add_test(NAME camera_tests COMMAND camera_tests)
+set_tests_properties(camera_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
 # SPEC-TRAFFIC: the road map, the settings and the time-of-day factor over
 # the player's files (skipped, exit 77, without SHIFT_GAME_ROOT).
 add_executable(traffic_tests traffic_tests.cpp)

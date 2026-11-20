@@ -42,6 +42,9 @@
 #include "renderer.h"
 #include "showroom.h"
 #include "traffic_view.h"
+#include "cars/physics.h"
+#include "cars/sources.h"
+#include "drive/cameras.h"
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive/save.h"
@@ -565,14 +568,15 @@ V3 transform(const float* m, V3 p, float w) {
 }
 
 // A camera at eye looking at target, in the car's model frame.
-ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery, bool reverse_z = false) {
-  const float fovy = 55.0f * kPi / 180.0f;
+ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery, bool reverse_z = false,
+                         float fov_degrees = 55.0f, float near_clip = 0.25f) {
+  const float fovy = fov_degrees * kPi / 180.0f;
   const V3 f = norm(sub(target, eye));
   const V3 side = norm(cross3(f, up));
   const V3 u = cross3(side, f);
   const float view[16] = {side.x, u.x, -f.x, 0, side.y, u.y, -f.y, 0, side.z, u.z, -f.z, 0,
                           -dot3(side, eye), -dot3(u, eye), dot3(f, eye), 1};
-  const float near_z = 0.25f, far_z = 16000.0f;  // the far ring reaches several km
+  const float near_z = near_clip, far_z = 16000.0f;  // the far ring reaches several km
   const float t = 1.0f / std::tan(fovy / 2);
   float projection[16] = {};
   projection[0] = t / aspect;
@@ -690,6 +694,111 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
   }
   return look_frame(transform(world_to_model, eye_used, 1), transform(world_to_model, target, 1),
                     norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false, reverse_z);
+}
+
+// SPEC-CAMERAS' rig for the drive: the tuning from camera.zip (v4's layers
+// when installed), the car's CameraOverrides row and MAXData box from the
+// player's files, the CoM and steering wheel from the car in use. False
+// (with a note) when something is missing: the drive keeps the old chase.
+bool load_camera_rig(const std::filesystem::path& game_root, const std::filesystem::path& bake_dir,
+                     const cars::bake::CarInfo& info, const drive::Vehicle& v, drive::DriveCamera& rig,
+                     std::string& note) {
+  cars::Install install;
+  const char* state = std::getenv("SHIFT_STATE_ROOT");
+  std::string ini, xml;
+  drive::CameraTuning tuning;
+  if (!cars::discover_install(game_root, state ? state : "", "", install, &note) ||
+      !cars::load_camera_files(install, ini, xml, &note) || !drive::parse_camera_settings(ini, tuning, &note) ||
+      !drive::parse_camera_physics(xml, tuning, &note))
+    return false;
+  // The box's z shift and the pristine box (the fallback) from the bake's rows.
+  cars::CarPhysics physics;
+  cars::PhysicsSettings settings_unused;
+  {
+    std::string name = lower_ascii(info.media_name);
+    std::ifstream in(bake_dir / "cars" / (name + ".physics.txt"), std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string e;
+    if (!in || !cars::physics_from_text(ss.str(), physics, settings_unused, &e)) {
+      note = "no physics rows for " + info.media_name;
+      return false;
+    }
+  }
+  const double shift = physics.get("Data_CarBody.BottomCenterWheelbasePosZ");
+  drive::CameraCar car;
+  cars::CarCameraRow row;
+  std::string row_error;
+  if (cars::load_car_camera(install, info.car_id, info.media_name, row, &row_error) && row.has_box) {
+    car.box_min = {row.box[0], row.box[1], row.box[2] - shift};
+    car.box_max = {row.box[3], row.box[4], row.box[5] - shift};
+  } else {
+    // SPEC-CAMERAS, Unknowns: failing MAXData, the pristine box.
+    note = row_error + "; the pristine box instead";
+    const char* k = "Data_CarBody.PristineBoundingBox";
+    car.box_min = {physics.get(std::string(k) + "MinX"), physics.get(std::string(k) + "MinY"),
+                   physics.get(std::string(k) + "MinZ") - shift};
+    car.box_max = {physics.get(std::string(k) + "MaxX"), physics.get(std::string(k) + "MaxY"),
+                   physics.get(std::string(k) + "MaxZ") - shift};
+  }
+  car.overrides = row.overrides;
+  // The CoM: the body frame (ground-origin, FORMAT-CARS' pose) to the car
+  // frame (the model origin, z forward).
+  const drive::Vec3 b = v.params().centre_of_mass;
+  const double c = std::cos(info.pitch), s = std::sin(info.pitch), y = b.y - info.lift;
+  car.com = {b.x, c * y + s * b.z, -s * y + c * b.z};
+  for (int k = 0; k < 3; ++k) car.steering_wheel[size_t(k)] = info.part_positions[9][size_t(k)];
+  rig.set_tuning(tuning);
+  rig.set_car(car);
+  return true;
+}
+
+// The rig's frame: the car's pose and motion in, the view out (in the
+// car's model frame, where the showroom draws).
+ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info, const drive::Vehicle& v,
+                        const drive::Ground* ground, double dt, float aspect, bool reverse_z, bool* interior,
+                        double* com_distance = nullptr) {
+  float model_to_world[16], world_to_model[16];
+  drive::model_to_world(info, v, model_to_world);
+  invert_affine(model_to_world, world_to_model);
+  drive::CameraInput in;
+  // The car frame is the model frame with z negated.
+  for (int k = 0; k < 16; ++k) in.car_to_world[k] = model_to_world[k] * (k >= 8 && k < 12 ? -1.0 : 1.0);
+  const drive::Vec3 vel = v.velocity();
+  in.speed = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+  const drive::Vec3 fwd = drive::rotate(v.orientation(), {0, 0, 1});
+  in.heading = std::atan2(fwd.x, fwd.z);
+  in.yaw_rate = v.angular_velocity().y;
+  in.pitch_degrees = std::asin(std::clamp(fwd.y, -1.0, 1.0)) * 180 / 3.14159265358979323846;
+  int down = 0;
+  const double c = std::cos(info.pitch), s = std::sin(info.pitch);
+  for (int i = 0; i < 4; ++i) {
+    const auto& w = v.wheels()[size_t(i)];
+    down += w.contact ? 1 : 0;
+    const double y = w.centre.y - v.params().tyre_radius[size_t(i)] - info.lift;
+    in.wheel_ground_y[size_t(i)] = c * y + s * w.centre.z;
+  }
+  in.contact = down / 4.0;
+  if (ground)
+    in.ground_below = [ground](double x, double y, double z, double& gy) {
+      drive::Hit hit;
+      if (!ground->raycast({x, y, z}, {0, -1, 0}, 60, hit)) return false;
+      gy = y - hit.distance;
+      return true;
+    };
+  const drive::CameraView view = rig.update(dt, in);
+  if (interior) *interior = view.interior;
+  if (com_distance) {
+    const drive::Vec3 com = v.centre_of_mass();
+    *com_distance = std::hypot(view.eye[0] - com.x, view.eye[1] - com.y, view.eye[2] - com.z);
+  }
+  const V3 eye{float(view.eye[0]), float(view.eye[1]), float(view.eye[2])};
+  const V3 at{float(view.eye[0] + view.forward[0]), float(view.eye[1] + view.forward[1]),
+              float(view.eye[2] + view.forward[2])};
+  const V3 up{float(view.up[0]), float(view.up[1]), float(view.up[2])};
+  return look_frame(transform(world_to_model, eye, 1), transform(world_to_model, at, 1),
+                    norm(transform(world_to_model, up, 0)), aspect, false, reverse_z, float(view.fov_degrees),
+                    float(view.near_clip));
 }
 
 void wheel_poses(const drive::Vehicle& v, WheelPose poses[4]) {
@@ -964,6 +1073,7 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path contacts_log_path;
   bool texture_census = false;
   int gather_route = 0;  // --route: the placements' route (-1: every one)
+  int camera_mode = 0;   // --camera: the drive camera to start in (0-4, SPEC-CAMERAS' cycle order)
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
   // 0.25 m to 16 km projection).
   bool reverse_z = true;
@@ -1022,6 +1132,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--contacts-log") contacts_log_path = next();
     else if (a == "--texture-census") texture_census = true;
     else if (a == "--route") gather_route = std::atoi(next());
+    else if (a == "--camera") camera_mode = std::atoi(next());
     else if (a == "--no-reverse-z") reverse_z = false;
     else if (a == "--near") {
       near_x = std::atof(next());
@@ -1790,6 +1901,35 @@ int run_drive(int argc, char** argv) {
       };
       WheelPose poses[4];
       CameraPull camera_pull;
+      // SPEC-CAMERAS' rig (the old chase when it cannot load, and for
+      // --view front).
+      drive::DriveCamera rig;
+      bool have_rig = false;
+      double rig_min_distance = 1e9, rig_max_distance = 0;  // the chase eye from the CoM, over the run
+      if (!world_dir.empty()) {
+        std::string note;
+        have_rig = load_camera_rig(world_dir.parent_path().parent_path().parent_path(), bake_dir, info, vehicle, rig, note);
+        if (!have_rig) std::fprintf(stderr, "carview: note: the camera spec's rig is off: %s\n", note.c_str());
+        else if (!note.empty()) std::fprintf(stderr, "carview: note: camera: %s\n", note.c_str());
+        rig.set_mode(drive::CameraMode(std::clamp(camera_mode, 0, drive::kCameraModes - 1)));
+      }
+      // The frame for the drive's camera: the rig, else the old chase.
+      auto drive_frame = [&](float aspect, double dt) {
+        if (have_rig && !front) {
+          bool interior = false;
+          double d = 0;
+          ShowroomFrame f = rig_frame(rig, info, vehicle, ground, dt, aspect, renderer.reverse_z(), &interior, &d);
+          if (rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh) {
+            rig_min_distance = std::min(rig_min_distance, d);
+            rig_max_distance = std::max(rig_max_distance, d);
+          }
+          // No interior is baked yet: the cockpit view leaves the car out.
+          showroom.set_draw_car(!interior);
+          return f;
+        }
+        showroom.set_draw_car(true);
+        return chase_frame(info, vehicle, aspect, front, ground, &camera_pull, dt, renderer.reverse_z());
+      };
       // The car's name and the keys, over the HUD for the first seconds.
       constexpr double kIntroSeconds = 6;
       // (The display name is a string-table key: the media name is shown.)
@@ -1955,8 +2095,7 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();
-          showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
-                                         2 * drive::Vehicle::kStep, renderer.reverse_z()));
+          showroom.set_frame(drive_frame(float(width) / float(height), 2 * drive::Vehicle::kStep));
           const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
           double rec = 0, gpu = 0;
           if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
@@ -2061,8 +2200,7 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();
-          showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
-                                         every, renderer.reverse_z()));
+          showroom.set_frame(drive_frame(float(width) / float(height), every));
           if (hud) set_hud(int(height), vehicle.time() < kIntroSeconds ? intro : std::string());
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
@@ -2086,6 +2224,8 @@ int run_drive(int argc, char** argv) {
                       vehicle.time(), vehicle.speed() * 3.6, vehicle.gear(), vehicle.rpm(), wl.steer, wl.compression,
                       at.x, at.y, at.z, path.c_str());
         }
+        if (rig_max_distance > 0)
+          std::printf("chase eye from the CoM over the run: %.2f to %.2f m\n", rig_min_distance, rig_max_distance);
         if (streamer)
           std::printf("longest step with its streaming: %.1f ms (%s gathers)\n", longest_step * 1000,
                       async_stream ? "background" : "synchronous");
@@ -2158,6 +2298,7 @@ int run_drive(int argc, char** argv) {
           else
             vehicle.reset(start, start_heading);
           camera_pull = CameraPull{};
+          rig.restart();
         };
         // The chosen item: resume, the picker, back on the road, or quit.
         auto choose = [&]() {
@@ -2200,7 +2341,11 @@ int run_drive(int argc, char** argv) {
                 else open_menu();
               }
               if (e.key.key == SDLK_R) put_back();
-              if (e.key.key == SDLK_V) front = !front;
+              // V: SwitchCamera (the rig); without the rig, the front view.
+              if (e.key.key == SDLK_V) {
+                if (have_rig) rig.cycle();
+                else front = !front;
+              }
               if (e.key.key == SDLK_LEFTBRACKET) browse(-1);
               if (e.key.key == SDLK_RIGHTBRACKET) browse(1);
               if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) take_pick();
@@ -2220,8 +2365,14 @@ int run_drive(int argc, char** argv) {
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) front = !front;
+              // The right shoulder is SwitchCamera (SPEC-CAMERAS: the default
+              // layout); in the picker it pages forward. The left one opens
+              // the picker and pages back.
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) browse(1);
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+                if (picking || !have_rig) browse(1);
+                else rig.cycle();
+              }
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) take_pick();
             }
             if (e.type == SDL_EVENT_GAMEPAD_ADDED)
@@ -2248,6 +2399,7 @@ int run_drive(int argc, char** argv) {
           // Look around: the right stick turns the chase camera up to half a
           // turn, Y (or C held) looks back.
           camera_pull.look_target = keys[SDL_SCANCODE_C] ? 3.14159265358979 : 0.0;
+          double rig_look = camera_pull.look_target;
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
             const double steer = deadzone(axis(SDL_GAMEPAD_AXIS_LEFTX), 0.10, 0.95);
@@ -2256,6 +2408,13 @@ int run_drive(int argc, char** argv) {
             const double look = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) camera_pull.look_target = 3.14159265358979;
             else if (look != 0) camera_pull.look_target = -look * 3.14159265358979;
+            // The rig's look (SPEC-CAMERAS, Button): the right stick down
+            // looks back, left and right to the sides, its click straight back.
+            const double lx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ly = axis(SDL_GAMEPAD_AXIS_RIGHTY);
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK) || (ly > 0.5 && ly > std::fabs(lx)))
+              rig_look = 3.14159265358979;
+            else if (std::fabs(lx) > 0.5 && std::fabs(lx) >= std::fabs(ly))
+              rig_look = (lx > 0 ? 0.5 : -0.5) * 3.14159265358979;
             if (steer != 0 || throttle > 0 || brake > 0 || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
               in.steer = steer;
               in.throttle = throttle;
@@ -2264,6 +2423,7 @@ int run_drive(int argc, char** argv) {
               break;
             }
           }
+          rig.set_look(rig_look);
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
@@ -2324,8 +2484,7 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();
-          showroom.set_frame(chase_frame(info, vehicle, h > 0 ? float(w) / float(h) : 1.0f, front, ground,
-                                         &camera_pull, frame_dt, renderer.reverse_z()));
+          showroom.set_frame(drive_frame(h > 0 ? float(w) / float(h) : 1.0f, frame_dt));
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;

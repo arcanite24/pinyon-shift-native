@@ -931,3 +931,27 @@ headless car, and the drive with `--no-post`).
   (`--route -1`, which adds concrete event barriers along the road but
   none there). Whether the game draws anything at about (2665, 115, 1315),
   or keeps an invisible rail there, needs a frame.
+
+## Q45 (M4): the driving cameras (SPEC-CAMERAS 163ffec3)
+
+`drive::DriveCamera` (libs/drive cameras.h) places the five cameras from
+the player's CameraSettings.ini, CameraPhysics.xml (v4's own copy when
+installed), the car's CameraOverrides row and MAXData box. camera_tests
+matches the spec's rule column on the R34 and the CR-X parked: every eye
+within 1 mm, every FOV exact, cockpit and hood pitch 1.11 and 7.20 deg,
+the looks back and to the side, and the steady speed FOV (CR-X low chase
+at 13.6 mph +1.20 deg; R34 hood at 30.3 mph +0.51 against +0.52). The R34
+low chase sits on the 1.80 m band (the oracle's 1.858 m stays open). On
+the 200 s cruise the chase eye stays 5.31 to 5.53 m from the CoM (no
+pull-in: the spec's 0.3 m clearance replaces the old ray pull). Open, with
+ours meanwhile:
+
+- the slope term's limit as a fraction of r (ours 0.25) and how long it
+  stays on after the wheels leave (ours 0.5 s);
+- the pitch layers' input sign (ours: nose up positive);
+- the chase FOV factor's angle (ours: half angles, tan(F/2) /
+  tan((F + dF)/2)); the five cruise rows are not matched yet;
+- what the cockpit draws: no interior is baked, so the car is left out
+  there for now;
+- the look spring (ours: 0.1 s), and the heading spring's yaw-rate sign
+  (as written).

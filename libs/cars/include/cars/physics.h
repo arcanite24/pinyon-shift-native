@@ -6,6 +6,7 @@
 // Global settings); FORMAT-CARS (DLC packages: database rows).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -63,6 +64,25 @@ bool load_physics_settings(const std::filesystem::path& physics_zip, PhysicsSett
 // error naming the link.
 bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, std::vector<CarPhysics>& out,
                       std::string* error);
+
+// SPEC-CAMERAS' per-car inputs: the car's CameraOverrides row (by CarId;
+// every column, zero when the car has no row) and its collision box,
+// MAXData.xml Collision/BoundingBox from the car archive (MinX MinY MinZ
+// MaxX MaxY MaxZ as written: x and y in the car frame, z before the
+// BottomCenterWheelbasePosZ shift).
+struct CarCameraRow {
+  std::map<std::string, double> overrides;  // column name -> value
+  bool has_overrides = false;
+  std::array<double, 6> box{};
+  bool has_box = false;
+};
+bool load_car_camera(const Install& install, int64_t car_id, const std::string& media, CarCameraRow& out,
+                     std::string* error);
+// media/camera.zip's CameraSettings.ini and CameraPhysics.xml; v4's own
+// camera/CameraPhysics.xml from its media.zip when there is one (SPEC-
+// CAMERAS, Inputs).
+bool load_camera_files(const Install& install, std::string& settings_ini, std::string& physics_xml,
+                       std::string* error);
 
 // A text form for the bake: "value <key> <number>", "curve <name> <n>
 // <numbers...>", "setting <key> <number>" and "car <id> <media name>".
