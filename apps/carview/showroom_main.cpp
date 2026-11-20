@@ -1598,7 +1598,7 @@ int run_drive(int argc, char** argv) {
         bool running = true;
         std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
                     "Space handbrake, R put back on the road, V chase/front view, C (held) look back, H hide/show "
-                    "the HUD, Esc quit.\n"
+                    "the HUD, Esc pause menu.\n"
                     "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, right stick "
                     "look around, Y (held) look back, Start pause menu, Back view.\n"
                     "car picker: [ and ] (LB and RB) choose among the %zu baked cars, Enter (X) drives it.\n",
