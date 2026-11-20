@@ -183,6 +183,7 @@ def cmd_stats(args) -> int:
     words = collections.Counter()
     tails = collections.Counter()
     seen_core = set()
+    seen_all = set()
     present = set()
     problems = 0
     numbering_ok = True
@@ -208,6 +209,7 @@ def cmd_stats(args) -> int:
             flags[tri.flags] += 1
             words["0x8000" if tri.word == 0x8000 else "other"] += 1
             tails[tri.tail == 0x00FFFFFF] += 1
+            seen_all.add(tuple(sorted((a, b, c))))
             cx, cz = (a[0] + b[0] + c[0]) / 3, (a[2] + b[2] + c[2]) / 3
             if x0 <= cx < x0 + CELL and z0 <= cz < z0 + CELL:
                 counts["core triangles"] += 1
@@ -227,7 +229,7 @@ def cmd_stats(args) -> int:
     for key in ("vertices", "triangles", "core triangles", "unlisted triangles", "with second block",
                 "normal = (b-a)x(c-a)", "normal other"):
         print(f"{key}: {counts[key]}")
-    print(f"distinct core triangles: {len(seen_core)}")
+    print(f"distinct core triangles: {len(seen_core)}, distinct over all tiles: {len(seen_all)}")
     print("surface index: triangles (up-facing)")
     for s in sorted(surfaces):
         print(f"  {s:3d}: {surfaces[s]} ({up_by_surface[s]})")
@@ -237,12 +239,12 @@ def cmd_stats(args) -> int:
         col = Path(args.col).read_bytes()
         w, h = struct.unpack_from(">II", col, 0)
         x0, z0, x1, z1 = struct.unpack_from(">4f", col, 8)
-        n, = struct.unpack_from(">I", col, 0x4C)
-        recs = [struct.unpack_from(">6I", col, 0x50 + 24 * k) for k in range(n)]
+        n, table = struct.unpack_from(">II", col, 0x4C)
+        recs = [struct.unpack_from(">6I", col, table + 24 * k) for k in range(n)]
         by_number = {e[0]: e for e in tiles}
-        ok = sum(1 for r in recs if r[2] in by_number and
-                 r[3] == by_number[r[2]][1][1] * w + by_number[r[2]][1][0] and r[5] == by_number[r[2]][2])
-        contiguous = all(recs[k + 1][1] == recs[k][1] + recs[k][5] for k in range(n - 1))
+        ok = sum(1 for r in recs if r[1] in by_number and
+                 r[2] == by_number[r[1]][1][1] * w + by_number[r[1]][1][0] and r[4] == by_number[r[1]][2])
+        contiguous = all(recs[k + 1][0] == recs[k][0] + recs[k][4] for k in range(n - 1))
         print(f".col: lattice {w} x {h} from ({x0}, {z0}) to ({x1}, {z1}), {n} records; "
               f"cell, tile number and first-block size agree for {ok}; offsets contiguous {contiguous}")
     return 1 if problems else 0

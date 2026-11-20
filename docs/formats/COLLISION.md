@@ -49,7 +49,7 @@ fields not needed for that are listed as unknown, with a default.
   own physics shapes, which are not decoded; M3 can leave them out.
 - **Spawn:** the reference seed's free-roam start, measured from a run,
   on asphalt, with the ground under each wheel checked; and a route start
-  on asphalt 93 m from the festival, read from a route file.
+  on asphalt beside the festival site, read from a route file.
 
 ## Files
 
@@ -85,9 +85,11 @@ models. The one `.col` file is the index above.
   frame, +z forward (the rear axle to the front), +y up, x = y × z. The
   four wheel hubs sit at body x ±0.77 m, y −0.15 m, z +1.146 m (front) and
   −1.519 m (rear), so the body's reference point is not FORMAT-CARS' body
-  origin (that one lies on the ground under the car). Wheels 0 and 2 are
-  at −x, which is the left side if this frame is FORMAT-CARS' body frame
-  (left at −x, +z forward; probable).
+  origin (that one lies on the ground under the car). Wheels 0 and 1 are
+  the front pair, 2 and 3 the rear; wheels 0 and 3 are at −x and 1 and 2
+  at +x. If this frame is FORMAT-CARS' body frame (left at −x, +z forward;
+  probable), the order is left front, right front, right rear, left rear,
+  the same order as `CarPartPositions` rows 5 to 8.
 
 ## Tiling and loading
 
@@ -104,8 +106,8 @@ both tiles, with the same vertices. To get each triangle once, keep a
 tile's triangle when the centroid of its three vertices (x and z) lies in
 the tile's own cell (lower bounds inclusive, upper exclusive). That keeps
 1,401,862 triangles, 1,399,504 distinct by their three vertices (the
-other 2,358 are repeats inside a tile); no triangle is lost, since every
-centroid falls in a cell that has a tile. Vertices may lie outside the
+other 2,358 are repeats inside a tile). No triangle is lost: the distinct
+triangles over all tiles, aprons included, are the same 1,399,504. Vertices may lie outside the
 box (161,489 do): triangles are whole, not clipped.
 
 **Loading around a point.** For the M3 drive, load every tile whose box
@@ -128,7 +130,8 @@ shape casts). How the game itself streams tiles is not traced; the
 | 52 | f32 × 4 | 100, 100 (cell size), 8, 8 (apron) | confirmed | tile boxes |
 | 68 | f32 × 2 | 10, 10 (the tiles' grid cell) stored little-endian | probable | bytes |
 | 76 | u32 | number of records: 3,201 | confirmed | |
-| 80 | 24 bytes × count | records: a word (non-zero only in record 0), a stream offset, the tile number, the cell index j × 133 + i, the stream offset again, and the size of the tile's first block | confirmed (number, cell, size, offsets contiguous from the `.col`'s own length) | all 3,201 against the tiles |
+| 80 | u32 | offset of the record table: 84 | confirmed | |
+| 84 | 24 bytes × count | records: a stream offset, the tile number, the cell index j × 133 + i, the stream offset again, the size of the tile's first block, and a zero word | confirmed (number, cell, size, offsets contiguous from the `.col`'s own length) | all 3,201 against the tiles |
 
 ## Tile layout (`N.fiz`)
 
@@ -284,8 +287,8 @@ known (guess: negative means the default restitution is replaced).
 **For M3 (engine's choice until the tyre-model spec):** grip = the car's
 tyre grip × `FrictionScale`; body against walls: the `Car`-row
 `FrictionCoefficient` and a small restitution. Treat `Invisible` (9) as a
-solid wall (its triangles are nearly all vertical: they bound the drivable
-world) and `CameraCollision` (49, 46 triangles) as not touching the car.
+solid wall (its triangles are nearly all vertical; where they stand was
+not mapped) and `CameraCollision` (49, 46 triangles) as not touching the car.
 No surface is water; what water does to the car is not traced.
 
 ## Props
@@ -322,15 +325,15 @@ player's stock R34 spawned and settled at rest on `Asphalt`:
 | Heading | 126.1° from +z towards +x, about the y axis |
 | Ground under the hubs | 143.30 to 143.45 m, surface 0, all four wheels in contact |
 
-The car is dropped onto the ground there: it appeared 0.91 m above the
-tile's ground (the body reference point) with its wheels off the ground
-and settled to 0.48 m above it. With the R34's hubs 0.15 m below the body
+The car is dropped onto the ground there: it was first traced 0.91 m
+above the tile's ground (the body reference point) with its wheels off
+the ground, already falling, and settled to 0.48 m above it. With the R34's hubs 0.15 m below the body
 reference point, the hubs then sit a rolling radius (0.32 m) over the
 ground.
 
 **Secondary, from data** (not run): `Ribbon_00/TrackRoute021.xml`
-`start_location_06`, 93 m from the festival objects (`festival_01` to
-`_06` in `GameObjs.xml`), on `Asphalt` with the tile ground 0.58 m below
+`start_location_06`, 16 m from `festival_04` and 85 m from the centre of
+the six festival objects (`festival_01` to `_06` in `GameObjs.xml`), on `Asphalt` with the tile ground 0.58 m below
 its position. A route `Transform` has `pos.x/y/z` and a horizontal unit
 `facing.x/z`, in the game frame. `TrackRoute110.xml` `start_location_00`
 (364 m away, 0.52 m above asphalt) is a second choice.
@@ -348,7 +351,7 @@ up, and let the physics settle it. A route position is already about
   body holds three float3 vertices of the triangle the wheel stands on,
   its normal, the hub position and the surface index (offsets in the
   "Car dynamics" findings). Over the four RI-0.5 oracle traces (one
-  spawn and three drives on asphalt and grass, 6,711 samples of a wheel
+  two starting at the spawn and two drives on asphalt and grass, 6,711 samples of a wheel
   in contact), every held triangle equals a `.fiz` triangle bit for bit,
   and its surface byte equals the wheel's surface index every time.
 - **Ground height (measured).** The hub's distance to that triangle's
@@ -373,7 +376,7 @@ up, and let the physics settle it. A route position is already about
 | How the tyre model uses the surface columns | `FrictionScale` as a grip multiplier until the tyre-model spec |
 | Elasticity sign convention | a small positive restitution against walls |
 | Prop collision shapes (`PhysicsDefinitions.bin`, `CO_*`) | leave props out, or boxes from render bounds |
-| Water, the world's edge beyond the `Invisible` walls | none; respawn the car if it falls below the lowest tile vertex (about −46 m) |
+| Water, the world's edge | none; respawn the car if it falls below the lowest tile vertex (about −46 m) |
 | A list index with no definition | `Asphalt`'s parameters, logged |
 | Which side wheel 0 is | left (probable, FORMAT-CARS' body frame) |
 
@@ -393,7 +396,8 @@ Counts over the player's base disc (`tools/re/collision.py stats`):
   116 m box; header + A + B equals the file size in all; 2,212 have
   block B.
 - 1,729,941 vertices, 2,007,595 triangles; 1,401,862 core triangles
-  (1,399,504 distinct by vertices); every triangle in a grid list; no
+  (1,399,504 distinct by vertices, the same number as distinct over all
+  tiles); every triangle in a grid list; no
   vertex reference out of range.
 - Tile numbers are the (j, i) rank of their cells, i from 0 to 132, j from
   0 to 99; the `.col` index has 3,201 records whose tile number, cell

@@ -240,7 +240,7 @@ name = """collision tile index"""
 what = """The only `.col` on the disc indexes the collision tiles: a 133 x 100 lattice of 100 m cells from an origin it states, an 8 m apron, a 10 m inner cell, and 3,201 24-byte records giving each tile's number, its cell (j x 133 + i), its first block's size and a stream offset (offsets contiguous from the .col's own length, the total in the header). Tile numbers are the row-major (z, then x) rank of the occupied cells. Some header floats are stored little-endian."""
 how = """Records compared with all 3,201 tiles (tools/re/collision.py stats --col)."""
 confidence = """confirmed"""
-note = """The first word of record 0 and a far-corner pair in the header are not explained."""
+note = """The record table starts at the offset the header gives (84). A far-corner pair in the header is not explained. The OWBB block's 32-bit IDs are not CollObjs.xml indices (the ones checked lie kilometres from their tile)."""
 source = """docs/formats/COLLISION.md#tiling-and-loading"""
 
 [[finding]]
@@ -354,7 +354,7 @@ source = """docs/DLC_BACKLOG.md Base-disc Rally investigation"""
 [[finding]]
 group = """Placements and routes"""
 name = """free-roam spawn on the collision"""
-what = """The reference seed's free-roam start puts the player's car at about (2002.9, 144.3, 960.0) in the game frame, 0.91 m over an Asphalt collision triangle with its wheels off the ground; it settles to (2002.96, 143.84, 960.00), facing (0.807, -0.046, -0.588) (126 degrees from +z towards +x), with each hub a rolling radius over the tile ground. Route start locations are in the same frame and sit a median 0.54 m over the tile triangles under them (242 of a 314-start sample over a triangle); TrackRoute021.xml start_location_06 is on Asphalt 93 m from the festival objects."""
+what = """The reference seed's free-roam start puts the player's car at about (2002.9, 144.3, 960.0) in the game frame, first traced 0.91 m over an Asphalt collision triangle with its wheels off the ground and already falling; it settles to (2002.96, 143.84, 960.00), facing (0.807, -0.046, -0.588) (126 degrees from +z towards +x), with each hub a rolling radius over the tile ground. Route start locations are in the same frame and sit a median 0.54 m over the tile triangles under them (242 of a 314-start sample over a triangle); TrackRoute021.xml start_location_06 is on Asphalt 16 m from festival_04."""
 how = """RI-0.5 oracle trace of the spawn (body position and rotation rows, wheel hubs) and tools/re/collision.py ground under it; route starts read and queried against the tiles."""
 confidence = """confirmed"""
 note = """Confirmed for the measured spawn; the route starts were not run (probable)."""

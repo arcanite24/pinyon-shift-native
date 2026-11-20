@@ -53,7 +53,7 @@ Car LOD distances live in the render scenarios ([Rendering](game-rendering.md#re
 
 ## Collision and cameras
 
-The car drives on a collision mesh of its own, not on the render models: 3,201 `.fiz` tiles of 100 m in Colorado's `bin.zip`, indexed by `Ribbon_00/Colorado_track_00.col`, about two million triangles each tagged with a surface type from `physics.zip`'s `surfaceTypes.xml`. Guard rails, barriers and the invisible walls at the world's edge are triangles in the same tiles; signs, fences and other breakable props are not. The format is in [COLLISION.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/formats/COLLISION.md).
+The car drives on a collision mesh of its own, not on the render models: 3,201 `.fiz` tiles of 100 m in Colorado's `bin.zip`, indexed by `Ribbon_00/Colorado_track_00.col`, about two million triangles each tagged with a surface type from `physics.zip`'s `surfaceTypes.xml`. Guard rails, barriers and invisible walls are triangles in the same tiles; signs, fences and other breakable props are not. The format is in [COLLISION.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/formats/COLLISION.md).
 
 The chase camera starts from a `CameraSettings.ini` tuning block, then applies
 per-car placement overrides. Live placement must adjust the instance's
