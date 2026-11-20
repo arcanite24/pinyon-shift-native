@@ -1,7 +1,7 @@
 # World geometry: Colorado render models
 
-Status: RI-0.4 probe and RF-7 placement search, specification role,
-2026-11-19. Our own reading of
+Status: RI-0.4 probe, RF-7 placement search, RI-0.4 depth check and
+object table, specification role, 2026-11-19. Our own reading of
 the player's files and of one frame dump; no disassembly, decompiled
 code or game data is reproduced here ([LEGAL.md](../LEGAL.md)). The
 reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
@@ -28,9 +28,14 @@ reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
     kind-7 `.pgeo` tiles hold f32 instance matrices (23 of the 130
     placements of one frame, exact), and `.pvsz` zone files hold an f32
     position plus a half-float rotation (the other 107, within 1 cm).
-    Which model a `.pvsz` placement names is not decoded yet. Collidable
-    props are also listed, with the same position and orientation and a
-    physics type name, in `Ribbon_00/CollObjs.xml` (59 of the 107).
+    Both name an **object ID**, and the object table in
+    `Ribbon_00/Colorado_00.pvs` gives each object's render model (see
+    [Object table](#object-table)): for every one of the 130 placements
+    it names the drawn model, a model of its LOD set, or a model with a
+    byte-identical mesh. `dump-obj --props` places both stores from it.
+    Collidable props are also listed, with the same position and
+    orientation and a physics type name, in `Ribbon_00/CollObjs.xml` (59
+    of the 107).
 - Drawn at the dumped camera from these files, the 73 world-space models
   of one frame match the game's own main-view depth to a median 0.024 %
   of the view depth (95th percentile 0.10 %), sampled at the game's pixel
@@ -59,8 +64,8 @@ table of 43,546 u32 offsets, then the NUL-terminated names those offsets
 point at (confirmed by reading it in full; the 173 shader objects appear
 in the map without the `shaders/track/` folder the archive stores them
 under). The list index is presumably the ID other files use to name a
-member; for the model IDs the placement files use it is not (see
-[Ruled out](#ruled-out)).
+member; the placement files do not use it: they name objects, whose
+model is a member number in the [object table](#object-table).
 
 | Members | Count (names) | What they are | Confidence | How |
 | --- | --- | --- | --- | --- |
@@ -228,7 +233,7 @@ game frame (the file frame with z negated).
 | Store | Placements of the frame | Encoding | Confidence |
 | --- | --- | --- | --- |
 | kind-7 `.pgeo` tile | 23 of 130 (22 chain-link fence in one tile, 1 lodgepole pine), translation within 1 cm and rotation within 0.001 | f32 axis rows and translation | confirmed |
-| `.pvsz` zone file | the other 107 (benches, information points, flags, signs, barriers), position within 1 cm, rotation within half-float precision | f32 position, 9 half floats | probable |
+| `.pvsz` zone file | the other 107 (benches, information points, flags, signs, barriers), position within 1 cm, rotation within half-float precision | f32 position, 9 half floats | confirmed |
 
 No placement was found in both, and every one was found in one of them.
 `Ribbon_00/CollObjs.xml`, the plain-XML list of 21,877 collidable
@@ -265,9 +270,11 @@ Kind-7 header fields (offsets from the start):
 
 Then, 16-byte aligned, 0x40-byte **model records**: a box (minimum, pad,
 maximum, pad), a string length, three (count, slot) pairs giving up to
-three lists of u32 model IDs (presumably LODs), and a word; the ID lists
-follow, 4-byte aligned. The IDs are in one space shared with the `.pvsz`
-ID lists; see open question 1.
+three lists of u32 object IDs (one per LOD: list 0 names the LOD00
+model, lists 1 and 2 the next ones; the IDs of one record are
+consecutive), and a word; the ID lists follow, 4-byte aligned. The IDs
+are in the object ID space the `.pvsz` files use, at its top, and the
+[object table](#object-table) gives their models.
 
 Then the **class part**: a small header whose group count is at +0xC,
 and 0x5C-byte **group records** from +0x14. A group names a reference (the
@@ -287,28 +294,99 @@ to the tile's box minimum, and a world box.
 
 Every kind-7 tile parses to its stated size. Linking a group's model
 record to a render model by header box is weak (122 of 2,460 instances in
-the sector below link to exactly one `.rmb.bin`); the ID lists are the
-real link and are not resolved.
+the sector below link to exactly one `.rmb.bin`, because many variants
+share a box); the ID lists through the object table are the link.
 
 ### `.pvsz` zone files
 
-A zone file begins with a count and that many u32 IDs (top bit a flag),
-then further sections. The 107 placements sit at unaligned offsets: three
-f32 (position, game frame), then nine half floats that hold the
-game-frame rotation transposed (H = F·R_gameᵀ), then padding. Three half
-floats (100, 250 and 500 in the samples, perhaps distances) and flag
-bytes come just before the position. How the records are framed, how
-many there are and which model each names are not decoded, so `dump-obj`
-cannot place these yet; `match-dump --pgeo` only checks them.
+A zone file has three parts:
+
+1. a u32 count n and n u32 object IDs (the top bit is a flag, not
+   decoded);
+2. a block not decoded (visibility data, presumably), whose size is not
+   stored anywhere found;
+3. exactly n placement records running to the end of the file, record k
+   for the k-th ID.
+
+| Record field | Size | Meaning | Confidence |
+| --- | --- | --- | --- |
+| three half floats | 6 | 100, 250 and 500 in most samples; NaN, −1 and 0 also occur | guess (LOD or fade distances) |
+| position | 12 | three f32, game frame | confirmed |
+| rotation | 18 | nine half floats, the game-frame rotation transposed (H = F·R_gameᵀ) | confirmed |
+| unknown | 16 | zero in the samples | — |
+| flag | 1 | 0: the record ends here (53 bytes) | confirmed |
+| when the flag is 1 | 4 + 1 + c + 32 | a u32 (−1, or a small index shared by every placement of one model: perhaps a physics or smashable type), a byte count c, c bytes, a 32-byte name such as `FR06_13` | probable |
+
+Because the block's size is not known, a reader finds the records as the
+one start offset from which n records end exactly at the end of the
+file; every one of the 1,434 zones has exactly one (1,027,743 records).
+An object listed by several zones has the same record in each (59,599
+distinct objects between 0 and 62,172), so the zones are views of one
+object list, and the model is not in the record: it comes from the
+[object table](#object-table). Every one of the 107 matched placements
+is the position field of a record.
+
+### Object table
+
+`Ribbon_00/Colorado_00.pvs` (magic `FPVS`, version 50) holds a 28-byte
+record table, a list of the 173 track shader names (a u32 count, then
+u32-length-prefixed strings), and right after the names the **object
+table**: a u32 count, 62,173 (the size of the object ID space), then
+one 18-byte record per object ID. The first big-endian u16 of a record
+is the member number of the object's render model, `coloradoout.NNNNN`.
+The other fields (a signed u16, two flag-like u16s, a u32 that is 0 or
+an index, a u32 that is −1 or a small count, a u16 that is usually all
+ones) are not decoded. The file goes on with the clustered boxes
+(see [Ruled out](#ruled-out)).
+
+For an object with LODs, the table names one member of the LOD set, not
+always LOD00. The set is the run of consecutive members whose first mesh
+names differ only in a `_LODnn` part that counts up by one (for example
+`OBJ_FEST_BarrierMetal_LOD00_`, `_LOD01_`, `_LOD02_` as three
+consecutive members; probable, it holds for every set the dump draws).
+A model whose name has no `_LODnn` is a set of one. The frame dump drew
+LOD00 for some near objects and LOD01 or LOD02 for others, so the game
+chooses the level at run time, presumably from the distances in the
+`.pvsz` record or the `.pgeo` group (not decoded).
+
+Checked against the 130 main-view placements of the dumped frame
+(`match-dump --pgeo`):
+
+| Store | Same model | Same LOD set | Byte-identical mesh | Other |
+| --- | --- | --- | --- | --- |
+| `.pgeo` (any of the record's ID lists) | 23 | 0 | 0 | 0 |
+| `.pvsz` | 88 | 8 | 11 | 0 |
+
+"Byte-identical mesh" means the drawn mesh object is, byte for byte, a
+mesh of the model the table names (signs that share a post or a board,
+copies of one flag): the draw tie cannot tell such twins apart and takes
+the lowest member number, so these are agreements the dump cannot
+distinguish, not misses.
+
+`dump-obj --box 1500 -1460 2500 -460 --props` now places, besides the
+277 world-space models of the sector, 2,460 `.pgeo` instances and 844
+`.pvsz` objects whose origin lies in the box, each with the LOD00 model
+of its set (2 objects in the box name no render model).
+
+The 28-byte records before the shader names are 19,612 entries with a
+type byte and two incrementing indices. The type counts match the
+texture members exactly (5,234 of type 4, the `.bix` pairs; 2,965 of
+type 0, the `_0x*.bin` containers; 11,409 of type 1), so this is
+presumably the texture and material resource list; how an entry names a
+file is not found (neither index is a filename-map position or a
+texture's hex name beyond chance).
 
 ### Ruled out
 
 - The earlier negative (no float triple within 0.05 m anywhere,
   `CollObjs.xml` included) was wrong: it searched for the biased
   placements of the full inverse.
-- Model IDs are not `FilenameMap_00.dat` indices, not `bin.zip`
+- The placement IDs are not `FilenameMap_00.dat` indices, not `bin.zip`
   directory indices and not PVS record numbers offset by the name count
-  (tested on the fence and pine IDs).
+  (tested on the fence and pine IDs). No render model holds its own
+  object IDs, and a scan of the loose track files for other ID-indexed
+  tables at common strides found only false hits. They are object IDs
+  (above).
 - The roughly 14,560 oriented boxes with ID lists in `Colorado_00.pvs`
   (from about 0x199000) are clusters, not instances.
 - The 40-byte `.pgeo` records are packed bitfields, not positions.
@@ -407,20 +485,18 @@ What this rests on: the replayed depth is the recompilation's (Vulkan,
 float depth converted to the 24-bit format at the resolve), not a console
 readback; the model set came from the dump's draw list, not from a
 selection rule (open question 3); and the comparison covers world-space
-models only (props need the model IDs, open question 1).
+models only. Props are now placed from the files (see
+[Object table](#object-table)) but were not part of this measurement:
+the engine does not draw them yet.
 
 ## Open questions and next steps
 
-1. **Model IDs and `.pvsz` framing (blocker for complete sectors).**
-   Where the placements live is answered above. Still open: the mapping
-   from the u32 model IDs in `.pgeo` model records and `.pvsz` lists to
-   `.rmb.bin` members, and the record framing of the `.pvsz` placements
-   (the `CollObjs.xml` physics names are a partial lead).
-   Next: follow an ID in the snapshot to the loaded render model
-   (`pinyon_shift_snapshot_virtual` writes the guest's virtual memory),
-   or move one `.pvsz` position in a private media copy and see which
-   draw moves (RF-7 b). `CollObjs.xml`'s `GraphicsName="#N"` is the
-   object's own index, not a render-model number.
+1. **Placed models (resolved 2026-11-19).** The `.pgeo` and `.pvsz` IDs
+   are object IDs; the [object table](#object-table) names their models,
+   and the `.pvsz` framing is decoded. Still open: the record fields
+   around the position and the LOD each object draws (question 3).
+   `CollObjs.xml`'s `GraphicsName="#N"` is the object's own index, not a
+   render-model number.
 2. **Vertex attributes** after the position: read the bound vertex
    shaders' fetch instructions in the dump, per stride.
 3. **Which LOD is drawn.** Models come as `_LOD00`/`_LOD01`/`_LOD02`,
@@ -447,7 +523,8 @@ says "engine's choice", the game's rule is not known.
 
 | Question | Answer |
 | --- | --- |
-| How is a model known to be world-space or local-space? | No stored flag is known. The rule used here: local when the header box lies within 200 m of the origin in X and Z, which gives 11,898 world and 2,393 local; it is probable. A model that a `.pgeo` or `.pvsz` placement names is local, once the model IDs are resolved |
+| How is a model known to be world-space or local-space? | No stored flag is known. The rule used here: local when the header box lies within 200 m of the origin in X and Z, which gives 11,898 world and 2,393 local; it is probable. A model that the object table names for a `.pgeo` or `.pvsz` placement is local |
+| How does the engine place props? | Read the object table from `Ribbon_00/Colorado_00.pvs`, every `.pvsz` record (one per object; dedupe by object ID) and every kind-7 `.pgeo` group; the model is the table's member for the object ID (for `.pgeo`, the first ID of list 0), widened to its LOD set; place it with the record's rotation and position (both in the game frame; negate z for the file frame). Which LOD to draw is the engine's choice until question 3 is answered: LOD00 near the camera matches the frame |
 | Which LOD does the game draw? | Unknown (open question 3). Drawing every overlapping model puts far LODs over near ones; for comparisons, draw the nearest LOD and leave out `UberLOD` and `_CUBE` models, as an engine choice |
 | Do name lengths include a terminating NUL? | Strip trailing NULs |
 | The restart value for a 4-byte strip | All ones, by analogy; no 4-byte strip is on the disc (the one 4-byte list is a triangle list) |
@@ -477,8 +554,12 @@ python -I tools/re/world-geometry.py depth-compare <world-depth.pfm> <frame file
 ```
 
 `--members @file` reads the comma-separated names from a file (the
-selection of 58 local-space and 277 world-space models used for the
-130-placement check is too long for a Windows command line). The memory
+selection used for the 130-placement check, the sector's 277
+world-space models plus the 47 local-space models the placements draw,
+is too long for a Windows command line). `dump-obj --props` and
+`match-dump --pgeo` read the object table from
+`.local/game/base/media/tracks/colorado/Ribbon_00/Colorado_00.pvs`
+unless `--pvs` names another file. The memory
 snapshot route is `.local/re/world/world-snapshot.fh1test` (local): the
 world-dump inputs, then `snapshot 2340 freeroam`, run with
 `--pinyon_shift_snapshot_virtual=true` to add the virtual-memory file.

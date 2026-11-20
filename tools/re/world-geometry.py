@@ -27,11 +27,13 @@ directory, past the wrapped 16-bit entry count).
 X/Z rectangle (one "sector") to an OBJ, by default .local/re/world/sector.obj.
 Instanced (local-space) models are left out unless `--props` is given:
 their placements are in the kind-7 procedural-geometry tiles
-(`__R00GNNNNN.pgeo`, read by `pgeo`), which `--props` links to render
-models by header box (provisional: the tiles name models by ID lists not
-yet resolved), and in the `.pvsz` zone files, which are only searched
-(by `match-dump --pgeo`), not placed. `--members @file` reads the
-comma-separated names from a file. `match-dump` ties the selected models to the draws of a frame dump:
+(`__R00GNNNNN.pgeo`, read by `pgeo`) and in the `.pvsz` zone files
+(read_pvsz). Both name object IDs; the object table of the ribbon's
+`.pvs` (read_object_models, `--pvs`) gives each object's render model,
+and `--props` places the LOD00 model of its LOD set. `--members @file`
+reads the comma-separated names from a file. `match-dump --pgeo` checks
+the frame's placements against both stores and the object table.
+`match-dump` ties the selected models to the draws of a frame dump:
 a mesh object is tied to a draw when the draw fetches its vertex block
 (same bytes, address and size) and reads one of its index lists (same
 bytes, address, count and primitive type).
@@ -386,42 +388,58 @@ def cmd_dump_obj(args) -> int:
                 continue
             emit(os.path.basename(path), model)
             written += 1
-        placed = ambiguous = unlinked = 0
+        placed = zoned = unlinked = 0
         if args.props:
             if not args.box:
                 raise SystemExit("--props needs --box")
-            by_box = rmb_box_index(args.root)
-            cache = {}
+            table = read_object_models(args.pvs)
+            cache, names = {}, {}
+
+            def model_of(member):
+                name = f"coloradoout.{member:05d}.rmb.bin"
+                if name not in cache:
+                    path = os.path.join(args.root, name)
+                    cache[name] = read_rmb(path) if os.path.exists(path) else None
+                return name, cache[name]
+
+            inside = lambda t: (args.box[0] <= t[0] <= args.box[2]
+                                and args.box[1] <= t[2] <= args.box[3])
             for pgeo_path in sorted(glob.glob(os.path.join(args.root, PGEO_GLOB))):
                 tile = read_pgeo(pgeo_path)
                 if tile is None or tile.kind != PGEO_MODELS:
                     continue
                 for group in tile.groups:
-                    inside = [inst for inst in group.instances
-                              if args.box[0] <= inst.file_translation[0] <= args.box[2]
-                              and args.box[1] <= inst.file_translation[2] <= args.box[3]]
-                    if not inside:
+                    chosen = [inst for inst in group.instances if inside(inst.file_translation)]
+                    if not chosen:
                         continue
-                    candidates = by_box.get(box_key(*tile.models[group.model].box), [])
-                    if not candidates:
-                        unlinked += len(inside)
+                    ids = tile.models[group.model].ids
+                    # the first ID list is the highest-detail LOD (probable)
+                    name, model = (model_of(table[ids[0][0]]) if ids and ids[0]
+                                   and ids[0][0] < len(table) else (None, None))
+                    if model is None:
+                        unlinked += len(chosen)
                         continue
-                    if len(candidates) > 1:
-                        ambiguous += len(inside)
-                    member = candidates[0]
-                    if member not in cache:
-                        cache[member] = read_rmb(os.path.join(args.root, member))
-                    for inst in inside:
-                        emit(f"{os.path.basename(pgeo_path)}:{member}", cache[member],
-                             inst.to_file_frame)
+                    for inst in chosen:
+                        emit(f"{os.path.basename(pgeo_path)}:{name}", model, inst.to_file_frame)
                         placed += 1
+            for number, placed_object in sorted(zone_objects(args.root).items()):
+                if not inside(placed_object.file_translation):
+                    continue
+                if number >= len(table):
+                    unlinked += 1
+                    continue
+                name, model = model_of(lod_run(args.root, table[number], names)[0])
+                if model is None:
+                    unlinked += 1
+                    continue
+                emit(f"object {number}:{name}", model, placed_object.to_file_frame)
+                zoned += 1
     print(f"wrote {written} models, {base - 1} vertices to {out}"
           + (f"; left out {skipped} instanced (local-space) models" if skipped and not args.props
              else ""))
     if args.props:
-        print(f"placed {placed} instances from .pgeo model groups ({ambiguous} with a model "
-              f"chosen among several of the same box); {unlinked} instances have no render "
-              f"model of their group's box")
+        print(f"placed {placed} instances from .pgeo model groups and {zoned} objects from "
+              f".pvsz zone files (highest-detail LOD); {unlinked} have no render model")
     return 0
 
 
@@ -591,22 +609,49 @@ def cmd_pgeo(args) -> int:
     return 0
 
 
-def check_placements_against_pgeo(root: str, instances: dict) -> None:
+def model_agreement(root: str, members: list[int], drawn, k: int, names: dict) -> str:
+    """How the render models an object names (`members`, from the object
+    table) relate to the model a draw was tied to (`drawn`, mesh object k):
+    'same model', 'same LOD set', 'identical mesh' (the tie cannot tell two
+    members with a byte-identical mesh apart and takes the first) or
+    'other'."""
+    number = int(os.path.basename(drawn.path).split(".")[1])
+    if number in members:
+        return "same model"
+    runs = [lod_run(root, m, names) for m in members]
+    if any(number in run for run in runs):
+        return "same LOD set"
+    mesh = drawn.objects[k]
+    for run in runs:
+        for m in run:
+            path = os.path.join(root, f"coloradoout.{m:05d}.rmb.bin")
+            if os.path.exists(path) and any(o.vertices == mesh.vertices
+                                            for o in read_rmb(path).objects):
+                return "identical mesh"
+    return "other"
+
+
+def check_placements_against_pgeo(root: str, instances: dict, tied: dict, table: list[int],
+                                  names: dict) -> None:
     """Compares the main-view placements of a frame dump with the
     instances stored in kind-7 .pgeo tiles (translation within 1 cm,
-    rotation within 0.001)."""
+    rotation within 0.001), and the model the group's ID lists name
+    through the object table with the drawn one."""
     stored = []
     for path in sorted(glob.glob(os.path.join(root, PGEO_GLOB))):
         tile = read_pgeo(path)
         if tile is None or tile.kind != PGEO_MODELS:
             continue
         for g, group in enumerate(tile.groups):
+            members = [table[i] for ids in tile.models[group.model].ids for i in ids
+                       if i < len(table)]
             for inst in group.instances:
-                stored.append((os.path.basename(path), g, inst))
+                stored.append((os.path.basename(path), g, inst, members))
     found = collections.Counter()
+    agreement = collections.Counter()
     for (member, _), (n, rotation, t) in sorted(instances.items(), key=lambda kv: kv[1][0]):
         hit = None
-        for name, g, inst in stored:
+        for name, g, inst, members in stored:
             ft = inst.file_translation
             if max(abs(ft[k] - t[k]) for k in range(3)) > 0.01:
                 continue
@@ -615,26 +660,169 @@ def check_placements_against_pgeo(root: str, instances: dict) -> None:
             ok = all(abs(flip[r] * flip[c] * inst.rows[c][r] - rotation[r][c]) < 1e-3
                      for r in range(3) for c in range(3))
             if ok:
-                hit = (name, g)
+                hit = (name, g, members)
                 break
         found[member, hit is not None] += 1
+        verdict = ""
+        if hit:
+            model, k, _ = tied[n]
+            verdict = model_agreement(root, hit[2], model, k, names)
+            agreement[verdict] += 1
         print(f"  draw {n}: {member} at {t[0]:.3f} {t[1]:.3f} {t[2]:.3f}: "
-              + (f"{hit[0]} group {hit[1]}" if hit else "no stored instance"))
+              + (f"{hit[0]} group {hit[1]}, models {sorted(set(hit[2]))}: {verdict}" if hit
+                 else "no stored instance"))
     matched = sum(v for (m, ok), v in found.items() if ok)
-    print(f"placements found in .pgeo model tiles: {matched} of {sum(found.values())}")
+    print(f"placements found in .pgeo model tiles: {matched} of {sum(found.values())}; "
+          f"model named through the object table: {dict(sorted(agreement.items()))}")
 
 
 PVSZ_GLOB = "__R00Z*.pvsz"
+DEFAULT_PVS = (REPO / ".local" / "game" / "base" / "media" / "tracks" / "colorado" / "Ribbon_00"
+               / "Colorado_00.pvs")
+FLIP = (1, 1, -1)
 
 
-def check_placements_against_pvsz(root: str, instances: dict) -> None:
+def read_object_models(path: str | os.PathLike) -> list[int]:
+    """The object table of a ribbon's `.pvs` file: one 18-byte record per
+    object ID, whose first big-endian u16 is the render model's member
+    number (coloradoout.NNNNN). The table follows the list of shader names
+    (a u32 count, then u32-length-prefixed strings) and starts with its
+    own u32 count. The rest of the record is not decoded."""
+    data = Path(path).read_bytes()
+    if data[:4] != b"FPVS":
+        raise FormatError(f"{path}: not a .pvs file")
+    first = data.find(b"shaders\\")
+    if first < 8:
+        raise FormatError(f"{path}: no shader name list")
+    at = first - 8
+    (count,) = struct.unpack_from(">I", data, at); at += 4
+    for _ in range(count):
+        (size,) = struct.unpack_from(">I", data, at); at += 4 + size
+    (objects,) = struct.unpack_from(">I", data, at); at += 4
+    if at + 18 * objects > len(data):
+        raise FormatError(f"{path}: object table of {objects} records runs past the end")
+    return [struct.unpack_from(">H", data, at + 18 * k)[0] for k in range(objects)]
+
+
+@dataclass
+class ZoneObject:
+    """One placed object of a `.pvsz` zone file."""
+    id: int                                  # object ID (top bit is a flag)
+    distances: tuple[float, ...]             # three half floats (LOD distances, probable)
+    position: tuple[float, float, float]     # game frame
+    halves: tuple[float, ...]                # rotation, transposed, third column negated
+    offset: int
+
+    @property
+    def object(self) -> int:
+        return self.id & 0x7FFFFFFF
+
+    @property
+    def rotation(self) -> list[list[float]]:
+        """File-frame rotation as rows (world = rotation * v + translation)."""
+        return [[self.halves[3 * c + r] * FLIP[r] for c in range(3)] for r in range(3)]
+
+    @property
+    def file_translation(self) -> tuple[float, float, float]:
+        x, y, z = self.position
+        return (x, y, -z)
+
+    def to_file_frame(self, v):
+        r, t = self.rotation, self.file_translation
+        return tuple(sum(r[i][k] * v[k] for k in range(3)) + t[i] for i in range(3))
+
+
+def read_pvsz(path: str | os.PathLike) -> list[ZoneObject]:
+    """Reads the placed objects of a `.pvsz` zone file: a u32 count n and n
+    u32 object IDs, a block not decoded, then exactly n records running to
+    the end of the file, record k for ID k. A record is three half floats,
+    a position (3 x f32), nine half floats of rotation, 16 bytes and a flag
+    byte; flag 1 adds a u32, a byte count c, c bytes and a 32-byte name.
+    The records' start is found as the one offset from which n records end
+    exactly at the end of the file."""
+    data = Path(path).read_bytes()
+    (n,) = struct.unpack_from(">I", data, 0)
+    ids = struct.unpack_from(f">{n}I", data, 4)
+
+    def plausible(x):
+        return x != x or x == -1.0 or 0 <= x <= 70000
+
+    def length(at):
+        if at + 53 > len(data) or not all(plausible(x) for x in struct.unpack_from(">3e", data, at)):
+            return 0
+        flag = data[at + 52]
+        if flag == 0:
+            return 53
+        if flag == 1 and at + 58 <= len(data):
+            return 58 + data[at + 57] + 32
+        return 0
+
+    for start in range(4 + 4 * n, len(data) - 53 * n + 1):
+        at, k = start, 0
+        while k < n:
+            size = length(at)
+            if not size:
+                break
+            at += size; k += 1
+        if k == n and at == len(data):
+            out, at = [], start
+            for i in ids:
+                out.append(ZoneObject(i, struct.unpack_from(">3e", data, at),
+                                      struct.unpack_from(">3f", data, at + 6),
+                                      struct.unpack_from(">9e", data, at + 18), at))
+                at += length(at)
+            return out
+    raise FormatError(f"{path}: no framing of {n} records ends at the end of the file")
+
+
+def lod_run(root: str, member: int, names: dict) -> list[int]:
+    """The render models of an object's LOD set, LOD00 first: the run of
+    consecutive members around `member` whose first mesh names differ only
+    in a `_LODnn` part that counts up by one (probable: it holds for every
+    LOD set the frame dump draws). A name without `_LODnn` is a set of
+    one."""
+    import re
+
+    def name(m):
+        if m not in names:
+            p = os.path.join(root, f"coloradoout.{m:05d}.rmb.bin")
+            names[m] = read_rmb(p).name if m >= 0 and os.path.exists(p) else None
+        return names[m]
+
+    def level(m):
+        found = re.search(r"_LOD(\d\d)", name(m) or "")
+        return (re.sub(r"_LOD\d\d", "", name(m)), int(found.group(1))) if found else None
+
+    if level(member) is None:
+        return [member]
+    stem = level(member)[0]
+    first = last = member
+    while level(first - 1) == (stem, level(first)[1] - 1):
+        first -= 1
+    while level(last + 1) == (stem, level(last)[1] + 1):
+        last += 1
+    return list(range(first, last + 1))
+
+
+def zone_objects(root: str) -> dict[int, ZoneObject]:
+    """Every object of every zone file, by object number (an object listed
+    by several zones has the same record in each)."""
+    objects = {}
+    for path in sorted(glob.glob(os.path.join(root, PVSZ_GLOB))):
+        for obj in read_pvsz(path):
+            objects.setdefault(obj.object, obj)
+    return objects
+
+
+def check_placements_against_pvsz(root: str, instances: dict, tied: dict, table: list[int],
+                                  names: dict) -> None:
     """Looks for the main-view placements of a frame dump in the .pvsz
     zone files. A placement there is a big-endian f32 position in the game
-    frame at any byte offset, followed by nine big-endian half floats that
-    hold the game-frame rotation transposed with the third column negated.
-    Only the position and rotation are checked: how a record is framed and
-    which model it names are not decoded (provisional)."""
-    flip = (1, 1, -1)
+    frame, followed by nine big-endian half floats that hold the
+    game-frame rotation transposed with the third column negated. The
+    search runs over the raw bytes; each hit is then framed (read_pvsz)
+    and the objects at that position are looked up in the object table."""
+    flip = FLIP
     targets = []
     for (member, _), (n, rotation, t) in sorted(instances.items(), key=lambda kv: kv[1][0]):
         game = (t[0], t[1], -t[2])
@@ -662,10 +850,25 @@ def check_placements_against_pvsz(root: str, instances: dict) -> None:
                                for i in range(3) for j in range(3)):
                             hits[k] = (os.path.basename(path), start)
                 start = data.find(prefix, start + 1)
+    zones = {}
+    agreement = collections.Counter()
     for k, (n, member, rotation, game, _) in enumerate(targets):
-        where = f"{hits[k][0]} +0x{hits[k][1]:x}" if k in hits else "not found"
-        print(f"  draw {n}: {member}: {where}")
-    print(f"placements found in .pvsz zone files: {len(hits)} of {len(targets)}")
+        if k not in hits:
+            print(f"  draw {n}: {member}: not found")
+            continue
+        zone, offset = hits[k]
+        if zone not in zones:
+            zones[zone] = read_pvsz(os.path.join(root, zone))
+        position = struct.unpack_from(">3f", Path(os.path.join(root, zone)).read_bytes(), offset)
+        objects = [o.object for o in zones[zone] if o.position == position]
+        members = [table[o] for o in objects if o < len(table)]
+        model, j, _ = tied[n]
+        verdict = model_agreement(root, members, model, j, names) if members else "not framed"
+        agreement[verdict] += 1
+        print(f"  draw {n}: {member}: {zone} +0x{offset:x}, objects {objects}, "
+              f"models {members}: {verdict}")
+    print(f"placements found in .pvsz zone files: {len(hits)} of {len(targets)}; "
+          f"model named through the object table: {dict(sorted(agreement.items()))}")
 
 
 # --- frame dumps ------------------------------------------------------------
@@ -1031,8 +1234,9 @@ def cmd_match_dump(args) -> int:
         print(f"  {placement}-space models, {matrix}: {value}")
     print(f"distinct main-view instance placements of local-space models: {len(instances)}")
     if getattr(args, "pgeo", None):
-        check_placements_against_pgeo(args.pgeo, instances)
-        check_placements_against_pvsz(args.pgeo, instances)
+        table, names = read_object_models(args.pvs), {}
+        check_placements_against_pgeo(args.pgeo, instances, tied, table, names)
+        check_placements_against_pvsz(args.pgeo, instances, tied, table, names)
     for key, value in totals.items():
         print(f"{key}: {value}")
     if scene:
@@ -1398,8 +1602,10 @@ def main(argv: list[str] | None = None) -> int:
     add_selection(dump)
     dump.add_argument("--out")
     dump.add_argument("--props", action="store_true",
-                      help="also place local-space models from the kind-7 .pgeo tiles "
-                           "(instances whose origin lies in --box)")
+                      help="also place local-space models from the kind-7 .pgeo tiles and "
+                           "the .pvsz zone files (instances whose origin lies in --box)")
+    dump.add_argument("--pvs", default=str(DEFAULT_PVS),
+                      help="the ribbon's .pvs file, whose object table names each object's model")
     dump.set_defaults(run=cmd_dump_obj)
     pgeo = commands.add_parser("pgeo")
     pgeo.add_argument("root")
@@ -1411,6 +1617,8 @@ def main(argv: list[str] | None = None) -> int:
     match.add_argument("--verbose", action="store_true", help="list every tied draw")
     match.add_argument("--pgeo", metavar="DIR",
                        help="check every main-view placement against the .pgeo and .pvsz files in DIR")
+    match.add_argument("--pvs", default=str(DEFAULT_PVS),
+                       help="the ribbon's .pvs file, whose object table names each object's model")
     match.set_defaults(run=cmd_match_dump)
     overlay = commands.add_parser("overlay")
     add_selection(overlay)

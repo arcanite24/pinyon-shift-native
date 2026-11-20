@@ -23,8 +23,8 @@ media/tracks/colorado/
   PhysicsDefinitions.bin, colorado.nav, colorado.owr, colorado.oww
   colorado_ambience.xml, colorado_reverb.xml, colorado_soundbank_lookup.xml
   Ribbon_00/
-    FilenameMap_00.dat       model ids to member names in bin.zip
-    Colorado_00.pvs          precomputed visibility zones
+    FilenameMap_00.dat       member names in bin.zip
+    Colorado_00.pvs          visibility data and the object table (object ID to render model)
     PVSZLookup_00.dat        zone lookup
     CollObjs.xml             21,877 collidable placements: physics type, position, orientation
     GameObjs.xml             2,148 gameplay objects by GameplayID (barn finds and others)
