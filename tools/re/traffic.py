@@ -196,6 +196,22 @@ def load_trace(path: Path):
 
 
 PHASES = (("noon parked", 1700, 4690), ("02:00 parked", 6500, 8290), ("noon cruise", 8400, 10300))
+TRAFFIC, FESTIVAL = 4, 1
+ACTIVE_M = 1000.0   # inactive cars wait in a pool about 2.5 km away
+ON_ROAD_M = 15.0
+
+
+def road_length_near(nav: Nav, centre, radius: float) -> dict:
+    """Road length (m) per traffic density id within a ground-plane radius."""
+    out = collections.defaultdict(float)
+    for wi, t, pts in nav.roads():
+        for a, b in zip(pts, pts[1:]):
+            n = max(1, int(math.dist(a, b) // 2) + 1)
+            for j in range(n):
+                q = [a[i] + (b[i] - a[i]) * (j + 0.5) / n for i in range(3)]
+                if math.hypot(q[0] - centre[0], q[2] - centre[2]) <= radius:
+                    out[traffic_density_id(t)] += math.dist(a, b) / n
+    return dict(out)
 
 
 def cmd_census(args) -> int:
@@ -207,66 +223,107 @@ def cmd_census(args) -> int:
         return 1
     drivers = collections.Counter(c["driver"] for _, _, cars in samples for c in cars.values())
     print(f"{len(samples)} samples, frames {samples[0][0]}..{samples[-1][0]}; driver types {dict(drivers)}")
+    player_at = {}
+    for frame, _, cars in samples:
+        p = next((c["p"] for c in cars.values() if c["driver"] == 0 and "p" in c), None)
+        if p:
+            player_at[frame] = p
+    first_player = next(p for f, p in player_at.items() if f >= PHASES[0][1])
+
+    # Spawns and despawns: a traffic car crossing the active radius after
+    # the first free-roam frame (the pool reset at entry is not counted).
+    previous, spawns, despawns, spawn_away = {}, [], [], [0, 0]
+    tracks = collections.defaultdict(list)
+    for frame, _, cars in samples:
+        p = player_at.get(frame)
+        if not p:
+            continue
+        for c in cars.values():
+            if c["driver"] != TRAFFIC or "p" not in c:
+                continue
+            d = math.dist(c["p"], p)
+            tracks[c["car"]].append((frame, d))
+            last = previous.get(c["car"])
+            if last is not None and last[1] > 0:
+                if last[0] >= ACTIVE_M and d < ACTIVE_M:
+                    spawns.append((frame, d, c["car"]))
+                elif last[0] < ACTIVE_M <= d and last[0] > 1.0:
+                    despawns.append((frame, last[0]))
+            previous[c["car"]] = (d, frame)
+    for frame, d, car in spawns:
+        later = [x for x in tracks[car] if frame < x[0] <= frame + 30]
+        if later:
+            spawn_away[later[-1][1] > d] += 1
+    print(f"\nspawns {len(spawns)}: {min(x[1] for x in spawns):.0f} to {max(x[1] for x in spawns):.0f} m"
+          f" (frames {[x[0] for x in spawns]})" if spawns else "\nno spawns")
+    print(f"  driving away {spawn_away[1]}, towards the player {spawn_away[0]}")
+    print(f"despawns {len(despawns)}: {min(x[1] for x in despawns):.0f} to {max(x[1] for x in despawns):.0f} m"
+          if despawns else "no despawns")
+    for r in (330.0, 370.0, 500.0):
+        near = road_length_near(nav, first_player, r)
+        print(f"road within {r:.0f} m of the start, m per density id:",
+              {str(k): round(v) for k, v in sorted(near.items(), key=lambda x: str(x[0]))})
+
     report = {}
     for name, f0, f1 in PHASES:
-        window = [s for s in samples if f0 <= s[0] <= f1]
+        window = [s for s in samples if f0 <= s[0] <= f1 and s[0] in player_at]
         if not window:
             continue
-        counts, speeds, dists, offs, side_sign = [], [], [], [], collections.Counter()
-        with_way, roads, ids, masses, paths = 0, collections.Counter(), collections.Counter(), {}, collections.Counter()
-        ppos = []
-        tracks = collections.defaultdict(list)
-        for frame, mode, cars in window:
-            player = next((c for c in cars.values() if c["driver"] == 0 and "p" in c), None)
-            others = [(i, c) for i, c in cars.items() if c["driver"] != 0 and "p" in c]
-            counts.append(len(others))
-            if player:
-                ppos.append(player["p"])
-            for i, c in others:
+        counts, festival, speeds, offs = [], [], [], []
+        sides = collections.Counter()
+        steps = collections.Counter()
+        full_d, light_d = [], []
+        moving = rejected = 0
+        ids, types, models = collections.Counter(), collections.Counter(), collections.Counter()
+        pos = collections.defaultdict(list)
+        for frame, _, cars in window:
+            p = player_at[frame]
+            active = [c for c in cars.values()
+                      if c["driver"] == TRAFFIC and "p" in c and math.dist(c["p"], p) < ACTIVE_M]
+            counts.append(len(active))
+            festival.append(sum(1 for c in cars.values() if c["driver"] == FESTIVAL and "p" in c
+                                and math.dist(c["p"], p) < ACTIVE_M))
+            for c in active:
+                d = math.dist(c["p"], p)
                 speeds.append(c["speed"])
-                if player:
-                    dists.append(math.dist(c["p"], player["p"]))
-                masses[c["car"]] = c["mass"]
-                paths[c["path"]] += 1
-                tracks[c["car"]].append((frame, c["p"], c["speed"]))
-        # Direction and lane side from each car's own motion between samples.
-        for car, tr in tracks.items():
+                steps[(c["path"], c["light"])] += 1
+                (full_d if c["path"] == 0 else light_d).append(d)
+                models[round(c["mass"], 3)] += 1
+                pos[c["car"]].append((frame, c["p"], c["speed"]))
+        for car, tr in pos.items():
             for (fa, pa, sa), (fb, pb, sb) in zip(tr, tr[1:]):
-                if fb - fa > 12 or sa < 3:
-                    continue
                 mx, mz = pb[0] - pa[0], pb[2] - pa[2]
                 m = math.hypot(mx, mz)
-                if m < 0.5:
+                if fb - fa > 12 or sa < 3 or m < 0.5:
                     continue
+                moving += 1
                 near = index.nearest(pa)
-                if not near or near["d"] > 15:
+                if not near or near["d"] > ON_ROAD_M:
+                    rejected += 1
                     continue
-                with_way += 1
                 t = near["tags"]
-                dens = traffic_density_id(t)
-                ids[dens] += 1
-                roads[t.get("road_type")] += 1
-                along = (mx * near["dir"][0] + mz * near["dir"][1]) / m
-                forward = along > 0
-                # Offset to the car's own left: positive = left of travel.
+                ids[traffic_density_id(t)] += 1
+                types[t.get("road_type")] += 1
+                forward = (mx * near["dir"][0] + mz * near["dir"][1]) > 0
                 left = near["side"] if forward else -near["side"]
                 offs.append(left)
-                side_sign["right" if left < 0 else "left"] += 1
-                side_sign["with node order" if forward else "against node order"] += 1
-                side_sign["oneway"] += t.get("oneway") == "true"
-                side_sign["oneway against"] += t.get("oneway") == "true" and not forward
-        q = lambda v, p: sorted(v)[int(p * (len(v) - 1))] if v else float("nan")
-        r = dict(samples=len(window), cars_mean=statistics.mean(counts), cars_min=min(counts),
-                 cars_max=max(counts), distinct_cars=len(tracks),
-                 speed_median_mps=q(speeds, .5), speed_p90_mps=q(speeds, .9),
-                 distance_median_m=q(dists, .5), distance_max_m=max(dists) if dists else None,
-                 moving_samples_on_road=with_way, offset_left_median_m=q(offs, .5),
-                 offset_abs_median_m=q([abs(x) for x in offs], .5),
-                 sides=dict(side_sign), road_types=dict(roads),
-                 density_ids={str(k): v for k, v in ids.items()},
-                 step_path=dict(paths), masses_100kg=masses,
-                 player_travel_m=math.dist(ppos[0], ppos[-1]) if len(ppos) > 1 else 0.0,
-                 player_start=ppos[0] if ppos else None)
+                sides["right" if left < 0 else "left"] += 1
+                sides["with node order" if forward else "against node order"] += 1
+                if t.get("oneway") == "true":
+                    sides["one-way, with node order" if forward else "one-way, against node order"] += 1
+        q = lambda v, f: sorted(v)[int(f * (len(v) - 1))] if v else None
+        r = dict(samples=len(window),
+                 traffic_mean=round(statistics.mean(counts), 2), traffic_min=min(counts), traffic_max=max(counts),
+                 festival_mean=round(statistics.mean(festival), 2),
+                 speed_median_mps=q(speeds, .5),
+                 moving_samples=moving, moving_off_road=rejected,
+                 offset_left_median_m=q(offs, .5), sides=dict(sides),
+                 density_ids={str(k): v for k, v in ids.items()}, road_types=dict(types),
+                 step_path_light={f"{k[0]}/{k[1]}": v for k, v in sorted(steps.items())},
+                 full_step_distance_max_m=q(full_d, 1.0), full_step_distance_p95_m=q(full_d, .95),
+                 light_step_distance_min_m=q(light_d, 0.0),
+                 body_masses_100kg=dict(models),
+                 player_travel_m=round(math.dist(player_at[window[0][0]], player_at[window[-1][0]]), 1))
         report[name] = r
         print(f"\n{name} (frames {f0}..{f1}):")
         for k, v in r.items():
