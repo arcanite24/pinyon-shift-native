@@ -179,11 +179,23 @@ int main(int argc, char** argv) {
       SDL_SetMainReady();
       return carview::run_drive(argc, argv);
     }
-  for (int i = 1; i < argc; ++i)
-    if (std::strcmp(argv[i], "--bake") == 0) {
-      SDL_SetMainReady();
-      return carview::run_showroom(argc, argv);
-    }
+  // The drive is the default mode. The showroom: --bake with neither a world
+  // nor a play folder (which only the drive takes); the disc viewer below:
+  // --game-root.
+  bool bake = false, drive_world = false, disc_viewer = false;
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--bake") == 0) bake = true;
+    if (std::strcmp(argv[i], "--world") == 0 || std::strcmp(argv[i], "--play") == 0) drive_world = true;
+    if (std::strcmp(argv[i], "--game-root") == 0) disc_viewer = true;
+  }
+  if (bake && !drive_world) {
+    SDL_SetMainReady();
+    return carview::run_showroom(argc, argv);
+  }
+  if (!disc_viewer) {
+    SDL_SetMainReady();
+    return carview::run_drive(argc, argv);
+  }
   std::filesystem::path game_root;
   std::string car, out = "carview.png";
   int lod = 0;

@@ -99,8 +99,11 @@ Then:
 ```
 
 With no arguments carview finds the play folder and drives the R34 on
-Colorado with traffic. Arguments still win (`--car <media name>`,
-`--hour 2`, `--size 1280x800`).
+Colorado with traffic. The drive is the default mode, so arguments alone
+still drive (`--car <media name>`, `--hour 2`, `--no-sound`,
+`--size 1280x800`); `carview --help` lists them. The showroom is `--bake`
+without `--world` or `--play`, the disc viewer `--game-root`. Without an
+audio device it drives on silent.
 
 - **Another folder:** `--data <dir>` puts the play folder elsewhere. Run
   `carview --play <dir>`, set `SHIFT_PLAY_DIR`, or put carview in that

@@ -52,3 +52,9 @@ add_executable(traffic_tests traffic_tests.cpp)
 target_link_libraries(traffic_tests PRIVATE shift_traffic)
 add_test(NAME traffic_tests COMMAND traffic_tests)
 set_tests_properties(traffic_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
+# carview's windowed start-up: SDL with video, gamepad and audio under the
+# dummy drivers (a build without SDL audio failed only at a player's start).
+add_executable(sdl_init_tests sdl_init_tests.cpp)
+target_link_libraries(sdl_init_tests PRIVATE SDL3::SDL3-static)
+add_test(NAME sdl_init_tests COMMAND sdl_init_tests)

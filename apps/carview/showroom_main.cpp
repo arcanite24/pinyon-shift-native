@@ -883,6 +883,24 @@ bool read_shadow_direction(const std::filesystem::path& world_dir, float travel[
   return true;
 }
 
+void drive_usage() {
+  std::fprintf(stderr,
+               "usage: carview [options]   (the drive; the default mode)\n"
+               "  where:   --play <dir> (play folder: play.txt, bake/, game) | --bake <dir> --world <colorado dir>\n"
+               "           --car <media> --hour h --spawn x y z heading --near x z --cache file\n"
+               "           --save file | --no-save\n"
+               "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
+               "           --shadows off|low|high --view chase|front --hud\n"
+               "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
+               "  traffic: --traffic | --no-traffic --traffic-seed N\n"
+               "  sound:   --sound <dir> | --no-sound\n"
+               "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
+               "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
+               "           --menu-png file.png\n"
+               "  other modes: carview --bake <dir> --car <media> (showroom), carview --game-root <dir> (disc viewer),\n"
+               "           carview --world ... (world viewer), carview --xds-png ...\n");
+}
+
 int run_drive(int argc, char** argv) {
   // The post chain (on unless --no-post); --exposure overrides ours,
   // --bloom / --no-bloom the preset's choice.
@@ -995,8 +1013,12 @@ int run_drive(int argc, char** argv) {
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
       size_given = true;
+    } else if (a == "--help" || a == "-h") {
+      drive_usage();
+      return 0;
     } else {
-      std::fprintf(stderr, "carview --drive: unknown option %s\n", a.c_str());
+      std::fprintf(stderr, "carview: unknown option %s\n", a.c_str());
+      drive_usage();
       return 2;
     }
   }
@@ -1115,12 +1137,8 @@ int run_drive(int argc, char** argv) {
                 spawn[1], spawn[2]);
   }
   if (bake_dir.empty() || car.empty()) {
-    std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
-                         "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] [--no-far] [--no-trees] "
-                         "[--world-reference file.json]] [--headless --out prefix.png [--hud] "
-                         "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH] [--preset low|high] "
-                         "[--no-post] [--bloom | --no-bloom] [--exposure x] [--shadows off|low|high]\n");
+    std::fprintf(stderr, "carview: no bake and car (no play folder found; see --play)\n");
+    drive_usage();
     return 2;
   }
   if (view != "chase" && view != "front") {
@@ -1174,10 +1192,13 @@ int run_drive(int argc, char** argv) {
 
   SDL_Window* window = nullptr;
   if (!headless) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | (sound ? SDL_INIT_AUDIO : 0))) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
       std::fprintf(stderr, "carview: SDL_Init: %s\n", SDL_GetError());
       return 1;
     }
+    // Audio apart: without it the drive goes on silent.
+    if (sound && !SDL_InitSubSystem(SDL_INIT_AUDIO))
+      std::fprintf(stderr, "carview: no audio (%s); driving without sound\n", SDL_GetError());
     window = SDL_CreateWindow(("carview drive - " + car).c_str(), int(width), int(height),
                               SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
