@@ -908,3 +908,26 @@ headless car, and the drive with `--no-post`).
   wall was pushed out through it (a fall through the world, then a
   non-finite state); headless runs now stop when the state is not
   finite. A swept contact is still to do.
+
+## Q44 (play-test): untextured draws and the bare GuardRail
+
+- **Fallback census (ours, `--texture-census`, headless):** per frame, the
+  scenery triangles drawn with a fallback (a slot whose record has no
+  file, a texture that failed to decode, a missing terrain layer) by
+  model, effect and slot, with their unoccluded screen area. On the 200 s
+  cruise they cover 0.1 to 0.8% of a 1600 x 900 frame. Nearly all of that
+  is `H_DIFF_1` models coloradoout.05367 to 05468 (slot 0 value 0, a
+  type-1 record: "no file", WORLD_MATERIALS says a 4 x 4 texture is
+  bound). They run along the road 7 to 12 m above it: the power-line
+  cables. The rest is `H_VBLND_NORM_MASK_OPAC_BIAS(_LM)` with slot 1 -2
+  (no Blend_B, drawn with Blend_A alone; under 0.1%). So the grey slopes
+  are not fallbacks: they are drawn with their listed textures. Open: the
+  4 x 4 texture's texels for type-1 and type-3 records, and which spot
+  the grey-slope screenshot was taken at.
+- **Bare GuardRail at x 2640 to 2780 (open):** tiles 2463, 2508 and 2562
+  hold always-on (word 0x8000) GuardRail triangles at car height about
+  17 m left of the road (x 2640 to 2771, z 1263 to 1534), with nothing
+  drawn within 1 m, on route 0 or with every route's placements
+  (`--route -1`, which adds concrete event barriers along the road but
+  none there). Whether the game draws anything at about (2665, 115, 1315),
+  or keeps an invisible rail there, needs a frame.

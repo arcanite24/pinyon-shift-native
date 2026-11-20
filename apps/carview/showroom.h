@@ -233,6 +233,8 @@ class Showroom {
   WorldDrawStats world_draw_stats() const { return world_stats_; }
   // Frustum culling of the world's draws (on by default).
   void set_world_culling(bool on) { world_cull_ = on; }
+  const ShowroomFrame& frame() const { return frame_; }
+  const float* world_transform() const { return world_transform_; }
   // The props' distance cross-fade (ShowroomFrame::world_fade; band 0 off)
   // and how long a swapped-in scenery takes to dither in over the one it
   // replaces (0: swapped at once). Both ours.

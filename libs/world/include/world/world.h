@@ -100,6 +100,11 @@ struct MeshMaterial {
   // LOD02 (faded in there, out at the gather's edge), 3 a prop with one
   // level (faded out at the edge).
   uint8_t fade = 0;
+  // The census (not part of the key): the raw slot values of the first
+  // submesh that made the material (-2: no slot) and their records' types
+  // (-1: no record).
+  std::array<int32_t, 3> slot_values{-2, -2, -2};
+  std::array<int32_t, 3> slot_types{-1, -1, -1};
   auto key() const { return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade); }
 };
 

@@ -962,6 +962,8 @@ int run_drive(int argc, char** argv) {
   // --contacts-log (ours, debugging): every hard body contact against the
   // collision, and per gather the walls nothing drawn stands near.
   std::filesystem::path contacts_log_path;
+  bool texture_census = false;
+  int gather_route = 0;  // --route: the placements' route (-1: every one)
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
   // 0.25 m to 16 km projection).
   bool reverse_z = true;
@@ -1018,6 +1020,8 @@ int run_drive(int argc, char** argv) {
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--contacts-log") contacts_log_path = next();
+    else if (a == "--texture-census") texture_census = true;
+    else if (a == "--route") gather_route = std::atoi(next());
     else if (a == "--no-reverse-z") reverse_z = false;
     else if (a == "--near") {
       near_x = std::atof(next());
@@ -1368,6 +1372,7 @@ int run_drive(int argc, char** argv) {
           world::GatherOptions gather_options;
           gather_options.render_data = !flat_world;
           gather_options.props = !no_props;
+          gather_options.route = gather_route;
           if (!flat_world && !no_far) gather_options.far_radius = 3000;
           if (!flat_world && !no_trees) gather_options.tree_radius = kTreeRadius;
           if (!flat_world) {
@@ -1477,6 +1482,94 @@ int run_drive(int argc, char** argv) {
           std::fclose(f);
         }
       } contact_log;
+      // --texture-census (headless): the scenery's triangles drawn with a
+      // fallback (a slot with no texture file, a texture that failed to
+      // decode, a terrain layer missing), by model, effect and slot, with
+      // their area on screen in pixels (clipped to the view, not occluded).
+      auto census_frame = [&](uint32_t width, uint32_t height) {
+        const auto& mesh = streamer->mesh();
+        if (!mesh.has_render_data()) return;
+        const ShowroomFrame& fr = showroom.frame();
+        const float* tr = showroom.world_transform();
+        float clip[16];
+        for (int c = 0; c < 4; ++c)
+          for (int r = 0; r < 4; ++r) {
+            float sum = 0;
+            for (int k = 0; k < 4; ++k) sum += fr.view_projection[k * 4 + r] * tr[c * 4 + k];
+            clip[c * 4 + r] = sum;
+          }
+        const double ox = showroom.world_origin_x(), oz = showroom.world_origin_z();
+        auto failed = [&](uint32_t record) {
+          return record == world::kNoTexture || texture_loader.failed.count(record) != 0;
+        };
+        // Why a material falls back, or empty.
+        std::vector<std::string> why(mesh.materials.size());
+        for (size_t i = 0; i < mesh.materials.size(); ++i) {
+          const auto& m = mesh.materials[i];
+          auto slot = [&](int k, uint32_t record) {
+            char b[96];
+            std::snprintf(b, sizeof b, "slot %d %s (value %d, type %d)", k,
+                          record == world::kNoTexture ? "no file" : "failed decode", m.slot_values[size_t(k)],
+                          m.slot_types[size_t(k)]);
+            return std::string(b);
+          };
+          if (m.effect.rfind("LAKE", 0) == 0) continue;  // drawn flat on purpose
+          if (failed(m.albedo)) why[i] = slot(0, m.albedo);
+          else if ((m.layers == world::Layers::kVertexBlend || m.layers == world::Layers::kSplat) && failed(m.layer_b))
+            why[i] = slot(1, m.layer_b);
+          else if (m.layers == world::Layers::kSplat && failed(m.splat))
+            why[i] = slot(2, m.splat);
+        }
+        struct Group {
+          double px = 0;
+          size_t tris = 0;
+          double sum[3] = {0, 0, 0};
+          float ymin = 1e9f, ymax = -1e9f;
+        };
+        std::map<std::tuple<std::string, std::string, std::string>, Group> area;
+        double total = 0;
+        for (size_t t = 0; t < mesh.material.size(); ++t) {
+          const std::string& w = why[mesh.material[t]];
+          if (w.empty()) continue;
+          double sx[3], sy[3];
+          bool behind = false;
+          for (int k = 0; k < 3 && !behind; ++k) {
+            const auto& p = mesh.positions[t * 3 + size_t(k)];
+            const float q[3] = {float(p[0] - ox), p[1], float(p[2] - oz)};
+            float o[4];
+            for (int r = 0; r < 4; ++r) o[r] = clip[r] * q[0] + clip[4 + r] * q[1] + clip[8 + r] * q[2] + clip[12 + r];
+            if (o[3] < 0.1f) behind = true;
+            sx[k] = std::clamp(double(o[0] / o[3]), -1.0, 1.0) * 0.5 * width;
+            sy[k] = std::clamp(double(o[1] / o[3]), -1.0, 1.0) * 0.5 * height;
+          }
+          if (behind) continue;
+          const double a = 0.5 * std::fabs((sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]));
+          if (a <= 0) continue;
+          const std::string model = t < mesh.model.size() && mesh.model[t] < colorado.models().size()
+                                        ? colorado.models()[mesh.model[t]].name
+                                        : std::string("?");
+          auto& e = area[{model, mesh.materials[mesh.material[t]].effect, w}];
+          e.px += a;
+          ++e.tris;
+          for (int k = 0; k < 3; ++k) {
+            const auto& p = mesh.positions[t * 3 + size_t(k)];
+            for (int c = 0; c < 3; ++c) e.sum[c] += p[size_t(c)] / 3.0;
+            e.ymin = std::min(e.ymin, p[1]), e.ymax = std::max(e.ymax, p[1]);
+          }
+          total += a;
+        }
+        std::vector<std::pair<double, decltype(area)::const_iterator>> top;
+        for (auto it = area.begin(); it != area.end(); ++it) top.push_back({it->second.px, it});
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::printf("texture census: %.0f px of fallback-textured triangles (%.1f%% of the frame), %zu groups\n", total,
+                    100.0 * total / (double(width) * height), area.size());
+        for (size_t i = 0; i < top.size() && i < 20; ++i) {
+          const auto& [key, v] = *top[i].second;
+          std::printf("  %9.0f px %6zu tris  %s  %s  %s  at %.0f %.0f %.0f, y %.1f to %.1f\n", v.px, v.tris,
+                      std::get<0>(key).c_str(), std::get<1>(key).c_str(), std::get<2>(key).c_str(),
+                      v.sum[0] / double(v.tris), v.sum[1] / double(v.tris), v.sum[2] / double(v.tris), v.ymin, v.ymax);
+        }
+      };
       if (!contacts_log_path.empty()) {
         contact_log.f = std::fopen(contacts_log_path.string().c_str(), "w");
         if (!contact_log.f) std::fprintf(stderr, "carview: cannot write %s\n", contacts_log_path.string().c_str());
@@ -1977,6 +2070,7 @@ int run_drive(int argc, char** argv) {
             std::fprintf(stderr, "carview: cannot write %s\n", path.c_str());
             status = 1;
           }
+          if (texture_census && streamer) census_frame(width, height);
           const auto& wl = vehicle.wheels()[0];
           const drive::Vec3 at = vehicle.position();
           std::printf("t %.2f s: %.1f km/h, gear %d, %.0f rpm, LF steer %.3f rad compression %.3f m, at %.1f %.1f "

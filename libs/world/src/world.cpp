@@ -321,6 +321,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               return kNoTexture;
             };
             mm.albedo = slot_record(0);
+            for (size_t k = 0; k < 3; ++k) {
+              const int32_t v = k < m.slots.size() ? m.slots[k] : -2;
+              mm.slot_values[k] = v;
+              if (v >= 0 && texture_list && size_t(v) < texture_list->size() &&
+                  (*texture_list)[size_t(v)] < impl_->table.textures.size())
+                mm.slot_types[k] = int32_t(impl_->table.textures[(*texture_list)[size_t(v)]].type);
+            }
             if (mm.effect.rfind("LAKE", 0) == 0) mm.albedo = kNoTexture;  // slot 0 is a cube map there
             // Terrain layers (WORLD-MATERIALS, Terrain shading): pixel
             // constants 0 and 1 are the tilings, 4's x the vertex weight's
