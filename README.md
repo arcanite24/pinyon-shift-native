@@ -69,6 +69,36 @@ as `-DSHIFT_GLSL_COMPILER=...`). Otherwise it embeds the committed SPIR-V in
 `apps/carview/shaders/prebuilt`. After changing a shader, refresh that copy
 with `python tools/regenerate-shaders.py [--compiler path]`.
 
+## Drive it yourself (M3 play test)
+
+On multivac, from the repository root, after a build and a bake (`out/bake1`
+holds all 240 cars and their physics rows):
+
+```powershell
+.\build\apps\carview\carview.exe --drive --bake out\bake1 --car NIS_SkylineGTRVSpecII_02 --world ..\horizon1-recomp\.local\game\base\media\tracks\colorado --size 1600x900
+```
+
+A window opens on Colorado at the measured free-roam spawn by the
+festival, in the R34 on CAR_PHYSICS.md's model: automatic gears, ABS on,
+traction control off. The scenery and the collision stream in the
+background as you drive. The first run builds `out\world\colorado.index`
+(about 10 s before the window opens). Any car of the bake works with
+`--car` (its media name, e.g. `FIA_500AbarthSS_10`).
+
+| | Keyboard | Gamepad |
+| --- | --- | --- |
+| Throttle | W or Up | right trigger |
+| Brake (held at a stop: reverse, then it is the throttle) | S or Down | left trigger |
+| Steer | A/D or Left/Right | left stick |
+| Handbrake | Space | A |
+| Back on the nearest road | R | Start |
+| Chase or front view | V | Back |
+| Quit | Esc | |
+
+The speed, gear, rpm and ABS flag are in the window title (there is no
+on-screen HUD yet). The chase camera pulls in when a wall is between it
+and the car.
+
 ## Running
 
 `<game>` is the folder that holds the extracted disc's `media/` (or the

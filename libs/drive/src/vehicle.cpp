@@ -341,8 +341,14 @@ void Vehicle::update_gearbox(double dt) {
       }
       // Automatic shifts (SPEC-CAR-PHYSICS, Gears): up at upshift_fraction x
       // the redline; down under braking, or when the engine lugs (ours).
+      // Up at part throttle (ours: the spec traced full throttle only): the
+      // point falls with the pedal to half the redline, if the next gear
+      // keeps the engine over 0.4 x the redline (the lug rule's 0.35 below).
       const int top = int(p_.gears.size());
-      if (gear_ >= 1 && gear_ < top && locked_ && rpm_now >= p_.upshift_fraction * red) {
+      const double up_at = lerp(0.5, p_.upshift_fraction, std::clamp(drive_pedal, 0.0, 1.0)) * red;
+      const double next_rpm = gear_ >= 1 && gear_ < top ? road * ratio(gear_ + 1) / ratio(gear_) : 0;
+      if (gear_ >= 1 && gear_ < top && locked_ &&
+          (rpm_now >= p_.upshift_fraction * red || (rpm_now >= up_at && next_rpm >= 0.4 * red))) {
         start_shift(gear_ + 1);
       } else if (gear_ > 1) {
         const double lower = road * ratio(gear_ - 1) / ratio(gear_);

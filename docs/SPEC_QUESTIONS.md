@@ -378,3 +378,13 @@ FORMAT-CARS's technique tables. The engine now leaves it out unless
 `--livery` is given, which removes the patch (the mask is unchanged:
 it sits on the body). Is `liveryBadge` drawn without a livery, and with
 what?
+
+## Q32 (not blocking): part-throttle upshifts
+
+The spec traced the automatic box at full throttle only (up at 0.96 x
+the redline). Cruising at part throttle, that kept the R34 in first at
+55 km/h and 6,000 rpm. Ours: up when the engine passes
+lerp(0.5, 0.96, throttle) x the redline, if the next gear keeps it over
+0.4 x the redline (the lugging downshift sits at 0.35). Full throttle is
+unchanged. Needed if the play test calls for it: the game's part-throttle
+shift points.

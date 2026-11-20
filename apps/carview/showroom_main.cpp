@@ -729,7 +729,7 @@ int run_drive(int argc, char** argv) {
     std::fprintf(stderr, "carview --drive: --view is chase or front\n");
     return 2;
   }
-  const bool front = view == "front";
+  bool front = view == "front";
   const bool cruise = run == "cruise" && script_path.empty();
   if (cruise && world_dir.empty()) {
     std::fprintf(stderr, "carview --drive: --run cruise needs --world\n");
@@ -959,14 +959,44 @@ int run_drive(int argc, char** argv) {
         uint64_t last = SDL_GetTicksNS(), title_at = 0;
         double accumulator = 0;
         bool running = true;
+        std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
+                    "Space handbrake, R put back on the road, V chase/front view, Esc quit.\n"
+                    "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, Start put "
+                    "back on the road, Back view. Speed, gear and rpm are in the window title.\n");
+        // R or Start: back on the nearest road (with a world), else to the start.
+        auto put_back = [&]() {
+          world::Spawn where;
+          if (streamer && world::recover(*streamer, vehicle, &where))
+            std::printf("t %.2f s: put back on the road %.1f m away\n", vehicle.time(), where.distance);
+          else
+            vehicle.reset(start, start_heading);
+          camera_pull = CameraPull{};
+        };
         while (running) {
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
-            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) running = false;
-            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_R) vehicle.reset(start, start_heading);
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+              if (e.key.key == SDLK_ESCAPE) running = false;
+              if (e.key.key == SDLK_R) put_back();
+              if (e.key.key == SDLK_V) front = !front;
+            }
+            if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) put_back();
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) front = !front;
+            }
             if (e.type == SDL_EVENT_GAMEPAD_ADDED)
-              if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) pads.push_back(pad);
+              if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) {
+                pads.push_back(pad);
+                std::printf("gamepad: %s\n", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "(unnamed)");
+              }
+            if (e.type == SDL_EVENT_GAMEPAD_REMOVED)
+              for (size_t k = 0; k < pads.size(); ++k)
+                if (SDL_GetGamepadID(pads[k]) == e.gdevice.which) {
+                  SDL_CloseGamepad(pads[k]);
+                  pads.erase(pads.begin() + long(k));
+                  break;
+                }
           }
           // Keyboard, then the first gamepad with any input.
           const bool* keys = SDL_GetKeyboardState(nullptr);
@@ -1004,9 +1034,12 @@ int run_drive(int argc, char** argv) {
           }
           if (now - title_at > 100000000) {  // the speedometer, ten times a second
             title_at = now;
-            char title[128];
-            std::snprintf(title, sizeof title, "carview drive - %s - %.0f km/h  gear %d  %.0f rpm", car.c_str(),
-                          std::fabs(vehicle.speed()) * 3.6, vehicle.gear(), vehicle.rpm());
+            char title[160], gear[8];
+            if (vehicle.gear() < 0) std::snprintf(gear, sizeof gear, "R");
+            else if (vehicle.gear() == 0) std::snprintf(gear, sizeof gear, "N");
+            else std::snprintf(gear, sizeof gear, "%d", vehicle.gear());
+            std::snprintf(title, sizeof title, "carview drive - %s - %3.0f km/h  gear %s  %5.0f rpm%s", car.c_str(),
+                          std::fabs(vehicle.speed()) * 3.6, gear, vehicle.rpm(), vehicle.abs_active() ? "  ABS" : "");
             SDL_SetWindowTitle(window, title);
           }
           int w = 0, h = 0;
