@@ -278,10 +278,11 @@ the curve) is 0.3 at 0.1 s, 0.6 at 0.2 to 0.3 s, 0.83 at 0.5 s and 1 by
 
 **Up-shift.** The automatic box requests a shift (engaged to clutch
 in) when the engine passes about 0.945 × `RedlineRPM`. On the R34
-(`RedlineRPM` 8,000) the body traces of six runs put every request at
-7,560 to 7,590 rpm in first and second and 7,615 to 7,620 rpm in third
-(13 shifts on the lap, one or two in each straight-line run); why third
-asks about 40 rpm later is open. Earlier text gave 7,680 rpm, which no
+(`RedlineRPM` 8,000) the body traces of four runs (the lap run and
+three straight-line runs) put 13 of 14 requests at 7,560 to 7,600 rpm
+in first and second and 7,615 to 7,620 rpm in third; why third asks
+about 40 rpm later is open. The 14th, 7,457 rpm in second, came as the
+car left the asphalt in scenario A's run. Earlier text gave 7,680 rpm, which no
 body trace shows. Whether a lift or the brake blocks or withdraws a
 request is not established: two requests on the lap read a gas word of
 0, but those may be the cleared control words of "Files and format", and
@@ -303,7 +304,8 @@ engine would turn in the lower gear. Measured on the R34: 6,310 to
 6,525 rpm over eight braking downshifts in the lap run (the race lap and the AI's flying laps after it; 3→2 and 4→3, brake
 0.14 to 0.48), 6,420 rpm on a 0.37 pad brake (2→1), and 5,560 rpm on a
 full press, where the locking fronts pull the clutch output speed down
-faster than a step. 6,400 is both 0.8 × `RedlineRPM` and
+faster than a step, which does not explain the whole 840 rpm gap (open).
+6,400 is both 0.8 × `RedlineRPM` and
 `FullThrottleShiftDownSafetyScale` (0.85) × the up-shift speed; one car
 cannot tell the two apart (probable). Every braking downshift in the
 traces had the brake above 0.04 at the request; a downshift with the gas
@@ -340,7 +342,7 @@ The rest of the stop:
 
 | Quantity | Column of `List_UpgradeBrakes` | Unit and rule |
 | --- | --- | --- |
-| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 to 4,000 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). Each wheel carries a brake torque value, constant through both stops: the rears' is 0.41 × the fronts' on the R34 (both sliders at 0.5, both brakes 11 in, four pistons front and two rear), so take the rear as 0.41 × the front for M3 (measured on one car; the bias rule is open). By the wheel balance on fully braked steps with the clutch open, the front takes 3,900 N·m (median 3,880 to 3,970 in two stops, quartiles 3,670 to 4,280) and the rear 1,750 N·m (quartiles 1,710 to 1,770), so in N·m the rear is 0.45 × the front; prefer these two numbers to the field ratio. The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it. Below a full press the pad's torque follows the brake input curve (see "Throttle, brake and steering from the pad"); the AI's is linear and 1.57 times higher per unit of brake (see "What the AI's controls mean") |
+| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 to 4,000 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). Each wheel carries a brake torque value, constant through both stops: the rears' is 0.41 × the fronts' on the R34 (both sliders at 0.5, both brakes 11 in, four pistons front and two rear), so take the rear as 0.41 × the front for M3 (measured on one car; the bias rule is open). By the wheel balance on fully braked steps with the clutch open, the front takes 3,900 N·m (median 3,880 to 3,970 in two stops, quartiles 3,670 to 4,280) and the rear 1,750 N·m (quartiles 1,710 to 1,770), so in N·m the rear is 0.45 × the front; prefer these two numbers to the field ratio. The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it. Below a full press the pad's torque follows the brake input curve (see "Throttle, brake and steering from the pad"); the AI's is linear and 1.57 times higher per unit of brake (see "What the AI's controls mean"). A held partial press calibrates one unit of the wheels' brake torque value at about 1,200 N·m on both axles (full press then 4,390 and 1,790 N·m); the 3,900 and 1,750 above are the full-press stop's fit, where the tyre sets the stop and the balance reads low. Use 1,200 N·m per unit wherever the brake is partial |
 | Braking friction | `List_TireCompound.TorqueFreeLongFrictionScaleBrake` × `GameFrictionScaleBraking` | the tyre's longitudinal friction scale on a wheel whose applied torque slows it (brake, or engine braking through the driveline): 1.8 × 1.0025 = 1.805 on the R34, against the speed-blended `…Accel0`/`…Accel1` scale (1.25 to 1.15) when the wheel is driven or free. The tyre's F_x already includes the scale, and its torque on the wheel is F_x × the rolling radius with no further factor. Confirmed on one car |
 | Bias | `BrakeBiasSlider` and `PhysicsSettings.ini` `BrakeBiasOffsetRear` | fraction |
 | Handbrake | `BiasHandbrake` | probable: handbrake strength |
@@ -557,10 +559,13 @@ probable. With ABS off the game uses `PhysicsSettings.ini`
 While the title's AI drives the car, the ABS takes a third path: one
 release point for both axles, `ReleasePointABS` (0.71 on the R34), with
 no steering blend, and the wheel is braked again on the next physics
-step rather than after `DurationABS`. On the oracle lap 149 wheel
-releases came at a five-substep mean of −0.63 to −0.85 (the mean read on
-the step after the release) and each lasted exactly one step (12.5 to
-21 ms, the step's dt). This keeps the AI's tyres near their peak slip,
+step rather than after `DurationABS`: the slip is retested every step
+against 0.71, and the release time is a global of at most one step (the
+`PhysicsSettings.ini` `NoABSDisableTime` is 0.0, but which global this
+path reads is not established). On the oracle lap 149 wheel releases
+came at a five-substep mean of −0.63 to −0.86 (the mean read on the step
+after the release); all but one lasted a single step (12.5 to 21 ms, the
+step's dt), the other 0.035 s. This keeps the AI's tyres near their peak slip,
 which is why its stops reach 1.5 to 1.7 g on a brake of 0.45 where a
 pad's full press averages 0.87 g. Confirmed on one car.
 
@@ -1001,27 +1006,35 @@ lap must feed them in at these stages:
 
 | Control | Stage it enters under the AI | Rule | The pad's path, for comparison |
 | --- | --- | --- | --- |
-| `brake` | the wheels' brake value, one physics step later | each wheel's brake torque is brake × a per-wheel constant, linear, with no `BrakeInputScale`. The constant is 5.811 trace units on the fronts and 2.373 on the rears of the R34, the same to four digits over the lap's 7,500 AI steps: 1.57 to 1.60 × the pad's full-press torque (3.63 to 3.70) on both axles. In N·m (unit below) a front wheel takes about 6,970 × brake and a rear 2,850 × brake. The AI's brake changes at 16 per second at most, so `BrakeDelaySpeed` (20 per second) never binds | torque = `BrakeInputScale`(brake) × 4.48 to 4.56 front, 1.86 rear; a full press is 3.63 to 3.70 and 1.48 to 1.51 |
-| ABS | the same brake model | release at `ReleasePointABS` (0.71) on both axles, no steering blend, re-applied on the next step (see ABS) | release at the axle's `NoSteer`/`FullSteer` blend (−3.0 front, −2.5 rear straight), off for `DurationABS` |
-| `steer` | the road wheels, one physics step later | the mean angle of the two front wheels is 41.85° × steer (`SteerMaxAngle` is 42°), at every speed from 0 to 45 m/s, with no speed narrowing and no rate limit: over 7,329 AI steps the residual is under 0.01° on 99 % of steps, and the wheels follow jumps of the steer value within one step. The inner wheel turns about 4 % more than the outer (median ratio 1.042 above 3°) | the lock narrows with speed and the wheels move at a limited rate (see "Throttle, brake and steering from the pad") |
-| `gas` | the engine's throttle | not ramped: it falls from 1.0 to 0.43 in one 14 ms step, where `AccelDelaySpeed` (5 per second) would take 0.11 s. The engine's own load value lags it (boost and the closed-throttle term), so do not build a torque map from that value | ramped at about 5 per second |
+| `brake` | the wheels' brake value (a trace taken at the step's entry shows it one step behind the control; the step itself applies the value it reads, so an engine adds no delay) | each wheel's brake torque is brake × a per-wheel constant, linear, with no `BrakeInputScale`. The constant is 5.811 trace units on the fronts and 2.373 on the rears of the R34, the same to four digits over the lap's 7,500 AI steps: 1.57 to 1.60 × the pad's full-press torque (3.63 to 3.70) on both axles. In N·m (unit below) a front wheel takes about 6,970 × brake and a rear 2,850 × brake. The AI's brake changes at 16 per second at most, so `BrakeDelaySpeed` (20 per second) never binds | torque = `BrakeInputScale`(brake) × 4.48 to 4.56 front, 1.86 rear; a full press is 3.63 to 3.70 and 1.48 to 1.51 |
+| ABS | the same brake model | retested every step against `ReleasePointABS` (0.71) on both axles, no steering blend, with a global release time of at most one step (see ABS) | release at the axle's `NoSteer`/`FullSteer` blend (−3.0 front, −2.5 rear straight), off for `DurationABS` |
+| `steer` | the road wheels (the same one-step offset in the trace as the brake) | the mean angle of the two front wheels is 41.85° × steer (`SteerMaxAngle` is 42°), at every speed from 0 to 45 m/s, with no speed narrowing and no rate limit: over 7,329 AI steps the residual is under 0.01° on 99 % of steps, and the wheels follow jumps of the steer value within one step. The inner wheel turns about 4 % more than the outer (median ratio 1.042 above 3°) | the lock narrows with speed and the wheels move at a limited rate (see "Throttle, brake and steering from the pad") |
+| `gas` | the engine's throttle | not ramped: it jumps between 1.0 and about 0.01 within one 11 to 13 ms step (up to 90 per second; 415 of 6,266 AI steps change faster than 5 per second), where `AccelDelaySpeed` (5 per second) would take 0.2 s. The engine's own load value lags it (boost and the closed-throttle term), so do not build a torque map from that value | ramped at about 5 per second |
 | gears | — | the AI does not shift: the automatic box does, with the same thresholds as in pad runs ("Clutch and gearbox states") | the same |
 
 So the lap's `steer` is a fraction of `SteerMaxAngle` at the road
 wheels, `brake` a fraction of the AI's linear brake torque, and `gas` the
-engine throttle. Measured on one car; the flag's writer and the code
-path that switches the brake and steering maps are not decoded.
+engine throttle. Measured on one car. The flag's only reader found is
+the ABS branch; whether the same flag or the AI's own write path
+switches the brake and steering maps is not decoded, and neither is the
+flag's writer.
 
-**Brake torque unit.** The wheels' brake torque value is roughly in
-kN·m. A wheel balance on the AI's clutch-open, braked steps (the gear
-change of each braking downshift: the tyre's F_x × the rolling radius
-minus `List_TireCompound.MomentInertia` (1.6 kg·m²) × the wheel's
-angular acceleration) gives 1,190 to 1,230 N·m per unit on three wheels
-(medians; quartiles within 3 %), the front left noisier at 1,060. The
-same balance on the pad's stops gives 1,060 to 1,140 on the fronts and
-1,160 to 1,180 on the rears, which is the basis of the 3,900 and
-1,750 N·m under Brakes. Use 1,200 N·m per unit for the AI's map; why the
-two balances differ on the fronts is open.
+**Brake torque unit.** One unit of the wheels' brake torque value is
+about 1,200 N·m on both axles. A wheel balance on the AI's clutch-open,
+braked steps (the gear change of each braking downshift: the tyre's F_x
+× the rolling radius minus `List_TireCompound.MomentInertia`
+(1.6 kg·m²) × the wheel's angular acceleration) gives 1,190 to
+1,230 N·m per unit on three wheels (medians; quartiles within 3 %), the
+front left noisier at 1,060. A held pad brake of 0.37 with no ABS
+release (route `fh1-physics-steer-speed`, 0.47 s) settles it: at
+1,200 N·m per unit the brakes, wheel inertia and engine rebuild the
+tyres' F_x to −11.02 against −11.09 m/s², where the basis of the
+3,900 and 1,750 N·m under Brakes (1,066 and 1,175 N·m per unit) gives
+−10.08, 9 % short. That basis came from full-press stops, where the ABS
+cycles the wheels through lock and the balance reads low on the fronts;
+on those stops 1,200 over-predicts the tyre force by 10 %, so a
+full-press stop is no calibration (the tyre, not the brake, sets it).
+Use 1,200 N·m per unit for partial braking, the AI's included.
 
 **Check: the first braking zone** (10.8 to 11.3 s, 39.4 to 32.0 m/s,
 brake 0.40 to 0.45, third gear, clutch locked). The oracle decelerates
@@ -1032,7 +1045,8 @@ ABS releases: brakes −15.3, wheel inertia +0.6, engine braking and
 engine inertia in third −0.4 (the closed-throttle torque of "Engine
 inertia and free rev"), so tyre force −15.1; with the grade and drag
 (−0.3), −14.6 m/s², 3 % under the oracle. Over the whole stop (10.75 to
-12.05 s, to the 3→2 change) the rebuild gives −11.6 against −11.5 m/s².
+12.05 s, to the 3→2 change) the rebuilt tyre force is −11.3 against
+−11.5 m/s², and the deceleration −10.8 against −11.5 m/s² (6 % under).
 The old linear pedal (3,900 and 1,750 N·m × brake) gives −9.8 m/s² from
 the brakes alone, and the AI map without its ABS releases about −17, so
 the engine needs both the map and the AI's ABS rule. With the pad-basis
@@ -1112,7 +1126,7 @@ tyre's peak F/load of about 1.8 under "Scenario B".
 | Part | State | What closes it |
 | --- | --- | --- |
 | Lateral tyre value | over-predicted 7 to 11 %; a measured factor stands in | trace the lateral path at higher slip angles; the steer route at speed |
-| Brake torque | the pad's curve confirmed at partial presses and the AI's linear map measured; the per-wheel constant's formula, the bias rule and the brake unit (1,060 to 1,230 N·m per trace unit by wheel, the fronts differing between pad and AI balances) not decoded | a car with other brake columns; the brake model's torque code |
+| Brake torque | the pad's curve confirmed at partial presses and the AI's linear map measured; the per-wheel constant's formula and the bias rule not decoded; one trace unit is about 1,200 N·m by steady partial braking, while full-press stops balance lower on the fronts | a car with other brake columns; the brake model's torque code |
 | AI-input mode | the flag, the AI's brake, ABS and steering paths measured on one lap; the flag's writer and the switch in the code not decoded | the code that reads the flag in the brake and steering models; a second AI-driven car |
 | Gearbox thresholds | up-shift at about 0.945 × `RedlineRPM` (third about 40 rpm later), braking down-shift at about 6,400 rpm in the lower gear; whether a lift or the brake withdraws a request, and the full-throttle down-shift, open | the gearbox state machine's engaged-state compares |
 | Engine inertia and the common 0.71 factor | free-rev J = 0.145 = 0.71 × (engine + flywheel); closed-throttle torque 0.71 × `ZeroThrottleTorqueScale`; clutch 0.72 × `ClutchMaxTorque`, all on one car | the same three fits on a car with other engine, flywheel and clutch rows |
