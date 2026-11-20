@@ -30,7 +30,7 @@ layout(push_constant) uniform Draw {
   vec4 params;  // x blend mode, y flags, z far-ring level
 } draw;
 
-const uint kFlagSky = 2u;
+const uint kFlagSky = 2u, kFlagBillboard = 32u;
 // Far-ring levels are pushed away from the eye by this much each (ours):
 // unchanged on screen, behind the near terrain where both are drawn.
 const float kFarPush = 0.03;
@@ -57,6 +57,25 @@ void main() {
   }
   vec4 world = draw.model * vec4(in_position, 1.0);
   mat3 normal_matrix = transpose(inverse(mat3(draw.model)));
+  if ((flags & kFlagBillboard) != 0u) {
+    // A tree sprite (WORLD-MATERIALS, Tree billboards): the base point B,
+    // the trunk axis U in the normal, the corner's offset in uv1. Width
+    // runs along R, at right angles to U and to the direction to the
+    // camera; height along U.
+    vec3 u = normalize(normal_matrix * in_normal.xyz);
+    vec3 to_eye = frame.eye.xyz - world.xyz;
+    vec3 r = cross(u, to_eye);
+    float len = length(r);
+    r = len > 1e-4 ? r / len : vec3(1.0, 0.0, 0.0);
+    world.xyz += r * in_uv1.x + u * in_uv1.y;
+    v_position = world.xyz;
+    v_normal = u;
+    v_uv0 = in_uv0;
+    v_uv1 = in_uv1;
+    v_colour = in_colour;
+    gl_Position = frame.view_projection * world;
+    return;
+  }
   v_position = world.xyz;
   v_normal = dot(in_normal.xyz, in_normal.xyz) > 0.01 ? normal_matrix * in_normal.xyz : vec3(0.0);
   v_uv0 = in_uv0;

@@ -291,6 +291,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         int splat_uv = -1;          // kSplat: TEXCOORD1, times splat_tiling
         std::array<float, 2> splat_tiling{1, 1};
         float weight_gain = -1;     // H_VBLND: c4.x of the vertex-colour weight
+        bool decal_fade = false;    // H_VBLND_DECAL: the weight is the fade, from COLOR.w
         if (options.render_data) {
           if (s.material_index < model.materials.size()) {
             const fh1::RmbMaterial& m = model.materials[s.material_index];
@@ -322,7 +323,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             const bool splat = mm.effect.rfind("H_BLND2", 0) == 0 || mm.effect.rfind("H_BLND3", 0) == 0;
             if (vblend) weight_gain = constant(4)[0];
             if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
-            if (decal) mm.layers = Layers::kVertexFade;
+            if (decal) {
+              mm.layers = Layers::kVertexFade;
+              decal_fade = true;
+            }
             if (vblend && !decal) {
               mm.layers = Layers::kVertexBlend;
               mm.layer_b = slot_record(1);
@@ -381,10 +385,12 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           auto c = layout.colour >= 0 ? fh1::rmb_colour(v + layout.colour)
                                       : std::array<uint8_t, 4>{255, 255, 255, 255};
           if (weight_gain >= 0) {
-            // COLOR.x is the first stored byte (rmb_colour's A; ours, from
-            // the road-paint decals: c4.x is 3.5 to 10 there and only that
-            // byte leaves them visible, as the frame shows them).
-            const double w = std::clamp((c[3] / 255.0 - 0.5) * weight_gain + 0.5, 0.0, 1.0);
+            // WORLD-MATERIALS, Colour byte order: the layer weight is
+            // COLOR.x, the second stored byte (rmb_colour's R); the decal
+            // fade is COLOR.w, the first (rmb_colour's A). The decal's
+            // noise term is left out (ours).
+            const uint8_t byte = decal_fade ? c[3] : c[0];
+            const double w = std::clamp((byte / 255.0 - 0.5) * weight_gain + 0.5, 0.0, 1.0);
             c[0] = uint8_t(std::lround(w * 255));
           }
           out.colours.push_back(c);
@@ -483,6 +489,56 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       }
     for (const auto& [i, model] : far_models) add_triangles(model, i, nullptr, &far_lowest, true);
     st.far_models = far_models.size();
+  }
+
+  // Tree sprites near the point (WORLD-MATERIALS, Tree billboards): the
+  // file records only; the generated records of placed instances are not
+  // made (ours, for now). Two triangles per sprite, corners 0 1 2 and 0 2 3.
+  if (options.render_data && options.tree_radius > 0 && impl_->have_props) {
+    std::map<uint32_t, uint32_t> material_of;  // atlas record -> material
+    for (const auto& t : impl_->props.trees) {
+      const double dx = t.base[0] - x, dz = t.base[2] + z, d = std::sqrt(dx * dx + dz * dz);  // z: file frame here
+      if (d > options.tree_radius || d > t.far) continue;
+      auto mit = material_of.find(t.atlas);
+      if (mit == material_of.end()) {
+        MeshMaterial mm;
+        mm.effect = "TREE_BILLBOARD";  // ours: the sprite shader's name is not in the files
+        mm.blend = Blend::kCoverage;
+        mm.layers = Layers::kBillboard;
+        if (t.atlas < impl_->table.textures.size() &&
+            (impl_->table.textures[t.atlas].type == fh1::kPvsTextureBix ||
+             impl_->table.textures[t.atlas].type == fh1::kPvsTextureCaff))
+          mm.albedo = t.atlas;
+        auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
+        if (fresh) out.materials.push_back(mm);
+        mit = material_of.emplace(t.atlas, it->second).first;
+      }
+      if (out.materials[mit->second].albedo == kNoTexture) {
+        ++st.trees_untextured;
+        continue;
+      }
+      double len = std::sqrt(double(t.axis[0]) * t.axis[0] + double(t.axis[1]) * t.axis[1] + double(t.axis[2]) * t.axis[2]);
+      const std::array<float, 3> up = len > 0.5 ? std::array<float, 3>{float(t.axis[0] / len), float(t.axis[1] / len),
+                                                                       float(t.axis[2] / len)}
+                                                : std::array<float, 3>{0, 1, 0};
+      const std::array<std::array<float, 2>, 4> offset{{{-t.half_width, 0}, {t.half_width, 0},
+                                                        {t.half_width, t.height}, {-t.half_width, t.height}}};
+      const std::array<std::array<float, 2>, 4> uv{{{t.u0, t.v1}, {t.u1, t.v1}, {t.u1, t.v0}, {t.u0, t.v0}}};
+      for (int c : {0, 1, 2, 0, 2, 3}) {
+        out.positions.push_back(t.base);
+        out.normals.push_back(up);
+        out.uv0.push_back(uv[size_t(c)]);
+        out.uv1.push_back(offset[size_t(c)]);
+        out.colours.push_back(t.tint);
+      }
+      for (int k = 0; k < 2; ++k) {
+        out.surface.push_back(Surface::kProp);
+        out.model.push_back(0);
+        out.ground.push_back(0);
+        out.material.push_back(mit->second);
+      }
+      ++st.trees;
+    }
   }
 
   // Props near the point, one per model and spot (a zone lists one object

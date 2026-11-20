@@ -58,6 +58,23 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
     out.pgeo_trailing_matches += packed == tile.trailing_size;
     const uint32_t container = uint32_t(out.containers.size());
     out.containers.push_back(name);
+    for (const auto& b : tile.billboards) {
+      const uint32_t key = tile.groups[b.group].key;
+      if (key >= tile.references.size()) {
+        ++out.tree_unresolved;
+        continue;
+      }
+      TreeSprite t;
+      // The tile's box minimum (game frame, as the instances) plus the
+      // point; the axis is in the same frame.
+      for (int k = 0; k < 3; ++k) t.base[size_t(k)] = tile.box_min[size_t(k)] + b.base[size_t(k)];
+      t.axis = b.axis;
+      t.u0 = b.u0, t.v0 = b.v0, t.u1 = b.u1, t.v1 = b.v1;
+      t.half_width = b.half_width, t.height = b.height, t.near = b.near, t.far = b.far;
+      t.tint = b.tint;
+      t.atlas = tile.references[key].first;
+      out.trees.push_back(t);
+    }
     for (const auto& g : tile.groups) {
       const auto& record = tile.models[g.model_record];
       for (const auto& in : g.instances) {

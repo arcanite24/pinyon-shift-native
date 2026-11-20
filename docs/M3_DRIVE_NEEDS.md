@@ -93,7 +93,9 @@ the code, and meant to be swapped out:
 - **Drawing:** `carview --drive --world` draws the streamed triangles
   with their own textures (WORLD_MATERIALS.md's first-pass recipe; flat
   colours per surface class with `--flat-world`; the far ring of MIDDIST
-  and UberLOD terrain and a sky gradient, ours) around the posed car,
+  and UberLOD terrain and a sky gradient, ours; the kind-7 tiles' tree
+  sprites within 2 km, per WORLD_MATERIALS.md's tree billboards) around
+  the posed car,
   with a chase
   camera that pulls in when a ray from its look-at point to the eye meets
   the collision (and eases back out). Headless, it writes frames.

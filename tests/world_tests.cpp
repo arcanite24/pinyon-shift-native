@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "drive/mesh_ground.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
 #include "world/stream.h"
@@ -144,6 +145,44 @@ int main() {
     CHECK(fs.far_models > 50 && far_tris == fs.far_triangles && far_tris > 10000);
     CHECK(far_bad == 0 && far_inside == 0);
     CHECK(far_mesh.triangles() - far_tris == mesh.triangles());
+
+    // Tree sprites (WORLD-MATERIALS, Tree billboards): the file records
+    // near the camera stand on the drawn terrain (the spec: all within 1 m,
+    // median 0.08 m below) and use the frame's atlases.
+    world::GatherOptions to = o;
+    to.tree_radius = 600;
+    world::Mesh tree_mesh;
+    world::GatherStats ts;
+    CHECK(w.gather(world::kDumpCameraX, world::kDumpCameraZ, to, tree_mesh, &ts, &error));
+    std::vector<std::array<float, 3>> terrain;
+    for (size_t t = 0; t < mesh.triangles(); ++t)
+      if (mesh.surface[t] != world::Surface::kProp)  // the drawn world-space models
+        for (int k = 0; k < 3; ++k) terrain.push_back(mesh.positions[t * 3 + size_t(k)]);
+    const drive::MeshGround ground(std::move(terrain));
+    std::vector<double> below;
+    std::set<uint32_t> atlases;
+    size_t sprites = 0;
+    for (size_t t = 0; t < tree_mesh.triangles(); ++t) {
+      const auto& m = tree_mesh.materials[tree_mesh.material[t]];
+      if (m.layers != world::Layers::kBillboard) continue;
+      atlases.insert(w.textures()[m.albedo].id);
+      if (++sprites % 2 == 0) continue;  // two triangles per sprite
+      const auto& b = tree_mesh.positions[t * 3];
+      drive::Hit h;
+      if (ground.raycast({b[0], b[1] + 40.0, b[2]}, {0, -1, 0}, 80, h)) below.push_back(40.0 - h.distance);  // ground minus base
+    }
+    std::sort(below.begin(), below.end());
+    size_t within = 0;
+    for (double d : below) within += std::fabs(d) < 1.0;
+    const double median = below.empty() ? 0 : below[below.size() / 2];
+    std::string names;
+    for (uint32_t id : atlases) names += " " + std::to_string(id);
+    std::printf("tree sprites within 600 m: %zu (%zu without an atlas), %zu over the terrain, %zu within 1 m, median "
+                "%.2f m below; atlas IDs%s\n",
+                ts.trees, ts.trees_untextured, below.size(), within, median, names.c_str());
+    CHECK(ts.trees > 3000 && ts.trees_untextured == 0);
+    CHECK(!below.empty() && within >= below.size() * 99 / 100 && std::fabs(median) < 0.3);
+    CHECK(tree_mesh.triangles() == mesh.triangles() + 2 * ts.trees);
   }
 
   // The dumped camera, game frame (file frame 1999.0, 145.4, -962.9).

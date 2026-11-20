@@ -93,12 +93,30 @@ struct PgeoModelRecord {
 };
 
 struct PgeoGroup {
-  uint32_t key = 0;           // names a reference (not decoded)
+  uint32_t key = 0;           // index into PgeoTile::references (a texture record for the sprites)
   uint32_t model_record = 0;  // index into PgeoTile::models
   uint32_t packed_count = 0;  // 40-byte records (in the tile's trailing block)
   uint32_t record32_count = 0;  // 32-byte records after the instances (not decoded)
-  std::array<float, 4> distances{};  // presumably LOD switch distances
+  std::array<float, 4> distances{};  // the first: where a placed model gives way to its sprite
+  // Tree sprites: the atlas rectangle (u0, u1, v1, v0) and the sprite's
+  // width and height in metres.
+  std::array<float, 4> atlas_rect{};
+  std::array<float, 2> sprite_size{};
   std::vector<PgeoInstance> instances;
+};
+
+// One 40-byte tree billboard record of the trailing block (WORLD-MATERIALS,
+// "Tree billboards (engine question Q38)").
+struct PgeoBillboard {
+  uint32_t group = 0;                 // the group it belongs to (records are in group order)
+  uint32_t position_word = 0;         // +0 as stored (big-endian)
+  std::array<float, 3> base{};        // tile frame: game frame, the tile box's minimum as origin
+  std::array<float, 3> axis{};        // trunk axis U, y up (signed 10_11_11, not normalised)
+  std::array<float, 3> normal{};      // lighting normal (2_10_10_10 signed)
+  float u0 = 0, v0 = 0, u1 = 0, v1 = 0;  // atlas cell: (u0, v0) top, (u1, v1) bottom
+  float half_width = 0, height = 0, near = 0, far = 0;  // metres
+  std::array<uint8_t, 4> tint{};      // R, G, B, A as stored A, R, G, B
+  std::array<uint8_t, 4> extra{};     // the extra light colour, R, G, B, A
 };
 
 struct PgeoTile {
@@ -112,7 +130,11 @@ struct PgeoTile {
   std::vector<PgeoModelRecord> models;
   std::vector<PgeoGroup> groups;
   size_t trailing_size = 0;  // the block of 40-byte packed records at the end
+  std::vector<PgeoBillboard> billboards;  // the trailing block, decoded
 };
+
+// Decodes one 40-byte billboard record over a tile box of `size`.
+PgeoBillboard decode_pgeo_billboard(const uint8_t* record, const std::array<float, 3>& size);
 
 // The kind word of a .pgeo tile (2 to 8 on the disc), or 0 with a reason.
 uint32_t pgeo_kind(std::span<const uint8_t> data, std::string* error);

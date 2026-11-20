@@ -67,6 +67,11 @@ enum class Layers : uint8_t {
   kVertexBlend,  // H_VBLND: lerp(Blend_A, Blend_B, the vertex colour's R)
   kSplat,        // H_BLND2, H_BLND3: lerp(Blend_A, Blend_B, Splat's R at uv1)
   kVertexFade,   // H_VBLND_DECAL: slot 0, its alpha times the vertex colour's R
+  // A tree sprite (WORLD-MATERIALS, Tree billboards): every corner holds the
+  // base point; the normal is the trunk axis, uv1 the corner's offset
+  // (across in metres, up in metres), the colour the tint (times 2), and
+  // the renderer turns the quad to the camera.
+  kBillboard,
 };
 
 struct MeshMaterial {
@@ -100,8 +105,8 @@ struct Mesh {
   // uv1: the lightmap UV, or for kSplat materials TEXCOORD1 times the
   // Splat tiling (pixel constant 1's zw). colours: as stored, except on
   // H_VBLND effects, whose R is the layer weight (or the decal fade)
-  // saturate((COLOR.x - 0.5) x c4.x + 0.5), COLOR.x the first stored byte
-  // (A here).
+  // saturate((COLOR - 0.5) x c4.x + 0.5), COLOR.x (the second stored byte,
+  // R here) for the layer weight, COLOR.w (the first, A here) for the fade.
   std::vector<std::array<float, 2>> uv0, uv1;
   std::vector<std::array<uint8_t, 4>> colours;
   std::vector<uint32_t> material;  // per triangle: index into materials
@@ -129,11 +134,16 @@ struct GatherOptions {
   // point (MIDDIST) or 1.5 x far_inner (UberLOD) are left out. 0: none.
   double far_radius = 0;
   double far_inner = 400;
+  // Tree sprites (needs render_data): the kind-7 tiles' billboard records
+  // whose base is within this of the point and within their far distance
+  // of it. 0: none.
+  double tree_radius = 0;
 };
 
 struct GatherStats {
   size_t world_models = 0, objects = 0, skipped_lod = 0, skipped_far = 0, props = 0, prop_unresolved = 0;
   size_t far_models = 0, far_triangles = 0;  // the far ring
+  size_t trees = 0, trees_untextured = 0;    // tree sprites; those whose atlas has no file
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name
   // With render_data: models drawn without a uvOffsetScale (given offset 0

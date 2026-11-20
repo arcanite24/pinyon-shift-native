@@ -804,7 +804,7 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 //   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle|cruise
 //           | --script file] [--speed kmh] [--view chase|front] [--seconds N] [--every S]
 //           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]
-//            [--render-ground] [--flat-world] [--no-props] [--no-far] [--world-reference freeroam.json]]
+//            [--render-ground] [--flat-world] [--no-props] [--no-far] [--no-trees] [--world-reference freeroam.json]]
 //           [--headless --out prefix.png [--hud]] [--size WxH]
 //
 // With --world the car drives on Colorado's collision (COLLISION.md `.fiz`
@@ -818,17 +818,22 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 // recipe: slot 0 lit by the frame's sun and sky); --flat-world draws the
 // earlier flat colours per surface class, and --no-props leaves the
 // placed props out. The textured world also draws the far ring (the
-// MIDDIST and UberLOD terrain within 3 km; --no-far leaves it out) and a
-// sky gradient. --world-reference (headless)
+// MIDDIST and UberLOD terrain within 3 km; --no-far leaves it out), the
+// tree sprites within kTreeRadius (--no-trees leaves them out) and a sky
+// gradient. --world-reference (headless)
 // gathers around a world reference's camera and renders that one frame
 // without the car at its matrix and size: <out> and, beside it, <out stem>_vs.png
 // with the reference image on the left.
+// How far out the tree sprites are gathered (ours; each record's own far
+// distance also applies).
+constexpr double kTreeRadius = 2000;
+
 int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
   bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false,
-       no_far = false;
+       no_far = false, no_trees = false;
   std::filesystem::path world_reference_path;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
@@ -859,6 +864,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--flat-world") flat_world = true;
     else if (a == "--no-props") no_props = true;
     else if (a == "--no-far") no_far = true;
+    else if (a == "--no-trees") no_trees = true;
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
     else if (a == "--sound") sound_dir = next();
@@ -883,7 +889,7 @@ int run_drive(int argc, char** argv) {
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] [--no-far] "
+                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] [--no-far] [--no-trees] "
                          "[--world-reference file.json]] [--headless --out prefix.png [--hud] "
                          "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH]\n");
     return 2;
@@ -1053,6 +1059,7 @@ int run_drive(int argc, char** argv) {
           gather_options.render_data = !flat_world;
           gather_options.props = !no_props;
           if (!flat_world && !no_far) gather_options.far_radius = 3000;
+          if (!flat_world && !no_trees) gather_options.tree_radius = kTreeRadius;
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, 200,
                                                        render_ground ? nullptr : &collision);
           // Gathers after the first run on a worker in the window (and with
@@ -1176,6 +1183,8 @@ int run_drive(int argc, char** argv) {
                     texture_loader.failed.size(), st.default_uv_models.size(), st.no_material);
         if (st.far_models)
           std::printf("far ring: %zu models, %zu triangles\n", st.far_models, st.far_triangles);
+        if (st.trees || st.trees_untextured)
+          std::printf("tree sprites: %zu (%zu without an atlas file)\n", st.trees, st.trees_untextured);
         for (const auto& n : showroom.notes()) std::fprintf(stderr, "carview: note: %s\n", n.c_str());
         // The effects drawn without a texture, by triangles.
         const auto& mesh = streamer->mesh();

@@ -40,7 +40,8 @@ layout(location = 4) in vec4 v_colour;
 layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u;
-const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u;
+const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
+           kFlagBillboard = 32u;
 
 // The sky gradient (ours, linear): pale haze at the horizon to blue above.
 const vec3 kSkyHorizon = vec3(0.477, 0.604, 0.708);
@@ -80,6 +81,8 @@ void main() {
   } else {
     t = vec4(draw.tint.rgb, 1.0);
   }
+  // Tree sprites: the atlas colour times the record's tint, 2 x RGB.
+  if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * v_colour.rgb;
 
   vec3 up = normalize(draw.up.xyz);
   // The authored normal (not turned to the eye: terrain and leaf cards above

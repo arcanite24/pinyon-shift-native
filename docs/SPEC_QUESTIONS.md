@@ -591,3 +591,26 @@ Built from the spec's Terrain shading section:
   positions (median height change to the nearest record 1.9 to 3 m per
   m); +4, +16 and +20 are near-constant. Needed: the position field and
   its frame (the draws' instance matrix?), the atlas cell.
+
+**Answered** (WORLD-MATERIALS 47c7801e, "Tree billboards (engine
+question Q38)" and "Colour byte order"). Built:
+
+- **Trees.** The 40-byte records decode as the spec gives them: the
+  position word is X, Z, height in 10_11_11 over the tile box (the box at
+  +0x10 is in the game frame, like the instances; the earlier search
+  failed because it read the third field as Z), then the trunk axis,
+  normal, atlas cell, half width, height, near, far and tint. Each
+  sprite is a quad turned to the camera about its trunk axis in
+  world.vert, cut out by the atlas alpha with alpha to coverage, tinted
+  2 x RGB. The atlas is the group key's entry of the tile's reference
+  list. At the reference camera the 3,403 sprites within 600 m stand on
+  the drawn terrain (3,401 within 1 m, median 0.06 m below) and use
+  `_0x00005010` to `_0x00005013` and `_0x00005015`, as the spec's frame.
+  Ours: only the file records (the generated records of placed
+  instances are not made), sprites gathered within 2 km and their far
+  distance of the gather point rather than per frame from the camera
+  (the records looked at all have near -1000, far 2500), the sprite's light is
+  the sun and sky on its trunk axis, and no grass.
+- **Colour byte order.** The `H_VBLND` layer weight now comes from
+  COLOR.x, the second stored byte; the decal fade stays on the first
+  (COLOR.w). The decal's noise term is not drawn yet.

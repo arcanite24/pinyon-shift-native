@@ -171,6 +171,39 @@ uint32_t pgeo_kind(std::span<const uint8_t> d, std::string* error) {
   return kind;
 }
 
+PgeoBillboard decode_pgeo_billboard(const uint8_t* p, const std::array<float, 3>& size) {
+  PgeoBillboard b;
+  auto bits = [](uint32_t w, int at, int n) { return (w >> at) & ((1u << n) - 1); };
+  auto sbits = [&](uint32_t w, int at, int n) {
+    const int32_t v = int32_t(bits(w, at, n));
+    return v >= (1 << (n - 1)) ? v - (1 << n) : v;
+  };
+  // +0: 10_11_11 unsigned, stored X, Z, height.
+  const uint32_t pos = load_be32(p);
+  b.position_word = pos;
+  b.base = {float(bits(pos, 0, 11) / 2047.0 * size[0]), float(bits(pos, 22, 10) / 1023.0 * size[1]),
+            float(bits(pos, 11, 11) / 2047.0 * size[2])};
+  // +4: 10_11_11 signed, x, y, z.
+  const uint32_t ax = load_be32(p + 4);
+  b.axis = {float(sbits(ax, 0, 11) / 1023.0), float(sbits(ax, 11, 11) / 1023.0), float(sbits(ax, 22, 10) / 511.0)};
+  // +12: 2_10_10_10 signed, as NORMAL.
+  const uint32_t nw = load_be32(p + 12);
+  b.normal = {float(std::max(-1.0, sbits(nw, 0, 10) / 511.0)), float(std::max(-1.0, sbits(nw, 10, 10) / 511.0)),
+              float(std::max(-1.0, sbits(nw, 20, 10) / 511.0))};
+  const uint32_t bottom = load_be32(p + 16), top = load_be32(p + 20);
+  b.u1 = float(bits(bottom, 11, 11) / 2047.0);
+  b.v1 = float(bits(bottom, 22, 10) / 1023.0);
+  b.u0 = float(bits(top, 0, 11) / 2047.0);
+  b.v0 = float(bits(top, 11, 11) / 2047.0);
+  b.half_width = half_to_float(load_be16(p + 24));
+  b.height = half_to_float(load_be16(p + 26));
+  b.near = half_to_float(load_be16(p + 28));
+  b.far = half_to_float(load_be16(p + 30));
+  b.tint = {p[33], p[34], p[35], p[32]};
+  b.extra = {p[37], p[38], p[39], p[36]};
+  return b;
+}
+
 bool parse_pgeo(std::span<const uint8_t> d, PgeoTile& out, std::string* error) {
   out = PgeoTile{};
   try {
@@ -256,6 +289,8 @@ bool parse_pgeo(std::span<const uint8_t> d, PgeoTile& out, std::string* error) {
       gr.packed_count = load_be32(&d[at + 0x34]);
       gr.record32_count = load_be32(&d[at + 0x38]);
       for (int k = 0; k < 4; ++k) gr.distances[k] = load_bef32(&d[at + 0x3C + 4 * k]);
+      for (int k = 0; k < 4; ++k) gr.atlas_rect[size_t(k)] = load_bef32(&d[at + 0x08 + 4 * k]);
+      gr.sprite_size = {load_bef32(&d[at + 0x18]), load_bef32(&d[at + 0x1C])};
       if (gr.model_record >= models)
         throw FormatError("group " + std::to_string(g) + " names model record " +
                           std::to_string(gr.model_record) + " of " + std::to_string(models));
@@ -280,6 +315,21 @@ bool parse_pgeo(std::span<const uint8_t> d, PgeoTile& out, std::string* error) {
     if (r.at() != d.size() - out.trailing_size)
       throw FormatError("groups end at " + std::to_string(r.at()) + ", the trailing block starts at " +
                         std::to_string(d.size() - out.trailing_size));
+    // The trailing block: one 40-byte billboard record per sprite, in group
+    // order. Left empty when the groups' counts do not cover it.
+    uint64_t packed = 0;
+    for (const auto& g : out.groups) packed += g.packed_count;
+    if (packed * 40 == out.trailing_size) {
+      const std::array<float, 3> size{out.box_max[0] - out.box_min[0], out.box_max[1] - out.box_min[1],
+                                      out.box_max[2] - out.box_min[2]};
+      const uint8_t* p = d.data() + (d.size() - out.trailing_size);
+      out.billboards.reserve(size_t(packed));
+      for (uint32_t g = 0; g < groups; ++g)
+        for (uint32_t k = 0; k < out.groups[g].packed_count; ++k, p += 40) {
+          out.billboards.push_back(decode_pgeo_billboard(p, size));
+          out.billboards.back().group = g;
+        }
+    }
   } catch (const FormatError& e) {
     const uint32_t kind = out.kind;
     out = PgeoTile{};

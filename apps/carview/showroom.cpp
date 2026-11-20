@@ -1381,7 +1381,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     d.push.tint[3] = 1;
     d.push.params[0] = float(mat.blend);
     // world.frag's flags: 1 textured, 4 vertex-blended layers, 8 splat
-    // layers, 16 decal alpha from the vertex colour's R; a textured draw's
+    // layers, 16 decal alpha from the vertex colour's R, 32 tree sprite; a textured draw's
     // tint holds the layers' tilings.
     uint32_t flags = mat.texture != kNoWorldTexture ? 1 : 0;
     if (flags && mat.layer_b != kNoWorldTexture) {
@@ -1395,6 +1395,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
       }
     }
     if (flags && mat.layers == 3) flags |= 16;
+    if (flags && mat.layers == 4) flags |= 32;  // tree sprite: turned to the camera in world.vert
     if (flags) std::memcpy(d.push.tint, mat.tiling.data(), sizeof d.push.tint);
     d.push.params[1] = float(flags);
     d.push.params[2] = float(mat.far);                                 // world.vert's depth push

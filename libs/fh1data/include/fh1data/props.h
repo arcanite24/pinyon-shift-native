@@ -29,9 +29,23 @@ struct PropPlacement {
   Placement placement;     // file frame
 };
 
+// A tree sprite from a kind-7 tile's billboard records, placed (WORLD-
+// MATERIALS, "Tree billboards (engine question Q38)"). The generated
+// records of placed instances are not made (ours, for now).
+struct TreeSprite {
+  std::array<float, 3> base{};  // game frame (the file frame with z negated), the drive's world frame
+  std::array<float, 3> axis{};  // trunk axis, game frame
+  float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+  float half_width = 0, height = 0, near = 0, far = 0;
+  std::array<uint8_t, 4> tint{};  // R, G, B, A as stored
+  uint32_t atlas = 0;             // texture record (the group's reference value)
+};
+
 struct PropWorld {
   std::vector<std::string> containers;
   std::vector<PropPlacement> placements;  // every .pgeo instance, every distinct .pvsz object
+  std::vector<TreeSprite> trees;          // every billboard record whose group names a reference
+  uint64_t tree_unresolved = 0;           // records whose group key is past the reference list
 
   // .pgeo census
   std::map<uint32_t, uint64_t> pgeo_kinds;
