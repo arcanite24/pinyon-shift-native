@@ -232,22 +232,32 @@ group = """Cars"""
 base = """CarPartPositions (10 rows a car)"""
 v4 = """same"""
 name = """wheel centres in CarPartPositions"""
-what = """`CarPartPositions` rows (`ID` = car id x 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`/`Y`/`Z`) with `PartId` 5 to 8 are a car's wheel centres in its model frame (+X right, +Z rear, the opposite z of the lamp points): 5 left rear, 6 right rear, 7 right front, 8 left front. Their spacing is the wheelbase and their height the tyre radius less the stock ride height within a few centimetres. Rows 0 to 3 look like lamp positions and rows 4 and 9 driver or steering points. All 250 rows of the database merged with v4 and the 21 packages have the four wheel rows, with rear wheels at +z and left wheels at -x; the table has no unique key, so a whole-row merge leaves identical duplicates for 37 cars."""
-how = """All 176 base cars against `Data_Car` tyre sizes, `Data_CarBody` ride heights and the models' wheel arches (2026-11-19)."""
+what = """`CarPartPositions` rows (`ID` = car id x 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`/`Y`/`Z`) with `PartId` 5 to 8 are a car's wheel axle positions in the body frame, +Z forward like the lamp points: 5 left front, 6 right front, 7 right rear, 8 left rear (left at -x). Their z is the drawn wheel's z, negated into the model frame, within 2.6 mm. Their x and y are not the drawn centres: over the 240 cars 321 of the 960 rows are more than 1 cm off the track rule in x and 249 in y (133 cars), up to 7.4 cm; the drawn centre comes from the track and tyre size (record "wheel and tyre models in the showroom"). Rows 0 to 3 look like lamp positions and rows 4 and 9 driver or steering points. All 250 rows of the database merged with v4 and the 21 packages have the four wheel rows; the table has no unique key, so a whole-row merge leaves identical duplicates for 37 cars."""
+how = """Wheel draws of 11 Autoshow frame dumps (44 wheels) against the rows; all 240 cars' rows against the track rule (2026-11-19)."""
 confidence = """confirmed"""
-source = """docs/formats/CARS.md; tools/re/car-formats.py"""
-note = """Rows 0-4 and 9 are a guess."""
+source = """docs/formats/CARS.md Wheels; shift-engine docs/SPEC_QUESTIONS.md Q9"""
+note = """Rows 0-4 and 9 are a guess. Corrects the earlier reading (+Z rear, 5 left rear), which the engine's Abarth 500 and 595 captures showed reversed."""
+
+[[finding]]
+group = """Cars"""
+base = """Data_Car stock ride heights, Data_CarBody.BottomCenterWheelbasePosY"""
+v4 = """same"""
+name = """car model pose in the showroom"""
+what = """The car model is drawn in the body frame: z mirrored, lifted by the mean of `Data_Car.FrontStockRideHeight` and `RearStockRideHeight` less `Data_CarBody.BottomCenterWheelbasePosY` (the `Data_CarBody` row is car id x 1000; all 240 cars have one), and pitched by atan((rear - front ride height) / `ModelWheelbase`)."""
+how = """The model-to-body vertex constants of 11 Autoshow frame dumps against the tables (2026-11-19)."""
+confidence = """confirmed"""
+source = """docs/formats/CARS.md Wheels"""
 
 [[finding]]
 group = """Cars"""
 base = """Data_Car.StockWheelID, List_Wheels.MediaName, media/wheels/TireA-C"""
 v4 = """same"""
 name = """wheel and tyre models in the showroom"""
-what = """`Data_Car.StockWheelID` names a `List_Wheels` row whose `MediaName` is the wheel archive (the car's own name on 172 of 176 cars). The rim model is one part, `wheel`, normalised so that 95 of the 176 stock rims have an outer radius of 0.190-0.196 m; tyres are the shared `TireA`, `TireB` and `TireC` (x from -0.5 to 0.5, radius 0.194-0.287) and truck variants. The models are drawn unchanged, and each wheel draw carries the rim radius (`WheelDiameterIN` x 0.0254 / 2) and the tyre's outer radius (rim radius plus width x aspect) of its axle; the tyre is scaled across by its width x 1.033, the rim by the axle's tyre width over the front tyre width. Which tyre model a car uses was not found; the stock XKR-S drew `TireC`."""
-how = """Database and listings for all base cars; vertex-shader constants of the wheel draws in an Autoshow frame dump of the stock XKR-S (2026-11-19)."""
-confidence = """probable"""
-source = """docs/formats/CARS.md; tools/re/car-formats.py"""
-note = """The constants are confirmed for one car; the radial fit in the shader is not decoded. `WheelNormOffsets` (111 rows), `WheelExceptions` (30) and `List_Wheels.BrakeDrawOffset` are untested leads."""
+what = """`Data_Car.StockWheelID` names a `List_Wheels` row whose `MediaName` is the wheel archive (the car's own name on 172 of 176 base cars). Each wheel draw carries the axle's rim radius (`WheelDiameterIN` x 0.0254 / 2) and tyre outer radius (rim radius plus width x aspect) from `Data_Car`. Rims are never scaled radially: 160 of the 240 stock rims carry a LOD0 morph target in the damage block (140 of them a 14-inch design morphed to about 24 inches), drawn at weight (D - 14) / 10 for a D-inch wheel; the other 76 are drawn as authored. The tyre models (`TireA`-`C`, one geometry) carry two morph targets, one raising the inner radius at the same weight as the rim and one raising the outer radius at weight (outer radius - 0.2850) / 0.1301. The rim is scaled across by the axle's tyre width over its design width (two floats of the wheel model's header), the tyre by that scale times the rim's width. The wheel centre in the body frame is x = +-(the axle's `ModelFrontTrackOuter` or `ModelRearTrackOuter` - tyre width) / 2, y = tyre outer radius, z = the `CarPartPositions` row's z. Right wheels are the model turned half a turn about y, not mirrored."""
+how = """Vertex-shader constants and decoded morph targets of the wheel draws in 11 Autoshow frame dumps (15 cars, 30 axles) against `Data_Car`; a census of all 240 stock wheel models (2026-11-19)."""
+confidence = """confirmed"""
+source = """docs/formats/CARS.md Wheels; shift-engine docs/SPEC_QUESTIONS.md Q3, Q10"""
+note = """Which of `TireA`-`C` a car draws does not matter for shape (same geometry); the XKR-S drew `TireC`. `CarTrackOffsets` (54 cars), `WheelNormOffsets` and `WheelExceptions` were not on any measured car. A tyre flattening term is zero in every showroom dump."""
 
 # --- Upgrades, colours and liveries ---------------------------------------
 
@@ -282,6 +292,17 @@ how = """Frame dump of the stock XKR-S in the Autoshow against its sequence-1 co
 confidence = """probable"""
 source = """docs/formats/CARS.md; tools/re/car-formats.py"""
 note = """Confirmed for one car with a non-metallic colour and equal front and rear caliper colours; metallic, two-tone and stripe terms are not traced."""
+
+[[finding]]
+group = """Upgrades, colours and liveries"""
+base = """Combo_Colors_Exceptions, Combo_Colors.BaseTexture"""
+v4 = """same"""
+name = """factory stripes and stripe-coloured parts"""
+what = """A factory stripe or decal is in the car's body atlas: texels with alpha 0 take the paint, texels with alpha 255 keep the texel colour, and where a colour row has a `Combo_Colors_Exceptions` row (`Ordinal` = car, same `Sequence`) with `HasStripe` 1, the exterior draws also receive `ColorStripe` (sRGB to linear, like the paint), which tints the white alpha-255 texels. The Abarth 500's ABARTH side stripe and its mirror caps (the cockpit model's `mirrorL`/`mirrorR` parts, technique `body`, all 524 sampled texels white at alpha 255) are such texels; its first row's stripe colour is red. A `BaseTexture` such as `nodamage_noStripe` names an atlas where the stripe texels have alpha 0, so they take the paint. `HasColor2` is never set: there is no second paint colour on factory cars. Glass draws receive no paint (the constant is 0) and do not sample the body atlas."""
+how = """Pixel-shader constants of the Abarth 500's Autoshow frame dump against its exception row; atlas texels sampled at the vertices of each technique; a diff of its two atlases; counts over the merged database (2026-11-19)."""
+confidence = """probable"""
+source = """docs/formats/CARS.md Paint"""
+note = """The stripe constant was matched on one car; the blend at intermediate alpha and the value cars without an exception receive are not traced. 674 exception rows on 61 cars (661 with `HasStripe`), 21 of the 250 merged first colour rows have a stripe; 229 colour rows on 30 cars name another atlas."""
 
 [[finding]]
 group = """Upgrades, colours and liveries"""

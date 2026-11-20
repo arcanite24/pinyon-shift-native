@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Spec ID | `FORMAT-CARS` |
-| Status | draft for M1: the files are complete (every model and texture parses and lays out); materials, paint, brakes and lamps are probable; the radial wheel fit, two-tone and stripe paint, the lamp and node blocks of the model header, and the livery decal models are open |
+| Status | draft for M1: the files are complete (every model and texture parses and lays out); the wheel fit is confirmed on 15 cars; materials, paint, stripes, brakes and lamps are probable; the lamp and node blocks of the model header and the livery decal models are open |
 | Written | 2026-11-19, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | `site/findings/files.toml` group "Textures and models"; `site/findings/content.toml` groups "Cars", "Upgrades, colours and liveries" and "Downloadable content" |
 | Implements it | `shift-engine` `libs/fh1data` (`carbin`, `xds`) and `carview`, for plan item M1 |
@@ -166,7 +166,8 @@ draw-list block, which locates the part count.
 
 | Field | Size | Meaning | Confidence | How |
 | --- | --- | --- | --- | --- |
-| kind | u32 | 5 for exterior, LOD0 and cockpit models; 1 for calipers, rotors and the loose brake models | confirmed | all 2,587 models and 120 brake files |
+| kind | u32 | 5 for exterior, LOD0 and cockpit models; 1 for calipers, rotors and the loose brake models; 3 for wheel (rim) and tyre models | confirmed | all 2,587 models and 120 brake files; all 240 stock wheel models |
+| (kind 3) bounds | floats from byte 16 | the rim's extents: x maximum at byte 32, the design +x face at 36, x minimum at 40, the design −x face at 44; further radii follow (the morphed outer radius, the LOD1 radius) | confirmed (32-44), probable (rest) | the lateral scales of 15 cars' wheel draws ([Wheels](#wheels)); 239 of 240 hold finite values |
 | (kind 5) five records | 5 × 64 bytes | not decoded; in the exterior model the first four begin with four floats, the fifth holds large integers (perhaps buffer sizes) | guess | census |
 | (kind 5) | 16 bytes | not decoded | | |
 | (kind 5) lamp count `L` | u32, at byte 340 | number of lamp points, 4 to 24 on the exterior models | confirmed | the block after them starts at 344 + 32 `L` in every kind-5 model |
@@ -293,8 +294,17 @@ established; see Unknowns.
 After a part's pools: u32 1, a u8 flag (1 when the part deforms), then one
 block per pool (LOD, then LOD0) with a pool's header (u32 3, vertex
 count, stride 4, the buffer flag and id) and one 4-byte word per vertex.
-Parts that do not deform have empty blocks. A showroom ignores the
-words (probable layout; the per-vertex meaning is a guess).
+Parts that do not deform have empty blocks. In car models a showroom
+ignores the words (probable layout; the per-vertex meaning is a guess).
+
+In wheel and tyre models the block has stride 16 instead: after the
+buffer id, two morph targets per vertex, each four half floats read as a
+direction and a length (position = xyz × w, in the pool's units), each
+32-bit word holding its two halves low half first (confirmed: the
+decoded targets reproduce the drawn rims and tyres of 15 cars within
+1.2 mm). They are not damage: the game uses them to size the wheel (see
+[Wheels](#wheels)). The rim's LOD0 block holds one target, the LOD1-5
+block two.
 
 ### Stripped twins
 
@@ -470,14 +480,24 @@ alpha 255; `chrome` 23 % alpha 0 (probable).
 | The paint shows where the atlas alpha is 0; alpha 255 shows the texel (badges, engine bay) | probable | atlas content and the body technique's alpha census |
 | `BaseTexture` names the clean atlas to use with that colour (`nodamage*.tga` in the table, shipped as `.xds`); `DamageTexture` is always `damage.tga` | confirmed (names), probable (use) | every name resolves to a member of the car's archive |
 | `Metallic` picks the metallic finish; `List_ColorFinish` names 0 Normal, 1 Metallic, 2 CarbonFiber | probable | names |
-| Two-tone and stripes: `Combo_Colors_Exceptions` (`Color2`, `Stripe`), `StripeColors`, `List_SpecialColors` (102 rows of two-tone scale, bias and power) and effect parameters `psPaintTwoTone*` and `StripeColor` | guess | names only |
+| A factory stripe, decal or contrasting part (the Abarth 500's ABARTH side stripe and mirror caps) is texels of the body atlas with alpha 255 under an exterior paint technique, mostly white; the mirror caps are the cockpit model's `mirrorL` and `mirrorR` parts, technique `body` | probable | atlas texels at the vertices: all 1,048 of the caps' are white at alpha 255 |
+| Where a colour row has a `Combo_Colors_Exceptions` row (`Ordinal` = car, the same `Sequence`) with `HasStripe` 1, the exterior draws also receive a constant equal to `ColorStripe` (r × 65536 + g × 256 + b) / 255 converted from sRGB to linear; it tints the alpha-255 texels, so white stripe texels show the stripe colour | confirmed (constant, one car), probable (use) | the Abarth 500's frame dump against its first row's red stripe colour, on its body, skirt and mirror-cap draws |
+| A `BaseTexture` other than `nodamage.tga` (`nodamage_noStripe`, `nodamageBlack` and others) is an atlas where the stripe texels differ: in the Abarth's `noStripe` atlas the stripe texels have alpha 0, so they take the paint | confirmed (one car's two atlases), probable (rest) | texel diff: 127,275 texels differ |
+| `HasColor2` and `Color2` are never set: factory cars have no second paint colour; their second colour is the stripe colour or the texel | confirmed | 0 of 674 exception rows |
+| `StripeColors` (`Ordinal`, `Sequence`, `ColorStripe`, `MetallicAmount`), `List_SpecialColors` (two-tone scale, bias and power) and the effect parameters `psPaintTwoTone*` serve the paint shop | guess | names |
+| Glass draws receive no paint (the paint constant is 0) and do not sample the body atlas; the windscreen's tinted top band is the glass techniques' own | probable | constants on four cars' glass draws (the same grey constant on all four); the slot table above |
 
 **Rule for M1.** Paint = the lowest-`Sequence` row's RGB, each channel
 / 255, converted from sRGB to linear, applied where the slot-0 texel's
 alpha is 0 on exterior techniques; texel colour elsewhere. Metallic
 cars use a metallic finish of the engine's choosing until the effect's
-paint terms are specified (log the car). Two-tone and stripes are not
-drawn (log).
+paint terms are specified (log the car). Stripes: where the showroom
+row has an exception with `HasStripe` 1, multiply the alpha-255 texels of
+the exterior paint techniques (the LOD0 and cockpit models' `body` and
+`body_2`) by `ColorStripe` converted to linear; blend by alpha between
+paint and the tinted texel (the blend at intermediate alpha is probable).
+Without an exception, show the texel colour. Use the row's `BaseTexture`
+atlas. Never apply paint or the body atlas to glass techniques.
 
 ## Livery masks
 
@@ -503,31 +523,39 @@ masks only to show where a livery could go; factory cars have none.
 | `Data_Car.StockWheelID` is a `List_Wheels` row whose `MediaName` names `media/wheels/<WheelMedia>.zip` (or a package's `media/wheels/<WheelMedia>/`); 172 of the 176 base cars use their own media name | confirmed | database against the listings: all 176 base rows and all 250 merged rows resolve |
 | A wheel archive holds `<WheelMedia>.carbin` (one part, `wheel`, with sub-sections for LOD0 to LOD5: `rim`, `inner_rim`, `outer_rim`, `wheel_black`, `blur_lip`, `blur_rim`), `wheel_LOD0.xds`, `wheel.xds` and `wheel0`-`wheel3.xds` | confirmed | listing; the showroom draws the LOD0 sub-sections |
 | `List_Wheels` has 736 rows; 285 of their media are on the disc | confirmed | database and listing |
-| Tyres are shared models `TireA`, `TireB`, `TireC` (sub-sections `sidewall`, `tread`), x from −0.5 to 0.5 and radius 0.194 to 0.287; the Raptor and Wrangler have their own variants | confirmed (files) | parse |
-| Which tyre model a car uses is not known; the stock XKR-S drew `TireC` with the `A` sidewall and tread textures | open | frame dump |
-| `CarPartPositions` (`ID` = car id × 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`, `PartPosY`, `PartPosZ`) holds 10 rows a car; `PartId` 5 to 8 are the wheel centres in the model's own frame (+X right, +Z rear; 5 left rear, 6 right rear, 7 right front, 8 left front). Unlike the lamp points, z is not negated | confirmed | their spacing equals the wheelbase, their height the tyre radius less the stock ride height within a few cm, on 176 cars; the signs (rear at +z, left at −x) hold for every wheel row of the 250 merged rows |
+| Tyres are shared models `TireA`, `TireB`, `TireC` (sub-sections `sidewall`, `tread`), x from −0.5 to 0.5 and radius 0.194 to 0.287; the three share one geometry; the Raptor and Wrangler have their own variants | confirmed (files) | parse |
+| The stock XKR-S drew `TireC` with the `A` sidewall and tread textures; which of the three a car draws does not change its shape | confirmed (one car) | frame dump |
+| `CarPartPositions` (`ID` = car id × 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`, `PartPosY`, `PartPosZ`) holds 10 rows a car; `PartId` 5 to 8 are the axle positions in the body frame, +Z forward like the lamp points: 5 left front, 6 right front, 7 right rear, 8 left rear, left at −x. In the model's frame z is negated | confirmed | 11 frame dumps, 44 wheels: the drawn centre's model z = −row z within 2.6 mm |
+| Only the rows' z places the wheel: their x and y are not the drawn centre (up to 7.4 cm off in x on one car) | confirmed | the same dumps; see the counts under Tests |
 | Rows 0 to 3 are lamp positions, rows 4 and 9 driver or steering points | guess | positions |
-| The rim and tyre models are drawn once per wheel each of the three times the frame draws the car, as every car model is; left wheels are the same model mirrored | probable (count), guess (mirroring) | frame dump draw counts |
-| Each wheel draw carries a constant with the rim radius = `WheelDiameterIN` × 0.0254 / 2 and the tyre's outer radius = rim radius + (tyre width in mm / 1000) × (aspect / 100), per axle | confirmed for one car | frame dump against `Data_Car` front and rear tyre sizes |
-| Lateral scale: the tyre's is its width in metres × 1.033; the rim's is the axle's tyre width ÷ the front tyre width | confirmed for one car | frame dump constants |
-| Rim models are normalised: 95 of the 176 stock rims have an outer radius of 0.190 to 0.196, the rest from 0.02 to 0.42 | confirmed (census) | parse |
-| The radial fit happens in the vertex shader from the constants above | probable | the model bytes are drawn unchanged |
-| `WheelNormOffsets` (111 rows, a small offset a wheel) and `WheelExceptions` (30 wheel ids), and `List_Wheels.BrakeDrawOffset` | guess (meaning) | names |
+| The rim and tyre models are drawn once per wheel each of the three times the frame draws the car, as every car model is | probable | frame dump draw counts |
+| The car model is posed in the body frame: z mirrored, lifted by (`Data_Car.FrontStockRideHeight` + `RearStockRideHeight`) / 2 − `Data_CarBody.BottomCenterWheelbasePosY` (row car id × 1000), and pitched by atan((rear − front ride height) / `ModelWheelbase`) | confirmed | model-to-body constants of 11 dumps |
+| Each wheel draw carries its axle's rim radius = `WheelDiameterIN` × 0.0254 / 2 and tyre outer radius = rim radius + (tyre width in mm / 1000) × (aspect / 100) | confirmed | 15 cars, 30 axles |
+| Wheel centre in the body frame: x = ±(`ModelFrontTrackOuter` or `ModelRearTrackOuter` − the axle's tyre width) / 2, y = the tyre's outer radius (the tyre stands on body y = 0), z = the row's z; mapped to the model frame by the inverse pose | confirmed | 15 cars: worst error 0.8 mm in x, 0.5 mm in y, 2.6 mm in z |
+| Right wheels are the wheel and tyre models turned half a turn about y, not mirrored; left wheels are drawn as authored, so the rim's outboard face is −x. Front wheels have a small camber (about 0.5°) | confirmed (turn), probable (camber) | wheel transforms of the dumps |
+| Rims are never scaled radially. A rim with a LOD0 morph target (see [Damage tail](#damage-tail)) is drawn as base + w × (target − base) with w = (D − 14) / 10 for a D-inch wheel; most are a 14-inch design whose target is the same rim at about 24 inches (radial scale 1.66-1.77, x unchanged) | confirmed | the weight constant on 15 cars (−0.2 at 12 inches to 0.6 at 20) |
+| A rim without a morph target is drawn as authored; its outer radius is about D × 0.0127 + 0.019 m | confirmed (drawn), probable (radius) | census and dumps |
+| Rim lateral scale = the axle's tyre width ÷ the rim's design width (header float at byte 36 − float at byte 44) | confirmed | exact on 15 cars |
+| The tyre is drawn as p + wB × (B − p) + wA × (A − p): target B raises the inner radius (to 0.324 m) with the outer fixed, at wB = (D − 14) / 10, the rim's weight, so the inner edge meets the rim; target A raises the outer radius (to 0.4136 m) with the inner fixed, at wA = (outer radius − 0.2850) / 0.1301 | confirmed | 10 weight values fitted exactly; drawn outer radius within 1.2 mm of `Data_Car` |
+| Tyre lateral scale = the rim's lateral scale × the rim's x extent (header float at byte 32 − float at byte 40); the tyre's centre is the rim's centre moved across by the rim's lateral scale × (byte 32 + byte 40) / 2 in the rim's own x | confirmed | exact on 10 cars |
+| A tyre flattening term exists and is zero in the showroom | confirmed (zero) | every dump |
+| `WheelNormOffsets` (111 rows), `WheelExceptions` (30 wheel ids), `CarTrackOffsets` (54 cars) and `List_Wheels.BrakeDrawOffset` | guess (meaning) | none applies to any measured car |
 
-**Rule for M1 (guess, to be checked against reference captures).**
-Place each wheel at its `CarPartPositions` centre. Scale the tyre's
-x by its width × 1.033 and map its radius linearly from the model's
-inner (0.194) and outer (0.287) radius to the rim radius and the outer
-radius. Scale the rim's x by the axle's tyre width ÷ the front width and
-its radius by the rim radius ÷ 0.194. Use `TireC` and log the car until
-the tyre choice is known.
+**Rule for M1.** Pose the car model as above. For each wheel take the
+axle's `Data_Car` sizes (rim diameter D, tyre width, aspect) and place
+it at the centre above (row z, track-rule x, y on the ground). Draw the
+LOD0 rim with its morph target at (D − 14) / 10, or as authored when it
+has none, scaled across by tyre width ÷ design width. Draw `TireC` (any
+of the three) with its two targets at the weights above, scaled across
+by rim scale × rim x extent and centred on the rim's x extent. Turn the
+right-hand wheels half a turn about y. Log a car with `CarTrackOffsets`
+rows, a rim whose header bounds are not finite, or no LOD0 rim pool.
 
 The sizes are `Data_Car` columns: `FrontTireWidthMM`,
 `FrontTireAspect` and `FrontWheelDiameterIN` for the front axle, and
 `RearTireWidthMM`, `RearTireAspect` and `RearWheelDiameterIN` for the
-rear (confirmed for one car: the stock XKR-S's wheel constants match
-these columns; the Autoshow shows stock wheels, so upgrade tables do not
-apply).
+rear (confirmed on 15 cars; the Autoshow shows stock wheels, so upgrade
+tables do not apply).
 
 ## Brakes, calipers and rotors
 
@@ -545,9 +573,10 @@ apply).
   M1 draw them unlit (lamps off, as in the showroom). The lamp points
   in the header place glows and are not needed.
 - **Glass.** Draw the transparent lists after the opaque ones, back to
-  front by part. `window` is tinted and see-through; in the showroom the
-  glass texels sampled are white with alpha 0, so the tint is the
-  effect's (probable).
+  front by part. `window` is tinted and see-through; the tint is the
+  effect's (probable). Glass draws take no paint and no body-atlas
+  texels: the Abarth 500's windscreen UVs land on red atlas texels at its
+  top edge, which the game does not show (see [Paint](#paint)).
 - **Shadow.** v4's `shaders/cars` has `dropshadow` and the car effect a
   `dropShadow` technique, and no shadow model is in the car files. The
   Autoshow frame dumps put no car geometry in a depth-only or shadow
@@ -561,8 +590,8 @@ apply).
 | --- | --- | --- |
 | lamp-point bytes, the kind-5 records and the node block | none | skip by the draw-list scan; keep bytes for a write |
 | the 28-, 4-, 12-, 5-, 36- and 56-byte fields of parts and sub-sections | none known | keep as bytes |
-| the radial wheel fit and which tyre model a car uses | wheels may look the wrong size | the rule under [Wheels](#wheels); log cars whose rim radius ratio is outside 0.9-1.1 |
-| metallic, two-tone and stripe paint terms | colours right, finish approximate | flat paint; log two-tone and stripe cars |
+| `CarTrackOffsets`, `WheelNormOffsets` and `WheelExceptions` (no measured car has rows) and one rim whose header bounds are ±FLT_MAX | a few cars' wheels may sit off | the rule under [Wheels](#wheels); log the car |
+| metallic finish; the stripe blend at intermediate alpha and the stripe constant of a car without an exception | colours right, finish approximate | flat paint; stripes as under [Paint](#paint) |
 | back-face culling for glass and the cockpit | visual | cull opaque techniques, draw transparent ones two-sided |
 | livery decal and vinyl models | none (no liveries in M1) | reject with a message |
 | whether the v4 or the disc copy of the car effect wins, and which package copy of a duplicated car loads | none (copies are identical for the official set) | disc first, then packages |
@@ -600,6 +629,15 @@ prints each.
 | tiled textures whose payload equals the layout size | 4,793 (one linear) | 2,647 |
 | loose brake models that parse / empty | 118 / 2 | — |
 | merged `Data_Car` rows (base, v4 and the 21 packages) with a car folder, a wheel folder, a colour row and wheel rows 5-8 | 250 of 250 (one table over both columns) | |
+| stock wheel models with header kind 3 | 240 of 240 (over both columns) | |
+| stock rims with a LOD0 morph target / without / with no LOD0 rim pool | 160 / 76 / 4 (over both) | |
+| morph rims with a 14-inch design (base outer radius 0.190-0.196 m) | 140 (over both) | |
+| rims with finite header bounds (design width 0.162-0.368 m) / of them at 0.225 m | 239 / 82 (over both) | |
+| `CarPartPositions` wheel rows more than 1 cm off the track rule in x / in y / in z | 321 / 249 / 0 of 960, on 133 cars (over both) | |
+| cars with `CarTrackOffsets` rows | 54 (over both) | |
+| `Combo_Colors_Exceptions` rows / cars / with `HasStripe` 1 / with `HasColor2` 1 | 674 / 61 / 661 / 0 (merged table) | |
+| merged first colour rows with a stripe exception (of them with stripe colour 0, black) | 21 of 250 (2) | |
+| colour rows naming an atlas other than `nodamage.tga` / cars | 229 / 30 (merged table) | |
 
 Synthetic cases an implementation should also pass: a model with an
 empty part (±FLT_MAX box, no vertices); a model with no parts; a 16-bit
@@ -621,6 +659,7 @@ python -I tools/re/car-formats.py census .local/re/cars [--brakes .local/game/ba
 python -I tools/re/car-formats.py dlc-duplicates .local/re/cars
 ```
 
-The frame-dump facts (texture slots, paint, caliper and wheel constants)
-come from `.local/ac0-dumps/stock.fh1frame`, an Autoshow frame of the
+The wheel, pose and stripe facts come from Autoshow frame dumps of 15
+cars taken for the M1 references (2026-11-19). The other frame-dump
+facts (texture slots, paint, caliper constants) come from `.local/ac0-dumps/stock.fh1frame`, an Autoshow frame of the
 stock XKR-S, read with `tools/re/world-geometry.py`'s frame-dump reader.
