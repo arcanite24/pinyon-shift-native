@@ -68,3 +68,4 @@ spec:
 | --- | --- | --- | --- |
 | [SPEC-EVENT-RESTRICTIONS](specs/EVENT_RESTRICTIONS.md) | event rules | complete for the disc's bits | `shift-engine` `libs/data` (`event_restrictions`), commit `34a4804` |
 | [WORLD-GEOMETRY](formats/WORLD_GEOMETRY.md) | Colorado render models and prop placements | positions and index lists, `.pgeo` and `.pvsz` placements through the `.pvs` object table; rest of the vertex, materials and the LOD and visibility rule open | `shift-engine` `libs/fh1data` (`rmb`, placements) and `carview` world mode, commits `d55ed64`, `6ed6cdc`..`dc76af7` |
+| [FORMAT-CARS](formats/CARS.md) | car models, textures, paint and wheels for the M1 showroom | `.carbin` and `.xds` complete for the disc and official DLC (every model parses, every texture lays out); materials, paint and brakes probable; radial wheel fit, two-tone paint, lamp and node blocks and livery shapes open | `shift-engine` `libs/fh1data` (`carbin`, `xds`), before this spec |

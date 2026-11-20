@@ -193,6 +193,62 @@ how = """Buy-car and drive routes from pinned seeds (id 1700 cloned from the XKR
 confidence = """confirmed"""
 issue = """#496"""
 source = """tools/build-mod-archives.py collect_new_archives; docs/MODDING.md New cars from existing models"""
+[[finding]]
+group = """Cars"""
+base = """media/wheels/<MediaName>.zip, audio/cars/CarModelTuning.zip <MediaName>_CMT.xml, audio/cars/Engines/EngineTuning.zip <MediaName>_ET.xml"""
+v4 = """same"""
+name = """a car's wheels and sound tuning by media name"""
+what = """Besides `media/cars/<MediaName>.zip`, the game finds a car's wheel model archive and its two sound tuning files by media name. A clone under a new media name opened `media/wheels/<MediaName>.zip` (the donor's archive with its members renamed), and with copies of the donor's `_CMT.xml` and `_ET.xml` under its own name its engine was 4.4 dB louder: engine-only RMS 0.043 and 0.046 with them, 0.026 and 0.028 without (two runs each). Without the tuning files the engine plays at much lower default levels."""
+how = """The runtime file log of a drive route (#496, AC AMG GT3 on the Ascari KZ1R, 2026-11-06); the `fh1-free-roam-audio` route with every mix category but the engine at 0, with and without the tuning files in the mod."""
+confidence = """confirmed"""
+issue = """#496"""
+source = """branch feat/ac-car-inspect tools/ac_car_mod.py write_media_files, docs/AC_CARS.md ACC-5, ACC-6"""
+
+[[finding]]
+group = """Cars"""
+base = """Data_CarBody ModelFrontStockRideHeight, ModelRearStockRideHeight, BottomCenterWheelbasePosZ; Physics/MAXData.xml"""
+v4 = """same"""
+name = """where a car model's wheels are"""
+what = """In a car's carbins (y up, the body's floor near y = 0), the wheel centres sit at the tyre radius (from `Data_Car`'s tyre width, aspect and rim size) less the model's stock ride height (`Data_CarBody`), per axle, and the axles' midpoint is at `BottomCenterWheelbasePosZ`. These fit the cars' wheel arches (arch top 3-8 cm above the tyre on the Skyline R34, SLS and KZ1R). The ride heights and wheelbase in the car archive's `Physics/MAXData.xml` do not always match: the KZ1R's are 0.19 m and 2.57 m against 0.123 m and 2.64 m in the database, and they would put the RUF Yellowbird's tyres into its arches."""
+how = """Comparing the database values with the lowest outer-panel vertex over each axle in seven cars' `_lod0` models; an AC AMG GT3 placed on the KZ1R from the database sat on its wheels in the Autoshow and in free roam (#496, 2026-11-06)."""
+confidence = """probable"""
+issue = """#496"""
+source = """branch feat/ac-car-inspect tools/ac_car_body.py DonorGeometry, tools/ac_car_mod.py donor_geometry; docs/formats/CARS.md"""
+
+[[finding]]
+group = """Cars"""
+base = """carbin techniques taillight2S, taillightst, head_light, window"""
+v4 = """same"""
+name = """car lamp and glass techniques"""
+what = """Base cars draw their lamps and glass with their own techniques, in their own parts: brake and tail lenses with `taillight2S` or `taillightst` (in `taillightL`/`R`), headlamps with `head_light`, `hidhead`, `oldhead` or `fullbeam` (in `headlightL`/`R`), side and rear windows with `window` (tinted, see-through), lamp covers with `detail_glass_red`, `_amber` or `_clear`. A lamp drawn with `taillight2S` inside the `body` part lights up red when the car brakes, taking its colour from the atlas point it samples. Which techniques a car has varies: the KZ1R has `taillight2S` but no `taillightst`."""
+how = """Listing the parts and techniques of base cars' carbins; an AC AMG GT3 on the KZ1R braking in free roam, its brake lamps on a red atlas cell (#496, 2026-11-06)."""
+confidence = """confirmed"""
+issue = """#496"""
+source = """branch feat/ac-car-inspect tools/ac_car_body.py fh1_techniques, RED_LAMPS; docs/formats/CARS.md"""
+note = """Unlit, the same lamps look pale in daylight; the shader's unlit colour was not traced. Inside the `body` part, `black` draws a lamp texture nearly black and `window` tints a lamp cover dark, so converted headlamps are drawn as `chrome` behind `detail_glass_clear` (GT40, F40 and R34 in the Autoshow, 2026-11-06). `window` drawn in the `body` part is dark and has no reflections; in a glass part (`glassF`) it looks like the stock car's windscreen, sampling the same texel (white, alpha 0)."""
+
+[[finding]]
+group = """Cars"""
+base = """CarPartPositions (10 rows a car)"""
+v4 = """same"""
+name = """wheel centres in CarPartPositions"""
+what = """Rows 5 to 8 of a car's `CarPartPositions` are its wheel centres in car space: 5 left rear, 6 right rear, 7 right front, 8 left front. Their spacing is the wheelbase and their height the tyre radius less the stock ride height within a few centimetres. Rows 0 to 3 look like lamp positions and rows 4 and 9 driver or steering points."""
+how = """All 176 base cars against `Data_Car` tyre sizes, `Data_CarBody` ride heights and the models' wheel arches (2026-11-19)."""
+confidence = """confirmed"""
+source = """docs/formats/CARS.md; tools/re/car-formats.py"""
+note = """Rows 0-4 and 9 are a guess."""
+
+[[finding]]
+group = """Cars"""
+base = """Data_Car.StockWheelID, List_Wheels.MediaName, media/wheels/TireA-C"""
+v4 = """same"""
+name = """wheel and tyre models in the showroom"""
+what = """`Data_Car.StockWheelID` names a `List_Wheels` row whose `MediaName` is the wheel archive (the car's own name on 172 of 176 cars). The rim model is one part, `wheel`, normalised so that 95 of the 176 stock rims have an outer radius of 0.190-0.196 m; tyres are the shared `TireA`, `TireB` and `TireC` (x from -0.5 to 0.5, radius 0.194-0.287) and truck variants. The models are drawn unchanged, and each wheel draw carries the rim radius (`WheelDiameterIN` x 0.0254 / 2) and the tyre's outer radius (rim radius plus width x aspect) of its axle; the tyre is scaled across by its width x 1.033, the rim by the axle's tyre width over the front tyre width. Which tyre model a car uses was not found; the stock XKR-S drew `TireC`."""
+how = """Database and listings for all base cars; vertex-shader constants of the wheel draws in an Autoshow frame dump of the stock XKR-S (2026-11-19)."""
+confidence = """probable"""
+source = """docs/formats/CARS.md; tools/re/car-formats.py"""
+note = """The constants are confirmed for one car; the radial fit in the shader is not decoded. `WheelNormOffsets` (111 rows), `WheelExceptions` (30) and `List_Wheels.BrakeDrawOffset` are untested leads."""
+
 # --- Upgrades, colours and liveries ---------------------------------------
 
 [[finding]]
@@ -204,6 +260,28 @@ what = """There are 46 part types, fixed by an enum in the code. Rims (736, 112 
 how = """Reading the database."""
 confidence = """confirmed"""
 source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
+
+[[finding]]
+group = """Upgrades, colours and liveries"""
+base = """Combo_Colors"""
+v4 = """same"""
+name = """a car's factory colours"""
+what = """A car's factory colours are its `Combo_Colors` rows: `ID` = car id x 1000 + n, `Ordinal` = the car id, `Sequence`, `Metallic`, `RGB` (r << 16 | g << 8 | b), `BaseTexture`/`DamageTexture` and a `ColorClassId` (`List_ColorClass`). The showroom offers one swatch a row: a clone given seven rows in place of its donor's one listed seven colours."""
+how = """Read-only survey; an Autoshow route with a converted car whose rows a `db/` script replaced (#496, 2026-11-06)."""
+confidence = """confirmed"""
+issue = """#496"""
+source = """branch feat/ac-car-inspect tools/ac_car_mod.py colours_sql; docs/formats/CARS.md"""
+
+[[finding]]
+group = """Upgrades, colours and liveries"""
+base = """Combo_Colors.RGB, Data_Car.CaliperRGBFront (shader constants)"""
+v4 = """same"""
+name = """paint and caliper colours in the shader"""
+what = """In the showroom the exterior techniques receive the car's colour as a pixel-shader constant equal to its `Combo_Colors` RGB, each channel / 255, converted from sRGB to linear; the constant is 0 on other techniques. The caliper draws receive `Data_Car.CaliperRGBFront` / 255 unconverted. The body technique samples atlas texels with alpha 0 at 97 % of its vertices, `black`, `frame` and `plastic2` alpha 255."""
+how = """Frame dump of the stock XKR-S in the Autoshow against its sequence-1 colour row and its caliper colour; alpha sampled at the vertices of 20 cars' LOD0 models (2026-11-19)."""
+confidence = """probable"""
+source = """docs/formats/CARS.md; tools/re/car-formats.py"""
+note = """Confirmed for one car with a non-metallic colour and equal front and rear caliper colours; metallic, two-tone and stripe terms are not traced."""
 
 [[finding]]
 group = """Upgrades, colours and liveries"""
@@ -240,10 +318,10 @@ source = """src/pinyon_shift_runtime_hooks.cpp PinyonShiftRequireTyrePhysicsReco
 group = """Upgrades, colours and liveries"""
 base = '''Liveries\<n>.liv, Career_Garage.LiveryFileName'''
 name = """livery files"""
-what = """Each painted car has one encrypted livery file (32-byte header, size, padding, encrypted body), named in its garage row of the profile's `PlayerDatabase`. A design is layered vectors (`CLivery`, layers, groups, elements, colours), rendered onto the car through the six planes of `LiveryMasks/Masks.xml`."""
-how = """A seed save; traces of old saves; class names."""
+what = """Each painted car has one encrypted livery file (32-byte header, size, padding, encrypted body), named in its garage row of the profile's `PlayerDatabase`. A design is layered vectors (`CLivery`, layers, groups, elements, colours), rendered onto the car through the six planes of `LiveryMasks/Masks.xml`. Each valid plane (Front, Back, Top, Left, Right; Wing is invalid on the 2010 MX-5) is a box in one 1024x1024 sheet: `left`, `right`, `top` and `bottom` are pixels from the sheet's centre with rows counted from the bottom, as the TGA stores them, and the box never overlaps another. The plane's `LiveryMasks/<plane>.tga` (32-bit, RLE) is opaque white on the car's paint, white with alpha 0 in the rest of the box and transparent black outside. The car's paint (its `body` material, wheels left out) drawn into a box, stretched to the paint's bounding box in that view, matches the mask: 62 to 78 % of the pixels agree on the 2010 MX-5, the side views best; the rest is the artists' cleaner outline."""
+how = """A seed save; traces of old saves; class names. Masks: the 2010 MX-5's five TGAs compared with its LOD0 paint drawn into each box in all four mirrorings (tools/ac_car_livery.py). UVs: a paint-shop route placing a vinyl on clones that mix the donor's and the converted car's files (only the LOD0 model mattered; within it, only UV0 with its transform), then the donor's transformed paint UVs grouped by normal against the boxes."""
 confidence = """confirmed"""
-note = """Confirmed for the files; the design layout is probable."""
+note = """Confirmed for the files; the design layout and the projection through the planes are probable. The `xAxis`/`yAxis` labels come in either case (`+X` on the RUF Yellowbird) and do not give the pixel direction: the Left view's pixels run along +z although it says `-z`, so a writer takes each view's mirroring from the car's own mask. UV1 is not the livery's: it is zero on every vertex of the 2010 MX-5, and on 13 of 40 sampled base cars it holds coordinates of about 20 per metre (the XKR-S: -18 to 18 across, -46 to 48 along), a tiled detail map by its range (guess). The paint's UV0 is not a free unwrap but its place in the mask sheet: after the sub-section transform (u = t0 + t1 u, v = t2 + t3 v, counted from the top; the body atlases share the layout) the 2010 MX-5's paint vertices land in the box of the view they face (+x Right, -x Left, +y Top, -z Front, +z Back, FH1 axes). So the game draws each view's vinyls into its box and the paint reads them at its UVs: an AC body keeping AC's own paint UVs showed no vinyl at all, with drawn masks or the donor's, and showed it once the paint got UVs projected through those boxes."""
 source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
 
 [[finding]]
@@ -530,6 +608,16 @@ confidence = """probable"""
 note = """Covers only the routes run so far."""
 negative = true
 source = """docs/TITLE_UPDATE_V4_BACKLOG.md TU-8"""
+
+[[finding]]
+group = """Downloadable content"""
+base = """<package>/Media/DLCZips/<offer>_pri_65.zip"""
+v4 = """same"""
+name = """DLC car files"""
+what = """An installed package's cars are folders in its offer ZIP, `Media/DLCZips/<offer>_pri_65.zip` (`media/cars/<MediaName>/` and `media/wheels/<name>/`, members by methods 21, 8 and 0), which `zipmount.xml` does not list; the same folder holds `<offer>_pri_65/` with loose audio and the ZIPs `zipmount.xml` mounts (cameras, string tables). The 21 official packages hold 83 car folders: 19 are byte-identical copies of disc cars, so 64 are DLC-only, and the 12 that appear in more than one package are identical in each. With the 176 disc folders that makes 240 models to show."""
+how = """Listing of the installed packages and SHA-256 of every member (`tools/re/car-formats.py dlc-duplicates`, 2026-11-19)."""
+confidence = """confirmed"""
+source = """docs/formats/CARS.md; tools/re/car-formats.py"""
 
 # --- Entitlements and licences --------------------------------------------
 
