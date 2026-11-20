@@ -98,7 +98,7 @@ the stock car only.
 | Mass | `List_UpgradeCarBodyWeight.Mass` | kg, without a driver. `Data_Car.CurbWeight` holds the same in 100 kg, but the game does not take the weight from it (finding "not the car's weight in game") | body mass 15.6 for 1,560 kg; doubling `Mass` doubled the 0-100 time (#1019) |
 | Front weight share | `List_UpgradeCarBodyWeight.CMBackFront` (also `Data_Car.WeightDistribution`) | fraction on the front axle | the front pair carries 57.5 % of the traced static load, the column within 1 % |
 | Left-right share | `List_UpgradeCarBodyWeight.CMLeftRight` | fraction | data |
-| Centre of mass height | `List_UpgradeCarBodyWeight.CMHeight` | metres | probable: not checked against the trace |
+| Centre of mass height | `List_UpgradeCarBodyWeight.CMHeight` | metres above the ground at ride height | confirmed on the R34: the traced centre of mass sits 0.47 m above the contact triangles at rest (column 0.481), the hubs 0.31 to 0.32 m, so the centre of mass is 0.15 m above the hubs. The pitch arm the tyre forces act through is shorter (see scenario B, load transfer) |
 | Inertia | `List_UpgradeCarBodyWeight.BlockDimX`, `BlockDimY`, `BlockDimZ` | the car's mass as a solid box of width X, height Y and length Z, in metres: I_xx = m (Y² + Z²) / 12, I_yy = m (X² + Z²) / 12, I_zz = m (X² + Y²) / 12 about the body axes | confirmed: the traced world inertia tensor, rotated into the body frame, is diagonal and equals the three box values to the printed precision |
 
 ### Suspension
@@ -305,7 +305,7 @@ down and, near the stop, into reverse:
 
 | Quantity | Column of `List_UpgradeBrakes` | Unit and rule |
 | --- | --- | --- |
-| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 to 4,000 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). Each wheel carries a brake torque value, constant through both stops: the rears' is 0.41 × the fronts' on the R34 (both sliders at 0.5, both brakes 11 in, four pistons front and two rear), so take the rear as 0.41 × the front for M3 (measured on one car; the bias rule is open). The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it |
+| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 to 4,000 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). Each wheel carries a brake torque value, constant through both stops: the rears' is 0.41 × the fronts' on the R34 (both sliders at 0.5, both brakes 11 in, four pistons front and two rear), so take the rear as 0.41 × the front for M3 (measured on one car; the bias rule is open). By the wheel balance on fully braked steps with the clutch open, the front takes 3,900 N·m (median 3,880 to 3,970 in two stops, quartiles 3,670 to 4,280) and the rear 1,750 N·m (quartiles 1,710 to 1,770), so in N·m the rear is 0.45 × the front; prefer these two numbers to the field ratio. The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it |
 | Braking friction | `List_TireCompound.TorqueFreeLongFrictionScaleBrake` × `GameFrictionScaleBraking` | the tyre's longitudinal friction scale on a wheel whose applied torque slows it (brake, or engine braking through the driveline): 1.8 × 1.0025 = 1.805 on the R34, against the speed-blended `…Accel0`/`…Accel1` scale (1.25 to 1.15) when the wheel is driven or free. The tyre's F_x already includes the scale, and its torque on the wheel is F_x × the rolling radius with no further factor. Confirmed on one car |
 | Bias | `BrakeBiasSlider` and `PhysicsSettings.ini` `BrakeBiasOffsetRear` | fraction |
 | Handbrake | `BiasHandbrake` | probable: handbrake strength |
@@ -716,6 +716,67 @@ long braked stretches, because their small load leaves the tyre torque
 (900 to 1,250 N·m) not far below the brake torque (about 1,500 to
 1,750 N·m). So driveline torque is part of the rears' ABS behaviour,
 and the split is the same as under drive.
+
+**Load transfer.** Wheel loads (N) and the body's pitch against the road
+(degrees, nose down negative; +0.03 at rest) through the ABS phase of run
+B1:
+
+| t (s) | km/h | Gearbox | FL | FR | RR | RL | Sum | Tyre F_x sum | Pitch |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.0 | 81.7 | engaged, 2nd | 2,490 | 2,565 | 3,634 | 3,504 | 12,193 | +6,352 | +0.68 |
+| 0.11 | 78.6 | engaged | 4,588 | 4,680 | 1,755 | 1,549 | 12,572 | −22,403 | +0.01 |
+| 0.20 | 74.5 | clutch in | 4,632 | 4,845 | 1,358 | 1,376 | 12,212 | −20,966 | −0.61 |
+| 0.30 | 69.6 | clutch in | 5,332 | 5,399 | 1,771 | 1,578 | 14,081 | −24,474 | −1.01 |
+| 0.40 | 64.9 | gear change | 5,632 | 5,955 | 2,198 | 2,072 | 15,856 | −27,867 | −0.99 |
+| 0.50 | 59.8 | rev-match, 1st | 5,019 | 5,388 | 2,583 | 2,118 | 15,107 | −26,848 | −0.82 |
+| 0.60 | 55.0 | rev-match | 4,657 | 4,995 | 2,574 | 2,489 | 14,715 | −25,637 | −0.74 |
+| 0.72 | 49.9 | rev-match | 4,814 | 5,091 | 2,484 | 2,243 | 14,632 | −23,899 | −0.67 |
+| 0.81 | 46.1 | clutch out | 4,886 | 5,268 | 2,560 | 2,346 | 15,061 | −16,926 | −0.68 |
+| 0.90 | 41.8 | clutch out | 5,046 | 5,164 | 2,443 | 2,203 | 14,856 | −7,831 | −0.78 |
+| 1.01 | 37.0 | clutch out | 4,813 | 5,010 | 2,393 | 2,042 | 14,259 | −15,120 | −0.83 |
+| 1.12 | 32.7 | engaged, 1st | 4,942 | 5,419 | 2,507 | 2,423 | 15,290 | −19,773 | −1.01 |
+| 1.20 | 29.3 | engaged | 5,141 | 5,547 | 2,446 | 2,033 | 15,167 | −15,339 | −0.94 |
+| 1.31 | 25.3 | engaged | 5,220 | 5,321 | 2,709 | 2,377 | 15,627 | −27,552 | −0.93 |
+
+(The F_x sum swings from step to step with the ABS cycle; the loads do
+not.) The front pair never carries more than about 11,600 N, and the
+rears keep 1,350 N or more each. Averaged over time, the front pair's
+gain over its static 57.5 % share × the wheelbase (2.665 m) / the
+tyres' total braking force gives the pitch arm the oracle uses:
+
+| Window | Run B1 | Run B2 |
+| --- | --- | --- |
+| 0.2 to 1.3 s | 0.279 m | 0.292 m |
+| 0.4 to 1.2 s | 0.255 m | 0.273 m |
+| 0.2 to 0.6 s (the first dive) | 0.328 m | 0.328 m |
+| 0.6 to 1.3 s | 0.248 m | 0.270 m |
+
+So the effective arm is about **0.27 m**, a little over the dive's
+first 0.4 s, not the 0.47 m of a tyre force at the contact patch and not
+the 0.15 m of one at the hub. The trace does not show why (anti-dive
+from the suspension geometry columns, or a force point between hub and
+ground, are both possible); for M3 apply the tyres' longitudinal forces
+to the body through a 0.27 m arm (measured fit, one car), which is in
+the band the engine found by sweeping the centre-of-mass height. The
+pitch settles at about −1° within 0.3 s and stays between −0.7 and −1.0°.
+
+**The reverse phase.** After reverse is selected (1.36 s in B1) the
+stop runs in two parts:
+
+- A coast of 0.38 s: no brake, the clutch open, the car speeding up
+  slightly (about 0.5 m/s², the grade) while the engine revs from 1,940
+  rpm to `StartRPM` at the free-rev rate.
+- A reverse launch of 0.91 s from 6.3 m/s at about 6.7 m/s² mean (7 to
+  9.7 m/s² in its first 0.3 s): the launch controller slips the clutch
+  at c 0.43 to 0.58 with the engine held near 4,300 to 5,800 rpm. The
+  rears spin backwards to a normalised slip of −15, and **the fronts
+  carry most of the force**: −7,000 to −12,500 N on the front pair at
+  a slip of only −0.1, against −5,000 to −9,000 N on the spinning rears.
+  With the rears spinning, the centre differential's drive-side locking
+  (`CenterLimitedSlipTorqueAccel`, 255 on the R34) moves torque to the
+  front axle (probable, from the forces). An engine that drives only
+  through the open 30/70 split here loses most of the reverse
+  deceleration.
 
 The 8.57 m/s² mean depends on both: an engine that keeps braking to the
 stop with the ABS alone will be quicker than the oracle, so it needs the
