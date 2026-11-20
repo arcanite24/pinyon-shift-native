@@ -215,11 +215,11 @@ source = """docs/UPSCALING_BACKLOG.md UP-1.3; docs/formats/WORLD_GEOMETRY.md#coo
 [[finding]]
 group = """Frame structure and views"""
 name = """Autoshow showroom car passes"""
-what = """In the Autoshow showroom every car geometry draw is a triangle strip in the 4x MSAA main pass: opaque parts (body, interior, steering wheel, mirrors, lights, wheels, rotors and calipers) with depth write on and the stage's clip matrix, then transparent parts (glass, lamp covers) with depth write off and a clip matrix whose translation differs slightly. No car model geometry was found in any depth-only or shadow pass, nor in the stage's mirrored floor group (a view-projection with z negated), so there is no car shadow map and the car is not reflected as geometry; the darkening under the car in the captures comes from something not identified. Later rectangle-list and point draws (one into a 640-pitch target) still point a vertex fetch constant at a car buffer; they draw 1 to 3 vertices and are post-processing and query draws, not car geometry. Car draws sample cube maps (512 and 256 square in one format, 64 square in a float format, 32 square), a screen-sized 1280x720 texture, the car's own atlases (1024 and 2048 square) and small lookup textures. About 1,500 to 1,800 draws make the frame; a 522- or 516-draw group with a translation-free matrix is the sky and background."""
+what = """In the Autoshow showroom every car geometry draw is a triangle strip in the 4x MSAA main pass: opaque parts (body, interior, steering wheel, mirrors, lights, wheels, rotors and calipers) with depth write on and the stage's clip matrix, then transparent parts (glass, lamp covers) with depth write off and a clip matrix whose translation differs slightly. No car model geometry was found in any depth-only or shadow pass, nor in the stage's mirrored floor group (a view-projection with z negated), so there is no car shadow map and the car is not reflected as geometry; the darkening under the car is a drop-shadow fan drawn with the car's matrix (record "Autoshow drop shadow"). Later rectangle-list and point draws (one into a 640-pitch target) still point a vertex fetch constant at a car buffer; they draw 1 to 3 vertices and are post-processing and query draws, not car geometry. Car draws sample cube maps (the 512 static and 256 dynamic environment cubes, a 64 square glossy cube and a 64 square float SH lookup cube; record "Autoshow car environment maps"), a 32 square all-white shadow mask, a screen-sized 1280x720 texture (the scene colour buffer, bound as `envBackgroundSampler` but switched off by `psUseBackgroundMap` = 0), the car's own atlases (1024 and 2048 square) and small lookup textures. About 1,500 to 1,800 draws make the frame; a 522- or 516-draw group with a translation-free matrix is the sky and background."""
 how = """Frame dumps of three M1 pilot showroom frames on v4 (American Motors Javelin-AMX, Abarth 595 esseesse, Lancia 037 Stradale), read with `world-geometry.py walk_draws`; car draws identified by finding each part's LOD0 vertex pool bytes from the car's `.carbin` files in guest memory; passes by surface info and depth control, textures by fetch constants."""
 confidence = """probable"""
-note = """What the screen-sized texture holds (a mask, the reflection or ambient occlusion) and how the cube maps are made (static or captured per frame) are not established. Matching by the car's own model bytes cannot see a shadow or blob mesh stored elsewhere."""
-source = """docs/formats/AUTOSHOW_REFERENCE.md Parts and lighting"""
+note = """2026-11-19 (FORMAT-SHOWROOM-LIGHTING): the screen-sized texture is the scene buffer and is not sampled; the cubes are identified in "Autoshow car environment maps". Transparent list: windows blend source alpha over inverse source alpha; lamp covers draw twice, a multiply pass (destination colour, zero) then an additive pass (one, one) with the environment reflection; all transparent draws test depth without writing it."""
+source = """docs/formats/AUTOSHOW_REFERENCE.md Parts and lighting; docs/formats/SHOWROOM_LIGHTING.md"""
 
 [[finding]]
 group = """Frame structure and views"""
@@ -512,6 +512,15 @@ confidence = """confirmed"""
 negative = true
 source = """docs/ANDROID_ODIN_BACKLOG.md Toward 60 fps with shadows"""
 
+[[finding]]
+group = """Shadows"""
+name = """Autoshow drop shadow"""
+what = """The darkening under an Autoshow car is one five-vertex fan per band (centre and four corners, four triangles) on the floor plane of the car's body frame, drawn with the car's matrix before the transparent list: source alpha over inverse source alpha, stencil tested against 0x80, no depth test, sampling a 256x256 8_8_8_8 top-down soft silhouette of the car. Its corners are about 1.02 m either side and -1.85 to +1.86 m along the Abarth 500. The Autoshow `TrackSettings.xml` sets `DropShadowColor` black and `DropShadowOpacityAdjustment` 0.4."""
+how = """M1 frame dump of the Abarth 500 (2026-11-19): index buffer, vertex constants, blend and depth-control registers and the bound texture at the draw; the car-only replay leaves it out."""
+confidence = """probable"""
+note = """The silhouette texture was not found in the player's files, so it is probably rendered at run time; how, and whether the two TrackSettings fields drive it, are open."""
+source = """docs/formats/SHOWROOM_LIGHTING.md#drop-shadow"""
+
 # ---------------------------------------------------------------------------
 # Post effects
 # ---------------------------------------------------------------------------
@@ -533,6 +542,15 @@ what = """By `8246554C` the title has copied the weather preset's bloom scale, i
 how = """Mid-function hook zeroing the value, with on, off and restore captures on desktop and Android."""
 confidence = """confirmed"""
 source = """config/rexglue/analysis/main-xex.toml midasm_hook 0x8246554C; src/pinyon_shift_runtime_hooks.cpp PinyonShiftBloomScale; docs/LOW_SPEC_BACKLOG.md Requested defaults and feature trades; docs/DLC_BACKLOG.md Android bloom default and qualification"""
+
+[[finding]]
+group = """Post effects"""
+name = """Autoshow final composite"""
+what = """In the Autoshow the car is shaded into the 7e3 main pass and resolved to 2_10_10_10 with exponent bias -2, so scene HDR above 4.0 is clipped. The post chain reduces to 320x192, 64x32 and 32x32, writes a 32x32 float exposure result (0.0584 everywhere on the Abarth 500 frame), runs a bright pass at 320x192 with constants (1.0, 1.0, 0.06, 3.0) equal to the `TrackSettings.xml` bloom cutoff, scale and curve gradients, blurs down to 32x32 and back, rewrites the scene, then composites into 2_10_10_10. The composite's constants are the Hable filmic curve from `filmicTone` (white 1.5, A 0.151, B 0.038, C 0.566, then C*B, D*F, D*E and E/F precomputed), a desaturation matrix 0.92 I + 0.08 luminance (`DesaturateAmount`, `DesatLuminosity`), the 16x16x16 grading volume addressed with scale 15/16 and offset 1/32, and `ShadowColor`, `DarkColor`, `LightColor` and `TrackLightMapParams`."""
+how = """Draw-by-draw read of an Abarth 500 M1 frame dump (2026-11-19): render targets, resolves, fetch constants and pixel constants, compared value by value with TrackSettings.xml; the end-to-end grey curve measured from the stored pre-composite values against the reference image."""
+confidence = """probable"""
+note = """Constants confirmed by value; the order of exposure, tone map, desaturation, grading and gamma, the scene rewrite's role and whether the grading volume is identity are open. The measured curve is in FORMAT-SHOWROOM-LIGHTING."""
+source = """docs/formats/SHOWROOM_LIGHTING.md#post-chain"""
 
 [[finding]]
 group = """Post effects"""
@@ -946,6 +964,25 @@ source = """docs/native-renderer/archive/REFLECTION_MIPMAP_REPLACEMENT.md Runtim
 
 [[finding]]
 group = """Shaders, textures and models"""
+base = """0x82239850, 0x8223987C (path formats); 0x822284F4, 0x82228514 (cube-face blit technique names, used by sub_82C3C4A8)"""
+name = """Autoshow car environment maps"""
+what = """Autoshow car shaders (effect `media/shaders/Cars/shaders_ui_v16.fxobj`) bind five environment textures. `envStaticSampler` is the 512x512 ten-level 8_8_8_8 cube loaded from the track's `staticcarcubemap.xpr` (an XPR2 file with one `TXCM` resource, `StaticCarCubemap_HDR_1`); the path formats are the track folder plus `staticCarCubemap.xpr` and a numbered variant. `envSampler` is the 256x256 dynamic cube, cleared every frame, resolved to six faces and mipped with no geometry drawn into it, and decoding to black (the Autoshow `TrackSettings.xml` sets `DynamicCubemap` 0). Both are LogLuv-encoded (`psStatCubeLogLuvDecode` and `psDynCubeLogLuvDecode` are 1). `specularCubemapSampler` is a 64x64 one-level LogLuv cube, a blurred environment weighted by `SpecularCubeScalar` (1 for metallic paint, 0 otherwise). The vertex shader's `shLookupCubemapSampler` is a 64x64 16_16_16_16_FLOAT cube holding the constant and linear SH basis per direction, (1.1807, -2.0449 y, 2.0449 z, -2.0449 x). The executable also names specular, blurred, ambient and SH lookup cubemap textures, and LogLuv and plain techniques that blit a lighting cube face from a cube map."""
+how = """M1 frame dumps (2026-11-19, ten cars): fetch constants at each car draw, sampler names from the effect's constant tables matched by microcode bytes; the static cube's guest memory compared byte for byte with the file's payload (base level and mip region); texels decoded; Ghidra string search on the base executable."""
+confidence = """confirmed"""
+note = """How the 64x64 glossy cube is made is open: a cosine-power lobe over the decoded static cube correlates only 0.76 to 0.79 in log luminance. The other track folders and media/tracks carry their own staticcarcubemap.xpr. v4 addresses not mapped."""
+source = """docs/formats/SHOWROOM_LIGHTING.md"""
+
+[[finding]]
+group = """Shaders, textures and models"""
+name = """Autoshow car shader parameters"""
+what = """Measured Autoshow car shader constants, the same on ten cars unless noted. Global: `psLightDirWS` (-0.5145, 0.8575, 0), the normalised negated `ShadowLightDirection` (0.6, -1, 0) of the Autoshow `TrackSettings.xml` (`OverrideShadowLightDirection` 1); `shDirectionalColour` 0.6525 grey (0.87 `iblSunColor` x 0.75); `shDirectionalLightI` the light direction in the SH basis; `shHemisphericalLightR/G/B` ambient SH coefficients with more light from below; `MinShadowValue` 0.75; `StaticEnvLightmapDampner` 0.85 and `DynamicEnvLightmapDampner` 0.3; `psFogColor` 0.5. Paint: `PaintColor` the colour row converted to linear, `FresnelIndex` 1.55 (table default 1.65), `FresnelScalar` 0.9, `reflectionScaler` 1, `SpecularCubeScalar` equal to the row's `Metallic` flag, flake terms off (`MetalScale` 0), `psDeferredHeadlightEnable` 0, `useStaticCubeMap` 1. Glass: `FresnelIndex` 4.35, `FresnelScalar` 0.7, `GlassColor` alpha 0.29, `SpecularPower` 133, `SpecularAmount` 0. Lamp-cover additive pass: `Glancing` 0.4, `Direct` 0.1, `FresnelPower` 5."""
+how = """Pixel and vertex float and bool constants at each car draw in M1 frame dumps (2026-11-19), named through the D3D constant tables in shaders_ui_v16.fxobj; values compared with TrackSettings.xml and the cars' colour rows."""
+confidence = """confirmed"""
+note = """Which 0.75 factor (filmic exposure, or iblDirectScale x iblDirectScaleCar) scales the key light, and how the hemispherical coefficients are computed, are open. The shading equations were not recovered."""
+source = """docs/formats/SHOWROOM_LIGHTING.md"""
+
+[[finding]]
+group = """Shaders, textures and models"""
 name = """car glass and paint shaders"""
 what = """In free roam a traffic car's glass and paint draw into the 7e3-as-16 HDR target, whose bloom resolves spread their output. The car shader jumps over a predicated cube fetch, with a texture fetch deciding the predicate. The HDR paint and glass shaders depend on the Xenos rule that 0 times infinity is 0."""
 how = """Frame dumps bisected with draw skips, null fetches and per-draw logs; audit of the translated shaders."""
@@ -1103,6 +1140,15 @@ what = """At night in free roam the game issues no viz queries (no `PM4_VIZ_QUER
 how = """Counters of viz query packets, probe draws, conditional draws and `REG_TO_MEM` registers over 600-frame windows, parked and driving at 23:00; guest CPU access traps on every resolved range (`fh1_trace_resolve_cpu_accesses`)."""
 confidence = """confirmed"""
 source = """docs/native-renderer/HEADLIGHT_FLICKER.md Lights through the car and terrain"""
+
+[[finding]]
+group = """Light glows"""
+name = """Autoshow lamp and highlight glow"""
+what = """The soft glow round an Autoshow car's nearest headlamp, and round other hot spots such as a stage light caught on a window frame, is not a sprite or flare geometry and does not use lamp positions. No showroom lamp is lit (`psDeferredHeadlightEnable` 0 on every car draw); the bright lamps are the lamp covers' additive environment-reflection pass, which writes HDR values far above 1. The glow is spread over the screen by a post pass after the main pass, most likely the bloom chain (bright pass with cutoff 1.0 at 320x192, blur, composite add)."""
+how = """Hidden replays of the DBS M1 dump (2026-11-19): the car-only image minus the same without the car's additive draws loses 13,522 mask pixels, all round the left headlamp, though those draws write only inside their parts. The Abarth 500 glow falls smoothly from about 8/255 to 1/255 over 100 px with the far background unchanged. No car-matrix draw other than the drop-shadow fan is non-model geometry."""
+confidence = """probable"""
+note = """Which post pass adds it is open: the per-frame bloom scale is zeroed in these runs and the glow remains. Test: null the composite's bloom input, then skip the scene rewrite, in a hidden replay."""
+source = """docs/formats/SHOWROOM_LIGHTING.md#lamp-and-highlight-glow-engine-question-q11"""
 
 [[finding]]
 group = """Shaders, textures and models"""
