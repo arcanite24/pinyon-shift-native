@@ -63,7 +63,7 @@ the code, and meant to be swapped out:
   controller, shift states, reverse selection under braking) since
   398228b8, with the measured engine and clutch fits of 67371030.
   Scenario results and the open questions: SPEC_QUESTIONS Q20 to Q29
-  and Q33 (load transfer under braking).
+  and Q33-Q34 (braking load transfer; the reverse launch).
 - **Ground** (`drive::MeshGround`): a static BVH over triangles behind
   the `drive::Ground` interface. Since COLLISION.md it holds the game's
   collision (`world::Collision`): the `.fiz` tiles whose 100 m cell lies

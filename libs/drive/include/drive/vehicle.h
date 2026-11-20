@@ -104,6 +104,10 @@ struct CarParams {
   Vec3 centre_of_mass{0, 0.5, 0};   // body frame; from_bake puts z at mid-wheelbase
   Vec3 inertia{0, 0, 0};            // principal moments about x, y, z; 0 = a box of `inertia_box`
   Vec3 inertia_box{1.8, 1.3, 4.3};  // SPEC-CAR-PHYSICS: the mass as a solid box of these sides, m
+  // The height above the centre of mass's ground point at which the tyres'
+  // longitudinal forces act on the body's pitch, as an arm below the centre
+  // of mass (m); <= 0: at the contact patch.
+  double longitudinal_pitch_arm = 0;
   Vec3 size{1.8, 1.3, 4.3};         // the body contacts' box, m (ours)
   double gravity = 9.8;             // the spec's weight: 15.6 x 9.8
   double airborne_gravity_scale = 1.15, per_tyre_off_gravity_scale = 1.05;
@@ -169,6 +173,9 @@ struct CarParams {
   // Drivetrain.
   enum class Layout { kRear, kFront, kAll } layout = Layout::kRear;
   double rear_split = 0.7;  // AWD torque share to the rear
+  // AWD centre differential's locking torque (N m at its input, x the
+  // final drive at the wheels) while the engine drives / while it brakes.
+  double centre_lsd_accel = 0, centre_lsd_decel = 0;
   std::vector<double> gears{3.30, 2.13, 1.55, 1.21, 1.00, 0.82};
   double reverse_gear = 3.4;  // magnitude
   double final_drive = 3.70;

@@ -65,6 +65,9 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.centre_of_mass.y = get("List_UpgradeCarBodyWeight.CMHeight", p.centre_of_mass.y);
   // CMLeftRight 0.5 is the centre; the side it measures from is our guess.
   p.centre_of_mass.x = (get("List_UpgradeCarBodyWeight.CMLeftRight", 0.5) - 0.5) * track;
+  // SPEC-CAR-PHYSICS scenario B, load transfer: the tyres' longitudinal
+  // forces pitch the body through a 0.27 m arm (measured fit, one car).
+  p.longitudinal_pitch_arm = 0.27;
   p.inertia = {};
   p.inertia_box = {get("List_UpgradeCarBodyWeight.BlockDimX", p.inertia_box.x),
                    get("List_UpgradeCarBodyWeight.BlockDimY", p.inertia_box.y),
@@ -155,6 +158,11 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   const int type = int(std::lround(get("Data_Drivetrain.DrivetypeID", 2)));
   p.layout = type == 1 ? CarParams::Layout::kFront : type == 3 ? CarParams::Layout::kAll : CarParams::Layout::kRear;
   p.rear_split = get("List_UpgradeDrivetrainDifferential.RearToqueSplit", 0.5);
+  // The centre differential's drive-side locking (SPEC-CAR-PHYSICS,
+  // scenario B reverse phase: probable, from the forces). Its RelVelClamp
+  // and AccelDefInputTorque are not decoded; ours locks like a clutch.
+  p.centre_lsd_accel = get("List_UpgradeDrivetrainDifferential.CenterLimitedSlipTorqueAccel", 0);
+  p.centre_lsd_decel = get("List_UpgradeDrivetrainDifferential.CenterLimitedSlipTorqueDecel", 0);
   const std::string tr = "List_UpgradeDrivetrainTransmission.";
   const int count = int(std::lround(get(tr + "NumGears", 7)));
   std::vector<double> gears;
@@ -179,10 +187,10 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
 
   // Brakes (SPEC-CAR-PHYSICS, Brakes): the measured full-press torque per
   // front wheel (3,800 to 4,050 N m from the wheel balance; the formula is
-  // not decoded), the rear 0.41 x the front (measured on the R34; the bias
-  // rule is open).
+  // not decoded), the rear 1,750 N m = 0.45 x the front by the same wheel
+  // balance (measured on the R34; the bias rule is open).
   p.front_brake_torque = 3900;
-  p.rear_brake_torque = 0.41 * p.front_brake_torque;
+  p.rear_brake_torque = 0.45 * p.front_brake_torque;
   // The tyre's longitudinal scale on a wheel whose applied torque slows it.
   p.brake_friction_scale = get("List_TireCompound.TorqueFreeLongFrictionScaleBrake", 1) *
                            get("List_UpgradeBrakes.GameFrictionScaleBraking", 1);

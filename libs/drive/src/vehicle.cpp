@@ -591,6 +591,25 @@ void Vehicle::substep(double dt, const Ground& ground) {
     // The tyre's torque back on the wheel is F_x x r (SPEC-CAR-PHYSICS).
     j_eff[i] = p.wheel_inertia + reflected * weight_[i] + dt * p.tyre_radius[i] * slope[i];
     resist[i] = p.tyre_radius[i] * fx0[i] + (std::fabs(w_[i].omega) > 0.1 ? sign(w_[i].omega) * brake[i] : 0);
+  }
+  // A limited-slip centre (AWD): it moves torque from the faster axle to
+  // the slower, up to its locking torque (drive side while the clutch
+  // passes engine torque forward, else the decel side), and no more than
+  // would bring the two axles' speeds together this substep (ours: a
+  // clutch-type lock; the columns' RelVelClamp is not decoded).
+  double lsd[kWheels]{};
+  if (p.layout == CarParams::Layout::kAll && G != 0 && clutch_ > 0) {
+    const double lock = (tc_prev_ >= 0 ? p.centre_lsd_accel : p.centre_lsd_decel) * p.final_drive;
+    if (lock > 0) {
+      const double d_omega = 0.5 * (w_[2].omega + w_[3].omega) - 0.5 * (w_[0].omega + w_[1].omega);
+      const double jf = j_eff[0] + j_eff[1], jr = j_eff[2] + j_eff[3];
+      const double t = std::clamp(d_omega / (dt * (1 / jf + 1 / jr)), -lock, lock);  // to the front axle
+      lsd[0] = lsd[1] = 0.5 * t;
+      lsd[2] = lsd[3] = -0.5 * t;
+    }
+  }
+  for (int i = 0; i < kWheels; ++i) {
+    resist[i] -= lsd[i];
     num += G * weight_[i] * resist[i] / j_eff[i];
     den += G * G * weight_[i] * weight_[i] / j_eff[i];
   }
@@ -610,7 +629,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
   double omega_new[kWheels];
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
-    double o = w.omega + dt * (tc * G * weight_[i] - p.tyre_radius[i] * fx0[i]) / j_eff[i];
+    double o = w.omega + dt * (tc * G * weight_[i] + lsd[i] - p.tyre_radius[i] * fx0[i]) / j_eff[i];
     const double b = brake[i] * dt / j_eff[i];
     o = std::fabs(o) <= b ? 0 : o - sign(o) * b;
     if (!w.contact) o *= 1 - 0.5 * dt;  // bearing drag in the air
@@ -640,6 +659,15 @@ void Vehicle::substep(double dt, const Ground& ground) {
       w.fx = fx;
       force = force + f;
       torque = torque + cross(contact[i] - pos_, f);
+      // The longitudinal force pitches the body through the measured arm
+      // instead of the contact patch's height below the centre of mass
+      // (SPEC-CAR-PHYSICS scenario B, load transfer): the same force at a
+      // point raised along the body's up axis.
+      if (p.longitudinal_pitch_arm > 0) {
+        const double below = dot(pos_ - contact[i], up);
+        if (below > p.longitudinal_pitch_arm)
+          torque = torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
+      }
     }
     if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];

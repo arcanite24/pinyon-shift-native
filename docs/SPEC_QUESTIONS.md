@@ -355,44 +355,54 @@ by 0.085 s); the rears stay within 3 % of the ground speed until
 0.075 s (oracle 0.085 s) and first reach their release point at
 0.208 s (oracle 0.25 s).
 
-## Q33 (blocking B): the load transfer under braking
+## Q33 (answered, CAR_PHYSICS 241331e7): the load transfer under braking
 
-After the first 0.17 s our loads keep moving forward: by 0.3 s the
-fronts carry 6,500-7,000 N and the rears 330-900 N (the spec: rears
-1,300-2,600 N through the stop, and their tyre torque of 900-1,250 N m
-implies about 1,600-2,200 N). At a front load of about
-T / (1.8 r) = 6,800 N the tyre's torque reaches the 3,900 N m brake, so
-our fronts cannot be pulled to the release point: they are braked on
-95 % of steps (oracle 50-54 %), the rears on 46 % (74-81 %), and the
-ABS phase is 14.8 m/s^2 (oracle 11.9-12.1). B's mean of 8.49 m/s^2 only
-passes because that cancels the weak reverse phase (4.10 m/s^2 over
-1.56 s; oracle ~5 over 1.26-1.29 s). Our transfer is the rigid body's:
-tyre forces at the contact patch, centre of mass at CMHeight 0.481 m
-above the ground (the spec marks it "probable: not checked against the
-trace").
+Answer: CMHeight is 0.47-0.48 m above the ground (confirmed); the tyres'
+longitudinal forces pitch the body through a 0.27 m arm (measured fit);
+the rear brake is 1,750 N m = 0.45 x the front; in the reverse launch the
+centre differential's drive-side lock (`CenterLimitedSlipTorqueAccel`,
+255) moves torque to the fronts (probable). Implemented:
+`longitudinal_pitch_arm` 0.27 (the force's moment taken at a point
+raised along the body's up axis), rear brake 0.45 x front, and a
+clutch-type limited-slip centre: up to the lock x the final drive at the
+wheels, never more than would bring the axles' mean speeds together in
+the substep (ours; `RelVelClamp` and `AccelDefInputTorque` are not
+decoded).
 
-A debug-only sweep of the centre-of-mass height (not committed):
+Our B1 loads now sit in the oracle's band: fronts 5,100-5,800 N
+(oracle 4,600-5,955), rears 1,500-2,300 N (1,358-2,709).
 
-| CM height (m) | ABS phase (m/s^2) | braked front / rear | reverse at | mean |
-|---|---|---|---|---|
-| 0.481 (rows) | 14.82 | 95 / 46 % | +1.08 s | 8.49 |
-| 0.40 | 12.63 | 72 / 65 % | +1.28 s | 7.94 |
-| 0.35 | 12.50 | 68 / 74 % | +1.29 s | 7.85 |
-| 0.30 | 12.19 | 62 / 79 % | +1.32 s | 7.85 |
-| 0.16 (0.481 - r) | 12.27 | 56 / 96 % | +1.31 s | 7.88 |
-| oracle | 11.9-12.1 | 50-54 / 74-81 % | +1.31-1.36 s | 8.57 |
+| Check | Engine | Oracle |
+|---|---|---|
+| B mean deceleration | 8.016 m/s^2 (-6.5 %, miss) | 8.57 |
+| ABS phase | 13.19 m/s^2 (+10 %) | 11.9-12.1 |
+| Braked steps front / rear | 71 / 70 % | 50-54 / 74-81 % |
+| Reverse selected | +1.225 s, 23.6 km/h | +1.31-1.36 s |
+| Reverse phase | 3.99 m/s^2 over 1.575 s | ~4.9 over 1.26-1.29 s |
+| Turn circle | 3.372 m (pass) | 3.37 m |
 
-A brake of 3,690 N m (the onset table's full press) at 0.481 m changes
-little (14.34, 95 / 47 %). Needed: run B1's four wheel loads and the
-pitch over 0.2-1.3 s of the press, and CMHeight's reference point (or
-the pitch moment arm the oracle uses for the tyre forces).
+## Q34 (blocking B): the reverse launch's drive torque, and the front ABS duty
 
-Engine choices the spec leaves open (ours, logged here): Ackermann
-steering geometry; the steering lock narrowed with speed to hold 1 g
-(atan rule, 5 degree minimum); engine braking ZeroThrottleTorqueScale x
-ramp(rpm); an idle governor; the automatic clutch opening when road rpm
-falls under 0.9 x idle; a 1 m/s slip speed floor; an implicit wheel
-update, with the body force the tyre's at the new wheel speed.
+1. Our reverse launch is clutch-limited: at engagement 0.41-0.50 (c
+   0.50-0.59, the oracle's 0.43-0.58) the capacity is
+   0.45 x 977 x 0.72 = 316 N m, x 3.28 x 3.545 = 3,680 N m at the
+   wheels, about 11 kN of tyre force. Ours makes 10.5-11.8 kN (5.9 m/s^2
+   over 1.1 s from 6.7 m/s), the rears at a slip of only -0.1 (the
+   centre lock holds the axles together). The oracle's front pair alone
+   makes 7,000-12,500 N and the spinning rears 5,000-9,000 N more, which
+   the same clutch capacity cannot pass. Needed: the oracle's clutch
+   torque (or the engine's net torque) in the reverse launch, or whether
+   the reverse path has its own ratio or capacity.
+2. The coast before it is 0.47 s (oracle 0.38 s): our engine starts it
+   at 1,544 rpm (oracle 1,940).
+3. Our fronts are braked on 71 % of steps in the ABS phase (oracle
+   50-54 %). After each release (6 steps, as the oracle's) they spin up
+   to a slip of about 0 and then take 9-21 steps to reach the release
+   point again, the longest while the clutch is locked in 1st (the
+   engine's inertia on the wheels). The oracle's 0.106 s row has a
+   released front at only -1.51. Needed: a few of the oracle's front
+   ABS cycles (slip per step over one release and reapply) in 1st with
+   the clutch locked.
 
 ## Q30 (polish, M1): the F40 Competizione's rear window
 
