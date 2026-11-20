@@ -45,3 +45,10 @@ add_executable(physics_tests physics_tests.cpp)
 target_link_libraries(physics_tests PRIVATE shift_drive)
 add_test(NAME physics_tests COMMAND physics_tests)
 set_tests_properties(physics_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
+# SPEC-TRAFFIC: the road map, the settings and the time-of-day factor over
+# the player's files (skipped, exit 77, without SHIFT_GAME_ROOT).
+add_executable(traffic_tests traffic_tests.cpp)
+target_link_libraries(traffic_tests PRIVATE shift_traffic)
+add_test(NAME traffic_tests COMMAND traffic_tests)
+set_tests_properties(traffic_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
