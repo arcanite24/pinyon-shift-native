@@ -328,7 +328,8 @@ def match(args: argparse.Namespace) -> int:
             note = "follows"
             if top is None:
                 best = score_all(w)
-                top, note = best[0], f"next {best[1][1]} r={best[1][0]:.2f}"
+                top = best[0]
+                note = f"next {best[1][1]} r={best[1][0]:.2f}" if len(best) > 1 else ""
             previous = top
             print(f"  {start / rate:6.1f} s  {top[1]:36} at {top[2]:7.1f} s  r={top[0]:.2f}  rms {level:.0f}  {note}",
                   flush=True)

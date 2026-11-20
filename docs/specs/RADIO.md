@@ -36,8 +36,10 @@ Inputs, all from the player's files and the engine's own state:
   RADIO STATION, RADIO DJ and RADIO VOLUME options.
 
 v4 and the 21 DLC packages add no radio files: v4's `media.zip` has no
-radio member, and no package ships one. v4 adds a rally radio mode
-(`SetRadioRallyMode`, findings "v4 type names"), out of scope here.
+radio member, and none of the 57 package archives holds a radio member
+(only two cars' gauge textures have "radio" in their names). v4 adds a
+rally radio mode (`SetRadioRallyMode`, findings "classes the title update
+adds"), out of scope here.
 
 Evidence comes from:
 
@@ -57,8 +59,9 @@ Evidence comes from:
 - the flow files in `gamemodes.zip` for the behaviours that drive the
   radio.
 
-This spec quotes clip names and counts only. The playlists, titles and
-artists are read from the player's files at run time.
+This spec quotes names, counts and measured values only. The playlists,
+titles, artists, sync points, levels and fade times are read from the
+player's files at run time; the spec names the attributes that hold them.
 
 ## Tracks (item 1)
 
@@ -81,8 +84,8 @@ aligned to 32 bytes.
 keeps only 29 characters of a name, and many DJ lines share their first 29
 characters. A clip named in `RadioSystem.xml` is the sample at its info
 file entry's `SoundBankIndex`. With that rule every name resolves (counts
-below). Matching by the truncated bank name fails for 140 or more names
-per station.
+below). Matching by the truncated bank name fails for 133 to 147 names
+per player station.
 
 **Languages.** The disc has VO banks for EN, BR, FR and MX, but info files
 for 15 languages. Interim rule: use the player's language when its bank
@@ -178,8 +181,11 @@ The flows also set a station by name (`bass_arena`, `pulse`, `2_eleven`,
 fixed two-track playlist. M4's free roam needs none of these.
 
 **Start station.** Two runs from the same seed started free roam once on
-off and once on Rocks. The rule is open. Interim rule: start on the
-profile's RADIO STATION option, and on Bass Arena when there is none.
+off (run A) and once on Rocks (run B). Run A ended on Rocks, but each run
+plays a fresh copy of the seed and the seed's profile was not written, so
+no carried state was found; it may be chance. The rule is open. Interim
+rule: start on the profile's RADIO STATION option, and on Bass Arena when
+there is none.
 
 ### Live radio: what a station does while not selected
 
@@ -193,7 +199,7 @@ mid-track.
 | --- | --- | --- | --- |
 | Rocks, off and back (run B) | 10 s | 0 s | +0.0 s (resumed) |
 | Rocks, off, Bass Arena, off and back (run B) | 61 s | 20 s | +20.2 s |
-| Rocks, off, Bass Arena, off and back (run A) | 135 s | 45 s | +45 s: the next track stood at 51.8 s, against 6.7 s plus 45 if it started at its beginning |
+| Rocks, off, Bass Arena, off and back (run A) | 135 s | 45 s | +45 s into the next track, if that track was `R3_AwayFromHere` from its start (the capture ended 2 s into the next track, too early to tell it from `R3_Animal`) |
 | Bass Arena, Pulse, Rocks, off and back (run A) | 135 s | 90 s | +95 s (5 s more than the rule; the next track started under a DJ line, see Unknowns) |
 
 When the radio first came on in run A the three stations stood at 88, 73
@@ -221,7 +227,7 @@ track A ... IdentStart(A)                      end of A
   the ident.
 - The next track starts at the ident's `OffsetStartNextTrack`, under the
   ident's last seconds.
-- In both changes captured with the whole transition, a DJ regular line
+- In both changes captured to the next track, a DJ regular line
   started within 0.2 s of the next track and talked over its intro (Bass
   Arena: an Autoshow reminder; Rocks: a fact about a rival).
 - No crossfade: the clips overlap at full level. The overlaps are part of
@@ -229,20 +235,23 @@ track A ... IdentStart(A)                      end of A
 
 Observed: Bass Arena `R1_ThePower`, `R123_IdentShared_01`, DJ line, then
 `R1_Illmerica`; Rocks `R3_BackOfYourNeck`, `R3_Ident_06`, DJ line, then
-`R3_AwayFromHere`; Pulse `R2_SpiritOfTheNight`, then `R2_Ident_05`.
+probably `R3_AwayFromHere`; Pulse `R2_SpiritOfTheNight`, then
+`R2_Ident_05`.
 
-**Shuffle.** The next track is not the playlist's next entry: entry 16
-was followed by entry 4 (Bass Arena), and 1 by 20 (Rocks). Interim rule
+**Shuffle.** The next track is not the playlist's next entry: on Bass
+Arena entry 16 was followed by entry 4 (no other track fits the time to
+the return), and on Rocks entry 1 by entry 20 or entry 0. Interim rule
 for the picker, from the attribute names (probable): pick uniformly at
 random, weighted by the time-of-day likelihood (all 1 on the disc), among
 the entries not among the last `noRepeat` played. The same for idents and
 DJ lines with their own `noRepeat`.
 
-**DJ lines.** `maxTracksBetweenDJ` is 1. Interim rule: after each ident,
+**DJ lines.** `System maxTracksBetweenDJ` allows a DJ break after every
+track on the disc. Interim rule: after each ident,
 play one regular line from the station's `DJRegularDialogue` over the next
 track's intro, when the line ends before that track's `EventStart` and the
-RADIO DJ option is on; else play no line. Bookends are `DJ_Blank` (a 2 s
-silent clip) and can be skipped. Special, immediate and festival lines
+RADIO DJ option is on; else play no line. Bookends are `DJ_Blank` (a silent
+clip) and can be skipped. Special, immediate and festival lines
 come from gameplay events and the flows; leave them out of M4.
 
 ### Off
@@ -252,9 +261,10 @@ lines. Treat it as silence that stops the other stations' clocks.
 
 ### Switching fades
 
-`stationChangeFadeTimeUser` is 0.25 s and `stationChangeFadeTimeNormal`
-0.5 s. Interim rule: on a D-pad change, fade the old station out and the
-new one in over 0.25 s each. The captures show the new station within
+`System stationChangeFadeTimeUser` (a D-pad change) and
+`stationChangeFadeTimeNormal` (a change by the game) give the fade times.
+Interim rule: on a D-pad change, fade the old station out and the new one
+in, each over `stationChangeFadeTimeUser`. The captures show the new station within
 about 1 s of the press; the fade itself was not resolved.
 
 ## Mixing (item 3)
@@ -268,19 +278,18 @@ radio gain = musicLevel x masterLevel x RADIO VOLUME option
              x GameMusic level of each active snapshot group
 ```
 
-| Source | Value |
+| Factor | Where |
 | --- | --- |
-| `System musicLevel`, `masterLevel` | 0.85, 1.0 (`identLevel` 0.3 and `dialogueLevel` 1.0 for idents and DJ lines; whether `identLevel` scales the idents is probable) |
-| `GameMusic` in `FreeRoam` (Gameplay group) | 1.0, against `FocusCar` (the player's engine) 0.35 |
-| Location group | `Festival` 0.8, others 1.0 |
-| Speed group | `TopSpeed` 1.15, `LowSpeed` 0.9 |
-| SatNav group | `SatNavPlaying` 0.25 |
-| VO group | `VOPlaying` 0.25 (story speech, not the DJ) |
-| Gameplay states | `Paused` 0.25, `Loading` 0.25, `UIExterior` 0.22, `RaceEncounter` 0.22, `Barnfind` 0.25 |
+| Music level and master level | `System musicLevel`, `masterLevel`; idents and DJ lines use `identLevel` and `dialogueLevel` instead of `musicLevel` (probable) |
+| Free-roam level | `GameMusic` in the `FreeRoam` snapshot (Gameplay group); the player's engine is `FocusCar` in the same snapshot |
+| Place | `GameMusic` in the Location group (`Festival` is lower than the others) |
+| Speed | `GameMusic` in `TopSpeed` and `LowSpeed` (Speed group; slightly louder at top speed) |
+| Speech | `SatNavPlaying` (SatNav group) and `VOPlaying` (VO group) lower the music |
+| Game states | `Paused`, `Loading`, `UIExterior`, `RaceEncounter` and `Barnfind` (Gameplay group) lower the music |
 
 Snapshot groups multiply (findings "mixer snapshots multiply"), and each
 snapshot fades to its level over its `fadetime`. The `AudioEngineConfig.xml`
-`gameMusic` level (0.4) measured no effect in free roam (findings) and
+`gameMusic` level measured no effect in free roam (findings) and
 should be ignored.
 
 **Measured.** Parked at idle in free roam, the radio played stereo on the
@@ -291,28 +300,30 @@ engine.** The level under throttle was not captured.
 
 ### Ducking
 
-| When | What drops | To | Fade |
-| --- | --- | --- | --- |
-| A DJ line plays (`RadioDJSpeaking`) | the player's engine (`FocusCar`), sat-nav | 0.4, 0 | 0.3 s |
-| A festival update (`RadioFestivalUpdate`) | engine; music | 0.4; 0.8 | 0.3 s |
-| Sat-nav speaks | music; engine | 0.25; 0.5 | 0.2 s |
-| Story speech | music and engine | 0.25 | 0.3 s |
-| Pause, loading | music | 0.25 | 0.2 to 2 s |
+| When (snapshot) | What drops |
+| --- | --- |
+| A DJ line plays (`RadioDJSpeaking`) | the player's engine (`FocusCar`) and sat-nav; not the music |
+| A festival update (`RadioFestivalUpdate`) | the engine, and the music a little |
+| Sat-nav speaks (`SatNavPlaying`) | the music, and the engine less |
+| Story speech (`VOPlaying`) | the music and the engine |
+| Pause, loading | the music |
 
-`System duckValue` is 0.3 with `duckFadeDownTime` 0.1 s and
-`duckFadeUpTime` 0.5 s. Interim rule: duck the music under a DJ line to 0.3
-with those fades. The capture under the two DJ lines did not settle it,
-because the line and the new track's intro overlap.
+Each snapshot fades to its `destvolume` over its `fadetime` and back over
+its `returnfadetime`. `System duckValue`, `duckFadeDownTime` and
+`duckFadeUpTime` hold a separate music duck. Interim rule: duck the music
+to `duckValue` under a DJ line with those fades. The captures under the two
+DJ lines did not settle it, because the line and the new track's intro
+overlap.
 
 ## HUD (item 4)
 
 A station change shows a popup at the right of the screen, above the
 speedometer:
 
-- a station: its `RS_*` logo (210x100 DXT5 texture), and under it the
+- a station: its `RS_*` logo (findings "station popup logos"), and under it the
   current track's title (white) and artist (on a pink label), from the
   playlist's `name` and `artist`, right-aligned;
-- off: a muted-speaker icon (`RS_Off`, 32x32) and RADIO OFF on one line, in
+- off: a muted-speaker icon (`RS_Off`) and RADIO OFF on one line, in
   the title's place.
 
 Layout at 1280x720 (measured by eye on captures; scale with the screen):
@@ -324,21 +335,29 @@ Layout at 1280x720 (measured by eye on captures; scale with the screen):
 | Artist line | right edge near 1207 | about 446 to 470 |
 | Speedometer (for reference) | 1035 to 1210 | 510 to 665 |
 
-Timing, in 60 Hz frames after the press:
+Timing, in route frames (60 a second of real time) after the press; the
+game rendered about 50 frames a second in these hidden runs (median of the
+run's performance log):
 
 | Popup | Starts | Full | Fades out | Gone |
 | --- | --- | --- | --- | --- |
 | RADIO OFF | before 20 | by 20 | about 185 | by 200 |
 | A station | 36 to 48 | 54 to 100 | about 190 | 220 to 240 |
 
-So the popup shows for about 2.5 s with fades of about 0.2 s, and a
-station's appears about 0.7 s after the press, probably once the track's
-name is known. Interim rule: show for 2.5 s after a 0.6 s delay, fading
-over 0.2 s; RADIO OFF at once.
+In real time the popup showed for about 2.5 s with fades of about 0.2 s,
+and a station's appeared about 0.7 s after the press, probably once the
+track's name is known. **The game's popup timer is not real time:** it
+steps a fixed 1/30 s each rendered frame (findings "other constant-step
+updaters"). At 50 frames a second the 2.5 s are about 125 updates, so on
+the console at 30 frames a second the popup would show for about 4.2 s,
+and a station's would appear about 1.1 s after the press (if the delay
+is counted the same way). Interim rule: show a station's popup for 4 s
+after a 1 s delay and RADIO OFF for 4 s at once, fading over 0.2 s
+(probable; check by eye in the play test).
 
-`HUDNewTrackDisplayDelayFreeRoam` (2 s) and `...Race` (4 s) are probably
-the delay before the same popup shows a new track while listening. That was
-not captured. Interim rule: show the popup 2 s after a track starts.
+`System HUDNewTrackDisplayDelayFreeRoam` and `...Race` are probably the
+delay before the same popup shows a new track while listening. That was not
+captured. Interim rule: show the popup that long after a track starts.
 
 ## State
 
@@ -350,23 +369,26 @@ selected. Nothing is saved but the selected station (profile option).
 
 ## Rates and timing
 
-The radio runs on real time, not the simulation step: positions advance in
-seconds of audio output, and the popup timing above is real time (60 Hz
-frames at 60 frames a second). The game's own updates of the popup and the
-radio state run at its audio or HUD rate (about 30 Hz); an engine may
-update at its frame rate.
+The music runs on real time, not the simulation step: positions advance in
+seconds of audio output. The popup's timer advances a fixed 1/30 s per
+rendered frame, so its duration in seconds depends on the frame rate (HUD
+section); an engine should time the popup in seconds, using the console's
+30 Hz values.
 
 ## Unknowns
 
 | Unknown | Confidence of the rule given | Do meanwhile |
 | --- | --- | --- |
-| The start station in free roam (off once, Rocks once from one seed) | open | the profile's option, else Bass Arena |
+| The start station in free roam (off once, Rocks once from one seed; run A ended on Rocks, no carried state found) | open | the profile's option, else Bass Arena |
+| The popup's console duration (4.2 s from a 1/30 s step at 30 frames a second) and whether its delay is counted the same way | probable | 4 s, 1 s delay |
+| Which Rocks track followed `R3_BackOfYourNeck` in run A (`R3_AwayFromHere` or `R3_Animal`) | probable (`AwayFromHere`) | no change to the rules |
+| The radio's level under throttle | not measured | set by ear against the idling-engine ratio |
 | The 5 s excess on one Bass Arena return (next track under a DJ line) | open | the background rule as given |
 | The picker: weights, `noRepeat` window, whether DJ lines follow every track | probable | uniform shuffle with the `noRepeat` window; a DJ line after each ident if it fits before `EventStart` |
-| Music ducking under DJ lines (`duckValue`) | probable | duck to 0.3, 0.1 s down, 0.5 s up |
-| The station-change fade | probable | 0.25 s out and in |
-| The new-track popup | probable | 2 s after a track starts |
-| Whether `identLevel` 0.3 scales idents | probable | apply it |
+| Music ducking under DJ lines (`duckValue`) | probable | duck to `duckValue` with its fade times |
+| The station-change fade | probable | `stationChangeFadeTimeUser` out and in |
+| The new-track popup | probable | `HUDNewTrackDisplayDelayFreeRoam` after a track starts |
+| Whether `identLevel` scales idents | probable | apply it |
 | A language without its own VO bank | open | EN |
 | Special, immediate and festival DJ lines; interviews; vox pops (`RadioDJVoxPops.xml`) | out of scope for M4 | omit |
 | The 3D location stations, the rally radio mode of v4 | out of scope for M4 | omit |
@@ -382,8 +404,8 @@ update at its frame rate.
   rule within 0.2 s).
 - Sequencing: ident start at `IdentStart` and next track at
   `OffsetStartNextTrack`, within 0.1 s.
-- Popup: delay and duration within 0.2 s; position within 2 % of the
-  screen.
+- Popup: delay and duration within 0.3 s of the interim values at 30
+  frames a second; position within 2 % of the screen.
 - Levels: by ear in the play test, with the radio about 20 dB over the
   idling engine.
 
