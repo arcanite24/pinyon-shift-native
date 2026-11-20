@@ -133,7 +133,7 @@ wheel w  = dynamics + 3936 + 1024 * w     0, 1 front; 2, 3 rear
 
 ## Activities and collectibles
 
-Free roam's collectibles and points of interest are **activities**: discount signs (`CActivityFlyers`), barn finds, speed cameras, average speed zones, gas stations and the rest. Discount signs and barn finds also keep a saved record in the profile, which is how the game remembers what was found and revealed.
+Free roam's collectibles and points of interest are **activities**: discount signs (`CActivityFlyers`), barn finds, speed cameras, average speed zones, gas stations and the rest. Discount signs and barn finds also keep a saved record in the profile, which is how the game remembers what was found and revealed. Each smashed sign takes one percent off upgrade prices, so all 100 make upgrades free; a barn find becomes discoverable only while its rumour runs. The native engine's specification for both, and for the map they appear on, is [SPEC-FREEROAM-COLLECTIBLES](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/specs/FREEROAM_COLLECTIBLES.md).
 
 {{findings:objects/Activities and collectibles}}
 

@@ -271,7 +271,8 @@ name = """CActivityBarnFind"""
 what = """A barn find: vtable `0x82078B5C` (set up by `sub_828B99C8`), discovered byte `+44` (set by `sub_828B9448`), float4 position `+112`, marker handles `+320` ("barnfind") and `+360` ("barnfind_collected"), `CBarnFindState` at `+424` and a collected byte at `+513` (the record's `+45`). The record's status at `+56` is 3 before it spawns, 4 while the spawn is pending (`sub_828BC5E0`), 5 once spawned with its rumour running (`sub_828BC658`; only then can it be discovered), 1 when discovered (`sub_828B9BF8`) and 0 once collected (`sub_828BC3B0`). `sub_828A5BF8(barn find, show)` toggles its exact-location marker, and the collected marker once found; `sub_828A78B0` is its reveal."""
 how = """Reading the state functions; showing locations through the title's own call."""
 confidence = """confirmed"""
-source = """src/cheats_map.cpp; config/mod/fh1-symbols.toml barn_find.*"""
+note = """Every found barn on the reference save reads status 2, live and in the saved record (2026-11-20), so 1 and 0 are transients of the discovery flow or 2 is set later; SPEC-FREEROAM-COLLECTIBLES writes 2 for a found barn."""
+source = """src/cheats_map.cpp; config/mod/fh1-symbols.toml barn_find.*; docs/specs/FREEROAM_COLLECTIBLES.md States"""
 
 [[finding]]
 group = """Activities and collectibles"""
@@ -533,3 +534,13 @@ how = """Per-wheel values in oracle body traces of two full-brake stops and thre
 confidence = """probable"""
 note = """The friction-scale switch and both brake maps are confirmed on one car; the per-wheel constant's formula, the bias rule and the code that switches the map in the AI-input mode are not decoded. The earlier reading of `+112` as a constant full-press torque held only because the pad stops were full presses."""
 source = """docs/specs/CAR_PHYSICS.md Brakes"""
+
+[[finding]]
+group = """Activities and collectibles"""
+base = """sub_828D8D38, 0x8207BB2C, sub_824C5108"""
+name = """discount sign smash event"""
+what = """A sign is counted through the event "Activity Discount Sign Smashed" (string `0x8207BB2C`): its handler `sub_828D8D38`, reached from the event dispatcher `sub_824C5108`, calls the sign's smash (`sub_828C0C80`) with notification on, then posts the string as a notification. The sign is a smashable object (`SmashableObjectTypes.xml` lists `Flyer`); all 100 use the model `O_FEST_EquipSign` and one shared flag-1 index in the zone files, and are placed by `GameObjs.xml` objects of the activity's name."""
+how = """Xrefs to the smash function and its string; placements from the zone files and `GameObjs.xml` (positions equal within 1e-6 m; the live positions within 0.08 m)."""
+confidence = """confirmed"""
+note = """The break threshold (speed or impulse) of the smashable is not found; SPEC-FREEROAM-COLLECTIBLES uses contact above 1 m/s as an interim rule."""
+source = """docs/specs/FREEROAM_COLLECTIBLES.md Discount signs"""

@@ -496,3 +496,24 @@ what = """`sub_82BFBA90` uses `XamInputRawState` and `XNotifyGetNext` with a 16-
 how = """Static reading of the generated code."""
 confidence = """guess"""
 source = """docs/FEATURE_BACKLOG.md FB-2"""
+
+[[finding]]
+group = """HUD and map"""
+base = """MapProfileFullscreen.xml group background; Horizon.zip Map/background"""
+v4 = """same"""
+name = """map background projection"""
+what = """The pause map's background is one painted image in two levels: `low-0-0.xds` (2048x1229) and fifteen 1024-pixel `high-<c>-<r>.xds` tiles (5 columns west to east, 3 rows north to south, drawn within 3,000 m of the view). Both cover X -9583.3 to +9583.3 and Z -6900 to +4600 in the game frame, north (+Z) up: the profile's `Offset` is the south-west corner and its `Size` (11500) the north-south extent, the width following from the 5:3 tiles. So u = (X + 9583.3) / 19166.7 and v = (4600 - Z) / 11500; 3.74 m per high-level pixel."""
+how = """Every `colorado.nav` road drawn over both levels with this projection lies on the painted roads (`tools/re/collectibles.py overlay`); the player's capture pose projects onto the road junction where the car stood, and onto the pause map's arrow within about 25 m when the capture is registered to the texture by two painted labels."""
+confidence = """confirmed"""
+source = """docs/specs/FREEROAM_COLLECTIBLES.md The minimal map"""
+
+[[finding]]
+group = """HUD and map"""
+base = """MapProfileFullscreen.xml, MapProfileMinimap.xml, colorado.nav"""
+v4 = """same"""
+name = """map render profiles"""
+what = """The map and minimap draw the roads as vector lines from `colorado.nav` ways tagged `road_type` (dirt, b, a, freeway; none and shortcut are not drawn), not from the texture, plus `colorado.nav` labels and area outlines, and icons from `MapIconSheet.xds` (pause map, 128-pixel cells) or `MapIconSheetSmall.xds` (minimap, 64-pixel cells), 8x8 cells per language. Groups filter on map tags: `activity_type` (flyer, flyer_collected, barnfind, barnfind_collected, race and the other activities), `vehicle_type` (player_local, traffic, ai) and `type` = barn_find_region (the rumour ellipse). The minimap has no background texture: it is a heading-up, tilted view of the vector layers, its icons faded out between 2,400 and 2,800 m."""
+how = """Reading the profiles; captures of the minimap and pause map on the reference save (2026-11-20)."""
+confidence = """confirmed"""
+note = """Heading-up and the tilt are from one frame (probable); the minimap's zoom is not measured."""
+source = """docs/specs/FREEROAM_COLLECTIBLES.md The minimal map"""

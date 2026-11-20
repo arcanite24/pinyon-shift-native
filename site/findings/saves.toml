@@ -175,11 +175,12 @@ source = """docs/DLC_BACKLOG.md DLC-7, DLC-5; src/dlc_token_unlocks.cpp"""
 
 [[finding]]
 group = """Profile values"""
+base = """sub_8252FEB0, sub_8252FF50, 0x82012B44"""
 name = """upgrade discount on the reference save"""
-what = """Upgrade prices on the reference save show an 85% discount: a 10,000-credit Rally tyre costs 1,500, and the Rally suspension and transmission cost 930 each. Race winnings are recorded per car as well as added to credits."""
-how = """Purchases and save audits on the reference save."""
+what = """Upgrade prices on the reference save showed an 85% discount when it had 85 signs: a 10,000-credit Rally tyre cost 1,500, and the Rally suspension and transmission cost 930 each. `sub_8252FEB0` reads `Main/UpgradeDiscount` (string `0x82012B44`) from the profile and scales it by 0.01; `sub_8252FF50(price)` returns the price unchanged when that is 0, else (1 - d) x price + 0.5 truncated, in single precision (six call sites). With all 100 signs the field reads 100, so upgrades cost nothing. Race winnings are recorded per car as well as added to credits."""
+how = """Purchases and save audits on the reference save; reading the two functions in Ghidra; the field read from the reference save's decrypted body (2026-11-20, 100 signs, value 100)."""
 confidence = """confirmed"""
-note = """Confirmed for the observed prices. `Main/UpgradeDiscount` holds the percentage (see "achievement progress fields"); whether it stops at 85 once every sign is found is not established."""
+note = """The field equals the found-sign count on both saves read (85 and 100); where the smash writes it (a count or an increment) is not traced. Whether every caller is an upgrade price is not traced (car purchases were charged in full, probable)."""
 source = """docs/DLC_BACKLOG.md Rally upgrade definitions and tyre purchase; Base-disc Rally tyre conversions; Rally audio update ownership"""
 
 [[finding]]
@@ -221,3 +222,12 @@ how = """Hooks at `0x828E292C`/`0x828E2930` and `0x828D7ED4`; save restore exper
 confidence = """confirmed"""
 note = """The v4 addresses are the hook sites."""
 source = """src/pinyon_shift_runtime_hooks.cpp PinyonShiftRestoreCareerEligibility, PinyonShiftPersistPostViperCheckpoint; config/rexglue/analysis/main-xex.toml career hooks"""
+
+[[finding]]
+group = """Profile values"""
+name = """collectible records in the profile"""
+what = """The class-serialised tail holds a record `Colorado` (class `CHorizonLocationState`, version 2) whose payload is a count (191) and child records of the same form as every tail record: name, class name (each a big-endian length and ASCII), version, payload size, payload. Among them: 100 `CFlyerState` (version 1, 2 bytes: revealed by the Treasure Map, found), 9 `CBarnFindState` (version 3, 15 bytes: revealed, discovered, collected, f32 total distance driven at discovery, f32 total distance driven when the rumour started, u32 status), 10 `CGasStationState`, 30 `CMissionState`, the speed camera and zone states, `CRoadDiscovery` and `CFirstTimeCareerState`. In memory the barn record's status is at `+56` (see CActivityBarnFind), so the serialised bytes map to `+40`, `+44`, `+45`, `+48`, `+52`, `+56`."""
+how = """Decoded with `tools/re/collectibles.py profile` from three decrypted bodies: the achievement-survey save (85 signs found, 5 rumours started), a later save of the same player (Treasure Map bought: every revealed byte 1) and the reference save (2026-11-20: 100 of 100 signs, 6 barn finds found with status 2, one rumour at status 5, two at status 3), which also matched the live census of the map-marker cheat."""
+confidence = """confirmed"""
+note = """The distance unit is that of `Main/TotalDistanceDriven` (probable metres). Found barns read status 2, not the 0 or 1 the state functions set during discovery."""
+source = """docs/specs/FREEROAM_COLLECTIBLES.md Profile record; tools/re/collectibles.py"""

@@ -1,0 +1,47 @@
+pinyon-shift-fh1-render-test-v1
+# clock-hz 60
+# M4 collectibles oracle (docs/specs/FREEROAM_COLLECTIBLES.md,
+# SPEC-FREEROAM-COLLECTIBLES) on a pinned copy of the reference save (v4).
+# Run hidden with the v4 build and
+#   PINYON_SHIFT_M5_SAVE_TRACE=1 (the loaded profile body in logs/save-snapshots)
+#   --game-argument=--pinyon_shift_cheats=true
+#   --game-argument=--pinyon_shift_physics_trace=6 (the player's pose)
+# cheat_show_collectibles logs every discount sign and barn find with its
+# live position and found state (cheat.collectible); the captures show the
+# minimap in free roam and the pause map, before and after the markers.
+input 0 0000 0 0 0 0 0 0
+wait 10 30000 file pressstart.wmv
+input 360 1000 0 0 0 0 0 0
+input 366 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 486 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 606 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 726 0000 0 0 0 0 0 0
+input 840 1000 0 0 0 0 0 0
+input 864 0000 0 0 0 0 0 0
+input 960 1000 0 0 0 0 0 0
+input 984 0000 0 0 0 0 0 0
+input 1080 1000 0 0 0 0 0 0
+input 1104 0000 0 0 0 0 0 0
+input 1200 1000 0 0 0 0 0 0
+input 1224 0000 0 0 0 0 0 0
+input 1320 1000 0 0 0 0 0 0
+input 1344 0000 0 0 0 0 0 0
+wait 1400 6000 vehicle
+capture 1500 free-roam
+input 1530 0020 0 0 0 0 0 0
+input 1536 0000 0 0 0 0 0 0
+capture 1650 map-before
+input 1740 0020 0 0 0 0 0 0
+input 1746 0000 0 0 0 0 0 0
+cvar 1780 cheat_show_collectibles true
+capture 1900 free-roam-on
+input 1930 0020 0 0 0 0 0 0
+input 1936 0000 0 0 0 0 0 0
+capture 2050 map-on
+input 2140 0020 0 0 0 0 0 0
+input 2146 0000 0 0 0 0 0 0
+capture 2260 free-roam-return
+stop 2290

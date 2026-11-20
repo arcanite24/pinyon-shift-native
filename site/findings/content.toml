@@ -880,3 +880,14 @@ what = """The festival's wristbands, numbered 1 to 7 on the bands themselves, ar
 how = """Decoding the textures; the achievement descriptions name the colours in order."""
 confidence = """confirmed"""
 source = """src/achievements/fh1_achievements.cpp; docs/ACHIEVEMENTS_UI_BACKLOG.md AC-0.3"""
+
+[[finding]]
+group = """Events and career"""
+base = """gamemodes.zip Colorado/barnfinds.xml, barnfinds.xml"""
+v4 = """same"""
+name = """barn find activity data"""
+what = """Each of the 9 `ActivityBarnFind` entries names a `TriggerZone` object (the derelict car placed in `GameObjs.xml` and the zone files, a car-specific model; radius 10 m, `maxMPH` 50, no button), a `HintRegion` (the rumour circle, an offset from the trigger and radii of 286 to 600 m), `SpawnInfo` and `DistanceDriven` values (meaning not traced), a `DoorInfo` set of four `GameObjs.xml` objects (barn with closed or open doors, `Barnfind_Barn__LOD00`, and their collision) and the `UnlockCar` row: 1219, 1040, 1277, 1105, 1386, 1154, 1301, 251 and 1155, all unicorns. The shared `barnfinds.xml` holds the discovery sequence (control off, fade, cut scenes, traffic removed and restored, the Barn This Way achievement, a micro-save) and the rumour reveal (pause, map with the barn-finds filter forced on, the region's unlock animation)."""
+how = """Reading the files; `tools/re/collectibles.py census` checks every trigger and door object is placed; the live positions logged by the map-marker cheat match the trigger objects within 0.08 m."""
+confidence = """confirmed"""
+note = """The rumour spawn rule is open: on the reference save the rumours started in the order 02, 01, 03, 04, 08, 05, 07, with gaps of 144, 49, 50, 52, 207 and 250 km of total distance."""
+source = """docs/specs/FREEROAM_COLLECTIBLES.md Barn finds"""
