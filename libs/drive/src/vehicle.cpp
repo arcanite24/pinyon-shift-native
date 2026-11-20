@@ -197,15 +197,18 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // The lock narrows with speed to hold steer_max_gees of kinematic lateral
   // acceleration (ours, after SteerSpeedSensitiveMaxGees), never below
   // steer_min_lock. At walking pace it is the full SteerMaxAngle.
+  const double target = shaped_.steer * steer_lock();
+  const bool centring = std::fabs(target) < std::fabs(steer_angle_) && target * steer_angle_ >= 0;
+  steer_angle_ = approach(steer_angle_, target, centring ? p_.straighten_rate : p_.steer_rate, dt);
+}
+
+double Vehicle::steer_lock() const {
   const double wheelbase = std::fabs((p_.wheel_centres[0].z + p_.wheel_centres[1].z) / 2 -
                                      (p_.wheel_centres[2].z + p_.wheel_centres[3].z) / 2);
   const double v = std::fabs(speed());
-  double lock = p_.max_steer;
-  if (v > 0.1) lock = std::clamp(std::atan(p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
-                                 std::min(p_.steer_min_lock, p_.max_steer), p_.max_steer);
-  const double target = shaped_.steer * lock;
-  const bool centring = std::fabs(target) < std::fabs(steer_angle_) && target * steer_angle_ >= 0;
-  steer_angle_ = approach(steer_angle_, target, centring ? p_.straighten_rate : p_.steer_rate, dt);
+  if (v <= 0.1) return p_.max_steer;
+  return std::clamp(std::atan(p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
+                    std::min(p_.steer_min_lock, p_.max_steer), p_.max_steer);
 }
 
 double Vehicle::engine_torque(double rpm, double throttle) const {
@@ -432,6 +435,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 probe = hard - down * p.probe_height;
     double compression = -droop_[i];
     w.contact = up.y > 0.2 && ground.raycast(probe, down, reach, hit);
+    w.surface = w.contact ? hit.surface : -1;
     if (w.contact) {
       compression = p.rest_length - (hit.distance - p.probe_height - radius);
       if (compression < -droop_[i]) w.contact = false, compression = -droop_[i];

@@ -3,7 +3,8 @@ add_library(shift_drive STATIC
   src/from_bake.cpp
   src/mesh_ground.cpp
   src/from_physics.cpp
-  src/profile_ground.cpp)
+  src/profile_ground.cpp
+  src/oracle_lap.cpp)
 target_include_directories(shift_drive PUBLIC include)
 target_link_libraries(shift_drive PUBLIC shift_cars)
 if(MSVC)

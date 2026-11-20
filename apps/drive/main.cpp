@@ -20,6 +20,16 @@
 // run) towards +z, instead of the flat ground.
 // --run cruise (with --world) drives itself along the road at --speed km/h
 // (default 40), with libs/world's test driver.
+// --run lap --line <lap.jsonl> (with --world) drives the M3 gate's lap
+// (SPEC-CAR-PHYSICS, "Oracle lap for the M3 gate"): from the oracle's grid
+// it settles --settle s (default 2) on the handbrake, then from the
+// start signal replays the oracle's gas and brake against the distance
+// along its line and steers by pure pursuit on it (--lookahead s of
+// speed, default 0.5, at least 5 m). The race clock stops when the body
+// point crosses the gate of --lap-json (default lap.json beside the line)
+// or --gate x z nx nz. --physics-trace then writes every 60 Hz frame as a
+// mode-3 sample and ends with a dlc.rally.race_trace event, for
+// physics-behaviour.py compare.
 // --materials prints the triangles per material name of the first gather
 // with our surface class.
 //
@@ -29,6 +39,7 @@
 // 0-100 km/h time, the top speed, the stopping distance from 100 km/h and
 // the rest pose. All physics constants are placeholders (libs/drive).
 
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -44,6 +55,7 @@
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive/mesh_ground.h"
+#include "drive/oracle_lap.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
 #include "world/stream.h"
@@ -60,12 +72,16 @@ const std::map<std::string, std::string> kRuns = {
     {"circle", "0 0 0 0\n1 0.5 0.35 0\n"},
     {"reverse", "0 0 0 1\n"},
     {"cruise", "0 0 0 0\n"},  // input from world::RoadFollower
+    {"lap", "0 0 0 0\n"},     // input from drive::LineFollower
 };
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  fs::path bake_dir, script_path, trace_path, world_dir, cache_path, physics_trace_path;
+  fs::path bake_dir, script_path, trace_path, world_dir, cache_path, physics_trace_path, line_path, lap_json_path;
+  double settle = 2, lookahead_s = 0.5;
+  bool have_gate = false, seconds_given = false;
+  drive::Gate gate;
   int physics_every = 6;
   std::string car, run = "launch";
   double seconds = 20;
@@ -81,7 +97,23 @@ int main(int argc, char** argv) {
     else if (a == "--car") car = next();
     else if (a == "--script") script_path = next();
     else if (a == "--run") run = next();
-    else if (a == "--seconds") seconds = std::stod(next());
+    else if (a == "--seconds") {
+      seconds = std::stod(next());
+      seconds_given = true;
+    }
+    else if (a == "--line") line_path = next();
+    else if (a == "--lap-json") lap_json_path = next();
+    else if (a == "--settle") settle = std::max(0.0, std::stod(next()));
+    else if (a == "--lookahead") lookahead_s = std::stod(next());
+    else if (a == "--gate") {
+      gate.x = std::stod(next());
+      gate.z = std::stod(next());
+      gate.nx = std::stod(next());
+      gate.nz = std::stod(next());
+      const double len = std::hypot(gate.nx, gate.nz);
+      if (len > 0) gate.nx /= len, gate.nz /= len;
+      have_gate = true;
+    }
     else if (a == "--trace") trace_path = next();
     else if (a == "--physics-trace") physics_trace_path = next();
     else if (a == "--every") physics_every = std::max(1, std::stoi(next()));
@@ -109,6 +141,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "usage: drive --bake <dir> --car <name> [--script <file> | --run "
                            "rest|launch|brake|circle|reverse] [--seconds N] [--trace <csv>]\n"
                            "             [--physics-trace <jsonl> [--every N]]\n"
+                           "             [--run lap --line <lap.jsonl> [--lap-json <file> | --gate x z nx nz] "
+                           "[--settle s] [--lookahead s]]\n"
                            "             [--world <colorado dir> [--cache <file>] [--near x z] "
                            "[--spawn x y z heading] [--materials] [--render-ground]]\n");
       return 2;
@@ -140,6 +174,49 @@ int main(int argc, char** argv) {
   if (!drive::parse_script(text, script, &error)) {
     std::fprintf(stderr, "drive: %s\n", error.c_str());
     return 1;
+  }
+
+  // The oracle lap: its line, gate and grid.
+  const bool lap = run == "lap" && script_path.empty();
+  drive::OracleLine line;
+  if (lap) {
+    if (line_path.empty() || world_dir.empty()) {
+      std::fprintf(stderr, "drive: --run lap needs --line <lap.jsonl> and --world\n");
+      return 2;
+    }
+    auto slurp = [](const fs::path& p, std::string& out) {
+      std::ifstream in(p, std::ios::binary);
+      if (!in) return false;
+      std::stringstream ss;
+      ss << in.rdbuf();
+      out = ss.str();
+      return true;
+    };
+    std::string line_text, json_text;
+    if (!slurp(line_path, line_text) || !drive::parse_oracle_line(line_text, line, &error)) {
+      std::fprintf(stderr, "drive: %s: %s\n", line_path.string().c_str(), error.empty() ? "unreadable" : error.c_str());
+      return 1;
+    }
+    if (!have_gate) {
+      if (lap_json_path.empty()) lap_json_path = line_path.parent_path() / "lap.json";
+      if (!slurp(lap_json_path, json_text) || !drive::parse_gate(json_text, gate, &error)) {
+        std::fprintf(stderr, "drive: %s: %s (or pass --gate x z nx nz)\n", lap_json_path.string().c_str(),
+                     error.empty() ? "unreadable" : error.c_str());
+        return 1;
+      }
+    }
+    if (!have_spawn) {
+      spawn[0] = line.start.x;
+      spawn[1] = line.start.y;
+      spawn[2] = line.start.z;
+      spawn[3] = line.start.yaw_deg * 3.14159265358979323846 / 180;
+      have_spawn = true;
+    }
+    if (!seconds_given) seconds = settle + (line.race_seconds > 0 ? 2 * line.race_seconds : 120);
+    std::printf("oracle line: %zu samples, grid %.3f %.3f %.3f yaw %.3f deg, race time %.3f s; gate %.3f %.3f "
+                "towards %.5f %.5f\n",
+                line.samples.size(), line.start.x, line.start.y, line.start.z, line.start.yaw_deg,
+                line.race_seconds, gate.x, gate.z, gate.nx, gate.nz);
   }
 
   std::vector<std::string> physics_notes;
@@ -237,6 +314,107 @@ int main(int argc, char** argv) {
     v.reset({s.position[0], s.position[1], s.position[2]}, s.heading);
     ground = &streamer->ground();
   }
+  if (lap) {
+    // SPEC-CAR-PHYSICS, "Oracle lap for the M3 gate".
+    drive::LineFollower::Options fo;
+    fo.lookahead_s = lookahead_s;
+    drive::LineFollower follower(line, fo);
+    drive::GateTimer timer(gate, follower.length() / 2);
+    std::ofstream out;
+    if (!physics_trace_path.empty()) out.open(physics_trace_path, std::ios::binary);
+    const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
+    long long last_frame = LLONG_MIN;
+    double distance = 0, t100 = -1, top = 0, max_cross = 0, sum_cross2 = 0, finish_speed = 0;
+    int lap_steps = 0, saturated = 0;
+    std::map<int, long long> surfaces;
+    std::vector<double> ours_at;  // our race time at each 100 m of the oracle's path
+    drive::Vec3 prev = v.position();
+    double prev_t = -settle;
+    bool finished = false;
+    double after_finish = 0;
+    for (int s = 0; s < steps; ++s) {
+      const bool racing = v.time() >= settle - 1e-9;
+      // Held on the handbrake until the start signal (the brake at rest
+      // selects reverse).
+      drive::Input in{0, 0, 0, true};
+      if (racing) in = follower.input(v);
+      v.step(in, *ground);
+      const double t = v.time() - settle;
+      const drive::Vec3 at = v.position();
+      if (streamer) {
+        bool changed = false;
+        if (!streamer->update(at.x, at.z, &changed, &error)) {
+          std::fprintf(stderr, "drive: %s\n", error.c_str());
+          return 1;
+        }
+        if (changed) ground = &streamer->ground();
+      }
+      if (t > 0) {
+        distance += std::sqrt((at.x - prev.x) * (at.x - prev.x) + (at.y - prev.y) * (at.y - prev.y) +
+                              (at.z - prev.z) * (at.z - prev.z));
+        if (!finished) {
+          ++lap_steps;
+          const double c = std::fabs(follower.cross_track());
+          max_cross = std::max(max_cross, c);
+          sum_cross2 += c * c;
+          saturated += follower.saturated();
+          for (const auto& w : v.wheels())
+            if (w.contact) ++surfaces[w.surface];
+          if (t100 < 0 && v.speed() >= 100 / 3.6) t100 = t;
+          top = std::max(top, v.speed());
+          while (follower.progress() >= 100.0 * double(ours_at.size() + 1)) ours_at.push_back(t);
+          if (timer.update(prev_t, prev.x, prev.z, t, at.x, at.z, follower.progress())) {
+            finished = true;
+            finish_speed = v.speed();
+          }
+        } else {
+          after_finish += drive::Vehicle::kStep;
+        }
+      }
+      if (out.is_open()) {
+        const long long frame = std::llround(t * 60);
+        if (frame != last_frame) out << drive::lap_trace_event(v, bake.car.car_id, t, distance) << "\n";
+        last_frame = frame;
+      }
+      prev = at;
+      prev_t = t;
+      if (finished && after_finish >= 1.0) break;
+    }
+    if (out.is_open()) out << drive::race_trace_event(finished, timer.time()) << "\n";
+    std::printf("car %s, run lap, %d lap steps (SPEC-CAR-PHYSICS, oracle lap)\n", bake.car.media_name.c_str(),
+                lap_steps);
+    if (finished) {
+      const double ref = line.race_seconds;
+      std::printf("race time: %.3f s (oracle %.3f s, %+.2f %%: %s the 2 %% gate), crossing at %.1f km/h\n",
+                  timer.time(), ref, ref > 0 ? 100 * (timer.time() - ref) / ref : 0.0,
+                  ref > 0 && std::fabs(timer.time() - ref) <= 0.02 * ref ? "within" : "outside",
+                  finish_speed * 3.6);
+    } else {
+      std::printf("race time: none (DNF): progress %.1f of %.1f m after %.1f s\n", follower.progress(),
+                  follower.length(), v.time() - settle);
+    }
+    std::printf("0-100 km/h: %.2f s, top speed %.1f km/h, distance %.1f m (oracle path %.1f m)\n", t100, top * 3.6,
+                distance, follower.length());
+    std::printf("line: cross-track max %.2f m, rms %.2f m; steer past full lock on %d of %d steps\n", max_cross,
+                lap_steps ? std::sqrt(sum_cross2 / lap_steps) : 0.0, saturated, lap_steps);
+    long long wheel_samples = 0;
+    for (const auto& [k, n] : surfaces) wheel_samples += n;
+    for (const auto& [k, n] : surfaces)
+      std::printf("surface %d (%s): %.1f %% of wheel samples\n", k,
+                  streamer && streamer->uses_collision() ? collision.surface_name(k).c_str() : "-",
+                  wheel_samples ? 100.0 * double(n) / double(wheel_samples) : 0.0);
+    size_t k = 0;
+    for (const auto& sample : line.samples) {
+      if (sample.t < 0) continue;
+      while (k < ours_at.size() && sample.distance >= 100.0 * double(k + 1)) {
+        std::printf("at %4.0f m: oracle %6.2f s, ours %6.2f s (%+.2f s)\n", 100.0 * double(k + 1), sample.t,
+                    ours_at[k], ours_at[k] - sample.t);
+        ++k;
+      }
+    }
+    return finished ? 0 : 3;
+  }
+
   const drive::Vec3 start = v.position();
   const bool cruise = run == "cruise" && script_path.empty();
   if (cruise && !streamer) {

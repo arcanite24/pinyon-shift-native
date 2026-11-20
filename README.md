@@ -195,6 +195,14 @@ carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --run slalom
 carview --drive --headless --bake out/bake --car NIS_SkylineGTRVSpecII_02 --run launch --out out/drive/r34.png --audio-out out/drive/r34.wav
 carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --world <game>/media/tracks/colorado \
         --run cruise --seconds 120 --every 10 --out out/drive/colorado.png
+# The M3 gate's lap (CAR_PHYSICS.md, "Oracle lap for the M3 gate"): the
+# oracle's grid, its pedals replayed by distance along its line, pure-pursuit
+# steering on it, timed to the gate of lap.json; prints the race time, the
+# line error, the surfaces and the time against the oracle every 100 m, and
+# writes a trace physics-behaviour.py compares (--clock-hz 60)
+drive --bake out/bake --car NIS_SkylineGTRVSpecII_02 --world <game>/media/tracks/colorado \
+      --run lap --line <oracle-lap>/lap.jsonl --physics-trace out/lap/lap.jsonl
+python <horizon1-recomp>/tools/physics-behaviour.py compare <oracle-lap>/lap.jsonl out/lap/lap.jsonl --clock-hz 60
 
 # Performance (M2): the cruise from the spawn, every frame at 60 Hz of game
 # time rendered and timed, no images: frame CPU, GPU by stage (timestamps)

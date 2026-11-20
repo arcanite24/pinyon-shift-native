@@ -245,6 +245,7 @@ struct WheelState {
   double brake = 0;         // the brake fraction this wheel got (0 while the ABS releases it)
   double fx = 0;            // N, the tyre's longitudinal force on the body (last substep)
   bool contact = false;
+  int surface = -1;         // the ground's surface index under it (-1: none or unknown)
   Vec3 centre{};            // body frame, rest centre moved by the travel
 };
 
@@ -290,6 +291,9 @@ class Vehicle {
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
   double steer_angle() const { return steer_angle_; }  // road wheels, rad
+  // The road-wheel angle a full stick asks for at the current speed (the
+  // lock narrows with speed; see shape_input).
+  double steer_lock() const;
   double time() const { return time_; }
   // The body contacts' total force in the last substep (N): 0 while only
   // the tyres touch the ground.

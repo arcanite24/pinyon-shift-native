@@ -10,6 +10,7 @@
 
 #include "drive/from_bake.h"
 #include "drive/mesh_ground.h"
+#include "drive/oracle_lap.h"
 #include "drive/vehicle.h"
 
 namespace {
@@ -178,6 +179,78 @@ void test_model_to_world() {
   CHECK(m[10] < -0.99f && m[0] > 0.99f && m[5] > 0.99f);
 }
 
+// SPEC-CAR-PHYSICS, "Oracle lap for the M3 gate": a synthetic oracle lap
+// on a 40 m circle (turning towards +x), followed on flat ground.
+std::string circle_lap(double radius, double gas) {
+  std::string text;
+  char buf[512];
+  const double length = 2 * 3.14159265358979323846 * radius;
+  for (int f = -30; f <= 3000; ++f) {
+    const double t = f / 60.0;
+    const double s = t > 0 ? 8 * t : 0;  // 8 m/s along the circle
+    if (s > length + 40) break;
+    const double a = s / radius;
+    std::snprintf(buf, sizeof buf,
+                  "{\"event\":\"fh1.physics_trace\",\"frame\":%d,\"mode\":\"3\",\"t_s\":%.6f,"
+                  "\"cars\":\"0:R34:0:%.3f:800:1:%.3f:0.000:0.000\",\"x\":%.4f,\"y\":0,\"z\":%.4f,"
+                  "\"yaw_deg\":%.4f,\"distance_m\":%.4f}\n",
+                  f, t, t > 0 ? 8.0 : 0.0, t >= 0 ? gas : 0.0, radius - radius * std::cos(a), radius * std::sin(a),
+                  a * 180 / 3.14159265358979323846, s);
+    text += buf;
+  }
+  text += "{\"event\":\"dlc.rally.race_trace\",\"started\":\"1\",\"ended\":\"1\",\"end_reason\":\"1\","
+          "\"time_72\":\"31.416\"}\n";
+  return text;
+}
+
+void test_oracle_lap() {
+  drive::OracleLine line;
+  std::string error;
+  CHECK(drive::parse_oracle_line(circle_lap(40, 0.25), line, &error));
+  CHECK(std::fabs(line.race_seconds - 31.416) < 1e-9);
+  CHECK(line.start.t == 0 && line.start.x == 0 && line.start.z == 0);
+  drive::Gate gate;
+  CHECK(drive::parse_gate("{\"gate\": {\"point_xz\": [0.0, 0.0], \"crossing_direction_xz\": [0, 2]}}", gate, &error));
+  CHECK(gate.nx == 0 && std::fabs(gate.nz - 1) < 1e-12);
+  CHECK(!drive::parse_gate("{\"race\": {}}", gate, &error));
+
+  drive::LineFollower follower(line, {});
+  // The grid's pedals are the last sample at distance 0: the launch's gas.
+  double gas = 0, brake = 1;
+  follower.pedals_at(0, gas, brake);
+  CHECK(std::fabs(gas - 0.25) < 1e-9 && brake == 0);
+
+  // Follow the circle once round, past the gate.
+  drive::Vehicle v(test_car());
+  const drive::FlatGround ground;
+  v.reset({0, 0, 0}, 0);
+  drive::GateTimer timer(gate, follower.length() / 2, 5);
+  drive::Vec3 prev = v.position();
+  double max_cross = 0;
+  for (int i = 0; i < int(60 / drive::Vehicle::kStep) && !timer.crossed(); ++i) {
+    const double t0 = v.time();
+    v.step(follower.input(v), ground);
+    const drive::Vec3 at = v.position();
+    if (v.time() > 2) max_cross = std::max(max_cross, std::fabs(follower.cross_track()));
+    timer.update(t0, prev.x, prev.z, v.time(), at.x, at.z, follower.progress());
+    prev = at;
+  }
+  CHECK(timer.crossed());
+  CHECK(max_cross < 1.5);
+  CHECK(follower.progress() > 2 * 3.14159265358979323846 * 40 - 5);
+
+  // A crossing before half the lap or against the direction is not the finish.
+  drive::GateTimer early(gate, 100);
+  CHECK(!early.update(0, 0, -1, 1, 0, 1, 50));
+  drive::GateTimer backwards(gate, 0);
+  CHECK(!backwards.update(0, 0, 1, 1, 0, -1, 200));
+  drive::GateTimer finish(gate, 0);
+  CHECK(finish.update(1, 0, -1, 2, 0, 3, 200) && std::fabs(finish.time() - 1.25) < 1e-12);
+
+  const std::string end = drive::race_trace_event(true, 38.5);
+  CHECK(end.find("\"ended\":\"1\"") != std::string::npos && end.find("\"time_72\":\"38.500000\"") != std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -189,6 +262,7 @@ int main() {
   test_script();
   test_mesh_ground();
   test_model_to_world();
+  test_oracle_lap();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;
