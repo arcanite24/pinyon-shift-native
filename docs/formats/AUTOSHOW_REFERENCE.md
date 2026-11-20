@@ -354,11 +354,13 @@ the mask; `image_car_only` keeps the glow.
 cockpit sections, tyres and wheels left out of both sides), projected
 with `clip_from_car` and rasterised at pixel centres, against the game's
 coverage of the same parts (a car-only replay without the wheel draws,
-against the empty frame, at the mask threshold): IoU 0.988 to 0.995 on
-five cars (Abarth 595 of 1968 0.990, Abarth 500 esseesse 0.988,
-Alfa Romeo 8C Spider 0.995, 8C Competizione 0.996, TZ3 Stradale 0.990).
-The remaining difference is edge pixels and the transparent pass's one
-pixel shift.
+against the empty frame, at the mask threshold): IoU 0.988 to 0.996 on
+seven cars (Abarth 595 of 1968 0.990, Abarth 500 esseesse 0.988,
+Alfa Romeo 8C Spider 0.995, 8C Competizione 0.996, TZ3 Stradale 0.990,
+AMC Javelin AMX 0.994, Lancia 037 Stradale 0.990). The remaining difference is
+edge pixels and the transparent pass's one pixel shift. Thin parts the
+car draws, such as the Ford F-150 SVT Raptor's whip antenna, stay in the
+mask as one-pixel lines; they are car geometry, not stage leak.
 
 ## Plan for every car
 
