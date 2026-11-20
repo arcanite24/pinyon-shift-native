@@ -33,7 +33,10 @@ readers, and a car drawn from the game's own files.
 | `libs/data` | Game database rules (SPEC-EVENT-RESTRICTIONS): decodes and re-encodes `EventRestrictions.Value` strings into per-bucket restriction sets, and tests a car against a set |
 | `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models; `--props` the object table, `.pgeo` tiles and `.pvsz` zones |
 | `apps/event-restrictions-corpus` | Decodes every `EventRestrictions` row of the player's `media/db/gamedb.slt` (opened read-only) and checks each round-trips; prints counts only |
-| `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, one pipeline, depth, 4x MSAA, one texture, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
+| `libs/cars` | Cars (FORMAT-CARS): the install (disc, v4 title update, installed DLC packages in priority order), the merged car database (v4 `gamedb.slt` plus each package's patch databases), and the baked format `.shiftbake` with its writer and reader |
+| `apps/car-corpus` | Reproduces every count of FORMAT-CARS's Tests section over the player's files (`--check` fails on a mismatch) |
+| `apps/carbake` | Bakes every distinct car (240), its stock wheel, the tyre archives and the shared textures to `.shiftbake` files, deterministically and in parallel; `--dump` lists a bake |
+| `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, depth, 4x MSAA, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG. `--bake` is the showroom over baked cars (our car shader and lighting, paint, livery masks, wheels, brakes, glass last) with a reference mode that renders at a reference camera and writes the car-coverage mask; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
 | `tests` | Unit tests on synthetic bytes |
 | `tools` | Windows build script, shader regeneration |
 
@@ -72,7 +75,35 @@ with `python tools/regenerate-shaders.py [--compiler path]`.
 `media` folder itself). Car names are the archive names under
 `media/cars`, e.g. `AST_DB5Vantage_64`.
 
+`<state>` is the folder that holds the installed packages' `user/` tree
+(`user/0000000000000000/4D5309C9/00000002/<package>/Media/DLCZips`), and
+`<dlc>` an optional folder of the packages' offer ZIPs already extracted
+(`<package>/<offer stem>/media/...`); without it they are read in place.
+
 ```sh
+# Cars: every count of FORMAT-CARS's Tests section (also run by ctest when
+# SHIFT_GAME_ROOT and SHIFT_STATE_ROOT are set; SHIFT_DLC_EXTRACTED optional)
+car-corpus --game-root <game> --state-root <state> [--dlc-extracted <dlc>] --check
+
+# Bake every car to out/bake (keep it out of the repository); the time is
+# written to out/bake/bake-time.txt
+carbake --game-root <game> --state-root <state> [--dlc-extracted <dlc>] --out out/bake
+carbake --dump out/bake/cars/fia_500abarthss_10.shiftbake
+
+# Showroom over the bake: window, or headless with the coverage mask
+carview --bake out/bake --car FIA_500AbarthSS_10 [--colour N] [--livery]
+carview --bake out/bake --car FIA_500AbarthSS_10 --headless --out car.png --mask car_mask.png
+
+# Reference mode: camera, size and paint from an AUTOSHOW_REFERENCE v1
+# JSON; compared with the capture and mask named in it (or --against
+# ref.png --against-mask ref_mask.png), printing IoU, masked PSNR and
+# edge overlap
+carview --bake out/bake --reference <refs>/1115.json --out 1115.png --mask 1115_mask.png
+
+# The M1 report over every reference: report.txt with the plan's pass
+# rule, and reference | engine | mask-difference PNGs (keep out/ local)
+python tools/m1-report.py --carview build/apps/carview/carview.exe --bake out/bake --refs <refs> --out out/m1
+
 # Corpus test: every archive, every .carbin and .xds member
 fh1data-corpus --game-root <game> [--verbose] [--filter cars/]
 
@@ -202,6 +233,38 @@ opaque.
   include barrier sets, for example a line of concrete barriers along
   the road through the dumped camera, that the free-roam frame does not
   draw.
+
+## Status (M1 car viewer, 2026-11-19)
+
+- `car-corpus --check` reproduces every count of FORMAT-CARS's Tests
+  section over the disc, v4 and the 21 installed packages, including 250
+  `Data_Car` rows and 240 distinct media names, in 7 s.
+- `carbake` writes 480 files (7.81 GB) for all 240 cars in 16-18 s on
+  multivac (16 threads; recorded in `bake-time.txt`); a second bake is
+  byte-identical.
+- The showroom draws all 240 cars headless (0.8 s each including load):
+  LOD0 body (the `a` variant of each part set, no upgrade parts), the
+  cockpit's hood, windscreen, headlights and cabin, rotors and callipers
+  per corner at the wheel-centre rows, and rims and `TireC` tyres fitted
+  to each axle's sizes. Paint is the lowest-Sequence colour where the
+  atlas alpha is 0; callipers take `CaliperRGB`. Lighting is our own: a
+  procedural studio cube (floor, walls, overhead softbox, side strips)
+  for diffuse and reflections, a key and a fill light, and the vertices'
+  baked occlusion. Glass is blended last, far to near.
+- 14 cars have no real LOD0 body and 6 have stand-in parts; they draw
+  from the LOD1-5 model (Q6).
+- Reference mode reads AUTOSHOW_REFERENCE v1. Over the first nine
+  references (`tools/m1-report.py`): silhouette IoU 0.968-0.996 (mean
+  0.989), eight of nine at or above 0.97; masked PSNR 8.9-12.6 dB
+  (median 10.8, none more than 6 dB under it); edge overlap 0.47-0.81.
+  The low PSNR is the lighting: the engine's studio is brighter than the
+  Autoshow stage. Under 0.97: `ALF_ZagatoTZ3Stradale_12` (0.968, Q10).
+- Two departures from FORMAT-CARS, both from the references: wheel-centre
+  z is negated (Q9), and rims are scaled by their own authored radius
+  (Q3).
+- Open in the spec: tyre model (Q3), part variants (Q4), cockpit parts
+  (Q5), calliper angle and rim facing (Q7), slot-1 UVs (Q8), TZ3 wheels
+  and roof (Q10).
 
 ## Licence
 
