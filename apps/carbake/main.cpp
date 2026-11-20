@@ -196,14 +196,23 @@ int dump(const fs::path& path) {
         std::printf("    %-20s lod %d x %.3f..%.3f r %.3f..%.3f\n", s.technique.c_str(), s.lod, x0, x1, r0, r1);
         const auto& morphs = s.lod == 0 ? p.lod0_morphs : p.lod_morphs;
         for (size_t t = 0; t < morphs.size(); ++t) {
-          float tx0 = 1e9f, tx1 = -1e9f, tr0 = 1e9f, tr1 = 0;
+          float tx0 = 1e9f, tx1 = -1e9f, tr0 = 1e9f, tr1 = 0, moved = 0;
+          size_t changed = 0, counted = 0;
           for (uint32_t i : s.indices) {
-            if (i >= morphs[t].size()) continue;
+            if (i >= morphs[t].size() || i >= pool.size()) continue;
             const auto& v = morphs[t][i];
             const float r = std::sqrt(v[1] * v[1] + v[2] * v[2]);
             tx0 = std::min(tx0, v[0]), tx1 = std::max(tx1, v[0]), tr0 = std::min(tr0, r), tr1 = std::max(tr1, r);
+            // How far the target moves each vertex from the base.
+            const auto& b0 = pool[i].position;
+            const float d = std::sqrt((v[0] - b0[0]) * (v[0] - b0[0]) + (v[1] - b0[1]) * (v[1] - b0[1]) +
+                                      (v[2] - b0[2]) * (v[2] - b0[2]));
+            moved = std::max(moved, d);
+            changed += d > 1e-4f;
+            ++counted;
           }
-          std::printf("      morph %zu x %.3f..%.3f r %.3f..%.3f\n", t, tx0, tx1, tr0, tr1);
+          std::printf("      morph %zu x %.3f..%.3f r %.3f..%.3f, moves %zu of %zu index refs, at most %.4f m\n", t,
+                      tx0, tx1, tr0, tr1, changed, counted, moved);
         }
       }
     }

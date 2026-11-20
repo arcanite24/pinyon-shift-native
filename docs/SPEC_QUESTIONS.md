@@ -637,6 +637,16 @@ question Q38)" and "Colour byte order"). Built:
   drawn. Its sizing is open (FORMAT-CARS, Wheels): it is modelled at the
   car's tyre radius (the FJ Cruiser's 0.401 m is its 265/75 R16) and,
   like the shared tyre, one unit wide. Ours: no outer-radius target, the
-  shared tyre's rim target and lateral fit. On the FJ Cruiser (1651) this
-  draws the tyre larger than the reference along its bottom and outer
-  side (IoU-g 0.963 against 0.969 with the shared tyre).
+  shared tyre's rim target and lateral fit. Since then: the six sets are
+  sized exactly as the shared tyre (both targets and the lateral fit), as
+  the spec now gives it (d07a2840).
+- **The FJ Cruiser's tyre (open, deferred as polish; M1 closed with it as
+  an exception).** 1651 scores IoU-g 0.9629 (0.9685 with the shared tyre):
+  the engine-only pixels ring the bottom and outer side of every tyre, so
+  the reference's tyre is smaller in radius and narrower than ours. Checked
+  and matching the dump: target A equals the base (no vertex moves more
+  than 0.4 mm, `carbake --dump`); the body pose (lift 0.4466, pitch 0, the
+  0.447 m ride heights); the wheel centres at body y 0.402 m; and the
+  rim lateral 1.1791, tyre lateral 0.2697, centre offset 0.0072, wB 0.2,
+  wA 0.897. Not yet compared: the drawn extremes of one tyre
+  (`fj-tyre-check.json`).
