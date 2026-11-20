@@ -591,6 +591,14 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       if (!once.insert({member, std::llround(t[0] * 100), std::llround(t[1] * 100), std::llround(t[2] * 100)})
                .second)
         continue;
+      // The gameplay beacon column (WORLD-MATERIALS item 7: coloradoout.06509,
+      // the only DIFF_GLOW_1 model, 105 placements) never drew in the frames
+      // checked, day or night: interim rule, not drawn.
+      if (fh1::PropModels::member_name(uint32_t(member)) == "coloradoout.06509.rmb.bin" ||
+          fh1::PropModels::member_name(m) == "coloradoout.06509.rmb.bin") {
+        ++st.props_beacons;
+        continue;
+      }
       const auto it = index_of.find(fh1::PropModels::member_name(uint32_t(member)));
       add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr);
       ++st.props;

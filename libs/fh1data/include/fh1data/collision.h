@@ -18,7 +18,9 @@ namespace fh1 {
 struct FizTriangle {
   uint8_t flags = 0;    // not decoded
   uint8_t surface = 0;  // index into the surface list
-  uint16_t word = 0;    // offset 2, not decoded (0x8000 on most)
+  // The route word (COLLISION.md, Route groups): 0x8000 collides whatever
+  // route is active; bit i (i < 15) while route i of the tile's list is.
+  uint16_t word = 0;
   uint32_t edges = 0;   // offset 28, not decoded (0x00FFFFFF on most)
   std::array<uint32_t, 3> v{};  // vertex indices
   std::array<float, 3> normal{};  // unit, (b - a) x (c - a) normalised
@@ -30,6 +32,9 @@ struct FizTile {
   uint32_t grid_x = 0, grid_z = 0;
   std::array<float, 4> box{};   // xmin, zmin, xmax, zmax
   std::array<float, 2> cell{};  // cell size x, z
+  // The tile's route list (block A +60, as many as the count at +122):
+  // track route numbers, bit i of a triangle's word naming entry i.
+  std::vector<uint16_t> routes;
   std::vector<std::array<float, 3>> vertices;
   std::vector<FizTriangle> triangles;
   // Per grid cell (x fastest), the triangle indices listed in it.

@@ -85,6 +85,10 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
       fh1::FizTile tile;
       if (!read_tile(r.tile, tile, error)) return false;
       Core core;
+      // The tile's mask for the active route (COLLISION.md, Route groups).
+      uint16_t mask = 0x8000;
+      for (size_t e = 0; e < tile.routes.size(); ++e)
+        if (int(tile.routes[e]) == route_) mask |= uint16_t(1u << e);
       for (const auto& t : tile.triangles) {
         const auto& a = tile.vertices[t.v[0]];
         const auto& b = tile.vertices[t.v[1]];
@@ -98,6 +102,7 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
         core.flags.push_back(t.flags);
         core.word.push_back(t.word);
         core.edges.push_back(t.edges);
+        core.active.push_back(mask);
       }
       it = cache_.emplace(k, std::move(core)).first;
     }
@@ -106,21 +111,11 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
     out.flags.insert(out.flags.end(), it->second.flags.begin(), it->second.flags.end());
     out.word.insert(out.word.end(), it->second.word.begin(), it->second.word.end());
     out.edges.insert(out.edges.end(), it->second.edges.begin(), it->second.edges.end());
+    out.active.insert(out.active.end(), it->second.active.begin(), it->second.active.end());
     out.tile.insert(out.tile.end(), it->second.surface.size(), r.tile);
     ++out.tiles;
   }
   return true;
-}
-
-bool Collision::steep(const CollisionMesh& cm, size_t t) {
-  const auto& a = cm.positions[t * 3];
-  const auto& b = cm.positions[t * 3 + 1];
-  const auto& c = cm.positions[t * 3 + 2];
-  const double ux = double(b[0]) - a[0], uy = double(b[1]) - a[1], uz = double(b[2]) - a[2];
-  const double vx = double(c[0]) - a[0], vy = double(c[1]) - a[1], vz = double(c[2]) - a[2];
-  const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-  const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
-  return len > 0 && std::fabs(ny / len) < 0.5;
 }
 
 double spawn_heading() { return std::atan2(kSpawnForwardX, kSpawnForwardZ); }

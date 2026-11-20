@@ -33,6 +33,7 @@ struct CollisionMesh {
   std::vector<uint32_t> tile;                   // one per triangle: N of N.fiz
   std::vector<uint16_t> word;                   // one per triangle: the .fiz u16 at 2 (not decoded)
   std::vector<uint32_t> edges;                  // one per triangle: the .fiz u32 at 28 (not decoded)
+  std::vector<uint16_t> active;                 // one per triangle: its tile's mask for the active route
   size_t tiles = 0;
   size_t triangles() const { return surface.size(); }
 };
@@ -54,21 +55,20 @@ class Collision {
   float grip(int surface) const;
   // Whether the car collides with a surface (all but CameraCollision).
   static bool car_collides(int surface) { return surface != kSurfaceCameraCollision; }
-  // Whether the car collides with a gathered triangle: car_collides, and,
-  // with skip_masked set, not a steep one (|normal y| < 0.5) whose u16 at
-  // offset 2 lacks the top bit (0x8000). Ours, opt-in, until COLLISION.md
-  // decodes the word: those (8 % of the core, 97 % of them upright Asphalt
-  // sheets standing on the roads, the word a bit mask) look like event road
-  // closures. The masked triangles that face up stay: they are the only
-  // floor where they lie.
-  bool collides(const CollisionMesh& cm, size_t t) const {
-    if (!car_collides(cm.surface[t])) return false;
-    if (!skip_masked_ || t >= cm.word.size() || (cm.word[t] & 0x8000)) return true;
-    return !steep(cm, t);
+  // Whether the car collides with a gathered triangle (COLLISION.md, Route
+  // groups): car_collides, and the route word AND the triangle's tile mask
+  // (0x8000, plus bit i when the active route is entry i of the tile's
+  // route list) is not zero. The category byte is not applied yet.
+  static bool collides(const CollisionMesh& cm, size_t t) {
+    return car_collides(cm.surface[t]) && (t >= cm.word.size() || (cm.word[t] & cm.active[t]) != 0);
   }
-  static bool steep(const CollisionMesh& cm, size_t t);
-  void set_skip_masked(bool on) { skip_masked_ = on; }
-  bool skip_masked() const { return skip_masked_; }
+  // The active route number R (free roam: 0; an event: its TrackRoute
+  // number, probable). Applies to the next gather.
+  void set_active_route(int route) {
+    if (route != route_) cache_.clear();
+    route_ = route;
+  }
+  int active_route() const { return route_; }
 
   // The core triangles of every tile whose cell comes within `radius` of
   // (x, z).
@@ -82,12 +82,12 @@ class Collision {
   struct Core {
     std::vector<std::array<float, 3>> positions;
     std::vector<uint8_t> surface, flags;
-    std::vector<uint16_t> word;
+    std::vector<uint16_t> word, active;
     std::vector<uint32_t> edges;
   };
   struct Impl;
   std::unique_ptr<Impl> impl_;
-  bool skip_masked_ = false;
+  int route_ = 0;
   fh1::ColIndex index_;
   std::vector<fh1::SurfaceType> surfaces_;
   std::map<uint32_t, Core> cache_;  // by record position

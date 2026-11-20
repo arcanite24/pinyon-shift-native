@@ -42,6 +42,12 @@ bool parse_fiz(std::span<const uint8_t> data, FizTile& tile, std::string* error)
     tile.cell[1] = r.f32();
     r.skip(8);  // the cell size's inverses
     const uint32_t grid_offset = r.u32();
+    r.seek(122);
+    const uint16_t route_count = r.u16();
+    if (route_count > 15) return fail(error, "fiz route list longer than the mask");
+    r.seek(60);
+    tile.routes.resize(route_count);
+    for (auto& route : tile.routes) route = r.u16();
 
     tile.vertices.resize(vertex_count);
     r.seek(vertex_offset);

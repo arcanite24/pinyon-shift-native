@@ -86,6 +86,7 @@ int main() {
   std::map<uint32_t, Word> words;
   std::map<int, size_t> steep_by_surface_8000;
   size_t masked_up_covered = 0, masked_up_holes = 0;
+  size_t collide_all = 0, skip_all = 0, collide_core = 0, skip_core = 0, route0_only = 0, tiles_listing_route0 = 0;
   std::vector<std::array<float, 4>> hole_examples;
   for (size_t k = 0; k < index.records.size(); ++k) {
     const auto& r = index.records[k];
@@ -129,6 +130,11 @@ int main() {
         }
       }
     }
+    // Route groups with route 0 active (free roam): the tile's mask.
+    uint16_t free_roam_mask = 0x8000;
+    for (size_t e = 0; e < tile.routes.size(); ++e)
+      if (tile.routes[e] == 0) free_roam_mask |= uint16_t(1u << e);
+    if (free_roam_mask != 0x8000) ++tiles_listing_route0;
     std::vector<char> listed(tile.triangles.size(), 0);
     for (const auto& cell : tile.grid)
       for (auto t : cell) listed[t] = 1;
@@ -153,10 +159,14 @@ int main() {
         if (err > 1e-3) ++bad_normals;
       }
       ++by_surface[tri.surface];
+      const bool route_on = (tri.word & free_roam_mask) != 0;
+      ++(route_on ? collide_all : skip_all);
+      if ((tri.word & 0x8000) == 0 && route_on) ++route0_only;
       if (tri.normal[1] > 0.7f) ++up_by_surface[tri.surface];
       const double cx = (double(a[0]) + b[0] + cc[0]) / 3, cz = (double(a[2]) + b[2] + cc[2]) / 3;
       if (!c.in_cell(r, cx, cz)) continue;
       ++core;
+      ++(route_on ? collide_core : skip_core);
       if (tri.word != 0x8000) {
         auto& w = words[tri.word];
         ++w.count;
@@ -198,6 +208,13 @@ int main() {
     for (const auto& [v, w] : words) n += w.count, steep += w.steep;
     CHECK(n == 110702 && steep == 107802 && words.size() == 54);
     CHECK(masked_up_covered == 0 && masked_up_holes == 3340);
+    // COLLISION.md, Route groups, free roam (route 0).
+    std::printf("route 0: %zu tiles list it; collide %zu, skip %zu (core %zu, %zu); %zu only through route 0\n",
+                tiles_listing_route0, collide_all, skip_all, collide_core, skip_core, route0_only);
+    CHECK(tiles_listing_route0 == 7);
+    CHECK(collide_all == 1851955 && skip_all == 155640);
+    CHECK(collide_core == 1291222 && skip_core == 110640);
+    CHECK(route0_only == 96);
   }
   std::printf("tiles %u, vertices %zu, triangles %zu, core %zu (%zu distinct), degenerate %zu\n", rank, vertices,
               triangles, core, distinct.size(), degenerate);

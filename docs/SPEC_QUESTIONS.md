@@ -879,24 +879,26 @@ headless car, and the drive with `--no-post`).
 
 ## Q43 (play-test): invisible walls, glow cards and the reset
 
-- **Masked collision walls (interim, ours):** the `.fiz` triangle's u16 at
-  offset 2 (COLLISION.md: not decoded) is a bit mask. 0x8000 is set on
-  every road, terrain, guard rail and Invisible triangle; the 110,702 core
-  triangles without it (54 values: 1, 2, 4 ... 4096 and unions) are 97 %
-  upright Asphalt sheets standing on the roads, by the look event road
-  closures, and every cruise contact with nothing drawn within 1 m hit
-  one. The drive leaves out the steep ones (|normal y| < 0.5) in the
-  window and keeps them headless (the gates); `--skip-masked-walls` /
-  `--keep-masked-walls` choose. The 3,340 masked triangles that face up
-  stay: nothing else lies under them. Open: what each bit selects and
-  which are active in free roam; the edge word at offset 28.
-  `--contacts-log file` logs hard contacts and the car-height walls with
-  nothing drawn near.
-- **Glow cards (interim, ours):** `DIFF_GLOW_1` (the black slab by the
-  festival road, coloradoout.06509) has no blend state in WORLD-MATERIALS
-  and a black texture where nothing glows; it is drawn unlit and added
-  (ONE, ONE) with no depth write, casting no shadow. Open: its blend
-  state and whether glow cards draw by day.
+- **Route groups (answered, COLLISION.md 9005ebcb / c5b81225):** the
+  `.fiz` word at offset 2 is a per-tile route mask, the tile's route list
+  at block A +60 (count at +122). The drive applies the rule everywhere:
+  a triangle collides when (word AND (0x8000 OR the tile's bit for the
+  active route)) is not zero, the active route 0 in free roam (
+  `world::Collision::set_active_route`). collision_tests matches the
+  spec's counts: 7 tiles list route 0; 1,851,955 triangles collide and
+  155,640 do not (cores 1,291,222 and 110,640); 96 only through route 0.
+  The category byte is not applied yet; the edge word at +28 is not
+  decoded. On the 200 s cruise, the car-height wall samples with nothing
+  drawn within 1 m stay at 33, 337 and 526 over the first three gathers
+  (9,736 and 13,601 before); what is left is mostly always-on GuardRail
+  (x 2640 to 2780, z 1260 to 1550, no drawn rail within 1 m: open) and
+  Invisible walls. `--contacts-log file` logs hard contacts and these
+  walls.
+- **Glow cards (answered, WORLD-MATERIALS item 7):** coloradoout.06509 is
+  the only `DIFF_GLOW_1` model, a gameplay beacon column at 105 places
+  the game did not draw in any frame checked: its placements are left
+  out (interim rule). The family stays drawn unlit and additive (ONE,
+  ONE, no depth write, no shadow) should another appear.
 - **Reset (ours):** R, Start and the headless driver's "stuck" put the car
   on the nearest nav road's centre line (SPEC-TRAFFIC roads), stepping
   4 m along it out to 60 m for a spot whose ground is within 2 m of the

@@ -150,12 +150,12 @@ double DrawnIndex::nearest(const std::array<float, 3>& pf, double reach, uint32_
 
 std::vector<UndrawnWalls> undrawn_walls(const world::CollisionMesh& cm, const drive::Ground& ground,
                                         const DrawnIndex& drawn, double x, double z, double radius, double reach,
-                                        bool skip_masked, size_t* samples, size_t* bare) {
+                                        size_t* samples, size_t* bare) {
   constexpr double kStep = 0.5;
   std::map<std::tuple<uint32_t, int, int, int, uint32_t>, UndrawnWalls> groups;
   size_t all = 0, all_bare = 0;
   for (size_t t = 0; t < cm.triangles(); ++t) {
-    if (!world::Collision::car_collides(cm.surface[t]) || (skip_masked && !(cm.word[t] & 0x8000))) continue;
+    if (!world::Collision::collides(cm, t)) continue;
     const V a = d(cm.positions[t * 3]), b = d(cm.positions[t * 3 + 1]), c = d(cm.positions[t * 3 + 2]);
     V n = cross(sub(b, a), sub(c, a));
     const double len = std::sqrt(dot(n, n));

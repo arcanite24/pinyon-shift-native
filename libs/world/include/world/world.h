@@ -152,6 +152,7 @@ struct GatherStats {
   size_t trees = 0, trees_untextured = 0;    // tree sprites; those whose atlas has no file
   size_t props_off_route = 0, trees_off_route = 0;  // left out by the route rule
   size_t props_markers = 0;  // placements of the Temp_Arrow_Pointer marker, left out
+  size_t props_beacons = 0;  // placements of the gameplay beacon (coloradoout.06509), left out
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name
   // With render_data: models drawn without a uvOffsetScale (given offset 0

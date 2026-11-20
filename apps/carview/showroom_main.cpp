@@ -897,7 +897,6 @@ void drive_usage() {
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound\n"
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
-               "           --skip-masked-walls | --keep-masked-walls (default: skipped in the window)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
                "           --menu-png file.png\n"
@@ -951,11 +950,6 @@ int run_drive(int argc, char** argv) {
   // --contacts-log (ours, debugging): every hard body contact against the
   // collision, and per gather the walls nothing drawn stands near.
   std::filesystem::path contacts_log_path;
-  // Masked walls (interim, ours; world::Collision::collides): the steep
-  // collision triangles whose undecoded word lacks 0x8000 (event road
-  // closures, by the look) are left out in the window, kept headless (the
-  // gates). --skip-masked-walls / --keep-masked-walls choose.
-  int masked_walls_flag = -1;  // -1: the default
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -1009,8 +1003,6 @@ int run_drive(int argc, char** argv) {
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--contacts-log") contacts_log_path = next();
-    else if (a == "--skip-masked-walls") masked_walls_flag = 1;
-    else if (a == "--keep-masked-walls") masked_walls_flag = 0;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -1349,8 +1341,7 @@ int run_drive(int argc, char** argv) {
         const char* how = "";
         if (!colorado.open(world_dir, cache_path, &error)) {
           status = 1;
-        } else if (collision.set_skip_masked(masked_walls_flag < 0 ? !headless : masked_walls_flag == 1),
-                   !render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
+        } else if (!render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
                                                      &error, &warning)) {
           status = 1;
         } else {
@@ -1436,9 +1427,6 @@ int run_drive(int argc, char** argv) {
         std::string why;
         safe_reset_ok = safe_reset.open(world_dir.parent_path().parent_path().parent_path(), &why);
         if (!safe_reset_ok) std::fprintf(stderr, "carview: note: reset on the nearest road triangle (%s)\n", why.c_str());
-        if (collision.skip_masked())
-          std::fprintf(stderr, "carview: note: interim: steep collision triangles without 0x8000 in the .fiz word "
-                       "left out (--keep-masked-walls keeps them)\n");
       }
       // The contacts log: a hard contact is one point pushing with more than
       // half the car's weight; one line when it starts or moves on 3 m.
@@ -1503,8 +1491,7 @@ int run_drive(int argc, char** argv) {
           const auto census_t0 = std::chrono::steady_clock::now();
           size_t samples = 0, bare = 0;
           const auto groups = carview::undrawn_walls(cm, streamer->ground(), contact_log.drawn, streamer->centre_x(),
-                                                     streamer->centre_z(), 200, 1.0, collision.skip_masked(), &samples,
-                                                     &bare);
+                                                     streamer->centre_z(), 200, 1.0, &samples, &bare);
           std::fprintf(contact_log.f, "gather %d at %.1f %.1f (t %.2f s): %zu drawn triangles indexed; walls within "
                        "200 m at car height: %zu samples (0.5 m), %zu with nothing drawn within 1 m, in %zu groups\n",
                        contact_log.gathers, streamer->centre_x(), streamer->centre_z(), vehicle.time(),
@@ -1701,9 +1688,10 @@ int run_drive(int argc, char** argv) {
           std::printf("far ring: %zu models, %zu triangles\n", st.far_models, st.far_triangles);
         if (st.trees || st.trees_untextured)
           std::printf("tree sprites: %zu (%zu without an atlas file)\n", st.trees, st.trees_untextured);
-        std::printf("props: %zu placed, %zu unresolved; left out: %zu off the free-roam route, %zu markers, %zu tree "
-                    "sprites off the route\n",
-                    st.props, st.prop_unresolved, st.props_off_route, st.props_markers, st.trees_off_route);
+        std::printf("props: %zu placed, %zu unresolved; left out: %zu off the free-roam route, %zu markers, %zu beacons, %zu "
+                    "tree sprites off the route\n",
+                    st.props, st.prop_unresolved, st.props_off_route, st.props_markers, st.props_beacons,
+                    st.trees_off_route);
         for (const auto& n : showroom.notes()) std::fprintf(stderr, "carview: note: %s\n", n.c_str());
         // The effects drawn without a texture, by triangles.
         const auto& mesh = streamer->mesh();

@@ -50,8 +50,8 @@ class DrawnIndex {
 // every half metre; a sample is at car height when the ground (`ground`,
 // probed straight down beside the wall) is 0.1 to 1.5 m below it, and bare
 // when nothing drawn lies within `reach`. `samples`, `bare`: car-height
-// samples checked and bare, every group together. skip_masked: as
-// world::Collision::collides.
+// samples checked and bare, every group together. Triangles as
+// world::Collision::collides takes them.
 struct UndrawnWalls {
   uint32_t tile = 0;
   int surface = 0, flags = 0, word = 0;
@@ -61,6 +61,6 @@ struct UndrawnWalls {
 };
 std::vector<UndrawnWalls> undrawn_walls(const world::CollisionMesh& cm, const drive::Ground& ground,
                                         const DrawnIndex& drawn, double x, double z, double radius, double reach,
-                                        bool skip_masked, size_t* samples, size_t* bare);
+                                        size_t* samples, size_t* bare);
 
 }  // namespace carview

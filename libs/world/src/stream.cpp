@@ -91,7 +91,7 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
     const auto& cm = g->collision;
     positions.reserve(cm.positions.size());
     for (size_t t = 0; t < cm.triangles(); ++t) {
-      if (!collision_->collides(cm, t)) continue;
+      if (!Collision::collides(cm, t)) continue;
       positions.push_back(cm.positions[t * 3]);
       positions.push_back(cm.positions[t * 3 + 1]);
       positions.push_back(cm.positions[t * 3 + 2]);
