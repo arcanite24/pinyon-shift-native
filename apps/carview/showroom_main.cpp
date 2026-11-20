@@ -843,6 +843,7 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path world_reference_path;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
+  bool size_given = false;
   double seconds = 6, every = 1;
   bool headless = false;
   bool hud = false;  // headless: draw the HUD into the frames (windowed: always, H toggles)
@@ -894,10 +895,39 @@ int run_drive(int argc, char** argv) {
     }
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
+      size_given = true;
     } else {
       std::fprintf(stderr, "carview --drive: unknown option %s\n", a.c_str());
       return 2;
     }
+  }
+  // The play test's defaults for a window: the bake in out/bake (or
+  // out/bake1), the R34, Colorado from SHIFT_GAME_ROOT or the sibling
+  // horizon1-recomp checkout, at the free-roam spawn, 1600 x 900.
+  if (!headless) {
+    std::error_code ec;
+    if (bake_dir.empty())
+      for (const char* d : {"out/bake", "out/bake1"})
+        if (std::filesystem::is_directory(std::filesystem::path(d) / "cars", ec)) {
+          bake_dir = d;
+          break;
+        }
+    if (car.empty()) car = "NIS_SkylineGTRVSpecII_02";
+    if (world_dir.empty()) {
+      std::vector<std::filesystem::path> roots;
+      if (const char* g = std::getenv("SHIFT_GAME_ROOT")) roots.emplace_back(g);
+      roots.emplace_back("../horizon1-recomp/.local/game/base");
+      for (const auto& r : roots) {
+        const auto d = (std::filesystem::is_directory(r / "media", ec) ? r / "media" : r) / "tracks" / "colorado";
+        if (std::filesystem::is_directory(d, ec)) {
+          world_dir = d;
+          break;
+        }
+      }
+    }
+    if (!size_given) width = 1600, height = 900;
+    std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
+                car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
   }
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
@@ -1188,9 +1218,14 @@ int run_drive(int argc, char** argv) {
       };
       WheelPose poses[4];
       CameraPull camera_pull;
+      // The car's name and the keys, over the HUD for the first seconds.
+      constexpr double kIntroSeconds = 6;
+      // (The display name is a string-table key: the media name is shown.)
+      const std::string intro = car + " - [ ] pick a car  R back on the road";
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
-      auto set_hud = [&](int height) {
+      auto set_hud = [&](int height, const std::string& banner) {
         HudState st;
+        st.banner = banner;
         st.kmh = vehicle.speed() * 3.6;
         st.gear = vehicle.gear();
         st.rpm = vehicle.rpm();
@@ -1428,7 +1463,7 @@ int run_drive(int argc, char** argv) {
           place_world();
           showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
                                          every));
-          if (hud) set_hud(int(height));
+          if (hud) set_hud(int(height), vehicle.time() < kIntroSeconds ? intro : std::string());
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -1620,7 +1655,13 @@ int run_drive(int argc, char** argv) {
           }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
-          if (show_hud) set_hud(h);
+          if (show_hud) {
+            char line[160] = "";
+            if (picking)
+              std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
+                            baked_cars[pick].c_str());
+            set_hud(h, picking ? std::string(line) : vehicle.time() < kIntroSeconds ? intro : std::string());
+          }
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();

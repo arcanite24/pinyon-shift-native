@@ -1,6 +1,7 @@
 #include "hud.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,33 @@ constexpr Glyph kFont[] = {
     {'A', {".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"}},
     {'B', {"####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."}},
     {'S', {".####", "#....", "#....", ".###.", "....#", "....#", "####."}},
+    {'C', {".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."}},
+    {'D', {"####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."}},
+    {'E', {"#####", "#....", "#....", "####.", "#....", "#....", "#####"}},
+    {'F', {"#####", "#....", "#....", "####.", "#....", "#....", "#...."}},
+    {'G', {".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"}},
+    {'H', {"#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"}},
+    {'I', {".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."}},
+    {'J', {"..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.."}},
+    {'K', {"#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"}},
+    {'L', {"#....", "#....", "#....", "#....", "#....", "#....", "#####"}},
+    {'M', {"#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"}},
+    {'O', {".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."}},
+    {'P', {"####.", "#...#", "#...#", "####.", "#....", "#....", "#...."}},
+    {'Q', {".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"}},
+    {'T', {"#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."}},
+    {'U', {"#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."}},
+    {'V', {"#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."}},
+    {'W', {"#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."}},
+    {'X', {"#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"}},
+    {'Y', {"#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."}},
+    {'Z', {"#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"}},
+    {'_', {".....", ".....", ".....", ".....", ".....", ".....", "#####"}},
+    {'-', {".....", ".....", ".....", "#####", ".....", ".....", "....."}},
+    {'.', {".....", ".....", ".....", ".....", ".....", ".##..", ".##.."}},
+    {':', {".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."}},
+    {'[', {".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###."}},
+    {']', {".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###."}},
 };
 
 const Glyph* glyph(char c) {
@@ -73,7 +101,13 @@ int hud_scale(int height) { return std::max(1, height / 300); }
 
 HudImage draw_hud(const HudState& state, int scale) {
   scale = std::max(1, scale);
-  constexpr int kWidth = 140, kHeight = 35;  // font pixels
+  // Font pixels: the panel, widened for the banner, which takes a line
+  // above it.
+  constexpr int kPanel = 140, kPanelHeight = 35, kBannerHeight = 11;
+  std::string banner = state.banner;
+  for (char& ch : banner) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  const int top = banner.empty() ? 0 : kBannerHeight;
+  const int kWidth = std::max(kPanel, 6 * int(banner.size()) + 7), kHeight = kPanelHeight + top;
   HudImage img;
   img.width = uint32_t(kWidth * scale);
   img.height = uint32_t(kHeight * scale);
@@ -83,21 +117,27 @@ HudImage draw_hud(const HudState& state, int scale) {
                            kAmber[3] = {255, 176, 32}, kTrack[3] = {48, 52, 60}, kBar[3] = {90, 200, 120},
                            kRed[3] = {235, 64, 52};
   c.rect(0, 0, kWidth, kHeight, kBack);
+  if (!banner.empty()) {
+    c.text(4, 3, banner.c_str(), 1, kAmber);
+    c.rect(0, top - 1, kWidth, 1, kTrack);
+  }
+  // The panel's rows, right-aligned under a wider banner.
+  const int ox = kWidth - kPanel, oy = top;
 
   // The speed, three digits at three times the size.
   char buf[32];
   std::snprintf(buf, sizeof buf, "%3d", std::min(999, int(std::lround(std::fabs(state.kmh)))));
-  c.text(4, 4, buf, 3, kText);
-  c.text(62, 18, "km/h", 1, kDim);
+  c.text(ox + 4, oy + 4, buf, 3, kText);
+  c.text(ox + 62, oy + 18, "km/h", 1, kDim);
   // The rpm, and the ABS flag while a wheel is released.
   std::snprintf(buf, sizeof buf, "%4d rpm", std::max(0, int(std::lround(state.rpm / 10) * 10)));
-  c.text(62, 4, buf, 1, kText);
-  if (state.abs) c.text(92, 18, "ABS", 1, kAmber);
+  c.text(ox + 62, oy + 4, buf, 1, kText);
+  if (state.abs) c.text(ox + 92, oy + 18, "ABS", 1, kAmber);
   // The gear.
   const char gear[2] = {state.gear < 0 ? 'R' : state.gear == 0 ? 'N' : char('0' + std::min(state.gear, 9)), 0};
-  c.text(118, 4, gear, 3, kText);
+  c.text(ox + 118, oy + 4, gear, 3, kText);
   // The tachometer bar, red from 90 % of the redline.
-  const int bar_x = 4, bar_w = kWidth - 8, bar_y = 29;
+  const int bar_x = ox + 4, bar_w = kPanel - 8, bar_y = oy + 29;
   c.rect(bar_x, bar_y, bar_w, 3, kTrack);
   const double frac = state.redline_rpm > 0 ? std::clamp(state.rpm / state.redline_rpm, 0.0, 1.0) : 0;
   const int fill = int(std::lround(frac * bar_w));

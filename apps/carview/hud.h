@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace carview {
@@ -14,6 +15,9 @@ struct HudState {
   double rpm = 0;
   double redline_rpm = 7000;
   bool abs = false;
+  // A line of text over the panel (the car, the picker's choice), shown in
+  // upper case; empty: none.
+  std::string banner;
 };
 
 struct HudImage {

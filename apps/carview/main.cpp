@@ -11,6 +11,9 @@
 //   carview --drive --bake <carbake-output> --car <media> ...  (showroom_main.cpp:
 //           one car on flat ground with the placeholder physics of libs/drive)
 //
+//   carview  (no arguments: the drive in a window with its defaults: the bake
+//           in out/bake, the R34, Colorado; see showroom_main.cpp)
+//
 // Windowed: drag with the left mouse button (or the left stick) to orbit,
 // wheel (or the triggers) to zoom, Esc to quit. Headless renders one frame
 // offscreen, without a window system, and writes a PNG.
@@ -164,6 +167,11 @@ int xds_png(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+  // No arguments: the drive with its play-test defaults (run_drive).
+  if (argc == 1) {
+    SDL_SetMainReady();
+    return carview::run_drive(argc, argv);
+  }
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "--world") == 0) return carview::run_world(argc, argv);
   for (int i = 1; i < argc; ++i)
