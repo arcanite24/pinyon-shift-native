@@ -29,10 +29,8 @@ using bake::Role;
 namespace {
 
 // Flags in ShowroomPush::params.y (showroom.vert / showroom.frag).
-constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagTyreFit = 4, kFlagLivery = 8,
+constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagLivery = 8, kFlagStripe = 32, kFlagFlat = 64,
                    kFlagNoSlot0 = 16;
-// Tyre models span radius 0.194 to 0.287 (FORMAT-CARS, Wheels).
-constexpr float kTyreInner = 0.194f;
 
 std::string lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -55,6 +53,15 @@ void translate_scale(const std::array<float, 3>& t, const std::array<float, 3>& 
   m[12] = t[0];
   m[13] = t[1];
   m[14] = t[2];
+}
+// out = a b (column-major).
+void multiply(const float* a, const float* b, float* out) {
+  for (int c = 0; c < 4; ++c)
+    for (int r = 0; r < 4; ++r) {
+      float sum = 0;
+      for (int k = 0; k < 4; ++k) sum += a[k * 4 + r] * b[c * 4 + k];
+      out[c * 4 + r] = sum;
+    }
 }
 std::array<float, 3> transform_point(const float* m, const std::array<float, 3>& p) {
   return {m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
@@ -299,7 +306,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     }
     body_parts.push_back(p.name);
   }
-  add_model(*body, body_parts, identity_m, car_, 0, false);
+  add_model(*body, body_parts, identity_m, car_, 0);
   // The cockpit model: the parts the body does not have (hood, windscreen,
   // headlights, cabin); the gauge needles at their minimum.
   std::set<std::string> cockpit_real;
@@ -318,7 +325,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       }
       cockpit_parts.push_back(p.name);
     }
-    add_model(*cockpit, cockpit_parts, identity_m, car_, 0, false);
+    add_model(*cockpit, cockpit_parts, identity_m, car_, 0);
   } else {
     notes_.push_back("no cockpit geometry: interior from the body model only");
   }
@@ -353,7 +360,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     }
     if (!fill.empty()) {
       notes_.push_back(std::to_string(fill.size()) + " stand-in parts drawn from the LOD1-5 model");
-      add_model(*exterior, fill, identity_m, car_, 0, false);
+      add_model(*exterior, fill, identity_m, car_, 0);
     }
   }
 
@@ -373,82 +380,116 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     translate_scale(info.wheel_centres[size_t(corner)], {1, 1, 1}, m4);
     std::vector<std::string> parts;
     for (const auto& p : m.parts) parts.push_back(p.name);
-    add_model(m, parts, m4, car_, corner < 2 ? 0 : 1, false);
+    add_model(m, parts, m4, car_, corner < 2 ? 0 : 1);
   }
   if (info.caliper_angle[0] != 0 || info.caliper_angle[1] != 0)
     notes_.push_back("calliper angles not applied (spec question)");
 
-  // Wheels: the rim and the tyre at each centre. The rim model faces -X
-  // (its face is on the car's left), so the right side is mirrored.
+  // Wheels (FORMAT-CARS, Wheels): built in the body frame at each centre and
+  // mapped to the model frame by the inverse of the model-to-body pose.
+  // Rims are sized by their morph target, never scaled radially; tyres by
+  // their two targets; both are scaled across from the rim header's design
+  // width. Right wheels are the same models turned half a turn about y.
   const bake::Model* rim = nullptr;
   for (const auto& m : wheel_.models)
     if (m.role == Role::kWheel) rim = &m;
   const bake::Model* tyre = nullptr;
   for (const auto& m : tyre_.models)
     if (m.role == Role::kTyre) tyre = &m;
-  const float front_width = info.tyre_width_mm[0] > 0 ? float(info.tyre_width_mm[0]) : 0.0f;
-  // The rim's own outer radius at the LOD it is drawn from, without its
-  // tyre. FORMAT-CARS scales by rim radius / 0.194, the normalised size of
-  // most rims; the rest are authored at other sizes (0.02 to 0.42 m), and
-  // the references show them at the rim radius too, so the scale divides
-  // by the model's own radius.
-  float rim_authored = kTyreInner;
+  bool header_ok = false, extent_ok = false;
   if (rim) {
-    float r_max = 0;
+    const auto& hb = rim->header_bounds;
+    auto finite = [](float f) { return std::isfinite(f) && std::fabs(f) < 1e3f; };
+    header_ok = rim->header_kind == 3 && finite(hb[1]) && finite(hb[3]) && hb[1] - hb[3] > 0.01f;
+    extent_ok = header_ok && finite(hb[0]) && finite(hb[2]) && hb[0] - hb[2] > 0.01f;
+    if (!header_ok) notes_.push_back("rim header design width not finite: rim drawn unscaled across");
+    else if (!extent_ok)
+      notes_.push_back("rim header x extent not finite: tyre fitted to the design width (spec question Q13)");
+    bool morph = false, lod0 = false;
     for (const auto& p : rim->parts) {
       const int32_t lod = best_lod(p);
-      if (lod < 0) continue;
-      const auto& pool = lod == 0 ? p.lod0_vertices : p.lod_vertices;
-      for (const auto& s : p.subsections) {
-        if (s.lod != lod || s.material == MaterialClass::kTyre || s.material == MaterialClass::kHidden) continue;
-        for (uint32_t i : s.indices) {
-          if (i >= pool.size()) continue;
-          const auto& v = pool[i].position;
-          r_max = std::max(r_max, std::sqrt(v[1] * v[1] + v[2] * v[2]));
+      if (lod == 0) lod0 = true;
+      if (!(lod == 0 ? p.lod0_morphs : p.lod_morphs).empty()) morph = true;
+    }
+    if (!morph) notes_.push_back("rim has no morph target: drawn as authored");
+    if (!lod0) notes_.push_back("rim drawn from LOD1 (its LOD0 pool is missing or a stand-in)");
+  }
+  // The inverse pose: model = R (body - (0, lift, 0)); R is its own inverse.
+  const float cp = std::cos(info.pitch), sp = std::sin(info.pitch);
+  float body_to_model[16] = {1, 0, 0, 0, 0, cp, sp, 0, 0, sp, -cp, 0, 0, 0, 0, 1};
+  body_to_model[12] = 0;
+  body_to_model[13] = -cp * info.lift;
+  body_to_model[14] = -sp * info.lift;
+  // Morph a copy of a wheel model: each drawn pool's targets at the weights.
+  auto morphed = [](const bake::Model& model, const std::array<float, 2>& weights) {
+    bake::Model out = model;
+    for (auto& p : out.parts) {
+      for (int lod = 0; lod < 2; ++lod) {
+        auto& pool = lod == 0 ? p.lod0_vertices : p.lod_vertices;
+        const auto& targets = lod == 0 ? p.lod0_morphs : p.lod_morphs;
+        std::vector<std::array<float, 3>> base(pool.size());
+        for (size_t i = 0; i < pool.size(); ++i) base[i] = pool[i].position;
+        for (size_t t = 0; t < targets.size() && t < 2; ++t) {
+          if (weights[t] == 0 || targets[t].size() != pool.size()) continue;
+          for (size_t i = 0; i < pool.size(); ++i)
+            for (size_t k = 0; k < 3; ++k)
+              pool[i].position[k] += weights[t] * (targets[t][i][k] - base[i][k]);
         }
       }
+      p.lod0_morphs.clear();
+      p.lod_morphs.clear();
     }
-    if (r_max > 0.01f) rim_authored = r_max;
-    if (rim_authored < kTyreInner * 0.98f || rim_authored > kTyreInner * 1.02f) {
-      char text[96];
-      std::snprintf(text, sizeof text, "rim authored at radius %.3f m, not 0.194: scaled by its own radius",
-                    rim_authored);
-      notes_.push_back(text);
-    }
-  }
+    return out;
+  };
   for (int c = 0; c < 4; ++c) {
     const int axle = c < 2 ? 0 : 1;
-    const auto& centre = info.wheel_centres[size_t(c)];
-    const float side = centre[0] < 0 ? 1.0f : -1.0f;
-    const float rim_radius = info.rim_inches[size_t(axle)] > 0
-                                 ? float(info.rim_inches[size_t(axle)]) * 0.0254f / 2
-                                 : kTyreInner;
+    const bool right = c % 2 == 1;
+    const float inches = info.rim_inches[size_t(axle)] > 0 ? float(info.rim_inches[size_t(axle)]) : 14.0f;
+    const float rim_radius = inches * 0.0254f / 2;
     const float width_m = info.tyre_width_mm[size_t(axle)] > 0
                               ? float(info.tyre_width_mm[size_t(axle)]) / 1000.0f
                               : 0.2f;
     const float aspect = info.tyre_aspect[size_t(axle)] > 0 ? float(info.tyre_aspect[size_t(axle)]) / 100.0f
                                                            : 0.5f;
     const float outer = rim_radius + width_m * aspect;
+    const float w_rim = (inches - 14.0f) / 10.0f;
+    const float rim_scale = rim && header_ok ? width_m / (rim->header_bounds[1] - rim->header_bounds[3]) : 1.0f;
+    // Body-frame wheel matrix: centre, the half turn for right wheels, then
+    // the lateral scale (and the tyre's lateral offset in the rim's x).
+    auto wheel_matrix = [&](float sx, float dx, float* m4) {
+      float local[16];
+      identity(local);
+      const float turn = right ? -1.0f : 1.0f;
+      local[0] = turn * sx;
+      local[10] = turn;
+      const auto& cb = info.wheel_centres_body[size_t(c)];
+      local[12] = cb[0] + turn * dx;
+      local[13] = cb[1];
+      local[14] = cb[2];
+      multiply(body_to_model, local, m4);
+    };
     if (rim) {
-      const float radial = rim_radius / rim_authored;
-      const float x = front_width > 0 ? (width_m * 1000.0f) / front_width : 1.0f;
       float m4[16];
-      translate_scale(centre, {side * x, radial, radial}, m4);
+      wheel_matrix(rim_scale, 0, m4);
+      const bake::Model sized = morphed(*rim, {w_rim, 0});
       std::vector<std::string> parts;
-      for (const auto& p : rim->parts) parts.push_back(p.name);
-      add_model(*rim, parts, m4, wheel_, axle, false);
+      for (const auto& p : sized.parts) parts.push_back(p.name);
+      add_model(sized, parts, m4, wheel_, axle);
     }
     if (tyre) {
+      // Target A raises the outer radius, target B the inner one.
+      const float w_outer = (outer - 0.2850f) / 0.1301f;
+      // The rim's x extent (bytes 32 and 40), or its design faces (36 and 44)
+      // where the extent is empty.
+      const auto& hb = rim ? rim->header_bounds : std::array<float, 4>{};
+      const float extent = extent_ok ? hb[0] - hb[2] : header_ok ? hb[1] - hb[3] : width_m;
+      const float centre = extent_ok ? (hb[0] + hb[2]) / 2 : header_ok ? (hb[1] + hb[3]) / 2 : 0.0f;
       float m4[16];
-      translate_scale(centre, {side * width_m * 1.033f, 1, 1}, m4);
+      wheel_matrix(rim_scale * extent, rim_scale * centre, m4);
+      const bake::Model sized = morphed(*tyre, {w_outer, w_rim});
       std::vector<std::string> parts;
-      for (const auto& p : tyre->parts) parts.push_back(p.name);
-      const size_t first = draws_.size();
-      add_model(*tyre, parts, m4, tyre_, axle, true);
-      for (size_t i = first; i < draws_.size(); ++i) {
-        draws_[i].push.params[2] = rim_radius;
-        draws_[i].push.params[3] = outer;
-      }
+      for (const auto& p : sized.parts) parts.push_back(p.name);
+      add_model(sized, parts, m4, tyre_, axle);
     }
   }
   if (!rim) notes_.push_back("no rim model in " + info.wheel_media);
@@ -510,7 +551,7 @@ uint32_t Showroom::texture_index(const std::string& slot, const bake::Bake& pack
 }
 
 void Showroom::add_model(const bake::Model& model, const std::vector<std::string>& parts,
-                         const float transform[16], const bake::Bake& pack, int axle, bool tyre_fit) {
+                         const float transform[16], const bake::Bake& pack, int axle) {
   const bake::CarInfo& info = car_.car;
   const auto& colours = info.colours;
   const bake::Colour* colour =
@@ -566,17 +607,29 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       std::memcpy(d.push.uv0, &s.uv_transform[0], 4 * sizeof(float));
       std::memcpy(d.push.uv1, &s.uv_transform[4], 4 * sizeof(float));
       uint32_t flags = 0;
-      const uint32_t t0 = texture_index(s.slots[0], pack, s.lod == 0);
+      // Glass techniques never sample the body atlas (FORMAT-CARS, Paint):
+      // an opaque glass draw (the windscreen's black_glass band) is a flat
+      // dark grey, the shade of the glass draws' constant not being known.
+      const bool flat_glass = s.material != MaterialClass::kGlass && s.slots[0] == "@atlas" &&
+                              s.technique.find("glass") != std::string::npos;
+      const uint32_t t0 = flat_glass ? UINT32_MAX : texture_index(s.slots[0], pack, s.lod == 0);
       const uint32_t t1 = texture_index(s.slots[1], pack, s.lod == 0);
       if (t0 == UINT32_MAX) flags |= kFlagNoSlot0;
       if (t1 != UINT32_MAX) flags |= kFlagSlot1;
-      if (tyre_fit) flags |= kFlagTyreFit;
       if (s.material == MaterialClass::kPaint) {
         if (colour) {
           d.push.tint[0] = srgb_to_linear(float((colour->rgb >> 16) & 0xFF) / 255.0f);
           d.push.tint[1] = srgb_to_linear(float((colour->rgb >> 8) & 0xFF) / 255.0f);
           d.push.tint[2] = srgb_to_linear(float(colour->rgb & 0xFF) / 255.0f);
           if (colour->metallic) flags |= kFlagMetallic;
+          // The stripe constant on the exterior paint techniques of a
+          // striped colour row (FORMAT-CARS, Paint).
+          if (colour->has_stripe && (s.technique == "body" || s.technique == "body_2")) {
+            flags |= kFlagStripe;
+            stripe_[0] = srgb_to_linear(float((colour->stripe_rgb >> 16) & 0xFF) / 255.0f);
+            stripe_[1] = srgb_to_linear(float((colour->stripe_rgb >> 8) & 0xFF) / 255.0f);
+            stripe_[2] = srgb_to_linear(float(colour->stripe_rgb & 0xFF) / 255.0f);
+          }
         }
         if (livery != UINT32_MAX) flags |= kFlagLivery;
       } else if (s.material == MaterialClass::kCaliper) {
@@ -584,6 +637,10 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         d.push.tint[0] = float((rgb >> 16) & 0xFF) / 255.0f;
         d.push.tint[1] = float((rgb >> 8) & 0xFF) / 255.0f;
         d.push.tint[2] = float(rgb & 0xFF) / 255.0f;
+      }
+      if (flat_glass) {
+        flags |= kFlagFlat;
+        d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = 0.02f;
       }
       d.push.tint[3] = 1;
       d.push.params[0] = float(uint32_t(s.material));

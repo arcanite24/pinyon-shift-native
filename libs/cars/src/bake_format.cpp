@@ -173,6 +173,8 @@ std::vector<uint8_t> encode(const Bake& b) {
       w.u32(col.rgb);
       w.str(col.atlas_lod0);
       w.str(col.atlas_lod);
+      w.u8(col.has_stripe ? 1 : 0);
+      w.u32(col.stripe_rgb);
     }
     w.str(c.wheel_media);
     w.str(c.tyre_media);
@@ -185,7 +187,13 @@ std::vector<uint8_t> encode(const Bake& b) {
       w.u32(c.caliper_rgb[size_t(a)]);
       w.f32(c.caliper_angle[size_t(a)]);
     }
+    for (float f : c.track_outer) w.f32(f);
+    for (float f : {c.wheelbase, c.body_bottom_y, c.lift, c.pitch}) w.f32(f);
+    w.u8(c.has_body ? 1 : 0);
+    w.u8(c.has_track_offsets ? 1 : 0);
     for (const auto& p : c.wheel_centres)
+      for (float f : p) w.f32(f);
+    for (const auto& p : c.wheel_centres_body)
       for (float f : p) w.f32(f);
     for (const auto& p : c.part_positions)
       for (float f : p) w.f32(f);
@@ -199,12 +207,22 @@ std::vector<uint8_t> encode(const Bake& b) {
     w.str(m.name);
     w.u32(uint32_t(m.role));
     w.u32(uint32_t(m.corner));
+    w.u32(m.header_kind);
+    for (float f : m.header_bounds) w.f32(f);
     w.u32(uint32_t(m.parts.size()));
     for (const Part& p : m.parts) {
       w.str(p.name);
       for (float f : p.bounds) w.f32(f);
       write_vertices(w, p.lod_vertices);
       write_vertices(w, p.lod0_vertices);
+      for (const auto* morphs : {&p.lod_morphs, &p.lod0_morphs}) {
+        w.u32(uint32_t(morphs->size()));
+        for (const MorphTarget& t : *morphs) {
+          w.u32(uint32_t(t.size()));
+          for (const auto& v : t)
+            for (float f : v) w.f32(f);
+        }
+      }
       w.u32(uint32_t(p.subsections.size()));
       for (const Subsection& s : p.subsections) {
         w.str(s.technique);
@@ -268,6 +286,8 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
         col.rgb = r.u32();
         col.atlas_lod0 = r.str();
         col.atlas_lod = r.str();
+        col.has_stripe = r.u8() != 0;
+        col.stripe_rgb = r.u32();
       }
       c.wheel_media = r.str();
       c.tyre_media = r.str();
@@ -280,7 +300,13 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
         c.caliper_rgb[size_t(a)] = r.u32();
         c.caliper_angle[size_t(a)] = r.f32();
       }
+      for (float& f : c.track_outer) f = r.f32();
+      for (float* f : {&c.wheelbase, &c.body_bottom_y, &c.lift, &c.pitch}) *f = r.f32();
+      c.has_body = r.u8() != 0;
+      c.has_track_offsets = r.u8() != 0;
       for (auto& p : c.wheel_centres)
+        for (float& f : p) f = r.f32();
+      for (auto& p : c.wheel_centres_body)
         for (float& f : p) f = r.f32();
       for (auto& p : c.part_positions)
         for (float& f : p) f = r.f32();
@@ -294,12 +320,22 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
       m.name = r.str();
       m.role = Role(r.u32());
       m.corner = Corner(r.u32());
+      m.header_kind = r.u32();
+      for (float& f : m.header_bounds) f = r.f32();
       m.parts.resize(r.count(4));
       for (Part& p : m.parts) {
         p.name = r.str();
         for (float& f : p.bounds) f = r.f32();
         p.lod_vertices = read_vertices(r);
         p.lod0_vertices = read_vertices(r);
+        for (auto* morphs : {&p.lod_morphs, &p.lod0_morphs}) {
+          morphs->resize(r.count(4));
+          for (MorphTarget& t : *morphs) {
+            t.resize(r.count(12));
+            for (auto& v : t)
+              for (float& f : v) f = r.f32();
+          }
+        }
         p.subsections.resize(r.count(4));
         for (Subsection& s : p.subsections) {
           s.technique = r.str();

@@ -15,6 +15,9 @@
 // Spec: FORMAT-CARS (Tests).
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -149,6 +152,52 @@ void run_item(const Item& item, Stats& s) {
   }
 }
 
+// The stock wheel model of a car (FORMAT-CARS, Wheels and Tests).
+struct WheelCensus {
+  bool parsed = false, kind3 = false, morph = false, lod0_pool = false, finite = false;
+  float design_width = 0, base_radius = 0;
+};
+
+float be_float(const std::vector<uint8_t>& head, size_t at) {
+  const uint32_t bits = uint32_t(head[at]) << 24 | uint32_t(head[at + 1]) << 16 | uint32_t(head[at + 2]) << 8 |
+                        uint32_t(head[at + 3]);
+  float f;
+  std::memcpy(&f, &bits, 4);
+  return f;
+}
+
+WheelCensus census_wheel(const cars::FolderRef& ref, const std::string& media) {
+  WheelCensus w;
+  cars::Folder folder;
+  std::string error;
+  std::vector<uint8_t> data;
+  fh1::Carbin model;
+  if (!folder.open(ref, &error) || !folder.read(cars::lower(media) + ".carbin", data, &error) ||
+      !fh1::parse_carbin(data, model, &error))
+    return w;
+  w.parsed = true;
+  w.kind3 = model.kind == 3;
+  if (model.head.size() >= 48) {
+    float b[4];
+    for (size_t k = 0; k < 4; ++k) b[k] = be_float(model.head, 32 + 4 * k);
+    // The design faces (bytes 36 and 44); some rims hold +/-FLT_MAX at 32
+    // and 40 (no x extent) and are still counted.
+    w.finite = std::isfinite(b[1]) && std::isfinite(b[3]) && std::fabs(b[1]) < 1e30f && std::fabs(b[3]) < 1e30f;
+    if (w.finite) w.design_width = b[1] - b[3];
+  }
+  for (const auto& part : model.parts) {
+    const size_t n = part.lod0_pool.vertex_count();
+    if (n == 0) continue;
+    w.lod0_pool = true;
+    if (part.damage.size() == 2 && part.damage[1].count == n && part.damage[1].stride >= 8) w.morph = true;
+    for (const auto& v : part.lod0_pool.vertices) {
+      const auto p = fh1::carbin_position(part, v);
+      w.base_radius = std::max(w.base_radius, std::sqrt(p[1] * p[1] + p[2] * p[2]));
+    }
+  }
+  return w;
+}
+
 struct Expect {
   const char* key;
   uint64_t base, dlc;
@@ -239,6 +288,76 @@ int main(int argc, char** argv) {
                                  (colour ? "" : " no colour") + (wheels ? "" : " no wheel rows"));
     }
   }
+  // Stock wheels, wheel rows and colour rows (FORMAT-CARS, Tests): one car
+  // per distinct media name (its lowest Id), over both columns.
+  uint64_t kind3 = 0, morph = 0, no_morph = 0, no_lod0 = 0, morph14 = 0, finite = 0, width225 = 0;
+  uint64_t off_x = 0, off_y = 0, off_z = 0, track_offsets = 0, first_stripe = 0, first_stripe_black = 0,
+           atlas_rows = 0;
+  std::set<int64_t> off_cars, atlas_cars;
+  {
+    std::set<std::string> done;
+    for (const auto& r : db.cars) {
+      for (const auto& col : r.colours) {
+        const std::string t = cars::lower(col.base_texture);
+        if (!t.empty() && t != "nodamage.tga") {
+          ++atlas_rows;
+          atlas_cars.insert(r.id);
+        }
+      }
+      if (!r.colours.empty() && r.colours[0].has_stripe) {
+        ++first_stripe;
+        if (r.colours[0].stripe_rgb == 0) ++first_stripe_black;
+      }
+      if (!done.insert(cars::lower(r.media_name)).second) continue;
+      if (r.has_track_offsets) ++track_offsets;
+      const auto wheel_ref = r.wheel_media.empty() ? std::nullopt : install.find_wheel(r.wheel_media);
+      if (wheel_ref) {
+        const WheelCensus w = census_wheel(*wheel_ref, r.wheel_media);
+        kind3 += w.kind3;
+        if (!w.lod0_pool) ++no_lod0;
+        else if (w.morph) ++morph;
+        else ++no_morph;
+        if (w.morph && w.base_radius >= 0.190f && w.base_radius <= 0.196f) ++morph14;
+        if (w.finite) {
+          ++finite;
+          if (std::fabs(w.design_width - 0.225f) <= 0.001f) ++width225;
+        }
+      }
+      // Rows 5 LF, 6 RF, 7 RR, 8 LR against the track rule (body frame).
+      static const int kRows[4] = {5, 6, 7, 8};
+      for (int k = 0; k < 4; ++k) {
+        const int row = kRows[k];
+        const size_t axle = row <= 6 ? 0 : 1;
+        const double side = (row == 5 || row == 8) ? -1 : 1;
+        const double width = double(r.tyre_width_mm[axle]) / 1000;
+        const double outer = double(r.rim_inches[axle]) * 0.0254 / 2 + width * double(r.tyre_aspect[axle]) / 100;
+        const double x = side * (r.track_outer[axle] - width) / 2;
+        const auto& p = r.part_positions[size_t(row)];
+        // y in the model's frame: the inverse pose of the body-frame height.
+        const double lift = (r.ride_height[0] + r.ride_height[1]) / 2 - r.body_bottom_y;
+        const double pitch = r.wheelbase > 0 ? std::atan((r.ride_height[1] - r.ride_height[0]) / r.wheelbase) : 0;
+        const double y = std::cos(pitch) * (outer - lift) + std::sin(pitch) * p[2];
+        const bool bx = std::fabs(p[0] - x) > 0.01, by = std::fabs(p[1] - y) > 0.01;
+        off_x += bx;
+        off_y += by;
+        if (bx || by) off_cars.insert(r.id);
+      }
+    }
+  }
+  std::printf("[wheels] kind 3: %llu, LOD0 morph / without / no LOD0 pool: %llu / %llu / %llu, 14-inch morph: %llu, "
+              "finite header: %llu (0.225 m: %llu)\n",
+              (unsigned long long)kind3, (unsigned long long)morph, (unsigned long long)no_morph,
+              (unsigned long long)no_lod0, (unsigned long long)morph14, (unsigned long long)finite,
+              (unsigned long long)width225);
+  std::printf("[wheel rows] off the track rule by > 1 cm in x / y / z: %llu / %llu / %llu on %zu cars; "
+              "CarTrackOffsets cars %llu\n",
+              (unsigned long long)off_x, (unsigned long long)off_y, (unsigned long long)off_z, off_cars.size(),
+              (unsigned long long)track_offsets);
+  std::printf("[colours] exceptions %zu rows, %zu cars, %zu stripe, %zu colour2; first rows with a stripe %llu "
+              "(black %llu); rows with another atlas %llu on %zu cars\n",
+              db.exception_rows, db.exception_cars, db.exception_stripes, db.exception_color2,
+              (unsigned long long)first_stripe, (unsigned long long)first_stripe_black,
+              (unsigned long long)atlas_rows, atlas_cars.size());
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
   std::set<std::string> all_techniques = base.techniques;
@@ -338,6 +457,26 @@ int main(int argc, char** argv) {
     expect("merged Data_Car rows", rows, 250);
     expect("merged rows with a car folder, wheel folder, colour and wheel rows", complete, 250);
     expect("distinct media names", media_names.size(), 240);
+    expect("stock wheel models with header kind 3", kind3, 240);
+    expect("stock rims with a LOD0 morph target", morph, 160);
+    expect("stock rims without", no_morph, 76);
+    expect("stock rims with no LOD0 rim pool", no_lod0, 4);
+    expect("morph rims with a 14-inch design", morph14, 140);
+    expect("rims with finite header bounds", finite, 239);
+    expect("rims with a 0.225 m design width (within 1 mm)", width225, 82);
+    expect("wheel rows more than 1 cm off the track rule in x", off_x, 321);
+    expect("wheel rows more than 1 cm off in y", off_y, 249);
+    expect("wheel rows more than 1 cm off in z", off_z, 0);
+    expect("cars with wheel rows off the track rule", off_cars.size(), 133);
+    expect("cars with CarTrackOffsets rows", track_offsets, 54);
+    expect("Combo_Colors_Exceptions rows", db.exception_rows, 674);
+    expect("Combo_Colors_Exceptions cars", db.exception_cars, 61);
+    expect("Combo_Colors_Exceptions rows with HasStripe", db.exception_stripes, 661);
+    expect("Combo_Colors_Exceptions rows with HasColor2", db.exception_color2, 0);
+    expect("merged first colour rows with a stripe exception", first_stripe, 21);
+    expect("of them with stripe colour 0", first_stripe_black, 2);
+    expect("colour rows naming an atlas other than nodamage.tga", atlas_rows, 229);
+    expect("cars with such rows", atlas_cars.size(), 30);
   }
   return failures ? 1 : 0;
 }

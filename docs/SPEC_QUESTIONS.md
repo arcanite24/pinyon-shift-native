@@ -34,24 +34,21 @@ questions are also sent to the specification session.
 - **Answer (spec session):** bake the disc copy; all 31 multi-copy media
   names are byte-identical, member for member.
 
-## Q3 (not blocking): tyre model
+## Q3 (answered in FORMAT-CARS f193075f): rim and tyre fit
 
-- **Spec:** FORMAT-CARS "Wheels" and the Tests table ("Which tyre model a
-  car uses is not known; the stock XKR-S drew `TireC` with the `A`
-  sidewall and tread textures").
-- **Engine:** the sizes come from `Data_Car` `FrontTireWidthMM`,
-  `FrontTireAspect`, `FrontWheelDiameterIN` and the `Rear*` columns, and
-  every car draws `TireC` with the `TireA` textures. The rim's axle scale
-  is the axle's tyre width over the front's, and the tyre's axle scale
-  width × 1.033.
-- **Changed from the spec's M1 rule:** the rim's radial scale is the rim
-  radius over the rim model's own LOD0 outer radius, not over 0.194.
-  FORMAT-CARS notes that only 95 of 176 stock rims are normalised to
-  about 0.194 m. `ALF_8C_08`'s rim is authored at 0.273 m; scaled by
-  rim radius / 0.194 it overfilled the tyre, and the reference showed it
-  at the rim radius. With the model's own radius its IoU went from 0.985
-  to 0.991 (and `AST_DBS_09` from 0.989 to 0.992). The showroom notes
-  every car whose rim is not at 0.194 m.
+- **Asked:** which tyre model a car draws, and how rims are sized (the
+  engine had scaled each rim radially by the rim radius over its own
+  authored radius).
+- **Answer:** rims are never scaled radially. A rim with a LOD0 morph
+  target (160 of 240) is drawn as base + w x (target - base) with
+  w = (D - 14) / 10; the rest as authored. Across, the rim is scaled by
+  the axle's tyre width over the header's design width (bytes 36 and 44).
+  The tyre models share one geometry with two targets (outer radius at
+  (outer - 0.2850) / 0.1301, inner at the rim's weight), scaled across by
+  the rim scale x the rim's x extent (bytes 32 and 40) and centred on it.
+- **Engine:** as specified; the targets are decoded at bake time (xyz x w
+  in metres, about the part's offset) and applied per axle when the car
+  is loaded. See Q13 for the rims whose x extent is empty.
 
 ## Q4 (not blocking): which part variants the showroom draws
 
@@ -100,15 +97,13 @@ questions are also sent to the specification session.
   part. Where a part has variants `a`-`h`, the first with real geometry is
   drawn (the Prius's are in `e`).
 
-## Q7 (not blocking): calliper angle and wheel mirroring
+## Q7 (half answered): calliper angle and wheel mirroring
 
-- **Spec:** FORMAT-CARS gives `CaliperAngle` per axle and the calliper
-  models per corner, but not the axis or sign of the angle, and not which
-  side of the rim model faces out.
-- **Engine:** callipers and rotors sit on the hub centre unrotated (a
-  note on every car); the rim model's face is taken to point at -X (the
-  left side), so the right-hand wheels are mirrored, which matches the
-  Abarth by eye.
+- **Answered (FORMAT-CARS f193075f):** right wheels are the rim and tyre
+  models turned half a turn about y, not mirrored; left wheels are drawn
+  as authored. The engine does this.
+- **Open:** the axis and sign of `CaliperAngle`. Callipers and rotors sit
+  on the hub centre unrotated (a note on every car).
 
 ## Q8 (not blocking): which UV set slot 1 uses, and which techniques are paint
 
@@ -118,54 +113,26 @@ questions are also sent to the specification session.
 - **Engine:** samples slot 1 with UV0 except carbon fibre (UV1), and
   paints `body` and `body_2` only.
 
-## Q9 (not blocking; correction to a confirmed fact): wheel-centre z sign
+## Q9 (answered in FORMAT-CARS f193075f): wheel rows and centres
 
-- **Spec:** FORMAT-CARS "Wheels": `CarPartPositions` `PartId` 5 to 8
-  are the wheel centres, "5 left rear, 6 right rear, 7 right front,
-  8 left front", and "unlike the lamp points, z is not negated" (rear
-  at +z), marked confirmed.
-- **Observed:** on the cars whose axles are not centred, the references
-  put the axles the other way round. `FIA_500AbarthSS_10` (car 1115)
-  has rows at z = -1.256 (7, 8) and +1.043 (5, 6) with a body from
-  -1.70 to +1.74: read as written, that gives a 0.44 m front overhang
-  and 0.70 m rear, the reverse of the real front-engined car, and the
-  render's wheels sat about 0.2 m forward of the capture's. The
-  rear-engined `FIA_595_68` (1545) was off the other way. The spacing
-  check in the spec cannot see this: the wheelbase is the same either
-  way.
-- **Likely cause:** the spec session reports (after `ebecd64d`) that the
-  references' `car_to_world` holds a z mirror between the decoded
-  `.carbin` positions and the body, so `clip_from_car` applies to
-  `.carbin` positions directly. If the `CarPartPositions` rows are in the
-  mirrored (body) frame, they need z negated to sit with the `.carbin`
-  positions, which is what the captures show.
-- **Engine:** negates z, as for the lamp points, so rows 5 and 6 are the
-  front pair (LF 5, RF 6, LR 8, RR 7). The 500's IoU went from 0.953 to
-  0.989, the 595's from 0.949 to 0.989, and every reference car is at
-  or above its earlier score. Front and rear sizes follow the swapped
-  rows.
+- **Asked:** the `CarPartPositions` wheel rows read as written put the
+  axles the wrong way round.
+- **Answer:** rows 5-8 are axle positions in the body frame, +Z forward
+  (5 LF, 6 RF, 7 RR, 8 LR); only their z places a wheel. The centre in
+  the body frame is x = +-(track outer - tyre width) / 2, y = the tyre's
+  outer radius, z = the row's z, mapped to the model frame by the inverse
+  of the model-to-body pose (z mirrored, lift = mean stock ride height -
+  `Data_CarBody.BottomCenterWheelbasePosY`, pitch = atan(ride height
+  difference / `ModelWheelbase`)).
+- **Engine:** as specified. The pose matches the references'
+  `checks.model_to_body` on the reference cars.
 
-## Q10 (blocks the M1 numeric pass for one car): ALF_ZagatoTZ3Stradale_12 (car 1656) at IoU 0.968
+## Q10 (answered in FORMAT-CARS f193075f): ALF_ZagatoTZ3Stradale_12 wheels
 
-- **Observed:** IoU 0.968 after Q3 and Q9; the body matches, the wheels
-  do not. The capture shows a large rim in a thin tyre, the engine a
-  smaller rim in a taller tyre that reaches lower and further out.
-- **Measured:** the references' `checks.model_to_body` lifts the model
-  by a height that, on seven of the nine cars, equals the Data_Car tyre's
-  outer radius less the wheel centre's height to within 1 mm, i.e. the
-  ground under the stock tyres. On the TZ3 the lift (0.0787 m) puts the
-  ground 0.016 m inside the front tyre (295/30 R18, outer 0.317 m) and
-  0.030 m inside the rear (345/30 R19, 0.345 m): the game draws smaller
-  tyres than those columns give, about 0.301 and 0.315 m. (`AST_DBS_09`
-  and `AST_Virage_12` are 0.02 m inside as well, and still score 0.99.)
-  The wheel model's own LOD1 tyre has a 0.261 m rim and 0.331 m outer,
-  a ratio near the capture's.
-- **Needed:** where the game takes this car's wheel sizes from, if not
-  the `Data_Car` front and rear columns (`List_Wheels`, an upgrade or
-  wheel table, `WheelNormOffsets`), and whether a wheel is offset
-  sideways (the rear centres at x = +-0.848 m put a 345 mm tread 6 cm
-  outside the body).
-- **Engine:** Data_Car sizes and the row's centre, no offset.
+- **Asked:** the TZ3's tyres looked smaller in the capture than the
+  `Data_Car` sizes give.
+- **Answer:** the sizes are right; the row's y had put the wheel too low.
+  With the centre rule of Q9 the TZ3 scores IoU 0.990 (from 0.968).
 
 ## Q11 (blocks the M1 numeric pass): glows are in the mask
 
@@ -180,6 +147,8 @@ questions are also sent to the specification session.
   `AST_DBS_09` 0.957 -> 0.990, `AST_Vanquish_13` 0.960 -> 0.982,
   `BMW_M3E92_08` 0.966 -> 0.984, `BEN_CONTINENTALGT_11` 0.966 -> 0.977,
   `AUD_RS4_06` 0.965 -> 0.992, `ALF_ZagatoTZ3Stradale_12` 0.968 -> 0.973.
+- **Now (25 v1 references, wheels by FORMAT-CARS f193075f):** only
+  `BEN_CONTINENTALGT_11` is under 0.97 (0.967; 0.979 without its glow).
 - **Needed:** what draws the glows (a sprite or flare per lamp point, or a
   glare pass on bright highlights; with the car's matrix?), their size
   and colour, and whether lamp points 0 to 3 of `CarPartPositions` place
@@ -201,3 +170,40 @@ questions are also sent to the specification session.
   rule only to partly covered silhouette pixels, so shading near the
   background grey (a material difference) does not cut holes in our mask.
   The holes cost the One-77 some IoU and most of its edge score.
+
+## Q13 (not blocking): rims whose header x extent is empty
+
+- **Spec:** FORMAT-CARS "Wheels": the tyre's lateral scale is the rim's
+  lateral scale x the rim's x extent (header floats at bytes 32 and 40),
+  centred on it.
+- **Observed:** 18 stock rims hold -FLT_MAX at byte 32 and +FLT_MAX at
+  byte 40 (an empty extent) while their design faces (36 and 44) are
+  finite: `aud_a4avant_04`, `bus_tour_12`, `che_express2500cargo_05`,
+  `chr_ptcruiser_04`, `dod_durango_99`, `for_explorer_10`,
+  `for_f350superduty_08`, `for_focuszx4_05`, `for_taurussho_10`,
+  `gmc_yukonxl_01`, `ken_t440_12`, `nis_leaf_11`, `toy_camry_07`,
+  `toy_corolladx_95`, `toy_prius_11`, `toy_rav4sport_04`, `vol_xc70_12`,
+  `vw_beetle_04`: the 14 cars of Q6 with no real LOD0 body and four of
+  the six with stand-in parts.
+- **Needed:** how the game sizes these cars' tyres across.
+- **Engine:** uses the design faces in place of the extent and notes the
+  car. `ult_gtr_12` (no finite design width) is drawn unscaled across.
+
+## Q14 (not blocking): the windscreen band and other opaque glass techniques
+
+- **Spec:** FORMAT-CARS "Paint": glass draws take no paint and do not
+  sample the body atlas; the windscreen's tinted band is the glass
+  techniques' own, shade not given.
+- **Engine:** an opaque sub-section whose technique names glass
+  (`black_glass`, the windscreen's top band) and whose slot 0 is the body
+  atlas is drawn flat dark grey (linear 0.02) without the atlas. Needed:
+  the band's shade, and whether `black_glass` is the band.
+
+## Q15 (not blocking): reference schema v2
+
+- **Observed:** four references (1081, 1181, 1681, 1683) are now
+  `shift-engine.m1-reference.v2`, with `checks.glow_px` and
+  `checks.holes_filled_px`; AUTOSHOW_REFERENCE on `recomp-research` still
+  describes v1 only.
+- **Engine:** reads v1 only, so the report scores the 25 v1 references.
+  It will read v2 once the spec defines it.

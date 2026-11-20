@@ -21,6 +21,9 @@ struct CarColour {
   bool metallic = false;
   uint32_t rgb = 0;  // r x 65536 + g x 256 + b, sRGB
   std::string base_texture, damage_texture;
+  // Combo_Colors_Exceptions (Ordinal = car, same Sequence) with HasStripe 1.
+  bool has_stripe = false;
+  uint32_t stripe_rgb = 0;  // ColorStripe, sRGB
 };
 
 struct CarRow {
@@ -32,14 +35,21 @@ struct CarRow {
   // Tyres per axle (0 front, 1 rear): width in mm, aspect, rim diameter in inches.
   std::array<int64_t, 2> tyre_width_mm{}, tyre_aspect{}, rim_inches{};
   std::array<double, 2> ride_height{};
+  // Data_CarBody row car id x 1000: ModelFrontTrackOuter, ModelRearTrackOuter,
+  // ModelWheelbase, BottomCenterWheelbasePosY.
+  bool has_body = false;
+  std::array<double, 2> track_outer{};
+  double wheelbase = 0, body_bottom_y = 0;
+  bool has_track_offsets = false;  // a CarTrackOffsets row (Id = car id)
   uint32_t caliper_rgb_front = 0, caliper_rgb_rear = 0;
   double caliper_angle_front = 0, caliper_angle_rear = 0;
   bool selectable = false, drivable = false, unicorn = false;
   bool has_livery = false;
   int64_t wing_mask = 0;
   std::vector<CarColour> colours;  // by Sequence, then ID
-  // CarPartPositions PartId 0-9 in the model's frame (+X right, +Z rear);
-  // 5 left rear, 6 right rear, 7 right front, 8 left front.
+  // CarPartPositions PartId 0-9 as stored; 5-8 are axle positions in the
+  // body frame (+Z forward, left at -x): 5 left front, 6 right front, 7
+  // right rear, 8 left rear. Only their z places a wheel.
   std::array<std::array<double, 3>, 10> part_positions{};
   std::array<bool, 10> has_part_position{};
   int part_position_duplicates = 0;  // identical duplicate rows left by the merge
@@ -50,6 +60,9 @@ struct Database {
   std::vector<CarRow> cars;  // by Id
   std::vector<std::string> merges_applied;  // in order, for the report
   size_t base_rows = 0, v4_rows = 0;
+  // Combo_Colors_Exceptions over the merged table: rows, distinct cars, rows
+  // with HasStripe 1 and with HasColor2 1 (FORMAT-CARS, Tests).
+  size_t exception_rows = 0, exception_cars = 0, exception_stripes = 0, exception_color2 = 0;
 };
 
 // Reads the disc's media/db/gamedb.slt (to tell base rows from v4 rows), v4's

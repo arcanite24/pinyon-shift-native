@@ -245,6 +245,46 @@ bool load_database(const Install& install, Database& out, std::string* error) {
     }
   }
   {
+    Query c(db,
+            "SELECT Ordinal, Sequence, HasStripe, ColorStripe, HasColor2 FROM Combo_Colors_Exceptions "
+            "ORDER BY Ordinal, Sequence, ID");
+    std::set<int64_t> cars_with;
+    while (c.step()) {
+      ++out.exception_rows;
+      cars_with.insert(c.i(0));
+      out.exception_stripes += c.i(2) != 0;
+      out.exception_color2 += c.i(4) != 0;
+      auto it = by_id.find(c.i(0));
+      if (it == by_id.end() || c.i(2) == 0) continue;
+      for (CarColour& col : out.cars[it->second].colours)
+        if (col.sequence == c.i(1) && !col.has_stripe) {
+          col.has_stripe = true;
+          col.stripe_rgb = uint32_t(c.i(3));
+        }
+    }
+    out.exception_cars = cars_with.size();
+  }
+  {
+    Query c(db,
+            "SELECT Id, ModelFrontTrackOuter, ModelRearTrackOuter, ModelWheelbase, BottomCenterWheelbasePosY "
+            "FROM Data_CarBody ORDER BY Id");
+    while (c.step()) {
+      if (c.i(0) % 1000 != 0) continue;
+      auto it = by_id.find(c.i(0) / 1000);
+      if (it == by_id.end()) continue;
+      CarRow& r = out.cars[it->second];
+      r.has_body = true;
+      r.track_outer = {c.d(1), c.d(2)};
+      r.wheelbase = c.d(3);
+      r.body_bottom_y = c.d(4);
+    }
+  }
+  {
+    Query c(db, "SELECT Id FROM CarTrackOffsets");
+    while (c.step())
+      if (auto it = by_id.find(c.i(0)); it != by_id.end()) out.cars[it->second].has_track_offsets = true;
+  }
+  {
     // No unique key: the merge can leave identical duplicate rows. The
     // first row by rowid is used; differing duplicates are counted.
     Query c(db, "SELECT Ordinal, PartId, PartPosX, PartPosY, PartPosZ FROM CarPartPositions ORDER BY Ordinal, PartId, rowid");

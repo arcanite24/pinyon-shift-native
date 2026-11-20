@@ -32,8 +32,9 @@ struct ShowroomFrame {
   float tint[4];     // light colour (linear rgb) for diffuse light: environment and both lights
   float reflect_tint[4];  // colour of environment reflections (linear rgb)
   float transparent_view_projection[16];  // glass and lamp covers; usually view_projection
+  float stripe[4];  // the factory stripe colour (linear rgb); set by the showroom
 };
-static_assert(sizeof(ShowroomFrame) == 224);
+static_assert(sizeof(ShowroomFrame) == 240);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -66,7 +67,11 @@ class Showroom {
   // Creates the pipelines and uploads geometry and textures; the renderer
   // must be initialised. Installs itself as the renderer's scene.
   bool upload(std::string& error);
-  void set_frame(const ShowroomFrame& frame) { frame_ = frame; }
+  // The caller's camera and lighting; the stripe colour is the car's own.
+  void set_frame(const ShowroomFrame& frame) {
+    frame_ = frame;
+    for (int i = 0; i < 4; ++i) frame_.stripe[i] = stripe_[i];
+  }
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
   void set_background(float r, float g, float b);
 
@@ -105,7 +110,7 @@ class Showroom {
   using GpuTexture = Renderer::Image;
 
   void add_model(const cars::bake::Model& model, const std::vector<std::string>& parts,
-                 const float transform[16], const cars::bake::Bake& pack, int axle, bool tyre_fit);
+                 const float transform[16], const cars::bake::Bake& pack, int axle);
   uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0);
   bool upload_texture(const cars::bake::Texture* texture, bool srgb, GpuTexture& out, std::string& error);
   bool upload_environment(std::string& error);
@@ -117,6 +122,7 @@ class Showroom {
   cars::bake::Bake car_, wheel_, tyre_, tyre_textures_, shared_;
   ShowroomOptions options_;
   ShowroomFrame frame_{};
+  float stripe_[4] = {1, 1, 1, 1};
   std::vector<cars::bake::Vertex> vertices_;
   std::vector<uint32_t> indices_;
   std::vector<Draw> draws_;

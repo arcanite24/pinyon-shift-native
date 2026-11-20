@@ -237,50 +237,50 @@ opaque.
 ## Status (M1 car viewer, 2026-11-19)
 
 - `car-corpus --check` reproduces every count of FORMAT-CARS's Tests
-  section over the disc, v4 and the 21 installed packages, including 250
-  `Data_Car` rows and 240 distinct media names, in 7 s.
-- `carbake` writes 480 files (7.81 GB) for all 240 cars. Gate run on
-  multivac (16 threads, 2026-11-19): two bakes from empty folders took
-  34.1 s and 48.4 s (budget 10 min) and gave the same 482 files (the
-  bake files plus manifest and report; `bake-time.txt` left out), combined
-  SHA-256 of the sorted per-file hashes
-  `c5e6e43f1d54c0666acc3e0e96b309be796f2cb1c4813f5b26bf3d694155c9f2`.
+  section over the disc, v4 and the 21 installed packages (as of
+  `f193075f`), including 250 `Data_Car` rows, 240 distinct media names,
+  the stock rims' morph targets and header bounds, the wheel rows against
+  the track rule and the stripe exceptions, in 10 s.
+- `carbake` writes 480 files (7.85 GB) for all 240 cars. Gate run on
+  multivac (16 threads, 2026-11-19, bake format 2): two bakes from empty
+  folders took 19.1 s and 28.7 s (budget 10 min) and gave the same 482
+  files (the bake files plus manifest and report; `bake-time.txt` left
+  out), combined SHA-256 of the sorted per-file hashes
+  `2c3b19d08d8409f4653c2fdb72cd21fd85dd17f5519273f8397ca5429a08afaa`.
 - All 240 cars render headless at the default orbit camera with no load
-  failures, no missing textures and none empty (212 s; the least-covered
-  frame is the tour bus at 11 %), checked by eye on one contact sheet.
-- The showroom draws all 240 cars headless (0.8 s each including load):
-  LOD0 body (the `a` variant of each part set, no upgrade parts), the
-  cockpit's hood, windscreen, headlights and cabin, rotors and callipers
-  per corner at the wheel-centre rows, and rims and `TireC` tyres fitted
-  to each axle's sizes. Paint is the lowest-Sequence colour where the
-  atlas alpha is 0; callipers take `CaliperRGB`. Lighting is our own: a
-  procedural studio cube (floor, walls, overhead softbox, side strips)
-  for diffuse and reflections, a key and a fill light, and the vertices'
-  baked occlusion. Glass is blended last, far to near.
+  failures, no missing textures and none empty (168 s), checked by eye
+  on one contact sheet.
+- The showroom draws the LOD0 body (the `a` variant of each part set, no
+  upgrade parts), the cockpit's hood, windscreen, headlights and cabin,
+  rotors and callipers per corner, and the wheels by FORMAT-CARS's rule:
+  centres from the track, tyre size and the rows' z, mapped to the model
+  frame by the inverse model-to-body pose; rims sized by their morph
+  target and scaled across by the header's design width; `TireC` sized
+  by its two targets; right wheels turned half a turn. Paint is the
+  lowest-Sequence colour where the atlas alpha is 0; on a striped colour
+  row the alpha-255 texels take the stripe colour (the Abarth's side
+  stripe and mirror caps). Glass never samples the body atlas. Lighting
+  is our own: a procedural studio cube for diffuse and reflections, a key
+  and a fill light, and the vertices' baked occlusion. Glass is blended
+  last, far to near.
 - 14 cars have no real LOD0 body and 6 have stand-in parts; they draw
   from the LOD1-5 model (Q6).
 - Reference mode reads AUTOSHOW_REFERENCE v1, draws the mask by its
   6/255 rule at the silhouette and the glass with the transparent pass's
-  matrix. Over the 30 references captured so far (`tools/m1-report.py`):
-  silhouette IoU mean 0.976, 23 of 30 at or above 0.97; masked PSNR
-  against the car-only captures 12.1-19.3 dB (median 17.1, none more
-  than 6 dB under it). M1's numeric rule is not met yet: six cars miss
-  0.97 by the lamp and highlight glows the captures' masks include and
-  the engine does not draw (Q11; without the glow every one is at 0.973
-  or above), and one capture (`AUD_RS4Avant_13`) has stage lights in its
-  car-only image. The TZ3's tyres are also smaller in the game (Q10).
+  matrix. Over the 25 v1 references (`tools/m1-report.py`; four v2
+  references wait for the spec, Q15): silhouette IoU mean 0.990, 24 of 25
+  at or above 0.97; masked PSNR against the car-only captures 14.6-19.9
+  dB (median 18.1). The one miss is `BEN_CONTINENTALGT_11` at 0.967, by
+  the lamp glow its mask includes (Q11; 0.979 without it).
 - The lighting's free settings (exposure, environment, key and fill
   strengths, the diffuse and reflection tints, metallic paint's share)
-  were fitted to those references for median masked PSNR, keeping the
+  were fitted to the references for median masked PSNR, keeping the
   diffuse light neutral; `--light name=value,...` overrides them. What
   is left is mostly the stage's sharp coloured reflections, which our
-  studio environment does not have, and the white cars (14.4 dB).
-- Two departures from FORMAT-CARS, both from the references: wheel-centre
-  z is negated (Q9), and rims are scaled by their own authored radius
-  (Q3).
-- Open in the spec: tyre model (Q3), part variants (Q4), cockpit parts
-  (Q5), calliper angle and rim facing (Q7), slot-1 UVs (Q8), TZ3 wheels
-  and roof (Q10).
+  studio environment does not have, and the white cars.
+- Open in the spec: part variants (Q4), cockpit parts (Q5), calliper
+  angle (Q7), slot-1 UVs (Q8), glows (Q11), rims with an empty x extent
+  (Q13), the windscreen band's shade (Q14), reference v2 (Q15).
 
 ## Licence
 

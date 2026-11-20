@@ -3,7 +3,8 @@
 //
 // Paint shows where the atlas alpha is 0 on paint techniques (the colour
 // arrives converted from sRGB to linear); callipers are tinted the same way
-// with their unconverted colour. Lighting: a fixed environment cube (the
+// with their unconverted colour. A striped colour row tints the texels
+// that show through (alpha 255) by the stripe colour. Lighting: a fixed environment cube (the
 // disc's lobby faces, or a gradient) for diffuse and reflections, a key and
 // a fill light, and the vertex's baked occlusion. Glass is tinted and
 // see-through. Output is encoded to sRGB here (the targets are UNORM).
@@ -18,6 +19,7 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 tint_light;
   vec4 reflect_tint;
   mat4 transparent_view_projection;  // glass and lamp covers
+  vec4 stripe;  // the factory stripe colour (linear rgb)
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 
@@ -43,7 +45,7 @@ layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, kGauge = 5u,
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u;
-const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u;
+const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -67,7 +69,7 @@ void main() {
   vec3 r = reflect(-view, n);
   float nv = clamp(dot(n, view), 0.0, 1.0);
 
-  vec3 base = t0.rgb;
+  vec3 base = (flags & kFlagFlat) != 0u ? draw.tint.rgb : t0.rgb;  // flat: glass bands
   float reflectivity = 0.04;   // at normal incidence
   float gloss = 0.3;           // 0 rough .. 1 mirror
   float metal = 0.0;
@@ -75,7 +77,10 @@ void main() {
   vec3 emissive = vec3(0.0);
 
   if (klass == kPaint) {
-    base = mix(draw.tint.rgb, t0.rgb, t0.a);
+    // Alpha-255 texels show the texel; on a striped colour row they are
+    // tinted by the stripe colour (FORMAT-CARS, Paint).
+    vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * frame.stripe.rgb : t0.rgb;
+    base = mix(draw.tint.rgb, texel, t0.a);
     reflectivity = 0.05;
     gloss = 0.9;
     if ((flags & kFlagMetallic) != 0u) metal = frame.options.w;  // flakes: less diffuse, tinted reflection

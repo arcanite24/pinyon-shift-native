@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <set>
 
 #include "fh1data/carbin.h"
@@ -50,6 +51,49 @@ bake::Vertex bake_vertex(const fh1::CarbinPart& part, const fh1::CarbinVertex& v
   o.uv1 = v.uv1;
   o.lighting = v.lighting;
   return o;
+}
+
+float half_to_float(uint16_t h) {
+  const int sign = h >> 15, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+  float v;
+  if (exponent == 0)
+    v = std::ldexp(float(mantissa), -24);
+  else if (exponent == 31)
+    v = mantissa ? NAN : INFINITY;
+  else
+    v = std::ldexp(float(mantissa | 0x400), exponent - 25);
+  return sign ? -v : v;
+}
+
+uint32_t load_be32(const uint8_t* p) {
+  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | uint32_t(p[3]);
+}
+
+// A wheel or tyre pool's morph targets from its damage-tail block
+// (FORMAT-CARS, Damage tail): after the buffer id, per vertex one or two
+// targets of four half floats (a direction and a length, low half of each
+// big-endian word first): position = xyz x w in metres, about the part's
+// offset (not scaled by the half-extents as vertex positions are).
+std::vector<bake::MorphTarget> morph_targets(const fh1::CarbinPart& part, const fh1::CarbinDamageBlock& d,
+                                             size_t vertices) {
+  std::vector<bake::MorphTarget> out;
+  if (d.count != vertices || vertices == 0 || (d.stride != 8 && d.stride != 16)) return out;
+  std::vector<uint8_t> bytes = d.table;
+  bytes.insert(bytes.end(), d.words.begin(), d.words.end());
+  const size_t body = size_t(d.count) * d.stride;
+  if (bytes.size() < body) return out;
+  const size_t skip = bytes.size() - body;  // the buffer id
+  const size_t targets = d.stride / 8;
+  out.assign(targets, bake::MorphTarget(vertices));
+  for (size_t v = 0; v < vertices; ++v)
+    for (size_t t = 0; t < targets; ++t) {
+      const uint8_t* at = bytes.data() + skip + v * d.stride + t * 8;
+      const uint32_t w0 = load_be32(at), w1 = load_be32(at + 4);
+      const float h[4] = {half_to_float(uint16_t(w0 & 0xFFFF)), half_to_float(uint16_t(w0 >> 16)),
+                          half_to_float(uint16_t(w1 & 0xFFFF)), half_to_float(uint16_t(w1 >> 16))};
+      for (int a = 0; a < 3; ++a) out[t][v][size_t(a)] = h[a] * h[3] + part.bounds[size_t(a)];
+    }
+  return out;
 }
 
 Role role_of(const std::string& name, bake::Corner& corner) {
@@ -129,6 +173,12 @@ bool parse_model(Folder& folder, const std::string& name, Role role, bake::Corne
   out.name = name;
   out.role = role;
   out.corner = corner;
+  out.header_kind = carbin.kind;
+  if (carbin.kind == 3 && carbin.head.size() >= 48)
+    for (size_t k = 0; k < 4; ++k) {
+      const uint32_t bits = load_be32(carbin.head.data() + 32 + 4 * k);
+      std::memcpy(&out.header_bounds[k], &bits, 4);
+    }
   for (size_t p = 0; p < carbin.parts.size(); ++p) {
     const fh1::CarbinPart& part = carbin.parts[p];
     if (part.empty_box()) continue;  // no geometry
@@ -137,6 +187,10 @@ bool parse_model(Folder& folder, const std::string& name, Role role, bake::Corne
     bp.bounds = part.bounds;
     for (const auto& v : part.lod_pool.vertices) bp.lod_vertices.push_back(bake_vertex(part, v));
     for (const auto& v : part.lod0_pool.vertices) bp.lod0_vertices.push_back(bake_vertex(part, v));
+    if ((role == Role::kWheel || role == Role::kTyre) && part.damage.size() == 2) {
+      bp.lod_morphs = morph_targets(part, part.damage[0], bp.lod_vertices.size());
+      bp.lod0_morphs = morph_targets(part, part.damage[1], bp.lod0_vertices.size());
+    }
     for (size_t i = 0; i < part.subsections.size(); ++i) {
       const fh1::CarbinSubsection& s = part.subsections[i];
       bake::Subsection bs;
@@ -360,18 +414,37 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
   c.wing_mask = row.wing_mask;
   for (size_t i = 0; i < 10; ++i)
     for (size_t a = 0; a < 3; ++a) c.part_positions[i][a] = float(row.part_positions[i][a]);
-  // LF, RF, LR, RR. FORMAT-CARS reads PartId 5-8 with +z to the rear
-  // (5 LR, 6 RR, 7 RF, 8 LF); the reference captures put the axles the
-  // other way round (docs/SPEC_QUESTIONS.md Q9): z is negated as for the
-  // lamp points, so 5 and 6 are the front pair.
+  c.has_body = row.has_body;
+  c.track_outer = {float(row.track_outer[0]), float(row.track_outer[1])};
+  c.wheelbase = float(row.wheelbase);
+  c.body_bottom_y = float(row.body_bottom_y);
+  c.has_track_offsets = row.has_track_offsets;
+  if (!row.has_body) notes.push_back("no Data_CarBody row " + std::to_string(row.id * 1000));
+  if (row.has_track_offsets) notes.push_back("CarTrackOffsets rows not applied (FORMAT-CARS: meaning not known)");
+  // The model-to-body pose (FORMAT-CARS, Wheels): z mirrored, lifted by the
+  // mean stock ride height less the body's bottom, pitched by the ride
+  // height difference over the wheelbase.
+  const double lift = (row.ride_height[0] + row.ride_height[1]) / 2 - row.body_bottom_y;
+  const double pitch = row.wheelbase > 0 ? std::atan((row.ride_height[1] - row.ride_height[0]) / row.wheelbase) : 0;
+  c.lift = float(lift);
+  c.pitch = float(pitch);
+  // LF, RF, LR, RR from CarPartPositions PartId 5 LF, 6 RF, 8 LR, 7 RR
+  // (body frame, +Z forward). Only z is taken from the rows; x is half the
+  // outer track less the tyre width, y the tyre's outer radius.
   const size_t wheel_rows[4] = {5, 6, 8, 7};
   for (size_t w = 0; w < 4; ++w) {
-    c.wheel_centres[w] = c.part_positions[wheel_rows[w]];
-    c.wheel_centres[w][2] = -c.wheel_centres[w][2];
+    const size_t axle = w < 2 ? 0 : 1;
+    const double rim_radius = double(row.rim_inches[axle]) * 0.0254 / 2;
+    const double width = double(row.tyre_width_mm[axle]) / 1000;
+    const double outer = rim_radius + width * double(row.tyre_aspect[axle]) / 100;
+    const double side = (w % 2 == 0) ? -1 : 1;  // left at -x
+    const double body[3] = {side * (row.track_outer[axle] - width) / 2, outer, row.part_positions[wheel_rows[w]][2]};
+    const double cs = std::cos(pitch), sn = std::sin(pitch);
+    const double y = body[1] - lift, z = body[2];
+    c.wheel_centres_body[w] = {float(body[0]), float(body[1]), float(body[2])};
+    c.wheel_centres[w] = {float(body[0]), float(cs * y + sn * z), float(sn * y - cs * z)};
     if (!row.has_part_position[wheel_rows[w]]) notes.push_back("no CarPartPositions row " + std::to_string(wheel_rows[w]));
   }
-  notes.push_back("tyre model " + std::string(kTyreModel) + " with " + kTyreTextures +
-                  " textures (FORMAT-CARS: the tyre choice is not known)");
 
   std::set<std::string> own;
   for (const auto& n : folder.names())
@@ -382,6 +455,8 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
     bc.sequence = col.sequence;
     bc.metallic = col.metallic;
     bc.rgb = col.rgb;
+    bc.has_stripe = col.has_stripe;
+    bc.stripe_rgb = col.stripe_rgb;
     std::string stem = lower(col.base_texture);
     if (const auto dot = stem.rfind('.'); dot != std::string::npos) stem = stem.substr(0, dot);
     if (stem.empty()) stem = "nodamage";

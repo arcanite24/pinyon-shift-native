@@ -138,14 +138,27 @@ int dump(const fs::path& path) {
   if (b.kind == cars::bake::Kind::kCar) {
     std::printf("car %s (%lld) wheel %s, colours %zu\n", b.car.media_name.c_str(), (long long)b.car.car_id,
                 b.car.wheel_media.c_str(), b.car.colours.size());
-    for (const auto& w : b.car.wheel_centres) std::printf("  wheel centre %.3f %.3f %.3f\n", w[0], w[1], w[2]);
+    std::printf("  pose lift %.4f pitch %.5f, track %.3f/%.3f, wheelbase %.3f\n", b.car.lift, b.car.pitch,
+                b.car.track_outer[0], b.car.track_outer[1], b.car.wheelbase);
+    for (size_t w = 0; w < 4; ++w)
+      std::printf("  wheel centre %.3f %.3f %.3f (body %.3f %.3f %.3f)\n", b.car.wheel_centres[w][0],
+                  b.car.wheel_centres[w][1], b.car.wheel_centres[w][2], b.car.wheel_centres_body[w][0],
+                  b.car.wheel_centres_body[w][1], b.car.wheel_centres_body[w][2]);
+    for (const auto& c : b.car.colours)
+      if (c.has_stripe)
+        std::printf("  colour %lld seq %lld stripe %06x\n", (long long)c.id, (long long)c.sequence, c.stripe_rgb);
     for (size_t a = 0; a < 2; ++a)
       std::printf("  %s tyre %lld/%lld R%lld, ride height %.3f\n", a == 0 ? "front" : "rear",
                   (long long)b.car.tyre_width_mm[a], (long long)b.car.tyre_aspect[a], (long long)b.car.rim_inches[a],
                   b.car.ride_height[a]);
   }
   for (const auto& m : b.models) {
-    std::printf("model %s role %u corner %u\n", m.name.c_str(), unsigned(m.role), unsigned(m.corner));
+    std::printf("model %s role %u corner %u kind %u", m.name.c_str(), unsigned(m.role), unsigned(m.corner),
+                m.header_kind);
+    if (m.header_kind == 3)
+      std::printf(" bounds %g %g %g %g", m.header_bounds[0], m.header_bounds[1], m.header_bounds[2],
+                  m.header_bounds[3]);
+    std::printf("\n");
     for (const auto& p : m.parts) {
       std::printf("  part %-24s c(%.2f %.2f %.2f) e(%.2f %.2f %.2f) v %zu/%zu:", p.name.c_str(), p.bounds[0],
                   p.bounds[1], p.bounds[2], p.bounds[6], p.bounds[7], p.bounds[8], p.lod_vertices.size(),
@@ -167,6 +180,17 @@ int dump(const fs::path& path) {
           x0 = std::min(x0, v[0]), x1 = std::max(x1, v[0]), r0 = std::min(r0, r), r1 = std::max(r1, r);
         }
         std::printf("    %-20s lod %d x %.3f..%.3f r %.3f..%.3f\n", s.technique.c_str(), s.lod, x0, x1, r0, r1);
+        const auto& morphs = s.lod == 0 ? p.lod0_morphs : p.lod_morphs;
+        for (size_t t = 0; t < morphs.size(); ++t) {
+          float tx0 = 1e9f, tx1 = -1e9f, tr0 = 1e9f, tr1 = 0;
+          for (uint32_t i : s.indices) {
+            if (i >= morphs[t].size()) continue;
+            const auto& v = morphs[t][i];
+            const float r = std::sqrt(v[1] * v[1] + v[2] * v[2]);
+            tx0 = std::min(tx0, v[0]), tx1 = std::max(tx1, v[0]), tr0 = std::min(tr0, r), tr1 = std::max(tr1, r);
+          }
+          std::printf("      morph %zu x %.3f..%.3f r %.3f..%.3f\n", t, tx0, tx1, tr0, tr1);
+        }
       }
     }
   }
