@@ -72,6 +72,11 @@ const drive::Vehicle* Bodies::body(uint32_t car) const {
   return it == bodies_.end() ? nullptr : it->second.v.get();
 }
 
+drive::Vehicle* Bodies::body(uint32_t car) {
+  const auto it = bodies_.find(car);
+  return it == bodies_.end() ? nullptr : it->second.v.get();
+}
+
 drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const {
   drive::Input in;
   const double speed = v.speed();
@@ -115,11 +120,11 @@ void Bodies::hold_lane(drive::Vehicle& v, double target, const std::array<double
   Vec3 vel = v.velocity();
   const double along = vel.x * lane[0] + vel.z * lane[1];
   const double along2 = along + (target - along) * sp;
-  const double across2 = -lateral * sl / drive::Vehicle::kStep;
+  const double across2 = std::clamp(-lateral * sl / drive::Vehicle::kStep, -o.hold_max_across, o.hold_max_across);
   vel.x = lane[0] * along2 + right[0] * across2;
   vel.z = lane[1] * along2 + right[1] * across2;
   Vec3 ang = v.angular_velocity();
-  ang.y = heading_error * sh / drive::Vehicle::kStep;
+  ang.y = std::clamp(heading_error * sh / drive::Vehicle::kStep, -o.hold_max_yaw, o.hold_max_yaw);
   v.set_velocity(vel, ang);
 }
 

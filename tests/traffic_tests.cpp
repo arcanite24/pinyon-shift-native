@@ -127,11 +127,76 @@ void test_push() {
   CHECK(me.speed() < me_at_contact - 2);
 }
 
+// The lane hold taking over a body 1.5 m right of its lane line and 0.5
+// rad off its heading (inside the off-line limits, as after a nudge or on
+// rejoining the line), with the player's car parked beside the lane: the
+// body goes back to its line without a burst of speed and without
+// launching the player's car.
+void test_hold_resume() {
+  const traffic::NavMap map = straight_road();
+  traffic::Roads roads;
+  roads.build(map);
+  traffic::TrafficConfig c;
+  c.initial_cars = 0;
+  traffic::DensityEntry e;
+  e.id = 5, e.speed_mph = 30;
+  c.traffic[5] = e;
+  c.models = {{282, 0, false, false}};
+  traffic::Population pop(roads, c, 7);
+  traffic::Car car;
+  car.model = 282;
+  car.base_speed = car.speed = car.target = 30 * 0.44704;
+  pop.add(car, 0, 120, 1);
+  drive::CarParams params;
+  const double r = 0.31;
+  params.wheel_centres = {drive::Vec3{-0.72, r, 1.15}, drive::Vec3{0.72, r, 1.15}, drive::Vec3{-0.72, r, -1.15},
+                          drive::Vec3{0.72, r, -1.15}};
+  params.tyre_radius = {r, r, r, r};
+  params.centre_of_mass = {0, 0.5, 0.05};
+  params.size = {1.64, 1.3, 3.9};
+  traffic::Bodies bodies(pop, [&](int64_t) { return &params; });
+  drive::Vehicle me(params);
+  me.reset({6.0, 0, 128}, 0);  // parked beside the lane, ahead of the body
+  const drive::FlatGround flat;
+  drive::Input hold;
+  hold.brake = 1;
+  hold.handbrake = true;
+  double peak = 0, me_peak = 0, lat_end = 0, yaw_peak = 0;
+  bool nudged = false;
+  for (int i = 0; i < int(3 / drive::Vehicle::kStep); ++i) {
+    me.step(hold, flat);
+    const auto p = me.position(), v = me.velocity();
+    pop.step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+    bodies.step(flat, &me);
+    if (pop.cars().empty() || !pop.cars()[0].body) continue;
+    drive::Vehicle* b = bodies.body(pop.cars()[0].id);
+    if (!nudged) {
+      nudged = true;
+      const auto at = b->position();
+      b->launch({at.x + 1.5, at.y, at.z}, 0.5, 13.41);
+      continue;
+    }
+    const auto bv = b->velocity();
+    peak = std::max(peak, std::hypot(bv.x, bv.z));
+    yaw_peak = std::max(yaw_peak, std::fabs(b->angular_velocity().y));
+    me_peak = std::max(me_peak, std::hypot(me.velocity().x, me.velocity().z));
+    lat_end = b->position().x - 2.2;
+  }
+  std::printf("hold resume: body up to %.1f m/s and %.1f rad/s, %.2f m off its line after 3 s, the parked player up "
+              "to %.2f m/s, contacts %d, off line %d\n",
+              peak, yaw_peak, lat_end, me_peak, bodies.player_contacts(), int(pop.cars()[0].off_line));
+  CHECK(nudged);
+  CHECK(peak < 16);
+  CHECK(me_peak < 1);
+  CHECK(std::fabs(lat_end) < 0.3);
+}
+
 }  // namespace
 
 int main() {
   test_time_factor();
   test_push();
+  test_hold_resume();
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root || !*root) {
     std::printf("traffic_tests: SHIFT_GAME_ROOT not set, corpus checks skipped\n");

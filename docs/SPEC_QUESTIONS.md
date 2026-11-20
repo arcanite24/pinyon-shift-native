@@ -785,7 +785,10 @@ question Q38)" and "Colour byte order"). Built:
   applied to the body's velocity, the speed along the lane towards a lane
   speed that moves to the target at AccelerationMax and DeccelerationMax
   (as a kinematic car's), the speed across it and the yaw rate to those
-  that remove that share of the offset and heading error;
+  that remove that share of the offset and heading error, capped at
+  1.5 m/s across and 1.0 rad/s in yaw (uncapped, a body 1.5 m and 0.5 rad
+  off its line was commanded 140 m/s and 47 rad/s; capped it is back on
+  its line within 3 s at no more than its lane speed, traffic_tests);
   LaneOffsetDecay and the pitch and roll limits are unused; (2) no hold
   for 1 s after a contact, so a push or a knock is the body's own; (3) no
   first gear forced off the line. At these gains the hold is close to
@@ -800,8 +803,10 @@ question Q38)" and "Colour byte order"). Built:
   54.1 s, away 4.6 s, interval 6.9 to 7.2 s, lifetime over interval 5.8
   to 5.9 cars (the spec's 5.7); the steady count over 60 to 600 s
   (`--steady`) is 5.87 (6.1). The census's 4.79 is the first minute from
-  the four initial cars, a transient (the oracle's minute was not from a
-  fresh start). Settled 02:00 (the minute after the last noon car left,
+  the four initial cars, which drive either way at even odds (ours), so it
+  is probably a transient. Open: whether the oracle's noon minute began at
+  the initial placement, and which way its four initial cars drove.
+  Settled 02:00 (the minute after the last noon car left,
   48 s after the change at the median; the oracle's 44 s): 0.97 with
   bodies, 0.95 kinematic (0.8; within 30 %). The 0.9 row (30 to 60 s
   after the change) still misses at 1.33 / 1.25: our noon cars leave

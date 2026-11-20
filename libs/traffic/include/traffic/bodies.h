@@ -38,6 +38,10 @@ struct BodiesOptions {
   TrafficConfig::LaneGains gains_min, gains_max{0.9, 0.93, 0.93};
   double gains_length_min = 4.5, gains_length_max = 10;
   double hold_after_contact = 1.0;  // s without the lane hold after a contact (ours)
+  // The most the hold commands across the lane (m/s) and in yaw (rad/s),
+  // so a body nudged off its line goes back to it rather than snapping
+  // (ours).
+  double hold_max_across = 1.5, hold_max_yaw = 1.0;
   // AI/Traffic/Speed/AccelerationMax, DeccelerationMax (m/s^2): the lane
   // speed the hold aims at moves towards the target at these, as a
   // kinematic car's does.
@@ -71,11 +75,13 @@ class Bodies {
   // interpolated by the body's length between the Min and Max cars; the
   // speed along the lane goes to `target`, the speed across it and the yaw
   // rate to those that remove the offset and the heading error at that
-  // share. The vertical motion and pitch and roll are the body's own.
+  // share, capped at hold_max_across and hold_max_yaw. The vertical motion
+  // and pitch and roll are the body's own.
   static void hold_lane(drive::Vehicle& v, double target, const std::array<double, 2>& lane, double lateral,
                         double heading_error, const BodiesOptions& o);
 
   const drive::Vehicle* body(uint32_t car) const;
+  drive::Vehicle* body(uint32_t car);
   size_t count() const { return bodies_.size(); }
   int contacts() const { return contacts_; }  // since the start
   // Contacts with the player's car since the start, and the largest
