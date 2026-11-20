@@ -115,7 +115,8 @@ It turns the one-paragraph sketch there into a programme of work.
 | Collision (`.fiz` tiles, the `.col` tile index, `surfaceTypes.xml`) | the static mesh, its tiling and the per-triangle surface index (M3 items 1-3, 2026-11-20); flag fields, prop shapes (`PhysicsDefinitions.bin`) and how the tyre uses the surface columns not decoded | `tools/re/collision.py`, [COLLISION.md](formats/COLLISION.md) |
 | `.sh`, `.gr2`, `.skinbin`, `.xpr` | **none** | |
 | PVS (`.pvs`, `.pvsz`, `PVSZLookup`, `FilenameMap`) | **named only** | |
-| `.nav`, `.owr`/`.oww`, `OWTM` racing lines, `PhysicsDefinitions.bin`, `.col`, `.crowd`, `.soundscape` | **none** | |
+| `colorado.nav` road graph | complete: nodes, ways, both reference lists, tags and strings, every byte accounted for (M4, 2026-11-20) | `tools/re/traffic.py nav`, [TRAFFIC.md](specs/TRAFFIC.md) |
+| `.owr`/`.oww`, `OWTM` racing lines, `PhysicsDefinitions.bin`, `.col`, `.crowd`, `.soundscape` | **none** (`OWTM`: a 48-byte header and 48-byte points, race routes only) | |
 | `.fxobj` effects | container: microcode and 34 vertex declarations | techniques, render states and parameter bindings are not decoded |
 | `.fev` FMOD events | **none** | |
 | `.wmv` movies | stored | today they are decoded by the XMedia facade module |
