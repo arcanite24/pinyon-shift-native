@@ -28,7 +28,7 @@ struct HudState {
 // The windowed drive's pause menu: Esc or Start opens it; the items move
 // with up and down and wrap.
 struct PauseMenu {
-  enum Item { kResume, kChangeCar, kReset, kQuit, kCount };
+  enum Item { kResume, kMap, kChangeCar, kReset, kQuit, kCount };
   bool open = false;
   int selected = kResume;
   static const char* label(int item);

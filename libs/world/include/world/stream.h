@@ -47,6 +47,12 @@ class Streamer {
   // caller must not use them.
   bool update(double x, double z, bool* changed, std::string* error);
   void set_async(bool async) { async_ = async; }
+  // A new set of hidden props (GatherOptions::hidden): the next update
+  // gathers again wherever the car is, once no gather is running.
+  void set_hidden(std::shared_ptr<const std::set<std::string>> hidden) {
+    pending_hidden_ = std::move(hidden);
+    force_ = true;
+  }
   void set_prepare(Prepare prepare) { prepare_ = std::move(prepare); }
   // The Prepare result of the mesh in use (moved out by the caller).
   std::any& prepared() { return prepared_; }
@@ -85,6 +91,8 @@ class Streamer {
 
   World& world_;
   GatherOptions options_;
+  std::shared_ptr<const std::set<std::string>> pending_hidden_;
+  bool force_ = false;
   double regather_;
   Collision* collision_;
   double collision_radius_;

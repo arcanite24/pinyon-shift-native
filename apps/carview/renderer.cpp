@@ -993,12 +993,18 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, color_stage, color_write,
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkBufferImageCopy region{};
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageOffset = {overlay_at_.x, overlay_at_.y, 0};
-    region.imageExtent = {overlay_width_, overlay_height_, 1};
-    vkCmdCopyBufferToImage(cmd, overlay_buffer_.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                           &region);
+    VkBufferImageCopy regions[kOverlayLayers]{};
+    uint32_t count = 0;
+    for (const auto& l : overlays_) {
+      if (!l.staged) continue;
+      VkBufferImageCopy& region = regions[count++];
+      region.bufferOffset = l.offset;
+      region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.imageOffset = {l.at.x, l.at.y, 0};
+      region.imageExtent = {l.width, l.height, 1};
+    }
+    vkCmdCopyBufferToImage(cmd, overlay_buffer_.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count,
+                           regions);
     layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
     last_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -1012,22 +1018,39 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   }
 }
 
-void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y) {
+void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y,
+                           int layer) {
+  if (layer < 0 || layer >= kOverlayLayers) return;
   if (rgba.size() != size_t(width) * height * 4) rgba.clear();
-  overlay_pixels_ = std::move(rgba);
-  overlay_width_ = overlay_pixels_.empty() ? 0 : width;
-  overlay_height_ = overlay_pixels_.empty() ? 0 : height;
-  overlay_x_ = x;
-  overlay_y_ = y;
+  OverlayLayer& l = overlays_[layer];
+  l.pixels = std::move(rgba);
+  l.width = l.pixels.empty() ? 0 : width;
+  l.height = l.pixels.empty() ? 0 : height;
+  l.x = x;
+  l.y = y;
+  l.dirty = true;
 }
 
 bool Renderer::stage_overlay() {
   overlay_staged_ = false;
-  if (overlay_pixels_.empty() || !overlay_supported_) return false;
-  const int64_t x = overlay_x_ < 0 ? int64_t(target_width_) - overlay_width_ + overlay_x_ + 1 : overlay_x_;
-  const int64_t y = overlay_y_ < 0 ? int64_t(target_height_) - overlay_height_ + overlay_y_ + 1 : overlay_y_;
-  if (x < 0 || y < 0 || x + overlay_width_ > target_width_ || y + overlay_height_ > target_height_) return false;
-  const VkDeviceSize bytes = overlay_pixels_.size();
+  for (auto& l : overlays_) l.staged = false;
+  if (!overlay_supported_) return false;
+  // Where each layer that fits goes, packed one after another (16-byte
+  // aligned offsets, as copies want a multiple of the texel size).
+  VkDeviceSize bytes = 0, offsets[kOverlayLayers]{};
+  for (int i = 0; i < kOverlayLayers; ++i) {
+    OverlayLayer& l = overlays_[i];
+    if (l.pixels.empty()) continue;
+    const int64_t x = l.x < 0 ? int64_t(target_width_) - l.width + l.x + 1 : l.x;
+    const int64_t y = l.y < 0 ? int64_t(target_height_) - l.height + l.y + 1 : l.y;
+    if (x < 0 || y < 0 || x + l.width > target_width_ || y + l.height > target_height_) continue;
+    l.at = {int32_t(x), int32_t(y)};
+    l.staged = true;
+    offsets[i] = bytes;
+    bytes += (VkDeviceSize(l.pixels.size()) + 15) & ~VkDeviceSize(15);
+  }
+  if (bytes == 0) return false;
+  bool all = false;  // every staged layer is copied again (a new buffer, moved offsets)
   if (overlay_buffer_.size < bytes) {
     if (overlay_mapped_) vkUnmapMemory(device_, overlay_buffer_.memory);
     overlay_mapped_ = nullptr;
@@ -1039,16 +1062,23 @@ bool Renderer::stage_overlay() {
       overlay_mapped_ = nullptr;
       return false;
     }
+    all = true;
   }
-  auto* out = static_cast<uint8_t*>(overlay_mapped_);
   const bool bgra = color_format_ == VK_FORMAT_B8G8R8A8_UNORM || color_format_ == VK_FORMAT_B8G8R8A8_SRGB;
-  for (size_t i = 0; i < overlay_pixels_.size(); i += 4) {
-    out[i + 0] = overlay_pixels_[i + (bgra ? 2 : 0)];
-    out[i + 1] = overlay_pixels_[i + 1];
-    out[i + 2] = overlay_pixels_[i + (bgra ? 0 : 2)];
-    out[i + 3] = overlay_pixels_[i + 3];
+  for (int i = 0; i < kOverlayLayers; ++i) {
+    OverlayLayer& l = overlays_[i];
+    if (!l.staged) continue;
+    if (!all && !l.dirty && l.offset == offsets[i]) continue;
+    l.offset = offsets[i];
+    l.dirty = false;
+    auto* out = static_cast<uint8_t*>(overlay_mapped_) + l.offset;
+    for (size_t k = 0; k < l.pixels.size(); k += 4) {
+      out[k + 0] = l.pixels[k + (bgra ? 2 : 0)];
+      out[k + 1] = l.pixels[k + 1];
+      out[k + 2] = l.pixels[k + (bgra ? 0 : 2)];
+      out[k + 3] = l.pixels[k + 3];
+    }
   }
-  overlay_at_ = {int32_t(x), int32_t(y)};
   overlay_staged_ = true;
   return true;
 }

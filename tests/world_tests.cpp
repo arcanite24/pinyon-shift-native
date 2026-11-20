@@ -196,6 +196,27 @@ int main() {
               st.world_models, st.props, render.mesh().triangles(), road, render.mesh_ground().triangle_count());
   CHECK(st.world_models > 100 && st.props > 100 && road > 1000);
 
+  // Named props hidden by GameplayID (SPEC-FREEROAM-COLLECTIBLES): the
+  // first discount sign stands at 1410.35, 128.44, 3126.53 (GameObjs.xml).
+  {
+    world::GatherOptions o;
+    o.hidden = std::make_shared<const std::set<std::string>>(std::set<std::string>{"flyer_001", "flyer_002"});
+    world::Streamer near_sign(w, o);
+    CHECK(near_sign.update(1410.35, 3126.53, nullptr, &error));
+    std::printf("near flyer_001: %zu props, %zu hidden by name\n", near_sign.stats().props,
+                near_sign.stats().props_hidden);
+    CHECK(near_sign.stats().props_hidden == 1);
+    // A barn's door variants and its car are named props too (DoorInfo,
+    // TriggerZone object), one placement each.
+    o.hidden = std::make_shared<const std::set<std::string>>(
+        std::set<std::string>{"bf_bug_eb110bf_92_closed", "bf_bug_eb110bf_92_open", "bf_bug_eb110bf_92_closedc",
+                              "bf_bug_eb110bf_92_openc", "barnfind_bug_eb110bf_92"});
+    world::Streamer barn(w, o);
+    CHECK(barn.update(1418.5, -5366.8, nullptr, &error));
+    std::printf("barn find 01: %zu of %zu props hidden by name\n", barn.stats().props_hidden, barn.stats().props);
+    CHECK(barn.stats().props_hidden == 5);
+  }
+
   world::Spawn spawn;
   CHECK(world::find_spawn(render.mesh(), x, z, spawn, &world::kDumpCameraHeading));
   std::printf("spawn %.3f %.3f %.3f heading %.4f, %.2f m from the search point\n", spawn.position[0],

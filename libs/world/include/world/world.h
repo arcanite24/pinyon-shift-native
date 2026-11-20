@@ -143,6 +143,9 @@ struct ModelInfo {
 };
 
 struct GatherOptions {
+  // Named props (lower-case GameplayIDs) left out: found discount signs,
+  // a barn's closed or open doors (SPEC-FREEROAM-COLLECTIBLES). Null: none.
+  std::shared_ptr<const std::set<std::string>> hidden;
   double radius = 600;       // world-space models whose header box comes within this (x-z)
   double prop_radius = 250;  // props placed within this
   double prop_lod0 = 80;     // props nearer than this use LOD00, the rest LOD02 (or their last)
@@ -173,6 +176,7 @@ struct GatherStats {
   size_t far_models = 0, far_triangles = 0;  // the far ring
   size_t trees = 0, trees_untextured = 0;    // tree sprites; those whose atlas has no file
   size_t props_off_route = 0, trees_off_route = 0;  // left out by the route rule
+  size_t props_hidden = 0;   // named props left out (GatherOptions::hidden)
   size_t props_markers = 0;  // placements of the Temp_Arrow_Pointer marker, left out
   size_t props_beacons = 0;  // placements of the gameplay beacon (coloradoout.06509), left out
   size_t props_near_lod = 0;  // with prop_near_radius: the LOD00 copies added beside LOD02

@@ -70,3 +70,7 @@ add_executable(handbrake_tests handbrake_tests.cpp)
 target_link_libraries(handbrake_tests PRIVATE shift_drive)
 add_test(NAME handbrake_tests COMMAND handbrake_tests)
 set_tests_properties(handbrake_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
+
+add_executable(freeroam_tests freeroam_tests.cpp)
+target_link_libraries(freeroam_tests PRIVATE shift_freeroam)
+add_test(NAME freeroam_tests COMMAND freeroam_tests)

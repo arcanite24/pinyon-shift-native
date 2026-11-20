@@ -263,10 +263,19 @@ void test_save() {
   s.has_spawn = true;
   s.spawn = {2002.96, 143.84, 960.0};
   s.spawn_heading = 2.2008;
+  s.total_distance = 51234.5;
+  s.signs_found = {"flyer_001", "flyer_017"};
+  s.barns = {{"barnfind_01", 2, 50000, 51200.25}, {"barnfind_02", 5, 51000, 0}};
+  s.garage = {1219};
   drive::DriveSave back;
   std::string error;
   CHECK(drive::save_from_text(drive::save_to_text(s), back, &error));
   CHECK(back.car == s.car && back.has_spawn);
+  // The free-roam progress (SPEC-FREEROAM-COLLECTIBLES).
+  CHECK(std::fabs(back.total_distance - 51234.5) < 1e-6 && back.signs_found == s.signs_found);
+  CHECK(back.barns.size() == 2 && back.barns[0].name == "barnfind_01" && back.barns[0].status == 2 &&
+        std::fabs(back.barns[0].found_at - 51200.25) < 1e-6 && back.barns[1].status == 5);
+  CHECK(back.garage == s.garage);
   CHECK(std::fabs(back.position[0] - s.position[0]) < 1e-5 && std::fabs(back.position[2] - s.position[2]) < 1e-5);
   CHECK(std::fabs(back.heading - s.heading) < 1e-6 && std::fabs(back.spawn_heading - s.spawn_heading) < 1e-6);
   CHECK(drive::save_from_text("shift-drive-save 1\ncar X\nposition 1 2 3\nheading 0.5\nfuture 7\n", back, &error));

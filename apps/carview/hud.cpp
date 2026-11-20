@@ -103,6 +103,7 @@ int hud_scale(int height) { return std::max(1, height / 300); }
 const char* PauseMenu::label(int item) {
   switch (item) {
     case kResume: return "resume";
+    case kMap: return "map";
     case kChangeCar: return "change car";
     case kReset: return "reset to road";
     case kQuit: return "quit";

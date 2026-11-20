@@ -583,6 +583,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         ++st.props_off_route;
         continue;
       }
+      if (options.hidden && !p.name.empty() && options.hidden->count(p.name)) {
+        ++st.props_hidden;
+        continue;
+      }
       if (!p.has_object || p.object_id >= impl_->table.objects.size()) {
         ++st.prop_unresolved;
         continue;

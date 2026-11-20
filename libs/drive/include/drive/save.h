@@ -8,17 +8,32 @@
 //   position -1790.46 34.16 1863.44
 //   heading -1.4358
 //   spawn 2002.96 143.84 960.00 2.2008
+//   distance 51234.5
+//   signs flyer_001 flyer_017
+//   barn barnfind_01 2 50000.0 51200.3
+//   garage 1219
 //
 // Lines are "key values"; unknown keys are skipped, so later versions can
 // add lines. `spawn` (optional) is the last spawn point, where "back to the
-// start" goes when no road is found.
+// start" goes when no road is found. The free-roam progress
+// (SPEC-FREEROAM-COLLECTIBLES; freeroam::Progress) is optional: `distance`
+// is the total driven (m), `signs` the found discount signs, one `barn`
+// line per barn find off its starting state (name, status, rumour and
+// discovery distances), `garage` the Data_Car ids barn finds gave.
 #pragma once
 
 #include <array>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace drive {
+
+struct SavedBarn {
+  std::string name;
+  int status = 3;
+  double rumour_at = 0, found_at = 0;
+};
 
 struct DriveSave {
   static constexpr int kVersion = 1;
@@ -28,6 +43,10 @@ struct DriveSave {
   bool has_spawn = false;
   std::array<double, 3> spawn{};
   double spawn_heading = 0;
+  double total_distance = 0;
+  std::vector<std::string> signs_found;
+  std::vector<SavedBarn> barns;
+  std::vector<int> garage;
 };
 
 std::string save_to_text(const DriveSave& save);

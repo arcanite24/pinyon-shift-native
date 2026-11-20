@@ -37,6 +37,7 @@ readers, and a car drawn from the game's own files.
 | `apps/car-corpus` | Reproduces every count of FORMAT-CARS's Tests section over the player's files (`--check` fails on a mismatch) |
 | `apps/carbake` | Bakes every distinct car (240), its stock wheel, the tyre archives and the shared textures to `.shiftbake` files, deterministically and in parallel; `--dump` lists a bake |
 | `libs/audio` | Engine sound (SPEC-ENGINE-SOUND): the tuning XMLs (engine, harmonics, car model listener), FSB4 bank headers and XMA2 wave wrapping, the rpm map, crossfades, pitch and parameter curves, the loop index rule, a stereo mixer, and the bake to PCM with its reader |
+| `libs/freeroam` | Free-roam collectibles (SPEC-FREEROAM-COLLECTIBLES): the discount signs and barn finds from `gamemodes.zip` and `GameObjs.xml`, the player's progress, the smash, rumour and discovery rules, the upgrade discount and the map projection |
 | `apps/soundbake` | Decodes each car's engine loops to 16-bit PCM under `out/sound/<car>/` with copies of its tuning files (FFmpeg, bake time only) |
 | `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, depth, 4x MSAA, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG. `--bake` is the showroom over baked cars (our car shader and lighting, paint, livery masks, wheels, brakes, glass last) with a reference mode that renders at a reference camera and writes the car-coverage mask; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
 | `tests` | Unit tests on synthetic bytes |
@@ -158,9 +159,10 @@ placed props out, `--no-far` the far ring, `--no-trees` the tree sprites.
 | Steer | A/D or Left/Right | left stick |
 | Handbrake | Space | A |
 | Back on the nearest road | R | |
-| Pause menu: resume, change car, reset to road, quit | Esc | Start |
+| Pause menu: resume, map, change car, reset to road, quit | Esc | Start |
 | In the menu: choose, take, close | Up/Down (W/S), Enter or Space, Esc | D-pad, A, B or Start |
-| Chase or front view | V | Back |
+| Map (the drive waits): close, zoom, pan | M; M or Esc, + and -, arrows | Back; B, LB and RB, D-pad |
+| Chase or front view | V | |
 | Look around | | right stick |
 | Look back (held) | C | Y |
 | Choose another car (shown in the title) | [ and ] | LB and RB |
@@ -181,6 +183,22 @@ menu opens, every 30 s of driving and on quit, and read at start: with no
 stood (when the car is the same). `--save <file>` names another file
 (headless runs too), `--no-save` neither reads nor writes one.
 `--menu-png <file>` writes the HUD with the menu open and exits.
+
+**Collectibles and the map.** Free roam has the 100 discount signs and the
+9 barn finds (SPEC-FREEROAM-COLLECTIBLES; `libs/freeroam`), read from
+`gamemodes.zip` and placed by `GameObjs.xml`. Driving through a sign above
+1 m/s smashes it: the sign is no longer drawn and each one takes 1 % off
+upgrades (`freeroam::discounted_price`; no upgrade shop yet). A barn's
+rumour starts every 50 km of total distance, lowest number first; driving
+within 10 m of the barn's car below 50 mph finds it: its car goes to the
+garage list, and the barn's closed doors give way to the open ones. These
+rules are the spec's interims. The save keeps the distance, the found signs,
+the barns and the garage. The minimap (lower left) shows the roads, rumour
+circles and icons, with the heading up. The map (M) is north up over the
+painted map. Unfound signs and barns show only with `--reveal`.
+`--distance <m>` adds to the total driven (a rumour sooner),
+`--no-collectibles` turns them off (`--bench` too), and `--map-png
+<prefix>` writes the map, a close-up and the minimap at the end of a run.
 
 **Traffic.** Free roam has the game's traffic (SPEC-TRAFFIC; `libs/traffic`):
 the road map in `colorado.nav`, the freeroam car list and density table of
@@ -650,6 +668,21 @@ the interim noted here until a later polish sweep.
   drive straight into a rail; headless runs put it back.
 - **The F12 screenshot.** F12 saves the pose but not an image yet (the
   window has no swapchain read-back).
+- **Collectibles presentation.** No discovery cut scene, fade, achievement
+  or rumour-reveal map animation (a notice line instead); no smash debris or
+  sound. The barn's collision doesn't follow the doors (only the drawn
+  props swap; the 10 m trigger is reachable from outside). A smashed sign
+  stays drawn until the next gather lands (one frame headless, a moment
+  in the window). Barn car names come from the string-table key
+  (`Barnfind.str` is not read).
+- **Map details.** The minimap's tilt, zoom and icon sizes are ours (the
+  spec's interim: 45 degrees, about 300 m); its icons don't fade by
+  `VisibleRange`. No traffic dots, place-name layers or the high
+  background tiles (the low 2048×1229 level only), and no Treasure Map
+  (`--reveal` stands in). Profile line sizes are scaled by our factors.
+- **Barn find 01 spawn.** A car placed off the road east of the Bugatti
+  barn (1448, -5363) falls through the ground; the barn is reached from
+  its road only through the rail. Worth a collision look.
 
 ## Licence
 

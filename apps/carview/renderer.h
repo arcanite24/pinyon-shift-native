@@ -116,7 +116,11 @@ class Renderer {
   // copied over every following frame with its top-left corner at (x, y)
   // pixels; a negative x or y counts from the right or bottom edge. An
   // empty panel removes it. Frames it does not fit in are drawn without it.
-  void set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y);
+  // Up to kOverlayLayers panels (the HUD, the minimap, the pause map), each
+  // its own layer; they must not overlap. A layer is copied to the GPU's
+  // buffer only when set again.
+  static constexpr int kOverlayLayers = 3;
+  void set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y, int layer = 0);
 
   const std::string& device_name() const { return device_name_; }
   uint32_t samples() const { return uint32_t(samples_); }
@@ -164,8 +168,8 @@ class Renderer {
   uint64_t frames_done() const { return frames_done_; }
   void record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                     VkImageLayout final_layout, const FrameConstants& constants);
-  // Copies the overlay into its buffer (none of the GPU's frames may be
-  // using it); false when there is none or it does not fit the target.
+  // Copies the changed overlay layers into their buffer (none of the GPU's
+  // frames may be using it); false when none is staged.
   bool stage_overlay();
 
   Options options_;
@@ -234,12 +238,18 @@ class Renderer {
   bool swapchain_dirty_ = false;
 
   SceneHooks scene_;
-  std::vector<uint8_t> overlay_pixels_;
-  uint32_t overlay_width_ = 0, overlay_height_ = 0;
-  int32_t overlay_x_ = 0, overlay_y_ = 0;
-  bool overlay_staged_ = false;     // this frame copies the overlay
+  struct OverlayLayer {
+    std::vector<uint8_t> pixels;
+    uint32_t width = 0, height = 0;
+    int32_t x = 0, y = 0;
+    bool dirty = false;           // set since last copied into the buffer
+    bool staged = false;          // this frame copies it
+    VkOffset2D at{};
+    VkDeviceSize offset = 0;      // in overlay_buffer_
+  };
+  OverlayLayer overlays_[kOverlayLayers];
+  bool overlay_staged_ = false;     // this frame copies a layer
   bool overlay_supported_ = true;   // the swapchain allows transfers into it
-  VkOffset2D overlay_at_{};
   Buffer overlay_buffer_;
   void* overlay_mapped_ = nullptr;
   uint32_t validation_messages_ = 0;

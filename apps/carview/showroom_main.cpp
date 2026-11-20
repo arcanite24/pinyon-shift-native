@@ -54,6 +54,8 @@
 #include "world/world.h"
 #include "contact_log.h"
 #include "safe_reset.h"
+#include "map_view.h"
+#include "freeroam/collectibles.h"
 
 namespace carview {
 
@@ -1022,6 +1024,43 @@ bool read_shadow_direction(const std::filesystem::path& world_dir, float travel[
   return true;
 }
 
+// The free-roam progress to and from the save (drive/save.h): barns by
+// name, an unknown status read as not spawned.
+void progress_from_save(const drive::DriveSave& s, const freeroam::Collectibles& data, freeroam::Progress& p) {
+  p.total_distance = s.total_distance;
+  p.signs_found.clear();
+  for (const auto& id : s.signs_found)
+    for (const auto& sign : data.signs)
+      if (sign.id == id) p.signs_found.insert(id);
+  p.barns.assign(data.barns.size(), {});
+  for (const auto& b : s.barns)
+    for (size_t i = 0; i < data.barns.size(); ++i)
+      if (data.barns[i].name == b.name) {
+        const bool known = b.status == freeroam::kBarnFound || b.status == freeroam::kBarnNotSpawned ||
+                           b.status == freeroam::kBarnRumour;
+        p.barns[i] = {known ? b.status : int(freeroam::kBarnNotSpawned), b.rumour_at, b.found_at};
+      }
+  p.garage = s.garage;
+}
+
+void progress_to_save(const freeroam::Collectibles& data, const freeroam::Progress& p, drive::DriveSave& s) {
+  s.total_distance = p.total_distance;
+  s.signs_found.assign(p.signs_found.begin(), p.signs_found.end());
+  s.barns.clear();
+  for (size_t i = 0; i < data.barns.size() && i < p.barns.size(); ++i)
+    if (p.barns[i].status != freeroam::kBarnNotSpawned)
+      s.barns.push_back({data.barns[i].name, p.barns[i].status, p.barns[i].rumour_at, p.barns[i].found_at});
+  s.garage = p.garage;
+}
+
+// "IDS_Barnfind_Car_BuggatiEB110SS" -> "BuggatiEB110SS" (the string table
+// is not read yet).
+std::string barn_car_label(const freeroam::Barn& b) {
+  const std::string prefix = "IDS_Barnfind_Car_";
+  if (b.car_name_key.rfind(prefix, 0) == 0) return b.car_name_key.substr(prefix.size());
+  return b.car_name_key.empty() ? "car " + std::to_string(b.car_id) : b.car_name_key;
+}
+
 void drive_usage() {
   std::fprintf(stderr,
                "usage: carview [options]   (the drive; the default mode)\n"
@@ -1033,12 +1072,14 @@ void drive_usage() {
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound\n"
+               "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
+               "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad\n"
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
                "           its spawn line goes back in as --spawn x y z heading); the title shows the position\n"
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
-               "           --menu-png file.png\n"
+               "           --menu-png file.png --map-png prefix (the pause map and the minimap at the end)\n"
                "  other modes: carview --bake <dir> --car <media> (showroom), carview --game-root <dir> (disc viewer),\n"
                "           carview --world ... (world viewer), carview --xds-png ...\n");
 }
@@ -1090,6 +1131,13 @@ int run_drive(int argc, char** argv) {
   // collision, and per gather the walls nothing drawn stands near.
   std::filesystem::path contacts_log_path;
   bool texture_census = false;
+  // Free-roam collectibles (SPEC-FREEROAM-COLLECTIBLES): on unless
+  // --no-collectibles or --bench (a smash regathers); --reveal shows the
+  // unfound ones on the map; --distance adds metres to the total driven;
+  // --map-png writes the pause map and the minimap at the end.
+  bool collectibles_on = true, reveal = false;
+  double seed_distance = 0;
+  std::filesystem::path map_png;
   int gather_route = 0;  // --route: the placements' route (-1: every one)
   int camera_mode = 0;   // --camera: the drive camera to start in (0-4, SPEC-CAMERAS' cycle order)
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
@@ -1165,6 +1213,14 @@ int run_drive(int argc, char** argv) {
       no_save = true;
     } else if (a == "--menu-png") {
       menu_png = next();
+    } else if (a == "--no-collectibles") {
+      collectibles_on = false;
+    } else if (a == "--reveal") {
+      reveal = true;
+    } else if (a == "--distance") {
+      seed_distance = std::atof(next());
+    } else if (a == "--map-png") {
+      map_png = next();
     }
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
@@ -1374,6 +1430,12 @@ int run_drive(int argc, char** argv) {
     std::sort(baked_cars.begin(), baked_cars.end());
   }
   std::string next_car;
+  // The free-roam progress outlives car changes; the map loads once.
+  freeroam::Collectibles collectibles;
+  freeroam::Progress progress;
+  bool progress_loaded = false;
+  MapView map_view;
+  bool map_tried = false;
   for (bool again = true; again;) {
   again = false;
   {
@@ -1453,6 +1515,8 @@ int run_drive(int argc, char** argv) {
       world::World colorado;
       world::Collision collision;
       std::unique_ptr<world::Streamer> streamer;
+      std::unique_ptr<freeroam::FreeRoam> free_roam;
+      std::shared_ptr<const std::set<std::string>> hidden_sent;
       WorldTextureLoader texture_loader;
       world::RoadFollower follower(cruise_kmh / 3.6);
       drive::Vec3 start{};
@@ -1525,6 +1589,35 @@ int run_drive(int argc, char** argv) {
             }
             // Headless frames repeat: their swaps stay instant.
             if (!headless || std::getenv("SHIFT_SWAP_FADE")) showroom.set_world_swap_fade(kSwapFadeSeconds);
+          }
+          // Free roam: found signs and each barn's other door variant are
+          // left out of the gathers from the first one on.
+          if (collectibles_on && !bench && !flat_world) {
+            const auto game_root = world_dir.parent_path().parent_path().parent_path();
+            if (collectibles.signs.empty()) {
+              std::string why;
+              if (!freeroam::load_collectibles(game_root, collectibles, &why)) {
+                std::fprintf(stderr, "carview: note: no collectibles: %s\n", why.c_str());
+                collectibles = {};
+              }
+            }
+            if (!collectibles.signs.empty()) {
+              if (!progress_loaded) {
+                if (have_saved) progress_from_save(saved, collectibles, progress);
+                progress.total_distance += seed_distance;
+                progress_loaded = true;
+              }
+              free_roam = std::make_unique<freeroam::FreeRoam>(collectibles, progress);
+              gather_options.hidden = hidden_sent = free_roam->hidden();
+              std::printf("free roam: %d of %zu signs, %d of %zu barn finds, %.1f km driven\n",
+                          free_roam->signs_found(), collectibles.signs.size(), free_roam->barns_found(),
+                          collectibles.barns.size(), progress.total_distance / 1000);
+            }
+            if (!map_tried) {
+              map_tried = true;
+              std::string why;
+              if (!map_view.open(game_root, &why)) std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
+            }
           }
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        render_ground ? nullptr : &collision);
@@ -1830,6 +1923,48 @@ int run_drive(int argc, char** argv) {
       };
       drive::Vec3 last_finite{};
       double last_finite_kmh = 0;
+      // A line over the HUD for a few seconds (the time of day, a pose
+      // saved, a collectible).
+      std::string notice;
+      double notice_until = -1;
+      bool save_due = false;  // a collectible: the window saves at once
+      // One free-roam step: the rules, then their notices and the props
+      // they hide.
+      auto free_roam_step = [&]() {
+        if (!free_roam) return;
+        freeroam::CarState cs;
+        const drive::Vec3 at = vehicle.position();
+        const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        const double fl = std::hypot(f.x, f.z);
+        cs.x = at.x, cs.y = at.y, cs.z = at.z;
+        if (fl > 1e-6) cs.forward_x = f.x / fl, cs.forward_z = f.z / fl;
+        cs.half_width = vehicle.params().size.x / 2;
+        cs.half_length = vehicle.params().size.z / 2;
+        cs.speed = vehicle.speed();
+        cs.moved = std::fabs(vehicle.speed()) * drive::Vehicle::kStep;
+        for (const auto& ev : free_roam->step(cs)) {
+          char line[160];
+          if (ev.kind == freeroam::Event::kSignSmashed) {
+            const int n = free_roam->signs_found();
+            std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, collectibles.signs.size(),
+                          freeroam::upgrade_discount(n));
+            std::printf("t %.2f s: %s smashed (%s)\n", vehicle.time(), collectibles.signs[size_t(ev.index)].id.c_str(), line);
+          } else if (ev.kind == freeroam::Event::kRumourStarted) {
+            std::snprintf(line, sizeof line, "barn find rumour - M for the map");
+            std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
+                        collectibles.barns[size_t(ev.index)].name.c_str(), progress.total_distance / 1000);
+          } else {
+            const auto& b = collectibles.barns[size_t(ev.index)];
+            std::snprintf(line, sizeof line, "barn find! %s is in the garage", barn_car_label(b).c_str());
+            std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
+                        barn_car_label(b).c_str(), b.car_id);
+          }
+          notice = line;
+          notice_until = vehicle.time() + 4;
+          save_due = true;
+        }
+        if (streamer && free_roam->hidden() != hidden_sent) streamer->set_hidden(hidden_sent = free_roam->hidden());
+      };
       auto step = [&](const drive::Input& in) {
         vehicle.step(in, *ground);
         {
@@ -1847,6 +1982,7 @@ int run_drive(int argc, char** argv) {
         }
         log_contacts();
         if (traffic) traffic->step(vehicle);
+        free_roam_step();
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
@@ -1915,6 +2051,14 @@ int run_drive(int argc, char** argv) {
         s.has_spawn = streamer != nullptr;
         s.spawn = {start.x, start.y, start.z};
         s.spawn_heading = start_heading;
+        if (progress_loaded) {
+          progress_to_save(collectibles, progress, s);
+        } else if (have_saved) {  // no collectibles this run: keep what the save had
+          s.total_distance = saved.total_distance;
+          s.signs_found = saved.signs_found;
+          s.barns = saved.barns;
+          s.garage = saved.garage;
+        }
         std::string e;
         if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
         else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);
@@ -1956,9 +2100,6 @@ int run_drive(int argc, char** argv) {
       constexpr double kIntroSeconds = 6;
       // (The display name is a string-table key: the media name is shown.)
       const std::string intro = car + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
-      // A line for a few seconds after the time of day changes.
-      std::string notice;
-      double notice_until = -1;
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
       auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
@@ -1973,6 +2114,31 @@ int run_drive(int argc, char** argv) {
         HudImage img = draw_hud(st, scale);
         const int margin = -8 * scale;
         renderer.set_overlay(std::move(img.rgba), img.width, img.height, margin, margin);
+      };
+      // The maps (SPEC-FREEROAM-COLLECTIBLES): the minimap in the lower-left
+      // corner (overlay layer 1, redrawn up to 15 times a second of drive
+      // time) and the pause map (layer 2).
+      auto map_scene = [&]() {
+        MapScene sc;
+        const drive::Vec3 at = vehicle.position();
+        const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        sc.x = at.x;
+        sc.z = at.z;
+        sc.heading = std::atan2(f.x, f.z);
+        sc.data = progress_loaded ? &collectibles : nullptr;
+        sc.progress = progress_loaded ? &progress : nullptr;
+        sc.reveal = reveal;
+        return sc;
+      };
+      double minimap_at = -1;
+      auto set_minimap = [&](int height, bool force) {
+        if (!map_view.ready() || !streamer) return;
+        const double t = vehicle.time();
+        if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 1.0 / 15) return;
+        minimap_at = t;
+        const int scale = hud_scale(height);
+        HudImage img = map_view.minimap(map_scene(), std::max(96, height * 26 / 100));
+        renderer.set_overlay(std::move(img.rgba), img.width, img.height, 8 * scale, -8 * scale, 1);
       };
       if (status == 0 && streamer) {
         const auto& st = streamer->stats();
@@ -2225,7 +2391,12 @@ int run_drive(int argc, char** argv) {
           showroom.set_braking(brake_glow(vehicle));
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), every));
-          if (hud) set_hud(int(height), vehicle.time() < kIntroSeconds ? intro : std::string());
+          if (hud) {
+            set_hud(int(height), vehicle.time() < notice_until  ? notice
+                                 : vehicle.time() < kIntroSeconds ? intro
+                                                                  : std::string());
+            set_minimap(int(height), true);
+          }
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -2324,10 +2495,36 @@ int run_drive(int argc, char** argv) {
           camera_pull = CameraPull{};
           rig.restart();
         };
-        // The chosen item: resume, the picker, back on the road, or quit.
+        // The pause map: M, or the pause menu's item; the drive waits while
+        // it is open.
+        bool map_open = false, map_dirty = false;
+        double map_zoom = 2, map_cx = 0, map_cz = 0;
+        int map_w = 0, map_h = 0;
+        auto open_map = [&]() {
+          if (!map_view.ready()) {
+            notice = "no map (see the console)";
+            notice_until = vehicle.time() + 3;
+            return;
+          }
+          map_open = map_dirty = true;
+          picking = false;
+          map_zoom = 2;
+          map_cx = vehicle.position().x;
+          map_cz = vehicle.position().z;
+          renderer.set_overlay({}, 0, 0, 0, 0, 0);
+          renderer.set_overlay({}, 0, 0, 0, 0, 1);
+          save_now("map");
+        };
+        auto close_map = [&]() {
+          map_open = false;
+          renderer.set_overlay({}, 0, 0, 0, 0, 2);
+          minimap_at = -1;
+        };
+        // The chosen item: resume, the map, the picker, back on the road, or quit.
         auto choose = [&]() {
           const int item = menu.selected;
           menu.open = false;
+          if (item == PauseMenu::kMap) open_map();
           if (item == PauseMenu::kChangeCar) browse(0);
           if (item == PauseMenu::kReset) put_back();
           if (item == PauseMenu::kQuit) running = false;
@@ -2341,6 +2538,42 @@ int run_drive(int argc, char** argv) {
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
+            // The map takes the keys and buttons while open.
+            if (map_open) {
+              bool close = false;
+              const double pan = 1500 / map_zoom;
+              auto zoom_by = [&](double f) {
+                map_zoom = std::clamp(map_zoom * f, 1.0, 24.0);
+                map_dirty = true;
+              };
+              auto pan_by = [&](double dx, double dz) {
+                map_cx += dx, map_cz += dz;
+                map_dirty = true;
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (!e.key.repeat && (k == SDLK_M || k == SDLK_ESCAPE)) close = true;
+                if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.5);
+                if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.5);
+                if (k == SDLK_LEFT || k == SDLK_A) pan_by(-pan, 0);
+                if (k == SDLK_RIGHT || k == SDLK_D) pan_by(pan, 0);
+                if (k == SDLK_UP || k == SDLK_W) pan_by(0, pan);
+                if (k == SDLK_DOWN || k == SDLK_S) pan_by(0, -pan);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK)
+                  close = true;
+                if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) zoom_by(1.5);
+                if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) zoom_by(1 / 1.5);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pan_by(-pan, 0);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) pan_by(pan, 0);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) pan_by(0, pan);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pan_by(0, -pan);
+              }
+              if (close) close_map();
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             // The pause menu takes the keys and buttons while open.
             if (menu.open) {
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
@@ -2365,6 +2598,7 @@ int run_drive(int argc, char** argv) {
                 else open_menu();
               }
               if (e.key.key == SDLK_R) put_back();
+              if (e.key.key == SDLK_M) open_map();
               // V: SwitchCamera (the rig); without the rig, the front view.
               if (e.key.key == SDLK_V) {
                 if (have_rig) rig.cycle();
@@ -2406,12 +2640,13 @@ int run_drive(int argc, char** argv) {
               }
               if (e.key.key == SDLK_H) {
                 show_hud = !show_hud;
-                if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0);
+                if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0), renderer.set_overlay({}, 0, 0, 0, 0, 1);
+                minimap_at = -1;
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) front = !front;
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) open_map();
               // The right shoulder is SwitchCamera (SPEC-CAMERAS: the default
               // layout); in the picker it pages forward. The left one opens
               // the picker and pages back.
@@ -2474,13 +2709,17 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open) accumulator += frame_dt;
+          if (!menu.open && !map_open) accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
             next_save = vehicle.time() + 30;
           }
-          while (!menu.open && accumulator >= drive::Vehicle::kStep) {
+          if (save_due && !map_open) {  // a collectible: the game's micro-save
+            save_due = false;
+            save_now("collectible");
+          }
+          while (!menu.open && !map_open && accumulator >= drive::Vehicle::kStep) {
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
               status = 1;
@@ -2522,7 +2761,17 @@ int run_drive(int argc, char** argv) {
           }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
-          if (show_hud) {
+          if (map_open) {
+            if (w != map_w || h != map_h) map_dirty = true;
+            if (map_dirty && w > 64 && h > 64) {
+              map_dirty = false;
+              map_w = w, map_h = h;
+              const int m = std::max(16, h / 30);
+              HudImage img = map_view.pause_map(map_scene(), w - 2 * m, h - 2 * m, map_zoom, map_cx, map_cz);
+              renderer.set_overlay(std::move(img.rgba), img.width, img.height, m, m, 2);
+            }
+          } else if (show_hud) {
+            set_minimap(h, false);
             char line[160] = "";
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
@@ -2548,6 +2797,32 @@ int run_drive(int argc, char** argv) {
         for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
         if (audio_stream) SDL_DestroyAudioStream(audio_stream);
       }
+      if (!map_png.empty() && status == 0) {
+        if (!map_view.ready()) {
+          std::fprintf(stderr, "carview: no map to write\n");
+        } else {
+          const std::filesystem::path prefix(map_png);
+          auto name = [&](const char* suffix) {
+            return (prefix.parent_path() / (prefix.stem().string() + suffix)).string();
+          };
+          const MapScene sc = map_scene();
+          const auto c = map_view.roads_centre();
+          const HudImage whole = map_view.pause_map(sc, 1600, 900, 1, c[0], c[1]);
+          const HudImage close = map_view.pause_map(sc, 1600, 900, 6, sc.x, sc.z);
+          const HudImage mini = map_view.minimap(sc, 300);
+          bool ok = write_png(name("_map.png"), whole.width, whole.height, 4, whole.rgba.data());
+          ok = ok && write_png(name("_map_near.png"), close.width, close.height, 4, close.rgba.data());
+          ok = ok && write_png(name("_minimap.png"), mini.width, mini.height, 4, mini.rgba.data());
+          if (!ok) status = 1;
+          std::printf("maps: %s, %s, %s\n", name("_map.png").c_str(), name("_map_near.png").c_str(),
+                      name("_minimap.png").c_str());
+        }
+      }
+      if (free_roam)
+        std::printf("free roam: %d of %zu signs (upgrades %d%% off), %d of %zu barn finds, %.1f km driven\n",
+                    free_roam->signs_found(), collectibles.signs.size(),
+                    freeroam::upgrade_discount(free_roam->signs_found()), free_roam->barns_found(),
+                    collectibles.barns.size(), progress.total_distance / 1000);
       save_now("end");
       if (traffic) std::printf("%s\n", traffic->summary().c_str());
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());

@@ -34,6 +34,19 @@ std::string save_to_text(const DriveSave& s) {
   if (s.has_spawn)
     out += "spawn " + num(s.spawn[0]) + " " + num(s.spawn[1]) + " " + num(s.spawn[2]) + " " + num(s.spawn_heading) +
            "\n";
+  if (s.total_distance > 0) out += "distance " + num(s.total_distance) + "\n";
+  if (!s.signs_found.empty()) {
+    out += "signs";
+    for (const auto& id : s.signs_found) out += " " + id;
+    out += "\n";
+  }
+  for (const auto& b : s.barns)
+    out += "barn " + b.name + " " + std::to_string(b.status) + " " + num(b.rumour_at) + " " + num(b.found_at) + "\n";
+  if (!s.garage.empty()) {
+    out += "garage";
+    for (int id : s.garage) out += " " + std::to_string(id);
+    out += "\n";
+  }
   return out;
 }
 
@@ -68,6 +81,16 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       have_heading = bool(l >> out.heading);
     } else if (key == "spawn") {
       out.has_spawn = bool(l >> out.spawn[0] >> out.spawn[1] >> out.spawn[2] >> out.spawn_heading);
+    } else if (key == "distance") {
+      if (!(l >> out.total_distance) || !std::isfinite(out.total_distance) || out.total_distance < 0)
+        out.total_distance = 0;
+    } else if (key == "signs") {
+      for (std::string id; l >> id;) out.signs_found.push_back(id);
+    } else if (key == "barn") {
+      SavedBarn b;
+      if (l >> b.name >> b.status >> b.rumour_at >> b.found_at) out.barns.push_back(b);
+    } else if (key == "garage") {
+      for (int id; l >> id;) out.garage.push_back(id);
     }
   }
   if (out.car.empty()) return fail(error, "save without a car");

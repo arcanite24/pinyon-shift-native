@@ -30,6 +30,9 @@ struct PropPlacement {
   // The route list of its .pvsz record or .pgeo tile (empty: none; shown
   // on every route). WORLD-GEOMETRY, "Which placements free roam draws".
   std::vector<uint8_t> routes;
+  // The .pvsz record's name (its GameplayID, e.g. flyer_001), lower case;
+  // empty for unnamed records and .pgeo placements.
+  std::string name;
 };
 
 // Whether a placement with this route list is shown on `route` (0: free

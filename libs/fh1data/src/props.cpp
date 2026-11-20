@@ -1,6 +1,7 @@
 #include "fh1data/props.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -133,6 +134,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
       p.container = container;
       p.placement = pvsz_placement(rec);
       if (rec.extended) p.routes = rec.extra;
+      for (char ch : rec.name) p.name += char(std::tolower(static_cast<unsigned char>(ch)));
       out.placements.push_back(p);
     }
   }
