@@ -31,6 +31,7 @@
 #include <stb_image.h>
 #include <stb_image_write.h>
 
+#include "audio/bake.h"
 #include "hud.h"
 #include "reference.h"
 #include "renderer.h"
@@ -161,6 +162,22 @@ ShowroomFrame orbit_frame(const Showroom& s, const Orbit& o, float aspect, bool 
   frame.eye[3] = 1;
   lighting(frame, livery);
   return frame;
+}
+
+// Interleaved stereo float as a 16-bit WAV, clipped to full scale.
+bool write_wav(const std::filesystem::path& path, int rate, const std::vector<float>& stereo) {
+  std::ofstream out(path, std::ios::binary);
+  auto u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+  auto u16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+  const uint32_t bytes = uint32_t(stereo.size() * 2);
+  out.write("RIFF", 4);
+  u32(36 + bytes);
+  out.write("WAVEfmt ", 8);
+  u32(16), u16(1), u16(2), u32(uint32_t(rate)), u32(uint32_t(rate) * 4), u16(4), u16(16);
+  out.write("data", 4);
+  u32(bytes);
+  for (float x : stereo) u16(uint16_t(int16_t(std::lround(std::clamp(x, -1.0f, 1.0f) * 32767))));
+  return bool(out);
 }
 
 bool write_png(const std::string& path, uint32_t w, uint32_t h, int channels, const uint8_t* data) {
@@ -688,6 +705,9 @@ int run_drive(int argc, char** argv) {
   bool headless = false;
   bool hud = false;  // headless: draw the HUD into the frames (windowed: always, H toggles)
   const bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
+  // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
+  std::filesystem::path sound_dir = "out/sound", audio_out;
+  bool sound = true;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -706,6 +726,9 @@ int run_drive(int argc, char** argv) {
     else if (a == "--speed") cruise_kmh = std::atof(next());
     else if (a == "--render-ground") render_ground = true;
     else if (a == "--hud") hud = true;
+    else if (a == "--sound") sound_dir = next();
+    else if (a == "--no-sound") sound = false;
+    else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--near") {
       near_x = std::atof(next());
@@ -725,8 +748,8 @@ int run_drive(int argc, char** argv) {
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground]] [--headless --out prefix.png [--hud]] "
-                         "[--size WxH]\n");
+                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground]] [--headless --out prefix.png [--hud] "
+                         "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH]\n");
     return 2;
   }
   if (view != "chase" && view != "front") {
@@ -762,7 +785,7 @@ int run_drive(int argc, char** argv) {
 
   SDL_Window* window = nullptr;
   if (!headless) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | (sound ? SDL_INIT_AUDIO : 0))) {
       std::fprintf(stderr, "carview: SDL_Init: %s\n", SDL_GetError());
       return 1;
     }
@@ -788,6 +811,40 @@ int run_drive(int argc, char** argv) {
       std::vector<std::string> physics_notes;
       drive::Vehicle vehicle(drive::params_for_baked_car(info, bake_dir, &physics_notes));
       for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
+      // The engine sound: the baked loops, mixed at 48 kHz.
+      constexpr int kAudioRate = 48000;
+      audio::BakedSound baked_sound;
+      std::unique_ptr<audio::EnginePlayer> engine_sound;
+      if (sound && (!headless || !audio_out.empty())) {
+        std::string sound_error;
+        if (audio::load_baked_sound(sound_dir, car, baked_sound, &sound_error) &&
+            !baked_sound.loaded.sound.groups.empty()) {
+          engine_sound = std::make_unique<audio::EnginePlayer>(baked_sound.loaded.sound, baked_sound.table(),
+                                                               kAudioRate, vehicle.params().idle_rpm,
+                                                               vehicle.params().redline_rpm);
+          engine_sound->master = 0.6;  // ours, by the mix's peaks
+          std::printf("engine sound: %zu groups from %s\n", baked_sound.loaded.sound.groups.size(),
+                      (sound_dir / car).string().c_str());
+        } else {
+          std::fprintf(stderr, "carview: no engine sound (%s)\n",
+                       sound_error.empty() ? "no loops" : sound_error.c_str());
+        }
+      }
+      // The sound's inputs from the engine: its throttle, and its torque as
+      // a fraction of full throttle (driving) or of closed throttle (braking).
+      auto sound_inputs = [&](bool bumper) {
+        audio::EnginePlayer::Update u;
+        const double rpm = vehicle.rpm(), thr = vehicle.engine_throttle();
+        const double torque = vehicle.engine_torque(rpm, thr);
+        const double full = vehicle.engine_torque(rpm, 1), closed = vehicle.engine_torque(rpm, 0);
+        u.rpm = rpm;
+        u.throttle = thr;
+        u.pos_torque = torque > 0 && full > 0 ? torque / full : 0;
+        u.neg_torque = torque < 0 && closed < 0 ? torque / closed : 0;
+        u.view = bumper ? audio::View::kFront : audio::View::kFollow;
+        return u;
+      };
+      std::vector<float> audio_track;  // headless --audio-out
       const drive::FlatGround flat;
       const drive::Ground* ground = &flat;
       world::World colorado;
@@ -934,6 +991,14 @@ int run_drive(int argc, char** argv) {
           const auto t0 = std::chrono::steady_clock::now();
           const bool ok =
               s == 0 || step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()));
+          if (engine_sound && s > 0) {
+            // One physics step of sound, the inputs set once per step.
+            engine_sound->set(sound_inputs(front));
+            const int frames = int(std::lround(kAudioRate * drive::Vehicle::kStep));
+            const size_t at = audio_track.size();
+            audio_track.resize(at + 2 * size_t(frames));
+            engine_sound->render(audio_track.data() + at, frames);
+          }
           longest_step =
               std::max(longest_step, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
           if (!ok) {
@@ -972,6 +1037,15 @@ int run_drive(int argc, char** argv) {
         if (streamer)
           std::printf("longest step with its streaming: %.1f ms (%s gathers)\n", longest_step * 1000,
                       async_stream ? "background" : "synchronous");
+        if (!audio_out.empty() && !audio_track.empty()) {
+          float peak = 0;
+          for (float x : audio_track) peak = std::max(peak, std::fabs(x));
+          if (!write_wav(audio_out, kAudioRate, audio_track))
+            std::fprintf(stderr, "carview: cannot write %s\n", audio_out.string().c_str());
+          else
+            std::printf("audio: %.2f s to %s, peak %.3f\n", double(audio_track.size()) / 2 / kAudioRate,
+                        audio_out.string().c_str(), peak);
+        }
       } else {
         std::vector<SDL_Gamepad*> pads;
         uint64_t last = SDL_GetTicksNS(), title_at = 0;
@@ -982,6 +1056,15 @@ int run_drive(int argc, char** argv) {
                     "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, Start put "
                     "back on the road, Back view.\n");
         bool show_hud = true;
+        // The engine sound's stream: about 60 ms queued ahead.
+        SDL_AudioStream* audio_stream = nullptr;
+        if (engine_sound) {
+          const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kAudioRate};
+          audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+          if (audio_stream) SDL_ResumeAudioStreamDevice(audio_stream);
+          else std::fprintf(stderr, "carview: no audio device: %s\n", SDL_GetError());
+        }
+        std::vector<float> audio_block;
         // R or Start: back on the nearest road (with a world), else to the start.
         auto put_back = [&]() {
           world::Spawn where;
@@ -1065,6 +1148,16 @@ int run_drive(int argc, char** argv) {
                           std::fabs(vehicle.speed()) * 3.6, gear, vehicle.rpm(), vehicle.abs_active() ? "  ABS" : "");
             SDL_SetWindowTitle(window, title);
           }
+          if (audio_stream) {
+            engine_sound->set(sound_inputs(front));
+            const int queued = SDL_GetAudioStreamQueued(audio_stream) / int(2 * sizeof(float));
+            const int frames = int(0.06 * kAudioRate) - queued;
+            if (frames > 0) {
+              audio_block.resize(2 * size_t(frames));
+              engine_sound->render(audio_block.data(), frames);
+              SDL_PutAudioStreamData(audio_stream, audio_block.data(), int(audio_block.size() * sizeof(float)));
+            }
+          }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
           if (show_hud) set_hud(h);
@@ -1080,6 +1173,7 @@ int run_drive(int argc, char** argv) {
           }
         }
         for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+        if (audio_stream) SDL_DestroyAudioStream(audio_stream);
       }
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;

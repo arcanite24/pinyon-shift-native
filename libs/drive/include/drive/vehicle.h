@@ -280,6 +280,8 @@ class Vehicle {
            (target_gear_ != gear_before_ && (state_ == GearState::kRevMatch || state_ == GearState::kClutchOut));
   }
   double engine_throttle() const { return engine_throttle_; }  // what the engine sees, 0..1
+  // The engine's torque (N m) at an rpm and throttle, before the clutch.
+  double engine_torque(double rpm, double throttle) const;
   double launch_target() const { return launch_target_; }      // rpm, in the launch state
   // The clutch output's speed (driven-wheel speed x gear x final drive), rpm, signed.
   double clutch_output_rpm() const;
@@ -299,7 +301,6 @@ class Vehicle {
   void substep(double dt, const Ground& ground);
   void shape_input(const Input& raw, double dt);
   void update_gearbox(double dt);
-  double engine_torque(double rpm, double throttle) const;
   double ratio(int gear) const;  // gear x final drive, signed (reverse negative)
   double input_omega() const;    // the gearbox output side's speed in wheel rad/s (diff-weighted)
 

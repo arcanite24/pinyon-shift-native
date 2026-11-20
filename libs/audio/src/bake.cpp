@@ -1,0 +1,247 @@
+#include "audio/bake.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include <set>
+#include <sstream>
+#include <system_error>
+
+namespace audio {
+namespace {
+
+bool read_file(const std::filesystem::path& p, std::vector<uint8_t>& out) {
+  std::ifstream in(p, std::ios::binary);
+  if (!in) return false;
+  out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  return true;
+}
+
+bool write_file(const std::filesystem::path& p, const void* data, size_t size) {
+  std::ofstream out(p, std::ios::binary);
+  out.write(static_cast<const char*>(data), std::streamsize(size));
+  return bool(out);
+}
+
+std::string pcm_name(const std::string& bank, int index, int channel) {
+  return lower_name(bank) + "." + std::to_string(index) + ".c" + std::to_string(channel) + ".s16";
+}
+
+std::string quoted(const std::filesystem::path& p) { return "\"" + p.string() + "\""; }
+
+}  // namespace
+
+std::filesystem::path find_ffmpeg() {
+  const char* path = std::getenv("PATH");
+#ifdef _WIN32
+  const char sep = ';';
+  const char* exe = "ffmpeg.exe";
+#else
+  const char sep = ':';
+  const char* exe = "ffmpeg";
+#endif
+  std::error_code ec;
+  if (path) {
+    std::stringstream ss(path);
+    std::string dir;
+    while (std::getline(ss, dir, sep))
+      if (!dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / exe, ec))
+        return std::filesystem::path(dir) / exe;
+  }
+#ifdef _WIN32
+  if (const char* local = std::getenv("LOCALAPPDATA")) {
+    const std::filesystem::path packages = std::filesystem::path(local) / "Microsoft" / "WinGet" / "Packages";
+    if (std::filesystem::is_directory(packages, ec))
+      for (const auto& e : std::filesystem::recursive_directory_iterator(
+               packages, std::filesystem::directory_options::skip_permission_denied, ec))
+        if (e.path().filename() == exe) return e.path();
+  }
+#endif
+  return {};
+}
+
+bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::filesystem::path& out_dir,
+                       const std::filesystem::path& ffmpeg, BakeReport& report, std::string* error) {
+  auto fail = [&](const std::string& what) {
+    if (error) *error = media + ": " + what;
+    return false;
+  };
+  LoadedSound loaded;
+  std::string e;
+  if (!load_engine_sound(files, media, loaded, &e)) return fail(e);
+  report.notes.insert(report.notes.end(), loaded.notes.begin(), loaded.notes.end());
+  const std::filesystem::path dir = out_dir / media;
+  std::error_code ec;
+  std::filesystem::create_directories(dir / "pcm", ec);
+  std::ostringstream index;
+  // The tuning files, as read.
+  auto copy = [&](TuningKind kind, const std::string& file, const std::string& line) -> bool {
+    std::string text;
+    if (!files.read_tuning(kind, file, text, &e)) return false;
+    index << line << ' ' << file << '\n';
+    return write_file(dir / file, text.data(), text.size());
+  };
+  if (!copy(TuningKind::kEngine, media + "_ET.xml", "engine")) return fail("cannot copy the engine tuning");
+  copy(TuningKind::kModel, media + "_CMT.xml", "model");
+  {
+    std::string text;
+    XmlNode engine;
+    std::vector<HarmonicRef> harmonics;
+    EngineSound scratch;
+    if (files.read_tuning(TuningKind::kEngine, media + "_ET.xml", text, &e) && parse_xml(text, engine, &e) &&
+        read_engine_tuning(engine, scratch, harmonics, &e))
+      for (const auto& h : harmonics) copy(TuningKind::kHarmonic, h.file, "harmonic " + h.element);
+  }
+  // Every sample a loop uses, once per bank sample (all its channels).
+  std::set<std::pair<std::string, int>> wanted;
+  for (const auto& g : loaded.sound.groups)
+    for (const auto& l : g.loops) wanted.insert({lower_name(g.bank), l.sample});
+  for (const auto& [bank, samples] : loaded.banks) index << "bank " << bank << ' ' << samples.size() << '\n';
+  const std::filesystem::path temp = std::filesystem::temp_directory_path(ec) / ("shift-sound-" + media);
+  std::filesystem::create_directories(temp, ec);
+  for (const auto& [bank, sample] : wanted) {
+    const auto& samples = loaded.banks.at(bank);
+    if (sample < 0 || size_t(sample) >= samples.size()) continue;
+    const FsbSample& s = samples[size_t(sample)];
+    index << "sample " << bank << ' ' << sample << ' ' << s.channels << ' ' << s.rate << ' ' << s.frames << '\n';
+    if (!s.xma()) {
+      report.notes.push_back(bank + " " + std::to_string(sample) + ": not XMA, skipped");
+      continue;
+    }
+    std::vector<uint8_t> data;
+    if (!read_file(files.bank(bank), data) || s.offset + s.bytes > data.size()) return fail("cannot read " + bank);
+    const auto wave = xma2_wave(s, std::span<const uint8_t>(data).subspan(size_t(s.offset), s.bytes));
+    const auto in_path = temp / "in.wav", out_path = temp / "out.s16";
+    std::filesystem::remove(out_path, ec);
+    if (!write_file(in_path, wave.data(), wave.size())) return fail("cannot write " + in_path.string());
+    std::string command = quoted(ffmpeg) + " -hide_banner -nostdin -v error -y -i " + quoted(in_path) +
+                          " -f s16le -acodec pcm_s16le " + quoted(out_path);
+#ifdef _WIN32
+    command = "\"" + command + "\"";  // cmd.exe strips one pair of outer quotes
+#endif
+    if (std::system(command.c_str()) != 0) return fail("ffmpeg failed on " + bank + " " + std::to_string(sample));
+    std::vector<uint8_t> pcm;
+    read_file(out_path, pcm);
+    const size_t channels = std::max<size_t>(1, s.channels);
+    size_t frames = pcm.size() / (2 * channels);
+    if (frames != s.frames) ++report.length_mismatches;
+    pcm.resize(size_t(s.frames) * 2 * channels, 0);  // exactly the declared length
+    frames = s.frames;
+    for (size_t c = 0; c < channels; ++c) {
+      std::vector<int16_t> mono(frames);
+      for (size_t f = 0; f < frames; ++f) {
+        const size_t at = (f * channels + c) * 2;
+        mono[f] = int16_t(pcm[at] | pcm[at + 1] << 8);
+      }
+      if (frames > 1)
+        report.worst_seam = std::max(report.worst_seam, std::fabs(mono.back() - mono.front()) / 32768.0);
+      if (!write_file(dir / "pcm" / pcm_name(bank, sample, int(c)), mono.data(), mono.size() * 2))
+        return fail("cannot write PCM");
+    }
+    ++report.samples;
+  }
+  std::filesystem::remove_all(temp, ec);
+  const std::string text = index.str();
+  if (!write_file(dir / "sound.txt", text.data(), text.size())) return fail("cannot write sound.txt");
+  return true;
+}
+
+std::vector<std::vector<const PcmSample*>> BakedSound::table() const {
+  std::vector<std::vector<const PcmSample*>> t;
+  for (const auto& g : loaded.sound.groups) {
+    t.emplace_back();
+    for (const auto& l : g.loops) {
+      const auto it = pcm.find({lower_name(g.bank), l.sample, l.channel});
+      t.back().push_back(it == pcm.end() ? nullptr : &it->second);
+    }
+  }
+  return t;
+}
+
+bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& media, BakedSound& out,
+                      std::string* error) {
+  out = {};
+  const std::filesystem::path dir = out_dir / media;
+  auto fail = [&](const std::string& what) {
+    if (error) *error = (dir / "sound.txt").string() + ": " + what;
+    return false;
+  };
+  std::ifstream index(dir / "sound.txt");
+  if (!index) return fail("not baked (run soundbake)");
+  auto parse = [&](const std::string& file, XmlNode& node) {
+    std::vector<uint8_t> bytes;
+    std::string e;
+    return read_file(dir / file, bytes) &&
+           parse_xml(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), node, &e);
+  };
+  XmlNode engine;
+  std::vector<std::pair<std::string, std::string>> harmonics;
+  std::string model_file;
+  std::string line;
+  out.loaded.sound.media = media;
+  while (std::getline(index, line)) {
+    std::istringstream ls(line);
+    std::string kind;
+    ls >> kind;
+    if (kind == "engine") {
+      std::string f;
+      ls >> f;
+      if (!parse(f, engine)) return fail("cannot read " + f);
+    } else if (kind == "model") {
+      ls >> model_file;
+    } else if (kind == "harmonic") {
+      std::string element, f;
+      ls >> element >> f;
+      harmonics.emplace_back(element, f);
+    } else if (kind == "bank") {
+      std::string bank;
+      size_t count = 0;
+      ls >> bank >> count;
+      auto& list = out.loaded.banks[bank];
+      if (list.size() < count) list.resize(count);
+    } else if (kind == "sample") {
+      std::string bank;
+      int sample = 0, channels = 1, rate = 0;
+      size_t frames = 0;
+      ls >> bank >> sample >> channels >> rate >> frames;
+      auto& list = out.loaded.banks[bank];
+      if (list.size() <= size_t(sample)) list.resize(size_t(sample) + 1);
+      list[size_t(sample)].channels = uint16_t(channels);
+      list[size_t(sample)].rate = rate;
+      list[size_t(sample)].frames = uint32_t(frames);
+      for (int c = 0; c < channels; ++c) {
+        std::vector<uint8_t> bytes;
+        if (!read_file(dir / "pcm" / pcm_name(bank, sample, c), bytes)) continue;
+        PcmSample p;
+        p.rate = rate;
+        p.data.resize(bytes.size() / 2);
+        for (size_t i = 0; i < p.data.size(); ++i)
+          p.data[i] = float(int16_t(bytes[2 * i] | bytes[2 * i + 1] << 8)) / 32768.0f;
+        out.pcm[{bank, sample, c}] = std::move(p);
+      }
+    }
+  }
+  std::vector<HarmonicRef> refs;
+  std::string e;
+  if (engine.name.empty() || !read_engine_tuning(engine, out.loaded.sound, refs, &e)) return fail("no engine tuning");
+  for (const auto& [element, f] : harmonics) {
+    XmlNode h;
+    if (parse(f, h)) read_harmonic(engine, h, element, out.loaded.sound, &e);
+  }
+  // The loop index rule needs each bank's full sample count ("bank" lines).
+  for (auto& g : out.loaded.sound.groups) {
+    const auto it = out.loaded.banks.find(lower_name(g.bank));
+    if (it == out.loaded.banks.end()) continue;
+    std::vector<int> channels;
+    for (const auto& s : it->second) channels.push_back(std::max<int>(1, s.channels));
+    resolve_loop_indices(g.loops, int(it->second.size()), channels);
+  }
+  XmlNode model;
+  if (!model_file.empty() && parse(model_file, model)) read_model_tuning(model, out.loaded.sound);
+  return true;
+}
+
+}  // namespace audio

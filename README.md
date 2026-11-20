@@ -36,6 +36,8 @@ readers, and a car drawn from the game's own files.
 | `libs/cars` | Cars (FORMAT-CARS): the install (disc, v4 title update, installed DLC packages in priority order), the merged car database (v4 `gamedb.slt` plus each package's patch databases), and the baked format `.shiftbake` with its writer and reader |
 | `apps/car-corpus` | Reproduces every count of FORMAT-CARS's Tests section over the player's files (`--check` fails on a mismatch) |
 | `apps/carbake` | Bakes every distinct car (240), its stock wheel, the tyre archives and the shared textures to `.shiftbake` files, deterministically and in parallel; `--dump` lists a bake |
+| `libs/audio` | Engine sound (SPEC-ENGINE-SOUND): the tuning XMLs (engine, harmonics, car model listener), FSB4 bank headers and XMA2 wave wrapping, the rpm map, crossfades, pitch and parameter curves, the loop index rule, a stereo mixer, and the bake to PCM with its reader |
+| `apps/soundbake` | Decodes each car's engine loops to 16-bit PCM under `out/sound/<car>/` with copies of its tuning files (FFmpeg, bake time only) |
 | `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, depth, 4x MSAA, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG. `--bake` is the showroom over baked cars (our car shader and lighting, paint, livery masks, wheels, brakes, glass last) with a reference mode that renders at a reference camera and writes the car-coverage mask; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
 | `tests` | Unit tests on synthetic bytes |
 | `tools` | Windows build script, shader regeneration |
@@ -102,6 +104,17 @@ and the ABS flag; the window title repeats them. Headless drive renders
 draw it too with `--hud`. The chase camera pulls in when a wall is between it
 and the car.
 
+The engine sound (ENGINE_SOUND.md) plays when the car's loops are baked.
+Bake them once (FFmpeg decodes the XMA samples at bake time; it is found
+on PATH or in WinGet's packages, or pass `--ffmpeg`):
+
+```powershell
+.\build\apps\soundbake\soundbake.exe --game-root ..\horizon1-recomp\.local\game\base --state-root <state> --out out\sound --cars NIS_SkylineGTRVSpecII_02
+```
+
+`--all` bakes every car (about 3 s each). The drive reads `out\sound`
+(`--sound <dir>` for another folder, `--no-sound` to turn it off).
+
 ## Running
 
 `<game>` is the folder that holds the extracted disc's `media/` (or the
@@ -151,6 +164,8 @@ drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --trace launch.csv
 drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --grade 0.07
 drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --physics-trace launch.jsonl --every 6
 carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --run slalom --every 0.5 --out out/drive/slalom.png
+# The engine sound of a headless drive, to a WAV (after soundbake)
+carview --drive --headless --bake out/bake --car NIS_SkylineGTRVSpecII_02 --run launch --out out/drive/r34.png --audio-out out/drive/r34.wav
 carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --world <game>/media/tracks/colorado \
         --run cruise --seconds 120 --every 10 --out out/drive/colorado.png
 

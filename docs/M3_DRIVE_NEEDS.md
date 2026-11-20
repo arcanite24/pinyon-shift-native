@@ -156,7 +156,8 @@ CAR_PHYSICS.md (a76cfa08); kept for the record.
 8. **Camera (not blocking).** The default chase camera's distance,
    height, look-at point, lag and field of view; the hood and bumper
    positions if `CarPartPositions` rows 4 and 9 are those.
-9. **Engine sound (not blocking for the physics gate).** Which FSB bank
+9. **Engine sound (answered by ENGINE_SOUND.md, 14243a1c; built:
+   `libs/audio`, `soundbake`, carview's drive plays it).** Which FSB bank
    and samples belong to a car, and how the game mixes them by RPM and
    load (layers, crossfades, pitch). RI-0.6 already decodes the samples.
 

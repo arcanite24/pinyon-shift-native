@@ -447,3 +447,24 @@ lerp(0.5, 0.96, throttle) x the redline, if the next gear keeps it over
 0.4 x the redline (the lugging downshift sits at 0.35). Full throttle is
 unchanged. Needed if the play test calls for it: the game's part-throttle
 shift points.
+
+## Q35 (polish): the engine sound's open items
+
+Built from ENGINE_SOUND.md (14243a1c); the R34's table checks out at
+4,000 and 7,000 rpm (audio_tests), and its 37 samples bake to their
+declared lengths. A headless sweep's dominant tone tracks the rpm to
+within 1 % of a fixed ratio from 4,000 to 7,350 rpm. Left open:
+
+- The NegTorque sign: the spec leaves whether braking torque raises or
+  lowers a parameter; ours lowers it (`EnginePlayer::neg_raises` false),
+  with no switch on the command line yet.
+- Not applied: the harmonic tunings' parametric EQs, the load EQs and the
+  expander. The groups play with their gain and one-pole low-pass only.
+- The listener's pan: our fold of the views' channel levels to stereo,
+  L = Left + 0.7 Centre + 0.7 rear Left (R likewise), scaled so the
+  larger is 1. The game's own downmix would replace it.
+- The master gain 0.6 is ours, set by the mix's peaks (0.22 on the R34's
+  full-throttle sweep). The game's overall level against other sounds is
+  not known.
+- The windowed playback (SDL audio stream, about 60 ms queued) has not
+  been heard yet: the play test checks it.
