@@ -67,11 +67,11 @@ source = """docs/FEATURE_BACKLOG.md FB-1, FB-1.1; src/ui/music.h"""
 
 [[finding]]
 group = """Audio engine"""
-base = """AudioEngineConfig.xml, AudioMixerSnapshots.xml, audio/cars/CarModelTuning.zip"""
+base = """AudioEngineConfig.xml, AudioMixerSnapshots.xml"""
 v4 = """same"""
 name = """audio mix"""
-what = """Per-category levels (player engine, opponents, tyres, wind, music, ambience), a normal and a TV compressor set, per-state ducking, and the map from car to engine sound bank."""
-how = """Archive listing."""
+what = """Per-category levels (player engine, opponents, tyres, wind, music, ambience), a normal and a TV compressor set, per-state ducking, and voice limits per engine emission group (`maxEngineIntake`, `maxEngineAmbient` and others). The map from car to engine sound bank is not here: it is the car's `_ET.xml` in `audio/cars/Engines/EngineTuning.zip` (group "Engine sound"); `CarModelTuning.zip` holds the emitter positions and per-camera levels."""
+how = """Archive listing; the engine-sound chain corrected 2026-11-20 by reading the tuning files and their loaders (SPEC-ENGINE-SOUND)."""
 confidence = """probable"""
 source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Developer options and leftover systems"""
 
@@ -422,3 +422,82 @@ what = """One long stereo XMA ambience sample in a `tracks` bank decodes to 423,
 how = """tools/re/media-decode-check.py sample comparison, 2026-11-19 (RI-0.6)."""
 confidence = """probable"""
 source = """docs/REIMPLEMENTATION_PLAN.md RI-0.6"""
+
+# ---------------------------------------------------------------- Engine sound
+
+[[finding]]
+group = """Engine sound"""
+base = """Data_Car.MediaName; audio/cars/Engines/EngineTuning.zip <MediaName>_ET.xml; audio/cars/CarModelTuning.zip <MediaName>_CMT.xml"""
+v4 = """same; v4's media.zip replaces 4 `_ET.xml` members"""
+name = """engine sound by media name: engine tuning, harmonic tuning, bank"""
+what = """No database column names a car's engine sound. The car's `MediaName` opens `<MediaName>_ET.xml` (engine tuning) and `<MediaName>_CMT.xml` (emitter positions and per-camera levels). The engine tuning names one harmonic tuning (`HarmonicTuning.zip`, `_HT.xml`) per emission group and upgrade level: `EngineAmbient` (level 0 only), `EngineIntake` and `Exhaust` (`L0` to `L3`). Each harmonic tuning names its FSB4 bank (`Soundbank name`), a loose file in `audio/cars/Engines/Soundbanks/LOD1/`. `NA.xml`, `NA_*_HT.xml` and the bank `NA.fsb` mean the group is silent. Packages add their tuning files in their `_pri_` archives and their banks loose. Over the 240 car models: 239 have an engine tuning (not `VW_IECorrado_95`), 236 a model tuning, 208 all three groups at stock, 30 one or two groups, and the Nissan Leaf none (it is electric)."""
+how = """Reading the tuning files (`tools/re/engine-sound.py census`: merged database, disc, 21 packages and v4); the loader's path strings; a clone with copied `_ET` and `_CMT` files changed its engine level (group "Cars" in content)."""
+confidence = """confirmed"""
+source = """docs/specs/ENGINE_SOUND.md; tools/re/engine-sound.py"""
+
+[[finding]]
+group = """Engine sound"""
+base = """sub_82BBDE48"""
+name = """harmonic tuning loader"""
+what = """Reads one `_HT.xml` into the car sound object: per emission group up to 16 `Loop` records (`wavebankindex`, `rpm_min`, `rpm_sample` and `rpm_max` as integers clamped to 0..32,000; `volume`, `pitch`, `pitchMin` and `pitchMax` as floats). A bank named `NA.fsb` sets the group's loop count to 0, and the exhaust's tuning fills a second set (`ExhaustR`) beside `ExhaustL`. It also reads `audio_rpm_idle_gain_reset`, `ExhaustNoise`, the burble bank and timer, and the group's DSP curves (volume, peaking EQ, low-pass, expander, the load EQs)."""
+how = """Ghidra decompile of the XML reader calls and their attribute strings."""
+confidence = """confirmed"""
+source = """docs/specs/ENGINE_SOUND.md Engine loops"""
+
+[[finding]]
+group = """Engine sound"""
+base = """sub_82BAC840, sub_82BAD588, sub_82BAC7A8"""
+name = """PhysicsCoeff and ThreePointCurve parameters"""
+what = """Every engine-sound parameter (gains, EQ frequency and gain, cutoff, expander) is one record: four coefficients from `PhysicsCoeff` (RPM, Throttle, PosTorque, NegTorque, clamped to 0..1) and three points from `ThreePointCurve` (x clamped to 0..1). Each update forms x = RPM × r + Throttle × t + PosTorque × p − NegTorque × n from the car's audio inputs (normalised rpm, throttle, positive and negative torque) and reads y piecewise linearly through the three points, holding the end values outside them."""
+how = """Ghidra decompile of the reader, the evaluator and its interpolation; 34 call sites in the car sound update."""
+confidence = """confirmed"""
+note = """The scale of the throttle and torque inputs is not traced (probably 0..1, NegTorque negative under engine braking)."""
+source = """docs/specs/ENGINE_SOUND.md Parameter curves"""
+
+[[finding]]
+group = """Engine sound"""
+base = """sub_82BBFCE0"""
+name = """physics rpm mapped into the recording's rpm range"""
+what = """Before the car sound update, the engine rpm from physics is normalised over the car's physics rpm range (two integers copied from the car's audio descriptor when the car loads; probably the stock camshaft's `StallRPM` and `RedlineRPM`) and mapped linearly onto the engine tuning's `audio_rpm_idle` to `audio_rpm_redline`. The normalised value is the curves' RPM input, and the mapped rpm picks and pitches the loops. When `drivetrain_spring_enabled` is set (22 of the 239 cars' engine tunings), two spring-damper states add a drivetrain oscillation to the rpm first."""
+how = """Data flow of the translated function (generated C++); the loader of `audio_rpm_idle` and `audio_rpm_redline` (clamped to 32,000)."""
+confidence = """probable"""
+note = """Which database columns fill the physics range is not traced; the R34 check in the spec tests it."""
+source = """docs/specs/ENGINE_SOUND.md Rpm map"""
+
+[[finding]]
+group = """Engine sound"""
+base = """sub_82BC6120, sub_82BC4E68, sub_82BC5290, sub_82BC8410"""
+name = """engine loop crossfade and pitch"""
+what = """`sub_82BC8410` (a car sound object's update, reached by vtable) calls `sub_82BC6120`, which computes each emission group's gain (its volume curve, the camera view's emission level and, for the exhaust, its expander) and passes the mapped rpm to the loop update (`sub_82BC4E68`; `sub_82BC5290` is the voice-limited path). A loop sounds while the rpm is inside its `rpm_min` to `rpm_max`. Its gain is 1 except where it overlaps a neighbour: from `rpm_min` up to the previous loop's `rpm_max`, and from the next loop's `rpm_min` up to its own `rpm_max`. There t runs linearly from 0 to 1 across the overlap and the gain is log2(1 + t). The voice volume is that gain × the loop's `volume` × the group gain; a loop outside its range decays by × 0.2 an update and stops below 0.001. Pitch is `pitch` + `pitchMin` × (rpm − `rpm_sample`) / `rpm_sample` below the recorded rpm, and the same with `pitchMax` above, which is rpm / `rpm_sample` when all three are 1."""
+how = """Translated code of the loop update (generated C++) and its constants (1/log10 2, 0.2, 0.001, 32,000) read in Ghidra; Ghidra cannot decompile `sub_82BC6120` (vector code)."""
+confidence = """confirmed"""
+source = """docs/specs/ENGINE_SOUND.md Loop crossfade and pitch"""
+
+[[finding]]
+group = """Engine sound"""
+base = """sub_82BB93C0"""
+name = """loop audition mode"""
+what = """A debug mode of the car sound object replaces the rpm input with the midpoint of one loop's range (odd steps) or of one overlap (even steps) and zeroes throttle and torque, so one loop or one crossfade can be heard alone. Not known to be reachable in the shipped game."""
+how = """Ghidra decompile."""
+confidence = """probable"""
+source = """docs/specs/ENGINE_SOUND.md Engine loops"""
+
+[[finding]]
+group = """Engine sound"""
+base = """HT Loop wavebankindex"""
+name = """a loop index past the bank's sample count picks the second channel"""
+what = """Exhaust tunings list `ExhaustL` loops at indices 0 to n−1 and `ExhaustR` at n to 2n−1 over a bank of n stereo samples. Of the stock loop records, 1,910 point past the sample count, and 1,845 of them land on a stereo sample's second channel by index = channel × n + sample. The other 65, in 6 cars' `ExhaustR` (among them the 2012 GT-R, the SLS and the C63), point past a bank of mono samples."""
+how = """`tools/re/engine-sound.py census` over every stock harmonic tuning and its bank header."""
+confidence = """probable"""
+note = """How the game plays the 65 records is not traced; the spec has engines reuse the mono sample (index modulo n)."""
+source = """docs/specs/ENGINE_SOUND.md Engine loops"""
+
+[[finding]]
+group = """Engine sound"""
+base = """audio/cars/Engines/DSPTuning.zip"""
+name = """DSPTuning.zip is an older format the title does not open"""
+what = """`DSPTuning.zip` holds 399 per-car files in a different layout (`Car name`, `audio_rpm_min`, `audio_rpm_max`, one `Upgrade level` element per exhaust level). The executable has no `DSPTuning` string, while the engine, harmonic and model tuning folders each have their path, so the archive looks unused."""
+how = """String search in Ghidra; reading the archive."""
+confidence = """probable"""
+negative = true
+source = """docs/specs/ENGINE_SOUND.md"""

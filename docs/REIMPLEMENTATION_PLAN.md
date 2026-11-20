@@ -94,7 +94,7 @@ It turns the one-paragraph sketch there into a programme of work.
 | Car dynamics | data flow; some offsets | The `ICarDynamics` vtable, wheel blocks, ABS/TCS and the step's two paths are recorded. 117 of the 131 physics functions are unnamed. The tyre model is located but not understood |
 | AI opponents | data flow | Assignment, rubber-banding and difficulty are recorded. The driving logic (47 RacingAI/MLP classes) is unexplored |
 | World streaming, collision | collision decoded; streaming named only | The static collision tiles, their lattice and the per-triangle surface index are confirmed against the physics oracle ([COLLISION.md](formats/COLLISION.md)); streaming is still one "guess" |
-| Audio | data flow; parts native | FMOD Ex internals, FSB4 and radio are known. The engine-sound model is only located |
+| Audio | data flow; parts native | FMOD Ex internals, FSB4 and radio are known. The engine loops (car to bank, crossfade, pitch, curves) are specified in [SPEC-ENGINE-SOUND](specs/ENGINE_SOUND.md); its DSP stages and the event-project car sounds are not |
 | Flow scripts | data flow | StateGroup XML is data. Its 439 behaviour names are C++ classes, so their meaning is code |
 
 ### Formats

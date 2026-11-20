@@ -62,6 +62,22 @@ host SDL output                         1,536 floats a block, folded to stereo o
 
 {{findings:audio/Mixer and output}}
 
+## Engine sound
+
+A car's engine is not an FMOD event. The game plays loops recorded at steady rpm straight from FSB4 banks and crossfades them itself. Each car finds its files by its database `MediaName`:
+
+```text
+Data_Car.MediaName
+  -> <MediaName>_ET.xml   engine tuning: audio rpm range, volumes, one harmonic tuning per group and upgrade level
+  -> <MediaName>_CMT.xml  model tuning: emitter positions, levels per camera view
+       -> <name>_HT.xml   harmonic tuning: the bank, its loops (recorded rpm and range), DSP curves
+            -> Soundbanks/LOD1/<bank>.fsb   XMA, mono or stereo, each sample one whole-length loop
+```
+
+Three emission groups sound for most cars: intake, engine (ambient) and exhaust (left and right). Each loop plays inside its rpm range at a pitch of rpm over its recorded rpm and fades into its neighbours on a log2 curve. Load and throttle do not choose loops. They shape gains and filters through curves of rpm, throttle and torque. Of the 240 car models, 239 resolve to an engine tuning and 208 have all three groups. The rule is written up as SPEC-ENGINE-SOUND (`docs/specs/ENGINE_SOUND.md`), and `tools/re/engine-sound.py` counts the chain on the player's files.
+
+{{findings:audio/Engine sound}}
+
 ## Speech and ambience banks
 
 {{findings:audio/Speech and ambience banks}}
