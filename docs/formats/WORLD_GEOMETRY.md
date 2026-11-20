@@ -39,7 +39,10 @@ reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
 - Drawn at the dumped camera from these files, the 73 world-space models
   of one frame match the game's own main-view depth to a median 0.024 %
   of the view depth (95th percentile 0.10 %), sampled at the game's pixel
-  centres; see [Depth check](#depth-check-ri-04-gate). The game's depth is
+  centres; see [Depth check](#depth-check-ri-04-gate). With the frame's
+  130 props added, the world pixels keep that tolerance but the prop
+  pixels do not yet (median 1.4 m, mostly the engine's barrier
+  orientation and props whose materials matter). The game's depth is
   reversed 24-bit float, and its pixel centres sit half a pixel off an
   ordinary rasteriser's ([Coordinate frames](#coordinate-frames-and-draws)).
 - `.bix`, the `_0x*.bin` members and `.bundle` hold textures; `.pgeo`,
@@ -260,8 +263,8 @@ Kind-7 header fields (offsets from the start):
 
 | Offset | Meaning | Confidence |
 | --- | --- | --- |
-| +0x38 | a distance (2,500 in the tiles read) | guess (draw distance) |
-| +0x3C | name length; the name follows the header | probable |
+| +0x38 | a distance: 2,500 in 1,432 of the 2,031 kind-7 tiles, 500 in 418, 3,500 in 131, 750 in 20, 350 in 15 | guess (draw distance) |
+| +0x3C | name length; the name starts at +0x60, or at +0x98 when the word at +0x58 is non-zero (1,562 and 469 kind-7 tiles; the 0x38 bytes between are not decoded) | confirmed (every tile parses to its size) |
 | +0x40 | number of 8-byte references (u32 value, u32 flag) | probable |
 | +0x44 | number of 8-byte string records | probable |
 | +0x48 | total size | confirmed (equals the file size) |
@@ -272,9 +275,14 @@ Then, 16-byte aligned, 0x40-byte **model records**: a box (minimum, pad,
 maximum, pad), a string length, three (count, slot) pairs giving up to
 three lists of u32 object IDs (one per LOD: list 0 names the LOD00
 model, lists 1 and 2 the next ones, probable from the pine and a few
-barriers; the IDs of one record are consecutive), and a word; the ID lists follow, 4-byte aligned. The IDs
+barriers), and a word; the ID lists follow, 4-byte aligned. The IDs
 are in the object ID space the `.pvsz` files use, at its top, and the
-[object table](#object-table) gives their models.
+[object table](#object-table) gives their models. Of the 12,044 model
+records, 9,268 have one ID in lists 0 and 1, 1,902 one ID in list 0
+only, 661 one ID in each of the three, and 213 no ID at all (no model to
+place). In 11,913 records the IDs run consecutively from list 0 on; in
+the other 131 they do not, so a reader must take each list's own IDs
+rather than count on from list 0.
 
 Then the **class part**: a small header whose group count is at +0xC,
 and 0x5C-byte **group records** from +0x14. A group names a reference (the
@@ -312,25 +320,70 @@ A zone file has three parts:
 | --- | --- | --- | --- |
 | three half floats | 6 | 100, 250 and 500 in most samples; NaN, −1 and 0 also occur | guess (LOD or fade distances) |
 | position | 12 | three f32, game frame | confirmed |
-| rotation | 18 | nine half floats, the game-frame rotation transposed (H = F·R_gameᵀ) | confirmed |
+| rotation | 18 | nine half floats h0..h8; see the reading below | confirmed |
 | unknown | 16 | zero in the samples | — |
 | flag | 1 | 0: the record ends here (53 bytes) | confirmed |
 | when the flag is 1 | 4 + 1 + c + 32 | a u32 (−1, or a small index shared by every placement of one model: perhaps a physics or smashable type), a byte count c, c bytes, a 32-byte name such as `FR06_13` | probable |
 
-Because the block's size is not known, a reader takes the first start
-offset from which n records end exactly at the end of the file; every
-one of the 1,434 zones has one (1,027,743 records; whether a second
-start would also fit is not checked).
-An object listed by several zones has the same record in each (59,599
-distinct objects between 0 and 62,172), so the zones are views of one
-object list, and the model is not in the record: it comes from the
-[object table](#object-table). Every one of the 107 matched placements
-is the position field of a record.
+**Finding the records.** The block's size is not known, and in most
+zones several start offsets give n records that end exactly at the end
+of the file (the record fields are loose enough to chain from a wrong
+start). The rule that works: among those starts, take the one whose
+records hold the most rigid rotations (the three rows of halves
+orthonormal within 0.01). Over the 1,434 zones: 1,209 have more than
+one start; in 56 the first start is not the most rigid one, and taking
+the first leaves 502 objects whose record differs from the same
+object's record in another zone (the implementation, with its own
+field checks, counted 1,214 zones and 1,570 such records); with the
+most-rigid rule none differ, and no zone has two starts that are both
+fully rigid. An object listed by several
+zones then has the same record in each (59,599 distinct objects between
+0 and 62,172), so the zones are views of one object list, and the model
+is not in the record: it comes from the [object table](#object-table).
+Every one of the 107 matched placements is the position field of a
+record.
+
+**Reading the rotation.** With h0..h8 the nine halves in file order and
+F = diag(1, 1, −1), the file-frame rotation is R[r][c] = h[3c + r]·F[r]:
+the halves are the rotation's columns, one after another, with the
+third component of each negated. A model vertex v (file frame) is
+placed at R·v + (x, y, −z), where (x, y, z) is the record's position.
+Checked against all 107 placements the dump drew: largest element error
+0.0005 for the 91 upright props and 0.0005 for the 16 tilted ones
+(within half-float precision). The other reading, R[r][c] = h[3r + c]·F[r]
+(rows instead of columns), is off by up to 0.049 for the upright props
+and 0.16 for the tilted ones; reading the halves as F·R·F gives errors
+up to 2 (mirrored placements).
+
+**One object per LOD at a spot.** A zone often lists several objects at
+one position with one rotation, one per LOD level of a prop. In the
+sector, the 847 objects sit at 572 spots; at each of the 236 spots with
+more than one object the rotations are equal and the table names a
+different member for each, of one LOD set at 231 of them. An engine that
+resolves each to the same level draws the model several times in
+place; keep one placement per model and spot. Which of them the game
+draws is the selection question (open question 3).
 
 ### Object table
 
-`Ribbon_00/Colorado_00.pvs` (magic `FPVS`, version 50) holds a 28-byte
-record table, a list of the 173 track shader names (a u32 count, then
+`Ribbon_00/Colorado_00.pvs` is big-endian. Its header:
+
+| Offset | Meaning | Confidence |
+| --- | --- | --- |
+| +0x00 | magic `FPVS` | confirmed |
+| +0x04 | version, 50 | probable |
+| +0x08 | 47,014,282 | unknown |
+| +0x0C, +0x10 | zero | — |
+| +0x14 | bytes 1F 22 01 01 | unknown |
+| +0x18, +0x1C | 50,120 and 3,852 | unknown |
+| +0x20 | 33, the length of the next list | probable |
+| +0x24 | 33 u32, rising from 43,546 to 229,835: the first `bin.zip` directory entry of each of the 33 repeated runs of members (see [Archive and member names](#archive-and-member-names)) | probable (the entries at those indices start a repeat, checked by name) |
+| +0xA8 | 12,800 | unknown |
+| +0xAC | three zero bytes | — |
+| +0xAF (175) | u32 count of the 28-byte records, 19,613; the records follow at +0xB3, unaligned | confirmed (the records end exactly on the shader-name count) |
+
+After the header come the 28-byte record table, a list of the 173 track
+shader names (a u32 count, then
 u32-length-prefixed strings), and right after the names the **object
 table**: a u32 count, 62,173 (the size of the object ID space), then
 one 18-byte record per object ID. The first big-endian u16 of a record
@@ -365,9 +418,13 @@ the lowest member number, so these are agreements the dump cannot
 distinguish, not misses.
 
 `dump-obj --box 1500 -1460 2500 -460 --props` now places, besides the
-277 world-space models of the sector, 2,460 `.pgeo` instances and 844
-`.pvsz` objects whose origin lies in the box, each with the LOD00 model
-of its set (2 objects in the box name no render model).
+277 world-space models of the sector, 2,460 `.pgeo` instances and
+845 of the 847 `.pvsz` objects whose origin lies in the box (2 name no
+render model), each with the LOD00 model of its set.
+
+Across the whole table, 1,087 objects name 268 member numbers that have
+no render model in `bin.zip` (found by the implementation's reader and
+reproduced here; why is not known).
 
 The 28-byte records before the shader names follow a u32 count of
 19,613. A record is a u32 that increases with gaps, the record number,
@@ -488,9 +545,49 @@ What this rests on: the replayed depth is the recompilation's (Vulkan,
 float depth converted to the 24-bit format at the resolve), not a console
 readback; the model set came from the dump's draw list, not from a
 selection rule (open question 3); and the comparison covers world-space
-models only. Props are now placed from the files (see
-[Object table](#object-table)) but were not part of this measurement:
-the engine does not draw them yet.
+models only.
+
+**With props** (measured 2026-11-19, later the same day). A third replay
+keeps the 820 world-space draws and the 515 main-view draws of the 130
+props the frame drew (`depth-skips --props`: 1,444 other draws
+skipped). The engine image is shift-engine `8a2932c` drawing the same 73
+world-space models plus those 130 placements (`--drawn-props`).
+`depth-compare --split` sorts each compared pixel by whether the props
+change the engine's depth there (against the world-only image above).
+
+| Pixels | Count | Median | 95th | Median, relative | 95th, relative |
+| --- | --- | --- | --- | --- | --- |
+| world | 519,023 | 0.007 m | 1.15 m | 0.025 % | 0.11 % |
+| world, under 40 m | 266,157 | 0.001 m | 0.009 m | 0.023 % | 0.067 % |
+| props | 51,087 | 1.41 m | 1,165 m | 13.7 % | 98.7 % |
+| props, under 40 m | 39,840 | 1.12 m | 15.0 m | 9.5 % | 64 % |
+| all | 570,110 | 0.016 m | 4.49 m | 0.028 % | 11.5 % |
+
+The world pixels keep their tolerance. The prop pixels do not. Sorting
+them (unshifted, 2 ‰ tolerance): 2,760 agree, 5,956 show the world
+behind the engine's prop (the game has nothing there), 2,651 are sky in
+the game, 6,570 are nearer in the game, and 43,217 are farther in the
+game but are not the world either, which means the game's prop surface is
+somewhere other than the engine's. Most of them are on the metal
+barriers beside the road and on the flag. The causes, from the images:
+
+- **Barrier orientation.** The engine draws the near metal barriers with
+  a yaw clearly different from the capture's and the game's depth, while
+  the `.pvsz` records of those placements match the dump's rotation to
+  0.0005 (see [Reading the rotation](#pvsz-zone-files)). So the difference
+  is in how the engine applies the record, not in the data. This
+  accounts for most of the far-from-the-world residual.
+- **Animation and cut-outs.** The flag is animated in the game (its
+  depth is a different shape), and the chain-link fence and the pine are
+  alpha-tested: the game writes depth only on opaque texels, the engine
+  over whole triangles. These pixels cannot agree without the materials.
+- **The instanced clip z row** (implementation question). Instanced draws
+  use a clip z row slightly different from the scene matrix times the
+  placement. Measured over the 515 prop draws at each model's origin,
+  converting the game's z/w with the scene's z mapping errs by a median
+  0.012 m (0.018 % of view depth), at most 0.16 m (0.029 %), about the
+  size of the world residual. It is not what keeps the props out of
+  tolerance.
 
 ## Open questions and next steps
 
@@ -527,7 +624,13 @@ says "engine's choice", the game's rule is not known.
 | Question | Answer |
 | --- | --- |
 | How is a model known to be world-space or local-space? | No stored flag is known. The rule used here: local when the header box lies within 200 m of the origin in X and Z, which gives 11,898 world and 2,393 local; it is probable. A model that the object table names for a `.pgeo` or `.pvsz` placement is local |
-| How does the engine place props? | Read the object table from `Ribbon_00/Colorado_00.pvs`, every `.pvsz` record (one per object; dedupe by object ID) and every kind-7 `.pgeo` group; the model is the table's member for the object ID (for `.pgeo`, the first ID of list 0), widened to its LOD set; place it with the record's rotation and position (both in the game frame; negate z for the file frame). Which LOD to draw is the engine's choice until question 3 is answered: LOD00 near the camera matches the frame |
+| How does the engine place props? | Read the object table from `Ribbon_00/Colorado_00.pvs`, every `.pvsz` record (one per object; dedupe by object ID, then keep one placement per model and spot) and every kind-7 `.pgeo` group; the model is the table's member for the object ID (for `.pgeo`, the first ID of list 0), widened to its LOD set; place it as in [Reading the rotation](#pvsz-zone-files) (`.pvsz`) and F·Rᵀ·F·v + F·t (`.pgeo`). Which LOD to draw is the engine's choice until question 3 is answered: LOD00 near the camera matches the frame |
+| Are the nine `.pvsz` halves row-major or column-major? | Columns: R[r][c] = h[3c + r]·F[r] in the file frame. Checked on all 107 drawn `.pvsz` placements, the 16 tilted ones included (largest error 0.0005); the row reading errs by up to 0.16 on the tilted ones. The earlier "H = F·R_gameᵀ" wording was ambiguous and is replaced |
+| Which record start is right when several end at the end of the file? | The one with the most rigid rotations; the first such start is wrong in 56 zones (see [`.pvsz` zone files](#pvsz-zone-files)) |
+| Instanced draws use another clip z row: how big is the depth effect? | A median 0.018 % of view depth at the model origin, at most 0.029 % (515 prop draws); see [Depth check](#depth-check-ri-04-gate) |
+| Why are some `.pgeo` barrier sets (for example `models_proc_clrd_barrier_reds_*`) in the sector but not in the frame? | Not known: which placements the game shows (by event, time or PVS zone) is part of the selection question (open question 3). The files place them; the free-roam frame does not draw them |
+| The kind-7 name offset | +0x60, or +0x98 when the word at +0x58 is non-zero (see the header table) |
+| Model records whose IDs are not consecutive | 131 of 12,044; read each list's IDs as stored |
 | Which LOD does the game draw? | Unknown (open question 3). Drawing every overlapping model puts far LODs over near ones; for comparisons, draw the nearest LOD and leave out `UberLOD` and `_CUBE` models, as an engine choice |
 | Do name lengths include a terminating NUL? | Strip trailing NULs |
 | The restart value for a 4-byte strip | All ones, by analogy; no 4-byte strip is on the disc (the one 4-byte list is a triangle list) |
@@ -550,11 +653,14 @@ python -I tools/re/world-geometry.py overlay .local/re/world/all <dump.fh1frame>
 python tools/replay-fh1-frame.py <dump.fh1frame> --state-root <seed> --hidden \
     --game-argument=--gpu_backend=vulkan --game-argument=--fh1_debug_log_draws=true \
     --game-argument=--fh1_resolve_dump_dir=<dir>
-python -I tools/re/world-geometry.py depth-skips <drawn members> <dump.fh1frame> <runtime.log>
+python -I tools/re/world-geometry.py depth-skips <drawn members> <dump.fh1frame> <runtime.log> [--props]
     (replay again with --fh1_debug_skip_draws=<the printed ranges>)
 python -I tools/re/world-geometry.py depth-compare <world-depth.pfm> <frame file> \
-    <band 1> <band 2> <band 3> --shift 0.5 0.5
+    <band 1> <band 2> <band 3> --shift 0.5 0.5 [--split <world-only depth.pfm>]
 ```
+
+With props, the members file is the 73 world-space models plus the 47 local-space models
+the placements draw.
 
 `--members @file` reads the comma-separated names from a file (the
 selection used for the 130-placement check, the sector's 277

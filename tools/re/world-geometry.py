@@ -738,8 +738,10 @@ def read_pvsz(path: str | os.PathLike) -> list[ZoneObject]:
     the end of the file, record k for ID k. A record is three half floats,
     a position (3 x f32), nine half floats of rotation, 16 bytes and a flag
     byte; flag 1 adds a u32, a byte count c, c bytes and a 32-byte name.
-    The records' start is found as the one offset from which n records end
-    exactly at the end of the file."""
+    The records' start is found by search: among the offsets from which n
+    records end exactly at the end of the file (most zones have several),
+    the one whose records hold the most rigid rotations (the first with
+    all of them rigid)."""
     data = Path(path).read_bytes()
     (n,) = struct.unpack_from(">I", data, 0)
     ids = struct.unpack_from(f">{n}I", data, 4)
@@ -757,6 +759,12 @@ def read_pvsz(path: str | os.PathLike) -> list[ZoneObject]:
             return 58 + data[at + 57] + 32
         return 0
 
+    def rigid(h):
+        rows = [h[0:3], h[3:6], h[6:9]]
+        return all(abs(sum(a * b for a, b in zip(rows[i], rows[j])) - (i == j)) < 0.01
+                   for i in range(3) for j in range(i, 3))
+
+    best = None
     for start in range(4 + 4 * n, len(data) - 53 * n + 1):
         at, k = start, 0
         while k < n:
@@ -771,8 +779,14 @@ def read_pvsz(path: str | os.PathLike) -> list[ZoneObject]:
                                       struct.unpack_from(">3f", data, at + 6),
                                       struct.unpack_from(">9e", data, at + 18), at))
                 at += length(at)
-            return out
-    raise FormatError(f"{path}: no framing of {n} records ends at the end of the file")
+            score = sum(rigid(o.halves) for o in out)
+            if best is None or score > best[0]:
+                best = (score, out)
+            if score == n:
+                break
+    if best is None:
+        raise FormatError(f"{path}: no framing of {n} records ends at the end of the file")
+    return best[1]
 
 
 def lod_run(root: str, member: int, names: dict) -> list[int]:
@@ -1349,6 +1363,12 @@ def cmd_depth_skips(args) -> int:
     keep = {n for n, (model, _, _) in tied.items()
             if model.placement == "world" and draws[n]["mvp"] == scene}
     targets = {draws[n]["depth_info"] for n in keep}
+    world = len(keep)
+    if args.props:
+        # also the selected local-space models drawn in the main view with a
+        # rigid placement (the props; cars and people tie to no member)
+        keep |= {n for n, (model, _, _) in tied.items()
+                 if model.placement == "local" and placed_in_scene(scene, draws[n]["mvp"])}
     # Geometry that writes depth: z enable and z write, and a depth test
     # other than "always" (the band's full-screen depth clear uses always
     # and must stay).
@@ -1356,7 +1376,8 @@ def cmd_depth_skips(args) -> int:
     skip = [numbers[n] for n, d in enumerate(draws)
             if numbers[n] is not None and modes[numbers[n]] != 6 and n not in keep
             and d["depth_info"] in targets and writes(d)]
-    print(f"world-space scene-matrix draws kept: {len(keep)}; depth targets "
+    print(f"world-space scene-matrix draws kept: {world}; main-view prop draws kept: "
+          f"{len(keep) - world}; depth targets "
           + ", ".join(f"0x{t:08x}" for t in sorted(targets)))
     print(f"other depth-writing draws into those targets (skipped): {len(skip)}")
     print(ranges(skip))
@@ -1465,8 +1486,27 @@ def cmd_depth_compare(args) -> int:
             return None
         return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty
 
-    diffs, rel = [], []
-    bands = [[lo, hi, [], []] for lo, hi in ((0, 40), (40, 200), (200, 1000), (1000, 1e9))]
+    base = read_pfm(args.split)[2] if args.split else None
+
+    def is_prop(x, y):
+        """True when the props change the engine's depth at the sample
+        point's four texels (only with --split)."""
+        if base is None:
+            return False
+        xs = (x, x + 1) if dx else (x,)
+        ys = (y, y + 1) if dy else (y,)
+        return any(ours[j * width + i] != base[j * width + i]
+                   for j in ys for i in xs if i < width and j < height)
+
+    classes = {}
+
+    def stats(name):
+        if name not in classes:
+            classes[name] = ([], [], [[lo, hi, [], []] for lo, hi in
+                                     ((0, 40), (40, 200), (200, 1000), (1000, 1e9))])
+        return classes[name]
+
+    diffs, rel, bands = stats("all")
     game_sky = our_sky = only_one = both = stepped = 0
     for y in range(height):
         for x in range(width):
@@ -1486,22 +1526,27 @@ def cmd_depth_compare(args) -> int:
             gw, ow = view_depth(1.0 - g), view_depth(o)
             both += 1
             d = abs(gw - ow)
-            diffs.append(d)
-            rel.append(d / gw)
-            for band in bands:
-                if band[0] <= gw < band[1]:
-                    band[2].append(d)
-                    band[3].append(d / gw)
+            names = ["all"] + ([("prop" if is_prop(x, y) else "world")] if base else [])
+            for name in names:
+                c_diffs, c_rel, c_bands = stats(name)
+                c_diffs.append(d)
+                c_rel.append(d / gw)
+                for band in c_bands:
+                    if band[0] <= gw < band[1]:
+                        band[2].append(d)
+                        band[3].append(d / gw)
     print(f"pixels outside the ignore boxes compared: {both} (shift {dx:+.2f}, {dy:+.2f} px), "
           f"left out at depth steps: {stepped}; empty in the game's depth: {game_sky}, "
           f"in ours: {our_sky}, in only one: {only_one}")
-    print(f"|view depth difference|: median {percentile(diffs, 0.5):.4f} m, "
-          f"95th {percentile(diffs, 0.95):.4f} m; relative median {percentile(rel, 0.5):.2e}, "
-          f"95th {percentile(rel, 0.95):.2e}")
-    for lo, hi, metres, relative in bands:
-        print(f"  {lo:g} <= w < {hi:g} m: {len(metres)} px, median {percentile(metres, 0.5):.4f} m, "
-              f"95th {percentile(metres, 0.95):.4f} m; relative median "
-              f"{percentile(relative, 0.5):.2e}, 95th {percentile(relative, 0.95):.2e}")
+    for name, (c_diffs, c_rel, c_bands) in classes.items():
+        print(f"{name} pixels, |view depth difference|: {len(c_diffs)} px, median "
+              f"{percentile(c_diffs, 0.5):.4f} m, 95th {percentile(c_diffs, 0.95):.4f} m; "
+              f"relative median {percentile(c_rel, 0.5):.2e}, 95th {percentile(c_rel, 0.95):.2e}")
+        for lo, hi, metres, relative in c_bands:
+            print(f"  {lo:g} <= w < {hi:g} m: {len(metres)} px, median "
+                  f"{percentile(metres, 0.5):.4f} m, 95th {percentile(metres, 0.95):.4f} m; "
+                  f"relative median {percentile(relative, 0.5):.2e}, "
+                  f"95th {percentile(relative, 0.95):.2e}")
     if args.out:
         # Signed difference image: grey 128 = equal, +-1 m per 8 grey levels.
         image = bytearray()
@@ -1630,6 +1675,8 @@ def main(argv: list[str] | None = None) -> int:
     add_selection(skips)
     skips.add_argument("dump")
     skips.add_argument("draw_log", help="a replay log written with --fh1_debug_log_draws=true")
+    skips.add_argument("--props", action="store_true",
+                       help="also keep the selected local-space models' main-view draws (props)")
     skips.set_defaults(run=cmd_depth_skips, predicate=True)
     depth = commands.add_parser("depth-compare")
     depth.add_argument("engine", help="the engine's z/w image (greyscale PFM)")
@@ -1642,6 +1689,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="compare with the engine's depth this many pixels right and down "
                             "(0.5 0.5: the game's pixel centres sit half a pixel off ours)")
     depth.add_argument("--out", help="write a signed difference image (PPM)")
+    depth.add_argument("--split", metavar="PFM",
+                       help="the engine's z/w image without props: pixels where it differs "
+                            "from ENGINE are reported apart as prop pixels")
     depth.set_defaults(run=cmd_depth_compare)
     args = parser.parse_args(argv)
     return args.run(args)

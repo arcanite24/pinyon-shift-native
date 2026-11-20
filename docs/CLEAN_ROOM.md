@@ -67,4 +67,4 @@ spec:
 | Spec | Subsystem | Status | Implemented by |
 | --- | --- | --- | --- |
 | [SPEC-EVENT-RESTRICTIONS](specs/EVENT_RESTRICTIONS.md) | event rules | complete for the disc's bits | `shift-engine` `libs/data` (`event_restrictions`), commit `34a4804` |
-| [WORLD-GEOMETRY](formats/WORLD_GEOMETRY.md) | Colorado render models | positions and index lists; rest of the vertex, materials, placements and LOD rule open | `shift-engine` `libs/fh1data` (`rmb`) and `carview` world mode, commit `d55ed64` |
+| [WORLD-GEOMETRY](formats/WORLD_GEOMETRY.md) | Colorado render models and prop placements | positions and index lists, `.pgeo` and `.pvsz` placements through the `.pvs` object table; rest of the vertex, materials and the LOD and visibility rule open | `shift-engine` `libs/fh1data` (`rmb`, placements) and `carview` world mode, commits `d55ed64`, `6ed6cdc`..`8a2932c` |
