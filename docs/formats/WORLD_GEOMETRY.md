@@ -271,8 +271,8 @@ Kind-7 header fields (offsets from the start):
 Then, 16-byte aligned, 0x40-byte **model records**: a box (minimum, pad,
 maximum, pad), a string length, three (count, slot) pairs giving up to
 three lists of u32 object IDs (one per LOD: list 0 names the LOD00
-model, lists 1 and 2 the next ones; the IDs of one record are
-consecutive), and a word; the ID lists follow, 4-byte aligned. The IDs
+model, lists 1 and 2 the next ones, probable from the pine and a few
+barriers; the IDs of one record are consecutive), and a word; the ID lists follow, 4-byte aligned. The IDs
 are in the object ID space the `.pvsz` files use, at its top, and the
 [object table](#object-table) gives their models.
 
@@ -317,9 +317,10 @@ A zone file has three parts:
 | flag | 1 | 0: the record ends here (53 bytes) | confirmed |
 | when the flag is 1 | 4 + 1 + c + 32 | a u32 (−1, or a small index shared by every placement of one model: perhaps a physics or smashable type), a byte count c, c bytes, a 32-byte name such as `FR06_13` | probable |
 
-Because the block's size is not known, a reader finds the records as the
-one start offset from which n records end exactly at the end of the
-file; every one of the 1,434 zones has exactly one (1,027,743 records).
+Because the block's size is not known, a reader takes the first start
+offset from which n records end exactly at the end of the file; every
+one of the 1,434 zones has one (1,027,743 records; whether a second
+start would also fit is not checked).
 An object listed by several zones has the same record in each (59,599
 distinct objects between 0 and 62,172), so the zones are views of one
 object list, and the model is not in the record: it comes from the
@@ -368,10 +369,12 @@ distinguish, not misses.
 `.pvsz` objects whose origin lies in the box, each with the LOD00 model
 of its set (2 objects in the box name no render model).
 
-The 28-byte records before the shader names are 19,612 entries with a
-type byte and two incrementing indices. The type counts match the
-texture members exactly (5,234 of type 4, the `.bix` pairs; 2,965 of
-type 0, the `_0x*.bin` containers; 11,409 of type 1), so this is
+The 28-byte records before the shader names follow a u32 count of
+19,613. A record is a u32 that increases with gaps, the record number,
+two f32 (1.0 in every record), ten zero bytes, a flag byte and a type
+byte. The type counts match the texture members exactly (5,234 of type
+4, the `.bix` pairs; 2,965 of type 0, the `_0x*.bin` containers; 11,409
+of type 1; 5 of type 3), so this is
 presumably the texture and material resource list; how an entry names a
 file is not found (neither index is a filename-map position or a
 texture's hex name beyond chance).

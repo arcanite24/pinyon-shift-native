@@ -160,6 +160,17 @@ A faster clock exposed one more console assumption: the simulation steps on the 
   has 230,057 directory entries, and the end record's count wraps.
   Readers that stop at the count miss a quarter of the names; walk the
   central directory by its byte size instead.
+- **Look for an ID space's size stored as a count.** FH1's prop
+  placements name 32-bit IDs up to 62,172. Scanning the track files for
+  a fixed-stride table indexed by those IDs found nothing real, but the
+  number 62,173 occurs once in the ribbon's `.pvs`, as the count before
+  an 18-byte record per ID whose first field is the render model
+  ([WORLD_GEOMETRY.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/formats/WORLD_GEOMETRY.md#object-table)).
+- **A byte-for-byte draw tie cannot tell identical meshes apart.**
+  Members that share a mesh (signs with one post, copies of a flag) tie
+  to the first member that matches. Check an expected model against the
+  mesh bytes, not the member number, before counting it as a miss: 11 of
+  130 prop placements looked wrong for this reason alone.
 
 - **Prove the check before trusting a clean result.** A comparison that
   never fails may not be looking. The region oracle (#749) ran each seeded
