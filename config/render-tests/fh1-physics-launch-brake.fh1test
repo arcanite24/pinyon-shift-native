@@ -1,0 +1,34 @@
+pinyon-shift-fh1-render-test-v1
+# Car physics oracle segment (docs/specs/CAR_PHYSICS.md, SPEC-CAR-PHYSICS):
+# free roam on acc9-stock (stock R34) as fh1-physics-accel: wake the car,
+# then a straight-line segment with no steering at a fixed 60 Hz clock:
+# full throttle from frame 1100 to 1440 (the throttle only takes effect
+# near frame 1180; the car is then near 80 km/h, about 55 m on), full
+# brake from 1440 to 1700, which stops the car on the asphalt before the
+# road bends away (a straight run leaves it near 110 m), then release.
+# Holding the brake at a standstill selects reverse. Run with
+#   --game-argument=--pinyon_shift_physics_trace=6
+#   --game-argument=--pinyon_shift_physics_oracle=true
+#   --game-argument=--pinyon_shift_physics_oracle_snapshot_frame=1095
+#   --game-argument=--pinyon_shift_physics_oracle_trace_ticks=800
+# and read the 0-100 time with tools/physics-behaviour.py summary; the
+# oracle's per-step body trace (physics-oracle.bin, window 0) gives the
+# position, speed, gear, loads and slips the spec's reference curves use.
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 366 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 486 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 606 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 726 0000 0 0 0 0 0 0
+input 780 0000 0 0 0 0 0 0
+wait 900 3000 vehicle
+capture 1090 start
+input 1100 0000 0 255 0 0 0 0
+input 1440 0000 255 0 0 0 0 0
+input 1700 0000 0 0 0 0 0 0
+capture 1710 end
+stop 1720

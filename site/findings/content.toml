@@ -39,6 +39,15 @@ source = """docs/NATIVE_PORT_BACKLOG.md Where the code stands, NP-10.2"""
 
 [[finding]]
 group = """Game database"""
+base = """media/db/gamedb.slt"""
+name = """car physics columns resolve for every car"""
+what = """Each of the 240 distinct car models (250 merged `Data_Car` rows) resolves every physics link: one `IsStock = 1` row in each `List_Upgrade*` table it uses, and every torque-curve, spring-damper, anti-roll, tyre-compound, friction-curve and aero ID present. Stock cars: 39 single turbo, 31 twin turbo, 18 with `List_UpgradeEngineDSC` and 1 with `List_UpgradeEngineCSC`; 152 rear-wheel, 57 all-wheel and 31 front-wheel drive; every suspension type 0; no CVT; `Data_Motor` empty. Stock brakes, springs and anti-roll bars are `Level` 1, other stock parts level 0, so stock parts are found by `IsStock`."""
+how = """Read-only join over `.local/re/cars/db/merged.slt`."""
+confidence = """confirmed"""
+source = """docs/specs/CAR_PHYSICS.md"""
+
+[[finding]]
+group = """Game database"""
 base = """.str string tables, _&N in name columns"""
 v4 = """same"""
 name = """localized string tables"""

@@ -1,0 +1,30 @@
+pinyon-shift-fh1-render-test-v1
+# Car physics oracle steering step (docs/specs/CAR_PHYSICS.md,
+# SPEC-CAR-PHYSICS): free roam on acc9-stock (stock R34) as
+# fh1-physics-accel: wake the car, full throttle from frame 1100 for 2 s,
+# then off the throttle with the left stick fully left from 1220 to 1460
+# (4 s) and centred again until 1580. Run with
+#   --game-argument=--pinyon_shift_physics_trace=1
+#   --game-argument=--pinyon_shift_physics_oracle=true
+#   --game-argument=--pinyon_shift_physics_oracle_snapshot_frame=1095
+#   --game-argument=--pinyon_shift_physics_oracle_trace_ticks=600
+# The oracle's body trace gives the steering control, the yaw rate and the
+# wheels' slip angles and lateral forces through the step and its release.
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 366 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 486 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 606 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 726 0000 0 0 0 0 0 0
+input 780 0000 0 0 0 0 0 0
+wait 900 3000 vehicle
+capture 1090 start
+input 1100 0000 0 255 0 0 0 0
+input 1220 0000 0 0 -32768 0 0 0
+input 1460 0000 0 0 0 0 0 0
+capture 1580 end
+stop 1590

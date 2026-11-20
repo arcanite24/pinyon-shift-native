@@ -178,7 +178,7 @@ group = """Car dynamics"""
 base = """sub_82D1D880, sub_82D365B0"""
 v4 = """sub_82DDF7E0"""
 name = """ABS, traction and stability flags"""
-what = """The cockpit ABS light is `[+3020] != 0 && [+3436] != 0`. `+3020` is the ABS-active flag: the brake model `sub_82D365B0` clears it on every physics step and sets it on the steps where it releases a wheel whose slip ratio is past its threshold, so it flickers during an ABS stop rather than staying on. `+3436` is the ABS assist setting. The TCS light is `[+3004] > 0.1` (a float intervention amount) and the STM light `[+3016] != 0`."""
+what = """The cockpit ABS light is `[+3020] != 0 && [+3436] != 0`. `+3020` is the ABS-active flag: the brake model `sub_82D365B0` clears it on every physics step and sets it on the steps where it releases a wheel whose slip ratio is past its threshold, so it flickers during an ABS stop rather than staying on. `+3436` is the ABS assist setting. The release point is blended by the steering input between the brake row's `ReleasePointABS…NoSteer` and `…FullSteer` columns of each axle, in units of the tyre's normalised slip, and a released wheel is braked again after `DurationABS` (probable, from the data flow). The TCS light is `[+3004] > 0.1` (a float intervention amount) and the STM light `[+3016] != 0`."""
 how = """The cockpit-light update in `CDigitalGauge`; at run time `+3436` read 1 with the seed save's assists, and `+3020` set on scattered steps of each hard stop (seen as the DualSense ABS effect switching on and off)."""
 confidence = """confirmed"""
 note = """TCS and STM are from the light update only, not checked at run time."""
@@ -454,3 +454,42 @@ how = """`pinyon_shift_physics_oracle` with the snapshot at route frame 1160 (ri
 confidence = """probable"""
 negative = true
 source = """docs/REIMPLEMENTATION_PLAN.md RI-0.5"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D2F348"""
+name = """tyre force construction"""
+what = """The tyre model turns slip into force through the compound's two `List_TireFrictionMultiCurve` rows (longitudinal and lateral). Each row's two `List_TireFrictionCurve` curves are read at the combined normalised slip and blended linearly by the wheel load in kilograms-force between `MinLoadCurve` and `MaxLoadCurve`. Slip ratio and slip angle are each divided by their load-blended peak slip (the slip of the curve's largest sample), and the peak slips and the curve's slip axis are both stretched by a sidewall factor from `PhysicsSettings.ini` `SidewallScalePeakSA` at the tyre's sidewall height (width × aspect; 1.27 on the stock R34). The force in each direction is the curve value × that direction's share of the combined slip × the load × the scales: surface friction, the `List_UpgradeCarBodyChassisStiffness` lat/long scales (wheel+0x60, +0x64), a compound drive scale (wheel+0x68, 1.15 on the R34 above 15 m/s), a scale near 1 (wheel+0x6C, 1.01) and the affect curves. The curve values land at wheel+0x8C (lateral) and +0x90 (longitudinal), the forces at +0x1BC and +0x1D4. `List_TireFrictionCurve.FrictionScale` is not applied. Negative result: the same construction over-predicts the traced lateral value by 7 to 11 %, so the lateral path has a term not identified yet."""
+how = """Data flow of the tyre function (what it reads and writes, not transcribed) checked against oracle traces of the stock R34 (ri05-aa2, m3-seg-a): the longitudinal curve value matched within 1 % at four slips and the force exactly; three lateral points read 0.907 to 0.930 of the prediction."""
+confidence = """probable"""
+note = """Longitudinal confirmed on one car; the lateral gap and the `FrictionScale` omission need a second compound to rule out a coincidence."""
+source = """docs/specs/CAR_PHYSICS.md"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """sub_82D2F348"""
+name = """physics surface record fields"""
+what = """The surface record the tyre model reads for a wheel's surface index has, after its first word, the floats of a `surfaceTypes.xml` surface in this order: `FrictionScale` (+4), `HeatTireScale` (+8), `OffRoadness` (+0xC), `OffRoadWetFrictionScale` (+0x10), `OffRoadDryPeakSA` (+0x14), `OffRoadWetPeakSA` (+0x18), `RearGripMultiplier` (+0x1C), `MinimumArcadeGripValue` (+0x20) and `HandbrakeGripMultiplier` (+0x24). The arcade-grip blend it drives (wheel+0x58, +0x5C) is 0 on asphalt."""
+how = """The order in which the tyre function uses each field matched to the attribute order and values in `media/physics.zip` `surfaceTypes.xml`; arcade blend read 0 on asphalt in the oracle traces."""
+confidence = """probable"""
+source = """docs/specs/CAR_PHYSICS.md"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """List_SpringDamperPhysics, List_UpgradeCarBodyWeight"""
+name = """suspension rates per mass, inertia as a box"""
+what = """The car build multiplies the `List_SpringDamperPhysics` rates (`DefSpringRate`, `DefDampenBumpRate`, `DefDampenReboundRate`, `DampenBumpClamp`, `DampenReboundClamp`) by the car's mass: the spring rate at wheel+0x33C is the column × body mass (15.6 for 1,560 kg) in 100 N/m, and bump, rebound and the two clamps at +0x340 to +0x34C scale the same way. The body inertia is the mass as a solid box of `BlockDimX`, `BlockDimY`, `BlockDimZ` (m/12 × the sum of the other two dimensions squared): the world inertia at body+0x10 rotated into the body frame is diagonal and equals the three box values. body+0xA0 is the angular momentum, not the angular velocity: divided by the yaw inertia it matches the course rate of a full-lock circle within 1 %."""
+how = """Oracle traces of the stock R34 (ri05-aa1, ri05-aa2, m3-steer-1) against the merged database rows."""
+confidence = """confirmed"""
+note = """The anti-roll bar rate was not checked against `List_AntiSwayPhysics`."""
+source = """docs/specs/CAR_PHYSICS.md"""
+
+[[finding]]
+group = """Car dynamics"""
+base = """CCarDynamics +2240, +3904, +3932"""
+name = """launch, shift and steering timing (stock R34)"""
+what = """Measured with the seed's assists (automatic gears, traction control off): from rest at full throttle the clutch slips for about 0.55 s while the engine revs from idle to about 5,800 rpm; the box shifts up at about 0.96 × `RedlineRPM` (1→2 at 7,690 rpm, 67.8 km/h), and a shift takes 0.60 to 0.66 s from the shift state at +3932 changing to power back, about `ClutchInTime` + `GearShiftTime` + `ClutchOutTime`. Under braking it shifts down, and with the brake held at low speed it selects reverse (gear 0) before the stop. At walking pace the steer control steps straight to the stick, the yaw builds over 0.40 s (`SteerMaxAngle` / `SteerMaxAngVelTurning`) and the full-lock path radius, 3.37 m, gives a road-wheel angle of `SteerMaxAngle` within 1°. Full brake from 80 km/h: the wheels lock within 0.25 s and the ABS holds them, mean deceleration 8.57 m/s² in two runs."""
+how = """Oracle body traces of three routes (m3-seg-a, m3-seg-b1, m3-seg-b2: launch and brake; m3-steer-1: full lock at walking pace)."""
+confidence = """probable"""
+note = """One car; steering at speed and the assisted steering not traced."""
+source = """docs/specs/CAR_PHYSICS.md"""
