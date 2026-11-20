@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Spec ID | `FORMAT-SHOWROOM-LIGHTING` |
-| Status | draft for M1: the reflection cube, the light direction and colour, the tone-map, desaturation and grading constants, the drop shadow and the lamp glow's cause are established; the small glossy cube's construction, the exact composite order and the glow's post pass are open |
+| Status | partial (wrapped up early, playable first): the reflection cube, the light direction and colour, the tone-map, desaturation and grading constants, the drop shadow and the lamp glow's cause are established; the small glossy cube's construction, the exact composite order and the glow's post pass are open |
 | Written | 2026-11-19, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | `site/findings/rendering.toml` groups "Frame structure and views" ("Autoshow showroom car passes"), "Shaders, textures and models" ("Autoshow car environment maps", "Autoshow car shader parameters"), "Post effects" ("Autoshow final composite"), "Shadows" ("Autoshow drop shadow") and "Light glows" ("Autoshow lamp and highlight glow") |
 | Implements it | `shift-engine` `carview` showroom lighting, for plan item M1 (not yet) |
