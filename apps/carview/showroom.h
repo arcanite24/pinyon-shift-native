@@ -56,14 +56,46 @@ struct ShowroomPush {
 };
 static_assert(sizeof(ShowroomPush) == 128);
 
+// A world texture ready for upload: the untiled levels of a texture record
+// (WORLD-MATERIALS), sampled as sRGB when its format word says gamma.
+struct WorldTextureData {
+  uint32_t record = 0;
+  bool srgb = false;
+  cars::bake::Texture texture;
+};
+constexpr uint32_t kNoWorldTexture = 0xFFFFFFFFu;
+
 // Scenery drawn around the car (carview --drive): triangles in groups of
 // one flat colour each, with positions relative to an origin the caller
-// folds into set_world_transform (floats stay precise far from zero).
+// folds into set_world_transform (floats stay precise far from zero). With
+// materials (the textured world) the triangles also carry per corner a
+// normal, the surface and lightmap UVs and the vertex colour, and per
+// triangle a material.
 struct WorldTriangles {
   std::vector<std::array<float, 3>> positions;  // three per triangle
   std::vector<uint8_t> group;                   // per triangle: index into colours
   std::vector<std::array<float, 3>> colours;    // linear rgb per group
+  struct Material {
+    uint32_t texture = kNoWorldTexture;  // texture record of slot 0
+    uint8_t blend = 0;                   // world::Blend: opaque, coverage, alpha
+  };
+  std::vector<std::array<float, 3>> normals;
+  std::vector<std::array<float, 2>> uv0, uv1;
+  std::vector<std::array<uint8_t, 4>> vertex_colours;
+  std::vector<uint32_t> material;  // per triangle: index into materials
+  std::vector<Material> materials;
+  // Textures not uploaded before, to upload with this scenery.
+  std::vector<std::shared_ptr<const WorldTextureData>> textures;
 };
+
+// The textured world's vertex (world.vert).
+struct WorldVertex {
+  float position[3];
+  int8_t normal[4];
+  float uv0[2], uv1[2];
+  uint8_t colour[4];
+};
+static_assert(sizeof(WorldVertex) == 36);
 
 // WorldTriangles as draw data: one vertex per corner with the face normal,
 // indices, and one draw per colour. Plain CPU work with no Vulkan, so a
@@ -73,7 +105,12 @@ struct WorldGeometry {
   struct Draw {
     uint32_t first_index = 0, index_count = 0;
     ShowroomPush push{};
+    uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
+    uint8_t blend = 0;
   };
+  bool textured = false;
+  std::vector<WorldVertex> textured_vertices;  // textured: in place of vertices
+  std::vector<std::shared_ptr<const WorldTextureData>> textures;
   std::vector<cars::bake::Vertex> vertices;
   std::vector<uint32_t> indices;
   std::vector<Draw> draws;
@@ -125,6 +162,8 @@ class Showroom {
   struct StagedWorld {
     std::vector<WorldGeometry::Draw> draws;
     size_t triangles = 0;
+    bool textured = false;
+    std::vector<std::shared_ptr<const WorldTextureData>> textures;
     std::shared_ptr<Renderer::Buffer> vertices, indices;
     double origin_x = 0, origin_z = 0;  // what the positions are relative to
   };
@@ -142,6 +181,12 @@ class Showroom {
   size_t world_triangle_count() const { return world_triangles_; }
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
   void set_background(float r, float g, float b);
+  // The textured world's light, in the frame's space: towards the sun, up,
+  // and an exposure (WORLD-MATERIALS' sunDir is in the game frame).
+  void set_world_light(const float sun[3], const float up[3], float exposure);
+  // Whether the car is drawn (the world reference frame leaves it out).
+  void set_draw_car(bool draw) { draw_car_ = draw; }
+  size_t world_texture_count() const { return world_textures_.size(); }
 
   // Renders the car-coverage mask (every car draw, no depth test, at the
   // colour pass's MSAA) at the current frame: 255 where any sample of the
@@ -188,6 +233,10 @@ class Showroom {
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
   void record_world(VkCommandBuffer cmd);
+  // Uploads the textures not in the cache and gives each a material set.
+  bool upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
+                             std::string& error);
+  VkDescriptorSet world_set(uint32_t record) const;
   void update_frame(VkCommandBuffer cmd);
 
   Renderer& r_;
@@ -234,6 +283,17 @@ class Showroom {
   };
   std::unique_ptr<PendingWorld> pending_world_;
   void drop_pending_world();
+  // The textured world.
+  bool world_textured_ = false;
+  bool draw_car_ = true;
+  VkPipeline world_opaque_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
+  std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
+  std::map<uint32_t, VkDescriptorSet> world_sets_;   // by texture record
+  VkDescriptorSet world_white_set_ = VK_NULL_HANDLE;  // untextured materials
+  std::vector<VkDescriptorPool> world_pools_;
+  uint32_t world_pool_left_ = 0;
+  float world_sun_[4] = {0.3848f, 0.8754f, 0.2926f, 1}, world_up_[4] = {0, 1, 0, 1};
+  bool allocate_world_set(VkDescriptorSet& out, std::string& error);
 };
 
 }  // namespace carview

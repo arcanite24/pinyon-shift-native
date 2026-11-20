@@ -50,6 +50,18 @@ struct Reference {
 
 bool read_reference(const std::filesystem::path& path, Reference& out, std::string& error);
 
+// The world reference (schema shift-engine.world-reference.v1,
+// WORLD-MATERIALS "Reference frame"): the car references' conventions with
+// clip_from_world (file-frame render model positions to upright Direct3D
+// clip, half pixel removed) in place of clip_from_car.
+struct WorldReference {
+  uint32_t width = 0, height = 0;
+  float clip_from_world[16] = {};
+  float camera_position[3] = {};  // file frame
+  std::filesystem::path image;    // resolved against the JSON's folder
+};
+bool read_world_reference(const std::filesystem::path& path, WorldReference& out, std::string& error);
+
 // The car-space eye of a perspective clip matrix (the point that maps to
 // x = y = w = 0). False for a matrix without one.
 bool clip_eye(const float m[16], float eye[3]);

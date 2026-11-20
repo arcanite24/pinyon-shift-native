@@ -9,6 +9,8 @@
 #include "mask_frag_spv.h"
 #include "showroom_frag_spv.h"
 #include "showroom_vert_spv.h"
+#include "world_frag_spv.h"
+#include "world_vert_spv.h"
 
 namespace carview {
 
@@ -227,9 +229,11 @@ Showroom::~Showroom() {
   drop_pending_world();
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
+  for (auto& [record, t] : world_textures_) r_.destroy_image(t);
+  for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
-  for (VkPipeline p : {opaque_, glass_, mask_})
+  for (VkPipeline p : {opaque_, glass_, mask_, world_opaque_, world_coverage_, world_alpha_})
     if (p) vkDestroyPipeline(d, p, nullptr);
   if (pipeline_layout_) vkDestroyPipelineLayout(d, pipeline_layout_, nullptr);
   if (frame_layout_) vkDestroyDescriptorSetLayout(d, frame_layout_, nullptr);
@@ -1013,14 +1017,17 @@ bool Showroom::create_pipelines(std::string& error) {
   dynamic.pDynamicStates = dynamic_states;
 
   auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
-                   bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out) {
+                   bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out,
+                   VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
+                   bool coverage = false) {
     const VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert,
-         "main", nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
+         vertex ? vertex : vert, "main", nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
          fragment, "main", nullptr}};
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = samples;
+    multisample.alphaToCoverageEnable = coverage && samples != VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = depth_attachment;
     depth.depthWriteEnable = depth_write;
@@ -1049,7 +1056,7 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pNext = &rendering;
     info.stageCount = 2;
     info.pStages = stages;
-    info.pVertexInputState = &vertex_input;
+    info.pVertexInputState = input ? input : &vertex_input;
     info.pInputAssemblyState = &assembly;
     info.pViewportState = &viewport;
     info.pRasterizationState = &raster;
@@ -1064,6 +1071,34 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS) result = build(frag, r_.color_format_, r_.samples_, true, false, true, glass_);
   if (result == VK_SUCCESS)
     result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, false, mask_);
+  // The textured world (world.vert / world.frag): opaque, opaque with alpha
+  // to coverage, and blended with depth writes off.
+  VkShaderModule world_vert = VK_NULL_HANDLE, world_frag = VK_NULL_HANDLE;
+  if (result == VK_SUCCESS) result = make_module(kWorld_vert_spv, sizeof(kWorld_vert_spv), world_vert);
+  if (result == VK_SUCCESS) result = make_module(kWorld_frag_spv, sizeof(kWorld_frag_spv), world_frag);
+  VkVertexInputBindingDescription world_binding{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+  const VkVertexInputAttributeDescription world_attributes[5] = {
+      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
+      {1, 0, VK_FORMAT_R8G8B8A8_SNORM, offsetof(WorldVertex, normal)},
+      {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv0)},
+      {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv1)},
+      {4, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(WorldVertex, colour)}};
+  VkPipelineVertexInputStateCreateInfo world_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  world_input.vertexBindingDescriptionCount = 1;
+  world_input.pVertexBindingDescriptions = &world_binding;
+  world_input.vertexAttributeDescriptionCount = 5;
+  world_input.pVertexAttributeDescriptions = world_attributes;
+  if (result == VK_SUCCESS)
+    result = build(world_frag, r_.color_format_, r_.samples_, true, true, false, world_opaque_, world_vert,
+                   &world_input);
+  if (result == VK_SUCCESS)
+    result = build(world_frag, r_.color_format_, r_.samples_, true, true, false, world_coverage_, world_vert,
+                   &world_input, true);
+  if (result == VK_SUCCESS)
+    result = build(world_frag, r_.color_format_, r_.samples_, true, false, true, world_alpha_, world_vert,
+                   &world_input);
+  if (world_vert) vkDestroyShaderModule(r_.device_, world_vert, nullptr);
+  if (world_frag) vkDestroyShaderModule(r_.device_, world_frag, nullptr);
   vkDestroyShaderModule(r_.device_, vert, nullptr);
   vkDestroyShaderModule(r_.device_, frag, nullptr);
   vkDestroyShaderModule(r_.device_, mask, nullptr);
@@ -1175,7 +1210,7 @@ bool Showroom::upload(std::string& error) {
   hooks.before = [this](VkCommandBuffer cmd) { update_frame(cmd); };
   hooks.draw = [this](VkCommandBuffer cmd) {
     record_world(cmd);
-    record_draws(cmd, opaque_, glass_);
+    if (draw_car_) record_draws(cmd, opaque_, glass_);
   };
   hooks.clear[0] = 0.09f;
   hooks.clear[1] = 0.095f;
@@ -1247,7 +1282,64 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   for (const Draw* d : sorted) draw(*d);
 }
 
+namespace {
+
+int8_t snorm8(float v) { return int8_t(std::lround(std::clamp(v, -1.0f, 1.0f) * 127.0f)); }
+
+// The textured world: one vertex per corner, one draw per material, the
+// opaque materials first, then the cut-outs, then the blended ones.
+WorldGeometry build_textured_world(const WorldTriangles& world) {
+  WorldGeometry out;
+  out.textured = true;
+  out.textures = world.textures;
+  const size_t n = world.material.size();
+  std::vector<std::vector<uint32_t>> by_material(world.materials.size());
+  for (uint32_t t = 0; t < n; ++t)
+    if (world.material[t] < by_material.size()) by_material[world.material[t]].push_back(t);
+  std::vector<uint32_t> order(world.materials.size());
+  for (uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::stable_sort(order.begin(), order.end(),
+                   [&](uint32_t a, uint32_t b) { return world.materials[a].blend < world.materials[b].blend; });
+  out.textured_vertices.reserve(n * 3);
+  out.indices.reserve(n * 3);
+  for (uint32_t m : order) {
+    if (by_material[m].empty()) continue;
+    const auto& mat = world.materials[m];
+    WorldGeometry::Draw d;
+    d.first_index = uint32_t(out.indices.size());
+    // The flat colour of an untextured material: its triangles' surface class.
+    std::array<float, 3> tint{0.3f, 0.3f, 0.3f};
+    const uint8_t g = world.group[by_material[m][0]];
+    if (g < world.colours.size()) tint = world.colours[g];
+    for (uint32_t t : by_material[m]) {
+      for (int k = 0; k < 3; ++k) {
+        const size_t c = size_t(t) * 3 + size_t(k);
+        WorldVertex v{};
+        for (int i = 0; i < 3; ++i) v.position[i] = world.positions[c][size_t(i)];
+        for (int i = 0; i < 3; ++i) v.normal[i] = snorm8(world.normals[c][size_t(i)]);
+        for (int i = 0; i < 2; ++i) v.uv0[i] = world.uv0[c][size_t(i)], v.uv1[i] = world.uv1[c][size_t(i)];
+        for (int i = 0; i < 4; ++i) v.colour[i] = world.vertex_colours[c][size_t(i)];
+        out.indices.push_back(uint32_t(out.textured_vertices.size()));
+        out.textured_vertices.push_back(v);
+      }
+      ++out.triangles;
+    }
+    d.index_count = uint32_t(out.indices.size()) - d.first_index;
+    d.texture = mat.texture;
+    d.blend = mat.blend;
+    for (int k = 0; k < 3; ++k) d.push.tint[k] = tint[size_t(k)];
+    d.push.tint[3] = 1;
+    d.push.params[0] = float(mat.blend);
+    d.push.params[1] = mat.texture != kNoWorldTexture ? 1.0f : 0.0f;  // world.frag's kFlagTextured
+    out.draws.push_back(d);
+  }
+  return out;
+}
+
+}  // namespace
+
 WorldGeometry build_world(const WorldTriangles& world) {
+  if (!world.material.empty()) return build_textured_world(world);
   WorldGeometry out;
   const size_t n = world.group.size();
   if (n == 0) return out;
@@ -1318,8 +1410,13 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   world_draws_.clear();
   world_triangles_ = 0;
   if (geometry.indices.empty()) return true;
-  if (!r_.upload_buffer(geometry.vertices.data(), geometry.vertices.size() * sizeof(bake::Vertex),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, world_vertices_) ||
+  if (!upload_world_textures(geometry.textures, error)) return false;
+  world_textured_ = geometry.textured;
+  const void* vertex_data =
+      geometry.textured ? static_cast<const void*>(geometry.textured_vertices.data()) : geometry.vertices.data();
+  const VkDeviceSize vertex_bytes = geometry.textured ? geometry.textured_vertices.size() * sizeof(WorldVertex)
+                                                      : geometry.vertices.size() * sizeof(bake::Vertex);
+  if (!r_.upload_buffer(vertex_data, vertex_bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, world_vertices_) ||
       !r_.upload_buffer(geometry.indices.data(), geometry.indices.size() * sizeof(uint32_t),
                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT, world_indices_)) {
     error = "world buffers";
@@ -1334,6 +1431,8 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
   out = StagedWorld{};
   out.draws = std::move(geometry.draws);
   out.triangles = geometry.triangles;
+  out.textured = geometry.textured;
+  out.textures = std::move(geometry.textures);
   if (geometry.indices.empty()) return true;
   Renderer& r = r_;
   auto stage = [&](const void* data, VkDeviceSize size, std::shared_ptr<Renderer::Buffer>& buffer) {
@@ -1350,7 +1449,12 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     vkUnmapMemory(r.device_, buffer->memory);
     return true;
   };
-  if (!stage(geometry.vertices.data(), geometry.vertices.size() * sizeof(bake::Vertex), out.vertices) ||
+  const bool staged_vertices =
+      geometry.textured
+          ? stage(geometry.textured_vertices.data(), geometry.textured_vertices.size() * sizeof(WorldVertex),
+                  out.vertices)
+          : stage(geometry.vertices.data(), geometry.vertices.size() * sizeof(bake::Vertex), out.vertices);
+  if (!staged_vertices ||
       !stage(geometry.indices.data(), geometry.indices.size() * sizeof(uint32_t), out.indices)) {
     error = "world staging buffers";
     return false;
@@ -1374,6 +1478,8 @@ void Showroom::drop_pending_world() {
 bool Showroom::begin_world(StagedWorld staged, std::string& error) {
   // One copy in flight at a time: a newer world replaces a pending one.
   drop_pending_world();
+  // Textures are uploaded here, synchronously (ours: a first pass).
+  if (!upload_world_textures(staged.textures, error)) return false;
   auto p = std::make_unique<PendingWorld>();
   p->staged = std::move(staged);
   if (p->staged.vertices && p->staged.indices) {
@@ -1436,6 +1542,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
   if (world_vertices_.buffer) {
     world_draws_ = std::move(p.staged.draws);
     world_triangles_ = p.staged.triangles;
+    world_textured_ = p.staged.textured;
   } else {
     world_draws_.clear();
     world_triangles_ = 0;
@@ -1456,12 +1563,113 @@ void Showroom::set_world_transform(const float transform[16]) {
   for (auto& d : world_draws_) std::memcpy(d.push.model, transform, sizeof d.push.model);
 }
 
+void Showroom::set_world_light(const float sun[3], const float up[3], float exposure) {
+  for (int k = 0; k < 3; ++k) world_sun_[k] = sun[k], world_up_[k] = up[k];
+  world_up_[3] = exposure;
+}
+
+bool Showroom::allocate_world_set(VkDescriptorSet& out, std::string& error) {
+  if (world_pool_left_ == 0) {
+    constexpr uint32_t kSets = 256;
+    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSets * 3};
+    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.maxSets = kSets;
+    pool.poolSizeCount = 1;
+    pool.pPoolSizes = &size;
+    VkDescriptorPool created = VK_NULL_HANDLE;
+    VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &created), "world descriptor pool");
+    world_pools_.push_back(created);
+    world_pool_left_ = kSets;
+  }
+  VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  alloc.descriptorPool = world_pools_.back();
+  alloc.descriptorSetCount = 1;
+  alloc.pSetLayouts = &material_layout_;
+  VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &out), "world material set");
+  --world_pool_left_;
+  return true;
+}
+
+bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
+                                     std::string& error) {
+  auto write_set = [&](VkDescriptorSet set, VkImageView view) {
+    VkDescriptorImageInfo images[3];
+    VkWriteDescriptorSet writes[3];
+    for (uint32_t b = 0; b < 3; ++b) {
+      images[b] = {sampler_, b == 0 ? view : gpu_textures_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[b].dstSet = set;
+      writes[b].dstBinding = b;
+      writes[b].descriptorCount = 1;
+      writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[b].pImageInfo = &images[b];
+    }
+    vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
+  };
+  if (!world_white_set_) {
+    if (gpu_textures_.empty()) {
+      error = "no built-in white texture";
+      return false;
+    }
+    if (!allocate_world_set(world_white_set_, error)) return false;
+    write_set(world_white_set_, gpu_textures_[0].view);
+  }
+  for (const auto& t : textures) {
+    if (!t || world_textures_.count(t->record)) continue;
+    GpuTexture image;
+    std::string why;
+    if (!upload_texture(&t->texture, t->srgb, image, why)) {
+      r_.destroy_image(image);
+      notes_.push_back("world texture " + t->texture.name + ": " + why);
+      continue;  // drawn flat
+    }
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (!allocate_world_set(set, error)) {
+      r_.destroy_image(image);
+      return false;
+    }
+    write_set(set, image.view);
+    world_textures_[t->record] = image;
+    world_sets_[t->record] = set;
+  }
+  return true;
+}
+
+VkDescriptorSet Showroom::world_set(uint32_t record) const {
+  const auto it = world_sets_.find(record);
+  return it == world_sets_.end() ? VK_NULL_HANDLE : it->second;
+}
+
 void Showroom::record_world(VkCommandBuffer cmd) {
   if (world_draws_.empty() || material_sets_.empty()) return;
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+  if (world_textured_) {
+    VkPipeline bound = VK_NULL_HANDLE;
+    VkDescriptorSet bound_set = VK_NULL_HANDLE;
+    for (const auto& d : world_draws_) {
+      const VkPipeline pipeline = d.blend == 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : world_opaque_;
+      if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+      ShowroomPush push = d.push;
+      if (!set) {
+        set = world_white_set_;
+        push.params[1] = 0;  // the texture did not upload: flat
+      }
+      if (set != bound_set)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &(bound_set = set), 0,
+                                nullptr);
+      std::memcpy(push.model, world_transform_, sizeof push.model);
+      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+    }
+    return;
+  }
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &material_sets_[0], 0,
                           nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque_);

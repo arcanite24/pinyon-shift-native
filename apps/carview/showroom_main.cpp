@@ -23,6 +23,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -645,8 +648,8 @@ const char* kDriveRuns[][2] = {
     {"cruise", "0 0 0 0\n"},  // input from world::RoadFollower (needs --world)
 };
 
-// Flat colours per surface class (ours, until the world's materials are
-// decoded): road, terrain, water, other, prop.
+// Flat colours per surface class (ours; the textured world's materials
+// without a texture, and --flat-world): road, terrain, water, other, prop.
 const std::array<float, 3> kSurfaceColours[] = {
     {0.035f, 0.035f, 0.04f}, {0.11f, 0.13f, 0.05f}, {0.03f, 0.07f, 0.12f}, {0.30f, 0.28f, 0.25f}, {0.20f, 0.17f, 0.12f}};
 
@@ -659,7 +662,69 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.positions.push_back({float(p[0] - origin_x), p[1], float(p[2] - origin_z)});
   w.group.reserve(mesh.triangles());
   for (auto s : mesh.surface) w.group.push_back(uint8_t(s));
+  if (mesh.has_render_data()) {
+    w.normals = mesh.normals;
+    w.uv0 = mesh.uv0;
+    w.uv1 = mesh.uv1;
+    w.vertex_colours = mesh.colours;
+    w.material = mesh.material;
+    for (const auto& m : mesh.materials) w.materials.push_back({m.albedo, uint8_t(m.blend)});
+  }
   return w;
+}
+
+// The world textures decoded so far, by texture record. Only the gathers'
+// Prepare touches it, and gathers run one at a time.
+struct WorldTextureLoader {
+  std::set<uint32_t> done, failed;
+  std::set<uint32_t> cutout;  // textures whose base level has alpha under one half
+  size_t decoded = 0;
+  // Decodes the textures `w` names that are new; a texture that does not
+  // decode leaves its materials flat.
+  void load(world::World& colorado, WorldTriangles& w) {
+    for (auto& m : w.materials) {
+      if (m.texture == kNoWorldTexture || done.count(m.texture)) continue;
+      if (failed.count(m.texture)) {
+        m.texture = kNoWorldTexture;
+        continue;
+      }
+      fh1::WorldTexture t;
+      std::string e;
+      if (!colorado.read_texture(m.texture, t, &e)) {
+        failed.insert(m.texture);
+        m.texture = kNoWorldTexture;
+        continue;
+      }
+      if (fh1::world_texture_has_cutout(t)) cutout.insert(m.texture);
+      auto d = std::make_shared<WorldTextureData>();
+      d->record = m.texture;
+      d->srgb = t.format.gamma;
+      char name[40];
+      std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[m.texture].id);
+      d->texture.name = name;
+      d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
+      d->texture.swizzle = t.blocks.swizzle;
+      for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
+      done.insert(m.texture);
+      w.textures.push_back(std::move(d));
+      ++decoded;
+    }
+  }
+};
+
+// WORLD-MATERIALS' sunDir (daytime free-roam frame), in the game frame.
+constexpr float kSunGame[3] = {0.3848f, 0.8754f, 0.2926f};
+
+// A direction through the rotation part of a column-major matrix, normalised.
+void rotate_direction(const float m[16], const float v[3], float out[3]) {
+  double len = 0;
+  for (int r = 0; r < 3; ++r) {
+    out[r] = m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2];
+    len += double(out[r]) * out[r];
+  }
+  len = std::sqrt(len);
+  if (len > 0)
+    for (int r = 0; r < 3; ++r) out[r] = float(out[r] / len);
 }
 
 // The scenery's transform: world to model, after the origin's translation.
@@ -686,7 +751,8 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 //   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle|cruise
 //           | --script file] [--speed kmh] [--view chase|front] [--seconds N] [--every S]
 //           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]
-//            [--render-ground]] [--headless --out prefix.png [--hud]] [--size WxH]
+//            [--render-ground] [--flat-world] [--no-props] [--world-reference freeroam.json]]
+//           [--headless --out prefix.png [--hud]] [--size WxH]
 //
 // With --world the car drives on Colorado's collision (COLLISION.md `.fiz`
 // tiles; --render-ground: the earlier render-triangle stand-in) and starts
@@ -694,11 +760,20 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 // triangle nearest --near (x, z in the game frame, the file frame with z
 // negated), or at --spawn, dropped onto the ground. --run cruise drives
 // itself along the road at --speed (default 40 km/h).
+//
+// The scenery is drawn with its own textures (WORLD-MATERIALS' first-pass
+// recipe: slot 0 lit by the frame's sun and sky); --flat-world draws the
+// earlier flat colours per surface class, and --no-props leaves the
+// placed props out. --world-reference (headless)
+// gathers around a world reference's camera and renders that one frame
+// without the car at its matrix and size: <out> and, beside it, <out stem>_vs.png
+// with the reference image on the left.
 int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
-  bool near_given = false, have_spawn = false, render_ground = false, async_stream = false;
+  bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false;
+  std::filesystem::path world_reference_path;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
   double seconds = 6, every = 1;
@@ -725,6 +800,9 @@ int run_drive(int argc, char** argv) {
     else if (a == "--cache") cache_path = next();
     else if (a == "--speed") cruise_kmh = std::atof(next());
     else if (a == "--render-ground") render_ground = true;
+    else if (a == "--flat-world") flat_world = true;
+    else if (a == "--no-props") no_props = true;
+    else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
     else if (a == "--sound") sound_dir = next();
     else if (a == "--no-sound") sound = false;
@@ -748,7 +826,8 @@ int run_drive(int argc, char** argv) {
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground]] [--headless --out prefix.png [--hud] "
+                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] "
+                         "[--world-reference file.json]] [--headless --out prefix.png [--hud] "
                          "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH]\n");
     return 2;
   }
@@ -763,6 +842,24 @@ int run_drive(int argc, char** argv) {
     return 2;
   }
   if (headless && out.empty()) out = car + "_drive.png";
+  WorldReference world_reference;
+  if (!world_reference_path.empty()) {
+    if (!headless || world_dir.empty()) {
+      std::fprintf(stderr, "carview --drive: --world-reference needs --headless and --world\n");
+      return 2;
+    }
+    std::string e;
+    if (!read_world_reference(world_reference_path, world_reference, e)) {
+      std::fprintf(stderr, "carview: %s\n", e.c_str());
+      return 1;
+    }
+    // Gather around the camera (game frame: the file frame with z negated).
+    near_x = world_reference.camera_position[0];
+    near_z = -world_reference.camera_position[2];
+    near_given = true;
+    width = world_reference.width;
+    height = world_reference.height;
+  }
   std::string text, error;
   if (!script_path.empty()) {
     std::ifstream in(script_path, std::ios::binary);
@@ -850,6 +947,7 @@ int run_drive(int argc, char** argv) {
       world::World colorado;
       world::Collision collision;
       std::unique_ptr<world::Streamer> streamer;
+      WorldTextureLoader texture_loader;
       world::RoadFollower follower(cruise_kmh / 3.6);
       drive::Vec3 start{};
       double start_heading = 0;
@@ -882,7 +980,10 @@ int run_drive(int argc, char** argv) {
           if (!error.empty()) std::fprintf(stderr, "carview: note: %s\n", error.c_str());
           if (!warning.empty()) std::fprintf(stderr, "carview: note: %s", warning.c_str());
           error.clear();
-          streamer = std::make_unique<world::Streamer>(colorado, world::GatherOptions{}, 200,
+          world::GatherOptions gather_options;
+          gather_options.render_data = !flat_world;
+          gather_options.props = !no_props;
+          streamer = std::make_unique<world::Streamer>(colorado, gather_options, 200,
                                                        render_ground ? nullptr : &collision);
           // Gathers after the first run on a worker in the window (and with
           // --async-stream headless), with the scenery's draw data built
@@ -890,10 +991,13 @@ int run_drive(int argc, char** argv) {
           streamer->set_async(streamer_async);
           // The worker builds the scenery's draw data and stages it in
           // host-visible buffers; the swap only copies them on the GPU.
-          streamer->set_prepare([&showroom](const world::Mesh& mesh, double cx, double cz) {
+          streamer->set_prepare([&showroom, &colorado, &texture_loader](const world::Mesh& mesh, double cx,
+                                                                        double cz) {
             auto staged = std::make_shared<Showroom::StagedWorld>();
             std::string e;
-            if (!showroom.stage_world(build_world(scenery(mesh, cx, cz)), *staged, e)) staged.reset();
+            WorldTriangles triangles = scenery(mesh, cx, cz);
+            texture_loader.load(colorado, triangles);
+            if (!showroom.stage_world(build_world(triangles), *staged, e)) staged.reset();
             if (staged) {
               staged->origin_x = cx;
               staged->origin_z = cz;
@@ -965,6 +1069,11 @@ int run_drive(int argc, char** argv) {
         float m[16];
         scenery_transform(info, vehicle, showroom.world_origin_x(), showroom.world_origin_z(), m);
         showroom.set_world_transform(m);
+        const float up_game[3] = {0, 1, 0};
+        float sun[3], up[3];
+        rotate_direction(m, kSunGame, sun);
+        rotate_direction(m, up_game, up);
+        showroom.set_world_light(sun, up, 1.0f);
       };
       WheelPose poses[4];
       CameraPull camera_pull;
@@ -981,7 +1090,90 @@ int run_drive(int argc, char** argv) {
         const int margin = -8 * scale;
         renderer.set_overlay(std::move(img.rgba), img.width, img.height, margin, margin);
       };
+      if (status == 0 && streamer) {
+        const auto& st = streamer->stats();
+        std::printf("scenery: %zu triangles, %zu materials, %zu textures decoded (%zu failed), %zu models with the "
+                    "default UV scale, %zu submeshes without a material\n",
+                    streamer->mesh().triangles(), streamer->mesh().materials.size(), texture_loader.decoded,
+                    texture_loader.failed.size(), st.default_uv_models.size(), st.no_material);
+        for (const auto& n : showroom.notes()) std::fprintf(stderr, "carview: note: %s\n", n.c_str());
+        // The effects drawn without a texture, by triangles.
+        const auto& mesh = streamer->mesh();
+        std::map<std::string, size_t> flat;
+        for (size_t t = 0; t < mesh.material.size(); ++t) {
+          const auto& m = mesh.materials[mesh.material[t]];
+          if (m.albedo == world::kNoTexture || texture_loader.failed.count(m.albedo)) ++flat[m.effect];
+        }
+        for (const auto& [effect, n] : flat)
+          std::printf("  drawn flat (slot 0 has no texture file): %s, %zu triangles\n", effect.c_str(), n);
+        if (std::getenv("SHIFT_WORLD_DEBUG")) {
+          // Per material: triangles, median UV span per metre of edge.
+          std::map<uint32_t, std::vector<float>> spans;
+          for (size_t t = 0; t < mesh.material.size(); ++t) {
+            const auto& a = mesh.positions[t * 3];
+            const auto& b = mesh.positions[t * 3 + 1];
+            const double len = std::hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+            const auto& ua = mesh.uv0[t * 3];
+            const auto& ub = mesh.uv0[t * 3 + 1];
+            if (len > 0.5) spans[mesh.material[t]].push_back(float(std::hypot(ub[0] - ua[0], ub[1] - ua[1]) / len));
+          }
+          for (auto& [m, v] : spans) {
+            std::sort(v.begin(), v.end());
+            const auto& mm = mesh.materials[m];
+            std::printf("  material %u %s texture %u blend %d cut-out %d: %zu triangles, UV per metre %.4g\n", m,
+                        mm.effect.c_str(), mm.albedo, int(mm.blend), int(texture_loader.cutout.count(mm.albedo)),
+                        v.size(), v[v.size() / 2]);
+          }
+        }
+      }
       if (status != 0) {
+      } else if (!world_reference_path.empty()) {
+        // The reference frame: file-frame positions (the scenery's are in
+        // the game frame, relative to its origin), the reference's matrix
+        // flipped to Vulkan's clip y, no car.
+        const float ox = float(showroom.world_origin_x()), oz = float(showroom.world_origin_z());
+        const float to_file[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, ox, 0, -oz, 1};
+        showroom.set_world_transform(to_file);
+        const float up_game[3] = {0, 1, 0};
+        float sun[3], up[3];
+        rotate_direction(to_file, kSunGame, sun);
+        rotate_direction(to_file, up_game, up);
+        showroom.set_world_light(sun, up, 1.0f);
+        ShowroomFrame frame{};
+        std::memcpy(frame.view_projection, world_reference.clip_from_world, sizeof frame.view_projection);
+        for (int c = 0; c < 4; ++c) frame.view_projection[c * 4 + 1] = -frame.view_projection[c * 4 + 1];
+        std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
+        for (int k = 0; k < 3; ++k) frame.eye[k] = world_reference.camera_position[k];
+        frame.options[0] = 1;
+        showroom.set_draw_car(false);
+        showroom.set_frame(frame);
+        std::vector<uint8_t> rgba;
+        if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+          std::fprintf(stderr, "carview: %s\n", error.c_str());
+          status = 1;
+        } else {
+          for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+          const std::filesystem::path path(out);
+          if (!write_png(path.string(), width, height, 4, rgba.data())) status = 1;
+          // Side by side with the reference image.
+          int rw = 0, rh = 0, rc = 0;
+          unsigned char* ref = world_reference.image.empty()
+                                   ? nullptr
+                                   : stbi_load(world_reference.image.string().c_str(), &rw, &rh, &rc, 4);
+          if (ref && uint32_t(rw) == width && uint32_t(rh) == height) {
+            std::vector<uint8_t> both(size_t(width) * 2 * height * 4);
+            for (uint32_t y = 0; y < height; ++y) {
+              std::memcpy(&both[(size_t(y) * width * 2) * 4], ref + size_t(y) * width * 4, size_t(width) * 4);
+              std::memcpy(&both[(size_t(y) * width * 2 + width) * 4], &rgba[size_t(y) * width * 4], size_t(width) * 4);
+            }
+            const auto vs = path.parent_path() / (path.stem().string() + "_vs.png");
+            if (!write_png(vs.string(), width * 2, height, 4, both.data())) status = 1;
+            std::printf("world reference: %s and %s\n", path.string().c_str(), vs.string().c_str());
+          } else {
+            std::printf("world reference: %s (no reference image of the same size)\n", path.string().c_str());
+          }
+          if (ref) stbi_image_free(ref);
+        }
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));

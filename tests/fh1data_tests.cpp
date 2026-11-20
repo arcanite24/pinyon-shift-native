@@ -18,6 +18,7 @@
 #include "fh1data/inflate.h"
 #include "fh1data/placements.h"
 #include "fh1data/rmb.h"
+#include "fh1data/world_texture.h"
 #include "fh1data/xds.h"
 #include "fh1data/xmem.h"
 #include "reference.h"
@@ -280,6 +281,130 @@ std::vector<uint8_t> synthetic_model(uint32_t count, uint32_t stride,
   }
   w.u32(0xDEADBEEF);
   return w.bytes;
+}
+
+// WORLD-MATERIALS: the material records after the geometry, the uvOffsetScale
+// writes, the vertex layouts and element decoders.
+void test_render_materials() {
+  const std::vector<SyntheticSubmesh> subs = {{4, 2, {0, 1, 2}}, {4, 2, {2, 3, 4}}};
+  auto bytes = synthetic_model(5, 20, subs);
+  bytes.resize(bytes.size() - 4);  // the stand-in for the material section
+  BeWriter w;
+  for (int i = 0; i < 4; ++i) w.u32(1);
+  w.u32(2);  // materials
+  for (uint32_t m = 0; m < 2; ++m) {
+    w.u32(3);
+    w.u32(m);  // effect
+    w.u32(0);
+    w.u32(1);
+    w.u32(0);  // no vertex constants
+    w.u32(1);
+    w.u32(1);  // one pixel constant
+    for (float f : {4.0f, 4.0f, 2.0f, 2.0f}) w.f32(f);
+    w.u32(1);
+    w.u32(8);
+    for (int32_t s : {int32_t(m), -2, -2, -2, -1, -2, -2, 7}) w.u32(uint32_t(s));
+  }
+  w.u32(1);
+  w.u32(2);
+  w.name(std::string("shaders\\track\\h_diff_1.fx") + '\0');
+  w.name("shaders\\track\\h_road_diff3_norm1_noise_ao_lm.fx");
+  // Command section: filler, a decoy (second constant not all ones), then
+  // one write per submesh, then the run repeated.
+  for (uint32_t v : {0xC0012D00u, 0x12345678u, 0x000F4000u}) w.u32(v);
+  for (float f : {9.0f, 9.0f, 9.0f, 9.0f, 0.5f, 1.0f, 1.0f, 1.0f}) w.f32(f);
+  for (int run = 0; run < 2; ++run)
+    for (int s = 0; s < 2; ++s) {
+      w.u32(s == 0 ? 0x000F4000u : 0x001F4000u);
+      for (float f : {0.25f * float(s), -1.0f, 128.0f, 64.0f}) w.f32(f);
+      for (int k = 0; k < 4; ++k) w.f32(1.0f);
+      for (int k = 0; k < (s == 0 ? 8 : 24); ++k) w.u32(0);
+    }
+  bytes.insert(bytes.end(), w.bytes.begin(), w.bytes.end());
+  fh1::RenderModel model;
+  std::string error;
+  CHECK(fh1::parse_render_model(bytes, model, &error));
+  CHECK(fh1::parse_render_materials(bytes, model, &error));
+  CHECK(model.materials.size() == 2 && model.effects.size() == 2);
+  if (model.materials.size() == 2 && model.effects.size() == 2) {
+    CHECK(model.effects[0] == "H_DIFF_1" && model.effects[1] == "H_ROAD_DIFF3_NORM1_NOISE_AO_LM");
+    CHECK(model.materials[1].effect == 1 && model.materials[1].slots.size() == 8);
+    CHECK(model.materials[1].slots[0] == 1 && model.materials[1].slots[4] == -1 && model.materials[1].slots[7] == 7);
+    CHECK(model.materials[0].pixel_constants.size() == 1 && model.materials[0].pixel_constants[0][2] == 2.0f);
+  }
+  CHECK(model.uv_offset_scale.size() == 2);
+  if (model.uv_offset_scale.size() == 2) {
+    CHECK(model.uv_offset_scale[0][0] == 0.0f && model.uv_offset_scale[0][2] == 128.0f);
+    CHECK(model.uv_offset_scale[1][0] == 0.25f && model.uv_offset_scale[1][3] == 64.0f);
+  }
+  // A truncated material section is an error, not a crash.
+  bytes.resize(model.geometry_end + 30);
+  CHECK(!fh1::parse_render_materials(bytes, model, &error) && model.materials.empty());
+
+  // Layouts: the stride table and an exception.
+  auto road = fh1::rmb_vertex_layout("H_ROAD_DIFF3_NORM1_NOISE_AO_LM", 36);
+  CHECK(road.known && road.normal == 12 && road.texcoord[2] == 24 && road.tangent == 28 && road.colour == 32);
+  CHECK(road.last_texcoord() == 2);
+  auto lake = fh1::rmb_vertex_layout("LAKE_ANIM_NORM_OPAC_REFL_3", 32);
+  CHECK(lake.texcoord[0] == 24 && lake.texcoord[2] == 16 && lake.colour == 20 && lake.tangent == 28);
+  CHECK(fh1::rmb_vertex_layout("TREE_DIFF_OPAC_DIRLIGHT_2_2SD", 24).normal == 16);
+  CHECK(!fh1::rmb_vertex_layout("H_DIFF_1", 40).known);
+  // NORMAL: x in bits 0-9; 511 is 1, the two's complement 0x201 is -1.
+  const uint32_t word = 511u | (0x201u << 10) | (0u << 20);
+  const uint8_t nb[4] = {uint8_t(word >> 24), uint8_t(word >> 16), uint8_t(word >> 8), uint8_t(word)};
+  const auto nv = fh1::rmb_normal(nb);
+  CHECK(nv[0] == 1.0f && nv[1] == -1.0f && nv[2] == 0.0f);
+  const uint8_t tc[4] = {0xFF, 0xFF, 0x00, 0x00};
+  const auto t = fh1::rmb_texcoord(tc);
+  CHECK(t[0] == 1.0f && t[1] == 0.0f);
+  const uint8_t col[4] = {255, 10, 20, 30};
+  CHECK((fh1::rmb_colour(col) == std::array<uint8_t, 4>{10, 20, 30, 255}));
+}
+
+// WORLD-MATERIALS: the format word, the trimmed last region, a .bix pair
+// and a CAFF texture, and the cut-out scan.
+void test_world_textures() {
+  const auto f = fh1::world_texture_format(0x1A207F52u);
+  CHECK(f.format == 18 && f.endian == 1 && f.tiled && f.gamma);
+  CHECK(!fh1::world_texture_format(0x00000152u).gamma);
+  // A 256 x 256 DXT1 with 9 levels: levels 0-3 in their own regions, 4-8
+  // in the tail, which a square DXT1 trims to 4,096 bytes.
+  const uint32_t dxt1 = 18 | 1 << 6 | 1 << 8 | 0x3F << 9;
+  const auto h = fh1::world_xds_header(256, 256, 9, dxt1);
+  CHECK((fh1::xds_trimmed_regions(h) == std::vector<size_t>{32768, 8192, 8192, 8192, 4096}));
+  // A 2:1 DXT5 tail is 8,192.
+  const auto r5 = fh1::xds_trimmed_regions(fh1::world_xds_header(256, 128, 9, 20 | 1 << 6 | 1 << 8));
+  CHECK(!r5.empty() && r5.back() == 8192);
+  // The .bix pair: header and chain, and the base apart.
+  BeWriter w;
+  w.bytes = {'B', 'I', 'X', '1'};
+  for (uint32_t v : {256u, 256u, 9u, dxt1, 32768u + 3 * 8192u + 4096u, 32768u}) w.u32(v);
+  w.bytes.resize(w.bytes.size() + 3 * 8192 + 4096, 0);
+  std::vector<uint8_t> base(32768, 0);
+  // The first block of the base: a three-colour DXT1 block with index 3
+  // (transparent), byte-swapped in 16-bit words as stored.
+  const uint8_t block[8] = {0x00, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF};  // c0 0, c1 1 once swapped
+  std::memcpy(base.data(), block, 8);
+  fh1::WorldTexture tex;
+  std::string error;
+  bool exact = false;
+  CHECK(fh1::decode_bix(w.bytes, base, tex, &error, &exact) && exact);
+  CHECK(tex.blocks.levels.size() == 9 && tex.blocks.format == fh1::XdsBlockFormat::kBc1);
+  CHECK(tex.blocks.levels[0].blocks.size() == 64 * 64 * 8 && tex.blocks.levels[8].width == 1);
+  CHECK(tex.format.gamma && fh1::world_texture_has_cutout(tex));
+  // One byte short of the chain: not exact; the levels before it remain.
+  auto short_bix = w.bytes;
+  short_bix.pop_back();
+  CHECK(fh1::decode_bix(short_bix, base, tex, &error, &exact) && !exact && tex.blocks.levels.size() == 4);
+  // A CAFF texture all in the tail (32 x 16): one full 8,192-byte region.
+  std::vector<uint8_t> caff(0x2B0 + 8192, 0);
+  std::memcpy(caff.data(), "CAFF", 4);
+  for (int i = 0; i < 4; ++i) caff[0x1A8 + size_t(i)] = uint8_t(dxt1 >> (24 - 8 * i));
+  caff[0x1B5] = 32;
+  caff[0x1B7] = 16;
+  caff[0x1C0] = 6;
+  CHECK(fh1::decode_caff(caff, tex, &error, &exact) && exact && tex.blocks.levels.size() == 6);
+  CHECK(!fh1::world_texture_has_cutout(tex));
 }
 
 void test_render_model() {
@@ -1105,6 +1230,8 @@ int main() {
   test_tiled_offset();
   test_archive_wrapped_count();
   test_render_model();
+  test_render_materials();
+  test_world_textures();
   test_half();
   test_object_table();
   test_pgeo();

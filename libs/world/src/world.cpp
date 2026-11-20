@@ -101,6 +101,47 @@ World::~World() = default;
 
 size_t World::placement_count() const { return impl_->have_props ? impl_->props.placements.size() : 0; }
 
+const std::vector<fh1::PvsTexture>& World::textures() const { return impl_->table.textures; }
+
+bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* error) {
+  if (record >= impl_->table.textures.size()) {
+    if (error) *error = "no texture record " + std::to_string(record);
+    return false;
+  }
+  const fh1::PvsTexture& t = impl_->table.textures[record];
+  char name[32];
+  std::vector<uint8_t> a, b;
+  bool exact = false, ok = false;
+  if (t.type == fh1::kPvsTextureBix) {
+    std::snprintf(name, sizeof name, "_0x%08x.bix", t.id);
+    std::string base = name;
+    base.insert(base.size() - 4, "_b");
+    ok = impl_->source.read(name, a, error) && impl_->source.read(base, b, error) &&
+         fh1::decode_bix(a, b, out, error, &exact);
+  } else if (t.type == fh1::kPvsTextureCaff) {
+    std::snprintf(name, sizeof name, "_0x%08x.bin", t.id);
+    ok = impl_->source.read(name, a, error) && fh1::decode_caff(a, out, error, &exact);
+  } else {
+    if (error) *error = "texture record type " + std::to_string(t.type) + " has no file";
+    return false;
+  }
+  if (ok && !exact) {
+    if (error) *error = std::string(name) + ": sizes do not fit the layout";
+    return false;
+  }
+  return ok;
+}
+
+Blend effect_blend(const std::string& e) {
+  auto starts = [&](const char* prefix) { return e.rfind(prefix, 0) == 0; };
+  if ((starts("H_ROAD") && e.find("_BLEND_") != std::string::npos) || starts("H_VBLND_DECAL") || starts("LAKE"))
+    return Blend::kAlpha;
+  // Props and trees drew with alpha to coverage in the frame; other effects
+  // named _OPAC (vertex-blend cut-outs) are given it too (ours).
+  if (starts("H_DIFF") || starts("TREE_") || e.find("_OPAC") != std::string::npos) return Blend::kCoverage;
+  return Blend::kOpaque;
+}
+
 bool World::open(const fs::path& colorado, const fs::path& cache, std::string* error) {
   const fs::path zip = colorado / "bin.zip";
   if (!impl_->source.open(zip, error)) return false;
@@ -181,9 +222,22 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   GatherStats& st = stats ? *stats : local;
   out = {};
 
+  std::map<std::tuple<std::string, uint32_t>, uint32_t> material_index;
   auto add_triangles = [&](const fh1::RenderModel& model, uint32_t model_index, const fh1::Placement* placement,
                            const std::map<std::string, int>* lowest) {
+    // The model's texture list (WORLD-MATERIALS): list j for member j + 1.
+    const std::vector<uint32_t>* texture_list = nullptr;
+    if (options.render_data && model_index < models_.size()) {
+      const std::string& name = models_[model_index].name;
+      const unsigned long member = name.size() > 17 ? std::strtoul(name.c_str() + 12, nullptr, 10) : 0;
+      if (member >= 1 && member - 1 < impl_->table.model_textures.size())
+        texture_list = &impl_->table.model_textures[member - 1];
+      if (model.uv_offset_scale.empty()) st.default_uv_models.insert(name);
+    }
+    size_t submesh_number = 0;  // in file order, for uvOffsetScale
     for (const auto& o : model.objects) {
+      const size_t first_submesh = submesh_number;
+      submesh_number += o.submeshes.size();
       if (!placement && skipped_object(o.name)) {
         ++st.skipped_far;
         continue;
@@ -207,16 +261,79 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         const auto q = placement->apply(p);
         return std::array<float, 3>{float(q[0]), float(q[1]), float(-q[2])};
       };
-      for (const auto& s : o.submeshes) {
+      for (size_t si = 0; si < o.submeshes.size(); ++si) {
+        const auto& s = o.submeshes[si];
         if (skipped_material(s.material)) continue;
         const uint8_t solid = !placement && ground_object(o.name);
         const Surface surface = placement ? Surface::kProp : classify(o.name, s.material);
         const auto tri = fh1::rmb_triangle_list(s);
+        // The render data: the material, the vertex layout and the UV scale.
+        uint32_t mat = kNoTexture;
+        fh1::RmbVertexLayout layout;
+        std::array<float, 4> uv{0, 0, 1, 1};
+        int lightmap = -1;
+        if (options.render_data) {
+          if (s.material_index < model.materials.size()) {
+            const fh1::RmbMaterial& m = model.materials[s.material_index];
+            MeshMaterial mm;
+            mm.effect = model.effects[m.effect];
+            mm.blend = effect_blend(mm.effect);
+            const int32_t slot0 = m.slots.empty() ? -2 : m.slots[0];
+            if (slot0 >= 0 && texture_list && size_t(slot0) < texture_list->size()) {
+              const uint32_t record = (*texture_list)[size_t(slot0)];
+              if (record < impl_->table.textures.size() &&
+                  (impl_->table.textures[record].type == fh1::kPvsTextureBix ||
+                   impl_->table.textures[record].type == fh1::kPvsTextureCaff))
+                mm.albedo = record;
+            }
+            if (mm.effect.rfind("LAKE", 0) == 0) mm.albedo = kNoTexture;  // slot 0 is a cube map there
+            auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
+            if (fresh) out.materials.push_back(mm);
+            mat = it->second;
+            layout = fh1::rmb_vertex_layout(mm.effect, o.stride);
+            if (mm.effect.ends_with("_LM") || mm.effect.find("_AO") != std::string::npos)
+              lightmap = layout.last_texcoord();
+            if (first_submesh + si < model.uv_offset_scale.size()) uv = model.uv_offset_scale[first_submesh + si];
+          } else {
+            ++st.no_material;
+            auto [it, fresh] = material_index.emplace(std::make_tuple(std::string(), kNoTexture),
+                                                      uint32_t(out.materials.size()));
+            if (fresh) out.materials.push_back(MeshMaterial{});
+            mat = it->second;
+          }
+        }
+        auto corner = [&](uint32_t i) {
+          out.positions.push_back(position(i));
+          if (!options.render_data) return;
+          const uint8_t* v = &o.vertices[size_t(i) * o.stride];
+          std::array<float, 3> n{0, 0, 0};
+          if (layout.normal >= 0) {
+            const auto f = fh1::rmb_normal(v + layout.normal);
+            std::array<double, 3> g{f[0], f[1], f[2]};
+            if (placement) {
+              const auto& l = placement->linear;
+              for (int r = 0; r < 3; ++r) g[size_t(r)] = l[size_t(r)][0] * f[0] + l[size_t(r)][1] * f[1] + l[size_t(r)][2] * f[2];
+            }
+            const double len = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+            if (len > 0) n = {float(g[0] / len), float(g[1] / len), float(-g[2] / len)};
+          }
+          out.normals.push_back(n);
+          auto texcoord = [&](int k) {
+            if (k < 0 || layout.texcoord[size_t(k)] < 0) return std::array<float, 2>{0, 0};
+            const auto t = fh1::rmb_texcoord(v + layout.texcoord[size_t(k)]);
+            return std::array<float, 2>{uv[0] + uv[2] * t[0], uv[1] + uv[3] * t[1]};
+          };
+          out.uv0.push_back(texcoord(0));
+          out.uv1.push_back(texcoord(lightmap));
+          out.colours.push_back(layout.colour >= 0 ? fh1::rmb_colour(v + layout.colour)
+                                                   : std::array<uint8_t, 4>{255, 255, 255, 255});
+        };
         size_t added = 0;
         for (size_t t = 0; t + 2 < tri.size(); t += 3) {
-          out.positions.push_back(position(tri[t]));
-          out.positions.push_back(position(tri[t + 1]));
-          out.positions.push_back(position(tri[t + 2]));
+          corner(tri[t]);
+          corner(tri[t + 1]);
+          corner(tri[t + 2]);
+          if (options.render_data) out.material.push_back(mat);
           out.surface.push_back(surface);
           out.model.push_back(model_index);
           out.ground.push_back(solid);
@@ -245,6 +362,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     if (!impl_->source.read(m.name, bytes, &e) || !fh1::parse_render_model(bytes, model, &e)) {
       if (error) *error = m.name + ": " + e;
       return false;
+    }
+    if (options.render_data) {
+      std::string ignored;
+      fh1::parse_render_materials(bytes, model, &ignored);  // without them the model draws flat
     }
     selected.emplace_back(i, std::move(model));
   }

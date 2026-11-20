@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -72,6 +73,43 @@ int main() {
               w.placement_count());
   CHECK(w.models().size() == 14291 && ok == 14291 && world_space == 11898);
   CHECK(w.placement_count() > 0);
+
+  // WORLD-MATERIALS: the texture records by type (4 .bix, 0 CAFF, 1 and 3
+  // no file), and a gather with its render data around the dumped camera:
+  // every slot-0 texture decodes and every vertex layout is known.
+  {
+    size_t types[5] = {};
+    for (const auto& t : w.textures())
+      if (t.type < 5) ++types[t.type];
+    std::printf("texture records %zu: %zu .bix, %zu CAFF, %zu type 1, %zu type 3\n", w.textures().size(), types[4],
+                types[0], types[1], types[3]);
+    CHECK(w.textures().size() == 19613 && types[4] == 5234 && types[0] == 2965 && types[1] == 11409 && types[3] == 5);
+    world::GatherOptions o;
+    o.render_data = true;
+    world::Mesh mesh;
+    world::GatherStats gs;
+    CHECK(w.gather(world::kDumpCameraX, world::kDumpCameraZ, o, mesh, &gs, &error));
+    CHECK(mesh.material.size() == mesh.triangles() && mesh.uv0.size() == mesh.positions.size() &&
+          mesh.normals.size() == mesh.positions.size());
+    std::set<uint32_t> textures;
+    size_t untextured = 0;
+    for (const auto& m : mesh.materials) {
+      if (m.albedo != world::kNoTexture) textures.insert(m.albedo);
+      else ++untextured;
+    }
+    size_t decoded = 0;
+    for (uint32_t r : textures) {
+      fh1::WorldTexture t;
+      std::string e;
+      if (w.read_texture(r, t, &e) && t.blocks.levels.size() == t.levels) ++decoded;
+      else std::printf("  texture record %u: %s\n", r, e.c_str());
+    }
+    std::printf("render data: %zu materials (%zu without a slot-0 file), %zu textures, %zu decode; %zu models with "
+                "the default UV scale, %zu submeshes without a material\n",
+                mesh.materials.size(), untextured, textures.size(), decoded, gs.default_uv_models.size(),
+                gs.no_material);
+    CHECK(!textures.empty() && decoded == textures.size() && gs.no_material == 0);
+  }
 
   // The dumped camera, game frame (file frame 1999.0, 145.4, -962.9).
   const double x = world::kDumpCameraX, z = world::kDumpCameraZ;

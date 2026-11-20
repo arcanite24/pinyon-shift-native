@@ -142,7 +142,12 @@ const RenderModel* PropModels::model(uint32_t member, std::string* error) {
     why = name + ": no such member";
   } else if (source_.read(name, bytes, &why)) {
     auto m = std::make_unique<RenderModel>();
-    if (parse_render_model(bytes, *m, &why)) slot = std::move(m);
+    // The materials are optional: a model without them still draws flat.
+    if (parse_render_model(bytes, *m, &why)) {
+      std::string ignored;
+      parse_render_materials(bytes, *m, &ignored);
+      slot = std::move(m);
+    }
     else why = name + ": " + why;
   }
   if (!slot) {

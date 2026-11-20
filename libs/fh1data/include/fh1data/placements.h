@@ -39,6 +39,15 @@ struct PvsObject {
   uint16_t field_16 = 0;
 };
 
+// A texture record of the 28-byte table (WORLD-MATERIALS, "From a texture
+// slot to a file"): the texture ID names its files.
+struct PvsTexture {
+  uint32_t id = 0;    // _0x%08X.bix with _0x%08X_B.bix (type 4), _0x%08X.bin (type 0)
+  uint8_t flag = 0;   // 1, or 0 on 75 records (not needed to find the file)
+  uint8_t type = 0;   // 4 .bix pair, 0 CAFF .bin, 1 and 3 no file
+};
+enum : uint8_t { kPvsTextureCaff = 0, kPvsTextureNone = 1, kPvsTexturePlaceholder = 3, kPvsTextureBix = 4 };
+
 struct PvsObjectTable {
   uint32_t version = 0;               // 50 on the disc
   size_t record_table_offset = 0;     // the u32 count of the 28-byte records
@@ -46,6 +55,11 @@ struct PvsObjectTable {
   std::vector<std::string> shaders;   // the track shader names
   size_t object_table_offset = 0;     // the u32 count of the 18-byte records
   std::vector<PvsObject> objects;     // indexed by object ID
+  std::vector<PvsTexture> textures;   // the 28-byte records, by record index
+  // The per-model texture lists after the object table: list j belongs to
+  // render model member j + 1; a material's slot value i is entry i.
+  std::vector<std::vector<uint32_t>> model_textures;
+  std::string texture_list_error;     // why the lists did not read (they are then empty)
 };
 
 // Reads the 28-byte record table, the shader names and the object table.
@@ -54,6 +68,8 @@ struct PvsObjectTable {
 // layout holds: a count n, then n records numbered 0..n-1 whose two f32 are
 // 1.0 and whose ten reserved bytes are zero, then a counted list of
 // printable names, then the object count and its records inside the file.
+// Then the per-model texture lists (a count, three u32 2, 0, 1, and per
+// list: k effect indices, a 15-float box, t texture record indices).
 bool parse_object_table(std::span<const uint8_t> data, PvsObjectTable& out, std::string* error);
 
 // --- kind-7 .pgeo tiles -------------------------------------------------------

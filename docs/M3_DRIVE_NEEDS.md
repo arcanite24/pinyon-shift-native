@@ -90,8 +90,10 @@ the code, and meant to be swapped out:
   negated). The car's body frame has the game frame's handedness:
   AUTOSHOW_REFERENCE's `car_to_world` negates the model frame's z, as the
   model-to-body pose does. libs/world negates z once, as it gathers.
-- **Drawing:** `carview --drive --world` draws the streamed triangles in
-  flat colours per surface class around the posed car, with a chase
+- **Drawing:** `carview --drive --world` draws the streamed triangles
+  with their own textures (WORLD_MATERIALS.md's first-pass recipe; flat
+  colours per surface class with `--flat-world`) around the posed car,
+  with a chase
   camera that pulls in when a ray from its look-at point to the eye meets
   the collision (and eases back out). Headless, it writes frames.
   Windowed (keyboard or gamepad, speed in the title), it is written but

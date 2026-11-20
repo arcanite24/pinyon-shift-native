@@ -29,9 +29,9 @@ readers, and a car drawn from the game's own files.
 
 | Path | What |
 | --- | --- |
-| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms), Colorado render models `coloradoout.NNNNN.rmb.bin` (WORLD-GEOMETRY: header box, mesh objects, raw vertices with the position decoded, strip or list submeshes, 16- or 32-bit indices), and the placements of its local-space models (WORLD-GEOMETRY: the object table in `Ribbon_00/Colorado_00.pvs`, kind-7 `.pgeo` tiles with model records, groups and 96-byte instances, `.pvsz` zone records, LOD sets) |
+| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms), Colorado render models `coloradoout.NNNNN.rmb.bin` (WORLD-GEOMETRY: header box, mesh objects, raw vertices with the position decoded, strip or list submeshes, 16- or 32-bit indices), and the placements of its local-space models (WORLD-GEOMETRY: the object table in `Ribbon_00/Colorado_00.pvs`, kind-7 `.pgeo` tiles with model records, groups and 96-byte instances, `.pvsz` zone records, LOD sets), and Colorado's materials and textures (WORLD-MATERIALS: material records, `uvOffsetScale`, vertex layouts per effect, the `.pvs` texture records and per-model lists, `.bix` pairs and CAFF textures with the trimmed last region) |
 | `libs/data` | Game database rules (SPEC-EVENT-RESTRICTIONS): decodes and re-encodes `EventRestrictions.Value` strings into per-bucket restriction sets, and tests a car against a set |
-| `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models; `--props` the object table, `.pgeo` tiles and `.pvsz` zones |
+| `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models; `--props` the object table, `.pgeo` tiles and `.pvsz` zones; `--world-materials` the materials, UV scales, vertex layouts and every world texture against WORLD_MATERIALS.md's counts |
 | `apps/event-restrictions-corpus` | Decodes every `EventRestrictions` row of the player's `media/db/gamedb.slt` (opened read-only) and checks each round-trips; prints counts only |
 | `libs/cars` | Cars (FORMAT-CARS): the install (disc, v4 title update, installed DLC packages in priority order), the merged car database (v4 `gamedb.slt` plus each package's patch databases), and the baked format `.shiftbake` with its writer and reader |
 | `apps/car-corpus` | Reproduces every count of FORMAT-CARS's Tests section over the player's files (`--check` fails on a mismatch) |
@@ -86,6 +86,13 @@ traction control off. The scenery and the collision stream in the
 background as you drive. The first run builds `out\world\colorado.index`
 (about 10 s before the window opens). Any car of the bake works with
 `--car` (its media name, e.g. `FIA_500AbarthSS_10`).
+
+The scenery is drawn with its own textures (WORLD_MATERIALS.md's first
+pass: each material's main texture lit by the sun and sky of the
+reference frame; terrain shows its first layer only, so hills read as
+grey rock). Textures decode as the world streams in, so a regather can
+stall the window briefly. `--flat-world` draws the earlier flat colours,
+`--no-props` leaves the placed props out.
 
 | | Keyboard | Gamepad |
 | --- | --- | --- |
@@ -188,6 +195,16 @@ carview --game-root <game> --car AST_DB5Vantage_64 --headless --out car.png --si
 # Render models: the archive's directory, then every model parsed
 fh1data-corpus --names <game>/media/tracks/colorado/bin.zip [extracted-dir]
 fh1data-corpus --render-models <game>/media/tracks/colorado/bin.zip
+
+# World materials and textures (WORLD_MATERIALS.md): material records,
+# uvOffsetScale writes, vertex layouts, texture records and every .bix
+# pair and CAFF texture decoded (about 15 s)
+fh1data-corpus --world-materials <game>/media/tracks/colorado/bin.zip <game>/media/tracks/colorado/Ribbon_00/Colorado_00.pvs
+
+# The textured world at the world reference's camera, without the car,
+# beside the capture (out.png and out_vs.png; keep them local)
+carview --drive --headless --bake out/bake --car NIS_SkylineGTRVSpecII_02 --world <game>/media/tracks/colorado \
+    --world-reference <refs>/freeroam.json --out out/world-ref/freeroam.png [--no-props]
 
 # Prop placements: object table, kind-7 .pgeo tiles, .pvsz zones, and the
 # placements whose translation lies in a box (x0 z0 x1 z1, file frame)

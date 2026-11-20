@@ -4,9 +4,11 @@
 // Big-endian and packed (no alignment after the first name). A header with
 // a box and an object count, then one mesh object per vertex format, each
 // holding the GPU vertex buffer and its submeshes (one index list and one
-// material each). Material and shader records follow the last object; they
-// are not decoded, the reader stops at the end of the geometry.
-// Spec: WORLD-GEOMETRY (horizon1-recomp docs/formats/WORLD_GEOMETRY.md).
+// material each). Material and shader records follow the last object
+// (parse_render_materials).
+// Spec: WORLD-GEOMETRY (horizon1-recomp docs/formats/WORLD_GEOMETRY.md);
+// WORLD-MATERIALS (docs/formats/WORLD_MATERIALS.md) for the materials, the
+// vertex layout and the texture coordinates' uvOffsetScale.
 #pragma once
 
 #include <array>
@@ -44,6 +46,27 @@ struct RmbObject {
   std::array<float, 3> position(uint32_t i) const;
 };
 
+// One material record (WORLD-MATERIALS, "Material records").
+struct RmbMaterial {
+  uint32_t effect = 0;  // index into RenderModel::effects
+  std::vector<std::array<float, 4>> vertex_constants, pixel_constants;
+  std::vector<int32_t> slots;  // per texture slot: model texture list entry, -2 none, -1 run time
+};
+
+// Where each vertex element sits (byte offsets, -1 absent).
+struct RmbVertexLayout {
+  int normal = -1, tangent = -1, colour = -1;
+  std::array<int, 3> texcoord{-1, -1, -1};
+  bool known = false;  // a layout of the stride table or its exceptions
+  // The last texture coordinate present: the lightmap and AO coordinate of
+  // _LM and _AO effects (probable); -1 when there is none.
+  int last_texcoord() const {
+    for (int i = 2; i >= 0; --i)
+      if (texcoord[size_t(i)] >= 0) return i;
+    return -1;
+  }
+};
+
 struct RenderModel {
   uint32_t kind = 0;                 // 6
   std::array<float, 3> box_min{}, box_max{};
@@ -51,6 +74,12 @@ struct RenderModel {
   std::array<uint32_t, 4> header_words{};  // 4, 4, 0, 1; meaning unknown
   std::vector<RmbObject> objects;
   size_t geometry_end = 0;           // offset just past the last index list's trailer
+  // parse_render_materials:
+  std::vector<RmbMaterial> materials;
+  std::vector<std::string> effects;  // effect names, upper case: H_ROAD_DIFF3_NORM1_NOISE_AO_LM
+  // Per submesh in file order (object by object): offset u, v, scale u, v;
+  // empty when the model holds no uvOffsetScale writes.
+  std::vector<std::array<float, 4>> uv_offset_scale;
 };
 
 // Parses the geometry of a render model. Returns false with a reason on any
@@ -67,6 +96,26 @@ bool parse_render_model(std::span<const uint8_t> data, RenderModel& out, std::st
 // (100 m and 400 m do not).
 constexpr float kRmbLocalRadius = 200.0f;
 bool rmb_is_world_space(const RenderModel& model);
+
+// Reads the materials, the effect path list and the uvOffsetScale writes of
+// the command section after the geometry (parse_render_model first). The
+// writes are PM4 type-0 writes of 16 or 32 dwords to vertex constant c0
+// (header 0x000F4000 or 0x001F4000) whose second constant is (1, 1, 1, 1);
+// the first one per submesh is taken.
+bool parse_render_materials(std::span<const uint8_t> data, RenderModel& model, std::string* error);
+
+// The vertex layout of an effect (upper-case name) at a stride: the spec's
+// stride table and its exceptions by effect name. Position is bytes 0-11.
+RmbVertexLayout rmb_vertex_layout(const std::string& effect, uint32_t stride);
+
+// Element decoders. NORMAL and TANGENT: a big-endian u32, x bits 0-9, y
+// 10-19, z 20-29, each a signed 10-bit value / 511. TEXCOORD: two
+// big-endian u16, u first, as a fraction of 65,535 (before uvOffsetScale).
+// COLOR: four bytes in memory order A, R, G, B (probable); returned as
+// R, G, B, A.
+std::array<float, 3> rmb_normal(const uint8_t* p);
+std::array<float, 2> rmb_texcoord(const uint8_t* p);
+std::array<uint8_t, 4> rmb_colour(const uint8_t* p);
 
 // The submesh as a triangle list: a strip is expanded (restart at 0xFFFF
 // for 16-bit lists, all ones for 32-bit lists), degenerate triangles are

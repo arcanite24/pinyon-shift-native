@@ -163,6 +163,48 @@ class Parser {
 
 }  // namespace
 
+bool read_world_reference(const std::filesystem::path& path, WorldReference& out, std::string& error) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    error = "cannot read " + path.string();
+    return false;
+  }
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  Json root;
+  if (!Parser(buffer.str()).parse(root, error)) return false;
+  auto get = [&](const char* key) -> const Json* {
+    auto it = root.object.find(key);
+    return it == root.object.end() ? nullptr : &it->second;
+  };
+  const Json* schema = get("schema");
+  if (root.type != Json::kObject || !schema || schema->string != "shift-engine.world-reference.v1") {
+    error = path.string() + ": not a shift-engine.world-reference.v1 file";
+    return false;
+  }
+  auto numbers = [&](const char* key, float* dst, size_t n) {
+    const Json* j = get(key);
+    if (!j || j->type != Json::kArray || j->array.size() != n) return false;
+    for (size_t i = 0; i < n; ++i) {
+      if (j->array[i].type != Json::kNumber) return false;
+      dst[i] = float(j->array[i].number);
+    }
+    return true;
+  };
+  const Json* w = get("width");
+  const Json* h = get("height");
+  const Json* image = get("image");
+  if (!numbers("clip_from_world", out.clip_from_world, 16) || !numbers("camera_position", out.camera_position, 3) ||
+      !w || !h || w->type != Json::kNumber || h->type != Json::kNumber) {
+    error = path.string() + ": needs clip_from_world (16), camera_position (3), width and height";
+    return false;
+  }
+  out.width = uint32_t(w->number);
+  out.height = uint32_t(h->number);
+  if (image && image->type == Json::kString) out.image = path.parent_path() / image->string;
+  return true;
+}
+
 bool read_reference(const std::filesystem::path& path, Reference& out, std::string& error) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {

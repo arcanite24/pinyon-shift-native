@@ -468,3 +468,53 @@ within 1 % of a fixed ratio from 4,000 to 7,350 rpm. Left open:
   not known.
 - The windowed playback (SDL audio stream, about 60 ms queued) has not
   been heard yet: the play test checks it.
+
+## Q36 (polish): the world materials' first pass
+
+Built from WORLD_MATERIALS.md (d410dd92, 52d48a6f, 6521547d). Over
+bin.zip (`fh1data-corpus --world-materials`): all 14,291 models parse with
+47,749 materials; 14,193 hold one uvOffsetScale per submesh, 98 none; every
+submesh's (effect, stride) is in the stride table or its exceptions; the
+texture records are 5,234 / 2,965 / 11,409 / 5 by type and the slot
+outcomes match the spec's table; every `.bix` pair fits the layout, and
+2,962 CAFF textures do (the spec's three 196,604-byte ones do not).
+
+Found while doing it, for the spec:
+
+- **Not every world texture is a power of two.** 12 CAFF textures are
+  not (`_0x00000D63`, `_0x000010F2`, `_0x00001EE4`, `_0x00001EF2` to
+  `_0x00001EF9`, `_0x00004578`): nine 768 x 256 and one 768 x 128 DXT1
+  with 10 levels, one 255 x 256 and one 7 x 256 with 9 levels. All 12 fit the `.xds` layout exactly with the mip regions
+  sized from the power-of-two rounding (a 768-wide level 1 is stored as
+  if 512 wide), the last region trimmed. The 255 and 7 widths may be a
+  misread field; they decode to the layout's size either way.
+- The all-tail CAFF case (one full region, as the spec says) covers 8
+  textures: `_0x0000203A` (32 x 16) and seven of 64 x 8 to 256 x 16.
+
+Engine choices, open for the spec:
+
+- **AO.** Not applied: which slot holds `AO` / `AOMap` depends on the
+  effect, and this side does not read `.fxobj`. Needed: the effect to
+  sampler-slot table (`world-materials.py samplers`), or the AO slot per
+  effect family.
+- **Terrain layers.** `Blend_A` alone, at TEXCOORD0 with no per-layer
+  tiling: hills read as uniform grey rock (terrain UVs repeat about every
+  50 m). Needed for a second pass: which pixel constants are the layer
+  tilings, which UV `Splat` uses, and the blend rule.
+- **Cut-outs.** Alpha to coverage on `H_DIFF*` and `TREE_*` (the frame's
+  families) and also on other effects named `_OPAC`
+  (`H_VBLND_NORM_MASK_OPAC_BIAS_LM` has cut-out alpha; no draw of it was
+  in the frame). Blended decals use the texture's alpha times the vertex
+  colour's A.
+- **Normals.** The authored normal is used on both sides. Turning it to
+  the eye (the car shader's two-sided rule) darkened every surface above
+  the eye.
+- **Lighting.** The recipe's sun and two-colour sky, exposure 1, no fog;
+  the sun colour's w (20) is not used.
+- **Props in the reference frame.** The gather places every `.pgeo` and
+  `.pvsz` prop near the camera, including event props the frame did not
+  draw (a gantry, grandstands, banners, a crate on the road). The world-only
+  render (`--no-props`) matches the frame's road, markings, shoulder and
+  guardrail.
+- **Upload.** Textures upload on the render thread when a gather swaps in,
+  synchronously, and stay cached: a regather can stall the window.

@@ -7,6 +7,8 @@
 //   fh1data-corpus --extract <archive.zip> <member> <out>
 //   fh1data-corpus --names <archive.zip> [members-dir]  (directory census)
 //   fh1data-corpus --render-models <dir|archive.zip>    (render model census)
+//   fh1data-corpus --world-materials <dir|archive.zip> <Colorado_00.pvs>
+//                  (WORLD-MATERIALS: materials, UV scales, layouts, textures)
 //   fh1data-corpus --props <dir|archive.zip> <Colorado_00.pvs> [x0 z0 x1 z1]
 //                  (object table, .pgeo and .pvsz census, placements in a box)
 //
@@ -35,6 +37,7 @@
 #include "fh1data/placements.h"
 #include "fh1data/props.h"
 #include "fh1data/rmb.h"
+#include "fh1data/world_texture.h"
 #include "fh1data/xds.h"
 
 namespace fs = std::filesystem;
@@ -530,12 +533,140 @@ int props(const fs::path& source_path, const fs::path& pvs_path, const double* b
 
 }  // namespace
 
+// --world-materials <dir|bin.zip> <Colorado_00.pvs>: the material records,
+// uvOffsetScale writes, vertex layouts, texture records and every texture
+// file, with the counts WORLD-MATERIALS quotes.
+std::string texture_file(uint32_t id, const char* suffix) {
+  char name[32];
+  std::snprintf(name, sizeof name, "_0x%08x%s", id, suffix);
+  return name;
+}
+
+int world_materials(const fs::path& source_path, const fs::path& pvs_path) {
+  fh1::MemberSource source;
+  std::string error;
+  if (!source.open(source_path, &error)) { std::cerr << error << "\n"; return 1; }
+  fh1::PvsObjectTable table;
+  if (!fh1::parse_object_table(read_file(pvs_path), table, &error)) { std::cerr << error << "\n"; return 1; }
+  std::map<uint32_t, uint64_t> types;
+  for (const auto& t : table.textures) ++types[t.type];
+  std::printf("texture records: %zu (", table.textures.size());
+  for (const auto& [t, n] : types) std::printf(" type %u: %llu", t, (unsigned long long)n);
+  std::printf(" ); model lists: %zu%s%s\n", table.model_textures.size(),
+              table.texture_list_error.empty() ? "" : ", error: ", table.texture_list_error.c_str());
+  // Every texture file.
+  uint64_t bix = 0, bix_exact = 0, bix_decoded = 0, caff = 0, caff_exact = 0, caff_decoded = 0, cutouts = 0;
+  std::map<std::string, uint64_t> formats;
+  std::vector<std::string> bad;
+  for (const auto& t : table.textures) {
+    if (t.type != fh1::kPvsTextureBix && t.type != fh1::kPvsTextureCaff) continue;
+    fh1::WorldTexture tex;
+    bool exact = false, ok = false;
+    std::vector<uint8_t> a, b;
+    if (t.type == fh1::kPvsTextureBix) {
+      if (!source.read(texture_file(t.id, ".bix"), a, &error) || !source.read(texture_file(t.id, "_b.bix"), b, &error))
+        continue;
+      ++bix;
+      ok = fh1::decode_bix(a, b, tex, &error, &exact);
+      bix_exact += exact, bix_decoded += ok && tex.blocks.levels.size() == tex.levels;
+    } else {
+      if (!source.read(texture_file(t.id, ".bin"), a, &error)) continue;
+      ++caff;
+      ok = fh1::decode_caff(a, tex, &error, &exact);
+      caff_exact += exact, caff_decoded += ok && tex.blocks.levels.size() == tex.levels;
+    }
+    if (ok) {
+      ++formats[std::string(fh1::xenos_format_name(tex.format.format)) + (tex.format.gamma ? " gamma" : " linear") +
+                (tex.caff ? " caff" : " bix")];
+      cutouts += fh1::world_texture_has_cutout(tex);
+    }
+    if ((!ok || !exact) && bad.size() < 12)
+      bad.push_back(texture_file(t.id, t.type == fh1::kPvsTextureBix ? ".bix" : ".bin") + " " +
+                    std::to_string(tex.width) + "x" + std::to_string(tex.height) + " levels " +
+                    std::to_string(tex.levels) + (ok ? " size differs" : " " + error));
+  }
+  std::printf(".bix pairs: %llu, %llu at the layout's sizes, %llu with every level\n", (unsigned long long)bix,
+              (unsigned long long)bix_exact, (unsigned long long)bix_decoded);
+  std::printf("CAFF: %llu, %llu at the layout's sizes, %llu with every level\n", (unsigned long long)caff,
+              (unsigned long long)caff_exact, (unsigned long long)caff_decoded);
+  std::printf("with cut-out alpha: %llu\n", (unsigned long long)cutouts);
+  for (const auto& [f, n] : formats) std::printf("  %-28s %llu\n", f.c_str(), (unsigned long long)n);
+  for (const auto& b : bad) std::printf("  not exact: %s\n", b.c_str());
+  // Every render model.
+  uint64_t models = 0, failed = 0, materials = 0, submeshes = 0, with_uv = 0, without_uv = 0, unknown_layout = 0;
+  uint64_t layout_known = 0, bad_material = 0;
+  std::map<std::string, uint64_t> slot_outcomes, unknown;
+  std::vector<std::string> no_uv;
+  for (const auto& name : source.with_suffix(".rmb.bin")) {
+    std::vector<uint8_t> data;
+    if (!source.read(name, data, &error)) { ++failed; continue; }
+    fh1::RenderModel m;
+    if (!fh1::parse_render_model(data, m, &error) || !fh1::parse_render_materials(data, m, &error)) {
+      ++failed;
+      if (failed < 5) std::printf("  %s: %s\n", name.c_str(), error.c_str());
+      continue;
+    }
+    ++models;
+    materials += m.materials.size();
+    size_t n = 0;
+    for (const auto& o : m.objects) n += o.submeshes.size();
+    submeshes += n;
+    if (m.uv_offset_scale.empty()) {
+      ++without_uv;
+      if (no_uv.size() < 6) no_uv.push_back(name);
+    } else {
+      ++with_uv;
+    }
+    const uint32_t member = uint32_t(std::stoul(name.substr(12, 5)));
+    const std::vector<uint32_t>* list =
+        member >= 1 && member - 1 < table.model_textures.size() ? &table.model_textures[member - 1] : nullptr;
+    for (const auto& o : m.objects)
+      for (const auto& s : o.submeshes) {
+        if (s.material_index >= m.materials.size()) { ++bad_material; continue; }
+        const auto& mat = m.materials[s.material_index];
+        const auto layout = fh1::rmb_vertex_layout(m.effects[mat.effect], o.stride);
+        if (layout.known) ++layout_known;
+        else if (++unknown_layout, unknown.size() < 20) ++unknown[m.effects[mat.effect] + " " + std::to_string(o.stride)];
+      }
+    for (const auto& mat : m.materials)
+      for (int32_t v : mat.slots) {
+        std::string outcome;
+        if (v == -2) outcome = "-2 no texture";
+        else if (v == -1) outcome = "-1 run time";
+        else if (!list || size_t(v) >= list->size()) outcome = "past the model's list";
+        else if ((*list)[size_t(v)] >= table.textures.size()) outcome = "past the records";
+        else {
+          const auto& t = table.textures[(*list)[size_t(v)]];
+          if (t.type == fh1::kPvsTextureBix)
+            outcome = source.contains(texture_file(t.id, ".bix")) ? "type 4, .bix present" : "type 4, missing";
+          else if (t.type == fh1::kPvsTextureCaff)
+            outcome = source.contains(texture_file(t.id, ".bin")) ? "type 0, .bin present" : "type 0, missing";
+          else outcome = "type " + std::to_string(t.type);
+        }
+        ++slot_outcomes[outcome];
+      }
+  }
+  std::printf("render models: %llu parsed, %llu failed; %llu materials for %llu submeshes (%llu without one)\n",
+              (unsigned long long)models, (unsigned long long)failed, (unsigned long long)materials,
+              (unsigned long long)submeshes, (unsigned long long)bad_material);
+  std::printf("uvOffsetScale: %llu models with one per submesh, %llu with none\n", (unsigned long long)with_uv,
+              (unsigned long long)without_uv);
+  for (const auto& n : no_uv) std::printf("  none: %s\n", n.c_str());
+  std::printf("vertex layouts: %llu submeshes known, %llu not\n", (unsigned long long)layout_known,
+              (unsigned long long)unknown_layout);
+  for (const auto& [k, n] : unknown) std::printf("  unknown: %s (%llu)\n", k.c_str(), (unsigned long long)n);
+  std::printf("texture slots:\n");
+  for (const auto& [k, n] : slot_outcomes) std::printf("  %-24s %llu\n", k.c_str(), (unsigned long long)n);
+  return failed ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
   std::vector<std::string> args(argv + 1, argv + argc);
   if (args.size() == 3 && args[0] == "--dump") return dump(args[1], args[2]);
   if ((args.size() == 2 || args.size() == 3) && args[0] == "--names")
     return names(args[1], args.size() == 3 ? fs::path(args[2]) : fs::path());
   if (args.size() == 2 && args[0] == "--render-models") return render_models(args[1]);
+  if (args.size() == 3 && args[0] == "--world-materials") return world_materials(args[1], args[2]);
   if ((args.size() == 3 || args.size() == 7) && args[0] == "--props") {
     double box[4];
     for (int k = 0; k < 4 && args.size() == 7; ++k) box[k] = std::stod(args[3 + k]);
@@ -568,6 +699,7 @@ int main(int argc, char** argv) {
                    "       fh1data-corpus --extract <archive.zip> <member> <out>\n"
                    "       fh1data-corpus --names <archive.zip> [members-dir]\n"
                    "       fh1data-corpus --render-models <dir|archive.zip>\n"
+                   "       fh1data-corpus --world-materials <dir|archive.zip> <Colorado_00.pvs>\n"
                    "       fh1data-corpus --props <dir|archive.zip> <Colorado_00.pvs> [x0 z0 x1 z1]\n";
       return 2;
     }

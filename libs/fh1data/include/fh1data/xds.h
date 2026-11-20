@@ -81,6 +81,18 @@ struct XdsBlocks {
 // Untiles every level of a 2D texture into linear blocks.
 bool extract_xds_blocks(std::span<const uint8_t> data, XdsBlocks& out, std::string* error);
 
+// Colorado's world textures (WORLD-MATERIALS, "Layout and untiling"): the
+// .xds layout, but the last region (the packed tail, or the last level when
+// the chain stops before it) only as large as the tiled bytes its levels
+// touch, rounded up to 4,096. The sizes of the regions, base first; empty
+// for a linear or unknown texture.
+std::vector<size_t> xds_trimmed_regions(const XdsHeader& header);
+// Untiles each level from regions stored apart (regions[r] holds region r:
+// the base, then each stored mip level, the packed tail last). Levels whose
+// region is missing or short are dropped from the end; the base must fit.
+bool extract_region_blocks(const XdsHeader& header, std::span<const std::span<const uint8_t>> regions,
+                           XdsBlocks& out, std::string* error);
+
 // Payload bytes the level layout needs (0 for an unknown format).
 size_t xds_layout_bytes(const XdsHeader& header);
 

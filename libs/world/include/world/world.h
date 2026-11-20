@@ -24,8 +24,13 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
+#include <tuple>
 #include <string>
 #include <vector>
+
+#include "fh1data/placements.h"
+#include "fh1data/world_texture.h"
 
 namespace world {
 
@@ -43,12 +48,42 @@ bool skipped_material(const std::string& material);
 // not: with nothing but wheel rays they act as ramps. Props never are.
 bool ground_object(const std::string& object);
 
+// How a material draws (WORLD-MATERIALS, the frame's blend state per
+// effect family): opaque; opaque with alpha to coverage (props' H_DIFF and
+// trees, the cut-out in the diffuse alpha); blended with the source alpha
+// (road decals, vertex-blend decals, the lake). Other effects named _OPAC
+// also get alpha to coverage (ours: H_VBLND_NORM_MASK_OPAC_BIAS_LM's texture
+// has cut-out alpha; the frame showed none of its draws).
+enum class Blend : uint8_t { kOpaque, kCoverage, kAlpha };
+Blend effect_blend(const std::string& effect);
+
+// A gathered material: its effect and the texture records (indices into
+// World::textures(), kNoTexture when the slot names no file) of the slots
+// drawn so far.
+constexpr uint32_t kNoTexture = 0xFFFFFFFFu;
+struct MeshMaterial {
+  std::string effect;               // upper case, e.g. H_ROAD_DIFF3_NORM1_NOISE_AO_LM
+  uint32_t albedo = kNoTexture;     // slot 0: Diffuse_Texture or Blend_A
+  Blend blend = Blend::kOpaque;
+  auto key() const { return std::make_tuple(effect, albedo); }
+};
+
 struct Mesh {
   std::vector<std::array<float, 3>> positions;  // three per triangle, game frame
   std::vector<Surface> surface;                 // per triangle
   std::vector<uint32_t> model;                  // per triangle: index into World::models()
   std::vector<uint8_t> ground;                  // per triangle: part of the stand-in ground
   size_t triangles() const { return surface.size(); }
+  // With GatherOptions::render_data: per corner (parallel to positions) the
+  // normal (game frame, zero when the layout has none), the surface UV and
+  // the lightmap UV (dequantised with the submesh's uvOffsetScale), the
+  // vertex colour (R, G, B, A; white when none); per triangle its material.
+  std::vector<std::array<float, 3>> normals;
+  std::vector<std::array<float, 2>> uv0, uv1;
+  std::vector<std::array<uint8_t, 4>> colours;
+  std::vector<uint32_t> material;  // per triangle: index into materials
+  std::vector<MeshMaterial> materials;
+  bool has_render_data() const { return !material.empty(); }
 };
 
 struct ModelInfo {
@@ -63,12 +98,17 @@ struct GatherOptions {
   double prop_radius = 250;  // props placed within this
   double prop_lod0 = 80;     // props nearer than this use LOD00, the rest LOD02 (or their last)
   bool props = true;
+  bool render_data = false;  // fill the Mesh's normals, UVs, colours and materials
 };
 
 struct GatherStats {
   size_t world_models = 0, objects = 0, skipped_lod = 0, skipped_far = 0, props = 0, prop_unresolved = 0;
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name
+  // With render_data: models drawn without a uvOffsetScale (given offset 0
+  // and scale 1, the engine's choice) and submeshes without a material.
+  std::set<std::string> default_uv_models;
+  size_t no_material = 0;
 };
 
 class World {
@@ -81,6 +121,13 @@ class World {
   bool open(const std::filesystem::path& colorado, const std::filesystem::path& cache, std::string* error);
   const std::vector<ModelInfo>& models() const { return models_; }
   size_t placement_count() const;
+  // The ribbon's texture records (WORLD-MATERIALS), by record index.
+  const std::vector<fh1::PvsTexture>& textures() const;
+  // Reads and untiles a texture record's files (type 4 .bix pair or type 0
+  // CAFF .bin). False for records without a file and for files whose sizes
+  // do not fit the layout (the spec's three undecoded CAFF textures). Uses
+  // the archive: not while a gather runs on another thread.
+  bool read_texture(uint32_t record, fh1::WorldTexture& out, std::string* error);
 
   // Every world-space model near (x, z) (game frame) and every prop
   // placement near it.

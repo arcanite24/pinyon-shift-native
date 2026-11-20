@@ -135,6 +135,7 @@ struct Level {
   size_t start;            // byte offset of its storage in the payload
   uint32_t pitch;          // storage pitch in blocks
   uint32_t x, y;           // block offset inside the storage (packed tail)
+  uint32_t region = 0;     // which storage region: the level, or the tail's
 };
 
 // The first level stored in the packed mip tail.
@@ -193,6 +194,7 @@ size_t layout(const XdsHeader& h, const Format& f, std::vector<Level>& levels) {
     Level lv{};
     if (level >= tail && h.packed_mips) packed_offset(h.width, h.height, level, bt, lv.x, lv.y);
     lv.start = starts[stored].first;
+    lv.region = stored;
     lv.pitch = starts[stored].second;
     lv.width = std::max(h.width >> level, 1u);
     lv.height = std::max(h.height >> level, 1u);
@@ -413,6 +415,99 @@ XdsResult decode_xds(std::span<const uint8_t> data, bool all_levels) {
     r.levels.push_back(std::move(mip));
   }
   return r;
+}
+
+namespace {
+
+// The block format and the sampled-channel map of a format, as for .xds.
+bool block_format(const XdsHeader& h, const Format& f, XdsBlocks& out, std::string* error) {
+  std::array<uint8_t, 4> channel{0, 1, 2, 3};
+  switch (f.kind) {
+    case Kind::k8888: out.format = XdsBlockFormat::kRgba8; break;
+    case Kind::kDxt1: out.format = XdsBlockFormat::kBc1; break;
+    case Kind::kDxt3: out.format = XdsBlockFormat::kBc2; break;
+    case Kind::kDxt5: out.format = XdsBlockFormat::kBc3; break;
+    case Kind::kDxn:
+      out.format = XdsBlockFormat::kBc5;
+      channel = {0, 1, 4, 5};
+      break;
+    case Kind::kDxt5a:
+      out.format = XdsBlockFormat::kBc4;
+      channel = {0, 0, 0, 0};
+      break;
+    case Kind::kDxt3a:
+      if (error) *error = "DXT3A has no block format equivalent";
+      return false;
+  }
+  for (int c = 0; c < 4; ++c) {
+    const uint32_t sel = (h.swizzle >> (3 * c)) & 7;
+    out.swizzle[size_t(c)] = sel < 4 ? channel[sel] : (sel == 5 ? 5 : 4);
+  }
+  out.block_bytes = f.block_bytes;
+  out.block_texels = f.block;
+  return true;
+}
+
+}  // namespace
+
+std::vector<size_t> xds_trimmed_regions(const XdsHeader& h) {
+  const Format* f = find_format(h.format);
+  if (!f || h.dimension != XdsDimension::k2D || !h.tiled) return {};
+  std::vector<Level> levels;
+  const size_t total = layout(h, *f, levels);
+  const uint32_t log2 = uint32_t(std::bit_width(f->block_bytes) - 1);
+  // Region starts, in order; each runs to the next, the last to `total`.
+  std::vector<size_t> starts;
+  for (const Level& lv : levels)
+    if (starts.size() <= lv.region) starts.push_back(lv.start);
+  std::vector<size_t> sizes(starts.size());
+  for (size_t r = 0; r < starts.size(); ++r) sizes[r] = (r + 1 < starts.size() ? starts[r + 1] : total) - starts[r];
+  // The last region: the tiled bytes its levels touch, rounded to 4,096.
+  size_t touched = 0;
+  for (const Level& lv : levels) {
+    if (lv.region + 1 != starts.size()) continue;
+    for (uint32_t by = 0; by < lv.height_blocks; ++by)
+      for (uint32_t bx = 0; bx < lv.width_blocks; ++bx)
+        touched = std::max(touched, size_t(xenos_tiled_offset_2d(int32_t(bx + lv.x), int32_t(by + lv.y),
+                                                                 lv.pitch, log2)) + f->block_bytes);
+  }
+  sizes.back() = std::min(sizes.back(), (touched + 4095) / 4096 * 4096);
+  return sizes;
+}
+
+bool extract_region_blocks(const XdsHeader& h, std::span<const std::span<const uint8_t>> regions, XdsBlocks& out,
+                           std::string* error) {
+  out = XdsBlocks{};
+  out.header = h;
+  auto fail = [&](const std::string& why) {
+    if (error) *error = why;
+    return false;
+  };
+  if (h.dimension != XdsDimension::k2D || !h.tiled) return fail("not a tiled 2D texture");
+  const Format* f = find_format(h.format);
+  if (!f) return fail("format " + std::to_string(h.format));
+  if (!block_format(h, *f, out, error)) return false;
+  std::vector<Level> levels;
+  out.layout_bytes = layout(h, *f, levels);
+  size_t region_start = 0;
+  uint32_t region = 0;
+  for (size_t i = 0; i < levels.size(); ++i) {
+    const Level& lv = levels[i];
+    if (lv.region != region) region = lv.region, region_start = lv.start;
+    if (lv.region >= regions.size()) break;
+    Level local = lv;
+    local.start = lv.start - region_start;
+    XdsBlockLevel level;
+    level.width = lv.width;
+    level.height = lv.height;
+    if (!copy_level_blocks(regions[lv.region], h, *f, local, level.blocks)) {
+      if (i == 0) return fail("the base level runs outside its data");
+      break;  // keep the levels before it
+    }
+    out.levels.push_back(std::move(level));
+  }
+  if (out.levels.empty()) return fail("no level");
+  return true;
 }
 
 }  // namespace fh1

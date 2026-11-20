@@ -126,6 +126,33 @@ bool parse_object_table(std::span<const uint8_t> d, PvsObjectTable& out, std::st
       o.field_16 = load_be16(q + 16);
       q += 18;
     }
+    out.textures.resize(n);
+    for (uint32_t k = 0; k < n; ++k) {
+      const uint8_t* t = &d[p + 4 + size_t(k) * 28];
+      out.textures[k].id = load_be32(t);
+      out.textures[k].flag = t[26];
+      out.textures[k].type = t[27];
+    }
+    try {
+      BeReader r(d, size_t(q - d.data()));
+      const uint32_t lists = r.u32();
+      if (lists > 1u << 20) throw FormatError(std::to_string(lists) + " model lists");
+      for (uint32_t want : {2u, 0u, 1u})
+        if (r.u32() != want) throw FormatError("model list header is not 2, 0, 1");
+      out.model_textures.resize(lists);
+      for (auto& list : out.model_textures) {
+        const uint32_t k = r.u32();
+        if (k > r.remaining() / 4) throw FormatError("effect indices run past the end");
+        r.skip(size_t(k) * 4 + 15 * 4);
+        const uint32_t t = r.u32();
+        if (t > r.remaining() / 4) throw FormatError("texture indices run past the end");
+        list.resize(t);
+        for (auto& v : list) v = r.u32();
+      }
+    } catch (const FormatError& e) {
+      out.model_textures.clear();
+      out.texture_list_error = e.what();
+    }
     return true;
   }
   return fail(error, "no 28-byte record table followed by shader names and an object table "

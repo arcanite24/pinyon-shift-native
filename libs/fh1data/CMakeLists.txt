@@ -3,6 +3,7 @@ add_library(fh1data STATIC
   src/xmem.cpp
   src/inflate.cpp
   src/xds.cpp
+  src/world_texture.cpp
   src/carbin.cpp
   src/rmb.cpp
   src/members.cpp

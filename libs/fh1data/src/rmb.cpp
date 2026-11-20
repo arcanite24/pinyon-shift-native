@@ -1,5 +1,7 @@
 #include "fh1data/rmb.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 
 #include "fh1data/bytes.h"
@@ -164,5 +166,128 @@ std::vector<uint32_t> rmb_triangle_list(const RmbSubmesh& s) {
   }
   return out;
 }
+
+namespace {
+
+std::vector<std::array<float, 4>> read_constants(BeReader& r, const char* what) {
+  expect(r, 1, what);
+  const uint32_t n = r.u32();
+  if (n > 256) throw FormatError(std::string(what) + ": " + std::to_string(n) + " constants");
+  std::vector<std::array<float, 4>> out(n);
+  for (auto& c : out)
+    for (float& v : c) v = r.f32();
+  return out;
+}
+
+std::string effect_name(const std::string& path) {
+  size_t start = path.find_last_of("\\/");
+  start = start == std::string::npos ? 0 : start + 1;
+  std::string name = path.substr(start);
+  for (char& c : name) c = char(std::toupper(static_cast<unsigned char>(c)));
+  if (name.size() > 3 && name.ends_with(".FX")) name.resize(name.size() - 3);
+  return name;
+}
+
+}  // namespace
+
+bool parse_render_materials(std::span<const uint8_t> data, RenderModel& m, std::string* error) {
+  m.materials.clear();
+  m.effects.clear();
+  m.uv_offset_scale.clear();
+  try {
+    BeReader r(data, m.geometry_end);
+    for (int i = 0; i < 4; ++i) expect(r, 1, "material section tag");
+    const uint32_t count = r.u32();
+    if (count > kMaximumSubmeshes) throw FormatError(std::to_string(count) + " materials");
+    m.materials.resize(count);
+    for (auto& mat : m.materials) {
+      expect(r, 3, "material tag");
+      mat.effect = r.u32();
+      expect(r, 0, "material word 2");
+      mat.vertex_constants = read_constants(r, "vertex constant tag");
+      mat.pixel_constants = read_constants(r, "pixel constant tag");
+      expect(r, 1, "texture slot tag");
+      const uint32_t slots = r.u32();
+      if (slots > 32) throw FormatError(std::to_string(slots) + " texture slots");
+      mat.slots.resize(slots);
+      for (auto& v : mat.slots) v = int32_t(r.u32());
+    }
+    expect(r, 1, "effect list tag");
+    const uint32_t effects = r.u32();
+    if (effects > 4096) throw FormatError(std::to_string(effects) + " effects");
+    for (uint32_t i = 0; i < effects; ++i) m.effects.push_back(effect_name(read_name(r, "effect path")));
+    for (const auto& mat : m.materials)
+      if (mat.effect >= m.effects.size())
+        throw FormatError("effect " + std::to_string(mat.effect) + " of " + std::to_string(m.effects.size()));
+    // The command section: the uvOffsetScale writes.
+    size_t submeshes = 0;
+    for (const auto& o : m.objects) submeshes += o.submeshes.size();
+    const size_t start = r.at();
+    for (size_t at = start; at + 36 <= data.size() && m.uv_offset_scale.size() < submeshes; ++at) {
+      const uint32_t header = load_be32(&data[at]);
+      if (header != 0x000F4000u && header != 0x001F4000u) continue;
+      bool ones = true;
+      for (int k = 0; k < 4; ++k) ones = ones && load_bef32(&data[at + 20 + 4 * size_t(k)]) == 1.0f;
+      if (!ones) continue;
+      m.uv_offset_scale.push_back({load_bef32(&data[at + 4]), load_bef32(&data[at + 8]), load_bef32(&data[at + 12]),
+                                   load_bef32(&data[at + 16])});
+      at += 35;
+    }
+    if (m.uv_offset_scale.size() < submeshes) m.uv_offset_scale.clear();
+  } catch (const FormatError& e) {
+    if (error) *error = e.what();
+    m.materials.clear();
+    m.effects.clear();
+    m.uv_offset_scale.clear();
+    return false;
+  }
+  return true;
+}
+
+RmbVertexLayout rmb_vertex_layout(const std::string& e, uint32_t stride) {
+  RmbVertexLayout l;
+  l.known = true;
+  auto starts = [&](const char* prefix) { return e.rfind(prefix, 0) == 0; };
+  if (stride == 24 && e == "ADD_DIFF_OPAC_RGBA") {
+    l.colour = 12, l.texcoord = {16, 20, -1};
+  } else if (stride == 24 && starts("BUNTING_")) {
+    l.normal = 12, l.texcoord = {16, -1, -1}, l.colour = 20;
+  } else if (stride == 24 && e == "TREE_DIFF_OPAC_DIRLIGHT_2_2SD") {
+    l.texcoord = {12, -1, -1}, l.normal = 16, l.colour = 20;
+  } else if (stride == 32 && starts("ANIM_FLAG_")) {
+    l.texcoord = {12, 24, 28}, l.colour = 16, l.tangent = 20;
+  } else if (stride == 32 && starts("LAKE_")) {
+    l.normal = 12, l.texcoord = {24, -1, 16}, l.colour = 20, l.tangent = 28;
+  } else if (stride == 28 && e == "DIFF_GLOW_1") {
+    l.normal = 12, l.texcoord = {16, -1, 20}, l.colour = 24;
+  } else {
+    switch (stride) {
+      case 16: l.texcoord = {12, -1, -1}; break;
+      case 20: l.normal = 12, l.texcoord = {16, -1, -1}; break;
+      case 24: l.normal = 12, l.texcoord = {16, 20, -1}; break;
+      case 28: l.normal = 12, l.texcoord = {16, 20, -1}, l.colour = 24; break;
+      case 32: l.normal = 12, l.texcoord = {16, 20, 24}, l.colour = 28; break;
+      case 36: l.normal = 12, l.texcoord = {16, 20, 24}, l.tangent = 28, l.colour = 32; break;
+      default: l.known = false;
+    }
+  }
+  return l;
+}
+
+std::array<float, 3> rmb_normal(const uint8_t* p) {
+  const uint32_t w = load_be32(p);
+  auto component = [&](int shift) {
+    int32_t v = int32_t((w >> shift) & 0x3FF);
+    if (v & 0x200) v -= 0x400;
+    return std::max(float(v) / 511.0f, -1.0f);
+  };
+  return {component(0), component(10), component(20)};
+}
+
+std::array<float, 2> rmb_texcoord(const uint8_t* p) {
+  return {float(load_be16(p)) / 65535.0f, float(load_be16(p + 2)) / 65535.0f};
+}
+
+std::array<uint8_t, 4> rmb_colour(const uint8_t* p) { return {p[1], p[2], p[3], p[0]}; }
 
 }  // namespace fh1
