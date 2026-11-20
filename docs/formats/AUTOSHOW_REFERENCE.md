@@ -458,8 +458,8 @@ Corrado; the 205 T16's lit lamps add 16,824 glow px outside the mask).
 
 **Traffic rows: no reference** (seed `m1-autoshow-v4-traffic-db`, mod
 `m1_traffic_db`, `IsSelectable = 1` on the 18 rows). The Autoshow lists
-all 18 by name and price, without thumbnails, and new makes appear (Bus,
-Kenworth, GMC, Volvo and others; 62 makes, as predicted). Every list capture named the
+all 18 by name and price, without thumbnails, and four new makes appear
+(Bus, Chrysler, Kenworth and Volvo; 61 makes, as predicted). Every list capture named the
 expected car and no route hung or crashed. But the showroom draws a
 traffic model it was not built for, and no draw is a whole car, so none
 is kept as a reference (traffic model, showroom draw unusable):

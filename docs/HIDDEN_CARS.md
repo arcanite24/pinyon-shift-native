@@ -15,8 +15,13 @@ Until 2026-10-27 the patch had no effect on the v4 build: v4 reads its own
 `gamedb.slt` from the update's `media.zip`, not the disc copy the patch
 replaced. The mod builders now apply the same script to v4's database too
 ([MODDING.md](MODDING.md#database-patches)). It changes the same 11 rows
-there as on the disc copy. Listing and buying the variants in v4 hasn't
-been checked in game yet.
+there as on the disc copy. On v4 the Autoshow lists the four variants
+and shows each in the showroom (M1 reference seed with the same
+`IsSelectable` change, 2026-11-20,
+[AUTOSHOW_REFERENCE.md](formats/AUTOSHOW_REFERENCE.md#cars-outside-the-stock-lists));
+buying them on v4 hasn't been checked yet. The same runs listed the
+traffic rows too: the showroom draws their models as stubs, a stand-in
+car or a box, which confirms the exclusions below.
 
 ## Asset audit
 

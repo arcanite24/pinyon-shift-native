@@ -225,7 +225,7 @@ The mod changes the game's database, so it plays the separate modded profile. Th
 
 Turn on **Hidden cars** with the launcher's **Mods** button (or **F6 > MODS > HIDDEN_CARS**) and restart to list the intro Corrado and showcase Mini Cooper S, 500 Abarth and Peugeot 205 T16 in the Autoshow. The traffic cars previously listed by this mod, including the tour bus, are excluded because they lack qualified player models. It plays a separate profile, so your own save is not changed. Existing traffic-car purchases remain there. If one blocks your garage, close the game and follow the [backed-up selection recovery](modding.md#enabling); it requests a starter Corrado without deleting the purchased car.
 
-The four variants were bought, saved, reloaded and driven on the base Windows build. Full garage and paint-shop checks, and v4 qualification, are still pending; see the [audit and test limits](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/HIDDEN_CARS.md).
+The four variants were bought, saved, reloaded and driven on the base Windows build. On v4 they are listed and shown in the showroom, but buying them there is not yet checked. Full garage and paint-shop checks are still pending; see the [audit and test limits](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/HIDDEN_CARS.md).
 
 ## Saves
 
