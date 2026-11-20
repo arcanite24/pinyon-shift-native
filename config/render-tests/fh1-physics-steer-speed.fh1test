@@ -1,0 +1,36 @@
+pinyon-shift-fh1-render-test-v1
+# Car physics oracle: the player's steering and partial brake at speed
+# (docs/specs/CAR_PHYSICS.md, SPEC-CAR-PHYSICS). Free roam on acc9-stock
+# (stock R34) as fh1-physics-launch-brake: full throttle from frame 1100
+# (the car responds near 1180), then at about 20 m/s a quarter left stick
+# for 25 frames and full left stick for 15, both with the throttle held,
+# then the stick centred and the throttle off, and a partial brake
+# (left trigger 115 of 255) for 40 frames. Run with
+#   --game-argument=--pinyon_shift_physics_trace=6
+#   --game-argument=--pinyon_shift_physics_oracle=true
+#   --game-argument=--pinyon_shift_physics_oracle_snapshot_frame=1095
+#   --game-argument=--pinyon_shift_physics_oracle_trace_ticks=800
+# The body trace gives the steer control against the front wheels' angle
+# (the speed-sensitive lock) and the brake value against the wheels'
+# brake torque (the brake input curve) on the player's path.
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 366 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 486 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 606 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 726 0000 0 0 0 0 0 0
+input 780 0000 0 0 0 0 0 0
+wait 900 3000 vehicle
+capture 1090 start
+input 1100 0000 0 255 0 0 0 0
+input 1400 0000 0 255 -8192 0 0 0
+input 1425 0000 0 255 -32768 0 0 0
+input 1440 0000 0 0 0 0 0 0
+input 1450 0000 115 0 0 0 0 0
+input 1490 0000 0 0 0 0 0 0
+capture 1560 end
+stop 1570
