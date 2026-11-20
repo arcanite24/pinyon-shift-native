@@ -380,14 +380,12 @@ Placement pgeo_placement(const PgeoInstance& in) {
   return p;
 }
 
-Placement pvsz_placement(const PvszRecord& rec, bool transposed) {
-  // The stored H = F * R_game^T, so the file-frame placement is H * F.
+Placement pvsz_placement(const PvszRecord& rec) {
+  // R[r][c] = h[3c + r] * F[r]: the halves are R's columns, third
+  // component negated.
   Placement p;
   for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 3; ++j) {
-      const double h = transposed ? rec.rotation[3 * j + i] : rec.rotation[3 * i + j];
-      p.linear[i][j] = h * kF[j];
-    }
+    for (int j = 0; j < 3; ++j) p.linear[i][j] = double(rec.rotation[3 * j + i]) * kF[i];
     p.offset[i] = kF[i] * double(rec.position[i]);
   }
   return p;

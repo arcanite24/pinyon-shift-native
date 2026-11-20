@@ -49,7 +49,6 @@ struct PropWorld {
 };
 
 struct PropLoadOptions {
-  bool pvsz_transposed = false;  // read the nine halves column-major
   bool census_first_rule = true; // also count cross-zone conflicts under the first-start rule
 };
 

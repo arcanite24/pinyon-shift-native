@@ -6,7 +6,7 @@
 //           [--feature text]... [--edge-percentile P] [--near metres]
 //           [--list] [--probe x y]... [--validation]
 //           [--pvs Colorado_00.pvs] [--members-root members-dir|bin.zip]
-//           [--drawn-props file] [--prop-lod n] [--pvsz-transposed]
+//           [--drawn-props file] [--prop-lod n] [--depth-skip text]...
 //
 // --skip drops mesh objects whose name holds the text (any case).
 // --nearest-lod keeps, of the objects whose names differ only in a "LODnn"
@@ -39,11 +39,17 @@
 // next to it is used). Every kind-7 .pgeo instance and every .pvsz object
 // whose file-frame translation lies inside --box is placed: object ID ->
 // table member -> its LOD set's member --prop-lod (default 0, LOD00).
-// --pvsz-transposed reads the zone rotation's nine halves column-major.
 // --drawn-props keeps only the placements a game frame drew, from lines
 //   drawn <member> <x> <y> <z>   file-frame translation (keep it local)
 // Each listed entry takes the nearest placement within 5 cm and draws the
 // listed member with it (the game may draw another LOD or a twin mesh).
+//
+// --depth-skip leaves the mesh objects whose names hold the text (any
+// case) out of a second depth image, world-depth-skip.pfm and .png, for
+// depth comparisons until materials exist: alpha-tested props (the
+// chain-link fence, trees) write depth only on opaque texels in the game,
+// and animated ones (flags) move. Colour, world-depth.pfm and the edge
+// scores keep every object.
 //
 // Writes world-colour.png (flat shading by face normal, a tint per model),
 // world-depth.png (log view distance, near is bright, sky black),
@@ -497,7 +503,7 @@ int run_world(int argc, char** argv) {
   bool recentre = false, validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   fs::path pvs_path, members_root, drawn_props_path;
   int prop_lod = 0;
-  bool pvsz_transposed = false;
+  std::vector<std::string> depth_skips;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
@@ -518,7 +524,7 @@ int run_world(int argc, char** argv) {
     else if (a == "--members-root" && (v = next())) members_root = v;
     else if (a == "--drawn-props" && (v = next())) drawn_props_path = v;
     else if (a == "--prop-lod" && (v = next())) prop_lod = std::atoi(v);
-    else if (a == "--pvsz-transposed") pvsz_transposed = true;
+    else if (a == "--depth-skip" && (v = next())) depth_skips.push_back(lower(v));
     else if (a == "--probe" && i + 2 < argc) {
       probes.push_back({std::atoi(argv[i + 1]), std::atoi(argv[i + 2])});
       i += 2;
@@ -532,7 +538,7 @@ int run_world(int argc, char** argv) {
                    "               [--feature text]... [--edge-percentile P] [--near metres]\n"
                    "               [--list] [--probe x y]... [--validation]\n"
                    "               [--pvs Colorado_00.pvs] [--members-root dir|bin.zip]\n"
-                   "               [--drawn-props file] [--prop-lod n] [--pvsz-transposed]\n");
+                   "               [--drawn-props file] [--prop-lod n] [--depth-skip text]...\n");
       return 2;
     }
   }
@@ -638,7 +644,6 @@ int run_world(int argc, char** argv) {
       return 1;
     }
     fh1::PropLoadOptions options;
-    options.pvsz_transposed = pvsz_transposed;
     options.census_first_rule = false;
     fh1::PropWorld props;
     if (!fh1::load_props(prop_source, props, &error, options)) {
@@ -647,14 +652,13 @@ int run_world(int argc, char** argv) {
     }
     std::printf("props from %s: object table %zu objects; %llu kind-7 .pgeo tiles (%llu failed), "
                 "%llu instances; %llu .pvsz zones (%llu failed), %llu records, %zu distinct "
-                "objects, %llu cross-zone conflicts; zone rotation read %s\n",
+                "objects, %llu cross-zone conflicts\n",
                 root.string().c_str(), table.objects.size(),
                 (unsigned long long)props.pgeo_parsed, (unsigned long long)props.pgeo_failed,
                 (unsigned long long)props.pgeo_instances, (unsigned long long)props.pvsz_zones,
                 (unsigned long long)props.pvsz_failed, (unsigned long long)props.pvsz_records,
                 props.placements.size() - size_t(props.pgeo_instances),
-                (unsigned long long)props.pvsz_conflicts,
-                pvsz_transposed ? "column-major" : "row-major");
+                (unsigned long long)props.pvsz_conflicts);
     for (const auto& f : props.failures) std::fprintf(stderr, "carview: %s\n", f.c_str());
     prop_models = std::make_unique<fh1::PropModels>(prop_source);
     auto table_member = [&](const fh1::PropPlacement& p) -> int64_t {
@@ -788,15 +792,15 @@ int run_world(int argc, char** argv) {
         shared_spot += near_count > 1;
         bool turned = false;
         if (best->store == fh1::PropStore::kPvsz) {
-          // How far apart the row- and column-major readings of the zone
-          // rotation are for this placement: the largest |H - H^T| entry
-          // (H = linear * F, F negating z).
+          // How far the spec's column reading of the zone rotation is from a
+          // row reading for this placement: R[r][c] = h[3c + r] F[r], while
+          // a row reading takes h[3r + c] F[r] = R[c][r] F[c] F[r].
           double asymmetry = 0;
           for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j) {
-              const double hij = best->placement.linear[i][j] * (j == 2 ? -1 : 1);
-              const double hji = best->placement.linear[j][i] * (i == 2 ? -1 : 1);
-              asymmetry = std::max(asymmetry, std::fabs(hij - hji));
+              const double sign = (i == 2) != (j == 2) ? -1 : 1;
+              asymmetry = std::max(asymmetry, std::fabs(best->placement.linear[i][j] -
+                                                        sign * best->placement.linear[j][i]));
             }
           asymmetries.push_back(asymmetry);
           turned = asymmetry > 0.05;
@@ -826,8 +830,9 @@ int run_world(int argc, char** argv) {
         std::sort(asymmetries.begin(), asymmetries.end());
         const size_t turned = size_t(asymmetries.end() - std::upper_bound(asymmetries.begin(),
                                                                           asymmetries.end(), 0.05));
-        std::printf("  .pvsz rotations: the row- and column-major readings differ (largest "
-                    "|H - H^T| over 0.05) for %zu of %zu; median %.3f, largest %.3f\n",
+        std::printf("  .pvsz rotations: a row reading of the halves would differ from the "
+                    "spec's column reading by over 0.05 for %zu of %zu; median %.3f, largest "
+                    "%.3f\n",
                     turned, asymmetries.size(), asymmetries[asymmetries.size() / 2],
                     asymmetries.back());
       }
@@ -1074,6 +1079,54 @@ int run_world(int argc, char** argv) {
     pfm << "Pf\n" << W << " " << H << "\n-1.0\n";
     for (uint32_t y = H; y-- > 0;)
       pfm.write(reinterpret_cast<const char*>(&depth[size_t(y) * W]), std::streamsize(W * 4));
+  }
+  if (!depth_skips.empty()) {
+    // The depth image without the --depth-skip objects.
+    std::vector<uint8_t> kept_object(scene.object_names.size(), 1);
+    size_t skipped_objects = 0;
+    for (size_t o = 0; o < scene.object_names.size(); ++o) {
+      const std::string n = lower(scene.object_names[o]);
+      for (const auto& t : depth_skips)
+        if (n.find(t) != std::string::npos) kept_object[o] = 0;
+      skipped_objects += !kept_object[o];
+    }
+    CarModel kept;
+    kept.texture_levels.push_back(make_texture());
+    for (size_t i = 0; i + 2 < scene.vertices.size(); i += 3)
+      if (kept_object[scene.vertex_object[i]])
+        kept.vertices.insert(kept.vertices.end(), scene.vertices.begin() + i,
+                             scene.vertices.begin() + i + 3);
+    kept.indices.resize(kept.vertices.size());
+    for (size_t i = 0; i < kept.indices.size(); ++i) kept.indices[i] = uint32_t(i);
+    std::vector<uint8_t> skip_rgba;
+    std::vector<float> skip_depth;
+    if (kept.vertices.empty()) {
+      skip_depth.assign(pixels, 1.0f);
+    } else if (!renderer.replace_geometry(kept, error) ||
+               !renderer.render_offscreen(constants, W, H, skip_rgba, error, &skip_depth)) {
+      std::fprintf(stderr, "carview: %s\n", error.c_str());
+      return 1;
+    }
+    std::vector<uint8_t> skip_png(pixels, 0);
+    size_t changed = 0;
+    for (uint32_t y = 0; y < H; ++y)
+      for (uint32_t x = 0; x < W; ++x) {
+        const size_t i = size_t(y) * W + x;
+        changed += skip_depth[i] != depth[i];
+        if (skip_depth[i] >= 1.0f) continue;
+        const Vec4 h = mul(inverse, {(x + 0.5 - ox) / sx, (y + 0.5 - oy) / sy, skip_depth[i], 1.0});
+        if (!(h[3] > 0)) continue;
+        skip_png[i] = uint8_t(std::clamp(
+            255.0 - 235.0 * (std::log(1.0 / h[3]) - lmin) / (lmax - lmin), 1.0, 255.0));
+      }
+    write_png(out_dir / "world-depth-skip.png", W, H, 1, skip_png);
+    std::ofstream pfm(out_dir / "world-depth-skip.pfm", std::ios::binary);
+    pfm << "Pf\n" << W << " " << H << "\n-1.0\n";
+    for (uint32_t y = H; y-- > 0;)
+      pfm.write(reinterpret_cast<const char*>(&skip_depth[size_t(y) * W]), std::streamsize(W * 4));
+    std::printf("depth without the --depth-skip objects: %zu mesh objects left out, %zu pixels "
+                "differ from world-depth.pfm; wrote world-depth-skip.pfm and .png\n",
+                skipped_objects, changed);
   }
 
   // Our edges. Silhouettes: the near side of a break in 1/w (1/w is affine

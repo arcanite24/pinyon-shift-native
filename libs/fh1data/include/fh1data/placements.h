@@ -110,7 +110,7 @@ struct PvszRecord {
   size_t offset = 0;
   std::array<float, 3> distances{};  // three half floats (LOD or fade distances, guess)
   std::array<float, 3> position{};   // game frame
-  std::array<float, 9> rotation{};   // nine half floats, row-major: H = F * R_game^T
+  std::array<float, 9> rotation{};   // nine half floats h0..h8 in file order
   std::array<uint8_t, 16> unknown{};
   bool extended = false;  // the flag byte
   uint32_t word = 0;      // extended: -1, or a small per-model index
@@ -153,8 +153,10 @@ struct Placement {
 };
 
 Placement pgeo_placement(const PgeoInstance& instance);
-// `transposed` reads the nine halves as column-major instead of row-major.
-Placement pvsz_placement(const PvszRecord& record, bool transposed = false);
+// The halves are the file-frame rotation's columns, each with its third
+// component negated: R[r][c] = h[3c + r] * F[r]; the vertex v is placed at
+// R * v + F * position.
+Placement pvsz_placement(const PvszRecord& record);
 
 // A render model's LOD part: the first "_LODnn" (any case) of a mesh object
 // name. Returns false when there is none; else `family` is the name with

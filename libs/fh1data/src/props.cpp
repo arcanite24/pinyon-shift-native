@@ -112,7 +112,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
       p.store = PropStore::kPvsz;
       p.object_id = id;
       p.container = container;
-      p.placement = pvsz_placement(rec, options.pvsz_transposed);
+      p.placement = pvsz_placement(rec);
       out.placements.push_back(p);
     }
   }

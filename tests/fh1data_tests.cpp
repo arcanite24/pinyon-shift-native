@@ -620,9 +620,8 @@ void test_pvsz() {
     CHECK(r.extended && r.word == 0xFFFFFFFFu && r.extra == std::vector<uint8_t>({7, 8, 9}));
     CHECK(r.name == "ZONE_A" && r.position[0] == -5.0f && r.distances[1] == 2.0f);
     CHECK(r.rotation[2] == 1.0f && r.rotation[6] == -1.0f);
-    // H F v + F p with H row-major: local +x goes to H's first column.
+    // R[r][c] = h[3c + r] F[r]: local +x goes to (h0, h1, -h2) = (0, 0, -1).
     CHECK(near3(fh1::pvsz_placement(r).apply({1, 0, 0}), -5, 1, -3));
-    CHECK(near3(fh1::pvsz_placement(r, true).apply({1, 0, 0}), -5, 1, -1));
     CHECK(!zone.records[0].extended && zone.records[2].position[2] == 9.0f);
   }
   fh1::PvszZone first;
@@ -634,6 +633,28 @@ void test_pvsz() {
   error.clear();
   CHECK(!fh1::parse_pvsz(longer, zone, &error) && !error.empty());
   CHECK(!fh1::parse_pvsz(std::span(w.bytes).first(3), zone, &error));
+}
+
+// A tilted rotation (no axis upright), where reading the halves as rows
+// instead of columns gives another placement.
+void test_pvsz_tilted() {
+  fh1::PvszRecord r;
+  // Stored columns (0, 1, 0), (0, 0, -1), (1, 0, 0); negating each third
+  // component gives R = [[0, 0, 1], [1, 0, 0], [0, 1, 0]], a proper rotation.
+  r.rotation = {0, 1, 0, 0, 0, -1, 1, 0, 0};
+  r.position = {10, 20, 30};
+  CHECK(fh1::pvsz_record_rigid(r));
+  const auto p = fh1::pvsz_placement(r);
+  CHECK(near3(p.apply({1, 0, 0}), 10, 21, -30));
+  CHECK(near3(p.apply({0, 1, 0}), 10, 20, -29));
+  CHECK(near3(p.apply({0, 0, 1}), 11, 20, -30));
+  CHECK(near3(p.apply({0, 0, 0}), 10, 20, -30));
+  double det = 0;
+  const auto& m = p.linear;
+  det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+        m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  CHECK(std::fabs(det - 1) < 1e-12);
 }
 
 void test_lod_part() {
@@ -659,6 +680,7 @@ int main() {
   test_object_table();
   test_pgeo();
   test_pvsz();
+  test_pvsz_tilted();
   test_lod_part();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
