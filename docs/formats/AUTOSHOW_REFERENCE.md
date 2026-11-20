@@ -77,8 +77,8 @@ install it.
 | Autoshow | 200 | Make carousel, then the car list, then the showroom (below) |
 | Garage, when owned (unicorn) | 16 | Nine barn finds and seven gifts. The Autoshow leaves unicorn cars out. A test database mod that clears the unicorn flag (the #895 method) lists them; all 16 references are taken that way ([below](#cars-outside-the-stock-lists)) |
 | Same model as a selectable car | 10 | Rally's event-only twins. No reference of their own: the selectable car's covers the model |
-| Not selectable | 23 | Traffic, the placeholder and four showcase variants. Not shown in the stock game. The showcase four can be sold with the `hidden_cars` mod |
-| Not entitled | 1 | The Season Pass Focus SVT: Rally's licence does not cover its offer |
+| Not selectable | 23 | Traffic, the placeholder and four showcase variants. Not shown in the stock game. A test mod that sets `IsSelectable` lists them all; the four showcase variants and the placeholder have references, the 18 traffic rows do not: their showroom draw is unusable ([below](#cars-outside-the-stock-lists)) |
+| Not entitled | 1 | The Season Pass Focus SVT: Rally's licence does not cover its offer. A test mod that also maps it to Rally's main offer lists it; it has a reference |
 
 The Autoshow's lists ask for cars that are drivable, selectable, not
 unicorn, visible to the player and have a powertrain row. Visibility of
@@ -382,10 +382,11 @@ mask as one-pixel lines; they are car geometry, not stage leak.
 3. **Unicorns.** Done (2026-11-20): all 16 have references from the seed
    `m1-autoshow-v4-unicorn-db` ([below](#cars-outside-the-stock-lists)).
 4. **Not in the Autoshow.** The ten event-only twins share a model with
-   a selectable car and need no reference. The 23 non-selectable base
-   rows get no stock reference; the four showcase variants can be shown
-   with the `hidden_cars` mod if wanted. The Focus SVT needs Rally's
-   Season Pass licence, which the seed does not have.
+   a selectable car and need no reference. Done (2026-11-20) for the
+   rest: the four showcase variants, the placeholder and the Focus SVT
+   have references from `m1-autoshow-v4-hidden-db`; the 18 traffic rows
+   have none, because the showroom draws their models broken
+   ([below](#cars-outside-the-stock-lists)).
 5. **Check.** For each car, assert the opened make from the SQL trace
    (`PINYON_SHIFT_DLC_SQL_TRACE` prints the car list query with its
    `MakeId`) and check the list capture names the expected car before
@@ -428,6 +429,50 @@ S5S Raptor).
 | 1233 Mazda MX-5 Superlight | 35, 2 | 251 Mercedes-Benz 300SL | 37, 0 |
 | 1488 MINI John Cooper Works Coupe | 38, 2 | 1277 Plymouth Cuda 426 | 44, 0 |
 | 1197 Saleen S5S Raptor | 48, 0 | 1155 Shelby Cobra Daytona | 50, 1 |
+
+**Showcase variants, placeholder and Focus SVT** (seed
+`m1-autoshow-v4-hidden-db`, mod `m1_hidden_db`). The script sets
+`IsSelectable = 1` on the intro Corrado (1565), the showcase Mini (1566),
+500 Abarth (1567) and 205 T16 (1568), as the `hidden_cars` mod does, and on
+the placeholder `NUL_Car_00` (1215). The Focus SVT (346) is not a
+`Data_Car` flag: its row and its offer mapping (to the Season Pass offer,
+mask 4) come from Rally's merge database, which the title merges after
+the patched one, so the script adds a second `ContentOffersMapping` row
+(Id 9346) that maps car 346 to Rally's main offer (mask 1, which the
+package's licence covers). With it the entitlement cache reports 346 as
+purchased and visible, and the Autoshow lists it in Ford at the predicted
+place. These are the first v4 runs to list the four variants (only the
+base build had been checked, [HIDDEN_CARS.md](../HIDDEN_CARS.md)). The
+placeholder lists as "NULL CAR", a 2000 BMW, with no thumbnail, and shows
+a dark BMW-shaped car; the intro Corrado has no thumbnail either. One
+route of six cars: every list capture named the expected car, every dump
+read the expected model, and all six references passed every check
+(camera 6.577 to 6.578 m, leak 0 px, at most 1,731 stray px for the
+Corrado; the 205 T16's lit lamps add 16,824 glow px outside the mask).
+
+| Car | Make, place | Car | Make, place |
+| --- | --- | --- | --- |
+| 1567 Abarth 500 esseesse (showcase) | 0, 2 | 1215 BMW NULL CAR (placeholder) | 7, 1 |
+| 346 Ford SVT Focus | 17, 6 | 1566 MINI Cooper S (showcase) | 38, 2 |
+| 1568 Peugeot 205 Turbo 16 (showcase) | 43, 2 | 1565 Volkswagen Corrado VR6 (intro) | 56, 4 |
+
+**Traffic rows: no reference** (seed `m1-autoshow-v4-traffic-db`, mod
+`m1_traffic_db`, `IsSelectable = 1` on the 18 rows). The Autoshow lists
+all 18 by name and price, without thumbnails, and new makes appear (Bus,
+Kenworth, GMC, Volvo and others; 62 makes, as predicted). Every list capture named the
+expected car and no route hung or crashed. But the showroom draws a
+traffic model it was not built for, and no draw is a whole car, so none
+is kept as a reference (traffic model, showroom draw unusable):
+
+| Rows | What the showroom draws |
+| --- | --- |
+| 1529 tour bus, 1530 RAV4 Sport, 1531 A4 Avant, 1532 Camry, 1546 Corolla DX, 1549 Express cargo van, 1550 Durango, 1560 Yukon XL, 1561 XC70, 1365 Leaf | stubs: a few small pyramid shapes and the lamp glow; no draw reads the row's own LOD0 member (the 10 to 11 KB members of [HIDDEN_CARS.md](../HIDDEN_CARS.md)) |
+| 1241 Taurus SHO, 1562 T440, 1340 Prius, 282 Beetle | stubs: the row's small LOD0 draws, as pyramids and suspension parts (Taurus), scattered quads (Prius) or a few dark parts (Beetle); the T440 dump was also rejected by the stray-mask check |
+| 1541 Explorer, 1542 F-350 Super Duty, 1543 Focus ZX4 | fallback: a BMW-shaped car with a livery, not the row's model; these rows have no LOD0 member (or a 1,232-byte one) |
+| 414 PT Cruiser | distorted: its LOD0 drawn as a textured box |
+
+These rows are traffic models: they are matched against a free-roam
+traffic frame in M4, not against the showroom.
 
 ## Unknowns
 
