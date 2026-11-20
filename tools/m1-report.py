@@ -111,6 +111,7 @@ def main() -> int:
     parser.add_argument("--no-images", action="store_true", help="skip the side-by-side PNGs")
     parser.add_argument("--light", help="passed to carview --light (lighting settings)")
     parser.add_argument("--include-v1", action="store_true", help="score v1 references as well")
+    parser.add_argument("--any-coverage", action="store_true", help="passed as carview --coverage-mask")
     args = parser.parse_args()
     args.carview = str(Path(args.carview).resolve())  # CreateProcess does not search relative paths
     args.out.mkdir(parents=True, exist_ok=True)
@@ -129,7 +130,8 @@ def main() -> int:
         ours = args.out / f"{ref.stem}.engine.png"
         ours_mask = args.out / f"{ref.stem}.engine.mask.png"
         run = subprocess.run([args.carview, "--bake", args.bake, "--reference", str(ref), "--out", str(ours),
-                              "--mask", str(ours_mask)] + (["--light", args.light] if args.light else []), capture_output=True, text=True,
+                              "--mask", str(ours_mask)] + (["--light", args.light] if args.light else [])
+                             + (["--coverage-mask"] if args.any_coverage else []), capture_output=True, text=True,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # no console on the desktop
         match = METRIC.search(run.stdout)
         if run.returncode != 0 or not match:
@@ -152,9 +154,10 @@ def main() -> int:
     scored = [r for r in rows if "iou" in r]
     median = statistics.median(r["psnr"] for r in scored) if scored else 0.0
     lines = ["M1 car viewer report (REIMPLEMENTATION_PLAN M1; AUTOSHOW_REFERENCE v2)", ""]
-    lines.append("IoU is the official number. IoU-g leaves out the largest connected reference-only")
-    lines.append("region (glow-px, the lamp and highlight glows: SPEC_QUESTIONS Q11); it separates")
-    lines.append("geometry from glow and is not used for the pass.")
+    lines.append("IoU is the official overlap. IoU-g leaves out the largest connected reference-only")
+    lines.append("region (glow-px, the lamp and highlight glows: SPEC_QUESTIONS Q11). The pass rule")
+    lines.append("(spec side, 2026-11-20, playable first): IoU-g >= 0.97; glow-only misses are polish.")
+    lines.append("A car with IoU < 0.97 also needs the spec side's by-eye check of its sheet (flag 'eye').")
     lines.append("")
     lines.append(f"{'car_id':>7}  {'media name':32} {'IoU':>7} {'IoU-g':>7} {'glow px':>8} {'PSNR dB':>8} {'edge':>6}"
                  f" {'ref px':>8} {'eng px':>8}  flags")
@@ -165,13 +168,13 @@ def main() -> int:
             fails += 1
             continue
         flags = []
-        if r["iou"] < 0.97:
-            flags.append("IoU<0.97")
+        if r.get("iou_clean", r["iou"]) < 0.97:
+            flags.append("IoU-g<0.97")
         fails += bool(flags)
+        if r["iou"] < 0.97:
+            flags.append("eye")
         if r["psnr"] < median - 6:
             flags.append("PSNR>6dB under median (report only)")
-        if r.get("iou_clean", 1.0) < 0.97:
-            flags.append("IoU-g<0.97")
         clean = f"{r['iou_clean']:7.4f} {r['glow_px']:8d}" if "iou_clean" in r else f"{'-':>7} {'-':>8}"
         lines.append(f"{r['car_id']:>7}  {r['media']:32} {r['iou']:7.4f} {clean} {r['psnr']:8.2f} {r['edge']:6.3f}"
                      f" {r['ref_px']:8d} {r['eng_px']:8d}  {' '.join(flags)}")
@@ -180,7 +183,8 @@ def main() -> int:
               f" mean {statistics.mean(r['iou'] for r in scored) if scored else 0:.4f};"
               f" IoU-g: min {min((r.get('iou_clean', r['iou']) for r in scored), default=0):.4f},"
               f" cars under 0.97 by IoU-g: {sum(r.get('iou_clean', 1.0) < 0.97 for r in scored)}",
-              f"cars failing the numeric rule (IoU >= 0.97): {fails} (the by-eye check is separate)"]
+              f"cars failing the numeric rule (IoU-g >= 0.97): {fails};"
+              f" cars for the by-eye check (IoU < 0.97): {sum(r['iou'] < 0.97 for r in scored)}"]
     if leftovers:
         lines += ["", f"v1 references not scored ({len(leftovers)}): " + ", ".join(leftovers)]
     text = "\n".join(lines) + "\n"

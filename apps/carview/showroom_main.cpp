@@ -373,14 +373,13 @@ int run_showroom(int argc, char** argv) {
         }
         showroom.set_frame(frame);
         // AUTOSHOW_REFERENCE's mask: the pixels a car-only replay changes
-        // by 6/255 or more in any channel against an empty one. Drawn the
-        // same way at the silhouette: clear to the capture's empty
-        // background (its top-left pixel); a partly covered pixel counts
-        // when our colour moves 6/255 or more. A fully covered pixel always
-        // counts, so our shading being near the background grey (a
-        // material error, not geometry) does not cut holes in the mask.
-        // --coverage-mask counts any coverage instead.
-        bool diff_mask = false;
+        // by 6/255 or more in any channel against an empty one. Ours: every
+        // pixel any car draw touches (any MSAA sample), glass included,
+        // whatever its colour, so glass over the grey stage and shading near
+        // the background grey do not cut holes in the mask (the spec side's
+        // M1 rule, 2026-11-20). The colour image is still drawn over the
+        // capture's empty background (its top-left pixel). --coverage-mask
+        // keeps the default background.
         uint8_t background[3] = {0, 0, 0};
         if (reference_mode && !coverage_mask && !against.empty()) {
           std::vector<uint8_t> target;
@@ -388,12 +387,11 @@ int run_showroom(int argc, char** argv) {
           if (read_png(against, 4, width, height, target, ignored)) {
             for (int c = 0; c < 3; ++c) background[c] = target[size_t(c)];
             showroom.set_background(background[0] / 255.0f, background[1] / 255.0f, background[2] / 255.0f);
-            diff_mask = true;
           }
         }
         std::vector<uint8_t> rgba, mask;
         if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error) ||
-            ((!mask_out.empty() || !against.empty()) ? !showroom.render_mask(width, height, mask, error, diff_mask)
+            ((!mask_out.empty() || !against.empty()) ? !showroom.render_mask(width, height, mask, error)
                                                       : false)) {
           std::fprintf(stderr, "carview: %s\n", error.c_str());
           status = 1;
@@ -401,15 +399,6 @@ int run_showroom(int argc, char** argv) {
           // The background is opaque; the alpha channel holds blending
           // leftovers, so write it as 255.
           for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
-          if (diff_mask) {
-            for (size_t p = 0; p < mask.size(); ++p) {
-              if (mask[p] == 0 || mask[p] == 255) continue;
-              bool changed = false;
-              for (int c = 0; c < 3; ++c)
-                changed |= std::abs(int(rgba[p * 4 + size_t(c)]) - int(background[c])) >= 6;
-              mask[p] = changed ? 255 : 0;
-            }
-          }
           if (!write_png(out, width, height, 4, rgba.data())) {
             std::fprintf(stderr, "carview: cannot write %s\n", out.c_str());
             status = 1;
