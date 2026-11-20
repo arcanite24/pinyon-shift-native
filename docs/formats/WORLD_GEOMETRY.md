@@ -272,7 +272,7 @@ Kind-7 header fields (offsets from the start):
 | +0x40 | number of 8-byte references (u32 value, u32 flag) | probable |
 | +0x44 | number of 8-byte string records | probable |
 | +0x48 | total size | confirmed (equals the file size) |
-| +0x50 | size of the trailing block of 40-byte packed records | confirmed (the parse ends on it) |
+| +0x50 | size of the trailing block of 40-byte packed records; in the free-roam frame these are the tree billboards' per-quad records (WORLD_MATERIALS.md, Trees) | confirmed (the parse ends on it); probable (billboards) |
 | +0x54 | number of model records | confirmed |
 
 Then, 16-byte aligned, 0x40-byte **model records**: a box (minimum, pad,
@@ -707,7 +707,7 @@ says "engine's choice", the game's rule is not known.
 | Why are some `.pgeo` barrier sets (for example `models_proc_clrd_barrier_reds_*`) in the sector but not in the frame? | Not known: which placements the game shows (by event, time or PVS zone) is part of the selection question (open question 3). The files place them; the free-roam frame does not draw them |
 | The kind-7 name offset | +0x60, or +0x98 when the word at +0x58 is non-zero (see the header table) |
 | Model records whose IDs are not consecutive | 131 of 12,044; read each list's IDs as stored |
-| Which LOD does the game draw? | Unknown (open question 3). Drawing every overlapping model puts far LODs over near ones; for comparisons, draw the nearest LOD and leave out `UberLOD` and `_CUBE` models, as an engine choice |
+| Which LOD does the game draw? | Unknown (open question 3). Drawing every overlapping model puts far LODs over near ones; for comparisons, draw the nearest LOD and leave out `_CAGE` and `TERR_CUBE` models (the free-roam frame draws neither in the main view; it does draw two `UberLOD` patches and 17 `MIDDIST` objects within 3 km: WORLD_MATERIALS.md, What draws the hills), as an engine choice |
 | Do name lengths include a terminating NUL? | Strip trailing NULs |
 | The restart value for a 4-byte strip | All ones, by analogy; no 4-byte strip is on the disc (the one 4-byte list is a triangle list) |
 | Does "overlaps" include boxes that only touch the rectangle? | Yes, inclusive. That gives the 277 models of the sector |

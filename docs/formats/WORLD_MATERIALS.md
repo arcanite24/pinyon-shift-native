@@ -478,14 +478,16 @@ is not known and any reasonable choice will do for now.
    the shader's output alpha is the diffuse alpha is probable. An
    engine without multisampling can alpha-test at 0.5 the draws whose
    slot-0 texture has alpha (DXT3, DXT5, or DXT1 with transparent
-   texels), and draw the rest opaque (engine's choice). The decal
-   alpha (`H_VBLND_DECAL*`, and `H_ROAD_*_BLEND_*` alike by the same
-   shader structure) is the diffuse alpha times a vertex-colour fade,
-   saturate((COLOR.x − 0.5) × c4.x + 0.5) by our reading of the shader:
-   probable. `ADD_DIFF_OPAC_RGBA` (not drawn in this frame, so its blend
-   state was not seen) writes colour only, from a diffuse texture
-   scrolled with time, an `opacity` texture and a sun tint; by its name
-   and the missing alpha output it is additive (one, one): probable.
+   texels), and draw the rest opaque (engine's choice). The
+   `H_VBLND_DECAL*` alpha is the diffuse alpha times a vertex-colour
+   fade, saturate((COLOR.x − 0.5) × c4.x + 0.5), by our reading of the
+   shader (probable). `H_ROAD_*_BLEND_*` samples `Blend_A` without its
+   alpha and has no c4: its alpha comes from interpolated vertex data
+   (the vertex colour's alpha is the likely source; form not settled).
+   `ADD_DIFF_OPAC_RGBA` (not drawn in this frame, so its blend state was
+   not seen) writes colour only, from a diffuse texture scrolled with
+   time, an `opacity` texture and a sun tint; additive (one, one) is a
+   guess from its name and the missing alpha output.
 
 The blend state per family is from `check-dump` (confirmed for the
 frame); the formulas in 2 to 4 are not.
@@ -529,9 +531,11 @@ level by distance is an engine choice, not the game's rule.
 
 The far `H_DIFF_1` objects (`Zone2_Area3_6_middistance_*`, the `UberLOD`
 patches and the `_CAGE` walls) all list a slot-0 texture with a file: all
-58 such materials name a type-4 record whose `.bix` pair exists (for
-example `_0x00002CA9`, `_0x0000474D`). An engine that finds no file for
-them is probably reading model j's list instead of list j − 1.
+58 such materials name a type-4 record whose `.bix` pair exists
+(checked for all 58). One chain to compare against:
+`coloradoout.06760.rmb.bin` (`Zone2_Area3_6_middistance_Area3`),
+slot-0 value 0 → list 6,759 (member 6,760) entry 0 → record 11,177
+(type 4, flag 1) → `_0x00002CA9.bix` and `_0x00002CA9_B.bix`.
 
 ### Terrain shading
 
@@ -568,13 +572,18 @@ output  = sqrt(colour)
 
 - N and sunDir are in the game frame; `shadow` is the screen-space
   shadow mask (sampler 13), 1 for a first pass.
-- AO multiplies only the light, through 0.05 + 0.95 × AO. On the
-  `MIDDIST` hills the `AO` and `Light_Map` slots name type-1 records,
-  which the frame binds as all-zero 4 × 4 DXT1 textures (8 `AO` and
-  3 `Light_Map` bindings checked), so their factor is 0.05, not 1.
-  That the sun term takes the same factor is the least certain line
-  here: if the hills come out near black, apply it to the ambient
-  term only.
+- AO scales the light through 0.05 + 0.95 × AO. On the `MIDDIST`
+  hills the `AO` and `Light_Map` slots name type-1 records, and the
+  frame binds type-1 slots as all-zero 4 × 4 DXT1 textures (8 `AO` and
+  3 `Light_Map` bindings over the 131 world-space and local models of
+  the frame; which draws they belong to was not tied). Taken literally
+  that would light the hills at 5 %, and the image says otherwise: the
+  game's pixels average 78 (of 255) on `MIDDIST` hills and 90 on near
+  `H_BLND3` terrain, although the hills' layer textures are several
+  times darker. **Use AO = 1 for type-1 slots.** Something brightens
+  the far terrain that this reading does not show (the vertex colour,
+  which the shader also reads, is a candidate); until it is found, an
+  engine scales the hills to match the reference.
 - `EmissiveSwitchOnThreshold.y` is 0 by day, so `Light_Map` drops out
   (this settles the recipe's lightmap reading for these effects).
 - Specular: sunColor × saturate(N·H)^sunColor.w (w = 20), scaled by
@@ -605,7 +614,7 @@ Two systems, both found in the frame:
   `DIFF_TREEBEND_*` effects, placed through the kind-7 `.pgeo` tiles
   (WORLD_GEOMETRY), drawn with alpha to coverage (above).
 - **Mid and far trees and grass are billboards.** The frame has 3 × 167
-  non-indexed quad-list draws (one set per main-pass band, 3,537 quads
+  non-indexed quad-list draws (one set per main-pass band, 10,610 quads
   per set, plus grass sets), drawn with a rigid instance matrix and
   sampling a 2 × 2 sprite atlas: `_0x00005013` (512² DXT5, four whole
   trees: two autumn, one yellow, one conifer; 55 % of texels
@@ -613,12 +622,18 @@ Two systems, both found in the frame:
   textures are records 19,580 to 19,613, at the end of the record table
   and in no model's texture list. The quads' per-draw data is the
   trailing block of 40-byte packed records of a kind-7 `.pgeo` tile:
-  the bytes the first sampled draw reads (33 quads, 1,320 bytes) are in
-  `__R00G07021.pgeo` (confirmed for that draw; one 40-byte record per
-  quad, probable). The record's fields (position, size, atlas cell) are
-  not decoded yet. The billboards draw opaque with no alpha test and no
-  alpha to coverage, so their cut-out is made in the pixel shader
-  (probable).
+  the 1,320 bytes the first sampled draw reads (33 quads) are the
+  first 1,320 bytes of the trailing block of `__R00G07021.pgeo` (its
+  size is the header word at +0x50; confirmed for that draw). The
+  vertex shader fetches with a 40-byte stride, so one record feeds the
+  four corners of one quad (probable). Its fetches, by offset: 0, 4,
+  16 and 20 in the console's format 16 (10_11_11 in the published
+  vertex format list), 12 as 2_10_10_10 signed, 24 as four half floats,
+  32 and 36 as 8_8_8_8; the fields' meaning (position, size, atlas
+  cell, tint) is not decoded. A second stream (2,736 bytes per draw,
+  fetch constant 90) is not identified. Their render state was not read
+  reliably; cut the sprites out by their alpha (55 % of the tree
+  atlas is transparent).
 
 ### Sky
 
