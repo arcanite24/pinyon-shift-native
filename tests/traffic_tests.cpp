@@ -11,8 +11,11 @@
 #include <map>
 #include <string>
 
+#include "drive/vehicle.h"
+#include "traffic/bodies.h"
 #include "traffic/config.h"
 #include "traffic/nav.h"
+#include "traffic/population.h"
 #include "traffic/roads.h"
 
 namespace {
@@ -40,10 +43,95 @@ void test_time_factor() {
   CHECK(near(traffic::traffic_cap(c, 0), 8, 1e-12));
 }
 
+// A straight synthetic road along +z (11 nodes, 100 m apart) tagged as a
+// density-5 A road.
+traffic::NavMap straight_road() {
+  traffic::NavMap m;
+  m.keys = {"road_type", "traffic_density"};
+  m.values = {"a", "5"};
+  for (uint32_t i = 0; i < 11; ++i) {
+    traffic::NavNode n;
+    n.id = i;
+    n.z = float(i * 100);
+    m.nodes.push_back(n);
+    m.way_nodes.push_back(i);
+  }
+  m.tags = {{0, 0}, {1, 1}};
+  traffic::NavWay w;
+  w.node_count = 11;
+  w.tag_count = 2;
+  m.ways.push_back(w);
+  return m;
+}
+
+// The player's car runs into the back of a traffic car at 25 m/s on flat
+// ground: the traffic car takes the full step within 30 m, is pushed
+// (faster than its 30 mph afterwards) and the player's car slows.
+void test_push() {
+  const traffic::NavMap map = straight_road();
+  traffic::Roads roads;
+  roads.build(map);
+  traffic::TrafficConfig c;
+  c.initial_cars = 0;
+  traffic::DensityEntry e;
+  e.id = 5, e.speed_mph = 30;  // min = max = 0: no spawns
+  c.traffic[5] = e;
+  c.models = {{282, 0, false, false}};
+  traffic::Population pop(roads, c, 7);
+  traffic::Car car;
+  car.model = 282;
+  car.base_speed = car.speed = car.target = 30 * 0.44704;
+  pop.add(car, 0, 120, 1);
+  drive::CarParams params;  // a synthetic car (world_tests' sizes)
+  const double r = 0.31;
+  params.wheel_centres = {drive::Vec3{-0.72, r, 1.15}, drive::Vec3{0.72, r, 1.15}, drive::Vec3{-0.72, r, -1.15},
+                          drive::Vec3{0.72, r, -1.15}};
+  params.tyre_radius = {r, r, r, r};
+  params.centre_of_mass = {0, 0.5, 0.05};
+  params.size = {1.64, 1.3, 3.9};
+  traffic::Bodies bodies(pop, [&](int64_t) { return &params; });
+  drive::Vehicle me(params);
+  me.launch({2.2, 0, 40}, 0, 25);
+  const drive::FlatGround flat;
+  bool was_body = false;
+  double before = 0, me_before = 0;
+  for (int i = 0; i < int(8 / drive::Vehicle::kStep); ++i) {
+    drive::Input in;
+    in.throttle = bodies.player_contacts() ? 0 : 0.6;
+    me.step(in, flat);
+    const auto p = me.position(), v = me.velocity();
+    pop.step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+    me_before = me.speed();
+    bodies.step(flat, &me);
+    if (!pop.cars().empty() && pop.cars()[0].body && !was_body) {
+      was_body = true;
+      before = pop.cars()[0].speed;
+    }
+    if (bodies.player_contacts()) break;
+  }
+  const double me_at_contact = me_before;
+  double after = 0;
+  for (int i = 0; i < int(0.5 / drive::Vehicle::kStep); ++i) {
+    me.step({}, flat);
+    const auto p = me.position(), v = me.velocity();
+    pop.step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+    bodies.step(flat, &me);
+    if (!pop.cars().empty()) after = std::max(after, pop.cars()[0].speed);
+  }
+  std::printf("push: body at %.1f m/s, contacts %d, the player %.1f -> %.1f m/s, the traffic car up to %.1f m/s "
+              "(largest impulse %.0f N s)\n",
+              before, bodies.player_contacts(), me_at_contact, me.speed(), after, bodies.largest_impulse());
+  CHECK(was_body && std::fabs(before - 13.41) < 1.0);
+  CHECK(bodies.player_contacts() > 0);
+  CHECK(after > 16);
+  CHECK(me.speed() < me_at_contact - 2);
+}
+
 }  // namespace
 
 int main() {
   test_time_factor();
+  test_push();
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root || !*root) {
     std::printf("traffic_tests: SHIFT_GAME_ROOT not set, corpus checks skipped\n");

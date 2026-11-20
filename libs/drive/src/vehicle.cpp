@@ -137,6 +137,46 @@ void Vehicle::place(const Vec3& position, double heading) {
   time_ = t;
 }
 
+void Vehicle::launch(const Vec3& position, double heading, double speed, double pitch) {
+  place(position, heading);
+  const Quat yaw = rot_;
+  // Nose up: a rotation about the body's +x by -pitch (z forward, y up).
+  const Quat tilt{std::sin(-pitch / 2), 0, 0, std::cos(-pitch / 2)};
+  rot_ = {yaw.w * tilt.x + yaw.x * tilt.w + yaw.y * tilt.z - yaw.z * tilt.y,
+          yaw.w * tilt.y - yaw.x * tilt.z + yaw.y * tilt.w + yaw.z * tilt.x,
+          yaw.w * tilt.z + yaw.x * tilt.y - yaw.y * tilt.x + yaw.z * tilt.w,
+          yaw.w * tilt.w - yaw.x * tilt.x - yaw.y * tilt.y - yaw.z * tilt.z};
+  pos_ = position + rotate(rot_, com_local_);
+  vel_ = rotate(rot_, Vec3{0, 0, speed});
+  for (int i = 0; i < kWheels; ++i) w_[i].omega = p_.tyre_radius[i] > 0 ? speed / p_.tyre_radius[i] : 0;
+  int gear = 1;
+  for (int g = 1; g <= int(p_.gears.size()); ++g) {
+    const double rpm = speed / std::max(1e-3, p_.tyre_radius[2]) * ratio(g) * kRpm;
+    if (rpm < p_.upshift_fraction * p_.redline_rpm) gear = g;
+    if (rpm < std::max(p_.idle_rpm * 1.2, 0.3 * p_.redline_rpm)) break;
+  }
+  gear_ = target_gear_ = gear_before_ = gear;
+  clutch_ = 1;
+  locked_ = true;
+  engine_omega_ = std::max(p_.idle_rpm / kRpm, speed / std::max(1e-3, p_.tyre_radius[2]) * ratio(gear));
+  prev_rpm_ = engine_omega_ * kRpm;
+}
+
+void Vehicle::apply_impulse(const Vec3& point, const Vec3& impulse, double angular_scale) {
+  vel_ = vel_ + impulse * (1 / p_.mass);
+  const Vec3 tw = cross(point - pos_, impulse) * angular_scale;
+  const Vec3 tl = rotate_inverse(rot_, tw);
+  ang_ = ang_ + rotate(rot_, Vec3{tl.x / inertia_.x, tl.y / inertia_.y, tl.z / inertia_.z});
+}
+
+Vec3 Vehicle::point_velocity(const Vec3& point) const { return vel_ + cross(ang_, point - pos_); }
+
+double Vehicle::inverse_mass_along(const Vec3& point, const Vec3& n, double angular_scale) const {
+  const Vec3 rn = rotate_inverse(rot_, cross(point - pos_, n));
+  const Vec3 w = rotate(rot_, Vec3{rn.x / inertia_.x, rn.y / inertia_.y, rn.z / inertia_.z});
+  return 1 / p_.mass + angular_scale * dot(cross(w, point - pos_), n);
+}
+
 void Vehicle::reset(const Vec3& position, double heading) {
   rot_ = {0, std::sin(heading / 2), 0, std::cos(heading / 2)};
   pos_ = position + rotate(rot_, com_local_);  // pos_ holds the centre of mass

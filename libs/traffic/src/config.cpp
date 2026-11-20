@@ -58,6 +58,8 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Traffic/VehicleManager/OverspawnCheckTime", overspawn_check_time);
   g("AI/Traffic/VehiclePosition/MaxHighLodDistance", high_lod_distance);
   g("AI/Traffic/VehiclePosition/MaxMediumLodDistance", medium_lod_distance);
+  g("AI/Traffic/VehicleControls/AccelMaxInput", accel_max_input);
+  g("AI/Traffic/VehicleControls/BrakeMaxInput", brake_max_input);
 }
 
 namespace {

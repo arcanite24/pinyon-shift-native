@@ -294,6 +294,21 @@ class Vehicle {
   void reset(const Vec3& position, double heading = 0);
   // As reset, but the clock runs on (a recovery during a run).
   void place(const Vec3& position, double heading = 0);
+  // As place, already moving: the body at `speed` along its heading
+  // (pitched by `pitch`, nose up positive), the wheels rolling with it, the
+  // highest gear that keeps the engine above idle (below the up-shift
+  // point) and the clutch in. For a traffic car taken into full physics
+  // on the move (SPEC-TRAFFIC, Physics and level of detail; ours).
+  void launch(const Vec3& position, double heading, double speed, double pitch = 0);
+  // Contacts with other bodies (SPEC-TRAFFIC, Collision with the player;
+  // ours): an impulse (N s, world) at a world point, its angular part
+  // scaled by `angular_scale`; the velocity of a world point of the body;
+  // the inverse of the body's effective mass along unit `n` at the point
+  // (the same scale on the angular part); and a shift of the body.
+  void apply_impulse(const Vec3& point, const Vec3& impulse, double angular_scale = 1);
+  Vec3 point_velocity(const Vec3& point) const;
+  double inverse_mass_along(const Vec3& point, const Vec3& n, double angular_scale = 1) const;
+  void translate(const Vec3& d) { pos_ = pos_ + d; }
   // Advances one fixed step with the given raw input.
   void step(const Input& input, const Ground& ground);
   // The AI's input mode (SPEC-CAR-PHYSICS, "What the AI's controls mean"):

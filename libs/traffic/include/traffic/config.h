@@ -58,6 +58,7 @@ struct TrafficConfig {
   double look_ahead_time = 1, min_look_ahead = 5, traffic_search = 30, player_search = 60;
   double model_rotation_time = 30, overspawn_check_time = 4;
   double high_lod_distance = 30, medium_lod_distance = 120;
+  double accel_max_input = 0.2, brake_max_input = 0.2;  // AI/Traffic/VehicleControls
 
   const DensityEntry* density(int id) const;
   void apply(const Registry& r);

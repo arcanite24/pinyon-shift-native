@@ -209,6 +209,12 @@ bool Population::place(Car& car, int road, double s, int dir) {
   return true;
 }
 
+void Population::add(Car car, int road, double s, int dir) {
+  car.id = next_id_++;
+  place(car, road, s, dir);
+  cars_.push_back(car);
+}
+
 void Population::pose(Car& car) const {
   if (car.road < 0) return;
   std::array<double, 2> t;
@@ -337,7 +343,7 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   }
   ahead(player, player_velocity.x, player_velocity.z, config_.player_search);
   car.target = target;
-  if (car.physics && bodies_) return;  // the host's body moves it
+  if (car.physics && bodies_ && car.body) return;  // the host's body moves it
   if (target > car.speed) car.speed = std::min(target, car.speed + config_.accel_max * dt);
   else car.speed = std::max(target, car.speed - config_.decel_max * dt);
   advance(car, car.speed * dt);

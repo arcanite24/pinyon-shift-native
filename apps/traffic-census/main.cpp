@@ -6,10 +6,13 @@
 // car against the road map: within 15 m of a traffic road, on two-way
 // roads right of the centre line at 2.2 +- 0.5 m. It also reports the
 // spawn and despawn distances, the share driving away, and the speeds on
-// straight road. The population is kinematic here (no bodies): the
-// physics level of detail is the host's (bodies.h).
+// straight road. Without --bake the population is kinematic; with --bake
+// (and Colorado's collision from the disc) the cars within 30 m are bodies
+// with their own rows on the collision ground (bodies.h), the player's car
+// (--car, the R34 by default) among them: parked on its brakes, then
+// carried along the cruise.
 //
-//   traffic-census --game-root <disc> [--seed N] [--seeds N] [--verbose]
+//   traffic-census --game-root <disc> [--bake <dir> [--car <media>]] [--seed N] [--seeds N] [--verbose]
 //
 // Exit 0 when every tolerance of SPEC-TRAFFIC holds over the seeds' mean,
 // 1 when one misses (each miss is printed), 2 on a usage or read error.
@@ -18,13 +21,23 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "cars/bake_format.h"
+#include "cars/sources.h"
+#include "drive/from_physics.h"
+#include "traffic/bodies.h"
 #include "traffic/config.h"
 #include "traffic/nav.h"
 #include "traffic/population.h"
 #include "traffic/roads.h"
+#include "world/collision.h"
+#include "world/stream.h"
+#include "world/world.h"
 
 namespace {
 
@@ -43,7 +56,27 @@ struct Result {
   int car_samples = 0, off_road = 0, two_way = 0, right = 0;
   std::vector<double> offsets, straight_speeds;
   traffic::PopulationStats stats;
+  int bodies_max = 0, contacts = 0, player_contacts = 0, body_steps = 0;
+  double body_lateral_max = 0;  // the largest offset of a body from its lane line (m)
 };
+
+// The world for bodies: Colorado's collision around the player and every
+// traffic model's rows.
+struct Physics {
+  world::World colorado;
+  world::Collision collision;
+  std::unique_ptr<world::Streamer> streamer;
+  std::map<int64_t, drive::CarParams> params;
+  drive::CarParams player;
+  double torque_scale = 0.25;
+};
+
+bool ground_height(const world::Streamer& s, double x, double z, double hint, double& y) {
+  drive::Hit h;
+  if (!s.ground().raycast({x, hint + 4, z}, {0, -1, 0}, 12, h)) return false;
+  y = hint + 4 - h.distance;
+  return true;
+}
 
 double median(std::vector<double> v) {
   if (v.empty()) return 0;
@@ -51,17 +84,45 @@ double median(std::vector<double> v) {
   return v[v.size() / 2];
 }
 
-Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, uint64_t seed, bool verbose) {
+Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, uint64_t seed, bool verbose,
+           Physics* physics) {
   Result out;
   traffic::Population pop(roads, config, seed);
   traffic::P3 player{2002.9, 143.8, 960.0}, velocity{0, 0, 0};
+  std::unique_ptr<traffic::Bodies> bodies;
+  std::unique_ptr<drive::Vehicle> me;
+  if (physics) {
+    const world::Streamer& s = *physics->streamer;
+    pop.set_ground([&s](double x, double z, double hint, double& y) { return ground_height(s, x, z, hint, y); });
+    traffic::BodiesOptions bo;
+    bo.torque_scale = physics->torque_scale;
+    bo.accel_max_input = config.accel_max_input;
+    bo.brake_max_input = config.brake_max_input;
+    bodies = std::make_unique<traffic::Bodies>(
+        pop,
+        [physics](int64_t m) -> const drive::CarParams* {
+          const auto it = physics->params.find(m);
+          return it == physics->params.end() ? nullptr : &it->second;
+        },
+        bo);
+    me = std::make_unique<drive::Vehicle>(physics->player);
+    double y = player.y;
+    ground_height(s, player.x, player.z, player.y, y);
+    // Parked facing along the road, against node order (its right-hand lane).
+    const auto h = roads.nearest(player.x, player.z, true);
+    std::array<double, 2> d;
+    roads.point_at(h.road, h.s, nullptr, &d);
+    me->reset({player.x, y, player.z}, std::atan2(-d[0], -d[1]));
+    player.y = y;
+  }
   // The cruise: along the player's road, the way its right-hand lane runs.
   const auto start = roads.nearest(player.x, player.z, true);
   traffic::Car walker;
   walker.road = start.road;
   walker.s = start.s;
   walker.dir = start.lateral < 0 ? -1 : 1;
-  constexpr double kDt = 1.0 / 60, kCruise = 313.0 / 30;
+  const double kDt = physics ? drive::Vehicle::kStep : 1.0 / 60, kCruise = 313.0 / 30;
+  const int every = int(std::lround(0.5 / kDt));
   const int steps = int(150 / kDt);
   for (int i = 0; i <= steps; ++i) {
     const double t = i * kDt;
@@ -74,9 +135,36 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
       const auto rt = traffic::right_of(d[0] * walker.dir, d[1] * walker.dir);
       player = {p.x + rt[0] * 2.2, p.y, p.z + rt[1] * 2.2};
       velocity = {d[0] * walker.dir * kCruise, 0, d[1] * walker.dir * kCruise};
+      if (me) {
+        double y = player.y;
+        ground_height(*physics->streamer, player.x, player.z, player.y, y);
+        player.y = y;
+        me->launch({player.x, player.y, player.z}, std::atan2(d[0] * walker.dir, d[1] * walker.dir), kCruise);
+      }
     }
+    if (me && t < 120) {
+      drive::Input hold;
+      hold.brake = 1;
+      hold.handbrake = true;
+      me->step(hold, physics->streamer->ground());
+      const auto at = me->position();
+      player = {at.x, at.y, at.z};
+      const auto v = me->velocity();
+      velocity = {v.x, v.y, v.z};
+    }
+    if (physics) physics->streamer->update(player.x, player.z, nullptr, nullptr);
     pop.step(kDt, player, velocity);
-    if (i % 30 != 0) continue;
+    if (bodies) {
+      bodies->step(physics->streamer->ground(), me.get());
+      out.body_steps += int(bodies->count());
+      out.bodies_max = std::max(out.bodies_max, int(bodies->count()));
+      for (const auto& c : pop.cars())
+        if (c.body && c.road >= 0) {
+          const auto h = roads.nearest(c.position.x, c.position.z, true, 60);
+          if (h.road >= 0) out.body_lateral_max = std::max(out.body_lateral_max, std::fabs(std::fabs(h.lateral) - 2.2));
+        }
+    }
+    if (i % every != 0) continue;
     int active = 0;
     for (const auto& c : pop.cars()) {
       if (std::hypot(c.position.x - player.x, c.position.z - player.z) > 1000) continue;
@@ -118,13 +206,15 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
                   pop.local_density(), pop.target(), active, pop.loaded().size());
   }
   out.stats = pop.stats();
+  if (bodies) out.contacts = bodies->contacts(), out.player_contacts = bodies->player_contacts();
   return out;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::filesystem::path game;
+  std::filesystem::path game, bake_dir;
+  std::string player_car = "NIS_SkylineGTRVSpecII_02";
   uint64_t seed = 1;
   int seeds = 10;
   bool verbose = false;
@@ -135,6 +225,8 @@ int main(int argc, char** argv) {
     else if (a == "--seed") seed = std::strtoull(next().c_str(), nullptr, 10);
     else if (a == "--seeds") seeds = std::max(1, std::atoi(next().c_str()));
     else if (a == "--verbose") verbose = true;
+    else if (a == "--bake") bake_dir = next();
+    else if (a == "--car") player_car = next();
     else {
       std::fprintf(stderr, "usage: traffic-census --game-root <disc> [--seed N] [--seeds N] [--verbose]\n");
       return 2;
@@ -156,12 +248,74 @@ int main(int argc, char** argv) {
   }
   traffic::Roads roads;
   roads.build(map);
+  std::unique_ptr<Physics> physics;
+  if (!bake_dir.empty()) {
+    physics = std::make_unique<Physics>();
+    const auto colorado = game / "media" / "tracks" / "colorado";
+    std::string warning;
+    if (!physics->colorado.open(colorado, std::filesystem::path("out") / "world" / "colorado.index", &error) ||
+        !physics->collision.open(colorado, game / "media" / "physics.zip", &error, &warning)) {
+      std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
+      return 2;
+    }
+    physics->streamer = std::make_unique<world::Streamer>(physics->colorado, world::GatherOptions{}, 200,
+                                                          &physics->collision);
+    if (!physics->streamer->update(2002.9, 960.0, nullptr, &error)) {
+      std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
+      return 2;
+    }
+    // Each model's rows, by Data_Car.Id (the second line of its physics rows).
+    auto params_of = [&](const std::string& media, drive::CarParams& out) {
+      cars::bake::Bake b;
+      if (!cars::bake::read_file(bake_dir / "cars" / (cars::lower(media) + ".shiftbake"), b, &error)) return false;
+      out = drive::params_for_baked_car(b.car, bake_dir);
+      return true;
+    };
+    std::error_code ec;
+    for (const auto& f : std::filesystem::directory_iterator(bake_dir / "cars", ec)) {
+      const std::string name = f.path().filename().string();
+      if (name.size() < 12 || name.substr(name.size() - 12) != ".physics.txt") continue;
+      std::ifstream in(f.path());
+      std::string line;
+      while (std::getline(in, line) && line.rfind("car ", 0) != 0) {
+      }
+      long long id = 0;
+      char media[128] = {};
+      if (std::sscanf(line.c_str(), "car %lld %127s", &id, media) != 2) continue;
+      bool traffic = false;
+      for (const auto& m : config.models) traffic |= m.id == id;
+      if (!traffic) continue;
+      drive::CarParams p;
+      if (!params_of(media, p)) {
+        std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
+        return 2;
+      }
+      physics->params[id] = p;
+    }
+    if (!params_of(player_car, physics->player)) {
+      std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
+      return 2;
+    }
+    {
+      // Collision\TrafficTorqueScale from the player's car's settings rows.
+      std::ifstream in(bake_dir / "cars" / (cars::lower(player_car) + ".physics.txt"));
+      std::string line;
+      while (std::getline(in, line))
+        if (line.rfind("setting Collision\\TrafficTorqueScale ", 0) == 0)
+          physics->torque_scale = std::atof(line.c_str() + line.rfind(' ') + 1);
+    }
+    std::printf("bodies: %zu of %zu traffic models baked, torque scale %.2f\n", physics->params.size(),
+                config.models.size(), physics->torque_scale);
+  }
 
   Phase noon, night, cruise;
   int samples = 0, off_road = 0, two_way = 0, right = 0, spawned = 0, away = 0, despawned = 0;
   std::vector<double> offsets, speeds, spawn_d, despawn_d;
   for (int k = 0; k < seeds; ++k) {
-    const Result r = run(roads, config, seed + uint64_t(k), verbose && k == 0);
+    const Result r = run(roads, config, seed + uint64_t(k), verbose && k == 0, physics.get());
+    if (physics)
+      std::printf("  bodies: up to %d at once, %d contacts (%d with the player), off their lane line by up to %.2f m\n",
+                  r.bodies_max, r.contacts, r.player_contacts, r.body_lateral_max);
     std::printf("seed %llu: noon %.2f (%d-%d), 02:00 %.2f (%d-%d), cruise %.2f (%d-%d); %d spawns (%d away), "
                 "%d despawns\n",
                 (unsigned long long)(seed + uint64_t(k)), r.noon.mean(), r.noon.min, r.noon.max, r.night.mean(),

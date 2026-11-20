@@ -43,6 +43,7 @@ struct Car {
   double heading = 0, pitch = 0;
   bool physics = false;     // in full physics (within the high-LOD distance, or knocked off its line)
   bool off_line = false;    // knocked off its lane (stays in physics until back on it)
+  bool body = false;        // the host has a body for it (bodies.h): it is not placed on the lane
   double age = 0;           // s since spawning
 };
 
@@ -73,6 +74,8 @@ class Population {
   // first call places the initial cars.
   void step(double dt, const P3& player, const P3& player_velocity);
 
+  // Adds a car on a road (its id given here), placed on its lane.
+  void add(Car car, int road, double s, int dir);
   const std::vector<Car>& cars() const { return cars_; }
   std::vector<Car>& cars() { return cars_; }
   // Moves a car in full physics to its body's pose: finds its place on its
