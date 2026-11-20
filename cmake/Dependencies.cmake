@@ -22,6 +22,8 @@ set_target_properties(shift_mspack_lzxd PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # SQLite, the official amalgamation, for reading the game database
 # (media/db/gamedb.slt) read-only. Public domain.
+# Checked 2026-11-19: the extracted sqlite3.c matches the SHA3-256 that
+# sqlite.org's 3.50.4 release log publishes (9145255e...df36782).
 FetchContent_Declare(sqlite3
   URL https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip
   URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
