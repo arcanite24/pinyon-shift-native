@@ -222,6 +222,19 @@ class Showroom {
   void set_world_light(const float sun[3], const float up[3], float exposure);
   // Whether the car is drawn (the world reference frame leaves it out).
   void set_draw_car(bool draw) { draw_car_ = draw; }
+
+  // Other cars drawn with this one's camera and light (traffic): each is a
+  // Showroom loaded and uploaded as a guest (set_guest before upload: no
+  // scene of its own), drawn wherever an instance names it. An instance's
+  // matrix takes the guest's model frame to this car's. A guest must be
+  // taken out of the instances before it is destroyed.
+  void set_guest() { guest_ = true; }
+  struct Instance {
+    Showroom* car = nullptr;
+    float model[16];
+  };
+  void set_instances(std::vector<Instance> list) { instances_ = std::move(list); }
+  size_t instance_count() const { return instances_.size(); }
   size_t world_texture_count() const { return world_textures_.size(); }
 
   // Renders the car-coverage mask (every car draw, no depth test, at the
@@ -294,7 +307,12 @@ class Showroom {
   // on first use; null when one of them did not upload.
   VkDescriptorSet world_layer_set(const std::array<uint32_t, 3>& records);
   void update_frame(VkCommandBuffer cmd);
+  // The opaque and glass draws once more, each model matrix first taken by
+  // `m` (a guest's instance; glass unsorted).
+  void record_instance(VkCommandBuffer cmd, const float m[16]);
 
+  bool guest_ = false;
+  std::vector<Instance> instances_;
   Renderer& r_;
   cars::bake::Bake car_, wheel_, tyre_, tyre_textures_, shared_;
   ShowroomOptions options_;

@@ -14,5 +14,8 @@ CarParams params_from_bake(const cars::bake::CarInfo& car);
 // 16 floats): world from model = world from body x body from model, where
 // body from model is FORMAT-CARS's pose (z mirrored, lifted, pitched).
 void model_to_world(const cars::bake::CarInfo& car, const Vehicle& v, float out[16]);
+// The same for a body frame at `position` with orientation `q` (a car
+// placed without a Vehicle: traffic on its lane).
+void model_to_world(const cars::bake::CarInfo& car, const Quat& q, const Vec3& position, float out[16]);
 
 }  // namespace drive

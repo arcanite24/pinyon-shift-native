@@ -23,10 +23,13 @@ CarParams params_from_bake(const cars::bake::CarInfo& car) {
 }
 
 void model_to_world(const cars::bake::CarInfo& car, const Vehicle& v, float out[16]) {
+  model_to_world(car, v.orientation(), v.position(), out);
+}
+
+void model_to_world(const cars::bake::CarInfo& car, const Quat& q, const Vec3& p, float out[16]) {
   // body = B model + (0, lift, 0), B = [[1,0,0],[0,c,s],[0,s,-c]].
   const double c = std::cos(car.pitch), s = std::sin(car.pitch);
   const double b[3][3] = {{1, 0, 0}, {0, c, s}, {0, s, -c}};
-  const Quat q = v.orientation();
   const Vec3 cols[3] = {rotate(q, {1, 0, 0}), rotate(q, {0, 1, 0}), rotate(q, {0, 0, 1})};
   // world = R body + p  =>  world = (R B) model + R (0, lift, 0) + p.
   for (int col = 0; col < 3; ++col) {
@@ -41,7 +44,6 @@ void model_to_world(const cars::bake::CarInfo& car, const Vehicle& v, float out[
     out[col * 4 + 2] = float(r.z);
     out[col * 4 + 3] = 0;
   }
-  const Vec3 p = v.position();
   out[12] = float(cols[1].x * car.lift + p.x);
   out[13] = float(cols[1].y * car.lift + p.y);
   out[14] = float(cols[1].z * car.lift + p.z);

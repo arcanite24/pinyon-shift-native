@@ -245,7 +245,7 @@ Showroom::~Showroom() {
   if (!d) return;
   vkDeviceWaitIdle(d);
   stop_reaper();
-  r_.set_scene({});
+  if (!guest_) r_.set_scene({});
   for (auto& t : gpu_textures_) r_.destroy_image(t);
   r_.destroy_image(environment_);
   r_.destroy_buffer(vertex_buffer_);
@@ -1296,12 +1296,26 @@ bool Showroom::upload(std::string& error) {
     vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
   }
 
+  if (guest_) return true;
   SceneHooks hooks;
-  hooks.before = [this](VkCommandBuffer cmd) { update_frame(cmd); };
+  hooks.before = [this](VkCommandBuffer cmd) {
+    update_frame(cmd);
+    // Each guest's frame block: this car's camera and light, its own stripe.
+    std::vector<Showroom*> seen;
+    for (const auto& in : instances_) {
+      if (!in.car || std::find(seen.begin(), seen.end(), in.car) != seen.end()) continue;
+      seen.push_back(in.car);
+      in.car->frame_ = frame_;
+      for (int i = 0; i < 4; ++i) in.car->frame_.stripe[i] = in.car->stripe_[i];
+      in.car->update_frame(cmd);
+    }
+  };
   hooks.draw = [this](VkCommandBuffer cmd) {
     r_.mark(cmd, "setup");
     record_world(cmd);
     if (draw_car_) record_draws(cmd, opaque_, glass_);
+    for (const auto& in : instances_)
+      if (in.car) in.car->record_instance(cmd, in.model);
     r_.mark(cmd, "car");
   };
   hooks.clear[0] = 0.09f;
@@ -1372,6 +1386,28 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
                    [&](const Draw* a, const Draw* b) { return distance(a) > distance(b); });
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glass);
   for (const Draw* d : sorted) draw(*d);
+}
+
+void Showroom::record_instance(VkCommandBuffer cmd, const float m[16]) {
+  if (draws_.empty() || material_sets_.empty()) return;
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0,
+                          nullptr);
+  for (int pass = 0; pass < 2; ++pass) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass ? glass_ : opaque_);
+    for (const auto& d : draws_) {
+      if (d.glass != (pass == 1)) continue;
+      ShowroomPush push = d.push;
+      multiply(m, d.push.model, push.model);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                              &material_sets_[d.descriptor], 0, nullptr);
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+    }
+  }
 }
 
 namespace {

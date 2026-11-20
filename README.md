@@ -125,6 +125,7 @@ placed props out, `--no-far` the far ring, `--no-trees` the tree sprites.
 | Choose another car (shown in the title) | [ and ] | LB and RB |
 | Drive the chosen car (from where this one stands) | Enter | X |
 | Hide or show the HUD | H | |
+| Traffic's time of day, an hour on or back | T, Shift+T | |
 
 The pause menu stops the car and is drawn over the HUD; "change car"
 opens the picker (Esc closes it without a change), "quit" closes the
@@ -139,6 +140,24 @@ menu opens, every 30 s of driving and on quit, and read at start: with no
 stood (when the car is the same). `--save <file>` names another file
 (headless runs too), `--no-save` neither reads nor writes one.
 `--menu-png <file>` writes the HUD with the menu open and exits.
+
+**Traffic.** Free roam has the game's traffic (SPEC-TRAFFIC; `libs/traffic`):
+the road map in `colorado.nav`, the freeroam car list and density table of
+`AIOpenWorld.xml`, and the registry's spawning and driving values. Around
+the player the population follows the local density for the hour (full by
+day, a few cars at night): four cars at the start, then one every 5 to 9 s
+on the 330 m circle while below the target, each removed past 390 m. Four
+of the 17 traffic models are loaded at a time, changing every 30 s; each is
+drawn from its M1 bake. Cars keep 2.2 m right of the centre line at the
+road's speed (30 or 60 mph), slow for bends and for the car ahead, and
+pick a way at junctions. Within 30 m of the player, or once knocked off
+their line, they are full-physics cars with their own rows that the
+player's car can push. Traffic is on in the window and off headless;
+`--traffic` and `--no-traffic` choose, `--hour <h>` sets the hour it
+follows (12 by default; the lighting does not change with it) and
+`--traffic-seed <n>` its random seed. `traffic-census --game-root <disc>
+[--bake out/bake]` runs the spec's census headless: noon 4.8 cars (the
+oracle's 6.1), 02:00 1.3 (0.9, a known miss: SPEC_QUESTIONS Q41).
 
 The pad's sticks and triggers are rescaled from an inside to an outside
 deadzone (steering 0.10 to 0.95, triggers 0.03 to 0.97; ours, the rule is

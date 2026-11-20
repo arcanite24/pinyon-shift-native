@@ -40,6 +40,7 @@
 #include "reference.h"
 #include "renderer.h"
 #include "showroom.h"
+#include "traffic_view.h"
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive/save.h"
@@ -858,6 +859,12 @@ int run_drive(int argc, char** argv) {
   // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
   std::filesystem::path sound_dir = "out/sound", audio_out;
   bool sound = true;
+  // Free-roam traffic (SPEC-TRAFFIC): on in the window with the world, off
+  // headless unless --traffic; --hour sets the time of day it follows (the
+  // world's lighting does not change with it), T / Shift+T in the window.
+  int traffic_flag = -1;  // -1: the default
+  double hour = 12;
+  uint64_t traffic_seed = 1;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -890,6 +897,10 @@ int run_drive(int argc, char** argv) {
     else if (a == "--hud") hud = true;
     else if (a == "--sound") sound_dir = next();
     else if (a == "--no-sound") sound = false;
+    else if (a == "--traffic") traffic_flag = 1;
+    else if (a == "--no-traffic") traffic_flag = 0;
+    else if (a == "--hour") hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
+    else if (a == "--traffic-seed") traffic_seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--near") {
@@ -1230,10 +1241,21 @@ int run_drive(int argc, char** argv) {
         }
         if (status != 0) std::fprintf(stderr, "carview: %s\n", error.c_str());
       }
+      std::unique_ptr<TrafficView> traffic;
+      if (status == 0 && streamer && (traffic_flag == 1 || (traffic_flag < 0 && !headless))) {
+        traffic = std::make_unique<TrafficView>(renderer, showroom, bake_dir, headless);
+        const auto game_root = world_dir.parent_path().parent_path().parent_path();
+        if (!traffic->open(game_root, &ground, hour, traffic_seed, error)) {
+          std::fprintf(stderr, "carview: note: no traffic: %s\n", error.c_str());
+          error.clear();
+          traffic.reset();
+        }
+      }
       // One fixed step, then the stream: gathers again (and swaps the
       // ground and the scenery) once the car is far from the last centre.
       auto step = [&](const drive::Input& in) {
         vehicle.step(in, *ground);
+        if (traffic) traffic->step(vehicle);
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
@@ -1275,6 +1297,7 @@ int run_drive(int argc, char** argv) {
         float m[16];
         scenery_transform(info, vehicle, showroom.world_origin_x(), showroom.world_origin_z(), m);
         showroom.set_world_transform(m);
+        if (traffic) traffic->place(info, vehicle);
         const float up_game[3] = {0, 1, 0};
         float sun[3], up[3];
         rotate_direction(m, kSunGame, sun);
@@ -1304,7 +1327,10 @@ int run_drive(int argc, char** argv) {
       // The car's name and the keys, over the HUD for the first seconds.
       constexpr double kIntroSeconds = 6;
       // (The display name is a string-table key: the media name is shown.)
-      const std::string intro = car + " - [ ] pick a car  R back on the road  Esc menu";
+      const std::string intro = car + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
+      // A line for a few seconds after the time of day changes.
+      std::string notice;
+      double notice_until = -1;
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
       auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
@@ -1693,6 +1719,14 @@ int run_drive(int argc, char** argv) {
               if (e.key.key == SDLK_LEFTBRACKET) browse(-1);
               if (e.key.key == SDLK_RIGHTBRACKET) browse(1);
               if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) take_pick();
+              if (e.key.key == SDLK_T && traffic) {
+                const bool back = (e.key.mod & SDL_KMOD_SHIFT) != 0;
+                traffic->set_hour(std::fmod(traffic->hour() + (back ? 23 : 1), 24.0));
+                char line_buf[64];
+                std::snprintf(line_buf, sizeof line_buf, "traffic at %02d:00", int(traffic->hour()));
+                notice = line_buf;
+                notice_until = vehicle.time() + 3;
+              }
               if (e.key.key == SDLK_H) {
                 show_hud = !show_hud;
                 if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0);
@@ -1795,7 +1829,12 @@ int run_drive(int argc, char** argv) {
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
                             baked_cars[pick].c_str());
-            set_hud(h, picking ? std::string(line) : vehicle.time() < kIntroSeconds ? intro : std::string(), &menu);
+            set_hud(h,
+                    picking                          ? std::string(line)
+                    : vehicle.time() < notice_until  ? notice
+                    : vehicle.time() < kIntroSeconds ? intro
+                                                     : std::string(),
+                    &menu);
           }
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
@@ -1812,6 +1851,7 @@ int run_drive(int argc, char** argv) {
         if (audio_stream) SDL_DestroyAudioStream(audio_stream);
       }
       save_now("end");
+      if (traffic) std::printf("%s\n", traffic->summary().c_str());
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
     }

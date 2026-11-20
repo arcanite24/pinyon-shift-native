@@ -738,3 +738,17 @@ question Q38)" and "Colour byte order"). Built:
   and node (uniform over the allowed ways); a car in the lane ahead
   within 2 m of its line is followed (matched less 2 m/s inside the
   look-ahead gap + 6 m, stopped inside 60 % of it); bends at 3 m/s^2.
+- **Drawing and bodies (since d6e6b63).** The window draws each traffic
+  model as a second Showroom from its M1 bake, with the player's camera
+  and light; models load on a worker as the loaded set changes (12 to
+  23 ms to upload one on multivac; headless loads at once so runs repeat)
+  and a rotated-out model stays until its last car is gone. Cars within
+  30 m are bodies with their own rows (17 of 17 baked), handed over on
+  the move; in the census they stay within 0.29 m of their lane line, and
+  the push test (the player's car at 31 m/s into one at 13.4) leaves the
+  traffic car at 23.1 m/s. Traffic costs about 0.07 ms CPU and 0.03 ms
+  GPU a frame on multivac (cruise bench). `--hour` and T change only the
+  density: no day/night lighting. Not done: festival cars, fades,
+  indicators and hazard lights, lane changes (one lane each way), the
+  give-way slowing at junctions, the gear caps (GearMaxSpeed1st to 4th)
+  and SteeringMultiplier.
