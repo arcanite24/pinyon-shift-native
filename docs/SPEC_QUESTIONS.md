@@ -210,7 +210,13 @@ questions are also sent to the specification session.
 - **Needed:** the game's draw and LOD rule around the player, whenever
   M2's streaming comes up.
 
-## Q17 (not blocking): road and surface identity
+## Q17 (answered by COLLISION.md, 43346e1d): road and surface identity
+
+- **Answer:** the ground is the `N.fiz` collision tiles, with a surface
+  index per triangle into `surfaceTypes.xml`. The engine now drives on
+  them (`world::Collision`), grip = FrictionScale (COLLISION.md's engine
+  choice). The render-name classes below remain only for drawing colours
+  and the test driver's road search.
 
 - **Engine (M3 stand-in):** a triangle is road when its mesh object's
   name holds `_road`/`road_` (Colorado names roads
@@ -222,7 +228,10 @@ questions are also sent to the specification session.
   sits behind `drive::Ground`, so it swaps out without touching the
   vehicle.
 
-## Q18 (not blocking): a spawn point
+## Q18 (answered by COLLISION.md, 43346e1d): a spawn point
+
+- **Answer:** the measured free-roam spawn (2002.96, 143.84, 960.00),
+  heading 126.1 degrees; the engine drops the car onto the tiles there.
 
 - **Engine (M3 stand-in):** the flat road triangle nearest the free-roam
   camera of WORLD_GEOMETRY's frame dump (game frame 1999.0, 962.9). The

@@ -19,7 +19,9 @@ class MeshGround : public Ground {
  public:
   // `positions`: three corners per triangle, in the drive's world frame.
   // `grip`: one factor per triangle (empty: 1 for every triangle).
-  MeshGround(std::vector<std::array<float, 3>> positions, std::vector<float> grip = {});
+  // `surface`: one index per triangle, reported in Hit::surface (empty: -1).
+  MeshGround(std::vector<std::array<float, 3>> positions, std::vector<float> grip = {},
+             std::vector<uint8_t> surface = {});
 
   // The nearest hit along the ray within `max_distance`, either face. The
   // normal faces against the ray.
@@ -39,6 +41,7 @@ class MeshGround : public Ground {
 
   std::vector<std::array<float, 3>> positions_;
   std::vector<float> grip_;
+  std::vector<uint8_t> surface_;
   std::vector<uint32_t> order_;
   std::vector<std::array<float, 3>> centroid_;
   std::vector<Node> nodes_;

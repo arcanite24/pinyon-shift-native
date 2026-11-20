@@ -651,19 +651,20 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 //
 //   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle|cruise
 //           | --script file] [--speed kmh] [--view chase|front] [--seconds N] [--every S]
-//           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]]
-//           [--headless --out prefix.png] [--size WxH]
+//           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]
+//            [--render-ground]] [--headless --out prefix.png] [--size WxH]
 //
-// With --world the car starts at a stand-in spawn: the road triangle
-// nearest --near (x, z in the game frame, the file frame with z negated;
-// default the free-roam spot of WORLD_GEOMETRY's frame dump, near the
-// festival), or --spawn. --run cruise drives itself along the road at
-// --speed (default 40 km/h).
+// With --world the car drives on Colorado's collision (COLLISION.md `.fiz`
+// tiles; --render-ground: the earlier render-triangle stand-in) and starts
+// at COLLISION.md's measured free-roam spawn by the festival, or on the road
+// triangle nearest --near (x, z in the game frame, the file frame with z
+// negated), or at --spawn, dropped onto the ground. --run cruise drives
+// itself along the road at --speed (default 40 km/h).
 int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
-  bool near_given = false, have_spawn = false;
+  bool near_given = false, have_spawn = false, render_ground = false;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
   double seconds = 6, every = 1;
@@ -684,6 +685,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--world") world_dir = next();
     else if (a == "--cache") cache_path = next();
     else if (a == "--speed") cruise_kmh = std::atof(next());
+    else if (a == "--render-ground") render_ground = true;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -702,7 +704,7 @@ int run_drive(int argc, char** argv) {
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading]] [--headless --out prefix.png] "
+                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground]] [--headless --out prefix.png] "
                          "[--size WxH]\n");
     return 2;
   }
@@ -766,6 +768,7 @@ int run_drive(int argc, char** argv) {
       const drive::FlatGround flat;
       const drive::Ground* ground = &flat;
       world::World colorado;
+      world::Collision collision;
       std::unique_ptr<world::Streamer> streamer;
       world::RoadFollower follower(cruise_kmh / 3.6);
       drive::Vec3 start{};
@@ -773,31 +776,39 @@ int run_drive(int argc, char** argv) {
       if (!world_dir.empty()) {
         if (cache_path.empty()) cache_path = std::filesystem::path("out") / "world" / "colorado.index";
         world::Spawn sp;
+        std::string warning;
+        const char* how = "";
         if (!colorado.open(world_dir, cache_path, &error)) {
+          status = 1;
+        } else if (!render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
+                                                     &error, &warning)) {
           status = 1;
         } else {
           if (!error.empty()) std::fprintf(stderr, "carview: note: %s\n", error.c_str());
+          if (!warning.empty()) std::fprintf(stderr, "carview: note: %s", warning.c_str());
           error.clear();
-          streamer = std::make_unique<world::Streamer>(colorado, world::GatherOptions{});
-          if (!streamer->update(have_spawn ? spawn[0] : near_x, have_spawn ? spawn[2] : near_z, nullptr, &error)) {
+          streamer = std::make_unique<world::Streamer>(colorado, world::GatherOptions{}, 200,
+                                                       render_ground ? nullptr : &collision);
+          const double sx = have_spawn ? spawn[0] : near_given || render_ground ? near_x : world::kSpawnX;
+          const double sz = have_spawn ? spawn[2] : near_given || render_ground ? near_z : world::kSpawnZ;
+          const double near[2] = {near_x, near_z};
+          if (!streamer->update(sx, sz, nullptr, &error)) {
             status = 1;
-          } else if (have_spawn) {
-            sp.position = {spawn[0], spawn[1], spawn[2]};
-            sp.heading = spawn[3];
-          } else if (!world::find_spawn(streamer->mesh(), near_x, near_z, sp,
-                                        near_given ? nullptr : &near_heading)) {
+          } else if (!world::choose_spawn(*streamer, have_spawn ? spawn : nullptr, near_given ? near : nullptr,
+                                          near_given ? nullptr : &near_heading, sp, &how)) {
             error = "no road triangle near the search point";
             status = 1;
           }
         }
         if (status == 0) {
-          std::printf("spawn (stand-in): %.3f %.3f %.3f heading %.4f rad\n", sp.position[0], sp.position[1],
+          std::printf("spawn %s: %.3f %.3f %.3f heading %.4f rad\n", how, sp.position[0], sp.position[1],
                       sp.position[2], sp.heading);
           start = {sp.position[0], sp.position[1], sp.position[2]};
           start_heading = sp.heading;
           vehicle.reset(start, start_heading);
           ground = &streamer->ground();
           follower.rebuild(streamer->mesh());
+          follower.set_ground(&streamer->ground());
           if (!showroom.set_world(scenery(streamer->mesh(), streamer->centre_x(), streamer->centre_z()), error))
             status = 1;
           else
@@ -814,15 +825,10 @@ int run_drive(int argc, char** argv) {
         // nearest road (the windowed mode has R).
         if (headless && follower.stuck(vehicle, in)) {
           const drive::Vec3 at = vehicle.position();
-          const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
-          const double heading = std::atan2(fwd.x, fwd.z);
           world::Spawn sp;
-          if (world::find_spawn(streamer->mesh(), at.x, at.z, sp, &heading)) {
-            vehicle.place({sp.position[0], sp.position[1] + 0.05, sp.position[2]}, sp.heading);
+          if (world::recover(*streamer, vehicle, &sp))
             std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away\n", vehicle.time(), at.x,
-                        at.y, at.z,
-                        sp.distance);
-          }
+                        at.y, at.z, sp.distance);
         }
         bool changed = false;
         const drive::Vec3 at = vehicle.position();
@@ -830,6 +836,7 @@ int run_drive(int argc, char** argv) {
         if (changed) {
           ground = &streamer->ground();
           follower.rebuild(streamer->mesh());
+          follower.set_ground(&streamer->ground());
           if (!showroom.set_world(scenery(streamer->mesh(), streamer->centre_x(), streamer->centre_z()), error))
             return false;
           std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles)\n", vehicle.time(), at.x, at.z,

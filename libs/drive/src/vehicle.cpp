@@ -264,30 +264,43 @@ void Vehicle::substep(double dt, const Ground& ground) {
     w.spin = std::fmod(w.spin + omega * dt, 2 * kPi);
   }
 
-  // Body contacts: the box's corners against the ground below them.
+  // Body contacts: 26 points on the box (corners, edge and face middles),
+  // each probed by a ray from the box's centre. A point past the first
+  // surface along its ray is pushed out along that surface's normal, so
+  // floors, walls, barriers and ceilings all act on the body. The force per
+  // point is scaled so that the eight corners carry what they did when they
+  // were the only contacts.
   body_force_ = 0;
-  for (int k = 0; k < 8; ++k) {
-    const Vec3 corner_local{(k & 1 ? 0.5 : -0.5) * p_.size.x, k & 2 ? p_.sill_height + p_.size.y : p_.sill_height,
-                            (k & 4 ? 0.5 : -0.5) * p_.size.z + p_.centre_of_mass.z};
-    const Vec3 corner = pos_ + rotate(rot_, corner_local - com_local_);
-    constexpr double kAbove = 1.5;
+  constexpr int kPoints = 26;
+  constexpr double kShare = 8.0 / kPoints;
+  const Vec3 centre_local{0, p_.sill_height + 0.5 * p_.size.y, p_.centre_of_mass.z};
+  const Vec3 centre = pos_ + rotate(rot_, centre_local - com_local_);
+  for (int k = 0; k < 27; ++k) {
+    const int ix = k % 3 - 1, iy = k / 3 % 3 - 1, iz = k / 9 - 1;
+    if (ix == 0 && iy == 0 && iz == 0) continue;
+    const Vec3 point_local = centre_local + Vec3{0.5 * ix * p_.size.x, 0.5 * iy * p_.size.y, 0.5 * iz * p_.size.z};
+    const Vec3 point = pos_ + rotate(rot_, point_local - com_local_);
+    const Vec3 ray = point - centre;
+    const double reach = length(ray);
+    const Vec3 dir = ray * (1 / reach);
     Hit hit;
-    if (!ground.raycast(corner + Vec3{0, kAbove, 0}, {0, -1, 0}, kAbove, hit)) continue;
-    const double depth = kAbove - hit.distance;
-    const Vec3 n = hit.normal.y < 0 ? hit.normal * -1.0 : hit.normal;
-    const Vec3 v = vel_ + cross(ang_, corner - pos_);
+    if (!ground.raycast(centre, dir, reach, hit)) continue;
+    // The normal faces against the ray: out of the surface, towards the box.
+    const Vec3 n = dot(hit.normal, dir) > 0 ? hit.normal * -1.0 : hit.normal;
+    const double depth = (reach - hit.distance) * -dot(dir, n);
+    const Vec3 v = vel_ + cross(ang_, point - pos_);
     const double vn = dot(v, n);
-    const double fn = std::max(0.0, p_.mass * (p_.body_stiffness * depth - p_.body_damping * vn));
+    const double fn = kShare * std::max(0.0, p_.mass * (p_.body_stiffness * depth - p_.body_damping * vn));
     if (fn <= 0) continue;
     Vec3 f = n * fn;
     const Vec3 vt = v - n * vn;
     const double vt_len = length(vt);
     if (vt_len > 1e-6) {
-      const double ft = std::min(p_.body_friction * fn, p_.mass / 8 * vt_len / dt);
+      const double ft = std::min(p_.body_friction * fn, p_.mass / kPoints * vt_len / dt);
       f = f - vt * (ft / vt_len);
     }
     force = force + f;
-    torque = torque + cross(corner - pos_, f);
+    torque = torque + cross(point - pos_, f);
     body_force_ += length(f);
   }
 

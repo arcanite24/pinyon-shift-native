@@ -12,8 +12,9 @@ constexpr uint32_t kLeafSize = 8;
 
 }  // namespace
 
-MeshGround::MeshGround(std::vector<std::array<float, 3>> positions, std::vector<float> grip)
-    : positions_(std::move(positions)), grip_(std::move(grip)) {
+MeshGround::MeshGround(std::vector<std::array<float, 3>> positions, std::vector<float> grip,
+                       std::vector<uint8_t> surface)
+    : positions_(std::move(positions)), grip_(std::move(grip)), surface_(std::move(surface)) {
   const uint32_t n = uint32_t(positions_.size() / 3);
   positions_.resize(size_t(n) * 3);
   if (grip_.size() != n) grip_.assign(n, 1.0f);
@@ -133,6 +134,7 @@ bool MeshGround::raycast(const Vec3& origin, const Vec3& dir, double max_distanc
   hit.distance = best;
   hit.normal = n;
   hit.grip = grip_[size_t(best_t)];
+  hit.surface = surface_.size() == grip_.size() ? int(surface_[size_t(best_t)]) : -1;
   return true;
 }
 

@@ -7,7 +7,8 @@ add_library(fh1data STATIC
   src/rmb.cpp
   src/members.cpp
   src/placements.cpp
-  src/props.cpp)
+  src/props.cpp
+  src/collision.cpp)
 target_include_directories(fh1data PUBLIC include)
 target_link_libraries(fh1data PRIVATE shift_mspack_lzxd)
 if(MSVC)

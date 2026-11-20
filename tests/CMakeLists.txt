@@ -24,3 +24,10 @@ add_executable(world_tests world_tests.cpp)
 target_link_libraries(world_tests PRIVATE shift_world)
 add_test(NAME world_tests COMMAND world_tests)
 set_tests_properties(world_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS corpus)
+
+# Colorado's collision census (COLLISION.md Tests) over the player's files
+# (skipped, exit 77, without SHIFT_GAME_ROOT).
+add_executable(collision_tests collision_tests.cpp)
+target_link_libraries(collision_tests PRIVATE shift_world)
+add_test(NAME collision_tests COMMAND collision_tests)
+set_tests_properties(collision_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 LABELS corpus)

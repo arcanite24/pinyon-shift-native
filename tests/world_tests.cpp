@@ -1,11 +1,13 @@
-// The stand-in world over the player's own files (no game data in the
-// repository): Colorado streamed around the free-roam spot of
-// WORLD_GEOMETRY's frame dump, the stand-in spawn, the mesh ground under it
-// and a minute of the test driver on the road. Skipped (exit 77) unless
-// SHIFT_GAME_ROOT names the disc. Synthetic car: no bake needed.
+// The world over the player's own files (no game data in the repository):
+// Colorado streamed around the free-roam spot of WORLD_GEOMETRY's frame
+// dump, the render-road spawn search (the test driver's recovery), then
+// the collision ground (COLLISION.md) at the measured spawn and a minute of
+// the test driver on it. Skipped (exit 77) unless SHIFT_GAME_ROOT names the
+// disc. Synthetic car: no bake needed.
 // Spec: WORLD-GEOMETRY (selection by header box, props through the object
-// table, the file frame), REIMPLEMENTATION_PLAN M3. The surfaces, LOD
-// choice, spawn and ground are our stand-ins until COLLISION.md.
+// table, the file frame), COLLISION.md (tiles, surfaces, spawn),
+// REIMPLEMENTATION_PLAN M3. The render surfaces, LOD choice and the test
+// driver are ours.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -71,31 +73,53 @@ int main() {
 
   // The dumped camera, game frame (file frame 1999.0, 145.4, -962.9).
   const double x = world::kDumpCameraX, z = world::kDumpCameraZ;
-  world::Streamer stream(w, world::GatherOptions{});
-  CHECK(stream.update(x, z, nullptr, &error));
-  const auto& st = stream.stats();
+  world::Streamer render(w, world::GatherOptions{});
+  CHECK(render.update(x, z, nullptr, &error));
+  const auto& st = render.stats();
   size_t road = 0;
-  for (auto s : stream.mesh().surface) road += s == world::Surface::kRoad;
-  std::printf("gathered %zu world-space models, %zu props, %zu triangles (%zu road, %zu in the ground)\n",
-              st.world_models, st.props, stream.mesh().triangles(), road, stream.mesh_ground().triangle_count());
+  for (auto s : render.mesh().surface) road += s == world::Surface::kRoad;
+  std::printf("gathered %zu world-space models, %zu props, %zu triangles (%zu road, %zu in the stand-in ground)\n",
+              st.world_models, st.props, render.mesh().triangles(), road, render.mesh_ground().triangle_count());
   CHECK(st.world_models > 100 && st.props > 100 && road > 1000);
 
   world::Spawn spawn;
-  CHECK(world::find_spawn(stream.mesh(), x, z, spawn, &world::kDumpCameraHeading));
+  CHECK(world::find_spawn(render.mesh(), x, z, spawn, &world::kDumpCameraHeading));
   std::printf("spawn %.3f %.3f %.3f heading %.4f, %.2f m from the search point\n", spawn.position[0],
               spawn.position[1], spawn.position[2], spawn.heading, spawn.distance);
   CHECK(spawn.distance < 5);
   // The dumped camera stood 1.8 m above the road there (145.4 m).
   CHECK(spawn.position[1] > 140 && spawn.position[1] < 145.4);
   drive::Hit hit;
-  CHECK(stream.ground().raycast({spawn.position[0], spawn.position[1] + 2, spawn.position[2]}, {0, -1, 0}, 5, hit));
+  CHECK(render.ground().raycast({spawn.position[0], spawn.position[1] + 2, spawn.position[2]}, {0, -1, 0}, 5, hit));
   CHECK(std::fabs(hit.distance - 2) < 0.05 && hit.normal.y > 0.9);
+
+  // The collision ground and the measured spawn on it: Asphalt, 0.48 m
+  // under the settled body reference point.
+  const fs::path media = fs::path(root) / "media";
+  world::Collision collision;
+  std::string warning;
+  if (!collision.open(colorado, media / "physics.zip", &error, &warning)) {
+    std::printf("FAIL collision: %s\n", error.c_str());
+    return 1;
+  }
+  world::Streamer stream(w, world::GatherOptions{}, 200, &collision);
+  CHECK(stream.update(world::kSpawnX, world::kSpawnZ, nullptr, &error));
+  const char* how = "";
+  CHECK(world::choose_spawn(stream, nullptr, nullptr, nullptr, spawn, &how));
+  CHECK(stream.ground().raycast({spawn.position[0], spawn.position[1] + 2, spawn.position[2]}, {0, -1, 0}, 5, hit));
+  std::printf("collision: %zu tiles, %zu triangles in the ground; spawn %s %.3f %.3f %.3f heading %.4f on %s\n",
+              stream.collision_mesh().tiles, stream.mesh_ground().triangle_count(), how, spawn.position[0],
+              spawn.position[1], spawn.position[2], spawn.heading, collision.surface_name(hit.surface).c_str());
+  CHECK(hit.surface == world::kSurfaceAsphalt);
+  CHECK(std::fabs(world::kSpawnY - (spawn.position[1] + 2 - hit.distance) - 0.48) < 0.03);
+  CHECK(std::fabs(spawn.heading * 180 / 3.14159265358979 - 126.1) < 0.1);
 
   // A minute of the test driver: on the ground throughout, moving on.
   drive::Vehicle v(test_car());
   v.reset({spawn.position[0], spawn.position[1], spawn.position[2]}, spawn.heading);
   world::RoadFollower follower;
   follower.rebuild(stream.mesh());
+  follower.set_ground(&stream.ground());
   int airborne = 0, longest_airborne = 0, gathers = 0;
   double path = 0;
   drive::Vec3 last = v.position();
@@ -106,6 +130,7 @@ int main() {
     CHECK(stream.update(at.x, at.z, &changed, &error));
     if (changed) {
       follower.rebuild(stream.mesh());
+      follower.set_ground(&stream.ground());
       ++gathers;
     }
     bool contact = false;

@@ -108,8 +108,10 @@ python tools/m1-report.py --carview build/apps/carview/carview.exe --bake out/ba
 # stand-ins): headless trace, then chase-camera frames (--view front shows
 # the wheels' steer and spin); without --headless it opens a window driven
 # by keyboard or gamepad. --world <game>/media/tracks/colorado streams
-# Colorado around the car as the stand-in ground and scenery, from a
-# stand-in spawn by the festival; --run cruise drives itself on the road.
+# Colorado around the car: the collision tiles as the ground (COLLISION.md)
+# and the render models as scenery, from the measured free-roam spawn by
+# the festival; --run cruise drives itself on the road. drive --probe x y z
+# lists the collision triangles near a point.
 # The model index is cached in out/world/colorado.index (first run ~10 s)
 drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --trace launch.csv
 drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --grade 0.07

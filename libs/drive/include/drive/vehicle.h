@@ -45,6 +45,7 @@ struct Hit {
   double distance = 0;
   Vec3 normal{0, 1, 0};
   double grip = 1;
+  int surface = -1;  // the ground's surface index, when it has one
 };
 class Ground {
  public:
@@ -78,14 +79,17 @@ struct CarParams {
   Vec3 centre_of_mass{0, 0.5, 0};  // body frame; z set to mid-wheelbase by from_bake
   Vec3 inertia{0, 0, 0};           // principal moments about x, y, z; 0 = from mass and size
   Vec3 size{1.8, 1.3, 4.3};        // box for the default inertia, m
-  // Body contacts (ours, a stand-in until COLLISION.md): the box's eight
-  // corners, from the sill to the roof, are pushed out of the ground along
-  // world up by a stiff damped spring with friction, so a car that rolls
-  // or lands on its body stays on the surface.
+  // Body contacts (ours, placeholders until CAR_PHYSICS.md): 26 points on
+  // the box from the sill to the roof (corners, edge and face middles),
+  // each probed by a ray from the box's centre, are pushed out of whatever
+  // surface they pass (floor, wall, barrier, ceiling) along its normal by a
+  // stiff damped spring with friction. A car that rolls, lands on its body
+  // or meets a wall stays on the surface. The constants are per corner: the
+  // force per point is scaled by 8/26.
   double sill_height = 0.25;      // m above the ground at rest
   double body_stiffness = 150;    // N/m per kg of mass, per corner
   double body_damping = 12;       // N s/m per kg of mass, per corner
-  double body_friction = 0.6;
+  double body_friction = 0.6;     // COLLISION.md: the Car-row FrictionCoefficient later
 
   // Suspension (placeholders): the wheel hangs `rest_length` below its
   // hardpoint at rest; the spring is preloaded so the car rests exactly

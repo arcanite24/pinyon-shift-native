@@ -57,22 +57,27 @@ the code, and meant to be swapped out:
   eight body-corner contacts so a rolled car stays on the surface. Every
   constant sits in `drive::CarParams`, to be filled from CAR_PHYSICS.md.
 - **Ground** (`drive::MeshGround`): a static BVH over triangles behind
-  the `drive::Ground` interface. The real collision source replaces it
-  there without touching the vehicle.
+  the `drive::Ground` interface. Since COLLISION.md it holds the game's
+  collision (`world::Collision`): the `.fiz` tiles whose 100 m cell lies
+  within 350 m of the streaming centre, core triangles only, with a
+  surface index per triangle and grip = `FrictionScale` (COLLISION.md's
+  engine choice until the tyre model). CameraCollision (49) is left out;
+  Invisible (9) is a wall. The body's 26 contact points (rays from the
+  box's centre) push it out of walls and barriers as well as the floor.
 - **World** (`libs/world`): the world-space render models whose header
   box lies within 600 m of the car, at the lowest LOD of each object
   family among them, and the props within 250 m. The world is gathered
   again once the car is 200 m from the last centre. Left out: TERR_CUBE
   (reflection views), the UberLOD and middle-distance terrain, and
-  occluders. The ground is these render triangles minus thin upright
-  objects (armco, barriers, railings, cables, fences, signs) and props.
-  Surfaces: road by the mesh object's name (`..._Road_...`), then terrain,
-  water and other by the object or material name, each with a placeholder
-  grip.
-- **Spawn:** the flat road triangle nearest a point. The default point is
-  the free-roam camera of WORLD_GEOMETRY's frame dump (game frame 1999.0,
-  962.9; file frame z −962.9), by the festival; the spawn lands 0.4 m
-  from it, 1.8 m below the dumped camera.
+  occluders. Before COLLISION.md the ground was these render triangles
+  minus thin upright objects; that stand-in is still there behind
+  `--render-ground`. Render surfaces (road by the mesh object's name, then
+  terrain, water and other) now only pick drawing colours and the test
+  driver's road.
+- **Spawn:** COLLISION.md's measured free-roam spawn (2002.96, 960.00,
+  heading 126.1 degrees), dropped onto the tiles (0.48 m under the
+  measured body point, on Asphalt). `--near x z` still takes the render
+  road triangle nearest a point.
 - **Frames:** the drive runs in the game frame (the file frame with z
   negated). The car's body frame has the game frame's handedness:
   AUTOSHOW_REFERENCE's `car_to_world` negates the model frame's z, as the
@@ -87,6 +92,8 @@ the code, and meant to be swapped out:
   AI.
 
 ## Specs needed, in order
+
+Items 1 to 3 are answered by COLLISION.md (43346e1d); kept for the record.
 
 1. **Collision geometry (blocking).** Where Colorado's collision lives
    (separate files or the render models, which members of `bin.zip` or

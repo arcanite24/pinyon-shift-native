@@ -5,6 +5,14 @@
 
 namespace world {
 
+bool wall_between(const drive::Ground& ground, const drive::Vec3& from, double x, double z) {
+  const drive::Vec3 origin{from.x, from.y + 0.7, from.z};
+  const double dx = x - from.x, dz = z - from.z, d = std::hypot(dx, dz);
+  if (d < 1e-6) return false;
+  drive::Hit hit;
+  return ground.raycast(origin, {dx / d, 0, dz / d}, d, hit) && std::fabs(hit.normal.y) < 0.5;
+}
+
 void RoadFollower::rebuild(const Mesh& mesh) {
   points_.clear();
   for (size_t t = 0; t < mesh.triangles(); ++t) {
@@ -31,7 +39,9 @@ drive::Input RoadFollower::input(const drive::Vehicle& v) const {
     const double d = std::hypot(dx, dz);
     if (d < ahead * 0.8 || d > ahead * 1.2) continue;
     const double turn = std::remainder(std::atan2(dx, dz) - yaw, 2 * 3.14159265358979323846);
-    if (std::fabs(turn) <= 1.2) turns.push_back(turn);
+    if (std::fabs(turn) > 1.2) continue;
+    if (ground_ && wall_between(*ground_, p, q[0], q[1])) continue;
+    turns.push_back(turn);
   }
   drive::Input in;
   if (!turns.empty()) {
