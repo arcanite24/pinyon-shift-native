@@ -1568,6 +1568,9 @@ int run_drive(int argc, char** argv) {
         std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         std::printf("texture census: %.0f px of fallback-textured triangles (%.1f%% of the frame), %zu groups\n", total,
                     100.0 * total / (double(width) * height), area.size());
+        const auto ds = showroom.world_draw_stats();
+        std::printf("  renderer fallbacks: %zu draws with a texture that did not upload, %zu with a layer set that did not\n",
+                    ds.white, ds.layer_fallback);
         for (size_t i = 0; i < top.size() && i < 20; ++i) {
           const auto& [key, v] = *top[i].second;
           std::printf("  %9.0f px %6zu tris  %s  %s  %s  at %.0f %.0f %.0f, y %.1f to %.1f\n", v.px, v.tris,

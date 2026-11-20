@@ -2528,9 +2528,10 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       if (set && d.texture_b != kNoWorldTexture) {
         VkDescriptorSet layered = world_layer_set({d.texture, d.texture_b, d.splat});
         if (layered) set = layered;
-        else push.params[1] = 1;  // a layer did not upload: slot 0 alone
+        else push.params[1] = 1, ++world_stats_.layer_fallback;  // a layer did not upload: slot 0 alone
       }
       if (!set) {
+        if (d.texture != kNoWorldTexture) ++world_stats_.white;
         set = world_white_set_;
         if (push.params[1] == 1) push.params[1] = 0;  // the texture did not upload: flat
       }

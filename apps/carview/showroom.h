@@ -229,6 +229,9 @@ class Showroom {
   // the indices drawn.
   struct WorldDrawStats {
     size_t drawn = 0, culled = 0, indices = 0;
+    // Draws whose texture did not upload (drawn flat with the white set) or
+    // whose layer set did not (slot 0 alone).
+    size_t white = 0, layer_fallback = 0;
   };
   WorldDrawStats world_draw_stats() const { return world_stats_; }
   // Frustum culling of the world's draws (on by default).
