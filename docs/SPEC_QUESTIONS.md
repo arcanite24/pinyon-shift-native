@@ -846,3 +846,22 @@ headless car, and the drive with `--no-post`).
   night filmicTone values (the drive uses the day curve at every hour);
   the spec's probable bright-pass cutoff and blur sizes against ours; the
   composite order. The windowed path was not run (headless only).
+- **Sun shadow (ours):** one orthographic map from the sun (WORLD-MATERIALS'
+  sunDir, the light world.frag already uses), its box centred half a
+  radius ahead of the eye along the view, snapped to whole texels from
+  the scenery's origin, 800 m deep along the sun. Casters: the scenery's
+  opaque and cut-out draws culled against the box (blended draws and the
+  sky cast none), tree sprites turned to the sun, the car and the traffic
+  within the box (glass casts none). Receivers: the scenery's sun term
+  only, times `mix(0.35, 1, lit)` (TrackSettings ShadowColor 0.35, read
+  as the sun's share left in shadow; ours). Tree sprites and the cars do
+  not receive: sprites face the eye in the colour pass and the sun in the
+  shadow pass, and the car's key light is fixed to the car, not the sun.
+  `--shadows off | low | high`: low 1024 texels over 80 m, one filtered
+  compare (`--preset low`'s default); high 2048 over 120 m, four.
+  Open: the game's own cascades (ShadowEnds Near 25, InGameShadowEnd 202,
+  ShadowMipBias, ShadowLightDirection with its override) and how
+  ShadowColor applies.
+- **Shadow costs (UHD 620, 1280x720, GPU p50 of the pass):** low 1.29 ms,
+  high 1.80 ms; frame p95 low 11.55 ms, high 16.04 ms (blindvac's runs
+  vary about 1 ms with its temperature). Masked PSNR with shadows 16.00 dB.

@@ -10,6 +10,7 @@
 #include <set>
 
 #include "mask_frag_spv.h"
+#include "shadow_frag_spv.h"
 #include "showroom_frag_spv.h"
 #include "showroom_vert_spv.h"
 #include "world_frag_spv.h"
@@ -251,6 +252,7 @@ Showroom::~Showroom() {
   r_.destroy_buffer(vertex_buffer_);
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
+  r_.destroy_buffer(shadow_frame_buffer_);
   drop_pending_world();
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
@@ -258,7 +260,8 @@ Showroom::~Showroom() {
   for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
-  for (VkPipeline p : {opaque_, glass_, mask_, world_opaque_, world_coverage_, world_alpha_})
+  for (VkPipeline p : {opaque_, glass_, mask_, world_opaque_, world_coverage_, world_alpha_, shadow_world_,
+                       shadow_cutout_, shadow_car_})
     if (p) vkDestroyPipeline(d, p, nullptr);
   if (pipeline_layout_) vkDestroyPipelineLayout(d, pipeline_layout_, nullptr);
   if (frame_layout_) vkDestroyDescriptorSetLayout(d, frame_layout_, nullptr);
@@ -1040,12 +1043,14 @@ bool Showroom::upload_environment(std::string& error) {
 }
 
 bool Showroom::create_pipelines(std::string& error) {
-  const VkDescriptorSetLayoutBinding frame_bindings[2] = {
+  // Set 0: the frame block, the environment cube, the sun shadow map.
+  const VkDescriptorSetLayoutBinding frame_bindings[3] = {
       {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
        nullptr},
-      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 2;
+  set.bindingCount = 3;
   set.pBindings = frame_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &frame_layout_), "frame set layout");
   VkDescriptorSetLayoutBinding material_bindings[3];
@@ -1192,6 +1197,51 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, false, true, world_alpha_, world_vert,
                    &world_input);
+  // The sun shadow pass (ours): depth only into the shadow map, biased;
+  // opaque casters with no fragment shader, cut-outs alpha-tested.
+  VkShaderModule shadow_frag = VK_NULL_HANDLE;
+  auto build_shadow = [&](VkShaderModule vertex, VkShaderModule fragment,
+                          const VkPipelineVertexInputStateCreateInfo* input, VkPipeline& out) {
+    const VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex, "main",
+         nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
+         "main", nullptr}};
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth.depthTestEnable = VK_TRUE;
+    depth.depthWriteEnable = VK_TRUE;
+    depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    VkPipelineRasterizationStateCreateInfo biased = raster;
+    biased.depthBiasEnable = VK_TRUE;
+    biased.depthBiasConstantFactor = 2.0f;
+    biased.depthBiasSlopeFactor = 2.5f;
+    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.depthAttachmentFormat = Renderer::kShadowFormat;
+    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    info.pNext = &rendering;
+    info.stageCount = fragment ? 2 : 1;
+    info.pStages = stages;
+    info.pVertexInputState = input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &biased;
+    info.pMultisampleState = &multisample;
+    info.pDepthStencilState = &depth;
+    info.pColorBlendState = &blend;
+    info.pDynamicState = &dynamic;
+    info.layout = pipeline_layout_;
+    return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+  };
+  if (result == VK_SUCCESS && r_.options_.shadow.size > 0) {
+    result = make_module(kShadow_frag_spv, sizeof(kShadow_frag_spv), shadow_frag);
+    if (result == VK_SUCCESS) result = build_shadow(world_vert, VK_NULL_HANDLE, &world_input, shadow_world_);
+    if (result == VK_SUCCESS) result = build_shadow(world_vert, shadow_frag, &world_input, shadow_cutout_);
+    if (result == VK_SUCCESS) result = build_shadow(vert, VK_NULL_HANDLE, &vertex_input, shadow_car_);
+  }
+  if (shadow_frag) vkDestroyShaderModule(r_.device_, shadow_frag, nullptr);
   if (world_vert) vkDestroyShaderModule(r_.device_, world_vert, nullptr);
   if (world_frag) vkDestroyShaderModule(r_.device_, world_frag, nullptr);
   vkDestroyShaderModule(r_.device_, vert, nullptr);
@@ -1202,7 +1252,14 @@ bool Showroom::create_pipelines(std::string& error) {
 }
 
 bool Showroom::upload(std::string& error) {
-  if (!create_pipelines(error)) return false;
+  if (!r_.ensure_shadow_map(error) || !create_pipelines(error)) return false;
+  const bool shadows = r_.options_.shadow.size > 0;
+  if (shadows && !r_.create_buffer(sizeof(ShowroomFrame),
+                                   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_buffer_)) {
+    error = "shadow frame buffer";
+    return false;
+  }
   if (!r_.upload_buffer(vertices_.data(), vertices_.size() * sizeof(bake::Vertex),
                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer_) ||
       !r_.upload_buffer(indices_.data(), indices_.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -1252,10 +1309,10 @@ bool Showroom::upload(std::string& error) {
     d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
-  const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 1}};
+  const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 4}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = sets + 1;
+  pool.maxSets = sets + 2;
   pool.poolSizeCount = 2;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
@@ -1264,22 +1321,35 @@ bool Showroom::upload(std::string& error) {
   alloc.descriptorSetCount = 1;
   alloc.pSetLayouts = &frame_layout_;
   VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &frame_set_), "frame set");
-  {
-    VkDescriptorBufferInfo buffer{frame_buffer_.buffer, 0, sizeof(ShowroomFrame)};
+  if (shadows) VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_), "shadow frame set");
+  // The frame set, and the shadow pass's (its own frame block; the map at
+  // binding 2 is never read by the pass's shaders).
+  for (VkDescriptorSet target : {frame_set_, shadow_set_}) {
+    if (!target) continue;
+    VkDescriptorBufferInfo buffer{target == frame_set_ ? frame_buffer_.buffer : shadow_frame_buffer_.buffer, 0,
+                                  sizeof(ShowroomFrame)};
     VkDescriptorImageInfo cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet writes[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+    VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
+                              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet writes[3] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
-    writes[0].dstSet = frame_set_;
+    writes[0].dstSet = target;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].pBufferInfo = &buffer;
-    writes[1].dstSet = frame_set_;
+    writes[1].dstSet = target;
     writes[1].dstBinding = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo = &cube;
-    vkUpdateDescriptorSets(r_.device_, 2, writes, 0, nullptr);
+    writes[2].dstSet = target;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = &map;
+    vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -1304,6 +1374,15 @@ bool Showroom::upload(std::string& error) {
   if (guest_) return true;
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) {
+    const bool shadows = shadows_on();
+    if (shadows) {
+      place_shadow();
+    } else {
+      std::memset(frame_.shadow_matrix, 0, sizeof frame_.shadow_matrix);
+      std::memset(frame_.shadow, 0, sizeof frame_.shadow);
+      std::memset(frame_.shadow_bias, 0, sizeof frame_.shadow_bias);
+      shadow_drawn_ = 0;
+    }
     update_frame(cmd);
     // Each guest's frame block: this car's camera and light, its own stripe.
     std::vector<Showroom*> seen;
@@ -1313,6 +1392,15 @@ bool Showroom::upload(std::string& error) {
       in.car->frame_ = frame_;
       for (int i = 0; i < 4; ++i) in.car->frame_.stripe[i] = in.car->stripe_[i];
       in.car->update_frame(cmd);
+      if (shadows && in.car->shadow_set_) {
+        in.car->shadow_frame_ = shadow_frame_;
+        in.car->update_buffer(cmd, in.car->shadow_frame_buffer_.buffer, in.car->shadow_frame_);
+      }
+    }
+    if (shadows) {
+      update_buffer(cmd, shadow_frame_buffer_.buffer, shadow_frame_);
+      record_shadow(cmd);
+      r_.mark(cmd, "shadows");
     }
   };
   hooks.draw = [this](VkCommandBuffer cmd) {
@@ -1337,20 +1425,22 @@ void Showroom::set_background(float r, float g, float b) {
   r_.scene_.clear[3] = 1.0f;
 }
 
-void Showroom::update_frame(VkCommandBuffer cmd) {
+void Showroom::update_frame(VkCommandBuffer cmd) { update_buffer(cmd, frame_buffer_.buffer, frame_); }
+
+void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f) {
   VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
   b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
   b.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
   b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.buffer = frame_buffer_.buffer;
+  b.buffer = buffer;
   b.size = VK_WHOLE_SIZE;
   VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dep.bufferMemoryBarrierCount = 1;
   dep.pBufferMemoryBarriers = &b;
   vkCmdPipelineBarrier2(cmd, &dep);
-  vkCmdUpdateBuffer(cmd, frame_buffer_.buffer, 0, sizeof(ShowroomFrame), &frame_);
+  vkCmdUpdateBuffer(cmd, buffer, 0, sizeof(ShowroomFrame), &f);
   b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -1391,6 +1481,213 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
                    [&](const Draw* a, const Draw* b) { return distance(a) > distance(b); });
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glass);
   for (const Draw* d : sorted) draw(*d);
+}
+
+bool Showroom::shadows_on() const {
+  return shadow_set_ && shadow_world_ && r_.shadow_size_ > 1 && world_textured_ && !world_draws_.empty();
+}
+
+void Showroom::place_shadow() {
+  const ShadowSettings& s = r_.options_.shadow;
+  const float radius = s.radius;
+  // Depth: 400 m either side of the box's centre along the sun (ours).
+  constexpr float kDepth = 400.0f;
+  auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+  auto normalise = [&](float* v) {
+    const float l = std::sqrt(dot3(v, v));
+    if (l < 1e-6f) return false;
+    for (int k = 0; k < 3; ++k) v[k] /= l;
+    return true;
+  };
+  auto cross = [](const float* a, const float* b, float* out) {
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+  };
+  float sun[3] = {world_sun_[0], world_sun_[1], world_sun_[2]};
+  float up[3] = {world_up_[0], world_up_[1], world_up_[2]};
+  if (!normalise(sun)) sun[0] = 0, sun[1] = 1, sun[2] = 0;
+  if (!normalise(up)) up[0] = 0, up[1] = 1, up[2] = 0;
+  // The box's centre: half its radius ahead of the eye along the view (the
+  // projection's w row), flattened onto the ground plane.
+  const float* vp = frame_.view_projection;
+  float ahead[3] = {vp[3], vp[7], vp[11]};
+  const float along_up = dot3(ahead, up);
+  for (int k = 0; k < 3; ++k) ahead[k] -= along_up * up[k];
+  if (!normalise(ahead)) ahead[0] = 0, ahead[1] = 0, ahead[2] = 1;
+  float centre[3];
+  for (int k = 0; k < 3; ++k) centre[k] = frame_.eye[k] + ahead[k] * radius * 0.5f;
+  // The sun's view: x and y across it, depth along it.
+  const float forward[3] = {-sun[0], -sun[1], -sun[2]};
+  float right[3], across[3];
+  cross(forward, up, right);
+  if (!normalise(right)) {
+    const float x[3] = {1, 0, 0};
+    cross(forward, x, right);
+    normalise(right);
+  }
+  cross(right, forward, across);
+  // Snapped to whole texels measured from the scenery's origin, so the map
+  // does not crawl as the car moves.
+  const float texel = 2.0f * radius / float(r_.shadow_size_);
+  const float origin[3] = {world_transform_[12], world_transform_[13], world_transform_[14]};
+  float cx = dot3(centre, right), cy = dot3(centre, across);
+  const float ox = dot3(origin, right), oy = dot3(origin, across);
+  cx = ox + std::round((cx - ox) / texel) * texel;
+  cy = oy + std::round((cy - oy) / texel) * texel;
+  const float cz = dot3(centre, sun);
+  float m[16] = {};
+  for (int k = 0; k < 3; ++k) {
+    m[k * 4 + 0] = right[k] / radius;
+    m[k * 4 + 1] = across[k] / radius;
+    m[k * 4 + 2] = -sun[k] / (2.0f * kDepth);
+  }
+  m[12] = -cx / radius;
+  m[13] = -cy / radius;
+  m[14] = 0.5f + cz / (2.0f * kDepth);
+  m[15] = 1.0f;
+  std::memcpy(frame_.shadow_matrix, m, sizeof m);
+  frame_.shadow[0] = 1.0f;
+  frame_.shadow[1] = 1.0f / float(r_.shadow_size_);
+  frame_.shadow[2] = s.strength;
+  frame_.shadow[3] = float(s.taps);
+  frame_.shadow_bias[0] = 1.5f * texel;
+  frame_.shadow_bias[1] = frame_.shadow_bias[2] = frame_.shadow_bias[3] = 0.0f;
+  shadow_frame_ = frame_;
+  std::memcpy(shadow_frame_.view_projection, m, sizeof m);
+  std::memcpy(shadow_frame_.transparent_view_projection, m, sizeof m);
+  // Tree sprites turn to the eye: here to the sun, far up its ray.
+  for (int k = 0; k < 3; ++k) shadow_frame_.eye[k] = centre[k] + sun[k] * 1000.0f;
+  shadow_frame_.eye[3] = 1.0f;
+}
+
+void Showroom::record_shadow(VkCommandBuffer cmd) {
+  const uint32_t size = r_.shadow_size_;
+  VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  b.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  b.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = r_.shadow_map_.image;
+  b.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dep.imageMemoryBarrierCount = 1;
+  dep.pImageMemoryBarriers = &b;
+  vkCmdPipelineBarrier2(cmd, &dep);
+
+  VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  depth.imageView = r_.shadow_map_.view;
+  depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  depth.clearValue.depthStencil = {1.0f, 0};
+  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  rendering.renderArea = {{0, 0}, {size, size}};
+  rendering.layerCount = 1;
+  rendering.pDepthAttachment = &depth;
+  vkCmdBeginRendering(cmd, &rendering);
+  const VkViewport viewport{0, 0, float(size), float(size), 0, 1};
+  const VkRect2D scissor{{0, 0}, {size, size}};
+  vkCmdSetViewport(cmd, 0, 1, &viewport);
+  vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+  // The scenery's casters, culled against the map's box (its six planes in
+  // the scenery's frame, as record_world culls against the view).
+  const float* vp = shadow_frame_.view_projection;
+  float clip[16];
+  for (int c = 0; c < 4; ++c)
+    for (int r = 0; r < 4; ++r) {
+      float s = 0;
+      for (int k = 0; k < 4; ++k) s += vp[k * 4 + r] * world_transform_[c * 4 + k];
+      clip[c * 4 + r] = s;
+    }
+  float planes[6][4];
+  for (int c = 0; c < 4; ++c) {
+    const float x = clip[c * 4 + 0], y = clip[c * 4 + 1], z = clip[c * 4 + 2], w = clip[c * 4 + 3];
+    planes[0][c] = w + x, planes[1][c] = w - x, planes[2][c] = w + y, planes[3][c] = w - y;
+    planes[4][c] = z, planes[5][c] = w - z;
+  }
+  auto outside = [&](const WorldGeometry::Draw& d) {
+    for (const auto& p : planes) {
+      const float x = p[0] >= 0 ? d.box_max[0] : d.box_min[0];
+      const float y = p[1] >= 0 ? d.box_max[1] : d.box_min[1];
+      const float z = p[2] >= 0 ? d.box_max[2] : d.box_min[2];
+      if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
+    }
+    return false;
+  };
+  shadow_drawn_ = 0;
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
+  VkPipeline bound = VK_NULL_HANDLE;
+  VkDescriptorSet bound_set = VK_NULL_HANDLE;
+  for (const auto& d : world_draws_) {
+    // Blended draws (decals, the lake) and the uncullable sky cast none.
+    if (!d.cull || d.blend == 2 || outside(d)) continue;
+    ++shadow_drawn_;
+    const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
+    if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+    ShowroomPush push = d.push;
+    if (d.blend == 1) {
+      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+      if (!set) {
+        set = world_white_set_;
+        push.params[1] = 0;
+      }
+      if (set != bound_set)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &(bound_set = set), 0,
+                                nullptr);
+    }
+    std::memcpy(push.model, world_transform_, sizeof push.model);
+    std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+    std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+    push.params[2] = 0;  // no far-ring depth push from the sun's eye
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ShowroomPush), &push);
+    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+  }
+  // The car, and the traffic whose origin is within the box (5 m spare).
+  if (draw_car_) record_shadow_car(cmd, nullptr);
+  const float reach = 1.0f + 5.0f / r_.options_.shadow.radius;
+  for (const auto& in : instances_) {
+    if (!in.car) continue;
+    const float* t = in.model + 12;
+    const float x = vp[0] * t[0] + vp[4] * t[1] + vp[8] * t[2] + vp[12];
+    const float y = vp[1] * t[0] + vp[5] * t[1] + vp[9] * t[2] + vp[13];
+    if (std::fabs(x) > reach || std::fabs(y) > reach) continue;
+    in.car->record_shadow_car(cmd, in.model);
+  }
+  vkCmdEndRendering(cmd);
+
+  b.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  b.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  b.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+void Showroom::record_shadow_car(VkCommandBuffer cmd, const float* m) {
+  if (draws_.empty() || !shadow_car_ || !shadow_set_) return;
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_car_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
+  for (const auto& d : draws_) {
+    if (d.glass) continue;  // glass and lamp covers cast none (ours)
+    ShowroomPush push = d.push;
+    if (m) multiply(m, d.push.model, push.model);
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ShowroomPush), &push);
+    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+  }
 }
 
 void Showroom::record_instance(VkCommandBuffer cmd, const float m[16]) {

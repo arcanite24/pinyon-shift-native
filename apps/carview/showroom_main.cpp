@@ -872,6 +872,10 @@ int run_drive(int argc, char** argv) {
   int bloom_flag = -1;
   double exposure_given = 0;
   bool low_preset = false;
+  // The sun shadow (ours): --shadows off, low (1024 texels over 80 m, one
+  // filtered compare) or high (2048 over 120 m, four); the preset's by
+  // default (low: low, otherwise high).
+  std::string shadows_flag;
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
@@ -935,6 +939,13 @@ int run_drive(int argc, char** argv) {
       low_preset = p == "low";
     }
     else if (a == "--no-post") post_on = false;
+    else if (a == "--shadows") {
+      shadows_flag = next();
+      if (shadows_flag != "off" && shadows_flag != "low" && shadows_flag != "high") {
+        std::fprintf(stderr, "carview --drive: --shadows takes off, low or high\n");
+        return 2;
+      }
+    }
     else if (a == "--bloom") bloom_flag = 1;
     else if (a == "--no-bloom") bloom_flag = 0;
     else if (a == "--exposure") exposure_given = std::atof(next());
@@ -1182,6 +1193,12 @@ int run_drive(int argc, char** argv) {
       if (!world_dir.empty()) read_post_settings(world_dir, post);
       post.exposure = float(exposure_given > 0 ? exposure_given : kPostExposure);
       post.bloom = bloom_flag >= 0 ? bloom_flag == 1 : !low_preset;
+    }
+    {
+      const std::string level = !shadows_flag.empty() ? shadows_flag : low_preset ? "low" : "high";
+      ShadowSettings& shadow = render_options.shadow;
+      if (level == "low") shadow.size = 1024, shadow.radius = 40, shadow.taps = 1;
+      else if (level == "high") shadow.size = 2048, shadow.radius = 60, shadow.taps = 4;
     }
     if (!showroom.load(bake_dir, car, options, error) || !renderer.init(render_options, error) ||
         !showroom.upload(error)) {
@@ -1556,7 +1573,7 @@ int run_drive(int argc, char** argv) {
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
         std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms, pose_ms;
         // The world's draws per frame: recorded, culled, indices drawn.
-        double draws_sum = 0, culled_sum = 0, indices_sum = 0;
+        double draws_sum = 0, culled_sum = 0, indices_sum = 0, shadow_sum = 0;
         std::vector<std::string> stage_names;
         std::vector<std::vector<double>> stage_ms;  // per stage, per frame
         double sim = 0;
@@ -1590,6 +1607,7 @@ int run_drive(int argc, char** argv) {
           {
             const auto ws = showroom.world_draw_stats();
             draws_sum += double(ws.drawn), culled_sum += double(ws.culled), indices_sum += double(ws.indices);
+            shadow_sum += double(showroom.shadow_draw_count());
           }
           for (const auto& [name, ms] : renderer.stage_ms()) {
             size_t k = 0;
@@ -1646,6 +1664,8 @@ int run_drive(int argc, char** argv) {
           std::printf("bench: world draws per frame %.0f drawn, %.0f culled, %.0fk of %.0fk triangles drawn\n",
                       draws_sum / double(n), culled_sum / double(n), indices_sum / double(n) / 3000.0,
                       double(showroom.world_triangle_count()) / 1000.0);
+        if (n && shadow_sum > 0)
+          std::printf("bench: shadow casters per frame %.0f world draws\n", shadow_sum / double(n));
         std::printf("bench: process CPU %.2f s over %.2f s wall: %.2f ms per frame, %.0f%% of one core\n", cpu, wall,
                     n ? cpu * 1000 / double(n) : 0.0, wall > 0 ? cpu / wall * 100 : 0.0);
       } else if (headless) {

@@ -18,7 +18,11 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 reflect_tint;
   mat4 transparent_view_projection;
   vec4 stripe;
+  mat4 shadow_matrix;  // the frame's space to the shadow map's clip
+  vec4 shadow;
+  vec4 shadow_bias;
 } frame;
+layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 
 layout(set = 1, binding = 0) uniform sampler2D albedo;
 layout(set = 1, binding = 1) uniform sampler2D layer_b;    // Blend_B
@@ -63,6 +67,29 @@ vec3 encode_srgb(vec3 c) {
 layout(constant_id = 0) const bool kLinearOut = false;
 vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
 
+// The drive's sun shadow (ours): one orthographic map around the car.
+// shadow: x on, y one texel in the map's UV, z the sun's share left in
+// shadow, w taps (1 or 4); shadow_bias.x the normal offset in metres.
+// 1 where lit; off (the showroom) always 1.
+float sun_shadow(vec3 p, vec3 n) {
+  if (frame.shadow.x < 0.5) return 1.0;
+  vec4 s = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x, 1.0);
+  float edge = max(abs(s.x), abs(s.y));
+  if (edge >= 1.0 || s.z <= 0.0 || s.z >= 1.0) return 1.0;
+  vec2 uv = s.xy * 0.5 + 0.5;
+  float lit;
+  if (frame.shadow.w > 1.5) {
+    float t = frame.shadow.y * 0.5;
+    lit = 0.25 * (texture(shadow_map, vec3(uv + vec2(-t, -t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, -t), s.z)) +
+                  texture(shadow_map, vec3(uv + vec2(-t, t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, t), s.z)));
+  } else {
+    lit = texture(shadow_map, vec3(uv, s.z));
+  }
+  // Faded out towards the box's edge.
+  lit = mix(lit, 1.0, smoothstep(0.8, 1.0, edge));
+  return mix(frame.shadow.z, 1.0, lit);
+}
+
 void main() {
   uint blend = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
@@ -95,7 +122,11 @@ void main() {
   // the eye would go dark); leaf cards without one take the up axis.
   vec3 n = dot(v_normal, v_normal) > 1e-6 ? normalize(v_normal) : up;
   vec3 sun = normalize(draw.sun.xyz);
-  vec3 light = kSunColour * max(dot(n, sun), 0.0) + mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up));
+  float ndl = max(dot(n, sun), 0.0);
+  // Tree sprites cast but do not receive: in the shadow pass they face the
+  // sun, here the eye, so they would shadow themselves (ours).
+  float shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n) : 1.0;
+  vec3 light = kSunColour * ndl * shade + mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up));
   vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
 
   float alpha = 1.0;

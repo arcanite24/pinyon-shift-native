@@ -48,8 +48,14 @@ struct ShowroomFrame {
   float reflect_tint[4];  // colour of environment reflections (linear rgb)
   float transparent_view_projection[16];  // glass and lamp covers; usually view_projection
   float stripe[4];  // the factory stripe colour (linear rgb); set by the showroom
+  // The drive's sun shadow (world.frag; set by the showroom each frame):
+  // the frame's space to the map's clip, then on, texel, strength, taps,
+  // and the normal offset in metres.
+  float shadow_matrix[16];
+  float shadow[4];
+  float shadow_bias[4];
 };
-static_assert(sizeof(ShowroomFrame) == 240);
+static_assert(sizeof(ShowroomFrame) == 336);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -236,6 +242,8 @@ class Showroom {
   void set_instances(std::vector<Instance> list) { instances_ = std::move(list); }
   size_t instance_count() const { return instances_.size(); }
   size_t world_texture_count() const { return world_textures_.size(); }
+  // The world draws the last frame's shadow pass drew (0 without shadows).
+  size_t shadow_draw_count() const { return shadow_drawn_; }
 
   // Renders the car-coverage mask (every car draw, no depth test, at the
   // colour pass's MSAA) at the current frame: 255 where any sample of the
@@ -307,6 +315,15 @@ class Showroom {
   // on first use; null when one of them did not upload.
   VkDescriptorSet world_layer_set(const std::array<uint32_t, 3>& records);
   void update_frame(VkCommandBuffer cmd);
+  void update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f);
+  // The sun shadow (ours): place_shadow fits the map's box around the car
+  // and fills frame_'s shadow fields and shadow_frame_ (the sun's view);
+  // record_shadow draws the pass (host); record_shadow_car the car's
+  // opaque draws, each model matrix first taken by `m` when given.
+  bool shadows_on() const;
+  void place_shadow();
+  void record_shadow(VkCommandBuffer cmd);
+  void record_shadow_car(VkCommandBuffer cmd, const float* m);
   // The opaque and glass draws once more, each model matrix first taken by
   // `m` (a guest's instance; glass unsorted).
   void record_instance(VkCommandBuffer cmd, const float m[16]);
@@ -342,6 +359,12 @@ class Showroom {
   VkPipeline opaque_ = VK_NULL_HANDLE, glass_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
+  // The sun shadow pass: its frame block and set, and depth-only pipelines.
+  Renderer::Buffer shadow_frame_buffer_;
+  VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
+  ShowroomFrame shadow_frame_{};
+  VkPipeline shadow_world_ = VK_NULL_HANDLE, shadow_cutout_ = VK_NULL_HANDLE, shadow_car_ = VK_NULL_HANDLE;
+  size_t shadow_drawn_ = 0;
   std::vector<VkDescriptorSet> material_sets_;
   // Scenery.
   Renderer::Buffer world_vertices_, world_indices_;

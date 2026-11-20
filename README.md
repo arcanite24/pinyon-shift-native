@@ -296,7 +296,8 @@ python <horizon1-recomp>/tools/physics-behaviour.py compare <oracle-lap>/lap.jso
 # and process CPU. --preset low: no MSAA, cut-outs alpha-tested, no bloom.
 # The drive renders HDR through the post chain (the track's filmic curve and
 # desaturation, our bloom; SPEC_QUESTIONS Q42): --no-post, --no-bloom,
-# --bloom, --exposure <x> (ours 0.8).
+# --bloom, --exposure <x> (ours 0.8). The sun shadow: --shadows off|low|high
+# (low with --preset low, otherwise high).
 carview --drive --bench --preset low --size 1280x720 --bake out/bake --car NIS_SkylineGTRVSpecII_02 \
         --world <game>/media/tracks/colorado --run cruise --seconds 60 --no-sound
 

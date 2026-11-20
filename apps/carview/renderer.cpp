@@ -81,6 +81,8 @@ Renderer::~Renderer() {
     if (post_set_layout_) vkDestroyDescriptorSetLayout(device_, post_set_layout_, nullptr);
     if (post_pool_) vkDestroyDescriptorPool(device_, post_pool_, nullptr);
     if (post_sampler_) vkDestroySampler(device_, post_sampler_, nullptr);
+    destroy_image(shadow_map_);
+    if (shadow_sampler_) vkDestroySampler(device_, shadow_sampler_, nullptr);
     if (timestamps_) vkDestroyQueryPool(device_, timestamps_, nullptr);
     if (image_ready_) vkDestroySemaphore(device_, image_ready_, nullptr);
     if (frame_fence_) vkDestroyFence(device_, frame_fence_, nullptr);
@@ -667,6 +669,60 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
   target_width_ = width;
   target_height_ = height;
   return true;
+}
+
+bool Renderer::ensure_shadow_map(std::string& error) {
+  if (shadow_map_.view) return true;
+  const uint32_t size = options_.shadow.size ? options_.shadow.size : 1;
+  if (!create_image(size, size, 1, kShadowFormat, VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT,
+                    shadow_map_)) {
+    error = "shadow map";
+    return false;
+  }
+  shadow_size_ = size;
+  VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  sampler.magFilter = VK_FILTER_LINEAR;
+  sampler.minFilter = VK_FILTER_LINEAR;
+  sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+  sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+  sampler.compareEnable = VK_TRUE;
+  sampler.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+  sampler.maxLod = 0.0f;
+  if (vkCreateSampler(device_, &sampler, nullptr, &shadow_sampler_) != VK_SUCCESS) {
+    error = "shadow sampler";
+    return false;
+  }
+  // Cleared to the far plane (lit) and left ready to sample.
+  const bool ok = submit_once([&](VkCommandBuffer cmd) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = shadow_map_.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    const VkClearDepthStencilValue far{1.0f, 0};
+    vkCmdClearDepthStencilImage(cmd, shadow_map_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far, 1,
+                                &b.subresourceRange);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(cmd, &dep);
+  });
+  if (!ok) error = "shadow map clear";
+  return ok;
 }
 
 bool Renderer::create_post(std::string& error) {

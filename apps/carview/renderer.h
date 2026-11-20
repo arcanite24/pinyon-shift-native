@@ -50,6 +50,15 @@ struct PostSettings {
   float bloom_cutoff = 1.0f, bloom_scale = 1.0f;
 };
 
+// The drive's sun shadow (ours): one orthographic cascade around the car,
+// drawn from the sun each frame. size 0: none (a 1x1 map stays bound).
+struct ShadowSettings {
+  uint32_t size = 0;      // the map's side in texels
+  float radius = 60.0f;   // half the box's side, metres
+  uint32_t taps = 4;      // 1: one filtered compare; 4: four
+  float strength = 0.35f;  // the sun's share left in shadow (TrackSettings ShadowColor, read as ours)
+};
+
 class Renderer {
  public:
   struct Options {
@@ -57,6 +66,7 @@ class Renderer {
     bool validation = false;
     uint32_t msaa = 4;
     PostSettings post;
+    ShadowSettings shadow;
   };
 
   Renderer() = default;
@@ -125,6 +135,9 @@ class Renderer {
   bool create_pipeline(VkFormat color_format, std::string& error);
   bool create_targets(uint32_t width, uint32_t height, std::string& error);
   bool create_post(std::string& error);  // the post pipelines and sets (once)
+  // The shadow map (options_.shadow.size, or 1x1 without shadows) and its
+  // comparison sampler, made once; left in DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+  bool ensure_shadow_map(std::string& error);
   void record_post(VkCommandBuffer cmd, VkImageView final_view);
   void destroy_targets();
   bool create_swapchain(std::string& error);
@@ -198,6 +211,11 @@ class Renderer {
   VkDescriptorPool post_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet post_sets_[4] = {};  // bright (hdr), blur x (a), blur y (b), composite (hdr, a)
   VkSampler post_sampler_ = VK_NULL_HANDLE;
+  // The sun shadow map (D16).
+  Image shadow_map_;
+  VkSampler shadow_sampler_ = VK_NULL_HANDLE;
+  uint32_t shadow_size_ = 0;
+  static constexpr VkFormat kShadowFormat = VK_FORMAT_D16_UNORM;
 
   // Windowed.
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
