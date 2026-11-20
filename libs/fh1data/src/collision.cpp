@@ -54,7 +54,7 @@ bool parse_fiz(std::span<const uint8_t> data, FizTile& tile, std::string* error)
     for (auto& t : tile.triangles) {
       t.flags = r.u8();
       t.surface = r.u8();
-      r.skip(2);
+      t.word = r.u16();
       for (auto& v : t.v) {
         const uint32_t at = r.u32();
         if (at < vertex_offset || (at - vertex_offset) % 16 != 0 || (at - vertex_offset) / 16 >= vertex_count)
@@ -62,7 +62,7 @@ bool parse_fiz(std::span<const uint8_t> data, FizTile& tile, std::string* error)
         v = (at - vertex_offset) / 16;
       }
       for (auto& n : t.normal) n = r.f32();
-      r.skip(4);
+      t.edges = r.u32();
     }
     if (tile.grid_x > 256 || tile.grid_z > 256) return fail(error, "fiz grid too large");
     tile.grid.resize(size_t(tile.grid_x) * tile.grid_z);

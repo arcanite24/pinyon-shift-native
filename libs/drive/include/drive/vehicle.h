@@ -52,6 +52,7 @@ struct Hit {
   double grip = 1;
   int surface = -1;  // the ground's surface index, when it has one
   SurfaceTyre tyre;
+  int64_t triangle = -1;  // the ground's triangle index, when it has one
 };
 class Ground {
  public:
@@ -361,6 +362,16 @@ class Vehicle {
   // The body contacts' total force in the last substep (N): 0 while only
   // the tyres touch the ground.
   double body_contact_force() const { return body_force_; }
+  // The strongest single body contact over the last step (all substeps):
+  // where the ray met the surface, its normal and the Hit's surface and
+  // triangle. force 0: none.
+  struct BodyContact {
+    Vec3 point{}, normal{};
+    double force = 0;
+    int surface = -1;
+    int64_t triangle = -1;
+  };
+  const BodyContact& strongest_body_contact() const { return strongest_; }
   // The static load the springs are preloaded with, per wheel (N).
   double static_load(int wheel) const { return preload_[wheel]; }
 
@@ -405,6 +416,7 @@ class Vehicle {
   std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
   double body_force_ = 0;
+  BodyContact strongest_;
 };
 
 // One line of a trace (CSV header and row), for the determinism check.

@@ -135,6 +135,7 @@ bool MeshGround::raycast(const Vec3& origin, const Vec3& dir, double max_distanc
   hit.normal = n;
   hit.grip = grip_[size_t(best_t)];
   hit.surface = surface_.size() == grip_.size() ? int(surface_[size_t(best_t)]) : -1;
+  hit.triangle = best_t;
   hit.tyre = hit.surface >= 0 && size_t(hit.surface) < tyres_.size() ? tyres_[size_t(hit.surface)] : SurfaceTyre{};
   return true;
 }

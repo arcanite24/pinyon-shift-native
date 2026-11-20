@@ -95,14 +95,32 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
         core.positions.push_back(b);
         core.positions.push_back(c);
         core.surface.push_back(t.surface);
+        core.flags.push_back(t.flags);
+        core.word.push_back(t.word);
+        core.edges.push_back(t.edges);
       }
       it = cache_.emplace(k, std::move(core)).first;
     }
     out.positions.insert(out.positions.end(), it->second.positions.begin(), it->second.positions.end());
     out.surface.insert(out.surface.end(), it->second.surface.begin(), it->second.surface.end());
+    out.flags.insert(out.flags.end(), it->second.flags.begin(), it->second.flags.end());
+    out.word.insert(out.word.end(), it->second.word.begin(), it->second.word.end());
+    out.edges.insert(out.edges.end(), it->second.edges.begin(), it->second.edges.end());
+    out.tile.insert(out.tile.end(), it->second.surface.size(), r.tile);
     ++out.tiles;
   }
   return true;
+}
+
+bool Collision::steep(const CollisionMesh& cm, size_t t) {
+  const auto& a = cm.positions[t * 3];
+  const auto& b = cm.positions[t * 3 + 1];
+  const auto& c = cm.positions[t * 3 + 2];
+  const double ux = double(b[0]) - a[0], uy = double(b[1]) - a[1], uz = double(b[2]) - a[2];
+  const double vx = double(c[0]) - a[0], vy = double(c[1]) - a[1], vz = double(c[2]) - a[2];
+  const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+  const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+  return len > 0 && std::fabs(ny / len) < 0.5;
 }
 
 double spawn_heading() { return std::atan2(kSpawnForwardX, kSpawnForwardZ); }

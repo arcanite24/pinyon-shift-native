@@ -59,6 +59,9 @@ class Streamer {
   const GatherStats& stats() const { return stats_; }
   // The collision triangles of the last gather (empty without a Collision).
   const CollisionMesh& collision_mesh() const { return collision_mesh_; }
+  // With collision: per ground triangle (Hit::triangle) its index in
+  // collision_mesh().
+  const std::vector<uint32_t>& ground_source() const { return ground_source_; }
   bool uses_collision() const { return collision_ != nullptr; }
   double centre_x() const { return cx_; }
   double centre_z() const { return cz_; }
@@ -71,6 +74,7 @@ class Streamer {
     GatherStats stats;
     CollisionMesh collision;
     std::unique_ptr<drive::MeshGround> ground;
+    std::vector<uint32_t> ground_source;
     std::any prepared;
     double x = 0, z = 0, seconds = 0;
     bool ok = false;
@@ -85,6 +89,7 @@ class Streamer {
   Collision* collision_;
   double collision_radius_;
   CollisionMesh collision_mesh_;
+  std::vector<uint32_t> ground_source_;
   double cx_ = 0, cz_ = 0;
   int gathers_ = 0;
   Mesh mesh_;

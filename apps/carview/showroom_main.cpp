@@ -49,6 +49,7 @@
 #include "world/road_follow.h"
 #include "world/stream.h"
 #include "world/world.h"
+#include "contact_log.h"
 
 namespace carview {
 
@@ -894,6 +895,7 @@ void drive_usage() {
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound\n"
+               "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near) --skip-masked-walls\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
                "           --menu-png file.png\n"
@@ -944,6 +946,12 @@ int run_drive(int argc, char** argv) {
   int traffic_flag = -1;  // -1: the default
   double hour = 12;
   uint64_t traffic_seed = 1;
+  // --contacts-log (ours, debugging): every hard body contact against the
+  // collision, and per gather the walls nothing drawn stands near.
+  std::filesystem::path contacts_log_path;
+  // --skip-masked-walls (ours, opt-in): leave out the collision triangles
+  // whose undecoded word lacks 0x8000 (world::Collision::collides).
+  bool skip_masked_walls = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -996,6 +1004,8 @@ int run_drive(int argc, char** argv) {
     else if (a == "--traffic-seed") traffic_seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
+    else if (a == "--contacts-log") contacts_log_path = next();
+    else if (a == "--skip-masked-walls") skip_masked_walls = true;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -1334,7 +1344,7 @@ int run_drive(int argc, char** argv) {
         const char* how = "";
         if (!colorado.open(world_dir, cache_path, &error)) {
           status = 1;
-        } else if (!render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
+        } else if (collision.set_skip_masked(skip_masked_walls), !render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
                                                      &error, &warning)) {
           status = 1;
         } else {
@@ -1413,8 +1423,158 @@ int run_drive(int argc, char** argv) {
       }
       // One fixed step, then the stream: gathers again (and swaps the
       // ground and the scenery) once the car is far from the last centre.
+      // The contacts log: a hard contact is one point pushing with more than
+      // half the car's weight; one line when it starts or moves on 3 m.
+      struct ContactLog {
+        FILE* f = nullptr;
+        carview::DrawnIndex drawn, all;  // upright drawn triangles; every drawn triangle
+        int gathers = -1;
+        bool touching = false;
+        drive::Vec3 last{};
+        size_t contacts = 0, undrawn = 0;
+        ~ContactLog() {
+          if (!f) return;
+          std::fprintf(f, "summary: %zu hard contacts, %zu with nothing drawn within 1 m\n", contacts, undrawn);
+          std::printf("contacts: %zu hard, %zu with nothing drawn within 1 m\n", contacts, undrawn);
+          std::fclose(f);
+        }
+      } contact_log;
+      if (!contacts_log_path.empty()) {
+        contact_log.f = std::fopen(contacts_log_path.string().c_str(), "w");
+        if (!contact_log.f) std::fprintf(stderr, "carview: cannot write %s\n", contacts_log_path.string().c_str());
+      }
+      auto drawn_name = [&](uint32_t t) {
+        const auto& mesh = streamer->mesh();
+        std::string s = t < mesh.model.size() && mesh.model[t] < colorado.models().size()
+                            ? colorado.models()[mesh.model[t]].name
+                            : "?";
+        if (mesh.has_render_data() && mesh.material[t] < mesh.materials.size())
+          s += " " + mesh.materials[mesh.material[t]].effect;
+        return s;
+      };
+      auto log_contacts = [&]() {
+        if (!contact_log.f || !streamer || !streamer->uses_collision()) return;
+        const auto& cm = streamer->collision_mesh();
+        if (streamer->gathers() != contact_log.gathers) {
+          contact_log.gathers = streamer->gathers();
+          contact_log.drawn.build(streamer->mesh());
+          contact_log.all.build(streamer->mesh(), false);
+          {
+            // The undecoded fields by surface and slope, over the whole gather.
+            std::map<std::tuple<int, int, int, int>, size_t> kinds;  // surface, steep, word, edges class
+            for (size_t t = 0; t < cm.triangles(); ++t) {
+              const auto& a = cm.positions[t * 3];
+              const auto& b = cm.positions[t * 3 + 1];
+              const auto& cc = cm.positions[t * 3 + 2];
+              const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+              const double vx = cc[0] - a[0], vy = cc[1] - a[1], vz = cc[2] - a[2];
+              const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+              const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+              const int steep = len > 0 && std::fabs(ny / len) < 0.5;
+              const int word = cm.word[t] == 0x8000 ? -1 : cm.word[t];
+              const uint32_t e = cm.edges[t];
+              const int edges = e == 0x00FFFFFFu ? 0 : ((e & 0xFF000000u) ? 2 : 1);
+              ++kinds[{cm.surface[t], steep, word, edges}];
+            }
+            for (const auto& [k, n] : kinds)
+              if (n >= 20 || std::get<1>(k))
+                std::fprintf(contact_log.f, "  kind: surface %d (%s) %s word %s edges %s: %zu\n", std::get<0>(k),
+                             collision.surface_name(std::get<0>(k)).c_str(), std::get<1>(k) ? "steep" : "flat",
+                             std::get<2>(k) < 0 ? "0x8000" : std::to_string(std::get<2>(k)).c_str(),
+                             std::get<3>(k) == 0 ? "0x00ffffff" : std::get<3>(k) == 1 ? "other" : "top byte set", n);
+          }
+          const auto census_t0 = std::chrono::steady_clock::now();
+          size_t samples = 0, bare = 0;
+          const auto groups = carview::undrawn_walls(cm, streamer->ground(), contact_log.drawn, streamer->centre_x(),
+                                                     streamer->centre_z(), 200, 1.0, collision.skip_masked(), &samples,
+                                                     &bare);
+          std::fprintf(contact_log.f, "gather %d at %.1f %.1f (t %.2f s): %zu drawn triangles indexed; walls within "
+                       "200 m at car height: %zu samples (0.5 m), %zu with nothing drawn within 1 m, in %zu groups\n",
+                       contact_log.gathers, streamer->centre_x(), streamer->centre_z(), vehicle.time(),
+                       contact_log.drawn.triangles(), samples, bare, groups.size());
+          std::printf("contacts log: gather %d census %.2f s\n", contact_log.gathers,
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - census_t0).count());
+          std::fflush(stdout);
+          std::fflush(contact_log.f);
+          for (size_t k = 0; k < groups.size() && k < 40; ++k) {
+            const auto& g = groups[k];
+            std::fprintf(contact_log.f, "  bare: tile %u surface %d (%s) flags 0x%02x word 0x%04x edges 0x%08x: %zu of %zu samples in %zu "
+                         "triangles, x %.1f..%.1f y %.1f..%.1f z %.1f..%.1f\n",
+                         g.tile, g.surface, collision.surface_name(g.surface).c_str(), g.flags, g.word, g.edges, g.bare, g.samples,
+                         g.triangles, g.lo[0], g.hi[0], g.lo[1], g.hi[1], g.lo[2], g.hi[2]);
+          }
+        }
+        const auto& c = vehicle.strongest_body_contact();
+        const double hard = 0.5 * vehicle.params().mass * 9.81;
+        if (c.force < hard) {
+          contact_log.touching = false;
+          return;
+        }
+        const drive::Vec3 dp = c.point - contact_log.last;
+        if (contact_log.touching && std::sqrt(drive::dot(dp, dp)) < 3) return;
+        contact_log.touching = true;
+        contact_log.last = c.point;
+        ++contact_log.contacts;
+        const auto& src = streamer->ground_source();
+        const int64_t ct = c.triangle >= 0 && size_t(c.triangle) < src.size() ? int64_t(src[size_t(c.triangle)]) : -1;
+        const std::array<float, 3> p{float(c.point.x), float(c.point.y), float(c.point.z)};
+        uint32_t near_t = 0;
+        const double near1 = contact_log.drawn.nearest(p, 1.0);
+        const double near5 = contact_log.drawn.nearest(p, 5.0, &near_t);
+        if (near1 < 0) ++contact_log.undrawn;
+        std::fprintf(contact_log.f, "contact t %.2f s at %.2f %.2f %.2f normal %.2f %.2f %.2f: %.0f N at %.0f km/h; "
+                     "surface %d (%s)",
+                     vehicle.time(), c.point.x, c.point.y, c.point.z, c.normal.x, c.normal.y, c.normal.z, c.force,
+                     vehicle.speed() * 3.6, c.surface, collision.surface_name(c.surface).c_str());
+        if (ct >= 0)
+          std::fprintf(contact_log.f, " flags 0x%02x word 0x%04x edges 0x%08x tile %u triangle %lld", size_t(ct) < cm.flags.size() ? cm.flags[size_t(ct)] : 0, size_t(ct) < cm.word.size() ? cm.word[size_t(ct)] : 0, size_t(ct) < cm.edges.size() ? cm.edges[size_t(ct)] : 0u,
+                       size_t(ct) < cm.tile.size() ? cm.tile[size_t(ct)] : 0u, (long long)ct);
+        if (near1 >= 0) std::fprintf(contact_log.f, "; drawn %.2f m: %s\n", near1, drawn_name(near_t).c_str());
+        else if (near5 >= 0) std::fprintf(contact_log.f, "; NOTHING DRAWN within 1 m (nearest %.2f m: %s)\n", near5, drawn_name(near_t).c_str());
+        else std::fprintf(contact_log.f, "; NOTHING DRAWN within 5 m\n");
+        if (ct >= 0) {
+          const auto& q = cm.positions;
+          const size_t b = size_t(ct) * 3;
+          std::fprintf(contact_log.f, "    triangle: %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f\n", q[b][0],
+                       q[b][1], q[b][2], q[b + 1][0], q[b + 1][1], q[b + 1][2], q[b + 2][0], q[b + 2][1], q[b + 2][2]);
+        }
+        // A profile across the contact along the wall's horizontal normal:
+        // the collision's top surface and the drawn surfaces near the point's height.
+        const double hn = std::hypot(c.normal.x, c.normal.z);
+        if (hn > 0.3) {
+          const double nx = c.normal.x / hn, nz = c.normal.z / hn;
+          for (double s = -3; s <= 3.01; s += 0.5) {
+            const double x = c.point.x + nx * s, z = c.point.z + nz * s;
+            double y = 0;
+            const bool ok = world::ground_height(*ground, x, z, c.point.y + 4, y);
+            std::fprintf(contact_log.f, "    %+.1f m: collision %s", s, ok ? "" : "none");
+            if (ok) std::fprintf(contact_log.f, "%.2f", y);
+            std::fprintf(contact_log.f, "  drawn");
+            int shown = 0;
+            for (double h : contact_log.all.heights(x, z))
+              if (h < c.point.y + 4 && h > c.point.y - 6 && shown++ < 4) std::fprintf(contact_log.f, " %.2f", h);
+            std::fprintf(contact_log.f, "\n");
+          }
+        }
+      };
+      drive::Vec3 last_finite{};
+      double last_finite_kmh = 0;
       auto step = [&](const drive::Input& in) {
         vehicle.step(in, *ground);
+        {
+          // A car that left the numbers (NaN) stops the run: a gather around
+          // NaN takes the whole map.
+          const drive::Vec3 at = vehicle.position();
+          if (!std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z)) {
+            std::fprintf(stderr, "carview: t %.3f s: the car's state is not finite (last at %.2f %.2f %.2f, %.1f km/h)\n",
+                         vehicle.time(), last_finite.x, last_finite.y, last_finite.z, last_finite_kmh);
+            error = "the car's state is not finite";
+            return false;
+          }
+          last_finite = at;
+          last_finite_kmh = vehicle.speed() * 3.6;
+        }
+        log_contacts();
         if (traffic) traffic->step(vehicle);
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the

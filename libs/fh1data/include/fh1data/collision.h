@@ -18,6 +18,8 @@ namespace fh1 {
 struct FizTriangle {
   uint8_t flags = 0;    // not decoded
   uint8_t surface = 0;  // index into the surface list
+  uint16_t word = 0;    // offset 2, not decoded (0x8000 on most)
+  uint32_t edges = 0;   // offset 28, not decoded (0x00FFFFFF on most)
   std::array<uint32_t, 3> v{};  // vertex indices
   std::array<float, 3> normal{};  // unit, (b - a) x (c - a) normalised
 };

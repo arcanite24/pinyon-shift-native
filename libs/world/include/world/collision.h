@@ -29,6 +29,10 @@ constexpr uint8_t kSurfaceCameraCollision = 49;  // the camera only, not the car
 struct CollisionMesh {
   std::vector<std::array<float, 3>> positions;  // three per triangle, game frame
   std::vector<uint8_t> surface;                 // one per triangle
+  std::vector<uint8_t> flags;                   // one per triangle: the .fiz byte (not decoded)
+  std::vector<uint32_t> tile;                   // one per triangle: N of N.fiz
+  std::vector<uint16_t> word;                   // one per triangle: the .fiz u16 at 2 (not decoded)
+  std::vector<uint32_t> edges;                  // one per triangle: the .fiz u32 at 28 (not decoded)
   size_t tiles = 0;
   size_t triangles() const { return surface.size(); }
 };
@@ -50,6 +54,21 @@ class Collision {
   float grip(int surface) const;
   // Whether the car collides with a surface (all but CameraCollision).
   static bool car_collides(int surface) { return surface != kSurfaceCameraCollision; }
+  // Whether the car collides with a gathered triangle: car_collides, and,
+  // with skip_masked set, not a steep one (|normal y| < 0.5) whose u16 at
+  // offset 2 lacks the top bit (0x8000). Ours, opt-in, until COLLISION.md
+  // decodes the word: those (8 % of the core, 97 % of them upright Asphalt
+  // sheets standing on the roads, the word a bit mask) look like event road
+  // closures. The masked triangles that face up stay: they are the only
+  // floor where they lie.
+  bool collides(const CollisionMesh& cm, size_t t) const {
+    if (!car_collides(cm.surface[t])) return false;
+    if (!skip_masked_ || t >= cm.word.size() || (cm.word[t] & 0x8000)) return true;
+    return !steep(cm, t);
+  }
+  static bool steep(const CollisionMesh& cm, size_t t);
+  void set_skip_masked(bool on) { skip_masked_ = on; }
+  bool skip_masked() const { return skip_masked_; }
 
   // The core triangles of every tile whose cell comes within `radius` of
   // (x, z).
@@ -62,10 +81,13 @@ class Collision {
  private:
   struct Core {
     std::vector<std::array<float, 3>> positions;
-    std::vector<uint8_t> surface;
+    std::vector<uint8_t> surface, flags;
+    std::vector<uint16_t> word;
+    std::vector<uint32_t> edges;
   };
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  bool skip_masked_ = false;
   fh1::ColIndex index_;
   std::vector<fh1::SurfaceType> surfaces_;
   std::map<uint32_t, Core> cache_;  // by record position

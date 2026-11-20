@@ -77,6 +77,16 @@ int main() {
   std::set<uint32_t> cells;
   for (const auto& r : index.records) cells.insert(r.cell);
   uint32_t rank = 0;
+  struct Word {
+    size_t count = 0, steep = 0, up = 0;
+    std::map<int, size_t> surfaces;
+    std::set<uint32_t> tiles;
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  };
+  std::map<uint32_t, Word> words;
+  std::map<int, size_t> steep_by_surface_8000;
+  size_t masked_up_covered = 0, masked_up_holes = 0;
+  std::vector<std::array<float, 4>> hole_examples;
   for (size_t k = 0; k < index.records.size(); ++k) {
     const auto& r = index.records[k];
     // Tile numbers are the (j, i) rank of their cells.
@@ -96,6 +106,29 @@ int main() {
       ++bad_box;
     vertices += tile.vertices.size();
     triangles += tile.triangles.size();
+    {
+      // Masked up-facing triangles (word without 0x8000): is there an
+      // always-on (0x8000) surface within 1 m under or over the centroid?
+      std::vector<std::array<float, 3>> always;
+      for (const auto& tri : tile.triangles)
+        if (tri.word & 0x8000)
+          for (auto v : tri.v) always.push_back(tile.vertices[v]);
+      drive::MeshGround g(always);
+      for (const auto& tri : tile.triangles) {
+        if ((tri.word & 0x8000) || tri.normal[1] <= 0.7f) continue;
+        const auto& a = tile.vertices[tri.v[0]];
+        const auto& b = tile.vertices[tri.v[1]];
+        const auto& cc = tile.vertices[tri.v[2]];
+        const drive::Vec3 m{(double(a[0]) + b[0] + cc[0]) / 3, (double(a[1]) + b[1] + cc[1]) / 3 + 1,
+                            (double(a[2]) + b[2] + cc[2]) / 3};
+        drive::Hit h;
+        if (g.raycast(m, {0, -1, 0}, 2, h)) ++masked_up_covered;
+        else {
+          ++masked_up_holes;
+          if (hole_examples.size() < 12) hole_examples.push_back({float(m.x), float(m.y - 1), float(m.z), float(tri.word)});
+        }
+      }
+    }
     std::vector<char> listed(tile.triangles.size(), 0);
     for (const auto& cell : tile.grid)
       for (auto t : cell) listed[t] = 1;
@@ -124,10 +157,47 @@ int main() {
       const double cx = (double(a[0]) + b[0] + cc[0]) / 3, cz = (double(a[2]) + b[2] + cc[2]) / 3;
       if (!c.in_cell(r, cx, cz)) continue;
       ++core;
+      if (tri.word != 0x8000) {
+        auto& w = words[tri.word];
+        ++w.count;
+        ++w.surfaces[tri.surface];
+        if (std::fabs(tri.normal[1]) < 0.5f) ++w.steep;
+        if (tri.normal[1] > 0.7f) ++w.up;
+        w.tiles.insert(r.tile);
+        for (const auto* p : {&a, &b, &cc})
+          for (int i = 0; i < 3; ++i) w.lo[i] = std::min(w.lo[i], (*p)[i]), w.hi[i] = std::max(w.hi[i], (*p)[i]);
+      } else if (std::fabs(tri.normal[1]) < 0.5f) {
+        ++steep_by_surface_8000[tri.surface];
+      }
       std::array<std::array<float, 3>, 3> key{a, b, cc};
       std::sort(key.begin(), key.end());
       distinct.insert(std::string(reinterpret_cast<const char*>(key.data()), sizeof key));
     }
+  }
+  // The u16 at triangle offset 2 (COLLISION.md: 0x8000 on most, not
+  // decoded): the core triangles with another value.
+  {
+    size_t n = 0, steep = 0, up = 0;
+    for (const auto& [v, w] : words) n += w.count, steep += w.steep, up += w.up;
+    std::printf("word != 0x8000: %zu core triangles (%zu steep, %zu up), %zu values\n", n, steep, up, words.size());
+    for (const auto& [v, w] : words) {
+      std::printf("  word %u: %zu triangles, %zu steep, %zu up, %zu tiles, x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f; surfaces",
+                  v, w.count, w.steep, w.up, w.tiles.size(), w.lo[0], w.hi[0], w.lo[1], w.hi[1], w.lo[2], w.hi[2]);
+      for (const auto& [s, k] : w.surfaces) std::printf(" %d:%zu", s, k);
+      std::printf("\n");
+    }
+    std::printf("masked up-facing triangles: %zu with a 0x8000 surface within 1 m, %zu without\n", masked_up_covered,
+                masked_up_holes);
+    for (const auto& e : hole_examples) std::printf("  hole at %.1f %.1f %.1f word %.0f\n", e[0], e[1], e[2], e[3]);
+    std::printf("steep core triangles with 0x8000 by surface:");
+    for (const auto& [s, k] : steep_by_surface_8000) std::printf(" %d:%zu", s, k);
+    std::printf("\n");
+  }
+  {
+    size_t n = 0, steep = 0;
+    for (const auto& [v, w] : words) n += w.count, steep += w.steep;
+    CHECK(n == 110702 && steep == 107802 && words.size() == 54);
+    CHECK(masked_up_covered == 0 && masked_up_holes == 3340);
   }
   std::printf("tiles %u, vertices %zu, triangles %zu, core %zu (%zu distinct), degenerate %zu\n", rank, vertices,
               triangles, core, distinct.size(), degenerate);

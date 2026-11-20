@@ -455,6 +455,7 @@ void Vehicle::step(const Input& input, const Ground& ground) {
   shape_input(input, kStep);
   update_gearbox(kStep);
   abs_flag_ = false;
+  strongest_ = {};
   const double dt = kStep / substeps_;
   for (int s = 0; s < substeps_; ++s) substep(dt, ground);
   time_ += kStep;
@@ -791,6 +792,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     force = force + f;
     torque = torque + cross(point - pos_, f);
     body_force_ += length(f);
+    if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n, fn, hit.surface, hit.triangle};
   }
 
   // Resistance (SPEC-CAR-PHYSICS, Aerodynamics: the measured fit, rolling
