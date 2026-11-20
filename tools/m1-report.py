@@ -6,7 +6,9 @@ folder, runs `carview --bake <bake> --reference <json>` and collects the
 metric it prints (silhouette IoU, PSNR inside the reference's car mask, edge
 overlap). Writes `report.txt` with one row per car and the plan's pass rule:
 IoU at least 0.97 for every car, and no car's masked PSNR more than 6 dB
-under the median. With Pillow installed it also writes `<car_id>.side.png`:
+under the median. With Pillow it also reports IoU-g, the IoU without the
+largest connected reference-only region (the glows, SPEC_QUESTIONS Q11),
+beside the official IoU and never in the pass rule, and writes `<car_id>.side.png`:
 reference (car-only replay when given) | engine | mask difference (green:
 both, red: reference only, blue: engine only) | absolute colour
 difference inside the reference mask, for judging by eye.
@@ -57,6 +59,47 @@ def side_by_side(ref_png: Path, ref_mask: Path, ours_png: Path, ours_mask: Path,
     sheet.save(out)
 
 
+def iou_without_largest(ref_mask: Path, ours_mask: Path) -> tuple[float, int] | None:
+    """IoU with the largest connected (4-neighbour) reference-only region
+    left out, and that region's size: the glows the captured masks hold
+    and the engine does not draw (SPEC_QUESTIONS Q11). Reported beside the
+    official IoU, never instead of it."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    a = Image.open(ref_mask).convert("L")
+    w, h = a.size
+    ra = a.tobytes()
+    eb = Image.open(ours_mask).convert("L").tobytes()
+    inter = union = 0
+    ref_only = bytearray(w * h)
+    for i in range(w * h):
+        r, e = ra[i] > 0, eb[i] > 0
+        inter += r and e
+        union += r or e
+        if r and not e:
+            ref_only[i] = 1
+    largest = 0
+    stack = []
+    for start in range(w * h):
+        if not ref_only[start]:
+            continue
+        ref_only[start] = 0
+        stack.append(start)
+        n = 0
+        while stack:
+            i = stack.pop()
+            n += 1
+            x = i % w
+            for j in (i - w, i + w, i - 1 if x else -1, i + 1 if x + 1 < w else -1):
+                if 0 <= j < w * h and ref_only[j]:
+                    ref_only[j] = 0
+                    stack.append(j)
+        largest = max(largest, n)
+    return (inter / (union - largest) if union > largest else 1.0), largest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--carview", required=True)
@@ -89,6 +132,9 @@ def main() -> int:
                      "psnr": float("inf") if match.group(3) == "inf" else float(match.group(3)),
                      "edge": float(match.group(4)), "ref_px": int(match.group(5)), "eng_px": int(match.group(6)),
                      "notes": notes})
+        cleaned = iou_without_largest(ref.parent / data["mask"], ours_mask)
+        if cleaned:
+            rows[-1]["iou_clean"], rows[-1]["glow_px"] = cleaned
         if not args.no_images:
             folder = ref.parent
             side_by_side(folder / data.get("image_car_only", data["image"]), folder / data["mask"], ours, ours_mask,
@@ -97,8 +143,12 @@ def main() -> int:
     scored = [r for r in rows if "iou" in r]
     median = statistics.median(r["psnr"] for r in scored) if scored else 0.0
     lines = ["M1 car viewer report (REIMPLEMENTATION_PLAN M1; AUTOSHOW_REFERENCE v1)", ""]
-    lines.append(f"{'car_id':>7}  {'media name':32} {'IoU':>7} {'PSNR dB':>8} {'edge':>6} {'ref px':>8}"
-                 f" {'eng px':>8}  flags")
+    lines.append("IoU is the official number. IoU-g leaves out the largest connected reference-only")
+    lines.append("region (glow-px, the lamp and highlight glows: SPEC_QUESTIONS Q11); it separates")
+    lines.append("geometry from glow and is not used for the pass.")
+    lines.append("")
+    lines.append(f"{'car_id':>7}  {'media name':32} {'IoU':>7} {'IoU-g':>7} {'glow px':>8} {'PSNR dB':>8} {'edge':>6}"
+                 f" {'ref px':>8} {'eng px':>8}  flags")
     fails = 0
     for r in rows:
         if "error" in r:
@@ -110,12 +160,17 @@ def main() -> int:
             flags.append("IoU<0.97")
         if r["psnr"] < median - 6:
             flags.append("PSNR>6dB under median")
-        fails += bool(flags)
-        lines.append(f"{r['car_id']:>7}  {r['media']:32} {r['iou']:7.4f} {r['psnr']:8.2f} {r['edge']:6.3f}"
+        fails += any(f != "IoU-g<0.97" for f in flags)
+        if r.get("iou_clean", 1.0) < 0.97:
+            flags.append("IoU-g<0.97")
+        clean = f"{r['iou_clean']:7.4f} {r['glow_px']:8d}" if "iou_clean" in r else f"{'-':>7} {'-':>8}"
+        lines.append(f"{r['car_id']:>7}  {r['media']:32} {r['iou']:7.4f} {clean} {r['psnr']:8.2f} {r['edge']:6.3f}"
                      f" {r['ref_px']:8d} {r['eng_px']:8d}  {' '.join(flags)}")
     lines += ["", f"cars: {len(rows)}, scored: {len(scored)}, median masked PSNR: {median:.2f} dB",
               f"IoU: min {min((r['iou'] for r in scored), default=0):.4f},"
-              f" mean {statistics.mean(r['iou'] for r in scored) if scored else 0:.4f}",
+              f" mean {statistics.mean(r['iou'] for r in scored) if scored else 0:.4f};"
+              f" IoU-g: min {min((r.get('iou_clean', r['iou']) for r in scored), default=0):.4f},"
+              f" cars under 0.97 by IoU-g: {sum(r.get('iou_clean', 1.0) < 0.97 for r in scored)}",
               f"cars failing the numeric rule: {fails} (the by-eye check is separate)"]
     text = "\n".join(lines) + "\n"
     (args.out / "report.txt").write_text(text, encoding="utf-8")
