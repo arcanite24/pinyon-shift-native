@@ -360,10 +360,14 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
   c.wing_mask = row.wing_mask;
   for (size_t i = 0; i < 10; ++i)
     for (size_t a = 0; a < 3; ++a) c.part_positions[i][a] = float(row.part_positions[i][a]);
-  // LF, RF, LR, RR from PartId 8, 7, 5, 6.
-  const size_t wheel_rows[4] = {8, 7, 5, 6};
+  // LF, RF, LR, RR. FORMAT-CARS reads PartId 5-8 with +z to the rear
+  // (5 LR, 6 RR, 7 RF, 8 LF); the reference captures put the axles the
+  // other way round (docs/SPEC_QUESTIONS.md Q9): z is negated as for the
+  // lamp points, so 5 and 6 are the front pair.
+  const size_t wheel_rows[4] = {5, 6, 8, 7};
   for (size_t w = 0; w < 4; ++w) {
     c.wheel_centres[w] = c.part_positions[wheel_rows[w]];
+    c.wheel_centres[w][2] = -c.wheel_centres[w][2];
     if (!row.has_part_position[wheel_rows[w]]) notes.push_back("no CarPartPositions row " + std::to_string(wheel_rows[w]));
   }
   notes.push_back("tyre model " + std::string(kTyreModel) + " with " + kTyreTextures +
