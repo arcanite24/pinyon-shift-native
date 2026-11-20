@@ -366,6 +366,7 @@ bool Renderer::submit_once(const std::function<void(VkCommandBuffer)>& record) {
   submit.pCommandBuffers = &cmd;
   const bool ok = vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS &&
                   vkQueueWaitIdle(queue_) == VK_SUCCESS;
+  if (ok) frames_done_ = ++frames_submitted_;  // the queue is idle: every frame is done
   vkFreeCommandBuffers(device_, pool_, 1, &cmd);
   return ok;
 }
@@ -990,6 +991,7 @@ void Renderer::destroy_swapchain(bool keep_handle) {
 
 bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
+  frames_done_ = frames_submitted_;
   int w = 0, h = 0;
   SDL_GetWindowSizeInPixels(options_.window, &w, &h);
   if (w <= 0 || h <= 0) return true;  // minimised
@@ -1029,6 +1031,7 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   submit.signalSemaphoreCount = 1;
   submit.pSignalSemaphores = &render_done_[index];
   VK_TRY(vkQueueSubmit(queue_, 1, &submit, frame_fence_), "vkQueueSubmit");
+  ++frames_submitted_;
   VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   present.waitSemaphoreCount = 1;
   present.pWaitSemaphores = &render_done_[index];

@@ -1037,10 +1037,22 @@ int run_drive(int argc, char** argv) {
       drive::Vec3 start{};
       double start_heading = 0;
       const bool streamer_async = !headless || async_stream;
-      // The streamer's staged scenery, swapped in.
+      // What the streaming worker prepares with each gather: the staged
+      // scenery and the road follower's points.
+      struct Prepared {
+        std::shared_ptr<Showroom::StagedWorld> staged;
+        world::RoadFollower::Points road;
+      };
+      // The streamer's prepared gather, swapped in.
       auto set_staged_world = [&]() {
-        auto staged = std::any_cast<std::shared_ptr<Showroom::StagedWorld>>(std::move(streamer->prepared()));
+        auto prepared = std::any_cast<std::shared_ptr<Prepared>>(std::move(streamer->prepared()));
         streamer->prepared().reset();
+        if (!prepared) {
+          error = "world staging buffers";
+          return false;
+        }
+        follower.set_points(std::move(prepared->road));
+        auto staged = std::move(prepared->staged);
         if (!staged) {
           error = "world staging buffers";
           return false;
@@ -1089,7 +1101,10 @@ int run_drive(int argc, char** argv) {
               staged->origin_x = cx;
               staged->origin_z = cz;
             }
-            return std::any(staged);
+            auto prepared = std::make_shared<Prepared>();
+            prepared->staged = std::move(staged);
+            prepared->road = world::RoadFollower::road_points(mesh);
+            return std::any(prepared);
           });
           const double sx = have_spawn ? spawn[0] : near_given || render_ground ? near_x : world::kSpawnX;
           const double sz = have_spawn ? spawn[2] : near_given || render_ground ? near_z : world::kSpawnZ;
@@ -1109,9 +1124,8 @@ int run_drive(int argc, char** argv) {
           start_heading = sp.heading;
           vehicle.reset(start, start_heading);
           ground = &streamer->ground();
-          follower.rebuild(streamer->mesh());
           follower.set_ground(&streamer->ground());
-          if (!set_staged_world())
+          if (!set_staged_world())  // and the follower's road points
             status = 1;
           else
             showroom.set_background(0.42f, 0.55f, 0.72f);
@@ -1139,13 +1153,12 @@ int run_drive(int argc, char** argv) {
           using clock = std::chrono::steady_clock;
           const auto t0 = clock::now();
           ground = &streamer->ground();
-          follower.rebuild(streamer->mesh());
-          follower.set_ground(&streamer->ground());
+          follower.set_ground(&streamer->ground());  // its road points: set_staged_world
           const auto t1 = clock::now();
           if (!set_staged_world()) return false;
           const auto t2 = clock::now();
-          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles, %.2f s; on the step: road "
-                      "follower %.1f ms, scenery hand-over %.1f ms)\n",
+          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles, %.2f s; on the step: ground "
+                      "%.1f ms, scenery hand-over %.1f ms)\n",
                       vehicle.time(), streamer->centre_x(), streamer->centre_z(), streamer->mesh().triangles(),
                       streamer->last_gather_seconds(), std::chrono::duration<double, std::milli>(t1 - t0).count(),
                       std::chrono::duration<double, std::milli>(t2 - t1).count());
@@ -1295,7 +1308,7 @@ int run_drive(int argc, char** argv) {
         // the whole run counts every thread (the gather worker, the
         // driver's).
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
-        std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms;
+        std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms, pose_ms;
         std::vector<std::string> stage_names;
         std::vector<std::vector<double>> stage_ms;  // per stage, per frame
         double sim = 0;
@@ -1324,6 +1337,7 @@ int run_drive(int argc, char** argv) {
             break;
           }
           sim_ms.push_back(sim);
+          pose_ms.push_back(pose);
           record_ms.push_back(rec);
           for (const auto& [name, ms] : renderer.stage_ms()) {
             size_t k = 0;
@@ -1348,12 +1362,26 @@ int run_drive(int argc, char** argv) {
         const size_t n = cpu_ms.size();
         std::printf("bench: %s, %ux%u, MSAA %u, %zu frames over %.1f s of game time (%.1f s wall)\n",
                     renderer.device_name().c_str(), width, height, renderer.sample_count(), n, seconds, wall);
-        std::printf("bench: frame CPU ms p50 %.2f p95 %.2f max %.2f (steps p50 %.2f max %.2f; recording p50 %.2f)\n",
-                    pct(cpu_ms, 0.5), pct(cpu_ms, 0.95), pct(cpu_ms, 1.0), pct(sim_ms, 0.5), pct(sim_ms, 1.0),
-                    pct(record_ms, 0.5));
+        std::printf("bench: frame CPU ms p50 %.2f p95 %.2f p99 %.2f max %.2f (steps p50 %.2f max %.2f; recording "
+                    "p50 %.2f)\n",
+                    pct(cpu_ms, 0.5), pct(cpu_ms, 0.95), pct(cpu_ms, 0.99), pct(cpu_ms, 1.0), pct(sim_ms, 0.5),
+                    pct(sim_ms, 1.0), pct(record_ms, 0.5));
+        {
+          // The slowest frames, by game time (a hitch shows which event).
+          std::vector<size_t> order(n);
+          for (size_t k = 0; k < n; ++k) order[k] = k;
+          std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return cpu_ms[a] > cpu_ms[b]; });
+          std::printf("bench: slowest frames (CPU ms at game time: steps + posing + recording):");
+          for (size_t k = 0; k < std::min<size_t>(5, n); ++k) {
+            const size_t f = order[k];
+            std::printf(" %.2f at %.2f s (%.2f + %.2f + %.2f);", cpu_ms[f], double(f) * 2 * drive::Vehicle::kStep,
+                        sim_ms[f], pose_ms[f], record_ms[f]);
+          }
+          std::printf("\n");
+        }
         if (n && gpu_ms[0] >= 0)
-          std::printf("bench: frame GPU ms p50 %.2f p95 %.2f max %.2f\n", pct(gpu_ms, 0.5), pct(gpu_ms, 0.95),
-                      pct(gpu_ms, 1.0));
+          std::printf("bench: frame GPU ms p50 %.2f p95 %.2f p99 %.2f max %.2f\n", pct(gpu_ms, 0.5),
+                      pct(gpu_ms, 0.95), pct(gpu_ms, 0.99), pct(gpu_ms, 1.0));
         else
           std::printf("bench: no GPU timestamps on this queue\n");
         if (!stage_names.empty()) {

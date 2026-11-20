@@ -220,6 +220,7 @@ Showroom::~Showroom() {
   VkDevice d = r_.device_;
   if (!d) return;
   vkDeviceWaitIdle(d);
+  stop_reaper();
   r_.set_scene({});
   for (auto& t : gpu_textures_) r_.destroy_image(t);
   r_.destroy_image(environment_);
@@ -1562,18 +1563,44 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
       out.texel_ranges.assign(out.textures.size(), {0, 0});
     }
   }
+  // Their images and views too (thread-safe device calls; on the render
+  // thread they cost a fraction of a millisecond each, tens per gather).
+  if (out.texels && out.vertices && out.indices) {
+    out.images = std::shared_ptr<std::vector<Renderer::Image>>(
+        new std::vector<Renderer::Image>(out.textures.size()), [&r](std::vector<Renderer::Image>* v) {
+          for (auto& i : *v) r.destroy_image(i);
+          delete v;
+        });
+    for (size_t i = 0; i < out.textures.size(); ++i) {
+      const auto& t = out.textures[i];
+      if (!t || !out.texel_ranges[i].second) continue;
+      {
+        std::lock_guard<std::mutex> lock(world_textures_mutex_);
+        if (world_textures_.count(t->record)) continue;
+      }
+      std::string why;
+      if (!create_texture_image(t->texture, t->srgb, out.texel_ranges[i].second, (*out.images)[i], why))
+        r.destroy_image((*out.images)[i]);  // begin_world tries again and reports it
+    }
+  }
   return true;
 }
 
 bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
-                                   VkCommandBuffer cmd, std::string& error) {
+                                   VkCommandBuffer cmd, Renderer::Image* made, std::string& error) {
   GpuTexture image;
-  if (!create_texture_image(t.texture, t.srgb, levels, image, error)) {
+  if (made && made->image) {
+    image = *made;
+    *made = {};
+  } else if (!create_texture_image(t.texture, t.srgb, levels, image, error)) {
     r_.destroy_image(image);
     return false;
   }
   record_texture_copy(cmd, texels, offset, t.texture, levels, image.image);
-  world_textures_[t.record] = image;
+  {
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    world_textures_[t.record] = image;
+  }
   // Its set: the texture at binding 0, white at 1 and 2. Drawn only once
   // the scenery's copy is fenced (poll_world).
   const VkDescriptorSet set = world_layer_set({t.record, kNoWorldTexture, kNoWorldTexture});
@@ -1593,9 +1620,64 @@ void Showroom::drop_pending_world() {
     vkDestroyFence(r_.device_, p.fence, nullptr);
   }
   if (p.cmd) vkFreeCommandBuffers(r_.device_, r_.pool_, 1, &p.cmd);
-  r_.destroy_buffer(p.vertices);
-  r_.destroy_buffer(p.indices);
+  // Its copy is done (the fence): the staging buffers, the worker's
+  // images not taken and buffers never swapped in go on the reaper.
+  auto staged = std::make_shared<StagedWorld>(std::move(p.staged));
+  reap([this, staged, v = p.vertices, i = p.indices]() mutable {
+    r_.destroy_buffer(v);
+    r_.destroy_buffer(i);
+    staged.reset();
+  });
   pending_world_.reset();
+}
+
+void Showroom::reap(std::function<void()> f) {
+  if (!reaper_.joinable()) {
+    reaper_ = std::thread([this] {
+      std::unique_lock<std::mutex> lock(reap_mutex_);
+      for (;;) {
+        reap_cv_.wait(lock, [this] { return reap_stop_ || !reap_queue_.empty(); });
+        if (reap_queue_.empty()) return;  // stopping, and drained
+        auto job = std::move(reap_queue_.front());
+        reap_queue_.pop_front();
+        lock.unlock();
+        job();
+        lock.lock();
+      }
+    });
+  }
+  {
+    std::lock_guard<std::mutex> lock(reap_mutex_);
+    reap_queue_.push_back(std::move(f));
+  }
+  reap_cv_.notify_one();
+}
+
+void Showroom::retire(std::function<void()> f) { retired_.push_back({r_.frames_submitted(), std::move(f)}); }
+
+void Showroom::release_retired() {
+  const uint64_t done = r_.frames_done();
+  for (size_t k = 0; k < retired_.size();) {
+    if (retired_[k].first <= done) {
+      reap(std::move(retired_[k].second));
+      retired_.erase(retired_.begin() + ptrdiff_t(k));
+    } else {
+      ++k;
+    }
+  }
+}
+
+void Showroom::stop_reaper() {
+  // The GPU is idle (the caller waited): what is retired can go now.
+  for (auto& [tag, f] : retired_) f();
+  retired_.clear();
+  if (!reaper_.joinable()) return;
+  {
+    std::lock_guard<std::mutex> lock(reap_mutex_);
+    reap_stop_ = true;
+  }
+  reap_cv_.notify_one();
+  reaper_.join();
 }
 
 bool Showroom::begin_world(StagedWorld staged, std::string& error) {
@@ -1642,8 +1724,9 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
         const auto& t = st.textures[k];
         if (!t || !st.texel_ranges[k].second || world_textures_.count(t->record)) continue;
         std::string why;
+        Renderer::Image* made = st.images && k < st.images->size() ? &(*st.images)[k] : nullptr;
         if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, p->cmd,
-                                 why))
+                                 made, why))
           notes_.push_back("world texture " + t->texture.name + ": " + why);  // drawn flat
       }
     }
@@ -1666,16 +1749,19 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
 
 bool Showroom::poll_world(bool wait, bool* swapped) {
   if (swapped) *swapped = false;
+  release_retired();
   if (!pending_world_) return true;
   auto& p = *pending_world_;
   if (p.fence) {
     if (!wait && vkGetFenceStatus(r_.device_, p.fence) != VK_SUCCESS) return true;
     vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
   }
-  // The scenery in use may still be read by a frame in flight.
-  vkDeviceWaitIdle(r_.device_);
-  r_.destroy_buffer(world_vertices_);
-  r_.destroy_buffer(world_indices_);
+  // The scenery in use may still be read by the frame in flight: it goes
+  // once that frame is done, off this thread (no device wait here).
+  retire([this, v = world_vertices_, i = world_indices_]() mutable {
+    r_.destroy_buffer(v);
+    r_.destroy_buffer(i);
+  });
   world_vertices_ = p.vertices;
   world_indices_ = p.indices;
   p.vertices = {};
@@ -1770,7 +1856,10 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
       return false;
     }
     write_set(set, image.view);
-    world_textures_[t->record] = image;
+    {
+      std::lock_guard<std::mutex> lock(world_textures_mutex_);
+      world_textures_[t->record] = image;
+    }
     world_sets_[t->record] = set;
   }
   return true;

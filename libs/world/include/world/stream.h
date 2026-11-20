@@ -95,6 +95,9 @@ class Streamer {
   std::any prepared_;
   double last_seconds_ = 0;
   std::future<std::unique_ptr<Gathered>> job_;
+  // The gather a swap replaced, freed on another thread (its meshes take
+  // milliseconds to free).
+  std::future<void> drop_;
 };
 
 // Where a car starts: at `given` (x, y, z, heading) when set; else on the

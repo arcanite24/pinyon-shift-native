@@ -119,11 +119,12 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
 }
 
 void Streamer::take(Gathered&& g) {
-  ground_ = std::move(g.ground);
-  mesh_ = std::move(g.mesh);
+  // Swapped, not moved: `g` leaves with the old gather (the caller frees it).
+  std::swap(ground_, g.ground);
+  std::swap(mesh_, g.mesh);
   stats_ = std::move(g.stats);
-  collision_mesh_ = std::move(g.collision);
-  prepared_ = std::move(g.prepared);
+  std::swap(collision_mesh_, g.collision);
+  std::swap(prepared_, g.prepared);
   last_seconds_ = g.seconds;
   cx_ = g.x;
   cz_ = g.z;
@@ -140,6 +141,9 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
       return false;
     }
     take(std::move(*g));
+    // The old gather goes on a thread of its own, off the step.
+    if (drop_.valid()) drop_.wait();
+    drop_ = std::async(std::launch::async, [old = std::move(g)]() mutable { old.reset(); });
     if (changed) *changed = true;
     return true;
   }

@@ -118,6 +118,10 @@ class Renderer {
   void destroy_image(Image& i);
   bool upload_buffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage, Buffer& out);
   bool submit_once(const std::function<void(VkCommandBuffer)>& record);
+  // Frames submitted, and how many of them the GPU is known to be done
+  // with (an object the frames used can go once done >= its tag).
+  uint64_t frames_submitted() const { return frames_submitted_; }
+  uint64_t frames_done() const { return frames_done_; }
   void record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                     VkImageLayout final_layout, const FrameConstants& constants);
   // Copies the overlay into its buffer (none of the GPU's frames may be
@@ -134,6 +138,7 @@ class Renderer {
   uint32_t queue_family_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;
   VkCommandPool pool_ = VK_NULL_HANDLE;
+  uint64_t frames_submitted_ = 0, frames_done_ = 0;
   VkPhysicalDeviceMemoryProperties memory_properties_{};
   VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;
   VkFormat depth_format_ = VK_FORMAT_D32_SFLOAT;

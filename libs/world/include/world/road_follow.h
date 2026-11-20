@@ -22,6 +22,11 @@ class RoadFollower {
   explicit RoadFollower(double target_speed = 40 / 3.6) : target_(target_speed) {}
   // The input for this step. Call `rebuild` after the mesh changes.
   void rebuild(const Mesh& mesh);
+  // The same in two halves, so a streaming worker can do the first:
+  // `road_points` (any thread) and `set_points` (the stepping thread).
+  using Points = std::vector<std::array<double, 2>>;
+  static Points road_points(const Mesh& mesh);
+  void set_points(Points points) { points_ = std::move(points); }
   // The collision to look for walls in (null: none). Set it again after
   // the ground changes.
   void set_ground(const drive::Ground* ground) { ground_ = ground; }

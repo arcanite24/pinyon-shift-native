@@ -410,21 +410,27 @@ start and end; frame CPU is the steps (with the streaming's hand-over),
 posing and recording on the main thread; process CPU counts every
 thread (the gather worker included).
 
-| Machine | Preset | GPU p50 / p95 / max ms | Frame CPU p50 / max ms | Process CPU ms/frame |
+| Machine | Preset | GPU p50 / p95 / max ms | Frame CPU p50 / p99 / max ms | Process CPU ms/frame |
 | --- | --- | --- | --- | --- |
-| blindvac, UHD 620, i5-8250U | low (no MSAA) | 10.1 / 12.7 / 16.2 | 1.18 / 29.7 | 1.79 |
-| blindvac, UHD 620, i5-8250U | high (MSAA 4) | 12.7 / 17.4 / 26.4 | 1.18 / 26.6 | 1.91 |
-| multivac, RTX 4080, Ryzen 7 5800X | low | 0.42 / 0.48 / 0.51 | 0.68 / 15.1 | 1.08 |
+| blindvac, UHD 620, i5-8250U | low (no MSAA) | 10.1 / 12.7 / 16.2 | 1.16 / 2.1 / 2.8-3.5 | 1.7 |
+| blindvac, UHD 620, i5-8250U | high (MSAA 4) | 12.7 / 15.5 / 26.4 | 1.18 / 2.1 / 3.1 | 1.75 |
+| multivac, RTX 4080, Ryzen 7 5800X | low | 0.4 / 0.5 / 0.5 | 0.67 / 1.2-1.4 / 2.3-2.5 | 1.15 |
 
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
 (1.4 ms) and the sky dome (0.6 ms). It does not follow the resolution
 (10.9 ms at 640x360, 11.3 ms at 1920x1080) or the triangle count (no
 props, far ring or trees: 10.3 to 10.7 ms; flat colours: 10.2 ms), so
-the cost is per vertex or per draw rather than per pixel. The frame CPU's
-maximum is the scenery hand-over on a regather (15 to 20 ms on the
-i5-8250U, 8 ms on the 5800X): a hitch, not the steady state. No Linux
-build yet, so no Steam Deck figure.
+the cost is per vertex or per draw rather than per pixel.
+
+The frame CPU's maximum was the scenery hand-over on a regather (blindvac
+low: max 26-31 ms, p99 2.25 ms). The streaming worker now also makes the
+new textures' images and views and the road follower's points; the old
+gather's meshes and the old scenery's buffers are freed on other threads
+(the buffers once the frame in flight is done, with no device wait). The
+hand-over is about 1.2 ms on the i5-8250U (0.9 ms on the 5800X), and the
+slowest frames are the physics steps (2.5-3.2 ms). No Linux build yet,
+so no Steam Deck figure.
 
 ## Licence
 

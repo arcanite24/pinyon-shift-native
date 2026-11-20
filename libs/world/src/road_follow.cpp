@@ -13,15 +13,18 @@ bool wall_between(const drive::Ground& ground, const drive::Vec3& from, double x
   return ground.raycast(origin, {dx / d, 0, dz / d}, d, hit) && std::fabs(hit.normal.y) < 0.5;
 }
 
-void RoadFollower::rebuild(const Mesh& mesh) {
-  points_.clear();
+void RoadFollower::rebuild(const Mesh& mesh) { points_ = road_points(mesh); }
+
+RoadFollower::Points RoadFollower::road_points(const Mesh& mesh) {
+  Points points;
   for (size_t t = 0; t < mesh.triangles(); ++t) {
     if (mesh.surface[t] != Surface::kRoad || !mesh.ground[t]) continue;
     const auto& a = mesh.positions[t * 3];
     const auto& b = mesh.positions[t * 3 + 1];
     const auto& c = mesh.positions[t * 3 + 2];
-    points_.push_back({(double(a[0]) + b[0] + c[0]) / 3, (double(a[2]) + b[2] + c[2]) / 3});
+    points.push_back({(double(a[0]) + b[0] + c[0]) / 3, (double(a[2]) + b[2] + c[2]) / 3});
   }
+  return points;
 }
 
 drive::Input RoadFollower::input(const drive::Vehicle& v) const {

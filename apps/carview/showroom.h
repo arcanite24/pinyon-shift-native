@@ -9,11 +9,16 @@
 #pragma once
 
 #include <array>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <map>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <volk.h>
@@ -176,6 +181,10 @@ class Showroom {
     // per texture, its offset and level count (0: upload it apart).
     std::shared_ptr<Renderer::Buffer> texels;
     std::vector<std::pair<VkDeviceSize, uint32_t>> texel_ranges;
+    // Their images, made by the worker too (per texture; empty where it
+    // was already uploaded or failed, which begin_world then handles).
+    // The ones begin_world does not take go with the StagedWorld.
+    std::shared_ptr<std::vector<Renderer::Image>> images;
     double origin_x = 0, origin_z = 0;  // what the positions are relative to
   };
   bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error);
@@ -244,8 +253,17 @@ class Showroom {
                             std::string& error);
   // Makes the image, view and set of a world texture staged in `texels`
   // and records its copy into `cmd` (the scenery's fenced upload).
+  // `made`: its image when the worker made it (taken), else null.
   bool begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
-                           VkCommandBuffer cmd, std::string& error);
+                           VkCommandBuffer cmd, Renderer::Image* made, std::string& error);
+  // Destroying Vulkan objects off this thread (freeing a scenery's
+  // buffers takes milliseconds): `reap` runs `f` on the reaper thread now;
+  // `retire` once the frame in flight is done with what `f` frees
+  // (release_retired, from poll_world, hands those over).
+  void reap(std::function<void()> f);
+  void retire(std::function<void()> f);
+  void release_retired();
+  void stop_reaper();
   bool upload_environment(std::string& error);
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
@@ -308,6 +326,14 @@ class Showroom {
   bool draw_car_ = true;
   VkPipeline world_opaque_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
   std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
+  // Held for writes to world_textures_ and for the worker's reads.
+  mutable std::mutex world_textures_mutex_;
+  std::thread reaper_;
+  std::mutex reap_mutex_;
+  std::condition_variable reap_cv_;
+  std::deque<std::function<void()>> reap_queue_;
+  bool reap_stop_ = false;
+  std::vector<std::pair<uint64_t, std::function<void()>>> retired_;  // main thread only
   std::map<uint32_t, VkDescriptorSet> world_sets_;   // by texture record
   // Sets for terrain draws: slot 0, Blend_B and Splat (bindings 0 to 2).
   std::map<std::array<uint32_t, 3>, VkDescriptorSet> world_layer_sets_;
