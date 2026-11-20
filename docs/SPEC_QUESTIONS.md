@@ -701,3 +701,40 @@ question Q38)" and "Colour byte order"). Built:
   braking zone peaks at -14.8 m/s^2 (the oracle -16.8). Scenario B's ABS
   phase 12.06 (oracle 11.9 to 12.1); the turn circle 3.35 m (3.37). Not
   chased.
+
+## Q41 (M4): free-roam traffic (SPEC-TRAFFIC 33788840)
+
+- **Done.** `libs/traffic`: colorado.nav and the drivable network (every
+  count of the spec's tables matches), the freeroam settings and registry
+  values, the time-of-day factor, the population (local density per 100 m
+  within the spawn-out distance, smoothed every 0.1 s; target min(D_s,
+  cap); four initial cars; spawns on the spawn-in circle, despawns at the
+  spawn-out distance + 20 m; four loaded models of the 17, rotated every
+  30 s) and lane driving (2.2 m right of the centre line, the road's mph
+  speed within SpeedMin/Max, slowing for bends between RadiusForMin/Max
+  and for the car or player ahead). `traffic-census` runs the oracle's
+  protocol headless.
+- **Census (10 seeds; 40 seeds in brackets).** Noon parked 4.79 cars
+  (4.84) against the oracle's 6.1, inside 30 %. 02:00 parked, from 30 s
+  after the change, 1.25 (1.40) against 0.9: **outside the 30 % gate**, a
+  known miss. Noon cruising 2.99 against 4.4 (not gated). Every moving
+  sample within 15 m of a traffic road (0 of 10,714 off); two-way roads
+  100 % right of the centre line, median 2.20 m; spawns at 330 m, 31 %
+  driving away (oracle 5 of 21); despawns at 390 m; 13.39 m/s on straight
+  road (30 mph is 13.41).
+- **Reading the misses.** The night count is the noon cars still inside
+  390 m plus about one car (target 0.62: one spawn whenever none is
+  active). The noon count is held by the spawn rate (one per 5 to 9 s while
+  below target) and the cars' time in range (a car spawned towards a
+  parked player stays about 54 s, one driving away about 5 s). Open: how
+  the spawn interval follows TrafficMin/Med/Max and Variance, and whether
+  the density walk's extent (the spec's second reading predicts 0.5 at
+  night) is the one the game uses. Not tuned.
+- **Ours, until the spec says.** The spawn interval (TrafficMed +-
+  TrafficVariance); the away chance rising from SpawnAwayChanceMin at rest
+  to the road's value at 20 m/s (SpawnAwayChanceLerpSpeed read as a
+  speed); one loaded model swapped per rotation, a rotated-out model's
+  cars driving on until they despawn; the junction choice fixed per car
+  and node (uniform over the allowed ways); a car in the lane ahead
+  within 2 m of its line is followed (matched less 2 m/s inside the
+  look-ahead gap + 6 m, stopped inside 60 % of it); bends at 3 m/s^2.
