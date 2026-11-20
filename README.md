@@ -579,6 +579,42 @@ stuck-car recovery (48.5 s); over SSH a first background swap sometimes
 stalls 5-6 ms on the driver (a fence destroy while another thread frees
 the old gather), taking the maximum to 7.7-8.8 ms.
 
+## Refactor candidates (performance)
+
+Standing rule (2026-11-20): match the specs' behaviour, numbers and gates,
+not the game's structure; pick the fastest design for modern hardware.
+Where the code is shaped per object for no reason, it is listed here.
+
+- **World draws are CPU-recorded one by one.** Each frame the CPU culls
+  about 2,400 draw boxes and records about 650 draws, each with its own push
+  constants and descriptor bind (`Showroom::record_world`). The shadow pass
+  walks the same list again (`record_shadow`). Target: one buffer set per
+  scenery, bindless textures, a compute pass that culls into indirect
+  buffers for the view and the shadow map, then `vkCmdDrawIndexedIndirect`
+  per pipeline.
+- **Traffic cars are drawn per instance and per part.** Each guest car
+  replays its whole draw list for every instance (`record_instance`, and
+  `record_shadow_car` in the shadow pass). Target: one instanced draw per
+  model and material, with an instance buffer of transforms, so traffic
+  at scale costs draws per model, not per car.
+- **The traffic population is an array of `Car` structs stepped one at a
+  time** (`traffic::Population::step`), with a `std::function` ground query
+  per kinematic car. Target: structure-of-arrays lanes (road, s, speed,
+  lateral) stepped in a batch, with ground heights batched per tile.
+- **Traffic bodies are full `drive::Vehicle`s stepped serially on the
+  main thread** (`traffic::Bodies::step`). Bodies only interact through
+  contacts, so they can step in parallel on a worker pool, with contacts
+  resolved after the step.
+- **The car's draws bind a descriptor set per material**
+  (`record_draws`). Target: bindless textures and draws sorted by
+  pipeline, the same as the world.
+- **Streaming starts a `std::async` per gather.** Target: a persistent
+  job system shared by gathers, texture decode, the traffic model loads
+  and (next) the radio's decode.
+- **The bloom runs as three full-screen fragment passes.** A compute
+  down-sample and blur would do the same in fewer passes. It is small
+  today (under 1 ms on the UHD 620), so it comes last.
+
 ## Licence
 
 GPL-3.0-or-later (`LICENSE`), copyright Brandon G. Neri. The LGPL-2.1
