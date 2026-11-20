@@ -3,15 +3,15 @@
 | | |
 | --- | --- |
 | Spec ID | `SPEC-CAR-PHYSICS` |
-| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia and the step confirmed on one car; lateral tyre, low-speed steering, drag and the torque chain measured fits; brake torque, collision, surfaces and the lap gate open |
+| Status | draft: parameters resolve for all 240 cars; longitudinal tyre, suspension units, inertia, the step and straight-line ABS confirmed on one car; lateral tyre, low-speed steering, drag, front brake torque and the torque chain measured fits; collision, surfaces and the lap gate open |
 | Written | 2026-11-20, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | [objects findings](../../site/findings/objects.toml), group "Car dynamics"; [content findings](../../site/findings/content.toml), group "Game database" |
 | Implements it | `shift-engine`, physics module (not yet) |
 
 ## What it is
 
-This spec covers what [M3_DRIVE_NEEDS](../REIMPLEMENTATION_PLAN.md) lists
-as items 4 to 7 for one car driven by the engine's own physics:
+This spec covers what `shift-engine` `docs/M3_DRIVE_NEEDS.md` lists as
+items 4 to 7 for one car driven by the engine's own physics:
 
 - **4. Car parameters:** which database tables and columns give a stock
   car's mass, inertia, suspension, engine, drivetrain, brakes, aero and
@@ -170,7 +170,7 @@ by `RearToqueSplit`.
 
 | Quantity | Column of `List_UpgradeBrakes` | Unit and rule |
 | --- | --- | --- |
-| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | not decoded. On the R34 a full press locks the wheels within 0.25 s (the normalised slip ratio reaches −1.3 to −2.7), and the ABS then holds the slip near the peak. So the stop is set by tyre grip and the ABS, not by the brake torque: any torque above the grip limit, with the bias below, gives the measured stop (scenario B) |
+| Brake torque | `BrakeTorqueSlider` with `FrontBrakeSize`, `RearBrakeSize` (inches), `…CaliperPistons`, `…BrakeTypeID` and `GameFrictionScaleBraking` | the formula is not decoded. Measured fit: at full press each front wheel takes about 3,500 N·m (3,100 to 4,200 over eleven steps in two stops; the wheel's own inertia × its deceleration plus the tyre's F_x × the radius). The rear wheels decelerate with the driveline in gear, so their torque does not separate from the trace; use the bias to set it. The torque is far above the grip limit: the fronts pass the ABS release point within 0.09 s of the press, so the stop is set by the ABS cycle and the tyre curve past its peak (scenario B), and a few percent of brake torque hardly changes it |
 | Bias | `BrakeBiasSlider` and `PhysicsSettings.ini` `BrakeBiasOffsetRear` | fraction |
 | Handbrake | `BiasHandbrake` | probable: handbrake strength |
 | ABS | `ReleasePointABS`, `DurationABS`, `ReleasePointABSFrontNoSteer`, `…FrontFullSteer`, `…RearNoSteer`, `…RearFullSteer` | see Assists |
@@ -320,7 +320,7 @@ Against the R34's oracle trace (stock compound, asphalt):
 | Sidewall factor | 1.27 on the R34's tyres, applied to both the peak slips and the curve's slip axis | confirmed |
 | Lateral curve value | the same construction **over-predicts** the traced lateral value by 7 to 11 % (three points) | open |
 | Lateral measured fit | multiply the lateral curve value by **0.915** (the three ratios are 0.907, 0.907 and 0.930) | measured, three points |
-| Low-speed turn | at full lock and 2 to 3 m/s, throttle off, the car's path radius is 3.37 m, steady for 3 s | measured |
+| Low-speed turn | at full lock and 2 to 3 m/s, coasting (the throttle released with the steer input, measured from 0.8 s after it), the car's path radius is 3.37 m, steady for 3 s | measured |
 
 The lateral gap may come from the lateral peak clamp, a different stretch
 on the angle axis or a camber term. The fit is enough for M3's play test;
@@ -357,16 +357,26 @@ off, automatic gears. M3 implements that set.
 ### ABS
 
 Each step, for each wheel: when the smoothed normalised slip ratio passes
-the release point, the brake on that wheel is released, and it is applied
-again after `DurationABS` seconds. The release point is blended by the
-steering input between the `NoSteer` and `FullSteer` columns of the axle
-(`ReleasePointABSFrontNoSteer`, `…FrontFullSteer`, `…RearNoSteer`,
-`…RearFullSteer`, in units of the normalised slip, so 1 is the tyre's
-peak). The ABS flag that the HUD shows is set on the steps where a wheel
-is released, so it flickers during a stop. With ABS off the game uses
-`PhysicsSettings.ini` `NoABSSlipDef…` and `NoABSBrakeTravel` instead
-(probable). Confidence: probable, from the data flow and the cockpit
-light; the release and reapply timing was not traced.
+the release point (locking, so the slip is negative), the brake on that
+wheel goes to 0, and it is applied again after `DurationABS` seconds. The
+release point is blended by the steering input between the `NoSteer` and
+`FullSteer` columns of the axle (`ReleasePointABSFrontNoSteer`,
+`…FrontFullSteer`, `…RearNoSteer`, `…RearFullSteer`, in units of the
+normalised slip, so 1 is the tyre's peak). The ABS flag that the HUD
+shows is set on the steps where a wheel is released, so it flickers
+during a stop.
+
+Measured on the R34's straight stops (no steering): the fronts released at
+a normalised slip of −2.9 to −3.3 and the rears at −2.4 to −2.7, which are
+the two `NoSteer` columns within the step size; each release lasted 0.045
+to 0.06 s against `DurationABS`, after which the brake went straight back
+to 1. So a straight ABS stop lets the wheels run to two or three times the
+peak slip before it releases, which is why the mean deceleration (0.87 g)
+sits well below the tyre's peak grip: the gate number depends on these
+release points and on the curve past its peak. Confidence: the straight-
+line rule confirmed on one car; the steering blend is from the data flow,
+probable. With ABS off the game uses `PhysicsSettings.ini`
+`NoABSSlipDef…` and `NoABSBrakeTravel` instead (probable).
 
 ### Traction control
 
@@ -395,7 +405,7 @@ out for M3.
 | --- | --- | --- |
 | Deadzones | `ForzaProfile.sch` `ControllerAdvancedOptions` (`SteeringAxisDeadzoneInside`, `…Outside`, `ThrottleDeadzoneInside`, `…Outside`, `BrakeDeadzoneInside`, `…Outside`) | the axis is rescaled from the inside to the outside deadzone to 0..1 and clamped, probable |
 | Throttle ramp | `PhysicsSettings.ini` `ControllerDelays\AccelDelaySpeed` | the throttle moves towards the trigger at that many full travels per second. Measured: the traced gas control's lower envelope rises at 4.9 per second, so about 0.2 s from 0 to 1. On alternate steps of the ramp the control reads 1.0 (finding "controls at step entry are not the step's input"), so take the envelope |
-| Brake ramp | `ControllerDelays\BrakeDelaySpeed`, `HandBrakeDelaySpeed` | the same rule, probable. The traced brake control read 1.0 on the first step of a full press in both stops, so any brake ramp acts after the traced control |
+| Brake ramp | `ControllerDelays\BrakeDelaySpeed`, `HandBrakeDelaySpeed` | the same rule. Measured: the traced brake control reads 1.0 on the first step of a full press, but the wheels' brake value ramps 0, 0.38, 0.68, 1.0 over 0.05 s, which is `BrakeDelaySpeed` full travels per second; the handbrake rate is probable |
 | Brake pedal curve | `PhysicsSettings.ini` `BrakeInputScale` (`…Input0`…`3`, `…Output0`…`3`) | a piecewise-linear map from the brake input to the brake torque fraction, probable |
 | Steering | `Data_Car.Steer*`, `PhysicsSettings.ini` `SteeringWheelFilter\*`, `SteerDefCountersteerRate`, `SteerDefDynSteerFindPeakRate` | measured at walking pace: the traced steer control steps straight to the stick (−1 at full left), so the shaping acts after it. The car's yaw then builds linearly over 0.40 s, the lock divided by `SteerMaxAngVelTurning`. At full lock the path radius (3.37 m) gives a kinematic road-wheel angle of 41.5°, which is `SteerMaxAngle` within 1°. So at low speed the road-wheel angle moves towards stick × `SteerMaxAngle` at `SteerMaxAngVelTurning` degrees per second, probable. With speed the lock narrows through the `SteerSpeedSensitive*` columns towards `SteerMaxAngleFiltered` (probable, not traced at speed). The counter-steer and find-peak rates belong to the assisted steering (`Steering` 1) and were not traced |
 | Gears | `Shifting` 0 | automatic: it shifts up at about 0.96 × `RedlineRPM` (1→2 at 7,690 rpm and 67.8 km/h, the same in three runs). A shift takes 0.60 to 0.66 s from the shift-state change to power back, which is `ClutchInTime` + `GearShiftTime` + `ClutchOutTime` within 0.05 s. Under braking it shifts down (2→1 near 58 km/h). With the brake held at low speed it selects reverse: at 23 km/h in one stop, at the stop in the other |
@@ -510,9 +520,10 @@ different speed in each run. Gate the stop from the brake onset:
 | ABS-active steps during the stop | 64 | 64 |
 
 The mean deceleration is 0.87 g on a road falling about 4 % there; the
-tyres themselves make about 0.91 g. Within 0.25 s of the press the wheels
-are past the peak (normalised slip −1.3 to −2.7), and the ABS cycles
-until the stop. The gearbox drops to first and then reverse on the way
+tyres themselves make about 0.91 g. The fronts reach the ABS release
+point within 0.09 s of the press and the rears within 0.25 s, and the ABS
+then cycles each wheel between about −3 (front) or −2.5 (rear) and near 0
+until the stop (see ABS). The gearbox drops to first and then reverse on the way
 (see Gears). The engine runs the same inputs and compares the stop from
 its own onset speed v₀: stopping distance v₀² / (2 × 8.57 m/s²).
 
@@ -572,13 +583,13 @@ Checks on this ground:
 | Part | State | What closes it |
 | --- | --- | --- |
 | Lateral tyre value | over-predicted 7 to 11 %; a measured factor stands in | trace the lateral path at higher slip angles; the steer route at speed |
-| Brake torque | not decoded; the stop is grip-limited | a light brake press in a route |
+| Brake torque | front measured at full press (about 3,500 N·m a wheel), formula and rear not decoded | a light brake press in a route; the rear in neutral |
 | Drag and rolling resistance | noisy fit, unit of the drag column open | a coasting route in neutral |
 | Boost and `GameTorqueScale` | net 1.00 on one car | the same fit on a naturally aspirated car and a supercharged one |
 | Differentials | limited-slip columns named only | a cornering trace under power |
 | Steering at speed, assisted steering, stability control | not traced | the steer route above 60 km/h |
 | Traction control on | not traced | a launch with the assist on |
-| ABS release and reapply timing | the rule is probable | step-level brake trace of a stop |
+| ABS with steering | straight-line release points and duration confirmed; the steering blend probable | a stop with the wheel turned |
 | Temperature, pressure, wear, camber | stay within 1 % of 1 on these drives | not needed for M3 |
 | Aligning torque | outputs seen, not used here | steering feel, after M3 |
 | Other surfaces | grass (surface 2) seen past 110 m | the surface spec |
