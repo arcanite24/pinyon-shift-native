@@ -354,3 +354,27 @@ steering geometry; the steering lock narrowed with speed to hold 1 g
 ramp(rpm); an idle governor; the automatic clutch opening when road rpm
 falls under 0.9 x idle; a 1 m/s slip speed floor; an implicit wheel
 update, with the body force the tyre's at the new wheel speed.
+
+## Q30 (polish, M1): the F40 Competizione's rear window
+
+FORMAT-CARS has `lexanR` (`window`) lying flat over the engine deck,
+between the roof and the wing. The engine draws it (LOD0, the transparent
+pass, two-sided, counted in the mask), but in our bake it does not lie
+flat. It slopes from the roof down to the tail (x -0.59..0.59, y 0.69..0.95,
+z 0.82..1.94 m in car space), inside the trunk's rubber trim (the same
+bounds). From the reference camera it lies wholly inside coverage the
+other parts already give: drawing it or leaving it out changes no mask
+pixel. The reference's extra region is the triangle above it, from the
+roof's rear edge to the wing's top. Needed: the game's world-space bounds
+of `lexanR` in capture 1023 (or the draw that covers that triangle), to
+tell a wrong vertex read from a missing transform.
+
+## Q31 (M1): `liveryBadge`
+
+The Challenger SRT8 392's lighter patch on the door and rear quarter
+comes from `body`'s `liveryBadge` sections (also on `bumperRa`). They
+sample opaque white atlas texels. The technique is in neither of
+FORMAT-CARS's technique tables. The engine now leaves it out unless
+`--livery` is given, which removes the patch (the mask is unchanged:
+it sits on the body). Is `liveryBadge` drawn without a livery, and with
+what?

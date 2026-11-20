@@ -584,9 +584,22 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
     const int32_t vertex_offset = int32_t(vertices_.size());
     vertices_.insert(vertices_.end(), pool.begin(), pool.end());
     bool drawn = false;
+    // CARVIEW_SECTIONS=1 lists every section and each drawn one's car-space
+    // bounds (debugging which part draws where).
+    if (std::getenv("CARVIEW_SECTIONS"))
+      for (const auto& s : part.subsections)
+        std::printf("section %s/%s lod %d (best %d) %s class %s, %zu indices\n", model.name.c_str(),
+                    part.name.c_str(), int(s.lod), int(best), s.technique.c_str(), bake::material_class_name(s.material),
+                    s.indices.size());
     for (const auto& s : part.subsections) {
       if (s.lod != best || s.indices.empty()) continue;
       if (s.material == MaterialClass::kHidden) continue;
+      // `liveryBadge` (not in FORMAT-CARS's technique tables) is the
+      // surface a livery's badges go on. Without a livery the game shows
+      // nothing there, while its atlas texels are opaque white, which
+      // drew a light patch on the Challenger SRT8 392's door and quarter
+      // (ours, SPEC_QUESTIONS Q31). Drawn only with --livery.
+      if (!options_.livery_overlay && lower(s.technique) == "liverybadge") continue;
       // Car models carry a tyre in their rim ("tire"); tyres are drawn from
       // the tyre model.
       if (s.material == MaterialClass::kTyre && model.role != Role::kTyre) continue;
@@ -617,6 +630,15 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         continue;
       }
       for (int k = 0; k < 3; ++k) d.centre[size_t(k)] = sum[size_t(k)] / float(s.indices.size());
+      if (std::getenv("CARVIEW_SECTIONS")) {
+        std::array<float, 3> lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+        for (uint32_t i : s.indices) {
+          const auto q = transform_point(transform, pool[i].position);
+          for (size_t k = 0; k < 3; ++k) lo[k] = std::min(lo[k], q[k]), hi[k] = std::max(hi[k], q[k]);
+        }
+        std::printf("drawn %s/%s %s: x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f\n", model.name.c_str(), part.name.c_str(),
+                    s.technique.c_str(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+      }
       indices_.insert(indices_.end(), s.indices.begin(), s.indices.end());
       std::memcpy(d.push.model, transform, sizeof d.push.model);
       d.wheel = pending_wheel_;
