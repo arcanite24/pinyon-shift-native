@@ -303,17 +303,22 @@ void Vehicle::update_gearbox(double dt) {
   // to the redline; lighter, proportionally nearer idle (ours), so a gentle
   // pull-away holds the engine low instead of crawling at the band's foot.
   auto launch_engagement = [&](double pedal) {
+    // The experiment: past launch_clutch_time the clutch closes fully.
+    if (p_.launch_clutch_time > 0 && launch_age_ >= p_.launch_clutch_time) return 1.0;
     const double t = std::clamp(pedal, 0.0, 1.0);
     return ramp(rpm(), lerp(p_.idle_rpm, p_.launch_rpm, t), lerp(p_.idle_rpm + 500, p_.redline_rpm, t));
   };
+  const double launch_rate_time = p_.clutch_out_time;
   if (launching_) {
+    launch_age_ += dt;
     if (drive_in < 0.05 || locked_) launching_ = false;
-    else clutch_ = approach(clutch_, launch_engagement(drive_in), 1 / p_.clutch_out_time, dt);
+    else clutch_ = approach(clutch_, launch_engagement(drive_in), 1 / launch_rate_time, dt);
   }
   if (!launching_) {
     if (slow && drive_in > 0.05) {
       launching_ = true;
-      clutch_ = approach(clutch_, launch_engagement(drive_in), 1 / p_.clutch_out_time, dt);
+      launch_age_ = 0;
+      clutch_ = approach(clutch_, launch_engagement(drive_in), 1 / launch_rate_time, dt);
     } else if (slow) {
       clutch_ = approach(clutch_, 0, 1 / p_.clutch_in_time, dt);
     } else {

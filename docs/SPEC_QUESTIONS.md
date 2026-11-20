@@ -270,7 +270,7 @@ only with `PHYSICS_GATE=1`, until the questions below are answered.
 | 0-40 km/h | 2.044 s | 1.891 s | miss |
 | 0-60 km/h | 2.920 s | 2.780 s | miss |
 | 0-80 km/h | 4.558 s | 4.557 s | pass |
-| 0-100 km/h | 5.919 s | 5.837 s (+-0.117) | pass |
+| 0-100 km/h | 5.919 s | 5.84 s (+-0.117; cfc4f721) | pass |
 | 1-2 shift | 68.5 km/h, 3.392 s, 7,709 rpm | 67.8 km/h, 3.55 s, 7,690 rpm | miss |
 | B mean deceleration | 6.15 m/s^2 | 8.57 m/s^2 | miss |
 | Turn circle | 3.348 m at 2.5-3.2 m/s | 3.37 m | pass |
@@ -287,6 +287,24 @@ suggest about 40 %.
   and slips until it locks (about 5,740 rpm held at full throttle; oracle
   ~5,800). Needed: the oracle's engine rpm and clutch state over 0-3 s,
   and whether the clutch slips until ~59 km/h.
+  - *Since cfc4f721* (0-100 gate 5.84 s, the mean of two runs; a 0.55 s
+    clutch-slip phase; rear slip ratio up to 0.79 in first gear): our
+    clutch slips until 2.43 s, so the oracle's revs after 0.55 s must come
+    from wheelspin, not clutch slip. Experiment `launch_clutch_time`
+    (`PHYSICS_LAUNCH_T`; off by default): the engine-speed ramp, then
+    the clutch closes fully at that time. Closing it on a timer from the
+    start instead bogs the engine (locked at 0.1 s, 1,300 rpm).
+
+    | launch_clutch_time | 0-20 | 0-40 | 0-60 | 0-80 | 0-100 | locked |
+    |---|---|---|---|---|---|---|
+    | off | 1.268 | 2.044 | 2.920 | 4.558 | 5.919 | 2.43 s |
+    | 0.4 s | 1.012 | 1.981 | 2.931 | 4.571 | 5.923 | 0.61 s |
+    | 0.55 s | 1.063 | 1.935 | 2.884 | 4.523 | 5.878 | 0.70 s |
+    | 0.7 s | 1.113 | 1.934 | 2.884 | 4.523 | 5.879 | 0.83 s |
+    | oracle | 1.122 | 1.891 | 2.780 | 4.557 | 5.84 | (0.55 s) |
+
+    Needed to settle it: what ends the oracle's slip phase (a time, an
+    rpm, a clutch value) and the rear slip ratio over 0.5-3 s.
 - **Q21 (A): the shift time.** What the oracle's 3.55 s marks (the shift
   request, the gear changing, or the clutch back in) and whether power is
   cut during it. Ours: power cut over kShift and kClutchOut, 0.16 s.

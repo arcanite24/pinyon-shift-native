@@ -94,7 +94,7 @@ struct Crossings {
   double t[5] = {-1, -1, -1, -1, -1};  // 20, 40, 60, 80, 100 km/h, from the launch
   double d[5] = {};
   double shift_t = -1, shift_kmh = 0, shift_rpm = 0;
-  double peak_rpm_clutch = 0, moved_at = -1;
+  double peak_rpm_clutch = 0, moved_at = -1, locked_at = -1;
 };
 
 void scenario_a(const drive::CarParams& p) {
@@ -137,6 +137,7 @@ void scenario_a(const drive::CarParams& p) {
     const double since = t - launch;
     if (since < 0.8) c.peak_rpm_clutch = std::max(c.peak_rpm_clutch, v.rpm());
     if (c.moved_at < 0 && v.speed() > 0.36) c.moved_at = since;
+    if (c.locked_at < 0 && v.gear() == 1 && v.clutch_locked()) c.locked_at = since;
     for (int k = 0; k < 5; ++k)
       if (c.t[k] < 0 && kmh >= targets[k]) {
         c.t[k] = prev_t - launch + (t - prev_t) * (targets[k] - prev_kmh) / (kmh - prev_kmh);
@@ -153,10 +154,13 @@ void scenario_a(const drive::CarParams& p) {
     prev_t = t;
     if (c.t[4] >= 0) break;
   }
-  const double oracle[5] = {1.122, 1.891, 2.780, 4.557, 5.837};
+  // Run A's crossings; 0-100 is the mean of runs A and C (5.837, 5.851),
+  // CAR_PHYSICS cfc4f721.
+  const double oracle[5] = {1.122, 1.891, 2.780, 4.557, 5.84};
   std::printf("scenario A (sim time from the launch, gas > 0.05):\n");
-  std::printf("  clutch phase: engine peak %.0f rpm in the first 0.8 s; 0.36 m/s at %.3f s (oracle ~5,800 rpm, 0.57 s)\n",
-              c.peak_rpm_clutch, c.moved_at);
+  std::printf("  clutch phase: engine peak %.0f rpm in the first 0.8 s; 0.36 m/s at %.3f s; clutch locked at %.3f s "
+              "(oracle ~5,800 rpm, 0.57 s, slipping for the first 0.55 s)\n",
+              c.peak_rpm_clutch, c.moved_at, c.locked_at);
   for (int k = 0; k < 5; ++k) {
     const double tol = k < 4 ? std::max(0.02 * oracle[k], 0.05) : 0.02 * oracle[k];
     const bool ok = c.t[k] >= 0 && std::fabs(c.t[k] - oracle[k]) <= tol;
@@ -286,6 +290,7 @@ int main() {
   if (const char* e = std::getenv("PHYSICS_ABS")) p.abs = std::atoi(e) != 0;
   if (const char* e = std::getenv("PHYSICS_WHEEL_J")) p.wheel_inertia = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_BRAKE_CLUTCH")) p.brake_opens_clutch = std::atoi(e) == 0;
+  if (const char* e = std::getenv("PHYSICS_LAUNCH_T")) p.launch_clutch_time = std::atof(e);
 
   unit_checks(r34, settings, p);
   scenario_a(p);

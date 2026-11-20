@@ -187,6 +187,10 @@ struct CarParams {
   double abs_duration = 0.05;  // s
   double abs_min_speed = 2.0;  // m/s: below it the ABS does not release (ours)
   bool brake_opens_clutch = false;  // true: braking hard opens the automatic clutch (ours, off: the spec has the driveline in gear)
+  // > 0: this many seconds into a launch the clutch closes fully, whatever
+  // the engine speed (an experiment against CAR_PHYSICS's 0.55 s slip
+  // phase; 0, the default: the engagement follows engine speed throughout).
+  double launch_clutch_time = 0;
 
   // Input shaping (SPEC-CAR-PHYSICS, Throttle, brake and steering).
   double throttle_rate = 5, brake_rate = 20, handbrake_rate = 12;  // full travels per second
@@ -247,6 +251,7 @@ class Vehicle {
   double rpm() const;                 // engine speed
   int gear() const { return gear_; }  // -1 reverse, 0 neutral, 1..n
   double clutch() const { return clutch_; }  // engagement 0..1
+  bool clutch_locked() const { return locked_; }  // the clutch is not slipping
   bool shifting() const { return phase_ != Phase::kNone; }
   bool abs_active() const { return abs_flag_; }  // a wheel was released this step
   int substeps() const { return substeps_; }
@@ -286,6 +291,7 @@ class Vehicle {
   double phase_timer_ = 0;
   double clutch_ = 0;          // engagement
   bool launching_ = false;     // the clutch is biting from rest
+  double launch_age_ = 0;      // s since the launch began
   bool locked_ = false;        // the clutch is not slipping
   double engine_omega_ = 0;    // rad/s
   double abs_timer_[kWheels]{};
