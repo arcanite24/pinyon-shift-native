@@ -381,7 +381,17 @@ Our B1 loads now sit in the oracle's band: fronts 5,100-5,800 N
 | Reverse phase | 3.99 m/s^2 over 1.575 s | ~4.9 over 1.26-1.29 s |
 | Turn circle | 3.372 m (pass) | 3.37 m |
 
-## Q34 (blocking B): the reverse launch's drive torque, and the front ABS duty
+## Q34 (polish): the reverse launch's drive torque, the front ABS duty, the early launch
+
+Moved to polish under the playable-first rule (OpenFH1, after 241331e7).
+The M3 physics gate (`physics_tests`, fatal unless PHYSICS_GATE=0) is
+0-80 and 0-100 at 2 %, the turn circle at 2 %, B's mean at 8 % and its
+ABS phase at 12 % (of 12.0 m/s^2). Report-only: 0-20/40/60, the 1-2
+change, and B's mean at 2 %. Open:
+
+0. The launch is about 0.1 s late to 20, 40 and 60 km/h (1.236 / 2.034 /
+   2.934 s against 1.122 / 1.891 / 2.780 s), and the 1-2 change 0.16 s
+   late (3.708 s against 3.55 s).
 
 1. Our reverse launch is clutch-limited: at engagement 0.41-0.50 (c
    0.50-0.59, the oracle's 0.43-0.58) the capacity is

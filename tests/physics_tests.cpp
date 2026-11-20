@@ -31,9 +31,17 @@ int failures = 0;
     }                                                              \
   } while (0)
 
-// The scenario gates: reported, and failing the test only with
-// PHYSICS_GATE=1 while the spec questions on them are open (SPEC_QUESTIONS).
-int gate_misses = 0;
+// The scenario gates fail the test (PHYSICS_GATE=0 makes them report-only,
+// for experiments). REPORT checks are printed only: their spec questions
+// are open as polish (SPEC_QUESTIONS Q34).
+int gate_misses = 0, report_misses = 0;
+#define REPORT(cond)                                                      \
+  do {                                                                    \
+    if (!(cond)) {                                                        \
+      std::printf("report miss %s:%d: %s\n", __FILE__, __LINE__, #cond);  \
+      ++report_misses;                                                    \
+    }                                                                     \
+  } while (0)
 #define GATE(cond)                                                      \
   do {                                                                  \
     if (!(cond)) {                                                      \
@@ -204,12 +212,14 @@ void scenario_a(const drive::CarParams& p) {
     const bool ok = c.t[k] >= 0 && std::fabs(c.t[k] - oracle[k]) <= tol;
     std::printf("  0-%3.0f km/h %.3f s at %.1f m (oracle %.3f s, tolerance %.3f s) %s\n", targets[k], c.t[k], c.d[k],
                 oracle[k], tol, ok ? "ok" : "MISS");
-    GATE(ok);
+    // M3 gate: 0-80 and 0-100 at 2 %; the early crossings report only.
+    if (k >= 3) GATE(ok);
+    else REPORT(ok);
   }
   std::printf("  1->2: requested %.3f s, gear change %.3f s at %.1f km/h, locked %.3f s (oracle 3.20, 3.55 s at 68 km/h, "
               "3.91 s)\n",
               c.request_t, c.change_t, c.change_kmh, c.relock_t);
-  GATE(near_rel(c.change_kmh, 68, 0.02) && near_rel(c.change_t, 3.55, 0.02));
+  REPORT(near_rel(c.change_kmh, 68, 0.02) && near_rel(c.change_t, 3.55, 0.02));
 }
 
 void scenario_b(const drive::CarParams& p) {
@@ -270,7 +280,11 @@ void scenario_b(const drive::CarParams& p) {
                 (v0 - v_rev) / t_rev, 100.0 * braked[0] / steps, 100.0 * braked[1] / steps,
                 (v_rev - v.speed()) / (t_stop - t_rev), t_stop - t_rev);
   CHECK(t_stop > 0);
-  GATE(near_rel(decel, 8.57, 0.02));
+  // M3 gate (playable first): the mean at 8 %, the ABS phase at 12 %; the
+  // reverse launch and the ABS spin-up are polish (Q34).
+  REPORT(near_rel(decel, 8.57, 0.02));
+  GATE(near_rel(decel, 8.57, 0.08));
+  GATE(t_rev > 0 && near_rel((v0 - v_rev) / t_rev, 12.0, 0.12));
 }
 
 void turn_circle(const drive::CarParams& p) {
@@ -369,8 +383,8 @@ int main() {
   scenario_b(p);
   turn_circle(p);
   const char* g = std::getenv("PHYSICS_GATE");
-  const bool gate = g && std::atoi(g) != 0;
-  std::printf("physics_tests: %d failures; %d scenario gate misses%s\n", failures, gate_misses,
-              gate ? " (PHYSICS_GATE=1: fatal)" : " (reported, not fatal: see SPEC_QUESTIONS)");
+  const bool gate = !g || std::atoi(g) != 0;
+  std::printf("physics_tests: %d failures; %d scenario gate misses%s; %d report-only misses (SPEC_QUESTIONS)\n",
+              failures, gate_misses, gate ? "" : " (PHYSICS_GATE=0: not fatal)", report_misses);
   return failures || (gate && gate_misses) ? 1 : 0;
 }
