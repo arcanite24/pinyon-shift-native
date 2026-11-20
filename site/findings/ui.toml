@@ -503,7 +503,7 @@ base = """MapProfileFullscreen.xml group background; Horizon.zip Map/background"
 v4 = """same"""
 name = """map background projection"""
 what = """The pause map's background is one painted image in two levels: `low-0-0.xds` (2048x1229) and fifteen 1024-pixel `high-<c>-<r>.xds` tiles (5 columns west to east, 3 rows north to south, drawn within 3,000 m of the view). Both cover X -9583.3 to +9583.3 and Z -6900 to +4600 in the game frame, north (+Z) up: the profile's `Offset` is the south-west corner and its `Size` (11500) the north-south extent, the width following from the 5:3 tiles. So u = (X + 9583.3) / 19166.7 and v = (4600 - Z) / 11500; 3.74 m per high-level pixel."""
-how = """Every `colorado.nav` road drawn over both levels with this projection lies on the painted roads (`tools/re/collectibles.py overlay`); the player's capture pose projects onto the road junction where the car stood, and onto the pause map's arrow within about 25 m when the capture is registered to the texture by two painted labels."""
+how = """Every `colorado.nav` road drawn over both levels with this projection lies on the painted roads (`tools/re/collectibles.py overlay`); the player's capture pose projects onto the road junction where the car stood, where the pause map capture shows the arrow (by eye)."""
 confidence = """confirmed"""
 source = """docs/specs/FREEROAM_COLLECTIBLES.md The minimal map"""
 

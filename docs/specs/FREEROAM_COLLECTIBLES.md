@@ -74,8 +74,9 @@ runs the activity's smash with notification on. The smash:
 1. sets the activity's smashed flag and the profile record's found byte;
 2. takes the "flyer" map marker off the map and, while free-roam
    collectibles are live, puts the "flyer_collected" marker on it;
-3. with notification on, updates the career profile (the discount,
-   below) and the UI.
+3. with notification on, updates the career profile and the UI: the
+   reference to `Main/UpgradeDiscount` lies in this notify path (the
+   discount, below).
 
 Collectibles are live in free roam only, and not during the first-time
 career (the opening drive): there a sign may break as a prop but counts
@@ -106,10 +107,11 @@ in single precision. Checks against observed prices on the 85-sign save:
 a 10,000-credit tyre costs 1,500; a part listed at 6,200 costs 930. With
 all 100 signs every upgrade costs 0 credits.
 
-Car prices in the Autoshow are **not** discounted (probable: car
-purchases on saves with most signs found were charged `Data_Car.BaseCost`
-in full; the discount function's six callers were not each traced). The
-database's `AffinityLevelDef.Discount` column is a different discount,
+Whether car prices in the Autoshow are discounted is **not checked**:
+the discount function has six callers, not each traced, and no capture
+of a car price on a save with signs found was compared with
+`Data_Car.BaseCost`. Apply the discount to upgrades only (the observed
+case) until it is checked. The database's `AffinityLevelDef.Discount` column is a different discount,
 not used by signs.
 
 ### Profile record
@@ -226,10 +228,15 @@ distance driven when its rumour started. On the reference save the
 rumours started in the order 02, 01, 03, 04, 08, 05, 07, at total
 distances whose consecutive gaps were 144, 49, 50, 52, 207 and 250 km
 (the last two gaps include races, which the counter may not count).
-**Interim rule:** start the next rumour, lowest activity number first
-among those at status 3, each time the profile's total distance driven
-passes the last rumour's start by 50 km, and never while another rumour
-is running.
+Several rumours run at once: the 85-sign save had five at status 5
+together, and on the reference save barn 02's rumour ran from 76 km to
+702 km while five others started. The observed order is not the
+activity number; it roughly follows ascending `SpawnInfo` probabilities
+and distances, and the two barns not yet spawned (06 and 09) have among
+the largest (a guess). **Interim rule** (a simplification): start the
+next rumour, lowest activity number first among those at status 3, each
+time the profile's total distance driven passes the last rumour's start
+by 50 km, whatever other rumours are running.
 
 ### Profile record
 
@@ -349,24 +356,24 @@ map depends on the simulation step.
 
 | Unknown | Confidence of what is known | Interim rule |
 | --- | --- | --- |
-| The sign's break threshold (speed, impulse or mass) | the break is a smashable-object event, confirmed; no threshold found in the track or physics files read | break on contact above 1 m/s |
-| The rumour spawn rule: what `SpawnInfo` and `DistanceDriven` do, the order, whether race distance counts | the record's distance fields, confirmed; order and gaps from one save | next barn by number every 50 km of total distance, one rumour at a time |
+| The sign's break threshold (speed, impulse or mass) | the break is a smashable-object event, confirmed; no threshold in the files read: the track's `SmashableObjectTypes.xml` and `SmashableEffects.xml`, and `physics.zip`'s `CollObjects.xml` (31 movable object types, none a sign) and `PhysicsSettings.ini` (no smash or break key); `PhysicsDefinitions.bin` is not decoded | break on contact above 1 m/s |
+| The rumour spawn rule: what `SpawnInfo` and `DistanceDriven` do, the order, whether race distance counts | the record's distance fields, confirmed; several rumours run at once; order and gaps from one save | next barn by number every 50 km of total distance |
 | The distance unit | probable metres | metres |
 | `HintRegion` y sign | probable +Z (north), from the reference save's one running rumour drawn on the pause map | north |
 | Status values 1 and 0 | from code reading; saves hold 2 | write 2 when found |
 | Whether a found sign's model is removed or drawn broken after a reload | not checked | do not draw found signs |
 | Whether the derelict car model stays in the barn after collection | not checked | hide it once collected |
 | Minimap zoom and tilt | one frame | about 300 m to the far edge, 45° tilt |
-| Car prices and the discount | probable not applied | apply to upgrades only |
-| Where `UpgradeDiscount` is written (count or increment) | it equals the found count on two saves | set it to the found count |
+| Car prices and the discount | not checked | apply to upgrades only |
+| How the smash's notify path writes `UpgradeDiscount` (a count or an increment) | it equals the found count on two saves | set it to the found count |
 
 ## Tolerances
 
 - Placements: positions as read from `GameObjs.xml`; the live game's
   positions match within 0.1 m (the logging precision).
 - Map projection: a world point must land within 2 high-level pixels
-  (7.5 m) of the same feature on the texture; the projection has no
-  free parameter.
+  (7.5 m) of the same feature on the texture, checked by drawing the
+  roads over it; the projection has no free parameter.
 - Discount: exact integer credits.
 
 ## Tests
@@ -400,9 +407,8 @@ activity's live position):
   capture's vehicle pose). The equation gives u 0.72160, v 0.34120: on
   the high level, the road junction south-west of the Bunker compound,
   where the car stood at an event start. On the pause-map capture the
-  player arrow lies within about 5 screen pixels (about 25 m) of that
-  point when the screen is registered to the texture by two painted
-  labels (Beaumont and Finley Dam).
+  player arrow sits at that junction by eye (not measured: the pause map
+  is drawn in perspective, so no fit was made).
 
 Synthetic cases the implementation must reproduce:
 
