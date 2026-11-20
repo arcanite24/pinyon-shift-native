@@ -523,8 +523,9 @@ Engine choices, open for the spec:
   draw (a gantry, grandstands, banners, a crate on the road). The world-only
   render (`--no-props`) matches the frame's road, markings, shoulder and
   guardrail.
-- **Upload.** Textures upload on the render thread when a gather swaps in,
-  synchronously, and stay cached: a regather can stall the window.
+- **Upload.** Textures are staged by the streaming worker and copied in
+  the scenery's fenced upload, and stay cached; a regather's hand-over
+  is about 8 ms on the render thread.
 
 ## Q37 (polish): the far ring and the sky
 

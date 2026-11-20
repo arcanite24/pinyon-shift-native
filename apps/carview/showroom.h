@@ -171,6 +171,11 @@ class Showroom {
     bool textured = false;
     std::vector<std::shared_ptr<const WorldTextureData>> textures;
     std::shared_ptr<Renderer::Buffer> vertices, indices;
+    // The textures' levels packed in one host-visible buffer by the worker
+    // (ours: uploaded in the scenery's fenced copy, not one wait each):
+    // per texture, its offset and level count (0: upload it apart).
+    std::shared_ptr<Renderer::Buffer> texels;
+    std::vector<std::pair<VkDeviceSize, uint32_t>> texel_ranges;
     double origin_x = 0, origin_z = 0;  // what the positions are relative to
   };
   bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error);
@@ -235,6 +240,12 @@ class Showroom {
                  const float transform[16], const cars::bake::Bake& pack, int axle);
   uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0);
   bool upload_texture(const cars::bake::Texture* texture, bool srgb, GpuTexture& out, std::string& error);
+  bool create_texture_image(const cars::bake::Texture& texture, bool srgb, uint32_t levels, GpuTexture& out,
+                            std::string& error);
+  // Makes the image, view and set of a world texture staged in `texels`
+  // and records its copy into `cmd` (the scenery's fenced upload).
+  bool begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
+                           VkCommandBuffer cmd, std::string& error);
   bool upload_environment(std::string& error);
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);

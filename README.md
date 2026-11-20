@@ -93,8 +93,9 @@ reference frame; terrain blends its Blend_A and Blend_B layers by
 vertex colour or Splat, and the forest-covered hills are brightened to
 the reference). Beyond 400 m the far ring
 draws the terrain's MIDDIST and UberLOD objects within 3 km (tree-covered
-slopes, the snowy peaks) under a sky gradient. Textures decode as the
-world streams in, so a regather can stall the window briefly.
+slopes, the snowy peaks) under a sky gradient. Textures decode and are
+staged on the streaming worker and copied with the scenery, so a
+regather costs the window about 10 ms.
 `--flat-world` draws the earlier flat colours, `--no-props` leaves the
 placed props out, `--no-far` the far ring.
 

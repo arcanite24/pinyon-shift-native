@@ -102,11 +102,14 @@ the code, and meant to be swapped out:
 - **Streaming off the step:** in the window (and headless with
   `--async-stream`), gathers after the first run on a worker thread:
   render models, collision tiles, the ground's BVH and the scenery's draw
-  data, staged in host-visible buffers. The step keeps the old ground
-  until the worker is done; the GPU copy is fenced and the old scenery
-  stays drawn until it lands. On the test cruise the longest step went
-  from 373 ms (synchronous) to about 3 ms. Headless runs stay synchronous
-  by default so they repeat exactly.
+  data and the new textures' levels, staged in host-visible buffers. The
+  step keeps the old ground until the worker is done; the GPU copy
+  (buffers and textures in one command buffer) is fenced and the old
+  scenery stays drawn until it lands. On the test cruise the longest step
+  went from 373 ms (synchronous) to about 3 ms untextured; textured, the
+  hand-over (image creation and recording) is about 8 ms and the longest
+  step 11 to 13 ms (it was 58 to 74 ms with one upload wait per texture).
+  Headless runs stay synchronous by default so they repeat exactly.
 - **Test driver** (`world::RoadFollower`, `--run cruise`): steers to the
   middle of the road ahead at a set speed. Headless runs put a stuck or
   rolled car back on the nearest road. It is for checks, not the game's

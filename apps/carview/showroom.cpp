@@ -724,36 +724,28 @@ void Showroom::set_wheel_poses(const WheelPose poses[4]) {
   }
 }
 
-bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTexture& out,
-                              std::string& error) {
-  // Built-ins: 1x1 white or black.
-  bake::Texture builtin;
-  if (!texture) {
-    builtin.format = bake::TextureFormat::kRgba8;
-    builtin.levels.push_back({1, 1, {255, 255, 255, 255}});
-    texture = &builtin;
-  }
-  const VkFormat format = vk_format(texture->format, srgb);
-  // Keep the levels that form a mip chain with valid sizes.
-  const uint32_t w0 = texture->levels[0].width, h0 = texture->levels[0].height;
+// The levels of `texture` that form a mip chain with valid sizes, and
+// their bytes.
+static uint32_t texture_chain(const bake::Texture& texture, VkDeviceSize& total) {
+  const uint32_t w0 = texture.levels[0].width, h0 = texture.levels[0].height;
   uint32_t levels = 0;
-  VkDeviceSize total = 0;
-  for (const auto& level : texture->levels) {
+  total = 0;
+  for (const auto& level : texture.levels) {
     const uint32_t w = std::max(1u, w0 >> levels), h = std::max(1u, h0 >> levels);
-    if (level.width != w || level.height != h ||
-        level.data.size() != level_bytes(texture->format, w, h))
-      break;
+    if (level.width != w || level.height != h || level.data.size() != level_bytes(texture.format, w, h)) break;
     total += level.data.size();
     ++levels;
   }
-  if (!levels) {
-    error = "texture " + texture->name + ": level 0 has the wrong size";
-    return false;
-  }
+  return levels;
+}
+
+bool Showroom::create_texture_image(const bake::Texture& texture, bool srgb, uint32_t levels, GpuTexture& out,
+                                    std::string& error) {
+  const VkFormat format = vk_format(texture.format, srgb);
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = format;
-  info.extent = {w0, h0, 1};
+  info.extent = {texture.levels[0].width, texture.levels[0].height, 1};
   info.mipLevels = levels;
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -771,11 +763,67 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
   view.image = out.image;
   view.viewType = VK_IMAGE_VIEW_TYPE_2D;
   view.format = format;
-  view.components = {vk_swizzle(texture->swizzle[0]), vk_swizzle(texture->swizzle[1]),
-                     vk_swizzle(texture->swizzle[2]), vk_swizzle(texture->swizzle[3])};
+  view.components = {vk_swizzle(texture.swizzle[0]), vk_swizzle(texture.swizzle[1]),
+                     vk_swizzle(texture.swizzle[2]), vk_swizzle(texture.swizzle[3])};
   view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
   VK_TRY(vkCreateImageView(r_.device_, &view, nullptr, &out.view), "vkCreateImageView");
+  return true;
+}
 
+// Copies `levels` levels, packed from `offset` in `staging`, into `image`
+// and leaves it ready to sample.
+static void record_texture_copy(VkCommandBuffer cmd, VkBuffer staging, VkDeviceSize offset, const bake::Texture& texture,
+                         uint32_t levels, VkImage image) {
+  std::vector<VkBufferImageCopy> copies;
+  for (uint32_t i = 0; i < levels; ++i) {
+    const auto& level = texture.levels[i];
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = offset;
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+    copy.imageExtent = {level.width, level.height, 1};
+    copies.push_back(copy);
+    offset += level.data.size();
+  }
+  VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+  b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = image;
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
+  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dep.imageMemoryBarrierCount = 1;
+  dep.pImageMemoryBarriers = &b;
+  vkCmdPipelineBarrier2(cmd, &dep);
+  vkCmdCopyBufferToImage(cmd, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(copies.size()),
+                         copies.data());
+  b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTexture& out,
+                              std::string& error) {
+  // Built-ins: 1x1 white or black.
+  bake::Texture builtin;
+  if (!texture) {
+    builtin.format = bake::TextureFormat::kRgba8;
+    builtin.levels.push_back({1, 1, {255, 255, 255, 255}});
+    texture = &builtin;
+  }
+  VkDeviceSize total = 0;
+  const uint32_t levels = texture_chain(*texture, total);
+  if (!levels) {
+    error = "texture " + texture->name + ": level 0 has the wrong size";
+    return false;
+  }
+  if (!create_texture_image(*texture, srgb, levels, out, error)) return false;
   Renderer::Buffer staging;
   if (!r_.create_buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -785,43 +833,14 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
   }
   uint8_t* mapped = nullptr;
   vkMapMemory(r_.device_, staging.memory, 0, total, 0, reinterpret_cast<void**>(&mapped));
-  std::vector<VkBufferImageCopy> copies;
   VkDeviceSize offset = 0;
   for (uint32_t i = 0; i < levels; ++i) {
-    const auto& level = texture->levels[i];
-    std::memcpy(mapped + offset, level.data.data(), level.data.size());
-    VkBufferImageCopy copy{};
-    copy.bufferOffset = offset;
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
-    copy.imageExtent = {level.width, level.height, 1};
-    copies.push_back(copy);
-    offset += level.data.size();
+    std::memcpy(mapped + offset, texture->levels[i].data.data(), texture->levels[i].data.size());
+    offset += texture->levels[i].data.size();
   }
   vkUnmapMemory(r_.device_, staging.memory);
-  const bool ok = r_.submit_once([&](VkCommandBuffer cmd) {
-    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = out.image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &dep);
-    vkCmdCopyBufferToImage(cmd, staging.buffer, out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           uint32_t(copies.size()), copies.data());
-    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    vkCmdPipelineBarrier2(cmd, &dep);
-  });
+  const bool ok = r_.submit_once(
+      [&](VkCommandBuffer cmd) { record_texture_copy(cmd, staging.buffer, 0, *texture, levels, out.image); });
   r_.destroy_buffer(staging);
   if (!ok) {
     error = "texture upload";
@@ -1512,6 +1531,54 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     error = "world staging buffers";
     return false;
   }
+  // The new textures' levels, packed (each from a 16-byte boundary).
+  VkDeviceSize texel_bytes = 0;
+  out.texel_ranges.assign(out.textures.size(), {0, 0});
+  for (size_t i = 0; i < out.textures.size(); ++i) {
+    const auto& t = out.textures[i];
+    if (!t || t->texture.levels.empty()) continue;
+    VkDeviceSize bytes = 0;
+    const uint32_t levels = texture_chain(t->texture, bytes);
+    if (!levels) continue;  // uploaded apart, which reports it
+    out.texel_ranges[i] = {texel_bytes, levels};
+    texel_bytes += (bytes + 15) / 16 * 16;
+  }
+  if (texel_bytes) {
+    std::vector<uint8_t> packed(size_t(texel_bytes), 0);
+    for (size_t i = 0; i < out.textures.size(); ++i) {
+      if (!out.texel_ranges[i].second) continue;
+      size_t at = size_t(out.texel_ranges[i].first);
+      for (uint32_t l = 0; l < out.texel_ranges[i].second; ++l) {
+        const auto& data = out.textures[i]->texture.levels[l].data;
+        std::memcpy(packed.data() + at, data.data(), data.size());
+        at += data.size();
+      }
+    }
+    if (!stage(packed.data(), texel_bytes, out.texels)) {
+      out.texels.reset();  // every texture uploads apart instead
+      out.texel_ranges.assign(out.textures.size(), {0, 0});
+    }
+  }
+  return true;
+}
+
+bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
+                                   VkCommandBuffer cmd, std::string& error) {
+  GpuTexture image;
+  if (!create_texture_image(t.texture, t.srgb, levels, image, error)) {
+    r_.destroy_image(image);
+    return false;
+  }
+  record_texture_copy(cmd, texels, offset, t.texture, levels, image.image);
+  world_textures_[t.record] = image;
+  // Its set: the texture at binding 0, white at 1 and 2. Drawn only once
+  // the scenery's copy is fenced (poll_world).
+  const VkDescriptorSet set = world_layer_set({t.record, kNoWorldTexture, kNoWorldTexture});
+  if (!set) {
+    error = "world texture set";
+    return false;
+  }
+  world_sets_[t.record] = set;
   return true;
 }
 
@@ -1531,8 +1598,15 @@ void Showroom::drop_pending_world() {
 bool Showroom::begin_world(StagedWorld staged, std::string& error) {
   // One copy in flight at a time: a newer world replaces a pending one.
   drop_pending_world();
-  // Textures are uploaded here, synchronously (ours: a first pass).
-  if (!upload_world_textures(staged.textures, error)) return false;
+  // Textures staged by the worker are copied in the scenery's fenced
+  // upload below; the rest (and every texture of a world with no buffers)
+  // are uploaded here, one wait each.
+  const bool fenced = staged.vertices && staged.indices && staged.texels;
+  std::vector<std::shared_ptr<const WorldTextureData>> apart;
+  for (size_t i = 0; i < staged.textures.size(); ++i)
+    if (!fenced || i >= staged.texel_ranges.size() || !staged.texel_ranges[i].second)
+      apart.push_back(staged.textures[i]);
+  if (!upload_world_textures(apart, error)) return false;
   auto p = std::make_unique<PendingWorld>();
   p->staged = std::move(staged);
   if (p->staged.vertices && p->staged.indices) {
@@ -1559,6 +1633,17 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     const VkBufferCopy v{0, 0, vb}, i{0, 0, ib};
     vkCmdCopyBuffer(p->cmd, p->staged.vertices->buffer, p->vertices.buffer, 1, &v);
     vkCmdCopyBuffer(p->cmd, p->staged.indices->buffer, p->indices.buffer, 1, &i);
+    if (fenced) {
+      const auto& st = p->staged;
+      for (size_t k = 0; k < st.textures.size() && k < st.texel_ranges.size(); ++k) {
+        const auto& t = st.textures[k];
+        if (!t || !st.texel_ranges[k].second || world_textures_.count(t->record)) continue;
+        std::string why;
+        if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, p->cmd,
+                                 why))
+          notes_.push_back("world texture " + t->texture.name + ": " + why);  // drawn flat
+      }
+    }
     vkEndCommandBuffer(p->cmd);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;

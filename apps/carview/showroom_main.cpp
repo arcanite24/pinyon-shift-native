@@ -1059,19 +1059,27 @@ int run_drive(int argc, char** argv) {
         const drive::Vec3 at = vehicle.position();
         if (!streamer->update(at.x, at.z, &changed, &error)) return false;
         if (changed) {
+          using clock = std::chrono::steady_clock;
+          const auto t0 = clock::now();
           ground = &streamer->ground();
           follower.rebuild(streamer->mesh());
           follower.set_ground(&streamer->ground());
+          const auto t1 = clock::now();
           if (!set_staged_world()) return false;
-          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles, %.2f s)\n", vehicle.time(),
-                      streamer->centre_x(), streamer->centre_z(), streamer->mesh().triangles(),
-                      streamer->last_gather_seconds());
+          const auto t2 = clock::now();
+          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles, %.2f s; on the step: road "
+                      "follower %.1f ms, scenery hand-over %.1f ms)\n",
+                      vehicle.time(), streamer->centre_x(), streamer->centre_z(), streamer->mesh().triangles(),
+                      streamer->last_gather_seconds(), std::chrono::duration<double, std::milli>(t1 - t0).count(),
+                      std::chrono::duration<double, std::milli>(t2 - t1).count());
         }
         bool swapped = false;
+        const auto p0 = std::chrono::steady_clock::now();
         showroom.poll_world(false, &swapped);
         if (swapped && streamer_async)
-          std::printf("t %.2f s: scenery around %.1f %.1f uploaded\n", vehicle.time(), showroom.world_origin_x(),
-                      showroom.world_origin_z());
+          std::printf("t %.2f s: scenery around %.1f %.1f uploaded (swap %.1f ms)\n", vehicle.time(),
+                      showroom.world_origin_x(), showroom.world_origin_z(),
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count());
         return true;
       };
       auto place_world = [&]() {
