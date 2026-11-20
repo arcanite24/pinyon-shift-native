@@ -43,8 +43,13 @@ models of `bin.zip` and against the draws of one free-roam frame.
   Slot 0 is the main diffuse (`Diffuse_Texture` or `Blend_A`) in every
   effect but the lake; `Light_Map` is always slot 7.
 
+- **First pass.** [Minimal recipe](#minimal-recipe-first-pass) gives
+  a drawable shading rule (albedo × AO × sun and sky, the frame's blend
+  state per family) and [Reference frame](#reference-frame) a capture
+  with its matrix to compare against.
+
 Open: the material constants' meaning beyond names, what the 98 models
-without a UV constant use, the per-family blend formulas, and what
+without a UV constant use, the game's exact shading formulas, and what
 4x4 placeholders the record types 1 and 3 stand for.
 
 ## Vertex layout
@@ -393,10 +398,101 @@ byte the files' (above), so the files need no conversion beyond this.
 
 ## Minimal recipe (first pass)
 
-Not yet written: per-family blend rules and lighting follow in the next
-change. For a first diffuse-only pass: draw each submesh with slot 0
-(`Diffuse_Texture` or `Blend_A`) sampled at TEXCOORD0 dequantised with
-the submesh's `uvOffsetScale`, sRGB when the format word says gamma.
+A recipe to draw Colorado recognisably, not the game's shading. Each
+step says how sure it is; "engine's choice" marks where the game's rule
+is not known and any reasonable choice will do for now.
+
+1. **Geometry and UVs.** Decode the vertex with the packed declaration;
+   dequantise every TEXCOORD with the submesh's `uvOffsetScale`
+   (confirmed). Call TEXCOORD0 the surface UV and the last TEXCOORD of
+   an `_LM` or `_AO` effect the lightmap UV (probable).
+2. **Albedo.** Sample slot 0 (`Diffuse_Texture` or `Blend_A`) at the
+   surface UV, as sRGB when its format word says gamma (confirmed slot
+   and texture; probable that slot 0 alone uses the plain surface UV).
+   Roads and terrain blend two or three layers (`Blend_A`, `Blend_B`,
+   `Blend_C`); for a first pass `Blend_A` alone is enough. The weights
+   are, by the data, the `Splat` texture's channels on `H_BLND*`
+   (which UV it uses is not checked; most texels have R + G + B well
+   under 1, so they read as "how much of B and C over A", not as
+   normalised weights) and the
+   vertex colour's R, G, B on roads (R + G + B is 255 on many road
+   vertices): a guess, not checked against pixels. The pixel constants'
+   per-layer tiling is not applied in this recipe.
+3. **Ambient occlusion.** Multiply by `AO` or `AOMap` (linear) sampled
+   at the lightmap UV (probable: per-model textures, unit UVs, white
+   where open).
+4. **Lighting.** The effects are lit by a sun and a two-colour sky. The
+   frame's values (daytime, measured at every colour draw):
+
+   | Constant | Value |
+   | --- | --- |
+   | `sunDir` | (0.3848, 0.8754, 0.2926) in the game frame; (0.3848, 0.8754, −0.2926) in the file frame |
+   | `sunColor` | (0.9695, 0.8358, 0.584), w 20 |
+   | `skyColor` | (0.1687, 0.2229, 0.2746) |
+   | `groundColor` | (0.1788, 0.1729, 0.1024) |
+   | `ambColor` (props) | (0.1717, 0.2079, 0.2229) |
+   | fog | `FogColor` (0.091, 0.1374, 0.1446), `FogColor2` (0.2233, 0.2232, 0.2232); `FogConsts2` (200, 4,000, 0.9, 4.9949) |
+
+   `sunDir` is in the game frame: the track vertex shaders' world
+   matrix is the z negation (measured), so normals reach the pixel
+   shader in the game frame. A plausible first pass (engine's choice):
+   colour = albedo × AO × (sunColor × max(0, N·sunDir) + mix(groundColor,
+   skyColor, 0.5 + 0.5 N·up)), then the engine's own exposure. "Unlit",
+   albedo × AO, is also fine for a first frame.
+5. **Lightmap.** Do not multiply by `Light_Map`. 9,661 of its 17,386
+   uses name an all-zero texture, and every lightmap the frame bound
+   from its file (104 slots) was all zero, while the surfaces they sit
+   on are lit; 105 more were bound at a 16 × 16 streaming size. The
+   pixel shaders that sample it also read `EmissiveSwitchOnThreshold`
+   and `TimeGain`, so it is light added at night (lamps): probable. Leave
+   it out by day.
+6. **Transparency.** In the frame no scenery draw used the alpha test;
+   these did not write opaquely (blend source alpha, one minus source
+   alpha): road decals (`H_ROAD_*_BLEND_*`, 15 draws), `H_VBLND_DECAL_*`
+   (18) and the lake (5). Trees (18 draws) and most props (297) drew
+   opaque with alpha to coverage at 4x MSAA: cut-outs come from the
+   diffuse alpha (DXT5, or DXT1's transparent texels). An engine without
+   MSAA can alpha-test at 0.5 (engine's choice). Which alpha the decals
+   use (diffuse or the vertex colour's A, about 0.5 on decal strips) is
+   not known.
+
+The blend state per family is from `check-dump` (confirmed for the
+frame); the formulas in 2 to 4 are not.
+
+## Reference frame
+
+`world-materials.py reference` writes the RI-0.4 free-roam frame as a
+reference for the engine, in the M1 reference conventions of
+[AUTOSHOW_REFERENCE.md](AUTOSHOW_REFERENCE.md#reference-files):
+`.local/re/world/reference/freeroam.json` and `freeroam.png` beside it
+(local only: the image is a capture of the player's game).
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | `shift-engine.world-reference.v1` |
+| `image`, `width`, `height` | the capture, 1280 × 720, as PNG |
+| `clip_from_world` | 16 numbers, column-major, for column vectors: clip = M × (x, y, z, 1) with (x, y, z) a render model position in the file frame as stored |
+| `near` | 0.29993 m: clip z/w is 0 at that view depth |
+| `half_pixel_removed` | true |
+| `camera_position` | (1999.04, 145.383, −962.878), file frame |
+| `world_space_members` | the 73 world-space models drawn with this matrix |
+| `game_clip_from_world` | provenance: the scene matrix as the game sets it (rows are the clip components) |
+
+As for the Autoshow references: clip space is Direct3D's for an upright
+image (the game's half turn taken out by negating the clip x and y
+rows), z/w is standard (0 at `near`, towards 1 far away; the game stores
+1 − z/w), and the matrix has the game's half-pixel offset removed (clip
+x moved by −w / width, clip y by +w / height), so a standard viewport of
+the image's size reproduces the game's pixels. Checked: a vertex
+projected with `clip_from_world` lands 0.5 px left of and above where
+the game's matrix and its pixel convention put it, as intended.
+
+The image is the run's parked capture (`before.ppm`, route frame 1,200);
+the dump was taken a moment later with the car still parked at the same
+pose, so the scenery is the same (WORLD_GEOMETRY's overlay and depth
+check used the same pair). It includes the HUD (minimap, speedometer,
+the "THE GAUNTLET" banner). For a HUD-free image, replay the dump with
+the UI draws left out as `autoshow-refs.py` does for cars; not done here.
 
 ## Evidence
 
@@ -413,6 +509,23 @@ c0):
 | other passes (depth prepass, shadow, reflection) | 606 |
 | colour draws whose vertex shader microcode the dump kept | 667 |
 
+Colour-pass render state (`check-dump`; RB_COLORCONTROL and
+RB_BLENDCONTROL0 at each draw):
+
+| Effect family | Draws | State |
+| --- | --- | --- |
+| `H_BLND*`, `H_ROAD` (not `_BLEND`), `H_VBLND` (not `DECAL`), `ANIM_FLAG*`, `UNDERGROUND`, part of `H_DIFF` | 408 | opaque, no alpha test |
+| `H_DIFF` (props, including `OPAC` fences) | 297 | opaque, alpha to coverage |
+| `TREE_DIFF_*OPAC*` | 18 | opaque, alpha to coverage |
+| `H_ROAD_*_BLEND_*` | 15 | source alpha, one minus source alpha |
+| `H_VBLND_DECAL_*` | 18 | source alpha, one minus source alpha |
+| `LAKE` | 5 | source alpha, one minus source alpha |
+
+No colour draw enabled the alpha test. The lighting constants in the
+recipe are the pixel and vertex constants of these draws (the same in
+all of them); the world matrix of the track vertex shaders is the z
+negation in the world-space draws checked.
+
 Corpus counts come from `census` over the extracted members.
 
 ## Open questions
@@ -424,7 +537,11 @@ Corpus counts come from `census` over the extracted members.
    textures for them (runtime placeholders or generated textures).
 4. The 3 CAFF textures with a 196,604-byte payload; the 146 `.bundle`
    members (texel payloads, not referenced by any texture record seen).
-5. The pixel constants' meaning per effect, and the blend formulas.
+5. The pixel constants' meaning per effect, and the shading formulas
+   (layer weights, lighting, fog): the recipe's are a stand-in.
+6. What alpha the decal and road-blend draws use, and whether
+   `Light_Map` is the night lighting (a night dump would settle it).
+7. A HUD-free reference image.
 
 ## Reproduce
 
@@ -435,6 +552,9 @@ python -I tools/re/world-materials.py model .local/re/world/all 9271
 python -I tools/re/world-materials.py texture .local/re/world/all 0x2EB6 --out road.png [--level N]
 python -I tools/re/world-materials.py check-dump .local/re/world/all <dump.fh1frame> \
     --members @<names file>
+python -I tools/re/world-materials.py reference .local/re/world/all <dump.fh1frame> \
+    .local/re/world/run1/before.ppm --members @<names file> \
+    --out .local/re/world/reference/freeroam.json
 ```
 
 `--pvs` names another `Colorado_00.pvs` than

@@ -754,6 +754,11 @@ def _content(root: str, texture_id: int):
     return hashlib.md5(t.base + t.chain).hexdigest()
 
 
+# Render-backend registers (the console's published register map).
+RB_BLENDCONTROL0, RB_COLORCONTROL, RB_ALPHA_REF = 0x2201, 0x2202, 0x210E
+ALPHA_FUNCS = ("never", "less", "equal", "less-equal", "greater", "not-equal", "greater-equal", "always")
+
+
 def cmd_check_dump(args) -> int:
     tables = read_texture_tables(args.pvs)
     effects = Effects(args.root)
@@ -811,13 +816,14 @@ def cmd_check_dump(args) -> int:
             elif op in (0x22, 0x36):
                 extra.append((vs, ps, tuple(tuple(regs[wg.FETCH + 6 * t:wg.FETCH + 6 * t + 6])
                                              for t in range(32)),
-                              struct.unpack("<4f", struct.pack("<4I", *regs[wg.ALU:wg.ALU + 4]))))
+                              struct.unpack("<4f", struct.pack("<4I", *regs[wg.ALU:wg.ALU + 4])),
+                              (regs[RB_COLORCONTROL], regs[RB_ALPHA_REF], regs[RB_BLENDCONTROL0])))
             i += 1 + count
         draws = original(registers, packets, memory, predicate, constants)
         if len(draws) != len(extra):
             raise FormatError("walkers disagree on the draw count")
-        for d, (v, p, t, c0) in zip(draws, extra):
-            d.update(vs_code=v, ps_code=p, textures=t, c0=c0)
+        for d, (v, p, t, c0, state) in zip(draws, extra):
+            d.update(vs_code=v, ps_code=p, textures=t, c0=c0, state=state)
         return draws
 
     wg.walk_draws = walk
@@ -829,6 +835,7 @@ def cmd_check_dump(args) -> int:
     c = collections.Counter()
     layouts = collections.Counter()
     binding = collections.Counter()
+    states = collections.Counter()
     cache = {}
     for n, (model, k, sub) in sorted(tied.items()):
         d = draws[n]
@@ -846,6 +853,13 @@ def cmd_check_dump(args) -> int:
             c["tied draws of another pass (pixel shader not the material's effect)"] += 1
             continue
         c["colour-pass draws (pixel shader from the material's effect)"] += 1
+        colour_control, alpha_ref, blend = d["state"]
+        test = (f"alpha test {ALPHA_FUNCS[colour_control & 7]} "
+                f"{struct.unpack('<f', struct.pack('<I', alpha_ref))[0]:.3f}"
+                if colour_control & 8 else "no alpha test") + (", alpha to coverage" if colour_control & 0x10 else "")
+        tokens = " ".join(t for t in ("_BLEND", "DECAL", "OPAC") if t in name)
+        states[(effect_family(name), tokens and f"name has {tokens}", test,
+                f"blend {blend & 0x1FFF1FFF:#010x}")] += 1
         vf = tuple((f[2], f[3]) for f in fetches(d["vs_code"] or b"") if f[0] == "v" and f[1] == o.stride)
         layouts[(o.stride, vf)] += 1
         decl = [x for x in effects.declarations(name) if packed_size(x) == o.stride]
@@ -915,6 +929,9 @@ def cmd_check_dump(args) -> int:
     print("colour-pass vertex fetches of the model's buffer (stride: offset, format):")
     for (stride, vf), v in sorted(layouts.items(), key=str):
         print(f"  {stride}: {v} draws: {vf}")
+    print("colour-pass render state by effect family:")
+    for k, v in sorted(states.items(), key=str):
+        print(f"  {k}: {v}")
     print("texture slots the colour-pass pixel shaders sample:")
     for k, v in sorted(binding.items(), key=str):
         print(f"  {k}: {v}")
