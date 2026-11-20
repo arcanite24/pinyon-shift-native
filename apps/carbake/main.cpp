@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -126,7 +127,57 @@ void run(const Job& job, const fs::path& out_dir, Result& r) {
 
 }  // namespace
 
+// --dump <file.shiftbake>: models, parts and sub-sections (names only).
+int dump(const fs::path& path) {
+  cars::bake::Bake b;
+  std::string error;
+  if (!cars::bake::read_file(path, b, &error)) {
+    std::fprintf(stderr, "%s\n", error.c_str());
+    return 1;
+  }
+  if (b.kind == cars::bake::Kind::kCar) {
+    std::printf("car %s (%lld) wheel %s, colours %zu\n", b.car.media_name.c_str(), (long long)b.car.car_id,
+                b.car.wheel_media.c_str(), b.car.colours.size());
+    for (const auto& w : b.car.wheel_centres) std::printf("  wheel centre %.3f %.3f %.3f\n", w[0], w[1], w[2]);
+    for (size_t a = 0; a < 2; ++a)
+      std::printf("  %s tyre %lld/%lld R%lld, ride height %.3f\n", a == 0 ? "front" : "rear",
+                  (long long)b.car.tyre_width_mm[a], (long long)b.car.tyre_aspect[a], (long long)b.car.rim_inches[a],
+                  b.car.ride_height[a]);
+  }
+  for (const auto& m : b.models) {
+    std::printf("model %s role %u corner %u\n", m.name.c_str(), unsigned(m.role), unsigned(m.corner));
+    for (const auto& p : m.parts) {
+      std::printf("  part %-24s c(%.2f %.2f %.2f) e(%.2f %.2f %.2f) v %zu/%zu:", p.name.c_str(), p.bounds[0],
+                  p.bounds[1], p.bounds[2], p.bounds[6], p.bounds[7], p.bounds[8], p.lod_vertices.size(),
+                  p.lod0_vertices.size());
+      for (const auto& s : p.subsections)
+        if (s.lod <= 1) std::printf(" %s/%s%s", s.technique.c_str(), cars::bake::material_class_name(s.material),
+                                    s.lod ? "@1" : "");
+      std::printf("\n");
+      if (m.role != cars::bake::Role::kWheel && m.role != cars::bake::Role::kTyre) continue;
+      // Wheel and tyre models: each sub-section's axle (x) and radial extent.
+      for (const auto& s : p.subsections) {
+        if (s.lod > 1 || s.indices.empty()) continue;
+        const auto& pool = s.lod == 0 ? p.lod0_vertices : p.lod_vertices;
+        float x0 = 1e9f, x1 = -1e9f, r0 = 1e9f, r1 = 0;
+        for (uint32_t i : s.indices) {
+          if (i >= pool.size()) continue;
+          const auto& v = pool[i].position;
+          const float r = std::sqrt(v[1] * v[1] + v[2] * v[2]);
+          x0 = std::min(x0, v[0]), x1 = std::max(x1, v[0]), r0 = std::min(r0, r), r1 = std::max(r1, r);
+        }
+        std::printf("    %-20s lod %d x %.3f..%.3f r %.3f..%.3f\n", s.technique.c_str(), s.lod, x0, x1, r0, r1);
+      }
+    }
+  }
+  for (const auto& t : b.textures)
+    std::printf("texture %s format %u %ux%u levels %zu\n", t.name.c_str(), unsigned(t.format),
+                t.levels.empty() ? 0 : t.levels[0].width, t.levels.empty() ? 0 : t.levels[0].height, t.levels.size());
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--dump") return dump(argv[2]);
   fs::path game, state, dlc_extracted, out_dir;
   unsigned threads = 0;
   std::set<std::string> only;
