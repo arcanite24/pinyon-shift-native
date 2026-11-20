@@ -65,3 +65,8 @@ set_tests_properties(traffic_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LA
 add_executable(sdl_init_tests sdl_init_tests.cpp)
 target_link_libraries(sdl_init_tests PRIVATE SDL3::SDL3-static)
 add_test(NAME sdl_init_tests COMMAND sdl_init_tests)
+
+add_executable(handbrake_tests handbrake_tests.cpp)
+target_link_libraries(handbrake_tests PRIVATE shift_drive)
+add_test(NAME handbrake_tests COMMAND handbrake_tests)
+set_tests_properties(handbrake_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
