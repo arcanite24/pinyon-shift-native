@@ -422,7 +422,8 @@ is not known and any reasonable choice will do for now.
    at the lightmap UV (probable: per-model textures, unit UVs, white
    where open).
 4. **Lighting.** The effects are lit by a sun and a two-colour sky. The
-   frame's values (daytime, measured at every colour draw):
+   frame's values (daytime, read from the constants of the colour draws
+   checked; the census did not compare them across all 761):
 
    | Constant | Value |
    | --- | --- |
@@ -433,9 +434,11 @@ is not known and any reasonable choice will do for now.
    | `ambColor` (props) | (0.1717, 0.2079, 0.2229) |
    | fog | `FogColor` (0.091, 0.1374, 0.1446), `FogColor2` (0.2233, 0.2232, 0.2232); `FogConsts2` (200, 4,000, 0.9, 4.9949) |
 
-   `sunDir` is in the game frame: the track vertex shaders' world
-   matrix is the z negation (measured), so normals reach the pixel
-   shader in the game frame. A plausible first pass (engine's choice):
+   `sunDir` is in the game frame: at a world-space draw the track
+   vertex shader's world matrix (and its inverse transpose) is the z
+   negation, so normals reach the pixel shader in the game frame. For
+   the file frame, negate `sunDir`'s z; a local-space model's normals
+   also take its placement's rotation (WORLD_GEOMETRY.md). A plausible first pass (engine's choice):
    colour = albedo × AO × (sunColor × max(0, N·sunDir) + mix(groundColor,
    skyColor, 0.5 + 0.5 N·up)), then the engine's own exposure. "Unlit",
    albedo × AO, is also fine for a first frame.
@@ -443,18 +446,28 @@ is not known and any reasonable choice will do for now.
    uses name an all-zero texture, and every lightmap the frame bound
    from its file (104 slots) was all zero, while the surfaces they sit
    on are lit; 105 more were bound at a 16 × 16 streaming size. The
-   pixel shaders that sample it also read `EmissiveSwitchOnThreshold`
-   and `TimeGain`, so it is light added at night (lamps): probable. Leave
-   it out by day.
+   non-zero ones decoded (8, on `_EMISSIVE_` and `_AO_` effects) are
+   gamma DXT1 atlases, mostly black (mean 5 to 35 of 255, 6 to 37 % of
+   texels above near-black) with bright patches such as rows of
+   windows: light to add, not an occlusion term to multiply. The pixel
+   shaders that sample it also read `EmissiveSwitchOnThreshold` and
+   `TimeGain`, so it is light added at night (lamps, windows):
+   probable. Leave it out by day.
 6. **Transparency.** In the frame no scenery draw used the alpha test;
    these did not write opaquely (blend source alpha, one minus source
    alpha): road decals (`H_ROAD_*_BLEND_*`, 15 draws), `H_VBLND_DECAL_*`
    (18) and the lake (5). Trees (18 draws) and most props (297) drew
-   opaque with alpha to coverage at 4x MSAA: cut-outs come from the
-   diffuse alpha (DXT5, or DXT1's transparent texels). An engine without
-   MSAA can alpha-test at 0.5 (engine's choice). Which alpha the decals
-   use (diffuse or the vertex colour's A, about 0.5 on decal strips) is
-   not known.
+   opaque with alpha to coverage (the multisampled scene pass; see
+   Rendering, "alpha to coverage and late depth", on the docs site).
+   Their diffuse textures carry the cut-out in alpha: decoded
+   `TREE_DIFF_OPAC` diffuses are DXT1 with 76 to 81 % transparent
+   texels, `OPAC` prop diffuses DXT5 or DXT1 with shaped alpha. That
+   the shader's output alpha is the diffuse alpha is probable. An
+   engine without multisampling can alpha-test at 0.5 the draws whose
+   slot-0 texture has alpha (DXT3, DXT5, or DXT1 with transparent
+   texels), and draw the rest opaque (engine's choice). Which alpha the
+   decals use (diffuse or the vertex colour's A, about 0.5 on decal
+   strips) is not known.
 
 The blend state per family is from `check-dump` (confirmed for the
 frame); the formulas in 2 to 4 are not.
@@ -478,7 +491,11 @@ reference for the engine, in the M1 reference conventions of
 | `world_space_members` | the 73 world-space models drawn with this matrix |
 | `game_clip_from_world` | provenance: the scene matrix as the game sets it (rows are the clip components) |
 
-As for the Autoshow references: clip space is Direct3D's for an upright
+The conventions are the car references' (a loader for those reads
+this file with two changes): `clip_from_world` takes the place of
+`clip_from_car`, and there is no `view`, `proj`, `car_to_world`,
+`image_car_only`, `mask`, paint or `checks` field. As for the Autoshow
+references: clip space is Direct3D's for an upright
 image (the game's half turn taken out by negating the clip x and y
 rows), z/w is standard (0 at `near`, towards 1 far away; the game stores
 1 − z/w), and the matrix has the game's half-pixel offset removed (clip
@@ -522,9 +539,9 @@ RB_BLENDCONTROL0 at each draw):
 | `LAKE` | 5 | source alpha, one minus source alpha |
 
 No colour draw enabled the alpha test. The lighting constants in the
-recipe are the pixel and vertex constants of these draws (the same in
-all of them); the world matrix of the track vertex shaders is the z
-negation in the world-space draws checked.
+recipe are the pixel and vertex constants read at colour draws of
+this frame; the world matrix of the track vertex shader is the z
+negation at the world-space draw read.
 
 Corpus counts come from `census` over the extracted members.
 
