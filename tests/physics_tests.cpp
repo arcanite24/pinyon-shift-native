@@ -93,9 +93,28 @@ double heading_of(double dx, double dz) { return std::atan2(dx, dz); }
 struct Crossings {
   double t[5] = {-1, -1, -1, -1, -1};  // 20, 40, 60, 80, 100 km/h, from the launch
   double d[5] = {};
-  double shift_t = -1, shift_kmh = 0, shift_rpm = 0;
-  double peak_rpm_clutch = 0, moved_at = -1, locked_at = -1;
+  double request_t = -1, change_t = -1, change_kmh = 0, relock_t = -1;
+  double launch_in = -1, launch_out = -1, launch_out_kmh = 0, locked_at = -1, locked_kmh = 0;
 };
+
+const char* state_name(drive::Vehicle::GearState s) {
+  using S = drive::Vehicle::GearState;
+  switch (s) {
+    case S::kOpen: return "open";
+    case S::kLaunch: return "launch";
+    case S::kEngaged: return "engaged";
+    case S::kClutchIn: return "clutch in";
+    case S::kGearChange: return "gear change";
+    case S::kRevMatch: return "rev-match";
+    case S::kClutchOut: return "clutch out";
+  }
+  return "?";
+}
+
+// The axle's mean |normalised slip ratio|.
+double axle_slip(const drive::Vehicle& v, int axle) {
+  return 0.5 * (std::fabs(v.wheels()[size_t(2 * axle)].slip_ratio) + std::fabs(v.wheels()[size_t(2 * axle + 1)].slip_ratio));
+}
 
 void scenario_a(const drive::CarParams& p) {
   const drive::ProfileGround road = drive::spawn_road(kStartX, kStartY, kStartZ, kDirX, kDirZ);
@@ -123,8 +142,14 @@ void scenario_a(const drive::CarParams& p) {
   Crossings c;
   double launch = -1, prev_kmh = 0, prev_t = 0;
   drive::Vec3 at_launch{};
-  bool shifted = false;
   const double targets[5] = {20, 40, 60, 80, 100};
+  // The spec's launch table (Clutch and gearbox states), at its sample times.
+  const double marks[] = {0.0, 0.3, 0.5, 0.6, 0.7, 0.9, 1.1, 1.3, 1.4, 1.5, 1.6, 2.0, 2.5, 3.0};
+  size_t mark = 0;
+  std::printf("scenario A launch (oracle: open to 0.5 s at 4,857 rpm; launch 0.6-1.4 s, c 0.43-0.65; clutch out\n"
+              "  1.5 s; engaged from 1.6 s at 33.1 km/h):\n"
+              "     t   km/h  state         c    rpm  out rpm  target  rear  front  throttle\n");
+  using S = drive::Vehicle::GearState;
   for (int i = 0; i < 120 * 15; ++i) {
     v.step({0, 1, 0, false}, road);
     const double t = v.time();
@@ -135,21 +160,34 @@ void scenario_a(const drive::CarParams& p) {
     if (launch < 0) continue;
     const double kmh = v.speed() * 3.6;
     const double since = t - launch;
-    if (since < 0.8) c.peak_rpm_clutch = std::max(c.peak_rpm_clutch, v.rpm());
-    if (c.moved_at < 0 && v.speed() > 0.36) c.moved_at = since;
-    if (c.locked_at < 0 && v.gear() == 1 && v.clutch_locked()) c.locked_at = since;
+    if (mark < sizeof marks / sizeof marks[0] && since >= marks[mark] - 1e-9) {
+      std::printf("  %4.2f %6.1f  %-11s %4.2f %6.0f %8.0f %7.0f  %4.2f  %5.2f  %4.2f\n", since, kmh,
+                  state_name(v.gear_state()), 1 - v.clutch(), v.rpm(), v.clutch_output_rpm(),
+                  v.gear_state() == S::kLaunch ? v.launch_target() : 0.0, axle_slip(v, 1), axle_slip(v, 0),
+                  v.engine_throttle());
+      ++mark;
+    }
+    if (c.launch_in < 0 && v.gear_state() == S::kLaunch) c.launch_in = since;
+    if (c.launch_in >= 0 && c.launch_out < 0 && v.gear_state() != S::kLaunch) {
+      c.launch_out = since;
+      c.launch_out_kmh = kmh;
+    }
+    if (c.locked_at < 0 && v.gear() == 1 && v.gear_state() == S::kEngaged && v.clutch_locked()) {
+      c.locked_at = since;
+      c.locked_kmh = kmh;
+    }
     for (int k = 0; k < 5; ++k)
       if (c.t[k] < 0 && kmh >= targets[k]) {
         c.t[k] = prev_t - launch + (t - prev_t) * (targets[k] - prev_kmh) / (kmh - prev_kmh);
         const drive::Vec3 d = v.centre_of_mass() - at_launch;
         c.d[k] = std::sqrt(drive::dot(d, d));
       }
-    if (!shifted && v.gear() == 1 && v.shifting()) {
-      shifted = true;
-      c.shift_t = since;
-      c.shift_kmh = kmh;
-      c.shift_rpm = v.rpm();
+    if (c.request_t < 0 && v.gear() == 1 && v.gear_state() == S::kClutchIn) c.request_t = since;
+    if (c.change_t < 0 && v.gear() == 2) {
+      c.change_t = since;
+      c.change_kmh = kmh;
     }
+    if (c.change_t >= 0 && c.relock_t < 0 && v.gear_state() == S::kEngaged) c.relock_t = since;
     prev_kmh = kmh;
     prev_t = t;
     if (c.t[4] >= 0) break;
@@ -158,9 +196,9 @@ void scenario_a(const drive::CarParams& p) {
   // CAR_PHYSICS cfc4f721.
   const double oracle[5] = {1.122, 1.891, 2.780, 4.557, 5.84};
   std::printf("scenario A (sim time from the launch, gas > 0.05):\n");
-  std::printf("  clutch phase: engine peak %.0f rpm in the first 0.8 s; 0.36 m/s at %.3f s; clutch locked at %.3f s "
-              "(oracle ~5,800 rpm, 0.57 s, slipping for the first 0.55 s)\n",
-              c.peak_rpm_clutch, c.moved_at, c.locked_at);
+  std::printf("  launch state %.3f to %.3f s (left at %.1f km/h), locked at %.3f s, %.1f km/h (oracle ~0.51 to 1.42 s at "
+              "29.6 km/h, locked by 1.58 s at 32.7 km/h)\n",
+              c.launch_in, c.launch_out, c.launch_out_kmh, c.locked_at, c.locked_kmh);
   for (int k = 0; k < 5; ++k) {
     const double tol = k < 4 ? std::max(0.02 * oracle[k], 0.05) : 0.02 * oracle[k];
     const bool ok = c.t[k] >= 0 && std::fabs(c.t[k] - oracle[k]) <= tol;
@@ -168,9 +206,10 @@ void scenario_a(const drive::CarParams& p) {
                 oracle[k], tol, ok ? "ok" : "MISS");
     GATE(ok);
   }
-  std::printf("  1->2 shift at %.1f km/h, %.3f s, %.0f rpm (oracle 67.8 km/h, 3.55 s, 7,690 rpm)\n", c.shift_kmh,
-              c.shift_t, c.shift_rpm);
-  GATE(near_rel(c.shift_kmh, 67.8, 0.02) && near_rel(c.shift_t, 3.55, 0.02));
+  std::printf("  1->2: requested %.3f s, gear change %.3f s at %.1f km/h, locked %.3f s (oracle 3.20, 3.55 s at 68 km/h, "
+              "3.91 s)\n",
+              c.request_t, c.change_t, c.change_kmh, c.relock_t);
+  GATE(near_rel(c.change_kmh, 68, 0.02) && near_rel(c.change_t, 3.55, 0.02));
 }
 
 void scenario_b(const drive::CarParams& p) {
@@ -192,12 +231,24 @@ void scenario_b(const drive::CarParams& p) {
   const double v0 = v.speed(), t0 = v.time();
   const drive::Vec3 p0 = v.centre_of_mass();
   const int gear0 = v.gear();
-  int abs_steps = 0;
-  double t_stop = -1;
+  int abs_steps = 0, steps = 0, braked[2] = {};
+  double t_stop = -1, t_down = -1, kmh_down = 0, t_rev = -1, v_rev = 0;
   for (int k = 0; k < 120 * 10; ++k) {
     v.step({0, 0, 1, false}, road);
     if (trace) std::fprintf(trace, "%s\n", drive::trace_row(v).c_str());
     abs_steps += v.abs_active();
+    if (t_down < 0 && v.gear() == 1) {
+      t_down = v.time() - t0;
+      kmh_down = v.speed() * 3.6;
+    }
+    if (t_rev < 0 && v.gear() == -1) {
+      t_rev = v.time() - t0;
+      v_rev = v.speed();
+    }
+    if (t_rev < 0) {
+      ++steps;
+      for (int a = 0; a < 2; ++a) braked[a] += v.wheels()[size_t(2 * a)].brake > 0;
+    }
     if (v.speed() < 0.3) {
       t_stop = v.time() - t0;
       break;
@@ -208,8 +259,16 @@ void scenario_b(const drive::CarParams& p) {
   const double dist = std::sqrt(drive::dot(d, d));
   const double decel = (v0 - v.speed()) / t_stop;
   std::printf("scenario B: brake at %.2f km/h in gear %d; stop in %.3f s over %.2f m; mean deceleration %.3f m/s^2 "
-              "(oracle 8.57 +-2 %%; distance for v0 %.2f m); ABS steps %d (oracle 64 at 60 Hz)\n",
-              v0 * 3.6, gear0, t_stop, dist, decel, v0 * v0 / (2 * 8.57), abs_steps);
+              "(oracle 8.57 +-2 %%, 2.645 s; distance for v0 %.2f m); ABS steps %d of %d\n",
+              v0 * 3.6, gear0, t_stop, dist, decel, v0 * v0 / (2 * 8.57), abs_steps, int(std::lround(t_stop * 120)));
+  std::printf("  2->1 gear change at +%.3f s, %.1f km/h (oracle +0.50 s, 59.8 km/h); reverse at +%.3f s, %.1f km/h "
+              "(oracle +1.31-1.36 s, 22.8-23.0 km/h)\n",
+              t_down, kmh_down, t_rev, v_rev * 3.6);
+  if (t_rev > 0)
+    std::printf("  ABS phase %.2f m/s^2 (oracle 11.9-12.1); braked steps front %.0f %%, rear %.0f %% (oracle 50-54, "
+                "74-81); reverse phase %.2f m/s^2 over %.3f s (oracle ~5, 1.26-1.29 s)\n",
+                (v0 - v_rev) / t_rev, 100.0 * braked[0] / steps, 100.0 * braked[1] / steps,
+                (v_rev - v.speed()) / (t_stop - t_rev), t_stop - t_rev);
   CHECK(t_stop > 0);
   GATE(near_rel(decel, 8.57, 0.02));
 }
@@ -219,8 +278,9 @@ void turn_circle(const drive::CarParams& p) {
   drive::Vehicle v(p);
   v.reset({0, 0, 0}, 0);
   for (int i = 0; i < 2; ++i) v.step({}, flat);
-  // Full left lock; a little throttle to 2.8 m/s, then coast (measured
-  // from 0.8 s after the release, for 3 s).
+  // SPEC-CAR-PHYSICS, the turn circle's inputs: full left lock, full
+  // throttle until about 3 m/s, then the gas released, coasting in first;
+  // the radius over the coast at 2 to 3 m/s (3.5 s).
   int i = 0;
   FILE* trace = std::getenv("PHYSICS_TRACE_T") ? std::fopen(std::getenv("PHYSICS_TRACE_T"), "w") : nullptr;
   if (trace) std::fprintf(trace, "%s\n", drive::trace_header().c_str());
@@ -228,15 +288,22 @@ void turn_circle(const drive::CarParams& p) {
     v.step(in, flat);
     if (trace) std::fprintf(trace, "%s\n", drive::trace_row(v).c_str());
   };
-  for (; i < 120 * 10 && v.speed() < 2.8; ++i) step({-1, 0.3, 0, false});
-  for (int k = 0; k < 96; ++k) step({-1, 0, 0, false});
-  double sum = 0, v_min = 1e9, v_max = 0;
-  int n = 0;
-  for (int k = 0; k < 360; ++k) {
+  for (; i < 120 * 10 && v.speed() < 3.0; ++i) step({-1, 1, 0, false});
+  const double t_release = v.time();
+  // The coast: measured for 3.5 s from the first step under 3 m/s, while
+  // the speed stays above 2 m/s.
+  double sum = 0, v_min = 1e9, v_max = 0, v_first = -1, v_last = 0;
+  int n = 0, coast = 0;
+  for (int k = 0; k < 120 * 10 && coast < 420; ++k) {
     step({-1, 0, 0, false});
     const drive::Vec3 vel = v.velocity();
     const double speed = std::hypot(vel.x, vel.z);
     const double yaw_rate = std::fabs(v.angular_velocity().y);
+    if (v_first < 0 && speed >= 3.0) continue;
+    ++coast;
+    if (speed < 2.0) continue;
+    if (v_first < 0) v_first = speed;
+    v_last = speed;
     if (yaw_rate > 1e-6) {
       sum += speed / yaw_rate;
       ++n;
@@ -246,9 +313,11 @@ void turn_circle(const drive::CarParams& p) {
   }
   if (trace) std::fclose(trace);
   const double radius = n ? sum / n : 0;
-  std::printf("turn circle: centre-of-mass path radius %.3f m at %.2f-%.2f m/s, road wheels %.1f deg "
-              "(oracle 3.37 m +-2 %%)\n",
-              radius, v_min, v_max, std::fabs(v.steer_angle()) * 180 / kPi);
+  std::printf("turn circle: released at %.2f s; centre-of-mass path radius %.3f m at %.2f-%.2f m/s (%.2f -> %.2f over "
+              "the coast), road wheels %.1f deg, gear %d, %.0f rpm at the end (oracle 3.37 m +-2 %%; 2.84 -> 2.08 m/s "
+              "over 3.5 s, 816 rpm)\n",
+              t_release, radius, v_min, v_max, v_first, v_last, std::fabs(v.steer_angle()) * 180 / kPi, v.gear(),
+              v.rpm());
   GATE(near_rel(radius, 3.37, 0.02));
 }
 
@@ -282,15 +351,17 @@ int main() {
   std::vector<std::string> notes;
   drive::apply_physics(r34, settings, p, &notes);
   for (const auto& n : notes) std::printf("note: %s\n", n.c_str());
-  // Experiments for the spec questions (not the gate): PHYSICS_BRAKE_REACTION
-  // scales the tyre's braking torque on the wheel; PHYSICS_REAR_BRAKE sets
-  // the rear brake torque (N m).
-  if (const char* e = std::getenv("PHYSICS_BRAKE_REACTION")) p.brake_reaction_scale = std::atof(e);
+  // Experiments (not the gate): PHYSICS_FRONT_BRAKE and PHYSICS_REAR_BRAKE
+  // set the brake torques (N m), PHYSICS_ABS 0 turns the ABS off,
+  // PHYSICS_WHEEL_J sets the wheel inertia, PHYSICS_BOOST_LAG the boost lag.
+  if (const char* e = std::getenv("PHYSICS_FRONT_BRAKE")) p.front_brake_torque = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_REAR_BRAKE")) p.rear_brake_torque = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_ABS")) p.abs = std::atoi(e) != 0;
   if (const char* e = std::getenv("PHYSICS_WHEEL_J")) p.wheel_inertia = std::atof(e);
-  if (const char* e = std::getenv("PHYSICS_BRAKE_CLUTCH")) p.brake_opens_clutch = std::atoi(e) == 0;
-  if (const char* e = std::getenv("PHYSICS_LAUNCH_T")) p.launch_clutch_time = std::atof(e);
+  if (const char* e = std::getenv("PHYSICS_BOOST_LAG")) p.boost_lag = std::atof(e);
+  if (const char* e = std::getenv("PHYSICS_ENGINE_J")) p.engine_inertia = std::atof(e);
+  std::printf("engine inertia %.4f kg m^2, brake torque front %.0f rear %.0f N m, braking friction scale %.4f\n", p.engine_inertia,
+              p.front_brake_torque, p.rear_brake_torque, p.brake_friction_scale);
 
   unit_checks(r34, settings, p);
   scenario_a(p);

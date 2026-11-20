@@ -252,80 +252,105 @@ questions are also sent to the specification session.
 - **Check:** a frame at the spawn, set beside the frame dump's capture,
   shows the gantry ahead and the barriers and flag on the right in both.
 
-## Q20 to Q26: SPEC-CAR-PHYSICS (a76cfa08), first run against the oracle
+## Q20 to Q26 (answered in CAR_PHYSICS 398228b8): the first run against the oracle
 
-The engine now drives on CAR_PHYSICS.md: the stock rows (`carbake
---physics-only` writes `cars/<key>.physics.txt` beside the bake),
-PhysicsSettings.ini, the multi-curve tyre with the sidewall factor, the
-359 Hz substeps, ABS, the brake input curve and the controller delays.
-`physics_tests` (corpus label) runs the R34 (car 445) through scenarios A
-and B and the turn circle. Hard checks: the static loads (sum 15,273 N
-against 15,288; front 57.0 % against 57.5 %) and the sidewall factor
-(1.2749 against 1.27). The scenario gates are reported, and fail the test
-only with `PHYSICS_GATE=1`, until the questions below are answered.
+The first run (a76cfa08, the engine's own clutch and gearbox) missed
+0-20/40/60, the 1-2 shift and scenario B. The questions asked for the
+launch clutch (Q20), the shift's timing (Q21), the clutch under braking
+(Q22), the rear brake (Q23), the tyre's torque on the wheel under braking
+(Q24), the ABS slip filter (Q25) and the turn circle's inputs (Q26).
+398228b8 answers all seven ("Clutch and gearbox states", Brakes, ABS, the
+turn circle's inputs). The engine now follows them:
 
-| Gate | Engine | Oracle | |
+- **Gearbox:** the spec's states (open, launch, engaged, clutch in, gear
+  change, rev-match, clutch out). The launch controller has the spec's
+  entry rule, its falling H/L target, the servo
+  `dc/dt = 53 (target - (rpm + 0.04 rpm')) / redline` and its exit
+  (output past the target, driven-wheel slip under 0.7). The power is cut
+  in clutch in and gear change. In clutch out the throttle is
+  `lerp(driver, request, c)`. Clutch capacity is
+  `(1 - c) x ClutchMaxTorque x GameTorqueScale`.
+- **Braking:** the clutch stays locked; 2-1 on the way. Reverse is
+  selected below MaxForwardVelShiftReverseMPH with the brake held, and
+  then the pedals swap.
+- **Brakes:** 3,900 N m front, 0.41 x that at the rear.
+- **Tyre and ABS:** a slowed wheel takes TorqueFreeLongFrictionScaleBrake
+  x GameFrictionScaleBraking (1.805) and puts F_x x r back on the wheel.
+  The ABS tests the mean of five substep slips.
+- **Turn circle:** full lock, full throttle to 3 m/s, then the coast.
+
+Our choices inside the answers:
+
+- the boost-like throttle build-up, a 0.28 s first-order lag of the
+  trigger capped by the pedal, which fits the spec's 0.3 / 0.6 / 0.83 /
+  1.0;
+- the rev-match request, proportional over 200 rpm towards the output
+  speed;
+- the 2-1 under braking when the lower gear sits under 0.73 x the
+  redline;
+- the clutch opening when the output would drag the engine under 0.9 x
+  idle;
+- the profile road's inner points rounded over +-4 m. The linear profile's
+  slope step at 60 m, where scenario B's brake lands, unloaded the
+  massless front wheels.
+
+### Results (car 445, spec defaults; ctest 7/7, the gates not fatal)
+
+| Check | Engine | Oracle | |
 |---|---|---|---|
-| 0-20 km/h | 1.268 s | 1.122 s | miss |
-| 0-40 km/h | 2.044 s | 1.891 s | miss |
-| 0-60 km/h | 2.920 s | 2.780 s | miss |
-| 0-80 km/h | 4.558 s | 4.557 s | pass |
-| 0-100 km/h | 5.919 s | 5.84 s (+-0.117; cfc4f721) | pass |
-| 1-2 shift | 68.5 km/h, 3.392 s, 7,709 rpm | 67.8 km/h, 3.55 s, 7,690 rpm | miss |
-| B mean deceleration | 6.15 m/s^2 | 8.57 m/s^2 | miss |
-| Turn circle | 3.348 m at 2.5-3.2 m/s | 3.37 m | pass |
+| Launch state | 0.617-1.592 s, left at 28.5 km/h, locked 1.767 s | 0.51-1.42 s, 29.6 km/h, 1.58 s | late |
+| 0-20 / 40 / 60 km/h | 1.315 / 2.113 / 3.063 s | 1.122 / 1.891 / 2.780 s | miss |
+| 0-80 / 100 km/h | 4.793 / 6.137 s | 4.557 / 5.84 s | miss |
+| 1-2: request, change, locked | 3.533, 3.850 s (67.7 km/h), 4.200 s | 3.20, 3.55 s (68), 3.91 s | late, durations match |
+| B mean deceleration | 7.25 m/s^2 | 8.57 | miss |
+| B ABS phase | 14.65 m/s^2, to reverse at +1.09 s, 24.1 km/h | 11.9-12.1, +1.31-1.36 s, 23 km/h | too strong |
+| B braked steps | front 95 %, rear 45 % | 50-54 %, 74-81 % | |
+| B reverse phase | 3.2 m/s^2 over 2.0 s | ~5 over 1.27 s | |
+| B 2-1 gear change | +0.49 s, 58.4 km/h | +0.50 s, 59.8 km/h | ok |
+| Turn circle | 3.344 m, coast 3.00 -> 2.32 m/s | 3.37 m, 2.84 -> 2.08 | pass |
 
-In A, the 20-40 and 40-60 increments match within 0.02 s: the miss is a
-constant ~0.14 s lost in the clutch phase. In B, our ABS releases on
-85-100 % of its steps; the oracle's 64 ABS steps at 60 Hz over the stop
-suggest about 40 %.
+## Q27 (blocking A and B): the free-revving engine's inertia
 
-- **Q20 (blocking A): the launch clutch.** The spec gives the clutch's
-  torque and engage and release times but not what drives the engagement
-  from rest. Ours: the clutch follows engine speed,
-  `ramp(rpm, lerp(idle, StartRPM, pedal), lerp(idle + 500, redline, pedal))`,
-  and slips until it locks (about 5,740 rpm held at full throttle; oracle
-  ~5,800). Needed: the oracle's engine rpm and clutch state over 0-3 s,
-  and whether the clutch slips until ~59 km/h.
-  - *Since cfc4f721* (0-100 gate 5.84 s, the mean of two runs; a 0.55 s
-    clutch-slip phase; rear slip ratio up to 0.79 in first gear): our
-    clutch slips until 2.43 s, so the oracle's revs after 0.55 s must come
-    from wheelspin, not clutch slip. Experiment `launch_clutch_time`
-    (`PHYSICS_LAUNCH_T`; off by default): the engine-speed ramp, then
-    the clutch closes fully at that time. Closing it on a timer from the
-    start instead bogs the engine (locked at 0.1 s, 1,300 rpm).
+With the clutch open our engine revs slower than the oracle's. That delays
+the launch by 0.1 s, and after reverse is selected it lengthens the coast
+to 0.7 s, against the oracle's 0.39 s. The spec's inertia is
+Data_Engine + flywheel = 0.2035 kg m^2.
 
-    | launch_clutch_time | 0-20 | 0-40 | 0-60 | 0-80 | 0-100 | locked |
-    |---|---|---|---|---|---|---|
-    | off | 1.268 | 2.044 | 2.920 | 4.558 | 5.919 | 2.43 s |
-    | 0.4 s | 1.012 | 1.981 | 2.931 | 4.571 | 5.923 | 0.61 s |
-    | 0.55 s | 1.063 | 1.935 | 2.884 | 4.523 | 5.878 | 0.70 s |
-    | 0.7 s | 1.113 | 1.934 | 2.884 | 4.523 | 5.879 | 0.83 s |
-    | oracle | 1.122 | 1.891 | 2.780 | 4.557 | 5.84 | (0.55 s) |
+| Engine inertia | rpm at 0.3 / 0.5 s | Launch from | 1-2 change | 0-100 | B |
+|---|---|---|---|---|---|
+| 0.2035 (spec) | 1,937 / 3,684 | 0.617 s | 3.850 s | 6.137 s | 7.25 |
+| 0.15 | 2,385 / 4,934 | 0.508 s | 3.700 s | 6.011 s | 8.45 |
+| 0.0957 (engine row only) | 3,443 / launch | 0.383 s | 3.567 s | 5.895 s | 8.57 |
+| oracle | 2,395 / 4,857 | ~0.51 s | 3.55 s | 5.84 s | 8.57 |
 
-    Needed to settle it: what ends the oracle's slip phase (a time, an
-    rpm, a clutch value) and the rear slip ratio over 0.5-3 s.
-- **Q21 (A): the shift time.** What the oracle's 3.55 s marks (the shift
-  request, the gear changing, or the clutch back in) and whether power is
-  cut during it. Ours: power cut over kShift and kClutchOut, 0.16 s.
-- **Q22 (blocking B): the clutch and engine under braking.** Clutch open
-  gives 4.85 m/s^2, closed 6.15 (now the default,
-  `CarParams::brake_opens_clutch = false`).
-- **Q23 (blocking B): the rear brake torque or bias.** Ours:
-  3500 x (0.5 - BrakeBiasOffsetRear 0.03) / 0.53, about 3,104 N m.
-- **Q24 (blocking B): the tyre's torque on the wheel under braking.** Is
-  it F_x x r, or scaled (TorqueFreeLongFrictionScaleBrake 1.8 fits the
-  ~40 % ABS duty)? With the ABS off (wheels locked) we reach 7.89 m/s^2;
-  a wheel inertia of 6.4 gives 7.8-8.0.
-- **Q25 (B): the ABS "smoothed" slip.** Which filter, over what window.
-  Ours: the instantaneous slip per substep, with no release below 2 m/s.
-- **Q26 (turn circle): the inputs.** Whether the oracle creeps in gear at
-  idle or holds a throttle, and the speed it reports the radius at.
+An inertia of 0.15 reproduces the oracle's free-rev, but in gear the car
+is then still ~0.15 s slow. B's 8.57 at 0.0957 is a coincidence: there
+the ABS phase is too strong (14.9) and the reverse phase too weak (4.2
+over 1.54 s). Needed: the oracle's engine inertia, or its engine
+acceleration with the clutch open (rpm per s at a known load), and
+whether the flywheel counts when the clutch is open.
+
+## Q28 (blocking B): the front tyre's braking grip against the brake torque
+
+The spec says the brake torque is far above the grip, so the fronts pass
+the release point within 0.09 s. Ours do not: at 3,900 N m and 1.805 the
+fronts hold a normalised slip of -0.3 to -0.6, braked on 95 % of steps.
+The ABS phase is then 14.6 m/s^2. At 5,000 N m the front duty matches
+(49 %), but the ABS phase is 10.6. Needed: the front's F_x and load (or
+F_x / N) in the first 0.1 s of the press, to check where our 1.805 scale
+sits against the oracle's.
+
+## Q29 (B): the rears under braking
+
+Our rears are braked on 38-48 % of steps (the oracle's 74-81 %), with
+only 1,600 N m of brake. Through the locked clutch they also carry the
+engine's braking and the 2-1 shift's clutch in and out. Is the driveline
+torque part of the rears' release, and is the oracle's AWD split the same
+under braking?
 
 Engine choices the spec leaves open (ours, logged here): Ackermann
 steering geometry; the steering lock narrowed with speed to hold 1 g
 (atan rule, 5 degree minimum); engine braking ZeroThrottleTorqueScale x
 ramp(rpm); an idle governor; the automatic clutch opening when road rpm
-falls under 0.9 x idle; reverse selected only under 0.1 m/s, the pedals
-swapping under 0.5 m/s; a 1 m/s slip speed floor; an implicit wheel
+falls under 0.9 x idle; a 1 m/s slip speed floor; an implicit wheel
 update, with the body force the tyre's at the new wheel speed.

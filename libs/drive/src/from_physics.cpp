@@ -167,13 +167,20 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.clutch_in_time = get("List_UpgradeDrivetrainClutch.ClutchInTime", p.clutch_in_time);
   p.clutch_out_time = get("List_UpgradeDrivetrainClutch.ClutchOutTime", p.clutch_out_time);
 
-  // Brakes: the front torque is the spec's measured full-press figure; the
-  // rear follows the bias (our reading: the rear share is BrakeBiasSlider
-  // less BrakeBiasOffsetRear).
-  p.front_brake_torque = 3500;
-  const double rear_share =
-      std::clamp(get("List_UpgradeBrakes.BrakeBiasSlider", 0.5) - s.get("BrakeBiasOffsetRear", 0.03), 0.05, 0.95);
-  p.rear_brake_torque = p.front_brake_torque * rear_share / (1 - rear_share);
+  // The clutch's capacity factor: the measured 0.78, which matches
+  // GameTorqueScale (SPEC-CAR-PHYSICS, Clutch and gearbox states).
+  p.clutch_torque_factor = get("Data_Car.GameTorqueScale", p.clutch_torque_factor);
+  p.reverse_select_speed = s.get("MaxForwardVelShiftReverseMPH", 15) * 0.44704;
+
+  // Brakes (SPEC-CAR-PHYSICS, Brakes): the measured full-press torque per
+  // front wheel (3,800 to 4,050 N m from the wheel balance; the formula is
+  // not decoded), the rear 0.41 x the front (measured on the R34; the bias
+  // rule is open).
+  p.front_brake_torque = 3900;
+  p.rear_brake_torque = 0.41 * p.front_brake_torque;
+  // The tyre's longitudinal scale on a wheel whose applied torque slows it.
+  p.brake_friction_scale = get("List_TireCompound.TorqueFreeLongFrictionScaleBrake", 1) *
+                           get("List_UpgradeBrakes.GameFrictionScaleBraking", 1);
   p.abs_front_no_steer = get("List_UpgradeBrakes.ReleasePointABSFrontNoSteer", p.abs_front_no_steer);
   p.abs_front_full_steer = get("List_UpgradeBrakes.ReleasePointABSFrontFullSteer", p.abs_front_full_steer);
   p.abs_rear_no_steer = get("List_UpgradeBrakes.ReleasePointABSRearNoSteer", p.abs_rear_no_steer);

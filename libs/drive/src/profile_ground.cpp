@@ -6,8 +6,8 @@
 namespace drive {
 
 ProfileGround::ProfileGround(double origin_x, double origin_y, double origin_z, double dir_x, double dir_z,
-                             std::vector<double> distances, std::vector<double> heights)
-    : ox_(origin_x), oy_(origin_y), oz_(origin_z), s_(std::move(distances)), h_(std::move(heights)) {
+                             std::vector<double> distances, std::vector<double> heights, double blend)
+    : ox_(origin_x), oy_(origin_y), oz_(origin_z), blend_(blend), s_(std::move(distances)), h_(std::move(heights)) {
   const double l = std::hypot(dir_x, dir_z);
   dx_ = dir_x / l;
   dz_ = dir_z / l;
@@ -15,19 +15,46 @@ ProfileGround::ProfileGround(double origin_x, double origin_y, double origin_z, 
 
 double ProfileGround::distance_along(double x, double z) const { return (x - ox_) * dx_ + (z - oz_) * dz_; }
 
-double ProfileGround::slope(double s) const {
-  if (s_.size() < 2) return 0;
+// The profile is piecewise linear, with each inner point rounded by a
+// parabola over +-blend_ (at most half of either segment): the slope then
+// changes smoothly, and the height at the point moves by
+// (slope change) x blend / 4.
+void ProfileGround::eval(double s, double& height, double& slope) const {
+  height = oy_;
+  slope = 0;
+  if (s_.empty()) return;
+  if (s_.size() == 1) {
+    height = oy_ + h_[0];
+    return;
+  }
+  auto seg_slope = [&](size_t i) { return (h_[i + 1] - h_[i]) / (s_[i + 1] - s_[i]); };
   size_t i = 0;
   while (i + 2 < s_.size() && s >= s_[i + 1]) ++i;
-  return (h_[i + 1] - h_[i]) / (s_[i + 1] - s_[i]);
+  // The inner point nearest s, and its fillet.
+  for (size_t k : {i, i + 1}) {
+    if (k == 0 || k + 1 >= s_.size()) continue;
+    const double r = std::min({blend_, 0.5 * (s_[k] - s_[k - 1]), 0.5 * (s_[k + 1] - s_[k])});
+    if (r <= 0 || std::fabs(s - s_[k]) >= r) continue;
+    const double m1 = seg_slope(k - 1), m2 = seg_slope(k);
+    const double u = s - (s_[k] - r);
+    height = oy_ + h_[k] - r * m1 + m1 * u + (m2 - m1) * u * u / (4 * r);
+    slope = m1 + (m2 - m1) * u / (2 * r);
+    return;
+  }
+  slope = seg_slope(i);
+  height = oy_ + h_[i] + slope * (s - s_[i]);
+}
+
+double ProfileGround::slope(double s) const {
+  double h, g;
+  eval(s, h, g);
+  return g;
 }
 
 double ProfileGround::height(double s) const {
-  if (s_.empty()) return oy_;
-  if (s_.size() == 1) return oy_ + h_[0];
-  size_t i = 0;
-  while (i + 2 < s_.size() && s >= s_[i + 1]) ++i;
-  return oy_ + h_[i] + (h_[i + 1] - h_[i]) * (s - s_[i]) / (s_[i + 1] - s_[i]);
+  double h, g;
+  eval(s, h, g);
+  return h;
 }
 
 bool ProfileGround::raycast(const Vec3& origin, const Vec3& dir, double max_distance, Hit& hit) const {

@@ -151,9 +151,10 @@ struct CarParams {
   double rear_fix_scale = 1, fix_slip0 = 0.5, fix_slip1 = 1, fix_steer0 = 0.5, fix_steer1 = 1;
   double slip_speed_floor = 1.0;   // m/s, v_min in the slips (ours)
   double wheel_inertia = 1.6;      // kg m^2 per wheel
-  // EXPERIMENT (not in the spec): the tyre's braking torque back on the
-  // wheel x this, the body force unscaled. 1 = off.
-  double brake_reaction_scale = 1;
+  // On a wheel whose applied torque slows it (brake, or engine braking
+  // through the driveline): TorqueFreeLongFrictionScaleBrake x
+  // GameFrictionScaleBraking, in place of the accel blend.
+  double brake_friction_scale = 1.8;
 
   // Engine.
   std::vector<double> torque_curve;     // normalised samples, sentinel removed; empty = synthetic
@@ -162,7 +163,7 @@ struct CarParams {
   double torque_scale = 380;            // N m at the curve's 1.0
   double engine_braking = 120;          // N m at the redline with the throttle shut (ours, shape)
   double idle_rpm = 800, redline_rpm = 7000;
-  double launch_rpm = 4000;             // the clutch bites from rest once the engine passes it
+  double launch_rpm = 4000;             // StartRPM: the launch controller's starting engine speed
   double engine_inertia = 0.2;          // kg m^2, engine + flywheel
 
   // Drivetrain.
@@ -174,8 +175,24 @@ struct CarParams {
   double gearbox_inertia = 0.014, driveline_inertia = 0.004;  // kg m^2
   double gear_shift_time = 0.16, clutch_in_time = 0.15, clutch_out_time = 0.3;  // s
   double clutch_max_torque = 900;  // N m
+  double clutch_torque_factor = 0.78;  // capacity = engagement x ClutchMaxTorque x this (GameTorqueScale)
   double upshift_fraction = 0.96;  // of the redline
-  double downshift_brake_fraction = 0.79;  // braking: down when the lower gear sits under this x redline (ours)
+  // Braking: down when the lower gear would sit under this x the redline
+  // (ours, from the R34's 2->1 at 75 km/h).
+  double downshift_brake_fraction = 0.73;
+  double reverse_select_speed = 6.7056;  // m/s: MaxForwardVelShiftReverseMPH (15 mph)
+  // The launch controller (SPEC-CAR-PHYSICS, Clutch and gearbox states).
+  double launch_max_output_rpm = 700;  // the clutch output speed under which a start is a launch
+  double launch_fall_time = 1.5;       // s for the target to fall from its start to its end
+  double launch_gain = 53;             // clutch rate per (rpm / redline)
+  double launch_lookahead = 0.04;      // s of engine acceleration in the servo's error
+  double launch_exit_slip = 0.7;       // the driven wheels' mean |normalised slip| under which it ends
+  double rev_match_time = 0.05;        // s
+  // The engine's effective throttle builds like boost: a first-order lag of
+  // the drive trigger with this time constant, capped by the pedal (ours, a
+  // fit to the spec's 0.3 / 0.6 / 0.83 / 1.0 at 0.1 / 0.25 / 0.5 / 0.9 s).
+  // 0 = off.
+  double boost_lag = 0.28;
 
   // Brakes.
   double front_brake_torque = 3500;  // N m per front wheel at full press
@@ -185,12 +202,7 @@ struct CarParams {
   double abs_front_no_steer = 3.0, abs_front_full_steer = 0.5;
   double abs_rear_no_steer = 2.5, abs_rear_full_steer = 2.0;
   double abs_duration = 0.05;  // s
-  double abs_min_speed = 2.0;  // m/s: below it the ABS does not release (ours)
-  bool brake_opens_clutch = false;  // true: braking hard opens the automatic clutch (ours, off: the spec has the driveline in gear)
-  // > 0: this many seconds into a launch the clutch closes fully, whatever
-  // the engine speed (an experiment against CAR_PHYSICS's 0.55 s slip
-  // phase; 0, the default: the engagement follows engine speed throughout).
-  double launch_clutch_time = 0;
+  int abs_smoothing = 5;       // substeps in the slip mean the ABS tests
 
   // Input shaping (SPEC-CAR-PHYSICS, Throttle, brake and steering).
   double throttle_rate = 5, brake_rate = 20, handbrake_rate = 12;  // full travels per second
@@ -250,9 +262,19 @@ class Vehicle {
   double speed() const;               // m/s along the body's forward axis
   double rpm() const;                 // engine speed
   int gear() const { return gear_; }  // -1 reverse, 0 neutral, 1..n
-  double clutch() const { return clutch_; }  // engagement 0..1
+  double clutch() const { return clutch_; }  // engagement 0..1 (the spec's c is 1 - this)
   bool clutch_locked() const { return locked_; }  // the clutch is not slipping
-  bool shifting() const { return phase_ != Phase::kNone; }
+  // SPEC-CAR-PHYSICS, Clutch and gearbox states.
+  enum class GearState { kOpen, kLaunch, kEngaged, kClutchIn, kGearChange, kRevMatch, kClutchOut };
+  GearState gear_state() const { return state_; }
+  bool shifting() const {
+    return state_ == GearState::kClutchIn || state_ == GearState::kGearChange ||
+           (target_gear_ != gear_before_ && (state_ == GearState::kRevMatch || state_ == GearState::kClutchOut));
+  }
+  double engine_throttle() const { return engine_throttle_; }  // what the engine sees, 0..1
+  double launch_target() const { return launch_target_; }      // rpm, in the launch state
+  // The clutch output's speed (driven-wheel speed x gear x final drive), rpm, signed.
+  double clutch_output_rpm() const;
   bool abs_active() const { return abs_flag_; }  // a wheel was released this step
   int substeps() const { return substeps_; }
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
@@ -266,7 +288,6 @@ class Vehicle {
   double static_load(int wheel) const { return preload_[wheel]; }
 
  private:
-  enum class Phase { kNone, kClutchIn, kShift, kClutchOut };
   void substep(double dt, const Ground& ground);
   void shape_input(const Input& raw, double dt);
   void update_gearbox(double dt);
@@ -287,11 +308,19 @@ class Vehicle {
   Input raw_{}, shaped_{};
   double steer_angle_ = 0;
   int gear_ = 1, target_gear_ = 1;
-  Phase phase_ = Phase::kNone;
-  double phase_timer_ = 0;
+  int gear_before_ = 1;        // the gear a shift started from
+  GearState state_ = GearState::kOpen;
+  double state_time_ = 0;      // s in the current state
   double clutch_ = 0;          // engagement
-  bool launching_ = false;     // the clutch is biting from rest
-  double launch_age_ = 0;      // s since the launch began
+  double prev_rpm_ = 0;        // engine rpm at the last step (the launch servo's rate)
+  double spool_ = 0;           // the boost lag's state
+  double engine_throttle_ = 0;
+  double driver_throttle_ = 0;  // the driver's effective drive throttle this step
+  double slip_hist_[kWheels][8]{};
+  int slip_pos_ = 0;
+  double tc_prev_ = 0;
+  bool rev_matching_ = false;  // the clutch-out blend asks for the rev-match throttle
+  double launch_target_ = 0;   // the launch controller's engine target (rpm)         // the clutch torque in the last substep (N m, engine side)
   bool locked_ = false;        // the clutch is not slipping
   double engine_omega_ = 0;    // rad/s
   double abs_timer_[kWheels]{};

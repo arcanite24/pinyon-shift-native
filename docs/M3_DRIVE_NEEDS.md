@@ -59,7 +59,10 @@ the code, and meant to be swapped out:
   the brake input curve and controller delays. A car's rows come from
   `carbake --physics-only` (`cars/<key>.physics.txt`); without them the
   synthetic car is used. `drive --physics-trace` writes the gate's JSONL.
-  Scenario results and the open questions: SPEC_QUESTIONS Q20 to Q26.
+  The clutch and gearbox follow the spec's state machine (launch
+  controller, shift states, reverse selection under braking) since
+  398228b8. Scenario results and the open questions: SPEC_QUESTIONS Q20
+  to Q29.
 - **Ground** (`drive::MeshGround`): a static BVH over triangles behind
   the `drive::Ground` interface. Since COLLISION.md it holds the game's
   collision (`world::Collision`): the `.fiz` tiles whose 100 m cell lies

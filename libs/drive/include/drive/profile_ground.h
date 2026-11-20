@@ -1,7 +1,9 @@
 // SPEC-CAR-PHYSICS, Drive on analytic ground: a road that follows a height
 // profile along one direction and is level across it, all asphalt (grip 1).
-// Heights are piecewise linear between the profile's points and continue
-// at the end slopes beyond them.
+// Heights are piecewise linear between the profile's points (the spec's
+// rule), each inner point rounded over +-`blend` m so the slope does not
+// step (ours: a massless wheel reads a slope step as a jump in suspension
+// speed), and continue at the end slopes beyond them.
 #pragma once
 
 #include <vector>
@@ -16,7 +18,7 @@ class ProfileGround : public Ground {
   // the road's direction (normalised here); `distances` rising, `heights`
   // relative to origin_y.
   ProfileGround(double origin_x, double origin_y, double origin_z, double dir_x, double dir_z,
-                std::vector<double> distances, std::vector<double> heights);
+                std::vector<double> distances, std::vector<double> heights, double blend = 4.0);
   bool raycast(const Vec3& origin, const Vec3& dir, double max_distance, Hit& hit) const override;
 
   double distance_along(double x, double z) const;  // the road distance of a point
@@ -24,7 +26,8 @@ class ProfileGround : public Ground {
   double slope(double s) const;                     // dy/ds there
 
  private:
-  double ox_, oy_, oz_, dx_, dz_;
+  void eval(double s, double& height, double& slope) const;
+  double ox_, oy_, oz_, dx_, dz_, blend_;
   std::vector<double> s_, h_;
 };
 

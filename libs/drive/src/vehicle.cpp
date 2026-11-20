@@ -141,12 +141,17 @@ void Vehicle::reset(const Vec3& position, double heading) {
   rot_ = {0, std::sin(heading / 2), 0, std::cos(heading / 2)};
   pos_ = position + rotate(rot_, com_local_);  // pos_ holds the centre of mass
   vel_ = ang_ = {};
-  gear_ = target_gear_ = 1;
-  phase_ = Phase::kNone;
-  phase_timer_ = 0;
+  gear_ = target_gear_ = gear_before_ = 1;
+  state_ = GearState::kOpen;
+  state_time_ = 0;
   clutch_ = 0;
-  launching_ = locked_ = false;
+  locked_ = rev_matching_ = false;
+  launch_target_ = 0;
   engine_omega_ = p_.idle_rpm / kRpm;
+  prev_rpm_ = p_.idle_rpm;
+  spool_ = engine_throttle_ = driver_throttle_ = 0;
+  tc_prev_ = 0;
+  slip_pos_ = 0;
   time_ = 0;
   steer_angle_ = 0;
   abs_flag_ = false;
@@ -157,6 +162,7 @@ void Vehicle::reset(const Vec3& position, double heading) {
     w_[i].contact = true;
     prev_compression_[i] = 0;
     abs_timer_[i] = 0;
+    for (double& h : slip_hist_[i]) h = 0;
   }
 }
 
@@ -171,6 +177,8 @@ double Vehicle::ratio(int gear) const {
   if (gear == -1) return -p_.reverse_gear * p_.final_drive;
   return 0;
 }
+
+double Vehicle::clutch_output_rpm() const { return ratio(gear_) * input_omega() * kRpm; }
 
 double Vehicle::input_omega() const {
   double o = 0;
@@ -228,101 +236,149 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
 }
 
 void Vehicle::update_gearbox(double dt) {
+  // SPEC-CAR-PHYSICS, Clutch and gearbox states. clutch_ is the engagement
+  // (the spec's c is 1 - clutch_). In reverse the pedals swap: the brake
+  // pedal is the throttle and the throttle pedal the brake.
   const double v = speed();
-  const bool reverse = gear_ == -1 && v < 0.5;
-  const double drive_in = reverse ? shaped_.brake : shaped_.throttle;
-  const double road_rpm = std::fabs(ratio(gear_) * input_omega()) * kRpm;
-  const bool slow = gear_ != 0 && road_rpm < p_.idle_rpm * 0.9;
-  auto start_shift = [&](int target) {
-    target_gear_ = target;
-    phase_ = Phase::kClutchIn;
-    launching_ = false;
+  const bool reverse = gear_ == -1;
+  const double drive_pedal = reverse ? shaped_.brake : shaped_.throttle;
+  const double brake_pedal = reverse ? shaped_.throttle : shaped_.brake;
+  // The effective throttle builds like boost (ours, see CarParams::boost_lag).
+  const double trigger = std::clamp(reverse ? raw_.brake : raw_.throttle, 0.0, 1.0);
+  if (p_.boost_lag > 0 && trigger > spool_) spool_ += (trigger - spool_) * (1 - std::exp(-dt / p_.boost_lag));
+  else spool_ = trigger;
+  const double driver = std::min(drive_pedal, spool_);
+  driver_throttle_ = driver;
+  const double rpm_now = rpm();
+  const double rpm_rate = (rpm_now - prev_rpm_) / dt;
+  prev_rpm_ = rpm_now;
+  const double idle = p_.idle_rpm, start = p_.launch_rpm, red = p_.redline_rpm;
+  auto out_rpm = [&] { return ratio(gear_) * input_omega() * kRpm; };  // the clutch output, signed
+  state_time_ += dt;
+  auto enter = [&](GearState s) {
+    state_ = s;
+    state_time_ = 0;
   };
-  switch (phase_) {
-    case Phase::kClutchIn:
-      clutch_ = std::max(0.0, clutch_ - dt / p_.clutch_in_time);
-      if (clutch_ <= 0) {
-        gear_ = target_gear_;
-        phase_ = Phase::kShift;
-        phase_timer_ = p_.gear_shift_time;
+  auto open = [&] {
+    enter(GearState::kOpen);
+    clutch_ = 0;
+  };
+  auto start_shift = [&](int target) {
+    gear_before_ = gear_;
+    target_gear_ = target;
+    enter(GearState::kClutchIn);
+  };
+  // The gearbox's own throttle in a rev-match: towards the clutch output's
+  // speed in the new gear (ours: proportional over 200 rpm).
+  auto rev_request = [&] { return std::clamp((std::fabs(out_rpm()) - rpm_now) / 200, 0.0, 1.0); };
+  const bool in_shift = state_ == GearState::kClutchIn || state_ == GearState::kGearChange ||
+                        state_ == GearState::kRevMatch || state_ == GearState::kClutchOut;
+
+  // Gear selection outside a shift: reverse with the brake held below
+  // MaxForwardVelShiftReverseMPH; forward again from reverse the same way.
+  if (!in_shift) {
+    if (gear_ >= 1 && shaped_.brake > 0.5 && shaped_.throttle < 0.1 && v < p_.reverse_select_speed) {
+      gear_before_ = gear_;
+      gear_ = target_gear_ = -1;
+      open();
+    } else if (gear_ == -1 && shaped_.throttle > 0.5 && shaped_.brake < 0.1 && v > -p_.reverse_select_speed) {
+      gear_before_ = gear_;
+      gear_ = target_gear_ = 1;
+      open();
+    } else if (gear_ == 0) {
+      gear_ = target_gear_ = 1;
+      open();
+    }
+  }
+
+  switch (state_) {
+    case GearState::kOpen: {
+      clutch_ = 0;
+      engine_throttle_ = driver;
+      if (drive_pedal > 0.1 && brake_pedal < 0.1) {
+        const double s0 = idle + 0.2 * (start - idle);
+        if (out_rpm() > p_.launch_max_output_rpm) {
+          gear_before_ = target_gear_ = gear_;  // rolling: match the engine, then close
+          rev_matching_ = true;
+          enter(GearState::kRevMatch);
+        } else if (rpm_now > lerp(s0, start, drive_pedal)) {
+          enter(GearState::kLaunch);
+        }
       }
-      return;
-    case Phase::kShift:
-      phase_timer_ -= dt;
-      if (phase_timer_ <= 0) phase_ = Phase::kClutchOut;
-      return;
-    case Phase::kClutchOut:
-      // From rest the launch rule below takes over; braking hard, the
-      // clutch stays open.
-      if (slow || (p_.brake_opens_clutch && !reverse && shaped_.brake > 0.5)) {
-        phase_ = Phase::kNone;
+      break;
+    }
+    case GearState::kLaunch: {
+      engine_throttle_ = driver;
+      if (brake_pedal > 0.1) {
+        open();
         break;
       }
-      clutch_ = std::min(1.0, clutch_ + dt / p_.clutch_out_time);
-      if (clutch_ >= 1) phase_ = Phase::kNone;
-      return;
-    case Phase::kNone:
+      const double tau = std::min(1.0, state_time_ / p_.launch_fall_time);
+      const double high = lerp(start + 0.2 * (red - start), idle + 0.3 * (start - idle), tau);
+      const double low = lerp(idle + 0.2 * (start - idle), idle + 0.01 * (start - idle), tau);
+      const double target = lerp(low, high, drive_pedal);
+      launch_target_ = target;
+      // dc/dt = gain x (target - (rpm + lookahead x rpm rate)) / redline.
+      const double c_rate = p_.launch_gain * (target - (rpm_now + p_.launch_lookahead * rpm_rate)) / red;
+      clutch_ = std::clamp(clutch_ - c_rate * dt, 0.0, 1.0);
+      double slip = 0, n = 0;
+      for (int i = 0; i < kWheels; ++i)
+        if (weight_[i] > 0) slip += std::fabs(w_[i].slip_ratio), n += 1;
+      if (n > 0) slip /= n;
+      if (out_rpm() > target && slip < p_.launch_exit_slip) {
+        rev_matching_ = false;
+        enter(GearState::kClutchOut);
+      }
       break;
-  }
-  // SPEC-CAR-PHYSICS, Gears (automatic): up at upshift_fraction x the
-  // redline; down under braking; reverse with the brake held at a stop.
-  const int top = int(p_.gears.size());
-  if (gear_ >= 1) {
-    if (std::fabs(v) < 0.1 && shaped_.brake > 0.5 && shaped_.throttle < 0.05) return start_shift(-1);
-    if (gear_ < top && locked_ && rpm() >= p_.upshift_fraction * p_.redline_rpm) return start_shift(gear_ + 1);
-    if (gear_ > 1) {
-      const double lower_rpm = road_rpm * ratio(gear_ - 1) / ratio(gear_);
-      const bool braking = shaped_.brake > 0.1;
-      // Braking: down once the lower gear sits under the brake fraction of
-      // the redline (2->1 near 58 km/h on the R34). Otherwise down when the
-      // engine lugs (ours).
-      if ((braking && lower_rpm < p_.downshift_brake_fraction * p_.redline_rpm) ||
-          (road_rpm < 0.35 * p_.redline_rpm && lower_rpm < 0.75 * p_.redline_rpm))
-        return start_shift(gear_ - 1);
     }
-  } else if (gear_ == -1) {
-    if (v > -0.5 && shaped_.throttle > 0.5 && shaped_.brake < 0.05) return start_shift(1);
-  } else {
-    return start_shift(1);
-  }
-  // The automatic clutch (our reading of the spec's clutch phase). Pulling
-  // away, its engagement follows the engine speed from launch_rpm
-  // (StartRPM) to the redline, so it slips with the engine held where the
-  // clutch's capacity meets the engine's torque, until the road speed
-  // catches up and it locks; then it closes over ClutchOutTime. It opens
-  // over ClutchInTime when the road speed would drag the engine under idle.
-  // Braking hard, the clutch opens (ours): with it closed the engine's
-  // inertia through the gears holds the driven wheels and the ABS cannot
-  // let them run back up.
-  if (p_.brake_opens_clutch && !reverse && shaped_.brake > 0.5) {
-    launching_ = false;
-    clutch_ = approach(clutch_, 0, 1 / p_.clutch_in_time, dt);
-    return;
-  }
-  // The engagement band scales with the pedal: at full throttle launch_rpm
-  // to the redline; lighter, proportionally nearer idle (ours), so a gentle
-  // pull-away holds the engine low instead of crawling at the band's foot.
-  auto launch_engagement = [&](double pedal) {
-    // The experiment: past launch_clutch_time the clutch closes fully.
-    if (p_.launch_clutch_time > 0 && launch_age_ >= p_.launch_clutch_time) return 1.0;
-    const double t = std::clamp(pedal, 0.0, 1.0);
-    return ramp(rpm(), lerp(p_.idle_rpm, p_.launch_rpm, t), lerp(p_.idle_rpm + 500, p_.redline_rpm, t));
-  };
-  const double launch_rate_time = p_.clutch_out_time;
-  if (launching_) {
-    launch_age_ += dt;
-    if (drive_in < 0.05 || locked_) launching_ = false;
-    else clutch_ = approach(clutch_, launch_engagement(drive_in), 1 / launch_rate_time, dt);
-  }
-  if (!launching_) {
-    if (slow && drive_in > 0.05) {
-      launching_ = true;
-      launch_age_ = 0;
-      clutch_ = approach(clutch_, launch_engagement(drive_in), 1 / launch_rate_time, dt);
-    } else if (slow) {
-      clutch_ = approach(clutch_, 0, 1 / p_.clutch_in_time, dt);
-    } else {
+    case GearState::kEngaged: {
+      engine_throttle_ = driver;
       clutch_ = approach(clutch_, 1, 1 / p_.clutch_out_time, dt);
+      const double road = std::fabs(out_rpm());
+      if (road < 0.9 * idle) {
+        open();  // the engine would be dragged under idle (ours)
+        break;
+      }
+      // Automatic shifts (SPEC-CAR-PHYSICS, Gears): up at upshift_fraction x
+      // the redline; down under braking, or when the engine lugs (ours).
+      const int top = int(p_.gears.size());
+      if (gear_ >= 1 && gear_ < top && locked_ && rpm_now >= p_.upshift_fraction * red) {
+        start_shift(gear_ + 1);
+      } else if (gear_ > 1) {
+        const double lower = road * ratio(gear_ - 1) / ratio(gear_);
+        if ((brake_pedal > 0.1 && lower < p_.downshift_brake_fraction * red) ||
+            (drive_pedal > 0.1 && road < 0.35 * red && lower < 0.75 * red))
+          start_shift(gear_ - 1);
+      }
+      break;
+    }
+    case GearState::kClutchIn:
+      engine_throttle_ = 0;  // the power cut
+      clutch_ = std::max(0.0, clutch_ - dt / p_.clutch_in_time);
+      if (clutch_ <= 0) enter(GearState::kGearChange);
+      break;
+    case GearState::kGearChange:
+      engine_throttle_ = 0;
+      clutch_ = 0;
+      if (state_time_ >= p_.gear_shift_time - 1e-9) {
+        gear_ = target_gear_;  // the gear number changes at the end
+        rev_matching_ = true;
+        enter(GearState::kRevMatch);
+      }
+      break;
+    case GearState::kRevMatch:
+      clutch_ = 0;
+      engine_throttle_ = rev_request();
+      if (state_time_ >= p_.rev_match_time - 1e-9) enter(GearState::kClutchOut);
+      break;
+    case GearState::kClutchOut: {
+      clutch_ = std::min(1.0, clutch_ + dt / p_.clutch_out_time);
+      // Power comes back as the clutch closes: lerp(driver, the box's
+      // request, c). Out of a launch the box asks for nothing of its own.
+      const double request = rev_matching_ ? rev_request() : driver;
+      engine_throttle_ = lerp(driver, request, 1 - clutch_);
+      if (clutch_ >= 1) enter(GearState::kEngaged);
+      break;
     }
   }
 }
@@ -411,16 +467,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
   const double g_scale = off == kWheels ? p.airborne_gravity_scale : std::pow(p.per_tyre_off_gravity_scale, off);
   force.y -= p.mass * p.gravity * g_scale;
 
-  // 2. Tyres: forces at the current wheel speeds, with the longitudinal
-  // force's slope against wheel speed for a linearised-implicit spin update.
-  // In reverse the pedals swap once the car is no longer rolling forward,
-  // so a stop that selects reverse keeps its brakes to the end.
-  const bool reverse = gear_ == -1 && speed() < 0.5;
-  // No power from the clutch's release to its re-engagement in a shift
-  // ("power back", SPEC-CAR-PHYSICS Gears; ours: the throttle is cut).
-  const bool cut = phase_ == Phase::kShift || phase_ == Phase::kClutchOut;
-  const double drive_in = cut ? 0 : reverse ? shaped_.brake : shaped_.throttle;
-  const double brake_in = reverse ? shaped_.throttle : shaped_.brake;
+  // 2. Brakes with the ABS (SPEC-CAR-PHYSICS, ABS). In reverse the pedals
+  // swap: the throttle pedal brakes. The engine's throttle is the gearbox's
+  // (update_gearbox).
+  const double drive_in = engine_throttle_;
+  const double brake_in = gear_ == -1 ? shaped_.throttle : shaped_.brake;
   // BrakeInputScale, normalised so a full press is the measured torque.
   static constexpr double kBrakeIn[4] = {0, 0.001, 0.90, 1}, kBrakeOut[4] = {0, 0.12, 0.70, 0.81};
   double brake_frac = 0;
@@ -431,6 +482,42 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
   if (brake_in <= 0) brake_frac = 0;
   const double stick = std::fabs(shaped_.steer);
+  // A wheel whose smoothed normalised slip ratio (the mean of its last
+  // abs_smoothing substeps) passes the release point, blended by the
+  // steering input, gets no brake for DurationABS, then the full brake.
+  const double G = ratio(gear_);
+  double brake[kWheels]{};
+  bool slowing[kWheels]{};
+  const int hist_n = std::clamp(p.abs_smoothing, 1, 8);
+  for (int i = 0; i < kWheels; ++i) {
+    WheelState& w = w_[i];
+    const int a = axle_of(i);
+    double frac = brake_frac;
+    if (p.abs && frac > 0) {
+      if (abs_timer_[i] <= 0 && w.contact) {
+        double mean = 0;
+        for (int k = 0; k < hist_n; ++k) mean += slip_hist_[i][k];
+        mean /= hist_n;
+        const double release = a == 0 ? lerp(p.abs_front_no_steer, p.abs_front_full_steer, stick)
+                                      : lerp(p.abs_rear_no_steer, p.abs_rear_full_steer, stick);
+        if (mean < -release) abs_timer_[i] = p.abs_duration;
+      }
+      if (abs_timer_[i] > 0) {
+        frac = 0;
+        abs_flag_ = true;
+      }
+    }
+    if (abs_timer_[i] > 0) abs_timer_[i] -= dt;
+    w.brake = frac;
+    brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque);
+    if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
+    // The wheel's applied torque slows it: a brake, or the driveline's
+    // torque (last substep's) against its spin.
+    slowing[i] = brake[i] > 0 || tc_prev_ * G * weight_[i] * w.omega < 0;
+  }
+
+  // 3. Tyres: forces at the current wheel speeds, with the longitudinal
+  // force's slope against wheel speed for a linearised-implicit spin update.
 
   Vec3 fwd[kWheels]{}, lat[kWheels]{};
   double vx[kWheels]{}, vy[kWheels]{}, fx0[kWheels]{}, fy[kWheels]{}, slope[kWheels]{};
@@ -447,8 +534,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double s = std::max(std::sqrt(sx * sx + sy * sy), 1e-6);
     const double mu_x = p.longitudinal.value(s * sig_pk, kgf, stretch);
     const double mu_y = p.lateral.value(s * alpha_pk, kgf, stretch);
+    // Braking friction on a slowed wheel, else the speed-blended accel
+    // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
     double kx = grip[i] * p.long_scale[a] * p.long_misc_scale;
-    if (sx > 0) kx *= lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
+    kx *= slowing[i] ? p.brake_friction_scale
+                     : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
     double ky = grip[i] * p.lat_scale[a] * p.lateral_fit;
     if (a == 1)
       ky *= 1 + (p.rear_fix_scale - 1) * ramp(std::fabs(sy), p.fix_slip0, p.fix_slip1) *
@@ -477,48 +567,22 @@ void Vehicle::substep(double dt, const Ground& ground) {
     tyre(i, w.omega + d_omega, &fx1, nullptr, nullptr, nullptr);
     slope[i] = std::max(0.0, (fx1 - fx0[i]) / d_omega);
   }
-
-  // 3. Brakes with the ABS (SPEC-CAR-PHYSICS, ABS): a wheel whose
-  // normalised slip ratio passes the release point (blended by the steering
-  // input) gets no brake for DurationABS.
-  double brake[kWheels]{};
-  for (int i = 0; i < kWheels; ++i) {
-    WheelState& w = w_[i];
-    const int a = axle_of(i);
-    double frac = brake_frac;
-    if (p.abs && frac > 0) {
-      if (abs_timer_[i] <= 0 && w.contact && std::fabs(vx[i]) > p.abs_min_speed) {
-        const double release = a == 0 ? lerp(p.abs_front_no_steer, p.abs_front_full_steer, stick)
-                                      : lerp(p.abs_rear_no_steer, p.abs_rear_full_steer, stick);
-        if (w.slip_ratio < -release) abs_timer_[i] = p.abs_duration;
-      }
-      if (abs_timer_[i] > 0) {
-        frac = 0;
-        abs_flag_ = true;
-      }
-    }
-    if (abs_timer_[i] > 0) abs_timer_[i] -= dt;
-    w.brake = frac;
-    brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque);
-    if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
-  }
+  for (int i = 0; i < kWheels; ++i) slip_hist_[i][slip_pos_] = w_[i].slip_ratio;
+  slip_pos_ = (slip_pos_ + 1) % hist_n;
 
   // 4. Drivetrain: the engine, the clutch and the wheels. A locked clutch's
   // torque is solved so the engine and the diff-weighted wheel speed stay
   // together; past its capacity it slips at the capacity.
-  const double G = ratio(gear_);
-  const double cap = G != 0 ? p.clutch_max_torque * clutch_ : 0;
+  const double cap = G != 0 ? p.clutch_max_torque * p.clutch_torque_factor * clutch_ : 0;
   const double je = p.engine_inertia;
   const double te = engine_torque(rpm(), drive_in);
   const double reflected = G != 0 ? p.gearbox_inertia * G * G + p.driveline_inertia * p.final_drive * p.final_drive : 0;
-  double j_eff[kWheels]{}, resist[kWheels]{}, react[kWheels]{};
+  double j_eff[kWheels]{}, resist[kWheels]{};
   double num = te / je, den = 1 / je;
   for (int i = 0; i < kWheels; ++i) {
-    // The tyre's torque back on the wheel; braking it is scaled by
-    // brake_reaction_scale (an experiment, see CarParams).
-    react[i] = fx0[i] < 0 ? p.brake_reaction_scale : 1;
-    j_eff[i] = p.wheel_inertia + reflected * weight_[i] + dt * p.tyre_radius[i] * slope[i] * react[i];
-    resist[i] = p.tyre_radius[i] * fx0[i] * react[i] + (std::fabs(w_[i].omega) > 0.1 ? sign(w_[i].omega) * brake[i] : 0);
+    // The tyre's torque back on the wheel is F_x x r (SPEC-CAR-PHYSICS).
+    j_eff[i] = p.wheel_inertia + reflected * weight_[i] + dt * p.tyre_radius[i] * slope[i];
+    resist[i] = p.tyre_radius[i] * fx0[i] + (std::fabs(w_[i].omega) > 0.1 ? sign(w_[i].omega) * brake[i] : 0);
     num += G * weight_[i] * resist[i] / j_eff[i];
     den += G * G * weight_[i] * weight_[i] / j_eff[i];
   }
@@ -538,7 +602,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
   double omega_new[kWheels];
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
-    double o = w.omega + dt * (tc * G * weight_[i] - p.tyre_radius[i] * fx0[i] * react[i]) / j_eff[i];
+    double o = w.omega + dt * (tc * G * weight_[i] - p.tyre_radius[i] * fx0[i]) / j_eff[i];
     const double b = brake[i] * dt / j_eff[i];
     o = std::fabs(o) <= b ? 0 : o - sign(o) * b;
     if (!w.contact) o *= 1 - 0.5 * dt;  // bearing drag in the air
@@ -553,6 +617,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     omega_e = std::max(omega_e, engine_omega_ + dt * te / je);
   }
   locked_ = lock_now;
+  tc_prev_ = tc;
   engine_omega_ = std::max(0.0, omega_e);
 
   // 5. Forces on the body.
