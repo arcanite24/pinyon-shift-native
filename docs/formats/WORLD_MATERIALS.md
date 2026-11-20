@@ -68,7 +68,7 @@ its stored order, with these sizes and formats:
 | NORMAL | 4 | 2_10_10_10, signed normalised | one big-endian u32: x bits 0-9, y bits 10-19, z bits 20-29, each a two's-complement 10-bit value / 511; bits 30-31 unused |
 | TANGENT | 4 | 2_10_10_10, signed normalised | as NORMAL |
 | TEXCOORD n | 4 | 16_16, unsigned normalised | two big-endian u16, u first, then v; dequantise with the submesh's `uvOffsetScale` (below) |
-| COLOR | 4 | 8_8_8_8, unsigned normalised | four bytes, in memory order A, R, G, B (probable: the first byte is 255 on most vertices) |
+| COLOR | 4 | 8_8_8_8, unsigned normalised | four bytes, in memory order A, R, G, B; the shader's COLOR is (R, G, B, A) = (stored byte 1, byte 2, byte 3, byte 0) / 255 (see [Colour byte order](#colour-byte-order)) |
 
 Pick the declaration whose packed size equals the object's stride
 (effects also hold position-only shaders for depth and shadow passes,
@@ -116,6 +116,36 @@ metadata; [the shader corpus tool](../../tools/extract-fh1-shader-corpus.py)
 documents that layout. An engine that does not want to read `.fxobj`
 files can use the stride table plus the exceptions above, keyed by
 effect name.
+
+### Colour byte order
+
+Engine question Q38, settled 2026-11-20 (confirmed for the frame). A
+colour element's four stored bytes are A, R, G, B, and every world
+shader sees them as COLOR = (R, G, B, A), that is COLOR.x is the
+**second** stored byte and COLOR.w the **first**:
+
+- The console reads an 8_8_8_8 element as one 32-bit word with the
+  byte swap of its fetch constant; all 1,773 8_8_8_8 vertex fetches of the frame
+  use the 8-in-32 swap, so the element's x is the last stored byte, y
+  the third, z the second and w the first.
+- All 493 colour fetches among the 1,367 tied world draws (every `H_VBLND`,
+  `H_BLND*` and `H_ROAD` family the frame drew) put the fetched
+  components into the shader register in the order z, y, x, w, which
+  makes the register (byte 1, byte 2, byte 3, byte 0).
+- The data agree: on the frame's `H_VBLND` submeshes byte 0 stays
+  between 152 and 255 (5 distinct values), while byte 1, the terrain
+  layer weight, spans 0 to 255.
+
+Which component a family uses:
+
+| Family | Uses | Stored byte |
+| --- | --- | --- |
+| `H_VBLND` (not `DECAL`) | layer weight from COLOR.x | 1 (R) |
+| `H_VBLND_DECAL_*` | opacity from COLOR.w; its RGB is multiplied by a constant that is 0 in the frame | 0 (A) |
+
+So an engine that found the decals right only with the first stored
+byte was right about the byte; the recipe below now names it as
+COLOR.w.
 
 ### UV dequantisation: `uvOffsetScale`
 
@@ -479,9 +509,15 @@ is not known and any reasonable choice will do for now.
    engine without multisampling can alpha-test at 0.5 the draws whose
    slot-0 texture has alpha (DXT3, DXT5, or DXT1 with transparent
    texels), and draw the rest opaque (engine's choice). The
-   `H_VBLND_DECAL*` alpha is the diffuse alpha times a vertex-colour
-   fade, saturate((COLOR.x − 0.5) × c4.x + 0.5), by our reading of the
-   shader (probable). `H_ROAD_*_BLEND_*` samples `Blend_A` without its
+   `H_VBLND_DECAL*` alpha is the diffuse (`Blend_A`) alpha times a
+   vertex-colour fade broken up by noise:
+   saturate(0.5 + c4.x × (COLOR.w − 0.5) − c4.y × (N − 0.5)), where
+   COLOR.w is the first stored colour byte
+   ([Colour byte order](#colour-byte-order)), N is the alpha of
+   `Noise_Sampler` (slot 2) at TEXCOORD0 × c1.zw, and c4 is the
+   material's pixel vec4 4 (3.5 and 8 on the frame's decal), by our
+   reading of the shader (probable). On the frame's decal vertices the
+   first byte runs from 178 to 255, so the fade is soft at the edges. `H_ROAD_*_BLEND_*` samples `Blend_A` without its
    alpha and has no c4: its alpha comes from interpolated vertex data
    (the vertex colour's alpha is the likely source; form not settled).
    `ADD_DIFF_OPAC_RGBA` (not drawn in this frame, so its blend state was
@@ -550,9 +586,8 @@ lightmap coordinate:
 | `H_BLND2*`, `H_BLND3*` (near terrain) | `Blend_A` at TEXCOORD0 × c0.xy, `Blend_B` at TEXCOORD0 × c0.zw, `Blend_C` at TEXCOORD0 × c1.xy, `Splat` at TEXCOORD1 × c1.zw | lerp(A, B, Splat.R), then `Blend_C` over that with a weight that involves `Blend_C`'s alpha (form not settled) |
 | `H_BLND1_SPEC` (`UberLOD`) | `Blend_A` at TEXCOORD0 × c0.xy (c0.xy is 1: an atlas laid out for the patch) | one layer |
 
-(COLOR.x is the first component the shader reads from the colour
-element; which stored byte that is follows the colour byte order, which
-is itself probable.) The middle-distance textures are aerial forest
+(COLOR.x is the second stored colour byte, R: see
+[Colour byte order](#colour-byte-order).) The middle-distance textures are aerial forest
 photographs: `Blend_A` `_0x000036A0` (256², luma median 18 of 255) and
 `Blend_B` `_0x000036A1` (512², median 28) on most `MIDDIST` materials,
 with tilings 0.3 to 0.5. **The distant tree cover is in these textures**:
@@ -613,27 +648,109 @@ Two systems, both found in the frame:
 - **Near trees** are render models with `TREE_DIFF_OPAC_*` and
   `DIFF_TREEBEND_*` effects, placed through the kind-7 `.pgeo` tiles
   (WORLD_GEOMETRY), drawn with alpha to coverage (above).
-- **Mid and far trees and grass are billboards.** The frame has 3 × 167
+- **Mid and far trees are billboards.** The frame has 3 × 167
   non-indexed quad-list draws (one set per main-pass band, 10,610 quads
-  per set, plus grass sets), drawn with a rigid instance matrix and
-  sampling a 2 × 2 sprite atlas: `_0x00005013` (512² DXT5, four whole
-  trees: two autumn, one yellow, one conifer; 55 % of texels
-  transparent) for trees, `_0x00005007` (256² DXT5) for grass. These
-  textures are records 19,580 to 19,613, at the end of the record table
-  and in no model's texture list. The quads' per-draw data is the
-  trailing block of 40-byte packed records of a kind-7 `.pgeo` tile:
-  the 1,320 bytes the first sampled draw reads (33 quads) are the
-  first 1,320 bytes of the trailing block of `__R00G07021.pgeo` (its
-  size is the header word at +0x50; confirmed for that draw). The
-  vertex shader fetches with a 40-byte stride, so one record feeds the
-  four corners of one quad (probable). Its fetches, by offset: 0, 4,
-  16 and 20 in the console's format 16 (10_11_11 in the published
-  vertex format list), 12 as 2_10_10_10 signed, 24 as four half floats,
-  32 and 36 as 8_8_8_8; the fields' meaning (position, size, atlas
-  cell, tint) is not decoded. A second stream (2,736 bytes per draw,
-  fetch constant 90) is not identified. Their render state was not read
-  reliably; cut the sprites out by their alpha (55 % of the tree
-  atlas is transparent).
+  per set), plus grass and other vegetation sets drawn with related
+  shaders. Each tree quad is one 40-byte record of a kind-7 `.pgeo`
+  tile, read with a 40-byte stride, and its texture is a sprite atlas
+  named by the tile. The atlases are texture records at the end of the
+  record table, in no model's texture list. See
+  [Tree billboards](#tree-billboards-engine-question-q38) for the
+  record, the quad and the atlas choice.
+
+#### Tree billboards (engine question Q38)
+
+Answered 2026-11-20 from the frame dump (the draws' vertex fetches and
+constants, the tree vertex shader run on sampled quads) and the
+player's files. Confidence: confirmed for the position, frame,
+batching and atlas choice (checks below); probable for the corner and
+fade rules (read from the shader and checked on sampled quads).
+
+**Frame and matrix.** There is no per-instance matrix. A tree draw's
+matrix is the scene's clip-from-world matrix with the tile's origin
+folded in: a point given in the tile's own frame, which is the game
+frame (z = − file z) shifted so that the tile's box minimum (header
++0x10) is the origin, maps to clip space exactly as the world point
+(minimum + point, then z negated) does under the scene matrix (checked
+to 0.0002 on four points). The draw also gets the camera in that tile
+frame and the tile box's size (header +0x20 minus +0x10).
+
+**The record** (big-endian words; field offsets in bytes):
+
+| Offset | Format | Meaning |
+| --- | --- | --- |
+| +0 | 10_11_11, unsigned normalised | base point: bits 0-10 / 2047 × box size x is X, bits 11-21 / 2047 × box size z is Z, bits 22-31 / 1023 × box size y is the height Y, in the tile frame. The two 11-bit fields are the horizontal axes and the 10-bit field the height, so the stored order is X, Z, Y, not X, Y, Z |
+| +4 | 10_11_11, signed normalised | the trunk axis U: two's-complement fields of 11, 11 and 10 bits over 1023, 1023 and 511, in the order x, y, z (y up; unlike the position, not swapped); about (0, 1, 0) with a few degrees of lean |
+| +8 | — | not read by the tree shader (the other vegetation shaders read it as a second signed vector) |
+| +12 | 2_10_10_10, signed normalised | normal for the sprite's lighting, laid out as NORMAL |
+| +16 | 10_11_11, unsigned normalised | bits 11-21 / 2047 is u1, bits 22-31 / 1023 is v1 (bottom edge); bits 0-10 are not read by the tree shader |
+| +20 | 10_11_11, unsigned normalised | bits 0-10 / 2047 is u0, bits 11-21 / 2047 is v0 (top edge); bits 22-31 are 0 |
+| +24 | four half floats, in stored order | half width w, height h (metres), near and far distance (metres) |
+| +32 | 8_8_8_8, stored A, R, G, B | tint: 2 × (R, G, B) / 255 when A is above 127 (A is 255 in 370,664 of 401,498 records); otherwise the same times a per-frame colour (white in the frame) |
+| +36 | 8_8_8_8, stored A, R, G, B | an extra light colour, squared and scaled by a per-frame factor (0 in the frame); zero in 400,771 records |
+
+Decoded this way, all 361 records of `__R00G07021.pgeo` sit on the
+frame's terrain mesh (the render models the depth check used): the
+base point is 0.08 m below the ground at the median, and every record
+is within 1 m (5th to 95th percentile −0.18 to +0.04 m). Over the five
+kind-7 tiles inside the camera's 1 km sector, 1,298 of 1,298 records
+are within 1 m. Quantisation is about 0.15 m across and 0.14 m in
+height for a tile of this size. The engine's earlier test failed
+because it read the third field as Z instead of the height.
+
+**The quad.** Record k feeds vertices 4k to 4k + 3. With B the base
+point, U the trunk axis, d the distance from the camera to B, and R the
+unit vector at right angles to U and to the direction to the camera,
+pointing to the viewer's right:
+
+| Corner | Position | UV |
+| --- | --- | --- |
+| 0 | B − w R | (u0, v1) |
+| 1 | B + w R | (u1, v1) |
+| 2 | B + w R + h U | (u1, v0) |
+| 3 | B − w R + h U | (u0, v0) |
+
+That is bottom left, bottom right, top right, top left on screen
+(checked by projecting six sampled quads in front of the camera with
+the reference matrix). The quad is drawn when near − 100 < d ≤ far
+and collapses to a point otherwise (100 m is a per-frame constant of
+the draw; the switch is sharp, with no scaling in between). The pixel
+shader multiplies the atlas colour by the tint and a per-vertex light
+(a sky-to-ground gradient up the quad plus sun on the record's
+normal; not decoded in detail), applies the fog and writes the square
+root like the terrain; its alpha is the atlas alpha. Cut the sprites
+out by that alpha (the draws' render state was not read).
+
+**Batches and generated records.** A tile's groups (WORLD_GEOMETRY,
+`.pgeo` tiles) hold its records in group order. Consecutive groups
+that share the reference key and three other group words are one
+draw. The draw's buffer holds those groups' file records, then one
+record per placed model instance in the same groups, built at run time.
+So the trees drawn as models up close also become sprites further
+away. A generated record holds the instance's translation, quantised
+the same way. Its near distance is the group's first distance (the
+point where the model stops), and its far distance and sprite are the
+group's. Checked: the buffer size is (records + instances) × 40 for
+519 of 519 main-pass tree draws whose first record is in a tile, and
+3,906 of 3,912 generated records lie within 0.15 m of one of their
+batch's instances. Thirty draws start with a generated record and were
+not tied.
+
+**The atlas.** The group's reference key indexes the tile's reference
+list (WORLD_GEOMETRY header +0x40), whose values are texture record
+indices. The record's ID names the file `_0x<ID>`. For all 519 tied
+draws the bound texture is the one this chain names; the frame binds
+`_0x00005010` to `_0x00005013` and `_0x00005015`. The cell is not a
+fixed grid: the group record holds its rectangle (u0, u1, v1, v0) and
+the sprite's width and height. Every one of the 401,498 records over
+the 1,582 kind-7 tiles that have any carries that rectangle, with u0
+and u1 swapped in 204,899 of them (mirrored sprites). In most records,
+w and h are the group's width / 2 and height times one per-tree scale.
+No kind-7 reference names record 19,580 (`_0x00005007`, the grass
+atlas). The grass and the other vegetation quads (four further shaders
+with the same 40-byte stride) take their records from somewhere other
+than any `.pgeo` file; their source is open. The second stream (2,736
+bytes, fetch constant 90) is not read by the tree shader.
 
 ### Sky
 
@@ -735,8 +852,10 @@ Corpus counts come from `census` over the extracted members.
 6. Whether `Light_Map` is night lighting (a night dump would settle
    it; by day the terrain shaders switch it off).
 7. A HUD-free reference image.
-8. The billboard record (40 bytes per quad in kind-7 `.pgeo` tiles):
-   position, size, atlas cell, and which tiles draw at which distance.
+8. The tree billboards (answered for kind-7 tiles, see
+   [Tree billboards](#tree-billboards-engine-question-q38)): where the
+   grass and other vegetation quads' records come from, the sprites'
+   lighting in detail, and their render state.
 9. Which `MIDDIST` level and `UberLOD` patch the game draws for a
    camera (WORLD_GEOMETRY open question 3).
 10. The sky: the draw that paints it and its parameters

@@ -272,7 +272,7 @@ Kind-7 header fields (offsets from the start):
 | +0x40 | number of 8-byte references (u32 value, u32 flag) | probable |
 | +0x44 | number of 8-byte string records | probable |
 | +0x48 | total size | confirmed (equals the file size) |
-| +0x50 | size of the trailing block of 40-byte packed records; in the free-roam frame these are the tree billboards' per-quad records (WORLD_MATERIALS.md, Trees) | confirmed (the parse ends on it); probable (billboards) |
+| +0x50 | size of the trailing block of 40-byte tree billboard records, one per sprite, in group order ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#tree-billboards-engine-question-q38)) | confirmed |
 | +0x54 | number of model records | confirmed |
 
 Then, 16-byte aligned, 0x40-byte **model records**: a box (minimum, pad,
@@ -290,10 +290,17 @@ rather than count on from list 0.
 
 Then the **class part**: a small header whose group count is at +0xC,
 and 0x5C-byte **group records** from +0x14. A group names a reference (the
-key at +0x00), a model record (+0x2C), its instance count (+0x30), counts
-of 40-byte and 32-byte records (+0x34, +0x38) and four distances (+0x3C,
-presumably LOD switch distances). Each group's instances follow,
-16-byte aligned, then its 32-byte records.
+key at +0x00, an index into the tile's reference list), a model record
+(+0x2C), its instance count (+0x30), counts of 40-byte and 32-byte
+records (+0x34, +0x38) and four distances (+0x3C; the first is where a
+placed model gives way to its billboard). For the tree billboards it also
+holds the sprite's atlas rectangle as four f32 at +0x08 (u0, u1, v1, v0)
+and the sprite's width and height in metres at +0x18 and +0x1C; the
+reference list entry is the atlas's texture record. Consecutive groups
+with equal words at +0x00, +0x04, +0x24 and +0x4C share one billboard
+draw ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#tree-billboards-engine-question-q38)).
+Each group's instances follow, 16-byte aligned, then its 32-byte
+records.
 
 A 96-byte **instance** is three rows of three f32 (each padded to 16
 bytes), each row the image of one local axis in the game frame with the
@@ -457,7 +464,9 @@ per-model lists; see
   about 0x199000) are not instances. They are not clusters either, as
   first thought: each is one render model's list of effects and texture
   records ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#from-a-texture-slot-to-a-file)).
-- The 40-byte `.pgeo` records are packed bitfields, not positions.
+- The 40-byte `.pgeo` records are not unsigned fractions of the tile box
+  in X, Y, Z order. They are packed fields whose first word is a
+  position stored X, Z, Y ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#tree-billboards-engine-question-q38)).
 - The file-open log of the free-roam route showed only `colorado_00.pvs`
   and `bin.zip` opened for the track during the logged span (the
   `Ribbon_00` XML is presumably read earlier or through another path; not
