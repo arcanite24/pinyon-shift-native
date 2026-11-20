@@ -134,7 +134,7 @@ for 15.6 × 9.8, in 100 N).
 | Closed-throttle torque | `List_TorqueCurve.ZeroThrottleTorqueScale` | N·m of engine braking, probable |
 | Rev limit | `List_UpgradeEngineCamshaft.RedlineRPM` | rpm. The traced limiter (the clamp of engine speed) sits about 1.0 × the redline column; the dashboard's shift light at 0.9 × |
 | Idle and stall | `List_UpgradeEngineCamshaft.StallRPM` | rpm; the traced idle sits 0 to 100 rpm below the column |
-| Engine inertia | `Data_Engine.MomentInertia` + `List_UpgradeEngineFlywheel.MomentInertia` | kg·m² |
+| Engine inertia | `Data_Engine.MomentInertia` + `List_UpgradeEngineFlywheel.MomentInertia` | kg·m²; the oracle behaves as 0.71 × this sum (see "Engine inertia and free rev" below) |
 | Boost | stock `List_UpgradeEngineTurboSingle`/`Twin` (`MinScale`, `MaxScale`, `PowerMinScale`, `PowerMaxScale`, `RobScale`, `TorqueDropOff*`) or `List_UpgradeEngineDSC`/`CSC` (`ZeroRPMScale`, `RedlineRPMScale`) | multipliers on the curve; see the torque chain below |
 | Wheel share | `Data_Car.GameTorqueScale` | multiplier |
 
@@ -153,6 +153,37 @@ the split between boost and `GameTorqueScale` is open. The torque reaches
 the axles through gear × final drive, and an all-wheel-drive car splits it
 by `RearToqueSplit`.
 
+**Engine inertia and free rev (measured fit).** With the clutch fully
+open (standing start, gear change, rev-match) the engine's angular
+acceleration is `TorqueScale` × load / J with **J = 0.145** on the R34:
+the median of every open-clutch step with positive load is 0.1445 to
+0.1461 in four runs, flat from 1,600 to 4,900 rpm and the same in the
+start, gear-change and rev-match states. That is about 19,000 rpm/s per
+unit of load. Here load is the engine's own load value, which with the
+throttle held at 1 from rest reads 0.30 × curve(rpm) at 0.1 s, 0.58 at
+0.2 s, 0.62 at 0.3 s, 0.68 at 0.4 s and 0.83 at 0.5 s (boost building,
+probable); an engine that applies the full curve at once revs too fast.
+On closed-throttle steps (negative load) the same J gives an engine
+braking torque of 93.8 N·m × |load|, which is 0.71 ×
+`ZeroThrottleTorqueScale` (132.8). The engine alone (0.0957) is far
+below 0.145, so the flywheel counts with the clutch open; the measured
+J is 0.71 × (engine + flywheel), and the same 0.71 appears on the
+closed-throttle torque and (as 0.72) on the clutch capacity. So the
+oracle's engine is equivalent to the rows' inertia and torques with
+every engine-side torque scaled by 0.71, or the drive torques as above
+with J = 0.145; the source of the factor is not decoded. In gear the
+torque chain above is unchanged (k = 1.00), because there the engine's
+inertia term is small.
+
+**All-wheel drive.** The clutch output speed is the axle speeds
+weighted by the split: (1 − `RearToqueSplit`) × front + `RearToqueSplit`
+× rear, each axle the mean of its wheels × gear × final drive
+(0.3 front, 0.7 rear on the R34, matching to about 1 rpm in the
+clutch-open steps of a stop). So the centre differential behaves as an
+open planetary that gives the rear 70 % of the driveline torque under
+drive and under braking alike. The R34's `…LimitedSlipTorqueDecel`
+columns (centre, front and rear) are 0: no locking under braking.
+
 ### Drivetrain
 
 | Quantity | Table and column | Unit and rule |
@@ -169,10 +200,11 @@ by `RearToqueSplit`.
 ### Clutch and gearbox states
 
 The clutch value c runs from 1 (open) to 0 (locked). The transmitted
-torque was measured at five points of the R34's launch as
-(1 − c) × `ClutchMaxTorque` × about 0.78, within 1 to 4 %; 0.78 matches
-the car's `GameTorqueScale` (0.775), but one car cannot tell whether
-that is the factor (measured fit). The gearbox is a small state machine,
+torque, fitted over the whole launch state of the accel run together
+with the engine inertia (see "Engine inertia and free rev"), is
+(1 − c) × `ClutchMaxTorque` × 0.72, with J = 0.145 and the engine
+torque `TorqueScale` × load (rms 10 N·m over 63 steps; measured fit).
+An earlier fit gave 0.78 because it used J = 0.2035. The gearbox is a small state machine,
 and each state sets how c moves:
 
 | State | What it does | Clutch rate |
@@ -644,6 +676,47 @@ until the stop (see ABS). The gearbox drops to first and then reverse on the way
 | ABS braking, press to reverse selection | 1.355 s, 81.7 → 22.8 km/h, 12.06 m/s² | 1.313 s, 79.4 → 23.0 km/h, 11.92 m/s² |
 | Reverse: coast, then reverse launch to the stop | 1.29 s, about 4.9 m/s² | 1.26 s, about 5.1 m/s² |
 
+The first 0.2 s of the press, front left wheel of run B1 (forces in N,
+normal load from the wheel block; the front right is within 5 %):
+
+| t (s) | Brake torque value | Normalised slip | F_x | Load | F_x / load |
+| --- | --- | --- | --- | --- | --- |
+| 0.000 | 0 | 0.06 | +1,050 | 2,500 | (driven) |
+| 0.019 | 1.66 | −0.23 | −3,400 | 2,600 | 1.30 |
+| 0.034 | 2.55 | −0.63 | −5,150 | 2,900 | 1.78 |
+| 0.053 | 3.70 | −1.50 | −6,070 | 3,400 | 1.79 |
+| 0.070 | 3.69 | −2.37 | −7,200 | 4,200 | 1.73 |
+| 0.085 | 3.69 | −3.20 | −7,200 | 4,300 | 1.68 (released next step) |
+| 0.106 | 0 | −1.51 | −8,080 | 4,600 | 1.76 |
+| 0.165 | 3.69 | −1.17 | −8,480 | 4,800 | 1.77 |
+
+So the front tyre's braking F_x / load peaks at about 1.8 (the 1.805
+scale included) near a normalised slip of −1 and falls slowly past it.
+Its torque on the wheel, 7,200 N × 0.322 m ≈ 2,300 N·m, is well below
+the brake torque (about 3,500 to 3,700 N·m by the wheel balance), so the
+front locks to the release point within 0.085 s of the press, through the
+brake ramp. An engine whose fronts hold at −0.3 to −0.6 under 3,900 N·m
+is making about 12,000 N, about 2.7 × the load: its braking F_x is
+about 1.5 × the oracle's. The rears in the same stop carry only 1,300 to
+2,600 N each (the weight moves forward) and make F_x / load of about
+1.8 too, −2,300 to −4,700 N.
+
+**The rears and the driveline.** With the clutch locked (the first
+0.17 s, and again after the downshift) the engine sits on the centre
+differential and the rears take 70 % of its torque (see "All-wheel
+drive"). As the fronts lock, the engine is pulled down from 5,660 to
+4,240 rpm in 0.085 s, and its inertia (0.145 × (gear × final drive)²,
+10 kg·m² at the wheels in second) plus the still-positive engine torque
+(the throttle ramps down) feed roughly 1,400 N·m to the rear axle (an estimate from the trace), about
+the rears' own brake torque: the rears stay within 3 % of the ground
+speed until 0.085 s and first reach their release point at 0.25 s,
+during the clutch-in of the downshift. In the clutch-open gear change
+they are free wheels, and their slip cycles between −0.7 and −2.7 with
+long braked stretches, because their small load leaves the tyre torque
+(900 to 1,250 N·m) not far below the brake torque (about 1,500 to
+1,750 N·m). So driveline torque is part of the rears' ABS behaviour,
+and the split is the same as under drive.
+
 The 8.57 m/s² mean depends on both: an engine that keeps braking to the
 stop with the ABS alone will be quicker than the oracle, so it needs the
 reverse selection with the pedal swap. The engine runs the same inputs and compares the stop from
@@ -712,7 +785,7 @@ with the clutch locked and no throttle, the engine idling down from
 | --- | --- | --- |
 | Lateral tyre value | over-predicted 7 to 11 %; a measured factor stands in | trace the lateral path at higher slip angles; the steer route at speed |
 | Brake torque | front measured at full press (3,500 to 4,000 N·m a wheel), rear 0.41 × front on one car; the formula and bias rule not decoded | a light brake press in a route; a car with other brake columns |
-| Clutch capacity factor | (1 − c) × `ClutchMaxTorque` × 0.78 measured on one car | the same fit on a car with another `GameTorqueScale` |
+| Engine inertia and the common 0.71 factor | free-rev J = 0.145 = 0.71 × (engine + flywheel); closed-throttle torque 0.71 × `ZeroThrottleTorqueScale`; clutch 0.72 × `ClutchMaxTorque`, all on one car | the same three fits on a car with other engine, flywheel and clutch rows |
 | Drag and rolling resistance | noisy fit, unit of the drag column open | a coasting route in neutral |
 | Boost and `GameTorqueScale` | net 1.00 on one car | the same fit on a naturally aspirated car and a supercharged one |
 | Differentials | limited-slip columns named only | a cornering trace under power |
