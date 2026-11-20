@@ -1016,6 +1016,8 @@ int run_drive(int argc, char** argv) {
   {
     Renderer renderer;
     Showroom showroom(renderer);
+    // SHIFT_NO_CULL=1: every world draw, for comparison with the culled frame.
+    if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options;
     if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, validation, msaa}, error) ||
         !showroom.upload(error)) {
@@ -1350,6 +1352,8 @@ int run_drive(int argc, char** argv) {
         // driver's).
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
         std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms, pose_ms;
+        // The world's draws per frame: recorded, culled, indices drawn.
+        double draws_sum = 0, culled_sum = 0, indices_sum = 0;
         std::vector<std::string> stage_names;
         std::vector<std::vector<double>> stage_ms;  // per stage, per frame
         double sim = 0;
@@ -1380,6 +1384,10 @@ int run_drive(int argc, char** argv) {
           sim_ms.push_back(sim);
           pose_ms.push_back(pose);
           record_ms.push_back(rec);
+          {
+            const auto ws = showroom.world_draw_stats();
+            draws_sum += double(ws.drawn), culled_sum += double(ws.culled), indices_sum += double(ws.indices);
+          }
           for (const auto& [name, ms] : renderer.stage_ms()) {
             size_t k = 0;
             while (k < stage_names.size() && stage_names[k] != name) ++k;
@@ -1431,6 +1439,10 @@ int run_drive(int argc, char** argv) {
             std::printf(" %s %.2f;", stage_names[k].c_str(), pct(stage_ms[k], 0.5));
           std::printf("\n");
         }
+        if (n)
+          std::printf("bench: world draws per frame %.0f drawn, %.0f culled, %.0fk of %.0fk triangles drawn\n",
+                      draws_sum / double(n), culled_sum / double(n), indices_sum / double(n) / 3000.0,
+                      double(showroom.world_triangle_count()) / 1000.0);
         std::printf("bench: process CPU %.2f s over %.2f s wall: %.2f ms per frame, %.0f%% of one core\n", cpu, wall,
                     n ? cpu * 1000 / double(n) : 0.0, wall > 0 ? cpu / wall * 100 : 0.0);
       } else if (headless) {

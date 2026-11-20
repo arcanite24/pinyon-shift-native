@@ -457,6 +457,25 @@ foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
 props, far ring or trees: 10.3 to 10.7 ms; flat colours: 10.2 ms), so
 the cost is per vertex or per draw rather than per pixel.
 
+Frustum culling and vertex reuse (the world's draws split by material
+and 256 m ground cell, 1,536 m for the far ring; each draw's box tested
+against the view's side planes; corners with equal attributes share a
+vertex). Per frame about 680 of 2,420 draws and 235k of 675k triangles
+are drawn, and the frames match the unculled ones pixel for pixel.
+Interleaved runs, GPU p50 ms:
+
+| Machine | Before | After | No sharing | 128 / 768 m cells | No culling (5,564 draws) |
+| --- | --- | --- | --- | --- | --- |
+| multivac, RTX 4080 | 0.38-0.39 | 0.22 | 0.24 | 0.25 | 0.26 |
+| blindvac, UHD 620 | 9.9-10.6 | 10.3-10.4 | 10.2 | 10.3 | 13.2 |
+
+The UHD 620 does not improve: with 2.6x fewer triangles its world stages
+lose about 1 ms, and the sky and the car (unchanged draws) gain about as
+much. The frame there has a floor near 10 ms that follows neither the
+pixels nor the vertices; only the draw count shows (5,564 draws: +3 ms).
+Recording costs 0.10 ms on the 5800X (0.07 before) and 0.21 ms on the
+i5-8250U (0.16). The vertex hashing runs on the gather worker.
+
 The frame CPU's maximum was the scenery hand-over on a regather (blindvac
 low: max 26-31 ms, p99 2.25 ms). The streaming worker now also makes the
 new textures' images and views and the road follower's points; the old

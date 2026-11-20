@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <regex>
+#include <unordered_map>
 #include <set>
 
 #include "mask_frag_spv.h"
@@ -1423,28 +1425,88 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
                    [&](uint32_t a, uint32_t b) { return world.materials[a].blend < world.materials[b].blend; });
   out.textured_vertices.reserve(n * 3);
   out.indices.reserve(n * 3);
+  // Each material's triangles split by ground cell (by the triangle's
+  // first corner), so a draw has a box the view can cull: near scenery in
+  // near_cell squares, the far ring in far_cell ones (ours, a balance of
+  // draws against culled area: 128 / 768 m cut 4,100 draws but recorded
+  // 1,400, which cost the UHD 620 more than the triangles saved;
+  // SHIFT_WORLD_CELL="near far" overrides).
+  float near_cell = 256, far_cell = 1536;
+  if (const char* e = std::getenv("SHIFT_WORLD_CELL")) std::sscanf(e, "%f %f", &near_cell, &far_cell);
+  near_cell = std::max(near_cell, 1.0f), far_cell = std::max(far_cell, 1.0f);
+  // Within a draw, corners with the same attributes share one vertex, so
+  // the post-transform cache can reuse it (SHIFT_WORLD_SHARE=0: one per
+  // corner, for comparison).
+  struct VertexKey {
+    WorldVertex v;
+    bool operator==(const VertexKey& o) const { return std::memcmp(&v, &o.v, sizeof v) == 0; }
+  };
+  struct VertexHash {
+    size_t operator()(const VertexKey& k) const {
+      const auto* p = reinterpret_cast<const unsigned char*>(&k.v);
+      uint64_t h = 1469598103934665603ull;
+      for (size_t i = 0; i < sizeof k.v; ++i) h = (h ^ p[i]) * 1099511628211ull;
+      return size_t(h);
+    }
+  };
+  std::unordered_map<VertexKey, uint32_t, VertexHash> shared;
+  const char* share_env = std::getenv("SHIFT_WORLD_SHARE");
+  const bool share = !(share_env && *share_env == '0');
+  std::vector<std::pair<int64_t, uint32_t>> cells;  // (cell, triangle), sorted by cell
   for (uint32_t m : order) {
     if (by_material[m].empty()) continue;
     const auto& mat = world.materials[m];
-    WorldGeometry::Draw d;
-    d.first_index = uint32_t(out.indices.size());
+    const bool billboard = mat.layers == 4;
+    const float cell = mat.far ? far_cell : near_cell;
+    cells.clear();
+    for (uint32_t t : by_material[m]) {
+      const auto& p = world.positions[size_t(t) * 3];
+      const int64_t cx = int64_t(std::floor(p[0] / cell)), cz = int64_t(std::floor(p[2] / cell));
+      cells.emplace_back(((cx + (int64_t(1) << 20)) << 21) | (cz + (int64_t(1) << 20)), t);
+    }
+    std::stable_sort(cells.begin(), cells.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     // The flat colour of an untextured material: its triangles' surface class.
     std::array<float, 3> tint{0.3f, 0.3f, 0.3f};
     const uint8_t g = world.group[by_material[m][0]];
     if (g < world.colours.size()) tint = world.colours[g];
-    for (uint32_t t : by_material[m]) {
+    for (size_t first = 0; first < cells.size();) {
+    size_t last = first;
+    while (last < cells.size() && cells[last].first == cells[first].first) ++last;
+    WorldGeometry::Draw d;
+    d.first_index = uint32_t(out.indices.size());
+    d.cull = true;
+    for (int i = 0; i < 3; ++i) d.box_min[i] = 1e30f, d.box_max[i] = -1e30f;
+    float reach = 0;
+    shared.clear();
+    for (size_t j = first; j < last; ++j) {
+      const uint32_t t = cells[j].second;
       for (int k = 0; k < 3; ++k) {
         const size_t c = size_t(t) * 3 + size_t(k);
-        WorldVertex v{};
+        VertexKey key{};
+        WorldVertex& v = key.v;
         for (int i = 0; i < 3; ++i) v.position[i] = world.positions[c][size_t(i)];
         for (int i = 0; i < 3; ++i) v.normal[i] = snorm8(world.normals[c][size_t(i)]);
         for (int i = 0; i < 2; ++i) v.uv0[i] = world.uv0[c][size_t(i)], v.uv1[i] = world.uv1[c][size_t(i)];
         for (int i = 0; i < 4; ++i) v.colour[i] = world.vertex_colours[c][size_t(i)];
-        out.indices.push_back(uint32_t(out.textured_vertices.size()));
-        out.textured_vertices.push_back(v);
+        for (int i = 0; i < 3; ++i) {
+          d.box_min[i] = std::min(d.box_min[i], v.position[i]);
+          d.box_max[i] = std::max(d.box_max[i], v.position[i]);
+        }
+        // A tree sprite's corner sits up to |uv1.x| + |uv1.y| from its base.
+        if (billboard) reach = std::max(reach, std::fabs(v.uv1[0]) + std::fabs(v.uv1[1]));
+        if (!share) {
+          out.indices.push_back(uint32_t(out.textured_vertices.size()));
+          out.textured_vertices.push_back(v);
+          continue;
+        }
+        const auto [it, added] = shared.try_emplace(key, uint32_t(out.textured_vertices.size()));
+        if (added) out.textured_vertices.push_back(v);
+        out.indices.push_back(it->second);
       }
       ++out.triangles;
     }
+    for (int i = 0; i < 3; ++i) d.box_min[i] -= reach, d.box_max[i] += reach;
+    first = last;
     d.index_count = uint32_t(out.indices.size()) - d.first_index;
     d.texture = mat.texture;
     d.blend = mat.blend;
@@ -1476,6 +1538,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     // frame's (ours).
     d.push.params[3] = (flags & 4) ? 2.5f : 1.0f;
     out.draws.push_back(d);
+    }
   }
   return out;
 }
@@ -1978,7 +2041,40 @@ void Showroom::record_world(VkCommandBuffer cmd) {
     // The benchmark's split (Renderer::mark): the sky, then each blend group.
     static const char* const kGroup[] = {"world opaque", "world cut-outs", "world blended"};
     int group = -1;
+    // The view's side planes in the scenery's frame (clip = view_projection
+    // x the scenery's transform, column-major): w + x, w - x, w + y, w - y.
+    // A box wholly outside one of them is not drawn. The near and far
+    // planes are left out (the far ring's depth push).
+    float clip[16];
+    for (int c = 0; c < 4; ++c)
+      for (int r = 0; r < 4; ++r) {
+        float s = 0;
+        for (int k = 0; k < 4; ++k) s += frame_.view_projection[k * 4 + r] * world_transform_[c * 4 + k];
+        clip[c * 4 + r] = s;
+      }
+    float planes[4][4];
+    for (int c = 0; c < 4; ++c) {
+      const float x = clip[c * 4 + 0], y = clip[c * 4 + 1], w = clip[c * 4 + 3];
+      planes[0][c] = w + x, planes[1][c] = w - x, planes[2][c] = w + y, planes[3][c] = w - y;
+    }
+    auto outside = [&](const WorldGeometry::Draw& d) {
+      for (const auto& p : planes) {
+        // The box's corner furthest along the plane's normal.
+        const float x = p[0] >= 0 ? d.box_max[0] : d.box_min[0];
+        const float y = p[1] >= 0 ? d.box_max[1] : d.box_min[1];
+        const float z = p[2] >= 0 ? d.box_max[2] : d.box_min[2];
+        if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
+      }
+      return false;
+    };
+    world_stats_ = {};
     for (const auto& d : world_draws_) {
+      if (d.cull && world_cull_ && outside(d)) {
+        ++world_stats_.culled;
+        continue;
+      }
+      ++world_stats_.drawn;
+      world_stats_.indices += d.index_count;
       const bool sky = uint32_t(d.push.params[1] + 0.5f) == 2;
       if (group < 0 && !sky) {
         r_.mark(cmd, "sky");

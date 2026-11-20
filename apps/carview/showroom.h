@@ -118,6 +118,11 @@ struct WorldGeometry {
     uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
     uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers
     uint8_t blend = 0;
+    // The draw's box in the scenery's frame (tree sprites padded by their
+    // corners' reach), tested against the view each frame; cull false:
+    // always drawn (the sky, the flat world).
+    bool cull = false;
+    float box_min[3] = {0, 0, 0}, box_max[3] = {0, 0, 0};
   };
   bool textured = false;
   std::vector<WorldVertex> textured_vertices;  // textured: in place of vertices
@@ -202,6 +207,14 @@ class Showroom {
   // The scenery's positions to the car's model frame (column-major).
   void set_world_transform(const float transform[16]);
   size_t world_triangle_count() const { return world_triangles_; }
+  // The world draws of the last recorded frame: recorded and culled, and
+  // the indices drawn.
+  struct WorldDrawStats {
+    size_t drawn = 0, culled = 0, indices = 0;
+  };
+  WorldDrawStats world_draw_stats() const { return world_stats_; }
+  // Frustum culling of the world's draws (on by default).
+  void set_world_culling(bool on) { world_cull_ = on; }
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
   void set_background(float r, float g, float b);
   // The textured world's light, in the frame's space: towards the sun, up,
@@ -316,6 +329,8 @@ class Showroom {
   Renderer::Buffer world_vertices_, world_indices_;
   std::vector<WorldGeometry::Draw> world_draws_;
   size_t world_triangles_ = 0;
+  WorldDrawStats world_stats_;
+  bool world_cull_ = true;
   float world_transform_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   double world_origin_[2] = {0, 0};
   struct PendingWorld {
