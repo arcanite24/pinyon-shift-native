@@ -71,6 +71,44 @@ as `-DSHIFT_GLSL_COMPILER=...`). Otherwise it embeds the committed SPIR-V in
 `apps/carview/shaders/prebuilt`. After changing a shader, refresh that copy
 with `python tools/regenerate-shaders.py [--compiler path]`.
 
+## Play the drive
+
+Build the tools ([Building](#building)), or let setup build them, and point
+setup at your extracted disc. Add `--state` with the installed packages'
+tree to bake the title update's and the DLC cars as well:
+
+```powershell
+python tools\setup.py D:\fh1\disc --state D:\fh1\packages
+```
+
+```sh
+tools/setup.sh ~/fh1/disc --state ~/fh1/packages
+```
+
+Setup takes about half a minute on a desktop. It bakes every car (7.4 GB),
+the R34's engine sound (when FFmpeg is installed; `--all-sounds` bakes
+every car's) and the Colorado model index. They go into the play folder,
+which is `%APPDATA%\shift-engine\play` on Windows and
+`~/.local/share/shift-engine/play` on Linux. Setup writes nothing under the
+disc or the repository. `--cars a,b` bakes fewer cars; keep the 17 traffic
+models (`traffic-census --list-models` lists them) or the roads stay empty.
+Then:
+
+```powershell
+.\build\apps\carview\carview.exe
+```
+
+With no arguments carview finds the play folder and drives the R34 on
+Colorado with traffic. Arguments still win (`--car <media name>`,
+`--hour 2`, `--size 1280x800`).
+
+- **Another folder:** `--data <dir>` puts the play folder elsewhere. Run
+  `carview --play <dir>`, set `SHIFT_PLAY_DIR`, or put carview in that
+  folder. The order is `--play`, `SHIFT_PLAY_DIR`, the executable's
+  folder, then the user-data folder.
+- **Controls:** keyboard or pad; Esc or Start opens the pause menu, which
+  has the car picker (controls table below).
+
 ## Drive it yourself (M3 play test)
 
 On multivac, from the repository root, after a build and a bake (`out/bake1`
