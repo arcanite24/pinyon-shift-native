@@ -15,6 +15,8 @@
 // saves an orbit camera in the reference schema (for checking the mode).
 
 #include <algorithm>
+#include <any>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -575,7 +577,18 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
 // model frame, where the showroom draws.
 // --view front: a fixed front three-quarter view from the car's left, low,
 // for checking the wheels' steer and spin.
-ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, bool front) {
+// The chase camera's pull-in (ours, until the camera spec): a ray from the
+// look-at point to the eye against the ground's collision; when it meets a
+// surface the eye moves in to 0.2 m short of it (at once), and eases back
+// out over about a third of a second once clear. `pull` keeps the fraction
+// of the full distance between frames (1 = full); `dt` is the time since
+// the last frame.
+struct CameraPull {
+  double fraction = 1;
+};
+
+ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, bool front,
+                          const drive::Ground* ground = nullptr, CameraPull* pull = nullptr, double dt = 0) {
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(car, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
@@ -588,7 +601,20 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
   const V3 eye = front ? add(add(add(base, mul(dir, 4.0f)), mul(left, 3.0f)), V3{0, 0.9f, 0})
                        : add(add(base, mul(dir, -4.5f)), V3{0, 1.6f, 0});
   const V3 target = front ? add(base, V3{0, 0.5f, 0}) : add(add(base, mul(dir, 1.5f)), V3{0, 0.7f, 0});
-  return look_frame(transform(world_to_model, eye, 1), transform(world_to_model, target, 1),
+  V3 eye_used = eye;
+  if (ground && pull) {
+    const drive::Vec3 from{target.x, target.y, target.z};
+    const drive::Vec3 ray{double(eye.x) - target.x, double(eye.y) - target.y, double(eye.z) - target.z};
+    const double reach = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
+    double want = 1;
+    drive::Hit hit;
+    if (reach > 1e-6 && ground->raycast(from, ray * (1 / reach), reach, hit))
+      want = std::clamp((hit.distance - 0.2) / reach, 0.1, 1.0);
+    pull->fraction = want < pull->fraction ? want : pull->fraction + (want - pull->fraction) * std::min(1.0, dt * 3);
+    const float f = float(pull->fraction);
+    eye_used = add(target, mul(V3{eye.x - target.x, eye.y - target.y, eye.z - target.z}, f));
+  }
+  return look_frame(transform(world_to_model, eye_used, 1), transform(world_to_model, target, 1),
                     norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false);
 }
 
@@ -664,7 +690,7 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
-  bool near_given = false, have_spawn = false, render_ground = false;
+  bool near_given = false, have_spawn = false, render_ground = false, async_stream = false;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
   double seconds = 6, every = 1;
@@ -686,6 +712,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--cache") cache_path = next();
     else if (a == "--speed") cruise_kmh = std::atof(next());
     else if (a == "--render-ground") render_ground = true;
+    else if (a == "--async-stream") async_stream = true;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -773,6 +800,21 @@ int run_drive(int argc, char** argv) {
       world::RoadFollower follower(cruise_kmh / 3.6);
       drive::Vec3 start{};
       double start_heading = 0;
+      const bool streamer_async = !headless || async_stream;
+      // The streamer's staged scenery, swapped in.
+      auto set_staged_world = [&]() {
+        auto staged = std::any_cast<std::shared_ptr<Showroom::StagedWorld>>(std::move(streamer->prepared()));
+        streamer->prepared().reset();
+        if (!staged) {
+          error = "world staging buffers";
+          return false;
+        }
+        // The first gather and synchronous streams swap at once; later
+        // background ones keep the old scenery drawn until the GPU copy is
+        // done (poll_world, each step).
+        return streamer_async && streamer->gathers() > 1 ? showroom.begin_world(std::move(*staged), error)
+                                                         : showroom.set_world(std::move(*staged), error);
+      };
       if (!world_dir.empty()) {
         if (cache_path.empty()) cache_path = std::filesystem::path("out") / "world" / "colorado.index";
         world::Spawn sp;
@@ -789,6 +831,22 @@ int run_drive(int argc, char** argv) {
           error.clear();
           streamer = std::make_unique<world::Streamer>(colorado, world::GatherOptions{}, 200,
                                                        render_ground ? nullptr : &collision);
+          // Gathers after the first run on a worker in the window (and with
+          // --async-stream headless), with the scenery's draw data built
+          // there too; headless runs stay synchronous so they repeat.
+          streamer->set_async(streamer_async);
+          // The worker builds the scenery's draw data and stages it in
+          // host-visible buffers; the swap only copies them on the GPU.
+          streamer->set_prepare([&showroom](const world::Mesh& mesh, double cx, double cz) {
+            auto staged = std::make_shared<Showroom::StagedWorld>();
+            std::string e;
+            if (!showroom.stage_world(build_world(scenery(mesh, cx, cz)), *staged, e)) staged.reset();
+            if (staged) {
+              staged->origin_x = cx;
+              staged->origin_z = cz;
+            }
+            return std::any(staged);
+          });
           const double sx = have_spawn ? spawn[0] : near_given || render_ground ? near_x : world::kSpawnX;
           const double sz = have_spawn ? spawn[2] : near_given || render_ground ? near_z : world::kSpawnZ;
           const double near[2] = {near_x, near_z};
@@ -809,7 +867,7 @@ int run_drive(int argc, char** argv) {
           ground = &streamer->ground();
           follower.rebuild(streamer->mesh());
           follower.set_ground(&streamer->ground());
-          if (!showroom.set_world(scenery(streamer->mesh(), streamer->centre_x(), streamer->centre_z()), error))
+          if (!set_staged_world())
             status = 1;
           else
             showroom.set_background(0.42f, 0.55f, 0.72f);
@@ -837,27 +895,39 @@ int run_drive(int argc, char** argv) {
           ground = &streamer->ground();
           follower.rebuild(streamer->mesh());
           follower.set_ground(&streamer->ground());
-          if (!showroom.set_world(scenery(streamer->mesh(), streamer->centre_x(), streamer->centre_z()), error))
-            return false;
-          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles)\n", vehicle.time(), at.x, at.z,
-                      streamer->mesh().triangles());
+          if (!set_staged_world()) return false;
+          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles, %.2f s)\n", vehicle.time(),
+                      streamer->centre_x(), streamer->centre_z(), streamer->mesh().triangles(),
+                      streamer->last_gather_seconds());
         }
+        bool swapped = false;
+        showroom.poll_world(false, &swapped);
+        if (swapped && streamer_async)
+          std::printf("t %.2f s: scenery around %.1f %.1f uploaded\n", vehicle.time(), showroom.world_origin_x(),
+                      showroom.world_origin_z());
         return true;
       };
       auto place_world = [&]() {
         if (!streamer) return;
         float m[16];
-        scenery_transform(info, vehicle, streamer->centre_x(), streamer->centre_z(), m);
+        scenery_transform(info, vehicle, showroom.world_origin_x(), showroom.world_origin_z(), m);
         showroom.set_world_transform(m);
       };
       WheelPose poses[4];
+      CameraPull camera_pull;
       if (status != 0) {
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
         const int stride = std::max(1, int(std::lround(every / drive::Vehicle::kStep)));
+        double longest_step = 0;  // wall time of one step with its streaming, s
         for (int s = 0; s <= steps && status == 0; ++s) {
-          if (s > 0 && !step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()))) {
+          const auto t0 = std::chrono::steady_clock::now();
+          const bool ok =
+              s == 0 || step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()));
+          longest_step =
+              std::max(longest_step, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+          if (!ok) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
@@ -866,7 +936,8 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();
-          showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front));
+          showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
+                                         every));
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -888,6 +959,9 @@ int run_drive(int argc, char** argv) {
                       vehicle.time(), vehicle.speed() * 3.6, vehicle.gear(), vehicle.rpm(), wl.steer, wl.compression,
                       at.x, at.y, at.z, path.c_str());
         }
+        if (streamer)
+          std::printf("longest step with its streaming: %.1f ms (%s gathers)\n", longest_step * 1000,
+                      async_stream ? "background" : "synchronous");
       } else {
         std::vector<SDL_Gamepad*> pads;
         uint64_t last = SDL_GetTicksNS(), title_at = 0;
@@ -924,7 +998,8 @@ int run_drive(int argc, char** argv) {
             }
           }
           const uint64_t now = SDL_GetTicksNS();
-          accumulator += std::min(0.25, double(now - last) * 1e-9);
+          const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
+          accumulator += frame_dt;
           last = now;
           while (accumulator >= drive::Vehicle::kStep) {
             if (!step(cruise ? follower.input(vehicle) : in)) {
@@ -947,7 +1022,8 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();
-          showroom.set_frame(chase_frame(info, vehicle, h > 0 ? float(w) / float(h) : 1.0f, front));
+          showroom.set_frame(chase_frame(info, vehicle, h > 0 ? float(w) / float(h) : 1.0f, front, ground,
+                                         &camera_pull, frame_dt));
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;

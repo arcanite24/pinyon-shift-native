@@ -9,11 +9,13 @@
 // REIMPLEMENTATION_PLAN M3. The render surfaces, LOD choice and the test
 // driver are ours.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
@@ -146,6 +148,30 @@ int main() {
   CHECK(path > 400);
   CHECK(longest_airborne < 120);
   CHECK(up.y > 0.8);
+
+  // A background gather: the car keeps the old ground until the new one is
+  // swapped in by an update, then the centre and ground are the new ones.
+  {
+    world::Streamer bg(w, world::GatherOptions{}, 200, &collision);
+    bg.set_async(true);
+    CHECK(bg.update(world::kSpawnX, world::kSpawnZ, nullptr, &error));  // the first gather runs in the call
+    const double fx = world::kSpawnX + 300, fz = world::kSpawnZ;
+    bool changed = false;
+    CHECK(bg.update(fx, fz, &changed, &error));
+    CHECK(!changed && bg.gathering() && bg.centre_x() == world::kSpawnX);
+    const auto t0 = std::chrono::steady_clock::now();
+    int polls = 0;
+    while (!changed && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(60)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      CHECK(bg.update(fx, fz, &changed, &error));
+      ++polls;
+    }
+    std::printf("background gather: swapped after %d polls (%.2f s on the worker), centre %.1f %.1f, %zu "
+                "triangles in the ground\n",
+                polls, bg.last_gather_seconds(), bg.centre_x(), bg.centre_z(), bg.mesh_ground().triangle_count());
+    CHECK(changed && bg.centre_x() == fx && bg.gathers() == 2 && !bg.gathering());
+    CHECK(bg.mesh_ground().triangle_count() > 1000);
+  }
 
   if (failures) {
     std::printf("%d failure(s)\n", failures);

@@ -84,8 +84,18 @@ the code, and meant to be swapped out:
   model-to-body pose does. libs/world negates z once, as it gathers.
 - **Drawing:** `carview --drive --world` draws the streamed triangles in
   flat colours per surface class around the posed car, with a chase
-  camera. Headless, it writes frames. Windowed (keyboard or gamepad,
-  speed in the title), it is written but has not been run here.
+  camera that pulls in when a ray from its look-at point to the eye meets
+  the collision (and eases back out). Headless, it writes frames.
+  Windowed (keyboard or gamepad, speed in the title), it is written but
+  has not been run here.
+- **Streaming off the step:** in the window (and headless with
+  `--async-stream`), gathers after the first run on a worker thread:
+  render models, collision tiles, the ground's BVH and the scenery's draw
+  data, staged in host-visible buffers. The step keeps the old ground
+  until the worker is done; the GPU copy is fenced and the old scenery
+  stays drawn until it lands. On the test cruise the longest step went
+  from 373 ms (synchronous) to about 3 ms. Headless runs stay synchronous
+  by default so they repeat exactly.
 - **Test driver** (`world::RoadFollower`, `--run cruise`): steers to the
   middle of the road ahead at a set speed. Headless runs put a stuck or
   rolled car back on the nearest road. It is for checks, not the game's

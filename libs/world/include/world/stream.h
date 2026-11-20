@@ -7,6 +7,9 @@
 // Without one it falls back to the earlier stand-in: the gathered
 // world-space render triangles, with a placeholder grip per surface class.
 #pragma once
+#include <any>
+#include <functional>
+#include <future>
 #include <memory>
 #include <string>
 
@@ -21,18 +24,35 @@ float placeholder_grip(Surface s);
 
 class Streamer {
  public:
+  // Work done with each gather's mesh before it is handed over (for
+  // instance building draw data), on the worker when async: its result is
+  // `prepared()`.
+  using Prepare = std::function<std::any(const Mesh& mesh, double centre_x, double centre_z)>;
+
   // `collision`: the ground source (null: the render-triangle stand-in),
   // loaded within `collision_radius` of the centre.
   Streamer(World& world, GatherOptions options, double regather_distance = 200, Collision* collision = nullptr,
-           double collision_radius = 350)
-      : world_(world),
-        options_(options),
-        regather_(regather_distance),
-        collision_(collision),
-        collision_radius_(collision_radius) {}
+           double collision_radius = 450);
+  ~Streamer();
   // Gathers on the first call and whenever (x, z) is more than the
-  // regather distance from the last centre. `changed`: whether it did.
+  // regather distance from the last centre. `changed`: whether the mesh
+  // and ground were replaced in this call.
+  //
+  // Async (set_async): the first gather still runs in the call; later ones
+  // run on a worker thread while the car keeps the current mesh and
+  // ground, and are swapped in by the first update after they finish, so
+  // the step does not wait for them. The swap time then depends on the
+  // wall clock, so headless runs that must repeat stay synchronous. While a
+  // gather is running, the World and Collision belong to the worker: the
+  // caller must not use them.
   bool update(double x, double z, bool* changed, std::string* error);
+  void set_async(bool async) { async_ = async; }
+  void set_prepare(Prepare prepare) { prepare_ = std::move(prepare); }
+  // The Prepare result of the mesh in use (moved out by the caller).
+  std::any& prepared() { return prepared_; }
+  bool gathering() const { return job_.valid(); }
+  // Seconds the last gather took (on whichever thread ran it).
+  double last_gather_seconds() const { return last_seconds_; }
   const Mesh& mesh() const { return mesh_; }
   const drive::Ground& ground() const { return *ground_; }
   const drive::MeshGround& mesh_ground() const { return *ground_; }
@@ -45,6 +65,20 @@ class Streamer {
   int gathers() const { return gathers_; }
 
  private:
+  // One gather's results, built on whichever thread ran it.
+  struct Gathered {
+    Mesh mesh;
+    GatherStats stats;
+    CollisionMesh collision;
+    std::unique_ptr<drive::MeshGround> ground;
+    std::any prepared;
+    double x = 0, z = 0, seconds = 0;
+    bool ok = false;
+    std::string error;
+  };
+  std::unique_ptr<Gathered> gather_now(double x, double z) const;
+  void take(Gathered&& g);
+
   World& world_;
   GatherOptions options_;
   double regather_;
@@ -56,6 +90,11 @@ class Streamer {
   Mesh mesh_;
   GatherStats stats_;
   std::unique_ptr<drive::MeshGround> ground_;
+  bool async_ = false;
+  Prepare prepare_;
+  std::any prepared_;
+  double last_seconds_ = 0;
+  std::future<std::unique_ptr<Gathered>> job_;
 };
 
 // Where a car starts: at `given` (x, y, z, heading) when set; else on the

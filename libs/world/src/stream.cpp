@@ -2,6 +2,7 @@
 
 #include "world/road_follow.h"
 
+#include <chrono>
 #include <cmath>
 
 namespace world {
@@ -62,19 +63,32 @@ bool recover(const Streamer& streamer, drive::Vehicle& vehicle, Spawn* where) {
   return true;
 }
 
-bool Streamer::update(double x, double z, bool* changed, std::string* error) {
-  if (changed) *changed = false;
-  if (gathers_ > 0 && std::hypot(x - cx_, z - cz_) <= regather_) return true;
-  Mesh mesh;
-  GatherStats stats;
-  if (!world_.gather(x, z, options_, mesh, &stats, error)) return false;
+
+Streamer::Streamer(World& world, GatherOptions options, double regather_distance, Collision* collision,
+                   double collision_radius)
+    : world_(world),
+      options_(options),
+      regather_(regather_distance),
+      collision_(collision),
+      collision_radius_(collision_radius) {}
+
+Streamer::~Streamer() {
+  if (job_.valid()) job_.wait();
+}
+
+std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) const {
+  const auto t0 = std::chrono::steady_clock::now();
+  auto g = std::make_unique<Gathered>();
+  g->x = x;
+  g->z = z;
+  if (!world_.gather(x, z, options_, g->mesh, &g->stats, &g->error)) return g;
   std::vector<std::array<float, 3>> positions;
   std::vector<float> grip;
   std::vector<uint8_t> surface;
   if (collision_) {
     // The ground: the collision's core triangles the car collides with.
-    CollisionMesh cm;
-    if (!collision_->gather(x, z, collision_radius_, cm, error)) return false;
+    if (!collision_->gather(x, z, collision_radius_, g->collision, &g->error)) return g;
+    const auto& cm = g->collision;
     positions.reserve(cm.positions.size());
     for (size_t t = 0; t < cm.triangles(); ++t) {
       if (!Collision::car_collides(cm.surface[t])) continue;
@@ -84,9 +98,9 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
       grip.push_back(collision_->grip(cm.surface[t]));
       surface.push_back(cm.surface[t]);
     }
-    collision_mesh_ = std::move(cm);
   } else {
     // Without collision: the world-space triangles world::ground_object keeps.
+    const auto& mesh = g->mesh;
     positions.reserve(mesh.positions.size());
     grip.reserve(mesh.triangles());
     for (size_t t = 0; t < mesh.triangles(); ++t) {
@@ -97,12 +111,50 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
       grip.push_back(placeholder_grip(mesh.surface[t]));
     }
   }
-  ground_ = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
-  mesh_ = std::move(mesh);
-  stats_ = std::move(stats);
-  cx_ = x;
-  cz_ = z;
+  g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
+  if (prepare_) g->prepared = prepare_(g->mesh, x, z);
+  g->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  g->ok = true;
+  return g;
+}
+
+void Streamer::take(Gathered&& g) {
+  ground_ = std::move(g.ground);
+  mesh_ = std::move(g.mesh);
+  stats_ = std::move(g.stats);
+  collision_mesh_ = std::move(g.collision);
+  prepared_ = std::move(g.prepared);
+  last_seconds_ = g.seconds;
+  cx_ = g.x;
+  cz_ = g.z;
   ++gathers_;
+}
+
+bool Streamer::update(double x, double z, bool* changed, std::string* error) {
+  if (changed) *changed = false;
+  // A finished background gather: swap it in.
+  if (job_.valid() && job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    auto g = job_.get();
+    if (!g->ok) {
+      if (error) *error = g->error;
+      return false;
+    }
+    take(std::move(*g));
+    if (changed) *changed = true;
+    return true;
+  }
+  if (job_.valid()) return true;
+  if (gathers_ > 0 && std::hypot(x - cx_, z - cz_) <= regather_) return true;
+  if (async_ && gathers_ > 0) {
+    job_ = std::async(std::launch::async, [this, x, z] { return gather_now(x, z); });
+    return true;
+  }
+  auto g = gather_now(x, z);
+  if (!g->ok) {
+    if (error) *error = g->error;
+    return false;
+  }
+  take(std::move(*g));
   if (changed) *changed = true;
   return true;
 }

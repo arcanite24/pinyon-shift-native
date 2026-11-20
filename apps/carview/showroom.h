@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,22 @@ struct WorldTriangles {
   std::vector<std::array<float, 3>> colours;    // linear rgb per group
 };
 
+// WorldTriangles as draw data: one vertex per corner with the face normal,
+// indices, and one draw per colour. Plain CPU work with no Vulkan, so a
+// streaming worker can build it (build_world) and the render thread only
+// uploads it.
+struct WorldGeometry {
+  struct Draw {
+    uint32_t first_index = 0, index_count = 0;
+    ShowroomPush push{};
+  };
+  std::vector<cars::bake::Vertex> vertices;
+  std::vector<uint32_t> indices;
+  std::vector<Draw> draws;
+  size_t triangles = 0;
+};
+WorldGeometry build_world(const WorldTriangles& world);
+
 struct ShowroomOptions {
   size_t colour = 0;            // index into the car's colours (by Sequence)
   int64_t match_rgb = -1;       // when set (r x 65536 + g x 256 + b): the colour with that sRGB
@@ -96,6 +113,30 @@ class Showroom {
   // Replaces the scenery (after upload); the GPU is idled first. Empty
   // clears it. The car-coverage mask never includes it.
   bool set_world(const WorldTriangles& world, std::string& error);
+  bool set_world(WorldGeometry geometry, std::string& error);
+  // Scenery staged for upload: its draws, with the vertices and indices
+  // already in host-visible buffers. stage_world only creates and fills new
+  // objects, so a streaming worker may call it while this thread renders;
+  // begin_world then starts the GPU copy into device memory without
+  // waiting for it, and the scenery in use stays drawn until poll_world
+  // finds the copy done and swaps (set_world(StagedWorld) does both,
+  // waiting). Staging buffers are freed when the last copy of the
+  // StagedWorld goes (before the Showroom).
+  struct StagedWorld {
+    std::vector<WorldGeometry::Draw> draws;
+    size_t triangles = 0;
+    std::shared_ptr<Renderer::Buffer> vertices, indices;
+    double origin_x = 0, origin_z = 0;  // what the positions are relative to
+  };
+  bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error);
+  bool begin_world(StagedWorld staged, std::string& error);
+  // Swaps in a begun world once its copy is done (or waits, with `wait`).
+  // `swapped`: whether it did.
+  bool poll_world(bool wait, bool* swapped);
+  bool set_world(StagedWorld staged, std::string& error);
+  // The origin of the scenery being drawn (its StagedWorld's).
+  double world_origin_x() const { return world_origin_[0]; }
+  double world_origin_z() const { return world_origin_[1]; }
   // The scenery's positions to the car's model frame (column-major).
   void set_world_transform(const float transform[16]);
   size_t world_triangle_count() const { return world_triangles_; }
@@ -180,14 +221,19 @@ class Showroom {
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> material_sets_;
   // Scenery.
-  struct WorldDraw {
-    uint32_t first_index = 0, index_count = 0;
-    ShowroomPush push{};
-  };
   Renderer::Buffer world_vertices_, world_indices_;
-  std::vector<WorldDraw> world_draws_;
+  std::vector<WorldGeometry::Draw> world_draws_;
   size_t world_triangles_ = 0;
   float world_transform_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  double world_origin_[2] = {0, 0};
+  struct PendingWorld {
+    Renderer::Buffer vertices, indices;
+    StagedWorld staged;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+  };
+  std::unique_ptr<PendingWorld> pending_world_;
+  void drop_pending_world();
 };
 
 }  // namespace carview

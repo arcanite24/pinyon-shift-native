@@ -224,6 +224,7 @@ Showroom::~Showroom() {
   r_.destroy_buffer(vertex_buffer_);
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
+  drop_pending_world();
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
@@ -1224,26 +1225,22 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   for (const Draw* d : sorted) draw(*d);
 }
 
-bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
-  vkDeviceWaitIdle(r_.device_);
-  r_.destroy_buffer(world_vertices_);
-  r_.destroy_buffer(world_indices_);
-  world_draws_.clear();
-  world_triangles_ = 0;
+WorldGeometry build_world(const WorldTriangles& world) {
+  WorldGeometry out;
   const size_t n = world.group.size();
-  if (n == 0) return true;
+  if (n == 0) return out;
   // One vertex per corner with the face normal as the tangent frame's
   // first axis (the shader's normal is rotate(frame, +x)); grouped by colour.
   std::vector<std::vector<uint32_t>> by_group(world.colours.size());
   for (uint32_t t = 0; t < n; ++t)
     if (world.group[t] < by_group.size()) by_group[world.group[t]].push_back(t);
-  std::vector<bake::Vertex> vertices;
-  std::vector<uint32_t> indices;
+  auto& vertices = out.vertices;
+  auto& indices = out.indices;
   vertices.reserve(n * 3);
   indices.reserve(n * 3);
   for (size_t g = 0; g < by_group.size(); ++g) {
     if (by_group[g].empty()) continue;
-    WorldDraw d;
+    WorldGeometry::Draw d;
     d.first_index = uint32_t(indices.size());
     for (uint32_t t : by_group[g]) {
       const auto& a = world.positions[size_t(t) * 3];
@@ -1274,7 +1271,7 @@ bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
         indices.push_back(uint32_t(vertices.size()));
         vertices.push_back(v);
       }
-      ++world_triangles_;
+      ++out.triangles;
     }
     d.index_count = uint32_t(indices.size()) - d.first_index;
     if (d.index_count == 0) continue;
@@ -1283,17 +1280,153 @@ bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
     d.push.tint[3] = 1;
     d.push.params[0] = 11;  // the shader's kWorld
     d.push.params[1] = 16;  // kFlagNoSlot0
-    world_draws_.push_back(d);
+    out.draws.push_back(d);
   }
-  if (indices.empty()) return true;
-  if (!r_.upload_buffer(vertices.data(), vertices.size() * sizeof(bake::Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                        world_vertices_) ||
-      !r_.upload_buffer(indices.data(), indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                        world_indices_)) {
+  return out;
+}
+
+bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
+  return set_world(build_world(world), error);
+}
+
+bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
+  vkDeviceWaitIdle(r_.device_);
+  r_.destroy_buffer(world_vertices_);
+  r_.destroy_buffer(world_indices_);
+  world_draws_.clear();
+  world_triangles_ = 0;
+  if (geometry.indices.empty()) return true;
+  if (!r_.upload_buffer(geometry.vertices.data(), geometry.vertices.size() * sizeof(bake::Vertex),
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, world_vertices_) ||
+      !r_.upload_buffer(geometry.indices.data(), geometry.indices.size() * sizeof(uint32_t),
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT, world_indices_)) {
     error = "world buffers";
     return false;
   }
+  world_draws_ = std::move(geometry.draws);
+  world_triangles_ = geometry.triangles;
   return true;
+}
+
+bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error) {
+  out = StagedWorld{};
+  out.draws = std::move(geometry.draws);
+  out.triangles = geometry.triangles;
+  if (geometry.indices.empty()) return true;
+  Renderer& r = r_;
+  auto stage = [&](const void* data, VkDeviceSize size, std::shared_ptr<Renderer::Buffer>& buffer) {
+    buffer = std::shared_ptr<Renderer::Buffer>(new Renderer::Buffer{}, [&r](Renderer::Buffer* b) {
+      r.destroy_buffer(*b);
+      delete b;
+    });
+    if (!r.create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *buffer))
+      return false;
+    void* mapped = nullptr;
+    if (vkMapMemory(r.device_, buffer->memory, 0, size, 0, &mapped) != VK_SUCCESS) return false;
+    std::memcpy(mapped, data, size_t(size));
+    vkUnmapMemory(r.device_, buffer->memory);
+    return true;
+  };
+  if (!stage(geometry.vertices.data(), geometry.vertices.size() * sizeof(bake::Vertex), out.vertices) ||
+      !stage(geometry.indices.data(), geometry.indices.size() * sizeof(uint32_t), out.indices)) {
+    error = "world staging buffers";
+    return false;
+  }
+  return true;
+}
+
+void Showroom::drop_pending_world() {
+  if (!pending_world_) return;
+  auto& p = *pending_world_;
+  if (p.fence) {
+    vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(r_.device_, p.fence, nullptr);
+  }
+  if (p.cmd) vkFreeCommandBuffers(r_.device_, r_.pool_, 1, &p.cmd);
+  r_.destroy_buffer(p.vertices);
+  r_.destroy_buffer(p.indices);
+  pending_world_.reset();
+}
+
+bool Showroom::begin_world(StagedWorld staged, std::string& error) {
+  // One copy in flight at a time: a newer world replaces a pending one.
+  drop_pending_world();
+  auto p = std::make_unique<PendingWorld>();
+  p->staged = std::move(staged);
+  if (p->staged.vertices && p->staged.indices) {
+    const VkDeviceSize vb = p->staged.vertices->size, ib = p->staged.indices->size;
+    VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc.commandPool = r_.pool_;
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 1;
+    VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->vertices) ||
+        !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->indices) ||
+        vkAllocateCommandBuffers(r_.device_, &alloc, &p->cmd) != VK_SUCCESS ||
+        vkCreateFence(r_.device_, &fence, nullptr, &p->fence) != VK_SUCCESS) {
+      pending_world_ = std::move(p);
+      drop_pending_world();
+      error = "world buffers";
+      return false;
+    }
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(p->cmd, &begin);
+    const VkBufferCopy v{0, 0, vb}, i{0, 0, ib};
+    vkCmdCopyBuffer(p->cmd, p->staged.vertices->buffer, p->vertices.buffer, 1, &v);
+    vkCmdCopyBuffer(p->cmd, p->staged.indices->buffer, p->indices.buffer, 1, &i);
+    vkEndCommandBuffer(p->cmd);
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &p->cmd;
+    if (vkQueueSubmit(r_.queue_, 1, &submit, p->fence) != VK_SUCCESS) {
+      vkDestroyFence(r_.device_, p->fence, nullptr);
+      p->fence = VK_NULL_HANDLE;
+      pending_world_ = std::move(p);
+      drop_pending_world();
+      error = "world upload submit";
+      return false;
+    }
+  }
+  pending_world_ = std::move(p);
+  return true;
+}
+
+bool Showroom::poll_world(bool wait, bool* swapped) {
+  if (swapped) *swapped = false;
+  if (!pending_world_) return true;
+  auto& p = *pending_world_;
+  if (p.fence) {
+    if (!wait && vkGetFenceStatus(r_.device_, p.fence) != VK_SUCCESS) return true;
+    vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
+  }
+  // The scenery in use may still be read by a frame in flight.
+  vkDeviceWaitIdle(r_.device_);
+  r_.destroy_buffer(world_vertices_);
+  r_.destroy_buffer(world_indices_);
+  world_vertices_ = p.vertices;
+  world_indices_ = p.indices;
+  p.vertices = {};
+  p.indices = {};
+  if (world_vertices_.buffer) {
+    world_draws_ = std::move(p.staged.draws);
+    world_triangles_ = p.staged.triangles;
+  } else {
+    world_draws_.clear();
+    world_triangles_ = 0;
+  }
+  world_origin_[0] = p.staged.origin_x;
+  world_origin_[1] = p.staged.origin_z;
+  drop_pending_world();
+  if (swapped) *swapped = true;
+  return true;
+}
+
+bool Showroom::set_world(StagedWorld staged, std::string& error) {
+  return begin_world(std::move(staged), error) && poll_world(true, nullptr);
 }
 
 void Showroom::set_world_transform(const float transform[16]) {
