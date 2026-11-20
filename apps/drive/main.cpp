@@ -8,8 +8,9 @@
 //          [--spawn x y z heading] [--materials]]
 //
 // --world streams the models around the car and starts at a stand-in spawn:
-// the road triangle nearest --near (file frame x, z; default the free-roam
-// spot of WORLD_GEOMETRY's frame dump, near the festival), or --spawn.
+// the road triangle nearest --near (x, z in the game frame, the file frame
+// with z negated; default the free-roam spot of WORLD_GEOMETRY's frame
+// dump, near the festival), or --spawn.
 // --grade G drives on a plane mesh (drive::MeshGround) rising G (rise over
 // run) towards +z, instead of the flat ground.
 // --run cruise (with --world) drives itself along the road at --speed km/h
@@ -61,8 +62,8 @@ int main(int argc, char** argv) {
   fs::path bake_dir, script_path, trace_path, world_dir, cache_path;
   std::string car, run = "launch";
   double seconds = 20;
-  double near_x = 1999.0, near_z = -962.9;  // WORLD_GEOMETRY's dumped free-roam camera (file frame)
-  bool have_spawn = false, materials = false;
+  double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
+  bool near_given = false, have_spawn = false, materials = false;
   double cruise_kmh = 40, grade = 0;
   bool have_grade = false;
   double spawn[4] = {0, 0, 0, 0};
@@ -86,6 +87,7 @@ int main(int argc, char** argv) {
     else if (a == "--near") {
       near_x = std::stod(next());
       near_z = std::stod(next());
+      near_given = true;
     } else if (a == "--spawn") {
       for (double& v : spawn) v = std::stod(next());
       have_spawn = true;
@@ -173,7 +175,7 @@ int main(int argc, char** argv) {
     if (have_spawn) {
       s.position = {spawn[0], spawn[1], spawn[2]};
       s.heading = spawn[3];
-    } else if (!world::find_spawn(streamer->mesh(), near_x, near_z, s)) {
+    } else if (!world::find_spawn(streamer->mesh(), near_x, near_z, s, near_given ? nullptr : &near_heading)) {
       std::fprintf(stderr, "drive: no road triangle near %.1f %.1f\n", near_x, near_z);
       return 1;
     }

@@ -194,3 +194,51 @@ questions are also sent to the specification session.
 - **Engine:** reads v1 and v2; `tools/m1-report.py` scores v2 only and
   lists the v1 leftovers (`--include-v1` scores them too). Masked PSNR is
   reported, not part of the pass (playable first, polish later).
+
+## Q16 (not blocking): which Colorado geometry the main view draws near the car
+
+- **Spec:** WORLD-GEOMETRY selects world-space models by header box. It
+  names TERR_CUBE models as drawn in reflection views, and leaves open
+  which LOD the game draws.
+- **Engine (M3 stand-in, `libs/world`):**
+  - draws every world-space model within 600 m, at the lowest LOD of
+    each object family among them;
+  - leaves out TERR_CUBE, `UberLOD`, `MIDDIST`/`middistance` objects and
+    the `Occluder` material;
+  - places props within 250 m, with LOD00 nearer than 80 m and LOD02
+    beyond.
+- **Needed:** the game's draw and LOD rule around the player, whenever
+  M2's streaming comes up.
+
+## Q17 (not blocking): road and surface identity
+
+- **Engine (M3 stand-in):** a triangle is road when its mesh object's
+  name holds `_road`/`road_` (Colorado names roads
+  `..._Road_LODnn_...`). Otherwise it is classed as terrain, water or
+  other by object or material name, with a placeholder grip each. Thin
+  upright objects (armco, barriers, railings, cables, fences, signs) and
+  props are left out of the ground.
+- **Needed:** COLLISION.md's surfaces and collision geometry. The stand-in
+  sits behind `drive::Ground`, so it swaps out without touching the
+  vehicle.
+
+## Q18 (not blocking): a spawn point
+
+- **Engine (M3 stand-in):** the flat road triangle nearest the free-roam
+  camera of WORLD_GEOMETRY's frame dump (game frame 1999.0, 962.9). The
+  car faces the way that camera looked, and lands 0.4 m from it, 1.8 m
+  below the camera.
+- **Needed:** the game's free-roam spawn (festival) position and heading,
+  if a spec covers it.
+
+## Q19 (answered from existing specs): the drive's world frame
+
+- **Answer:** the game frame (WORLD-GEOMETRY: the file frame with z
+  negated). AUTOSHOW_REFERENCE's `car_to_world` negates the model frame's
+  z, as FORMAT-CARS's model-to-body pose does, so the body frame is
+  placed in the game frame by a rotation.
+- **Engine:** `libs/world` negates z once, as it gathers. 0d4bb44 first
+  drove in the file frame, which drew the scenery mirrored; the next
+  commit fixed it.
+- **Check:** a frame at the spawn, set beside the frame dump's capture,
+  shows the gantry ahead and the barriers and flag on the right in both.

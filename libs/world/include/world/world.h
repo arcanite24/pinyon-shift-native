@@ -4,9 +4,12 @@
 // Spec: WORLD-GEOMETRY (horizon1-recomp docs/formats/WORLD_GEOMETRY.md):
 // world-space models are selected by their header box; local-space props
 // are placed from the kind-7 .pgeo tiles and the .pvsz zones through the
-// object table. Everything here is in the file frame (the game's world
-// with z negated), which is also the drive's world frame: +Y up, and the
-// same handedness as the car's body frame.
+// object table. The files hold the file frame; the game's world is the
+// file frame with z negated. Everything here (points in, triangles out) is
+// in the game frame, which is the drive's world frame: the car's body frame
+// has its handedness (AUTOSHOW_REFERENCE's car_to_world negates the model
+// frame's z, as FORMAT-CARS's model-to-body pose does), so the body is
+// placed in it by a rotation. The z negation happens once, here.
 //
 // Ours, not the spec's: the surface classes (by mesh object name, then
 // material name), the LOD choice (the lowest LOD of each object family among
@@ -41,7 +44,7 @@ bool skipped_material(const std::string& material);
 bool ground_object(const std::string& object);
 
 struct Mesh {
-  std::vector<std::array<float, 3>> positions;  // three per triangle, file frame
+  std::vector<std::array<float, 3>> positions;  // three per triangle, game frame
   std::vector<Surface> surface;                 // per triangle
   std::vector<uint32_t> model;                  // per triangle: index into World::models()
   std::vector<uint8_t> ground;                  // per triangle: part of the stand-in ground
@@ -79,7 +82,8 @@ class World {
   const std::vector<ModelInfo>& models() const { return models_; }
   size_t placement_count() const;
 
-  // Every world-space model near (x, z) and every prop placement near it.
+  // Every world-space model near (x, z) (game frame) and every prop
+  // placement near it.
   bool gather(double x, double z, const GatherOptions& options, Mesh& out, GatherStats* stats,
               std::string* error);
 
@@ -100,5 +104,10 @@ struct Spawn {
   double distance = 0;  // from (x, z), metres
 };
 bool find_spawn(const Mesh& mesh, double x, double z, Spawn& out, const double* prefer_heading = nullptr);
+
+// The default search point and heading: the free-roam camera of
+// WORLD_GEOMETRY's frame dump, by the festival (file frame 1999.0, 145.4,
+// -962.9), in the game frame, looking the way that camera looked.
+constexpr double kDumpCameraX = 1999.0, kDumpCameraZ = 962.9, kDumpCameraHeading = 2.199;
 
 }  // namespace world

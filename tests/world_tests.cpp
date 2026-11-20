@@ -69,7 +69,8 @@ int main() {
   CHECK(w.models().size() == 14291 && ok == 14291 && world_space == 11898);
   CHECK(w.placement_count() > 0);
 
-  const double x = 1999.0, z = -962.9;
+  // The dumped camera, game frame (file frame 1999.0, 145.4, -962.9).
+  const double x = world::kDumpCameraX, z = world::kDumpCameraZ;
   world::Streamer stream(w, world::GatherOptions{});
   CHECK(stream.update(x, z, nullptr, &error));
   const auto& st = stream.stats();
@@ -80,7 +81,7 @@ int main() {
   CHECK(st.world_models > 100 && st.props > 100 && road > 1000);
 
   world::Spawn spawn;
-  CHECK(world::find_spawn(stream.mesh(), x, z, spawn));
+  CHECK(world::find_spawn(stream.mesh(), x, z, spawn, &world::kDumpCameraHeading));
   std::printf("spawn %.3f %.3f %.3f heading %.4f, %.2f m from the search point\n", spawn.position[0],
               spawn.position[1], spawn.position[2], spawn.heading, spawn.distance);
   CHECK(spawn.distance < 5);

@@ -22,13 +22,16 @@ wheel fit (FORMAT-CARS f193075f).
 - **World:** all 14,291 Colorado render models parse (WORLD-GEOMETRY), the
   props and their placements resolve (174,803 tile instances, 1,027,743
   zone placements), and `carview --world` draws the world-space models in
-  a rectangle, headless, at a frame dump's camera. There is no streaming,
-  no interactive fly camera and no collision yet.
+  a rectangle, headless, at a frame dump's camera. (When this note was
+  written there was no streaming and no collision; the stand-ins below
+  have added both.)
 - **Renderer and platform:** Vulkan 1.3 with dynamic rendering, SDL3
   windows (SDL3 also gives gamepads and keyboard input), a headless PNG
   mode for checks.
-- **Not yet:** a physics module, an audio path, a HUD, a game loop with a
-  fixed step.
+- **Not yet (when written):** a physics module, an audio path, a HUD, a
+  game loop with a fixed step. The physics module and the fixed-step loop
+  now exist as stand-ins (below); audio and a HUD beyond the window
+  title's speedometer do not.
 
 ## What the engine would build without new specs
 
@@ -67,9 +70,13 @@ the code, and meant to be swapped out:
   water and other by the object or material name, each with a placeholder
   grip.
 - **Spawn:** the flat road triangle nearest a point. The default point is
-  the free-roam camera of WORLD_GEOMETRY's frame dump (file frame 1999.0,
-  −962.9), by the festival; the spawn lands 0.4 m from it, 1.8 m below
-  the dumped camera.
+  the free-roam camera of WORLD_GEOMETRY's frame dump (game frame 1999.0,
+  962.9; file frame z −962.9), by the festival; the spawn lands 0.4 m
+  from it, 1.8 m below the dumped camera.
+- **Frames:** the drive runs in the game frame (the file frame with z
+  negated). The car's body frame has the game frame's handedness:
+  AUTOSHOW_REFERENCE's `car_to_world` negates the model frame's z, as the
+  model-to-body pose does. libs/world negates z once, as it gathers.
 - **Drawing:** `carview --drive --world` draws the streamed triangles in
   flat colours per surface class around the posed car, with a chase
   camera. Headless, it writes frames. Windowed (keyboard or gamepad,

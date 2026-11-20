@@ -655,13 +655,15 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 //           [--headless --out prefix.png] [--size WxH]
 //
 // With --world the car starts at a stand-in spawn: the road triangle
-// nearest --near (file frame x, z; default the free-roam spot of
-// WORLD_GEOMETRY's frame dump, near the festival), or --spawn. --run cruise
-// drives itself along the road at --speed (default 40 km/h).
+// nearest --near (x, z in the game frame, the file frame with z negated;
+// default the free-roam spot of WORLD_GEOMETRY's frame dump, near the
+// festival), or --spawn. --run cruise drives itself along the road at
+// --speed (default 40 km/h).
 int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
-  double near_x = 1999.0, near_z = -962.9, cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
-  bool have_spawn = false;
+  double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
+  double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
+  bool near_given = false, have_spawn = false;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
   double seconds = 6, every = 1;
@@ -685,6 +687,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
+      near_given = true;
     } else if (a == "--spawn") {
       for (double& v : spawn) v = std::atof(next());
       have_spawn = true;
@@ -781,7 +784,8 @@ int run_drive(int argc, char** argv) {
           } else if (have_spawn) {
             sp.position = {spawn[0], spawn[1], spawn[2]};
             sp.heading = spawn[3];
-          } else if (!world::find_spawn(streamer->mesh(), near_x, near_z, sp)) {
+          } else if (!world::find_spawn(streamer->mesh(), near_x, near_z, sp,
+                                        near_given ? nullptr : &near_heading)) {
             error = "no road triangle near the search point";
             status = 1;
           }

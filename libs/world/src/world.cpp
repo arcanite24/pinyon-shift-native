@@ -200,11 +200,12 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         }
       }
       ++st.objects;
+      // File frame to the game frame: z negated.
       auto position = [&](uint32_t i) {
         const auto p = o.position(i);
-        if (!placement) return p;
+        if (!placement) return std::array<float, 3>{p[0], p[1], -p[2]};
         const auto q = placement->apply(p);
-        return std::array<float, 3>{float(q[0]), float(q[1]), float(q[2])};
+        return std::array<float, 3>{float(q[0]), float(q[1]), float(-q[2])};
       };
       for (const auto& s : o.submeshes) {
         if (skipped_material(s.material)) continue;
@@ -227,6 +228,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     }
   };
 
+  // The point in the file frame, where the boxes and placements are.
+  z = -z;
   // World-space models whose header box comes within the radius.
   std::vector<std::pair<uint32_t, fh1::RenderModel>> selected;
   std::vector<uint8_t> bytes;
