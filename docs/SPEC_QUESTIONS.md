@@ -518,14 +518,19 @@ Engine choices, open for the spec:
   the eye.
 - **Lighting.** The recipe's sun and two-colour sky, exposure 1, no fog;
   the sun colour's w (20) is not used.
-- **Props in the reference frame.** The gather places every `.pgeo` and
-  `.pvsz` prop near the camera, including event props the frame did not
-  draw (a gantry, grandstands, banners, a crate on the road). The world-only
-  render (`--no-props`) matches the frame's road, markings, shoulder and
-  guardrail.
-- **Upload.** Textures are staged by the streaming worker and copied in
-  the scenery's fenced upload, and stay cached; a regather's hand-over
-  is about 8 ms on the render thread.
+- **Props in the reference frame.** Answered (WORLD-GEOMETRY, "Which
+  placements free roam draws", recomp-research a818c127): a `.pvsz`
+  record's or kind-7 tile's route list; free roam (route 0) draws a
+  placement with no list or with 0 in it, and never the
+  `Temp_Arrow_Pointer` marker (a guess from one marker). In the frame
+  this leaves out 232 placements and the marker: the gantry, the
+  grandstand and its banners, the concrete barriers and the striped box
+  are gone, the crowd barriers and the flag stay. The zone choice is
+  ours (the union of every zone); the group's first distance as a
+  per-instance cut-off for kind-7 models is not applied yet.
+- **Upload.** The streaming worker stages the textures and makes their
+  images; the old scenery is freed off the render thread. A regather's
+  hand-over is about 1 ms on the render thread.
 
 ## Q37 (polish): the far ring and the sky
 

@@ -406,7 +406,7 @@ opaque.
   diffuse light neutral; `--light name=value,...` overrides them. What
   is left is mostly the stage's sharp coloured reflections, which our
   studio environment does not have, and the white cars.
-- Open in the spec: part variants (Q4), cockpit parts (Q5), calliper
+- Open in the spec: cockpit parts (Q5), calliper
   angle (Q7), slot-1 UVs (Q8). Polish for later: the showroom lighting
   (SHOWROOM_LIGHTING), the lamp glow and glare, Q13 and Q14.
 

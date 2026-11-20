@@ -17,6 +17,7 @@
 #include "fh1data/carbin.h"
 #include "fh1data/inflate.h"
 #include "fh1data/placements.h"
+#include "fh1data/props.h"
 #include "fh1data/rmb.h"
 #include "fh1data/world_texture.h"
 #include "fh1data/xds.h"
@@ -575,7 +576,13 @@ std::vector<uint8_t> synthetic_pgeo(bool long_header, const std::vector<Syntheti
   w.u32(2);   // model records
   w.u32(long_header ? 0x12345678 : 0);
   w.u32(0x44444444);
-  while (w.bytes.size() < (long_header ? 0x98u : 0x60u)) w.u32(0xFFFFFFFF);
+  while (w.bytes.size() < (long_header ? 0x98u : 0x60u)) w.u32(long_header ? 0 : 0xFFFFFFFF);
+  if (long_header) {
+    // The route list (WORLD-GEOMETRY, Q4): two routes from +0x85.
+    w.bytes[0x84] = 2;
+    w.bytes[0x85] = 134;
+    w.bytes[0x86] = 210;
+  }
   w.bytes.insert(w.bytes.end(), name.begin(), name.end());
   pad_to(w, 16);
   // 28 characters and a NUL: the ID lists and strings end off a 4-byte boundary.
@@ -657,6 +664,9 @@ void test_pgeo() {
     CHECK(fh1::parse_pgeo(bytes, t, &error));
     if (!error.empty()) std::printf("  pgeo: %s\n", error.c_str());
     CHECK(t.header_size == (long_header ? 0x98u : 0x60u));
+    CHECK(t.has_routes == long_header);
+    CHECK((t.routes == (long_header ? std::vector<uint8_t>{134, 210} : std::vector<uint8_t>{})));
+    CHECK(!fh1::shown_on_route(t.routes, 0) == long_header && fh1::shown_on_route(t.routes, 210));
     CHECK(t.name == "Models_Synthetic_1" && t.distance == 2500.0f && t.box_max[2] == 40.0f);
     CHECK(t.references.size() == 2 && t.references[1] == std::make_pair(0x0102u, 1u));
     CHECK(t.models.size() == 2 && t.groups.size() == 2 && t.trailing_size == 80);

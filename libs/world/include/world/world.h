@@ -138,12 +138,17 @@ struct GatherOptions {
   // whose base is within this of the point and within their far distance
   // of it. 0: none.
   double tree_radius = 0;
+  // The track route whose placements are drawn (WORLD-GEOMETRY, "Which
+  // placements free roam draws"): 0 is free roam; -1 draws every one.
+  int route = 0;
 };
 
 struct GatherStats {
   size_t world_models = 0, objects = 0, skipped_lod = 0, skipped_far = 0, props = 0, prop_unresolved = 0;
   size_t far_models = 0, far_triangles = 0;  // the far ring
   size_t trees = 0, trees_untextured = 0;    // tree sprites; those whose atlas has no file
+  size_t props_off_route = 0, trees_off_route = 0;  // left out by the route rule
+  size_t props_markers = 0;  // placements of the Temp_Arrow_Pointer marker, left out
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name
   // With render_data: models drawn without a uvOffsetScale (given offset 0

@@ -73,6 +73,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
       t.half_width = b.half_width, t.height = b.height, t.near = b.near, t.far = b.far;
       t.tint = b.tint;
       t.atlas = tile.references[key].first;
+      t.routes = tile.routes;
       out.trees.push_back(t);
     }
     for (const auto& g : tile.groups) {
@@ -84,6 +85,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
         p.object_id = p.has_object ? record.ids[0][0] : 0;
         p.container = container;
         p.placement = pgeo_placement(in);
+        p.routes = tile.routes;
         out.placements.push_back(p);
         ++out.pgeo_instances;
       }
@@ -130,6 +132,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
       p.object_id = id;
       p.container = container;
       p.placement = pvsz_placement(rec);
+      if (rec.extended) p.routes = rec.extra;
       out.placements.push_back(p);
     }
   }

@@ -228,6 +228,13 @@ bool parse_pgeo(std::span<const uint8_t> d, PgeoTile& out, std::string* error) {
     // Our reading: the header is 0x60 bytes, or 0x98 when the word at
     // +0x58 is set (the name then follows a longer header).
     out.header_size = load_be32(&d[0x58]) ? 0x98 : 0x60;
+    if (out.header_size == 0x98) {
+      if (d.size() < 0x98) throw FormatError("kind-7 long header runs past the end");
+      const uint8_t n = d[0x84];
+      if (0x85 + size_t(n) > 0x98) throw FormatError("route list of " + std::to_string(n) + " bytes");
+      out.has_routes = true;
+      out.routes.assign(d.begin() + 0x85, d.begin() + 0x85 + n);
+    }
     r.seek(out.header_size);
     const auto name = r.raw(name_size);
     out.name = strip(name.data(), name.size());

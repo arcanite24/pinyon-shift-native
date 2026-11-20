@@ -125,6 +125,10 @@ struct PgeoTile {
   float distance = 0;                          // +0x38, a draw distance (guess)
   std::string name;
   size_t header_size = 0;  // 0x60, or 0x98 when the word at +0x58 is not zero
+  // With the longer header: the byte count at +0x84 and the route list
+  // after it (WORLD-GEOMETRY, "Which placements free roam draws").
+  bool has_routes = false;
+  std::vector<uint8_t> routes;
   std::vector<std::pair<uint32_t, uint32_t>> references;  // (value, flag)
   uint32_t string_records = 0;                             // 8-byte records, skipped
   std::vector<PgeoModelRecord> models;
@@ -152,7 +156,7 @@ struct PvszRecord {
   std::array<uint8_t, 16> unknown{};
   bool extended = false;  // the flag byte
   uint32_t word = 0;      // extended: -1, or a small per-model index
-  std::vector<uint8_t> extra;  // extended: the counted bytes
+  std::vector<uint8_t> extra;  // extended: the counted bytes, the route list (WORLD-GEOMETRY, Q4)
   std::string name;            // extended: the 32-byte name, NULs stripped
 };
 

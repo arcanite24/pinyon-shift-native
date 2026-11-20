@@ -502,6 +502,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     for (const auto& t : impl_->props.trees) {
       const double dx = t.base[0] - x, dz = t.base[2] + z, d = std::sqrt(dx * dx + dz * dz);  // z: file frame here
       if (d > options.tree_radius || d > t.far) continue;
+      if (options.route >= 0 && !fh1::shown_on_route(t.routes, options.route)) {
+        ++st.trees_off_route;
+        continue;
+      }
       auto mit = material_of.find(t.atlas);
       if (mit == material_of.end()) {
         MeshMaterial mm;
@@ -554,11 +558,28 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       const auto& t = p.placement.offset;
       const double dx = t[0] - x, dz = t[2] - z, d2 = dx * dx + dz * dz;
       if (d2 > options.prop_radius * options.prop_radius) continue;
+      if (options.route >= 0 && !fh1::shown_on_route(p.routes, options.route)) {
+        ++st.props_off_route;
+        continue;
+      }
       if (!p.has_object || p.object_id >= impl_->table.objects.size()) {
         ++st.prop_unresolved;
         continue;
       }
       const uint32_t m = impl_->table.objects[p.object_id].member;
+      // The placeholder marker of activity nodes is never drawn (WORLD-
+      // GEOMETRY: a guess from the one marker in view).
+      {
+        std::string family;
+        int lod = -1;
+        if (impl_->prop_models->first_name(m, family, lod)) {
+          for (char& ch : family) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+          if (family.rfind("temp_arrow_pointer", 0) == 0) {
+            ++st.props_markers;
+            continue;
+          }
+        }
+      }
       const int level = d2 < options.prop_lod0 * options.prop_lod0 ? 0 : 2;
       const int64_t member = impl_->prop_models->model(m) ? impl_->prop_models->lod_member(m, level) : -1;
       const fh1::RenderModel* model = member >= 0 ? impl_->prop_models->model(uint32_t(member)) : nullptr;

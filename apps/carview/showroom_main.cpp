@@ -1211,6 +1211,9 @@ int run_drive(int argc, char** argv) {
           std::printf("far ring: %zu models, %zu triangles\n", st.far_models, st.far_triangles);
         if (st.trees || st.trees_untextured)
           std::printf("tree sprites: %zu (%zu without an atlas file)\n", st.trees, st.trees_untextured);
+        std::printf("props: %zu placed, %zu unresolved; left out: %zu off the free-roam route, %zu markers, %zu tree "
+                    "sprites off the route\n",
+                    st.props, st.prop_unresolved, st.props_off_route, st.props_markers, st.trees_off_route);
         for (const auto& n : showroom.notes()) std::fprintf(stderr, "carview: note: %s\n", n.c_str());
         // The effects drawn without a texture, by triangles.
         const auto& mesh = streamer->mesh();
