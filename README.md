@@ -77,6 +77,15 @@ On multivac, from the repository root, after a build and a bake (`out/bake1`
 holds all 240 cars and their physics rows):
 
 ```powershell
+.\build\apps\carview\carview.exe
+```
+
+With no arguments it drives the R34 on Colorado in a 1600 x 900 window,
+from the bake in `out\bake` (or `out\bake1`) and the game under
+`SHIFT_GAME_ROOT` (or the sibling `..\horizon1-recomp\.local\game\base`);
+the console prints what it picked. The same with every argument given:
+
+```powershell
 .\build\apps\carview\carview.exe --drive --bake out\bake1 --car NIS_SkylineGTRVSpecII_02 --world ..\horizon1-recomp\.local\game\base\media\tracks\colorado --size 1600x900
 ```
 
@@ -122,7 +131,9 @@ CAR_PHYSICS's). The chase camera's heading trails the car's by 0.2 s and
 its distance follows the car's size. Picking a car restarts the drive
 with it (a few seconds: the car, its sound and the world load again).
 
-The HUD in the bottom-right corner shows the speed, the rpm with a
+For the first six seconds a line over the HUD names the car and the
+picker and reset keys; while choosing a car it shows the choice. The HUD
+in the bottom-right corner shows the speed, the rpm with a
 tachometer bar (red from 90 % of the redline), the gear (R in reverse)
 and the ABS flag; the window title repeats them. Headless drive renders
 draw it too with `--hud`. The chase camera pulls in when a wall is between it
