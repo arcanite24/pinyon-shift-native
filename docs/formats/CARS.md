@@ -133,6 +133,18 @@ reader needs LZX and deflate.
 | cars in more than one package | 12, all byte-identical across packages | confirmed | SHA-256 of every member |
 | car rows in the merge databases | 84, for 83 media names | confirmed | merge databases |
 
+**Database rows.** A package's car rows come from its merge database,
+`media/db/patch/<n>_merge.slt` inside the offer ZIP (15 of the 21
+packages carry one; the other six add no car rows), merged over v4's
+database as whole rows by key in package priority order
+(`tools/re/car-list.py`; record "M1 car denominator"). Over the merged
+database's 250 `Data_Car` rows every join this page uses resolves: each
+`MediaName` has a car folder, each `StockWheelID` a `List_Wheels` row
+whose media has a wheel folder, each car at least one `Combo_Colors`
+row and the four wheel rows of `CarPartPositions`. `CarPartPositions`
+has no unique key, so a whole-row merge leaves identical duplicate rows
+for 37 cars; read any one of them.
+
 **Rule.** Key cars by media name compared without case. Take a folder
 from the disc first and from the packages in package order; copies are
 identical, so the order changes nothing for the official set. A media
@@ -168,18 +180,25 @@ draw-list block, which locates the part count.
 | --- | --- | --- | --- | --- |
 | tag | 2 × u32 | 4, 4 | confirmed (constant) | all models with parts |
 | LOD count `n` | u32 | 5 in exterior models, 1 in every other model | confirmed | 240 and 2,346 models |
-| transparent lists | `n` lists | list `k` holds the sub-sections drawn with blending at LOD `k` (LOD `k + 1` in an exterior model) | confirmed | every entry's sub-section LOD matches its list |
+| transparent lists | `n` lists | list `k` holds the sub-sections drawn after the opaque ones, mostly without depth writes, at LOD `k` (LOD `k + 1` in an exterior model) | confirmed (lists), confirmed for one car (draw order) | every entry's sub-section LOD matches its list |
 | opaque lists | `n` lists | the same for opaque sub-sections | confirmed | same |
 | list | u32 count + count × u32 | each entry is (part index × 65536 + sub-section index) | confirmed | every entry names an existing sub-section, and every sub-section appears exactly once in the model's lists |
 | end | u32 | 1, then the part count | confirmed | all models |
 
-**Locating it.** Scan the header at 4-byte offsets for the words 4, 4,
-`n` (1 ≤ `n` ≤ 8) whose 2`n` lists parse and end at a word 1 followed by
-a part count whose parts parse. In the corpus this finds exactly one
-position in every model and every header is a multiple of 4 bytes, so an
-implementation can either scan or walk the lamp and node blocks once
-they are decoded. A model with no parts (the empty F-350 LOD0 and two
-brake files) has `n` = 0, the word 1, a part count of 0 and the footer.
+**Locating it.** Scan the file from its start at 4-byte offsets for the
+words 4, 4, `n` with 0 ≤ `n` ≤ 8, whose 2`n` lists parse and are
+followed by the word 1 and a part count `c`, where either `c` = 0 and
+exactly the 24-byte footer follows, or `c` > 0 and a part parses right
+after the count. Over the whole file, not only the header, this finds
+exactly one position in every one of the 2,587 models, and every header
+is a multiple of 4 bytes. A model with no parts (the empty F-350 LOD0 and
+the two empty brake files) is the `n` = 0 form: the words 4, 4, 0, 1, 0
+and the footer. An implementation can scan, or walk the lamp and node
+blocks once they are decoded.
+
+The render models of [WORLD_GEOMETRY.md](WORLD_GEOMETRY.md) carry the
+constant words 4, 4, 0, 1 before their object count: by this layout that
+is the same block with no lists (probable).
 
 **Footer.** Six words, 1, 0, 1, 0, 1, 0, in every model (meaning
 unknown; write them back as read).
@@ -290,11 +309,18 @@ damage flags 1 become 3. A twin is fully determined by its model
   with the car layout. `Circle01` and `drum_null_caliper` are empty
   models (no parts). Confirmed.
 - **Livery shapes** (`Livery.zip`, 492 under `decals/`, 880 under
-  `vinyls/`): a different layout. They start with the word 3 (360 with
-  1), a box as two (x, y, z, 0) vectors, the words 1, 0, 4, 4, 0, 1, 1, 2,
-  the box again, a part named `decal` and 36-byte vertices; some carry an
-  embedded texture. Not decoded and not needed for M1, which shows
-  factory paint (guess for the framing).
+  `vinyls/`): close to the render-model layout of
+  [WORLD_GEOMETRY.md](WORLD_GEOMETRY.md#mesh-object), not to the car
+  layout. The 664 with first word 3 continue with a box as two
+  (x, y, z, 0) vectors, the words 1, 0, then 4, 4, 0, 1 (the empty
+  draw-list block) and an object count of 1, then one mesh object whose
+  tag is 2, not 1: centre, half-extents, a name (`decal`, or the
+  vinyl's own name), a vertex format (2 or 3), a vertex count, stride 36
+  and the vertices; some decals then carry what looks like an embedded
+  texture. The world-geometry reader does not walk them as they are (no
+  matrix in the header, tag 2). The 708 with first word 1 were not
+  examined. Probable for the kind-3 framing, open for the rest; not
+  needed for M1, which shows factory paint.
 
 ## `.xds`: textures
 
@@ -336,20 +362,34 @@ own region, until the packed tail:
   rounded up to a power of two and halved per level (the base level uses
   the header pitch when that is larger); its height in blocks is rounded
   up to 32 the same way. Its byte size is rounded up to 4,096.
-- The levels whose shorter side is 16 texels or less share one packed
-  tile at the end, at block offsets the published packed-mip rule gives
-  (levels 1 and 2 of the tail along one axis, the rest along the
-  other). A texture whose base level is that small is all tail (209
-  textures): its one region takes its pitch and height from the size
-  rounded up to powers of two, not from the header pitch.
+- The levels whose shorter side, rounded up to a power of two, is 16
+  texels or less share one packed tile at the end. With `L` and `S` the
+  base-2 logarithms of the longer and shorter side rounded up, the tail
+  starts at level `max(S − 4, 0)`, and tail level `t` (0 for the first
+  level in the tail) sits at this texel offset in the tile (divide by 4
+  for block formats):
+
+  | Tail level `t` | Offset along the shorter axis | Offset along the longer axis |
+  | --- | --- | --- |
+  | 0, 1, 2 | 16 >> `t` (16, 8, 4) | 0 |
+  | 3 and up | 0 | 2^(`L` − `max(S − 4, 0)`) >> (`t` − 2) |
+
+  The shorter axis is y for a texture wider than tall, x otherwise
+  (square textures count as not wider). A texture whose base level is
+  that small is all tail (209 textures): its one region takes its pitch
+  and height from the size rounded up to powers of two, not from the
+  header pitch.
 - Inside a region, block (x, y) is at the console's standard 2D tiled
   offset. Each block is byte-swapped by the endian mode.
 
-Confidence: confirmed. The payload of each of the 7,440 tiled textures
-equals the layout's size exactly; 698 base body atlases and 154 Autoshow
-pictures decode and re-encode byte for byte (accar branch
-`tools/fh1_xds.py`). DXN and DXT5A are size-checked only; their blocks
-are the standard two-channel and one-channel BC formats.
+Confidence: confirmed for region sizes and for full-size levels. The
+payload of each of the 7,440 tiled textures equals the layout's size
+exactly; 698 base body atlases and 154 Autoshow pictures decode and
+re-encode byte for byte (accar branch `tools/fh1_xds.py`). The tail
+offsets and the all-tail textures are probable: the 209 all-tail
+textures are size-checked only, and no tail level was compared texel
+by texel. DXN and DXT5A are size-checked only; their blocks are the
+standard two-channel and one-channel BC formats.
 
 ## Materials
 
@@ -360,7 +400,12 @@ cars (266 in the base cars). The most frequent: `black`, `body`,
 `ShaderSettings.xml` overrides parameters for that car (probable).
 
 **Transparent techniques** (from the draw lists; confirmed: each
-technique is in only one kind of list in every model): `window`,
+technique is in only one kind of list in every model). In the showroom
+frame of the stock XKR-S, each of the three times the car is drawn, the
+transparent-list draws come after the opaque ones, and 138 of the 162
+transparent draws have depth writes off while 1,032 of the 1,038 opaque
+draws write depth; the blend register is the same for both, so blending
+itself was not read from the dump. The techniques are: `window`,
 `window_2`, `frontwindow`, `glass`, `glass_2`, the `glass*_LOD<n>`
 names, `detail_glass_clear`, `detail_glass_red`, `detail_glass_amber`,
 `lights_glass`, `light_glass`, `red_glass`, `blur_rim` and
@@ -372,12 +417,13 @@ to the archive member with the same bytes):
 
 | Techniques | Slot 0 | Slot 1 | Slots 2 and up |
 | --- | --- | --- | --- |
-| exterior paint and trim: `body`, `body_2`, `rubber_trim` | `nodamage_LOD0` | — | `dirt_pattern`, `dirt_mask` |
+| exterior paint: `body`, `body_2` | `nodamage_LOD0` | — | `dirt_pattern`, `dirt_mask` |
+| `rubber_trim` | `nodamage_LOD0` | `dirt_pattern` | `dirt_mask` |
 | `black`, `frame`, `plastic2`, `matte_colors`, `emblem`, `bottom`, `weatherstrip`, `misc`, `chrome` (cockpit) | `nodamage_LOD0` | `dirt_mask` | |
 | `undercarriage` | `nodamage_LOD0` | `dirt_mask` | `undercarriage` (Shared) |
 | `carbon_fiber` | `nodamage_LOD0` | `carbonFiber` | `carbonFiberNormal` (Shared) |
 | `bumper_frame`, `grille1` | `nodamage_LOD0` | `bumper_frame`, `grille1_alpha` (Shared) | |
-| lamps: `taillight2S`, `taillightst`, `tail_light_lod0`, `reverse_light_lod0`, `indicator_left`, `indicator_right`, `xenonhead`, `slorange`, `textured_reflector`, `numplate`, `drlwhite` | `nodamage_LOD0` | `lights_LOD0` | |
+| lamps: `taillight2S`, `taillightst`, `tail_light_lod0`, `reverse_light_lod0`, `indicator_left`, `indicator_right`, `xenonhead`, `slorange`, `textured_reflector`, `numplate`; `drlwhite` (no slot 0) | `nodamage_LOD0` | `lights_LOD0` | |
 | interior: `leather`, `cloth`, `plastic`, `solid`, `mottled`, `headliner` | (`nodamage_LOD0` on some) | `interior_LOD0` | `interior_emissive_LOD0` on some |
 | interior with normal maps: `bump_leather`, `bump_plastic`, `bump_stitching` | | `interior_LOD0` | `leather_NRM`, `plastic_NRM`, `stitches_BUMP` |
 | gauges: `gauge_emissive`, `z_gauge_emissive_alpha` | | `interior_LOD0` | `interior_emissive_LOD0` |
@@ -419,7 +465,7 @@ alpha 255; `chrome` 23 % alpha 0 (probable).
 | Fact | Confidence | How |
 | --- | --- | --- |
 | A car's factory colours are its `Combo_Colors` rows (1 to 31 a car, 1,281 rows): `ID` = car id × 1000 + n, `Sequence`, `Metallic` (0 or 1), `RGB` = r × 65536 + g × 256 + b, `BaseTexture`, `DamageTexture` | confirmed | database; a clone given seven rows showed seven swatches |
-| The showroom shows the row with the lowest `Sequence` | probable | three cars (other agent's M1 pilot; record "Autoshow showroom colour") |
+| The showroom shows the row with the lowest `Sequence` | probable | three pilot cars ([AUTOSHOW_REFERENCE.md](AUTOSHOW_REFERENCE.md#paint-colour); record "Autoshow showroom colour") |
 | On exterior techniques a pixel-shader constant equals that row's RGB / 255 converted from sRGB to linear; it is 0 on other techniques | confirmed for one car | frame dump of the stock XKR-S |
 | The paint shows where the atlas alpha is 0; alpha 255 shows the texel (badges, engine bay) | probable | atlas content and the body technique's alpha census |
 | `BaseTexture` names the clean atlas to use with that colour (`nodamage*.tga` in the table, shipped as `.xds`); `DamageTexture` is always `damage.tga` | confirmed (names), probable (use) | every name resolves to a member of the car's archive |
@@ -454,14 +500,14 @@ masks only to show where a livery could go; factory cars have none.
 
 | Fact | Confidence | How |
 | --- | --- | --- |
-| `Data_Car.StockWheelID` is a `List_Wheels` row whose `MediaName` names `media/wheels/<WheelMedia>.zip` (or a package's `media/wheels/<WheelMedia>/`); 172 of the 176 base cars use their own media name | confirmed | database against the listings, all 176 cars |
+| `Data_Car.StockWheelID` is a `List_Wheels` row whose `MediaName` names `media/wheels/<WheelMedia>.zip` (or a package's `media/wheels/<WheelMedia>/`); 172 of the 176 base cars use their own media name | confirmed | database against the listings: all 176 base rows and all 250 merged rows resolve |
 | A wheel archive holds `<WheelMedia>.carbin` (one part, `wheel`, with sub-sections for LOD0 to LOD5: `rim`, `inner_rim`, `outer_rim`, `wheel_black`, `blur_lip`, `blur_rim`), `wheel_LOD0.xds`, `wheel.xds` and `wheel0`-`wheel3.xds` | confirmed | listing; the showroom draws the LOD0 sub-sections |
 | `List_Wheels` has 736 rows; 285 of their media are on the disc | confirmed | database and listing |
 | Tyres are shared models `TireA`, `TireB`, `TireC` (sub-sections `sidewall`, `tread`), x from −0.5 to 0.5 and radius 0.194 to 0.287; the Raptor and Wrangler have their own variants | confirmed (files) | parse |
 | Which tyre model a car uses is not known; the stock XKR-S drew `TireC` with the `A` sidewall and tread textures | open | frame dump |
-| `CarPartPositions` holds 10 rows a car; rows 5 to 8 are the wheel centres in car space (5 left rear, 6 right rear, 7 right front, 8 left front) | confirmed | their spacing equals the wheelbase, their height the tyre radius less the stock ride height within a few cm, on 176 cars |
+| `CarPartPositions` (`ID` = car id × 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`, `PartPosY`, `PartPosZ`) holds 10 rows a car; `PartId` 5 to 8 are the wheel centres in the model's own frame (+X right, +Z rear; 5 left rear, 6 right rear, 7 right front, 8 left front). Unlike the lamp points, z is not negated | confirmed | their spacing equals the wheelbase, their height the tyre radius less the stock ride height within a few cm, on 176 cars; the signs (rear at +z, left at −x) hold for every wheel row of the 250 merged rows |
 | Rows 0 to 3 are lamp positions, rows 4 and 9 driver or steering points | guess | positions |
-| The rim and tyre models are drawn once per wheel in each of the showroom's three passes, as every car model is; left wheels are the same model mirrored | probable (count), guess (mirroring) | frame dump draw counts |
+| The rim and tyre models are drawn once per wheel each of the three times the frame draws the car, as every car model is; left wheels are the same model mirrored | probable (count), guess (mirroring) | frame dump draw counts |
 | Each wheel draw carries a constant with the rim radius = `WheelDiameterIN` × 0.0254 / 2 and the tyre's outer radius = rim radius + (tyre width in mm / 1000) × (aspect / 100), per axle | confirmed for one car | frame dump against `Data_Car` front and rear tyre sizes |
 | Lateral scale: the tyre's is its width in metres × 1.033; the rim's is the axle's tyre width ÷ the front tyre width | confirmed for one car | frame dump constants |
 | Rim models are normalised: 95 of the 176 stock rims have an outer radius of 0.190 to 0.196, the rest from 0.02 to 0.42 | confirmed (census) | parse |
@@ -496,9 +542,11 @@ the tyre choice is known.
   glass texels sampled are white with alpha 0, so the tint is the
   effect's (probable).
 - **Shadow.** v4's `shaders/cars` has `dropshadow` and the car effect a
-  `dropShadow` technique; no shadow model was found in the car files
-  (probable: the shadow is drawn from the car's own models or a generic
-  quad). The engine may draw its own contact shadow.
+  `dropShadow` technique, and no shadow model is in the car files. The
+  Autoshow frame dumps put no car geometry in a depth-only or shadow
+  pass, and the darkening under the car has no established source
+  ([AUTOSHOW_REFERENCE.md](AUTOSHOW_REFERENCE.md#parts-and-lighting)).
+  The engine may draw its own contact shadow.
 
 ## Unknowns
 
@@ -511,14 +559,15 @@ the tyre choice is known.
 | back-face culling for glass and the cockpit | visual | cull opaque techniques, draw transparent ones two-sided |
 | livery decal and vinyl models | none (no liveries in M1) | reject with a message |
 | whether the v4 or the disc copy of the car effect wins, and which package copy of a duplicated car loads | none (copies are identical for the official set) | disc first, then packages |
-| a model whose draw-list scan finds no or several positions | none in the corpus | reject the model and name it |
+| a model whose draw-list scan (including the `n` = 0 form) finds no or several positions | none in the corpus | reject the model and name it |
 
 ## Tolerances
 
 Parsing is exact: an implementation must reproduce every count below.
-For drawing, compare against the Autoshow reference captures by image
-metric (the other agent's `docs/formats/AUTOSHOW_REFERENCE.md` sets the
-metric and the views).
+For drawing, compare against the Autoshow reference captures of
+[AUTOSHOW_REFERENCE.md](AUTOSHOW_REFERENCE.md), each with the camera
+from its own frame dump; the image metric and its threshold are not set
+yet (open).
 
 ## Tests
 
@@ -538,10 +587,12 @@ prints each.
 | 32-bit index buffers | 28,359 | 13,008 |
 | vertices in all pools | 35,193,432 | 16,461,551 |
 | distinct techniques | 266 | 161 (284 over both) |
-| models whose draw-list scan finds exactly one position, covering every sub-section once | all 1,882 with parts | all 704 |
+| models whose draw-list scan from the file's start finds exactly one position | all 1,883 | all 704 |
+| models whose draw lists cover every sub-section once, each in its LOD's list | all 1,882 with parts | all 704 |
 | `.xds` in car and wheel folders | 4,794 | 2,647 |
 | tiled textures whose payload equals the layout size | 4,793 (one linear) | 2,647 |
 | loose brake models that parse / empty | 118 / 2 | — |
+| merged `Data_Car` rows (base, v4 and the 21 packages) with a car folder, a wheel folder, a colour row and wheel rows 5-8 | 250 of 250 (one table over both columns) | |
 
 Synthetic cases an implementation should also pass: a model with an
 empty part (±FLT_MAX box, no vertices); a model with no parts; a 16-bit

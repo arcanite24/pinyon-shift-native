@@ -93,6 +93,32 @@ def draw_lists(head: bytes):
     return found
 
 
+def scan_file(data: bytes) -> list[int]:
+    """Offsets of the part count found by the spec's rule over the whole
+    file: 4, 4, n (0 <= n <= 8), 2n lists, the word 1, then a count c with
+    either c = 0 and only the 24-byte footer after it, or a part that
+    parses right after it."""
+    marker = struct.pack(">II", 4, 4)
+    found = []
+    at = data.find(marker)
+    while at != -1:
+        if at % 4 == 0 and at + 12 <= len(data) and u32(data, at + 8) <= 8:
+            p, ok = at + 12, True
+            for _ in range(2 * u32(data, at + 8)):
+                count = u32(data, p) if p + 4 <= len(data) else 1 << 30
+                if count > 4096 or p + 4 + 4 * count > len(data):
+                    ok = False
+                    break
+                p += 4 + 4 * count
+            if ok and p + 8 <= len(data) and u32(data, p) == 1:
+                count = u32(data, p + 4)
+                if (count == 0 and len(data) - (p + 8) == 24) or (
+                        0 < count <= 4096 and fh1_carbin._plausible_section(data, p + 8)):
+                    found.append(p + 4)
+        at = data.find(marker, at + 1)
+    return found
+
+
 def _align(value: int, to: int) -> int:
     return (value + to - 1) // to * to
 
@@ -153,6 +179,11 @@ def census(root: Path, brakes: Path | None) -> int:
             s["models"] += 1
             s["kind " + model_kind(name)] += 1
             s["round trip"] += model.encode() == data
+            expected = len(model.head) if model.sections else len(data) - 28
+            if scan_file(data) == [expected]:
+                s["draw-list scan from the file start finds one position"] += 1
+            else:
+                problems.append(f"{car}/{name}: the whole-file draw-list scan does not find one position")
             if not model.sections:
                 s["no parts"] += 1
                 continue
