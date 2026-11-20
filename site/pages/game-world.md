@@ -62,6 +62,18 @@ original INI-backed block does not update the cached placement. The
 [camera editor](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/MODDING.md#camera-editor) retains
 those loaded values so resetting preserves another mod's tuning too.
 
+The right shoulder steps through five driving cameras: low chase, high
+chase, cockpit, hood and bumper, then back to the low chase. The chase
+cameras orbit the car's centre of mass at a distance set by its collision
+box (not its drawn size) and start at a fixed height above the ground,
+1.80 m or 2.08 m for every car on the disc, because the minimum and
+maximum of the height band are equal. The cockpit eye hangs off the
+steering wheel's position, the hood eye off one point shared by every
+car, and the bumper eye sits 1.15 m above the ground, 0.61 m behind the
+collision box front. Parked frame dumps of the R34 and the CR-X match
+these rules within 2 mm. The native engine's specification is
+[SPEC-CAMERAS](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/specs/CAMERAS.md).
+
 {{findings:world/Collision and cameras}}
 
 ## Placements and routes

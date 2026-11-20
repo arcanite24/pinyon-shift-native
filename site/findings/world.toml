@@ -278,11 +278,11 @@ source = """docs/MODDING.md Built-in mods; Settings merged by key"""
 
 [[finding]]
 group = """Collision and cameras"""
-base = """sub_8284DAE0; sub_8284E038; sub_8284E058; sub_8284E350; sub_8285AD98"""
+base = """sub_8284DAE0; sub_8284E038; sub_8284E058; sub_8284E350; sub_8284E430; sub_8285AD98; sub_8285CEA0; sub_82851E30; sub_82852590; sub_8284E088; sub_8284DA00; sub_8284E1E0"""
 v4 = """sub_828FDD30; sub_828FE2F0"""
 name = """chase camera loaded tuning and per-car offsets"""
-what = """A chase camera's +192 pointer names the 56-byte CameraSettings.ini FollowLowCam/FollowHighCam tuning block. Float offsets are height 0, radius 4, target height 8, minimum/maximum ground height 12/16, near/far clip 20/24, FOV in degrees 28, yaw spring K/D 32/36, yaw damping scale/max speed 40/44 and height spring K/D 48/52. Initialization copies height/radius/target to camera +268/+276/+280; per-car overrides can replace these instance values, so editing only the tuning block's placement fields is insufficient for live placement. FOV is read from the tuning block by the getter."""
-how = """Setting registration, FOV getter, initialization, per-car writer and height-spring update analysis; Windows disc/v4 pinned-seed routes fh1-camera-editor confirm live placement, FOV, stiffness coefficients and restoration."""
+what = """A chase camera's +192 pointer names the 56-byte CameraSettings.ini FollowLowCam/FollowHighCam tuning block. Float offsets are height 0, radius 4, target height 8, minimum/maximum ground height 12/16, near/far clip 20/24, FOV in degrees 28, yaw spring K/D 32/36, yaw damping scale/max speed 40/44 and height spring K/D 48/52. Initialization copies height/radius/target to camera +268/+276/+280; per-car overrides can replace these instance values, so editing only the tuning block's placement fields is insufficient for live placement. FOV is read from the tuning block by the getter. Placement (SPEC-CAMERAS): `sub_8285CEA0` starts the camera and computes once the box top above the ground under physics wheel 2 plus the height and split-screen terms, then adds a correction to +268 and +280 that brings it into the minimum/maximum band (min = max on the disc, so every car's chase eye starts 1.80 / 2.08 m above the ground). `sub_8285AD98` updates it: `sub_82851E30` is the yaw spring (state +240, K/D times the mean wheel contact, car yaw rate damping, clamp to the maximum speed), `sub_82852590` the look spring at +296, `sub_8284E088` the radius ((box half z - box centre z) + [292] + [276] + [272], times a FOV ratio using [112]), `sub_8284DA00` the ground-plane slope term at the eye, the height spring on +248/+252 toward the box top; then eye y = target y + [288] + [268] + [248] and look-at y = target y + box top + [280]. `sub_8284E1E0` lifts the eye to 0.3 m above a world collision hit. The box is the car's collision box ("car collision box for cameras"), the target its centre of mass. Measured: the radius is the collision box rear extent behind the CoM + 2.80 m (low) / 2.90 m (high) on the R34 and CR-X within 2 mm."""
+how = """Setting registration, FOV getter, initialization, per-car writer and height-spring update analysis; Windows disc/v4 pinned-seed routes fh1-camera-editor confirm live placement, FOV, stiffness coefficients and restoration. 2026-11-20: start and update read statically, then frame dumps of both chase cameras on the R34 and CR-X (tools/re/cameras.py), eyes against the physics trace's body position."""
 confidence = """confirmed"""
 issue = """#487"""
 source = """docs/MODDING.md Camera editor; src/camera_tuning.h"""
@@ -296,6 +296,42 @@ what = """Rally finish sequences aim at authored camera target nodes (`CameraTar
 how = """Read-only camera snapshots, a terrain query on a copy of the node, and a run with the fixed data."""
 confidence = """confirmed"""
 source = """docs/DLC_BACKLOG.md Rally finish-camera height"""
+
+[[finding]]
+group = """Collision and cameras"""
+base = """sub_82854D10; sub_828587E0; sub_82858868; 0x8248AD9C in sub_8248AB08"""
+name = """driving camera cycle and button"""
+what = """`sub_82854D10(controller, group)` steps the camera controller's mode to the next entry of the 24-mode table (base 0x8324BB08, 12-byte entries: name, group, flag) in the requested group, wrapping. Group 1 holds modes 0-4 (FollowCam, FollowCam2, DriverCam, Hood, BumperHigh). Mode 2 is skipped unless the car's field +0x3298 is 0 (probably "has a cockpit"), mode 3 when the controller's +0xA4 is set, modes 3 and 4 when controller +0x154 is not 24. The player-input function `sub_8248AB08` (named for rumble output, but it also reads the pad actions) calls it with group 1 at `0x8248AD9C` on action 17, `SwitchCamera`, which `ControllerLayouts` layout 0 puts on the right shoulder. The starting camera is the profile's `Main/CameraAngle` (0 in a new profile). The set-mode wrappers are `sub_828587E0` and `sub_82858868`."""
+how = """Reading the cycle, its caller and the controller layout table; frame dumps after each right-shoulder press on two cars (tools/re/cameras.py route), the cameras told apart by FOV: FollowCam, FollowCam2, cockpit, hood, bumper, FollowCam, parked and cruising."""
+confidence = """confirmed"""
+source = """docs/specs/CAMERAS.md The camera set, the button and the default"""
+
+[[finding]]
+group = """Collision and cameras"""
+base = """sub_824C2B08; 0x824E2124 in sub_824E1818; sub_824E2180"""
+name = """per-car camera overrides"""
+what = """`sub_824C2B08` reads the car's `CameraOverrides` row into a 23-float block stored at car +0x3C9C, in column order: follow-low height, radius, target y; follow-high height, radius, target y; bumper-high height, z; bumper-low height, z; hood height, z, pitch; cockpit offset x, y, z; split-screen cockpit offset x, y, z; cockpit wheel position x, y, z; wheel rotation. It is called while a car is built (`sub_824E1818` at `0x824E2124`, and `sub_824E2180`). 241 of the 250 `Data_Car` rows have a row (the 9 without are traffic models). Non-zero: low chase 72 rows, high chase 17, bumper 0, hood all 241 (pitch on 2), cockpit 172; 69 rows have every cockpit field zero."""
+how = """Loader and caller analysis; database counts; the R34 and CR-X hood and cockpit eyes in frame dumps match their rows within 1 mm."""
+confidence = """confirmed"""
+source = """docs/specs/CAMERAS.md Per-car overrides"""
+
+[[finding]]
+group = """Collision and cameras"""
+base = """sub_828517C0; sub_8284C780; sub_8284CDF8; sub_8284CE80; sub_82851698; sub_8284C588; sub_8285C8C8; 0x82031F60; 0x82022858; 0x820740F8"""
+name = """cockpit-family camera placement"""
+what = """The hood, driver and bumper cameras keep an anchor at +192 and an offset at +208 in the car frame, and `sub_8285C8C8` updates them: eye = anchor + offset, turned by a look spring (+276, target +280); with the look near pi the eye moves to the car's collision box rear, near +-pi/2 to its side, 0.6096 m (`0x820740F8`) inside. Hood start `sub_828517C0`: anchor (0, 0.45, 0.6) (`0x82031F60`, `0x82022858`) plus a vector from car vtable +1128; `sub_8284C780` sets the offset (0, hood height, hood z) and pitch +320 from the overrides, or the HoodCam defaults when all three are zero. Driver start `sub_8284CDF8`: anchor = car part position 9 (steering wheel); `sub_8284CE80` sets the offset to the cockpit override when any cockpit field is non-zero, else Driver DefaultOffsetFromSteeringWheel. Bumper start `sub_82851698`: anchor x 0, y = wheel 0 position y + RestHeightAboveGround - wheel 0 radius, z = collision box front - 0.6096; `sub_8284C588` sets the offset (0, 0, bumper z override) or (0, 0, CamZOffset)."""
+how = """Reading the start and update functions; frame dumps of the three cameras on the R34 and CR-X, parked and cruising, and the bumper's look back and right on the R34: every eye within 2 mm of the rule."""
+confidence = """confirmed"""
+source = """docs/specs/CAMERAS.md On-car cameras"""
+
+[[finding]]
+group = """Collision and cameras"""
+base = """sub_82D1E2D8; sub_82D14110"""
+name = """car collision box for cameras"""
+what = """`ICarDynamics` vtable slot 220 (`sub_82D1E2D8`) returns two float4s, the centre and half extents of the car body's collision box kept at `CCarDynamics` +0x920 (interface - 0x1B0), which `sub_82D14110` builds from the body's collision shape. The cameras use it for the chase radius and height and the bumper and look positions. It matches the car archive's `Physics/MAXData.xml` `Collision/BoundingBox` with z shifted by minus `Data_CarBody.BottomCenterWheelbasePosZ`, not the database's pristine box (R34 front 2.11 m against 2.42 m)."""
+how = """Vtable read and the box builder's stores; the R34 and CR-X bumper eyes (front - 0.6096 - 0.05) and the R34 look-back eye (rear + 0.6096) within 1 mm of the MAXData box with that shift."""
+confidence = """probable"""
+source = """docs/specs/CAMERAS.md Frames"""
 
 # --- Placements and routes ---------------------------------------------------
 
