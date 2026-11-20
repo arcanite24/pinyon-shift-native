@@ -860,8 +860,12 @@ Corpus counts come from `census` over the extracted members.
    camera (WORLD_GEOMETRY open question 3).
 10. The sky: the draw that paints it and its parameters
     (`realtimesky.zip`).
-11. Which placements the game shows (event props): see WORLD_GEOMETRY's
-    selection question.
+11. Which placements the game shows (event props): answered 2026-11-20
+    for free roam (route lists on `.pvsz` records and switchable kind-7
+    tiles; route 0 is free roam), see WORLD_GEOMETRY.md,
+    [Which placements free roam draws](WORLD_GEOMETRY.md#which-placements-free-roam-draws-engine-question-q4).
+    Still open: the camera-to-zone lookup, and which instances of the
+    shown vegetation tiles are drawn.
 
 ## Reproduce
 

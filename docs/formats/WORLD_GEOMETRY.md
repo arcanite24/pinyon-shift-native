@@ -267,13 +267,14 @@ Kind-7 header fields (offsets from the start):
 
 | Offset | Meaning | Confidence |
 | --- | --- | --- |
-| +0x38 | a distance: 2,500 in 1,432 of the 2,031 kind-7 tiles, 500 in 418, 3,500 in 131, 750 in 20, 350 in 15 | guess (draw distance) |
+| +0x38 | a distance: 2,500 in 1,432 of the 2,031 kind-7 tiles, 500 in 418, 3,500 in 131, 750 in 20, 350 in 15. It is 500 in all 413 event tiles (below), but also in 5 tiles that free roam keeps, so it is not the selection | guess (draw distance) |
 | +0x3C | name length; the name starts at +0x60, or at +0x98 when the word at +0x58 is non-zero (1,562 and 469 kind-7 tiles; the 0x38 bytes between are not decoded) | confirmed (every tile parses to its size) |
 | +0x40 | number of 8-byte references (u32 value, u32 flag) | probable |
 | +0x44 | number of 8-byte string records | probable |
 | +0x48 | total size | confirmed (equals the file size) |
 | +0x50 | size of the trailing block of 40-byte tree billboard records, one per sprite, in group order ([WORLD_MATERIALS.md](WORLD_MATERIALS.md#tree-billboards-engine-question-q38)) | confirmed |
 | +0x54 | number of model records | confirmed |
+| +0x84 | when the word at +0x58 is non-zero: a byte count n, then the tile's **route list**, n bytes from +0x85 (the rest of the block to +0x98 is zero in every such tile). A tile without the block (+0x58 zero) has no list | probable (route list, see [Which placements free roam draws](#which-placements-free-roam-draws-engine-question-q4)); confirmed (layout, all 469 kind-7 tiles with the block) |
 
 Then, 16-byte aligned, 0x40-byte **model records**: a box (minimum, pad,
 maximum, pad), a string length, three (count, slot) pairs giving up to
@@ -334,7 +335,7 @@ A zone file has three parts:
 | rotation | 18 | nine half floats h0..h8; see the reading below | confirmed |
 | unknown | 16 | zero in the samples | — |
 | flag | 1 | 0: the record ends here (53 bytes) | confirmed |
-| when the flag is 1 | 4 + 1 + c + 32 | a u32 (−1, or a small index shared by every placement of one model: perhaps a physics or smashable type), a byte count c, c bytes, a 32-byte name such as `FR06_13` | probable |
+| when the flag is 1 | 4 + 1 + c + 32 | a u32 (−1, or a small index shared by every placement of one model: perhaps a physics or smashable type), a byte count c, the **route list** (c bytes, each a track route number; 0 is free roam), a 32-byte name such as `FR06_13` (empty, or a `GameObjs.xml` gameplay ID) | probable (u32); probable (route list, see [Which placements free roam draws](#which-placements-free-roam-draws-engine-question-q4)); confirmed (name: all 1,959 distinct names are `GameplayID`s) |
 
 **Finding the records.** The block's size is not known, and in most
 zones several start offsets give n records that end exactly at the end
@@ -373,7 +374,9 @@ more than one object the rotations are equal and the table names a
 different member for each, of one LOD set at 231 of them. An engine that
 resolves each to the same level draws the model several times in
 place; keep one placement per model and spot. Which of them the game
-draws is the selection question (open question 3).
+draws is the LOD part of the selection question (open question 3);
+which spots are shown at all is answered under
+[Which placements free roam draws](#which-placements-free-roam-draws-engine-question-q4).
 
 ### Object table
 
@@ -448,6 +451,112 @@ the records name). Corrected 2026-11-20: this page said earlier that no
 link to file names was found. The materials reach these records through
 per-model lists; see
 [WORLD_MATERIALS.md](WORLD_MATERIALS.md#from-a-texture-slot-to-a-file).
+
+### Which placements free roam draws (engine question Q4)
+
+Answered 2026-11-20 (specification role) for the free-roam reference
+frame (`.local/re/world/reference/freeroam.json`, the dump the 130
+placements come from). Drawing every placement puts a race's set
+dressing on the road: a gantry, a grandstand, marquees, flags and
+concrete barriers that the game shows only during that race.
+
+**The rule.** Both stores carry a **route list**: a `.pvsz` record in its
+flag-1 bytes, a switchable kind-7 tile in its header block (+0x84). Each
+byte is a track route number, the number in `Ribbon_00/TrackRoute<NNN>.xml`;
+route 0 is free roam. A placement is shown in free roam when it has no
+list (a flag-0 record, a flag-1 record with c = 0, a tile without the
+block) or when its list holds 0. During an event the active route's
+number would take 0's place (inferred from the numbers, not observed).
+Every placement has one of three states:
+
+| Route list | `.pvsz` objects (of 59,599) | kind-7 tiles (of 2,031) | Free roam |
+| --- | --- | --- | --- |
+| none | 35,672 (31,682 flag 0, 3,990 flag 1 with c = 0) | 1,562 (the `Models_Ungrouped_*` tiles) | shown |
+| holds route 0 | 3,954 (3,652 of them named gameplay objects) | 56 (55 named `...[freeroam]...`, one tree set) | shown |
+| other routes only | 19,973 | 413 (the `models_proc_clrd_*barrier*`, `festival_*`, `multiplayer_*` sets) | hidden |
+
+Evidence that the bytes are route numbers (probable): of the 83 distinct
+values in `.pvsz` lists, 81 are numbers of the 243 `TrackRoute` files (15
+and 203 have no file); of the 110 in tile lists, 109 (15 again). The
+grandstand, marquees, tent and flags at the camera carry routes 134 and
+210, and those two routes' first start locations are 18 m and 20 m from
+the camera; the `e3_reset_*` marker objects carry only route 170. No code
+was found that compares the list with a route, so the mechanism is
+inferred from the data.
+
+**The camera's zone.** The candidates are presumably the objects listed
+by the zone file the camera is in (the [PVS zones](#pvsz-zone-files)):
+the union of all zones adds shown spots the frame does not draw. Two
+zones list all 105 objects at the spots the frame drew, `__R00Z01063` and `__R00Z01093`; the rule is
+exact with the first, so it is presumably the camera's zone. How the
+camera position selects a zone (`PVSZLookup_00.dat`, 1,434 pairs of a
+key and a zone number) is not decoded.
+
+**Counts.** Placements whose origin projects inside the 1280 × 720
+reference image; a `.pvsz` spot (one position, one object per LOD level)
+counts as drawn when the frame drew any of its objects, and as shown
+when any of its objects passes the rule:
+
+| Set | Spots | Drawn, shown | Not drawn, hidden | Drawn, hidden | Not drawn, shown |
+| --- | --- | --- | --- | --- | --- |
+| zone `01063`, within 470 m | 206 | 70 | 136 | 0 | 0 |
+| zone `01063`, any distance | 325 | 97 | 215 | 0 | 13 |
+| zone `01093`, within 470 m | 246 | 70 | 147 | 0 | 29 |
+| every zone, within 470 m | 282 | 70 | 159 | 0 | 53 |
+
+All four rows count the marker below as hidden. No drawn spot is hidden
+by the rule. The 13 shown but not drawn beyond 470 m (buildings, a barn,
+road signs, two flyer signs, festival speakers and floodlights, a bin, a
+telegraph pole) are not explained: the record's third distance is
+not a draw limit, since 48 drawn objects lie beyond it (fences at 213 m
+with 200, signs at 629 m with 150), and the top bit of the zone's object
+ID does not separate them either (records within 470 m in zone `01063`: drawn, 64 clear and 10 set; not
+drawn, 124 clear and 40 set).
+
+Kind-7 instances on screen within 470 m: 467 in six event tiles (none
+drawn; 121 of them the concrete barriers of
+`models_proc_clrd_barrier_reds_004_005_006_shared_0`, routes 134, 157,
+160 and 210); 15 in two `[freeroam]` tree tiles; 444 in untagged tiles,
+of which the frame drew 41 (the chain-link fence and the pine). The rule
+hides the event tiles, but it does not say which instances of the shown
+tiles are drawn: about 80 shrub and tree instances inside their group's
+first distance are not tied to a draw, while 10 fence and 5 pine
+instances beyond it are. The first group distance is therefore not a
+cut-off either; vegetation (and whether its draws escape the tie) is
+open.
+
+**The three items in the engine's frame**, all `.pvsz` objects at the
+event start of `FR06` (the frame's "The Gauntlet" sign-up) and all hidden
+by the rule:
+
+| In the engine | Object | Route list | In the game's frame |
+| --- | --- | --- | --- |
+| gantry over the road, 40 m | `OBJ_FEST_FlyUnderWalkway` (LOD00/01), a 30 m wide, 6.7 m tall span | 157, 160 | not drawn |
+| grandstand and the banner wall under it, 14 m, right | `GrandstandStraight` (LOD00..02); the banners are probably the front of this model, whose main material is `FEST_RACECENTRAL_Grandstand_Main` (not checked against its texture) | 134, 210 | not drawn |
+| concrete barriers along the right verge | kind-7 tile `models_proc_clrd_barrier_reds_004_005_006_shared_0`, `BarrierConcrete_mult` | 134, 157, 160, 210 | not drawn |
+
+None of these members is tied to any draw of the frame when all 2,393
+local-space models are matched (`match-all.txt`), so "not drawn" means
+absent from the frame, not left out of a narrower match. The metal crowd
+barriers, the trailer and one flag that the game does show there are
+named `FR06_00`…`FR06_14` gameplay objects with route list {0}.
+
+**The striped box.** The red and orange box about 5 m ahead of the
+camera, low in the middle of the image, is the object named `FR06_NODE`:
+model `Temp_Arrow_Pointer`, a 1.9 × 0.85 × 3.3 m box with one material
+(`Object001_LOD00`). It is a placeholder marker, not an LOD stand-in. Its
+route list is {0}, so the route rule alone shows it; the game does not
+draw it. All 112 objects named `<activity>_NODE` use this model (87 with
+list {0}, 25 with no list), as do 20 others (`<activity>_ENDNODE`,
+`e3_reset_*_resetPos`, one gas station discovery point), so an engine
+should leave out every placement of `Temp_Arrow_Pointer`. That rests on
+one observation (the only marker in view) and is a guess; how the game
+hides it is not known (the activity code builds `<id>_NODE` names to find
+the node object, see `site/findings`).
+
+Other kinds carry the same block: kind-3 tiles (1,526 without route 0, 89
+with it), kind 5 (97, none with route 0) and kind 6 (82 blocks with an
+empty list). Their placements were not checked against the frame.
 
 ### Ruled out
 
@@ -682,7 +791,10 @@ ambiguous; `dc76af7` reads the halves by columns and removes it.
    render-model number.
 2. **Vertex attributes** after the position (resolved 2026-11-20): see
    [WORLD_MATERIALS.md](WORLD_MATERIALS.md#vertex-layout).
-3. **Which LOD is drawn.** Models come as `_LOD00`/`_LOD01`/`_LOD02`,
+3. **Which LOD is drawn.** Which placements are shown at all in free
+   roam is answered (route lists, see
+   [Which placements free roam draws](#which-placements-free-roam-draws-engine-question-q4));
+   the camera-to-zone lookup is still open. Models come as `_LOD00`/`_LOD01`/`_LOD02`,
    `_NoLOD`, `_MIDDIST`, `UberLOD`, `_CUBE`; the choice is the PVS and
    streaming work.
 4. **Depth check** for the RI-0.4 gate. The engine now draws the sector
@@ -713,7 +825,8 @@ says "engine's choice", the game's rule is not known.
 | Are the nine `.pvsz` halves row-major or column-major? | Columns: R[r][c] = h[3c + r]·F[r] in the file frame. Checked on all 107 drawn `.pvsz` placements, the 16 tilted ones included (largest error 0.0005); the row reading errs by up to 0.16 on the tilted ones. The earlier "H = F·R_gameᵀ" wording was ambiguous and is replaced |
 | Which record start is right when several end at the end of the file? | The one with the most rigid rotations; the first such start is wrong in 56 zones (see [`.pvsz` zone files](#pvsz-zone-files)) |
 | Instanced draws use another clip z row: how big is the depth effect? | A median 0.018 % of view depth at the model origin, at most 0.029 % (515 prop draws); see [Depth check](#depth-check-ri-04-gate). The engine can ignore it: with the scene's z mapping the opaque props match to 0.015 % (median) |
-| Why are some `.pgeo` barrier sets (for example `models_proc_clrd_barrier_reds_*`) in the sector but not in the frame? | Not known: which placements the game shows (by event, time or PVS zone) is part of the selection question (open question 3). The files place them; the free-roam frame does not draw them |
+| Why are some `.pgeo` barrier sets (for example `models_proc_clrd_barrier_reds_*`) in the sector but not in the frame? | They belong to races: their tile's route list does not hold route 0 (free roam). See [Which placements free roam draws](#which-placements-free-roam-draws-engine-question-q4) |
+| Which placements does free roam draw (Q4)? | Those listed by the camera's zone whose route list is empty or holds route 0, and no `Temp_Arrow_Pointer` marker (a guess); kind-7 tiles without the header block always, with it only when the list holds 0. Exact for the reference frame within 470 m (206 spots: 70 drawn and shown, 136 not drawn and hidden). Engine's choice until the zone lookup is decoded: take the zone from the reference data, or draw the union of zones near the camera (53 extra spots on this frame) |
 | The kind-7 name offset | +0x60, or +0x98 when the word at +0x58 is non-zero (see the header table) |
 | Model records whose IDs are not consecutive | 131 of 12,044; read each list's IDs as stored |
 | Which LOD does the game draw? | Unknown (open question 3). Drawing every overlapping model puts far LODs over near ones; for comparisons, draw the nearest LOD and leave out `_CAGE` and `TERR_CUBE` models (the free-roam frame draws neither in the main view; it does draw two `UberLOD` patches and 17 `MIDDIST` objects within 3 km: WORLD_MATERIALS.md, What draws the hills), as an engine choice |
@@ -735,6 +848,7 @@ python -I tools/re/world-geometry.py match-dump .local/re/world/all <dump.fh1fra
 python -I tools/re/world-geometry.py match-dump .local/re/world/all <dump.fh1frame> \
     --members @<names file> --pgeo .local/re/world/all
 python -I tools/re/world-geometry.py overlay .local/re/world/all <dump.fh1frame> <capture.ppm>
+python -I tools/re/world-geometry.py prop-selection .local/re/world/all \n    .local/re/world/reference/freeroam.json .local/re/world/match-pgeo.txt \n    --zone __R00Z01063.pvsz --markers [--max-distance 470]   (or --zone all)
 python tools/replay-fh1-frame.py <dump.fh1frame> --state-root <seed> --hidden \
     --game-argument=--gpu_backend=vulkan --game-argument=--fh1_debug_log_draws=true \
     --game-argument=--fh1_resolve_dump_dir=<dir>

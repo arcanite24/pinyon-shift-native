@@ -19,6 +19,8 @@ directory, past the wrapped 16-bit entry count).
   world-geometry.py pgeo <members dir> [--verbose]
   world-geometry.py match-dump <members dir> <file.fh1frame> [--box ...] [--verbose]
                                [--members @names.txt] [--pgeo <members dir>]
+  world-geometry.py prop-selection <members dir> <reference.json> <match-dump --pgeo output>
+                               --zone <__R00Z*.pvsz>... | all [--max-distance M] [--markers]
   world-geometry.py overlay <members dir> <file.fh1frame> <capture.ppm> [--box ...]
   world-geometry.py depth-skips <members dir> <file.fh1frame> <replay runtime.log>
   world-geometry.py depth-compare <engine z/w .pfm> <frame file> <resolve>... [--shift DX DY]
@@ -499,6 +501,12 @@ class PgeoTile:
     refs: list[int] = field(default_factory=list)
     groups: list[PgeoGroup] = field(default_factory=list)
     end: int = 0
+    tags: bytes | None = None   # route list of a switchable tile; None: always on
+
+    @property
+    def free_roam(self) -> bool:
+        """Shown in free roam: no route list, or route 0 in it (Q4)."""
+        return self.tags is None or 0 in self.tags
 
 
 def read_pgeo(path: str) -> PgeoTile | None:
@@ -513,6 +521,8 @@ def read_pgeo(path: str) -> PgeoTile | None:
     f32 = lambda at, n: struct.unpack_from(f">{n}f", data, at)
     tile = PgeoTile(path, u32(0x30), "", (f32(0x10, 3), f32(0x20, 3)))
     pos = 0x60 + (0x38 if u32(0x58) else 0)
+    if u32(0x58):
+        tile.tags = data[0x85:0x85 + data[0x84]]
     name_size = u32(0x3C)
     tile.name = data[pos:pos + name_size].split(b"\0")[0].decode("latin-1")
     pos += name_size
@@ -712,6 +722,14 @@ class ZoneObject:
     position: tuple[float, float, float]     # game frame
     halves: tuple[float, ...]                # rotation, transposed, third column negated
     offset: int
+    link: int | None = None                  # flag-1 u32 (-1 or a small index)
+    tags: bytes = b""                        # flag-1 route list (0: free roam)
+    name: str = ""                           # flag-1 name, a GameObjs.xml GameplayID
+
+    @property
+    def free_roam(self) -> bool:
+        """Shown in free roam: no route list, or route 0 in it (Q4)."""
+        return not self.tags or 0 in self.tags
 
     @property
     def object(self) -> int:
@@ -786,6 +804,13 @@ def read_pvsz(path: str | os.PathLike) -> list[ZoneObject]:
                 break
     if best is None:
         raise FormatError(f"{path}: no framing of {n} records ends at the end of the file")
+    for obj in best[1]:
+        at = obj.offset
+        if data[at + 52] == 1:
+            count = data[at + 57]
+            obj.link = struct.unpack_from(">i", data, at + 53)[0]
+            obj.tags = data[at + 58:at + 58 + count]
+            obj.name = data[at + 58 + count:at + 90 + count].split(b"\0")[0].decode("latin-1")
     return best[1]
 
 
@@ -1647,6 +1672,94 @@ def cmd_extract(args) -> int:
     return result.returncode
 
 
+def cmd_prop_selection(args) -> int:
+    """Checks the free-roam selection rule (engine question Q4) against a
+    frame: which placed objects of a zone, and which kind-7 instances,
+    project inside the reference image, and whether the frame drew them.
+    The drawn .pvsz objects are those `match-dump --pgeo` found (every
+    object at the same spot counts, one per LOD); drawn kind-7 groups are
+    the ones it names. A spot is shown when any of its objects passes the
+    rule; `--markers` also hides the `Temp_Arrow_Pointer` marker model."""
+    import json
+    import math
+    import re
+    reference = json.loads(Path(args.reference).read_text(encoding="utf-8"))
+    m = reference["clip_from_world"]
+    camera = reference["camera_position"]
+    width, height = reference["width"], reference["height"]
+
+    def on_screen(p):
+        c = [m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r] for r in range(4)]
+        if c[3] <= reference.get("near", 0.3):
+            return False
+        x, y = (c[0] / c[3] * 0.5 + 0.5) * width, (0.5 - c[1] / c[3] * 0.5) * height
+        return 0 <= x < width and 0 <= y < height
+
+    def near(p):
+        return math.dist(p, camera) <= args.max_distance
+
+    match = Path(args.match).read_text(encoding="utf-8")
+    hits = re.findall(r"(__R00Z\d+\.pvsz) \+0x([0-9a-f]+)", match)
+    groups = {(tile, int(g)) for tile, g in re.findall(r"(__R00G\d+\.pgeo) group (\d+)", match)}
+    cache = {}
+
+    def zone(name):
+        if name not in cache:
+            cache[name] = read_pvsz(os.path.join(args.root, name))
+        return cache[name]
+
+    drawn = set()
+    for name, offset in hits:
+        objs = zone(name)
+        spot = [o.position for o in objs if o.offset + 6 == int(offset, 16)]
+        drawn.update(o.object for o in objs if o.position in spot)
+    table = read_object_models(args.pvs)
+    model_names = {}
+
+    def is_marker(k):
+        if not args.markers or k >= len(table):
+            return False
+        member = table[k]
+        if member not in model_names:
+            p = os.path.join(args.root, f"coloradoout.{member:05d}.rmb.bin")
+            model_names[member] = read_rmb(p).name if os.path.exists(p) else ""
+        return model_names[member].startswith("Temp_Arrow_Pointer")
+    names = sorted(glob.glob(os.path.join(args.root, PVSZ_GLOB))) if args.zone == ["all"] else \
+        [os.path.join(args.root, z) for z in args.zone]
+    spots = collections.defaultdict(dict)
+    for path in names:
+        for o in zone(os.path.basename(path)):
+            if on_screen(o.file_translation) and near(o.file_translation):
+                spots[o.position][o.object] = o
+    tally = collections.Counter()
+    for pos, objs in spots.items():
+        was_drawn = any(k in drawn for k in objs)
+        shown = any(o.free_roam and not is_marker(k) for k, o in objs.items())
+        tally[was_drawn, shown] += 1
+        if was_drawn != shown:
+            o = next(iter(objs.values()))
+            print(f"  {'drawn, rule hides' if was_drawn else 'not drawn, rule shows'}: "
+                  f"object {o.object} model {table[o.object]:05d} at "
+                  f"{math.dist(o.file_translation, camera):.1f} m, routes {list(o.tags)}")
+    print(f".pvsz spots on screen within {args.max_distance:g} m: {len(spots)}; drawn and shown "
+          f"{tally[True, True]}, not drawn and hidden {tally[False, False]}, drawn but hidden "
+          f"{tally[True, False]}, not drawn but shown {tally[False, True]}")
+    kinds = collections.Counter()
+    for path in sorted(glob.glob(os.path.join(args.root, PGEO_GLOB))):
+        tile = read_pgeo(path)
+        if tile is None or tile.kind != PGEO_MODELS:
+            continue
+        for g, group in enumerate(tile.groups):
+            n = sum(1 for i in group.instances
+                    if on_screen(i.file_translation) and near(i.file_translation))
+            if n:
+                label = "always" if tile.tags is None else ("route 0" if tile.free_roam else "events")
+                kinds[label, (os.path.basename(path), g) in groups] += n
+    for (label, was_drawn), n in sorted(kinds.items()):
+        print(f"kind-7 instances on screen, {label} tiles, group {'drawn' if was_drawn else 'not drawn'}: {n}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1690,6 +1803,17 @@ def main(argv: list[str] | None = None) -> int:
     match.add_argument("--pvs", default=str(DEFAULT_PVS),
                        help="the ribbon's .pvs file, whose object table names each object's model")
     match.set_defaults(run=cmd_match_dump)
+    selection = commands.add_parser("prop-selection")
+    selection.add_argument("root", help="directory of extracted bin.zip members")
+    selection.add_argument("reference", help="a world-reference JSON (clip_from_world, camera)")
+    selection.add_argument("match", help="the output of match-dump --pgeo for the same frame")
+    selection.add_argument("--zone", nargs="+", required=True,
+                           help="zone files whose objects are checked, or 'all'")
+    selection.add_argument("--max-distance", type=float, default=1e9)
+    selection.add_argument("--markers", action="store_true",
+                           help="also hide the Temp_Arrow_Pointer marker model (a guess)")
+    selection.add_argument("--pvs", default=str(DEFAULT_PVS))
+    selection.set_defaults(run=cmd_prop_selection)
     overlay = commands.add_parser("overlay")
     add_selection(overlay)
     overlay.add_argument("dump")

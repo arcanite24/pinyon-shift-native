@@ -249,6 +249,7 @@ v4 = """0x820892CC, sub_8296BE38, 0x8298B244"""
 name = """CActivityGeneric"""
 what = """Generic activity: vtable `0x82078E54`, name at `+16`, a state byte at `+44`, trigger embedded at `+48`, X and Z at `+112` and `+120`. The trigger's position is at `trigger+64..76`, and its byte at `+192` carries a position-set flag (0x20). Its base parser binds triggers only to named GameObjs. `sub_828BA0C0(activity)` enters the activity and owns loading, game control and the return anchor."""
 how = """Hook at `0x828D94FC` after the trigger attributes are read, reading the `X`/`Z` keys through the reader's float reader (vtable `+180`); calling the enter function started Rally stages."""
+note = """The parser around the hook, `sub_828D9208`, appends the suffix `_NODE` (string `0x8207BBB0`) to the activity's name, presumably to find its node gameplay object: every `<activity>_NODE` object in the .pvsz zone files (112) is the `Temp_Arrow_Pointer` marker model, which free roam does not draw (see pvsz-placements). Whether this code also hides that model is not traced (guess)."""
 confidence = """confirmed"""
 source = """src/pinyon_shift_runtime_hooks.cpp PinyonShiftReadRallyEntryPosition, QueueRallyRaceTrace"""
 
