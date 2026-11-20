@@ -1,4 +1,6 @@
-add_executable(fh1data_tests fh1data_tests.cpp)
+# carview's reference reader and metric are plain C++ with no Vulkan.
+add_executable(fh1data_tests fh1data_tests.cpp ../apps/carview/reference.cpp)
+target_include_directories(fh1data_tests PRIVATE ../apps/carview)
 target_link_libraries(fh1data_tests PRIVATE fh1data shift_cars)
 add_test(NAME fh1data_tests COMMAND fh1data_tests)
 

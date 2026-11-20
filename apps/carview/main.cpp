@@ -6,6 +6,8 @@
 //           [--no-cockpit] [--all-parts] [--frames N]
 //   carview --xds-png <archive.zip> <member.xds> <out.png> [level]
 //   carview --world <members-dir|bin.zip> --frame <frame.txt> ...  (world_view.cpp)
+//   carview --bake <carbake-output> --car <media> ...  (showroom_main.cpp: the
+//           showroom over baked cars, and the reference mode)
 //
 // Windowed: drag with the left mouse button (or the left stick) to orbit,
 // wheel (or the triggers) to zoom, Esc to quit. Headless renders one frame
@@ -24,6 +26,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
@@ -32,6 +36,10 @@
 #include "fh1data/xds.h"
 #include "renderer.h"
 #include "world_view.h"
+
+namespace carview {
+int run_showroom(int argc, char** argv);
+}
 
 namespace {
 
@@ -155,6 +163,11 @@ int xds_png(int argc, char** argv) {
 int main(int argc, char** argv) {
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "--world") == 0) return carview::run_world(argc, argv);
+  for (int i = 1; i < argc; ++i)
+    if (std::strcmp(argv[i], "--bake") == 0) {
+      SDL_SetMainReady();
+      return carview::run_showroom(argc, argv);
+    }
   std::filesystem::path game_root;
   std::string car, out = "carview.png";
   int lod = 0;

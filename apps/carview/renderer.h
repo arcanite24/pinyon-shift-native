@@ -24,6 +24,17 @@ struct FrameConstants {
 };
 static_assert(sizeof(FrameConstants) == 112);
 
+class Showroom;
+
+// Lets another scene (the showroom) record its own draws in place of the
+// single car pipeline: `before` runs outside rendering (buffer updates),
+// `draw` inside it with the viewport and scissor set.
+struct SceneHooks {
+  std::function<void(VkCommandBuffer)> before;
+  std::function<void(VkCommandBuffer)> draw;
+  float clear[4] = {0.16f, 0.18f, 0.21f, 1.0f};
+};
+
 class Renderer {
  public:
   struct Options {
@@ -49,6 +60,9 @@ class Renderer {
                         std::vector<float>* depth = nullptr);
   // Windowed: renders and presents one frame. Returns false on a fatal error.
   bool draw_frame(const FrameConstants& constants, std::string& error);
+
+  // With hooks set, frames record the hooked scene; upload() is not needed.
+  void set_scene(SceneHooks hooks) { scene_ = std::move(hooks); }
 
   const std::string& device_name() const { return device_name_; }
   uint32_t samples() const { return uint32_t(samples_); }
@@ -129,7 +143,9 @@ class Renderer {
   VkCommandBuffer frame_cmd_ = VK_NULL_HANDLE;
   bool swapchain_dirty_ = false;
 
+  SceneHooks scene_;
   uint32_t validation_messages_ = 0;
+  friend class Showroom;
   friend VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT,
                                                        VkDebugUtilsMessageTypeFlagsEXT,
                                                        const VkDebugUtilsMessengerCallbackDataEXT*,

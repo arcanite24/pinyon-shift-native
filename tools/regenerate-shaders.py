@@ -6,6 +6,7 @@ glslc; otherwise it uses apps/carview/shaders/prebuilt/*.spv. Run this
 after every shader change so the fallback matches the source:
 
   python tools/regenerate-shaders.py [--compiler path/to/glslangValidator]
+                                      [--target-env vulkan1.2]
 
 The compiler is searched on PATH and in $VULKAN_SDK/Bin (or bin) when
 --compiler is not given.
@@ -42,6 +43,8 @@ def find_compiler() -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--compiler")
+    parser.add_argument("--target-env", default="vulkan1.3",
+                        help="vulkan1.2 for compilers older than Vulkan 1.3 (the SPIR-V runs on 1.3)")
     args = parser.parse_args()
     compiler = args.compiler or find_compiler()
     if not compiler:
@@ -51,9 +54,9 @@ def main() -> int:
     for source in sorted(SHADERS.glob("*.vert")) + sorted(SHADERS.glob("*.frag")):
         out = SHADERS / "prebuilt" / (source.name + ".spv")
         if is_glslc:
-            command = [compiler, "--target-env=vulkan1.3", "-o", str(out), str(source)]
+            command = [compiler, f"--target-env={args.target_env}", "-o", str(out), str(source)]
         else:
-            command = [compiler, "-V", "--target-env", "vulkan1.3", "-o", str(out), str(source)]
+            command = [compiler, "-V", "--target-env", args.target_env, "-o", str(out), str(source)]
         subprocess.run(command, check=True)
         print(f"{source.name} -> {out.relative_to(ROOT)}")
     return 0

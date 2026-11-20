@@ -13,11 +13,15 @@ set(shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${generated}")
 set(shader_headers "")
-foreach(stage vert frag)
-  set(source "${shader_dir}/car.${stage}")
-  set(header "${generated}/car_${stage}_spv.h")
+foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag)
+  string(REPLACE "." "_" id "${shader}")
+  string(SUBSTRING "${id}" 0 1 first)
+  string(TOUPPER "${first}" first)
+  string(SUBSTRING "${id}" 1 -1 rest)
+  set(source "${shader_dir}/${shader}")
+  set(header "${generated}/${id}_spv.h")
   if(SHIFT_GLSL_COMPILER)
-    set(spv "${generated}/car.${stage}.spv")
+    set(spv "${generated}/${shader}.spv")
     get_filename_component(compiler_name "${SHIFT_GLSL_COMPILER}" NAME_WE)
     if(compiler_name STREQUAL "glslc")
       set(compile_args --target-env=vulkan1.3 -o "${spv}" "${source}")
@@ -28,10 +32,10 @@ foreach(stage vert frag)
       COMMAND "${SHIFT_GLSL_COMPILER}" ${compile_args}
       DEPENDS "${source}" VERBATIM)
   else()
-    set(spv "${shader_dir}/prebuilt/car.${stage}.spv")
+    set(spv "${shader_dir}/prebuilt/${shader}.spv")
   endif()
   add_custom_command(OUTPUT "${header}"
-    COMMAND "${CMAKE_COMMAND}" -DINPUT=${spv} -DOUTPUT=${header} -DNAME=kCar_${stage}_spv
+    COMMAND "${CMAKE_COMMAND}" -DINPUT=${spv} -DOUTPUT=${header} -DNAME=k${first}${rest}_spv
             -P "${PROJECT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
     DEPENDS "${spv}" "${PROJECT_SOURCE_DIR}/cmake/EmbedSpirv.cmake" VERBATIM)
   list(APPEND shader_headers "${header}")
@@ -46,10 +50,13 @@ add_executable(carview
   main.cpp
   car_model.cpp
   renderer.cpp
+  reference.cpp
+  showroom.cpp
+  showroom_main.cpp
   world_view.cpp
   ${shader_headers})
 target_include_directories(carview PRIVATE "${generated}")
-target_link_libraries(carview PRIVATE fh1data shift_volk SDL3::SDL3-static shift_stb)
+target_link_libraries(carview PRIVATE fh1data shift_cars shift_volk SDL3::SDL3-static shift_stb)
 if(NOT WIN32)
   find_package(Threads REQUIRED)
   target_link_libraries(carview PRIVATE Threads::Threads)

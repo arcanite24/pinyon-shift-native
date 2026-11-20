@@ -20,6 +20,7 @@
 #include "fh1data/rmb.h"
 #include "fh1data/xds.h"
 #include "fh1data/xmem.h"
+#include "reference.h"
 
 namespace {
 
@@ -998,7 +999,71 @@ void test_bake_format() {
   CHECK(rgba[0] == 7 && rgba[3] == 8 && rgba[8] == 3 && rgba[11] == 4);
 }
 
+// carview's reference JSON (provisional schema), the eye of a clip matrix,
+// and the M1 metric on small masks.
+void test_reference() {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "shift_reference_test";
+  std::filesystem::create_directories(dir);
+  // A look-at from (0, 0, 5) towards the origin times a perspective: the
+  // eye must come back as (0, 0, 5).
+  const float f = 2.0f, n = 0.5f, fa = 50.0f;
+  // view: translate by -5 in z; projection (D3D, z 0..1, column vectors).
+  const float view[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1};
+  const float proj[16] = {f, 0, 0, 0, 0, f, 0, 0, 0, 0, fa / (n - fa), -1, 0, 0, n * fa / (n - fa), 0};
+  float m[16];
+  for (int c = 0; c < 4; ++c)
+    for (int r = 0; r < 4; ++r) {
+      float sum = 0;
+      for (int k = 0; k < 4; ++k) sum += proj[k * 4 + r] * view[c * 4 + k];
+      m[c * 4 + r] = sum;
+    }
+  {
+    std::FILE* out = std::fopen((dir / "car.json").string().c_str(), "wb");
+    std::fprintf(out, "{\"schema\": \"shift-engine.m1-reference.v1\", \"car_id\": 1001,\n"
+                      " \"media_name\": \"X_Car_10\", \"image\": \"1001.png\", \"mask\": \"1001.mask.png\",\n"
+                      " \"frame\": {\"after_a\": 390}, \"paint_rgb\": [141, 0, 7], \"half_pixel_removed\": true,\n"
+                      " \"width\": 64, \"height\": 32, \"clip_from_car\": [");
+    for (int i = 0; i < 16; ++i) std::fprintf(out, "%s%.9g", i ? ", " : "", double(m[i]));
+    std::fprintf(out, "]}\n");
+    std::fclose(out);
+  }
+  carview::Reference ref;
+  std::string error;
+  CHECK(carview::read_reference(dir / "car.json", ref, error));
+  CHECK(ref.media_name == "X_Car_10" && ref.car_id == 1001 && ref.width == 64 && ref.height == 32);
+  CHECK(ref.has_paint && ref.paint_rgb[0] == 141 && ref.paint_rgb[2] == 7);
+  CHECK(ref.image == dir / "1001.png" && ref.mask == dir / "1001.mask.png");
+  CHECK(std::fabs(ref.clip_from_car[14] - m[14]) < 1e-5f);
+  float eye[3];
+  CHECK(carview::clip_eye(ref.clip_from_car, eye));
+  CHECK(std::fabs(eye[0]) < 1e-4f && std::fabs(eye[1]) < 1e-4f && std::fabs(eye[2] - 5) < 1e-4f);
+  {
+    std::FILE* out = std::fopen((dir / "bad.json").string().c_str(), "wb");
+    std::fprintf(out, "{\"schema\": \"other\", \"width\": 1, \"height\": 1, \"clip_from_car\": []}");
+    std::fclose(out);
+  }
+  CHECK(!carview::read_reference(dir / "bad.json", ref, error));
+  std::filesystem::remove_all(dir);
+
+  // Metric: a 4x4 square against the same square shifted by one column.
+  const uint32_t w = 8, h = 8;
+  std::vector<uint8_t> a_mask(w * h, 0), b_mask(w * h, 0), a_rgba(w * h * 4, 100), b_rgba(w * h * 4, 100);
+  for (uint32_t y = 2; y < 6; ++y)
+    for (uint32_t x = 2; x < 6; ++x) {
+      a_mask[y * w + x] = 255;
+      b_mask[y * w + x + 1] = 255;
+    }
+  carview::Metric same = carview::compare(a_rgba, a_mask, a_rgba, a_mask, w, h);
+  CHECK(same.iou == 1.0 && std::isinf(same.masked_psnr) && same.edge_overlap == 1.0);
+  carview::Metric shifted = carview::compare(a_rgba, a_mask, b_rgba, b_mask, w, h);
+  CHECK(std::fabs(shifted.iou - 12.0 / 20.0) < 1e-9);
+  b_rgba[(3 * w + 3) * 4] = 110;  // one channel of one pixel off by 10
+  carview::Metric noisy = carview::compare(a_rgba, a_mask, b_rgba, a_mask, w, h);
+  CHECK(std::fabs(noisy.masked_psnr - 10 * std::log10(255.0 * 255.0 / (100.0 / 48.0))) < 1e-6);
+}
+
 int main() {
+  test_reference();
   test_bake_format();
   test_dlc_folder();
   test_xds_layout();

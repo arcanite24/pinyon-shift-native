@@ -621,6 +621,7 @@ void Renderer::destroy_targets() {
 void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                             VkImageLayout final_layout, const FrameConstants& constants) {
   const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
+  if (scene_.before) scene_.before(cmd);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -644,7 +645,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   color.storeOp = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
-  color.clearValue.color = {{0.16f, 0.18f, 0.21f, 1.0f}};
+  color.clearValue.color = {{scene_.clear[0], scene_.clear[1], scene_.clear[2], scene_.clear[3]}};
   if (msaa) {
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
     color.resolveImageView = final_view;
@@ -667,16 +668,20 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   VkRect2D scissor{{0, 0}, {target_width_, target_height_}};
   vkCmdSetViewport(cmd, 0, 1, &viewport);
   vkCmdSetScissor(cmd, 0, 1, &scissor);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
-                          &descriptor_set_, 0, nullptr);
-  vkCmdPushConstants(cmd, pipeline_layout_,
-                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                     sizeof(FrameConstants), &constants);
-  VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
-  vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
-  vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
+  if (scene_.draw) {
+    scene_.draw(cmd);
+  } else {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
+                            &descriptor_set_, 0, nullptr);
+    vkCmdPushConstants(cmd, pipeline_layout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(FrameConstants), &constants);
+    VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
+  }
   vkCmdEndRendering(cmd);
   if (depth_readable_) {
     image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
