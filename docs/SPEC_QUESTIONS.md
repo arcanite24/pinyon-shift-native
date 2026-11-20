@@ -682,3 +682,22 @@ question Q38)" and "Colour byte order"). Built:
   over 1.58 s against the oracle's ~5 over 1.27 s (Q34). The mean's 8 %
   gate stays and is a known miss until Q34's reverse phase is answered
   (gates move only with the spec); the ABS phase passes its 12 % gate.
+- **Since b6920963 (the tyre law).** Each curve times its row's
+  `FrictionScale`, the width scale (0.9266 on the R34), the compound's
+  `TorqueFreeLatFrictionScale` (1.8) and the 1.01 constant on the lateral
+  force, in place of the 0.915 fit; the off-road peak (`OffRoadness`,
+  `OffRoadDryPeakSA`) and `RearGripMultiplier` from surfaceTypes.xml; the
+  rear-grip fix keyed to the road wheels' angle in degrees; the combined
+  slip's 1e-4 floor; the lateral forces through a 0.28 m roll arm; the
+  AI's grip factor replayed from `ai_grip` on the lap only. **The lap
+  finishes: 40.915 s against 38.784 (+5.49 %, outside the 2 %).** 0-100
+  km/h 6.08 s (5.76). Split: +0.26 s at 100 m, +0.28 at 200, +0.27 at
+  300, +0.30 at 400, +0.32 at 500, +0.37 at 600, +0.72 at 700, +1.04 at
+  800, +1.40 at 900, +1.93 at 1,000, +2.10 at 1,100. The first corner
+  holds (cross-track RMS 0.78 m over the lap, max 3.7 m). The loss is
+  from 550 to 650 m, where our line puts three wheels on dirt and the
+  oracle's stays on asphalt (38 -> 34 m/s, never made up before the
+  850 m braking), then the 900 to 1,000 m hairpin (+0.5 s). The first
+  braking zone peaks at -14.8 m/s^2 (the oracle -16.8). Scenario B's ABS
+  phase 12.06 (oracle 11.9 to 12.1); the turn circle 3.35 m (3.37). Not
+  chased.

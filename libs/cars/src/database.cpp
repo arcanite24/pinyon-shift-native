@@ -533,6 +533,10 @@ bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, s
         q.bind(1, key(std::string(d.group) + ".TireFrictionCurveID" + std::to_string(c)));
         if (!q.step()) return fail(std::string("no friction curve for ") + d.group);
         car.curves[d.curve + std::to_string(c)] = samples_of(q, "NumCurveValues", "", nullptr);
+        // The row's own FrictionScale (SPEC-CAR-PHYSICS, Curves).
+        for (int col = 0; col < q.count(); ++col)
+          if (q.name(col) == "FrictionScale")
+            v[std::string(d.group) + ".FrictionScale" + std::to_string(c)] = q.d(col);
       }
     }
     out.push_back(std::move(car));

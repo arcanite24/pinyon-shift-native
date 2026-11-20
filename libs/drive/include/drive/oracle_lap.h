@@ -18,6 +18,7 @@ struct LineSample {
   double x = 0, y = 0, z = 0, yaw_deg = 0;
   double distance = 0;  // distance_m: the body point's path length from t = 0
   double speed = 0, gas = 0, brake = 0, steer = 0;
+  double grip_front = 1, grip_rear = 1;  // ai_grip: the AI's grip factor on dirt
 };
 
 struct OracleLine {
@@ -61,6 +62,8 @@ class LineFollower {
   // The oracle's pedals at a distance along its path (the last sample at
   // equal distances, so the grid gives the launch's gas).
   void pedals_at(double distance, double& gas, double& brake) const;
+  // The AI's grip factor (front, rear) at `distance`, like the pedals.
+  void grip_at(double distance, double& front, double& rear) const;
   // The line's point at a distance along it.
   void point_at(double distance, double& x, double& z) const;
 
@@ -70,6 +73,7 @@ class LineFollower {
   Options options_;
   std::vector<double> px_, pz_, dist_;     // the line's points (strictly increasing distance)
   std::vector<double> pd_, pgas_, pbrake_; // the pedal table
+  std::vector<double> pgf_, pgr_;          // the grip factor, on the pedal table's distances
   size_t seg_ = 0;
   double progress_ = 0, cross_ = 0;
   bool saturated_ = false;

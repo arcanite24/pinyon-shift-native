@@ -112,6 +112,11 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
     }
   }
   g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
+  if (collision_) {
+    std::vector<drive::SurfaceTyre> tyres;
+    for (const auto& s : collision_->surfaces()) tyres.push_back({s.rear_grip, s.off_roadness, s.off_road_peak_sa});
+    g->ground->set_surface_tyres(std::move(tyres));
+  }
   if (prepare_) g->prepared = prepare_(g->mesh, x, z);
   g->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   g->ok = true;

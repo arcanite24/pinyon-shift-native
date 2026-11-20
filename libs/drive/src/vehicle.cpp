@@ -62,8 +62,8 @@ double TyreCurves::blend(double load_kgf) const {
 double TyreCurves::peak_slip(double load_kgf, double stretch) const {
   return stretch * lerp(light.peak_slip(), heavy.peak_slip(), blend(load_kgf));
 }
-double TyreCurves::value(double slip, double load_kgf, double stretch) const {
-  return lerp(light.at(slip, stretch), heavy.at(slip, stretch), blend(load_kgf));
+double TyreCurves::value(double slip, double load_kgf, double stretch, const std::array<double, 2>& scale) const {
+  return lerp(light.at(slip, stretch) * scale[0], heavy.at(slip, stretch) * scale[1], blend(load_kgf));
 }
 
 FrictionCurve synthetic_curve(double max_slip, double peak, double tail) {
@@ -428,6 +428,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
   // 1. Suspension and contact.
   Vec3 contact[kWheels]{}, normal[kWheels]{};
   double grip[kWheels]{}, rate[kWheels]{};
+  SurfaceTyre surf[kWheels]{};
   int off = 0;
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
@@ -459,6 +460,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (w.contact) {
       normal[i] = hit.normal;
       grip[i] = hit.grip;
+      surf[i] = hit.tyre;
       contact[i] = probe + down * hit.distance;
     }
     // The suspension's speed from the travel itself, so a car running down
@@ -557,23 +559,34 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double n = w_[i].load, kgf = n / kKgf, stretch = p.sidewall_stretch[a];
     const double sig_pk = std::max(1e-4, p.longitudinal.peak_slip(kgf, stretch));
     const double alpha_pk = std::clamp(p.lateral.peak_slip(kgf, stretch), p.lateral_peak_min_deg, p.lateral_peak_max_deg);
+    // An off-road surface moves the normalising peak towards its own; the
+    // curve is still read at the road's (SPEC-CAR-PHYSICS, Off-road surfaces).
+    const double alpha_norm = alpha_pk + surf[i].off_roadness * (surf[i].off_road_peak_sa - alpha_pk);
     const double denom = std::max(std::fabs(vx[i]), p.slip_speed_floor);
     const double sigma = (omega * p.tyre_radius[i] - vx[i]) / denom;
     // Below the floor speed the angle becomes the linear term v_y / v_min.
     const double alpha = std::atan2(vy[i], denom) * 180 / kPi;
-    const double sx = sigma / sig_pk, sy = alpha / alpha_pk;
-    const double s = std::max(std::sqrt(sx * sx + sy * sy), 1e-6);
-    const double mu_x = p.longitudinal.value(s * sig_pk, kgf, stretch);
-    const double mu_y = p.lateral.value(s * alpha_pk, kgf, stretch);
+    const double sx = sigma / sig_pk, sy = alpha / std::max(alpha_norm, 1e-3);
+    const double s = std::max(std::sqrt(sx * sx + sy * sy), 1e-4);
+    // Each curve times its row's FrictionScale, blended by load, times the
+    // width scale.
+    const double mu_x = p.longitudinal.value(s * sig_pk, kgf, stretch, p.long_curve_scale) * p.width_scale[a];
+    const double mu_y = p.lateral.value(s * alpha_pk, kgf, stretch, p.lat_curve_scale) * p.width_scale[a];
+    const double rear = a == 1 ? surf[i].rear_grip : 1.0;
+    const double ai = ai_grip_[a];
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
-    double kx = grip[i] * p.long_scale[a] * p.long_misc_scale;
+    double kx = grip[i] * rear * ai * p.long_scale[a] * p.long_misc_scale;
     kx *= slowing[i] ? p.brake_friction_scale
                      : lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(vx[i]), p.accel_speed0, p.accel_speed1));
-    double ky = grip[i] * p.lat_scale[a] * p.lateral_fit;
-    if (a == 1)
-      ky *= 1 + (p.rear_fix_scale - 1) * ramp(std::fabs(sy), p.fix_slip0, p.fix_slip1) *
-                    (1 - ramp(stick, p.fix_steer0, p.fix_steer1));
+    double ky = grip[i] * rear * ai * p.lat_scale[a] * p.lat_compound_scale * p.long_misc_scale;
+    // The rear-grip fix: g + d (1 - g), g the scale faded out by the
+    // normalised slip angle, d by the road wheels' steer angle in degrees.
+    if (a == 1) {
+      const double g = lerp(p.rear_fix_scale, 1.0, ramp(std::fabs(sy), p.fix_slip0, p.fix_slip1));
+      const double d = ramp(std::fabs(steer_angle_) * 180 / kPi, p.fix_steer0, p.fix_steer1);
+      ky *= g + d * (1 - g);
+    }
     if (fx_out) *fx_out = mu_x * (sx / s) * n * kx;
     if (fy_out) *fy_out = -mu_y * (sy / s) * n * ky;
     if (sx_out) *sx_out = sx;
@@ -686,11 +699,12 @@ void Vehicle::substep(double dt, const Ground& ground) {
       // instead of the contact patch's height below the centre of mass
       // (SPEC-CAR-PHYSICS scenario B, load transfer): the same force at a
       // point raised along the body's up axis.
-      if (p.longitudinal_pitch_arm > 0) {
-        const double below = dot(pos_ - contact[i], up);
-        if (below > p.longitudinal_pitch_arm)
-          torque = torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
-      }
+      // The lateral force rolls it through its own arm likewise.
+      const double below = dot(pos_ - contact[i], up);
+      if (p.longitudinal_pitch_arm > 0 && below > p.longitudinal_pitch_arm)
+        torque = torque + cross(up * (below - p.longitudinal_pitch_arm), fwd[i] * fx);
+      if (p.lateral_roll_arm > 0 && below > p.lateral_roll_arm)
+        torque = torque + cross(up * (below - p.lateral_roll_arm), lat[i] * fy_new);
     }
     if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];

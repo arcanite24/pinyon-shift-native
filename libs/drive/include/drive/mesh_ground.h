@@ -26,6 +26,9 @@ class MeshGround : public Ground {
   // The nearest hit along the ray within `max_distance`, either face. The
   // normal faces against the ray.
   bool raycast(const Vec3& origin, const Vec3& dir, double max_distance, Hit& hit) const override;
+  // The tyre columns by surface index, reported in Hit::tyre (empty, or an
+  // index past the end: the defaults).
+  void set_surface_tyres(std::vector<SurfaceTyre> tyres) { tyres_ = std::move(tyres); }
 
   size_t triangle_count() const { return positions_.size() / 3; }
   size_t node_count() const { return nodes_.size(); }
@@ -42,6 +45,7 @@ class MeshGround : public Ground {
   std::vector<std::array<float, 3>> positions_;
   std::vector<float> grip_;
   std::vector<uint8_t> surface_;
+  std::vector<SurfaceTyre> tyres_;
   std::vector<uint32_t> order_;
   std::vector<std::array<float, 3>> centroid_;
   std::vector<Node> nodes_;

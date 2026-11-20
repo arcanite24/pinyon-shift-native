@@ -40,11 +40,18 @@ Vec3 rotate_inverse(const Quat& q, const Vec3& v);
 // The ground the wheels stand on. raycast returns the distance along dir
 // (unit) from origin to the first hit within max_distance, with the
 // surface normal and a grip factor (the surface's FrictionScale).
+// A surface's tyre columns (SPEC-CAR-PHYSICS, Tyre model): the rear
+// wheels' multiplier, and how far it moves the lateral peak slip towards
+// its own (degrees).
+struct SurfaceTyre {
+  double rear_grip = 1, off_roadness = 0, off_road_peak_sa = 12;
+};
 struct Hit {
   double distance = 0;
   Vec3 normal{0, 1, 0};
   double grip = 1;
   int surface = -1;  // the ground's surface index, when it has one
+  SurfaceTyre tyre;
 };
 class Ground {
  public:
@@ -86,7 +93,8 @@ struct TyreCurves {
   double light_load_kgf = 10.1972, heavy_load_kgf = 1019.72, load_clamp_kgf = 5000;
   double blend(double load_kgf) const;  // 0 at the light load, 1 at the heavy
   double peak_slip(double load_kgf, double stretch) const;
-  double value(double slip, double load_kgf, double stretch) const;
+  // `scale`: each curve's row FrictionScale (light, heavy).
+  double value(double slip, double load_kgf, double stretch, const std::array<double, 2>& scale = {1, 1}) const;
 };
 // The engine's own stand-in curve for the synthetic car: rises to 1 at
 // `peak`, falls to `tail` at the end (no game data).
@@ -108,6 +116,10 @@ struct CarParams {
   // longitudinal forces act on the body's pitch, as an arm below the centre
   // of mass (m); <= 0: at the contact patch.
   double longitudinal_pitch_arm = 0;
+  // The same for the tyres' lateral forces on the body's roll (SPEC-CAR-
+  // PHYSICS, Check: the first corner, load transfer); <= 0: at the contact
+  // patch.
+  double lateral_roll_arm = 0;
   Vec3 size{1.8, 1.3, 4.3};         // the body contacts' box, m (ours)
   double gravity = 9.8;             // the spec's weight: 15.6 x 9.8
   double airborne_gravity_scale = 1.15, per_tyre_off_gravity_scale = 1.05;
@@ -146,12 +158,20 @@ struct CarParams {
   std::array<double, 2> sidewall_stretch{1.2, 1.2};  // per axle
   double lateral_peak_min_deg = 4, lateral_peak_max_deg = 18;
   std::array<double, 2> long_scale{1, 1}, lat_scale{1, 1};  // the body's friction scales per axle
+  // Each curve's row FrictionScale (light-load and heavy-load curve),
+  // applied before the load blend.
+  std::array<double, 2> long_curve_scale{1, 1}, lat_curve_scale{1, 1};
+  // The tyre-width scale per axle (TireFricScale0..1 over TireFricWidth0..1).
+  std::array<double, 2> width_scale{1, 1};
+  // The compound's lateral scale (TorqueFreeLatFrictionScale).
+  double lat_compound_scale = 1;
   // Under drive: accel_scale0 at accel_speed0 m/s to accel_scale1 at accel_speed1, clamped.
   double accel_scale0 = 1.2, accel_scale1 = 1.1, accel_speed0 = 5, accel_speed1 = 15;
-  double long_misc_scale = 1.01;   // the spec's unidentified constant
-  double lateral_fit = 0.915;      // the spec's measured lateral factor
-  // Rear lateral FixListing multiplier: `rear_fix_scale` faded in between
-  // normalised slips fix_slip0..1 and out by the steering input fix_steer0..1.
+  double long_misc_scale = 1.01;   // the spec's unidentified constant, on both forces
+  // Rear lateral FixListing multiplier: `rear_fix_scale` up to the
+  // normalised slip angle fix_slip0, faded to 1 by fix_slip1, and cancelled
+  // as the road wheels' steer angle goes from fix_steer0 to fix_steer1
+  // degrees.
   double rear_fix_scale = 1, fix_slip0 = 0.5, fix_slip1 = 1, fix_steer0 = 0.5, fix_steer1 = 1;
   double slip_speed_floor = 1.0;   // m/s, v_min in the slips (ours)
   double wheel_inertia = 1.6;      // kg m^2 per wheel
@@ -281,6 +301,10 @@ class Vehicle {
   // road wheels (no narrowing, no rate), the brakes linear with the AI's
   // ABS. Off by default (the pad's path).
   void set_ai_controls(bool on) { ai_ = on; }
+  // The AI's grip factor (front axle, rear axle) on both tyre forces, seen
+  // only on dirt under the AI; the oracle lap replays it from its file.
+  // 1, 1 by default and in pad play.
+  void set_ai_grip(double front, double rear) { ai_grip_ = {front, rear}; }
   bool ai_controls() const { return ai_; }
 
   const CarParams& params() const { return p_; }
@@ -360,6 +384,7 @@ class Vehicle {
   double abs_timer_[kWheels]{};
   bool abs_flag_ = false;
   bool ai_ = false;
+  std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
   double body_force_ = 0;
 };

@@ -175,9 +175,15 @@ bool parse_surface_types(std::string_view xml, std::vector<SurfaceType>& out, st
     if (end == std::string_view::npos || end > defs_end) return;
     s.defined = true;
     attribute(xml, at, "Category", s.category);
-    const size_t f = find_element(xml, "FrictionScale", at, end);
-    std::string v;
-    if (f != std::string_view::npos && attribute(xml, f, "value", v)) s.friction_scale = float(std::atof(v.c_str()));
+    auto read = [&](const char* element, float& out) {
+      const size_t f = find_element(xml, element, at, end);
+      std::string v;
+      if (f != std::string_view::npos && attribute(xml, f, "value", v)) out = float(std::atof(v.c_str()));
+    };
+    read("FrictionScale", s.friction_scale);
+    read("RearGripMultiplier", s.rear_grip);
+    read("OffRoadness", s.off_roadness);
+    read("OffRoadDryPeakSA", s.off_road_peak_sa);
   };
   for (auto& s : out) read_def(s);
   // An index without a definition takes Asphalt's values (index 0).
@@ -185,6 +191,9 @@ bool parse_surface_types(std::string_view xml, std::vector<SurfaceType>& out, st
     if (s.defined) continue;
     s.category = out[0].category;
     s.friction_scale = out[0].friction_scale;
+    s.rear_grip = out[0].rear_grip;
+    s.off_roadness = out[0].off_roadness;
+    s.off_road_peak_sa = out[0].off_road_peak_sa;
   }
   return true;
 }

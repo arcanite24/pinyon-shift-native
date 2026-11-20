@@ -340,6 +340,10 @@ int main(int argc, char** argv) {
       if (racing) {
         v.set_ai_controls(true);  // the oracle lap is the AI driving (SPEC-CAR-PHYSICS)
         in = follower.input(v);
+        // The AI's grip factor on dirt, replayed by distance like the pedals.
+        double gf = 1, gr = 1;
+        follower.grip_at(follower.progress(), gf, gr);
+        v.set_ai_grip(gf, gr);
       }
       v.step(in, *ground);
       const double t = v.time() - settle;

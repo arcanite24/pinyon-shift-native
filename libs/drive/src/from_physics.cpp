@@ -68,6 +68,7 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   // SPEC-CAR-PHYSICS scenario B, load transfer: the tyres' longitudinal
   // forces pitch the body through a 0.27 m arm (measured fit, one car).
   p.longitudinal_pitch_arm = 0.27;
+  p.lateral_roll_arm = 0.28;  // SPEC-CAR-PHYSICS, Check: the first corner (0.278 m)
   p.inertia = {};
   p.inertia_box = {get("List_UpgradeCarBodyWeight.BlockDimX", p.inertia_box.x),
                    get("List_UpgradeCarBodyWeight.BlockDimY", p.inertia_box.y),
@@ -110,6 +111,11 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
     out.heavy_load_kgf = get(g + ".MaxLoadCurve", out.heavy_load_kgf);
     out.load_clamp_kgf = get(g + ".LoadClamp", out.load_clamp_kgf);
   };
+  for (int c = 0; c < 2; ++c) {
+    p.long_curve_scale[size_t(c)] = get("LongMultiCurve.FrictionScale" + std::to_string(c), 1);
+    p.lat_curve_scale[size_t(c)] = get("LatMultiCurve.FrictionScale" + std::to_string(c), 1);
+  }
+  p.lat_compound_scale = get("List_TireCompound.TorqueFreeLatFrictionScale", 1);
   curves("LongMultiCurve", "long", p.longitudinal);
   curves("LatMultiCurve", "lat", p.lateral);
   for (int a = 0; a < 2; ++a) {
@@ -126,6 +132,14 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.accel_speed0 = get("List_TireCompound.TorqueFreeLongFrictionScaleAccelSpeed0", 5);
   p.accel_speed1 = get("List_TireCompound.TorqueFreeLongFrictionScaleAccelSpeed1", 15);
   p.wheel_inertia = get("List_TireCompound.MomentInertia", p.wheel_inertia);
+  // The tyre-width scale, linear in the width between the compound's two
+  // points and clamped (probable).
+  for (int a = 0; a < 2; ++a) {
+    const double w0 = get("List_TireCompound.TireFricWidth0", 0), w1 = get("List_TireCompound.TireFricWidth1", 0);
+    const double s0 = get("List_TireCompound.TireFricScale0", 1), s1 = get("List_TireCompound.TireFricScale1", 1);
+    const double width = get(std::string("Data_Car.") + (a == 0 ? "Front" : "Rear") + "TireWidthMM", 225);
+    p.width_scale[size_t(a)] = w1 > w0 ? s0 + (s1 - s0) * std::clamp((width - w0) / (w1 - w0), 0.0, 1.0) : 1;
+  }
   p.rear_fix_scale = get("Data_Car.FixListingRearFricScale", 1);
   p.fix_slip0 = get("Data_Car.FixListingNormSlip0", 0.5);
   p.fix_slip1 = get("Data_Car.FixListingNormSlip1", 1);

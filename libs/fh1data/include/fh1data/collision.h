@@ -62,6 +62,10 @@ struct SurfaceType {
   std::string name;
   std::string category;
   float friction_scale = 1;
+  // The tyre's columns (SPEC-CAR-PHYSICS, Tyre model: Off-road surfaces).
+  float rear_grip = 1;         // RearGripMultiplier, on the rear wheels
+  float off_roadness = 0;      // OffRoadness
+  float off_road_peak_sa = 12; // OffRoadDryPeakSA, degrees
   bool defined = false;
 };
 

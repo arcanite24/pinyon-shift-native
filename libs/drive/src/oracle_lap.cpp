@@ -81,6 +81,7 @@ bool parse_oracle_line(const std::string& text, OracleLine& out, std::string* er
         !number(line, "z", s.z) || !number(line, "distance_m", s.distance) || !string_value(line, "cars", cars))
       continue;
     number(line, "yaw_deg", s.yaw_deg);
+    pair(line, "ai_grip", s.grip_front, s.grip_rear, 0);
     // 0:R34:0:speed:rpm:gear:gas:brake:steer
     std::vector<std::string> f;
     std::stringstream cs(cars.substr(0, cars.find('|')));
@@ -130,10 +131,14 @@ LineFollower::LineFollower(const OracleLine& line, const Options& options) : opt
     if (!pd_.empty() && s.distance <= pd_.back()) {
       pgas_.back() = s.gas;
       pbrake_.back() = s.brake;
+      pgf_.back() = s.grip_front;
+      pgr_.back() = s.grip_rear;
     } else {
       pd_.push_back(s.distance);
       pgas_.push_back(s.gas);
       pbrake_.push_back(s.brake);
+      pgf_.push_back(s.grip_front);
+      pgr_.push_back(s.grip_rear);
     }
     // The line: a point each time the path has moved on.
     if (dist_.empty() || s.distance > dist_.back() + 1e-3) {
@@ -163,6 +168,24 @@ void LineFollower::pedals_at(double distance, double& gas, double& brake) const 
   const double f = (distance - pd_[i]) / (pd_[i + 1] - pd_[i]);
   gas = lerp(pgas_[i], pgas_[i + 1], f);
   brake = lerp(pbrake_[i], pbrake_[i + 1], f);
+}
+
+void LineFollower::grip_at(double distance, double& front, double& rear) const {
+  front = rear = 1;
+  if (pd_.empty()) return;
+  const auto it = std::upper_bound(pd_.begin(), pd_.end(), distance);
+  if (it == pd_.begin()) {
+    front = pgf_.front(), rear = pgr_.front();
+    return;
+  }
+  const size_t i = size_t(it - pd_.begin()) - 1;
+  if (i + 1 >= pd_.size()) {
+    front = pgf_.back(), rear = pgr_.back();
+    return;
+  }
+  const double f = (distance - pd_[i]) / (pd_[i + 1] - pd_[i]);
+  front = lerp(pgf_[i], pgf_[i + 1], f);
+  rear = lerp(pgr_[i], pgr_[i + 1], f);
 }
 
 void LineFollower::point_at(double distance, double& x, double& z) const {
