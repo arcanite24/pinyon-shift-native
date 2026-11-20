@@ -86,8 +86,8 @@ def read_steps(path: Path) -> list[dict]:
                 # stability flags"): TCS intervention amount, STM active.
                 tcs=f32(blob, DYN + 3004), stm=struct.unpack_from(">i", blob, DYN + 3016)[0],
                 abs_setting=struct.unpack_from(">I", blob, DYN + 3436)[0],
-                # The AI-only grip factor on the front and rear axles (finding
-                # "AI off-road grip factor"): 1 unless a wheel is on dirt.
+                # The grip factor on dirt seen under the AI, front and rear axles (finding
+                # "grip factor on dirt under the AI"): 1 unless a wheel is on dirt.
                 ai_grip=(f32(blob, wheels[0] + 0x4C), f32(blob, wheels[2] + 0x4C))))
             t += abs(dt)
     return steps

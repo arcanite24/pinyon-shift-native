@@ -486,7 +486,7 @@ normal load: spring, damper and anti-roll bar. The scales are products:
 | Off-road | none: the code's 1 + `OffRoadness` × a constant has the constant 0 | none |
 | Rear | the surface's `RearGripMultiplier` (1 on asphalt, 0.93 on dirt) on the rear wheels | the same, and on the rear wheels the `Data_Car.FixListing*` multiplier below |
 | Handbrake | the surface's `HandbrakeGripMultiplier` on the rear wheels while the handbrake is held | same |
-| AI grip | under the AI only: a factor on both forces while a wheel is on dirt (see "What the AI's controls mean") | same |
+| AI grip | a factor on both forces while a wheel is on dirt, seen under the AI (see "What the AI's controls mean"); 1 on every other surface seen | same |
 | Misc | a constant near 1 (1.01 on the R34; the source is not identified) | same |
 
 **Rear-grip fix.** On each rear wheel the lateral force is multiplied by
@@ -1057,7 +1057,7 @@ lap must feed them in at these stages:
 | `steer` | the road wheels (the same one-step offset in the trace as the brake) | the mean angle of the two front wheels is 41.85° × steer (`SteerMaxAngle` is 42°), at every speed from 0 to 45 m/s, with no speed narrowing and no rate limit: over 7,329 AI steps the residual is under 0.01° on 99 % of steps, and the wheels follow jumps of the steer value within one step. The inner wheel turns about 4 % more than the outer (median ratio 1.042 above 3°) | the lock narrows with speed and the wheels move at a limited rate (see "Throttle, brake and steering from the pad") |
 | `gas` | the engine's throttle | not ramped: it jumps between 1.0 and about 0.01 within one 11 to 13 ms step (up to 90 per second; 415 of 6,266 AI steps change faster than 5 per second), where `AccelDelaySpeed` (5 per second) would take 0.2 s. The engine's own load value lags it (boost and the closed-throttle term), so do not build a torque map from that value | ramped at about 5 per second |
 | gears | — | the AI does not shift: the automatic box does, with the same thresholds as in pad runs ("Clutch and gearbox states") | the same |
-| grip on dirt | a factor on both tyre forces of every wheel (the tyre's "AI grip" scale) | above 1 only while a wheel is on dirt (279 of the 287 active lap steps; the other 8 the step after leaving it), and not on every dirt step (52 stay at 1). The two fronts share one value and the two rears another, with the rear's excess over 1 exactly 1.1 × the front's; at most 1.50 front and 1.55 rear. A step uses the value written in the step before. Its size, 1.0 to 1.5, has no rule found (it falls with speed and rises with steer). The lap file gives it per sample as `ai_grip`; an engine replays it by distance like the pedals | none: 1 in every pad run and the no-AI lap, on grass and dirt alike |
+| grip on dirt | a factor on both tyre forces of every wheel (the tyre's "AI grip" scale) | above 1 only while a wheel is on dirt (279 of the 287 active lap steps; the other 8 the step after leaving it), and not on every dirt step (52 stay at 1). The two fronts share one value and the two rears another, with the rear's excess over 1 exactly 1.1 × the front's; at most 1.50 front and 1.55 rear. Its size, 1.0 to 1.5, has no rule found (it falls with speed and rises with steer). The lap file gives it per sample as `ai_grip`, the value the step starting at that sample applies, so an engine replays it by distance like the pedals and adds no delay. Seen on dirt under the AI only: no pad or no-AI trace has touched dirt, so whether the player's car gets it on dirt is open | 1 in every pad run and the no-AI lap, none of which reached dirt (they saw asphalt, grass and other hard surfaces) |
 
 So the lap's `steer` is a fraction of `SteerMaxAngle` at the road
 wheels, `brake` a fraction of the AI's linear brake torque, and `gas` the
@@ -1107,26 +1107,31 @@ speed-narrowed lock the same steer values would give under 1°.
 
 **Check: the first corner** (300 to 400 m, 12.1 to 16.0 s, 24.2 to
 30.4 m/s, second gear, mostly at part or full throttle). The car turns
-left. From 12.9 s the AI cuts the inside over dirt: the front left wheel
-is on surface 1 for 43 % of the window and the rear left for 41 %. The
-tyre's per-wheel state (medians, N; α from the contact velocities above;
-the inside wheels leave the ground on 19 and 12 of 258 steps):
+left. From 12.99 to 14.6 s the AI cuts the inside over dirt: the front
+left wheel is on surface 1 for 43 % of the window and the rear left for
+41 %. From 12.31 to 12.59 s the inner wheels leave the ground (the front
+left on 19 steps, the rear left on 11), so the steady part of the corner
+is 14.7 to 16.0 s: 88 steps, all four wheels down on asphalt, a_lat
+−11 to −15 m/s². The tyre's per-wheel state there (medians, N; α from
+the contact velocities above), and over the whole window:
 
-| Wheel | 12.1 to 12.6 s, all on asphalt: load | α | s_y | μ_y | \|F_y\| | F_y / load | Whole window: load | α | \|F_y\| |
+| Wheel | 14.7 to 16.0 s: load | α | s_y | μ_y | \|F_y\| | F_y / load | Whole window: load | α | \|F_y\| |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| front left (inner) | 2,107 | 3.86° | 0.40 | 0.80 | 2,889 | 1.42 | 2,688 | 2.76° | 2,973 |
-| front right (outer) | 6,179 | 4.16° | 0.48 | 0.79 | 8,411 | 1.41 | 6,432 | 2.71° | 8,260 |
-| rear right (outer) | 4,344 | 3.80° | 0.42 | 0.78 | 6,074 | 1.40 | 5,358 | 2.15° | 6,313 |
-| rear left (inner) | 1,669 | 3.94° | 0.40 | 0.82 | 2,443 | 1.44 | 2,537 | 2.19° | 2,412 |
+| front left (inner) | 2,694 | 2.95° | 0.31 | 0.73 | 3,110 | 1.18 | 2,688 | 2.76° | 2,973 |
+| front right (outer) | 6,550 | 2.85° | 0.34 | 0.67 | 7,834 | 1.18 | 6,432 | 2.71° | 8,260 |
+| rear right (outer) | 5,638 | 2.24° | 0.26 | 0.60 | 5,846 | 1.03 | 5,358 | 2.15° | 6,313 |
+| rear left (inner) | 2,618 | 2.30° | 0.24 | 0.69 | 2,539 | 0.97 | 2,537 | 2.19° | 2,412 |
 
-The tyre law above, fed the oracle's slip angles, slip ratios, loads and
-surfaces, gives each wheel's traced F_y with a median ratio of 1.002 to
-1.004 (5th to 95th percentile 1.001 to 1.02) over the window. The four
-lateral forces sum to 12.5 m/s² of the car's mass (traced 12.47, rebuilt
-12.50, median). Projected on the body's lateral axis with the fronts'
-steer, the tyre forces give −12.7 m/s² over 12.1 to 12.6 s, where the
-lap's `a_lat` reads −12.4. No tyre is near its peak: s_y is 0.2 to 0.5,
-where F_y / load is 1.1 to 1.4 against a peak of about 1.66.
+The tyre law above, fed the oracle's slip angles, slip ratios, loads,
+surfaces and AI grip factor, gives each wheel's traced F_y with a median
+ratio of 1.002 to 1.004 (5th to 95th percentile 1.001 to 1.02) over the
+whole window. The four lateral forces sum to 12.5 m/s² of the car's mass
+(traced 12.47, rebuilt 12.50, median). Projected on the body's lateral
+axis with the fronts' steer, the tyre forces give −12.5 m/s² over the
+window, where the lap's `a_lat` reads −11 to −15. No tyre is near its
+peak: s_y is 0.2 to 0.5. The peak F_y / load falls with load, through
+the curves' `FrictionScale` pair: on a front wheel about 1.74 at 1.7 kN,
+1.64 at 4.3 kN, 1.57 at 6.2 kN and 1.50 at 8 kN.
 
 Two terms carry the corner. **The compound's `TorqueFreeLatFrictionScale`
 (1.8)**: without it the same slips give 6.9 m/s², which is the 5 to
@@ -1135,22 +1140,27 @@ Two terms carry the corner. **The compound's `TorqueFreeLatFrictionScale`
 controls mean"): without it the window gives 11.1 m/s² (about 11 % less
 from 322 to 365 m, where a wheel is on dirt).
 
-**Load transfer in the corner.** Over 12.1 to 12.6 s each front wheel's
-load moves by 2,080 N from the inner to the outer wheel and each rear
-wheel's by 1,540 N, so the front axle takes 57 % of the lateral load
-transfer (56 % over the window, quartiles 54 to 62 %). The roll stiffness
-from the springs and bars predicts 58 %: per axle the springs give
-k_s × t² / 2 and the bar k_bar × t², with k_s = 855 and 645 (100 N/m),
-k_bar = 144.1 and 96.05 (100 N/m), and tracks t = 1.541 and 1.530 m,
-which is 1,358 front against 980 rear (100 N·m/rad). The bars carry 22 %
-of the front's transfer and 21 % of the rear's (traced; 25 and 23 %
-predicted). The front's share is about its 57.5 % share of the weight, so
-the split does not overload the front. The size of the transfer matches
-an arm of 0.28 m (0.27 to 0.29 m) between the tyre forces and the centre
-of mass, the same as the 0.27 m pitch arm of scenario B, not the 0.47 m
-of a force at the contact patch. An engine that applies lateral tyre
-forces at the contact patch moves 1.7 times too much load onto the outer
-wheels, which saturates the outer front first.
+**Load transfer in the corner.** Each wheel's load is its spring force
+(rate × compression) plus its damper force plus the anti-roll bar's
+(confirmed: the remainder after spring and bar has a median of −0.5 to
++0.3 hundred N on each wheel over 14.7 to 16.0 s, the damper's swing).
+Over 14.7 to 16.0 s each front wheel's load moves by 1,920 N from the
+inner to the outer wheel and each rear wheel's by 1,610 N, so the front
+axle takes 55.5 % of the lateral load transfer (quartiles 54 to 56 %).
+The roll stiffness from the springs and bars predicts 58 %: per axle the
+springs give k_s × t² / 2 and the bar k_bar × t², with k_s = 855 and 645
+(100 N/m), k_bar = 144.1 and 96.05 (100 N/m), and tracks t = 1.541 and
+1.530 m, which is 1,358 front against 980 rear (100 N·m/rad). The bars
+carry 25 % of the front's transfer and 22 % of the rear's (traced; 25 and
+23 % predicted). The front's share is about its 57.5 % share of the
+weight, so the split does not overload the front. **Arm:** the size of
+the transfer matches the lateral tyre forces acting 0.28 m below the
+centre of mass (0.278 m, quartiles 0.273 to 0.283), the same as the
+0.27 m pitch arm of scenario B. For M3, apply the tyres' lateral forces
+through the same 0.27 to 0.28 m arm as the longitudinal ones, not at the
+contact patch (0.47 m below the centre of mass). At the contact patch an
+engine moves 1.7 times too much load onto the outer wheels, which
+saturates the outer front first.
 
 ### Files and format
 
@@ -1223,7 +1233,7 @@ tyre's peak F/load of about 1.8 under "Scenario B".
 | Part | State | What closes it |
 | --- | --- | --- |
 | Lateral tyre | confirmed on one compound at slip angles up to about 0.5 of the peak; the width scale's clamping and the arcade curve not checked | a second compound and a corner near the peak |
-| AI grip factor on dirt | on while a wheel of the AI-driven car is on dirt, size 1.0 to 1.5 with no rule found; replayed from the lap file | the code that writes it |
+| Grip factor on dirt | on while a wheel of the AI-driven car is on dirt, size 1.0 to 1.5 with no rule found; replayed from the lap file; AI and dirt not separated (no pad trace on dirt) | the code that writes it; a pad drive onto dirt |
 | Brake torque | the pad's curve confirmed at partial presses and the AI's linear map measured; the per-wheel constant's formula and the bias rule not decoded; one trace unit is about 1,200 N·m by steady partial braking, while full-press stops balance lower on the fronts | a car with other brake columns; the brake model's torque code |
 | AI-input mode | the flag, the AI's brake, ABS and steering paths measured on one lap; the flag's writer and the switch in the code not decoded | the code that reads the flag in the brake and steering models; a second AI-driven car |
 | Gearbox thresholds | up-shift at about 0.945 × `RedlineRPM` (third about 40 rpm later), braking down-shift at about 6,400 rpm in the lower gear; whether a lift or the brake withdraws a request, and the full-throttle down-shift, open | the gearbox state machine's engaged-state compares |
