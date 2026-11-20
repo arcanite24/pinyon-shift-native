@@ -225,20 +225,39 @@ active traffic cars.
   `numInitialTrafficCars` cars at once (4; festival
   `numInitialFestivalCars`, 2), spread along the player's road. In the
   oracle they appeared at 52, 112, 195 and 289 m (registry
-  `AI/Spawning/InitialSpawnMinDistance`, `InitialSpawnMaxCars`).
+  `AI/Spawning/InitialSpawnMinDistance`, `InitialSpawnMaxCars`). A
+  change of the hour does not run the initial placement again: after the
+  switch from noon to 02:00 the six cars on the road drove out one by one
+  (the last despawn 44 s later) with no spawn until the road was empty,
+  and after the switch back to noon cars came one at a time.
 - **Spawn.** While the active count is below the target, one car spawns
   on a road at the spawn-in distance from the player: the density
   entry's `spawnInDistance` when present (town ids 6 and 7), otherwise
   `AI/Spawning/SpawnInDistance` (330 m). Measured: 17 spawns at 317 to
   347 m. The time between spawns follows `AI/Spawning/Interval/Traffic*`
-  (minimum, medium, maximum, variance; seconds); measured 5 to 9 s while
-  the population was below target at noon.
+  (minimum, medium, maximum, variance; seconds) and `Interval/SpeedFactor`
+  and `SpeedMax`. Measured with the player parked at noon: 4.8 to 9.4 s
+  (mean 7.4 s, 8 intervals) whether 4 or 7 cars were active, so the
+  interval does not visibly shorten towards `TrafficMin` when the count
+  is low; cruising at noon it fell to 3.1 to 6.0 s as the player gained
+  speed, so the player's speed shortens it (probable; the formula is not
+  decoded). At 02:00 a car spawned only when the road was empty (0.2 and
+  2.7 s after the last car left), consistent with spawning only while the
+  active count is below a target under 1.
+- **Count follows lifetime.** With a fixed interval the parked count is
+  about the mean car lifetime over the interval. A car spawned towards the
+  player crosses 330 m to him and 393 m past him, about 54 s at 13.4 m/s;
+  one spawned driving away leaves in about 5 s. With 0.24 of spawns away,
+  that is 0.76 × 54 + 0.24 × 5 = 42 s, over 7.4 s gives 5.7 cars,
+  against 6.1 observed. The spawn direction matters as much as the rate.
 - **Direction.** A spawned car drives towards the player or away from
   him; `spawnAwayChance` (per density id) and `AI/Spawning/
   SpawnAwayChanceMin`, `Max` and `LerpSpeed` set the chance it drives
   away. Measured: 5 of 21 spawns drove away from the player, most with
   him parked (close to `SpawnAwayChanceMin`), so the chance probably rises
-  with the player's speed towards the road's value (probable).
+  with the player's speed towards the road's value (probable). An engine
+  should use `SpawnAwayChanceMin` while the player is still; using the
+  road's value (0.6) shortens the mean lifetime to about 25 s.
 - **Spacing.** No spawn within `AI/Spawning/MinDistanceFromOtherCars` of
   another car, scaled up to `MaxDistanceFromOtherCars` at
   `SpeedAtMaxDistanceFromOtherCars` (probable reading of the keys).
@@ -352,6 +371,21 @@ throttle and brake inputs limited by `VehicleControls/AccelMaxInput` and
 `BrakeMaxInput`, steering scaled by `SteeringMultiplier`, gears capped by
 `GearMaxSpeed1st` to `4th` (m/s).
 
+`AccelMaxInput` (0.2) is a cap, not a rate: in all 492 full-step samples
+of traffic on its line the throttle input was exactly 0.20 (Leaf, Express
+van, Taurus, Prius), never between 0 and 0.2. At that throttle the cars
+held 13.3 to 13.6 m/s, and the Express van went from 10.4 to 13.4 m/s in
+about 2 s. Meanwhile the engine speed rose slowly from idle (about 700 to
+1,600 rpm over 5 s in third gear) at a constant road speed, so the
+engine's torque is not what holds the car's speed when it enters full
+physics: the traffic position controller (the interpolation gains above)
+probably keeps pulling the body to its predicted place on the line
+(probable). Engine rule: cap the throttle at 0.2, and hold a full-physics
+traffic car at its lane speed with the same position and heading blend
+the kinematic cars use, so a weak model (Prius, Leaf, Focus, Corolla)
+still keeps 30 mph. Cars knocked off their line showed full brake (1.0)
+and first gear until stopped.
+
 ### Collision with the player
 
 Traffic cars are rigid bodies the player can push. Their body mass is the
@@ -428,7 +462,8 @@ Traffic counts are cars of driver type 4 within 1 km of the player
 | Phase | Active traffic (mean, min, max) | Festival cars (mean) |
 | --- | --- | --- |
 | noon, parked | 6.1, 4, 8 | 0.8 |
-| 02:00, parked (from 30 s after the change) | 0.9, 0, 2 | 1.7 |
+| 02:00, parked (from 30 s after the change; the noon cars were still leaving until 44 s) | 0.9, 0, 2 | 1.7 |
+| 02:00, parked, after the last noon car left (16 s) | 0.8, 0, 1 | |
 | noon, cruising | 4.4, 2, 8 | 1.0 |
 
 Density check at noon: within 370 m of the player the network holds
