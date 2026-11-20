@@ -36,6 +36,7 @@
 
 #include "audio/bake.h"
 #include "hud.h"
+#include "process_time.h"
 #include "reference.h"
 #include "renderer.h"
 #include "showroom.h"
@@ -834,6 +835,8 @@ int run_drive(int argc, char** argv) {
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
   bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false,
        no_far = false, no_trees = false;
+  bool bench = false;     // headless: render every frame, timed, no images
+  uint32_t msaa = 4;
   std::filesystem::path world_reference_path;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
@@ -865,6 +868,13 @@ int run_drive(int argc, char** argv) {
     else if (a == "--no-props") no_props = true;
     else if (a == "--no-far") no_far = true;
     else if (a == "--no-trees") no_trees = true;
+    else if (a == "--bench") bench = headless = async_stream = true;  // streams like the window
+    else if (a == "--msaa") msaa = uint32_t(std::atoi(next()));
+    else if (a == "--preset") {
+      // low (ours): no MSAA, cut-outs alpha-tested; high: the default 4x.
+      const std::string p = next();
+      msaa = p == "low" ? 1 : 4;
+    }
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
     else if (a == "--sound") sound_dir = next();
@@ -974,7 +984,7 @@ int run_drive(int argc, char** argv) {
     Renderer renderer;
     Showroom showroom(renderer);
     ShowroomOptions options;
-    if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, validation, 4}, error) ||
+    if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, validation, msaa}, error) ||
         !showroom.upload(error)) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;
@@ -1275,6 +1285,85 @@ int run_drive(int argc, char** argv) {
           }
           if (ref) stbi_image_free(ref);
         }
+      } else if (bench) {
+        // The benchmark (M2 performance): the cruise along the free-roam
+        // road from the spawn, a frame every second step (60 Hz of game
+        // time), each rendered and timed without reading it back. Per
+        // frame: the CPU time of the steps since the last frame (with the
+        // streaming's hand-over), of posing the scene and of recording the
+        // commands; the GPU time between timestamps. Process CPU time over
+        // the whole run counts every thread (the gather worker, the
+        // driver's).
+        const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
+        std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms;
+        std::vector<std::string> stage_names;
+        std::vector<std::vector<double>> stage_ms;  // per stage, per frame
+        double sim = 0;
+        const double cpu0 = process_cpu_seconds();
+        const auto wall0 = std::chrono::steady_clock::now();
+        for (int s = 0; s <= steps && status == 0; ++s) {
+          const auto t0 = std::chrono::steady_clock::now();
+          if (s > 0 && !step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()))) {
+            std::fprintf(stderr, "carview: %s\n", error.c_str());
+            status = 1;
+            break;
+          }
+          sim += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          if (s % 2 != 0) continue;
+          const auto p0 = std::chrono::steady_clock::now();
+          wheel_poses(vehicle, poses);
+          showroom.set_wheel_poses(poses);
+          place_world();
+          showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
+                                         2 * drive::Vehicle::kStep));
+          const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
+          double rec = 0, gpu = 0;
+          if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
+            std::fprintf(stderr, "carview: %s\n", error.c_str());
+            status = 1;
+            break;
+          }
+          sim_ms.push_back(sim);
+          record_ms.push_back(rec);
+          for (const auto& [name, ms] : renderer.stage_ms()) {
+            size_t k = 0;
+            while (k < stage_names.size() && stage_names[k] != name) ++k;
+            if (k == stage_names.size()) {
+              stage_names.push_back(name);
+              stage_ms.emplace_back();
+            }
+            stage_ms[k].push_back(ms);
+          }
+          cpu_ms.push_back(sim + pose + rec);
+          gpu_ms.push_back(gpu);
+          sim = 0;
+        }
+        const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
+        const double cpu = process_cpu_seconds() - cpu0;
+        auto pct = [](std::vector<double> v, double q) {
+          if (v.empty()) return 0.0;
+          std::sort(v.begin(), v.end());
+          return v[std::min(v.size() - 1, size_t(q * double(v.size() - 1) + 0.5))];
+        };
+        const size_t n = cpu_ms.size();
+        std::printf("bench: %s, %ux%u, MSAA %u, %zu frames over %.1f s of game time (%.1f s wall)\n",
+                    renderer.device_name().c_str(), width, height, renderer.sample_count(), n, seconds, wall);
+        std::printf("bench: frame CPU ms p50 %.2f p95 %.2f max %.2f (steps p50 %.2f max %.2f; recording p50 %.2f)\n",
+                    pct(cpu_ms, 0.5), pct(cpu_ms, 0.95), pct(cpu_ms, 1.0), pct(sim_ms, 0.5), pct(sim_ms, 1.0),
+                    pct(record_ms, 0.5));
+        if (n && gpu_ms[0] >= 0)
+          std::printf("bench: frame GPU ms p50 %.2f p95 %.2f max %.2f\n", pct(gpu_ms, 0.5), pct(gpu_ms, 0.95),
+                      pct(gpu_ms, 1.0));
+        else
+          std::printf("bench: no GPU timestamps on this queue\n");
+        if (!stage_names.empty()) {
+          std::printf("bench: GPU by stage, p50 ms:");
+          for (size_t k = 0; k < stage_names.size(); ++k)
+            std::printf(" %s %.2f;", stage_names[k].c_str(), pct(stage_ms[k], 0.5));
+          std::printf("\n");
+        }
+        std::printf("bench: process CPU %.2f s over %.2f s wall: %.2f ms per frame, %.0f%% of one core\n", cpu, wall,
+                    n ? cpu * 1000 / double(n) : 0.0, wall > 0 ? cpu / wall * 100 : 0.0);
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));

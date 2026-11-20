@@ -56,7 +56,10 @@ void main() {
     return;
   }
   vec4 world = draw.model * vec4(in_position, 1.0);
-  mat3 normal_matrix = transpose(inverse(mat3(draw.model)));
+  // The scenery's transform is orthogonal (the car's pose inverted, with
+  // the z mirror; no scale), so it turns normals as it is: no per-vertex
+  // inverse.
+  mat3 normal_matrix = mat3(draw.model);
   if ((flags & kFlagBillboard) != 0u) {
     // A tree sprite (WORLD-MATERIALS, Tree billboards): the base point B,
     // the trunk axis U in the normal, the corner's offset in uv1. Width

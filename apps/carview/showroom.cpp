@@ -1228,8 +1228,10 @@ bool Showroom::upload(std::string& error) {
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) { update_frame(cmd); };
   hooks.draw = [this](VkCommandBuffer cmd) {
+    r_.mark(cmd, "setup");
     record_world(cmd);
     if (draw_car_) record_draws(cmd, opaque_, glass_);
+    r_.mark(cmd, "car");
   };
   hooks.clear[0] = 0.09f;
   hooks.clear[1] = 0.095f;
@@ -1816,7 +1818,19 @@ void Showroom::record_world(VkCommandBuffer cmd) {
   if (world_textured_) {
     VkPipeline bound = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
+    // The benchmark's split (Renderer::mark): the sky, then each blend group.
+    static const char* const kGroup[] = {"world opaque", "world cut-outs", "world blended"};
+    int group = -1;
     for (const auto& d : world_draws_) {
+      const bool sky = uint32_t(d.push.params[1] + 0.5f) == 2;
+      if (group < 0 && !sky) {
+        r_.mark(cmd, "sky");
+        group = 0;
+      }
+      if (group >= 0 && d.blend != group) {
+        r_.mark(cmd, kGroup[std::min(group, 2)]);
+        group = d.blend;
+      }
       const VkPipeline pipeline = d.blend == 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : world_opaque_;
       if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
@@ -1833,6 +1847,9 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       if (set != bound_set)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &(bound_set = set), 0,
                                 nullptr);
+      // Cut-outs without MSAA: world.frag's alpha test (flag 64).
+      if (d.blend == 1 && r_.samples_ == VK_SAMPLE_COUNT_1_BIT)
+        push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 64u);
       std::memcpy(push.model, world_transform_, sizeof push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
       std::memcpy(push.uv1, world_up_, sizeof push.uv1);
@@ -1840,6 +1857,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
     }
+    if (group >= 0) r_.mark(cmd, kGroup[std::min(group, 2)]);
     return;
   }
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &material_sets_[0], 0,

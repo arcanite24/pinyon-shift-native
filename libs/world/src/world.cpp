@@ -42,7 +42,10 @@ std::string lod_family(const std::string& name, int& lod) {
   return n;
 }
 
-constexpr const char* kCacheMagic = "shift-world-index 2";
+// Bumped whenever what the index records changes (3: the far flag leaves
+// out the CAGE, TERR_CUBE and occluder objects), so an older index is
+// rebuilt rather than reused.
+constexpr const char* kCacheMagic = "shift-world-index 3";
 
 }  // namespace
 

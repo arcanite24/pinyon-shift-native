@@ -58,6 +58,19 @@ class Renderer {
   bool render_offscreen(const FrameConstants& constants, uint32_t width, uint32_t height,
                         std::vector<uint8_t>& rgba, std::string& error,
                         std::vector<float>* depth = nullptr);
+  // Headless benchmark: renders one frame into a kept target without
+  // reading it back. `record_ms` is the CPU time to record the commands,
+  // `gpu_ms` the GPU time between timestamps at the start and end of the
+  // frame (negative when the queue has no timestamps).
+  bool render_timed(const FrameConstants& constants, uint32_t width, uint32_t height, double& record_ms,
+                    double& gpu_ms, std::string& error);
+  // render_timed's split: the GPU time of each stage the scene marked
+  // (mark), in order, from the last timed frame.
+  const std::vector<std::pair<std::string, double>>& stage_ms() const { return stage_ms_; }
+  // Ends a stage of a timed frame at this point of `cmd` (nothing otherwise).
+  void mark(VkCommandBuffer cmd, const char* label);
+  // The MSAA sample count in use (1 when off).
+  uint32_t sample_count() const { return uint32_t(samples_); }
   // Windowed: renders and presents one frame. Returns false on a fatal error.
   bool draw_frame(const FrameConstants& constants, std::string& error);
 
@@ -138,6 +151,15 @@ class Renderer {
   Image texture_;
 
   uint32_t target_width_ = 0, target_height_ = 0;
+  // render_timed: the kept target and the timestamp queries.
+  Image bench_output_;
+  VkQueryPool timestamps_ = VK_NULL_HANDLE;
+  double timestamp_ns_ = 0;  // ns per tick; 0 without timestamps
+  static constexpr uint32_t kTimestamps = 16;
+  bool timing_ = false;
+  uint32_t mark_end_ = 1;
+  std::vector<const char*> mark_labels_;
+  std::vector<std::pair<std::string, double>> stage_ms_;
   bool depth_readable_ = false;
   Image msaa_color_, depth_;
 

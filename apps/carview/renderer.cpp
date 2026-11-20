@@ -1,6 +1,7 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -70,6 +71,8 @@ Renderer::~Renderer() {
     destroy_buffer(index_buffer_);
     destroy_buffer(overlay_buffer_);
     destroy_image(texture_);
+    destroy_image(bench_output_);
+    if (timestamps_) vkDestroyQueryPool(device_, timestamps_, nullptr);
     if (image_ready_) vkDestroySemaphore(device_, image_ready_, nullptr);
     if (frame_fence_) vkDestroyFence(device_, frame_fence_, nullptr);
     if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
@@ -229,6 +232,14 @@ bool Renderer::pick_device(std::string& error) {
       samples_ = VkSampleCountFlagBits(s);
       break;
     }
+  }
+  {
+    uint32_t families = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &families, nullptr);
+    std::vector<VkQueueFamilyProperties> family_props(families);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &families, family_props.data());
+    if (queue_family_ < families && family_props[queue_family_].timestampValidBits > 0)
+      timestamp_ns_ = props.limits.timestampPeriod;
   }
   VkFormatProperties format_props;
   vkGetPhysicalDeviceFormatProperties(physical_, VK_FORMAT_D32_SFLOAT, &format_props);
@@ -831,6 +842,63 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     depth_readable_ = false;
   }
   return ok;
+}
+
+bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uint32_t height, double& record_ms,
+                            double& gpu_ms, std::string& error) {
+  if ((target_width_ != width || target_height_ != height) && !create_targets(width, height, error)) return false;
+  if (!bench_output_.image &&
+      !create_image(width, height, 1, color_format_, VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                    bench_output_)) {
+    error = "benchmark colour image";
+    return false;
+  }
+  if (timestamp_ns_ > 0 && !timestamps_) {
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = kTimestamps;
+    if (vkCreateQueryPool(device_, &info, nullptr, &timestamps_) != VK_SUCCESS) timestamp_ns_ = 0;
+  }
+  stage_overlay();
+  double recorded = 0;
+  const bool ok = submit_once([&](VkCommandBuffer cmd) {
+    const auto t0 = std::chrono::steady_clock::now();
+    mark_labels_.clear();
+    if (timestamps_) {
+      vkCmdResetQueryPool(cmd, timestamps_, 0, kTimestamps);
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, timestamps_, 0);
+      timing_ = true;
+    }
+    record_scene(cmd, bench_output_.image, bench_output_.view, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, constants);
+    timing_ = false;
+    if (timestamps_) mark_end_ = uint32_t(mark_labels_.size()) + 1;
+    if (timestamps_) vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, timestamps_, mark_end_);
+    recorded = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  });
+  if (!ok) {
+    error = "benchmark submission failed";
+    return false;
+  }
+  record_ms = recorded;
+  gpu_ms = -1;
+  uint64_t ticks[kTimestamps] = {};
+  stage_ms_.clear();
+  if (timestamps_ && vkGetQueryPoolResults(device_, timestamps_, 0, mark_end_ + 1, sizeof ticks, ticks,
+                                           sizeof(uint64_t),
+                                           VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+    auto ms = [&](uint32_t a, uint32_t b) { return double(ticks[b] - ticks[a]) * timestamp_ns_ / 1e6; };
+    gpu_ms = ms(0, mark_end_);
+    for (uint32_t i = 0; i < mark_labels_.size(); ++i) stage_ms_.push_back({mark_labels_[i], ms(i, i + 1)});
+    stage_ms_.push_back({"rest", ms(uint32_t(mark_labels_.size()), mark_end_)});
+  }
+  return true;
+}
+
+void Renderer::mark(VkCommandBuffer cmd, const char* label) {
+  if (!timing_ || mark_labels_.size() + 2 >= kTimestamps) return;
+  mark_labels_.push_back(label);
+  vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestamps_, uint32_t(mark_labels_.size()));
 }
 
 bool Renderer::create_swapchain(std::string& error) {

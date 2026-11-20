@@ -41,7 +41,7 @@ layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
-           kFlagBillboard = 32u;
+           kFlagBillboard = 32u, kFlagAlphaTest = 64u;
 
 // The sky gradient (ours, linear): pale haze at the horizon to blue above.
 const vec3 kSkyHorizon = vec3(0.477, 0.604, 0.708);
@@ -94,6 +94,8 @@ void main() {
 
   float alpha = 1.0;
   if (blend == kCoverage) {
+    // Without MSAA there is no alpha to coverage: an alpha test at one half.
+    if ((flags & kFlagAlphaTest) != 0u && t.a < 0.5) discard;
     // Alpha to coverage, sharpened to the texel edge.
     alpha = clamp((t.a - 0.5) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
   } else if (blend == kAlpha) {

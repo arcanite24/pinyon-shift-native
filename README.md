@@ -196,6 +196,12 @@ carview --drive --headless --bake out/bake --car NIS_SkylineGTRVSpecII_02 --run 
 carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --world <game>/media/tracks/colorado \
         --run cruise --seconds 120 --every 10 --out out/drive/colorado.png
 
+# Performance (M2): the cruise from the spawn, every frame at 60 Hz of game
+# time rendered and timed, no images: frame CPU, GPU by stage (timestamps)
+# and process CPU. --preset low: no MSAA, cut-outs alpha-tested.
+carview --drive --bench --preset low --size 1280x720 --bake out/bake --car NIS_SkylineGTRVSpecII_02 \
+        --world <game>/media/tracks/colorado --run cruise --seconds 60 --no-sound
+
 # Corpus test: every archive, every .carbin and .xds member
 fh1data-corpus --game-root <game> [--verbose] [--filter cars/]
 
@@ -393,6 +399,32 @@ opaque.
 - Open in the spec: part variants (Q4), cockpit parts (Q5), calliper
   angle (Q7), slot-1 UVs (Q8). Polish for later: the showroom lighting
   (SHOWROOM_LIGHTING), the lamp glow and glare, Q13 and Q14.
+
+## Status (M2 performance, 2026-11-20)
+
+`carview --drive --bench` along the free-roam cruise from the spawn, 60 s
+of game time (3,601 frames), 1280x720, about 570-750k triangles of
+scenery with the far ring and 39k tree sprites, frames rendered back to
+back without readback. GPU time is between timestamps at the frame's
+start and end; frame CPU is the steps (with the streaming's hand-over),
+posing and recording on the main thread; process CPU counts every
+thread (the gather worker included).
+
+| Machine | Preset | GPU p50 / p95 / max ms | Frame CPU p50 / max ms | Process CPU ms/frame |
+| --- | --- | --- | --- | --- |
+| blindvac, UHD 620, i5-8250U | low (no MSAA) | 10.1 / 12.7 / 16.2 | 1.18 / 29.7 | 1.79 |
+| blindvac, UHD 620, i5-8250U | high (MSAA 4) | 12.7 / 17.4 / 26.4 | 1.18 / 26.6 | 1.91 |
+| multivac, RTX 4080, Ryzen 7 5800X | low | 0.42 / 0.48 / 0.51 | 0.68 / 15.1 | 1.08 |
+
+On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
+foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
+(1.4 ms) and the sky dome (0.6 ms). It does not follow the resolution
+(10.9 ms at 640x360, 11.3 ms at 1920x1080) or the triangle count (no
+props, far ring or trees: 10.3 to 10.7 ms; flat colours: 10.2 ms), so
+the cost is per vertex or per draw rather than per pixel. The frame CPU's
+maximum is the scenery hand-over on a regather (15 to 20 ms on the
+i5-8250U, 8 ms on the 5800X): a hitch, not the steady state. No Linux
+build yet, so no Steam Deck figure.
 
 ## Licence
 

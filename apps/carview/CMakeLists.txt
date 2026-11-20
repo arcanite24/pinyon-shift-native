@@ -50,6 +50,7 @@ add_executable(carview
   main.cpp
   car_model.cpp
   hud.cpp
+  process_time.cpp
   renderer.cpp
   reference.cpp
   showroom.cpp
