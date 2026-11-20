@@ -309,44 +309,83 @@ Our choices inside the answers:
 | B 2-1 gear change | +0.49 s, 58.4 km/h | +0.50 s, 59.8 km/h | ok |
 | Turn circle | 3.344 m, coast 3.00 -> 2.32 m/s | 3.37 m, 2.84 -> 2.08 | pass |
 
-## Q27 (blocking A and B): the free-revving engine's inertia
+## Q27 (answered, CAR_PHYSICS 67371030): the free-revving engine's inertia
 
-With the clutch open our engine revs slower than the oracle's. That delays
-the launch by 0.1 s, and after reverse is selected it lengthens the coast
-to 0.7 s, against the oracle's 0.39 s. The spec's inertia is
-Data_Engine + flywheel = 0.2035 kg m^2.
+Answer: J = 0.145 (0.71 x the rows' engine + flywheel), engine braking
+0.71 x ZeroThrottleTorqueScale, clutch capacity factor 0.72 (measured
+fits). Implemented in `from_physics.cpp`. Results (R34):
 
-| Engine inertia | rpm at 0.3 / 0.5 s | Launch from | 1-2 change | 0-100 | B |
-|---|---|---|---|---|---|
-| 0.2035 (spec) | 1,937 / 3,684 | 0.617 s | 3.850 s | 6.137 s | 7.25 |
-| 0.15 | 2,385 / 4,934 | 0.508 s | 3.700 s | 6.011 s | 8.45 |
-| 0.0957 (engine row only) | 3,443 / launch | 0.383 s | 3.567 s | 5.895 s | 8.57 |
-| oracle | 2,395 / 4,857 | ~0.51 s | 3.55 s | 5.84 s | 8.57 |
+| Check | Engine | Oracle |
+|---|---|---|
+| Launch state | 0.492-1.500 s, left at 28.0 km/h; locked 1.675 s at 31.9 km/h | 0.51-1.42 s at 29.6 km/h; locked 1.58 s at 32.7 km/h |
+| 0-20 / 40 / 60 km/h | 1.226 / 2.023 / 2.925 s (miss) | 1.122 / 1.891 / 2.780 s |
+| 0-80 / 0-100 km/h | 4.620 / 5.943 s (ok) | 4.557 / 5.84 s |
+| 1-2 request / change / locked | 3.367 / 3.683 s at 67.9 km/h (miss) / 4.033 s | 3.20 / 3.55 / 3.91 s |
 
-An inertia of 0.15 reproduces the oracle's free-rev, but in gear the car
-is then still ~0.15 s slow. B's 8.57 at 0.0957 is a coincidence: there
-the ABS phase is too strong (14.9) and the reverse phase too weak (4.2
-over 1.54 s). Needed: the oracle's engine inertia, or its engine
-acceleration with the clutch open (rpm per s at a known load), and
-whether the flywheel counts when the clutch is open.
+The launch is still about 0.1 s late below 60 km/h; 80 and 100 pass.
 
-## Q28 (blocking B): the front tyre's braking grip against the brake torque
+## Q28 (answered, 67371030): the front tyre's braking grip
 
-The spec says the brake torque is far above the grip, so the fronts pass
-the release point within 0.09 s. Ours do not: at 3,900 N m and 1.805 the
-fronts hold a normalised slip of -0.3 to -0.6, braked on 95 % of steps.
-The ABS phase is then 14.6 m/s^2. At 5,000 N m the front duty matches
-(49 %), but the ABS phase is 10.6. Needed: the front's F_x and load (or
-F_x / N) in the first 0.1 s of the press, to check where our 1.805 scale
-sits against the oracle's.
+Answer: the spec's onset table (front left, run B1). With the per-wheel
+F_x now in the trace (`fx0..fx3`), ours over the same window:
 
-## Q29 (B): the rears under braking
+| t (s) | brake (N m) | slip | F_x | load | F_x / load | oracle slip, F_x, load |
+|---|---|---|---|---|---|---|
+| 0.000 | 0 | +0.05 | +937 | 2,962 | | +0.06, +1,050, 2,500 |
+| 0.017 | 1,610 | -0.17 | -3,723 | 3,118 | 1.19 | -0.23, -3,400, 2,600 |
+| 0.033 | 2,646 | -0.47 | -5,981 | 3,497 | 1.71 | -0.63, -5,150, 2,900 |
+| 0.050 | 3,900 | -1.09 | -6,915 | 3,865 | 1.79 | -1.50, -6,070, 3,400 |
+| 0.067 | 3,900 | -1.92 | -7,455 | 4,252 | 1.75 | -2.37, -7,200, 4,200 |
+| 0.083 | 3,900 | -2.66 | -7,949 | 4,635 | 1.71 | -3.20, -7,200, 4,300 |
+| 0.108 | 0 (released) | -2.77 | -8,970 | 5,169 | 1.74 | -1.51, -8,080, 4,600 |
+| 0.167 | 3,900 | -0.42 | -9,160 | 5,444 | 1.68 | -1.17, -8,480, 4,800 |
 
-Our rears are braked on 38-48 % of steps (the oracle's 74-81 %), with
-only 1,600 N m of brake. Through the locked clutch they also carry the
-engine's braking and the 2-1 shift's clutch in and out. Is the driveline
-torque part of the rears' release, and is the oracle's AWD split the same
-under braking?
+Our 1.805 is applied once and F_x / load peaks at 1.79. One fix came
+from the 0.106 row: the oracle's released front keeps F_x / load 1.76,
+so a wheel counts as slowed while the brake pedal is held, through an
+ABS release (before: only while its brake torque was applied, which
+gave 1.1 on released steps). The first release is at 0.108 s.
+
+## Q29 (answered, 67371030): the rears under braking
+
+Answer: open centre differential, 70 % rear, the same under braking;
+the locked clutch feeds the rears. Ours already split it so. Checks:
+the engine is pulled from 5,660 to 4,271 rpm by 0.083 s (oracle 4,240
+by 0.085 s); the rears stay within 3 % of the ground speed until
+0.075 s (oracle 0.085 s) and first reach their release point at
+0.208 s (oracle 0.25 s).
+
+## Q33 (blocking B): the load transfer under braking
+
+After the first 0.17 s our loads keep moving forward: by 0.3 s the
+fronts carry 6,500-7,000 N and the rears 330-900 N (the spec: rears
+1,300-2,600 N through the stop, and their tyre torque of 900-1,250 N m
+implies about 1,600-2,200 N). At a front load of about
+T / (1.8 r) = 6,800 N the tyre's torque reaches the 3,900 N m brake, so
+our fronts cannot be pulled to the release point: they are braked on
+95 % of steps (oracle 50-54 %), the rears on 46 % (74-81 %), and the
+ABS phase is 14.8 m/s^2 (oracle 11.9-12.1). B's mean of 8.49 m/s^2 only
+passes because that cancels the weak reverse phase (4.10 m/s^2 over
+1.56 s; oracle ~5 over 1.26-1.29 s). Our transfer is the rigid body's:
+tyre forces at the contact patch, centre of mass at CMHeight 0.481 m
+above the ground (the spec marks it "probable: not checked against the
+trace").
+
+A debug-only sweep of the centre-of-mass height (not committed):
+
+| CM height (m) | ABS phase (m/s^2) | braked front / rear | reverse at | mean |
+|---|---|---|---|---|
+| 0.481 (rows) | 14.82 | 95 / 46 % | +1.08 s | 8.49 |
+| 0.40 | 12.63 | 72 / 65 % | +1.28 s | 7.94 |
+| 0.35 | 12.50 | 68 / 74 % | +1.29 s | 7.85 |
+| 0.30 | 12.19 | 62 / 79 % | +1.32 s | 7.85 |
+| 0.16 (0.481 - r) | 12.27 | 56 / 96 % | +1.31 s | 7.88 |
+| oracle | 11.9-12.1 | 50-54 / 74-81 % | +1.31-1.36 s | 8.57 |
+
+A brake of 3,690 N m (the onset table's full press) at 0.481 m changes
+little (14.34, 95 / 47 %). Needed: run B1's four wheel loads and the
+pitch over 0.2-1.3 s of the press, and CMHeight's reference point (or
+the pitch moment arm the oracle uses for the tyre forces).
 
 Engine choices the spec leaves open (ours, logged here): Ackermann
 steering geometry; the steering lock narrowed with speed to hold 1 g

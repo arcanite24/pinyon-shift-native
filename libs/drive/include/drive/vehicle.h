@@ -175,7 +175,7 @@ struct CarParams {
   double gearbox_inertia = 0.014, driveline_inertia = 0.004;  // kg m^2
   double gear_shift_time = 0.16, clutch_in_time = 0.15, clutch_out_time = 0.3;  // s
   double clutch_max_torque = 900;  // N m
-  double clutch_torque_factor = 0.78;  // capacity = engagement x ClutchMaxTorque x this (GameTorqueScale)
+  double clutch_torque_factor = 0.72;  // capacity = engagement x ClutchMaxTorque x this (measured fit)
   double upshift_fraction = 0.96;  // of the redline
   // Braking: down when the lower gear would sit under this x the redline
   // (ours, from the R34's 2->1 at 75 km/h).
@@ -236,6 +236,7 @@ struct WheelState {
   double slip_ratio = 0;    // normalised (1 = the curve's peak), signed: negative locking
   double slip_angle = 0;    // normalised, signed
   double brake = 0;         // the brake fraction this wheel got (0 while the ABS releases it)
+  double fx = 0;            // N, the tyre's longitudinal force on the body (last substep)
   bool contact = false;
   Vec3 centre{};            // body frame, rest centre moved by the travel
 };

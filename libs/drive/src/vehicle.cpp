@@ -517,9 +517,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
     w.brake = frac;
     brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque);
     if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
-    // The wheel's applied torque slows it: a brake, or the driveline's
-    // torque (last substep's) against its spin.
-    slowing[i] = brake[i] > 0 || tc_prev_ * G * weight_[i] * w.omega < 0;
+    // The wheel's applied torque slows it: the brake pedal (held through
+    // an ABS release: the oracle's released front keeps F_x / load 1.76,
+    // SPEC-CAR-PHYSICS scenario B onset table), the handbrake, or the
+    // driveline's torque (last substep's) against its spin.
+    slowing[i] = brake_frac > 0 || brake[i] > 0 || tc_prev_ * G * weight_[i] * w.omega < 0;
   }
 
   // 3. Tyres: forces at the current wheel speeds, with the longitudinal
@@ -635,9 +637,11 @@ void Vehicle::substep(double dt, const Ground& ground) {
       double fx = 0, fy_new = 0;
       tyre(i, omega_new[i], &fx, &fy_new, nullptr, nullptr);
       const Vec3 f = normal[i] * w.load + fwd[i] * fx + lat[i] * fy_new;
+      w.fx = fx;
       force = force + f;
       torque = torque + cross(contact[i] - pos_, f);
     }
+    if (!w.contact || w.load <= 0) w.fx = 0;
     w.omega = omega_new[i];
     w.spin = std::fmod(w.spin + w.omega * dt, 2 * kPi);
   }
@@ -712,7 +716,7 @@ std::string trace_header() {
   std::string h = "t,x,y,z,vx,vy,vz,speed,yaw,pitch,roll,rpm,gear,steer,throttle,brake,body,clutch,abs";
   for (int i = 0; i < kWheels; ++i) {
     const std::string n = std::to_string(i);
-    h += ",comp" + n + ",omega" + n + ",load" + n + ",sx" + n + ",sy" + n + ",brk" + n;
+    h += ",comp" + n + ",omega" + n + ",load" + n + ",sx" + n + ",sy" + n + ",brk" + n + ",fx" + n;
   }
   return h;
 }
@@ -747,6 +751,7 @@ std::string trace_row(const Vehicle& v) {
     add(w.slip_ratio);
     add(w.slip_angle);
     add(w.brake);
+    add(w.fx);
   }
   return row;
 }

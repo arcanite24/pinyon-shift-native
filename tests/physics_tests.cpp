@@ -360,6 +360,7 @@ int main() {
   if (const char* e = std::getenv("PHYSICS_WHEEL_J")) p.wheel_inertia = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_BOOST_LAG")) p.boost_lag = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_ENGINE_J")) p.engine_inertia = std::atof(e);
+  if (const char* e = std::getenv("PHYSICS_CM_HEIGHT")) p.centre_of_mass.y = std::atof(e);
   std::printf("engine inertia %.4f kg m^2, brake torque front %.0f rear %.0f N m, braking friction scale %.4f\n", p.engine_inertia,
               p.front_brake_torque, p.rear_brake_torque, p.brake_friction_scale);
 

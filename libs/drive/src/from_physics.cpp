@@ -140,11 +140,16 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   }
   p.torque_curve_max_rpm = get("List_UpgradeEngineCamshaft.TorqueCurveMaxRPM", p.torque_curve_max_rpm);
   p.torque_scale = get("List_TorqueCurve.TorqueScale", p.torque_scale);
-  p.engine_braking = get("List_TorqueCurve.ZeroThrottleTorqueScale", p.engine_braking);
+  // SPEC-CAR-PHYSICS, Engine inertia and free rev (measured fit on the R34):
+  // the oracle's engine behaves as the rows' inertia and closed-throttle
+  // torque x 0.71, and its clutch capacity x 0.72 (below).
+  constexpr double kEngineSide = 0.71;
+  p.engine_braking = kEngineSide * get("List_TorqueCurve.ZeroThrottleTorqueScale", p.engine_braking / kEngineSide);
   p.idle_rpm = get("List_UpgradeEngineCamshaft.StallRPM", p.idle_rpm);
   p.redline_rpm = get("List_UpgradeEngineCamshaft.RedlineRPM", p.redline_rpm);
   p.launch_rpm = get("List_UpgradeEngineCamshaft.StartRPM", p.launch_rpm);
-  p.engine_inertia = get("Data_Engine.MomentInertia", 0.1) + get("List_UpgradeEngineFlywheel.MomentInertia", 0.1);
+  p.engine_inertia =
+      kEngineSide * (get("Data_Engine.MomentInertia", 0.1) + get("List_UpgradeEngineFlywheel.MomentInertia", 0.1));
 
   // Drivetrain.
   const int type = int(std::lround(get("Data_Drivetrain.DrivetypeID", 2)));
@@ -167,9 +172,9 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.clutch_in_time = get("List_UpgradeDrivetrainClutch.ClutchInTime", p.clutch_in_time);
   p.clutch_out_time = get("List_UpgradeDrivetrainClutch.ClutchOutTime", p.clutch_out_time);
 
-  // The clutch's capacity factor: the measured 0.78, which matches
-  // GameTorqueScale (SPEC-CAR-PHYSICS, Clutch and gearbox states).
-  p.clutch_torque_factor = get("Data_Car.GameTorqueScale", p.clutch_torque_factor);
+  // The clutch's capacity factor: 0.72, fitted with J = 0.145 over the
+  // launch (SPEC-CAR-PHYSICS, Clutch and gearbox states; measured fit).
+  p.clutch_torque_factor = 0.72;
   p.reverse_select_speed = s.get("MaxForwardVelShiftReverseMPH", 15) * 0.44704;
 
   // Brakes (SPEC-CAR-PHYSICS, Brakes): the measured full-press torque per
