@@ -94,6 +94,11 @@ roam. The render-test runner sets bloom, depth of field and motion blur
 off and resolves MSAA to one sample, so references are the scene before
 those effects. The engine should match that, not the shipped look.
 
+The built-in immersive-camera mod is always loaded. It changes only the
+driving camera's physics file; a pilot run with its four layers set to
+0 put the showroom camera within the spread of two unchanged runs, so it
+does not affect the reference.
+
 ### Selecting a car
 
 The Autoshow opens on a make carousel: one row, the all-affordable entry
@@ -112,12 +117,16 @@ Three pilot cars were taken this way on the v4 build: one base car
 (Abarth 595 esseesse, first make, first car), one v4 car (Lancia 037
 Stradale, make 30, third car; its files are in the Rally pack) and one
 package car (American Motors Javelin-AMX, make 2, first car, from the
-December IGN Car Pack). Each route opened the Autoshow, walked the two carousels by
-count, pressed A, captured the screen every 60 frames and took one frame
-dump. All three landed on the expected car.
+December IGN Car Pack). Each route opened the Autoshow, walked the two
+carousels by count, pressed A, captured the screen every 60 frames and
+took one frame dump. All three landed on the expected car. The Abarth
+was run three times (twice unchanged, once with the immersive camera
+off) to check repeatability.
 
-After A the showroom goes through three phases (frames as the
-render-test runner counts them, from the A press):
+After A the showroom goes through three phases. The frames are the
+render-test runner's, counted from the A press with the frame rate
+uncapped; some UI camera shots advance with wall time, so the
+boundaries may move at another frame rate.
 
 | Frames after A | What is on screen |
 | --- | --- |
@@ -131,10 +140,14 @@ same view are never identical; compare the car, not the background.
 
 ### Camera
 
-The view is not static, but it is reproducible. At 390 frames after A
-the clip matrices of the Abarth and the Lancia agree in rotation to four
-decimals and differ only by a small vertical offset, which looks like
-the camera aiming at each car's own height. So:
+The view is not static, and it is only nearly reproducible. At 390
+frames after A, three runs of the Abarth gave clip matrices that differ
+in the second or third decimal of a few terms: a fraction of a degree
+of orbit between runs. The Lancia and the Javelin at the same delay sit
+inside that spread in rotation, but their vertical translation term is
+offset from the Abarth's by two to five times the run-to-run spread, in
+opposite directions, which looks like the camera aiming at each car's
+own height. So:
 
 - take every reference at the same delay in the standard view; the pilot
   used 390 frames after A;
@@ -142,8 +155,10 @@ the camera aiming at each car's own height. So:
   from its own frame dump (the stage's clip matrix), or model the aim
   point once the offset's source is known.
 
-The idle orbit is a constant step per update, so the delay is in game
-updates, not seconds. The runner's frame count is what fixes it.
+The idle orbit is a constant step per update, so a fixed delay in
+runner frames lands close to the same view, but not exactly: a
+reference is compared with the engine using the camera from its own
+dump, never a shared one.
 
 ### Paint colour
 
@@ -163,12 +178,17 @@ bytes:
 - **Drawn:** body, interior and steering wheel, mirrors, lamps, glass,
   the four wheels with rotors and calipers. Interior and glass matter:
   the reference sees them through the windows.
-- **Passes:** opaque parts go in the multisampled main pass with the
-  stage, depth written; glass and lamp covers come after, without depth
-  writes.
-- **Shadows:** the car is in no depth-only or shadow pass. Any darkening
-  under it is baked into the stage or comes from the screen-space
-  texture below, not from a shadow map.
+- **Passes:** every car geometry draw is a triangle strip in the
+  multisampled main pass with the stage: opaque parts with depth
+  written, then glass and lamp covers without depth writes. (A few
+  rectangle and point draws later in the frame still point a vertex
+  fetch at a car buffer; they are post-processing and query draws, not
+  car geometry.)
+- **Shadows:** no car model geometry is in any depth-only or shadow
+  pass, so there is no car shadow map. The captures do show darkening
+  under the car; where it comes from (a blob or decal mesh outside the
+  car's model files, the stage, or the screen-sized texture below) is
+  not established.
 - **Floor reflection:** the stage draws a mirrored copy of itself for the
   floor, but the car is not in it.
 - **Lighting:** car draws sample several cube maps (two larger colour
@@ -181,9 +201,10 @@ bytes:
 
 A one-car route is about 4,400 frames: boot and free roam about 1,400,
 the carousels about 2,300 at a press every 30 frames, the showroom 720.
-It took 42 to 50 s of wall time on multivac with the runner uncapped,
-including start-up. In the showroom alone a car needs about 400 frames
-from A to the reference frame.
+It took 41 to 50 s of wall time on multivac with the runner uncapped,
+including start-up (six runs). In the showroom alone a car needs about
+400 frames from A to the reference frame. The per-run and per-make
+figures below are extrapolated from these runs, not measured.
 
 ## Plan for every car
 
@@ -191,9 +212,10 @@ from A to the reference frame.
    `car-list.json` (`autoshow_make_index`, `autoshow_list_index`): open
    the Autoshow once, walk to the make, and for each car press A, capture
    at 300 and 390 frames, then return to the list and move one right.
-   Returning with B from the showroom still has to be checked; if it
-   opens a dialog there, re-enter the Autoshow per car. 57 make routes
-   cover the 200 Autoshow cars in roughly an hour of wall time.
+   This depends on B taking the showroom back to the car list, which is
+   not verified: in the pilot B during the beauty camera opened a
+   dialog. If it cannot, re-enter the Autoshow per car. 57 make routes
+   would cover the 200 Autoshow cars in roughly an hour of wall time.
 2. **Dumps.** A run takes one dump, because the dump path is read at
    start and a second dump overwrites it. Either run one short route per
    car (200 runs, about 2.5 hours) or add a default-off SDK option that
@@ -201,15 +223,22 @@ from A to the reference frame.
 3. **Unicorns.** Use a test database mod in the seed that clears the
    unicorn flag (the method of the Autoshow price tests), so the 16
    unicorns appear in their makes; record that their references come
-   from a modified list.
+   from a modified list, and recompute the list places for that seed,
+   since the unicorns shift the cars after them.
 4. **Not in the Autoshow.** The ten event-only twins share a model with
    a selectable car and need no reference. The 23 non-selectable base
    rows get no stock reference; the four showcase variants can be shown
    with the `hidden_cars` mod if wanted. The Focus SVT needs Rally's
    Season Pass licence, which the seed does not have.
-5. **Check.** For each car, check the list capture names the expected
-   car before trusting the showroom frames, and keep captures and dumps
-   under `.local/re/cars/`.
+5. **Check.** For each car, assert the opened make from the SQL trace
+   (`PINYON_SHIFT_DLC_SQL_TRACE` prints the car list query with its
+   `MakeId`) and check the list capture names the expected car before
+   trusting the showroom frames. The make order is predicted from a plain
+   lowercase sort of English names, not the game's collation, and six
+   pairs of cars share class and performance index (in Audi, Mitsubishi,
+   Dodge, Volkswagen and Ford twice); `car-list.py` orders such pairs by
+   ID, which the game does not promise. Keep captures and dumps under
+   `.local/re/cars/`.
 
 ## Unknowns
 
@@ -221,3 +250,5 @@ from A to the reference frame.
 - Which copy the game loads when a model exists both on the disc and in
   a package.
 - Whether B from the showroom returns straight to the car list.
+- The order of the six tied pairs in their car lists.
+- Where the darkening under the car comes from.
