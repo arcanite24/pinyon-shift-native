@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Spec ID | `FORMAT-CARS` |
-| Status | draft for M1: the files are complete (every model and texture parses and lays out); the wheel fit is confirmed on 15 cars; materials, paint, stripes, brakes and lamps are probable; the lamp and node blocks of the model header and the livery decal models are open |
+| Status | draft for M1: the files are complete (every model and texture parses and lays out); the wheel fit is confirmed on 15 cars; the stock part selection agrees with 16 frame dumps; materials, paint, stripes, factory liveries, brakes and lamps are probable; the lamp and node blocks of the model header, the sizing of the six car-specific tyre models and the livery decal models are open |
 | Written | 2026-11-19, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
 | Records | `site/findings/files.toml` group "Textures and models"; `site/findings/content.toml` groups "Cars", "Upgrades, colours and liveries" and "Downloadable content" |
 | Implements it | `shift-engine` `libs/fh1data` (`carbin`, `xds`) and `carview`, for plan item M1 |
@@ -42,6 +42,14 @@ reader is [`tools/fh1_carbin.py`](../../tools/fh1_carbin.py).
   is 0. The colour is a `Combo_Colors` row, converted from sRGB to linear
   before it reaches the shader (confirmed on one car). Calipers are
   tinted with `Data_Car.CaliperRGB*`, which reaches the shader unconverted.
+- Stock parts: a model carries every body-kit variant (`bumperFa`,
+  `bumperFp`, `wingl`, ...). The showroom draws only the parts the
+  car's `IsStock` upgrade rows name, which is letter `a` on all but two
+  rows, and draws nothing in a slot whose stock part is missing or a
+  stand-in; see [Stock parts](#stock-parts).
+- Factory liveries: the 15 cars with `Data_Car.HasRaceLivery` = 1 carry
+  their livery in the body atlas and show the atlas colour instead of
+  the paint; see [Factory liveries](#factory-liveries).
 - Wheels: the rim model is the wheel archive's; tyres are three shared
   models. The wheel centres are rows 5 to 8 of `CarPartPositions`. Tyre
   and rim are scaled in the vertex shader from the car's tyre sizes:
@@ -470,6 +478,108 @@ in the atlas. Over 20 cars, the `body` technique samples texels with
 alpha 0 at 97 % of its vertices; `black`, `frame` and `plastic2` sample
 alpha 255; `chrome` 23 % alpha 0 (probable).
 
+## Stock parts
+
+A car's LOD0, cockpit and LOD1-5 models hold every body part the
+upgrade shop can fit, overlapping in place: the stock part and each
+aftermarket kit of a slot are separate parts named by a family and a
+letter (`bumperFa`, `bumperFp`, `bumperFrace`). Only the stock set is
+drawn in the showroom.
+
+**Families.** The upgrade tables name parts through
+`List_PartsStrings` (136 strings): `BumperF<x>`, `BumperR<x>`, `Wing<x>`,
+`Hood<x>` and the pair `SkirtL<x>,SkirtR<x>` for `x` from `a` to `z`,
+the race parts `BumperFRace`, `BumperRRace`, `WingRace`, `hoodPSrace`,
+`hoodCIrace` and `cagerace`, and `-seatL` and `-seatR`, which remove a
+seat. Part names compare without case.
+
+| Table | Keyed by | Selects | Confidence | How |
+| --- | --- | --- | --- | --- |
+| `List_UpgradeCarBodyFrontBumper`, `...RearBumper`, `...SideSkirt`, `...Hood` | `CarBodyID` (the car's `List_UpgradeCarBody` stock row, car id × 1000) | `PartsStringId` | confirmed | database; 16 frame dumps |
+| `List_UpgradeRearWing` | `Ordinal` = car id | `PartsStringId` | confirmed | same |
+| `List_UpgradeCarBodyChassisStiffness`, `List_UpgradeCarBodyWeight` | `CarbodyId` | `PartsStringID` (0 = none): the roll cage, a removed seat | probable | database; the cage was not in a dump |
+
+**Rule.** For the `Data_Car` row being shown (by car id, not by media
+name: two rows can share a model and differ in stock parts):
+
+1. The stock part of each slot is the string of that table's row with
+   `IsStock` = 1. Draw it, and hide every other member of the same
+   family, every race part, and `cagerace`, unless a stock row names it.
+2. Exhausts (`exhaust<x>`, `exhaustL<x>`, `exhaustR<x>`) are named by no
+   table (`List_UpgradeEngineExhaust.PartsStringID` is 0 on every row).
+   Draw letter `a` and hide the other letters. On 249 of the 250 rows the
+   stock rear bumper is `a` too, so this cannot be told apart from
+   "the exhaust follows the rear bumper's letter"; the exception is
+   `VW_IECorrado_95` (stock rear bumper `d`, only `exhausta`), not an M1
+   reference car.
+3. A seat a stock weight row removes (`-seatL`, `-seatR`) is not drawn.
+4. A stock part that the model lacks, or that is a stand-in (a pool of
+   at most 6 vertices, a 17-vertex cube, or at most 24 vertices all on
+   their box's corners), leaves its slot empty. Never promote another letter. The
+   LOD0 stand-in may be filled from the LOD1-5 model's part of the same
+   name, as for any other part.
+5. Sub-parts that extend a family member's name (`winga_arm1`,
+   `winga_piston`, `winga_lower`) follow that member.
+6. Other lettered names (`undercarriagea`, the Mini's `wheela` and
+   `wheelb`, `mirrorRa`) belong to no upgrade family; keep the first real
+   letter, as the first M1 build does.
+
+`Shared/CarPartAttributes.xml` agrees: its `DefaultParts` list names the
+families with a `#` placeholder (`bumperF#`, `bumperR#`, `hood#`,
+`wing#`, `exhaust#`, `exhaustL#`, `exhaustR#`, `trunk#`, `mirrorL#`) and
+a `NonUpgradeableParts` list (`door*`, `engine*`, `badge*`,
+`undercarriage*`, `a_pillar*`); `CarInvalidDefaultParts` is empty. The
+executable holds the query that reads a `List_PartsStrings` row by id.
+
+**What the first M1 build did instead.** It hid race parts and, of a
+family, a letter from `b` to `h` when an earlier letter was a real
+part. Two faults follow: letters after `h` are never hidden (the RX-8
+Mazdaspeed drew its stock `a` kit and the `o`, `p`, `r`, `t` and `u`
+kits on top of each other), and when the stock `a` part is missing or a
+stand-in the next letter is drawn (the FJ Cruiser's roof rack `wingc`,
+the Beetle's roof rack `wingb`). Set `a` itself was right on all six
+failing cars.
+
+**Evidence.**
+
+- Frame dumps: every part draw carries the part's box offset and
+  half-extent length as vertex-shader constants (see [Parts](#parts)),
+  so a dump tells which parts the game drew. Over 16 Autoshow dumps,
+  165 variant and seat parts (parts with a box identical to another
+  part's excluded) agree with the rule with no exception; the first
+  build's rule disagrees on 3 (the Mini Coupé JCW's `exhaustLc` and
+  `exhaustRc`, the CR-X's `wingc`). The CR-X's `exhaustd` has the same
+  box and vertex count as `exhausta`, so a dump cannot separate them.
+- Over the 250 merged rows the rule changes the drawn parts of 38 rows
+  (32 only lose parts). All six cars of the M1 report that failed on
+  kits change: the RX-8 Mazdaspeed loses 17 kit parts, the Supra 6, the
+  Celica ST185 5 (the rally light pod `bumperFi`, roof vent `hoodi`,
+  mud flaps `skirtLj`/`skirtRj` and `wingj`), the BRZ 28, the FJ
+  Cruiser and the Beetle their roof racks.
+- 22 cars that already pass the M1 numeric gate also change, all by
+  losing parts: side skirts `b` to `e` (206 RC, Golf GTi, S2000, Silvia,
+  Rabbit, 240SX, 037 Stradale, Scirocco R and its LCE twin, Bel Air,
+  Escort Cosworth, M135i, Civic Si 2013, and the RX-7 with two hoods),
+  wing `b` (370Z, ML63,
+  RX-3, Vandura, Sprinter Trueno) and kit sets after `h` (Civic Type R,
+  Lancer Evo VI, FR-S). On the sheets checked (370Z, Vandura, RX-7,
+  Civic Si, Lancer Evo VI, FR-S) the removed part is exactly the
+  engine-only region of the mask diff, so these cars move towards the
+  reference.
+- Stock rows name a letter other than `a` on two rows only:
+  `VW_IECorrado_95` (rear bumper `d`, skirts `b`) and the v4 rally
+  `SUB_WRXSTi_05` row 1626 (front bumper `d`, skirts `e`, hood `f`, wing
+  `d`, a stock roll cage). Three rows have a stock roll cage and three a
+  removed seat (the three Showcase cars and that WRX). None is an M1
+  reference car.
+- The Beetle (1968)'s stock `winga` is a 3-vertex LOD0 stand-in whose
+  LOD1-5 twin has 15 vertices; filling it draws a small piece where the
+  game shows none (visual, one car; whether the game skips that twin is
+  not known).
+
+`tools/re/car-stock-parts.py census` prints the per-row changes and
+counts, `dumps` the frame-dump check.
+
 ## Paint
 
 | Fact | Confidence | How |
@@ -497,7 +607,9 @@ the exterior paint techniques (the LOD0 and cockpit models' `body` and
 `body_2`) by `ColorStripe` converted to linear; blend by alpha between
 paint and the tinted texel (the blend at intermediate alpha is probable).
 Without an exception, show the texel colour. Use the row's `BaseTexture`
-atlas. Never apply paint or the body atlas to glass techniques.
+atlas. Never apply paint or the body atlas to glass techniques. A car
+with `HasRaceLivery` = 1 takes no paint at all: see
+[Factory liveries](#factory-liveries).
 
 The stripe colour can look different from `ColorStripe` in the
 references: the Challenger SRT8 392's showroom row is white with a
@@ -523,7 +635,34 @@ The paint's UV0 after its transform lands in the box of the view it faces
 livery sheet at its own UVs (probable; one car checked, and a vinyl test
 in game). `Data_Car.HasLivery`, `WingMask` and `CarExceptions`
 (`NoPaintableWing` and others) gate the planes (guess). M1 needs the
-masks only to show where a livery could go; factory cars have none.
+masks only to show where a player livery could go; the factory
+liveries below do not use them.
+
+## Factory liveries
+
+Fifteen cars reach the Autoshow in a factory livery (the HPD Fit's
+Honda Racing scheme, the Forza Horizon art cars of the Limited
+Collector's Edition, the Transit SuperSportVan's Ford scheme, the
+Radical's green). The livery is not a file of its own: no car folder,
+package or disc archive holds a livery or `Livery.bin` for them, and
+the livery and vinyl tables have no per-car rows. It is painted into the
+car's body atlases.
+
+| Fact | Confidence | How |
+| --- | --- | --- |
+| A factory livery car is a `Data_Car` row with `HasRaceLivery` = 1: 15 rows, 15 distinct models (6 base, 9 DLC-only). `HasLivery` is 1 on 13 of them and on no other row; the Shelby GT500 LCE and the Raptor HALO have only `HasRaceLivery`, and the Shelby shows its livery, so `HasRaceLivery` is the gate | confirmed (rows), probable (gate) | merged database; the M1 reference sheets of all 15 |
+| The livery is the RGB of the body atlas texels whose alpha is 0, the texels that take the paint on every other car; the alpha-255 texels (sponsor decals, number boxes) are as on any car. The LOD0 atlas and the LOD1-5 atlas carry the same scheme | confirmed (atlas content) | decoded atlases of the HPD Fit, the LCE Lancer Evo X and the LCE Scirocco R: the alpha-0 region holds the scheme seen in the game; on unflagged cars it is flat |
+| The showroom shows the texel colour at every alpha and does not apply the paint, neither replacing nor tinting: the HPD Fit's only colour row is red, yet its hood shows the atlas's white; the LCE Scirocco's row is mid blue and it shows the atlas's light blue and graffiti; the DS3 Racing's row is grey and it shows the atlas's black | probable | references against the colour rows; how the effect skips the paint term is not traced |
+| Unflagged cars keep the paint even where their alpha-0 texels are coloured or dark (the Veyron Super Sport, the 250 GT): the first M1 build's paint matches their references | probable | references |
+| 14 of the 15 have one colour row; the Agera has 7, each naming its own atlas (`nodamage_darkGrey` and others), so its colour choice is the atlas choice | confirmed | database |
+| The executable reads both flags: a query for `HasLivery` by car id built in `sub_82548B20` (called from `sub_82550E30`), and a `HasRaceLivery` query string with no reference the analysis resolved | probable (query), open (use) | strings; one cross-reference |
+
+**Rule for M1.** For a row with `HasRaceLivery` = 1, draw the exterior
+paint techniques with the slot-0 texel colour wherever its alpha is,
+with no paint and no stripe tint; keep the finish (gloss) the engine
+uses for paint. Every other row follows [Paint](#paint). Effect: the 15
+cars' colours, not their silhouettes (the M1 IoU of these cars does not
+depend on it; their PSNR does).
 
 ## Wheels
 
@@ -532,7 +671,8 @@ masks only to show where a livery could go; factory cars have none.
 | `Data_Car.StockWheelID` is a `List_Wheels` row whose `MediaName` names `media/wheels/<WheelMedia>.zip` (or a package's `media/wheels/<WheelMedia>/`); 172 of the 176 base cars use their own media name | confirmed | database against the listings: all 176 base rows and all 250 merged rows resolve |
 | A wheel archive holds `<WheelMedia>.carbin` (one part, `wheel`, with sub-sections for LOD0 to LOD5: `rim`, `inner_rim`, `outer_rim`, `wheel_black`, `blur_lip`, `blur_rim`), `wheel_LOD0.xds`, `wheel.xds` and `wheel0`-`wheel3.xds` | confirmed | listing; the showroom draws the LOD0 sub-sections |
 | `List_Wheels` has 736 rows; 285 of their media are on the disc | confirmed | database and listing |
-| Tyres are shared models `TireA`, `TireB`, `TireC` (sub-sections `sidewall`, `tread`), x from −0.5 to 0.5 and radius 0.194 to 0.287; the three share one geometry; the Raptor and Wrangler have their own variants | confirmed (files) | parse |
+| Tyres are shared models `TireA`, `TireB`, `TireC` (sub-sections `sidewall`, `tread`), x from −0.5 to 0.5 and radius 0.194 to 0.287; the three share one geometry | confirmed (files) | parse |
+| Six cars have their own tyre archives `TireA<MediaName>`, `TireB...`, `TireC...` (the Wrangler on the disc only `TireA`): the SVT Raptor and its LCE and HALO versions, the Wrangler, the H1 Alpha and the FJ Cruiser. They are off-road tyres modelled at the car's size: the FJ Cruiser's base outer radius is 0.402 m, equal to its `Data_Car` tyre radius, against 0.287 for the shared tyres. Which archive the game draws and how it sizes it is not traced; the FJ Cruiser's tyres in the reference look smaller than the shared tyre sized by the rule below | confirmed (files), open (use) | listing; parse; the FJ Cruiser's M1 sheet |
 | The stock XKR-S drew `TireC` with the `A` sidewall and tread textures; which of the three a car draws does not change its shape | confirmed (one car) | frame dump |
 | `CarPartPositions` (`ID` = car id × 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`, `PartPosY`, `PartPosZ`) holds 10 rows a car; `PartId` 5 to 8 are the axle positions in the body frame, +Z forward like the lamp points: 5 left front, 6 right front, 7 right rear, 8 left rear, left at −x. In the model's frame z is negated | confirmed | 11 frame dumps, 44 wheels: the drawn centre's model z = −row z within 2.6 mm |
 | Only the rows' z places the wheel: their x and y are not the drawn centre (up to 7.4 cm off in x on one car) | confirmed | the same dumps; see the counts under Tests |
@@ -613,7 +753,10 @@ tables do not apply).
 | metallic finish; the stripe blend at intermediate alpha and the stripe constant of a car without an exception | colours right, finish approximate | flat paint; stripes as under [Paint](#paint) |
 | back-face culling for glass and the cockpit | visual | cull opaque techniques, draw transparent ones two-sided |
 | a lighter rectangle the engine draws on the Challenger SRT8 392's rear door and quarter, absent in the game | visual, one car | not a paint-rule case: the LOD0 and cockpit `body` and `body_2` triangles sample only transparent (paint) texels or the dark stripe texels of the atlas, none opaque white, so the patch comes from the engine's draw (another part or technique overlapping, or a UV or alpha read); check which part the engine draws there |
-| livery decal and vinyl models | none (no liveries in M1) | reject with a message |
+| livery decal and vinyl models | none (M1 shows no player liveries; factory liveries are atlas texels) | reject with a message |
+| which tyre archive the six cars with their own tyres draw, and how it is sized | the FJ Cruiser's tyres too large (its M1 IoU), and probably the Raptors', Wrangler's and H1's | draw the shared tyre by the rule; a frame dump of the FJ Cruiser settles it |
+| how the effect drops the paint on a `HasRaceLivery` car (a flag, a constant, another technique) | none for colours | the rule under [Factory liveries](#factory-liveries) |
+| whether exhausts follow the stock rear bumper's letter or always take `a` | one non-reference row (`VW_IECorrado_95`) | letter `a` |
 | whether the v4 or the disc copy of the car effect wins, and which package copy of a duplicated car loads | none (copies are identical for the official set) | disc first, then packages |
 | a model whose draw-list scan (including the `n` = 0 form) finds no or several positions | none in the corpus | reject the model and name it |
 
@@ -658,6 +801,11 @@ prints each.
 | `Combo_Colors_Exceptions` rows / cars / with `HasStripe` 1 / with `HasColor2` 1 | 674 / 61 / 661 / 0 (merged table) | |
 | merged first colour rows with a stripe exception (of them with stripe colour 0, black) | 21 of 250 (2) | |
 | colour rows naming an atlas other than `nodamage.tga` / cars | 229 / 30 (merged table) | |
+| merged rows whose stock rows name a letter other than `a` / with a stock roll cage / with a removed seat | 2 / 3 / 3 (of 250) | |
+| merged rows whose drawn parts the stock rule changes against the first M1 build / of them only losing parts | 38 / 32 | |
+| of those, M1 reference cars that passed / failed the numeric gate | 22 / 6 (all six kit failures) | |
+| variant and seat parts in 16 Autoshow frame dumps / disagreeing with the stock rule / with the first build's rule | 165 / 0 / 3 | |
+| rows with `HasRaceLivery` / `HasLivery` / both / distinct models with `HasRaceLivery` | 15 / 13 / 13 / 15 | |
 
 Synthetic cases an implementation should also pass: a model with an
 empty part (±FLT_MAX box, no vertices); a model with no parts; a 16-bit
@@ -677,7 +825,15 @@ extract the disc's car, wheel and brake archives and the packages' offer ZIPs:
 
 python -I tools/re/car-formats.py census .local/re/cars [--brakes .local/game/base/media/brakes]
 python -I tools/re/car-formats.py dlc-duplicates .local/re/cars
+python -I tools/re/car-stock-parts.py census .local/re/cars .local/re/cars/db/merged.slt [--report <m1 report.txt>]
+python -I tools/re/car-stock-parts.py dumps .local/re/cars .local/re/cars/db/merged.slt <dumps>/*.fh1frame
+python -I tools/re/car-stock-parts.py liveries .local/re/cars/db/merged.slt
 ```
+
+The stock-part census emulates the first M1 build's part choice
+(`shift-engine` `apps/carview/showroom.cpp` at d26abc9) to count what
+the rule changes; the frame dumps are the M1 reference dumps of
+2026-11-20 (`.local/re/cars/dumps`).
 
 The wheel, pose and stripe facts come from Autoshow frame dumps of 15
 cars taken for the M1 references (2026-11-19). The other frame-dump

@@ -266,7 +266,7 @@ what = """`Data_Car.StockWheelID` names a `List_Wheels` row whose `MediaName` is
 how = """Vertex-shader constants and decoded morph targets of the wheel draws in 11 Autoshow frame dumps (15 cars, 30 axles) against `Data_Car`; a census of all 240 stock wheel models (2026-11-19)."""
 confidence = """confirmed"""
 source = """docs/formats/CARS.md Wheels; shift-engine docs/SPEC_QUESTIONS.md Q3, Q10"""
-note = """Which of `TireA`-`C` a car draws does not matter for shape (same geometry); the XKR-S drew `TireC`. `CarTrackOffsets` (54 cars), `WheelNormOffsets` and `WheelExceptions` were not on any measured car. A tyre flattening term is zero in every showroom dump."""
+note = """Which of `TireA`-`C` a car draws does not matter for shape (same geometry); the XKR-S drew `TireC`. `CarTrackOffsets` (54 cars), `WheelNormOffsets` and `WheelExceptions` were not on any measured car. A tyre flattening term is zero in every showroom dump. Six cars (the SVT Raptor and its LCE and HALO versions, the Wrangler, the H1 Alpha and the FJ Cruiser) also have their own off-road tyre archives `Tire<A-C><MediaName>`, modelled at the car's size (the FJ Cruiser's base outer radius 0.402 m equals its `Data_Car` tyre radius); which one the game draws and how it sizes it is open: the FJ Cruiser's reference tyres look smaller than the shared tyre sized by this rule (2026-11-20)."""
 
 # --- Upgrades, colours and liveries ---------------------------------------
 
@@ -343,6 +343,26 @@ what = """The tyre-physics constructor takes its required record in r30 and call
 how = """Crash analysis after disabling Rally with a Rally-tyred Mustang saved; guard hook `PinyonShiftRequireTyrePhysicsRecord`."""
 confidence = """confirmed"""
 source = """src/pinyon_shift_runtime_hooks.cpp PinyonShiftRequireTyrePhysicsRecord; docs/DLC_BACKLOG.md Missing saved Rally tyre recovery"""
+
+[[finding]]
+group = """Upgrades, colours and liveries"""
+base = """List_PartsStrings, List_UpgradeCarBody*.PartsStringId, List_UpgradeRearWing.PartsStringId, Shared/CarPartAttributes.xml, 0x821416AC (PartsString query string)"""
+name = """stock body parts in the showroom"""
+what = """A car's models hold every body-kit variant of a slot as separate overlapping parts named by family and letter (`bumperFa`, `bumperFp`, `skirtLj`, `wingl`, `bumperFrace`). The upgrade tables (front and rear bumper, side skirt, hood by `CarBodyID`, rear wing by car id) select one through `PartsStringId` into `List_PartsStrings` (136 strings, letters `a`-`z`, race parts, `cagerace`, `-seatL`/`-seatR`). The showroom draws only the parts the car's `IsStock` = 1 rows name and hides every other letter and race part; exhausts, which no table names, show letter `a`; a stock part the model lacks or holds only as a stand-in leaves the slot empty, no other letter takes its place. Stock rows name letter `a` on all but two of the 250 merged rows (`VW_IECorrado_95` and the v4 rally `SUB_WRXSTi_05` row 1626, which also has a stock roll cage); so the rule is per car id, not per model. `CarPartAttributes.xml` lists the same families as default parts with a `#` letter placeholder and a list of non-upgradeable parts."""
+how = """Database; part census of the 240 models; which parts 16 Autoshow frame dumps drew, by the box offset and half-extent constants of each part draw: 165 variant and seat parts agree with the rule, none disagrees; M1 reference sheets of the six cars that failed on kits and of six passing cars that change (2026-11-20)."""
+confidence = """confirmed"""
+source = """docs/formats/CARS.md Stock parts; tools/re/car-stock-parts.py"""
+note = """The first M1 build hid only letters b-h after a real earlier letter, so it drew kits after `h` over the stock part (RX-8 Mazdaspeed, Supra, Celica ST185, BRZ) and promoted the next letter when `a` was missing (FJ Cruiser and Beetle roof racks). The stock rule changes 38 rows, among them 22 reference cars that already passed, all by removing parts their references do not show. The roll cage and seat removal rows (3 each) were not in a dump; whether exhausts follow a non-`a` stock rear bumper is not decided (one row)."""
+
+[[finding]]
+group = """Upgrades, colours and liveries"""
+base = """Data_Car.HasRaceLivery, Data_Car.HasLivery, sub_82548B20 (HasLivery query), 0x8201A3D8 (HasRaceLivery query string)"""
+name = """factory liveries"""
+what = """The 15 `Data_Car` rows with `HasRaceLivery` = 1 (15 models: the HPD Fit, the LCE cars, the Transit SSV, the Radical SR8 LM, the Zonda R, the Agera, the DS3 Racing, the Viper ACR-X, the Shelby GT500 LCE, the Raptor HALO) show a factory livery that is painted into their body atlases: the RGB of the alpha-0 texels, which on other cars take the paint, holds the scheme, in the LOD0 and LOD1-5 atlases alike. No livery file exists for them. The showroom shows those texels as they are and applies no paint: the HPD Fit's red colour row still shows a white hood. `HasLivery` is set on 13 of the 15 and on no other row; the Shelby GT500 LCE shows its livery with only `HasRaceLivery`. `sub_82548B20` (called from `sub_82550E30`) builds the `HasLivery` query for a car id and returns a flag."""
+how = """Database; decoded atlases of three cars; M1 reference sheets of the 15 cars and of unflagged cars with coloured or dark alpha-0 texels (Veyron Super Sport, 250 GT) against their colour rows; string cross-references (2026-11-20)."""
+confidence = """probable"""
+source = """docs/formats/CARS.md Factory liveries"""
+note = """How the effect drops the paint (a flag, a zero constant, another technique) and where the `HasRaceLivery` query is used are not traced: the string has no cross-reference the analysis resolved. The Agera has seven colour rows, each naming its own atlas."""
 
 [[finding]]
 group = """Upgrades, colours and liveries"""
