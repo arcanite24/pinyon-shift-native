@@ -49,6 +49,19 @@ bool inside(const Box& b, double x, double z) {
 
 }  // namespace
 
+BodiesOptions bodies_options(const TrafficConfig& c) {
+  BodiesOptions o;
+  o.accel_max_input = c.accel_max_input;
+  o.brake_max_input = c.brake_max_input;
+  o.gains_min = c.gains_min;
+  o.gains_max = c.gains_max;
+  o.gains_length_min = c.gains_length_min;
+  o.gains_length_max = c.gains_length_max;
+  o.accel_max = c.accel_max;
+  o.decel_max = c.decel_max;
+  return o;
+}
+
 Bodies::Bodies(Population& population, Params params, BodiesOptions options)
     : pop_(population), params_(std::move(params)), o_(options) {
   pop_.set_bodies(true);
@@ -59,9 +72,13 @@ const drive::Vehicle* Bodies::body(uint32_t car) const {
   return it == bodies_.end() ? nullptr : it->second.v.get();
 }
 
-drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v, const drive::Input& last) const {
+drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const {
   drive::Input in;
   const double speed = v.speed();
+  if (car.off_line) {
+    in.brake = 1;  // knocked off its line: full brake until stopped
+    return in;
+  }
   const P3 aim = pop_.lane_point(car, std::max(8.0, speed));
   const Vec3 pos = v.position();
   const Vec3 local = drive::rotate_inverse(v.orientation(), Vec3{aim.x - pos.x, 0, aim.z - pos.z});
@@ -71,20 +88,39 @@ drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v, const 
   // Pure pursuit: the road-wheel angle onto the arc through the aim point.
   const double delta = d2 > 1e-6 ? std::atan(2 * wheelbase * local.x / d2) : 0;
   in.steer = std::clamp(delta / std::max(0.05, p.max_steer), -1.0, 1.0);
-  speed_input(car.target, speed, o_, last, in);
+  speed_input(car.target, speed, o_, in);
   return in;
 }
 
-void Bodies::speed_input(double target, double speed, const BodiesOptions& o, const drive::Input& last,
-                         drive::Input& in) {
+void Bodies::speed_input(double target, double speed, const BodiesOptions& o, drive::Input& in) {
   const double err = target - speed;
-  double throttle = 0, brake = 0;
-  if (target < 0.5) brake = 1;  // stop and hold
-  else if (err > -0.2) throttle = std::clamp(0.5 * err + 0.15, 0.0, 1.0);
-  else if (err < -0.6) brake = std::clamp(-0.3 * err, 0.0, 1.0);
-  auto toward = [](double from, double to, double step) { return from + std::clamp(to - from, -step, step); };
-  in.throttle = toward(last.throttle, throttle, o.accel_max_input * drive::Vehicle::kStep);
-  in.brake = toward(last.brake, brake, o.brake_max_input * drive::Vehicle::kStep);
+  in.throttle = in.brake = 0;
+  if (target < 0.5) in.brake = o.brake_max_input;  // stop and hold
+  else if (err < -0.6) in.brake = std::clamp(-0.3 * err, 0.0, o.brake_max_input);
+  else in.throttle = o.accel_max_input;
+}
+
+void Bodies::hold_lane(drive::Vehicle& v, double target, const std::array<double, 2>& lane, double lateral,
+                       double heading_error, const BodiesOptions& o) {
+  const double f = std::clamp((v.params().size.z - o.gains_length_min) /
+                                  std::max(1e-6, o.gains_length_max - o.gains_length_min),
+                              0.0, 1.0);
+  auto k = [f](double a, double b) { return a + (b - a) * f; };
+  // The share of an error removed in one step, and the rate that removes it.
+  auto share = [](double gain) { return 1 - std::pow(1 - std::clamp(gain, 0.0, 1.0), drive::Vehicle::kStep * 60); };
+  const double sp = share(k(o.gains_min.position_k, o.gains_max.position_k));
+  const double sl = share(k(o.gains_min.lane_offset_k, o.gains_max.lane_offset_k));
+  const double sh = share(k(o.gains_min.heading_k, o.gains_max.heading_k));
+  const auto right = right_of(lane[0], lane[1]);
+  Vec3 vel = v.velocity();
+  const double along = vel.x * lane[0] + vel.z * lane[1];
+  const double along2 = along + (target - along) * sp;
+  const double across2 = -lateral * sl / drive::Vehicle::kStep;
+  vel.x = lane[0] * along2 + right[0] * across2;
+  vel.z = lane[1] * along2 + right[1] * across2;
+  Vec3 ang = v.angular_velocity();
+  ang.y = heading_error * sh / drive::Vehicle::kStep;
+  v.set_velocity(vel, ang);
 }
 
 bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b) {
@@ -170,16 +206,39 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     const auto it = bodies_.find(c.id);
     if (it == bodies_.end()) continue;
     Body& b = it->second;
-    b.last = drive_input(c, *b.v, b.last);
-    b.v->step(b.last, ground);
+    b.since_contact += drive::Vehicle::kStep;
+    if (!c.off_line && b.since_contact >= o_.hold_after_contact) {
+      // The lane line at the body: its direction of travel, the body's
+      // offset right of it and the heading error.
+      const P3 p0 = pop_.lane_point(c, 0), p1 = pop_.lane_point(c, 1);
+      const double dx = p1.x - p0.x, dz = p1.z - p0.z, l = std::hypot(dx, dz);
+      if (l > 1e-6) {
+        const std::array<double, 2> lane{dx / l, dz / l};
+        const auto rt = right_of(lane[0], lane[1]);
+        const Vec3 at = b.v->position();
+        const Vec3 fw = drive::rotate(b.v->orientation(), {0, 0, 1});
+        const double lateral = (at.x - p0.x) * rt[0] + (at.z - p0.z) * rt[1];
+        const double herr = std::remainder(std::atan2(lane[0], lane[1]) - std::atan2(fw.x, fw.z), 2 * 3.14159265358979323846);
+        const double sp = b.v->speed(), dt = drive::Vehicle::kStep;
+        const double speed = sp + std::clamp(c.target - sp, -o_.decel_max * dt, o_.accel_max * dt);
+        hold_lane(*b.v, speed, lane, lateral, herr, o_);
+      }
+    }
+    b.v->step(drive_input(c, *b.v), ground);
   }
   // Contacts: each body with the player's car and with the others.
-  std::vector<drive::Vehicle*> list;
-  for (auto& [id, b] : bodies_) list.push_back(b.v.get());
+  std::vector<Body*> list;
+  for (auto& [id, b] : bodies_) list.push_back(&b);
   for (size_t i = 0; i < list.size(); ++i) {
-    if (player && collide(*player, 1.0, *list[i], o_.torque_scale)) ++contacts_, ++player_contacts_;
+    if (player && collide(*player, 1.0, *list[i]->v, o_.torque_scale)) {
+      ++contacts_, ++player_contacts_;
+      list[i]->since_contact = 0;
+    }
     for (size_t k = i + 1; k < list.size(); ++k)
-      if (collide(*list[i], o_.torque_scale, *list[k], o_.torque_scale)) ++contacts_;
+      if (collide(*list[i]->v, o_.torque_scale, *list[k]->v, o_.torque_scale)) {
+        ++contacts_;
+        list[i]->since_contact = list[k]->since_contact = 0;
+      }
   }
   // The poses back to the population.
   for (size_t i = 0; i < cars.size(); ++i) {

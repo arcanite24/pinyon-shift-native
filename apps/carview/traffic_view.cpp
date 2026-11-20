@@ -100,9 +100,7 @@ bool TrafficView::open(const std::filesystem::path& game_root, const drive::Grou
     y = hint + 4 - h.distance;
     return true;
   });
-  traffic::BodiesOptions bo;
-  bo.accel_max_input = config_.accel_max_input;
-  bo.brake_max_input = config_.brake_max_input;
+  const traffic::BodiesOptions bo = traffic::bodies_options(config_);
   bodies_ = std::make_unique<traffic::Bodies>(
       *population_,
       [this](int64_t m) -> const drive::CarParams* {

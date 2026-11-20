@@ -156,10 +156,12 @@ player's car can push. Traffic is on in the window and off headless;
 `--traffic` and `--no-traffic` choose, `--hour <h>` sets the hour it
 follows (12 by default; the lighting does not change with it) and
 `--traffic-seed <n>` its random seed. `traffic-census --game-root <disc>
-[--bake out/bake] [--freeway] [--models]` runs the spec's census headless:
-noon 4.8 cars (the oracle's 6.1), 02:00 1.4 with bodies (0.9, a known
-miss: SPEC_QUESTIONS Q41); `--freeway` parks beside a one-way carriageway
-instead, `--models` checks each traffic model as a body.
+[--bake out/bake] [--freeway] [--models] [--steady]` runs the spec's
+census headless: noon 4.8 cars in the first minute (5.9 steady with
+`--steady`; the oracle's 6.1), 02:00 settled 1.0 (0.8), 02:00 at 30 to
+60 s 1.3 (0.9, a known miss: SPEC_QUESTIONS Q41); `--freeway` parks beside
+a one-way carriageway instead, `--models` checks each traffic model as a
+body, `--registry <text>` prints the registry lines whose id holds it.
 
 The pad's sticks and triggers are rescaled from an inside to an outside
 deadzone (steering 0.10 to 0.95, triggers 0.03 to 0.97; ours, the rule is

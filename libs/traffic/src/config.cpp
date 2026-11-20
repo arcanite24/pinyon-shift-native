@@ -60,6 +60,14 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Traffic/VehiclePosition/MaxMediumLodDistance", medium_lod_distance);
   g("AI/Traffic/VehicleControls/AccelMaxInput", accel_max_input);
   g("AI/Traffic/VehicleControls/BrakeMaxInput", brake_max_input);
+  g("AI/Traffic/VehiclePosition/Interpolation/Min/PositionK", gains_min.position_k);
+  g("AI/Traffic/VehiclePosition/Interpolation/Min/HeadingK", gains_min.heading_k);
+  g("AI/Traffic/VehiclePosition/Interpolation/Min/LaneOffsetK", gains_min.lane_offset_k);
+  g("AI/Traffic/VehiclePosition/Interpolation/Max/PositionK", gains_max.position_k);
+  g("AI/Traffic/VehiclePosition/Interpolation/Max/HeadingK", gains_max.heading_k);
+  g("AI/Traffic/VehiclePosition/Interpolation/Max/LaneOffsetK", gains_max.lane_offset_k);
+  g("AI/Traffic/VehiclePosition/Interpolation/VehicleLengthAtMin", gains_length_min);
+  g("AI/Traffic/VehiclePosition/Interpolation/VehicleLengthAtMax", gains_length_max);
 }
 
 namespace {

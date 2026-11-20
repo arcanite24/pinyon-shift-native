@@ -1,7 +1,11 @@
 // traffic-census: SPEC-TRAFFIC's oracle census over our traffic, headless.
 // The player stands at the oracle's parked spot (2002.9, 143.8, 960.0) on
-// a density-5 road: 60 s at noon, 60 s at 02:00 (counted from 30 s after
-// the change), then 30 s driving along the road at 10.4 m/s (313 m). Each
+// a density-5 road: 60 s at noon, then 02:00 (counted from 30 s to 60 s
+// after the change, as the oracle's first night row, and settled: the
+// minute after the last car of the noon population left), then 30 s
+// driving along the road at 10.4 m/s (313 m). With --steady it stays
+// parked at noon for 600 s instead (counted from 60 s), for the
+// steady-state count and the lifetime and interval terms behind it. Each
 // half second it counts the active traffic within 1 km and checks every
 // car against the road map: within 15 m of a traffic road, on two-way
 // roads right of the centre line at 2.2 +- 0.5 m. It also reports the
@@ -13,6 +17,8 @@
 // carried along the cruise.
 //
 //   traffic-census --game-root <disc> [--bake <dir> [--car <media>]] [--seed N] [--seeds N] [--verbose]
+//                  [--freeway] [--models] [--steady] [--at x y z]
+//   traffic-census --game-root <disc> --registry <text>   (GlobalRegistry.xml lines whose id holds it)
 //
 // Exit 0 when every tolerance of SPEC-TRAFFIC holds over the seeds' mean,
 // 1 when one misses (each miss is printed), 2 on a usage or read error.
@@ -24,12 +30,14 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "cars/bake_format.h"
 #include "cars/sources.h"
 #include "drive/from_physics.h"
+#include "fh1data/archive.h"
 #include "traffic/bodies.h"
 #include "traffic/config.h"
 #include "traffic/nav.h"
@@ -52,7 +60,12 @@ struct Phase {
 };
 
 struct Result {
-  Phase noon, night, cruise;
+  Phase noon, night, settled, cruise;
+  double settled_at = -1;  // s: the last noon car gone
+  int parked_spawned = 0, parked_away = 0;  // spawns before the cruise, those driving away
+  // Cars spawned while parked at noon: lifetimes (s) of those driving
+  // towards and away from the player, and the spawn intervals (s).
+  std::vector<double> life_towards, life_away, intervals;
   int car_samples = 0, off_road = 0, two_way = 0, right = 0, one_way = 0, node_order = 0;
   std::vector<double> offsets, straight_speeds;
   traffic::PopulationStats stats;
@@ -87,7 +100,7 @@ double median(std::vector<double> v) {
 traffic::P3 g_spot{2002.9, 143.8, 960.0};
 
 Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, uint64_t seed, bool verbose,
-           Physics* physics) {
+           Physics* physics, bool steady) {
   Result out;
   traffic::Population pop(roads, config, seed);
   traffic::P3 player = g_spot, velocity{0, 0, 0};
@@ -96,10 +109,8 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
   if (physics) {
     const world::Streamer& s = *physics->streamer;
     pop.set_ground([&s](double x, double z, double hint, double& y) { return ground_height(s, x, z, hint, y); });
-    traffic::BodiesOptions bo;
+    traffic::BodiesOptions bo = traffic::bodies_options(config);
     bo.torque_scale = physics->torque_scale;
-    bo.accel_max_input = config.accel_max_input;
-    bo.brake_max_input = config.brake_max_input;
     bodies = std::make_unique<traffic::Bodies>(
         pop,
         [physics](int64_t m) -> const drive::CarParams* {
@@ -125,11 +136,22 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
   walker.dir = start.lateral < 0 ? -1 : 1;
   const double kDt = physics ? drive::Vehicle::kStep : 1.0 / 60, kCruise = 313.0 / 30;
   const int every = int(std::lround(0.5 / kDt));
-  const int steps = int(150 / kDt);
-  for (int i = 0; i <= steps; ++i) {
+  // The cruise starts a minute after the night settles (at 240 s if it
+  // never does).
+  double cruise_at = steady ? 1e9 : 240, end = steady ? 600 : cruise_at + 30;
+  bool snapped = false;
+  std::set<uint32_t> noon_ids, alive;
+  std::map<uint32_t, std::pair<double, bool>> born;  // spawn time, driving away
+  double last_spawn = -1;
+  for (int i = 0;; ++i) {
     const double t = i * kDt;
-    pop.set_hour(t < 60 ? 12 : t < 120 ? 2 : 12);
-    if (t >= 120) {
+    if (t > end) break;
+    pop.set_hour(steady || t < 60 || t >= cruise_at ? 12 : 2);
+    if (t >= cruise_at && !snapped) {
+      snapped = true;
+      out.parked_spawned = pop.stats().spawned, out.parked_away = pop.stats().spawned_away;
+    }
+    if (t >= cruise_at) {
       // Drive along the road (its centre line at the parked offset).
       walker.s += walker.dir * kCruise * kDt;
       std::array<double, 2> d;
@@ -144,7 +166,7 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
         me->launch({player.x, player.y, player.z}, std::atan2(d[0] * walker.dir, d[1] * walker.dir), kCruise);
       }
     }
-    if (me && t < 120) {
+    if (me && t < cruise_at) {
       drive::Input hold;
       hold.brake = 1;
       hold.handbrake = true;
@@ -167,6 +189,35 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
         }
     }
     if (i % every != 0) continue;
+    // Lifetimes and intervals of the cars spawned while parked at noon.
+    {
+      std::set<uint32_t> now;
+      for (const auto& c : pop.cars()) {
+        now.insert(c.id);
+        if (t == 0 || alive.count(c.id)) continue;
+        const bool noon_parked = steady ? t < end - 60 : t < 60;
+        if (!noon_parked) continue;
+        const double out_along =
+            (c.position.x - player.x) * std::sin(c.heading) + (c.position.z - player.z) * std::cos(c.heading);
+        born[c.id] = {t, out_along > 0};
+        if (last_spawn >= 0) out.intervals.push_back(t - last_spawn);
+        last_spawn = t;
+      }
+      for (uint32_t id : alive)
+        if (!now.count(id)) {
+          const auto it = born.find(id);
+          if (it == born.end()) continue;
+          (it->second.second ? out.life_away : out.life_towards).push_back(t - it->second.first);
+          born.erase(it);
+        }
+      alive = now;
+      if (!steady && std::fabs(t - 60) < 1e-6) noon_ids = now;
+      if (!steady && t > 60 + 1e-6 && out.settled_at < 0) {
+        bool left = true;
+        for (uint32_t id : noon_ids) left &= !now.count(id);
+        if (left) out.settled_at = t, cruise_at = t + 60, end = cruise_at + 30;
+      }
+    }
     int active = 0;
     for (const auto& c : pop.cars()) {
       if (std::hypot(c.position.x - player.x, c.position.z - player.z) > 1000) continue;
@@ -204,9 +255,14 @@ Result run(const traffic::Roads& roads, const traffic::TrafficConfig& config, ui
         if (std::fabs(r.s[k] - c.s) < 60 && r.radius[k] < 300) straight = false;
       if (straight && c.age > 5) out.straight_speeds.push_back(c.speed);
     }
-    if (t < 60) out.noon.add(active);
-    else if (t >= 90 && t < 120) out.night.add(active);
-    else if (t >= 120) out.cruise.add(active);
+    if (steady) {
+      if (t >= 60) out.noon.add(active);
+    } else {
+      if (t < 60) out.noon.add(active);
+      if (t >= 90 && t < 120) out.night.add(active);
+      if (out.settled_at >= 0 && t >= out.settled_at && t < cruise_at) out.settled.add(active);
+      if (t >= cruise_at) out.cruise.add(active);
+    }
     if (verbose && i % 1200 == 0 && t > 0)
       for (const auto& c : pop.cars())
         std::printf("    car %u model %lld road %d dir %+d s %.1f v %.1f target %.1f d %.0f phys %d\n", c.id,
@@ -228,7 +284,8 @@ int main(int argc, char** argv) {
   std::string player_car = "NIS_SkylineGTRVSpecII_02";
   uint64_t seed = 1;
   int seeds = 10;
-  bool verbose = false, check_models = false, freeway = false;
+  bool verbose = false, check_models = false, freeway = false, steady = false;
+  std::string registry_prefix;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -244,6 +301,8 @@ int main(int argc, char** argv) {
       g_spot.z = std::atof(next().c_str());
     } else if (a == "--models") check_models = true;
     else if (a == "--freeway") freeway = true;
+    else if (a == "--registry") registry_prefix = next();
+    else if (a == "--steady") steady = true;
     else {
       std::fprintf(stderr, "usage: traffic-census --game-root <disc> [--seed N] [--seeds N] [--verbose]\n");
       return 2;
@@ -254,6 +313,24 @@ int main(int argc, char** argv) {
   if (game.empty()) {
     std::fprintf(stderr, "traffic-census: --game-root or SHIFT_GAME_ROOT needed\n");
     return 2;
+  }
+  if (!registry_prefix.empty()) {
+    // The GlobalRegistry.xml lines whose id contains the text.
+    std::string err;
+    auto z = fh1::Archive::open(game / "media" / "gametunablesettings.zip", &err);
+    if (!z) return std::fprintf(stderr, "traffic-census: %s\n", err.c_str()), 2;
+    const auto r = z->read("GlobalRegistry.xml");
+    if (!r.ok()) return std::fprintf(stderr, "traffic-census: %s\n", r.error.c_str()), 2;
+    const std::string text(r.data.begin(), r.data.end());
+    size_t at = 0;
+    while (at < text.size()) {
+      size_t end = text.find('\n', at);
+      if (end == std::string::npos) end = text.size();
+      const std::string line = text.substr(at, end - at);
+      if (line.find(registry_prefix) != std::string::npos) std::printf("%s\n", line.c_str());
+      at = end + 1;
+    }
+    return 0;
   }
   traffic::NavMap map;
   traffic::TrafficConfig config;
@@ -341,7 +418,8 @@ int main(int argc, char** argv) {
                 config.models.size(), physics->torque_scale);
     if (check_models) {
       // Each model as a body on flat ground: its mass and box, then 8 s
-      // launched at 30 mph holding it with the traffic controls' caps.
+      // launched at 30 mph along +z on the line x = 0, driven and held as
+      // Bodies does (the throttle at AccelMaxInput, the lane hold).
       int bad = 0;
       const drive::FlatGround flat;
       for (const auto& [id, p] : physics->params) {
@@ -349,14 +427,12 @@ int main(int argc, char** argv) {
         v.set_ai_controls(true);
         v.launch({0, 0, 0}, 0, 13.41);
         double up = 1, slowest = 1e9, fastest = 0;
-        drive::Input last;
+        const traffic::BodiesOptions bo = traffic::bodies_options(config);
         for (int i = 0; i < int(8 / drive::Vehicle::kStep); ++i) {
-          drive::Input in = last;
-          traffic::BodiesOptions bo;
-          bo.accel_max_input = config.accel_max_input;
-          bo.brake_max_input = config.brake_max_input;
-          traffic::Bodies::speed_input(13.41, v.speed(), bo, last, in);
-          last = in;
+          drive::Input in;
+          traffic::Bodies::speed_input(13.41, v.speed(), bo, in);
+          const auto fw = drive::rotate(v.orientation(), {0, 0, 1});
+          traffic::Bodies::hold_lane(v, 13.41, {0, 1}, v.position().x, -std::atan2(fw.x, fw.z), bo);
           v.step(in, flat);
           if (verbose && i % 60 == 0)
             std::printf("    %lld t %.1f v %.2f gear %d rpm %.0f thr %.2f brk %.2f clutch %.2f\n", (long long)id,
@@ -374,23 +450,30 @@ int main(int argc, char** argv) {
     }
   }
 
-  Phase noon, night, cruise;
+  Phase noon, night, settled, cruise;
   int samples = 0, off_road = 0, two_way = 0, right = 0, spawned = 0, away = 0, despawned = 0, one_way = 0,
-      node_order = 0;
-  std::vector<double> offsets, speeds, spawn_d, despawn_d;
+      node_order = 0, parked_spawned = 0, parked_away = 0, unsettled = 0;
+  std::vector<double> offsets, speeds, spawn_d, despawn_d, life_towards, life_away, intervals, settled_at;
   for (int k = 0; k < seeds; ++k) {
-    const Result r = run(roads, config, seed + uint64_t(k), verbose && k == 0, physics.get());
+    const Result r = run(roads, config, seed + uint64_t(k), verbose && k == 0, physics.get(), steady);
     if (physics)
       std::printf("  bodies: up to %d at once, %d contacts (%d with the player), off their lane line by up to %.2f m\n",
                   r.bodies_max, r.contacts, r.player_contacts, r.body_lateral_max);
-    std::printf("seed %llu: noon %.2f (%d-%d), 02:00 %.2f (%d-%d), cruise %.2f (%d-%d); %d spawns (%d away), "
-                "%d despawns\n",
+    std::printf("seed %llu: noon %.2f (%d-%d), 02:00 %.2f (%d-%d), settled from %.0f s %.2f (%d-%d), "
+                "cruise %.2f (%d-%d); %d spawns (%d away), %d despawns\n",
                 (unsigned long long)(seed + uint64_t(k)), r.noon.mean(), r.noon.min, r.noon.max, r.night.mean(),
-                r.night.min, r.night.max, r.cruise.mean(), r.cruise.min, r.cruise.max, r.stats.spawned,
-                r.stats.spawned_away, r.stats.despawned);
+                r.night.min, r.night.max, r.settled_at, r.settled.mean(), r.settled.min, r.settled.max,
+                r.cruise.mean(), r.cruise.min, r.cruise.max, r.stats.spawned, r.stats.spawned_away,
+                r.stats.despawned);
     noon.sum += r.noon.mean(), noon.samples++;
     night.sum += r.night.mean(), night.samples++;
+    if (r.settled_at >= 0) settled.sum += r.settled.mean(), settled.samples++, settled_at.push_back(r.settled_at - 60);
+    else unsettled += !steady;
     cruise.sum += r.cruise.mean(), cruise.samples++;
+    parked_spawned += r.parked_spawned, parked_away += r.parked_away;
+    life_towards.insert(life_towards.end(), r.life_towards.begin(), r.life_towards.end());
+    life_away.insert(life_away.end(), r.life_away.begin(), r.life_away.end());
+    intervals.insert(intervals.end(), r.intervals.begin(), r.intervals.end());
     samples += r.car_samples, off_road += r.off_road, two_way += r.two_way, right += r.right;
     one_way += r.one_way, node_order += r.node_order;
     spawned += r.stats.spawned, away += r.stats.spawned_away, despawned += r.stats.despawned;
@@ -402,10 +485,34 @@ int main(int argc, char** argv) {
   std::sort(spawn_d.begin(), spawn_d.end());
   std::sort(despawn_d.begin(), despawn_d.end());
   auto pct = [](const std::vector<double>& v, double p) { return v.empty() ? 0.0 : v[size_t(p * double(v.size() - 1))]; };
+  auto mean_of = [](const std::vector<double>& v) {
+    double s = 0;
+    for (double x : v) s += x;
+    return v.empty() ? 0.0 : s / double(v.size());
+  };
   std::printf("\nmean over %d seeds (oracle):\n", seeds);
-  std::printf("  noon parked    %.2f cars (6.1)\n", noon.mean());
-  std::printf("  02:00 parked   %.2f cars (0.9)\n", night.mean());
-  std::printf("  noon cruising  %.2f cars (4.4)\n", cruise.mean());
+  if (steady) {
+    std::printf("  noon parked, 60-600 s  %.2f cars (6.1)\n", noon.mean());
+  } else {
+    std::printf("  noon parked    %.2f cars (6.1)\n", noon.mean());
+    std::printf("  02:00 parked   %.2f cars (0.9; 30-60 s after the change)\n", night.mean());
+    std::printf("  02:00 settled  %.2f cars (0.8; the minute after the last noon car left, %.0f s after the "
+                "change at the median; oracle 44 s; %d seed(s) never settled)\n",
+                settled.mean(), median(settled_at), unsettled);
+    std::printf("  noon cruising  %.2f cars (4.4)\n", cruise.mean());
+    std::printf("  spawns while parked %d, %.0f %% away (SpawnAwayChanceMin %.2f)\n", parked_spawned,
+                parked_spawned ? 100.0 * parked_away / parked_spawned : 0.0, config.away_chance_min);
+  }
+  const double share_away = life_towards.size() + life_away.size()
+                                ? double(life_away.size()) / double(life_towards.size() + life_away.size())
+                                : 0.0;
+  std::printf("  parked at noon: %zu spawns, %.0f %% away; lifetime towards %.1f s (54), away %.1f s (5); "
+              "interval %.1f s (7.4); lifetime / interval %.2f cars\n",
+              life_towards.size() + life_away.size(), 100 * share_away, mean_of(life_towards), mean_of(life_away),
+              mean_of(intervals),
+              mean_of(intervals) > 0
+                  ? ((1 - share_away) * mean_of(life_towards) + share_away * mean_of(life_away)) / mean_of(intervals)
+                  : 0.0);
   std::printf("  moving samples %d, off road (> 15 m) %d\n", samples, off_road);
   std::printf("  two-way (nearest road, by heading): right of the centre line %.1f %%, median offset %.2f m\n",
               two_way ? 100.0 * right / two_way : 0.0, median(offsets));
@@ -415,12 +522,14 @@ int main(int argc, char** argv) {
   std::printf("  despawns %d at %.0f to %.0f m\n", despawned, pct(despawn_d, 0.05), pct(despawn_d, 0.95));
   std::printf("  straight-road speed median %.2f m/s (13.4)\n", median(speeds));
 
+  if (steady) return std::printf("traffic-census: steady run (not gated)\n"), 0;
   int misses = 0;
   auto gate = [&](bool ok, const char* what) {
     if (!ok) std::printf("MISS %s\n", what), ++misses;
   };
   gate(std::fabs(noon.mean() - 6.1) <= 0.3 * 6.1, "noon count within 30 % of 6.1");
   gate(std::fabs(night.mean() - 0.9) <= 0.3 * 0.9, "02:00 count within 30 % of 0.9");
+  gate(unsettled == 0 && std::fabs(settled.mean() - 0.8) <= 0.3 * 0.8, "02:00 settled count within 30 % of 0.8");
   gate(off_road == 0, "every car within 15 m of a traffic road");
   gate(two_way == 0 || right >= 0.95 * two_way, "right of the centre line in 95 % of samples");
   gate(node_order == one_way, "one-way roads driven in node order");

@@ -309,6 +309,9 @@ class Vehicle {
   Vec3 point_velocity(const Vec3& point) const;
   double inverse_mass_along(const Vec3& point, const Vec3& n, double angular_scale = 1) const;
   void translate(const Vec3& d) { pos_ = pos_ + d; }
+  // Sets the body's linear (centre of mass) and angular velocity (world):
+  // the traffic lane hold (SPEC-TRAFFIC, Driving; ours).
+  void set_velocity(const Vec3& linear, const Vec3& angular) { vel_ = linear, ang_ = angular; }
   // Advances one fixed step with the given raw input.
   void step(const Input& input, const Ground& ground);
   // The AI's input mode (SPEC-CAR-PHYSICS, "What the AI's controls mean"):

@@ -772,4 +772,39 @@ question Q38)" and "Colour byte order"). Built:
   then hold 30 mph within 0.7 m/s (12.74 to 13.50 m/s from 2 to 8 s; the
   Corolla 12.74 to 13.09). The census with bodies is unchanged (noon
   4.81, 02:00 1.41, 100 % right at 2.20 m); the push test unchanged.
-  Pending the spec's answer on cap or rate.
+  Pending the spec's answer on cap or rate. Superseded below.
+- **Cap and lane hold (SPEC-TRAFFIC a7b959a2).** AccelMaxInput is a cap:
+  on its line a body drives at throttle 0.2 (the oracle's 492 samples were
+  all exactly 0.20), braking proportionally up to BrakeMaxInput when 0.6
+  m/s over its target, and the lane hold keeps it at its lane speed,
+  offset and heading. Knocked off its line it brakes at 1.0 with no hold.
+  Ours until the spec says: (1) the reading of the VehiclePosition/
+  Interpolation gains: each K is the share of the error removed per 1/60 s
+  tick, interpolated by the body's length between Min (4.5 m: PositionK
+  0.999, HeadingK and LaneOffsetK 0.95) and Max (10 m: 0.9, 0.93, 0.93);
+  applied to the body's velocity, the speed along the lane towards a lane
+  speed that moves to the target at AccelerationMax and DeccelerationMax
+  (as a kinematic car's), the speed across it and the yaw rate to those
+  that remove that share of the offset and heading error;
+  LaneOffsetDecay and the pitch and roll limits are unused; (2) no hold
+  for 1 s after a contact, so a push or a knock is the body's own; (3) no
+  first gear forced off the line. At these gains the hold is close to
+  glue: all 17 models hold 13.41 m/s from 2 to 8 s (`--models`), bodies
+  stay within 0.01 m of their lane line, the push test is unchanged (31.5
+  to 20.8 m/s, the traffic car to 23.5).
+- **Spawning while parked (a7b959a2).** The away chance was already
+  SpawnAwayChanceMin (0.25) with the player still; the census's 31 %
+  pooled the cruise, where the chance rises with speed. Parked spawns
+  alone: 30 % of 105 in the census, 23 % of 741 over 600 s at noon. The
+  terms behind the count, parked at noon: lifetime towards the player
+  54.1 s, away 4.6 s, interval 6.9 to 7.2 s, lifetime over interval 5.8
+  to 5.9 cars (the spec's 5.7); the steady count over 60 to 600 s
+  (`--steady`) is 5.87 (6.1). The census's 4.79 is the first minute from
+  the four initial cars, a transient (the oracle's minute was not from a
+  fresh start). Settled 02:00 (the minute after the last noon car left,
+  48 s after the change at the median; the oracle's 44 s): 0.97 with
+  bodies, 0.95 kinematic (0.8; within 30 %). The 0.9 row (30 to 60 s
+  after the change) still misses at 1.33 / 1.25: our noon cars leave
+  later than the oracle's. Open: the interval's shortening with the
+  player's speed (3.1 to 6.0 s cruising; Interval/SpeedFactor and
+  SpeedMax not decoded), so the cruise count stays low (2.6, 4.4).

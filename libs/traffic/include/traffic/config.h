@@ -59,6 +59,13 @@ struct TrafficConfig {
   double model_rotation_time = 30, overspawn_check_time = 4;
   double high_lod_distance = 30, medium_lod_distance = 120;
   double accel_max_input = 0.2, brake_max_input = 0.2;  // AI/Traffic/VehicleControls
+  // AI/Traffic/VehiclePosition/Interpolation: the gains for a short car
+  // (Min, at VehicleLengthAtMin) and a long one (Max, at VehicleLengthAtMax).
+  struct LaneGains {
+    double position_k = 0.999, heading_k = 0.95, lane_offset_k = 0.95;
+  };
+  LaneGains gains_min, gains_max{0.9, 0.93, 0.93};
+  double gains_length_min = 4.5, gains_length_max = 10;  // m
 
   const DensityEntry* density(int id) const;
   void apply(const Registry& r);
