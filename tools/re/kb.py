@@ -217,6 +217,9 @@ def lint_specs(spec_dirs=SPEC_DIRS) -> list[str]:
             idiom = GENERATED_IDIOM.search(text)
             if idiom:
                 problems.append(f"{where}: contains generated-code text `{idiom.group(0)}`")
+            # Guest addresses belong in site/findings (docs/CLEAN_ROOM.md).
+            for address in sorted(set(GUEST_ADDRESS.findall(text))):
+                problems.append(f"{where}: names guest address {address} (put it in site/findings)")
     return problems
 
 
