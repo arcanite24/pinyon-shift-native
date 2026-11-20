@@ -955,7 +955,8 @@ ALU, FETCH = 0x4000, 0x4800
 CONSTANT_BASES = {0: 0x4000, 1: 0x4800, 2: 0x4900, 3: 0x4908, 4: 0x2000}
 
 
-def walk_draws(registers, packets, memory: GuestMemory, predicate: bool = False):
+def walk_draws(registers, packets, memory: GuestMemory, predicate: bool = False,
+               constants: bool = False):
     """Replays the register writes of the packet stream (PM4 types 0, 1, 3;
     constants set inline or loaded from memory) and returns one record per
     draw: primitive type, index source, count and address, the vertex
@@ -964,7 +965,9 @@ def walk_draws(registers, packets, memory: GuestMemory, predicate: bool = False)
     SDK's command processor. With `predicate`, type-3 packets predicated
     off by the bin mask and select (the tiled main pass replays its
     commands once per screen band) are left out, as the GPU does; without
-    it every draw of every band is listed (the counts match-dump reports)."""
+    it every draw of every band is listed (the counts match-dump reports).
+    With `constants`, each record also keeps the 256 vertex shader
+    constants (as raw words) under "vs_constants"."""
     regs = list(registers)
     draws = []
     bin_mask = bin_select = (1 << 64) - 1
@@ -1047,6 +1050,8 @@ def walk_draws(registers, packets, memory: GuestMemory, predicate: bool = False)
                     "window_scissor": (regs[0x2081], regs[0x2082]),
                     "vtx_cntl": regs[0x2302],   # PA_SU_VTX_CNTL (bit 0: pixel centre)
                 })
+                if constants:
+                    draws[-1]["vs_constants"] = regs[ALU:ALU + 1024]
             i += 1 + count
     return draws
 
