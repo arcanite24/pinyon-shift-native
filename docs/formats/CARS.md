@@ -488,7 +488,8 @@ drawn in the showroom.
 
 **Families.** The upgrade tables name parts through
 `List_PartsStrings` (136 strings): `BumperF<x>`, `BumperR<x>`, `Wing<x>`,
-`Hood<x>` and the pair `SkirtL<x>,SkirtR<x>` for `x` from `a` to `z`,
+`Hood<x>` and the pair `SkirtL<x>,SkirtR<x>` for `x` from `a` to `z`
+(hoods `a` to `x`),
 the race parts `BumperFRace`, `BumperRRace`, `WingRace`, `hoodPSrace`,
 `hoodCIrace` and `cagerace`, and `-seatL` and `-seatR`, which remove a
 seat. Part names compare without case.
@@ -553,9 +554,11 @@ failing cars.
 - Over the 250 merged rows the rule changes the drawn parts of 38 rows
   (32 only lose parts). All six cars of the M1 report that failed on
   kits change: the RX-8 Mazdaspeed loses 17 kit parts, the Supra 6, the
-  Celica ST185 5 (the rally light pod `bumperFi`, roof vent `hoodi`,
-  mud flaps `skirtLj`/`skirtRj` and `wingj`), the BRZ 28, the FJ
-  Cruiser and the Beetle their roof racks.
+  Celica ST185 5 (`bumperFi`, `hoodi`, `skirtLj`/`skirtRj` and
+  `wingj`; by the sheet these are the rally light pods, roof vent, mud
+  flaps and wing, matched by eye), the BRZ 28, the FJ Cruiser and the
+  Beetle their roof racks. On the sheets of the Supra, Celica, Beetle
+  and BRZ the kit is exactly the engine-only region of the mask diff.
 - 22 cars that already pass the M1 numeric gate also change, all by
   losing parts: side skirts `b` to `e` (206 RC, Golf GTi, S2000, Silvia,
   Rabbit, 240SX, 037 Stradale, Scirocco R and its LCE twin, Bel Air,
@@ -569,7 +572,9 @@ failing cars.
 - Stock rows name a letter other than `a` on two rows only:
   `VW_IECorrado_95` (rear bumper `d`, skirts `b`) and the v4 rally
   `SUB_WRXSTi_05` row 1626 (front bumper `d`, skirts `e`, hood `f`, wing
-  `d`, a stock roll cage). Three rows have a stock roll cage and three a
+  `d`, a stock roll cage). That these two rows draw their non-`a`
+  parts rests on the database alone: neither has a reference or a dump.
+  Three rows have a stock roll cage and three a
   removed seat (the three Showcase cars and that WRX). None is an M1
   reference car.
 - The Beetle (1968)'s stock `winga` is a 3-vertex LOD0 stand-in whose
@@ -650,9 +655,9 @@ car's body atlases.
 
 | Fact | Confidence | How |
 | --- | --- | --- |
-| A factory livery car is a `Data_Car` row with `HasRaceLivery` = 1: 15 rows, 15 distinct models (6 base, 9 DLC-only). `HasLivery` is 1 on 13 of them and on no other row; the Shelby GT500 LCE and the Raptor HALO have only `HasRaceLivery`, and the Shelby shows its livery, so `HasRaceLivery` is the gate | confirmed (rows), probable (gate) | merged database; the M1 reference sheets of all 15 |
+| A factory livery car is a `Data_Car` row with `HasRaceLivery` = 1: 15 rows, 15 distinct models (6 base, 9 DLC-only). `HasLivery` is 1 on 13 of them and on no other row; the Shelby GT500 LCE and the Raptor HALO have only `HasRaceLivery`, and the Shelby shows its livery, so `HasRaceLivery` is the gate | confirmed (rows), probable (gate) | merged database; M1 reference sheets of 11 of the 15 (not viewed: Zonda R, LCE Sport Quattro, Apollo Enraged, Viper ACR-X) |
 | The livery is the RGB of the body atlas texels whose alpha is 0, the texels that take the paint on every other car; the alpha-255 texels (sponsor decals, number boxes) are as on any car. The LOD0 atlas and the LOD1-5 atlas carry the same scheme | confirmed (atlas content) | decoded atlases of the HPD Fit, the LCE Lancer Evo X and the LCE Scirocco R: the alpha-0 region holds the scheme seen in the game; on unflagged cars it is flat |
-| The showroom shows the texel colour at every alpha and does not apply the paint, neither replacing nor tinting: the HPD Fit's only colour row is red, yet its hood shows the atlas's white; the LCE Scirocco's row is mid blue and it shows the atlas's light blue and graffiti; the DS3 Racing's row is grey and it shows the atlas's black | probable | references against the colour rows; how the effect skips the paint term is not traced |
+| The showroom shows the texel colour at every alpha and does not apply the paint, neither replacing nor tinting. Mean alpha-0 colour of the shown row's LOD0 atlas against its colour row, over the 15: the HPD Fit's row is red and its atlas mean is a pale pink-grey, and the hood shows the atlas's white; the LCE Scirocco's row is mid blue against a teal mean, and it shows the atlas's light blue and graffiti; both Raptors' rows are near black against a mid grey (LCE) and an olive (HALO) mean, and both references show the white skull and the camouflage, not a black truck; the DS3 Racing's row is grey against a black mean, and it shows black. On the Zonda R, the Agera (each of its atlases) and the Apollo the mean is within a few levels of the row, so these cars cannot separate the two readings | probable | atlas means against the colour rows; references; how the effect skips the paint term is not traced |
 | Unflagged cars keep the paint even where their alpha-0 texels are coloured or dark (the Veyron Super Sport, the 250 GT): the first M1 build's paint matches their references | probable | references |
 | 14 of the 15 have one colour row; the Agera has 7, each naming its own atlas (`nodamage_darkGrey` and others), so its colour choice is the atlas choice | confirmed | database |
 | The executable reads both flags: a query for `HasLivery` by car id built in `sub_82548B20` (called from `sub_82550E30`), and a `HasRaceLivery` query string with no reference the analysis resolved | probable (query), open (use) | strings; one cross-reference |
@@ -672,7 +677,7 @@ depend on it; their PSNR does).
 | A wheel archive holds `<WheelMedia>.carbin` (one part, `wheel`, with sub-sections for LOD0 to LOD5: `rim`, `inner_rim`, `outer_rim`, `wheel_black`, `blur_lip`, `blur_rim`), `wheel_LOD0.xds`, `wheel.xds` and `wheel0`-`wheel3.xds` | confirmed | listing; the showroom draws the LOD0 sub-sections |
 | `List_Wheels` has 736 rows; 285 of their media are on the disc | confirmed | database and listing |
 | Tyres are shared models `TireA`, `TireB`, `TireC` (sub-sections `sidewall`, `tread`), x from −0.5 to 0.5 and radius 0.194 to 0.287; the three share one geometry | confirmed (files) | parse |
-| Six cars have their own tyre archives `TireA<MediaName>`, `TireB...`, `TireC...` (the Wrangler on the disc only `TireA`): the SVT Raptor and its LCE and HALO versions, the Wrangler, the H1 Alpha and the FJ Cruiser. They are off-road tyres modelled at the car's size: the FJ Cruiser's base outer radius is 0.402 m, equal to its `Data_Car` tyre radius, against 0.287 for the shared tyres. Which archive the game draws and how it sizes it is not traced; the FJ Cruiser's tyres in the reference look smaller than the shared tyre sized by the rule below | confirmed (files), open (use) | listing; parse; the FJ Cruiser's M1 sheet |
+| The game's files hold two per-car tyre sets beside the shared ones: `TireA`, `TireB`, `TireC` for the SVT Raptor and `TireA` only for the Wrangler. Of the 201 M1 references, 195 draw the shared `TireC`; the SVT Raptor, its LCE and HALO versions and the H1 Alpha Open Top draw the Raptor's `TireA`, and the Wrangler its own `TireA`; the FJ Cruiser's reference matched no tyre draw. The executable builds a tyre path from the wheels folder, `tire`, a letter (`a` for a level below 2, `b` for 2, `c` above) and, when a flag is set, a media name; what sets the flag and why the H1 takes the Raptor's name is not traced. Archives for the FJ Cruiser and the H1 Alpha exist only in the XE mod's files, not in the game's | confirmed (files, references), probable (path), open (flag) | listing; reference model lists; `sub_82DA5558` |
 | The stock XKR-S drew `TireC` with the `A` sidewall and tread textures; which of the three a car draws does not change its shape | confirmed (one car) | frame dump |
 | `CarPartPositions` (`ID` = car id × 1000 + n, `Ordinal` = car id, `PartId`, `PartPosX`, `PartPosY`, `PartPosZ`) holds 10 rows a car; `PartId` 5 to 8 are the axle positions in the body frame, +Z forward like the lamp points: 5 left front, 6 right front, 7 right rear, 8 left rear, left at −x. In the model's frame z is negated | confirmed | 11 frame dumps, 44 wheels: the drawn centre's model z = −row z within 2.6 mm |
 | Only the rows' z places the wheel: their x and y are not the drawn centre (up to 7.4 cm off in x on one car) | confirmed | the same dumps; see the counts under Tests |
@@ -754,7 +759,7 @@ tables do not apply).
 | back-face culling for glass and the cockpit | visual | cull opaque techniques, draw transparent ones two-sided |
 | a lighter rectangle the engine draws on the Challenger SRT8 392's rear door and quarter, absent in the game | visual, one car | not a paint-rule case: the LOD0 and cockpit `body` and `body_2` triangles sample only transparent (paint) texels or the dark stripe texels of the atlas, none opaque white, so the patch comes from the engine's draw (another part or technique overlapping, or a UV or alpha read); check which part the engine draws there |
 | livery decal and vinyl models | none (M1 shows no player liveries; factory liveries are atlas texels) | reject with a message |
-| which tyre archive the six cars with their own tyres draw, and how it is sized | the FJ Cruiser's tyres too large (its M1 IoU), and probably the Raptors', Wrangler's and H1's | draw the shared tyre by the rule; a frame dump of the FJ Cruiser settles it |
+| which cars draw a per-car tyre (the Raptor's for four rows, the Wrangler's), what sets the flag, and how the FJ Cruiser's tyres are sized | the FJ Cruiser's tyres too large (its M1 IoU), and the off-road cars' tyre shape | draw the Raptor's `TireA` for the four Raptor-tyre rows and the Wrangler's for the Wrangler, the shared tyre otherwise; a frame dump of the FJ Cruiser settles it |
 | how the effect drops the paint on a `HasRaceLivery` car (a flag, a constant, another technique) | none for colours | the rule under [Factory liveries](#factory-liveries) |
 | whether exhausts follow the stock rear bumper's letter or always take `a` | one non-reference row (`VW_IECorrado_95`) | letter `a` |
 | whether the v4 or the disc copy of the car effect wins, and which package copy of a duplicated car loads | none (copies are identical for the official set) | disc first, then packages |
