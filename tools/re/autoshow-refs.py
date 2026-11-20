@@ -270,11 +270,12 @@ def cmd_replay(args) -> int:
         if "error" in skips:
             continue
         jobs.append([dump, skips, False])
-    # The empty frame (UI, stage and car left out) was identical across
-    # dumps; replay it for the first and last dump of each plan only and
-    # check that they agree.
-    if jobs:
-        jobs[0][2] = jobs[-1][2] = True
+    # Every dump gets its own empty frame (UI, stage and car left out): a
+    # full-screen pass before the stage leaves stage content (the floor
+    # lights' reflection, animated) in some dumps, which only the same
+    # dump's empty replay cancels.
+    for job in jobs:
+        job[2] = True
 
     import queue
     slots = queue.Queue()
@@ -416,7 +417,8 @@ def cmd_build(args) -> int:
         dump = Path(entry["dump"])
         ref_ppm, car_ppm = dump.with_suffix(".ref.ppm"), dump.with_suffix(".caronly.ppm")
         cover_ppm, nocar_ppm = dump.with_suffix(".cover.ppm"), dump.with_suffix(".nocar.ppm")
-        if not all(path.is_file() for path in (dump, ref_ppm, car_ppm, cover_ppm, nocar_ppm)):
+        own = dump.with_suffix(".empty.ppm")
+        if not all(path.is_file() for path in (dump, ref_ppm, car_ppm, cover_ppm, nocar_ppm, own)):
             continue
         car = cars[entry["car_id"]]
         a = ad.analyse(dump, car)
@@ -431,7 +433,12 @@ def cmd_build(args) -> int:
         # glow; a part coloured like the background leaves a hole, which is
         # filled where the car also changes the full stage (reference image
         # against the stage without the car).
-        first = diff_mask(cover, empty[2])
+        background = _ppm.read_ppm(own)[2]
+        # Stage content the dump left in the car-only replays: where its own
+        # empty frame differs from the plan's first one.
+        leak = diff_mask(background, empty[2])
+        leak_px = sum(1 for v in leak if v)
+        first = diff_mask(cover, background)
         holes = enclosed(first, width, height)
         stage = diff_mask(image, nocar)
         mask = bytes(255 if f or (hole and s) else 0 for f, hole, s in zip(first, holes, stage))
@@ -461,6 +468,15 @@ def cmd_build(args) -> int:
             # bright highlights, not geometry: leave them out of the mask.
             mask = clip_to_box(mask, box, width, height)
         _ppm.write_png(refs / f"{cid}.png", width, height, image)
+        # The car-only image on the clean background: the car-only replay
+        # where the car changed anything (glow and edges included), the plan's
+        # first empty frame elsewhere, so leaked stage content is not kept.
+        changed = diff_mask(car_only, background, 2)
+        clean = bytearray(empty[2])
+        for i, v in enumerate(changed):
+            if v or mask[i]:
+                clean[3 * i:3 * i + 3] = car_only[3 * i:3 * i + 3]
+        car_only = bytes(clean)
         _ppm.write_png(refs / f"{cid}.car.png", width, height, car_only)
         _ppm.write_png(refs / f"{cid}.mask.png", width, height, mask, channels=1)
         rgb, metallic = ad.paint(cid)
@@ -486,7 +502,7 @@ def cmd_build(args) -> int:
                        "ui_draws_left_out": len(a["ui"]), "draw_numbers_match_replay_log": aligned,
                        "empty_frames_agree": empty_agree, "mask_threshold": MASK_THRESHOLD,
                        "viewport": a["viewport"], "z_viewport": a["zviewport"],
-                       "mask_pixels": covered, "glow_px": glow_px, "holes_filled_px": holes_filled, "mask_outside_box": stray,
+                       "mask_pixels": covered, "glow_px": glow_px, "stage_leak_px": leak_px, "holes_filled_px": holes_filled, "mask_outside_box": stray,
                        "projected_box": [round(v, 1) for v in box] if box else None,
                        "mask_draws_left_out": json.loads(dump.with_suffix(".skips.json").read_text(
                            encoding="utf-8")).get("additive_draws", []), "camera_distance": round(distance, 3),

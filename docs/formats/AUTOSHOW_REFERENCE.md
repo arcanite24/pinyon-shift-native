@@ -253,7 +253,7 @@ car's frame dump. The images sit beside it. Everything stays under
 | `paint_rgb` | 3 integers | the colour shown: the car's first `Combo_Colors` row, sRGB, 0-255, as stored in the database (the game converts it to linear before shading; FORMAT-CARS) |
 | `paint_metallic` | integer | that row's metallic flag |
 | `game_clip_from_car` | 16 numbers | provenance: the car draws' matrix as the game sets it (rows are the clip components, row-major), before the conversions below |
-| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, the model-to-body matrix, the transparent pass's matrix, `draw_numbers_match_replay_log`, `empty_frames_agree`, `mask_threshold`, `mask_pixels`, `mask_box`, `glow_px`, `holes_filled_px`, `mask_outside_box`, `projected_box`, `mask_draws_left_out`, `camera_distance` |
+| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, the model-to-body matrix, the transparent pass's matrix, `draw_numbers_match_replay_log`, `empty_frames_agree`, `mask_threshold`, `mask_pixels`, `mask_box`, `glow_px`, `stage_leak_px`, `holes_filled_px`, `mask_outside_box`, `projected_box`, `mask_draws_left_out`, `camera_distance` |
 
 **Spaces.**
 
@@ -304,15 +304,22 @@ reference run.
 
 **Car-only image.** The same dump replayed with the UI and every other
 triangle draw into the car's colour surface left out, so only the car's
-draws and the frame's clears and full-screen passes remain: the car on
-the cleared background, lit as in the image.
+draws and the frame's clears and full-screen passes remain: the car,
+lit as in the image, with its lamp glow. A full-screen pass before the
+stage leaves stage content in some dumps (the floor lights' animated
+reflection, a band across the lower frame); it is the same in the
+dump's own empty replay, so the image keeps the car-only replay where it
+differs from that empty replay by 2 or more, or the mask is set, and
+shows the plan's first empty frame (the plain grey) elsewhere.
+`checks.stage_leak_px` counts the pixels where the dump's empty frame
+differs from the plan's first one.
 
 **Mask.** 8-bit greyscale, 255 where the car covers the pixel, 0
 elsewhere. Schema v2 changed it (v1 compared the car-only image with
 the empty replay directly). It is built in three steps:
 
 1. *Cover against empty.* Pixels where any channel of a *cover* replay
-   differs from an *empty* replay by 6 or more of 255. The cover replay
+   differs from the same dump's *empty* replay by 6 or more of 255. The cover replay
    is the car-only replay without the car's additive draws (colour
    blend ONE + ONE: the lit lamps' glow, `checks.mask_draws_left_out`
    names their model sub-sections); the empty replay also leaves out
@@ -322,8 +329,9 @@ the empty replay directly). It is built in three steps:
    (interior, steering wheel, mirrors, lamp units), glass and lamp
    covers, rotors, calipers, rims and tyres. Glass counts, and so does
    the interior seen through it. The stage is drawn in neither replay,
-   so the car's shadow and reflections on the stage stay out. The empty
-   frame is the same for every car (`checks.empty_frames_agree`).
+   so the car's shadow and reflections on the stage stay out. Each dump
+   has its own empty replay, which cancels any stage content the dump
+   left in the car-only replays.
 2. *Holes.* A part coloured like the empty background (grey 95, 95, 95)
    leaves holes in step 1. Pixels that step 1 leaves out but that it
    encloses (the image border cannot reach them without crossing the
