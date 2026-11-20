@@ -473,6 +473,9 @@ The UHD 620 does not improve: with 2.6x fewer triangles its world stages
 lose about 1 ms, and the sky and the car (unchanged draws) gain about as
 much. The frame there has a floor near 10 ms that follows neither the
 pixels nor the vertices; only the draw count shows (5,564 draws: +3 ms).
+Left as is (10 ms against the 33 ms target). Unchecked guesses: the
+iGPU's clock management holding its busy share level, or a fixed cost
+per frame (the render pass's loads and stores, the timestamp queries).
 Recording costs 0.10 ms on the 5800X (0.07 before) and 0.21 ms on the
 i5-8250U (0.16). The vertex hashing runs on the gather worker.
 
