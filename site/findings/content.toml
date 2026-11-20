@@ -91,12 +91,24 @@ source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
 
 [[finding]]
 group = """Cars"""
-base = """Autoshow make grid"""
+base = """0x8204D230, 0x8204D1C8 (make list); 0x8204BE80, 0x8204BE5C (car list)"""
+v4 = """0x8205DE90, 0x8205DE28 (make list); 0x8205C954, 0x8205C930 (car list)"""
 name = """make list query"""
-what = '''The Autoshow's make grid comes from one SQL query in the executable: makes that have a selectable, visible, non-unicorn car, sorted by name, with the logo `Manufacturer_Logos_I\L_MAN_<IconPathBase>_Logo.tga`. There is no hard-coded make list, so DLC-only makes appear once their cars are owned.'''
-how = """Executable strings."""
+what = '''The Autoshow's make grid comes from one SQL query in the executable: makes that have a selectable, visible, non-unicorn car, sorted by name, with the logo `Manufacturer_Logos_I\L_MAN_<IconPathBase>_Logo.tga`. There is no hard-coded make list, so DLC-only makes appear once their cars are owned. The make count joins `Drivable_Data_Car` to `PowerTrains` and filters `IsUnicorn=0 AND IsCarVisible(ModelId) AND IsSelectable=1`, ordering by `DisplayName COLLATE LOCALIZED_NOCASE`. On screen it is a one-row carousel: the all-affordable entry first, then the makes (57 with the 21 official packages); D-pad right moves one make. A opens the make's car list, a second query on `Drivable_Data_Car` with the same three filters but no powertrain join, ordered `ClassID, PerformanceIndex`; it is also a one-row carousel. `ModelId` equals `Id` in every row of the merged database.'''
+how = """Executable strings (the queries are split across two strings each); the SQL trace (`PINYON_SHIFT_DLC_SQL_TRACE`) of an M1 pilot route on v4 printed both queries as run; pilot routes reached American Motors at make 2, Abarth at 0 and Lancia at 30, and the third Lancia (037 Stradale) at list place 2, as predicted from the database."""
 confidence = """confirmed"""
-source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
+source = """docs/formats/AUTOSHOW_REFERENCE.md Selecting a car; tools/re/car-list.py; docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
+
+[[finding]]
+group = """Cars"""
+base = """Data_Car merged with v4 and DLC merge databases"""
+v4 = """same"""
+name = """M1 car denominator"""
+what = """With the 21 official packages on v4 the merged database has 250 car rows and 240 distinct models. 200 are in the Autoshow under 57 makes (127 base, 10 base rows sold through a DLC offer, 5 v4 Rally rows, 58 package rows); 16 are unicorns (garage only); 10 are v4 Rally event-only twins of a selectable model; 23 are base rows that are drivable but not selectable (traffic, a placeholder and four showcase variants); 1 is not entitled (Rally's Season Pass Focus SVT). v4's update `media.zip` carries no car archives: the five selectable v4 cars draw from the Rally Expansion Pack. 40 rows have model files both on the disc and in a package."""
+how = """`tools/re/car-list.py` over the disc database, v4's copy and each package's merge database, merged whole rows by key in priority order; the screen of each row derived from the Autoshow queries and the offer rule; checked against the live entitlement trace of an M1 pilot run."""
+confidence = """confirmed"""
+note = """Which copy the game loads when a model exists both on the disc and in a package is not established. The community UDLC package would add 113 rows and is left out."""
+source = """docs/formats/AUTOSHOW_REFERENCE.md The cars; tools/re/car-list.py"""
 
 [[finding]]
 group = """Cars"""
@@ -192,6 +204,17 @@ what = """There are 46 part types, fixed by an enum in the code. Rims (736, 112 
 how = """Reading the database."""
 confidence = """confirmed"""
 source = """docs/REVERSE_ENGINEERING.md@a72a92a5f215 Custom content"""
+
+[[finding]]
+group = """Upgrades, colours and liveries"""
+base = """0x8201A4D8, 0x82009650, 0x82071F70 (Combo_Colors query strings)"""
+v4 = """0x820213B0, 0x8200F778, 0x820811C8"""
+name = """Autoshow showroom colour"""
+what = """The Autoshow showroom shows a car in its factory colour with the lowest `Combo_Colors.Sequence`: the first swatch of the colour bar is highlighted and the body matches it (American Motors Javelin-AMX orange, Abarth 595 esseesse white, Lancia 037 Stradale red, each the car's sequence-1 row). The executable holds three colour queries: the lowest sequence of a car, five random colours, and every colour of a car by sequence with its RGB and metallic flag."""
+how = """Executable strings; three M1 pilot routes on v4 compared with each car's `Combo_Colors` rows."""
+confidence = """probable"""
+note = """Which query the showroom runs was not caught: the SQL trace of the pilot routes logged the list queries but no `Combo_Colors` query. Three cars, all with a non-metallic first colour."""
+source = """docs/formats/AUTOSHOW_REFERENCE.md Paint colour"""
 
 [[finding]]
 group = """Upgrades, colours and liveries"""
@@ -524,8 +547,8 @@ source = """src/pinyon_shift_runtime_hooks.cpp TraceDlcCars; docs/TITLE_UPDATE_V
 group = """Entitlements and licences"""
 v4 = """same"""
 name = """ContentOffersMapping and licence masks"""
-what = """Car ownership follows the database's `ContentOffersMapping` and each package's licence mask, not the merged `Data_Car` rows. Rally's publication 1600 has offers for masks 1, 2 and 4: the mask-1 offer maps the Escort (1272), WRX (365), Lancer (378) and 037 (1295) among others, and the Focus SVT (346) maps to the mask-4 Season Pass offer. The Rally package's mask is `00000001`, so with Rally on 27 entitlements load and the Focus is installed but neither purchased nor visible, on base and v4 alike."""
-how = """Reading the owned database and package header; read-only queries of the live entitlement cache after the normal merge (`v4-rally-car-database`)."""
+what = """Car ownership follows the database's `ContentOffersMapping` and each package's licence mask, not the merged `Data_Car` rows. Rally's publication 1600 has offers for masks 1, 2 and 4: the mask-1 offer maps the Escort (1272), WRX (365), Lancer (378) and 037 (1295) among others, and the Focus SVT (346) maps to the mask-4 Season Pass offer. The Rally package's mask is `00000001`, so with Rally on 27 entitlements load and the Focus is installed but neither purchased nor visible, on base and v4 alike. An offer whose mask is 0 needs only its package to be installed: the Honda Challenge's offer 1800 has mask 0 and its three cars are visible. Evaluated from the files with this rule (owned when the package is installed and the offer mask is 0 or shares a bit with the package mask), visibility matches the live entitlement cache for all 84 rows the 21 official packages touch."""
+how = """Reading the owned database and package header; read-only queries of the live entitlement cache after the normal merge (`v4-rally-car-database`); the M1 pilot route's DLC car trace compared with `tools/re/car-list.py`."""
 confidence = """confirmed"""
 source = """docs/DLC_BACKLOG.md Native Rally car database and entitlement check; docs/TITLE_UPDATE_V4_BACKLOG.md TU-6"""
 

@@ -212,6 +212,15 @@ how = """Copying each tile's depth band at its resolve and comparing it with the
 confidence = """confirmed"""
 source = """docs/UPSCALING_BACKLOG.md UP-1.3; docs/formats/WORLD_GEOMETRY.md#coordinate-frames-and-draws; ShiftGlue src/graphics/vulkan/command_processor.cpp kSwapCameraSource"""
 
+[[finding]]
+group = """Frame structure and views"""
+name = """Autoshow showroom car passes"""
+what = """In the Autoshow showroom the car is drawn in the 4x MSAA main pass only: opaque parts (body, interior, steering wheel, mirrors, lights, wheels, rotors and calipers) with depth write on and the stage's clip matrix, then transparent parts (glass, lamp covers) with depth write off and a clip matrix whose translation differs slightly. No car geometry appears in any depth-only or shadow pass, and none in the stage's mirrored floor group (a view-projection with z negated), so the car casts no shadow map and is not reflected as geometry. Car draws sample cube maps (512 and 256 square in one format, 64 square in a float format, 32 square), a screen-sized 1280x720 texture, the car's own atlases (1024 and 2048 square) and small lookup textures. About 1,500 to 1,800 draws make the frame; a 522- or 516-draw group with a translation-free matrix is the sky and background."""
+how = """Frame dumps of three M1 pilot showroom frames on v4 (American Motors Javelin-AMX, Abarth 595 esseesse, Lancia 037 Stradale), read with `world-geometry.py walk_draws`; car draws identified by finding each part's LOD0 vertex pool bytes from the car's `.carbin` files in guest memory; passes by surface info and depth control, textures by fetch constants."""
+confidence = """confirmed"""
+note = """What the screen-sized texture holds (a mask, the reflection or ambient occlusion) and how the cube maps are made (static or captured per frame) are not established. One Lancia part also drew into a 640-pitch surface."""
+source = """docs/formats/AUTOSHOW_REFERENCE.md Parts and lighting"""
+
 # ---------------------------------------------------------------------------
 # Render targets and EDRAM
 # ---------------------------------------------------------------------------

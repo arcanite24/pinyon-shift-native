@@ -418,6 +418,16 @@ confidence = """confirmed"""
 note = """Which animation ran fast for the player is still open."""
 source = """docs/NATIVE_PORT_BACKLOG.md NP-3.7"""
 
+[[finding]]
+group = """Movies and camera shots"""
+base = """sub_82653300 (idle orbit)"""
+name = """Autoshow showroom camera phases"""
+what = """After A on a car the showroom camera runs three phases. A sweep in from a low floor-level view takes about 180 route frames; from about 240 frames the standard three-quarter front view holds with the price and colour bar, slowly orbiting; between about 600 and 900 frames the UI hides and close beauty-camera cuts begin, with different shots at 900, 1200 and 1800 frames. The orbit is reproducible: at 390 frames after A the view-projection of the Abarth 595 and the Lancia 037 agree in rotation to four decimals and differ only by a small vertical offset, consistent with the camera aiming at each car. Y (more tokens) brings the UI back; B opens a dialog."""
+how = """Captures every 60 frames from 60 to 660 frames after A in three M1 pilot routes on v4 (route frames as the render-test runner counts them, uncapped); frame dumps at 390 frames (two cars) and about 960 frames (one), compared by clip matrix."""
+confidence = """confirmed"""
+note = """The vertical offset's source (bounding box, wheelbase or a per-car camera row such as `CameraOverrides`) is not established."""
+source = """docs/formats/AUTOSHOW_REFERENCE.md Camera"""
+
 # ------------------------------------------------------ Input and system UI
 
 [[finding]]
