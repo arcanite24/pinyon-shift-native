@@ -34,6 +34,9 @@
 #include "showroom.h"
 #include "drive/from_bake.h"
 #include "drive/vehicle.h"
+#include "world/road_follow.h"
+#include "world/stream.h"
+#include "world/world.h"
 
 namespace carview {
 
@@ -547,7 +550,7 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
   const V3 u = cross3(side, f);
   const float view[16] = {side.x, u.x, -f.x, 0, side.y, u.y, -f.y, 0, side.z, u.z, -f.z, 0,
                           -dot3(side, eye), -dot3(u, eye), dot3(f, eye), 1};
-  const float near_z = 0.1f, far_z = 500.0f;
+  const float near_z = 0.25f, far_z = 4000.0f;
   const float t = 1.0f / std::tan(fovy / 2);
   float projection[16] = {};
   projection[0] = t / aspect;
@@ -605,22 +608,60 @@ const char* kDriveRuns[][2] = {
     {"launch", "0 0 1 0\n"},
     {"slalom", "0 0 0.6 0\n2 0.8 0.5 0\n3 -0.8 0.5 0\n4 0.8 0.5 0\n5 -0.8 0.5 0\n6 0 0 0.6\n"},
     {"circle", "0 0 0 0\n1 0.5 0.35 0\n"},
+    {"cruise", "0 0 0 0\n"},  // input from world::RoadFollower (needs --world)
 };
+
+// Flat colours per surface class (ours, until the world's materials are
+// decoded): road, terrain, water, other, prop.
+const std::array<float, 3> kSurfaceColours[] = {
+    {0.035f, 0.035f, 0.04f}, {0.11f, 0.13f, 0.05f}, {0.03f, 0.07f, 0.12f}, {0.30f, 0.28f, 0.25f}, {0.20f, 0.17f, 0.12f}};
+
+// The streamed mesh as showroom scenery, relative to `origin` (x, 0, z).
+WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z) {
+  WorldTriangles w;
+  w.colours.assign(std::begin(kSurfaceColours), std::end(kSurfaceColours));
+  w.positions.reserve(mesh.positions.size());
+  for (const auto& p : mesh.positions)
+    w.positions.push_back({float(p[0] - origin_x), p[1], float(p[2] - origin_z)});
+  w.group.reserve(mesh.triangles());
+  for (auto s : mesh.surface) w.group.push_back(uint8_t(s));
+  return w;
+}
+
+// The scenery's transform: world to model, after the origin's translation.
+void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, double origin_x, double origin_z,
+                       float out[16]) {
+  float model_to_world[16], world_to_model[16];
+  drive::model_to_world(car, v, model_to_world);
+  invert_affine(model_to_world, world_to_model);
+  float shift[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, float(origin_x), 0, float(origin_z), 1};
+  multiply4(world_to_model, shift, out);
+}
 
 }  // namespace
 
-// carview --drive: one car on flat ground with the engine's placeholder
-// physics (libs/drive), M3's first slice. Headless, it runs a built-in or
-// scripted input and writes chase-camera frames every --every seconds;
-// windowed, it is driven with the keyboard (arrows or WASD, space for the
-// handbrake) or a gamepad (left stick, triggers, A), with speed, gear and
-// rpm in the title.
+// carview --drive: one car with the engine's placeholder physics
+// (libs/drive), on flat ground or, with --world, in Colorado: the render
+// models and props streamed around the car (libs/world), drawn in flat
+// colours per surface class and driven on as the stand-in ground. Headless,
+// it runs a built-in or scripted input and writes chase-camera frames
+// every --every seconds; windowed, it is driven with the keyboard (arrows
+// or WASD, space for the handbrake, R to go back to the start) or a
+// gamepad (left stick, triggers, A), with speed, gear and rpm in the title.
 //
-//   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle
-//           | --script file] [--view chase|front] [--seconds N] [--every S]
+//   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle|cruise
+//           | --script file] [--speed kmh] [--view chase|front] [--seconds N] [--every S]
+//           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]]
 //           [--headless --out prefix.png] [--size WxH]
+//
+// With --world the car starts at a stand-in spawn: the road triangle
+// nearest --near (file frame x, z; default the free-roam spot of
+// WORLD_GEOMETRY's frame dump, near the festival), or --spawn. --run cruise
+// drives itself along the road at --speed (default 40 km/h).
 int run_drive(int argc, char** argv) {
-  std::filesystem::path bake_dir, script_path;
+  std::filesystem::path bake_dir, script_path, world_dir, cache_path;
+  double near_x = 1999.0, near_z = -962.9, cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
+  bool have_spawn = false;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
   double seconds = 6, every = 1;
@@ -638,6 +679,16 @@ int run_drive(int argc, char** argv) {
     else if (a == "--script") script_path = next();
     else if (a == "--seconds") seconds = std::atof(next());
     else if (a == "--every") every = std::atof(next());
+    else if (a == "--world") world_dir = next();
+    else if (a == "--cache") cache_path = next();
+    else if (a == "--speed") cruise_kmh = std::atof(next());
+    else if (a == "--near") {
+      near_x = std::atof(next());
+      near_z = std::atof(next());
+    } else if (a == "--spawn") {
+      for (double& v : spawn) v = std::atof(next());
+      have_spawn = true;
+    }
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
     } else {
@@ -647,7 +698,9 @@ int run_drive(int argc, char** argv) {
   }
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
-                         "[--view chase|front] [--seconds N] [--every S] [--headless --out prefix.png] [--size WxH]\n");
+                         "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
+                         "[--cache file] [--near x z] [--spawn x y z heading]] [--headless --out prefix.png] "
+                         "[--size WxH]\n");
     return 2;
   }
   if (view != "chase" && view != "front") {
@@ -655,6 +708,11 @@ int run_drive(int argc, char** argv) {
     return 2;
   }
   const bool front = view == "front";
+  const bool cruise = run == "cruise" && script_path.empty();
+  if (cruise && world_dir.empty()) {
+    std::fprintf(stderr, "carview --drive: --run cruise needs --world\n");
+    return 2;
+  }
   if (headless && out.empty()) out = car + "_drive.png";
   std::string text, error;
   if (!script_path.empty()) {
@@ -702,17 +760,101 @@ int run_drive(int argc, char** argv) {
     } else {
       const auto& info = showroom.car();
       drive::Vehicle vehicle(drive::params_from_bake(info));
-      const drive::FlatGround ground;
+      const drive::FlatGround flat;
+      const drive::Ground* ground = &flat;
+      world::World colorado;
+      std::unique_ptr<world::Streamer> streamer;
+      world::RoadFollower follower(cruise_kmh / 3.6);
+      drive::Vec3 start{};
+      double start_heading = 0;
+      if (!world_dir.empty()) {
+        if (cache_path.empty()) cache_path = std::filesystem::path("out") / "world" / "colorado.index";
+        world::Spawn sp;
+        if (!colorado.open(world_dir, cache_path, &error)) {
+          status = 1;
+        } else {
+          if (!error.empty()) std::fprintf(stderr, "carview: note: %s\n", error.c_str());
+          error.clear();
+          streamer = std::make_unique<world::Streamer>(colorado, world::GatherOptions{});
+          if (!streamer->update(have_spawn ? spawn[0] : near_x, have_spawn ? spawn[2] : near_z, nullptr, &error)) {
+            status = 1;
+          } else if (have_spawn) {
+            sp.position = {spawn[0], spawn[1], spawn[2]};
+            sp.heading = spawn[3];
+          } else if (!world::find_spawn(streamer->mesh(), near_x, near_z, sp)) {
+            error = "no road triangle near the search point";
+            status = 1;
+          }
+        }
+        if (status == 0) {
+          std::printf("spawn (stand-in): %.3f %.3f %.3f heading %.4f rad\n", sp.position[0], sp.position[1],
+                      sp.position[2], sp.heading);
+          start = {sp.position[0], sp.position[1], sp.position[2]};
+          start_heading = sp.heading;
+          vehicle.reset(start, start_heading);
+          ground = &streamer->ground();
+          follower.rebuild(streamer->mesh());
+          if (!showroom.set_world(scenery(streamer->mesh(), streamer->centre_x(), streamer->centre_z()), error))
+            status = 1;
+          else
+            showroom.set_background(0.42f, 0.55f, 0.72f);
+        }
+        if (status != 0) std::fprintf(stderr, "carview: %s\n", error.c_str());
+      }
+      // One fixed step, then the stream: gathers again (and swaps the
+      // ground and the scenery) once the car is far from the last centre.
+      auto step = [&](const drive::Input& in) {
+        vehicle.step(in, *ground);
+        if (!streamer) return true;
+        // Headless runs put a car that is stuck or rolled back on the
+        // nearest road (the windowed mode has R).
+        if (headless && follower.stuck(vehicle, in)) {
+          const drive::Vec3 at = vehicle.position();
+          const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const double heading = std::atan2(fwd.x, fwd.z);
+          world::Spawn sp;
+          if (world::find_spawn(streamer->mesh(), at.x, at.z, sp, &heading)) {
+            vehicle.place({sp.position[0], sp.position[1] + 0.05, sp.position[2]}, sp.heading);
+            std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away\n", vehicle.time(), at.x,
+                        at.y, at.z,
+                        sp.distance);
+          }
+        }
+        bool changed = false;
+        const drive::Vec3 at = vehicle.position();
+        if (!streamer->update(at.x, at.z, &changed, &error)) return false;
+        if (changed) {
+          ground = &streamer->ground();
+          follower.rebuild(streamer->mesh());
+          if (!showroom.set_world(scenery(streamer->mesh(), streamer->centre_x(), streamer->centre_z()), error))
+            return false;
+          std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles)\n", vehicle.time(), at.x, at.z,
+                      streamer->mesh().triangles());
+        }
+        return true;
+      };
+      auto place_world = [&]() {
+        if (!streamer) return;
+        float m[16];
+        scenery_transform(info, vehicle, streamer->centre_x(), streamer->centre_z(), m);
+        showroom.set_world_transform(m);
+      };
       WheelPose poses[4];
-      if (headless) {
+      if (status != 0) {
+      } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
         const int stride = std::max(1, int(std::lround(every / drive::Vehicle::kStep)));
         for (int s = 0; s <= steps && status == 0; ++s) {
-          if (s > 0) vehicle.step(drive::script_input(script, vehicle.time()), ground);
+          if (s > 0 && !step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()))) {
+            std::fprintf(stderr, "carview: %s\n", error.c_str());
+            status = 1;
+            break;
+          }
           if (s % stride != 0) continue;
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
+          place_world();
           showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front));
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
@@ -729,9 +871,11 @@ int run_drive(int argc, char** argv) {
             status = 1;
           }
           const auto& wl = vehicle.wheels()[0];
-          std::printf("t %.2f s: %.1f km/h, gear %d, %.0f rpm, LF steer %.3f rad compression %.3f m -> %s\n",
+          const drive::Vec3 at = vehicle.position();
+          std::printf("t %.2f s: %.1f km/h, gear %d, %.0f rpm, LF steer %.3f rad compression %.3f m, at %.1f %.1f "
+                      "%.1f -> %s\n",
                       vehicle.time(), vehicle.speed() * 3.6, vehicle.gear(), vehicle.rpm(), wl.steer, wl.compression,
-                      path.c_str());
+                      at.x, at.y, at.z, path.c_str());
         }
       } else {
         std::vector<SDL_Gamepad*> pads;
@@ -743,7 +887,7 @@ int run_drive(int argc, char** argv) {
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) running = false;
-            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_R) vehicle.reset({0, 0, 0});
+            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_R) vehicle.reset(start, start_heading);
             if (e.type == SDL_EVENT_GAMEPAD_ADDED)
               if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) pads.push_back(pad);
           }
@@ -772,7 +916,12 @@ int run_drive(int argc, char** argv) {
           accumulator += std::min(0.25, double(now - last) * 1e-9);
           last = now;
           while (accumulator >= drive::Vehicle::kStep) {
-            vehicle.step(in, ground);
+            if (!step(cruise ? follower.input(vehicle) : in)) {
+              running = false;
+              status = 1;
+              std::fprintf(stderr, "carview: %s\n", error.c_str());
+              break;
+            }
             accumulator -= drive::Vehicle::kStep;
           }
           if (now - title_at > 100000000) {  // the speedometer, ten times a second
@@ -786,6 +935,7 @@ int run_drive(int argc, char** argv) {
           SDL_GetWindowSizeInPixels(window, &w, &h);
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
+          place_world();
           showroom.set_frame(chase_frame(info, vehicle, h > 0 ? float(w) / float(h) : 1.0f, front));
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());

@@ -55,6 +55,15 @@ struct ShowroomPush {
 };
 static_assert(sizeof(ShowroomPush) == 128);
 
+// Scenery drawn around the car (carview --drive): triangles in groups of
+// one flat colour each, with positions relative to an origin the caller
+// folds into set_world_transform (floats stay precise far from zero).
+struct WorldTriangles {
+  std::vector<std::array<float, 3>> positions;  // three per triangle
+  std::vector<uint8_t> group;                   // per triangle: index into colours
+  std::vector<std::array<float, 3>> colours;    // linear rgb per group
+};
+
 struct ShowroomOptions {
   size_t colour = 0;            // index into the car's colours (by Sequence)
   int64_t match_rgb = -1;       // when set (r x 65536 + g x 256 + b): the colour with that sRGB
@@ -84,6 +93,12 @@ class Showroom {
   // Moves the wheels, rotors and callipers (LF, RF, LR, RR). Until it is
   // called they stand at the car's rest centres, as the showroom shows them.
   void set_wheel_poses(const WheelPose poses[4]);
+  // Replaces the scenery (after upload); the GPU is idled first. Empty
+  // clears it. The car-coverage mask never includes it.
+  bool set_world(const WorldTriangles& world, std::string& error);
+  // The scenery's positions to the car's model frame (column-major).
+  void set_world_transform(const float transform[16]);
+  size_t world_triangle_count() const { return world_triangles_; }
   // The colour the scene clears to, as stored in the 8-bit target (0-1).
   void set_background(float r, float g, float b);
 
@@ -131,6 +146,7 @@ class Showroom {
   bool upload_environment(std::string& error);
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
+  void record_world(VkCommandBuffer cmd);
   void update_frame(VkCommandBuffer cmd);
 
   Renderer& r_;
@@ -163,6 +179,15 @@ class Showroom {
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> material_sets_;
+  // Scenery.
+  struct WorldDraw {
+    uint32_t first_index = 0, index_count = 0;
+    ShowroomPush push{};
+  };
+  Renderer::Buffer world_vertices_, world_indices_;
+  std::vector<WorldDraw> world_draws_;
+  size_t world_triangles_ = 0;
+  float world_transform_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 };
 
 }  // namespace carview

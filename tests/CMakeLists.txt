@@ -17,3 +17,10 @@ add_test(NAME data_tests COMMAND data_tests)
 # SHIFT_STATE_ROOT the launcher state root with the installed packages.
 add_test(NAME car_corpus_counts COMMAND car-corpus --check)
 set_tests_properties(car_corpus_counts PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1800 LABELS corpus)
+
+# The stand-in world over the player's Colorado (skipped, exit 77, without
+# SHIFT_GAME_ROOT). The first run builds a model index in the temp folder.
+add_executable(world_tests world_tests.cpp)
+target_link_libraries(world_tests PRIVATE shift_world)
+add_test(NAME world_tests COMMAND world_tests)
+set_tests_properties(world_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS corpus)

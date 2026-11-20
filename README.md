@@ -104,11 +104,18 @@ carview --bake out/bake --reference <refs>/1115.json --out 1115.png --mask 1115_
 # rule, and reference | engine | mask-difference PNGs (keep out/ local)
 python tools/m1-report.py --carview build/apps/carview/carview.exe --bake out/bake --refs <refs> --out out/m1
 
-# M3 drive (placeholder physics, flat ground): headless trace, then
-# chase-camera frames (--view front shows the wheels' steer and spin);
-# without --headless it opens a window driven by keyboard or gamepad
+# M3 drive (placeholder physics; docs/M3_DRIVE_NEEDS.md lists the
+# stand-ins): headless trace, then chase-camera frames (--view front shows
+# the wheels' steer and spin); without --headless it opens a window driven
+# by keyboard or gamepad. --world <game>/media/tracks/colorado streams
+# Colorado around the car as the stand-in ground and scenery, from a
+# stand-in spawn by the festival; --run cruise drives itself on the road.
+# The model index is cached in out/world/colorado.index (first run ~10 s)
 drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --trace launch.csv
+drive --bake out/bake --car FIA_500AbarthSS_10 --run launch --grade 0.07
 carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --run slalom --every 0.5 --out out/drive/slalom.png
+carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --world <game>/media/tracks/colorado \
+        --run cruise --seconds 120 --every 10 --out out/drive/colorado.png
 
 # Corpus test: every archive, every .carbin and .xds member
 fh1data-corpus --game-root <game> [--verbose] [--filter cars/]

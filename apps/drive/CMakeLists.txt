@@ -1,2 +1,2 @@
 add_executable(drive main.cpp)
-target_link_libraries(drive PRIVATE shift_drive)
+target_link_libraries(drive PRIVATE shift_drive shift_world)

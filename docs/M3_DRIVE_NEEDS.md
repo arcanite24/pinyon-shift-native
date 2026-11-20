@@ -42,6 +42,43 @@ wheel fit (FORMAT-CARS f193075f).
   speedometer.
 - A trace writer for the physics gate, once its format is known (below).
 
+## Stand-ins built so far (2026-11-20)
+
+Built at the spec side's request ("playable first") while COLLISION.md and
+CAR_PHYSICS.md are written. Every one is ours, marked as a placeholder in
+the code, and meant to be swapped out:
+
+- **Physics** (`libs/drive`): a rigid body at a fixed 1/120 s step (ten
+  substeps), raycast suspension, a friction-circle tyre, an automatic
+  gearbox that shifts on road speed (not wheelspin), brakes, drag, and
+  eight body-corner contacts so a rolled car stays on the surface. Every
+  constant sits in `drive::CarParams`, to be filled from CAR_PHYSICS.md.
+- **Ground** (`drive::MeshGround`): a static BVH over triangles behind
+  the `drive::Ground` interface. The real collision source replaces it
+  there without touching the vehicle.
+- **World** (`libs/world`): the world-space render models whose header
+  box lies within 600 m of the car, at the lowest LOD of each object
+  family among them, and the props within 250 m. The world is gathered
+  again once the car is 200 m from the last centre. Left out: TERR_CUBE
+  (reflection views), the UberLOD and middle-distance terrain, and
+  occluders. The ground is these render triangles minus thin upright
+  objects (armco, barriers, railings, cables, fences, signs) and props.
+  Surfaces: road by the mesh object's name (`..._Road_...`), then terrain,
+  water and other by the object or material name, each with a placeholder
+  grip.
+- **Spawn:** the flat road triangle nearest a point. The default point is
+  the free-roam camera of WORLD_GEOMETRY's frame dump (file frame 1999.0,
+  −962.9), by the festival; the spawn lands 0.4 m from it, 1.8 m below
+  the dumped camera.
+- **Drawing:** `carview --drive --world` draws the streamed triangles in
+  flat colours per surface class around the posed car, with a chase
+  camera. Headless, it writes frames. Windowed (keyboard or gamepad,
+  speed in the title), it is written but has not been run here.
+- **Test driver** (`world::RoadFollower`, `--run cruise`): steers to the
+  middle of the road ahead at a set speed. Headless runs put a stuck or
+  rolled car back on the nearest road. It is for checks, not the game's
+  AI.
+
 ## Specs needed, in order
 
 1. **Collision geometry (blocking).** Where Colorado's collision lives

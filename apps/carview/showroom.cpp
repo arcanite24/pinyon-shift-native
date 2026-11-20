@@ -224,6 +224,8 @@ Showroom::~Showroom() {
   r_.destroy_buffer(vertex_buffer_);
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
+  r_.destroy_buffer(world_vertices_);
+  r_.destroy_buffer(world_indices_);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
   for (VkPipeline p : {opaque_, glass_, mask_})
@@ -1148,7 +1150,10 @@ bool Showroom::upload(std::string& error) {
 
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) { update_frame(cmd); };
-  hooks.draw = [this](VkCommandBuffer cmd) { record_draws(cmd, opaque_, glass_); };
+  hooks.draw = [this](VkCommandBuffer cmd) {
+    record_world(cmd);
+    record_draws(cmd, opaque_, glass_);
+  };
   hooks.clear[0] = 0.09f;
   hooks.clear[1] = 0.095f;
   hooks.clear[2] = 0.105f;
@@ -1217,6 +1222,101 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
                    [&](const Draw* a, const Draw* b) { return distance(a) > distance(b); });
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glass);
   for (const Draw* d : sorted) draw(*d);
+}
+
+bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
+  vkDeviceWaitIdle(r_.device_);
+  r_.destroy_buffer(world_vertices_);
+  r_.destroy_buffer(world_indices_);
+  world_draws_.clear();
+  world_triangles_ = 0;
+  const size_t n = world.group.size();
+  if (n == 0) return true;
+  // One vertex per corner with the face normal as the tangent frame's
+  // first axis (the shader's normal is rotate(frame, +x)); grouped by colour.
+  std::vector<std::vector<uint32_t>> by_group(world.colours.size());
+  for (uint32_t t = 0; t < n; ++t)
+    if (world.group[t] < by_group.size()) by_group[world.group[t]].push_back(t);
+  std::vector<bake::Vertex> vertices;
+  std::vector<uint32_t> indices;
+  vertices.reserve(n * 3);
+  indices.reserve(n * 3);
+  for (size_t g = 0; g < by_group.size(); ++g) {
+    if (by_group[g].empty()) continue;
+    WorldDraw d;
+    d.first_index = uint32_t(indices.size());
+    for (uint32_t t : by_group[g]) {
+      const auto& a = world.positions[size_t(t) * 3];
+      const auto& b = world.positions[size_t(t) * 3 + 1];
+      const auto& c = world.positions[size_t(t) * 3 + 2];
+      const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+      const float e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+      float nv[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+      const float len = std::sqrt(nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]);
+      if (!(len > 0)) continue;
+      for (float& k : nv) k /= len;
+      if (nv[1] < 0)
+        for (float& k : nv) k = -k;  // up-facing; the shader faces it to the eye anyway
+      // The rotation taking +x to the normal: (x cross n, 1 + x dot n), normalised.
+      float q[4] = {0, -nv[2], nv[1], 1 + nv[0]};
+      if (q[3] < 1e-4f) {
+        q[0] = 0;
+        q[1] = 1;
+        q[2] = 0;
+        q[3] = 0;
+      }
+      const float ql = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+      bake::Vertex v{};
+      for (int k = 0; k < 4; ++k) v.frame[size_t(k)] = int16_t(std::lround(q[k] / ql * 32767));
+      v.lighting = {100, 0, 0, 0};  // open to the sky
+      for (const auto* p : {&a, &b, &c}) {
+        v.position = *p;
+        indices.push_back(uint32_t(vertices.size()));
+        vertices.push_back(v);
+      }
+      ++world_triangles_;
+    }
+    d.index_count = uint32_t(indices.size()) - d.first_index;
+    if (d.index_count == 0) continue;
+    d.push.uv0[1] = d.push.uv0[3] = d.push.uv1[1] = d.push.uv1[3] = 1;
+    for (int k = 0; k < 3; ++k) d.push.tint[k] = world.colours[g][size_t(k)];
+    d.push.tint[3] = 1;
+    d.push.params[0] = 11;  // the shader's kWorld
+    d.push.params[1] = 16;  // kFlagNoSlot0
+    world_draws_.push_back(d);
+  }
+  if (indices.empty()) return true;
+  if (!r_.upload_buffer(vertices.data(), vertices.size() * sizeof(bake::Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                        world_vertices_) ||
+      !r_.upload_buffer(indices.data(), indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                        world_indices_)) {
+    error = "world buffers";
+    return false;
+  }
+  return true;
+}
+
+void Showroom::set_world_transform(const float transform[16]) {
+  std::memcpy(world_transform_, transform, sizeof world_transform_);
+  for (auto& d : world_draws_) std::memcpy(d.push.model, transform, sizeof d.push.model);
+}
+
+void Showroom::record_world(VkCommandBuffer cmd) {
+  if (world_draws_.empty() || material_sets_.empty()) return;
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &material_sets_[0], 0,
+                          nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque_);
+  for (const auto& d : world_draws_) {
+    ShowroomPush push = d.push;
+    std::memcpy(push.model, world_transform_, sizeof push.model);
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ShowroomPush), &push);
+    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+  }
 }
 
 bool Showroom::render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>& mask,

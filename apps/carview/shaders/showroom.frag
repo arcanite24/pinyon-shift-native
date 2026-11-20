@@ -44,7 +44,7 @@ layout(location = 4) in float v_occlusion;
 layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, kGauge = 5u,
-           kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u;
+           kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
 const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u;
 
 vec3 encode_srgb(vec3 c) {
@@ -113,6 +113,12 @@ void main() {
   } else if (klass == kChrome) {
     gloss = 0.95;
     metal = 0.9;
+  } else if (klass == kWorld) {
+    // Scenery around the car (drive mode): flat colour per surface class,
+    // matte, until the world's materials are decoded.
+    base = draw.tint.rgb;
+    reflectivity = 0.02;
+    gloss = 0.05;
   } else if (klass == kCarbon) {
     base = t0.rgb * ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(1.0));
     reflectivity = 0.05;
