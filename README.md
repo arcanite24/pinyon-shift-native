@@ -415,6 +415,7 @@ thread (the gather worker included).
 | blindvac, UHD 620, i5-8250U | low (no MSAA) | 10.1 / 12.7 / 16.2 | 1.16 / 2.1 / 2.8-3.5 | 1.7 |
 | blindvac, UHD 620, i5-8250U | high (MSAA 4) | 12.7 / 15.5 / 26.4 | 1.18 / 2.1 / 3.1 | 1.75 |
 | multivac, RTX 4080, Ryzen 7 5800X | low | 0.4 / 0.5 / 0.5 | 0.67 / 1.2-1.4 / 2.3-2.5 | 1.15 |
+| Steam Deck LCD (Van Gogh, RADV), SteamOS 3.7 | low | 2.9 / 3.6 / 13.8 (GPU clock low, see below) | 2.85 / 3.9-4.05 / 6.4-7.7 | 3.97 |
 
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
@@ -429,8 +430,16 @@ new textures' images and views and the road follower's points; the old
 gather's meshes and the old scenery's buffers are freed on other threads
 (the buffers once the frame in flight is done, with no device wait). The
 hand-over is about 1.2 ms on the i5-8250U (0.9 ms on the 5800X), and the
-slowest frames are the physics steps (2.5-3.2 ms). No Linux build yet,
-so no Steam Deck figure.
+slowest frames are the physics steps (2.5-3.2 ms).
+
+The Steam Deck runs a Linux build (WSL Ubuntu 24.04, gcc 13, static
+libstdc++; glibc 2.38 symbols) started from a temporary Steam shortcut,
+three runs. Its CPU sat at 1.5-2.0 GHz (powersave) and, the bench
+presenting no frames, its GPU at 200-534 MHz, so the GPU times are an
+upper bound. The slowest frame of each run is the bench driver's
+stuck-car recovery (48.5 s); over SSH a first background swap sometimes
+stalls 5-6 ms on the driver (a fence destroy while another thread frees
+the old gather), taking the maximum to 7.7-8.8 ms.
 
 ## Licence
 
