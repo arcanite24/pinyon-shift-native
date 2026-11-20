@@ -18,6 +18,13 @@ difference inside the reference mask, for judging by eye.
   python tools/m1-report.py --carview build/apps/carview/carview.exe \\
       --bake out/bake --refs <horizon1-recomp>/.local/re/cars/refs --out out/m1
 
+To rerun on some references only: `--cars 1006,1460` (car IDs),
+`--where key=value` (a JSON field, repeatable, all must match; e.g. the
+capture's own source field), `--skip-scored out/m1/report.txt` (leave out
+the cars a previous report scored). `--gate out/gate/gate.txt` adds the
+bake gate's result (tools/bake-gate.py) to the report. The report also
+lists the baked cars that no reference names ("no stock Autoshow view").
+
 Keep the output out of the repository: it holds the player's captures.
 """
 from __future__ import annotations
@@ -112,7 +119,23 @@ def main() -> int:
     parser.add_argument("--light", help="passed to carview --light (lighting settings)")
     parser.add_argument("--include-v1", action="store_true", help="score v1 references as well")
     parser.add_argument("--any-coverage", action="store_true", help="passed as carview --coverage-mask")
+    parser.add_argument("--cars", help="comma-separated car IDs to score (default: all)")
+    parser.add_argument("--where", action="append", default=[], metavar="KEY=VALUE",
+                        help="score only references whose JSON field KEY equals VALUE (repeatable)")
+    parser.add_argument("--skip-scored", type=Path, metavar="REPORT",
+                        help="leave out the car IDs a previous report.txt scored")
+    parser.add_argument("--gate", type=Path, help="the bake gate's gate.txt, copied into the report")
     args = parser.parse_args()
+    only = {c.strip() for c in args.cars.split(",")} if args.cars else None
+    where = [w.split("=", 1) for w in args.where]
+    if any(len(w) != 2 for w in where):
+        parser.error("--where takes KEY=VALUE")
+    skip = set()
+    if args.skip_scored:
+        for line in args.skip_scored.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"\s*(\d+)  \S+\s+[0-9.]+ ", line)
+            if m:
+                skip.add(m.group(1))
     args.carview = str(Path(args.carview).resolve())  # CreateProcess does not search relative paths
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -121,8 +144,14 @@ def main() -> int:
     schemas = {"shift-engine.m1-reference.v2"}
     if args.include_v1:
         schemas.add("shift-engine.m1-reference.v1")
+    referenced = set()  # media names, lower case, of every reference in the folder
     for ref in sorted(args.refs.glob("*.json"), key=lambda p: (len(p.stem), p.stem)):
         data = json.loads(ref.read_text(encoding="utf-8"))
+        referenced.add(str(data.get("media_name", "")).lower())
+        if only is not None and ref.stem not in only:
+            continue
+        if ref.stem in skip or any(str(data.get(k)) != v for k, v in where):
+            continue
         if data.get("schema") not in schemas:
             if data.get("schema") == "shift-engine.m1-reference.v1":
                 leftovers.append(f"{ref.stem} {data.get('media_name', '?')}")
@@ -187,6 +216,18 @@ def main() -> int:
               f" cars for the by-eye check (IoU < 0.97): {sum(r['iou'] < 0.97 for r in scored)}"]
     if leftovers:
         lines += ["", f"v1 references not scored ({len(leftovers)}): " + ", ".join(leftovers)]
+    filters = ([f"cars {args.cars}"] if args.cars else []) + [f"{k}={v}" for k, v in where] + \
+        ([f"skipping {len(skip)} cars scored in {args.skip_scored}"] if args.skip_scored else [])
+    if filters:
+        lines += ["", "filtered: " + "; ".join(filters)]
+    baked = sorted(p.stem for p in (Path(args.bake) / "cars").glob("*.shiftbake"))
+    missing = [b for b in baked if b.lower() not in referenced]
+    if baked:
+        lines += ["", f"baked cars: {len(baked)}; no stock Autoshow view (no reference in the folder): {len(missing)}"]
+        lines += [f"  {b}" for b in missing]
+    if args.gate:
+        lines += ["", "bake gate (tools/bake-gate.py):"] + \
+            ["  " + line for line in args.gate.read_text(encoding="utf-8").splitlines()]
     text = "\n".join(lines) + "\n"
     (args.out / "report.txt").write_text(text, encoding="utf-8")
     sys.stdout.write(text)

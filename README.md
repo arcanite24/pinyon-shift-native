@@ -171,8 +171,11 @@ carview --bake out/bake --car FIA_500AbarthSS_10 --headless --out car.png --mask
 carview --bake out/bake --reference <refs>/1115.json --out 1115.png --mask 1115_mask.png
 
 # The M1 report over every reference: report.txt with the plan's pass
-# rule, and reference | engine | mask-difference PNGs (keep out/ local)
-python tools/m1-report.py --carview build/apps/carview/carview.exe --bake out/bake --refs <refs> --out out/m1
+# rule, and reference | engine | mask-difference PNGs (keep out/ local).
+# --cars, --where key=value and --skip-scored <report.txt> rerun a subset;
+# --gate adds the bake gate (two bakes from empty folders, timed and hashed)
+python tools/bake-gate.py --carbake build/apps/carbake/carbake.exe --game-root <game> --state-root <state> --work out/gate --compare out/bake
+python tools/m1-report.py --carview build/apps/carview/carview.exe --bake out/bake --refs <refs> --out out/m1 --gate out/gate/gate.txt
 
 # M3 drive (CAR_PHYSICS.md; carbake --physics-only writes the cars' rows,
 # docs/M3_DRIVE_NEEDS.md lists the rest): headless trace, then chase-camera frames (--view front shows
@@ -346,6 +349,10 @@ opaque.
   files (the bake files plus manifest and report; `bake-time.txt` left
   out), combined SHA-256 of the sorted per-file hashes
   `2c3b19d08d8409f4653c2fdb72cd21fd85dd17f5519273f8397ca5429a08afaa`.
+  Rerun with `tools/bake-gate.py` for the M1 report (2026-11-20; the bake
+  now also writes each car's `physics.txt`): 45.5 s and 74.2 s, 722
+  files, byte-identical to each other and to `out/bake`, combined
+  `ec300aee1ca8b4b9331895c9dec3f850ab5e7683a12985fbf015846dacd5b2f6`.
 - All 240 cars render headless at the default orbit camera with no load
   failures, no missing textures and none empty (168 s), checked by eye
   on one contact sheet.
@@ -367,11 +374,16 @@ opaque.
 - Reference mode reads AUTOSHOW_REFERENCE v1 and v2, draws the mask by
   the 6/255 rule at the silhouette and the glass with the transparent
   pass's matrix. `tools/m1-report.py` scores v2 references only (their
-  masks leave out the lamps' additive glow) and passes a car at IoU
-  0.97; masked PSNR is reported only. The five v2 references so far all
-  pass (IoU 0.976-0.997, mean 0.986); the other 25 are being recaptured
-  as v2. On the 25 v1 captures the wheel fit gives IoU mean 0.990, the
-  one miss there (`BEN_CONTINENTALGT_11`, 0.967) being lamp glow.
+  masks leave out the lamps' additive glow) and passes a car at IoU-g
+  0.97 (the IoU without the largest reference-only region, the glow);
+  plain IoU under 0.97 asks for a by-eye check, and masked PSNR is
+  reported only. The M1 run (2026-11-20, all 200 stock-Autoshow
+  references): IoU mean 0.985, min 0.905; 193 of 200 pass by IoU-g, 31
+  are under 0.97 by IoU. Six of the seven misses draw an aftermarket part
+  set where the stock car has stock parts (RX-8, Supra, Celica, '68
+  Beetle, FJ Cruiser, BRZ: the part-variant choice, Q4); the seventh,
+  the Huayra, is two glow regions (IoU-g 0.9700). The 40 baked cars with
+  no stock Autoshow view are listed by the report.
 - The lighting's free settings (exposure, environment, key and fill
   strengths, the diffuse and reflection tints, metallic paint's share)
   were fitted to the references for median masked PSNR, keeping the
