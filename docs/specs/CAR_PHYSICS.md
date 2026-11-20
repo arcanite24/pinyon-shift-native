@@ -477,13 +477,13 @@ come from it.
 
 Oracle numbers (sim time from the launch, from the body trace):
 
-| Crossing | Run A | Run B1 | Run B2 | Distance |
-| --- | --- | --- | --- | --- |
-| 0-20 km/h | 1.122 s | 1.126 s | 1.126 s | 1.7 m |
-| 0-40 km/h | 1.891 s | 1.899 s | 1.892 s | 8.4 m |
-| 0-60 km/h | 2.780 s | 2.788 s | 2.781 s | 20.7 m |
-| 0-80 km/h | 4.557 s | 4.556 s | (lifted at 79 km/h) | 55.1 m |
-| **0-100 km/h** | **5.837 s** | | | 87.2 m, 3.80 m lower |
+| Crossing | Run A | Run B1 | Run B2 | Run C (accel route) | Distance |
+| --- | --- | --- | --- | --- | --- |
+| 0-20 km/h | 1.122 s | 1.126 s | 1.126 s | 1.119 s | 1.7 m |
+| 0-40 km/h | 1.891 s | 1.899 s | 1.892 s | 1.893 s | 8.4 m |
+| 0-60 km/h | 2.780 s | 2.788 s | 2.781 s | 2.782 s | 20.7 m |
+| 0-80 km/h | 4.557 s | 4.556 s | (lifted at 79 km/h) | 4.572 s | 55.1 m |
+| **0-100 km/h** | **5.837 s** | | | **5.851 s** | 87.2 m, 3.80 m lower |
 
 What happens on the way:
 
@@ -496,7 +496,7 @@ What happens on the way:
 - **1→2 shift** at 67.8 km/h, 3.55 s after the launch, taking about 0.6 s
   (see Gears).
 - The physics-behaviour summary of the same routes (frame clock) gives
-  0-60 2.62 to 2.65 s and 0-100 5.68 to 5.82 s; do not gate on those (see
+  0-60 2.62 to 2.69 s and 0-100 5.68 to 5.82 s; do not gate on those (see
   the trace notes).
 
 ### Scenario B: a straight segment (launch, lift, brake)
@@ -573,7 +573,7 @@ Checks on this ground:
 | --- | --- | --- |
 | Static normal loads | sum to the weight, front pair 57.5 % | 1 % |
 | 0-20, 0-40, 0-60, 0-80 km/h | scenario A's table | 2 % or 0.05 s, the larger |
-| 0-100 km/h | 5.837 s | 2 % (5.72 to 5.95 s) |
+| 0-100 km/h | 5.84 s (5.837 and 5.851 in two runs) | 2 % (5.72 to 5.96 s) |
 | 1→2 shift | 67.8 km/h, 3.55 s | 2 % |
 | Stop from scenario B's onset speed | 8.57 m/s² mean | 2 % |
 | Full-lock circle at 2 to 3 m/s (route `fh1-physics-steer`) | 3.37 m path radius | 2 % |
@@ -597,7 +597,7 @@ Checks on this ground:
 
 ## Tolerances
 
-- The oracle repeats its sim-time crossings within 0.3 % (three runs) and
+- The oracle repeats its sim-time crossings within 0.4 % (four runs; 0-100 within 0.24 % in two) and
   its braking deceleration within 0.2 % (two runs). The physics-behaviour
   summary on the frame clock repeats only within about 2.5 %.
 - The M3 gate is 2 % on 0-100 km/h (sim time) and on scenario B's mean
@@ -619,7 +619,8 @@ Oracle side (multivac, run lock, hidden, a copy of the pinned seed):
   `--pinyon_shift_physics_oracle_snapshot_frame=1095` and
   `--pinyon_shift_physics_oracle_trace_ticks=800`. It writes the JSONL
   events and `physics-oracle.bin` (scenarios A and B).
-- The same with `config/render-tests/fh1-physics-steer.fh1test`, trace
+- The same with `config/render-tests/fh1-physics-accel.fh1test` (scenario A's
+  0-100; Run C), and with `config/render-tests/fh1-physics-steer.fh1test`, trace
   N = 1 and 600 trace ticks (the turn circle).
 - `tools/physics-behaviour.py summary <result.json>` for the frame-clock
   summary; `tools/re/physics-inject-compare.py` reads the body trace.
