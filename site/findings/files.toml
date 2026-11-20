@@ -471,7 +471,7 @@ what = """None of their bytes appear in any vertex buffer of a free-roam frame. 
 how = """Search of the dump's vertex buffers; header look; for .pgeo and .pvsz, the RF-7 placement search. RI-0.4 and RF-7, 2026-11-19, base build on Vulkan, one free-roam frame."""
 confidence = """confirmed"""
 negative = true
-note = """The .sh and .fiz uses and the .pgeo kinds other than 7 are guesses. Colorado_00.pvs (FPVS) has a header field equal to 7,970, the .pgeo count."""
+note = """.fiz are the collision tiles (see "collision tiles" on the world page, docs/formats/COLLISION.md). The .sh use and the .pgeo kinds other than 7 are guesses. Colorado_00.pvs (FPVS) has a header field equal to 7,970, the .pgeo count."""
 source = """docs/formats/WORLD_GEOMETRY.md#archive-and-member-names"""
 
 [[finding]]

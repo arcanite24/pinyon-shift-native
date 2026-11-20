@@ -225,6 +225,37 @@ source = """src/pinyon_shift_runtime_hooks.cpp QueueRallyRaceTrace"""
 
 [[finding]]
 group = """Collision and cameras"""
+base = """media/tracks/colorado/bin.zip N.fiz (0 to 3200)"""
+name = """collision tiles"""
+what = """The car's ground and walls are the 3,201 `N.fiz` members of Colorado's `bin.zip`, not the render models: each a `fiz ` header, block A (a triangle soup: 16-byte vertices of three f32 plus an undecoded word, 32-byte triangles with a flag byte, a surface index byte, a 16-bit word, three corner offsets, a unit normal and a tail word, then a 12 x 12 grid of 10 m cells holding u16 triangle lists) and, in 2,212 tiles, an `OWBB` block that is not geometry. 1,729,941 vertices and 2,007,595 triangles in all; 1,401,862 lie in a tile's own 100 m cell, the rest repeat in the 8 m aprons. Positions are in the game frame (the render file frame with z negated); the normal is (b - a) x (c - a) normalised in that frame."""
+how = """Parsing every tile to its stated sizes (tools/re/collision.py stats); RF-5 physics-oracle traces: the contact triangle each wheel block holds is a .fiz triangle bit for bit in 6,711 of 6,711 wheel samples (oracle-check), and the body's ground lies 0.4 to 0.9 m below it with the axes as read."""
+confidence = """confirmed"""
+note = """The flag byte, the 16-bit word, the tail word, the vertex's fourth word and block B are not decoded. How the game streams the tiles is not traced. Corrects the earlier reading of .fiz as an undecoded header with two spacings."""
+source = """docs/formats/COLLISION.md"""
+
+[[finding]]
+group = """Collision and cameras"""
+base = """media/tracks/colorado/Ribbon_00/Colorado_track_00.col"""
+name = """collision tile index"""
+what = """The only `.col` on the disc indexes the collision tiles: a 133 x 100 lattice of 100 m cells from an origin it states, an 8 m apron, a 10 m inner cell, and 3,201 24-byte records giving each tile's number, its cell (j x 133 + i), its first block's size and a stream offset (offsets contiguous from the .col's own length, the total in the header). Tile numbers are the row-major (z, then x) rank of the occupied cells. Some header floats are stored little-endian."""
+how = """Records compared with all 3,201 tiles (tools/re/collision.py stats --col)."""
+confidence = """confirmed"""
+note = """The first word of record 0 and a far-corner pair in the header are not explained."""
+source = """docs/formats/COLLISION.md#tiling-and-loading"""
+
+[[finding]]
+group = """Collision and cameras"""
+base = """media/physics.zip surfaceTypes.xml"""
+v4 = """media.zip physics/surfacetypes.xml (appends RallyGrass, Dirt2, Dirt3, RallyGravel as 68-71)"""
+name = """surface types"""
+what = """A collision triangle's surface byte (and the wheel block's surface index) is a 0-based index into `SurfaceTypesList` in `surfaceTypes.xml`: 68 names on the disc (Asphalt, Dirt, Grass, GuardRail, ConcreteBarrier, ...). The same file gives each surface a Category and Friction, VelDepFriction, CarWorldCollFricMods, Aerodynamics, Bumpiness, Springiness, SteerTorque and effect columns, and a CategoryToCategoryParams table of friction and elasticity per category pair. The tiles use 50 indices; Dirt, Asphalt and Grass hold 76 % of the triangles, and GuardRail, Invisible, Wood and BumpyConcreteExtreme triangles almost all face sideways (walls)."""
+how = """Oracle wheel samples: the surface index equals the contact triangle's byte in 6,711 of 6,711, on indices 0 and 2 (Asphalt, Grass); counts over the tiles; the CollObjects.xml cone's SurfaceId names RubberCone."""
+confidence = """confirmed"""
+note = """Confirmed for the index rule; the names past indices 0 and 2 and the columns' roles (by their names) are probable. The list name Kerb (58) has no definition and the definition BowlingPin no list entry; no triangle uses 58. The wheel blocks do not cache the surface's FrictionScale, so how the tyre model applies the columns is open."""
+source = """docs/formats/COLLISION.md#surface-types"""
+
+[[finding]]
+group = """Collision and cameras"""
 base = """sub_82857B00, 0x82857C98"""
 v4 = """sub_82907F88, 0x82908120"""
 name = """camera physics layer"""
@@ -319,6 +350,15 @@ how = """Placing the car at the route start (`CPlaceCar`) on the base build with
 confidence = """confirmed"""
 note = """One starting area tested."""
 source = """docs/DLC_BACKLOG.md Base-disc Rally investigation"""
+
+[[finding]]
+group = """Placements and routes"""
+name = """free-roam spawn on the collision"""
+what = """The reference seed's free-roam start puts the player's car at about (2002.9, 144.3, 960.0) in the game frame, 0.91 m over an Asphalt collision triangle with its wheels off the ground; it settles to (2002.96, 143.84, 960.00), facing (0.807, -0.046, -0.588) (126 degrees from +z towards +x), with each hub a rolling radius over the tile ground. Route start locations are in the same frame and sit a median 0.54 m over the tile triangles under them (242 of a 314-start sample over a triangle); TrackRoute021.xml start_location_06 is on Asphalt 93 m from the festival objects."""
+how = """RI-0.5 oracle trace of the spawn (body position and rotation rows, wheel hubs) and tools/re/collision.py ground under it; route starts read and queried against the tiles."""
+confidence = """confirmed"""
+note = """Confirmed for the measured spawn; the route starts were not run (probable)."""
+source = """docs/formats/COLLISION.md#spawn-point"""
 
 [[finding]]
 group = """Placements and routes"""

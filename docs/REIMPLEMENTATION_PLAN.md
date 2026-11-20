@@ -93,7 +93,7 @@ It turns the one-paragraph sketch there into a programme of work.
 | Saves | struct layouts; partly native | `tools/fh1-profile.py` round-trips the profile field tree. Encryption is handled only by a runtime hook, with no offline crypto |
 | Car dynamics | data flow; some offsets | The `ICarDynamics` vtable, wheel blocks, ABS/TCS and the step's two paths are recorded. 117 of the 131 physics functions are unnamed. The tyre model is located but not understood |
 | AI opponents | data flow | Assignment, rubber-banding and difficulty are recorded. The driving logic (47 RacingAI/MLP classes) is unexplored |
-| World streaming, collision | named only | The thinnest area: one streaming "guess", and the ground query is "probable" |
+| World streaming, collision | collision decoded; streaming named only | The static collision tiles, their lattice and the per-triangle surface index are confirmed against the physics oracle ([COLLISION.md](formats/COLLISION.md)); streaming is still one "guess" |
 | Audio | data flow; parts native | FMOD Ex internals, FSB4 and radio are known. The engine-sound model is only located |
 | Flow scripts | data flow | StateGroup XML is data. Its 439 behaviour names are C++ classes, so their meaning is code |
 
@@ -112,7 +112,8 @@ It turns the one-paragraph sketch there into a programme of work.
 | Colorado render models (`.rmb.bin`) | positions and index lists of all 14,291 (RI-0.4), and instance placements with each object's model (`.pgeo`, `.pvsz`, the `.pvs` object table); the rest of each vertex, materials and the LOD choice are not decoded | `tools/re/world-geometry.py`, [WORLD_GEOMETRY.md](formats/WORLD_GEOMETRY.md) |
 | `.bix`, `_0x*.bin` textures | identified (RI-0.4), not decoded | |
 | `.pgeo` kind 7 (prop instance matrices), `.pvsz` placements | instances read and matched (RF-7); model IDs, other kinds and the `.pvsz` framing not decoded | `tools/re/world-geometry.py pgeo` |
-| `.fiz`, `.sh`, `.gr2`, `.skinbin`, `.xpr` | **none** | |
+| Collision (`.fiz` tiles, the `.col` tile index, `surfaceTypes.xml`) | the static mesh, its tiling and the per-triangle surface index (M3 items 1-3, 2026-11-20); flag fields, prop shapes (`PhysicsDefinitions.bin`) and how the tyre uses the surface columns not decoded | `tools/re/collision.py`, [COLLISION.md](formats/COLLISION.md) |
+| `.sh`, `.gr2`, `.skinbin`, `.xpr` | **none** | |
 | PVS (`.pvs`, `.pvsz`, `PVSZLookup`, `FilenameMap`) | **named only** | |
 | `.nav`, `.owr`/`.oww`, `OWTM` racing lines, `PhysicsDefinitions.bin`, `.col`, `.crowd`, `.soundscape` | **none** | |
 | `.fxobj` effects | container: microcode and 34 vertex declarations | techniques, render states and parameter bindings are not decoded |
@@ -290,7 +291,7 @@ produces.
 | --- | --- | --- | --- |
 | World geometry (`.rmb.bin` render models, prop placements, `.pgeo`, `.sh`) | Read trace to tie members to sectors, then frame-dump correlation of positions and indices, then mutation of suspected fields, then loader analysis in Ghidra (specification role) | One Colorado sector baked and drawn by the engine, matching a frame dump at the same camera (depth within tolerance) | **RI-0.4 timebox: 4 weeks.** If no sector draws by then, fallback B is a world harvest on the player's machine: the baker runs the player's own Pinyon Shift build along a scripted fly-through and stores the vertex and index buffers it submits. That keeps the data local, but every player would need a working recompilation to install the engine, and the harvest yields only what the route drew. If that cost is unacceptable, the programme stops at M1 |
 | PVS and streaming | Read trace during scripted drives; correlate zone files with the members loaded | The engine streams the route the oracle streams, within a radius | If the PVS can't be decoded, compute our own visibility at bake time. That is allowed, since we only need a playable result |
-| Collision (`.col`, `PhysicsDefinitions.bin`; `.rmb.bin` is render geometry, RI-0.4) | Mutation (raise or remove a wall, then watch a car pass), ground-query traces from RF-5 | The ground height under four wheels matches the oracle along a recorded drive, within 1 cm | Fallback: build collision from render geometry at bake time |
+| Collision (the `.fiz` tiles indexed by `Colorado_track_00.col`, done for M3 in [COLLISION.md](formats/COLLISION.md); left: `PhysicsDefinitions.bin` prop shapes; `.rmb.bin` is render geometry, RI-0.4) | Mutation (raise or remove a wall, then watch a car pass), ground-query traces from RF-5 | The ground height under four wheels matches the oracle along a recorded drive, within 1 cm | Fallback: build collision from render geometry at bake time |
 | Car physics data (`physicsdefinition.bin`, `MAXData.xml`, unknown database columns) | Sweep columns and fields, measure with the physics trace (the #1019 approach) | Each field used by the M3 step has a meaning and a unit | — |
 | `.fxobj` effects | Effect structure from the shader corpus and the D3D wrapper records | A material table per shader family, enough to write our own shaders | Our own shaders are a look match, not a translation, so the decoding only has to reach that level |
 | `.fev` events | Structure from FSB references and FMOD's public Ex-era behaviour (*to verify* what is public) | Engine, tyre and UI events play from the engine's mixer | Fallback: drive the FSB samples from our own event tables |

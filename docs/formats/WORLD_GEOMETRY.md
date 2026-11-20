@@ -49,6 +49,7 @@ reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
   ordinary rasteriser's ([Coordinate frames](#coordinate-frames-and-draws)).
 - `.bix`, the `_0x*.bin` members and `.bundle` hold textures; `.pgeo`,
   `.fiz`, `.sh` and `.pvsz` bytes appear in no vertex buffer of the frame.
+  The `.fiz` members are the collision mesh ([COLLISION.md](COLLISION.md)).
   The census record calling `.bix` "scenery models" and `.bin` "track
   geometry" needs correcting: the geometry is in `.rmb.bin` only.
 
@@ -80,7 +81,7 @@ model is a member number in the [object table](#object-table).
 | `_0xXXXXXXXX.bundle` | 146 | block-compressed texel payloads behind a small header (texture arrays, perhaps lightmaps; guess) | guess | payload look |
 | `__R00GNNNNN.pgeo` | 7,970 | "procedural geometry" tiles (`OEGP` magic) of seven kinds by a header word (2-8); kind 7 (2,031 tiles) places models: 12,044 model records and 174,803 instance matrices. No vertex data | confirmed (kind 7 layout); probable (kind word); guess (other kinds) | full parse of every kind-7 tile to its stated size; exact match to drawn placements; runtime snapshot; class names in the executable |
 | `*__shdata__<x>_<z>.sh` | 1,421 | lighting data per X/Z cell, by its name (spherical harmonics is a guess from `shdata`) | guess | names |
-| `N.fiz` | 3,201 | a `fiz ` header with an X/Z box and two spacings; not in any vertex buffer | guess | header floats |
+| `N.fiz` | 3,201 | collision tiles: the car's ground and walls, with a surface index per triangle; not in any vertex buffer ([COLLISION.md](COLLISION.md)) | confirmed | full parse; the physics oracle's contact triangles |
 | `__R00ZNNNNN.pvsz` | 1,434 | zone files: a list of 32-bit IDs with the top bit as a flag, then prop placements (f32 position, half-float rotation) among other data | probable (placements); guess (framing) | 107 drawn placements found, position and rotation |
 | `colorado_00_NNNNN.soundscape` | 1,450 | sound | — | name |
 | `shaders/track/*.fxobj` | 173 | compiled track shaders, by name (the shader paths the render models list) | probable | names |

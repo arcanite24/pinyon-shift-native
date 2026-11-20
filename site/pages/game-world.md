@@ -15,7 +15,8 @@ The track folder, with what each file is known to hold (unmarked names are not y
 
 ```text
 media/tracks/colorado/
-  bin.zip                    230,057 members: .rmb.bin models, .bix textures, .pgeo, .fiz
+  bin.zip                    230,057 members: .rmb.bin models, .bix textures, .pgeo,
+                             .fiz collision tiles
   TrackSettings.xml          grass, crowd, lightmap and depth-pass distances, tone map, wind
   SmashableObjectTypes.xml   object types the car may smash: Fence, Flyer, Mailbox, RaceActivation
   PVSZoneSpeeds.dat          per-zone data for the visibility system
@@ -51,6 +52,8 @@ Car LOD distances live in the render scenarios ([Rendering](game-rendering.md#re
 {{findings:world/Render scenarios and car level of detail}}
 
 ## Collision and cameras
+
+The car drives on a collision mesh of its own, not on the render models: 3,201 `.fiz` tiles of 100 m in Colorado's `bin.zip`, indexed by `Ribbon_00/Colorado_track_00.col`, about two million triangles each tagged with a surface type from `physics.zip`'s `surfaceTypes.xml`. Guard rails, barriers and the invisible walls at the world's edge are triangles in the same tiles; signs, fences and other breakable props are not. The format is in [COLLISION.md](https://github.com/arcanite24/pinyon-shift/blob/dev/docs/formats/COLLISION.md).
 
 The chase camera starts from a `CameraSettings.ini` tuning block, then applies
 per-car placement overrides. Live placement must adjust the instance's
