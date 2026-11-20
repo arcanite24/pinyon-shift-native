@@ -113,7 +113,7 @@ void main() {
     // A lamp cover: coloured glass (the draw's tint), lit when braking.
     if ((flags & kFlagCover) != 0u) {
       base = draw.tint.rgb;
-      alpha = 0.75;
+      alpha = draw.tint.r - draw.tint.g > 0.1 ? 0.75 : 0.15;  // red, amber: coloured; clear: see-through
       emissive = vec3(2.4, 0.05, 0.03) * draw.params.z * step(0.1, draw.tint.r - 4.0 * draw.tint.g);
     }
   } else if (klass == kLamp) {
