@@ -1,0 +1,66 @@
+pinyon-shift-fh1-render-test-v1
+# Radio switch-back oracle (docs/specs/RADIO.md, SPEC-RADIO) on acc9-stock,
+# parked at idle, starting with the radio off. D-pad right (0008) and left
+# (0004) switch to Bass Arena and away and back after 10, 20 and 40 s,
+# then between Bass Arena and Pulse, inside three 60 s audiocaptures, so
+# tools/re/radio.py match shows whether a station resumes, restarts or
+# moves on. Dense HUD captures after the first press time the popup.
+# Run hidden with PINYON_SHIFT_AUDIO_PROBE_SECONDS=60 and the other mix
+# categories at 0, as fh1-radio-cycle.
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 366 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 486 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 606 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 726 0000 0 0 0 0 0 0
+input 780 0000 0 0 0 0 0 0
+wait 900 3000 vehicle
+audiocapture 1000
+input 1200 0008 0 0 0 0 0 0
+input 1206 0000 0 0 0 0 0 0
+capture 1220 r1-020
+capture 1230 r1-030
+capture 1236 r1-036
+capture 1242 r1-042
+capture 1248 r1-048
+capture 1254 r1-054
+capture 1266 r1-066
+capture 1278 r1-078
+capture 1320 r1-120
+capture 1350 r1-150
+capture 1370 r1-170
+capture 1380 r1-180
+capture 1390 r1-190
+capture 1400 r1-200
+capture 1410 r1-210
+capture 1420 r1-220
+capture 1430 r1-230
+input 2400 0004 0 0 0 0 0 0
+input 2406 0000 0 0 0 0 0 0
+capture 2436 off-036
+capture 2448 off-048
+capture 2580 off-180
+capture 2600 off-200
+capture 2620 off-220
+input 3000 0008 0 0 0 0 0 0
+input 3006 0000 0 0 0 0 0 0
+input 3600 0004 0 0 0 0 0 0
+input 3606 0000 0 0 0 0 0 0
+audiocapture 4700
+input 4800 0008 0 0 0 0 0 0
+input 4806 0000 0 0 0 0 0 0
+input 6000 0008 0 0 0 0 0 0
+input 6006 0000 0 0 0 0 0 0
+input 7200 0004 0 0 0 0 0 0
+input 7206 0000 0 0 0 0 0 0
+audiocapture 8400
+input 8460 0004 0 0 0 0 0 0
+input 8466 0000 0 0 0 0 0 0
+input 10860 0008 0 0 0 0 0 0
+input 10866 0000 0 0 0 0 0 0
+capture 12000 end
+stop 12400

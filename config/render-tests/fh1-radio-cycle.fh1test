@@ -1,0 +1,98 @@
+pinyon-shift-fh1-render-test-v1
+# Radio oracle (docs/specs/RADIO.md, SPEC-RADIO) on acc9-stock: wake the
+# car as fh1-physics-launch-brake and stay parked at idle. Five D-pad
+# right presses (0008), then two D-pad left (0004), 2,700 frames apart;
+# HUD captures 10 to 360 frames after each press time the station popup,
+# and a 40 s audiocapture after each press records the native mix. Run
+# hidden with PINYON_SHIFT_AUDIO_PROBE_SECONDS=40 and
+#   --game-argument=--pinyon_shift_mix_opponents=0
+#   --game-argument=--pinyon_shift_mix_tyres=0
+#   --game-argument=--pinyon_shift_mix_wind=0
+#   --game-argument=--pinyon_shift_mix_ambience=0
+# and read the captures with tools/re/radio.py match: the track and offset
+# every 4 s window plays.
+# clock-hz 60
+input 0 0000 0 0 0 0 0 0
+input 360 1000 0 0 0 0 0 0
+input 366 0000 0 0 0 0 0 0
+input 480 1000 0 0 0 0 0 0
+input 486 0000 0 0 0 0 0 0
+input 600 1000 0 0 0 0 0 0
+input 606 0000 0 0 0 0 0 0
+input 720 1000 0 0 0 0 0 0
+input 726 0000 0 0 0 0 0 0
+input 780 0000 0 0 0 0 0 0
+wait 900 3000 vehicle
+capture 990 initial
+audiocapture 1000
+input 3600 0008 0 0 0 0 0 0
+input 3606 0000 0 0 0 0 0 0
+capture 3610 p1r-010
+capture 3630 p1r-030
+capture 3660 p1r-060
+capture 3700 p1r-100
+capture 3760 p1r-160
+capture 3840 p1r-240
+capture 3960 p1r-360
+audiocapture 3720
+input 6300 0008 0 0 0 0 0 0
+input 6306 0000 0 0 0 0 0 0
+capture 6310 p2r-010
+capture 6330 p2r-030
+capture 6360 p2r-060
+capture 6400 p2r-100
+capture 6460 p2r-160
+capture 6540 p2r-240
+capture 6660 p2r-360
+audiocapture 6420
+input 9000 0008 0 0 0 0 0 0
+input 9006 0000 0 0 0 0 0 0
+capture 9010 p3r-010
+capture 9030 p3r-030
+capture 9060 p3r-060
+capture 9100 p3r-100
+capture 9160 p3r-160
+capture 9240 p3r-240
+capture 9360 p3r-360
+audiocapture 9120
+input 11700 0008 0 0 0 0 0 0
+input 11706 0000 0 0 0 0 0 0
+capture 11710 p4r-010
+capture 11730 p4r-030
+capture 11760 p4r-060
+capture 11800 p4r-100
+capture 11860 p4r-160
+capture 11940 p4r-240
+capture 12060 p4r-360
+audiocapture 11820
+input 14400 0008 0 0 0 0 0 0
+input 14406 0000 0 0 0 0 0 0
+capture 14410 p5r-010
+capture 14430 p5r-030
+capture 14460 p5r-060
+capture 14500 p5r-100
+capture 14560 p5r-160
+capture 14640 p5r-240
+capture 14760 p5r-360
+audiocapture 14520
+input 17100 0004 0 0 0 0 0 0
+input 17106 0000 0 0 0 0 0 0
+capture 17110 p6l-010
+capture 17130 p6l-030
+capture 17160 p6l-060
+capture 17200 p6l-100
+capture 17260 p6l-160
+capture 17340 p6l-240
+capture 17460 p6l-360
+audiocapture 17220
+input 19800 0004 0 0 0 0 0 0
+input 19806 0000 0 0 0 0 0 0
+capture 19810 p7l-010
+capture 19830 p7l-030
+capture 19860 p7l-060
+capture 19900 p7l-100
+capture 19960 p7l-160
+capture 20040 p7l-240
+capture 20160 p7l-360
+audiocapture 19920
+stop 22600
