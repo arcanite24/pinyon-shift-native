@@ -201,8 +201,10 @@ def cmd_prepare(args) -> int:
     """Per dump, beside it: the draws each replay leaves out. `ref` (the
     reference image) leaves out the UI; `caronly` also the stage (every
     other triangle draw of the main colour pass), so the car stands on the
-    pass's clear colour; `empty` also the car. The mask is where `caronly`
-    and `empty` differ."""
+    pass's clear colour; `cover` also the car's additive draws (lamp glow);
+    `empty` also the car; `nocar` is the reference image without the car.
+    The mask is where `cover` and `empty` differ, plus the enclosed holes
+    of that where the reference and `nocar` differ (see cmd_build)."""
     import autoshow_dump as ad
     cars = load_cars(args.car_list)
     for entry in plan_entries(args.plan):
@@ -215,7 +217,10 @@ def cmd_prepare(args) -> int:
             stage = ad.stage_numbers(a)
             skips = {"ui": ad.wg.ranges(a["ui"]),
                      "caronly": ad.wg.ranges(a["ui"] + stage),
+                     "cover": ad.wg.ranges(a["ui"] + stage + ad.additive_numbers(a)),
                      "empty": ad.wg.ranges(a["ui"] + stage + a["car_numbers"]),
+                     "nocar": ad.wg.ranges(a["ui"] + a["car_numbers"]),
+                     "additive_draws": ad.additive_labels(a),
                      "kinds": a["kinds"], "files": a["files"], "car_draws": len(a["car_numbers"]),
                      "stage_draws": len(stage), "ui_draws": len(a["ui"]), "executed": a["executed"]}
             if args.check:
@@ -233,9 +238,10 @@ def cmd_prepare(args) -> int:
     return 0
 
 
-def replay_one(dump: Path, skip: str, out: Path, work: Path, log: bool) -> tuple[bool, str]:
+def replay_one(dump: Path, skip: str, out: Path, work: Path, log: bool,
+               extra: list[str] = ()) -> tuple[bool, str]:
     arguments = [f"--game-argument=--fh1_frame_replay_output_path={out}",
-                 f"--game-argument=--fh1_debug_skip_draws={skip}"]
+                 f"--game-argument=--fh1_debug_skip_draws={skip}", *extra]
     if log:
         arguments.append("--game-argument=--fh1_debug_log_draws=true")
     process = subprocess.run(
@@ -285,16 +291,17 @@ def cmd_replay(args) -> int:
     def run_in(job, work):
         dump, skips, empty = job
         results = []
-        wanted = [("ref", skips["ui"], True), ("caronly", skips["caronly"], False)]
+        wanted = [("ref", skips["ui"], True, []), ("caronly", skips["caronly"], False, []),
+                  ("cover", skips["cover"], False, []), ("nocar", skips["nocar"], False, [])]
         if empty:
-            wanted.append(("empty", skips["empty"], False))
+            wanted.append(("empty", skips["empty"], False, []))
         if "wheelless" in skips:
-            wanted.append(("wheelless", skips["wheelless"], False))
-        for name, skip, log in wanted:
+            wanted.append(("wheelless", skips["wheelless"], False, []))
+        for name, skip, log, extra in wanted:
             out = dump.with_suffix(f".{name}.ppm")
             if out.is_file() and not args.force:
                 continue
-            ok, tail = replay_one(dump, skip, out, work, log)
+            ok, tail = replay_one(dump, skip, out, work, log, extra)
             results.append((name, ok, tail))
         for stale in (Path(f"{dump}.replay.json"), Path(f"{dump}.replay.bin")):
             stale.unlink(missing_ok=True)
@@ -331,6 +338,54 @@ def diff_mask(a: bytes, b: bytes, threshold: int = MASK_THRESHOLD) -> bytes:
     return bytes(out)
 
 
+BOX_MARGIN = 32        # pixels around the projected LOD0 box that still count as the car
+BOX_MARGIN_BELOW = 96  # more below it: the tyres hang under the LOD0 body
+STRAY_LIMIT = 5000     # more mask pixels outside it reject the dump; fewer are cut off
+
+
+def enclosed(mask: bytes, width: int, height: int) -> bytes:
+    """True for the pixels outside `mask` that the image border cannot reach
+    without crossing it (4-connected): the holes inside the silhouette."""
+    outside = bytearray(width * height)
+    stack = [i for i in range(width)] + [(height - 1) * width + i for i in range(width)]
+    stack += [j * width for j in range(height)] + [j * width + width - 1 for j in range(height)]
+    while stack:
+        i = stack.pop()
+        if outside[i] or mask[i]:
+            continue
+        outside[i] = 1
+        x, y = i % width, i // width
+        if x:
+            stack.append(i - 1)
+        if x < width - 1:
+            stack.append(i + 1)
+        if y:
+            stack.append(i - width)
+        if y < height - 1:
+            stack.append(i + width)
+    return bytes(1 if not (o or m) else 0 for o, m in zip(outside, mask))
+
+
+def covered_count(mask: bytes) -> int:
+    return sum(1 for v in mask if v)
+
+
+def in_box(box, width: int):
+    x0, y0, x1, y1 = (box[0] - BOX_MARGIN, box[1] - BOX_MARGIN,
+                      box[2] + BOX_MARGIN, box[3] + BOX_MARGIN_BELOW)
+    return lambda i: x0 <= i % width <= x1 and y0 <= i // width <= y1
+
+
+def mask_outside(mask: bytes, box, width: int, height: int) -> int:
+    inside = in_box(box, width)
+    return sum(1 for i, v in enumerate(mask) if v and not inside(i))
+
+
+def clip_to_box(mask: bytes, box, width: int, height: int) -> bytes:
+    inside = in_box(box, width)
+    return bytes(v if inside(i) else 0 for i, v in enumerate(mask))
+
+
 STANDARD_VIEW_DISTANCE = 6.58   # camera to car origin in the standard view, metres
 
 
@@ -360,7 +415,8 @@ def cmd_build(args) -> int:
     for entry in entries:
         dump = Path(entry["dump"])
         ref_ppm, car_ppm = dump.with_suffix(".ref.ppm"), dump.with_suffix(".caronly.ppm")
-        if not (dump.is_file() and ref_ppm.is_file() and car_ppm.is_file()):
+        cover_ppm, nocar_ppm = dump.with_suffix(".cover.ppm"), dump.with_suffix(".nocar.ppm")
+        if not all(path.is_file() for path in (dump, ref_ppm, car_ppm, cover_ppm, nocar_ppm)):
             continue
         car = cars[entry["car_id"]]
         a = ad.analyse(dump, car)
@@ -370,7 +426,18 @@ def cmd_build(args) -> int:
         logged = ad.wg.logged_draws(str(ref_ppm.with_suffix(".draws.log")))
         numbers = ad.wg.executor_numbers(a["draws"], logged) if logged else []
         aligned = bool(logged) and all(n == d["executor"] for n, d in zip(numbers, a["draws"]))
-        mask = diff_mask(car_only, empty[2])
+        cover, nocar = _ppm.read_ppm(cover_ppm)[2], _ppm.read_ppm(nocar_ppm)[2]
+        # Coverage against the plain background, without the additive lamp
+        # glow; a part coloured like the background leaves a hole, which is
+        # filled where the car also changes the full stage (reference image
+        # against the stage without the car).
+        first = diff_mask(cover, empty[2])
+        holes = enclosed(first, width, height)
+        stage = diff_mask(image, nocar)
+        mask = bytes(255 if f or (hole and s) else 0 for f, hole, s in zip(first, holes, stage))
+        holes_filled = sum(1 for f, m_ in zip(first, mask) if m_ and not f)
+        glow = diff_mask(car_only, cover)
+        glow_px = sum(1 for g, k in zip(glow, mask) if g and not k)
         cid = car["id"]
         m = ad.matrices(a, width, height)
         distance = camera_distance(m)
@@ -379,6 +446,20 @@ def cmd_build(args) -> int:
             print(cid, car["media_name"], f"REJECT camera {distance:.2f} m from the car, "
                   "not the standard view", flush=True)
             continue
+        box = ad.screen_box(car["media_name"], m["clip_from_car"], width, height)
+        stray = mask_outside(mask, box, width, height) if box else covered_count(mask)
+        if stray > STRAY_LIMIT:
+            # A large region far from the car: something other than the car
+            # changed between the replays (a stage draw let through).
+            print(cid, car["media_name"], f"REJECT {stray} mask pixels more than "
+                  f"{BOX_MARGIN} px outside the projected car box", flush=True)
+            for old in refs.glob(f"{cid}.*"):
+                old.unlink()
+            continue
+        if stray:
+            # Small regions outside the box are the post chain's glare around
+            # bright highlights, not geometry: leave them out of the mask.
+            mask = clip_to_box(mask, box, width, height)
         _ppm.write_png(refs / f"{cid}.png", width, height, image)
         _ppm.write_png(refs / f"{cid}.car.png", width, height, car_only)
         _ppm.write_png(refs / f"{cid}.mask.png", width, height, mask, channels=1)
@@ -390,7 +471,7 @@ def cmd_build(args) -> int:
         xs = [i % width for i, v in enumerate(mask) if v]
         ys = [i // width for i, v in enumerate(mask) if v]
         reference = {
-            "schema": "shift-engine.m1-reference.v1",
+            "schema": "shift-engine.m1-reference.v2",
             "car_id": cid, "media_name": car["media_name"], "display_name": car["display_name"],
             "make": car["make"], "year": car["year"], "source": source,
             "files": car["files"][0]["path"],
@@ -405,17 +486,21 @@ def cmd_build(args) -> int:
                        "ui_draws_left_out": len(a["ui"]), "draw_numbers_match_replay_log": aligned,
                        "empty_frames_agree": empty_agree, "mask_threshold": MASK_THRESHOLD,
                        "viewport": a["viewport"], "z_viewport": a["zviewport"],
-                       "mask_pixels": covered, "camera_distance": round(distance, 3),
+                       "mask_pixels": covered, "glow_px": glow_px, "holes_filled_px": holes_filled, "mask_outside_box": stray,
+                       "projected_box": [round(v, 1) for v in box] if box else None,
+                       "mask_draws_left_out": json.loads(dump.with_suffix(".skips.json").read_text(
+                           encoding="utf-8")).get("additive_draws", []), "camera_distance": round(distance, 3),
                        "mask_box": [min(xs), min(ys), max(xs), max(ys)] if xs else None},
         }
         (refs / f"{cid}.json").write_text(json.dumps(reference, indent=1) + "\n",
                                           encoding="utf-8", newline="\n")
         print(cid, car["media_name"], "mask", covered, "aligned", aligned, flush=True)
-        if args.clean:
+        if args.clean and not (ROOT / ".local/re/cars/keep-dumps").exists():
             # A --check plan keeps what the projection check reads.
             checked = dump.with_suffix(".wheelless.ppm").is_file()
-            for suffix in (".ref.ppm", ".caronly.ppm", ".ref.draws.log") + (
-                    () if checked else (".wheelless.ppm", ".empty.ppm", ".skips.json")):
+            for suffix in (".ref.ppm", ".caronly.ppm", ".cover.ppm", ".nocar.ppm",
+                           ".ref.draws.log") + (() if checked else (
+                               ".wheelless.ppm", ".empty.ppm", ".skips.json")):
                 dump.with_suffix(suffix).unlink(missing_ok=True)
             dump.unlink(missing_ok=True)
     return 0

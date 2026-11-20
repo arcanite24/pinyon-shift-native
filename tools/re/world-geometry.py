@@ -1044,6 +1044,7 @@ def walk_draws(registers, packets, memory: GuestMemory, predicate: bool = False,
                     # PA_CL_VPORT_ZSCALE, ZOFFSET; RB_DEPTHCONTROL; RB_DEPTH_INFO
                     "zviewport": struct.unpack("<2f", struct.pack("<2I", *regs[0x2113:0x2115])),
                     "depth_control": regs[0x2200],
+                    "blend_control": regs[0x2201],   # RB_BLENDCONTROL0
                     "depth_info": regs[0x2002],
                     # RB_SURFACE_INFO; PA_SC_WINDOW_SCISSOR_TL, _BR
                     "surface_info": regs[0x2000],

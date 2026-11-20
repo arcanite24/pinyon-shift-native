@@ -241,6 +241,24 @@ def analyse(dump: Path, car: dict) -> dict:
             "vtx_cntl": draws[body[0]]["vtx_cntl"]}
 
 
+def additive(draw: dict) -> bool:
+    """RB_BLENDCONTROL0 colour blend ONE + ONE: the lamp glow passes."""
+    return draw["blend_control"] & 0x1FFF == 0x0101
+
+
+def additive_numbers(analysis: dict) -> list[int]:
+    """Executor numbers of the car's additive draws."""
+    draws = analysis["draws"]
+    return [draws[n]["executor"] for n in analysis["car_draws"]
+            if additive(draws[n]) and draws[n]["executor"] is not None]
+
+
+def additive_labels(analysis: dict) -> list[str]:
+    """The model file:sub-section pairs of the car's additive draws."""
+    draws, tagged = analysis["draws"], analysis["tagged"]
+    return sorted({f"{tagged[n][1]}:{tagged[n][2]}" for n in analysis["car_draws"] if additive(draws[n])})
+
+
 def stage_numbers(analysis: dict) -> list[int]:
     """Executor numbers of the stage: every other triangle draw (lists,
     strips, quads) of the main colour pass (EDRAM colour mode, the car's
@@ -407,6 +425,27 @@ def matrices(analysis: dict, width: int, height: int) -> dict:
 
 
 # --- projection check ---------------------------------------------------------
+
+def screen_box(media: str, clip_from_car: list[float], width: int, height: int):
+    """Pixel box (x0, y0, x1, y1) of the car's LOD0 vertices projected with
+    the column-major clip_from_car, or None when one is behind the camera."""
+    m = clip_from_car
+    xs, ys = [], []
+    for path, model in models(car_folder(media)):
+        if not path.name.lower().endswith("_lod0.carbin"):
+            continue
+        for section in model.sections:
+            pool = section.lod0_pool
+            if not pool.count or pool.stride != 28:
+                continue
+            for x, y, z in cb.positions(section, pool):
+                w = m[3] * x + m[7] * y + m[11] * z + m[15]
+                if w <= 1e-4:
+                    return None
+                xs.append(((m[0] * x + m[4] * y + m[8] * z + m[12]) / w + 1) * width / 2)
+                ys.append((1 - (m[1] * x + m[5] * y + m[9] * z + m[13]) / w) * height / 2)
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
 
 def triangles(model, lod: int = 0):
     """Car-space triangles of a model's sub-sections at one LOD."""

@@ -225,7 +225,7 @@ figures below are extrapolated from these runs, not measured.
 
 ## Reference files
 
-Schema `shift-engine.m1-reference.v1`, one JSON file per referenced car
+Schema `shift-engine.m1-reference.v2`, one JSON file per referenced car
 at `.local/re/cars/refs/<car_id>.json`, written by
 [`tools/re/autoshow-refs.py`](../../tools/re/autoshow-refs.py) from the
 car's frame dump. The images sit beside it. Everything stays under
@@ -233,7 +233,7 @@ car's frame dump. The images sit beside it. Everything stays under
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema` | string | `shift-engine.m1-reference.v1` |
+| `schema` | string | `shift-engine.m1-reference.v2` |
 | `car_id` | integer | `Data_Car.Id` |
 | `media_name` | string | `Data_Car.MediaName`, the car's folder |
 | `display_name`, `make`, `year` | | for reports only |
@@ -253,7 +253,7 @@ car's frame dump. The images sit beside it. Everything stays under
 | `paint_rgb` | 3 integers | the colour shown: the car's first `Combo_Colors` row, sRGB, 0-255, as stored in the database (the game converts it to linear before shading; FORMAT-CARS) |
 | `paint_metallic` | integer | that row's metallic flag |
 | `game_clip_from_car` | 16 numbers | provenance: the car draws' matrix as the game sets it (rows are the clip components, row-major), before the conversions below |
-| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, the model-to-body matrix, the transparent pass's matrix, `draw_numbers_match_replay_log`, `empty_frames_agree`, `mask_threshold`, the mask's pixel count and box |
+| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, the model-to-body matrix, the transparent pass's matrix, `draw_numbers_match_replay_log`, `empty_frames_agree`, `mask_threshold`, `mask_pixels`, `mask_box`, `glow_px`, `holes_filled_px`, `mask_outside_box`, `projected_box`, `mask_draws_left_out`, `camera_distance` |
 
 **Spaces.**
 
@@ -308,21 +308,39 @@ draws and the frame's clears and full-screen passes remain: the car on
 the cleared background, lit as in the image.
 
 **Mask.** 8-bit greyscale, 255 where the car covers the pixel, 0
-elsewhere: pixels where any channel of the car-only image differs from
-an *empty* replay (the car-only replay with the car's draws left out
-too) by 6 or more of 255. The car's draws are every draw of the main
-colour pass with the car's matrix (within 0.05, which takes in the
-transparent pass): the exterior LOD0 model, the cockpit model
-(interior, steering wheel, mirrors, lamp units), glass and lamp covers,
-rotors, calipers, rims and tyres. Glass counts: a window pixel is in
-the mask because the glass changes it, and so is the interior seen
-through it. Because the stage is not drawn in either replay, nothing
-the car does to the stage (shadow, reflections, lamp glow on the floor)
-reaches the mask. The threshold 6 leaves out a faint glow that the
-car's passes spread a few pixels around the body (differences of 1 to
-5); at 2 it adds up to 7 % to the mask. The empty frame is the same for
-every car (checked on the first and last dump of each run,
-`checks.empty_frames_agree`).
+elsewhere. Schema v2 changed it (v1 compared the car-only image with
+the empty replay directly). It is built in three steps:
+
+1. *Cover against empty.* Pixels where any channel of a *cover* replay
+   differs from an *empty* replay by 6 or more of 255. The cover replay
+   is the car-only replay without the car's additive draws (colour
+   blend ONE + ONE: the lit lamps' glow, `checks.mask_draws_left_out`
+   names their model sub-sections); the empty replay also leaves out
+   every car draw. The car's draws are every draw of the main colour
+   pass with the car's matrix (within 0.05, which takes in the
+   transparent pass): the exterior LOD0 model, the cockpit model
+   (interior, steering wheel, mirrors, lamp units), glass and lamp
+   covers, rotors, calipers, rims and tyres. Glass counts, and so does
+   the interior seen through it. The stage is drawn in neither replay,
+   so the car's shadow and reflections on the stage stay out. The empty
+   frame is the same for every car (`checks.empty_frames_agree`).
+2. *Holes.* A part coloured like the empty background (grey 95, 95, 95)
+   leaves holes in step 1. Pixels that step 1 leaves out but that it
+   encloses (the image border cannot reach them without crossing the
+   mask) are added where the reference image differs from a replay of
+   the full stage without the car by 6 or more
+   (`checks.holes_filled_px`). A part on the silhouette's edge that
+   matches the background is not enclosed and can still be missed.
+3. *Glare.* The post chain spreads a soft glare around very bright
+   highlights (up to 16 of 255, as far as 60 px from the body). It is
+   not a car draw: leaving out each draw class after the car's
+   showed that it is made by the final post passes. Mask pixels more than 32 px
+   outside the projected box of the car's LOD0 vertices (96 px below,
+   for the tyres) are cut off and counted in `checks.mask_outside_box`;
+   more than 5,000 such pixels reject the dump.
+
+`checks.glow_px` counts the pixels the additive glow changes outside
+the mask; `image_car_only` keeps the glow.
 
 **Projection check.** The parts the game drew (exterior LOD0 and
 cockpit sections, tyres and wheels left out of both sides), projected
