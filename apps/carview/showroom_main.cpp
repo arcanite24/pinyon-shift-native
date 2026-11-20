@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -60,19 +61,61 @@ struct Orbit {
   float yaw = 145.0f, pitch = 12.0f, distance = 0;
 };
 
+// Our lighting's free settings; --light name=value,... overrides them. The
+// defaults were fitted to the M1 references (median masked PSNR over the
+// first eight Autoshow captures, with the diffuse light kept neutral so
+// white paint stays white): a dim stage with
+// blue reflections, almost no key light.
+struct LightSettings {
+  float exposure = 0.4f, environment = 0.586f, key = 0.076f, fill = 1.0f;
+  float tint[3] = {0.88f, 0.9f, 0.95f};
+  float reflect[3] = {0.512f, 0.9f, 1.775f};  // the stage's blue lights
+  float metallic = 0.273f;
+};
+LightSettings g_light;
+
+bool parse_light(const std::string& text) {
+  std::stringstream list(text);
+  for (std::string item; std::getline(list, item, ',');) {
+    const size_t eq = item.find('=');
+    if (eq == std::string::npos) return false;
+    const std::string name = item.substr(0, eq);
+    const float value = std::strtof(item.c_str() + eq + 1, nullptr);
+    if (name == "exposure") g_light.exposure = value;
+    else if (name == "env") g_light.environment = value;
+    else if (name == "key") g_light.key = value;
+    else if (name == "fill") g_light.fill = value;
+    else if (name == "r") g_light.tint[0] = value;
+    else if (name == "g") g_light.tint[1] = value;
+    else if (name == "b") g_light.tint[2] = value;
+    else if (name == "rr") g_light.reflect[0] = value;
+    else if (name == "rg") g_light.reflect[1] = value;
+    else if (name == "rb") g_light.reflect[2] = value;
+    else if (name == "metal") g_light.metallic = value;
+    else return false;
+  }
+  return true;
+}
+
 void lighting(ShowroomFrame& f, bool livery) {
   const V3 key = norm({0.35f, 1.0f, -0.45f}), fill = norm({-0.7f, 0.35f, 0.6f});
   f.key_light[0] = key.x;
   f.key_light[1] = key.y;
   f.key_light[2] = key.z;
-  f.key_light[3] = 1.6f;
+  f.key_light[3] = g_light.key;
   f.fill_light[0] = fill.x;
   f.fill_light[1] = fill.y;
   f.fill_light[2] = fill.z;
-  f.fill_light[3] = 0.35f;
-  f.options[0] = 1.0f;  // exposure
-  f.options[1] = 1.0f;  // environment
+  f.fill_light[3] = g_light.fill;
+  f.options[0] = g_light.exposure;
+  f.options[1] = g_light.environment;
   f.options[2] = livery ? 1.0f : 0.0f;
+  f.options[3] = g_light.metallic;
+  for (int i = 0; i < 3; ++i) {
+    f.tint[i] = g_light.tint[i];
+    f.reflect_tint[i] = g_light.reflect[i];
+  }
+  f.tint[3] = f.reflect_tint[3] = 1.0f;
 }
 
 ShowroomFrame orbit_frame(const Showroom& s, const Orbit& o, float aspect, bool livery) {
@@ -176,6 +219,12 @@ int run_showroom(int argc, char** argv) {
     else if (a == "--colour" && (v = next())) colour = std::atoi(v);
     else if (a == "--frames" && (v = next())) max_frames = uint32_t(std::atoi(v));
     else if (a == "--msaa" && (v = next())) msaa = uint32_t(std::atoi(v));
+    else if (a == "--light" && (v = next())) {
+      if (!parse_light(v)) {
+        std::fprintf(stderr, "carview: --light takes name=value,... (exposure, env, key, fill, r, g, b, rr, rg, rb, metal)\n");
+        return 2;
+      }
+    }
     else if (a == "--yaw" && (v = next())) orbit.yaw = float(std::atof(v));
     else if (a == "--pitch" && (v = next())) orbit.pitch = float(std::atof(v));
     else if (a == "--distance" && (v = next())) orbit.distance = float(std::atof(v));

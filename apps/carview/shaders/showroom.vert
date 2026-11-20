@@ -14,6 +14,8 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 key_light;   // xyz towards the light, w intensity
   vec4 fill_light;
   vec4 options;     // x exposure, y environment intensity, z livery overlay
+  vec4 tint_light;
+  vec4 reflect_tint;
 } frame;
 
 layout(push_constant) uniform Draw {

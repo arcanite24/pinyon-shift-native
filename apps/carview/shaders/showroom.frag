@@ -15,6 +15,8 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 key_light;
   vec4 fill_light;
   vec4 options;
+  vec4 tint_light;
+  vec4 reflect_tint;
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 
@@ -75,17 +77,18 @@ void main() {
     base = mix(draw.tint.rgb, t0.rgb, t0.a);
     reflectivity = 0.05;
     gloss = 0.9;
-    if ((flags & kFlagMetallic) != 0u) metal = 0.25;
+    if ((flags & kFlagMetallic) != 0u) metal = frame.options.w;  // flakes: less diffuse, tinted reflection
     if ((flags & kFlagLivery) != 0u && frame.options.z > 0.5)
       base = mix(base, vec3(1.0, 0.0, 1.0), 0.5 * texture(livery, v_uv0).r * (1.0 - t0.a));
   } else if (klass == kCaliper) {
     base = mix(draw.tint.rgb, t0.rgb, t0.a);
     gloss = 0.6;
   } else if (klass == kGlass) {
-    base = vec3(0.02, 0.025, 0.03);
+    // Tinted and dark: the captures show the cabin only dimly through it.
+    base = vec3(0.01, 0.012, 0.016);
     reflectivity = 0.06;
     gloss = 0.95;
-    alpha = 0.35;
+    alpha = 0.6;
   } else if (klass == kLamp) {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
     reflectivity = 0.3;
@@ -111,14 +114,17 @@ void main() {
   }
 
   float occlusion = mix(0.35, 1.0, v_occlusion);
+  // The cabin is lit through the glass and roof: dimmer than the body.
+  if (klass == kInterior || klass == kGauge) occlusion *= 0.4;
   vec3 key = normalize(frame.key_light.xyz), fill = normalize(frame.fill_light.xyz);
-  vec3 diffuse_light = env(n, 7.0) * occlusion + frame.key_light.w * max(dot(n, key), 0.0) * mix(0.5, 1.0, occlusion) +
-                       frame.fill_light.w * max(dot(n, fill), 0.0) * occlusion;
+  vec3 diffuse_light = env(n, 7.0) * frame.tint_light.rgb * occlusion +
+                       (frame.key_light.w * max(dot(n, key), 0.0) * mix(0.5, 1.0, occlusion) +
+                        frame.fill_light.w * max(dot(n, fill), 0.0) * occlusion) * frame.tint_light.rgb;
   float fresnel = reflectivity + (1.0 - reflectivity) * pow(1.0 - nv, 5.0);
   vec3 specular_colour = mix(vec3(fresnel), base * mix(0.5, 1.0, fresnel), metal);
-  vec3 reflection = env(r, (1.0 - gloss) * 7.0) * occlusion;
+  vec3 reflection = env(r, (1.0 - gloss) * 7.0) * frame.reflect_tint.rgb * occlusion;
   vec3 h = normalize(view + key);
-  float highlight = pow(max(dot(n, h), 0.0), mix(8.0, 400.0, gloss)) * frame.key_light.w * gloss;
+  vec3 highlight = pow(max(dot(n, h), 0.0), mix(8.0, 400.0, gloss)) * frame.key_light.w * gloss * frame.tint_light.rgb;
 
   vec3 colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
   if (klass == kGlass) {

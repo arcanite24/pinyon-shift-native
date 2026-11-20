@@ -64,6 +64,7 @@ def main() -> int:
     parser.add_argument("--refs", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--no-images", action="store_true", help="skip the side-by-side PNGs")
+    parser.add_argument("--light", help="passed to carview --light (lighting settings)")
     args = parser.parse_args()
     args.carview = str(Path(args.carview).resolve())  # CreateProcess does not search relative paths
     args.out.mkdir(parents=True, exist_ok=True)
@@ -76,7 +77,7 @@ def main() -> int:
         ours = args.out / f"{ref.stem}.engine.png"
         ours_mask = args.out / f"{ref.stem}.engine.mask.png"
         run = subprocess.run([args.carview, "--bake", args.bake, "--reference", str(ref), "--out", str(ours),
-                              "--mask", str(ours_mask)], capture_output=True, text=True,
+                              "--mask", str(ours_mask)] + (["--light", args.light] if args.light else []), capture_output=True, text=True,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # no console on the desktop
         match = METRIC.search(run.stdout)
         if run.returncode != 0 or not match:

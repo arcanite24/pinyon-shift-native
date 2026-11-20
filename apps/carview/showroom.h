@@ -28,9 +28,11 @@ struct ShowroomFrame {
   float eye[4];               // camera position in car space
   float key_light[4];         // towards the light, intensity
   float fill_light[4];
-  float options[4];  // exposure, environment intensity, livery overlay, unused
+  float options[4];  // exposure, environment intensity, livery overlay, metallic paint's metal share
+  float tint[4];     // light colour (linear rgb) for diffuse light: environment and both lights
+  float reflect_tint[4];  // colour of environment reflections (linear rgb)
 };
-static_assert(sizeof(ShowroomFrame) == 128);
+static_assert(sizeof(ShowroomFrame) == 160);
 
 // Per-draw push constants.
 struct ShowroomPush {

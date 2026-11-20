@@ -253,14 +253,19 @@ opaque.
   baked occlusion. Glass is blended last, far to near.
 - 14 cars have no real LOD0 body and 6 have stand-in parts; they draw
   from the LOD1-5 model (Q6).
-- Reference mode reads AUTOSHOW_REFERENCE v1. Over the first nine
+- Reference mode reads AUTOSHOW_REFERENCE v1. Over the eight current
   references (`tools/m1-report.py`): silhouette IoU 0.968-0.996 (mean
-  0.989), eight of nine at or above 0.97; masked PSNR 8.9-12.6 dB
-  (median 10.8, none more than 6 dB under it); edge overlap 0.47-0.81.
-  The low PSNR is the lighting: the engine's studio is brighter than the
-  Autoshow stage. Under 0.97, so M1's numeric rule is not yet met:
-  `ALF_ZagatoTZ3Stradale_12` (0.968): the game draws smaller tyres than
-  its `Data_Car` sizes give (Q10).
+  0.989), seven of eight at or above 0.97; masked PSNR against the
+  car-only captures 14.4-18.8 dB (median 17.2, none more than 6 dB under
+  it); edge overlap 0.47-0.81. Under 0.97, so M1's numeric rule is not
+  yet met: `ALF_ZagatoTZ3Stradale_12` (0.968): the game draws smaller
+  tyres than its `Data_Car` sizes give (Q10).
+- The lighting's free settings (exposure, environment, key and fill
+  strengths, the diffuse and reflection tints, metallic paint's share)
+  were fitted to those references for median masked PSNR, keeping the
+  diffuse light neutral; `--light name=value,...` overrides them. What
+  is left is mostly the stage's sharp coloured reflections, which our
+  studio environment does not have, and the white cars (14.4 dB).
 - Two departures from FORMAT-CARS, both from the references: wheel-centre
   z is negated (Q9), and rims are scaled by their own authored radius
   (Q3).
