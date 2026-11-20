@@ -31,6 +31,7 @@
 #include <stb_image.h>
 #include <stb_image_write.h>
 
+#include "hud.h"
 #include "reference.h"
 #include "renderer.h"
 #include "showroom.h"
@@ -668,7 +669,7 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 //   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle|cruise
 //           | --script file] [--speed kmh] [--view chase|front] [--seconds N] [--every S]
 //           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]
-//            [--render-ground]] [--headless --out prefix.png] [--size WxH]
+//            [--render-ground]] [--headless --out prefix.png [--hud]] [--size WxH]
 //
 // With --world the car drives on Colorado's collision (COLLISION.md `.fiz`
 // tiles; --render-ground: the earlier render-triangle stand-in) and starts
@@ -685,6 +686,8 @@ int run_drive(int argc, char** argv) {
   uint32_t width = 960, height = 540;
   double seconds = 6, every = 1;
   bool headless = false;
+  bool hud = false;  // headless: draw the HUD into the frames (windowed: always, H toggles)
+  const bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -702,6 +705,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--cache") cache_path = next();
     else if (a == "--speed") cruise_kmh = std::atof(next());
     else if (a == "--render-ground") render_ground = true;
+    else if (a == "--hud") hud = true;
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--near") {
       near_x = std::atof(next());
@@ -721,7 +725,7 @@ int run_drive(int argc, char** argv) {
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground]] [--headless --out prefix.png] "
+                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground]] [--headless --out prefix.png [--hud]] "
                          "[--size WxH]\n");
     return 2;
   }
@@ -775,7 +779,7 @@ int run_drive(int argc, char** argv) {
     Renderer renderer;
     Showroom showroom(renderer);
     ShowroomOptions options;
-    if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, false, 4}, error) ||
+    if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, validation, 4}, error) ||
         !showroom.upload(error)) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;
@@ -907,6 +911,19 @@ int run_drive(int argc, char** argv) {
       };
       WheelPose poses[4];
       CameraPull camera_pull;
+      // The HUD panel in the bottom-right corner, 16 px in (scaled).
+      auto set_hud = [&](int height) {
+        HudState st;
+        st.kmh = vehicle.speed() * 3.6;
+        st.gear = vehicle.gear();
+        st.rpm = vehicle.rpm();
+        st.redline_rpm = vehicle.params().redline_rpm;
+        st.abs = vehicle.abs_active();
+        const int scale = hud_scale(height);
+        HudImage img = draw_hud(st, scale);
+        const int margin = -8 * scale;
+        renderer.set_overlay(std::move(img.rgba), img.width, img.height, margin, margin);
+      };
       if (status != 0) {
       } else if (headless) {
         const std::filesystem::path prefix(out);
@@ -930,6 +947,7 @@ int run_drive(int argc, char** argv) {
           place_world();
           showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
                                          every));
+          if (hud) set_hud(int(height));
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -960,9 +978,10 @@ int run_drive(int argc, char** argv) {
         double accumulator = 0;
         bool running = true;
         std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
-                    "Space handbrake, R put back on the road, V chase/front view, Esc quit.\n"
+                    "Space handbrake, R put back on the road, V chase/front view, H hide/show the HUD, Esc quit.\n"
                     "gamepad: right trigger throttle, left trigger brake, left stick steer, A handbrake, Start put "
-                    "back on the road, Back view. Speed, gear and rpm are in the window title.\n");
+                    "back on the road, Back view.\n");
+        bool show_hud = true;
         // R or Start: back on the nearest road (with a world), else to the start.
         auto put_back = [&]() {
           world::Spawn where;
@@ -980,6 +999,10 @@ int run_drive(int argc, char** argv) {
               if (e.key.key == SDLK_ESCAPE) running = false;
               if (e.key.key == SDLK_R) put_back();
               if (e.key.key == SDLK_V) front = !front;
+              if (e.key.key == SDLK_H) {
+                show_hud = !show_hud;
+                if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0);
+              }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) put_back();
@@ -1044,6 +1067,7 @@ int run_drive(int argc, char** argv) {
           }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
+          if (show_hud) set_hud(h);
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           place_world();
@@ -1057,6 +1081,8 @@ int run_drive(int argc, char** argv) {
         }
         for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
       }
+      if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
+      if (status == 0 && renderer.validation_messages()) status = 3;
     }
   }
   if (window) {

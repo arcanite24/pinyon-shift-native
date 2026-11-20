@@ -49,6 +49,7 @@ endif()
 add_executable(carview
   main.cpp
   car_model.cpp
+  hud.cpp
   renderer.cpp
   reference.cpp
   showroom.cpp

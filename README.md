@@ -93,10 +93,13 @@ background as you drive. The first run builds `out\world\colorado.index`
 | Handbrake | Space | A |
 | Back on the nearest road | R | Start |
 | Chase or front view | V | Back |
+| Hide or show the HUD | H | |
 | Quit | Esc | |
 
-The speed, gear, rpm and ABS flag are in the window title (there is no
-on-screen HUD yet). The chase camera pulls in when a wall is between it
+The HUD in the bottom-right corner shows the speed, the rpm with a
+tachometer bar (red from 90 % of the redline), the gear (R in reverse)
+and the ABS flag; the window title repeats them. Headless drive renders
+draw it too with `--hud`. The chase camera pulls in when a wall is between it
 and the car.
 
 ## Running

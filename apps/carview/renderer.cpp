@@ -68,6 +68,7 @@ Renderer::~Renderer() {
     destroy_targets();
     destroy_buffer(vertex_buffer_);
     destroy_buffer(index_buffer_);
+    destroy_buffer(overlay_buffer_);
     destroy_image(texture_);
     if (image_ready_) vkDestroySemaphore(device_, image_ready_, nullptr);
     if (frame_fence_) vkDestroyFence(device_, frame_fence_, nullptr);
@@ -690,15 +691,72 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
   }
 
+  // The overlay panel, copied over the resolved frame.
+  VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  VkPipelineStageFlags2 last_stage = color_stage;
+  VkAccessFlags2 last_access = color_write;
+  if (overlay_staged_) {
+    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, color_stage, color_write,
+                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageOffset = {overlay_at_.x, overlay_at_.y, 0};
+    region.imageExtent = {overlay_width_, overlay_height_, 1};
+    vkCmdCopyBufferToImage(cmd, overlay_buffer_.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                           &region);
+    layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+    last_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  }
   if (final_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, final_layout, color_stage, color_write,
+    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
   } else {
-    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, final_layout, color_stage, color_write,
+    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
                   VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
   }
+}
+
+void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y) {
+  if (rgba.size() != size_t(width) * height * 4) rgba.clear();
+  overlay_pixels_ = std::move(rgba);
+  overlay_width_ = overlay_pixels_.empty() ? 0 : width;
+  overlay_height_ = overlay_pixels_.empty() ? 0 : height;
+  overlay_x_ = x;
+  overlay_y_ = y;
+}
+
+bool Renderer::stage_overlay() {
+  overlay_staged_ = false;
+  if (overlay_pixels_.empty() || !overlay_supported_) return false;
+  const int64_t x = overlay_x_ < 0 ? int64_t(target_width_) - overlay_width_ + overlay_x_ + 1 : overlay_x_;
+  const int64_t y = overlay_y_ < 0 ? int64_t(target_height_) - overlay_height_ + overlay_y_ + 1 : overlay_y_;
+  if (x < 0 || y < 0 || x + overlay_width_ > target_width_ || y + overlay_height_ > target_height_) return false;
+  const VkDeviceSize bytes = overlay_pixels_.size();
+  if (overlay_buffer_.size < bytes) {
+    if (overlay_mapped_) vkUnmapMemory(device_, overlay_buffer_.memory);
+    overlay_mapped_ = nullptr;
+    destroy_buffer(overlay_buffer_);
+    if (!create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, overlay_buffer_))
+      return false;
+    if (vkMapMemory(device_, overlay_buffer_.memory, 0, bytes, 0, &overlay_mapped_) != VK_SUCCESS) {
+      overlay_mapped_ = nullptr;
+      return false;
+    }
+  }
+  auto* out = static_cast<uint8_t*>(overlay_mapped_);
+  const bool bgra = color_format_ == VK_FORMAT_B8G8R8A8_UNORM || color_format_ == VK_FORMAT_B8G8R8A8_SRGB;
+  for (size_t i = 0; i < overlay_pixels_.size(); i += 4) {
+    out[i + 0] = overlay_pixels_[i + (bgra ? 2 : 0)];
+    out[i + 1] = overlay_pixels_[i + 1];
+    out[i + 2] = overlay_pixels_[i + (bgra ? 0 : 2)];
+    out[i + 3] = overlay_pixels_[i + 3];
+  }
+  overlay_at_ = {int32_t(x), int32_t(y)};
+  overlay_staged_ = true;
+  return true;
 }
 
 bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width, uint32_t height,
@@ -712,7 +770,8 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
   if (!create_targets(width, height, error)) return false;
   Image output;
   if (!create_image(width, height, 1, color_format_, VK_SAMPLE_COUNT_1_BIT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, output)) {
     error = "offscreen colour image";
     return false;
@@ -727,6 +786,7 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     error = "readback buffer";
     return false;
   }
+  stage_overlay();  // submit_once waits for the queue: no frame is using the buffer
   const bool ok = submit_once([&](VkCommandBuffer cmd) {
     record_scene(cmd, output.image, output.view, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, constants);
     VkBufferImageCopy copy{};
@@ -812,7 +872,9 @@ bool Renderer::create_swapchain(std::string& error) {
   info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
   info.imageExtent = extent;
   info.imageArrayLayers = 1;
-  info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  // Transfers into the image carry the overlay panel (set_overlay).
+  overlay_supported_ = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+  info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (overlay_supported_ ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0);
   info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   info.preTransform = caps.currentTransform;
   info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -885,6 +947,7 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(frame_cmd_, &begin);
+  stage_overlay();  // the fence above: the last frame is done with its buffer
   record_scene(frame_cmd_, swapchain_images_[index], swapchain_views_[index],
                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, constants);
   vkEndCommandBuffer(frame_cmd_);

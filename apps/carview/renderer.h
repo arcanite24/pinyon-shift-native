@@ -64,6 +64,12 @@ class Renderer {
   // With hooks set, frames record the hooked scene; upload() is not needed.
   void set_scene(SceneHooks hooks) { scene_ = std::move(hooks); }
 
+  // An opaque panel drawn on the CPU (RGBA8, already sRGB-encoded) and
+  // copied over every following frame with its top-left corner at (x, y)
+  // pixels; a negative x or y counts from the right or bottom edge. An
+  // empty panel removes it. Frames it does not fit in are drawn without it.
+  void set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y);
+
   const std::string& device_name() const { return device_name_; }
   uint32_t samples() const { return uint32_t(samples_); }
   uint32_t validation_messages() const { return validation_messages_; }
@@ -101,6 +107,9 @@ class Renderer {
   bool submit_once(const std::function<void(VkCommandBuffer)>& record);
   void record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                     VkImageLayout final_layout, const FrameConstants& constants);
+  // Copies the overlay into its buffer (none of the GPU's frames may be
+  // using it); false when there is none or it does not fit the target.
+  bool stage_overlay();
 
   Options options_;
   std::string device_name_;
@@ -144,6 +153,14 @@ class Renderer {
   bool swapchain_dirty_ = false;
 
   SceneHooks scene_;
+  std::vector<uint8_t> overlay_pixels_;
+  uint32_t overlay_width_ = 0, overlay_height_ = 0;
+  int32_t overlay_x_ = 0, overlay_y_ = 0;
+  bool overlay_staged_ = false;     // this frame copies the overlay
+  bool overlay_supported_ = true;   // the swapchain allows transfers into it
+  VkOffset2D overlay_at_{};
+  Buffer overlay_buffer_;
+  void* overlay_mapped_ = nullptr;
   uint32_t validation_messages_ = 0;
   friend class Showroom;
   friend VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT,
