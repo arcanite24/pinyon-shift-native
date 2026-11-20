@@ -69,6 +69,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <stb_image_write.h>
@@ -669,8 +670,9 @@ int run_world(int argc, char** argv) {
     }
     auto store_index = [](const fh1::PropPlacement& p) { return p.store == fh1::PropStore::kPgeo ? 0 : 1; };
     if (drawn_props_path.empty()) {
-      size_t in_box[2] = {0, 0}, unresolved[2] = {0, 0};
+      size_t in_box[2] = {0, 0}, unresolved[2] = {0, 0}, same_draw[2] = {0, 0};
       std::set<int64_t> models_used;
+      std::set<std::tuple<int64_t, long long, long long, long long>> drawn_once;
       for (const fh1::PropPlacement* p : candidates) {
         const int s = store_index(*p);
         ++in_box[s];
@@ -681,15 +683,25 @@ int run_world(int argc, char** argv) {
           ++unresolved[s];
           continue;
         }
+        // A zone often lists one object per LOD level of a prop at the same
+        // spot; resolved to one level they are the same draw. Keep one.
+        const auto key = std::make_tuple(member, std::llround(p->placement.offset[0] * 100),
+                                         std::llround(p->placement.offset[1] * 100),
+                                         std::llround(p->placement.offset[2] * 100));
+        if (!drawn_once.insert(key).second) {
+          ++same_draw[s];
+          continue;
+        }
         models_used.insert(member);
         placed.push_back({fh1::PropModels::member_name(uint32_t(member)), model, p->placement,
                           p->store, false, props.containers[p->container]});
       }
       std::printf("props in the box: %zu .pgeo instances (%zu name no render model), %zu .pvsz "
                   "objects (%zu name no render model); %zu placed with %zu distinct models (level "
-                  "%d of each LOD set)\n",
+                  "%d of each LOD set); left out as the same model at the same spot (1 cm): %zu "
+                  ".pgeo, %zu .pvsz\n",
                   in_box[0], unresolved[0], in_box[1], unresolved[1], placed.size(),
-                  models_used.size(), prop_lod);
+                  models_used.size(), prop_lod, same_draw[0], same_draw[1]);
     } else {
       // The drawn list: each entry takes the nearest placement within 5 cm.
       std::ifstream in(drawn_props_path);

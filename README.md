@@ -176,16 +176,27 @@ opaque.
   gives none. The reader uses the second rule.
 - `carview --world --pvs` places every `.pgeo` instance and `.pvsz`
   object in the box. The spec's sector holds 2,460 `.pgeo` instances and
-  847 `.pvsz` objects (2 name no render model). Of the 130 placements
-  one game frame drew, 130 are found within 5 cm (largest 0.7 mm). For
-  each, the table names the drawn model, a model of its LOD set, or a
-  model with a byte-identical mesh object.
+  847 `.pvsz` objects (2 name no render model). The 847 sit at 572
+  spots: a zone often lists one object per LOD level of a prop, so a
+  model resolved to one level is drawn once per spot (270 repeats left
+  out). Of the 130 placements one game frame drew, 130 are found within
+  5 cm (largest 0.7 mm). For each, the table names the drawn model, a
+  model of its LOD set, or a model with a byte-identical mesh object.
 - With the 73 world-space models and the 130 drawn props at the frame's
-  camera, the edges of the signs, benches and information points lie a
-  median 1-1.4 px from the capture's edges. The chain-link fence's lie
-  1.4 px away, the barriers' 2.2 px. Pine leaf cards (alpha-tested in
-  the game, solid here) and the flag (animated in the game) do not line
-  up. The validation layer is clean.
+  camera, the signs and benches line up with the capture: their edges
+  lie a mean 1.9 and 1.4 px from the capture's edges, against 2.4-10 px
+  for the same edges shifted by 20 px (the information points have too
+  few edge pixels to tell). The edge test
+  does not show alignment for the chain-link fence, the metal barriers,
+  the pine and the flag: their scores are close to the shifted baseline.
+  The fence and barriers repeat at short spacing, the pine's leaf cards
+  are alpha-tested in the game and solid here, and the flag is animated
+  in the game. The validation layer is clean.
+- Most zone rotations are turns about the vertical axis, for which the
+  row- and column-major readings of the nine halves give the same
+  placement. They differ only for tilted props (16 of the 107 drawn,
+  up to 0.16), too few edge pixels to choose. The reader keeps the
+  spec's row-major reading.
 - Which placements the game shows is open. The sector's `.pgeo` tiles
   include barrier sets, for example a line of concrete barriers along
   the road through the dumped camera, that the free-roam frame does not
