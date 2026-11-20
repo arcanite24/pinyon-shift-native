@@ -349,12 +349,14 @@ int main(int argc, char** argv) {
         v.set_ai_controls(true);
         v.launch({0, 0, 0}, 0, 13.41);
         double up = 1, slowest = 1e9, fastest = 0;
+        drive::Input last;
         for (int i = 0; i < int(8 / drive::Vehicle::kStep); ++i) {
-          drive::Input in;
+          drive::Input in = last;
           traffic::BodiesOptions bo;
           bo.accel_max_input = config.accel_max_input;
           bo.brake_max_input = config.brake_max_input;
-          traffic::Bodies::speed_input(13.41, v.speed(), bo, in);
+          traffic::Bodies::speed_input(13.41, v.speed(), bo, last, in);
+          last = in;
           v.step(in, flat);
           if (verbose && i % 60 == 0)
             std::printf("    %lld t %.1f v %.2f gear %d rpm %.0f thr %.2f brk %.2f clutch %.2f\n", (long long)id,

@@ -765,3 +765,11 @@ question Q38)" and "Colour byte order"). Built:
   Focus and Corolla lose about 0.3 m/s each second at that throttle (the
   Corolla at 2,500 to 3,000 rpm in 2nd). Open: whether AccelMaxInput is a
   cap on the throttle (as read here) or on its rate.
+- **AccelMaxInput as a rate (interim, since this entry).** Per OpenFH1's
+  call, AccelMaxInput and BrakeMaxInput now limit how fast the throttle
+  and brake change (0.2 per second), not how far they go; the wanted
+  inputs come from a proportional controller up to full. All 17 models
+  then hold 30 mph within 0.7 m/s (12.74 to 13.50 m/s from 2 to 8 s; the
+  Corolla 12.74 to 13.09). The census with bodies is unchanged (noon
+  4.81, 02:00 1.41, 100 % right at 2.20 m); the push test unchanged.
+  Pending the spec's answer on cap or rate.

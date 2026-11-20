@@ -8,8 +8,10 @@
 //
 // Ours until the spec says: the lane is followed by pure pursuit at a
 // look-ahead of max(8 m, 1 s), the speed by a proportional throttle and
-// brake capped at AI/Traffic/VehicleControls/AccelMaxInput and
-// BrakeMaxInput (the gear caps and SteeringMultiplier are not used); the
+// brake whose changes are limited to AI/Traffic/VehicleControls/
+// AccelMaxInput and BrakeMaxInput per second (interim reading, Q41: read
+// as caps on the inputs, four light models could not hold 30 mph; the gear
+// caps and SteeringMultiplier are not used); the
 // contacts are between the bodies' boxes (CarParams::size) on the ground
 // plane, an impulse with restitution 0.2 and friction 0.3 at the deepest
 // corners, the angular part on a traffic car scaled by TrafficTorqueScale,
@@ -28,8 +30,8 @@ namespace traffic {
 
 struct BodiesOptions {
   double torque_scale = 0.25;   // PhysicsSettings Collision\TrafficTorqueScale
-  double accel_max_input = 0.2;  // AI/Traffic/VehicleControls/AccelMaxInput
-  double brake_max_input = 0.2;  // AI/Traffic/VehicleControls/BrakeMaxInput
+  double accel_max_input = 0.2;  // AI/Traffic/VehicleControls/AccelMaxInput (throttle change per s)
+  double brake_max_input = 0.2;  // AI/Traffic/VehicleControls/BrakeMaxInput (brake change per s)
   double restitution = 0.2, friction = 0.3;
 };
 
@@ -45,9 +47,11 @@ class Bodies {
   // handed back.
   void step(const drive::Ground& ground, drive::Vehicle* player);
 
-  // The throttle and brake for a target speed (ours: proportional with a
-  // small hold, capped at the options' inputs).
-  static void speed_input(double target, double speed, const BodiesOptions& o, drive::Input& in);
+  // The throttle and brake for a target speed one step on from `last`
+  // (ours: proportional with a small hold; each input moves towards its
+  // wanted value at most the options' rate per second).
+  static void speed_input(double target, double speed, const BodiesOptions& o, const drive::Input& last,
+                          drive::Input& in);
 
   const drive::Vehicle* body(uint32_t car) const;
   size_t count() const { return bodies_.size(); }
@@ -60,8 +64,9 @@ class Bodies {
  private:
   struct Body {
     std::unique_ptr<drive::Vehicle> v;
+    drive::Input last;  // the inputs of the last step
   };
-  drive::Input drive_input(const Car& car, const drive::Vehicle& v) const;
+  drive::Input drive_input(const Car& car, const drive::Vehicle& v, const drive::Input& last) const;
   bool collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b);
 
   Population& pop_;

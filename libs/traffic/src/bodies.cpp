@@ -59,7 +59,7 @@ const drive::Vehicle* Bodies::body(uint32_t car) const {
   return it == bodies_.end() ? nullptr : it->second.v.get();
 }
 
-drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const {
+drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v, const drive::Input& last) const {
   drive::Input in;
   const double speed = v.speed();
   const P3 aim = pop_.lane_point(car, std::max(8.0, speed));
@@ -71,16 +71,20 @@ drive::Input Bodies::drive_input(const Car& car, const drive::Vehicle& v) const 
   // Pure pursuit: the road-wheel angle onto the arc through the aim point.
   const double delta = d2 > 1e-6 ? std::atan(2 * wheelbase * local.x / d2) : 0;
   in.steer = std::clamp(delta / std::max(0.05, p.max_steer), -1.0, 1.0);
-  speed_input(car.target, speed, o_, in);
+  speed_input(car.target, speed, o_, last, in);
   return in;
 }
 
-void Bodies::speed_input(double target, double speed, const BodiesOptions& o, drive::Input& in) {
+void Bodies::speed_input(double target, double speed, const BodiesOptions& o, const drive::Input& last,
+                         drive::Input& in) {
   const double err = target - speed;
-  in.throttle = in.brake = 0;
-  if (target < 0.5) in.brake = o.brake_max_input;  // stop and hold
-  else if (err > -0.2) in.throttle = std::clamp(0.25 * err + 0.1, 0.0, o.accel_max_input);
-  else if (err < -0.6) in.brake = std::clamp(-0.2 * err, 0.0, o.brake_max_input);
+  double throttle = 0, brake = 0;
+  if (target < 0.5) brake = 1;  // stop and hold
+  else if (err > -0.2) throttle = std::clamp(0.5 * err + 0.15, 0.0, 1.0);
+  else if (err < -0.6) brake = std::clamp(-0.3 * err, 0.0, 1.0);
+  auto toward = [](double from, double to, double step) { return from + std::clamp(to - from, -step, step); };
+  in.throttle = toward(last.throttle, throttle, o.accel_max_input * drive::Vehicle::kStep);
+  in.brake = toward(last.brake, brake, o.brake_max_input * drive::Vehicle::kStep);
 }
 
 bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b) {
@@ -165,7 +169,9 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
   for (const auto& c : cars) {
     const auto it = bodies_.find(c.id);
     if (it == bodies_.end()) continue;
-    it->second.v->step(drive_input(c, *it->second.v), ground);
+    Body& b = it->second;
+    b.last = drive_input(c, *b.v, b.last);
+    b.v->step(b.last, ground);
   }
   // Contacts: each body with the player's car and with the others.
   std::vector<drive::Vehicle*> list;
