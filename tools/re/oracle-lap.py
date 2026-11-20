@@ -82,6 +82,9 @@ def read_steps(path: Path) -> list[dict]:
                 controls=[f32(blob, CONTROLS + 4 * i) for i in range(5)],
                 surface=[blob[w + 337] for w in wheels], contact=[int(blob[w + 796] != 0) for w in wheels],
                 abs_active=struct.unpack_from(">i", blob, DYN + 3020)[0],
+                # The cockpit lights' sources (finding "ABS, traction and
+                # stability flags"): TCS intervention amount, STM active.
+                tcs=f32(blob, DYN + 3004), stm=struct.unpack_from(">i", blob, DYN + 3016)[0],
                 abs_setting=struct.unpack_from(">I", blob, DYN + 3436)[0]))
             t += abs(dt)
     return steps
@@ -100,6 +103,20 @@ def repair_controls(steps: list[dict]) -> int:
                 steps[i]["controls"][c] = 0.5 * (a + n)
                 repaired += 1
     return repaired
+
+
+def double_zeros(steps: list[dict], go: float, end: float) -> int:
+    """Steps left with gas and brake both 0 for one or two steps between
+    neighbours with the gas fully open: clears the lone-zero repair misses."""
+    lap = [s for s in steps if go <= s["t"] <= end]
+    count = 0
+    for i in range(1, len(lap) - 3):
+        for width in (1, 2):
+            run = lap[i:i + width]
+            if (lap[i - 1]["controls"][0] > 0.99 and lap[i + width]["controls"][0] > 0.99 and
+                    all(r["controls"][0] == 0 and r["controls"][1] == 0 for r in run)):
+                count += width
+    return count
 
 
 def events(path: Path) -> list[dict]:
@@ -243,6 +260,11 @@ def analyse(run: Path, route_xml: Path) -> dict:
         run=str(run), event_log=result["event_log"], steps=len(steps), controls_repaired=repaired,
         mass_kg=round(steps[0]["mass"], 1), abs_setting=steps[0]["abs_setting"],
         abs_active_steps=sum(1 for s in steps if go <= s["t"] <= finish_t and s["abs_active"]),
+        lap_steps=sum(1 for s in steps if go <= s["t"] <= finish_t),
+        tcs_max=max(s["tcs"] for s in steps if go <= s["t"] <= finish_t),
+        tcs_light_steps=sum(1 for s in steps if go <= s["t"] <= finish_t and s["tcs"] > 0.1),
+        stm_active_steps=sum(1 for s in steps if go <= s["t"] <= finish_t and s["stm"]),
+        gas_brake_double_zero_steps=double_zeros(steps, go, finish_t),
         dt_s=dict(min=min(s["dt"] for s in steps), max=max(s["dt"] for s in steps),
                   mean=sum(s["dt"] for s in steps) / len(steps)),
         race_seconds=race_s, race_trace=finish, go_sim_s=go, finish_sim_s=finish_t,

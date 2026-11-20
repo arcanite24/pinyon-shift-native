@@ -846,22 +846,31 @@ pure pursuit.
 | Trace | the body oracle writes the whole player body at every physics step with the step's dt (`physics-oracle.bin`). `tools/re/oracle-lap.py <run> --repeat <run> --meta <json> --output .local/re/physics/oracle-lap` resamples it at 60 Hz of simulated time |
 
 **Simulated time** is the sum of the steps' dt, here 5 to 31 ms a step,
-14.4 ms on average. t = 0 is the start signal: the finish crossing minus
-the race time the game reports. Three checks hold that clock against the
-game's own: the AI's gas opens 0.0035 and 0.0052 s after t = 0, the
-gate crossing falls at the reported race time, and race time and the race
-manager's clock advance together (their difference is constant through
-the race).
+14.4 ms on average. t = 0 is the start signal, placed at the finish
+crossing minus the race time the game reports, so the lap time equals the
+race time by construction. One check is independent: the AI's gas opens
+0.0035 and 0.0052 s after that t = 0, within one step of the start, so
+the line crossing and the race clock agree. The race time also advances
+with the race manager's own clock through the race (their difference stays
+constant).
 
-**Same physics as a player's car.** Under the AI the car keeps driver
-type 0, mass 15.6 (1,560 kg) and ABS setting 1. Its launch from idle at
-the start signal crosses 20, 40, 60 and 80 km/h at 1.06, 1.84, 2.73 and
-4.46 s from the gas, and 100 km/h at 5.76 s; scenario A on another road
-gave 1.12, 1.89, 2.78, 4.56 and 5.84 s. A control run without the AI
-(full throttle from route frame 2780, before the start signal, no
-steering) is quicker off the line by 0.08 to 0.15 s, because the engine
-is already revved when the clutch bites. That comes from the input, not
-from different physics. The control run's car leaves the asphalt at 4.7 s.
+**The car under the AI is the player's car.** It keeps driver type 0,
+mass 15.6 (1,560 kg) and ABS setting 1. Its launch from idle at the start
+signal crosses 20, 40, 60 and 80 km/h at 1.06, 1.84, 2.73 and 4.46 s from
+the gas, and 100 km/h at 5.76 s; scenario A on another road gave 1.12,
+1.89, 2.78, 4.56 and 5.84 s. A control run without the AI, with the same
+seed, event and grid, compares the settled body 30 steps before the gas:
+of its 5,136 words, 1,057 differ from run B and 1,075 differ between runs
+B and C. Only 8 words differ from B and not between B and C. Six are
+last-bit rounding of rotation entries. One is a wheel's friction scale,
+which changes with the wheel's state every step (finding "braking
+friction scale and brake torque"). The last is a word that reads 0 under the AI, 57.0
+without it and NaN in free-roam player runs; its use is unknown. No car
+parameter differs, so the AI drives the player's physics (probable: one
+pre-start state compared). The control run's own launch cannot be
+compared, because its gas went down before the start signal (2.5 s from
+gas to motion against 0.52 s). It also left the asphalt at 4.7 s with no
+steering.
 
 ### The race
 
@@ -874,16 +883,27 @@ from different physics. The control run's car leaves the asphalt at 4.7 s.
 | Distance | 1,159.4 m and 1,158.9 m along the body point's path from the grid to the finish; the grid is 12.7 m behind the line |
 | Top speed | 146.8 km/h, fourth gear |
 
-**Gate.** The start/finish line is the vertical plane through the route
-file's `start_gantry_cannon_00` transform, across its facing: point
-(x, z) = (−1802.75, 1866.28), crossed along (−0.9919, 0.1267) in the game
-frame. The car's body reference point crosses it 2.17 s after the start
-and again at the finish. The route file gives the line no width; the car
-crossed 0.85 to 1.15 m to the right of the point. Measured: the gas opens
-0.0035 to 0.0052 s after race time 0, and the finish crossing falls at the
-race time. So the race clock runs from the start signal to the moment the
-body point crosses this plane, within one step. Confirmed on this track;
-on other circuits the start gantry is probable.
+**Gate.** The start/finish line is the vertical plane through the
+route file's `start_gantry_cannon_00` transform, normal to its horizontal
+facing, crossed in the facing's direction. The route gives the line no
+width. Measured crossings of the car's body reference point in the game
+frame:
+
+| Crossing | t | Body point | Yaw | Speed |
+| --- | --- | --- | --- | --- |
+| start, run B | 2.169 s | (−1802.89, 34.12, 1865.19) | −83.6° | 47.9 km/h |
+| finish, run B | 38.784 s | (−1802.86, 34.12, 1865.44) | −89.0° | 137.9 km/h |
+| start, run C | 2.173 s | (−1802.90, 34.12, 1865.14) | −84.0° | 47.8 km/h |
+| finish, run C | 38.798 s | (−1802.86, 34.12, 1865.44) | −89.0° | 138.0 km/h |
+
+The gas opens 0.0035 to 0.0052 s after race time 0, and the finish
+crossing falls at the race time. So the race clock runs from the start
+signal to the moment the body point crosses this plane, within one step.
+An engine that loads the route file takes the plane from the transform;
+one that does not can take it through the finish points above, normal
+to the measured grid heading (yaw −82.27°, below), which lies within 0.5°
+of the transform's facing. Confirmed on this track; on other
+circuits the start gantry is probable.
 
 **Lap time** (`dlc.rally.race_trace` `time_72`, the race statistics
 record's race time, at `started` 1, `ended` 1, `end_reason` 1):
@@ -904,8 +924,8 @@ are not gated.
 
 | | |
 | --- | --- |
-| Grid | the pole, `start_location_00` of the route file. The body reference point rests at (−1790.46, 34.614, 1863.44) in the game frame |
-| Heading | forward (−0.9901, −0.0413, 0.1344), yaw −82.27° (from +z towards +x), the grid transform's facing |
+| Grid | the pole, `start_location_00` of the route file. Measured: the body reference point settles at (−1790.46, 34.614, 1863.44) in the game frame, on the slot's x and z |
+| Heading | measured: forward (−0.9901, −0.0413, 0.1344), yaw −82.27° (from +z towards +x), along the slot's facing |
 | Start | standing, at rest, first gear, engine idling at 800 rpm. The car is dropped onto the grid when the race loads and settles about 18 s before the start |
 | Throttle | the AI opens the gas within 0.005 s of the start signal. The clutch phase of scenario A follows, and the car first moves 0.52 s after the start |
 
@@ -915,7 +935,7 @@ are not gated.
 | --- | --- |
 | Car, tune, tyres | car 445, stock, no upgrades, stock tyres; mass 1,560 kg |
 | ABS | on: the setting word reads 1. It released a wheel on 62 and 66 steps of the lap |
-| Traction and stability control | not read for the AI-driven car. In the player's runs both flags stayed 0 (above). M3 keeps the defaults of "Assists and input shaping" |
+| Traction and stability control | the settings were not read (their words are not known). Read over the lap from the cockpit lights' sources (finding "ABS, traction and stability flags"), the TCS intervention amount peaked at 0.064 and 0.042, under the light's 0.1, and the STM flag was 0 on every step. M3 leaves both out, as "Assists and input shaping" does. Which of the two the AI-driven car has on stays open |
 | Gearbox | automatic: 1→2 at 3.49 s; second to fourth over the lap |
 | Line | none shown; the AI follows its own racing line |
 | Input | no pad. The AI writes the car's controls: gas and brake from 0 to 1, steer from −1 to 1, the same fields `fh1.physics_trace` reports. Steer stays within about ±0.3: at speed the lock is narrowed after this value (see steering) |
@@ -953,12 +973,14 @@ beside the engine's oracle data):
 **Control words.** The controls read at a step's entry are cleared
 between steps now and then (finding "controls at step entry are not the
 step's input"). A lone exact zero between two non-zero neighbours is
-replaced by their mean: 713 and 748 words in runs B and C. Positions and
-speeds need no repair. Take gas and brake against `distance_m` for the
+replaced by their mean: 713 and 748 words in runs B and C. No step is
+left with gas and brake both 0 for one or two steps between full-throttle
+neighbours. Positions and speeds need no repair. Take gas and brake against `distance_m` for the
 replay.
 
-**Clean lap.** No wall or car contact: the field is empty, and no sample
-shows a speed loss beyond braking. The peaks are 1.73 g longitudinal under
+**Clean lap.** No car contact (the field is empty). Wall contact is
+inferred, not read: no sample shows a speed loss beyond braking, and the
+collision pulses are not in the trace. The peaks are 1.73 g longitudinal under
 braking at 40 m/s (brake 0.45) and 1.3 to 1.8 g lateral in
 the two slow corners, with single 60 Hz samples up to 3.0 g over the dirt
 edges. Those peaks match the yaw rate times the speed (17.3 m/s² against
@@ -971,7 +993,13 @@ tyre's peak F/load of about 1.8 under "Scenario B".
   crossing the plane above, within 2 % of 38.78 s (38.01 to 39.56 s).
   Report the run in `physics-behaviour.py compare` against `lap.jsonl`.
 - The engine needs friction for asphalt and dirt (surfaces 0 and 1): the
-  AI's line cuts two corners onto dirt.
+  AI's line cuts two corners onto dirt, and how the tyre uses the surface
+  columns is still open (FORMAT-COLLISION). The 2 % gate depends on it.
+- For `compare` to see a race time, the engine's own file needs `mode` 3
+  samples and a final `dlc.rally.race_trace` event with `started`,
+  `ended` and `end_reason` the strings "1" and `time_72` its race time.
+- The route's frame numbers (snapshot 1800, start near 2750) are output
+  frames, which depend on the machine; re-check them on another host.
 - The engine's start is the same standing start: idle, first gear, gas at
   t = 0. Its own clutch phase sets the first 0.5 s.
 
