@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Spec ID | `SPEC-CAMERAS` |
-| Status | first usable draft for M4: the camera set, cycle, button, default, the per-car placement of all five cameras and their lenses confirmed on two cars at rest; chase springs and the look rule probable; the chase look-at drop, behaviour at speed and the shake layers open |
+| Status | first usable draft for M4: the camera set, cycle, button, default, the per-car placement of all five cameras and their lenses confirmed on two cars at rest, except the R34's low chase height (5.8 cm over, open); chase springs and the look rule probable; the chase look-at drop, behaviour at speed and the shake layers open |
 | Written | 2026-11-20, specification role ([CLEAN_ROOM.md](../CLEAN_ROOM.md)) |
-| Records | [world findings](../../site/findings/world.toml), group "Collision and cameras" (driving camera cycle, per-car camera overrides, chase camera placement, cockpit-family camera placement, camera physics layer); [objects findings](../../site/findings/objects.toml), "camera controllers and free camera"; [rendering findings](../../site/findings/rendering.toml), "camera vertical field of view" and "camera position constants" |
+| Records | [world findings](../../site/findings/world.toml), group "Collision and cameras" ("driving camera cycle and button", "per-car camera overrides", "chase camera loaded tuning and per-car offsets", "cockpit-family camera placement", "car collision box for cameras", "camera physics layer"); [objects findings](../../site/findings/objects.toml), "camera controllers and free camera"; [rendering findings](../../site/findings/rendering.toml), "camera vertical field of view" and "camera position constants" |
 | Implements it | `shift-engine` camera module (not yet; the M3 chase camera in `apps/carview/showroom_main.cpp` is a placeholder) |
 
 ## What it is
@@ -164,13 +164,14 @@ c = (Min − start height) if below Min, (Max − start height) if above Max, el
 
 Box top above ground is the collision box `MaxY` above the ground under
 the car (one wheel's contact height at that moment, the physics wheel 2);
-H is the
-height offset (global or override). c is added to both the height offset
+H is the height offset (global or override). c is added to both the height offset
 and the target offset and kept until the camera restarts. Both chase
 cameras on the disc have Min = Max, so at rest every car's chase eye is
 at the same height above its ground: 1.80 m (FollowCam) and 2.08 m
-(FollowCam2), whatever its height override. The per-car height and
-target overrides then only change where the camera looks.
+(FollowCam2), and the per-car height and target overrides would only
+change where the camera looks. This holds for the CR-X and the Miata
+(no override) and the R34's FollowCam2, but the R34's FollowCam, which
+has a height override, sits 1.858 m up in two runs (see Unknowns).
 
 Every frame the eye height above the CoM is H + c + h. The state h
 springs toward the box top above the CoM plus a slope term:
@@ -251,7 +252,8 @@ share the look rule below.
   car-specific vector is added to it; it was zero on both test cars).
 - Offset: (0, `CamHoodHeight`, `CamHoodZ`), pitch `CamHoodPitch`; when
   all three are zero the `HoodCam\CamYOffset`, `CamZOffset` and
-  `CamPitchOffset` defaults (no car on the disc needs them).
+  `CamPitchOffset` defaults (no drivable car needs them; the 9 traffic
+  models without a row would).
 - The disc's layers add a constant 0.03 m down, 0.164 m forward (scaled
   by a speed curve that is 1 up to 20 mph and grows to 1.44 at 190 mph),
   and a constant 7.2° look down.
@@ -299,12 +301,23 @@ aspect ratio.
 
 **Chase distance at speed.** The chase cameras also move back with speed
 (a `SpeedMPH` layer on the car-space z offset, sprung), and the distance
-is rescaled when the FOV changes. On the two cruises the measured
-distance is 0.3 to 0.45 m more than at rest at 14 to 27 mph; the layer
-plus a rescale of tan(½F) / tan(½(F − ½ΔF)), with F the current FOV and
-ΔF the speed layer's share, fits the low chase within 1.5 and 3.3 cm and
-the high chase within 2.2 cm on the CR-X but 12 cm on the R34. The
-rescale's exact form is open.
+r0 is multiplied by tan(F) / tan(F + ΔF), F the tuning FOV and ΔF the
+FOV layers' output, so the camera moves in as the lens widens and the
+car keeps its size on screen (read from the update, probable; whether F
+is the full or the half angle is not settled). The cruises do not
+confirm it: at 14 to 27 mph, accelerating gently, the chase was farther
+back than at rest, while the g layers were live as well:
+
+| Camera, car | Speed | ΔF | Distance from the CoM, rest / cruising |
+| --- | --- | --- | --- |
+| FollowCam, CR-X | 13.6 mph | 1.17° | 4.829 / 5.150 m |
+| FollowCam, CR-X | 15.4 mph | 1.34° | 4.829 / 5.134 m |
+| FollowCam, R34 | 24.0 mph | 2.35° | 5.192 / 5.635 m |
+| FollowCam2, CR-X | 17.0 mph | 1.48° | 4.929 / 5.131 m |
+| FollowCam2, R34 | 27.2 mph | 3.05° | 5.290 / 5.459 m |
+
+How the speed layer, the g layers and the FOV factor combine at speed is
+open.
 
 ### Camera physics layers
 
@@ -365,21 +378,20 @@ own clearance rule is above.
 - Every rendered frame: the springs step with the frame time; the
   heading and height springs use its absolute value.
 - The chase start correction c and the bumper's ground height are taken
-  once when the camera starts (each cycle into it). A camera that starts
-  while the car is still settling keeps the error: the R34's first low
-  chase started while the car was being dropped onto the road at the
-  start of the run and sat 5.8 cm high until it was cycled.
+  once when the camera starts (each cycle into it), so a camera that
+  starts while the car is still settling keeps that error.
 - Layer springs and attack/decay followers run every frame.
 
 ## Unknowns
 
 | Unknown | Confidence of the current reading | What to do meanwhile |
 | --- | --- | --- |
+| Why the R34's FollowCam is 1.858 m above the ground, not 1.80 m | measured twice, both times the camera the run started in (a second run with the presses after the car settled found the same; its cycled-back FollowCam was taken while the car rolled and is not usable); the CR-X's start camera is 1.795 to 1.798 m and the R34's FollowCam2 on the band. The R34 is the only car checked with a low-chase height override (72 cars have one), so the override may enter the start correction | put the eye on the band; recheck on a car with an override, parked with the brake held |
 | d_base (2.95 m / 3.10 m) and δ (0.335 m / 0.58 m) | measured on two cars, agree within 2 mm (d_base) and 6 mm (δ) | use the measured values |
 | Which shift the box z takes when `MAXData.xml` and `Data_CarBody` disagree (31 models) | both test cars agree | use `Data_CarBody.BottomCenterWheelbasePosZ` |
 | Collision box for models whose `MAXData.xml` was not checked (65 of 240 in this extraction, DLC packs) | the file is in every checked car archive | read it from the car archive; failing that, the pristine box |
 | The cockpit availability flag | a car field the cycle tests; 69 cars have no cockpit offsets | allow the cockpit for every car |
-| Chase distance rescale with FOV at speed | fits 1.5 to 12 cm on two low-speed cruises | the layer plus the rescale above |
+| Chase distance at speed: the FOV factor and the layers | factor read from the update (probable); the low-speed cruises sit 0.17 to 0.44 m farther back than at rest | the speed layer plus the factor as read |
 | Heading spring sign of the yaw-rate term, and its response in a turn | read from the update, not measured in motion | as written |
 | `SpringDPercent` meaning | name | damping as that fraction of critical damping (2√K) |
 | Noise, impulse, collision, bump and head-tracking layers | layer semantics known, values not checked | ignore them |
@@ -424,7 +436,7 @@ chase as distance from the CoM and height above the ground plane):
 
 | Camera | Car | Rule | Oracle | FOV rule / oracle |
 | --- | --- | --- | --- | --- |
-| FollowCam | R34 | 5.191 m, 1.800 m | 5.192 m, 1.858 m (started during the drop; see Rates) | 48.5 / 48.5 |
+| FollowCam | R34 | 5.191 m, 1.800 m | 5.192 m, 1.858 m (fails by 5.8 cm, open) | 48.5 / 48.5 |
 | FollowCam | CR-X | 4.828 m, 1.800 m | 4.829 m, 1.798 m | 48.5 / 48.5 |
 | FollowCam2 | R34 | 5.291 m, 2.080 m | 5.290 m, 2.078 m | 58.0 / 58.0 |
 | FollowCam2 | CR-X | 4.928 m, 2.080 m | 4.929 m, 2.078 m | 58.0 / 58.0 |
@@ -436,9 +448,15 @@ chase as distance from the CoM and height above the ground plane):
 | Bumper | CR-X | (0, 0.895, 1.110) | (0.000, 0.895, 1.109) | 53.0 / 53.0 |
 
 Every eye is within 2 mm and every FOV within 0.01°, except the R34's
-first low chase, 5.8 cm high: a camera started while the car was in the
-air before the run began, which the start rule explains but the oracle
-did not re-measure.
+low chase height, 5.8 cm over the band: a failed check, open (a second
+R34 run, presses after the car settled, read 5.190 m and 1.858 m
+again for the starting FollowCam).
+
+A third car, the 1994 Miata (car 1110, no chase override, a box shift of
+the other sign: `BottomCenterWheelbasePosZ` −0.0429), from an earlier
+FollowCam dump at the same spot (`.local/mr981/parked.fh1frame`, the
+camera's start time unknown): the rule gives 4.819 m from the CoM and
+1.800 m above the ground plane, the dump 4.819 m and 1.818 m.
 
 View pitch, parked: cockpit 1.11°, hood 7.20° down in the car frame
 (oracle 1.11° and 7.20°). Chase, the eye-to-look-at drop at the CoM, in

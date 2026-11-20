@@ -85,7 +85,7 @@ def route(args) -> None:
         put(frame, buttons=buttons)
         put(frame + 6, buttons=0)
 
-    t = 1100
+    t = args.start
     # Parked: the default camera, then each press of the right shoulder.
     for k in range(6):
         if k:
@@ -100,19 +100,22 @@ def route(args) -> None:
         dump(t + 60, label)
         put(t + 80, rx=0, ry=0)
         t += 140
-    # Cruise: part throttle, no steering; two dumps in the first camera,
-    # then one in each other camera.
-    put(t, rt=args.throttle)
-    t += 600
-    dump(t, "cruise-0a")
-    t += 300
-    dump(t, "cruise-0b")
-    for k in range(1, 5):
-        press(t + 20)
-        t += 160
-        dump(t, f"cruise-{k}")
-    put(t + 40, rt=0)
-    events.append((t + 200, f"stop {t + 200}"))
+    if args.parked_only:
+        events.append((t + 60, f"stop {t + 60}"))
+    else:
+        # Cruise: part throttle, no steering; two dumps in the first
+        # camera, then one in each other camera.
+        put(t, rt=args.throttle)
+        t += 600
+        dump(t, "cruise-0a")
+        t += 300
+        dump(t, "cruise-0b")
+        for k in range(1, 5):
+            press(t + 20)
+            t += 160
+            dump(t, f"cruise-{k}")
+        put(t + 40, rt=0)
+        events.append((t + 200, f"stop {t + 200}"))
     for frame, s in inputs.items():
         events.append((frame, f"input {frame} {s['buttons']:04x} 0 {s['rt']} 0 0 {s['rx']} {s['ry']}"))
     events.sort(key=lambda e: (e[0], not e[1].startswith("cvar")))
@@ -195,6 +198,9 @@ def main() -> None:
     r.add_argument("--dumps", required=True)
     r.add_argument("--output", required=True)
     r.add_argument("--throttle", type=int, default=90)
+    r.add_argument("--start", type=int, default=1100,
+                   help="frame of the first parked dump; later than the car's landing")
+    r.add_argument("--parked-only", action="store_true")
     r.set_defaults(func=route)
     a = sub.add_parser("analyse")
     a.add_argument("--media", required=True)
