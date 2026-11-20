@@ -82,6 +82,10 @@ constexpr uint32_t kNoWorldTexture = 0xFFFFFFFFu;
 // materials (the textured world) the triangles also carry per corner a
 // normal, the surface and lightmap UVs and the vertex colour, and per
 // triangle a material.
+// The decals' depth bias (ours): in float ulps of the primitive's depth and
+// times its depth slope.
+constexpr float kDecalBiasConstant = 64.0f, kDecalBiasSlope = 1.0f;
+
 struct WorldTriangles {
   std::vector<std::array<float, 3>> positions;  // three per triangle
   std::vector<uint8_t> group;                   // per triangle: index into colours
@@ -90,6 +94,7 @@ struct WorldTriangles {
     uint32_t texture = kNoWorldTexture;  // texture record of slot 0
     uint8_t blend = 0;                   // world::Blend: opaque, coverage, alpha
     uint8_t far = 0;                     // world::MeshMaterial::far: pushed back in depth
+    uint8_t decal = 0;                   // world::decal_effect: drawn with a depth bias
     uint8_t layers = 0;                  // world::Layers: one, vertex blend, splat
     uint32_t layer_b = kNoWorldTexture;  // Blend_B
     uint32_t splat = kNoWorldTexture;    // Splat
@@ -124,6 +129,7 @@ struct WorldGeometry {
     uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
     uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers
     uint8_t blend = 0;
+    uint8_t decal = 0;  // drawn with the decal depth bias
     // The draw's box in the scenery's frame (tree sprites padded by their
     // corners' reach), tested against the view each frame; cull false:
     // always drawn (the sky, the flat world).

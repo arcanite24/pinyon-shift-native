@@ -4,6 +4,9 @@
 // origin in the game frame; the push constant's model matrix takes them to
 // the frame's space.
 
+// Reversed depth (the drive): the sky sits at 0 rather than 1.
+layout(constant_id = 1) const bool kReverseZ = false;
+
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec4 in_normal;  // snorm, game frame; zero when the layout has none
 layout(location = 2) in vec2 in_uv0;     // surface UV, dequantised
@@ -52,7 +55,7 @@ void main() {
     v_uv1 = vec2(0.0);
     v_colour = vec4(1.0);
     gl_Position = frame.view_projection * vec4(frame.eye.xyz + dir, 1.0);
-    gl_Position.z = gl_Position.w * 0.9999999;
+    gl_Position.z = kReverseZ ? 0.0 : gl_Position.w * 0.9999999;
     return;
   }
   vec4 world = draw.model * vec4(in_position, 1.0);

@@ -67,6 +67,10 @@ class Renderer {
     uint32_t msaa = 4;
     PostSettings post;
     ShadowSettings shadow;
+    // Reversed depth (ours, the drive): the scene clears depth to 0, tests
+    // GREATER(_OR_EQUAL), and the camera's projection maps the near plane to
+    // 1 and infinity to 0, so the float depth keeps its precision far out.
+    bool reverse_z = false;
   };
 
   Renderer() = default;
@@ -99,6 +103,7 @@ class Renderer {
   // under the post chain.
   VkFormat scene_format() const { return options_.post.enabled ? VK_FORMAT_R16G16B16A16_SFLOAT : color_format_; }
   bool post() const { return options_.post.enabled; }
+  bool reverse_z() const { return options_.reverse_z; }
   // The MSAA sample count in use (1 when off).
   uint32_t sample_count() const { return uint32_t(samples_); }
   // Windowed: renders and presents one frame. Returns false on a fatal error.

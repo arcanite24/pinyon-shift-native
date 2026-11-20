@@ -565,7 +565,7 @@ V3 transform(const float* m, V3 p, float w) {
 }
 
 // A camera at eye looking at target, in the car's model frame.
-ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
+ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery, bool reverse_z = false) {
   const float fovy = 55.0f * kPi / 180.0f;
   const V3 f = norm(sub(target, eye));
   const V3 side = norm(cross3(f, up));
@@ -580,6 +580,11 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
   projection[10] = far_z / (near_z - far_z);
   projection[11] = -1;
   projection[14] = near_z * far_z / (near_z - far_z);
+  if (reverse_z) {
+    // Reversed, with the far plane at infinity: depth = near / distance.
+    projection[10] = 0;
+    projection[14] = near_z;
+  }
   ShowroomFrame frame{};
   multiply4(projection, view, frame.view_projection);
   std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
@@ -635,7 +640,8 @@ double deadzone(double v, double inside, double outside) {
 }
 
 ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, bool front,
-                          const drive::Ground* ground = nullptr, CameraPull* pull = nullptr, double dt = 0) {
+                          const drive::Ground* ground = nullptr, CameraPull* pull = nullptr, double dt = 0,
+                          bool reverse_z = false) {
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(car, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
@@ -683,7 +689,7 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
     eye_used = add(target, mul(V3{eye.x - target.x, eye.y - target.y, eye.z - target.z}, f));
   }
   return look_frame(transform(world_to_model, eye_used, 1), transform(world_to_model, target, 1),
-                    norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false);
+                    norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false, reverse_z);
 }
 
 void wheel_poses(const drive::Vehicle& v, WheelPose poses[4]) {
@@ -726,7 +732,8 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.vertex_colours = mesh.colours;
     w.material = mesh.material;
     for (const auto& m : mesh.materials)
-      w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(m.layers), m.layer_b, m.splat, m.tiling});
+      w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(world::decal_effect(m.effect) ? 1 : 0),
+                             uint8_t(m.layers), m.layer_b, m.splat, m.tiling});
   }
   return w;
 }
@@ -892,7 +899,7 @@ void drive_usage() {
                "           --car <media> --hour h --spawn x y z heading --near x z --cache file\n"
                "           --save file | --no-save\n"
                "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
-               "           --shadows off|low|high --view chase|front --hud\n"
+               "           --shadows off|low|high --view chase|front --hud --no-reverse-z\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound\n"
@@ -950,6 +957,9 @@ int run_drive(int argc, char** argv) {
   // --contacts-log (ours, debugging): every hard body contact against the
   // collision, and per gather the walls nothing drawn stands near.
   std::filesystem::path contacts_log_path;
+  // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
+  // 0.25 m to 16 km projection).
+  bool reverse_z = true;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -1003,6 +1013,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--contacts-log") contacts_log_path = next();
+    else if (a == "--no-reverse-z") reverse_z = false;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -1234,6 +1245,7 @@ int run_drive(int argc, char** argv) {
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options;
     Renderer::Options render_options{window, validation, msaa};
+    render_options.reverse_z = reverse_z;
     if (post_on) {
       PostSettings& post = render_options.post;
       post.enabled = true;
@@ -1755,6 +1767,9 @@ int run_drive(int argc, char** argv) {
         ShowroomFrame frame{};
         std::memcpy(frame.view_projection, world_reference.clip_from_world, sizeof frame.view_projection);
         for (int c = 0; c < 4; ++c) frame.view_projection[c * 4 + 1] = -frame.view_projection[c * 4 + 1];
+        // Reversed depth: z' = w - z (the game's depth d becomes 1 - d).
+        if (renderer.reverse_z())
+          for (int c = 0; c < 4; ++c) frame.view_projection[c * 4 + 2] = frame.view_projection[c * 4 + 3] - frame.view_projection[c * 4 + 2];
         std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
         for (int k = 0; k < 3; ++k) frame.eye[k] = world_reference.camera_position[k];
         frame.options[0] = 1;
@@ -1819,7 +1834,7 @@ int run_drive(int argc, char** argv) {
           showroom.set_wheel_poses(poses);
           place_world();
           showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
-                                         2 * drive::Vehicle::kStep));
+                                         2 * drive::Vehicle::kStep, renderer.reverse_z()));
           const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
           double rec = 0, gpu = 0;
           if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
@@ -1925,7 +1940,7 @@ int run_drive(int argc, char** argv) {
           showroom.set_wheel_poses(poses);
           place_world();
           showroom.set_frame(chase_frame(info, vehicle, float(width) / float(height), front, ground, &camera_pull,
-                                         every));
+                                         every, renderer.reverse_z()));
           if (hud) set_hud(int(height), vehicle.time() < kIntroSeconds ? intro : std::string());
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
@@ -2187,7 +2202,7 @@ int run_drive(int argc, char** argv) {
           showroom.set_wheel_poses(poses);
           place_world();
           showroom.set_frame(chase_frame(info, vehicle, h > 0 ? float(w) / float(h) : 1.0f, front, ground,
-                                         &camera_pull, frame_dt));
+                                         &camera_pull, frame_dt, renderer.reverse_z()));
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;

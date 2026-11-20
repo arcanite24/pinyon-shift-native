@@ -59,6 +59,10 @@ bool ground_object(const std::string& object);
 // state (their textures are black where nothing glows).
 enum class Blend : uint8_t { kOpaque, kCoverage, kAlpha, kAdditive };
 Blend effect_blend(const std::string& effect);
+// Whether an effect lies on another surface and is drawn with a depth bias
+// (ours): H_VBLND_DECAL*, any *_DECAL*, and the blended road and decal
+// families (kAlpha but the lake).
+bool decal_effect(const std::string& effect);
 
 // A gathered material: its effect and the texture records (indices into
 // World::textures(), kNoTexture when the slot names no file) of the slots

@@ -145,6 +145,11 @@ bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* e
   return ok;
 }
 
+bool decal_effect(const std::string& e) {
+  if (e.find("DECAL") != std::string::npos) return true;
+  return effect_blend(e) == Blend::kAlpha && e.rfind("LAKE", 0) != 0;
+}
+
 Blend effect_blend(const std::string& e) {
   auto starts = [&](const char* prefix) { return e.rfind(prefix, 0) == 0; };
   if (starts("DIFF_GLOW")) return Blend::kAdditive;  // interim (ours), see Blend

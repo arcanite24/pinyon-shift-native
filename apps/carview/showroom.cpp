@@ -1113,16 +1113,27 @@ bool Showroom::create_pipelines(std::string& error) {
 
   // Under the drive's post chain the scene shaders write linear HDR
   // (constant 0 of showroom.frag and world.frag).
-  const VkBool32 linear_out = r_.post() ? VK_TRUE : VK_FALSE;
-  const VkSpecializationMapEntry spec_entry{0, 0, sizeof(VkBool32)};
-  const VkSpecializationInfo spec{1, &spec_entry, sizeof(VkBool32), &linear_out};
+  // Constant 1 (world.vert): reversed depth, for the sky's depth.
+  const VkBool32 spec_values[2] = {r_.post() ? VK_TRUE : VK_FALSE, r_.reverse_z() ? VK_TRUE : VK_FALSE};
+  const VkSpecializationMapEntry spec_entries[2] = {{0, 0, sizeof(VkBool32)},
+                                                    {1, sizeof(VkBool32), sizeof(VkBool32)}};
+  const VkSpecializationInfo spec{2, spec_entries, sizeof spec_values, spec_values};
+  // The world's pipelines take a depth bias per draw (decals and road
+  // paint over the surface they lie on; the rest 0).
+  VkPipelineRasterizationStateCreateInfo raster_bias = raster;
+  raster_bias.depthBiasEnable = VK_TRUE;
+  const VkDynamicState bias_states[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                         VK_DYNAMIC_STATE_DEPTH_BIAS};
+  VkPipelineDynamicStateCreateInfo dynamic_bias{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic_bias.dynamicStateCount = 3;
+  dynamic_bias.pDynamicStates = bias_states;
   auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
                    bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out,
                    VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
                    bool coverage = false) {
     const VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
-         vertex ? vertex : vert, "main", nullptr},
+         vertex ? vertex : vert, "main", vertex ? &spec : nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
          fragment, "main", fragment == mask ? nullptr : &spec}};
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -1131,7 +1142,7 @@ bool Showroom::create_pipelines(std::string& error) {
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = depth_attachment;
     depth.depthWriteEnable = depth_write;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depth.depthCompareOp = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineColorBlendAttachmentState attachment{};
     attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -1159,11 +1170,11 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pVertexInputState = input ? input : &vertex_input;
     info.pInputAssemblyState = &assembly;
     info.pViewportState = &viewport;
-    info.pRasterizationState = &raster;
+    info.pRasterizationState = vertex ? &raster_bias : &raster;
     info.pMultisampleState = &multisample;
     info.pDepthStencilState = &depth;
     info.pColorBlendState = &blend;
-    info.pDynamicState = &dynamic;
+    info.pDynamicState = vertex ? &dynamic_bias : &dynamic;
     info.layout = pipeline_layout_;
     return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
   };
@@ -1850,6 +1861,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     d.index_count = uint32_t(out.indices.size()) - d.first_index;
     d.texture = mat.texture;
     d.blend = mat.blend;
+    d.decal = mat.decal;
     for (int k = 0; k < 3; ++k) d.push.tint[k] = tint[size_t(k)];
     d.push.tint[3] = 1;
     d.push.params[0] = float(mat.blend);
@@ -2407,6 +2419,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       }
       return false;
     };
+    int bias = -1;  // the depth bias set: -1 none yet, else the decal flag
     world_stats_ = {};
     for (const auto& d : world_draws_) {
       if (d.cull && world_cull_ && outside(d)) {
@@ -2426,7 +2439,17 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       }
       // Additive (3) shares the blended pipeline: its fragments carry alpha 0.
       const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : world_opaque_;
-      if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+      if (pipeline != bound) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+        bias = -1;
+      }
+      // Decals and road paint: pulled towards the eye by a few float ulps
+      // and the slope (ours; the sign follows the depth direction).
+      if (int(d.decal) != bias) {
+        bias = d.decal;
+        const float sign = r_.reverse_z() ? 1.0f : -1.0f;
+        vkCmdSetDepthBias(cmd, d.decal ? sign * kDecalBiasConstant : 0.0f, 0.0f, d.decal ? sign * kDecalBiasSlope : 0.0f);
+      }
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
       ShowroomPush push = d.push;
       if (set && d.texture_b != kNoWorldTexture) {

@@ -581,7 +581,7 @@ bool Renderer::create_pipeline(VkFormat color_format, std::string& error) {
       VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
   depth.depthTestEnable = VK_TRUE;
   depth.depthWriteEnable = VK_TRUE;
-  depth.depthCompareOp = VK_COMPARE_OP_LESS;
+  depth.depthCompareOp = options_.reverse_z ? VK_COMPARE_OP_GREATER : VK_COMPARE_OP_LESS;
   VkPipelineColorBlendAttachmentState blend_attachment{};
   blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -950,7 +950,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
   depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   depth.storeOp = depth_readable_ ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  depth.clearValue.depthStencil = {1.0f, 0};
+  depth.clearValue.depthStencil = {options_.reverse_z ? 0.0f : 1.0f, 0};
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
   rendering.renderArea = {{0, 0}, {target_width_, target_height_}};
   rendering.layerCount = 1;
