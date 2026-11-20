@@ -679,5 +679,6 @@ question Q38)" and "Colour byte order"). Built:
   ABS phase at 11.95 m/s^2 (oracle 11.9 to 12.1; was 13.19) and the braked
   steps at 52 / 76 % (oracle 50 to 54 / 74 to 81). The mean falls to
   7.69 m/s^2 (oracle 8.57) because the reverse phase is still 4.1 m/s^2
-  over 1.58 s against the oracle's ~5 over 1.27 s (Q34). The mean's gate
-  is now 12 %; the ABS phase keeps its 12 % gate.
+  over 1.58 s against the oracle's ~5 over 1.27 s (Q34). The mean's 8 %
+  gate stays and is a known miss until Q34's reverse phase is answered
+  (gates move only with the spec); the ABS phase passes its 12 % gate.
