@@ -239,9 +239,15 @@ opaque.
 - `car-corpus --check` reproduces every count of FORMAT-CARS's Tests
   section over the disc, v4 and the 21 installed packages, including 250
   `Data_Car` rows and 240 distinct media names, in 7 s.
-- `carbake` writes 480 files (7.81 GB) for all 240 cars in 16-18 s on
-  multivac (16 threads; recorded in `bake-time.txt`); a second bake is
-  byte-identical.
+- `carbake` writes 480 files (7.81 GB) for all 240 cars. Gate run on
+  multivac (16 threads, 2026-11-19): two bakes from empty folders took
+  34.1 s and 48.4 s (budget 10 min) and gave the same 482 files (the
+  bake files plus manifest and report; `bake-time.txt` left out), combined
+  SHA-256 of the sorted per-file hashes
+  `c5e6e43f1d54c0666acc3e0e96b309be796f2cb1c4813f5b26bf3d694155c9f2`.
+- All 240 cars render headless at the default orbit camera with no load
+  failures, no missing textures and none empty (212 s; the least-covered
+  frame is the tour bus at 11 %), checked by eye on one contact sheet.
 - The showroom draws all 240 cars headless (0.8 s each including load):
   LOD0 body (the `a` variant of each part set, no upgrade parts), the
   cockpit's hood, windscreen, headlights and cabin, rotors and callipers
