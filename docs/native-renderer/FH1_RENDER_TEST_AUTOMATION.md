@@ -383,7 +383,11 @@ capture gameplay after verifying a route reached it, set only the path on
 the command line, then use `cvar <script-frame> fh1_frame_dump_frame -1`
 in the route. A negative request records the next complete executor frame;
 the request resets to zero when armed, so it records once. Another request
-can be armed after the previous dump completes. With `gpu_record_thread`
+can be armed after the previous dump completes. The path is read when a
+request is armed, so a route that sets `cvar <frame> fh1_frame_dump_path
+<file>` before each request writes one file per request: the Autoshow
+reference routes (`tools/re/autoshow-refs.py`) dump up to 38 cars in one
+run this way. With `gpu_record_thread`
 enabled, the request is consumed and rejected with a warning: the packet
 recorder otherwise races the decoder. The parked-car example is
 `config/render-tests/fh1-macos-fixed-frame.fh1test`.

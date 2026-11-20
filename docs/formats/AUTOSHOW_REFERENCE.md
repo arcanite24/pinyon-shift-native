@@ -137,10 +137,19 @@ boundaries may move at another frame rate.
 | Frames after A | What is on screen |
 | --- | --- |
 | 0 to about 180 | Load, then a camera sweep in from a low view near the floor |
-| about 240 to 600 | The standard view: three-quarter front, the price and the colour bar, a slow orbit |
-| from 600 to 900 on | The UI hides and close beauty-camera cuts start (other shots at 900, 1200, 1800) |
+| about 200 to 640 | The standard view: three-quarter front, the price and the colour bar, a slow orbit |
+| from about 680 | The UI hides and close beauty-camera cuts start (other shots at 900, 1200, 1800) |
 
-Y (more tokens) brings the UI back; B opens a dialog. The stage has an
+The bulk runs measured the later boundaries with captures every 40
+frames from A, for a slow-loading package car (Aston Martin DBS) and a
+disc car (Virage), with the window visible and hidden: the four
+timelines agreed. B behaves differently in each phase: during the
+sweep it is ignored; in the standard view one B returns to the car
+list (within 60 frames); in the beauty camera B only brings the UI
+back, and a second B is needed. Y (more tokens) also brings the UI
+back. The standard-view camera sits 6.58 m from the car's origin in
+every reference taken; the close-ups are nearer (3.6 m for one DBS dump
+at 720 frames). The stage has an
 animated light wall and crowd behind the car, so two captures of the
 same view are never identical; compare the car, not the background.
 
@@ -155,8 +164,10 @@ offset from the Abarth's by two to five times the run-to-run spread, in
 opposite directions, which looks like the camera aiming at each car's
 own height. So:
 
-- take every reference at the same delay in the standard view; the pilot
-  used 390 frames after A;
+- take every reference at the same delay in the standard view: the
+  references use 420 frames after A (390 for the first eight cars;
+  each file's `frame.after_a` says which), and `autoshow-refs.py build`
+  refuses a dump whose camera is not 6.58 ± 0.5 m from the car;
 - do not assume one camera for all cars: read each reference's camera
   from its own frame dump (the stage's clip matrix), or model the aim
   point once the offset's source is known.
@@ -228,20 +239,21 @@ car's frame dump. The images sit beside it. Everything stays under
 | `display_name`, `make`, `year` | | for reports only |
 | `source` | string | where the row comes from: `base`, `v4`, or `dlc:<package id>` |
 | `files` | string | the car folder the game read: disc archive or package folder, as `car-list.json` gives it |
-| `image` | string | PNG of the dumped frame, path relative to the JSON |
+| `image` | string | PNG of the dumped frame without the UI, path relative to the JSON |
+| `image_car_only` | string | PNG of the same frame with only the car's draws, relative path (below) |
 | `mask` | string | PNG car-coverage mask, same size, relative path (below) |
 | `width`, `height` | integers | image size in pixels: 1280 and 720, the game's own render size at 1x |
 | `frame` | object | `after_a`: runner frames from the A press that opened the showroom to the dumped frame; `dump_swap`: the executor's swap number of the dump |
 | `clip_from_car` | 16 numbers | car space to clip space, **column-major**, for column vectors: clip = M × (x, y, z, 1) |
 | `view` | 16 numbers | world to camera, column-major, rigid |
 | `proj` | 16 numbers | camera to clip, column-major; `clip_from_car` = `proj` × `view` × `car_to_world` |
-| `car_to_world` | 16 numbers | car space to the showroom's world frame, column-major, rigid; identity when the car sits at the world origin |
+| `car_to_world` | 16 numbers | car space to the showroom's world frame, column-major. Not rigid: its determinant is −1, because it includes the game's model-to-body step (below) |
 | `near` | number | the projection's near distance in metres (camera z where clip z is 0) |
 | `half_pixel_removed` | boolean | always true (below) |
 | `paint_rgb` | 3 integers | the colour shown: the car's first `Combo_Colors` row, sRGB, 0-255, as stored in the database (the game converts it to linear before shading; FORMAT-CARS) |
 | `paint_metallic` | integer | that row's metallic flag |
 | `game_clip_from_car` | 16 numbers | provenance: the car draws' matrix as the game sets it (rows are the clip components, row-major), before the conversions below |
-| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, replay agreement |
+| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, the model-to-body matrix, the transparent pass's matrix, `draw_numbers_match_replay_log`, `empty_frames_agree`, `mask_threshold`, the mask's pixel count and box |
 
 **Spaces.**
 
@@ -251,6 +263,16 @@ car's frame dump. The images sit beside it. Everything stays under
   shader, so wheel, tyre, rotor and caliper models are drawn with the
   car's own matrix and their wheel-centre placement (FORMAT-CARS,
   Wheels).
+- *Model to body.* The game does not draw car space directly: each
+  car draw first maps the model into a body frame with z mirrored, the
+  ride height added to y (0.163 m for the Abarth 595) and a small rake,
+  then maps the body frame to clip. `clip_from_car` and `car_to_world`
+  include both steps, so they take decoded `.carbin` positions as they
+  are; the model-to-body step alone is in `checks.model_to_body`.
+- *Transparent pass.* Glass and lamp covers are drawn with a second
+  matrix whose projection differs by about one pixel (about 1.1 px at
+  the car's edges); `clip_from_car` is the opaque pass's matrix, and
+  the transparent one is in `checks.transparent_clip_from_car`.
 - *Clip space* is Direct3D's: +x right and +y up on the screen as
   presented, w > 0 in front of the camera, z/w from 0 at the near plane
   towards 1 far away. The game's own matrix has negative x and y scales
@@ -274,24 +296,43 @@ car's frame dump. The images sit beside it. Everything stays under
   so a standard viewport reproduces the game's pixels.
 
 **Image.** The frame the dump recorded, replayed offline with
-`tools/replay-fh1-frame.py` (the post-processing output before host
-upscaling and UI, 8 bits per channel). Bloom, depth of field and motion
-blur are off and MSAA is resolved, as in every reference run.
+`tools/replay-fh1-frame.py` with the UI draws left out (the post-processing
+output before host upscaling, 8 bits per channel). The UI draws are the
+triangle lists between the frame's last two EDRAM copies. Bloom, depth
+of field and motion blur are off and MSAA is resolved, as in every
+reference run.
+
+**Car-only image.** The same dump replayed with the UI and every other
+triangle draw into the car's colour surface left out, so only the car's
+draws and the frame's clears and full-screen passes remain: the car on
+the cleared background, lit as in the image.
 
 **Mask.** 8-bit greyscale, 255 where the car covers the pixel, 0
-elsewhere. It is the resolved image's pixels that change when the car's
-draws are left out of a replay of the same dump: every channel of the
-two replays is compared, and any difference counts. The car's draws are
-every draw of the main colour pass with the car's matrix: the exterior
-LOD0 model, the cockpit model (interior, steering wheel, mirrors, lamp
-units), glass and lamp covers, rotors, calipers, rims and tyres. Glass
-counts: a window pixel is in the mask because the glass changes it, and
-so is the interior seen through it. Partial edge pixels of the resolved
-MSAA image count as covered when they change at all, so the mask is
-about half a pixel wider at the silhouette than a single-sample
-coverage at pixel centres; the M1 IoU threshold allows for it. The
-darkening under the car is not one of the car's draws and is not in the
-mask.
+elsewhere: pixels where any channel of the car-only image differs from
+an *empty* replay (the car-only replay with the car's draws left out
+too) by 6 or more of 255. The car's draws are every draw of the main
+colour pass with the car's matrix (within 0.05, which takes in the
+transparent pass): the exterior LOD0 model, the cockpit model
+(interior, steering wheel, mirrors, lamp units), glass and lamp covers,
+rotors, calipers, rims and tyres. Glass counts: a window pixel is in
+the mask because the glass changes it, and so is the interior seen
+through it. Because the stage is not drawn in either replay, nothing
+the car does to the stage (shadow, reflections, lamp glow on the floor)
+reaches the mask. The threshold 6 leaves out a faint glow that the
+car's passes spread a few pixels around the body (differences of 1 to
+5); at 2 it adds up to 7 % to the mask. The empty frame is the same for
+every car (checked on the first and last dump of each run,
+`checks.empty_frames_agree`).
+
+**Projection check.** The parts the game drew (exterior LOD0 and
+cockpit sections, tyres and wheels left out of both sides), projected
+with `clip_from_car` and rasterised at pixel centres, against the game's
+coverage of the same parts (a car-only replay without the wheel draws,
+against the empty frame, at the mask threshold): IoU 0.988 to 0.995 on
+five cars (Abarth 595 of 1968 0.990, Abarth 500 esseesse 0.988,
+Alfa Romeo 8C Spider 0.995, 8C Competizione 0.996, TZ3 Stradale 0.990).
+The remaining difference is edge pixels and the transparent pass's one
+pixel shift.
 
 ## Plan for every car
 
@@ -299,14 +340,16 @@ mask.
    `car-list.json` (`autoshow_make_index`, `autoshow_list_index`): open
    the Autoshow once, walk to the make, and for each car press A, capture
    at 300 and 390 frames, then return to the list and move one right.
-   This depends on B taking the showroom back to the car list, which is
-   not verified: in the pilot B during the beauty camera opened a
-   dialog. If it cannot, re-enter the Autoshow per car. 57 make routes
-   would cover the 200 Autoshow cars in roughly an hour of wall time.
-2. **Dumps.** A run takes one dump, because the dump path is read at
-   start and a second dump overwrites it. Either run one short route per
-   car (200 runs, about 2.5 hours) or add a default-off SDK option that
-   numbers dump files, so a make route can dump each car.
+   B at 480 frames after A, in the standard view, returns to the car
+   list with the same car selected; the next press waits 300 frames.
+   Routes run hidden (the menus advance in wall time and a visible
+   window changes the pacing). `autoshow-refs.py routes` writes routes
+   of several makes each, and `--only` routes a subset.
+2. **Dumps.** The route sets `fh1_frame_dump_path` at run time before
+   each request, so one run dumps every car it shows (FH1 render test
+   automation, Frame dumps). Each dump is replayed three times (image,
+   car only, and the empty frame for the first and last dump), and the
+   dump is deleted once its reference is built.
 3. **Unicorns.** Use a test database mod in the seed that clears the
    unicorn flag (the method of the Autoshow price tests), so the 16
    unicorns appear in their makes; record that their references come
@@ -336,6 +379,5 @@ mask.
   holds.
 - Which copy the game loads when a model exists both on the disc and in
   a package (no effect: the copies are identical).
-- Whether B from the showroom returns straight to the car list.
 - The order of the six tied pairs in their car lists.
 - Where the darkening under the car comes from.
