@@ -69,6 +69,7 @@ class TrafficView {
   size_t drawn_ = 0;
   double upload_ms_max_ = 0;
   int uploads_ = 0;
+  double guests_at_ = -1;  // the population time guests were last refreshed from step()
 };
 
 }  // namespace carview

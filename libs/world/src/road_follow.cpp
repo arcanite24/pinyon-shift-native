@@ -56,7 +56,10 @@ drive::Input RoadFollower::input(const drive::Vehicle& v) const {
     size_t lo = best, hi = best;
     while (lo > 0 && turns[lo] - turns[lo - 1] < 0.15) --lo;
     while (hi + 1 < turns.size() && turns[hi + 1] - turns[hi] < 0.15) ++hi;
-    const double aim = (turns[lo] + turns[hi]) / 2;
+    double aim = (turns[lo] + turns[hi]) / 2;
+    // A lane right of the middle (a positive turn is to the right), a
+    // metre inside the run's right end.
+    if (keep_right_ > 0) aim += std::clamp(keep_right_ / ahead, 0.0, std::max(0.0, turns[hi] - aim - 1.0 / ahead));
     in.steer = std::clamp(aim / 0.45, -1.0, 1.0);
   }
   const double error = target_ - speed;

@@ -14,6 +14,7 @@ constexpr double kAwayLerpSpeed = 20;   // AI/Spawning/SpawnAwayChanceLerpSpeed,
 constexpr double kBendDecel = 3;        // m/s^2 when slowing for a bend (ours)
 constexpr double kCarLength = 6;        // m added to the look-ahead gap, bumper to bumper (ours)
 constexpr double kLaneHalfWidth = 2.0;  // m: another car this close to the lane line is in it (ours)
+constexpr double kPlayerHalfWidth = 2.4;  // m: the same for the player, who may straddle the lanes (ours)
 
 double hdist(const P3& a, const P3& b) { return std::hypot(a.x - b.x, a.z - b.z); }
 
@@ -328,10 +329,10 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   // The car or player ahead in the lane: match its speed, stop short of it.
   const double fx = std::sin(car.heading), fz = std::cos(car.heading);
   const auto right = right_of(fx, fz);
-  auto ahead = [&](const P3& p, double vx, double vz, double search) {
+  auto ahead = [&](const P3& p, double vx, double vz, double search, double half_width) {
     const double rx = p.x - car.position.x, rz = p.z - car.position.z;
     const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
-    if (d <= 0 || d > search || std::fabs(lat) > kLaneHalfWidth) return;
+    if (d <= 0 || d > search || std::fabs(lat) > half_width) return;
     const double need = std::max(config_.min_look_ahead, car.speed * config_.look_ahead_time) + kCarLength;
     const double along = vx * fx + vz * fz;
     if (d < need) target = std::min(target, d < 0.6 * need ? 0.0 : std::max(0.0, along - 2.0));
@@ -339,9 +340,9 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   };
   for (const auto& o : cars_) {
     if (o.id == car.id) continue;
-    ahead(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, config_.traffic_search);
+    ahead(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, config_.traffic_search, kLaneHalfWidth);
   }
-  ahead(player, player_velocity.x, player_velocity.z, config_.player_search);
+  ahead(player, player_velocity.x, player_velocity.z, config_.player_search, kPlayerHalfWidth);
   car.target = target;
   if (car.physics && bodies_ && car.body) return;  // the host's body moves it
   if (target > car.speed) car.speed = std::min(target, car.speed + config_.accel_max * dt);

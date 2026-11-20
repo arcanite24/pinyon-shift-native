@@ -117,6 +117,13 @@ void TrafficView::step(drive::Vehicle& player) {
   if (!population_) return;
   const drive::Vec3 p = player.position(), v = player.velocity();
   population_->step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
+  // The bodies' parameters come with the models: refresh them on the sim's
+  // clock too, so a run that renders seldom (headless --every) still gets
+  // bodies near the player.
+  if (population_->time() - guests_at_ >= 0.25) {
+    guests_at_ = population_->time();
+    update_guests();
+  }
   if (ground_ && *ground_) bodies_->step(**ground_, &player);
 }
 

@@ -30,6 +30,9 @@ class RoadFollower {
   // The collision to look for walls in (null: none). Set it again after
   // the ground changes.
   void set_ground(const drive::Ground* ground) { ground_ = ground; }
+  // Keep this far right of the road's middle (m; 0: the middle), held a
+  // metre inside the road's right edge: a lane, for runs with traffic.
+  void set_keep_right(double metres) { keep_right_ = metres; }
   drive::Input input(const drive::Vehicle& v) const;
   size_t road_points() const { return points_.size(); }
 
@@ -43,6 +46,7 @@ class RoadFollower {
   double stuck_time_ = 0;
   const drive::Ground* ground_ = nullptr;
   double target_;
+  double keep_right_ = 0;
   std::vector<std::array<double, 2>> points_;  // road triangle centres (x, z)
 };
 
