@@ -563,7 +563,7 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery) {
   const V3 u = cross3(side, f);
   const float view[16] = {side.x, u.x, -f.x, 0, side.y, u.y, -f.y, 0, side.z, u.z, -f.z, 0,
                           -dot3(side, eye), -dot3(u, eye), dot3(f, eye), 1};
-  const float near_z = 0.25f, far_z = 4000.0f;
+  const float near_z = 0.25f, far_z = 16000.0f;  // the far ring reaches several km
   const float t = 1.0f / std::tan(fovy / 2);
   float projection[16] = {};
   projection[0] = t / aspect;
@@ -668,7 +668,7 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.uv1 = mesh.uv1;
     w.vertex_colours = mesh.colours;
     w.material = mesh.material;
-    for (const auto& m : mesh.materials) w.materials.push_back({m.albedo, uint8_t(m.blend)});
+    for (const auto& m : mesh.materials) w.materials.push_back({m.albedo, uint8_t(m.blend), m.far});
   }
   return w;
 }
@@ -751,7 +751,7 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 //   carview --drive --bake <dir> --car <media> [--run rest|launch|slalom|circle|cruise
 //           | --script file] [--speed kmh] [--view chase|front] [--seconds N] [--every S]
 //           [--world <colorado dir> [--cache file] [--near x z] [--spawn x y z heading]
-//            [--render-ground] [--flat-world] [--no-props] [--world-reference freeroam.json]]
+//            [--render-ground] [--flat-world] [--no-props] [--no-far] [--world-reference freeroam.json]]
 //           [--headless --out prefix.png [--hud]] [--size WxH]
 //
 // With --world the car drives on Colorado's collision (COLLISION.md `.fiz`
@@ -764,7 +764,9 @@ void scenery_transform(const cars::bake::CarInfo& car, const drive::Vehicle& v, 
 // The scenery is drawn with its own textures (WORLD-MATERIALS' first-pass
 // recipe: slot 0 lit by the frame's sun and sky); --flat-world draws the
 // earlier flat colours per surface class, and --no-props leaves the
-// placed props out. --world-reference (headless)
+// placed props out. The textured world also draws the far ring (the
+// MIDDIST and UberLOD terrain within 3 km; --no-far leaves it out) and a
+// sky gradient. --world-reference (headless)
 // gathers around a world reference's camera and renders that one frame
 // without the car at its matrix and size: <out> and, beside it, <out stem>_vs.png
 // with the reference image on the left.
@@ -772,7 +774,8 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
-  bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false;
+  bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false,
+       no_far = false;
   std::filesystem::path world_reference_path;
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
@@ -802,6 +805,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--render-ground") render_ground = true;
     else if (a == "--flat-world") flat_world = true;
     else if (a == "--no-props") no_props = true;
+    else if (a == "--no-far") no_far = true;
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
     else if (a == "--sound") sound_dir = next();
@@ -826,7 +830,7 @@ int run_drive(int argc, char** argv) {
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "usage: carview --drive --bake <dir> --car <media> [--run name | --script file] "
                          "[--speed kmh] [--view chase|front] [--seconds N] [--every S] [--world <colorado dir> "
-                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] "
+                         "[--cache file] [--near x z] [--spawn x y z heading] [--render-ground] [--flat-world] [--no-props] [--no-far] "
                          "[--world-reference file.json]] [--headless --out prefix.png [--hud] "
                          "[--audio-out file.wav]] [--sound dir | --no-sound] [--size WxH]\n");
     return 2;
@@ -983,6 +987,7 @@ int run_drive(int argc, char** argv) {
           world::GatherOptions gather_options;
           gather_options.render_data = !flat_world;
           gather_options.props = !no_props;
+          if (!flat_world && !no_far) gather_options.far_radius = 3000;
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, 200,
                                                        render_ground ? nullptr : &collision);
           // Gathers after the first run on a worker in the window (and with
@@ -1096,6 +1101,8 @@ int run_drive(int argc, char** argv) {
                     "default UV scale, %zu submeshes without a material\n",
                     streamer->mesh().triangles(), streamer->mesh().materials.size(), texture_loader.decoded,
                     texture_loader.failed.size(), st.default_uv_models.size(), st.no_material);
+        if (st.far_models)
+          std::printf("far ring: %zu models, %zu triangles\n", st.far_models, st.far_triangles);
         for (const auto& n : showroom.notes()) std::fprintf(stderr, "carview: note: %s\n", n.c_str());
         // The effects drawn without a texture, by triangles.
         const auto& mesh = streamer->mesh();

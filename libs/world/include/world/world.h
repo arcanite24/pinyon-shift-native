@@ -65,7 +65,11 @@ struct MeshMaterial {
   std::string effect;               // upper case, e.g. H_ROAD_DIFF3_NORM1_NOISE_AO_LM
   uint32_t albedo = kNoTexture;     // slot 0: Diffuse_Texture or Blend_A
   Blend blend = Blend::kOpaque;
-  auto key() const { return std::make_tuple(effect, albedo); }
+  // The far ring (ours): 0 near scenery, 1 a MIDDIST object, 2 an UberLOD
+  // one. The renderer pushes far levels back in depth so the near terrain
+  // wins where both are drawn.
+  uint8_t far = 0;
+  auto key() const { return std::make_tuple(effect, albedo, far); }
 };
 
 struct Mesh {
@@ -90,7 +94,8 @@ struct ModelInfo {
   std::string name;  // coloradoout.NNNNN.rmb.bin
   std::array<float, 3> box_min{}, box_max{};
   bool world_space = false;
-  bool ok = false;  // parsed
+  bool ok = false;   // parsed
+  bool far = false;  // holds MIDDIST or UberLOD objects (the far ring)
 };
 
 struct GatherOptions {
@@ -99,10 +104,17 @@ struct GatherOptions {
   double prop_lod0 = 80;     // props nearer than this use LOD00, the rest LOD02 (or their last)
   bool props = true;
   bool render_data = false;  // fill the Mesh's normals, UVs, colours and materials
+  // The far ring (ours; needs render_data): the MIDDIST and UberLOD terrain
+  // the near gather skips, from models whose header box comes within this,
+  // finest LOD per family; their triangles wholly within far_inner of the
+  // point (MIDDIST) or 1.5 x far_inner (UberLOD) are left out. 0: none.
+  double far_radius = 0;
+  double far_inner = 400;
 };
 
 struct GatherStats {
   size_t world_models = 0, objects = 0, skipped_lod = 0, skipped_far = 0, props = 0, prop_unresolved = 0;
+  size_t far_models = 0, far_triangles = 0;  // the far ring
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name
   // With render_data: models drawn without a uvOffsetScale (given offset 0

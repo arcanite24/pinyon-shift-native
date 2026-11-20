@@ -78,6 +78,7 @@ struct WorldTriangles {
   struct Material {
     uint32_t texture = kNoWorldTexture;  // texture record of slot 0
     uint8_t blend = 0;                   // world::Blend: opaque, coverage, alpha
+    uint8_t far = 0;                     // world::MeshMaterial::far: pushed back in depth
   };
   std::vector<std::array<float, 3>> normals;
   std::vector<std::array<float, 2>> uv0, uv1;

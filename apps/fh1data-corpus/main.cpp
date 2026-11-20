@@ -315,9 +315,11 @@ int names(const fs::path& zip, const fs::path& dir) {
   return only_archive || only_disk ? 1 : 0;
 }
 
-// --render-models <dir|archive.zip>: parses every *.rmb.bin to its last
-// index list and prints the census the format spec quotes.
-int render_models(const fs::path& source) {
+// --render-models <dir|archive.zip> [--objects]: parses every *.rmb.bin to
+// its last index list and prints the census the format spec quotes;
+// --objects also lists every mesh object (model, name, the model's header
+// box, its submeshes' effects and triangles).
+int render_models(const fs::path& source, bool list_objects = false) {
   std::unique_ptr<fh1::Archive> archive;
   std::vector<fs::path> files;
   std::vector<const fh1::ArchiveMember*> members;
@@ -408,6 +410,25 @@ int render_models(const fs::path& source) {
       }
     }
     if (!constants) ++odd_constants;
+    if (list_objects) {
+      std::string ignored;
+      fh1::parse_render_materials(data, model, &ignored);
+      for (const auto& o : model.objects) {
+        std::string effects;
+        size_t tris = 0;
+        for (const auto& s : o.submeshes) {
+          tris += fh1::rmb_triangle_list(s).size() / 3;
+          std::string e = s.material_index < model.materials.size() &&
+                                  model.materials[s.material_index].effect < model.effects.size()
+                              ? model.effects[model.materials[s.material_index].effect]
+                              : std::string("-");
+          if (effects.find(e) == std::string::npos) effects += (effects.empty() ? "" : ",") + e;
+        }
+        std::printf("object %s %s box %.0f %.0f %.0f %.0f %.0f %.0f tris %zu %s\n", name.c_str(), o.name.c_str(),
+                    model.box_min[0], model.box_min[1], model.box_min[2], model.box_max[0], model.box_max[1],
+                    model.box_max[2], tris, effects.c_str());
+      }
+    }
   }
   auto histogram = [](const char* what, const std::map<uint32_t, uint64_t>& h) {
     std::printf("%s:", what);
@@ -665,7 +686,8 @@ int main(int argc, char** argv) {
   if (args.size() == 3 && args[0] == "--dump") return dump(args[1], args[2]);
   if ((args.size() == 2 || args.size() == 3) && args[0] == "--names")
     return names(args[1], args.size() == 3 ? fs::path(args[2]) : fs::path());
-  if (args.size() == 2 && args[0] == "--render-models") return render_models(args[1]);
+  if ((args.size() == 2 || (args.size() == 3 && args[2] == "--objects")) && args[0] == "--render-models")
+    return render_models(args[1], args.size() == 3);
   if (args.size() == 3 && args[0] == "--world-materials") return world_materials(args[1], args[2]);
   if ((args.size() == 3 || args.size() == 7) && args[0] == "--props") {
     double box[4];

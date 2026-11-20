@@ -38,7 +38,11 @@ layout(location = 4) in vec4 v_colour;
 layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u;
-const uint kFlagTextured = 1u;
+const uint kFlagTextured = 1u, kFlagSky = 2u;
+
+// The sky gradient (ours, linear): pale haze at the horizon to blue above.
+const vec3 kSkyHorizon = vec3(0.477, 0.604, 0.708);
+const vec3 kSkyZenith = vec3(0.089, 0.235, 0.571);
 
 // The frame's lighting constants (daytime free-roam dump).
 const vec3 kSunColour = vec3(0.9695, 0.8358, 0.584);
@@ -53,6 +57,12 @@ vec3 encode_srgb(vec3 c) {
 void main() {
   uint blend = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
+  if ((flags & kFlagSky) != 0u) {
+    float h = dot(normalize(v_position), normalize(draw.up.xyz));
+    vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(clamp(h, 0.0, 1.0), 0.6));
+    out_color = vec4(encode_srgb(sky * (h < 0.0 ? 0.85 : 1.0)), 1.0);
+    return;
+  }
   vec4 t = (flags & kFlagTextured) != 0u ? texture(albedo, v_uv0) : vec4(draw.tint.rgb, 1.0);
 
   vec3 up = normalize(draw.up.xyz);

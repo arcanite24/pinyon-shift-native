@@ -42,7 +42,7 @@ std::string lod_family(const std::string& name, int& lod) {
   return n;
 }
 
-constexpr const char* kCacheMagic = "shift-world-index 1";
+constexpr const char* kCacheMagic = "shift-world-index 2";
 
 }  // namespace
 
@@ -60,6 +60,16 @@ const char* surface_name(Surface s) {
 bool skipped_object(const std::string& object) {
   const std::string o = lower(object);
   return has(o, "terr_cube") || has(o, "uberlod") || has(o, "middist") || has(o, "occluder");
+}
+
+// The far ring's level of an object: 1 MIDDIST, 2 UberLOD, 0 neither.
+// TERR_CUBE objects are not scenery (ours: road and diffuse effects over
+// the terrain's footprint, by their name the cube maps' stand-ins).
+uint8_t far_level(const std::string& object) {
+  const std::string o = lower(object);
+  if (has(o, "terr_cube") || has(o, "occluder") || has(o, "cage")) return 0;  // CAGE: walls round a patch
+  if (has(o, "uberlod")) return 2;
+  return has(o, "middist") ? 1 : 0;
 }
 
 bool skipped_material(const std::string& material) { return lower(material) == "occluder"; }
@@ -157,11 +167,12 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
     unsigned long long size = 0;
     if (std::getline(in, magic) && magic == kCacheMagic && (in >> size) && size == zip_size) {
       ModelInfo m;
-      int ws = 0, ok = 0;
+      int ws = 0, ok = 0, far = 0;
       while (in >> m.name >> m.box_min[0] >> m.box_min[1] >> m.box_min[2] >> m.box_max[0] >> m.box_max[1] >>
-             m.box_max[2] >> ws >> ok) {
+             m.box_max[2] >> ws >> ok >> far) {
         m.world_space = ws != 0;
         m.ok = ok != 0;
+        m.far = far != 0;
         models_.push_back(m);
       }
       cached = !models_.empty();
@@ -180,6 +191,7 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
         m.box_min = model.box_min;
         m.box_max = model.box_max;
         m.world_space = fh1::rmb_is_world_space(model);
+        for (const auto& o : model.objects) m.far = m.far || far_level(o.name) != 0;
       }
       models_.push_back(m);
     }
@@ -189,9 +201,9 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
       out << kCacheMagic << "\n" << zip_size << "\n";
       char line[256];
       for (const auto& m : models_) {
-        std::snprintf(line, sizeof line, "%s %.9g %.9g %.9g %.9g %.9g %.9g %d %d\n", m.name.c_str(), m.box_min[0],
-                      m.box_min[1], m.box_min[2], m.box_max[0], m.box_max[1], m.box_max[2], int(m.world_space),
-                      int(m.ok));
+        std::snprintf(line, sizeof line, "%s %.9g %.9g %.9g %.9g %.9g %.9g %d %d %d\n", m.name.c_str(),
+                      m.box_min[0], m.box_min[1], m.box_min[2], m.box_max[0], m.box_max[1], m.box_max[2],
+                      int(m.world_space), int(m.ok), int(m.far));
         out << line;
       }
     }
@@ -222,9 +234,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   GatherStats& st = stats ? *stats : local;
   out = {};
 
-  std::map<std::tuple<std::string, uint32_t>, uint32_t> material_index;
+  std::map<std::tuple<std::string, uint32_t, uint8_t>, uint32_t> material_index;
+  // far_pass: the far ring's objects only (the near pass skips them).
   auto add_triangles = [&](const fh1::RenderModel& model, uint32_t model_index, const fh1::Placement* placement,
-                           const std::map<std::string, int>* lowest) {
+                           const std::map<std::string, int>* lowest, bool far_pass = false) {
     // The model's texture list (WORLD-MATERIALS): list j for member j + 1.
     const std::vector<uint32_t>* texture_list = nullptr;
     if (options.render_data && model_index < models_.size()) {
@@ -238,10 +251,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     for (const auto& o : model.objects) {
       const size_t first_submesh = submesh_number;
       submesh_number += o.submeshes.size();
-      if (!placement && skipped_object(o.name)) {
-        ++st.skipped_far;
+      const uint8_t far = far_pass ? far_level(o.name) : 0;
+      if (far_pass ? far == 0 : !placement && skipped_object(o.name)) {
+        if (!far_pass) ++st.skipped_far;
         continue;
       }
+      // The far ring leaves out triangles wholly near the point.
+      const double inner = far == 2 ? 1.5 * options.far_inner : options.far_inner;
       if (lowest) {
         int lod;
         const std::string family = lod_family(o.name, lod);
@@ -264,8 +280,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       for (size_t si = 0; si < o.submeshes.size(); ++si) {
         const auto& s = o.submeshes[si];
         if (skipped_material(s.material)) continue;
-        const uint8_t solid = !placement && ground_object(o.name);
-        const Surface surface = placement ? Surface::kProp : classify(o.name, s.material);
+        const uint8_t solid = !placement && !far && ground_object(o.name);
+        const Surface surface = placement ? Surface::kProp : far ? Surface::kTerrain : classify(o.name, s.material);
         const auto tri = fh1::rmb_triangle_list(s);
         // The render data: the material, the vertex layout and the UV scale.
         uint32_t mat = kNoTexture;
@@ -276,6 +292,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           if (s.material_index < model.materials.size()) {
             const fh1::RmbMaterial& m = model.materials[s.material_index];
             MeshMaterial mm;
+            mm.far = far;
             mm.effect = model.effects[m.effect];
             mm.blend = effect_blend(mm.effect);
             const int32_t slot0 = m.slots.empty() ? -2 : m.slots[0];
@@ -296,9 +313,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             if (first_submesh + si < model.uv_offset_scale.size()) uv = model.uv_offset_scale[first_submesh + si];
           } else {
             ++st.no_material;
-            auto [it, fresh] = material_index.emplace(std::make_tuple(std::string(), kNoTexture),
+            auto [it, fresh] = material_index.emplace(std::make_tuple(std::string(), kNoTexture, uint8_t(far)),
                                                       uint32_t(out.materials.size()));
-            if (fresh) out.materials.push_back(MeshMaterial{});
+            if (fresh) {
+              MeshMaterial none;
+              none.far = far;
+              out.materials.push_back(none);
+            }
             mat = it->second;
           }
         }
@@ -330,6 +351,15 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         };
         size_t added = 0;
         for (size_t t = 0; t + 2 < tri.size(); t += 3) {
+          if (far) {
+            bool inside = true;
+            for (int k = 0; k < 3 && inside; ++k) {
+              const auto p = position(tri[t + size_t(k)]);
+              inside = std::hypot(p[0] - x, p[2] + z) < inner;  // z is the file frame's here
+            }
+            if (inside) continue;
+            ++st.far_triangles;
+          }
           corner(tri[t]);
           corner(tri[t + 1]);
           corner(tri[t + 2]);
@@ -380,6 +410,40 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     }
   for (const auto& [i, model] : selected) add_triangles(model, i, nullptr, &lowest);
   st.world_models = selected.size();
+
+  // The far ring: MIDDIST and UberLOD objects of the models within
+  // far_radius, the finest LOD present per family.
+  if (options.render_data && options.far_radius > 0) {
+    std::vector<std::pair<uint32_t, fh1::RenderModel>> far_models;
+    const double fr = options.far_radius;
+    for (uint32_t i = 0; i < models_.size(); ++i) {
+      const ModelInfo& m = models_[i];
+      if (!m.ok || !m.world_space || !m.far) continue;
+      const double dx = std::max({0.0, double(m.box_min[0]) - x, x - double(m.box_max[0])});
+      const double dz = std::max({0.0, double(m.box_min[2]) - z, z - double(m.box_max[2])});
+      if (dx * dx + dz * dz > fr * fr) continue;
+      fh1::RenderModel model;
+      std::string e;
+      if (!impl_->source.read(m.name, bytes, &e) || !fh1::parse_render_model(bytes, model, &e)) {
+        if (error) *error = m.name + ": " + e;
+        return false;
+      }
+      std::string ignored;
+      fh1::parse_render_materials(bytes, model, &ignored);
+      far_models.emplace_back(i, std::move(model));
+    }
+    std::map<std::string, int> far_lowest;
+    for (const auto& [i, model] : far_models)
+      for (const auto& o : model.objects) {
+        int lod;
+        const std::string family = lod_family(o.name, lod);
+        if (lod < 0 || far_level(o.name) == 0) continue;
+        auto [it, added] = far_lowest.emplace(family, lod);
+        if (!added) it->second = std::min(it->second, lod);
+      }
+    for (const auto& [i, model] : far_models) add_triangles(model, i, nullptr, &far_lowest, true);
+    st.far_models = far_models.size();
+  }
 
   // Props near the point, one per model and spot (a zone lists one object
   // per LOD level at the same spot).

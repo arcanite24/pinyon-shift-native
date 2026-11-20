@@ -109,6 +109,31 @@ int main() {
                 mesh.materials.size(), untextured, textures.size(), decoded, gs.default_uv_models.size(),
                 gs.no_material);
     CHECK(!textures.empty() && decoded == textures.size() && gs.no_material == 0);
+
+    // The far ring (ours): MIDDIST and UberLOD terrain beyond far_inner,
+    // never ground or road, its materials marked far.
+    world::GatherOptions fo = o;
+    fo.far_radius = 3000;
+    world::Mesh far_mesh;
+    world::GatherStats fs;
+    CHECK(w.gather(world::kDumpCameraX, world::kDumpCameraZ, fo, far_mesh, &fs, &error));
+    size_t far_tris = 0, far_bad = 0, far_inside = 0;
+    for (size_t t = 0; t < far_mesh.triangles(); ++t) {
+      if (!far_mesh.materials[far_mesh.material[t]].far) continue;
+      ++far_tris;
+      far_bad += far_mesh.ground[t] || far_mesh.surface[t] == world::Surface::kRoad;
+      bool inside = true;
+      for (int k = 0; k < 3; ++k) {
+        const auto& p = far_mesh.positions[t * 3 + size_t(k)];
+        inside = inside && std::hypot(p[0] - world::kDumpCameraX, p[2] - world::kDumpCameraZ) < fo.far_inner;
+      }
+      far_inside += inside;
+    }
+    std::printf("far ring: %zu models, %zu triangles (%zu marked far), near triangles %zu as before\n",
+                fs.far_models, fs.far_triangles, far_tris, far_mesh.triangles() - far_tris);
+    CHECK(fs.far_models > 50 && far_tris == fs.far_triangles && far_tris > 10000);
+    CHECK(far_bad == 0 && far_inside == 0);
+    CHECK(far_mesh.triangles() - far_tris == mesh.triangles());
   }
 
   // The dumped camera, game frame (file frame 1999.0, 145.4, -962.9).

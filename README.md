@@ -89,10 +89,13 @@ background as you drive. The first run builds `out\world\colorado.index`
 
 The scenery is drawn with its own textures (WORLD_MATERIALS.md's first
 pass: each material's main texture lit by the sun and sky of the
-reference frame; terrain shows its first layer only, so hills
-probably read as grey rock for that reason). Textures decode as the world streams in, so a regather can
-stall the window briefly. `--flat-world` draws the earlier flat colours,
-`--no-props` leaves the placed props out.
+reference frame; terrain shows its first layer only, so near slopes
+probably read as grey rock for that reason). Beyond 400 m the far ring
+draws the terrain's MIDDIST and UberLOD objects within 3 km (tree-covered
+slopes, the snowy peaks) under a sky gradient. Textures decode as the
+world streams in, so a regather can stall the window briefly.
+`--flat-world` draws the earlier flat colours, `--no-props` leaves the
+placed props out, `--no-far` the far ring.
 
 | | Keyboard | Gamepad |
 | --- | --- | --- |
@@ -194,7 +197,7 @@ carview --game-root <game> --car AST_DB5Vantage_64 --headless --out car.png --si
 
 # Render models: the archive's directory, then every model parsed
 fh1data-corpus --names <game>/media/tracks/colorado/bin.zip [extracted-dir]
-fh1data-corpus --render-models <game>/media/tracks/colorado/bin.zip
+fh1data-corpus --render-models <game>/media/tracks/colorado/bin.zip [--objects]
 
 # World materials and textures (WORLD_MATERIALS.md): material records,
 # uvOffsetScale writes, vertex layouts, texture records and every .bix

@@ -27,8 +27,13 @@ layout(push_constant) uniform Draw {
   vec4 sun;     // xyz towards the sun in the frame's space
   vec4 up;      // xyz up in the frame's space, w exposure
   vec4 tint;    // flat colour of an untextured material
-  vec4 params;  // x blend mode, y flags
+  vec4 params;  // x blend mode, y flags, z far-ring level
 } draw;
+
+const uint kFlagSky = 2u;
+// Far-ring levels are pushed away from the eye by this much each (ours):
+// unchanged on screen, behind the near terrain where both are drawn.
+const float kFarPush = 0.03;
 
 layout(location = 0) out vec3 v_position;
 layout(location = 1) out vec3 v_normal;
@@ -37,6 +42,19 @@ layout(location = 3) out vec2 v_uv1;
 layout(location = 4) out vec4 v_colour;
 
 void main() {
+  uint flags = uint(draw.params.y + 0.5);
+  if ((flags & kFlagSky) != 0u) {
+    // The sky dome: a direction, centred on the eye, at the far plane.
+    vec3 dir = mat3(draw.model) * in_position;
+    v_position = dir;
+    v_normal = vec3(0.0);
+    v_uv0 = vec2(0.0);
+    v_uv1 = vec2(0.0);
+    v_colour = vec4(1.0);
+    gl_Position = frame.view_projection * vec4(frame.eye.xyz + dir, 1.0);
+    gl_Position.z = gl_Position.w * 0.9999999;
+    return;
+  }
   vec4 world = draw.model * vec4(in_position, 1.0);
   mat3 normal_matrix = transpose(inverse(mat3(draw.model)));
   v_position = world.xyz;
@@ -44,5 +62,7 @@ void main() {
   v_uv0 = in_uv0;
   v_uv1 = in_uv1;
   v_colour = in_colour;
-  gl_Position = frame.view_projection * world;
+  vec4 placed = world;
+  if (draw.params.z > 0.5) placed.xyz = frame.eye.xyz + (world.xyz - frame.eye.xyz) * (1.0 + kFarPush * draw.params.z);
+  gl_Position = frame.view_projection * placed;
 }

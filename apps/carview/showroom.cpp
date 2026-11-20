@@ -1287,11 +1287,42 @@ namespace {
 int8_t snorm8(float v) { return int8_t(std::lround(std::clamp(v, -1.0f, 1.0f) * 127.0f)); }
 
 // The textured world: one vertex per corner, one draw per material, the
-// opaque materials first, then the cut-outs, then the blended ones.
+// the sky dome first, then opaque materials, then the cut-outs, then the
+// blended ones.
 WorldGeometry build_textured_world(const WorldTriangles& world) {
   WorldGeometry out;
   out.textured = true;
   out.textures = world.textures;
+  {
+    // The sky (ours): a unit sphere of directions in the game frame, which
+    // world.vert centres on the eye at the far plane and world.frag shades
+    // by height.
+    WorldGeometry::Draw d;
+    d.first_index = 0;
+    constexpr int kRings = 12, kSegments = 24;
+    constexpr float kPi = 3.14159265358979f;
+    auto dir = [&](int ring, int seg) {
+      const float a = kPi * float(ring) / kRings - kPi / 2, b = 2 * kPi * float(seg) / kSegments;
+      return std::array<float, 3>{std::cos(a) * std::cos(b), std::sin(a), std::cos(a) * std::sin(b)};
+    };
+    auto vertex = [&](const std::array<float, 3>& p) {
+      WorldVertex v{};
+      for (int i = 0; i < 3; ++i) v.position[i] = p[size_t(i)];
+      out.indices.push_back(uint32_t(out.textured_vertices.size()));
+      out.textured_vertices.push_back(v);
+    };
+    for (int r = 0; r < kRings; ++r)
+      for (int s = 0; s < kSegments; ++s) {
+        const auto a = dir(r, s), b = dir(r + 1, s), c = dir(r + 1, s + 1), e = dir(r, s + 1);
+        vertex(a), vertex(b), vertex(c), vertex(a), vertex(c), vertex(e);
+      }
+    d.index_count = uint32_t(out.indices.size());
+    d.texture = kNoWorldTexture;
+    d.blend = 0;
+    d.push.params[0] = 0;
+    d.push.params[1] = 2;  // world.frag's kFlagSky
+    out.draws.push_back(d);
+  }
   const size_t n = world.material.size();
   std::vector<std::vector<uint32_t>> by_material(world.materials.size());
   for (uint32_t t = 0; t < n; ++t)
@@ -1331,6 +1362,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     d.push.tint[3] = 1;
     d.push.params[0] = float(mat.blend);
     d.push.params[1] = mat.texture != kNoWorldTexture ? 1.0f : 0.0f;  // world.frag's kFlagTextured
+    d.push.params[2] = float(mat.far);                                 // world.vert's depth push
     out.draws.push_back(d);
   }
   return out;
@@ -1656,7 +1688,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       ShowroomPush push = d.push;
       if (!set) {
         set = world_white_set_;
-        push.params[1] = 0;  // the texture did not upload: flat
+        if (push.params[1] == 1) push.params[1] = 0;  // the texture did not upload: flat
       }
       if (set != bound_set)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &(bound_set = set), 0,

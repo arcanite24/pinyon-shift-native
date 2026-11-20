@@ -525,3 +525,29 @@ Engine choices, open for the spec:
   guardrail.
 - **Upload.** Textures upload on the render thread when a gather swaps in,
   synchronously, and stay cached: a regather can stall the window.
+
+## Q37 (polish): the far ring and the sky
+
+The hills of the reference frame were flat grey shapes on a flat blue sky.
+The near gather skips every object named TERR_CUBE, UberLOD, MIDDIST or
+OCCLUDER (the WORLD_GEOMETRY selection). Ours, until the spec says which
+models draw the hills, the distant tree cover and the sky:
+
+- **The far ring.** The MIDDIST and UberLOD objects (the model index marks
+  the 406 models that hold them) of the models whose header box is within
+  3 km, finest LOD present per family, drawn with their own slot-0 texture.
+  Their triangles wholly within 400 m of the gather point are left out
+  (UberLOD: 600 m), and the rest are pushed away from the eye in depth (3 %
+  for MIDDIST, 6 % for UberLOD), so the near terrain wins where both are
+  drawn. At the reference camera: 117 models, about 99,000 triangles.
+- **Left out of it.** TERR_CUBE objects (road and diffuse effects over the
+  terrain's footprint; by the name, the cube maps' stand-ins) and UberLOD
+  `_CAGE` objects (tall walls round a patch, untextured: they hid the
+  sky). Some far objects use H_DIFF_1 with no slot-0 file
+  (`Zone2_Area3_6_middistance_*`, several UberLOD patches); they draw flat.
+- **The sky.** A gradient by height from a pale horizon to blue, ours,
+  behind everything. Needed: the sky's model or effect, if the game draws
+  one.
+- **Far plane.** The drive camera's far plane is 16 km (was 4 km).
+- **Census.** `fh1data-corpus --render-models bin.zip --objects` lists
+  every mesh object with its model's box and effects.
