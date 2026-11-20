@@ -348,7 +348,7 @@ void put_be32_at(std::vector<uint8_t>& b, size_t at, uint32_t v) {
 void test_half() {
   CHECK(fh1::half_to_float(0x3C00) == 1.0f);
   CHECK(fh1::half_to_float(0xC000) == -2.0f);
-  CHECK(fh1::half_to_float(0x5640) == 100.0f);
+  CHECK(fh1::half_to_float(0x4900) == 10.0f);
   CHECK(fh1::half_to_float(0x0000) == 0.0f);
   CHECK(fh1::half_to_float(0x0001) == std::ldexp(1.0f, -24));
   CHECK(std::isinf(fh1::half_to_float(0x7C00)));
@@ -379,8 +379,8 @@ std::vector<uint8_t> synthetic_pvs(uint32_t objects) {
   for (uint32_t i = 0; i < objects; ++i) {
     w.u16(100 + i);
     w.u16(0xFFFE);
-    w.u16(0x20);
-    w.u16(0x3F02);
+    w.u16(0x0005);
+    w.u16(0x0007);
     w.u32(i);
     w.u32(0xFFFFFFFF);
     w.u16(0xFFFF);
@@ -427,9 +427,9 @@ struct SyntheticInstance {
 std::vector<uint8_t> synthetic_pgeo(bool long_header, const std::vector<SyntheticInstance>& in) {
   BeWriter w;
   w.bytes = {'O', 'E', 'G', 'P'};
-  w.u32(0x2A);
-  w.f32(150);
-  w.f32(150);
+  w.u32(1);
+  w.f32(64);
+  w.f32(64);
   w.vec3_pad(-10, 0, 20);
   w.vec3_pad(10, 5, 40);
   const std::string name = std::string("Models_Synthetic_1") + '\0';
@@ -444,7 +444,7 @@ std::vector<uint8_t> synthetic_pgeo(bool long_header, const std::vector<Syntheti
   w.u32(80);  // trailing block: two 40-byte records
   w.u32(2);   // model records
   w.u32(long_header ? 0x12345678 : 0);
-  w.u32(0x43280080);
+  w.u32(0x44444444);
   while (w.bytes.size() < (long_header ? 0x98u : 0x60u)) w.u32(0xFFFFFFFF);
   w.bytes.insert(w.bytes.end(), name.begin(), name.end());
   pad_to(w, 16);
@@ -457,9 +457,9 @@ std::vector<uint8_t> synthetic_pgeo(bool long_header, const std::vector<Syntheti
     const uint32_t counts[2][3] = {{1, 2, 0}, {0, 0, 0}};
     for (int k = 0; k < 3; ++k) {
       w.u32(counts[r][k]);
-      w.u32(0xB087A232);
+      w.u32(0x11111111);  // slot
     }
-    w.u32(0x78000040);
+    w.u32(0x33333333);
   }
   w.u32(61000);
   w.u32(61001);
@@ -468,12 +468,12 @@ std::vector<uint8_t> synthetic_pgeo(bool long_header, const std::vector<Syntheti
   w.bytes.push_back(0);
   w.bytes.push_back(0);
   pad_to(w, 4);
-  w.u32(0x4C8C);
+  w.u32(0x0101);
   w.u32(0);
-  w.u32(0x4C8D);
+  w.u32(0x0102);
   w.u32(1);
   // The class part: a 0x14-byte header with the group count at +0xC.
-  w.u32(0xD4516D37);
+  w.u32(0x22222222);
   w.f32(100);
   w.u32(0);
   w.u32(2);
@@ -528,7 +528,7 @@ void test_pgeo() {
     if (!error.empty()) std::printf("  pgeo: %s\n", error.c_str());
     CHECK(t.header_size == (long_header ? 0x98u : 0x60u));
     CHECK(t.name == "Models_Synthetic_1" && t.distance == 2500.0f && t.box_max[2] == 40.0f);
-    CHECK(t.references.size() == 2 && t.references[1] == std::make_pair(0x4C8Du, 1u));
+    CHECK(t.references.size() == 2 && t.references[1] == std::make_pair(0x0102u, 1u));
     CHECK(t.models.size() == 2 && t.groups.size() == 2 && t.trailing_size == 80);
     if (t.models.size() == 2 && t.groups.size() == 2) {
       CHECK(t.models[0].ids[0] == std::vector<uint32_t>{61000});
@@ -572,7 +572,7 @@ void test_pgeo() {
 
 void put_zone_record(BeWriter& w, const std::array<float, 3>& pos, const uint16_t rot[9],
                      bool extended, const std::string& name) {
-  for (uint16_t d : {0x5640, 0x5BD0, 0x5FD0}) w.u16(d);  // 100, 250, 500
+  for (uint16_t d : {0x3C00, 0x4000, 0x4200}) w.u16(d);  // 1, 2, 3
   for (float p : pos) w.f32(p);
   for (int k = 0; k < 9; ++k) w.u16(rot[k]);
   for (int k = 0; k < 16; ++k) w.bytes.push_back(0);
@@ -606,7 +606,7 @@ void test_pvsz() {
   const uint32_t zbits = 0x42010000;
   std::memcpy(&z, &zbits, 4);
   put_zone_record(w, {10, 20, z}, identity, false, "");
-  put_zone_record(w, {-5, 1, 2}, quarter, true, "FR06_13");
+  put_zone_record(w, {-5, 1, 2}, quarter, true, "ZONE_A");
   put_zone_record(w, {7, 8, 9}, identity, false, "");
   fh1::PvszZone zone;
   std::string error;
@@ -618,7 +618,7 @@ void test_pvsz() {
   if (zone.records.size() == 3) {
     const auto& r = zone.records[1];
     CHECK(r.extended && r.word == 0xFFFFFFFFu && r.extra == std::vector<uint8_t>({7, 8, 9}));
-    CHECK(r.name == "FR06_13" && r.position[0] == -5.0f && r.distances[1] == 250.0f);
+    CHECK(r.name == "ZONE_A" && r.position[0] == -5.0f && r.distances[1] == 2.0f);
     CHECK(r.rotation[2] == 1.0f && r.rotation[6] == -1.0f);
     // H F v + F p with H row-major: local +x goes to H's first column.
     CHECK(near3(fh1::pvsz_placement(r).apply({1, 0, 0}), -5, 1, -3));
@@ -639,8 +639,8 @@ void test_pvsz() {
 void test_lod_part() {
   std::string family;
   int level = 0;
-  CHECK(fh1::rmb_lod_part("OBJ_FEST_BarrierMetal_LOD02_", family, level));
-  CHECK(level == 2 && family == "obj_fest_barriermetal_lod**_");
+  CHECK(fh1::rmb_lod_part("Synthetic_Rail_LOD02_", family, level));
+  CHECK(level == 2 && family == "synthetic_rail_lod**_");
   CHECK(!fh1::rmb_lod_part("Tree_NoLOD", family, level) && level == -1);
   CHECK(!fh1::rmb_lod_part("TERR_LOD1", family, level));
 }
