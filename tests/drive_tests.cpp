@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "drive/from_bake.h"
+#include "drive/mesh_ground.h"
 #include "drive/vehicle.h"
 
 namespace {
@@ -107,6 +108,48 @@ void test_reverse() {
   CHECK(v.position().z < -0.5);
 }
 
+// A plane as two big triangles, rising `grade` (rise over run) towards +z.
+drive::MeshGround plane(double grade) {
+  const float h = 2000, y = float(grade * 2000);
+  return drive::MeshGround({{-h, -y, -h}, {h, y, h}, {h, -y, -h}, {-h, -y, -h}, {-h, y, h}, {h, y, h}});
+}
+
+double time_to(const drive::CarParams& p, const drive::Ground& ground, double kmh) {
+  drive::Vehicle v(p);
+  for (int i = 0; i < 120 * 40; ++i) {
+    v.step({0, 1, 0, false}, ground);
+    if (v.speed() >= kmh / 3.6) return v.time();
+  }
+  return -1;
+}
+
+void test_mesh_ground() {
+  const auto p = test_car();
+  // A flat mesh is the flat ground: the same run to rounding (the mesh's
+  // ray distances differ from the plane's in the last bits).
+  const auto flat_mesh = plane(0);
+  const drive::FlatGround flat;
+  drive::Vehicle a(p), b(p);
+  double worst = 0;
+  for (int i = 0; i < 120 * 8; ++i) {
+    a.step({0.3, 1, 0, false}, flat);
+    b.step({0.3, 1, 0, false}, flat_mesh);
+    const drive::Vec3 d = a.position() - b.position();
+    worst = std::max(worst, std::sqrt(drive::dot(d, d)));
+  }
+  std::printf("flat mesh against flat ground over 8 s: %.3g m apart at most\n", worst);
+  CHECK(worst < 1e-3);
+  // Rays: hit from above, miss from below the far end and beside it.
+  drive::Hit hit;
+  CHECK(flat_mesh.raycast({5, 2, 7}, {0, -1, 0}, 5, hit) && std::fabs(hit.distance - 2) < 1e-6 && hit.normal.y > 0.99);
+  CHECK(!flat_mesh.raycast({5, 2, 7}, {0, -1, 0}, 1.5, hit));
+  CHECK(!flat_mesh.raycast({2500, 2, 7}, {0, -1, 0}, 5, hit));
+  // Up a 7 % grade the car still reaches 60 km/h, a little later.
+  const double t_flat = time_to(p, flat, 60), t_hill = time_to(p, plane(0.07), 60);
+  std::printf("0-60 km/h: flat %.2f s, 7 %% grade %.2f s\n", t_flat, t_hill);
+  CHECK(t_hill > t_flat && t_hill < t_flat * 2);
+}
+
 void test_script() {
   std::vector<drive::ScriptLine> s;
   std::string error;
@@ -144,6 +187,7 @@ int main() {
   test_steer_right_goes_to_plus_x();
   test_reverse();
   test_script();
+  test_mesh_ground();
   test_model_to_world();
   if (failures) {
     std::printf("%d failure(s)\n", failures);

@@ -11,13 +11,6 @@ namespace {
 constexpr double kGravity = 9.81;
 constexpr double kPi = 3.14159265358979323846;
 
-Vec3 operator+(const Vec3& a, const Vec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
-Vec3 operator-(const Vec3& a, const Vec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-Vec3 operator*(const Vec3& a, double s) { return {a.x * s, a.y * s, a.z * s}; }
-double dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-Vec3 cross(const Vec3& a, const Vec3& b) {
-  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
 double length(const Vec3& a) { return std::sqrt(dot(a, a)); }
 Vec3 normalized(const Vec3& a) {
   const double l = length(a);
@@ -78,6 +71,12 @@ Vehicle::Vehicle(const CarParams& params) : p_(params) {
   reset({0, 0, 0});
 }
 
+void Vehicle::place(const Vec3& position, double heading) {
+  const double t = time_;
+  reset(position, heading);
+  time_ = t;
+}
+
 void Vehicle::reset(const Vec3& position, double heading) {
   rot_ = {0, std::sin(heading / 2), 0, std::cos(heading / 2)};
   pos_ = position + rotate(rot_, com_local_);  // pos_ holds the centre of mass
@@ -129,10 +128,25 @@ void Vehicle::update_gearbox(double dt) {
       shift_timer_ = p_.shift_time;
       return;
     }
-    if (rpm_ > p_.shift_up_rpm && gear_ < int(p_.gears.size())) {
+    // Shift on the engine speed the road speed gives through each gear, not
+    // on the driven wheels' (wheelspin would shift up, then the shift's
+    // pause would shift down again, over and over up a hill).
+    double radius = 0;
+    int driven = 0;
+    for (int i = 0; i < kWheels; ++i)
+      if ((i < 2) != (p_.layout == CarParams::Layout::kRear) || p_.layout == CarParams::Layout::kAll) {
+        radius += p_.tyre_radius[size_t(i)];
+        ++driven;
+      }
+    radius = driven ? radius / driven : 0.3;
+    auto road_rpm = [&](int g) { return std::fabs(v) / radius * p_.gears[size_t(g - 1)] * p_.final_drive * 60 / (2 * kPi); };
+    // Also up from the limiter when the next gear does not bog down.
+    const bool limiter = rpm_ >= p_.redline_rpm * 0.98 && gear_ < int(p_.gears.size()) &&
+                         road_rpm(gear_ + 1) > p_.shift_down_rpm + 500;
+    if ((road_rpm(gear_) > p_.shift_up_rpm || limiter) && gear_ < int(p_.gears.size())) {
       ++gear_;
       shift_timer_ = p_.shift_time;
-    } else if (rpm_ < p_.shift_down_rpm && gear_ > 1) {
+    } else if (gear_ > 1 && road_rpm(gear_) < p_.shift_down_rpm && road_rpm(gear_ - 1) < p_.shift_up_rpm * 0.9) {
       --gear_;
       shift_timer_ = p_.shift_time;
     }
@@ -190,15 +204,16 @@ void Vehicle::substep(double dt, const Ground& ground) {
     w.steer = i < 2 ? shaped_.steer * lock : 0;
 
     Hit hit;
-    const double reach = p.rest_length + p.droop_travel + radius;
+    const double reach = p.rest_length + p.droop_travel + radius + p.probe_height;
+    const Vec3 probe = hard - down * p.probe_height;
     double len = p.rest_length + p.droop_travel;
     double load = 0;
     Vec3 contact{}, normal{0, 1, 0};
-    w.contact = ground.raycast(hard, down, reach, hit);
+    w.contact = up.y > 0.2 && ground.raycast(probe, down, reach, hit);
     if (w.contact) {
-      len = hit.distance - radius;
+      len = hit.distance - p.probe_height - radius;
       normal = hit.normal;
-      contact = hard + down * hit.distance;
+      contact = probe + down * hit.distance;
       const Vec3 v_hard = vel_ + cross(ang_, hard - pos_);
       const double len_rate = dot(v_hard, up);  // the hardpoint rising lengthens the spring
       double f = preload_[i] + spring_rate_[i] * (p.rest_length - len) - damping_[i] * len_rate;
@@ -249,6 +264,33 @@ void Vehicle::substep(double dt, const Ground& ground) {
     w.spin = std::fmod(w.spin + omega * dt, 2 * kPi);
   }
 
+  // Body contacts: the box's corners against the ground below them.
+  body_force_ = 0;
+  for (int k = 0; k < 8; ++k) {
+    const Vec3 corner_local{(k & 1 ? 0.5 : -0.5) * p_.size.x, k & 2 ? p_.sill_height + p_.size.y : p_.sill_height,
+                            (k & 4 ? 0.5 : -0.5) * p_.size.z + p_.centre_of_mass.z};
+    const Vec3 corner = pos_ + rotate(rot_, corner_local - com_local_);
+    constexpr double kAbove = 1.5;
+    Hit hit;
+    if (!ground.raycast(corner + Vec3{0, kAbove, 0}, {0, -1, 0}, kAbove, hit)) continue;
+    const double depth = kAbove - hit.distance;
+    const Vec3 n = hit.normal.y < 0 ? hit.normal * -1.0 : hit.normal;
+    const Vec3 v = vel_ + cross(ang_, corner - pos_);
+    const double vn = dot(v, n);
+    const double fn = std::max(0.0, p_.mass * (p_.body_stiffness * depth - p_.body_damping * vn));
+    if (fn <= 0) continue;
+    Vec3 f = n * fn;
+    const Vec3 vt = v - n * vn;
+    const double vt_len = length(vt);
+    if (vt_len > 1e-6) {
+      const double ft = std::min(p_.body_friction * fn, p_.mass / 8 * vt_len / dt);
+      f = f - vt * (ft / vt_len);
+    }
+    force = force + f;
+    torque = torque + cross(corner - pos_, f);
+    body_force_ += length(f);
+  }
+
   // Aerodynamic drag.
   force = force - vel_ * (0.5 * p_.air_density * p_.drag_area * v_abs);
 
@@ -271,7 +313,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
 }
 
 std::string trace_header() {
-  std::string h = "t,x,y,z,vx,vy,vz,speed,yaw,pitch,roll,rpm,gear,steer,throttle,brake";
+  std::string h = "t,x,y,z,vx,vy,vz,speed,yaw,pitch,roll,rpm,gear,steer,throttle,brake,body";
   for (int i = 0; i < kWheels; ++i) {
     const std::string n = std::to_string(i);
     h += ",comp" + n + ",omega" + n + ",load" + n;
@@ -299,6 +341,7 @@ std::string trace_row(const Vehicle& v) {
   add(v.shaped_input().steer);
   add(v.shaped_input().throttle);
   add(v.shaped_input().brake);
+  add(v.body_contact_force());
   for (const auto& w : v.wheels()) {
     add(w.compression);
     add(w.omega);

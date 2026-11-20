@@ -23,6 +23,13 @@ namespace drive {
 struct Vec3 {
   double x = 0, y = 0, z = 0;
 };
+inline Vec3 operator+(const Vec3& a, const Vec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+inline Vec3 operator-(const Vec3& a, const Vec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline Vec3 operator*(const Vec3& a, double s) { return {a.x * s, a.y * s, a.z * s}; }
+inline double dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline Vec3 cross(const Vec3& a, const Vec3& b) {
+  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
 struct Quat {  // unit quaternion (x, y, z, w)
   double x = 0, y = 0, z = 0, w = 1;
 };
@@ -71,6 +78,14 @@ struct CarParams {
   Vec3 centre_of_mass{0, 0.5, 0};  // body frame; z set to mid-wheelbase by from_bake
   Vec3 inertia{0, 0, 0};           // principal moments about x, y, z; 0 = from mass and size
   Vec3 size{1.8, 1.3, 4.3};        // box for the default inertia, m
+  // Body contacts (ours, a stand-in until COLLISION.md): the box's eight
+  // corners, from the sill to the roof, are pushed out of the ground along
+  // world up by a stiff damped spring with friction, so a car that rolls
+  // or lands on its body stays on the surface.
+  double sill_height = 0.25;      // m above the ground at rest
+  double body_stiffness = 150;    // N/m per kg of mass, per corner
+  double body_damping = 12;       // N s/m per kg of mass, per corner
+  double body_friction = 0.6;
 
   // Suspension (placeholders): the wheel hangs `rest_length` below its
   // hardpoint at rest; the spring is preloaded so the car rests exactly
@@ -78,6 +93,12 @@ struct CarParams {
   double rest_length = 0.3;   // m
   double bump_travel = 0.12;  // m of compression available from rest
   double droop_travel = 0.15; // m of extension available from rest
+  // The suspension rays start this far above the hardpoints, so a wheel
+  // driven into rising ground (or below a step) still finds the surface
+  // and the bump stop lifts it, instead of the ray starting underground.
+  // Ours, for the stand-in ground. A wheel whose suspension points less
+  // than ~78 degrees from straight down finds no ground (rolled over).
+  double probe_height = 1.0;  // m
   double frequency = 1.6;     // Hz, sets the spring rate per corner
   double damping_ratio = 0.35;
 
@@ -137,6 +158,8 @@ class Vehicle {
 
   // Places the body frame's origin at `position` (world), level, at rest.
   void reset(const Vec3& position, double heading = 0);
+  // As reset, but the clock runs on (a recovery during a run).
+  void place(const Vec3& position, double heading = 0);
   // Advances one fixed step with the given raw input.
   void step(const Input& input, const Ground& ground);
 
@@ -151,6 +174,9 @@ class Vehicle {
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
   double time() const { return time_; }
+  // The body contacts' total force in the last substep (N): 0 while only
+  // the tyres touch the ground.
+  double body_contact_force() const { return body_force_; }
 
  private:
   void substep(double dt, const Ground& ground);
@@ -168,6 +194,7 @@ class Vehicle {
   Input raw_{}, shaped_{};
   int gear_ = 1;
   double shift_timer_ = 0, rpm_ = 0, time_ = 0;
+  double body_force_ = 0;
 };
 
 // One line of a trace (CSV header and row), for the determinism check and
