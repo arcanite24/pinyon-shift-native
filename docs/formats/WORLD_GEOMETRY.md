@@ -40,9 +40,10 @@ reader is [`tools/re/world-geometry.py`](../../tools/re/world-geometry.py).
   of one frame match the game's own main-view depth to a median 0.024 %
   of the view depth (95th percentile 0.10 %), sampled at the game's pixel
   centres; see [Depth check](#depth-check-ri-04-gate). With the frame's
-  130 props added, the world pixels keep that tolerance but the prop
-  pixels do not yet (median 1.4 m, mostly the engine's barrier
-  orientation and props whose materials matter). The game's depth is
+  opaque, still props added (the alpha-tested fence and pine and the
+  animated flag left out on both sides), the prop pixels agree to a
+  median 0.015 % and a 95th percentile of 0.12 % (0.107 % away from
+  their edges), and the whole image to 0.024 % and 0.10 %. The game's depth is
   reversed 24-bit float, and its pixel centres sit half a pixel off an
   ordinary rasteriser's ([Coordinate frames](#coordinate-frames-and-draws)).
 - `.bix`, the `_0x*.bin` members and `.bundle` hold textures; `.pgeo`,
@@ -547,47 +548,79 @@ readback; the model set came from the dump's draw list, not from a
 selection rule (open question 3); and the comparison covers world-space
 models only.
 
-**With props** (measured 2026-11-19, later the same day). A third replay
-keeps the 820 world-space draws and the 515 main-view draws of the 130
-props the frame drew (`depth-skips --props`: 1,444 other draws
-skipped). The engine image is shift-engine `8a2932c` drawing the same 73
-world-space models plus those 130 placements (`--drawn-props`).
+**With props** (measured 2026-11-19, later the same day). The engine
+image is shift-engine `dc76af7` drawing the same 73 world-space models
+plus the 130 placements the frame drew (`--drawn-props`), with the
+`.pvsz` rotation read by columns as in [Reading the
+rotation](#pvsz-zone-files); its barrier edges land a median 1 px from
+the capture. Two sets are compared, each the same on both sides:
+
+- **Opaque props** (the gate set): the engine leaves out the mesh objects
+  whose names contain `chainlinkfence`, `pine` or `flag`, and the replay
+  keeps the 820 world-space draws and the 235 main-view draws of the
+  other props (`depth-skips --props --leave-out
+  chainlinkfence,pine,flag`: 1,724 other draws skipped, 1,908 run).
+- **All props** (for reference): every prop on both sides; the replay
+  keeps all 515 main-view prop draws (`depth-skips --props`: 1,444
+  skipped).
+
 `depth-compare --split` sorts each compared pixel by whether the props
-change the engine's depth there (against the world-only image above).
+change the engine's depth there (against the world-only image above);
+"away from edges" drops the prop pixels within 1 px of a world pixel and
+the world pixels within 1 px of a prop pixel (a scratch measure, not a
+tool option).
 
-| Pixels | Count | Median | 95th | Median, relative | 95th, relative |
+| Opaque props | Pixels | Median | 95th | Median, relative | 95th, relative |
 | --- | --- | --- | --- | --- | --- |
-| world | 519,023 | 0.007 m | 1.15 m | 0.025 % | 0.11 % |
-| world, under 40 m | 266,157 | 0.001 m | 0.009 m | 0.023 % | 0.067 % |
-| props | 51,087 | 1.41 m | 1,165 m | 13.7 % | 98.7 % |
-| props, under 40 m | 39,840 | 1.12 m | 15.0 m | 9.5 % | 64 % |
-| all | 570,110 | 0.016 m | 4.49 m | 0.028 % | 11.5 % |
+| all | 565,092 | 0.006 m | 1.06 m | 0.024 % | 0.10 % |
+| world | 546,414 | 0.007 m | 1.09 m | 0.024 % | 0.10 % |
+| props | 18,678 | 0.002 m | 0.074 m | 0.015 % | 0.12 % |
+| props, under 40 m | 17,362 | 0.002 m | 0.011 m | 0.014 % | 0.105 % |
+| props, 200 to 1,000 m | 1,274 | 0.13 m | 1.9 m | 0.024 % | 0.32 % |
+| props, away from edges | 18,356 | 0.002 m | 0.061 m | 0.015 % | 0.107 % |
+| world, away from edges | 540,872 | 0.007 m | 1.09 m | 0.024 % | 0.10 % |
 
-The world pixels keep their tolerance. The prop pixels do not. Sorting
-them (unshifted, 2 ‰ tolerance): 2,760 agree, 5,956 show the world
-behind the engine's prop (the game has nothing there), 2,651 are sky in
-the game, 6,570 are nearer in the game, and 43,217 are farther in the
-game but are not the world either, which means the game's prop surface is
-somewhere other than the engine's. Most of them are on the metal
-barriers beside the road and on the flag. The causes, from the images:
+| All props | Pixels | Median | 95th | Median, relative | 95th, relative |
+| --- | --- | --- | --- | --- | --- |
+| all | 568,310 | 0.007 m | 1.27 m | 0.025 % | 0.20 % |
+| world | 531,655 | 0.007 m | 1.11 m | 0.025 % | 0.10 % |
+| props | 36,655 | 0.017 m | 19.6 m | 0.081 % | 42 % |
+| props, under 40 m | 31,344 | 0.005 m | 0.24 m | 0.040 % | 1.4 % |
+| props, 40 to 200 m | 3,863 | 18.4 m | 27.0 m | 38 % | 48 % |
 
-- **Barrier orientation.** The engine draws the near metal barriers with
-  a yaw clearly different from the capture's and the game's depth, while
-  the `.pvsz` records of those placements match the dump's rotation to
-  0.0005 (see [Reading the rotation](#pvsz-zone-files)). So the difference
-  is in how the engine applies the record, not in the data. This
-  accounts for most of the far-from-the-world residual.
-- **Animation and cut-outs.** The flag is animated in the game (its
-  depth is a different shape), and the chain-link fence and the pine are
-  alpha-tested: the game writes depth only on opaque texels, the engine
-  over whole triangles. These pixels cannot agree without the materials.
+43,263 (opaque) and 43,328 (all) pixels are left out at depth steps,
+and coverage differs in 467 and 677 pixels. What is left over:
+
+- **Opaque props meet the world's tolerance in the median** (0.015 %
+  against the world's 0.024 %) **and miss it at the 95th percentile by
+  0.02 points** (0.12 % against 0.10 %). The excess is in thin, far
+  props: the 1,274 prop pixels at 200 to 1,000 m have a 95th of 0.32 %
+  against the world's 0.09 % in the same band, and 224 of them, in a
+  row across the screen just below the horizon, are over 0.1 %, the game
+  a median 0.66 m farther. That is the game's depth showing the world
+  behind a prop the engine covers, which fits the 4× pass storing its
+  first sample, not the pixel centre: on props a pixel or two wide the
+  two images sample different surfaces. Away from the edges the prop
+  95th is 0.107 % against the world's 0.101 %. A residual of 39 pixels
+  over 1 km (one small object near the skyline, the game a median
+  1.7 m, 0.21 %, farther) and 3 scattered edge pixels at 40 to 200 m
+  remain; they do not move the percentiles.
+- **All props** keep the world's numbers on the world pixels but not on
+  the props: the chain-link fence and the pine are alpha-tested (the game
+  writes depth only on opaque texels, the engine over whole triangles)
+  and the flag is animated. Those pixels cannot agree without the
+  materials and the animation.
 - **The instanced clip z row** (implementation question). Instanced draws
   use a clip z row slightly different from the scene matrix times the
   placement. Measured over the 515 prop draws at each model's origin,
   converting the game's z/w with the scene's z mapping errs by a median
   0.012 m (0.018 % of view depth), at most 0.16 m (0.029 %), about the
-  size of the world residual. It is not what keeps the props out of
-  tolerance.
+  size of the world residual.
+
+Superseded: the first prop run (shift-engine `8a2932c`) gave the prop
+pixels a median 1.41 m (13.7 %). Most of it was the near metal barriers
+drawn with the wrong yaw, because the spec's rotation wording was
+ambiguous; `dc76af7` reads the halves by columns and removes it.
 
 ## Open questions and next steps
 
@@ -608,7 +641,9 @@ barriers beside the road and on the flag. The causes, from the images:
    were off: the skyline by a mean 8 px, ridges by 40 to 50 px. Drawing exactly the 73 world-space models the dump tied to the main view, with the matrix at full precision, puts the skyline a median 3-4 px (mean 6 px) from the capture and the near silhouettes 1 px. Only 39 of those 73 lie in the 1 km box, and limiting the draw to them puts the skyline back to a mean 8 px. The ridges come from models outside the sector, and the sector's other 238 models are not drawn by the game. Given the game's draw list, the format and matrix reproduce the frame; the selection rule is question 3. Depth
    is now measured against the game's own depth targets (see
    [Depth check](#depth-check-ri-04-gate)): at the game's sample point the
-   view depth agrees to a median 0.024 % and a 95th percentile of 0.10 %.
+   view depth agrees to a median 0.024 % and a 95th percentile of 0.10 %,
+   and with the opaque props of the frame (shift-engine `dc76af7`) the
+   prop pixels to 0.015 % and 0.12 %.
    `match-dump` printed the scene
    matrix to 4 decimals, which moves near geometry by several pixels; it
    now prints full precision.
@@ -627,7 +662,7 @@ says "engine's choice", the game's rule is not known.
 | How does the engine place props? | Read the object table from `Ribbon_00/Colorado_00.pvs`, every `.pvsz` record (one per object; dedupe by object ID, then keep one placement per model and spot) and every kind-7 `.pgeo` group; the model is the table's member for the object ID (for `.pgeo`, the first ID of list 0), widened to its LOD set; place it as in [Reading the rotation](#pvsz-zone-files) (`.pvsz`) and F·Rᵀ·F·v + F·t (`.pgeo`). Which LOD to draw is the engine's choice until question 3 is answered: LOD00 near the camera matches the frame |
 | Are the nine `.pvsz` halves row-major or column-major? | Columns: R[r][c] = h[3c + r]·F[r] in the file frame. Checked on all 107 drawn `.pvsz` placements, the 16 tilted ones included (largest error 0.0005); the row reading errs by up to 0.16 on the tilted ones. The earlier "H = F·R_gameᵀ" wording was ambiguous and is replaced |
 | Which record start is right when several end at the end of the file? | The one with the most rigid rotations; the first such start is wrong in 56 zones (see [`.pvsz` zone files](#pvsz-zone-files)) |
-| Instanced draws use another clip z row: how big is the depth effect? | A median 0.018 % of view depth at the model origin, at most 0.029 % (515 prop draws); see [Depth check](#depth-check-ri-04-gate) |
+| Instanced draws use another clip z row: how big is the depth effect? | A median 0.018 % of view depth at the model origin, at most 0.029 % (515 prop draws); see [Depth check](#depth-check-ri-04-gate). The engine can ignore it: with the scene's z mapping the opaque props match to 0.015 % (median) |
 | Why are some `.pgeo` barrier sets (for example `models_proc_clrd_barrier_reds_*`) in the sector but not in the frame? | Not known: which placements the game shows (by event, time or PVS zone) is part of the selection question (open question 3). The files place them; the free-roam frame does not draw them |
 | The kind-7 name offset | +0x60, or +0x98 when the word at +0x58 is non-zero (see the header table) |
 | Model records whose IDs are not consecutive | 131 of 12,044; read each list's IDs as stored |
@@ -653,7 +688,8 @@ python -I tools/re/world-geometry.py overlay .local/re/world/all <dump.fh1frame>
 python tools/replay-fh1-frame.py <dump.fh1frame> --state-root <seed> --hidden \
     --game-argument=--gpu_backend=vulkan --game-argument=--fh1_debug_log_draws=true \
     --game-argument=--fh1_resolve_dump_dir=<dir>
-python -I tools/re/world-geometry.py depth-skips <drawn members> <dump.fh1frame> <runtime.log> [--props]
+python -I tools/re/world-geometry.py depth-skips <drawn members> <dump.fh1frame> <runtime.log> \
+    [--props [--leave-out chainlinkfence,pine,flag]]
     (replay again with --fh1_debug_skip_draws=<the printed ranges>)
 python -I tools/re/world-geometry.py depth-compare <world-depth.pfm> <frame file> \
     <band 1> <band 2> <band 3> --shift 0.5 0.5 [--split <world-only depth.pfm>]

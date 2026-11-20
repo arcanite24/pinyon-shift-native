@@ -1367,8 +1367,10 @@ def cmd_depth_skips(args) -> int:
     if args.props:
         # also the selected local-space models drawn in the main view with a
         # rigid placement (the props; cars and people tie to no member)
-        keep |= {n for n, (model, _, _) in tied.items()
-                 if model.placement == "local" and placed_in_scene(scene, draws[n]["mvp"])}
+        leave_out = [s.lower() for s in (args.leave_out or "").split(",") if s]
+        keep |= {n for n, (model, k, _) in tied.items()
+                 if model.placement == "local" and placed_in_scene(scene, draws[n]["mvp"])
+                 and not any(s in model.objects[k].name.lower() for s in leave_out)}
     # Geometry that writes depth: z enable and z write, and a depth test
     # other than "always" (the band's full-screen depth clear uses always
     # and must stay).
@@ -1677,6 +1679,9 @@ def main(argv: list[str] | None = None) -> int:
     skips.add_argument("draw_log", help="a replay log written with --fh1_debug_log_draws=true")
     skips.add_argument("--props", action="store_true",
                        help="also keep the selected local-space models' main-view draws (props)")
+    skips.add_argument("--leave-out", metavar="WORDS",
+                       help="with --props, skip prop draws whose mesh object name contains one "
+                            "of these comma-separated words (case ignored)")
     skips.set_defaults(run=cmd_depth_skips, predicate=True)
     depth = commands.add_parser("depth-compare")
     depth.add_argument("engine", help="the engine's z/w image (greyscale PFM)")
