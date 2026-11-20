@@ -488,8 +488,9 @@ Found while doing it, for the spec:
   sized from the power-of-two rounding (a 768-wide level 1 is stored as
   if 512 wide), the last region trimmed. The 255 and 7 widths may be a
   misread field; they decode to the layout's size either way.
-- The all-tail CAFF case (one full region, as the spec says) covers 8
-  textures: `_0x0000203A` (32 x 16) and seven of 64 x 8 to 256 x 16.
+- The all-tail CAFF case: 17 CAFF textures have a side of 16 or less;
+  the full-region rule (as the spec says) changes the size of 8 of them,
+  `_0x0000203A` (32 x 16) and seven of 64 x 8 to 256 x 16.
 
 Engine choices, open for the spec:
 
@@ -499,13 +500,19 @@ Engine choices, open for the spec:
   effect family.
 - **Terrain layers.** `Blend_A` alone, at TEXCOORD0 with no per-layer
   tiling: hills read as uniform grey rock (terrain UVs repeat about every
-  50 m). Needed for a second pass: which pixel constants are the layer
+  50 m). That the missing layers are the cause is probable, not shown:
+  the base levels of the main `H_BLND*` albedos (records 11180, 4314,
+  11408) were not checked for colour spread. Needed for a second pass: which pixel constants are the layer
   tilings, which UV `Splat` uses, and the blend rule.
 - **Cut-outs.** Alpha to coverage on `H_DIFF*` and `TREE_*` (the frame's
   families) and also on other effects named `_OPAC`
   (`H_VBLND_NORM_MASK_OPAC_BIAS_LM` has cut-out alpha; no draw of it was
-  in the frame). Blended decals use the texture's alpha times the vertex
-  colour's A.
+  in the frame). The `_OPAC` rule also catches `ADD_DIFF_OPAC_RGBA`,
+  additive by its name; it draws as a cut-out until the blend is known.
+  Blended decals use the texture's alpha times the vertex colour's A.
+- **Window streaming.** With `--async-stream` the textured frames match the
+  synchronous ones until a regather; the background gather's textures
+  draw once it swaps in (checked headless over a 40 s cruise).
 - **Normals.** The authored normal is used on both sides. Turning it to
   the eye (the car shader's two-sided rule) darkened every surface above
   the eye.

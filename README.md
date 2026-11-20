@@ -89,8 +89,8 @@ background as you drive. The first run builds `out\world\colorado.index`
 
 The scenery is drawn with its own textures (WORLD_MATERIALS.md's first
 pass: each material's main texture lit by the sun and sky of the
-reference frame; terrain shows its first layer only, so hills read as
-grey rock). Textures decode as the world streams in, so a regather can
+reference frame; terrain shows its first layer only, so hills
+probably read as grey rock for that reason). Textures decode as the world streams in, so a regather can
 stall the window briefly. `--flat-world` draws the earlier flat colours,
 `--no-props` leaves the placed props out.
 
