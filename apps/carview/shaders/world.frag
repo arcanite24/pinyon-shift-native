@@ -42,6 +42,7 @@ layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_uv0;
 layout(location = 3) in vec2 v_uv1;
 layout(location = 4) in vec4 v_colour;
+layout(location = 5) flat in vec2 v_fade;  // the instance's fade weights (world.vert)
 
 layout(location = 0) out vec4 out_color;
 
@@ -115,9 +116,7 @@ void main() {
   float swap = draw.sun.w;
   if (swap < 1.5 ? door >= swap : swap > 2.5 && door < swap - 3.0) discard;
   if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && frame.world_fade.y > 0.0) {
-    float d = length(v_position - frame.eye.xyz);
-    float s = smoothstep(frame.world_fade.x, frame.world_fade.x + frame.world_fade.y, d);
-    float e = smoothstep(frame.world_fade.z, frame.world_fade.w, d);
+    float s = v_fade.x, e = v_fade.y;
     if ((flags & kFlagLodNear) != 0u ? door < s : door < e || ((flags & kFlagLodFar) != 0u && door >= s)) discard;
   }
   // Terrain layers (WORLD-MATERIALS, Terrain shading): tint holds the

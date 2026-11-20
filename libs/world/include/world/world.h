@@ -127,6 +127,9 @@ struct Mesh {
   std::vector<std::array<float, 2>> uv0, uv1;
   std::vector<std::array<uint8_t, 4>> colours;
   std::vector<uint32_t> material;  // per triangle: index into materials
+  // Per triangle: its prop's placement origin (game frame), so the
+  // renderer can pick a level per instance; zero for scenery.
+  std::vector<std::array<float, 3>> instance;
   std::vector<MeshMaterial> materials;
   bool has_render_data() const { return !material.empty(); }
 };

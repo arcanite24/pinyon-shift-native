@@ -257,6 +257,11 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       if (model.uv_offset_scale.empty()) st.default_uv_models.insert(name);
     }
     size_t submesh_number = 0;  // in file order, for uvOffsetScale
+    std::array<float, 3> instance{0, 0, 0};
+    if (placement) {
+      const auto q = placement->apply({0, 0, 0});
+      instance = {float(q[0]), float(q[1]), float(-q[2])};
+    }
     for (const auto& o : model.objects) {
       const size_t first_submesh = submesh_number;
       submesh_number += o.submeshes.size();
@@ -427,7 +432,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           corner(tri[t]);
           corner(tri[t + 1]);
           corner(tri[t + 2]);
-          if (options.render_data) out.material.push_back(mat);
+          if (options.render_data) out.material.push_back(mat), out.instance.push_back(instance);
           out.surface.push_back(surface);
           out.model.push_back(model_index);
           out.ground.push_back(solid);
@@ -558,6 +563,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         out.model.push_back(0);
         out.ground.push_back(0);
         out.material.push_back(mit->second);
+        out.instance.push_back(t.base);
       }
       ++st.trees;
     }

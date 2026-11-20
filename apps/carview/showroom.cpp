@@ -1211,16 +1211,17 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS) result = make_module(kWorld_vert_spv, sizeof(kWorld_vert_spv), world_vert);
   if (result == VK_SUCCESS) result = make_module(kWorld_frag_spv, sizeof(kWorld_frag_spv), world_frag);
   VkVertexInputBindingDescription world_binding{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-  const VkVertexInputAttributeDescription world_attributes[5] = {
+  const VkVertexInputAttributeDescription world_attributes[6] = {
       {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
       {1, 0, VK_FORMAT_R8G8B8A8_SNORM, offsetof(WorldVertex, normal)},
       {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv0)},
       {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv1)},
-      {4, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(WorldVertex, colour)}};
+      {4, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(WorldVertex, colour)},
+      {5, 0, VK_FORMAT_R16G16B16A16_SINT, offsetof(WorldVertex, centre)}};
   VkPipelineVertexInputStateCreateInfo world_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   world_input.vertexBindingDescriptionCount = 1;
   world_input.pVertexBindingDescriptions = &world_binding;
-  world_input.vertexAttributeDescriptionCount = 5;
+  world_input.vertexAttributeDescriptionCount = 6;
   world_input.pVertexAttributeDescriptions = world_attributes;
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_opaque_, world_vert,
@@ -1594,6 +1595,9 @@ void Showroom::place_shadow() {
   // Tree sprites turn to the eye: here to the sun, far up its ray.
   for (int k = 0; k < 3; ++k) shadow_frame_.eye[k] = centre[k] + sun[k] * 1000.0f;
   shadow_frame_.eye[3] = 1.0f;
+  // No per-instance level pick from the sun's eye (world.vert): every level
+  // casts, as before the pick.
+  shadow_frame_.world_fade[1] = 0.0f;
 }
 
 void Showroom::record_shadow(VkCommandBuffer cmd) {
@@ -1661,9 +1665,10 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
   VkPipeline bound = VK_NULL_HANDLE;
   VkDescriptorSet bound_set = VK_NULL_HANDLE;
+  const auto eye = eye_in_scenery(world_transform_);
   for (const auto& d : world_draws_) {
     // Blended draws (decals, the lake) and the uncullable sky cast none.
-    if (!d.cull || d.blend >= 2 || outside(d)) continue;  // blended and additive draws cast nothing
+    if (!d.cull || d.blend >= 2 || outside(d) || near_lod_beyond(d, eye)) continue;  // blended and additive draws cast nothing
     ++shadow_drawn_;
     const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
     if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
@@ -1831,7 +1836,10 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     if (by_material[m].empty()) continue;
     const auto& mat = world.materials[m];
     const bool billboard = mat.layers == 4;
-    const float cell = mat.far ? far_cell : near_cell;
+    const bool fade_class = mat.fade != 0;
+    // A prop's LOD00 copies (fade class 1) in small cells, so the ones past
+    // the LOD band are left out whole on the CPU (near_lod_beyond).
+    const float cell = mat.far ? far_cell : mat.fade == 1 ? 64.0f : near_cell;
     cells.clear();
     for (uint32_t t : by_material[m]) {
       const auto& p = world.positions[size_t(t) * 3];
@@ -1862,6 +1870,9 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
         for (int i = 0; i < 3; ++i) v.normal[i] = snorm8(world.normals[c][size_t(i)]);
         for (int i = 0; i < 2; ++i) v.uv0[i] = world.uv0[c][size_t(i)], v.uv1[i] = world.uv1[c][size_t(i)];
         for (int i = 0; i < 4; ++i) v.colour[i] = world.vertex_colours[c][size_t(i)];
+        if (fade_class && t < world.instance.size())
+          for (int i = 0; i < 3; ++i)
+            v.centre[i] = int16_t(std::clamp(std::lround((world.instance[t][size_t(i)] - v.position[i]) * 10.0f), -32767L, 32767L));
         for (int i = 0; i < 3; ++i) {
           d.box_min[i] = std::min(d.box_min[i], v.position[i]);
           d.box_max[i] = std::max(d.box_max[i], v.position[i]);
@@ -2480,6 +2491,28 @@ void Showroom::record_world(VkCommandBuffer cmd) {
   }
 }
 
+// The camera's eye in the scenery's frame (the transform is a rotation and
+// a translation).
+std::array<float, 3> Showroom::eye_in_scenery(const float transform[16]) const {
+  const float e[3] = {frame_.eye[0] - transform[12], frame_.eye[1] - transform[13], frame_.eye[2] - transform[14]};
+  std::array<float, 3> out{};
+  for (int c = 0; c < 3; ++c) out[size_t(c)] = transform[c * 4 + 0] * e[0] + transform[c * 4 + 1] * e[1] + transform[c * 4 + 2] * e[2];
+  return out;
+}
+
+// A cell of prop LOD00 copies wholly past the LOD band from the eye: every
+// instance in it would be hidden (world.vert), so it is not drawn at all.
+bool Showroom::near_lod_beyond(const WorldGeometry::Draw& d, const std::array<float, 3>& eye) const {
+  if ((uint32_t(d.push.params[1] + 0.5f) & 128u) == 0 || world_fade_[1] <= 0) return false;
+  float d2 = 0;
+  for (int i = 0; i < 3; ++i) {
+    const float v = std::max({d.box_min[i] - eye[size_t(i)], 0.0f, eye[size_t(i)] - d.box_max[i]});
+    d2 += v * v;
+  }
+  const float reach = world_fade_[0] + world_fade_[1] + kPropReach;
+  return d2 > reach * reach;
+}
+
 void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<WorldGeometry::Draw>& draws,
                                      const float transform[16], float swap, bool outgoing) {
   {
@@ -2515,9 +2548,10 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       return false;
     };
     int bias = -1;  // the depth bias set: -1 none yet, else the decal flag
+    const auto eye = eye_in_scenery(transform);
     for (const auto& d : draws) {
       if (outgoing && !d.cull) continue;  // the sky: the incoming one's is drawn whole
-      if (d.cull && world_cull_ && outside(d)) {
+      if (d.cull && ((world_cull_ && outside(d)) || near_lod_beyond(d, eye))) {
         ++world_stats_.culled;
         continue;
       }

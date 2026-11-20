@@ -110,6 +110,7 @@ struct WorldTriangles {
   std::vector<std::array<float, 2>> uv0, uv1;
   std::vector<std::array<uint8_t, 4>> vertex_colours;
   std::vector<uint32_t> material;  // per triangle: index into materials
+  std::vector<std::array<float, 3>> instance;  // per triangle: its prop's origin (world::Mesh::instance)
   std::vector<Material> materials;
   // Textures not uploaded before, to upload with this scenery.
   std::vector<std::shared_ptr<const WorldTextureData>> textures;
@@ -121,8 +122,14 @@ struct WorldVertex {
   int8_t normal[4];
   float uv0[2], uv1[2];
   uint8_t colour[4];
+  // A prop's origin less the corner, in decimetres (the level is picked
+  // per instance in world.vert); zero elsewhere.
+  int16_t centre[4];
+  // Pads the stride to 48 bytes: at 44 the UHD 620 ran about 3 ms slower
+  // per frame (p50, low preset), its vertex fetch off the 16-byte grid.
+  uint32_t pad = 0;
 };
-static_assert(sizeof(WorldVertex) == 36);
+static_assert(sizeof(WorldVertex) == 48);
 
 // WorldTriangles as draw data: one vertex per corner with the face normal,
 // indices, and one draw per colour. Plain CPU work with no Vulkan, so a
@@ -260,6 +267,9 @@ class Showroom {
   }
   // Whether the car is drawn (the world reference frame leaves it out).
   void set_draw_car(bool draw) { draw_car_ = draw; }
+  // A prop's reach from its origin (m): the box test of LOD00 cells allows
+  // an instance whose origin is inside the band but whose corners are not.
+  static constexpr float kPropReach = 40;
   // The brake lamps: 0 off, 1 full (the tail-lamp parts' lamp and red
   // cover draws glow; an interim, FORMAT-CARS leaves the lit state to the
   // effect).
@@ -346,6 +356,10 @@ class Showroom {
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
   void record_world(VkCommandBuffer cmd);
+  // The eye in a scenery's frame, and whether a cell of LOD00 copies lies
+  // wholly past the LOD band (showroom.cpp).
+  std::array<float, 3> eye_in_scenery(const float transform[16]) const;
+  bool near_lod_beyond(const WorldGeometry::Draw& d, const std::array<float, 3>& eye) const;
   // One scenery's textured draws; swap: world.frag's dither (2 none, t in
   // 0-1 the incoming scenery, 3 + t the outgoing one).
   void record_world_textured(VkCommandBuffer cmd, const std::vector<WorldGeometry::Draw>& draws,

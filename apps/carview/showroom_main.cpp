@@ -850,6 +850,7 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.uv1 = mesh.uv1;
     w.vertex_colours = mesh.colours;
     w.material = mesh.material;
+    w.instance = mesh.instance;
     for (const auto& m : mesh.materials)
       w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(world::decal_effect(m.effect) ? 1 : 0),
                              uint8_t(m.layers), m.layer_b, m.splat, m.tiling, m.fade});

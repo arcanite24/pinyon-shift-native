@@ -12,6 +12,7 @@ layout(location = 1) in vec4 in_normal;  // snorm, game frame; zero when the lay
 layout(location = 2) in vec2 in_uv0;     // surface UV, dequantised
 layout(location = 3) in vec2 in_uv1;     // lightmap UV
 layout(location = 4) in vec4 in_colour;  // vertex colour, unorm RGBA
+layout(location = 5) in ivec4 in_centre;  // a prop's origin less the corner, decimetres
 
 layout(set = 0, binding = 0) uniform Frame {
   mat4 view_projection;
@@ -23,6 +24,10 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 reflect_tint;
   mat4 transparent_view_projection;
   vec4 stripe;
+  mat4 shadow_matrix;
+  vec4 shadow;
+  vec4 shadow_bias;
+  vec4 world_fade;  // prop LOD distance, its band; the edge fade's start and end
 } frame;
 
 layout(push_constant) uniform Draw {
@@ -33,7 +38,7 @@ layout(push_constant) uniform Draw {
   vec4 params;  // x blend mode, y flags, z far-ring level
 } draw;
 
-const uint kFlagSky = 2u, kFlagBillboard = 32u;
+const uint kFlagSky = 2u, kFlagBillboard = 32u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u;
 // Far-ring levels are pushed away from the eye by this much each (ours):
 // unchanged on screen, behind the near terrain where both are drawn.
 const float kFarPush = 0.03;
@@ -43,9 +48,36 @@ layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec2 v_uv0;
 layout(location = 3) out vec2 v_uv1;
 layout(location = 4) out vec4 v_colour;
+// The prop's fade weights (ours): x the LOD band's, y the edge's, by the
+// instance's distance; the fragment dithers only while one is between 0
+// and 1.
+layout(location = 5) flat out vec2 v_fade;
 
 void main() {
   uint flags = uint(draw.params.y + 0.5);
+  v_fade = vec2(0.0);
+  // A prop's level, picked per instance: its LOD00 inside the LOD band,
+  // its LOD02 outside it, both dithered only across the band; the far
+  // levels fade out at the gather's edge. An instance wholly hidden goes
+  // off screen (every corner the same point outside the clip volume), so
+  // its triangles cost no fragments.
+  if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && frame.world_fade.y > 0.0) {
+    vec3 centre = (draw.model * vec4(in_position, 1.0)).xyz + mat3(draw.model) * (vec3(in_centre.xyz) * 0.1);
+    float d = length(centre - frame.eye.xyz);
+    float s = smoothstep(frame.world_fade.x, frame.world_fade.x + frame.world_fade.y, d);
+    float e = smoothstep(frame.world_fade.z, frame.world_fade.w, d);
+    v_fade = vec2(s, e);
+    bool hidden = (flags & kFlagLodNear) != 0u ? s >= 1.0 : e >= 1.0 || ((flags & kFlagLodFar) != 0u && s <= 0.0);
+    if (hidden) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      v_position = vec3(0.0);
+      v_normal = vec3(0.0);
+      v_uv0 = vec2(0.0);
+      v_uv1 = vec2(0.0);
+      v_colour = vec4(0.0);
+      return;
+    }
+  }
   if ((flags & kFlagSky) != 0u) {
     // The sky dome: a direction, centred on the eye, at the far plane.
     vec3 dir = mat3(draw.model) * in_position;
