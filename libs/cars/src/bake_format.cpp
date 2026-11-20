@@ -199,6 +199,16 @@ std::vector<uint8_t> encode(const Bake& b) {
       for (float f : p) w.f32(f);
     w.u8(c.has_livery ? 1 : 0);
     w.i64(c.wing_mask);
+    w.u32(uint32_t(c.stock_rows.size()));
+    for (const auto& s : c.stock_rows) {
+      w.i64(s.car_id);
+      w.u8(s.race_livery ? 1 : 0);
+      w.u8(s.known ? 1 : 0);
+      w.u32(uint32_t(s.parts.size()));
+      for (const auto& n : s.parts) w.str(n);
+      w.u32(uint32_t(s.removed.size()));
+      for (const auto& n : s.removed) w.str(n);
+    }
     w.u32(uint32_t(c.notes.size()));
     for (const auto& n : c.notes) w.str(n);
   }
@@ -312,6 +322,16 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
         for (float& f : p) f = r.f32();
       c.has_livery = r.u8() != 0;
       c.wing_mask = r.i64();
+      c.stock_rows.resize(r.count(14));
+      for (auto& s : c.stock_rows) {
+        s.car_id = r.i64();
+        s.race_livery = r.u8() != 0;
+        s.known = r.u8() != 0;
+        s.parts.resize(r.count(4));
+        for (auto& n : s.parts) n = r.str();
+        s.removed.resize(r.count(4));
+        for (auto& n : s.removed) n = r.str();
+      }
       c.notes.resize(r.count(4));
       for (auto& n : c.notes) n = r.str();
     }

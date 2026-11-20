@@ -222,7 +222,7 @@ bool load_database(const Install& install, Database& out, std::string* error) {
           "FrontWheelDiameterIN, RearTireWidthMM, RearTireAspect, RearWheelDiameterIN, "
           "FrontStockRideHeight, RearStockRideHeight, CaliperRGBFront, CaliperRGBRear, "
           "CaliperAngleFront, CaliperAngleRear, IsSelectable, IsDrivable, IsUnicorn, HasLivery, "
-          "WingMask FROM Data_Car ORDER BY Id");
+          "WingMask, HasRaceLivery FROM Data_Car ORDER BY Id");
   if (!q.ok()) {
     if (error) *error = std::string("Data_Car query: ") + sqlite3_errmsg(db);
     return false;
@@ -247,6 +247,7 @@ bool load_database(const Install& install, Database& out, std::string* error) {
     r.unicorn = q.i(18) != 0;
     r.has_livery = q.i(19) != 0;
     r.wing_mask = q.i(20);
+    r.race_livery = q.i(21) != 0;
     r.origin = base_ids.count(r.id) ? "base" : v4_ids.count(r.id) ? "v4" : "";
     if (auto it = added_by.find(r.id); it != added_by.end() && r.origin.empty()) r.origin = it->second;
     out.cars.push_back(std::move(r));
@@ -303,6 +304,73 @@ bool load_database(const Install& install, Database& out, std::string* error) {
       r.track_outer = {c.d(1), c.d(2)};
       r.wheelbase = c.d(3);
       r.body_bottom_y = c.d(4);
+    }
+  }
+  {
+    // FORMAT-CARS, Stock parts: each car's IsStock rows of the upgrade
+    // tables, through List_PartsStrings (a comma list; "-seatL" removes).
+    std::map<int64_t, std::string> strings;
+    {
+      Query s(db, "SELECT Id, PartsString FROM List_PartsStrings");
+      while (s.step()) strings[s.i(0)] = s.s(1);
+    }
+    std::map<int64_t, int64_t> body_of;  // car id -> its stock CarBodyID
+    {
+      Query b(db, "SELECT Ordinal, CarBodyID FROM List_UpgradeCarBody WHERE IsStock = 1 ORDER BY rowid");
+      while (b.step()) body_of.emplace(b.i(0), b.i(1));
+    }
+    std::map<int64_t, std::vector<int64_t>> by_body, by_car;  // string ids
+    struct Table {
+      const char* name;
+      const char* key;
+      const char* column;
+      bool by_car;
+    };
+    static constexpr Table kTables[] = {
+        {"List_UpgradeCarBodyFrontBumper", "CarBodyID", "PartsStringId", false},
+        {"List_UpgradeCarBodyRearBumper", "CarBodyID", "PartsStringId", false},
+        {"List_UpgradeCarBodySideSkirt", "CarBodyID", "PartsStringId", false},
+        {"List_UpgradeCarBodyHood", "CarBodyID", "PartsStringId", false},
+        {"List_UpgradeRearWing", "Ordinal", "PartsStringId", true},
+        {"List_UpgradeCarBodyChassisStiffness", "CarbodyId", "PartsStringID", false},
+        {"List_UpgradeCarBodyWeight", "CarBodyId", "PartsStringID", false},
+    };
+    for (const Table& t : kTables) {
+      Query u(db, std::string("SELECT ") + t.key + ", " + t.column + " FROM " + t.name + " WHERE IsStock = 1");
+      while (u.step()) {
+        if (u.null(1)) continue;
+        const int64_t id = u.i(1);
+        if (id == 0) continue;  // none
+        (t.by_car ? by_car : by_body)[u.i(0)].push_back(id);
+      }
+    }
+    for (CarRow& r : out.cars) {
+      std::vector<int64_t> ids = by_car[r.id];
+      if (auto b = body_of.find(r.id); b != body_of.end()) {
+        r.has_stock_body = true;
+        const auto& more = by_body[b->second];
+        ids.insert(ids.end(), more.begin(), more.end());
+      }
+      std::set<std::string> shown, removed;
+      for (int64_t id : ids) {
+        auto s = strings.find(id);
+        if (s == strings.end()) continue;
+        std::string list = s->second;
+        size_t at = 0;
+        while (at <= list.size()) {
+          size_t end = list.find(',', at);
+          if (end == std::string::npos) end = list.size();
+          std::string name = list.substr(at, end - at);
+          while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+          while (!name.empty() && name.back() == ' ') name.pop_back();
+          for (char& ch : name) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+          if (!name.empty() && name[0] == '-') removed.insert(name.substr(1));
+          else if (!name.empty()) shown.insert(name);
+          at = end + 1;
+        }
+      }
+      r.stock_parts.assign(shown.begin(), shown.end());
+      r.removed_parts.assign(removed.begin(), removed.end());
     }
   }
   {

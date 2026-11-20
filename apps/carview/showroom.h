@@ -134,6 +134,9 @@ struct ShowroomOptions {
   int64_t match_rgb = -1;       // when set (r x 65536 + g x 256 + b): the colour with that sRGB
   bool livery_overlay = false;  // tint the livery mask magenta on the paint
   bool all_variants = false;    // draw every part variant and upgrade part
+  // The Data_Car row shown (0: the baked row). Rows sharing a model can
+  // differ in stock parts and factory livery (FORMAT-CARS, Stock parts).
+  int64_t car_id = 0;
 };
 
 class Showroom {
@@ -245,6 +248,8 @@ class Showroom {
   };
   using GpuTexture = Renderer::Image;
 
+  // The shown row's stock parts and livery flag (null: none baked).
+  const cars::bake::StockRow* stock_ = nullptr;
   void add_model(const cars::bake::Model& model, const std::vector<std::string>& parts,
                  const float transform[16], const cars::bake::Bake& pack, int axle);
   uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0);

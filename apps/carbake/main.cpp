@@ -44,6 +44,7 @@ struct Job {
   cars::FolderRef ref;
   const cars::CarRow* row = nullptr;
   std::vector<cars::FolderRef> others;  // further copies of a car folder
+  std::vector<const cars::CarRow*> rows;  // every Data_Car row of the model (stock parts)
 };
 
 struct Result {
@@ -77,7 +78,17 @@ void run(const Job& job, const fs::path& out_dir, Result& r) {
   std::string error;
   bool ok = false;
   switch (job.kind) {
-    case Job::Kind::kCar: ok = cars::bake_car(job.ref, *job.row, b, &error); break;
+    case Job::Kind::kCar:
+      ok = cars::bake_car(job.ref, *job.row, b, &error);
+      // Each row's stock parts and factory-livery flag, the baked row first.
+      if (ok) {
+        std::vector<const cars::CarRow*> rows = {job.row};
+        for (const cars::CarRow* r : job.rows)
+          if (r != job.row) rows.push_back(r);
+        for (const cars::CarRow* r : rows)
+          b.car.stock_rows.push_back({r->id, r->stock_parts, r->removed_parts, r->race_livery, r->has_stock_body});
+      }
+      break;
     case Job::Kind::kWheel: ok = cars::bake_wheel(job.ref, false, b, &error); break;
     case Job::Kind::kTyre: ok = cars::bake_wheel(job.ref, true, b, &error); break;
     case Job::Kind::kShared: ok = cars::bake_shared(job.ref, b, &error); break;
@@ -277,17 +288,19 @@ int main(int argc, char** argv) {
   std::vector<std::string> problems;
   std::set<std::string> wheels;
   if (auto shared = install.base_cars.find("shared"); shared != install.base_cars.end())
-    jobs.push_back({Job::Kind::kShared, "shared", shared->second, nullptr, {}});
+    jobs.push_back({Job::Kind::kShared, "shared", shared->second, nullptr, {}, {}});
   else
     problems.push_back("no cars/Shared.zip");
   for (const char* tyre : {cars::kTyreModel, cars::kTyreTextures}) {
-    if (auto t = install.find_wheel(tyre)) jobs.push_back({Job::Kind::kTyre, tyre, *t, nullptr, {}});
+    if (auto t = install.find_wheel(tyre)) jobs.push_back({Job::Kind::kTyre, tyre, *t, nullptr, {}, {}});
     else problems.push_back(std::string("no wheel archive ") + tyre);
   }
   size_t car_jobs = 0;
   for (const auto& [key, row] : chosen) {
     if (!only.empty() && !only.count(key)) continue;
-    Job job{Job::Kind::kCar, key, {}, row, {}};
+    Job job{Job::Kind::kCar, key, {}, row, {}, {}};
+    for (const auto& r : db.cars)
+      if (cars::lower(r.media_name) == key) job.rows.push_back(&r);
     auto ref = install.find_car(row->media_name, &job.others);
     if (!ref) {
       problems.push_back(key + ": no car folder");

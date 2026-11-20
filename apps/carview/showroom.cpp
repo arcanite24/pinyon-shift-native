@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <regex>
 #include <set>
 
 #include "mask_frag_spv.h"
@@ -32,7 +33,7 @@ namespace {
 
 // Flags in ShowroomPush::params.y (showroom.vert / showroom.frag).
 constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagLivery = 8, kFlagStripe = 32, kFlagFlat = 64,
-                   kFlagNoSlot0 = 16;
+                   kFlagNoSlot0 = 16, kFlagRaceLivery = 128;
 
 std::string lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -98,6 +99,27 @@ bool hidden_variant(const std::string& name, const std::set<std::string>& real) 
     }
   }
   return false;
+}
+
+// FORMAT-CARS, Stock parts: the upgrade-family member a part name is or
+// extends ("winga_arm1" follows "winga"), or "" when it is in no family
+// (bumpers, skirts, hood and wing by letter or race, the race hoods, the
+// roll cage, and the exhausts, which no table names).
+std::string family_member(const std::string& name) {
+  static const std::regex kVariant(
+      "(bumperf|bumperr|skirtl|skirtr|hood|wing)([a-z]|race)|hood(ps|ci)race|cagerace|exhaust[lr]?[a-z]");
+  const std::string n = lower(name);
+  const std::string base = n.substr(0, n.find('_'));
+  return std::regex_match(base, kVariant) ? base : std::string();
+}
+
+// Whether a family member is drawn for a stock row: exhausts by letter a,
+// the rest when a stock row names it.
+bool stock_hidden(const std::string& member, const cars::bake::StockRow& stock) {
+  static const std::regex kExhaust("exhaust[lr]?([a-z])");
+  std::smatch m;
+  if (std::regex_match(member, m, kExhaust)) return m[1].str() != "a";
+  return !std::binary_search(stock.parts.begin(), stock.parts.end(), member);
 }
 
 // Some LOD0, cockpit, brake and rim models hold stand-ins instead of
@@ -276,6 +298,27 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   textures_.push_back({nullptr, "@white"});
   textures_.push_back({nullptr, "@black"});
 
+  // The row shown: the requested car id, else the baked row.
+  stock_ = nullptr;
+  for (const auto& s : info.stock_rows)
+    if (s.known && (options_.car_id == 0 ? s.car_id == info.car_id : s.car_id == options_.car_id)) stock_ = &s;
+  if (options_.car_id != 0 && !stock_)
+    notes_.push_back("no stock row for car " + std::to_string(options_.car_id) + " in the bake");
+  if (!stock_) notes_.push_back("no stock parts baked: hiding variants by letter (first real letter)");
+  // FORMAT-CARS, Stock parts: family members by the stock rows, seats a
+  // stock weight row removes, and other lettered names by the first real
+  // letter.
+  auto hidden = [&](const std::string& name, const std::set<std::string>& real) {
+    if (options_.all_variants) return false;
+    const std::string n = lower(name);
+    if (stock_) {
+      const std::string member = family_member(n);
+      if (!member.empty()) return stock_hidden(member, *stock_);
+      if (std::binary_search(stock_->removed.begin(), stock_->removed.end(), n)) return true;
+    }
+    return hidden_variant(n, real);
+  };
+
   // Which body: LOD0 when it has geometry, else the LOD1-5 model.
   const bake::Model* body = nullptr;
   const bake::Model* exterior = nullptr;
@@ -308,7 +351,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     const std::string n = lower(p.name);
     // The LOD0 model carries a rim ("wheel") at the origin; the wheels are
     // drawn from the wheel model at each centre instead.
-    if (n == "wheel" || placeholder(p) || (!options_.all_variants && hidden_variant(n, body_real))) {
+    if (n == "wheel" || placeholder(p) || hidden(n, body_real)) {
       skipped_parts_.push_back(body->name + "/" + p.name);
       continue;
     }
@@ -326,8 +369,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     for (const auto& p : cockpit->parts) {
       const std::string n = lower(p.name);
       const bool needle = ends_with(n, "_mid") || ends_with(n, "_max");
-      if (body_names.count(n) || needle || placeholder(p) ||
-          (!options_.all_variants && hidden_variant(n, cockpit_real))) {
+      if (body_names.count(n) || needle || placeholder(p) || hidden(n, cockpit_real)) {
         skipped_parts_.push_back(cockpit->name + "/" + p.name);
         continue;
       }
@@ -357,8 +399,14 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       if (!stem_of(n).empty()) stems_drawn.insert(stem_of(n));
     std::vector<std::string> fill;
     for (const auto& n : stand_ins) {  // sorted: "bumperfa" before "bumperfb"
-      if (n == "wheel" || ends_with(n, "race") || ends_with(n, "_mid") || ends_with(n, "_max")) continue;
-      const std::string stem = stem_of(n);
+      if (n == "wheel" || ends_with(n, "_mid") || ends_with(n, "_max")) continue;
+      // A stock family member is filled from its LOD1-5 twin; another
+      // member never stands in for it (no promotion).
+      const bool by_stock = stock_ && !family_member(n).empty();
+      if (by_stock && hidden(n, real)) continue;
+      if (!by_stock && ends_with(n, "race")) continue;
+      if (!by_stock && stock_ && hidden(n, real)) continue;  // a removed seat
+      const std::string stem = by_stock ? std::string() : stem_of(n);
       if (!options_.all_variants && !stem.empty() && stems_drawn.count(stem)) continue;
       for (const auto& e : exterior->parts)
         if (lower(e.name) == n && !placeholder(e)) {
@@ -669,7 +717,8 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           if (colour->metallic) flags |= kFlagMetallic;
           // The stripe constant on the exterior paint techniques of a
           // striped colour row (FORMAT-CARS, Paint).
-          if (colour->has_stripe && (s.technique == "body" || s.technique == "body_2")) {
+          if (colour->has_stripe && !(stock_ && stock_->race_livery) &&
+              (s.technique == "body" || s.technique == "body_2")) {
             flags |= kFlagStripe;
             stripe_[0] = srgb_to_linear(float((colour->stripe_rgb >> 16) & 0xFF) / 255.0f);
             stripe_[1] = srgb_to_linear(float((colour->stripe_rgb >> 8) & 0xFF) / 255.0f);
@@ -677,6 +726,9 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           }
         }
         if (livery != UINT32_MAX) flags |= kFlagLivery;
+        // A factory livery (HasRaceLivery): the texel at every alpha, no
+        // paint (FORMAT-CARS, Factory liveries).
+        if (stock_ && stock_->race_livery) flags |= kFlagRaceLivery;
       } else if (s.material == MaterialClass::kCaliper) {
         const uint32_t rgb = info.caliper_rgb[size_t(axle)];
         d.push.tint[0] = float((rgb >> 16) & 0xFF) / 255.0f;

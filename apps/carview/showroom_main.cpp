@@ -1,7 +1,7 @@
 // carview --bake: the showroom over carbake's output, windowed or headless,
 // the reference mode, and the drive mode (carview --drive, below).
 //
-//   carview --bake <dir> --car <media> [--colour N] [--livery] [--all-variants]
+//   carview --bake <dir> --car <media> [--car-id N] [--colour N] [--livery] [--all-variants]
 //           [--size WxH] [--yaw deg] [--pitch deg] [--distance m] [--msaa N]
 //           [--headless --out file.png [--mask mask.png] [--write-reference cam.json]]
 //           [--frames N] [--validation] [--verbose]
@@ -214,7 +214,7 @@ std::string mask_path_for(const std::string& out) {
 
 void usage() {
   std::fprintf(stderr,
-               "usage: carview --bake <dir> --car <media> [--colour N] [--livery] [--all-variants]\n"
+               "usage: carview --bake <dir> --car <media> [--colour N] [--livery] [--car-id N] [--all-variants]\n"
                "               [--size WxH] [--yaw deg] [--pitch deg] [--distance m] [--msaa N]\n"
                "               [--headless --out file.png [--mask mask.png]] [--frames N] [--validation]\n"
                "       carview --bake <dir> --reference <car.json> [--car <media>] --out file.png\n"
@@ -241,6 +241,7 @@ int run_showroom(int argc, char** argv) {
     else if (a == "--verbose") verbose = true;
     else if (a == "--livery") options.livery_overlay = true;
     else if (a == "--all-variants") options.all_variants = true;
+    else if (a == "--car-id" && (v = next())) options.car_id = std::atoll(v);
     else if (a == "--coverage-mask") coverage_mask = true;
     else if (a == "--bake" && (v = next())) bake_dir = v;
     else if (a == "--car" && (v = next())) car = v;
@@ -281,6 +282,8 @@ int run_showroom(int argc, char** argv) {
       return 1;
     }
     if (car.empty()) car = reference.media_name;
+    // The row shown (its stock parts and livery): the reference's car id.
+    if (options.car_id == 0) options.car_id = reference.car_id;
     if (colour < 0 && reference.has_paint)
       options.match_rgb = int64_t(reference.paint_rgb[0]) * 65536 + reference.paint_rgb[1] * 256 +
                           reference.paint_rgb[2];

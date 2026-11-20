@@ -45,8 +45,14 @@ struct CarRow {
   double caliper_angle_front = 0, caliper_angle_rear = 0;
   bool selectable = false, drivable = false, unicorn = false;
   bool has_livery = false;
+  bool race_livery = false;  // HasRaceLivery: a factory livery (FORMAT-CARS, Factory liveries)
   int64_t wing_mask = 0;
   std::vector<CarColour> colours;  // by Sequence, then ID
+  // FORMAT-CARS, Stock parts: the part names (lower case) the car's
+  // IsStock upgrade rows name (front and rear bumper, side skirt, hood,
+  // rear wing, chassis stiffness, weight), and the seats they remove.
+  std::vector<std::string> stock_parts, removed_parts;
+  bool has_stock_body = false;  // a List_UpgradeCarBody IsStock row
   // CarPartPositions PartId 0-9 as stored; 5-8 are axle positions in the
   // body frame (+Z forward, left at -x): 5 left front, 6 right front, 7
   // right rear, 8 left rear. Only their z places a wheel.

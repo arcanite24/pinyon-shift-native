@@ -383,13 +383,23 @@ opaque.
   masks leave out the lamps' additive glow) and passes a car at IoU-g
   0.97 (the IoU without the largest reference-only region, the glow);
   plain IoU under 0.97 asks for a by-eye check, and masked PSNR is
-  reported only. The M1 run (2026-11-20, all 200 stock-Autoshow
-  references): IoU mean 0.985, min 0.905; 193 of 200 pass by IoU-g, 31
-  are under 0.97 by IoU. Six of the seven misses draw an aftermarket part
-  set where the stock car has stock parts (RX-8, Supra, Celica, '68
-  Beetle, FJ Cruiser, BRZ: the part-variant choice, Q4); the seventh,
-  the Huayra, is two glow regions (IoU-g 0.9700). The 40 baked cars with
-  no stock Autoshow view are listed by the report.
+  reported only. The M1 run (2026-11-20, 216 references: the 200
+  stock-Autoshow views and the 16 unicorns), with FORMAT-CARS's stock
+  parts and factory liveries: IoU mean 0.986, min 0.922; 213 of 216 pass
+  by IoU-g, 30 are under 0.97 by IoU (on the 200: mean 0.9848 -> 0.9863,
+  misses 7 -> 3, under 0.97 31 -> 27; the 16 unicorns all pass, mean
+  0.984). The three misses: the RX-8 Mazdaspeed (its kit is gone; what
+  is left is headlamp glow, IoU-g 0.964), the Huayra (two glow regions,
+  0.9700) and the FJ Cruiser (its tyres: the per-car tyre choice is not
+  traced, 0.9685). The 24 baked cars with no stock Autoshow view are
+  listed by the report.
+- Stock parts (FORMAT-CARS): each Data_Car row's IsStock upgrade rows
+  name the parts drawn; other members of those families, race parts and
+  the roll cage are hidden, exhausts take letter a, a missing or
+  stand-in stock part leaves its slot empty (or takes its LOD1-5 twin),
+  and rows sharing a model are told apart by car id (`--car-id`, or the
+  reference's). A `HasRaceLivery` row shows its body atlas at every
+  alpha, unpainted.
 - The lighting's free settings (exposure, environment, key and fill
   strengths, the diffuse and reflection tints, metallic paint's share)
   were fitted to the references for median masked PSNR, keeping the

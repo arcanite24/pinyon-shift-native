@@ -23,7 +23,7 @@
 
 namespace cars::bake {
 
-inline constexpr uint32_t kVersion = 2;
+inline constexpr uint32_t kVersion = 3;
 
 enum class Kind : uint32_t { kCar = 1, kWheel = 2, kShared = 3 };
 
@@ -144,6 +144,16 @@ struct LiveryPlane {
   std::string x_axis, y_axis;
 };
 
+// One Data_Car row of a baked model (rows can share a model and differ
+// in stock parts; FORMAT-CARS, Stock parts and Factory liveries).
+struct StockRow {
+  int64_t car_id = 0;
+  std::vector<std::string> parts;    // shown, lower case
+  std::vector<std::string> removed;  // seats removed, lower case
+  bool race_livery = false;
+  bool known = false;  // it has a List_UpgradeCarBody stock row
+};
+
 struct CarInfo {
   std::string media_name, display_name, origin;
   int64_t car_id = 0;
@@ -174,6 +184,8 @@ struct CarInfo {
   std::array<std::array<float, 3>, 10> part_positions{};
   bool has_livery = false;
   int64_t wing_mask = 0;
+  // Every Data_Car row of this model, the baked row first.
+  std::vector<StockRow> stock_rows;
   std::vector<std::string> notes;  // what the bake could not resolve or had to guess
 };
 

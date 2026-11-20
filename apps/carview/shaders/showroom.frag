@@ -45,7 +45,8 @@ layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, kGauge = 5u,
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
-const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u;
+const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
+           kFlagRaceLivery = 128u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -81,6 +82,8 @@ void main() {
     // tinted by the stripe colour (FORMAT-CARS, Paint).
     vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * frame.stripe.rgb : t0.rgb;
     base = mix(draw.tint.rgb, texel, t0.a);
+    // A factory livery shows the atlas at every alpha, unpainted.
+    if ((flags & kFlagRaceLivery) != 0u) base = t0.rgb;
     reflectivity = 0.05;
     gloss = 0.9;
     if ((flags & kFlagMetallic) != 0u) metal = frame.options.w;  // flakes: less diffuse, tinted reflection
