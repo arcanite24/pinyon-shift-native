@@ -858,7 +858,9 @@ int run_drive(int argc, char** argv) {
   const bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
   std::filesystem::path sound_dir = "out/sound", audio_out;
-  bool sound = true;
+  bool sound = true, sound_given = false;
+  // The play folder (tools/setup.py; README, Play the drive).
+  std::filesystem::path play_dir;
   // Free-roam traffic (SPEC-TRAFFIC): on in the window with the world, off
   // headless unless --traffic; --hour sets the time of day it follows (the
   // world's lighting does not change with it), T / Shift+T in the window.
@@ -895,7 +897,8 @@ int run_drive(int argc, char** argv) {
     }
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
-    else if (a == "--sound") sound_dir = next();
+    else if (a == "--sound") sound_dir = next(), sound_given = true;
+    else if (a == "--play") play_dir = next();
     else if (a == "--no-sound") sound = false;
     else if (a == "--traffic") traffic_flag = 1;
     else if (a == "--no-traffic") traffic_flag = 0;
@@ -961,6 +964,47 @@ int run_drive(int argc, char** argv) {
     std::string e;
     have_saved = drive::read_save(save_path, saved, &e);
     if (!have_saved && !e.empty()) std::fprintf(stderr, "carview: note: save ignored: %s\n", e.c_str());
+  }
+  // The play folder tools/setup.py makes: play.txt ("game <root>", the
+  // extracted disc) with bake/, sound/ and world/colorado.index beside it.
+  // --play names it; otherwise a window looks in SHIFT_PLAY_DIR, the
+  // executable's folder, then the user-data folder (SDL's pref path,
+  // shift-engine/play). It fills what the arguments left out (headless
+  // too when no --bake is given).
+  if ((!headless || bake_dir.empty()) && play_dir.empty()) {
+    std::vector<std::filesystem::path> where;
+    if (const char* p = std::getenv("SHIFT_PLAY_DIR")) where.emplace_back(p);
+    if (const char* b = SDL_GetBasePath()) where.emplace_back(b);
+    if (char* pref = SDL_GetPrefPath("shift-engine", "play")) {
+      where.emplace_back(pref);
+      SDL_free(pref);
+    }
+    std::error_code ec;
+    for (const auto& d : where)
+      if (!d.empty() && std::filesystem::is_regular_file(d / "play.txt", ec)) {
+        play_dir = d;
+        break;
+      }
+  }
+  if (!play_dir.empty()) {
+    std::ifstream in(play_dir / "play.txt");
+    if (!in) {
+      std::fprintf(stderr, "carview: no play.txt in %s (run tools/setup.py)\n", play_dir.string().c_str());
+      return 2;
+    }
+    std::filesystem::path game;
+    for (std::string line; std::getline(in, line);) {
+      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+      if (line.rfind("game ", 0) == 0) game = std::filesystem::path(line.substr(5));
+    }
+    if (!game.empty() && game.is_relative()) game = play_dir / game;
+    if (bake_dir.empty()) bake_dir = play_dir / "bake";
+    if (!sound_given) sound_dir = play_dir / "sound";
+    if (cache_path.empty()) cache_path = play_dir / "world" / "colorado.index";
+    std::error_code ec;
+    if (world_dir.empty() && !game.empty())
+      world_dir = (std::filesystem::is_directory(game / "media", ec) ? game / "media" : game) / "tracks" / "colorado";
+    std::printf("play: %s\n", play_dir.string().c_str());
   }
   if (!headless) {
     std::error_code ec;

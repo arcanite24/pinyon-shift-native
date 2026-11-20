@@ -18,6 +18,7 @@
 //
 //   traffic-census --game-root <disc> [--bake <dir> [--car <media>]] [--seed N] [--seeds N] [--verbose]
 //                  [--freeway] [--models] [--steady] [--at x y z]
+//   traffic-census --game-root <disc> --bake <dir> --list-models   (the baked traffic models: id, bake name)
 //   traffic-census --game-root <disc> --registry <text>   (GlobalRegistry.xml lines whose id holds it)
 //
 // Exit 0 when every tolerance of SPEC-TRAFFIC holds over the seeds' mean,
@@ -284,7 +285,7 @@ int main(int argc, char** argv) {
   std::string player_car = "NIS_SkylineGTRVSpecII_02";
   uint64_t seed = 1;
   int seeds = 10;
-  bool verbose = false, check_models = false, freeway = false, steady = false;
+  bool verbose = false, check_models = false, freeway = false, steady = false, list_models = false;
   std::string registry_prefix;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -303,6 +304,7 @@ int main(int argc, char** argv) {
     else if (a == "--freeway") freeway = true;
     else if (a == "--registry") registry_prefix = next();
     else if (a == "--steady") steady = true;
+    else if (a == "--list-models") list_models = true;
     else {
       std::fprintf(stderr, "usage: traffic-census --game-root <disc> [--seed N] [--seeds N] [--verbose]\n");
       return 2;
@@ -395,6 +397,10 @@ int main(int argc, char** argv) {
       bool traffic = false;
       for (const auto& m : config.models) traffic |= m.id == id;
       if (!traffic) continue;
+      if (list_models) {
+        std::printf("traffic-model %lld %s\n", id, name.substr(0, name.size() - 12).c_str());
+        continue;
+      }
       drive::CarParams p;
       if (!params_of(media, p)) {
         std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
@@ -402,6 +408,7 @@ int main(int argc, char** argv) {
       }
       physics->params[id] = p;
     }
+    if (list_models) return 0;
     if (!params_of(player_car, physics->player)) {
       std::fprintf(stderr, "traffic-census: %s\n", error.c_str());
       return 2;
