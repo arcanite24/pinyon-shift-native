@@ -50,11 +50,17 @@ smaller VIP package add no rows: they sell base rows and carry wheels.
   car rows to its database, but its `media.zip` holds no car archives.
   The models are in the Rally Expansion Pack, so without that package
   the five selectable v4 cars cannot be drawn.
-- **Some models exist twice.** 40 rows have files both on the disc and
-  in a package (Rally ships folders for ten base cars; the LCE and
-  October packs ship the same eleven). Which copy the game loads is not
-  established; a bake should prefer the package copy and report a
-  difference.
+- **Some models exist twice.** 40 rows (31 media names, 9 of the rows
+  event-only twins) have files in more than one place: 19 media names
+  both on the disc and in a package (Rally ships nine base cars, the
+  Pre-Order and VIP packs five each) and 12 in two packages (the LCE and
+  October packs carry the same eleven). Every copy is byte-identical to
+  the other, member for member (SHA-256 of all members, 2026-11-19),
+  which agrees with FORMAT-CARS. Which copy the game loads is not
+  established, and for the official set it does not matter: a bake takes
+  the disc copy first, then the packages in package order, as
+  FORMAT-CARS says, and reports a difference if a later install ever has
+  one.
 - **Rows without a model of their own.** The ten Rally event-only rows
   reuse the media name of a selectable car, and of the 23 base rows that
   are drivable but not selectable, 18 traffic rows have stub models of a
@@ -206,6 +212,87 @@ including start-up (six runs). In the showroom alone a car needs about
 400 frames from A to the reference frame. The per-run and per-make
 figures below are extrapolated from these runs, not measured.
 
+## Reference files
+
+Schema `shift-engine.m1-reference.v1`, one JSON file per referenced car
+at `.local/re/cars/refs/<car_id>.json`, written by
+[`tools/re/autoshow-refs.py`](../../tools/re/autoshow-refs.py) from the
+car's frame dump. The images sit beside it. Everything stays under
+`.local/`: the images are captures of the player's game.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema` | string | `shift-engine.m1-reference.v1` |
+| `car_id` | integer | `Data_Car.Id` |
+| `media_name` | string | `Data_Car.MediaName`, the car's folder |
+| `display_name`, `make`, `year` | | for reports only |
+| `source` | string | where the row comes from: `base`, `v4`, or `dlc:<package id>` |
+| `files` | string | the car folder the game read: disc archive or package folder, as `car-list.json` gives it |
+| `image` | string | PNG of the dumped frame, path relative to the JSON |
+| `mask` | string | PNG car-coverage mask, same size, relative path (below) |
+| `width`, `height` | integers | image size in pixels: 1280 and 720, the game's own render size at 1x |
+| `frame` | object | `after_a`: runner frames from the A press that opened the showroom to the dumped frame; `dump_swap`: the executor's swap number of the dump |
+| `clip_from_car` | 16 numbers | car space to clip space, **column-major**, for column vectors: clip = M × (x, y, z, 1) |
+| `view` | 16 numbers | world to camera, column-major, rigid |
+| `proj` | 16 numbers | camera to clip, column-major; `clip_from_car` = `proj` × `view` × `car_to_world` |
+| `car_to_world` | 16 numbers | car space to the showroom's world frame, column-major, rigid; identity when the car sits at the world origin |
+| `near` | number | the projection's near distance in metres (camera z where clip z is 0) |
+| `half_pixel_removed` | boolean | always true (below) |
+| `paint_rgb` | 3 integers | the colour shown: the car's first `Combo_Colors` row, sRGB, 0-255, as stored in the database (the game converts it to linear before shading; FORMAT-CARS) |
+| `paint_metallic` | integer | that row's metallic flag |
+| `game_clip_from_car` | 16 numbers | provenance: the car draws' matrix as the game sets it (rows are the clip components, row-major), before the conversions below |
+| `checks` | object | the tool's own checks: car draw counts, which models the car draws read, replay agreement |
+
+**Spaces.**
+
+- *Car space* is FORMAT-CARS': +X to the car's right, +Y up, +Z to the
+  rear, the body's lowest point at y = 0, metres. Positions are the
+  decoded `.carbin` positions; the wheels are placed in the vertex
+  shader, so wheel, tyre, rotor and caliper models are drawn with the
+  car's own matrix and their wheel-centre placement (FORMAT-CARS,
+  Wheels).
+- *Clip space* is Direct3D's: +x right and +y up on the screen as
+  presented, w > 0 in front of the camera, z/w from 0 at the near plane
+  towards 1 far away. The game's own matrix has negative x and y scales
+  (it draws the view rotated by a half turn and turns it upright later
+  in the frame, as in WORLD_GEOMETRY.md); `clip_from_car` has that half
+  turn taken out, so it is the matrix for an upright image.
+- *Depth.* The game's reversed depth is left out: the game stores
+  1 − z/w and tests greater-or-equal; `clip_from_car` gives the standard
+  z/w, 0 near and 1 far. The showroom projection has no far plane: its z
+  row equals the w row less `near`, so z/w = 1 − `near`/w.
+- *Camera space* (`view`, `proj`): +X right, +Y up, +Z forward into the
+  screen (left-handed, as Direct3D), w = camera z.
+- *World frame*: the frame of the stage's world-space draws, +Y up. Only
+  `car_to_world` refers to it; an engine can use `clip_from_car` alone.
+- *Pixels.* Pixel (i, j), j counted down from the top, has its centre at
+  clip x/w = 2 (i + 0.5) / width − 1 and y/w = 1 − 2 (j + 0.5) / height,
+  as a Vulkan or Direct3D 10+ viewport of the image's size (with y
+  flipped for Vulkan) puts it. The game samples Direct3D 9 pixel centres,
+  half a pixel right of and below those; the matrices have that half
+  pixel removed (clip x moved by −w / width and clip y by +w / height),
+  so a standard viewport reproduces the game's pixels.
+
+**Image.** The frame the dump recorded, replayed offline with
+`tools/replay-fh1-frame.py` (the post-processing output before host
+upscaling and UI, 8 bits per channel). Bloom, depth of field and motion
+blur are off and MSAA is resolved, as in every reference run.
+
+**Mask.** 8-bit greyscale, 255 where the car covers the pixel, 0
+elsewhere. It is the resolved image's pixels that change when the car's
+draws are left out of a replay of the same dump: every channel of the
+two replays is compared, and any difference counts. The car's draws are
+every draw of the main colour pass with the car's matrix: the exterior
+LOD0 model, the cockpit model (interior, steering wheel, mirrors, lamp
+units), glass and lamp covers, rotors, calipers, rims and tyres. Glass
+counts: a window pixel is in the mask because the glass changes it, and
+so is the interior seen through it. Partial edge pixels of the resolved
+MSAA image count as covered when they change at all, so the mask is
+about half a pixel wider at the silhouette than a single-sample
+coverage at pixel centres; the M1 IoU threshold allows for it. The
+darkening under the car is not one of the car's draws and is not in the
+mask.
+
 ## Plan for every car
 
 1. **Routes from the list.** Generate one route per make from
@@ -248,7 +335,7 @@ figures below are extrapolated from these runs, not measured.
 - How the cube maps are produced and what the screen-sized texture
   holds.
 - Which copy the game loads when a model exists both on the disc and in
-  a package.
+  a package (no effect: the copies are identical).
 - Whether B from the showroom returns straight to the car list.
 - The order of the six tied pairs in their car lists.
 - Where the darkening under the car comes from.

@@ -522,6 +522,13 @@ radius. Scale the rim's x by the axle's tyre width ÷ the front width and
 its radius by the rim radius ÷ 0.194. Use `TireC` and log the car until
 the tyre choice is known.
 
+The sizes are `Data_Car` columns: `FrontTireWidthMM`,
+`FrontTireAspect` and `FrontWheelDiameterIN` for the front axle, and
+`RearTireWidthMM`, `RearTireAspect` and `RearWheelDiameterIN` for the
+rear (confirmed for one car: the stock XKR-S's wheel constants match
+these columns; the Autoshow shows stock wheels, so upgrade tables do not
+apply).
+
 ## Brakes, calipers and rotors
 
 | Fact | Confidence | How |
