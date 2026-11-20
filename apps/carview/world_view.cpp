@@ -5,6 +5,8 @@
 //           [--skip text]... [--nearest-lod] [--recentre]
 //           [--feature text]... [--edge-percentile P] [--near metres]
 //           [--list] [--probe x y]... [--validation]
+//           [--pvs Colorado_00.pvs] [--members-root members-dir|bin.zip]
+//           [--drawn-props file] [--prop-lod n] [--pvsz-transposed]
 //
 // --skip drops mesh objects whose name holds the text (any case).
 // --nearest-lod keeps, of the objects whose names differ only in a "LODnn"
@@ -29,6 +31,19 @@
 //                            and --recentre)
 //   ignore x0 y0 x1 y1       a pixel rectangle the comparison skips (the
 //                            player's car, the HUD); repeatable
+//
+// Props (local-space models). --pvs names the object table
+// (Ribbon_00/Colorado_00.pvs) and turns placing on; --members-root is where
+// the .pgeo tiles, .pvsz zones and the props' render models are read
+// (default: the --world source; with a bin.zip and no --pvs, the table
+// next to it is used). Every kind-7 .pgeo instance and every .pvsz object
+// whose file-frame translation lies inside --box is placed: object ID ->
+// table member -> its LOD set's member --prop-lod (default 0, LOD00).
+// --pvsz-transposed reads the zone rotation's nine halves column-major.
+// --drawn-props keeps only the placements a game frame drew, from lines
+//   drawn <member> <x> <y> <z>   file-frame translation (keep it local)
+// Each listed entry takes the nearest placement within 5 cm and draws the
+// listed member with it (the game may draw another LOD or a twin mesh).
 //
 // Writes world-colour.png (flat shading by face normal, a tint per model),
 // world-depth.png (log view distance, near is bright, sky black),
@@ -60,6 +75,9 @@
 
 #include "car_model.h"
 #include "fh1data/archive.h"
+#include "fh1data/members.h"
+#include "fh1data/placements.h"
+#include "fh1data/props.h"
 #include "fh1data/rmb.h"
 #include "renderer.h"
 
@@ -451,6 +469,15 @@ struct EdgePixel {
   bool silhouette;  // a depth break or sky; else a boundary between mesh objects
 };
 
+struct Placed {
+  std::string name;  // the member drawn
+  const fh1::RenderModel* model = nullptr;
+  fh1::Placement placement;
+  fh1::PropStore store = fh1::PropStore::kPgeo;
+  bool turned = false;  // a zone rotation whose two readings differ (drawn-props runs)
+  std::string container;  // the tile or zone member
+};
+
 struct Score {
   size_t n = 0;
   double mean = 0, median = 0, within1 = 0, within2 = 0, within3 = 0;
@@ -467,6 +494,9 @@ int run_world(int argc, char** argv) {
   double edge_percentile = 0.95, near_limit = 40.0;
   bool list = false, nearest_lod = false;
   bool recentre = false, validation = std::getenv("SHIFT_VALIDATION") != nullptr;
+  fs::path pvs_path, members_root, drawn_props_path;
+  int prop_lod = 0;
+  bool pvsz_transposed = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
@@ -483,6 +513,11 @@ int run_world(int argc, char** argv) {
     else if (a == "--list") list = true;
     else if (a == "--nearest-lod") nearest_lod = true;
     else if (a == "--validation") validation = true;
+    else if (a == "--pvs" && (v = next())) pvs_path = v;
+    else if (a == "--members-root" && (v = next())) members_root = v;
+    else if (a == "--drawn-props" && (v = next())) drawn_props_path = v;
+    else if (a == "--prop-lod" && (v = next())) prop_lod = std::atoi(v);
+    else if (a == "--pvsz-transposed") pvsz_transposed = true;
     else if (a == "--probe" && i + 2 < argc) {
       probes.push_back({std::atoi(argv[i + 1]), std::atoi(argv[i + 2])});
       i += 2;
@@ -494,7 +529,9 @@ int run_world(int argc, char** argv) {
                    "               [--box x0 z0 x1 z1] [--out-dir dir] [--capture file.ppm]...\n"
                    "               [--skip text]... [--nearest-lod] [--recentre]\n"
                    "               [--feature text]... [--edge-percentile P] [--near metres]\n"
-                   "               [--list] [--probe x y]... [--validation]\n");
+                   "               [--list] [--probe x y]... [--validation]\n"
+                   "               [--pvs Colorado_00.pvs] [--members-root dir|bin.zip]\n"
+                   "               [--drawn-props file] [--prop-lod n] [--pvsz-transposed]\n");
       return 2;
     }
   }
@@ -568,6 +605,224 @@ int run_world(int argc, char** argv) {
     selected.emplace_back(source.names[i], std::move(model));
   }
 
+  // Props: every placement in the box, through the object table.
+  std::vector<Placed> placed;
+  fh1::MemberSource prop_source;
+  std::unique_ptr<fh1::PropModels> prop_models;
+  if (pvs_path.empty() && !drawn_props_path.empty()) {
+    const fs::path root = members_root.empty() ? source_path : members_root;
+    if (!fs::is_directory(root)) {
+      const fs::path guess = root.parent_path() / "Ribbon_00" / "Colorado_00.pvs";
+      if (fs::exists(guess)) pvs_path = guess;
+    }
+    if (pvs_path.empty()) {
+      std::fprintf(stderr, "carview: --drawn-props needs the object table (--pvs)\n");
+      return 2;
+    }
+  }
+  if (!pvs_path.empty()) {
+    const fs::path root = members_root.empty() ? source_path : members_root;
+    if (!prop_source.open(root, &error)) {
+      std::fprintf(stderr, "carview: %s\n", error.c_str());
+      return 1;
+    }
+    std::vector<uint8_t> pvs_bytes;
+    {
+      std::ifstream f(pvs_path, std::ios::binary);
+      pvs_bytes.assign(std::istreambuf_iterator<char>(f), {});
+    }
+    fh1::PvsObjectTable table;
+    if (!fh1::parse_object_table(pvs_bytes, table, &error)) {
+      std::fprintf(stderr, "carview: %s: %s\n", pvs_path.string().c_str(), error.c_str());
+      return 1;
+    }
+    fh1::PropLoadOptions options;
+    options.pvsz_transposed = pvsz_transposed;
+    options.census_first_rule = false;
+    fh1::PropWorld props;
+    if (!fh1::load_props(prop_source, props, &error, options)) {
+      std::fprintf(stderr, "carview: %s\n", error.c_str());
+      return 1;
+    }
+    std::printf("props from %s: object table %zu objects; %llu kind-7 .pgeo tiles (%llu failed), "
+                "%llu instances; %llu .pvsz zones (%llu failed), %llu records, %zu distinct "
+                "objects, %llu cross-zone conflicts; zone rotation read %s\n",
+                root.string().c_str(), table.objects.size(),
+                (unsigned long long)props.pgeo_parsed, (unsigned long long)props.pgeo_failed,
+                (unsigned long long)props.pgeo_instances, (unsigned long long)props.pvsz_zones,
+                (unsigned long long)props.pvsz_failed, (unsigned long long)props.pvsz_records,
+                props.placements.size() - size_t(props.pgeo_instances),
+                (unsigned long long)props.pvsz_conflicts,
+                pvsz_transposed ? "column-major" : "row-major");
+    for (const auto& f : props.failures) std::fprintf(stderr, "carview: %s\n", f.c_str());
+    prop_models = std::make_unique<fh1::PropModels>(prop_source);
+    auto table_member = [&](const fh1::PropPlacement& p) -> int64_t {
+      if (!p.has_object || p.object_id >= table.objects.size()) return -1;
+      const uint32_t m = table.objects[p.object_id].member;
+      return prop_models->model(m) ? int64_t(m) : -1;
+    };
+    std::vector<const fh1::PropPlacement*> candidates;
+    for (const auto& p : props.placements) {
+      const auto& t = p.placement.offset;
+      if (t[0] >= box[0] && t[0] <= box[2] && t[2] >= box[1] && t[2] <= box[3])
+        candidates.push_back(&p);
+    }
+    auto store_index = [](const fh1::PropPlacement& p) { return p.store == fh1::PropStore::kPgeo ? 0 : 1; };
+    if (drawn_props_path.empty()) {
+      size_t in_box[2] = {0, 0}, unresolved[2] = {0, 0};
+      std::set<int64_t> models_used;
+      for (const fh1::PropPlacement* p : candidates) {
+        const int s = store_index(*p);
+        ++in_box[s];
+        const int64_t m = table_member(*p);
+        const int64_t member = m >= 0 ? prop_models->lod_member(uint32_t(m), prop_lod) : -1;
+        const fh1::RenderModel* model = member >= 0 ? prop_models->model(uint32_t(member)) : nullptr;
+        if (!model) {
+          ++unresolved[s];
+          continue;
+        }
+        models_used.insert(member);
+        placed.push_back({fh1::PropModels::member_name(uint32_t(member)), model, p->placement,
+                          p->store, false, props.containers[p->container]});
+      }
+      std::printf("props in the box: %zu .pgeo instances (%zu name no render model), %zu .pvsz "
+                  "objects (%zu name no render model); %zu placed with %zu distinct models (level "
+                  "%d of each LOD set)\n",
+                  in_box[0], unresolved[0], in_box[1], unresolved[1], placed.size(),
+                  models_used.size(), prop_lod);
+    } else {
+      // The drawn list: each entry takes the nearest placement within 5 cm.
+      std::ifstream in(drawn_props_path);
+      if (!in) {
+        std::fprintf(stderr, "carview: cannot open %s\n", drawn_props_path.string().c_str());
+        return 1;
+      }
+      struct Entry {
+        std::string member;
+        double x, y, z;
+      };
+      std::vector<Entry> entries;
+      for (std::string line; std::getline(in, line);) {
+        if (const auto hash = line.find('#'); hash != std::string::npos) line.resize(hash);
+        std::istringstream s(line);
+        std::string key;
+        Entry e;
+        if (!(s >> key)) continue;
+        if (key != "drawn" || !(s >> e.member >> e.x >> e.y >> e.z)) {
+          std::fprintf(stderr, "carview: bad drawn-props line: %s\n", line.c_str());
+          return 1;
+        }
+        entries.push_back(e);
+      }
+      constexpr double kMatch = 0.05;
+      size_t found[2] = {0, 0};
+      // Relation of the listed member to the table's: same model, same LOD
+      // set, a byte-identical mesh object, or other.
+      size_t relation[2][4] = {};
+      std::vector<double> distances;
+      std::vector<std::string> missed;
+      size_t shared_spot = 0;
+      std::vector<double> asymmetries;
+      auto same_mesh = [](const fh1::RmbObject& a, const fh1::RmbObject& b) {
+        if (a.vertices != b.vertices || a.submeshes.size() != b.submeshes.size()) return false;
+        for (size_t k = 0; k < a.submeshes.size(); ++k)
+          if (a.submeshes[k].indices != b.submeshes[k].indices) return false;
+        return true;
+      };
+      for (const auto& e : entries) {
+        unsigned listed_number = 0;
+        const bool numbered =
+            std::sscanf(lower(e.member).c_str(), "coloradoout.%u.rmb.bin", &listed_number) == 1;
+        const fh1::RenderModel* listed = numbered ? prop_models->model(listed_number, &error) : nullptr;
+        auto relation_of = [&](const fh1::PropPlacement& p) {
+          const int64_t tm = table_member(p);
+          if (tm < 0 || !listed) return 3;
+          if (tm == int64_t(listed_number)) return 0;
+          const auto set = prop_models->lod_set(uint32_t(tm));
+          if (std::find(set.begin(), set.end(), listed_number) != set.end()) return 1;
+          for (uint32_t m : set) {
+            const fh1::RenderModel* other = prop_models->model(m);
+            for (const auto& a : listed->objects)
+              for (const auto& b : other->objects)
+                if (same_mesh(a, b)) return 2;
+          }
+          return 3;
+        };
+        // Of the placements within 5 cm, the best relation, then the nearest.
+        const fh1::PropPlacement* best = nullptr;
+        double best_d = 0;
+        int rel = 4;
+        size_t near_count = 0;
+        for (const fh1::PropPlacement* p : candidates) {
+          const auto& t = p->placement.offset;
+          const double d = std::sqrt((t[0] - e.x) * (t[0] - e.x) + (t[1] - e.y) * (t[1] - e.y) +
+                                     (t[2] - e.z) * (t[2] - e.z));
+          if (d > kMatch) continue;
+          ++near_count;
+          const int r = relation_of(*p);
+          if (r < rel || (r == rel && d < best_d)) {
+            best = p;
+            best_d = d;
+            rel = r;
+          }
+        }
+        if (!best || !listed) {
+          char text[256];
+          std::snprintf(text, sizeof text, "%s %.3f %.3f %.3f: %s", e.member.c_str(), e.x, e.y, e.z,
+                        !best ? "no placement within 5 cm" : "the listed model is not available");
+          missed.push_back(text);
+          continue;
+        }
+        shared_spot += near_count > 1;
+        bool turned = false;
+        if (best->store == fh1::PropStore::kPvsz) {
+          // How far apart the row- and column-major readings of the zone
+          // rotation are for this placement: the largest |H - H^T| entry
+          // (H = linear * F, F negating z).
+          double asymmetry = 0;
+          for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+              const double hij = best->placement.linear[i][j] * (j == 2 ? -1 : 1);
+              const double hji = best->placement.linear[j][i] * (i == 2 ? -1 : 1);
+              asymmetry = std::max(asymmetry, std::fabs(hij - hji));
+            }
+          asymmetries.push_back(asymmetry);
+          turned = asymmetry > 0.05;
+        }
+        const int s = store_index(*best);
+        ++found[s];
+        distances.push_back(best_d);
+        ++relation[s][rel];
+        placed.push_back({e.member, listed, best->placement, best->store, turned,
+                          props.containers[best->container]});
+      }
+      std::sort(distances.begin(), distances.end());
+      std::printf("drawn props: %zu of %zu listed entries found a placement within 5 cm (%zu "
+                  ".pgeo, %zu .pvsz); translation distance median %.4f m, largest %.4f m\n",
+                  found[0] + found[1], entries.size(), found[0], found[1],
+                  distances.empty() ? 0.0 : distances[distances.size() / 2],
+                  distances.empty() ? 0.0 : distances.back());
+      std::printf("  %zu entries had more than one placement within 5 cm (the one whose table "
+                  "model relates best to the listed member is taken)\n",
+                  shared_spot);
+      for (int s = 0; s < 2; ++s)
+        std::printf("  %s: the table names the drawn model %zu, a model of its LOD set %zu, a "
+                    "model with a byte-identical mesh object %zu, other %zu\n",
+                    s == 0 ? ".pgeo" : ".pvsz", relation[s][0], relation[s][1], relation[s][2],
+                    relation[s][3]);
+      if (!asymmetries.empty()) {
+        std::sort(asymmetries.begin(), asymmetries.end());
+        const size_t turned = size_t(asymmetries.end() - std::upper_bound(asymmetries.begin(),
+                                                                          asymmetries.end(), 0.05));
+        std::printf("  .pvsz rotations: the row- and column-major readings differ (largest "
+                    "|H - H^T| over 0.05) for %zu of %zu; median %.3f, largest %.3f\n",
+                    turned, asymmetries.size(), asymmetries[asymmetries.size() / 2],
+                    asymmetries.back());
+      }
+      for (const auto& m : missed) std::printf("  not found: %s\n", m.c_str());
+    }
+  }
+
   // Object filters: --skip, then --nearest-lod over what is left.
   auto skipped = [&](const std::string& name) {
     const std::string n = lower(name);
@@ -599,31 +854,47 @@ int run_world(int argc, char** argv) {
     }
 
   Scene scene;
-  for (const auto& [model_name, model] : selected) {
+  size_t prop_objects = 0, prop_triangles = 0;
+  auto add_model = [&](const std::string& model_name, const fh1::RenderModel& model,
+                       const fh1::Placement* placement, const char* tag,
+                       const std::string& container) {
     const uint32_t model_index = uint32_t(scene.models++);
-    if (list)
+    if (list && !placement)
       std::printf("model %s: box %.1f %.1f %.1f .. %.1f %.1f %.1f\n", model_name.c_str(),
                   model.box_min[0], model.box_min[1], model.box_min[2], model.box_max[0],
                   model.box_max[1], model.box_max[2]);
+    if (list && placement)
+      std::printf("prop %s %s at %.3f %.3f %.3f (%s)\n", tag, model_name.c_str(),
+                  placement->offset[0], placement->offset[1], placement->offset[2],
+                  container.c_str());
     const auto uv = tint_uv(model_index);
+    const size_t triangles_before = scene.triangles;
     for (const auto& o : model.objects) {
       int lod;
       const std::string family = lod_family(o.name, lod);
-      if (skipped(o.name) || (nearest_lod && lod >= 0 && lowest_lod[family] != lod)) {
+      if (skipped(o.name) ||
+          (!placement && nearest_lod && lod >= 0 && lowest_lod[family] != lod)) {
         ++scene.skipped_objects;
         continue;
       }
       ++scene.objects;
+      prop_objects += placement != nullptr;
       if (list)
         std::printf("  object %s: %u vertices, stride %u\n", o.name.c_str(), o.vertex_count,
                     o.stride);
       const uint32_t object_id = uint32_t(scene.object_names.size());
-      scene.object_names.push_back(model_name + " " + o.name);
+      scene.object_names.push_back(model_name + " " + o.name + (placement ? std::string(" ") + tag : ""));
       scene.model_vertices += o.vertex_count;
+      auto position = [&](uint32_t i) {
+        const auto p = o.position(i);
+        if (!placement) return p;
+        const auto q = placement->apply(p);
+        return std::array<float, 3>{float(q[0]), float(q[1]), float(q[2])};
+      };
       for (const auto& s : o.submeshes) {
         const auto tri = fh1::rmb_triangle_list(s);
         for (size_t t = 0; t + 2 < tri.size(); t += 3) {
-          const auto a = o.position(tri[t]), b = o.position(tri[t + 1]), c = o.position(tri[t + 2]);
+          const auto a = position(tri[t]), b = position(tri[t + 1]), c = position(tri[t + 2]);
           const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
           const float e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
           float n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
@@ -646,12 +917,21 @@ int run_world(int argc, char** argv) {
         }
       }
     }
-  }
-  std::printf("sector x %.0f..%.0f z %.0f..%.0f: %zu world-space models, %zu mesh objects drawn "
-              "(%zu skipped), %zu vertices, %zu triangles; %zu local-space models overlap and "
-              "are not drawn; %zu members failed\n",
-              box[0], box[2], box[1], box[3], scene.models, scene.objects, scene.skipped_objects,
-              scene.model_vertices, scene.triangles, local_overlapping, failed);
+    if (placement) prop_triangles += scene.triangles - triangles_before;
+  };
+  for (const auto& [model_name, model] : selected) add_model(model_name, model, nullptr, "", "");
+  const size_t world_models = scene.models;
+  for (const auto& p : placed)
+    add_model(p.name, *p.model, &p.placement,
+              p.store == fh1::PropStore::kPgeo ? "[pgeo]" : p.turned ? "[pvsz] [turned]" : "[pvsz]",
+              p.container);
+  std::printf("sector x %.0f..%.0f z %.0f..%.0f: %zu world-space models and %zu placed props, "
+              "%zu mesh objects drawn (%zu of them props; %zu skipped), %zu vertices, %zu "
+              "triangles (%zu of props); %zu local-space models overlap the box in the world "
+              "source and are not drawn as world-space; %zu members failed\n",
+              box[0], box[2], box[1], box[3], world_models, placed.size(), scene.objects,
+              prop_objects, scene.skipped_objects, scene.model_vertices, scene.triangles,
+              prop_triangles, local_overlapping, failed);
   if (scene.vertices.empty()) {
     std::fprintf(stderr, "carview: nothing to draw\n");
     return 1;

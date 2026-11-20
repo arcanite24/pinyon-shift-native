@@ -3,7 +3,10 @@ add_library(fh1data STATIC
   src/xmem.cpp
   src/xds.cpp
   src/carbin.cpp
-  src/rmb.cpp)
+  src/rmb.cpp
+  src/members.cpp
+  src/placements.cpp
+  src/props.cpp)
 target_include_directories(fh1data PUBLIC include)
 target_link_libraries(fh1data PRIVATE shift_mspack_lzxd)
 if(MSVC)

@@ -5,11 +5,14 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <span>
+#include <utility>
 #include <string>
 #include <vector>
 
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
+#include "fh1data/placements.h"
 #include "fh1data/rmb.h"
 #include "fh1data/xds.h"
 #include "fh1data/xmem.h"
@@ -332,6 +335,316 @@ void test_render_model() {
   CHECK(!fh1::parse_render_model(wrong_kind, m, &error));
 }
 
+// --- placements -------------------------------------------------------------
+
+void pad_to(BeWriter& w, size_t alignment) {
+  while (w.bytes.size() % alignment) w.bytes.push_back(0xEE);  // filler, not zero
+}
+
+void put_be32_at(std::vector<uint8_t>& b, size_t at, uint32_t v) {
+  for (int s = 0; s < 4; ++s) b[at + s] = uint8_t(v >> (24 - 8 * s));
+}
+
+void test_half() {
+  CHECK(fh1::half_to_float(0x3C00) == 1.0f);
+  CHECK(fh1::half_to_float(0xC000) == -2.0f);
+  CHECK(fh1::half_to_float(0x5640) == 100.0f);
+  CHECK(fh1::half_to_float(0x0000) == 0.0f);
+  CHECK(fh1::half_to_float(0x0001) == std::ldexp(1.0f, -24));
+  CHECK(std::isinf(fh1::half_to_float(0x7C00)));
+  CHECK(std::isnan(fh1::half_to_float(0x7E00)));
+}
+
+// An FPVS file: magic, version, a header of odd length, then the 28-byte
+// records, the shader names and the object table.
+std::vector<uint8_t> synthetic_pvs(uint32_t objects) {
+  BeWriter w;
+  w.bytes = {'F', 'P', 'V', 'S'};
+  w.u32(50);
+  for (int i = 0; i < 7; ++i) w.bytes.push_back(uint8_t(0x30 + i));  // undescribed header bytes
+  w.u32(3);
+  for (uint32_t k = 0; k < 3; ++k) {
+    w.u32(10 + 5 * k);
+    w.u32(k);
+    w.f32(1.0f);
+    w.f32(1.0f);
+    for (int i = 0; i < 10; ++i) w.bytes.push_back(0);
+    w.bytes.push_back(1);
+    w.bytes.push_back(uint8_t(k % 2 ? 4 : 0));
+  }
+  w.u32(2);
+  w.name(std::string("shaders\\track\\one") + '\0');
+  w.name("shaders\\track\\two");
+  w.u32(objects);
+  for (uint32_t i = 0; i < objects; ++i) {
+    w.u16(100 + i);
+    w.u16(0xFFFE);
+    w.u16(0x20);
+    w.u16(0x3F02);
+    w.u32(i);
+    w.u32(0xFFFFFFFF);
+    w.u16(0xFFFF);
+  }
+  for (int i = 0; i < 9; ++i) w.u32(0xABCD0000u + i);  // what follows the table
+  return w.bytes;
+}
+
+void test_object_table() {
+  const auto bytes = synthetic_pvs(4);
+  fh1::PvsObjectTable t;
+  std::string error;
+  CHECK(fh1::parse_object_table(bytes, t, &error));
+  CHECK(t.version == 50 && t.record_table_offset == 15 && t.record_count == 3);
+  CHECK(t.shaders.size() == 2 && t.shaders[0] == "shaders\\track\\one");
+  CHECK(t.objects.size() == 4);
+  if (t.objects.size() == 4) {
+    CHECK(t.objects[2].member == 102 && t.objects[2].field_2 == -2 && t.objects[2].field_8 == 2);
+    CHECK(t.objects[3].field_16 == 0xFFFF);
+  }
+  auto bad = bytes;
+  bad[0] = 'X';
+  CHECK(!fh1::parse_object_table(bad, t, &error) && !error.empty());
+  // A record numbered out of order: no table is found.
+  bad = bytes;
+  bad[15 + 4 + 28 + 7] = 9;
+  error.clear();
+  CHECK(!fh1::parse_object_table(bad, t, &error) && !error.empty());
+  // Truncated inside the object records.
+  error.clear();
+  CHECK(!fh1::parse_object_table(std::span(bytes).first(bytes.size() - 9 * 4 - 5), t, &error));
+  CHECK(!error.empty());
+}
+
+struct SyntheticInstance {
+  float rows[3][3];
+  float t[3];
+};
+
+// A kind-7 tile with two model records (the second with a string and no
+// IDs), two references and two groups: the instances of record 0 and one
+// 32-byte record, then no instances of record 1. `long_header` uses the
+// 0x98-byte header.
+std::vector<uint8_t> synthetic_pgeo(bool long_header, const std::vector<SyntheticInstance>& in) {
+  BeWriter w;
+  w.bytes = {'O', 'E', 'G', 'P'};
+  w.u32(0x2A);
+  w.f32(150);
+  w.f32(150);
+  w.vec3_pad(-10, 0, 20);
+  w.vec3_pad(10, 5, 40);
+  const std::string name = std::string("Models_Synthetic_1") + '\0';
+  w.u32(7);
+  w.f32(-1);
+  w.f32(2500);
+  w.u32(uint32_t(name.size()));
+  w.u32(2);   // references
+  w.u32(0);   // string records
+  w.u32(0);   // total size, patched below
+  w.u32(0);
+  w.u32(80);  // trailing block: two 40-byte records
+  w.u32(2);   // model records
+  w.u32(long_header ? 0x12345678 : 0);
+  w.u32(0x43280080);
+  while (w.bytes.size() < (long_header ? 0x98u : 0x60u)) w.u32(0xFFFFFFFF);
+  w.bytes.insert(w.bytes.end(), name.begin(), name.end());
+  pad_to(w, 16);
+  // 28 characters and a NUL: the ID lists and strings end off a 4-byte boundary.
+  const std::string text = "Tracks\\Synthetic\\Obj_001.max";
+  for (int r = 0; r < 2; ++r) {
+    w.vec3_pad(-1, 0, -1);
+    w.vec3_pad(1, 2, 1);
+    w.u32(r == 0 ? 0 : uint32_t(text.size() + 2));
+    const uint32_t counts[2][3] = {{1, 2, 0}, {0, 0, 0}};
+    for (int k = 0; k < 3; ++k) {
+      w.u32(counts[r][k]);
+      w.u32(0xB087A232);
+    }
+    w.u32(0x78000040);
+  }
+  w.u32(61000);
+  w.u32(61001);
+  w.u32(61002);
+  w.bytes.insert(w.bytes.end(), text.begin(), text.end());
+  w.bytes.push_back(0);
+  w.bytes.push_back(0);
+  pad_to(w, 4);
+  w.u32(0x4C8C);
+  w.u32(0);
+  w.u32(0x4C8D);
+  w.u32(1);
+  // The class part: a 0x14-byte header with the group count at +0xC.
+  w.u32(0xD4516D37);
+  w.f32(100);
+  w.u32(0);
+  w.u32(2);
+  w.u32(0);
+  for (uint32_t g = 0; g < 2; ++g) {
+    const size_t at = w.bytes.size();
+    w.bytes.resize(at + 0x5C, 0);
+    put_be32_at(w.bytes, at + 0x00, g);
+    put_be32_at(w.bytes, at + 0x2C, g);
+    put_be32_at(w.bytes, at + 0x30, g == 0 ? uint32_t(in.size()) : 0);
+    put_be32_at(w.bytes, at + 0x34, 1);
+    put_be32_at(w.bytes, at + 0x38, g == 0 ? 1 : 0);
+    for (int k = 0; k < 4; ++k) {
+      uint32_t v;
+      const float d = 100.0f * float(k + 1);
+      std::memcpy(&v, &d, 4);
+      put_be32_at(w.bytes, at + 0x3C + 4 * size_t(k), v);
+    }
+  }
+  pad_to(w, 16);
+  for (const auto& i : in) {
+    for (const auto& row : i.rows) w.vec3_pad(row[0], row[1], row[2]);
+    w.f32(i.t[0]);
+    w.f32(i.t[1]);
+    w.f32(i.t[2]);
+    w.f32(1);
+    for (int k = 0; k < 4; ++k) w.f32(0.5f);
+    w.vec3_pad(0, 1, 0);
+  }
+  for (int k = 0; k < 32; ++k) w.bytes.push_back(uint8_t(k));
+  for (int k = 0; k < 80; ++k) w.bytes.push_back(uint8_t(0xA0 + k));
+  put_be32_at(w.bytes, 0x48, uint32_t(w.bytes.size()));
+  return w.bytes;
+}
+
+bool near3(const std::array<double, 3>& a, double x, double y, double z) {
+  return std::fabs(a[0] - x) < 1e-9 && std::fabs(a[1] - y) < 1e-9 && std::fabs(a[2] - z) < 1e-9;
+}
+
+void test_pgeo() {
+  const std::vector<SyntheticInstance> in = {
+      {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {1, 2, 30}},
+      {{{0, 0, -1}, {0, 1, 0}, {1, 0, 0}}, {2, 3, 31}},  // a quarter turn about y
+      {{{2, 0, 0}, {0, 2, 0}, {0, 0, 2}}, {3, 4, 32}},   // scale 2
+  };
+  for (bool long_header : {false, true}) {
+    const auto bytes = synthetic_pgeo(long_header, in);
+    fh1::PgeoTile t;
+    std::string error;
+    CHECK(fh1::pgeo_kind(bytes, &error) == 7);
+    CHECK(fh1::parse_pgeo(bytes, t, &error));
+    if (!error.empty()) std::printf("  pgeo: %s\n", error.c_str());
+    CHECK(t.header_size == (long_header ? 0x98u : 0x60u));
+    CHECK(t.name == "Models_Synthetic_1" && t.distance == 2500.0f && t.box_max[2] == 40.0f);
+    CHECK(t.references.size() == 2 && t.references[1] == std::make_pair(0x4C8Du, 1u));
+    CHECK(t.models.size() == 2 && t.groups.size() == 2 && t.trailing_size == 80);
+    if (t.models.size() == 2 && t.groups.size() == 2) {
+      CHECK(t.models[0].ids[0] == std::vector<uint32_t>{61000});
+      CHECK((t.models[0].ids[1] == std::vector<uint32_t>{61001, 61002}));
+      CHECK(t.models[0].ids[2].empty() && t.models[1].ids[0].empty());
+      CHECK(t.models[1].text == "Tracks\\Synthetic\\Obj_001.max");
+      CHECK(t.groups[0].instances.size() == 3 && t.groups[1].instances.empty());
+      CHECK(t.groups[0].record32_count == 1 && t.groups[1].model_record == 1);
+      CHECK(t.groups[0].distances[3] == 400.0f);
+      if (t.groups[0].instances.size() == 3) {
+        const auto& i1 = t.groups[0].instances[1];
+        CHECK(i1.rows[0][2] == -1.0f && i1.translation[2] == 31.0f && i1.w == 1.0f);
+        // F R^T F v + F t. Local +x maps to the first row (0, 0, -1) in the
+        // game frame, (0, 0, 1) in the file frame, added to F t = (2, 3, -31).
+        const auto p = fh1::pgeo_placement(i1);
+        CHECK(near3(p.apply({1, 0, 0}), 2, 3, -30));
+        // File-frame local +z is game-frame -z, whose image is -(row 2) =
+        // (-1, 0, 0) in both frames.
+        CHECK(near3(p.apply({0, 0, 1}), 1, 3, -31));
+        CHECK(near3(fh1::pgeo_placement(t.groups[0].instances[2]).apply({1, 1, 1}), 5, 6, -30));
+      }
+    }
+    // Truncations are errors with a reason.
+    size_t tried = 0, rejected = 0;
+    for (size_t n = 0; n < bytes.size(); n += 7) {
+      fh1::PgeoTile x;
+      std::string why;
+      ++tried;
+      if (!fh1::parse_pgeo(std::span(bytes).first(n), x, &why) && !why.empty()) ++rejected;
+    }
+    CHECK(rejected == tried);
+    auto bad = bytes;
+    bad[0x30 + 3] = 3;
+    CHECK(!fh1::parse_pgeo(bad, t, &error) && t.kind == 3);
+    bad = bytes;
+    bad[0x50 + 3] = 40;  // the groups no longer end where the trailing block starts
+    error.clear();
+    CHECK(!fh1::parse_pgeo(bad, t, &error) && !error.empty());
+  }
+}
+
+void put_zone_record(BeWriter& w, const std::array<float, 3>& pos, const uint16_t rot[9],
+                     bool extended, const std::string& name) {
+  for (uint16_t d : {0x5640, 0x5BD0, 0x5FD0}) w.u16(d);  // 100, 250, 500
+  for (float p : pos) w.f32(p);
+  for (int k = 0; k < 9; ++k) w.u16(rot[k]);
+  for (int k = 0; k < 16; ++k) w.bytes.push_back(0);
+  w.bytes.push_back(extended ? 1 : 0);
+  if (extended) {
+    w.u32(0xFFFFFFFF);
+    w.bytes.push_back(3);
+    w.bytes.insert(w.bytes.end(), {7, 8, 9});
+    std::string n = name;
+    n.resize(32, '\0');
+    w.bytes.insert(w.bytes.end(), n.begin(), n.end());
+  }
+}
+
+void test_pvsz() {
+  const uint16_t identity[9] = {0x3C00, 0, 0, 0, 0x3C00, 0, 0, 0, 0x3C00};
+  // A quarter turn: rows (0, 0, 1), (0, 1, 0), (-1, 0, 0).
+  const uint16_t quarter[9] = {0, 0, 0x3C00, 0, 0x3C00, 0, 0xBC00, 0, 0};
+  BeWriter w;
+  w.u32(3);
+  w.u32(5);
+  w.u32(0x80000006);
+  w.u32(7);
+  // The undecoded block: 64 bytes that hold no rigid record.
+  for (int k = 0; k < 64; ++k) w.bytes.push_back(uint8_t(k % 3 == 0 ? 0x11 : 0));
+  const size_t start = w.bytes.size();
+  // The first record's z (bytes 14-17) holds 0x01 at byte 15 and its
+  // rotation's second half is 0, so a bogus extended record 37 bytes
+  // earlier ends exactly where the second record starts: two starts fit.
+  float z;
+  const uint32_t zbits = 0x42010000;
+  std::memcpy(&z, &zbits, 4);
+  put_zone_record(w, {10, 20, z}, identity, false, "");
+  put_zone_record(w, {-5, 1, 2}, quarter, true, "FR06_13");
+  put_zone_record(w, {7, 8, 9}, identity, false, "");
+  fh1::PvszZone zone;
+  std::string error;
+  CHECK(fh1::parse_pvsz(w.bytes, zone, &error));
+  CHECK(zone.ids.size() == 3 && fh1::pvsz_object_id(zone.ids[1]) == 6 && (zone.ids[1] >> 31) == 1);
+  CHECK(zone.starts.size() >= 2 && zone.starts.front() == start - 37);
+  CHECK(zone.start == start && zone.rigid_records == 3);
+  CHECK(zone.records.size() == 3);
+  if (zone.records.size() == 3) {
+    const auto& r = zone.records[1];
+    CHECK(r.extended && r.word == 0xFFFFFFFFu && r.extra == std::vector<uint8_t>({7, 8, 9}));
+    CHECK(r.name == "FR06_13" && r.position[0] == -5.0f && r.distances[1] == 250.0f);
+    CHECK(r.rotation[2] == 1.0f && r.rotation[6] == -1.0f);
+    // H F v + F p with H row-major: local +x goes to H's first column.
+    CHECK(near3(fh1::pvsz_placement(r).apply({1, 0, 0}), -5, 1, -3));
+    CHECK(near3(fh1::pvsz_placement(r, true).apply({1, 0, 0}), -5, 1, -1));
+    CHECK(!zone.records[0].extended && zone.records[2].position[2] == 9.0f);
+  }
+  fh1::PvszZone first;
+  CHECK(fh1::parse_pvsz(w.bytes, first, &error, fh1::PvszStartRule::kFirst));
+  CHECK(first.start == start - 37 && first.rigid_records == 2);
+  // One byte more at the end: no start fits.
+  auto longer = w.bytes;
+  longer.push_back(0);
+  error.clear();
+  CHECK(!fh1::parse_pvsz(longer, zone, &error) && !error.empty());
+  CHECK(!fh1::parse_pvsz(std::span(w.bytes).first(3), zone, &error));
+}
+
+void test_lod_part() {
+  std::string family;
+  int level = 0;
+  CHECK(fh1::rmb_lod_part("OBJ_FEST_BarrierMetal_LOD02_", family, level));
+  CHECK(level == 2 && family == "obj_fest_barriermetal_lod**_");
+  CHECK(!fh1::rmb_lod_part("Tree_NoLOD", family, level) && level == -1);
+  CHECK(!fh1::rmb_lod_part("TERR_LOD1", family, level));
+}
+
 }  // namespace
 
 int main() {
@@ -342,6 +655,11 @@ int main() {
   test_tiled_offset();
   test_archive_wrapped_count();
   test_render_model();
+  test_half();
+  test_object_table();
+  test_pgeo();
+  test_pvsz();
+  test_lod_part();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

@@ -7,6 +7,8 @@
 //   fh1data-corpus --extract <archive.zip> <member> <out>
 //   fh1data-corpus --names <archive.zip> [members-dir]  (directory census)
 //   fh1data-corpus --render-models <dir|archive.zip>    (render model census)
+//   fh1data-corpus --props <dir|archive.zip> <Colorado_00.pvs> [x0 z0 x1 z1]
+//                  (object table, .pgeo and .pvsz census, placements in a box)
 //
 // <dir> is the extracted disc root containing media/ (or media itself).
 // Exit code 0 when every car archive parses.
@@ -29,6 +31,9 @@
 
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
+#include "fh1data/members.h"
+#include "fh1data/placements.h"
+#include "fh1data/props.h"
 #include "fh1data/rmb.h"
 #include "fh1data/xds.h"
 
@@ -434,6 +439,95 @@ int render_models(const fs::path& source) {
   return failed ? 1 : 0;
 }
 
+// --props <dir|archive.zip> <Colorado_00.pvs> [x0 z0 x1 z1]: the object
+// table, every kind-7 .pgeo tile and every .pvsz zone, and, with a box,
+// the placements whose file-frame translation lies inside it (inclusive).
+int props(const fs::path& source_path, const fs::path& pvs_path, const double* box) {
+  std::string error;
+  fh1::MemberSource source;
+  if (!source.open(source_path, &error)) { std::cerr << error << "\n"; return 1; }
+  const auto pvs_bytes = read_file(pvs_path);
+  fh1::PvsObjectTable table;
+  if (!fh1::parse_object_table(pvs_bytes, table, &error)) {
+    std::cerr << pvs_path.string() << ": " << error << "\n";
+    return 1;
+  }
+  std::set<uint32_t> missing_members;
+  size_t objects_missing = 0;
+  for (const auto& o : table.objects)
+    if (!source.contains(fh1::PropModels::member_name(o.member))) {
+      ++objects_missing;
+      missing_members.insert(o.member);
+    }
+  std::printf("object table: version %u; %u 28-byte records at %zu, %zu shader names, %zu objects "
+              "at %zu (ends at %zu of %zu bytes); %zu objects name %zu member numbers with no "
+              "render model in the source\n",
+              table.version, table.record_count, table.record_table_offset, table.shaders.size(),
+              table.objects.size(), table.object_table_offset,
+              table.object_table_offset + 4 + table.objects.size() * 18, pvs_bytes.size(),
+              objects_missing, missing_members.size());
+
+  fh1::PropWorld world;
+  if (!fh1::load_props(source, world, &error)) { std::cerr << error << "\n"; return 1; }
+  std::printf(".pgeo: %llu tiles; by kind:", (unsigned long long)world.pgeo_tiles);
+  for (const auto& [k, n] : world.pgeo_kinds) std::printf(" %u (%llu)", k, (unsigned long long)n);
+  std::printf("\n  kind 7: %llu parsed to their stated size, %llu failed; %llu model records, "
+              "%llu groups, %llu instances\n",
+              (unsigned long long)world.pgeo_parsed, (unsigned long long)world.pgeo_failed,
+              (unsigned long long)world.pgeo_models, (unsigned long long)world.pgeo_groups,
+              (unsigned long long)world.pgeo_instances);
+  std::printf("  header sizes:");
+  for (const auto& [k, n] : world.pgeo_header_sizes)
+    std::printf(" 0x%zx (%llu)", k, (unsigned long long)n);
+  std::printf("; model records with consecutive IDs %llu, with an empty list 0 %llu; tiles whose "
+              "trailing block is 40 x the groups' counts %llu\n",
+              (unsigned long long)world.pgeo_consecutive_records,
+              (unsigned long long)world.pgeo_records_without_list0,
+              (unsigned long long)world.pgeo_trailing_matches);
+  std::set<uint32_t> distinct;
+  size_t out_of_table = 0;
+  for (const auto& p : world.placements) {
+    if (p.store == fh1::PropStore::kPvsz) distinct.insert(p.object_id);
+    if (p.has_object && p.object_id >= table.objects.size()) ++out_of_table;
+  }
+  std::printf(".pvsz: %llu zones, %llu parsed, %llu failed; %llu records; %llu zones with more than "
+              "one start that ends exactly, %llu where the most rigid start is not the first\n",
+              (unsigned long long)world.pvsz_zones, (unsigned long long)world.pvsz_parsed,
+              (unsigned long long)world.pvsz_failed, (unsigned long long)world.pvsz_records,
+              (unsigned long long)world.pvsz_multi_start,
+              (unsigned long long)world.pvsz_not_first_start);
+  std::printf("  %zu distinct objects (largest ID %llu, %llu IDs flagged); records differing from "
+              "the object's record in another zone: %llu (first-start rule: %llu)\n",
+              distinct.size(), (unsigned long long)world.pvsz_max_object,
+              (unsigned long long)world.pvsz_flagged_ids, (unsigned long long)world.pvsz_conflicts,
+              (unsigned long long)world.pvsz_first_conflicts);
+  std::printf("placements naming an object ID outside the table: %zu\n", out_of_table);
+  for (size_t i = 0; i < world.failures.size() && i < 20; ++i)
+    std::printf("FAIL %s\n", world.failures[i].c_str());
+
+  if (box) {
+    fh1::PropModels models(source);
+    size_t in_box[2] = {0, 0}, unresolved[2] = {0, 0};
+    std::set<uint32_t> lod00_members;
+    for (const auto& p : world.placements) {
+      const auto& t = p.placement.offset;
+      if (!(t[0] >= box[0] && t[0] <= box[2] && t[2] >= box[1] && t[2] <= box[3])) continue;
+      const int s = p.store == fh1::PropStore::kPgeo ? 0 : 1;
+      ++in_box[s];
+      const int64_t member = p.has_object && p.object_id < table.objects.size()
+                                 ? models.lod_member(table.objects[p.object_id].member, 0)
+                                 : -1;
+      if (member < 0) ++unresolved[s];
+      else lod00_members.insert(uint32_t(member));
+    }
+    std::printf("box x %.0f..%.0f z %.0f..%.0f: %zu .pgeo instances (%zu name no render model), "
+                "%zu .pvsz objects (%zu name no render model); %zu distinct LOD00 models\n",
+                box[0], box[2], box[1], box[3], in_box[0], unresolved[0], in_box[1],
+                unresolved[1], lod00_members.size());
+  }
+  return world.pgeo_failed || world.pvsz_failed ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -442,6 +536,11 @@ int main(int argc, char** argv) {
   if ((args.size() == 2 || args.size() == 3) && args[0] == "--names")
     return names(args[1], args.size() == 3 ? fs::path(args[2]) : fs::path());
   if (args.size() == 2 && args[0] == "--render-models") return render_models(args[1]);
+  if ((args.size() == 3 || args.size() == 7) && args[0] == "--props") {
+    double box[4];
+    for (int k = 0; k < 4 && args.size() == 7; ++k) box[k] = std::stod(args[3 + k]);
+    return props(args[1], args[2], args.size() == 7 ? box : nullptr);
+  }
   if (args.size() == 4 && args[0] == "--extract") {
     std::string error;
     auto archive = fh1::Archive::open(args[1], &error);
@@ -468,7 +567,8 @@ int main(int argc, char** argv) {
                    "       fh1data-corpus --dump <archive.zip> <member>\n"
                    "       fh1data-corpus --extract <archive.zip> <member> <out>\n"
                    "       fh1data-corpus --names <archive.zip> [members-dir]\n"
-                   "       fh1data-corpus --render-models <dir|archive.zip>\n";
+                   "       fh1data-corpus --render-models <dir|archive.zip>\n"
+                   "       fh1data-corpus --props <dir|archive.zip> <Colorado_00.pvs> [x0 z0 x1 z1]\n";
       return 2;
     }
   }

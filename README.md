@@ -29,9 +29,9 @@ readers, and a car drawn from the game's own files.
 
 | Path | What |
 | --- | --- |
-| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms), Colorado render models `coloradoout.NNNNN.rmb.bin` (WORLD-GEOMETRY: header box, mesh objects, raw vertices with the position decoded, strip or list submeshes, 16- or 32-bit indices) |
+| `libs/fh1data` | Format readers (RF-6): FH1 ZIP archives (stored and XMem LZX, method 21, with the `0x1123` payload-offset field and archives without local headers), `.xds` textures (Xenos fetch constant, untiling, endian swap, DXT1/3/5, DXN, DXT3A/5A and 8888, every mip level), `.carbin` car models (parts, vertex pools, 28-byte vertices, strips, sub-sections, UV transforms), Colorado render models `coloradoout.NNNNN.rmb.bin` (WORLD-GEOMETRY: header box, mesh objects, raw vertices with the position decoded, strip or list submeshes, 16- or 32-bit indices), and the placements of its local-space models (WORLD-GEOMETRY: the object table in `Ribbon_00/Colorado_00.pvs`, kind-7 `.pgeo` tiles with model records, groups and 96-byte instances, `.pvsz` zone records, LOD sets) |
 | `libs/data` | Game database rules (SPEC-EVENT-RESTRICTIONS): decodes and re-encodes `EventRestrictions.Value` strings into per-bucket restriction sets, and tests a car against a set |
-| `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models |
+| `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models; `--props` the object table, `.pgeo` tiles and `.pvsz` zones |
 | `apps/event-restrictions-corpus` | Decodes every `EventRestrictions` row of the player's `media/db/gamedb.slt` (opened read-only) and checks each round-trips; prints counts only |
 | `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, one pipeline, depth, 4x MSAA, one texture, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
 | `tests` | Unit tests on synthetic bytes |
@@ -93,10 +93,22 @@ carview --game-root <game> --car AST_DB5Vantage_64 --headless --out car.png --si
 fh1data-corpus --names <game>/media/tracks/colorado/bin.zip [extracted-dir]
 fh1data-corpus --render-models <game>/media/tracks/colorado/bin.zip
 
+# Prop placements: object table, kind-7 .pgeo tiles, .pvsz zones, and the
+# placements whose translation lies in a box (x0 z0 x1 z1, file frame)
+fh1data-corpus --props <game>/media/tracks/colorado/bin.zip \
+        <game>/media/tracks/colorado/Ribbon_00/Colorado_00.pvs 1500 -1460 2500 -460
+
 # One sector at a game camera (the frame file holds numbers measured from
 # a game frame: keep it, and the outputs, out of the repository)
 carview --world <bin.zip or extracted dir> --frame frame.txt --out-dir out \
         --capture frame.ppm [--nearest-lod --skip uberlod --skip terr_cube]
+
+# The same with the sector's props placed through the object table
+# (--members-root: where the .pgeo/.pvsz members and the props' models are
+# read; --drawn-props keeps the placements a game frame drew)
+carview --world <bin.zip or extracted dir> --frame frame.txt --out-dir out \
+        --pvs <game>/media/tracks/colorado/Ribbon_00/Colorado_00.pvs \
+        [--members-root <bin.zip or extracted dir>] [--drawn-props drawn.txt]
 ```
 
 The frame file format and every option are described at the top of
@@ -146,6 +158,38 @@ opaque.
   is not enough for a pixel-exact check. Which LOD the game draws is not
   known yet, so drawing every model overlapping the sector puts far LODs
   over near ones.
+
+
+## Status (RI-0.4 props, 2026-11-19)
+
+- The object table in `Ribbon_00/Colorado_00.pvs` reads (19,613 28-byte
+  records, 173 shader names, 62,173 objects; 1,087 objects name 268
+  member numbers that have no render model). All 2,031 kind-7 `.pgeo`
+  tiles parse to their stated size (12,044 model records, 12,044 groups,
+  174,803 instances) and all 1,434 `.pvsz` zones parse (1,027,743
+  records, 59,599 distinct objects), read from `bin.zip` or from an
+  extracted folder, in about 3 s.
+- Zone records: 1,214 zones have more than one start from which the
+  records end exactly at the end of the file. The first such start (the
+  spec's rule) gives 1,570 records that disagree with the same object's
+  record in another zone; taking the start with the most rigid rotations
+  gives none. The reader uses the second rule.
+- `carview --world --pvs` places every `.pgeo` instance and `.pvsz`
+  object in the box. The spec's sector holds 2,460 `.pgeo` instances and
+  847 `.pvsz` objects (2 name no render model). Of the 130 placements
+  one game frame drew, 130 are found within 5 cm (largest 0.7 mm). For
+  each, the table names the drawn model, a model of its LOD set, or a
+  model with a byte-identical mesh object.
+- With the 73 world-space models and the 130 drawn props at the frame's
+  camera, the edges of the signs, benches and information points lie a
+  median 1-1.4 px from the capture's edges. The chain-link fence's lie
+  1.4 px away, the barriers' 2.2 px. Pine leaf cards (alpha-tested in
+  the game, solid here) and the flag (animated in the game) do not line
+  up. The validation layer is clean.
+- Which placements the game shows is open. The sector's `.pgeo` tiles
+  include barrier sets, for example a line of concrete barriers along
+  the road through the dumped camera, that the free-roam frame does not
+  draw.
 
 ## Licence
 
