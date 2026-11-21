@@ -196,32 +196,40 @@ void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float
 // (a) The free-roam dial: centre 1122,587, ±137° from 12 o'clock.
 void dial(ui::List& l, const DriveHud& st, const Layout& g) {
   const float s = g.s;
-  const float cx = g.R(1122), cy = g.B(587), R = 88 * s;
+  // The numerals (SPEC-UI-LAYOUTS a, measured: centre 1122,587, radius
+  // 78.5); the face, ticks and needle from 947_HUD GAUGE_ANALOG (centre
+  // 1123,593.3; MAINBACKRING 256 px; hatches 13 x 9 at radius 82; NEEDLE's
+  // bar from radius 44 to 72, tinted pink).
+  const float nx = g.R(1122), ny = g.B(587);
+  const float cx = g.R(1123), cy = g.B(593.3f);
   constexpr float kSweep = 2.391f;  // 137°
-  l.circle(cx, cy, R, rgba(0, 0, 0, 140));
+  std::array<float, 4> ring;
+  const bool textured = ui_texture("HUD/DIALS/MAINBACKRING", ring);
+  if (textured) l.image(g.R(995), g.B(465), g.R(1251), g.B(721), ring, rgba(255, 255, 255, 242));
+  else l.circle(cx, cy, 88 * s, rgba(0, 0, 0, 140));
   const double red = std::max(1000.0, st.redline_rpm);
   // The scale: whole thousands, at least 10, numerals every second one.
   const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000) * 2000);
   auto angle = [&](double rpm) { return -kSweep + 2 * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
-  l.arc(cx, cy, R - 1 * s, 2 * s, -kSweep, kSweep, rgba(255, 255, 255, 230));
-  l.arc(cx, cy, R - 5 * s, 6 * s, angle(red), kSweep, kPink);
+  if (!textured) l.arc(cx, cy, 87 * s, 2 * s, -kSweep, kSweep, rgba(255, 255, 255, 230));
+  l.arc(cx, cy, 84 * s, 6 * s, angle(red), kSweep, kPink);  // the redline (REDLINE's mask is ours)
   const TextStyle num = font(ui::Font::kB, 15 * s, kText, Align::kCenter);
-  for (double k = 0; k <= top + 1; k += 1000) {
+  // Hatches: large at the thousands, mid between, small at the quarters.
+  for (double k = 0; k <= top + 1; k += 250) {
+    const int q = int(std::lround(k / 250));
+    const bool large = q % 4 == 0, mid = q % 2 == 0;
     const float a = angle(k), sa = std::sin(a), ca = -std::cos(a);
-    const bool major = int(std::lround(k / 1000)) % 2 == 0;
-    const float r0 = major ? R - 4 * s : R - 7 * s;
-    l.line(cx + r0 * sa, cy + r0 * ca, cx + (R - 2 * s) * sa, cy + (R - 2 * s) * ca, (major ? 2.0f : 1.5f) * s,
-           rgba(255, 255, 255, 220));
-    if (!major) continue;
+    const float w = (large ? 3.0f : mid ? 2.0f : 1.5f) * s;
+    const uint32_t c = large ? rgba(255, 255, 255) : mid ? rgba(255, 255, 255, 230) : rgba(255, 255, 255, 122);
+    l.line(cx + 80 * s * sa, cy + 80 * s * ca, cx + 87.5f * s * sa, cy + 87.5f * s * ca, w, c);  // ours: 2.5 px out, off the numerals
+    if (!large || (q / 4) % 2) continue;
     char d[8];
-    std::snprintf(d, sizeof d, "%d", int(std::lround(k / 1000)));
-    const float rn = 78.5f * s;
-    l.text(cx + rn * sa, cy + rn * ca - 7.5f * s, d, num);
+    std::snprintf(d, sizeof d, "%d", q / 4);
+    l.text(nx + 78.5f * s * sa, ny + 78.5f * s * ca - 7.5f * s, d, num);
   }
-  // The needle.
+  // The needle: NEEDLE's bar.
   const float a = angle(st.rpm), sa = std::sin(a), ca = -std::cos(a);
-  l.line(cx - 10 * s * sa, cy - 10 * s * ca, cx + (R - 8 * s) * sa, cy + (R - 8 * s) * ca, 3 * s, kPink);
-  l.circle(cx, cy, 5 * s, kPink);
+  l.line(cx + 44 * s * sa, cy + 44 * s * ca, cx + 72 * s * sa, cy + 72 * s * ca, 3 * s, kPink);
   // The speed: three digits, the leading zeros at half white.
   const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
   char digits[8];
