@@ -95,6 +95,28 @@ once.
 - `--no-traffic`;
 - `--difficulty easy|med|hard|pro`, `--no-rubberband` for races.
 
+## Settings
+
+To keep options for every run, add `--save-settings` once:
+
+```sh
+carview --preset low --no-traffic --difficulty hard --save-settings
+```
+
+They are written to `settings.txt` in the user folder (beside `drive/`), one
+option per line without the dashes (`preset low`, `no-traffic`). You can
+edit the file by hand. Options given on the command line win over the
+file, and `--no-settings` ignores it for one run. The file keeps the look
+(`preset`, `size`, `msaa`, `shadows`, `bloom`, `no-post`, `exposure`),
+sound (`no-sound`, `no-radio`), `traffic`, the race options
+(`difficulty`, `no-rubberband`), `camera`, `hour`, `no-collectibles`,
+`play` and the mod options. Unknown lines are reported and skipped.
+
+## Mods
+
+See [MODS.md](MODS.md): your own tuning, models and sounds, laid over the
+play folder without changing it.
+
 ## Troubleshooting
 
 - **"no play folder found"**: run setup first, or pass `--play <dir>`.

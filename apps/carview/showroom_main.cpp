@@ -68,7 +68,9 @@
 #include "garage/garage.h"
 #include "upgrade_shop.h"
 #include "autoshow.h"
+#include "cars/mods.h"
 #include "career_page.h"
+#include "settings.h"
 
 namespace carview {
 
@@ -731,7 +733,7 @@ bool load_camera_rig(const std::filesystem::path& game_root, const std::filesyst
   cars::PhysicsSettings settings_unused;
   {
     std::string name = lower_ascii(info.media_name);
-    std::ifstream in(bake_dir / "cars" / (name + ".physics.txt"), std::ios::binary);
+    std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
     std::stringstream ss;
     ss << in.rdbuf();
     std::string e;
@@ -1115,6 +1117,9 @@ void drive_usage() {
                "           --car <media> --hour h --spawn x y z heading --near x z --cache file\n"
                "           --save file | --no-save --import-profile <export folder> (once; then\n"
                "           --import-profile-again <folder> replaces the career)\n"
+               "  settings: --save-settings (keeps this run's look, sound, traffic and race options in the\n"
+               "           user folder's settings.txt; the window reads it first) --no-settings\n"
+               "  mods:    --mods <dir> (default: the user folder's mods/, the window only) --no-mods\n"
                "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
                "           --shadows off|low|high --view chase|front --hud --no-reverse-z\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
@@ -1207,11 +1212,36 @@ int run_drive(int argc, char** argv) {
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
   // 0.25 m to 16 km projection).
   bool reverse_z = true;
-  for (int i = 1; i < argc; ++i) {
-    const std::string a = argv[i];
-    auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
-    if (a == "--drive") continue;
-    if (a == "--headless") headless = true;
+  // The player's settings (settings.h) go in before the command line, in
+  // the window only; --no-settings skips them, --save-settings keeps this
+  // run's options for the next.
+  std::vector<std::string> args;
+  {
+    bool window = true, use_settings = true;
+    for (int i = 1; i < argc; ++i) {
+      const std::string a = argv[i];
+      if (a == "--headless" || a == "--bench" || a == "--menu-png" || a == "--help" || a == "-h") window = false;
+      if (a == "--no-settings") use_settings = false;
+    }
+    if ((window || std::getenv("SHIFT_SETTINGS")) && use_settings) {
+      std::vector<std::string> notes;
+      args = carview::read_settings(carview::settings_path(), &notes);
+      for (const auto& n : notes) std::fprintf(stderr, "carview: note: %s\n", n.c_str());
+      if (!args.empty()) std::printf("settings: %s (%zu tokens)\n", carview::settings_path().string().c_str(), args.size());
+    }
+    for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+  }
+  bool save_settings = false;
+  std::filesystem::path mods_root;
+  bool mods_off = false;
+  for (size_t i = 0; i < args.size(); ++i) {
+    const std::string a = args[i];
+    auto next = [&]() -> const char* { return i + 1 < args.size() ? args[++i].c_str() : ""; };
+    if (a == "--drive" || a == "--no-settings") continue;
+    if (a == "--save-settings") save_settings = true;
+    else if (a == "--mods") mods_root = next(), mods_off = false;
+    else if (a == "--no-mods") mods_off = true;
+    else if (a == "--headless") headless = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") car = next();
     else if (a == "--out") out = next();
@@ -1314,6 +1344,15 @@ int run_drive(int argc, char** argv) {
       drive_usage();
       return 2;
     }
+  }
+  if (save_settings) {
+    std::string e;
+    const auto file = carview::settings_path();
+    if (file.empty() || !carview::write_settings(file, args, &e)) {
+      std::fprintf(stderr, "carview: --save-settings: %s\n", file.empty() ? "no user folder" : e.c_str());
+      return 1;
+    }
+    std::printf("settings: saved %s\n", file.string().c_str());
   }
   if (!menu_png.empty()) {
     // The HUD with the pause menu open, the second item chosen, at scale 3.
@@ -1446,6 +1485,16 @@ int run_drive(int argc, char** argv) {
     if (!size_given) width = 1600, height = 900;
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
+  }
+  // Mods (cars/mods.h): the window's from the user folder's mods/, a
+  // headless run's only from --mods; --no-mods turns them off.
+  if (!mods_off) {
+    if (mods_root.empty() && !headless) mods_root = carview::default_mods_root();
+    const auto mods = cars::mods::list(mods_root);
+    cars::mods::activate(mods, bake_dir, sound_dir);
+    for (const auto& m : mods)
+      std::printf("mod: %s (%s), %d files, %s\n", m.name.c_str(), m.title.c_str(), m.files,
+                  m.enabled ? "on" : "off (mod.txt: enabled 0)");
   }
   // The career garage (SPEC-GARAGE-UPGRADES): garage.txt beside the save,
   // made by the profile import; the cars the bake has, by Data_Car id.

@@ -1,3 +1,4 @@
+#include "cars/mods.h"
 #include "drive/from_physics.h"
 
 #include <algorithm>
@@ -234,7 +235,7 @@ CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesy
                                std::vector<std::string>* notes) {
   std::string name = car.media_name;
   for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
-  const auto path = bake_dir / "cars" / (name + ".physics.txt");
+  const auto path = cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt"));
   std::ifstream in(path, std::ios::binary);
   if (!in) {
     if (notes) notes->push_back("no " + path.string() + ": the synthetic car's physics (carbake --physics-only writes it)");
@@ -249,7 +250,7 @@ CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::files
                                 const cars::CarPhysics& rows, std::vector<std::string>* notes) {
   std::string name = car.media_name;
   for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
-  std::ifstream in(bake_dir / "cars" / (name + ".physics.txt"), std::ios::binary);
+  std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
   CarParams p = params_from_bake(car);
   std::stringstream ss;
   ss << in.rdbuf();

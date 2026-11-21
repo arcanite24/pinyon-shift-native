@@ -11,7 +11,7 @@ Every file of the package (a folder or its `.zip`), whatever its type:
 
 | Check | Fails when | Why |
 | --- | --- | --- |
-| Text | the file's bytes contain a guest function name (`sub_8…`), a guest code or data address (`0x82…`, `0x83…`), a generated-code register access (`ctx.r3`) or a generated-code macro: the list of `tools/check-provenance.py` | the clean-room rule for sources, applied to what ships |
+| Text | the file's bytes contain a guest function name (`sub_8…`), a guest code or data address (`0x82…`, `0x83…`), a generated-code register access (`ctx.` and a register name) or a generated-code macro: the list of `tools/check-provenance.py` | the clean-room rule for sources, applied to what ships |
 | Name | the file is named like a file of the game (disc, title update, content packages), or has a game-data extension (`.xex`, `.xexp`, `.xpr`, `.xds`, `.bix`, `.slt`, `.pgeo`, `.col`, `.owt`, …) | no game file copied in under its own name |
 | Format | the file starts as an XEX executable, an XPR resource or a database | no game container under another name |
 | Guest code | the PowerPC return word (`blr`, 4E800020) or link-save word (`mflr r0`, 7C0802A6) occurs more than 64 times | the game is PowerPC code; native x86-64 and ARM64 binaries hold these words only by chance |

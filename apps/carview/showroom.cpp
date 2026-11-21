@@ -1,3 +1,4 @@
+#include "cars/mods.h"
 #include "showroom.h"
 
 #include <algorithm>
@@ -275,7 +276,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   options_ = options;
   std::string err;
   const std::string car_name = lower(car);
-  if (!bake::read_file(bake_dir / "cars" / (car_name + ".shiftbake"), car_, &err)) {
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "cars" / (car_name + ".shiftbake")), car_, &err)) {
     error = car_name + ": " + err;
     return false;
   }
@@ -302,14 +303,14 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       notes_.push_back("no colour with Sequence " + std::to_string(options_.match_sequence) + ": the lowest");
     }
   }
-  if (!bake::read_file(bake_dir / "wheels" / (info.wheel_media + ".shiftbake"), wheel_, &err)) {
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.wheel_media + ".shiftbake")), wheel_, &err)) {
     error = "wheel " + info.wheel_media + ": " + err;
     return false;
   }
-  if (!bake::read_file(bake_dir / "wheels" / (info.tyre_media + ".shiftbake"), tyre_, &err) ||
-      !bake::read_file(bake_dir / "wheels" / (info.tyre_texture_media + ".shiftbake"), tyre_textures_,
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_media + ".shiftbake")), tyre_, &err) ||
+      !bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_texture_media + ".shiftbake")), tyre_textures_,
                        &err) ||
-      !bake::read_file(bake_dir / "shared.shiftbake", shared_, &err)) {
+      !bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
     error = err;
     return false;
   }

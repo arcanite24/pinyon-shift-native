@@ -1,0 +1,30 @@
+// The player's settings (ours, M7): settings.txt in the user folder, one
+// option per line as "key value" or "key" (the drive's own options without
+// the dashes: "preset low", "no-traffic", "difficulty hard"). They go in
+// before the command line, so the command line wins. Only the options
+// listed in settings.cpp are kept; others are noted and skipped. The window
+// reads them; headless runs do not (the gates stay as given) unless
+// SHIFT_SETTINGS names the file.
+#pragma once
+
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace carview {
+
+// SHIFT_SETTINGS, else <user folder>/settings.txt (SDL's pref path
+// shift-engine/), or empty.
+std::filesystem::path settings_path();
+// The user folder's mods/ (the default mods root), or empty.
+std::filesystem::path default_mods_root();
+
+// The file's options as command-line tokens ("--preset", "low", ...).
+// Missing file: none.
+std::vector<std::string> read_settings(const std::filesystem::path& file, std::vector<std::string>* notes);
+
+// Writes the kept options of `args` (command-line tokens, settings first),
+// the last of each kept: --save-settings.
+bool write_settings(const std::filesystem::path& file, const std::vector<std::string>& args, std::string* error);
+
+}  // namespace carview

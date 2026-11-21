@@ -113,6 +113,16 @@ audio device it drives on silent.
   folder, then the user-data folder.
 - **Controls:** keyboard or pad; Esc or Start opens the pause menu, which
   has the car picker (controls table below).
+- **Settings:** `--save-settings` keeps the run's look, sound, traffic and
+  race options in `settings.txt` in the user folder; the window reads it
+  before the command line (`--no-settings` skips it, `SHIFT_SETTINGS`
+  names another file and applies headless too). See
+  [docs/player/INSTALL.md](docs/player/INSTALL.md).
+- **Mods:** folders in the user folder's `mods/` (or `--mods <dir>`; the
+  window only by default) replace files of the play folder's `bake/` and
+  `sound/` (`cars/mods.h`, [docs/player/MODS.md](docs/player/MODS.md)).
+  Checked headless: a mod doubling the R34's mass gives 67.8 km/h at 6 s
+  of the launch run against 100.4 stock.
 
 ## Drive it yourself (M3 play test)
 
@@ -806,6 +816,11 @@ the interim noted here until a later polish sweep.
   packs); the bought car takes its first colour (no colour bar); no
   tutorial list. A garage car is drawn in its stored colour Sequence; the
   paint shop and player liveries are not done.
+- **Settings and mods (M7 interims).** There is no settings page in the
+  pause menu yet: settings are the file and `--save-settings`, and a change
+  to the preset or size takes effect on the next start. Mods replace files
+  only, and the car list (`baked_car_ids`, traffic) still comes from the
+  play folder, so a mod cannot add a car. Mods are read once at start-up.
 - **Career page and Rally (SPEC-V4-CONTENT interims).** The pause menu's
   career page lists the imported records (level, credits, races, garage,
   1000 Club challenges, Rally XP, level, events, stages, wins and

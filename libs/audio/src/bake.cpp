@@ -1,3 +1,4 @@
+#include "cars/mods.h"
 #include "audio/bake.h"
 
 #include <algorithm>
@@ -164,7 +165,7 @@ std::vector<std::vector<const PcmSample*>> BakedSound::table() const {
 bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& media, BakedSound& out,
                       std::string* error) {
   out = {};
-  const std::filesystem::path dir = out_dir / media;
+  const std::filesystem::path dir = cars::mods::resolve(out_dir / media);
   auto fail = [&](const std::string& what) {
     if (error) *error = (dir / "sound.txt").string() + ": " + what;
     return false;
