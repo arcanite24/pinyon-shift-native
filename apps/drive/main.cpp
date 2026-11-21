@@ -305,8 +305,10 @@ int main(int argc, char** argv) {
         double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
         const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
         for (double& x : n) x /= len > 0 ? len : 1;
-        std::printf("probe: centroid %.2f %.2f %.2f normal %.2f %.2f %.2f %s\n", c[0], c[1], c[2], n[0], n[1],
-                    n[2], collision.surface_name(cm.surface[t]).c_str());
+        std::printf("probe: centroid %.2f %.2f %.2f normal %.2f %.2f %.2f %s tile %u word %04x cat %02x %s\n", c[0],
+                    c[1], c[2], n[0], n[1], n[2], collision.surface_name(cm.surface[t]).c_str(), cm.tile[t],
+                    t < cm.word.size() ? cm.word[t] : 0, cm.flags[t],
+                    world::Collision::collides(cm, t) ? "collides" : "off");
       }
     }
     world::Spawn s;
