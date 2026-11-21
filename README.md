@@ -811,8 +811,12 @@ the interim noted here until a later polish sweep.
   contacts with the replayed player and runs 37 % of the race within 20 m
   behind it. EXHIBITION's showcase Minis (stock rows that are upgrades,
   now with their deltas: acceleration 1.0 to 1.3 of the oracle's) plan
-  from 20.7 m/s^2 lateral and 20.2 braking, slide off the first corners
-  and need 33 resets (asked of the spec side). The AI's steer is capped
+  from 17.5 m/s^2 lateral and 19.9 braking (the title 16.24 and 19.12;
+  ours was 20.7 before the load transfer was capped at the axle's load),
+  yet still need 27 to 33 resets: of 33 sudden losses in 70 s, 14 are
+  contact between Minis, 2 with the replayed player and 17 alone, the
+  body touching the road (5 to 6 % of samples, a raised sill does not
+  change it: the Mini's ride, open). The AI's steer is capped
   at the pad's speed-narrowed lock (interim); twice the cap changed
   nothing. Tools: `SHIFT_PLAN_DUMP=<file>` (the corner pass and the AI
   line file), the trace's `hit`, `hny`, `surf` (the strongest body

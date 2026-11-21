@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 namespace drive {
@@ -119,7 +121,7 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     // the wheelbase.
     double a = 0;
     for (int pass = 0; pass < 6; ++pass) {
-      const double t = m * a * h / wb;
+      const double t = std::min(m * a * h / wb, axle_w[1]);  // at most the whole rear on the front
       a = (axle(0, TyrePeak::kBraking, axle_w[0] + t, v) + axle(1, TyrePeak::kBraking, axle_w[1] - t, v)) / m;
     }
     c.braking[size_t(n)] = float(cal.braking * (a + p.drag_quadratic * v * v / m));
@@ -129,7 +131,9 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     for (int pass = 0; pass < 6; ++pass) {
       double next[2];
       for (int ax = 0; ax < 2; ++ax) {
-        const double dn = force[ax] * h / track;
+        // At most the whole axle on the outer wheel (the inner lifts): past
+        // that the transfer would make load from nothing.
+        const double dn = std::min(force[ax] * h / track, 0.5 * axle_w[ax]);
         double f = 0;
         for (double side : {0.5 * axle_w[ax] + dn, 0.5 * axle_w[ax] - dn}) {
           side = std::max(0.0, side);
@@ -144,10 +148,24 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
       force[0] = next[0], force[1] = next[1];
     }
     c.lateral[size_t(n)] = float(cal.lateral * (force[0] + force[1]) / m);
+    if (n == 8 && std::getenv("SHIFT_CAPACITY_DEBUG")) {
+      // The lateral terms at 20 m/s (SHIFT_CAPACITY_DEBUG=1).
+      for (int ax = 0; ax < 2; ++ax) {
+        const double kgf = 0.5 * axle_w[ax] / kG;
+        std::fprintf(stderr,
+                     "capacity: axle %d static %.0f kgf mu %.3f width %.4f lat_scale %.3f compound %.3f misc %.3f "
+                     "curve scales %.3f %.3f blend %.3f force %.0f N\n",
+                     ax, kgf, tyre_peak_mu(p, ax, TyrePeak::kLateral, 0.5 * axle_w[ax], v), p.width_scale[size_t(ax)],
+                     p.lat_scale[size_t(ax)], p.lat_compound_scale, p.long_misc_scale, p.lat_curve_scale[0],
+                     p.lat_curve_scale[1], p.lateral.blend(kgf), force[ax]);
+      }
+      std::fprintf(stderr, "capacity: mass %.0f share %.3f h %.3f track %.3f raw %.2f cal %.3f -> %.2f m/s^2\n", m, share, h,
+                   track, (force[0] + force[1]) / m, cal.lateral, c.lateral[size_t(n)]);
+    }
     // Forward: the driven axles, load moving rearwards (tyre-limited only).
     a = 0;
     for (int pass = 0; pass < 6; ++pass) {
-      const double t = m * a * h / wb;
+      const double t = std::min(m * a * h / wb, axle_w[0]);  // at most the whole front on the rear
       double f = 0;
       if (driven[0]) f += axle(0, TyrePeak::kDriving, axle_w[0] - t, v);
       if (driven[1]) f += axle(1, TyrePeak::kDriving, axle_w[1] + t, v);
