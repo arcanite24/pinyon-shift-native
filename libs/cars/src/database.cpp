@@ -631,14 +631,13 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
                                         "List_UpgradeEngineIntake",   "List_UpgradeEngineManifold",
                                         "List_UpgradeEngineOilCooling"};
         for (const char* k : kTorque)
-          if (t == k) torque *= car.get(t + ".TorqueScale", 1);
+          if (t == k) torque += car.get(t + ".TorqueScale", 1) - 1;  // additive: 1 + the sum of (s - 1) (SPEC-GARAGE-UPGRADES)
       }
       v["List_UpgradeCarBodyWeight.Mass"] = car.get("List_UpgradeCarBodyWeight.Mass", 0) + mass_diff;
       v["List_TorqueCurve.TorqueScale"] = car.get("List_TorqueCurve.TorqueScale", 1) * torque;
       v["List_UpgradeCarBodyWeight.CMBackFront"] = car.get("List_UpgradeCarBodyWeight.CMBackFront", 0.5) + share;
-      // CMHeightDiff is 1 on every chassis row of the disc and packages
-      // (stock and upgraded), so it scales the height (the spec's "added",
-      // probable, would lift every car by 1 m).
+      // CMHeightDiff is unused by the game (1.0 on all 623 rows,
+      // SPEC-GARAGE-UPGRADES); the product leaves the height as it is.
       v["List_UpgradeCarBodyWeight.CMHeight"] = car.get("List_UpgradeCarBodyWeight.CMHeight", 0) *
                                                car.get("List_UpgradeCarBodyChassisStiffness.CMHeightDiff", 1);
       for (const std::string a : {"Front", "Rear"}) {

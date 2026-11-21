@@ -800,10 +800,23 @@ the interim noted here until a later polish sweep.
   title's yaw-capped 15.3 to 15.5 (sent to the spec side).
   `SHIFT_RACE_PLANNER=fit` restores the old flat fit. Gate, one seed: AI
   mean time within 3 % on FR06, FR22, FR33 and HEADLINE; slow on
-  EXHIBITION_FEST_003 (213.7 against 179.0 s), NR02 (145.5/130.7),
-  STREET_PLNS_002 (134.3/124.1), FR24 (119.9/110.8), FR01 (109.5/102.7)
-  and FR16 (127.9/124.0). To do: find where those laps lose the time
-  (straights, the line, the pack) with `tools/race/corners.py`.
+  EXHIBITION_FEST_003 (209.7 against 179.0 s), NR02 (134.9/130.7, from
+  145.5 before the minimum-curvature street line), STREET_PLNS_002
+  (131.4/124.1), FR24 (119.9/110.8), FR01 (109.5/102.7) and FR16
+  (127.9/124.0). Where the time goes: on FR01 the R34's acceleration
+  matches the oracle's from 20 to 45 m/s and its line is the OWTM's
+  (the oracle sits at 0.6 to 0.7 of the file's offset on seven of eight
+  events, 0.97 on HEADLINE; scaling the offset did not help), the loss is
+  pack contact and one spin over a dirt edge; on NR02 the AI loses two
+  contacts with the replayed player and runs 37 % of the race within 20 m
+  behind it. EXHIBITION's showcase Minis (stock rows that are upgrades,
+  now with their deltas: acceleration 1.0 to 1.3 of the oracle's) plan
+  from 20.7 m/s^2 lateral and 20.2 braking, slide off the first corners
+  and need 33 resets (asked of the spec side). The AI's steer is capped
+  at the pad's speed-narrowed lock (interim); twice the cap changed
+  nothing. Tools: `SHIFT_PLAN_DUMP=<file>` (the corner pass and the AI
+  line file), the trace's `hit`, `hny`, `surf` (the strongest body
+  contact).
 - **Street and nemesis races (SPEC-EVENTS, SPEC-RACE-AI interims).**
   Ribbon-6 routes have no AI line: the line is the shortest road-map path
   through slot 00 and the checkpoints (`race/street_line.h`), smoothed to
