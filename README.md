@@ -768,9 +768,10 @@ the interim noted here until a later polish sweep.
   the tree band within 3 % of the game's means. The hills stay about 10 %
   brighter and greener than the game's; that's material, not grade.
   Tune with `SHIFT_BALANCE=r,g,b`.
-- **Yellow hill shells.** Model `coloradoout.06765` (H_DIFF_1,
-  _0x2CA9, coverage blend, BC1 with no alpha) draws as solid yellow
-  blobs on the hills in the reference view. The question is with the spec.
+- **Yellow hill shells.** Done (2026-11-21). They were placeholder
+  models (WORLD_MATERIALS, Placeholder models), and every material whose
+  slot 0 is _0x2CA9 is now skipped. Interim: one leaves a small hole to
+  the sky at (530, 207) of hill-2244-707; the question is with the spec.
   `SHIFT_WORLD_PICK=x,y` with `--world-reference` prints the triangles
   and materials under a pixel.
 - **Camera details** (Q45). The slope term, pitch sign, speed-FOV factor

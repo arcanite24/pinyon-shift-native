@@ -50,6 +50,8 @@ std::string lod_family(const std::string& name, int& lod) {
 // out the CAGE, TERR_CUBE and occluder objects), so an older index is
 // rebuilt rather than reused.
 constexpr const char* kCacheMagic = "shift-world-index 3";
+// WORLD-MATERIALS, Placeholder models: the art tools' missing-material texture.
+constexpr uint32_t kPlaceholderTextureId = 0x00002CA9u;
 
 }  // namespace
 
@@ -361,6 +363,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               return record < impl_->table.textures.size() ? record : kNoTexture;
             };
             mm.albedo = slot_record(0);
+            // WORLD-MATERIALS, Placeholder models: slot 0 on the art tools'
+            // missing-material marker (_0x00002CA9) is never drawn, in any
+            // pass (shadow stand-ins too, interim).
+            if (mm.albedo != kNoTexture && impl_->table.textures[mm.albedo].id == kPlaceholderTextureId) continue;
             for (size_t k = 0; k < 3; ++k) {
               const int32_t v = k < m.slots.size() ? m.slots[k] : -2;
               mm.slot_values[k] = v;
