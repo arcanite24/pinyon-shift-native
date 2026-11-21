@@ -213,8 +213,8 @@ clock while the radio is on and stops while it is off, so switching joins a
 station where it has got to. A change fades over
 `stationChangeFadeTimeUser` and shows the popup (logo, title, artist) above
 the HUD panel: a station's after 1 s for 4 s, RADIO OFF at once, a new track
-2 s after it starts. Our level: 1.8 times the files' levels, about 20 dB over
-the idling engine. `--no-radio` turns it off; headless, it plays with
+2 s after it starts. Our level: the files' levels as they are (about 0.12
+RMS, the game's 0.08 to 0.10), about 15 dB over our idling engine. `--no-radio` turns it off; headless, it plays with
 `--audio-out`, and `--radio-press <s>` presses D-pad right every s seconds.
 
 **Traffic.** Free roam has the game's traffic (SPEC-TRAFFIC; `libs/traffic`):
@@ -700,6 +700,10 @@ the interim noted here until a later polish sweep.
 - **Barn find 01 spawn.** A car placed off the road east of the Bugatti
   barn (1448, -5363) falls through the ground; the barn is reached from
   its road only through the rail. Worth a collision look.
+- **Radio against the engine.** The spec has the radio about 20 dB over
+  the idling engine; ours is about 15 dB, because our idle (0.022 RMS) is
+  louder than the game's (0.008). Raising the radio clips under throttle
+  (peak 1.12 at 1.8 times), so the engine's own level wants the look.
 - **Radio details.** No snapshot levels (pause, loading, speed, place) and
   no engine duck under DJ lines; no RADIO VOLUME, RADIO DJ or saved station
   (the profile is not read yet); a clip's bytes are read on the main thread

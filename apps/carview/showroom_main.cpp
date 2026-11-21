@@ -1498,8 +1498,9 @@ int run_drive(int argc, char** argv) {
       // The engine sound: the baked loops, mixed at 48 kHz.
       constexpr int kAudioRate = 48000;
       // Ours: the radio's level against the engine (SPEC-RADIO: about 20 dB
-      // over the idling engine), set from a headless idle capture.
-      constexpr double kRadioMaster = 1.8;  // idle engine RMS 0.022, radio 0.21
+      // over the idling engine; the game measured 0.08 to 0.10 RMS), from
+      // headless idle and cruise captures.
+      constexpr double kRadioMaster = 1.0;  // radio 0.12 RMS, idle engine 0.022 (1.8 clipped under throttle)
       audio::BakedSound baked_sound;
       std::unique_ptr<audio::EnginePlayer> engine_sound;
       std::unique_ptr<audio::RadioPlayer> radio_player;
@@ -2883,7 +2884,6 @@ int run_drive(int argc, char** argv) {
             }
           } else if (show_hud) {
             set_minimap(h, false);
-            set_radio_popup(h);
             char line[160] = "";
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
@@ -2894,6 +2894,7 @@ int run_drive(int argc, char** argv) {
                     : vehicle.time() < kIntroSeconds ? intro
                                                      : std::string(),
                     &menu);
+            set_radio_popup(h);  // after the panel: its height
           }
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);

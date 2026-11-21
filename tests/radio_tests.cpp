@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+#include <filesystem>
+#include <fstream>
+
+#include "audio/fsb4.h"
 #include "audio/radio.h"
 
 namespace {
@@ -253,6 +257,41 @@ void disc(const char* root) {
   CHECK(d.unresolved == 0);
   CHECK(d.cycle.size() == 4);
   CHECK(d.stations[size_t(d.cycle[3])].off);
+  // Decoded lengths (the spec's check): the first track and the first
+  // ident of each player station, each within one frame of its header.
+  auto headers = [](const std::filesystem::path& p, std::vector<audio::FsbSample>& out) {
+    std::ifstream f(p, std::ios::binary);
+    std::vector<uint8_t> h(48);
+    f.read(reinterpret_cast<char*>(h.data()), 48);
+    const uint32_t n = uint32_t(h[8]) | uint32_t(h[9]) << 8 | uint32_t(h[10]) << 16 | uint32_t(h[11]) << 24;
+    h.resize(48 + size_t(n));
+    f.read(reinterpret_cast<char*>(h.data() + 48), n);
+    return audio::read_fsb4(h, out, nullptr, std::filesystem::file_size(p));
+  };
+  std::vector<audio::FsbSample> music, vo;
+  CHECK(headers(d.music_bank, music) && headers(d.vo_bank, vo));
+  int checked = 0, exact = 0;
+  auto length = [&](const std::filesystem::path& bank, const audio::FsbSample& s) {
+    std::ifstream f(bank, std::ios::binary);
+    std::vector<uint8_t> raw(s.bytes);
+    f.seekg(std::streamoff(s.offset));
+    f.read(reinterpret_cast<char*>(raw.data()), std::streamsize(raw.size()));
+    std::vector<uint32_t> at;
+    int rate = 0, spf = 0;
+    audio::mpeg_frames(raw.data(), raw.size(), &at, &rate, &spf);
+    const int64_t got = int64_t(at.size()) * spf, want = s.frames;
+    ++checked;
+    exact += got >= want && got - want < spf;
+    if (std::llabs(got - want) > 1152)
+      std::printf("  %s: %lld samples in its frames, header %lld\n", s.name.c_str(), (long long)got, (long long)want);
+    return std::llabs(got - want) <= 1152;
+  };
+  for (int k = 0; k < 3; ++k) {
+    const auto& st = d.stations[size_t(d.cycle[size_t(k)])];
+    CHECK(length(d.music_bank, music[d.music[size_t(st.tracks[0].clip)].sample]));
+    CHECK(length(d.vo_bank, vo[d.vo[size_t(st.idents[0])].sample]));
+  }
+  std::printf("disc: %d of %d decoded lengths within a frame (whole frames)\n", exact, checked);
   // Two seconds of the first station: decoded and not silent.
   audio::Radio radio(d, 1);
   radio.select(d.cycle[0]);
@@ -265,6 +304,31 @@ void disc(const char* root) {
   const double rms = std::sqrt(sum / double(out.size()));
   std::printf("disc: Radio1 2 s RMS %.4f, %d decoders\n", rms, player.decoders());
   CHECK(rms > 0.01 && rms < 0.7);
+  // Across a change: from 2 s before the track's ident, 24 s in quarter
+  // seconds; the ident, the next track and any DJ line decode with no
+  // dropout or burst.
+  double into = 0;
+  const audio::RadioEvent* now = radio.schedule(radio.selected())->track_at(radio.clock(), &into);
+  CHECK(now != nullptr);
+  if (!now) return;
+  radio.advance(d.music[size_t(now->clip)].ident_start - 2 - into);
+  int most = 0, quiet = 0;
+  bool finite = true;
+  double loudest = 0;
+  std::vector<float> block(2 * 12000);
+  for (int b = 0; b < 96; ++b) {
+    std::fill(block.begin(), block.end(), 0.0f);
+    player.render(block.data(), 12000);
+    most = std::max(most, player.decoders());
+    double s2 = 0;
+    for (float x : block) finite &= std::isfinite(x), s2 += double(x) * x;
+    const double r = std::sqrt(s2 / double(block.size()));
+    quiet += r < 0.003;
+    loudest = std::max(loudest, r);
+  }
+  std::printf("disc: across a change, up to %d clips at once, %d quiet quarter seconds, loudest %.3f RMS\n", most,
+              quiet, loudest);
+  CHECK(finite && most >= 2 && quiet <= 2 && loudest < 0.8);
 }
 
 }  // namespace

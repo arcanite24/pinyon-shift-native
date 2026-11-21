@@ -368,10 +368,10 @@ struct RadioPlayer::Decoder {
     done = frame_at.empty();
     buf.clear();
     pos = std::max(0.0, frame);
+    if (done) return;
     // Two frames early, for the bit reservoir; their output is dropped.
     const int64_t k = std::clamp<int64_t>(int64_t(pos / spf) - 2, 0, int64_t(frame_at.size()) - 1);
     buf_start = k * spf;
-    if (done) return;
     open = drmp3_init_memory(&dec, mp3.data() + frame_at[size_t(k)], mp3.size() - frame_at[size_t(k)], nullptr) != 0;
     done = !open;
   }
