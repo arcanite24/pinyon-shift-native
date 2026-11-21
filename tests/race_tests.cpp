@@ -167,6 +167,24 @@ void test_session() {
     if (!r.resets().empty()) r.reset_done(0);
   }
   CHECK(resets == 1 && !r.collides(0));
+  // A checkpoint plane counts either way within its reach; a one-way gate
+  // only forwards.
+  race::Gate cp{0, 10, 0, 1, 25};
+  CHECK(cp.crossing(0, 11, 0, 9) < 0 && cp.crossing(0, 9, 0, 11) >= 0);
+  cp.both_ways = true;
+  CHECK(cp.crossing(0, 11, 0, 9) >= 0 && cp.crossing(30, 11, 30, 9) < 0);
+  // A sprint's finish does not count while held (an earlier checkpoint
+  // missed), and counts once released.
+  race::Session f(1, false, 1, g, cp, {0.0, false});
+  race::CarSample m;
+  m.x0 = 0, m.z0 = 9, m.x1 = 0, m.z1 = 11;
+  f.hold_finish(0, true);
+  f.step(0.1, std::span(&m, 1));
+  CHECK(!f.finished(0));
+  f.hold_finish(0, false);
+  m.z0 = 11, m.z1 = 9;
+  f.step(0.1, std::span(&m, 1));
+  CHECK(f.finished(0));
 }
 
 // Made-up difficulty rows.

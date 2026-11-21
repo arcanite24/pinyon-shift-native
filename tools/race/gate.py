@@ -9,7 +9,7 @@ the results lines, and compares each event against its oracle table
   - AI mean race time within 3 % of the oracle's,
   - AI mean distance from the grid to the finish within 3 %,
   - the player's place within one of the oracle's,
-  - the winner from the front three grid slots.
+  - our best AI car among the oracle's first three AI cars (by slot).
 
 With out/oracle/<event>-player.csv present the player's car replays the
 oracle's path (--race-replay), as the spec's gate asks; --no-replay drives
@@ -44,6 +44,9 @@ def oracle(event):
             o["ai_times"] = d["ai_times_s"]
         if d.get("ai_mean_distance_m"):
             o["ai_mean_distance"] = d["ai_mean_distance_m"]
+        ai = sorted((c for c in d.get("cars", []) if c.get("driver") == "ai" and c.get("place")), key=lambda c: c["place"])
+        if ai:
+            o["ai_top3_slots"] = [c["slot"] for c in ai[:3]]
         pl = d.get("player") or {}
         if pl.get("place"):
             o["player_place"] = pl["place"]
@@ -92,7 +95,8 @@ def judge(event, runs, o):
                 continue
             ai_times.append(c["time"])
             ai_dist.append(c["distance"])
-        fin = [c for c in r["cars"] if c["time"] is not None]
+        # The best-placed AI car (the replayed player wins where the oracle's did).
+        fin = [c for c in r["cars"] if c["time"] is not None and not c["player"]]
         if fin:
             winners.append(min(fin, key=lambda c: c["place"])["slot"])
     row = {"event": event, "runs": len(runs), "dnf": dnf}
@@ -112,7 +116,10 @@ def judge(event, runs, o):
         if "player_place" in o and places:
             checks["place ±1"] = all(abs(p - o["player_place"]) <= 1 for p in places)
         if "winner_slot" in o and winners:
-            checks["winner front 3"] = all(w <= 2 for w in winners)
+            # Our best AI car is one of the oracle's first three AI cars
+            # (by slot); without the export's car list, from slots 0-2.
+            top = o.get("ai_top3_slots", [0, 1, 2])
+            checks["AI winner in oracle top 3"] = all(w in top for w in winners)
     row["checks"] = checks
     row["pass"] = bool(checks) and all(checks.values()) and dnf == 0
     return row
@@ -136,7 +143,11 @@ def main():
     seeds = [int(s) for s in a.seeds.split(",")]
     extra = a.extra.split()
     with cf.ThreadPoolExecutor(a.jobs) as pool:
-        futs = [pool.submit(run, a.exe, e, s, a.seconds, extra, outdir, not a.no_replay) for e in events for s in seeds]
+        def seconds(e):
+            # Long races (HEADLINE_EVENT, 513 s) get the oracle's time and a margin.
+            o = oracle(e) or {}
+            return max(a.seconds, 1.3 * (o.get("player_time") or 0) + 30)
+        futs = [pool.submit(run, a.exe, e, s, seconds(e), extra, outdir, not a.no_replay) for e in events for s in seeds]
         results = [f.result() for f in futs]
     rows = []
     for e in events:

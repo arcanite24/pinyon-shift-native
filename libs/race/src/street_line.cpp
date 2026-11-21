@@ -53,7 +53,9 @@ uint32_t nearest_node(const traffic::NavMap& nav, const Graph& g, double x, doub
 }
 
 // Dijkstra from a to b; the node indices from a to b, empty when none.
-std::vector<uint32_t> shortest(const Graph& g, uint32_t a, uint32_t b) {
+// When b is out of reach, `reached` (if given) holds every node's distance
+// from a (infinite when unreachable): the whole component was searched.
+std::vector<uint32_t> shortest(const Graph& g, uint32_t a, uint32_t b, std::vector<float>* reached = nullptr) {
   const size_t n = g.out.size();
   std::vector<float> dist(n, std::numeric_limits<float>::infinity());
   std::vector<uint32_t> prev(n, std::numeric_limits<uint32_t>::max());
@@ -71,7 +73,10 @@ std::vector<uint32_t> shortest(const Graph& g, uint32_t a, uint32_t b) {
       if (nd < dist[e.to]) dist[e.to] = nd, prev[e.to] = u, q.push({nd, e.to});
     }
   }
-  if (!std::isfinite(dist[b])) return {};
+  if (!std::isfinite(dist[b])) {
+    if (reached) *reached = std::move(dist);
+    return {};
+  }
   std::vector<uint32_t> path;
   for (uint32_t v = b; v != std::numeric_limits<uint32_t>::max(); v = prev[v]) {
     path.push_back(v);
@@ -106,12 +111,13 @@ std::optional<Gate> checkpoint_gate(const Route& route, size_t k) {
   const RouteTransform* from = k > 0 ? cps[k - 1] : (slots.empty() ? nullptr : slots[0]);
   const RouteTransform& c = *cps[k];
   double nx = c.fx, nz = c.fz;
-  if (from) nx = c.x - from->x, nz = c.z - from->z;
+  if (std::hypot(nx, nz) < 1e-6 && from) nx = c.x - from->x, nz = c.z - from->z;
   const double l = std::hypot(nx, nz);
   if (l < 1e-6) return std::nullopt;
   Gate g;
   g.x = c.x, g.z = c.z, g.nx = nx / l, g.nz = nz / l;
-  g.reach = c.width ? std::max(15.0, *c.width) : 30.0;
+  g.reach = c.width ? 0.5 * *c.width : 25.0;
+  g.both_ways = true;
   return g;
 }
 
@@ -139,7 +145,24 @@ bool build_street_line(const traffic::NavMap& nav, const Route& route, AiLineFil
   std::vector<P> pts;
   pts.push_back({slots[0]->x, slots[0]->y, slots[0]->z});
   for (size_t k = 0; k + 1 < nodes.size(); ++k) {
-    const auto path = shortest(g, nodes[k], nodes[k + 1]);
+    std::vector<float> reached;
+    auto path = shortest(g, nodes[k], nodes[k + 1], &reached);
+    if (path.empty() && !reached.empty()) {
+      // The nearest road is not joined to the last one (a separate piece
+      // of the road map): the nearest node within 80 m that is.
+      const RouteTransform* t = stops[k + 1];
+      uint32_t best = std::numeric_limits<uint32_t>::max();
+      double bd = 80;
+      for (uint32_t i = 0; i < nav.nodes.size(); ++i) {
+        if (!std::isfinite(reached[i])) continue;
+        const double d = std::hypot(nav.nodes[i].x - t->x, nav.nodes[i].z - t->z);
+        if (d < bd) bd = d, best = i;
+      }
+      if (best != std::numeric_limits<uint32_t>::max()) {
+        nodes[k + 1] = best;
+        path = shortest(g, nodes[k], best);
+      }
+    }
     if (path.empty()) {
       if (error) *error = "route " + std::to_string(route.id) + ": no road path to " + stops[k + 1]->name;
       return false;
@@ -208,6 +231,33 @@ bool build_street_line(const traffic::NavMap& nav, const Route& route, AiLineFil
     p.lx = float(-dz * o.half_width), p.ly = 0, p.lz = float(dx * o.half_width);
     p.offset = 0;
   }
+  // The racing offset: the signed heading change over +-span (left turns
+  // positive) per metre, as a fraction of 1 / inside_radius, then smoothed
+  // so the line eases in and out of each bend.
+  const size_t n = out.points.size();
+  const int w = std::max(1, int(o.span / o.spacing));
+  std::vector<double> off(n, 0.0);
+  for (size_t i = size_t(w); i + size_t(w) < n; ++i) {
+    const auto& a = out.points[i - size_t(w)];
+    const auto& c = out.points[i];
+    const auto& b = out.points[i + size_t(w)];
+    const double h0 = std::atan2(c.x - a.x, c.z - a.z), h1 = std::atan2(b.x - c.x, b.z - c.z);
+    double turn = h1 - h0;  // positive: towards +x of travel, which is right when +z is forward
+    while (turn > 3.14159265358979) turn -= 2 * 3.14159265358979;
+    while (turn < -3.14159265358979) turn += 2 * 3.14159265358979;
+    const double curvature = -turn / (2 * o.span);  // left positive, 1/m
+    off[i] = std::clamp(curvature * o.inside_radius, -o.max_offset, o.max_offset);
+  }
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<double> s = off;
+    for (size_t i = size_t(w); i + size_t(w) < n; ++i) {
+      double t = 0;
+      for (int k = -w; k <= w; ++k) t += off[i + size_t(k)];
+      s[i] = t / (2 * w + 1);
+    }
+    off.swap(s);
+  }
+  for (size_t i = 0; i < n; ++i) out.points[i].offset = float(off[i]);
   return true;
 }
 

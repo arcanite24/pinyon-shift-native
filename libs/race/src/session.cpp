@@ -72,7 +72,7 @@ void Session::step(double dt, std::span<const CarSample> s) {
         if (c.crossings >= laps_ + 1) c.finish = t;
       } else ++c.crossings;
     }
-    if (!circuit_ && finish_ && c.finish < 0) {
+    if (!circuit_ && finish_ && c.finish < 0 && !c.finish_held) {
       const double g = finish_->crossing(q.x0, q.z0, q.x1, q.z1);
       if (g >= 0) c.finish = std::max(0.0, t0 + g * dt);
     }

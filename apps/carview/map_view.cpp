@@ -392,6 +392,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     for (const auto& ic : it->second)
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y - ic.size * unit * 0.4, ic.size * unit, 0, ic.colour);
   }
+  // Opponents: red dots with a dark rim.
+  for (const auto& o : scene.opponents) {
+    if (std::hypot(o[0] - scene.x, o[1] - scene.z) > reach) continue;
+    const P p = project(o[0], o[1]);
+    if (p.depth < 1) continue;
+    cv.line(p.x, p.y, p.x, p.y, 7 * unit + 2, Rgba{20, 20, 20, 220});
+    cv.line(p.x, p.y, p.x, p.y, 7 * unit, Rgba{230, 60, 50, 255});
+  }
   // The player, heading up.
   if (const auto it = mini_.icons.find("player_local"); it != mini_.icons.end()) {
     const P p = project(scene.x, scene.z);
@@ -491,6 +499,11 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     if (it == full_.icons.end()) continue;
     const auto p = to_screen(m.x, m.z);
     for (const auto& ic : it->second) cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], ic.size * unit, 0, ic.colour);
+  }
+  for (const auto& o : scene.opponents) {
+    const auto p = to_screen(o[0], o[1]);
+    cv.line(p[0], p[1], p[0], p[1], 12, Rgba{20, 20, 20, 220});
+    cv.line(p[0], p[1], p[0], p[1], 9, Rgba{230, 60, 50, 255});
   }
   // The player's arrow, turned with the heading (clockwise from north).
   if (const auto it = full_.icons.find("player_local"); it != full_.icons.end()) {

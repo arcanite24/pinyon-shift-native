@@ -39,7 +39,7 @@ double number(std::string_view v) { return std::strtod(std::string(v).c_str(), n
 
 double Gate::crossing(double x0, double z0, double x1, double z1) const {
   const double a = side(x0, z0), b = side(x1, z1);
-  if (!(a < 0 && b >= 0)) return -1;
+  if (!(a < 0 && b >= 0) && !(both_ways && a > 0 && b <= 0)) return -1;
   const double f = a / (a - b);
   const double cx = x0 + f * (x1 - x0), cz = z0 + f * (z1 - z0);
   if ((cx - x) * (cx - x) + (cz - z) * (cz - z) > reach * reach) return -1;

@@ -93,8 +93,13 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     const auto* s0 = slots[0];
     gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
     line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
+    double from = line_.gate_progress;
     for (size_t k = 0; k < cps.size(); ++k)
-      if (auto g = race::checkpoint_gate(route_, k)) checkpoint_gates_.push_back(*g);
+      if (auto g = race::checkpoint_gate(route_, k)) {
+        checkpoint_gates_.push_back(*g);
+        from = line_.line.nearest(g->x, g->z, from, std::min(line_.line.length(), from + 2000));
+        checkpoint_progress_.push_back(from);
+      }
   }
   if (!street_ && !circuit_ && !slots.empty() && (!gate || !finish)) {
     // An open line with no gantry or cannons (route 136): the start line
@@ -176,6 +181,12 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
 void RaceView::player_spawn(double out[4]) const {
   const auto& s = slots_[size_t(player_slot_)];
   out[0] = s.x, out[1] = s.y, out[2] = s.z, out[3] = std::atan2(s.fx, s.fz);
+}
+
+void RaceView::opponent_positions(std::vector<std::array<double, 2>>& out) const {
+  out.clear();
+  for (const auto& c : cars_)
+    if (c.body) out.push_back({c.body->position().x, c.body->position().z});
 }
 
 bool RaceView::post_race_spawn(double out[4]) const {
@@ -360,6 +371,24 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   };
   for (size_t k = 0; k < n; ++k) sample(k, *cars_[k].body, cars_[k].px, cars_[k].pz);
   sample(n, player, ppx_, ppz_);
+  // Checkpoints in order (SPEC-EVENTS, Pass rule); the last is the finish,
+  // held until every earlier one is passed. A missed one is not counted
+  // past (interim: the off-route reset brings the car back).
+  if (checkpoint_gates_.size() > 1) {
+    next_checkpoint_.resize(n + 1, 0);
+    const size_t last = checkpoint_gates_.size() - 1;
+    for (size_t i = 0; i <= n; ++i) {
+      const auto& q = samples_[i];
+      size_t& k = next_checkpoint_[i];
+      // Crossed within the gate's reach, or (ours, the missed-checkpoint
+      // rule is open) carried past it along the line: a reset puts a car
+      // back on the line ahead, and a wide car can pass outside the reach.
+      if (session_->started() && k < last &&
+          (checkpoint_gates_[k].crossing(q.x0, q.z0, q.x1, q.z1) >= 0 || q.progress > checkpoint_progress_[k] + 10))
+        ++k;
+      session_->hold_finish(i, k < last);
+    }
+  }
   session_->step(drive::Vehicle::kStep, samples_);
   // SHIFT_RACE_TRACE=<file>: every car 4 times a second (JSON lines).
   static FILE* trace = [] {
@@ -425,9 +454,13 @@ std::string RaceView::banner() const {
     const char* go = c < 1.5 ? "GO!  " : "";
     if (circuit_)
       std::snprintf(b, sizeof b, "%sLAP %d/%d  P%d/%zu  %s", go, s.lap(n), s.laps(), s.car(n).place, n + 1, t);
-    else
-      std::snprintf(b, sizeof b, "%sP%d/%zu  %s  %.0f m to go", go, s.car(n).place, n + 1, t,
-                    std::max(0.0, finish_progress_ - field_->progress(n)));
+    else {
+      // A sprint, and any race on an open line: PROGRESS in percent of the
+      // run (SPEC-EVENTS, Laps on an open route).
+      const double run = std::max(1.0, finish_progress_ - line_.gate_progress);
+      const double pc = std::clamp((field_->progress(n) - line_.gate_progress) / run, 0.0, 1.0);
+      std::snprintf(b, sizeof b, "%sP%d/%zu  %s  PROGRESS %.0f%%", go, s.car(n).place, n + 1, t, 100 * pc);
+    }
   }
   return b;
 }

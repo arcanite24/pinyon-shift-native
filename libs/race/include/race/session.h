@@ -48,6 +48,7 @@ class Session {
     double no_collide_until = -1e9;
     const char* reason = "";  // the last reset's condition
     double distance = 0;      // m driven from the signal to the finish (horizontal)
+    bool finish_held = false;  // a checkpoint race's earlier gate not passed yet
   };
 
   // A circuit counts crossings of `start` (laps + 1 finish); a sprint
@@ -75,6 +76,9 @@ class Session {
   // puts each back on the line and calls reset_done.
   const std::vector<size_t>& resets() const { return resets_; }
   void reset_done(size_t i);
+  // A checkpoint race (SPEC-EVENTS): the finish does not count for car i
+  // while held (an earlier checkpoint not passed).
+  void hold_finish(size_t i, bool held) { cars_[i].finish_held = held; }
   bool collides(size_t i) const { return clock_ >= cars_[i].no_collide_until; }
   // Car indices from first to last place.
   std::vector<size_t> order() const;

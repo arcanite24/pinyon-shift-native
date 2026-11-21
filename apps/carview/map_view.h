@@ -35,6 +35,9 @@ struct MapScene {
   // Unfound signs and barns' exact places on the map (the game's Treasure
   // Map, or its collectibles cheat); found ones and rumours always show.
   bool reveal = false;
+  // A race's opponents (x, z), drawn as dots (ours: the profiles' opponent
+  // icon is not mapped yet).
+  std::vector<std::array<double, 2>> opponents;
 };
 
 class MapView {

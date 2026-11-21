@@ -25,6 +25,7 @@ struct RouteTransform {
 struct Gate {
   double x = 0, z = 0, nx = 0, nz = 1;
   double reach = 1e30;  // a crossing counts within this distance of (x, z)
+  bool both_ways = false;  // a backward crossing counts too (checkpoints)
   double side(double px, double pz) const { return (px - x) * nx + (pz - z) * nz; }
   // A forward crossing on the move from (x0, z0) to (x1, z1): the fraction
   // of the move at the plane, or a negative number.

@@ -20,14 +20,19 @@ namespace race {
 // route_checkpoint_00, _01, ... in order, until one is missing.
 std::vector<const RouteTransform*> checkpoints(const Route& route);
 
-// The plane of checkpoint k, normal from checkpoint k - 1 to k (slot 00 for
-// the first), counted within its width (or 30 m) of the point.
+// The plane of checkpoint k (SPEC-EVENTS, Pass rule): through its position,
+// normal along its facing (from checkpoint k - 1, or slot 00, when it has
+// none), crossed either way within half its width (25 m when unset).
 std::optional<Gate> checkpoint_gate(const Route& route, size_t k);
 
 struct StreetLineOptions {
-  double half_width = 5.0;  // m, the road's assumed half width (the nav map has none)
+  double half_width = 4.5;  // m, the AI's measured spread about the road's centre (SPEC-RACE-AI)
   double spacing = 4.0;     // m between the line's points
   int smooth_passes = 3;    // corner rounding (see build_street_line)
+  // The racing offset (SPEC-RACE-AI, Routes with no AI line: "to the
+  // inside of bends"; the amount is ours): the curvature over +-span m
+  // times `inside_radius`, at most `max_offset` half widths.
+  double span = 24.0, inside_radius = 25.0, max_offset = 0.6;
 };
 
 // The line from slot 00 through every checkpoint along the road map; false

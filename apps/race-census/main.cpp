@@ -44,6 +44,28 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "race-census: %s\n", e.c_str());
     return 1;
   }
+  // A street race must be finishable: its built line crosses every
+  // checkpoint gate in order (geometry only, the racing points).
+  traffic::NavMap nav;
+  const bool have_nav = traffic::read_nav(root / "media" / "tracks" / "colorado" / "colorado.nav", nav, nullptr);
+  auto street_gates_ok = [&](const race::Route& route, std::string& why) {
+    race::AiLineFile line;
+    if (!have_nav || !race::build_street_line(nav, route, line, &why)) return false;
+    const size_t n = race::checkpoints(route).size();
+    size_t k = 0;
+    for (size_t i = 1; i < line.points.size() && k < n; ++i) {
+      const auto g = race::checkpoint_gate(route, k);
+      if (!g) {
+        why = "checkpoint " + std::to_string(k) + " has no plane";
+        return false;
+      }
+      const auto& a = line.points[i - 1];
+      const auto& b = line.points[i];
+      if (g->crossing(a.race_x(), a.race_z(), b.race_x(), b.race_z()) >= 0) ++k;
+    }
+    if (k < n) why = "line misses checkpoint " + std::to_string(k) + " of " + std::to_string(n);
+    return k == n;
+  };
   struct Count {
     int races = 0, runnable = 0;
   };
@@ -59,23 +81,27 @@ int main(int argc, char** argv) {
     const bool gate = have_route && route.start_line().has_value();
     const bool finish = have_route && route.sprint_finish().has_value();
     // What carview runs today: an AI line; a closed line is a circuit (any
-    // laps), an open one a one-lap sprint with a finish.
+    // laps), an open one a run to the finish whatever NumLaps says
+    // (SPEC-EVENTS, Laps on an open route).
     const char* verdict = "ok";
     const bool street = have_route && !have_line && !race::checkpoints(route).empty();
+    std::string street_why;
     if (!have_route) verdict = "no route";
-    else if (street) verdict = slots ? "ok" : "street, no slots";  // a line along the road map
+    else if (street && !slots) verdict = "street, no slots";
+    else if (street && !street_gates_ok(route, street_why)) verdict = "street gates";
+    else if (street) verdict = "ok";  // a line along the road map
     else if (!have_line) verdict = "no AI line";
     else if (slots == 0) verdict = "no slots";
     else if (!gate && owt.closed) verdict = "no start line";
     else if (!owt.closed && !finish && !route.find("route_waypoint_00")) verdict = "open line, no finish";
-    else if (!owt.closed && ev.laps > 1) verdict = "open line, laps > 1";
     const bool ok = std::string(verdict) == "ok";
-    const bool supported = street || (have_line && ((owt.closed && ev.ribbon == 0) || (!owt.closed && ev.laps == 1)));
+    const bool supported = street || (have_line && ((owt.closed && ev.ribbon == 0) || !owt.closed));
     if (supported && !ok) ++failures;
     runnable += ok;
     auto& c = by_type[ev.career_type];
     ++c.races;
     c.runnable += ok;
+    if (!street_why.empty()) std::printf("%s: %s\n", ev.horizon_id.c_str(), street_why.c_str());
     if (!quiet)
       std::printf("%-6s type %2d ribbon %2d route %3d laps %d opp %d slots %2zu line %-6s gate %d finish %d  %s\n",
                   ev.horizon_id.c_str(), ev.career_type, ev.ribbon, ev.route_id, ev.laps, ev.opponents, slots,

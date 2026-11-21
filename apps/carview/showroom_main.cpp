@@ -1515,7 +1515,7 @@ int run_drive(int argc, char** argv) {
     std::string e;
     if (race::list_events(world_dir.parent_path().parent_path().parent_path(), all, &e))
       for (const auto& ev : all)
-        if (ev.ribbon >= 0 && !(ev.ribbon == 2 && ev.laps > 1)) event_ids.push_back(ev.horizon_id);
+        if (ev.ribbon >= 0) event_ids.push_back(ev.horizon_id);
   }
   size_t event_pick = 0;
   for (size_t k = 0; k < event_ids.size(); ++k)
@@ -2377,6 +2377,7 @@ int run_drive(int argc, char** argv) {
         sc.data = progress_loaded ? &collectibles : nullptr;
         sc.progress = progress_loaded ? &progress : nullptr;
         sc.reveal = reveal;
+        if (race) race->opponent_positions(sc.opponents);
         return sc;
       };
       double minimap_at = -1;

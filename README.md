@@ -771,23 +771,26 @@ the interim noted here until a later polish sweep.
   width apart (beyond the spec's passing rule); one AI line; stock cars;
   opponents take the free slots in row order. Pack contact is frequent
   (800 to 1,250 steps with a contact in an 8-car FR22, 1,400 to 3,500 in FR16).
-- **Street and nemesis races (Q47 open).** Ribbon-6 routes have no AI
-  line: the line is the shortest road-map path through slot 00 and the
-  checkpoints (`race/street_line.h`), smoothed to round the junctions, with
-  an assumed 5 m half width; the finish is the last checkpoint's plane
-  (normal from the one before; the oracle's measured rule) and the other
-  checkpoints are not enforced. `STREET_PLNS_002`: AI mean 137 s (oracle
-  124.1), 5 to 11 resets a run; `NR02` (one opponent): 161 s (130.7). No
-  traffic in races. Route 136 (`FR44`, `FR62`) has neither gantry nor
+- **Street and nemesis races (SPEC-EVENTS, SPEC-RACE-AI interims).**
+  Ribbon-6 routes have no AI line: the line is the shortest road-map path
+  through slot 00 and the checkpoints (`race/street_line.h`), smoothed to
+  round the junctions, half width 4.5 m, no racing offset yet (the spec
+  asks for one to the inside of bends). Checkpoints are planes crossed
+  either way within half their width, in order; the last is the finish,
+  held until the others are passed; a missed one falls to the off-route
+  reset. `STREET_PLNS_002`: AI mean 137 s (oracle 124.1), 5 to 11 resets a
+  run; `NR02` (one opponent): 161 s (130.7). No traffic in races (the spec
+  has it on for these). Route 136 (`FR44`, `FR62`) has neither gantry nor
   cannons: the start line through slot 00 and the finish across the AI
-  line nearest its last waypoint (ours). Ribbon-2 circuits and multi-lap
-  sprints (7 races, Q48) do not run yet: `race-census` counts 111 of 119
-  runnable.
+  line nearest its last waypoint (ours). Races on ribbon-2 routes run once
+  to the sprint finish whatever `NumLaps` says (the spec's rule); `FR37`
+  (ribbon-0 sprint, 3 laps) is untested.
 - **Race flow left out.** No event card, pre-race menu, cutscene camera,
-  finish screen or results screen (the results print); no rewards
-  applied to a save; no post-race placement; no checkpoints (street
-  races) or ribbon-2 circuits; no player wrong-way warning or rewind.
-  Opponents are not on the minimap.
+  finish screen or results screen (the banner carries the result, then
+  A/Enter continues in free roam at the route's post-race spot and Y
+  restarts); the pause menu's race item picks any runnable event. No
+  player wrong-way warning or rewind. Opponents show as red dots on the
+  minimap and the pause map (ours; the profiles' opponent icon is unmapped).
 - **Ribbon ground.** The far cars' road is the AI line's centre +- its half
   width plus 8 m, flat across (within 6 cm of the collision on the line
   near the grid): a car on it laps a little differently from one on the

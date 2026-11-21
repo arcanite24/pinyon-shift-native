@@ -7,6 +7,7 @@
 // ribbon (the road the line describes), so the whole field keeps moving.
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -83,6 +84,8 @@ class RaceView {
   std::string banner() const;
   std::string results() const;  // one line a car, by place
   const race::Session& session() const { return *session_; }
+  // The opponents' positions (x, z), for the maps.
+  void opponent_positions(std::vector<std::array<double, 2>>& out) const;
   bool player_finished() const { return session_->finished(player_index()); }
   size_t player_index() const { return cars_.size(); }
   std::string summary() const;
@@ -121,6 +124,8 @@ class RaceView {
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
   std::vector<race::Gate> checkpoint_gates_;  // a street race's checkpoints in order
+  std::vector<size_t> next_checkpoint_;       // each car's next checkpoint (the player last)
+  std::vector<double> checkpoint_progress_;   // each checkpoint's distance along the line
   std::vector<race::RouteTransform> slots_;
   // Per step, every car (opponents, then the player).
   std::vector<drive::AiCarState> states_;
