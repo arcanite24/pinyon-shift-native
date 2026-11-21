@@ -47,6 +47,7 @@ std::string save_to_text(const DriveSave& s) {
     for (int id : s.garage) out += " " + std::to_string(id);
     out += "\n";
   }
+  if (s.owned_garage) out += "owned_garage 1\n";
   if (s.credits || s.total_winnings)
     out += "credits " + std::to_string(s.credits) + " " + std::to_string(s.total_winnings) + "\n";
   if (s.wristband_points) out += "wristband " + std::to_string(s.wristband_points) + "\n";
@@ -107,6 +108,9 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       if (l >> b.name >> b.status >> b.rumour_at >> b.found_at) out.barns.push_back(b);
     } else if (key == "garage") {
       for (int id; l >> id;) out.garage.push_back(id);
+    } else if (key == "owned_garage") {
+      int v = 0;
+      out.owned_garage = (l >> v) && v != 0;
     } else if (key == "credits") {
       l >> out.credits >> out.total_winnings;
     } else if (key == "wristband") {

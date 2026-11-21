@@ -12,6 +12,7 @@
 //   signs flyer_001 flyer_017
 //   barn barnfind_01 2 50000.0 51200.3
 //   garage 1219
+//   owned_garage 1
 //   credits 7500 7500
 //   wristband 120
 //   stats 1 0 1 160.93 0 0 61.2
@@ -25,7 +26,9 @@
 // (SPEC-FREEROAM-COLLECTIBLES; freeroam::Progress) is optional: `distance`
 // is the total driven (m), `signs` the found discount signs, one `barn`
 // line per barn find off its starting state (name, status, rumour and
-// discovery distances), `garage` the Data_Car ids barn finds gave. The
+// discovery distances), `garage` the Data_Car ids barn finds gave
+// (with `owned_garage 1`, the save came from the player's profile and
+// `garage` is every owned car: the car picker offers only those). The
 // career (SPEC-EVENT-REWARDS; race::CareerRecord) is optional: credits and
 // total winnings, wristband points, the counters (races, victories,
 // podiums, festival, street and exhibition race time in s, top speed in
@@ -59,6 +62,7 @@ struct DriveSave {
   std::vector<std::string> signs_found;
   std::vector<SavedBarn> barns;
   std::vector<int> garage;
+  bool owned_garage = false;
   // The career.
   int64_t credits = 0, total_winnings = 0;
   int wristband_points = 0;

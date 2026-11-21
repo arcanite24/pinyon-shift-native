@@ -1048,6 +1048,26 @@ bool read_shadow_direction(const std::filesystem::path& world_dir, float travel[
 
 // The free-roam progress to and from the save (drive/save.h): barns by
 // name, an unknown status read as not spawned.
+// The cars the bake has, by Data_Car id, from each physics file's
+// "car <id> <media>" line.
+std::map<int64_t, std::string> baked_car_ids(const std::filesystem::path& bake_dir) {
+  std::map<int64_t, std::string> out;
+  std::error_code ec;
+  for (const auto& f : std::filesystem::directory_iterator(bake_dir / "cars", ec)) {
+    if (!f.path().string().ends_with(".physics.txt")) continue;
+    std::ifstream in(f.path());
+    for (std::string line; std::getline(in, line);)
+      if (line.rfind("car ", 0) == 0) {
+        std::istringstream ls(line.substr(4));
+        int64_t id = 0;
+        std::string media;
+        if (ls >> id >> media) out[id] = media;
+        break;
+      }
+  }
+  return out;
+}
+
 void progress_from_save(const drive::DriveSave& s, const freeroam::Collectibles& data, freeroam::Progress& p) {
   p.total_distance = s.total_distance;
   p.signs_found.clear();
@@ -1392,8 +1412,7 @@ int run_drive(int argc, char** argv) {
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
   }
-  // The profile import (FORMAT-PROFILE): the cars the bake has, by
-  // Data_Car id, from each physics file's "car <id> <media>" line.
+  // The profile import (FORMAT-PROFILE), with the cars the bake has.
   bool imported = false;
   if (!import_dir.empty()) {
     profile::Imported prof;
@@ -1402,21 +1421,8 @@ int run_drive(int argc, char** argv) {
       std::fprintf(stderr, "carview: --import-profile: %s\n", e.c_str());
       return 2;
     }
-    std::map<int64_t, std::string> baked;
     std::error_code ec;
-    if (!bake_dir.empty())
-      for (const auto& f : std::filesystem::directory_iterator(bake_dir / "cars", ec)) {
-        if (!f.path().string().ends_with(".physics.txt")) continue;
-        std::ifstream in(f.path());
-        for (std::string line; std::getline(in, line);)
-          if (line.rfind("car ", 0) == 0) {
-            std::istringstream ls(line.substr(4));
-            int64_t id = 0;
-            std::string media;
-            if (ls >> id >> media) baked[id] = media;
-            break;
-          }
-      }
+    const auto baked = bake_dir.empty() ? std::map<int64_t, std::string>{} : baked_car_ids(bake_dir);
     std::vector<std::string> notes;
     profile::to_drive_save(prof, [&](int64_t id) { auto it = baked.find(id); return it == baked.end() ? std::string() : it->second; },
                            saved, &notes);
@@ -1557,13 +1563,28 @@ int run_drive(int argc, char** argv) {
   }
   int status = 0;
   // The car picker (ours): the baked cars by key; picking one restarts the
-  // drive with it where the last car stood (window and SDL kept).
+  // drive with it where the last car stood (window and SDL kept). With a
+  // save from the player's profile, only the owned cars the bake has (the
+  // garage, barn finds included).
   std::vector<std::string> baked_cars;
   {
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(bake_dir / "cars", ec))
       if (e.path().extension() == ".shiftbake") baked_cars.push_back(e.path().stem().string());
     std::sort(baked_cars.begin(), baked_cars.end());
+    if (have_saved && saved.owned_garage) {
+      const auto ids = baked_car_ids(bake_dir);
+      std::vector<std::string> owned;
+      for (int id : saved.garage)
+        if (auto it = ids.find(id); it != ids.end()) owned.push_back(lower_ascii(it->second));
+      std::sort(owned.begin(), owned.end());
+      owned.erase(std::unique(owned.begin(), owned.end()), owned.end());
+      std::vector<std::string> keep;
+      for (const auto& c : baked_cars)
+        if (std::binary_search(owned.begin(), owned.end(), lower_ascii(c))) keep.push_back(c);
+      std::printf("garage: %zu owned cars, %zu baked\n", saved.garage.size(), keep.size());
+      if (!keep.empty()) baked_cars = std::move(keep);
+    }
   }
   std::string next_car;
   // The pause menu's event pick (ours): every race carview runs, by
@@ -2329,6 +2350,7 @@ int run_drive(int argc, char** argv) {
           s.barns = saved.barns;
           s.garage = saved.garage;
         }
+        s.owned_garage = have_saved && saved.owned_garage;
         std::string e;
         if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
         else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);

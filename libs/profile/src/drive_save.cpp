@@ -8,6 +8,7 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
     if (notes) notes->push_back(std::move(s));
   };
   out = drive::DriveSave{};
+  out.owned_garage = true;
   // The selected car, or the next loadable one (FORMAT-PROFILE: a missing
   // model is kept but hidden; select another).
   const GarageCar* selected = p.selected_car();
