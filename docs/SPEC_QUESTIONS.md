@@ -1126,3 +1126,17 @@ the 15 `HasRaceLivery` cars from their atlas, ignore `LiveryFileName`
 (the one file in the reference save is the default design). Open with
 interims: colour grids, two-tone blend, the metallic and matte look,
 the livery format, tokens (none).
+
+GARAGE-UPGRADES answered in docs/specs/GARAGE_UPGRADES.md f25f7f7d
+(horizon1-recomp, branch reimplementation-plan, 2026-11-20; first
+commit d845a1e1). Items 2 and 3: a purchase (credits, the new garage
+row with stock parts, `CareerCar`), the owned-car record, the 45 part
+slots and their 43 `List_Upgrade*` tables (enum to column to table),
+part prices with the sign discount and `PricePaid`/`PartsValue`, the
+mass rule, the class bands and shown index (checked on 45 stored garage
+rows), stock owned index = `Data_Car.PerformanceIndex` (15 cars). The
+upgraded index is a virtual lap from `PI.xml` with the time map
+confirmed and the lap model open. Interims: keep stored indexes, move
+the stock index by the engine's own lap-time difference after a part
+change; selling at 0.5 x (BaseCost + PartsValue); no garage limit;
+starter Corrado 309 with stock parts; Auto Upgrade by table order.
