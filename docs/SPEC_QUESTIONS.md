@@ -1140,3 +1140,20 @@ confirmed and the lap model open. Interims: keep stored indexes, move
 the stock index by the engine's own lap-time difference after a part
 change; selling at 0.5 x (BaseCost + PartsValue); no garage limit;
 starter Corrado 309 with stock parts; Auto Upgrade by table order.
+
+V4-CONTENT answered in docs/specs/V4_CONTENT.md b07ea92a
+(horizon1-recomp, branch reimplementation-plan, 2026-11-20). Item 6:
+DLC packages (folder layout, `<offer>.puboffer`, content archive and
+loose folder over `media`, `zipmount.xml`, string tables, any
+`media/db/patch/*_merge.slt` merged into v4's database by priority,
+ownership by offer and licence mask; 21 official + UDLC, 15 with a
+merge, 96 car rows / 84 ids, no events or routes in car packs). 1000
+Club: 218 challenge files, 1,145 challenges, the node and condition
+grammar, medals and the ten achievements; the profile record is now
+probable (file order, blob = saved counts, flag A = completed; key
+algorithm open, match by index). Rally: 36 v4 events (28 stages, 7
+championships, heats), routes, 4 split fractions per stage, a 49-driver
+timed field, unlock chain, XP and level tables, 10 twins; block 2
+preserved. Interims: stage finish at AI-line progress 1, AI times =
+best / f(skill, difficulty), XP per championship place, credits and
+the Rally-upgraded test guessed.
