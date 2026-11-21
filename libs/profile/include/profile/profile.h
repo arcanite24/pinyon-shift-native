@@ -79,10 +79,12 @@ struct Barn {
 };
 struct GarageCar {
   int64_t id = 0, car_id = 0;
-  int64_t performance_index = 0, class_id = 0, color_index = 0;
+  double performance_index = 0;  // raw, (0, 1]
+  int64_t class_id = 0, color_index = 0;
   // Every integer column of the row by name (the part slots, the tune,
   // the history), kept as read.
   std::map<std::string, int64_t> columns;
+  std::map<std::string, double> reals;  // the float columns (CurbWeight, the ratings)
 };
 struct PurchasedPart {
   int64_t garage_id = 0, part_enum = 0, part_id = 0, manufacturer_id = 0, price_paid = 0;

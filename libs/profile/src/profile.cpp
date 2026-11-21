@@ -331,8 +331,10 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
                  for (int c = 0; c < sqlite3_column_count(s); ++c)
                    if (sqlite3_column_type(s, c) == SQLITE_INTEGER)
                      g.columns[sqlite3_column_name(s, c)] = sqlite3_column_int64(s, c);
+                   else if (sqlite3_column_type(s, c) == SQLITE_FLOAT)
+                     g.reals[sqlite3_column_name(s, c)] = sqlite3_column_double(s, c);
                  auto col = [&](const char* k) { return g.columns.count(k) ? g.columns[k] : 0; };
-                 g.id = col("Id"), g.car_id = col("CarId"), g.performance_index = col("PerformanceIndex");
+                 g.id = col("Id"), g.car_id = col("CarId"), g.performance_index = g.reals.count("PerformanceIndex") ? g.reals["PerformanceIndex"] : double(col("PerformanceIndex"));
                  g.class_id = col("ClassID"), g.color_index = col("DefaultManufacturerColorIndex");
                  out.garage.push_back(std::move(g));
                },

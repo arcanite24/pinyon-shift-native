@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "drive/save.h"
+#include "garage/garage.h"
 #include "profile/profile.h"
 
 namespace profile {
@@ -28,5 +29,11 @@ namespace profile {
 // UpgradeDiscount check, hidden cars).
 void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>& media_of, drive::DriveSave& out,
                    std::vector<std::string>* notes);
+
+// The garage (SPEC-GARAGE-UPGRADES, The owned-car record): every
+// Career_Garage row with its stored index, class, parts value, paint and
+// fitted slots; every Career_PurchasedParts row; LastUsedGarageId; the
+// selected car (CareerCar, or the lowest Id).
+garage::Garage to_garage(const Imported& p);
 
 }  // namespace profile

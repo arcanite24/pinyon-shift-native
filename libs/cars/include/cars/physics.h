@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,11 +60,65 @@ bool parse_physics_settings(std::string_view text, PhysicsSettings& out, std::st
 // media/physics.zip member PhysicsSettings.ini.
 bool load_physics_settings(const std::filesystem::path& physics_zip, PhysicsSettings& out, std::string* error);
 
+// The fitted parts of a car (SPEC-GARAGE-UPGRADES, Areas, slots and
+// tables): the List_Upgrade* table name to the fitted row's Id. A table
+// not named (or -1) keeps its stock row.
+using FittedParts = std::map<std::string, int64_t>;
+
 // The stock rows of each car in `ids` (Data_Car.Id) over the merged
 // database (load_database's merge). A car whose links do not resolve is an
-// error naming the link.
+// error naming the link. With `fitted` (one per id), each named table's
+// fitted row replaces its stock row (the sub-part tables then follow the
+// fitted engine, drivetrain and body keys), the fitted rows of the tables
+// the stock chain does not read are loaded too, and the delta columns
+// combine (SPEC-GARAGE-UPGRADES, What a part changes): the mass is the
+// weight row's Mass plus every other fitted row's MassDiff; the torque
+// scale times each fitted engine part's TorqueScale; the front share plus
+// every WeightDistDiff; the CoM height plus the chassis row's CMHeightDiff;
+// the tyre widths and rim diameters from the fitted width and rim rows.
 bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, std::vector<CarPhysics>& out,
-                      std::string* error);
+                      std::string* error, const std::vector<FittedParts>* fitted = nullptr);
+
+// An upgrade slot (SPEC-GARAGE-UPGRADES, Areas, slots and tables): its
+// part enum, its Career_Garage column, its table and the table's key
+// (0 the car's Ordinal, 1 EngineID, 2 DrivetrainID, 3 CarBodyID).
+struct UpgradeSlot {
+  int part_enum;
+  const char* column;
+  const char* table;
+  int key;
+};
+const std::vector<UpgradeSlot>& upgrade_slots();
+
+// A row a slot offers.
+struct PartRow {
+  int part_enum = 0;
+  std::string table;
+  int64_t id = 0;
+  int level = 0;
+  bool is_stock = false;
+  int64_t price = 0, manufacturer = 0;
+};
+
+// The merged database kept open (opening merges every package, so the
+// garage opens it once): a car's rows with its fitted parts, and the rows
+// each slot offers for the car (keyed through its fitted engine,
+// drivetrain and body).
+class PartsDb {
+ public:
+  PartsDb();
+  ~PartsDb();
+  PartsDb(const PartsDb&) = delete;
+  PartsDb& operator=(const PartsDb&) = delete;
+  bool open(const Install& install, std::string* error);
+  bool is_open() const { return impl_ != nullptr; }
+  bool physics(int64_t car_id, const FittedParts& fit, CarPhysics& out, std::string* error) const;
+  bool options(int64_t car_id, const FittedParts& fit, std::vector<PartRow>& out, std::string* error) const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 // SPEC-CAMERAS' per-car inputs: the car's CameraOverrides row (by CarId;
 // every column, zero when the car has no row) and its collision box,

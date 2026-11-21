@@ -502,16 +502,22 @@ bool load_camera_files(const Install& install, std::string& settings_ini, std::s
   return true;
 }
 
-bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, std::vector<CarPhysics>& out,
-                      std::string* error) {
-  out.clear();
-  Merged merged;
-  if (!open_merged(install, merged, error)) return false;
-  sqlite3* db = merged.db;
-  for (int64_t id : ids) {
+namespace {
+
+// One car's rows (load_car_physics), with `fit` its fitted parts.
+bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysics& out, std::string* error) {
+  {
     CarPhysics car;
     car.car_id = id;
     auto& v = car.values;
+    // The row of table `t`: the fitted one by Id, else the stock one by
+    // `where` (SQL with one ? for `key`).
+    auto part = [&](const std::string& t, const std::string& where, int64_t key, int* rows = nullptr) {
+      const auto f = fit.find(t);
+      if (f != fit.end() && f->second >= 0)
+        return row_into(db, "SELECT * FROM " + t + " WHERE Id = ?", f->second, t, v, rows);
+      return row_into(db, "SELECT * FROM " + t + " WHERE " + where, key, t, v, rows);
+    };
     auto fail = [&](const std::string& what) {
       if (error) *error = "car " + std::to_string(id) + ": " + what;
       return false;
@@ -536,26 +542,22 @@ bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, s
                           Table{"List_UpgradeRearWing", false}, Table{"List_UpgradeRimSizeFront", false},
                           Table{"List_UpgradeRimSizeRear", false}}) {
       int rows = 0;
-      row_into(db, std::string("SELECT * FROM ") + t.name + " WHERE Ordinal = ? AND IsStock = 1", id, t.name, v,
-               &rows);
+      part(t.name, "Ordinal = ? AND IsStock = 1", id, &rows);
       if (t.required && rows != 1) return fail(std::string(t.name) + ": " + std::to_string(rows) + " stock rows");
     }
     const auto key = [&](const std::string& k) { return int64_t(std::llround(car.get(k, -1))); };
     const int64_t body = key("List_UpgradeCarBody.CarBodyID");
     row_into(db, "SELECT * FROM Data_CarBody WHERE Id = ?", body, "Data_CarBody", v);
-    if (!row_into(db, "SELECT * FROM List_UpgradeCarBodyWeight WHERE CarBodyId = ? AND IsStock = 1", body,
-                  "List_UpgradeCarBodyWeight", v))
+    if (!part("List_UpgradeCarBodyWeight", "CarBodyId = ? AND IsStock = 1", body))
       return fail("no stock List_UpgradeCarBodyWeight row");
-    row_into(db, "SELECT * FROM List_UpgradeCarBodyChassisStiffness WHERE CarBodyId = ? AND IsStock = 1", body,
-             "List_UpgradeCarBodyChassisStiffness", v);
+    part("List_UpgradeCarBodyChassisStiffness", "CarBodyId = ? AND IsStock = 1", body);
     const int64_t engine = key("List_UpgradeEngine.EngineID");
     row_into(db, "SELECT * FROM Data_Engine WHERE EngineID = ?", engine, "Data_Engine", v);
-    if (!row_into(db, "SELECT * FROM List_UpgradeEngineCamshaft WHERE EngineID = ? AND IsStock = 1", engine,
-                  "List_UpgradeEngineCamshaft", v))
+    if (!part("List_UpgradeEngineCamshaft", "EngineID = ? AND IsStock = 1", engine))
       return fail("no stock camshaft");
     for (const char* t : {"List_UpgradeEngineFlywheel", "List_UpgradeEngineTurboSingle", "List_UpgradeEngineTurboTwin",
                           "List_UpgradeEngineDSC", "List_UpgradeEngineCSC"})
-      row_into(db, std::string("SELECT * FROM ") + t + " WHERE EngineID = ? AND IsStock = 1", engine, t, v);
+      part(t, "EngineID = ? AND IsStock = 1", engine);
     {
       Query q(db, "SELECT * FROM List_TorqueCurve WHERE TorqueCurveID = ?");
       q.bind(1, key("List_UpgradeEngineCamshaft.TorqueCurveFullThrottleID"));
@@ -566,9 +568,7 @@ bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, s
     row_into(db, "SELECT * FROM Data_Drivetrain WHERE DrivetrainID = ?", drivetrain, "Data_Drivetrain", v);
     for (const char* t : {"List_UpgradeDrivetrainTransmission", "List_UpgradeDrivetrainDifferential",
                           "List_UpgradeDrivetrainClutch", "List_UpgradeDrivetrainDriveline"})
-      if (!row_into(db, std::string("SELECT * FROM ") + t + " WHERE DrivetrainID = ? AND IsStock = 1", drivetrain, t,
-                    v))
-        return fail(std::string("no stock ") + t);
+      if (!part(t, "DrivetrainID = ? AND IsStock = 1", drivetrain)) return fail(std::string("no stock ") + t);
     for (const std::string a : {"Front", "Rear"}) {
       if (!row_into(db, "SELECT * FROM List_SpringDamperPhysics WHERE SpringDamperPhysicsID = ?",
                     key("List_UpgradeSpringDamper." + a + "SpringDamperPhysicsID"), a + "SpringDamper", v))
@@ -601,9 +601,171 @@ bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, s
             v[std::string(d.group) + ".FrictionScale" + std::to_string(c)] = q.d(col);
       }
     }
+    if (!fit.empty()) {
+      // The fitted rows the stock chain does not read, then the deltas.
+      for (const auto& [t, row] : fit)
+        if (row >= 0 && !car.has(t + ".Id")) row_into(db, "SELECT * FROM " + t + " WHERE Id = ?", row, t, v);
+      double mass_diff = 0, torque = 1, share = 0;
+      for (const auto& [t, row] : fit) {
+        if (row < 0 || t == "List_UpgradeCarBodyWeight") continue;
+        mass_diff += car.get(t + ".MassDiff", 0);
+        share += car.get(t + ".WeightDistDiff", 0);
+        static const char* kTorque[] = {"List_UpgradeEngineValves",   "List_UpgradeEngineDisplacement",
+                                        "List_UpgradeEnginePistonsCompression", "List_UpgradeEngineFuelSystem",
+                                        "List_UpgradeEngineIgnition", "List_UpgradeEngineExhaust",
+                                        "List_UpgradeEngineIntake",   "List_UpgradeEngineManifold",
+                                        "List_UpgradeEngineOilCooling"};
+        for (const char* k : kTorque)
+          if (t == k) torque *= car.get(t + ".TorqueScale", 1);
+      }
+      v["List_UpgradeCarBodyWeight.Mass"] = car.get("List_UpgradeCarBodyWeight.Mass", 0) + mass_diff;
+      v["List_TorqueCurve.TorqueScale"] = car.get("List_TorqueCurve.TorqueScale", 1) * torque;
+      v["List_UpgradeCarBodyWeight.CMBackFront"] = car.get("List_UpgradeCarBodyWeight.CMBackFront", 0.5) + share;
+      v["List_UpgradeCarBodyWeight.CMHeight"] = car.get("List_UpgradeCarBodyWeight.CMHeight", 0) +
+                                               car.get("List_UpgradeCarBodyChassisStiffness.CMHeightDiff", 0);
+      for (const std::string a : {"Front", "Rear"}) {
+        const std::string w = "List_UpgradeCarBodyTireWidth" + a + "." + a + "TireWidth";
+        const std::string r = "List_UpgradeRimSize" + a + "." + a + "WheelDiameter";
+        if (fit.count("List_UpgradeCarBodyTireWidth" + a) && car.has(w)) v["Data_Car." + a + "TireWidthMM"] = car.get(w);
+        if (fit.count("List_UpgradeRimSize" + a) && car.has(r)) v["Data_Car." + a + "WheelDiameterIN"] = car.get(r);
+      }
+    }
+    out = std::move(car);
+  }
+  return true;
+}
+
+}  // namespace
+
+bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, std::vector<CarPhysics>& out,
+                      std::string* error, const std::vector<FittedParts>* fitted) {
+  out.clear();
+  Merged merged;
+  if (!open_merged(install, merged, error)) return false;
+  static const FittedParts kNone;
+  for (size_t index = 0; index < ids.size(); ++index) {
+    CarPhysics car;
+    if (!car_physics_from(merged.db, ids[index], fitted && index < fitted->size() ? (*fitted)[index] : kNone, car,
+                          error))
+      return false;
     out.push_back(std::move(car));
   }
   return true;
+}
+
+struct PartsDb::Impl {
+  Merged merged;
+};
+
+PartsDb::PartsDb() = default;
+PartsDb::~PartsDb() = default;
+
+bool PartsDb::open(const Install& install, std::string* error) {
+  auto impl = std::make_unique<Impl>();
+  if (!open_merged(install, impl->merged, error)) return false;
+  impl_ = std::move(impl);
+  return true;
+}
+
+bool PartsDb::physics(int64_t car_id, const FittedParts& fit, CarPhysics& out, std::string* error) const {
+  if (!impl_) {
+    if (error) *error = "parts database not open";
+    return false;
+  }
+  return car_physics_from(impl_->merged.db, car_id, fit, out, error);
+}
+
+bool PartsDb::options(int64_t car_id, const FittedParts& fit, std::vector<PartRow>& out, std::string* error) const {
+  out.clear();
+  if (!impl_) {
+    if (error) *error = "parts database not open";
+    return false;
+  }
+  sqlite3* db = impl_->merged.db;
+  // The car's keys through its fitted (or stock) engine, drivetrain and
+  // body rows.
+  CarPhysics car;
+  if (!car_physics_from(db, car_id, fit, car, error)) return false;
+  const int64_t keys[4] = {car_id, int64_t(std::llround(car.get("List_UpgradeEngine.EngineID", -1))),
+                           int64_t(std::llround(car.get("List_UpgradeDrivetrain.DrivetrainID", -1))),
+                           int64_t(std::llround(car.get("List_UpgradeCarBody.CarBodyID", -1)))};
+  for (const UpgradeSlot& slot : upgrade_slots()) {
+    const std::string table = slot.table;
+    const auto cols = columns(db, "main", table);
+    if (cols.empty()) continue;
+    auto has = [&](const char* c) {
+      for (const auto& k : cols)
+        if (std::equal(k.begin(), k.end(), c, c + std::strlen(c), [](char x, char y) { return std::tolower((unsigned char)x) == std::tolower((unsigned char)y); })) return true;
+      return false;
+    };
+    std::string key_col;
+    for (const char* k : {slot.key == 0 ? "Ordinal" : slot.key == 1 ? "EngineID" : slot.key == 2 ? "DrivetrainID" : "CarBodyID"})
+      if (has(k)) key_col = k;
+    if (key_col.empty()) continue;
+    const std::string sql = "SELECT Id, Level, IsStock, " + std::string(has("Price") ? "Price" : "0") + ", " +
+                            (has("ManufacturerID") ? "ManufacturerID" : "0") + " FROM " + quote(table) + " WHERE " +
+                            key_col + " = ? ORDER BY Level, Id";
+    Query q(db, sql);
+    if (!q.ok()) continue;
+    q.bind(1, keys[slot.key]);
+    while (q.step()) {
+      PartRow r;
+      r.part_enum = slot.part_enum;
+      r.table = table;
+      r.id = q.i(0), r.level = int(q.i(1)), r.is_stock = q.i(2) != 0, r.price = q.i(3), r.manufacturer = q.i(4);
+      out.push_back(std::move(r));
+    }
+  }
+  return true;
+}
+
+const std::vector<UpgradeSlot>& upgrade_slots() {
+  // SPEC-GARAGE-UPGRADES, Areas, slots and tables: the part enum, the
+  // Career_Garage column, the table and its key (0 car, 1 engine,
+  // 2 drivetrain, 3 body). The empty motor families are left out.
+  static const std::vector<UpgradeSlot> slots = {
+      {0, "Engine", "List_UpgradeEngine", 0},
+      {1, "Drivetrain", "List_UpgradeDrivetrain", 0},
+      {2, "CarBody", "List_UpgradeCarBody", 0},
+      {4, "Brakes", "List_UpgradeBrakes", 0},
+      {5, "SpringDamper", "List_UpgradeSpringDamper", 0},
+      {6, "AntiSwayFront", "List_UpgradeAntiSwayFront", 0},
+      {7, "AntiSwayRear", "List_UpgradeAntiSwayRear", 0},
+      {8, "TireCompound", "List_UpgradeTireCompound", 0},
+      {9, "RearWing", "List_UpgradeRearWing", 0},
+      {10, "RimSizeFront", "List_UpgradeRimSizeFront", 0},
+      {11, "RimSizeRear", "List_UpgradeRimSizeRear", 0},
+      {12, "Camshaft", "List_UpgradeEngineCamshaft", 1},
+      {13, "Valves", "List_UpgradeEngineValves", 1},
+      {14, "Displacement", "List_UpgradeEngineDisplacement", 1},
+      {15, "PistonsCompression", "List_UpgradeEnginePistonsCompression", 1},
+      {16, "FuelSystem", "List_UpgradeEngineFuelSystem", 1},
+      {17, "Ignition", "List_UpgradeEngineIgnition", 1},
+      {18, "Exhaust", "List_UpgradeEngineExhaust", 1},
+      {19, "Intake", "List_UpgradeEngineIntake", 1},
+      {20, "Flywheel", "List_UpgradeEngineFlywheel", 1},
+      {21, "Manifold", "List_UpgradeEngineManifold", 1},
+      {22, "RestrictorPlate", "List_UpgradeEngineRestrictorPlate", 1},
+      {23, "OilCooling", "List_UpgradeEngineOilCooling", 1},
+      {24, "SingleTurbo", "List_UpgradeEngineTurboSingle", 1},
+      {25, "TwinTurbo", "List_UpgradeEngineTurboTwin", 1},
+      {27, "SuperchargerCSC", "List_UpgradeEngineCSC", 1},
+      {28, "SuperchargerDSC", "List_UpgradeEngineDSC", 1},
+      {29, "Intercooler", "List_UpgradeEngineIntercooler", 1},
+      {30, "Clutch", "List_UpgradeDrivetrainClutch", 2},
+      {31, "Transmission", "List_UpgradeDrivetrainTransmission", 2},
+      {32, "Driveline", "List_UpgradeDrivetrainDriveline", 2},
+      {33, "Differential", "List_UpgradeDrivetrainDifferential", 2},
+      {34, "FrontBumper", "List_UpgradeCarBodyFrontBumper", 3},
+      {35, "RearBumper", "List_UpgradeCarBodyRearBumper", 3},
+      {36, "Hood", "List_UpgradeCarBodyHood", 3},
+      {37, "SideSkirts", "List_UpgradeCarBodySideSkirt", 3},
+      {38, "TireWidthFront", "List_UpgradeCarBodyTireWidthFront", 3},
+      {39, "TireWidthRear", "List_UpgradeCarBodyTireWidthRear", 3},
+      {40, "WeightReduction", "List_UpgradeCarBodyWeight", 3},
+      {41, "ChassisStiffness", "List_UpgradeCarBodyChassisStiffness", 3},
+  };
+  return slots;
 }
 
 }  // namespace cars

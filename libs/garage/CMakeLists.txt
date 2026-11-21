@@ -1,0 +1,8 @@
+add_library(shift_garage STATIC src/garage.cpp)
+target_include_directories(shift_garage PUBLIC include)
+target_link_libraries(shift_garage PUBLIC shift_cars PRIVATE shift_sqlite3)
+if(MSVC)
+  target_compile_options(shift_garage PRIVATE /W4)
+else()
+  target_compile_options(shift_garage PRIVATE -Wall -Wextra)
+endif()

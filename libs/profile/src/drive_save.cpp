@@ -42,4 +42,21 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
          " signs found (the signs win)");
 }
 
+garage::Garage to_garage(const Imported& p) {
+  garage::Garage g;
+  g.last_id = p.last_used_garage_id;
+  if (const GarageCar* s = p.selected_car()) g.selected = s->id;
+  for (const auto& r : p.garage) {
+    garage::Car c;
+    c.id = r.id, c.car_id = r.car_id, c.class_id = int(r.class_id), c.colour = int(r.color_index);
+    c.performance_index = r.performance_index;
+    if (auto it = r.columns.find("PartsValue"); it != r.columns.end()) c.parts_value = it->second;
+    for (const auto& s : cars::upgrade_slots())
+      if (auto it = r.columns.find(s.column); it != r.columns.end() && it->second >= 0) c.slots[s.column] = it->second;
+    g.cars.push_back(std::move(c));
+  }
+  for (const auto& b : p.parts) g.bought.push_back({b.garage_id, int(b.part_enum), b.part_id, b.manufacturer_id, b.price_paid});
+  return g;
+}
+
 }  // namespace profile

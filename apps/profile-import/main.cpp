@@ -3,10 +3,17 @@
 //
 //   profile-import <export folder>         prints the summary
 //   profile-import --fields <folder>       prints the Main fields
+//   profile-import --garage <folder> <game root> [state root]
+//                                          checks each garage car the
+//                                          database has: the mass rule
+//                                          against CurbWeight, the class
+//                                          of the stored index, PartsValue
 //   profile-import --check <exports root>  checks each export folder under
 //                                          the root (user, user-modded)
 //                                          against its summary.json; exit
 //                                          77 when there are none
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -15,7 +22,9 @@
 #include <string>
 #include <vector>
 
+#include "profile/drive_save.h"
 #include "profile/profile.h"
+#include "cars/sources.h"
 
 namespace {
 
@@ -113,6 +122,53 @@ int main(int argc, char** argv) {
       return 77;
     }
     return bad ? 1 : 0;
+  }
+  if ((argc == 4 || argc == 5) && std::string(argv[1]) == "--garage") {
+    profile::Imported p;
+    std::string error;
+    if (!profile::import_profile(argv[2], p, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    const garage::Garage g = profile::to_garage(p);
+    cars::Install install;
+    cars::PartsDb db;
+    std::vector<garage::ClassBand> bands;
+    if (!cars::discover_install(argv[3], argc == 5 ? argv[4] : "", "", install, &error) || !db.open(install, &error) ||
+        !garage::load_class_bands(argv[3], bands, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    int checked = 0, mass_ok = 0, class_ok = 0, value_ok = 0, missing = 0;
+    for (const auto& c : g.cars) {
+      const auto* row = [&]() -> const profile::GarageCar* {
+        for (const auto& r : p.garage)
+          if (r.id == c.id) return &r;
+        return nullptr;
+      }();
+      int64_t paid = 0;
+      for (const auto& b : g.bought)
+        if (b.garage_id == c.id) paid += b.price_paid;
+      value_ok += paid == c.parts_value;
+      class_ok += garage::class_of(c.performance_index, bands) == c.class_id;
+      cars::CarPhysics phys;
+      std::string e;
+      if (!db.physics(c.car_id, garage::fitted(c), phys, &e)) {
+        ++missing;
+        continue;
+      }
+      ++checked;
+      const double mass = phys.get("List_UpgradeCarBodyWeight.Mass", 0);
+      const double stored = row && row->reals.count("CurbWeight") ? row->reals.at("CurbWeight") * 100 : 0;
+      const bool ok = std::abs(mass - stored) < 0.1;
+      mass_ok += ok;
+      std::printf("%3lld %-28s %s %4d  mass %7.1f stored %7.1f %s  parts %lld\n", (long long)c.id, phys.media_name.c_str(),
+                  bands[size_t(std::clamp(c.class_id, 0, int(bands.size()) - 1))].name.c_str(),
+                  garage::shown_index(c.performance_index, bands), mass, stored, ok ? "ok" : "OFF", (long long)c.parts_value);
+    }
+    std::printf("garage: %zu cars; class %d, parts value %d; mass rule %d of %d in the database (%d not in it)\n",
+                g.cars.size(), class_ok, value_ok, mass_ok, checked, missing);
+    return 0;
   }
   if (argc == 3 && std::string(argv[1]) == "--fields") {
     profile::Imported p;
