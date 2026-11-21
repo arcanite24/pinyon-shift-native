@@ -28,7 +28,7 @@ struct HudState {
 // The windowed drive's pause menu: Esc or Start opens it; the items move
 // with up and down and wrap.
 struct PauseMenu {
-  enum Item { kResume, kMap, kEvent, kChangeCar, kUpgrades, kPaint, kAutoshow, kCareer, kReset, kQuit, kCount };
+  enum Item { kResume, kMap, kEvent, kChangeCar, kUpgrades, kPaint, kClub, kAutoshow, kCareer, kReset, kQuit, kCount };
   // kEvent's line ("race FR22", left and right pick); empty: "race".
   std::string event_label;
   bool open = false;

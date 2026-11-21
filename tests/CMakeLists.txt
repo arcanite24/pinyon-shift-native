@@ -75,6 +75,10 @@ add_executable(freeroam_tests freeroam_tests.cpp)
 target_link_libraries(freeroam_tests PRIVATE shift_freeroam)
 add_test(NAME freeroam_tests COMMAND freeroam_tests)
 
+add_executable(club_tests club_tests.cpp)
+target_link_libraries(club_tests PRIVATE shift_freeroam)
+add_test(NAME club_tests COMMAND club_tests)
+
 add_executable(radio_tests radio_tests.cpp)
 target_link_libraries(radio_tests PRIVATE shift_audio)
 add_test(NAME radio_tests COMMAND radio_tests)

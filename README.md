@@ -611,6 +611,13 @@ thread (the gather worker included).
 | multivac, RTX 4080, Ryzen 7 5800X | low | 0.4 / 0.5 / 0.5 | 0.67 / 1.2-1.4 / 2.3-2.5 | 1.15 |
 | Steam Deck LCD (Van Gogh, RADV), SteamOS 3.7 | low | 2.9 / 3.6 / 13.8 (GPU clock low, see below) | 2.85 / 3.9-4.05 / 6.4-7.7 | 3.97 |
 
+Rechecked 2026-11-21 with the sun shadow, the post chain, bundle textures
+and the cockpit/paint work in (an optimised build, two runs): low GPU
+p50 10.7 and 9.8, p95 12.3 and 11.4, max 15.6 ms; frame CPU p95 2.1 ms.
+A build without `/O2` (an empty `CMAKE_CXX_FLAGS_RELEASE` in the cache)
+reads 16.1 / 18.7 ms on the same GPU: the slower CPU takes the shared
+power budget, so bench only optimised builds.
+
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
 (1.4 ms) and the sky dome (0.6 ms). It does not follow the resolution
@@ -677,9 +684,29 @@ copy's packages.
   (FER_599XXEvolution_12), and free roam reports 100 of 100 signs
   (upgrades 100 % off), 8 of 9 barn finds and 1,717.6 km driven.
 - **Interims (backlog):** the wristband level's name is a string-table
-  key, so the page shows its number. A 1000 Club challenge driven and
-  a Rally stage driven are later work (SPEC-V4-CONTENT: "Driving a 1000
-  Club challenge or a Rally stage is later work").
+  key, so the page shows its number. A Rally stage driven is later work.
+- **1000 Club driving (2026-11-21):** `freeroam/club.h` parses the
+  package's 218 challenge files (1,145 challenges) and v4's 30 named
+  locations, and evaluates a challenge tree (`pass_when`, `fail_when`,
+  `fail_unless`, `and`/`then`/`or` groups, `a_to_b`) on the car's
+  state every step. The pause menu's `1000 club` page lists the car's
+  challenges; its last line begins them (the car's record in the save).
+  It's gated on the package being enabled, the green wristband and a
+  garage car. A pass writes the completed flag and saves; a failure
+  restarts the attempt. Shown on a scratch import of user-modded:
+  JAG_DType_56 held over 60 mph for 30 s on I-70 (`--near -5956.65
+  1690.84 --run cruise --speed 125 --seconds 110`) and got a medal at
+  91.7 s, taking the save from 8 to 9 of 49. The named-transform frame
+  matches ours (the freeway point's y 35.37; the road there is 35.378).
+  Interims: only speed, timer, gear, airborne, jump length, location and
+  crashes are measured, which covers 237 of 1,145 (timed and clean
+  road trips, top speed, long jump). A challenge using skills, speed
+  cameras, events, smashables or encounters doesn't start. A serious
+  crash is one body contact over 4x the car's weight (ours). A jump's
+  length is metres, horizontal, from take-off (ours). The page shows
+  the title id as words and our summary until the string tables are
+  read. The key of a new car's record is 0 (the hash is open). Medals'
+  achievements are not done.
 - **Paint (2026-11-21):** the pause menu's `paint` page lists the car's
   factory colours (`Combo_Colors` rows in `Sequence` order, metallic
   and stripe marked). Left and right preview live; Enter keeps the
@@ -773,8 +800,9 @@ the interim noted here until a later polish sweep.
   R/255) under the warm sun (0.97, 0.84, 0.58). Interim: the current
   terrain shading, which leaves grey bands. Reference pose: camera
   (2243.8, 119.8, 706.9). Grade (ours, 2026-11-21): a linear gain
-  (1.10, 0.88, 0.88) after the tone curve (`kPostBalance`). It brings
-  the tree band within 3 % of the game's means. The hills stay about 10 %
+  (1.10, 0.88, 0.88) after the tone curve (`kPostBalance`). With the
+  placeholder blobs skipped, the tree band's sRGB means are within 6 % of
+  the game's (red 6 % low, blue 5 % low, green even). The hills stay about 10 %
   brighter and greener than the game's; that's material, not grade.
   Tune with `SHIFT_BALANCE=r,g,b`.
 - **Yellow hill shells.** Done (2026-11-21). They were placeholder

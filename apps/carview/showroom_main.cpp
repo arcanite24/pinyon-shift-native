@@ -63,6 +63,7 @@
 #include "map_view.h"
 #include "fh1data/archive.h"
 #include "fh1data/xds.h"
+#include "freeroam/club.h"
 #include "freeroam/collectibles.h"
 #include "profile/drive_save.h"
 #include "garage/garage.h"
@@ -1857,6 +1858,11 @@ int run_drive(int argc, char** argv) {
   // Sequence), kept across the rebuild it asks for.
   int64_t paint_sequence = -1;
   std::string paint_car;
+  // The 1000 Club (SPEC-V4-CONTENT): the package's challenges and v4's
+  // named locations, loaded the first time a drive asks.
+  freeroam::club::ClubData club_data;
+  bool club_tried = false, club_loaded = false;
+  std::string club_why;
   for (bool again = true; again;) {
   again = false;
   {
@@ -2434,6 +2440,130 @@ int run_drive(int argc, char** argv) {
       std::string notice;
       double notice_until = -1;
       bool save_due = false;  // a collectible: the window saves at once
+      // The 1000 Club in this car: the gate's answer, the car's Data_Car id
+      // and, once begun, one run per incomplete challenge (SPEC-V4-CONTENT,
+      // Checking during driving).
+      struct ClubRun {
+        size_t index;
+        freeroam::club::Run run;
+        int failures_seen = 0;
+      };
+      std::vector<ClubRun> club_runs;
+      int64_t club_car = -1;
+      std::string club_gate;  // empty: open
+      bool club_open = false;
+      size_t club_pick = 0;
+      freeroam::club::Signal club_signal;
+      bool club_was_air = false;
+      drive::Vec3 club_takeoff{};
+      auto club_record = [&]() -> drive::SavedClubCar* {
+        for (auto& c : saved.club)
+          if (c.car_id == club_car) return &c;
+        return nullptr;
+      };
+      // Entry: the package owned, the green wristband (level index >= 1)
+      // and a garage car (not a loaned or event car) with challenges.
+      auto club_check = [&]() {
+        club_runs.clear();
+        club_car = -1;
+        const char* state = std::getenv("SHIFT_STATE_ROOT");
+        if (!club_tried) {
+          club_tried = true;
+          club_loaded = freeroam::club::load_club(state ? state : "", club_data, &club_why);
+          if (club_loaded)
+            std::printf("1000 club: %zu cars, %zu challenges (%zu measured today), %zu locations\n",
+                        club_data.cars.size(), club_data.challenges(), club_data.measured(),
+                        club_data.locations.size());
+        }
+        if (!club_loaded) return club_gate = club_why, void();
+        bool owned = false;
+        for (const auto& p : cars::list_packs(state ? state : ""))
+          if (p.id == club_data.package) owned = p.owned();
+        if (!owned) return club_gate = "the 1000 Club package is not enabled", void();
+        if (wristbands.levels.empty() && !world_dir.empty()) {
+          std::string e;
+          race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e);
+        }
+        if (wristbands.level_index(career.wristband_points) < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND"))
+          return club_gate = "needs the green wristband", void();
+        // The car driven: the selected garage row when it is this car, else
+        // any garage row of this car (a --car pick).
+        if (have_garage) {
+          auto is_this = [&](const garage::Car& gc) {
+            auto it = baked_ids.find(gc.car_id);
+            return it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car);
+          };
+          if (const garage::Car* gc = career_garage.selected_car(); gc && is_this(*gc)) club_car = gc->car_id;
+          for (const auto& gc : career_garage.cars)
+            if (club_car < 0 && is_this(gc)) club_car = gc.car_id;
+        }
+        if (club_car < 0) return club_gate = "only in your own garage cars", void();
+        if (!club_data.cars.count(club_car)) return club_gate = "this car has no challenges", void();
+        club_gate.clear();
+        const auto& list = club_data.cars.at(club_car);
+        drive::SavedClubCar* rec = club_record();
+        if (!rec) return;  // not begun in this car
+        if (rec->challenges.size() < list.size()) rec->challenges.resize(list.size(), {0u, false});
+        for (size_t i = 0; i < list.size(); ++i)
+          if (!rec->challenges[i].second) club_runs.push_back({i, freeroam::club::Run(list[i], club_data.locations), 0});
+      };
+      // One step of every running challenge on the car's state.
+      auto club_step = [&]() {
+        if (club_runs.empty()) return;
+        auto& s = club_signal;
+        const drive::Vec3 at = vehicle.position();
+        s.time = vehicle.time();
+        s.speed_mph = std::fabs(vehicle.speed()) * 2.2369363;
+        s.gear = vehicle.gear() < 0 ? 0 : vehicle.gear() == 0 ? -1 : vehicle.gear();
+        bool air = true;
+        for (const auto& w : vehicle.wheels()) air = air && !w.contact;
+        air = air && vehicle.body_contact_force() <= 0;
+        if (air && !club_was_air) club_takeoff = at;
+        club_was_air = air;
+        s.in_air = air;
+        s.jump_m = air ? std::hypot(at.x - club_takeoff.x, at.z - club_takeoff.z) : 0;
+        // A serious collision (interim, ours): one body contact pushing
+        // with more than four times the car's weight.
+        s.collided = vehicle.strongest_body_contact().force > 4 * vehicle.params().mass * 9.81;
+        s.x = at.x, s.z = at.z;
+        const auto& list = club_data.cars.at(club_car);
+        drive::SavedClubCar* rec = club_record();
+        for (size_t k = 0; k < club_runs.size();) {
+          ClubRun& r = club_runs[k];
+          const std::string label = list[r.index].label();
+          if (r.run.step(s)) {
+            if (rec) rec->challenges[r.index].second = true;
+            int done = 0;
+            if (rec)
+              for (const auto& c : rec->challenges) done += c.second;
+            char line[160];
+            std::snprintf(line, sizeof line, "1000 club medal! %s (%d/%zu in this car)", label.c_str(), done,
+                          list.size());
+            std::printf("t %.2f s: %s\n", s.time, line);
+            notice = line;
+            notice_until = s.time + 5;
+            save_due = true;
+            club_runs.erase(club_runs.begin() + std::ptrdiff_t(k));
+            continue;
+          }
+          if (r.run.failures() != r.failures_seen) {
+            r.failures_seen = r.run.failures();
+            notice = "1000 club: " + label + " failed - try again";
+            notice_until = s.time + 3;
+            std::printf("t %.2f s: %s\n", s.time, notice.c_str());
+          }
+          ++k;
+        }
+      };
+      // The banner while a challenge is under way.
+      auto club_banner = [&]() -> std::string {
+        if (club_runs.empty()) return {};
+        const auto& list = club_data.cars.at(club_car);
+        for (const auto& r : club_runs)
+          if (r.run.under_way(club_signal))
+            return "1000 club: " + list[r.index].label() + " - " + r.run.status(club_signal);
+        return {};
+      };
       // One free-roam step: the rules, then their notices and the props
       // they hide.
       auto free_roam_step = [&]() {
@@ -2508,6 +2638,7 @@ int run_drive(int argc, char** argv) {
           }
         }
         free_roam_step();
+        club_step();
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
@@ -2622,12 +2753,28 @@ int run_drive(int argc, char** argv) {
         }
         s.owned_garage = have_saved && saved.owned_garage;
         if (have_saved) s.carry_from(saved);
+        s.club = saved.club;
         std::string e;
         if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
         else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);
         saved = s;
         have_saved = true;
       };
+      // The 1000 Club's gate for this car, and its runs when begun;
+      // SHIFT_CLUB_BEGIN=1 (debug) begins them as the page's last line does.
+      club_check();
+      if (std::getenv("SHIFT_CLUB_BEGIN") && club_gate.empty() && !club_record()) {
+        drive::SavedClubCar rec;
+        rec.car_id = club_car;
+        rec.challenges.assign(club_data.cars.at(club_car).size(), {0u, false});
+        saved.club.push_back(rec);
+        club_check();
+      }
+      if (headless || club_gate.empty())
+        std::printf("1000 club: %s\n", !club_gate.empty() ? club_gate.c_str()
+                                        : club_runs.empty() && !club_record() ? "not begun in this car"
+                                                                              : (std::to_string(club_runs.size()) +
+                                                                                 " challenges running in this car").c_str());
       WheelPose poses[4];
       CameraPull camera_pull;
       // SPEC-CAMERAS' rig (the old chase when it cannot load, and for
@@ -2693,6 +2840,34 @@ int run_drive(int argc, char** argv) {
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
+        if (club_open) {
+          st.menu.clear();
+          const auto* list = club_gate.empty() ? &club_data.cars.at(club_car) : nullptr;
+          const drive::SavedClubCar* rec = club_record();
+          int done = 0;
+          if (rec)
+            for (const auto& c : rec->challenges) done += c.second;
+          if (!list) {
+            st.menu_title = "1000 club";
+            st.menu.push_back(club_gate);
+          } else {
+            st.menu_title = "1000 club: " + std::to_string(done) + "/" + std::to_string(list->size()) +
+                            " medals in this car (esc leaves)";
+            for (size_t i = 0; i < list->size(); ++i) {
+              std::string line = (*list)[i].label() + " - ";
+              if (rec && i < rec->challenges.size() && rec->challenges[i].second) line += "medal";
+              else if (!(*list)[i].supported) line += "not measured yet";
+              else if (!rec) line += (*list)[i].summary();
+              else
+                for (const auto& r : club_runs)
+                  if (r.index == i) line += r.run.status(club_signal);
+              if (line.size() > 90) line = line.substr(0, 87) + "...";
+              st.menu.push_back(line);
+            }
+            st.menu.push_back(rec ? "challenges running in this car" : "begin challenges in this car");
+          }
+          st.menu_selected = int(std::min(club_pick, st.menu.size() - 1));
+        }
         if (paint_open) {
           st.menu_title = "paint (free): left/right, enter keeps";
           st.menu.clear();
@@ -3093,7 +3268,7 @@ int run_drive(int argc, char** argv) {
             set_hud(int(height), vehicle.time() < notice_until  ? notice
                                  : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
-                                                                  : std::string());
+                                                                  : club_banner());
             set_minimap(int(height), true);
             set_radio_popup(int(height));
           }
@@ -3262,6 +3437,10 @@ int run_drive(int argc, char** argv) {
           if (item == PauseMenu::kEvent && !event_ids.empty()) {
             next_event = event_ids[event_pick];
             running = false;
+          }
+          if (item == PauseMenu::kClub) {
+            club_open = true;
+            club_pick = club_gate.empty() ? club_data.cars.at(club_car).size() : 0;
           }
           if (item == PauseMenu::kPaint) {
             const auto& rows = showroom.colours();
@@ -3436,6 +3615,38 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) autoshow.jump_class(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) autoshow.jump_class(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) buy();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // The 1000 Club page: up and down scroll, enter on the last line
+            // begins the challenges in this car (its record in the save).
+            if (club_open) {
+              const size_t rows = club_gate.empty() ? club_data.cars.at(club_car).size() + 1 : 1;
+              auto begin = [&]() {
+                if (!club_gate.empty() || club_pick + 1 != rows || club_record()) return;
+                drive::SavedClubCar rec;
+                rec.car_id = club_car;
+                rec.challenges.assign(club_data.cars.at(club_car).size(), {0u, false});
+                saved.club.push_back(rec);
+                save_now("1000 club");
+                club_check();
+                notice = "1000 club: challenges begun in this car";
+                notice_until = vehicle.time() + 4;
+                club_open = false;
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) club_open = false;
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) begin();
+                else if (k == SDLK_UP || k == SDLK_W) club_pick = (club_pick + rows - 1) % rows;
+                else if (k == SDLK_DOWN || k == SDLK_S) club_pick = (club_pick + 1) % rows;
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) club_open = false;
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) begin();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) club_pick = (club_pick + rows - 1) % rows;
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) club_pick = (club_pick + 1) % rows;
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -3656,7 +3867,9 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open) accumulator += frame_dt;
+          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open &&
+              !club_open)
+            accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
@@ -3667,7 +3880,7 @@ int run_drive(int argc, char** argv) {
             save_now("collectible");
           }
           while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open &&
-                 accumulator >= drive::Vehicle::kStep) {
+                 !club_open && accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
@@ -3731,7 +3944,7 @@ int run_drive(int argc, char** argv) {
                     : vehicle.time() < notice_until  ? notice
                     : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
-                                                     : std::string(),
+                                                     : club_banner(),
                     &menu);
             set_radio_popup(h);  // after the panel: its height
           }
