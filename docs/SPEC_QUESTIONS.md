@@ -1100,3 +1100,14 @@ narrow spec with its own tests:
 6. The 1000 Club, Horizon Rally and the DLC packs (what each pack adds:
    cars, events, the Rally expansion).
 Meanwhile: none of this in the engine.
+
+FORMAT-PROFILE answered in docs/formats/PROFILE.md 9e6822f3
+(horizon1-recomp, branch reimplementation-plan, 2026-11-20). Item 1 is
+covered: folder, `cmss` container, secure envelope and key derivation,
+profile body, class-serialised tail and the 19 `PlayerDatabase` tables,
+with reference counts for both trees (`user`, base-written: 100/100
+signs, 6/9 barns, 19 cars, 36 event results; `user-modded`, v4-written,
+the profile the game plays: 38 cars, 119 event results, 1000 Club and
+Rally records) and 22 installed content packages. Interim: import the
+plaintext export of `tools/re/profile-export.py`; livery key open
+(paint from `DefaultManufacturerColorIndex`); 1000 Club layout a guess.
