@@ -1054,6 +1054,19 @@ mm and 0.16°, final direction 0.15°. Layers compose as eye += car-axes
 offset, chase direction pitched by the pitch sum (no re-aim), roll from
 the layers only. Open: the high chase at speed (same rules assumed).
 
+Base height (R34 low chase 5.8 cm): answered in CAMERAS.md 50040686
+(Chase cameras, Height and Look-at). The start applies the car's
+CameraOverrides for that camera first; if any of its height, radius or
+target override is non-zero, the band correction is skipped (c = 0).
+A fixed eye lift L (0.35 m FollowCam, 0.60 m FollowCam2, code
+constants) is in both the start height and the spring target: start =
+box top above ground + L + H; target = (MaxY - CoM y) + L + slope; eye
+above CoM = H + c + h; look-at above CoM = (MaxY - CoM y) + T + c (no
+delta). R34: 1.3725 + 0.35 + 0.1375 = 1.860 m vs 1.858 m parked; on the
+lap its height and target offsets read exactly the overrides (0.1375,
+-0.0025) and the target base is box top + 0.350 within 0.4 mm. For a
+car without an override the result is unchanged (delta was L).
+
 ## Q52 (M5, not blocking): where CareerRaceModes.xml lives
 
 SPEC-EVENT-REWARDS reads each mode's WinningsDistribution from
