@@ -56,6 +56,10 @@ void main() {
     float dist;
     if (rel <= q.y - q.x) {
       dist = abs(length(d) - p.z) - p.w;
+    } else if (q.z > 0.0) {
+      // Square ends: the distance past the nearer end's radial edge.
+      float past = min(rel - (q.y - q.x), 2.0 * kPi - rel) * length(d);
+      dist = max(abs(length(d) - p.z) - p.w, past);
     } else {
       vec2 e0 = p.xy + p.z * vec2(sin(q.x), -cos(q.x));
       vec2 e1 = p.xy + p.z * vec2(sin(q.y), -cos(q.y));

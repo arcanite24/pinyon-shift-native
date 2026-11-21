@@ -44,7 +44,7 @@ static_assert(sizeof(Instance) == 64);
 enum Kind : uint32_t {
   kRoundRect = 0,  // p: radius, stroke (0 fills), inset (the shape inside the bounds), -; q: softness (a blurred edge, px); colour top to color2 bottom
   kLine = 1,       // p: ax, ay, bx, by; q: half width
-  kArc = 2,        // p: cx, cy, radius, half width; q: a0, a1 (radians clockwise from 12 o'clock, a0 <= a1)
+  kArc = 2,        // p: cx, cy, radius, half width; q: a0, a1 (radians clockwise from 12 o'clock, a0 <= a1), square ends (> 0)
   kGlyph = 3,      // p: origin x, y (top of the cap height), pixels per unit, stroke radius (units); q: first segment, count, slant
   kImage = 4,      // p: radius (or rotated: -, half width, half height, radians clockwise about the rect's centre); q: atlas u0, v0, u1, v1 (0..1), tinted by color
 };
@@ -107,7 +107,8 @@ class List {
   void shadow(float x0, float y0, float x1, float y1, uint32_t color, float radius, float blur);
   void line(float ax, float ay, float bx, float by, float width, uint32_t color);
   void circle(float cx, float cy, float r, uint32_t color);
-  void arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color);
+  // `square`: flat radial ends (else round caps).
+  void arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color, bool square = false);
   void image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint = rgba(255, 255, 255),
              float radius = 0);
   // An image quad centred at (cx, cy), half size hw x hh, turned `angle`

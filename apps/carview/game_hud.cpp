@@ -317,17 +317,20 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
   auto angle = [&](double rpm) { return -kSweep + 2 * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
   // The redline band.
   const float a_red = angle(red);
-  for (int r = 61; r <= 83; r += 2)
-    l.arc(cx, cy, float(r) * s, 1.0f * s, a_red, kSweep, ui::fade(kNeedle, 0.12 + 0.5 * (r - 60) / 24.0));
-  l.arc(cx, cy, 85 * s, 1.2f * s, a_red, kSweep, kNeedle);
+  // (Measured on the original's race frame: a solid band from radius 61
+  // to 86, deepening outward, with a bright rim.)
+  l.arc(cx, cy, 73.5f * s, 25 * s, a_red, kSweep, ui::fade(kNeedle, 0.5), true);
+  l.arc(cx, cy, 81.5f * s, 9 * s, a_red, kSweep, ui::fade(kNeedle, 0.3), true);
+  l.arc(cx, cy, 85.5f * s, 2 * s, a_red, kSweep, kNeedle, true);
   // Hatches and numerals.
   const TextStyle num = [&] {
     TextStyle t = font(ui::Font::kB, 10 * s, kText, Align::kCenter);
     return t;
   }();
-  for (double k = 0; k <= top + 1; k += 250) {
+  // A hatch every 500 (the original's frames), large at the thousands.
+  for (double k = 0; k <= top + 1; k += 500) {
     const int q = int(std::lround(k / 250));
-    const bool is_large = q % 4 == 0, is_mid = q % 2 == 0;
+    const bool is_large = q % 4 == 0, is_mid = false;
     const float a = angle(k), sa = std::sin(a), ca = std::cos(a);
     const float hw = (is_large || is_mid ? 6.5f : 7.0f) * s, hh = 4.5f * s;
     l.image_rotated(cx + 82 * s * sa, cy - 82 * s * ca, hw, hh, a, is_large ? large : is_mid ? mid : small,
@@ -356,7 +359,15 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
       l.image_rotated(px, py, 32 * s, 32 * s, a, uv, ui::fade(kNeedle, k));
     }
   }
-  l.image_rotated(cx + 50 * s * sa, cy - 50 * s * ca, 16 * s, 64 * s, a, nuv, kNeedle);
+  // The needle's bar runs from radius 60 to 86 in the original's frames:
+  // the quad's centre 65 out (the scene's static 50 is moved by code).
+  l.image_rotated(cx + 65 * s * sa, cy - 65 * s * ca, 16 * s, 64 * s, a, nuv, kNeedle);
+  // The assists' labels (ASSIST_ICONS: ABSON and TCS ON at half opacity).
+  const int assists = sc.find("ASSIST_ICONS", gauge);
+  for (const char* name : {"HUD_ABS", "HUD_TCS"}) {
+    const int on = sc.find("Rectangle_ON", sc.find(name, assists));
+    sc.model(l, f, on, sc.alpha(on), 0, 0, 0, kPillGrey);  // grey: off, as the frames show
+  }
   // The speed: three digit slots, the leading zeros at half white (ours).
   const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
   char digits[8];

@@ -174,10 +174,10 @@ void List::line(float ax, float ay, float bx, float by, float width, uint32_t co
 
 void List::circle(float cx, float cy, float r, uint32_t color) { rect(cx - r, cy - r, cx + r, cy + r, color, r); }
 
-void List::arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color) {
+void List::arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color, bool square) {
   if (a1 <= a0) return;
   const float h = radius + 0.5f * width + 1;
-  items_.push_back({{cx - h, cy - h, cx + h, cy + h}, {cx, cy, radius, 0.5f * width}, {a0, a1, 0, 0}, color, color,
+  items_.push_back({{cx - h, cy - h, cx + h, cy + h}, {cx, cy, radius, 0.5f * width}, {a0, a1, square ? 1.0f : 0.0f, 0}, color, color,
                     kArc, 0});
 }
 
@@ -473,6 +473,9 @@ float coverage(const Instance& it, float px, float py, float& mix) {
       float d;
       if (rel <= it.q[1] - it.q[0]) {
         d = std::fabs(std::hypot(dx, dy) - it.p[2]) - it.p[3];
+      } else if (it.q[2] > 0) {
+        const float past = std::min(rel - (it.q[1] - it.q[0]), 2 * kPi - rel) * std::hypot(dx, dy);
+        d = std::max(std::fabs(std::hypot(dx, dy) - it.p[2]) - it.p[3], past);
       } else {
         const float e0x = it.p[0] + it.p[2] * std::sin(it.q[0]), e0y = it.p[1] - it.p[2] * std::cos(it.q[0]);
         const float e1x = it.p[0] + it.p[2] * std::sin(it.q[1]), e1y = it.p[1] - it.p[2] * std::cos(it.q[1]);
