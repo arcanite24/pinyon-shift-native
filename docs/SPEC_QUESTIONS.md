@@ -1001,6 +1001,11 @@ lists, and how the profile records an event win (wristband progress).
 Meanwhile: the interim of SPEC-EVENTS (EventScoring row × CashPrize /
 1,000, no XP).
 
+answered in SPEC-EVENT-REWARDS 28bd6ba6 (credit split and rounding,
+wristband points, saved race and event results, profile counters, prize
+cars, results screen; bonus lines, difficulty bonus, driver XP and
+popularity open with interims)
+
 ## Q51 (polish, queued last): a chase capture at speed
 
 For the chase camera's feel: an oracle capture (camera pose per frame
