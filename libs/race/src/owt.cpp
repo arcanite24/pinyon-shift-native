@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 
 #include "fh1data/archive.h"
 
@@ -58,6 +60,16 @@ bool load_owt(const std::filesystem::path& game_root, int route_id, AiLineFile& 
     return false;
   }
   return parse_owt(r.data, out, error);
+}
+
+bool load_owt_file(const std::filesystem::path& path, AiLineFile& out, std::string* error) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    if (error) *error = "cannot read " + path.string();
+    return false;
+  }
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  return parse_owt(bytes, out, error);
 }
 
 std::vector<std::string> owt_members(const std::filesystem::path& game_root, std::string* error) {

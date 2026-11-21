@@ -21,6 +21,7 @@
 #include "race/difficulty.h"
 #include "race/event.h"
 #include "race/race_line.h"
+#include "race/rally.h"
 #include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
@@ -46,6 +47,10 @@ class RaceView {
     // its raw PerformanceIndex, or < 0 to take `player_car`'s stock row.
     std::string player_car;
     double player_pi = -1;
+    // A Rally stage (SPEC-V4-CONTENT, Events and routes): the event
+    // "stage:<route>" in this world folder (ColoradoDirt): its own route
+    // file and loose AI line, the player alone on slot 00, one lap.
+    std::filesystem::path stage_world;
   };
   explicit RaceView(std::filesystem::path bake_dir);
   ~RaceView();
@@ -139,6 +144,13 @@ class RaceView {
   double ppx_ = 0, ppz_ = 0;
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
+  bool stage_ = false;                    // a Rally stage (Options::stage_world)
+  // The stage's track row, the field's times and the player's splits
+  // (SPEC-V4-CONTENT; race/rally.h).
+  bool have_stage_track_ = false;
+  race::StageTrack stage_track_;
+  std::vector<double> stage_field_, split_times_;
+  int stage_place_ = 0;
   std::vector<race::Gate> checkpoint_gates_;  // a street race's checkpoints in order
   std::vector<size_t> next_checkpoint_;       // each car's next checkpoint (the player last)
   std::vector<double> checkpoint_progress_;   // each checkpoint's distance along the line

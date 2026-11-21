@@ -37,6 +37,8 @@ struct AiLineFile {
 bool parse_owt(std::span<const uint8_t> bytes, AiLineFile& out, std::string* error);
 // Reads route `route_id`'s line from <game_root>/media/aiopenworld.zip.
 bool load_owt(const std::filesystem::path& game_root, int route_id, AiLineFile& out, std::string* error);
+// A loose .owt file (the Rally package's Media/AIOpenWorld/coloradodirt).
+bool load_owt_file(const std::filesystem::path& path, AiLineFile& out, std::string* error);
 // Every member name ending .owt in the archive (the census).
 std::vector<std::string> owt_members(const std::filesystem::path& game_root, std::string* error);
 

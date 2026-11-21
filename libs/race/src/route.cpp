@@ -132,7 +132,10 @@ std::filesystem::path route_path(const std::filesystem::path& game_root, int rou
 }
 
 bool load_route(const std::filesystem::path& game_root, int route_id, Route& out, std::string* error) {
-  const auto p = route_path(game_root, route_id);
+  return load_route_file(route_path(game_root, route_id), route_id, out, error);
+}
+
+bool load_route_file(const std::filesystem::path& p, int route_id, Route& out, std::string* error) {
   std::ifstream in(p, std::ios::binary);
   if (!in) {
     if (error) *error = "cannot read " + p.string();

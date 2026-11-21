@@ -19,6 +19,7 @@
 #include "race/difficulty.h"
 #include "race/event.h"
 #include "race/owt.h"
+#include "race/rally.h"
 #include "race/race_line.h"
 #include "race/rewards.h"
 #include "race/route.h"
@@ -483,9 +484,45 @@ void disc(const std::filesystem::path& root) {
   }
 }
 
+// A Rally stage's timed field (SPEC-V4-CONTENT, the interim rule) on a
+// file in rallyaidifficulty.xml's form (ours): times are the best total
+// over a fraction between the difficulty's Min and Max; a track override
+// wins; the place counts faster drivers.
+void test_rally_field() {
+  const char* kXml = R"(<RallyAITimeGeneration>
+  <GlobalDifficulty>
+    <Difficulty Min="0.5" Max="0.6"/><Difficulty Min="0.8" Max="0.9"/>
+    <Difficulty Min="0.85" Max="0.95"/><Difficulty Min="0.9" Max="1.0"/>
+  </GlobalDifficulty>
+  <TrackDifficultyOverride>
+    <Track Id="7"><Difficulty Min="0.1" Max="0.2"/><Difficulty Min="0.4" Max="0.4"/>
+      <Difficulty Min="0.85" Max="0.95"/><Difficulty Min="0.9" Max="1.0"/></Track>
+  </TrackDifficultyOverride>
+  <AIDrivers SkillVariance="0.1">
+    <AIDriver AIPlayerId="1" Skill="1.0"/><AIDriver AIPlayerId="2" Skill="0.5"/><AIDriver AIPlayerId="3" Skill="0.0"/>
+  </AIDrivers>
+</RallyAITimeGeneration>)";
+  race::RallyField field;
+  std::string e;
+  CHECK(race::parse_rally_field(kXml, field, &e));
+  CHECK(field.drivers.size() == 3 && field.skill_variance == 0.1 && field.overrides.size() == 1);
+  race::StageTrack track;
+  track.track_id = 1;
+  track.best = {40, 60};
+  const auto t = race::field_times(field, track, 1, 1);
+  CHECK(t.size() == 3);
+  for (double v : t) CHECK(v >= 100 / 0.9 - 1e-9 && v <= 100 / 0.8 + 1e-9);
+  CHECK(t[0] < t[2]);  // skill 1 against 0 with a 0.1 variance
+  track.track_id = 7;  // the override: Medium is exactly 0.4
+  for (double v : race::field_times(field, track, 1, 2)) CHECK(std::fabs(v - 250) < 1e-9);
+  CHECK(race::rally_place({100, 120, 140}, 110) == 2 && race::rally_place({100, 120, 140}, 90) == 1 &&
+        race::rally_place({100, 120, 140}, 150) == 4);
+}
+
 }  // namespace
 
 int main() {
+  test_rally_field();
   test_owt();
   test_route();
   test_session();

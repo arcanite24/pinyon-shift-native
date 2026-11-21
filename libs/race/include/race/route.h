@@ -50,5 +50,7 @@ struct Route {
 bool parse_route(std::string_view text, Route& out, std::string* error);
 std::filesystem::path route_path(const std::filesystem::path& game_root, int route_id);
 bool load_route(const std::filesystem::path& game_root, int route_id, Route& out, std::string* error);
+// A route file by its path (another world's Ribbon_00: ColoradoDirt).
+bool load_route_file(const std::filesystem::path& path, int route_id, Route& out, std::string* error);
 
 }  // namespace race

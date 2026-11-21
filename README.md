@@ -685,7 +685,8 @@ copy's packages.
   (FER_599XXEvolution_12), and free roam reports 100 of 100 signs
   (upgrades 100 % off), 8 of 9 barn finds and 1,717.6 km driven.
 - **Interims (backlog):** the wristband level's name is a string-table
-  key, so the page shows its number. A Rally stage driven is later work.
+  key, so the page shows its number. Rally stages drive (see "Career
+  page and Rally"); championships and Rally XP are later work.
 - **1000 Club driving (2026-11-21):** `freeroam/club.h` parses the
   package's 218 challenge files (1,145 challenges) and v4's 30 named
   locations, and evaluates a challenge tree (`pass_when`, `fail_when`,
@@ -957,21 +958,32 @@ the interim noted here until a later polish sweep.
   career page lists the imported records (level, credits, races, garage,
   1000 Club challenges, Rally XP, level, events, stages, wins and
   winnings) and the state root's packs. It replaces the game's career and
-  marketplace screens and changes nothing. Rally is shown, not yet driven.
-  Checked so far on the staged world (`out/world/rally`, from the state
-  copy's Rally package; the zips need the engine's extractor): the
-  ColoradoDirt `.col` parses with the Colorado reader (route 24's start,
-  surfaces 68 and 69), and 29 of the 36 routes have a loose AI line
-  (route 24 among them). Still to do for a stage:
-  - The world's file names come from its folder, not the literal
-    `Colorado`: `.col`, `.pvs`, `.nav` and the `coloradoout.` model prefix.
-  - The game root is passed explicitly instead of three `parent_path()`
-    calls.
-  - Rally events are read from the merged v4 database. Use it as a
-    fallback after the disc's, so the M5 grids don't move.
-  - AI lines are read from the loose folder.
-  - Collectibles, traffic and the map are off in ColoradoDirt.
-  - The stage finishes at progress 1, with the 49-driver timed field.
+  marketplace screens and changes nothing.
+  **Rally stages (2026-11-21).** ColoradoDirt (staged at
+  `out/world/rally` from the state copy's Rally package) loads as a
+  world. Its files are named by its folder, `--game` gives the disc root,
+  and collectibles, the map and traffic stay off. `--event stage:<route>`
+  drives a stage with the route file and loose AI line from that world.
+  The player starts alone on slot 00 behind the gantry. The finish sits
+  FinishLine x Length past the start on the AI line (v4's `Tracks` row).
+  The four splits come from `SplitPoints`, and the 49 drivers are timed
+  by SPEC-V4-CONTENT's interim rule
+  (`rallyaidifficulty.xml`, `rallytracktimings.xml`). The stage time
+  ranks the player among 50. In ColoradoDirt the pause menu's race picker
+  lists the 29 stages that have a line. Example:
+  `SHIFT_STATE_ROOT=out/state-copy carview --game <disc> --world
+  out/world/rally/media/tracks/ColoradoDirt --event stage:7`. Headless on
+  autopilot, the R34 took 158.8 s on route 7 (47th of 50, field 139 to
+  160 s) and 130.5 s on the heats, route 24.
+  Interims:
+  - The heats' best times add up to 86 s, against about 130 s driven,
+    so their finish may sit earlier.
+  - The finish rule is ours; the spec's interim is the line's end, and
+    these lines run past the stage.
+  - 8 CAFF textures fail the layout check and draw flat.
+  - Not done yet: championships (four stages totalled), Rally XP and
+    level, entry gates (yellow wristband, Rally-upgraded car), the
+    stage's own car, the co-driver and a stage-results screen.
 - **Race AI speed planner (SPEC-RACE-AI Speed planning, Q53).** Each car
   plans from its own lateral, braking and drive capacity tables (40 speeds,
   from the engine's tyre model at 0.98 of the car's mass), the line's

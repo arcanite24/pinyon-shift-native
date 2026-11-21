@@ -1612,6 +1612,7 @@ int run_drive(int argc, char** argv) {
   auto start_race = [&](const std::string& id, std::string& why) {
     race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
     race_options.player_car = car;  // its stock PI for the AI upgrades (interim: not the garage row)
+    race_options.stage_world = world_dir;  // a Rally stage's route and line (--event stage:<route>)
     auto r = std::make_unique<carview::RaceView>(bake_dir);
     if (!r->open(game_root_of(), id, race_options, why)) return false;
     race = std::move(r);
@@ -1837,12 +1838,26 @@ int run_drive(int argc, char** argv) {
   // finish, Continue leaves the race at the route's post-race spot and
   // Restart runs it again (SPEC-EVENT-REWARDS, Results screen).
   std::vector<std::string> event_ids;
-  if (!world_dir.empty()) {
+  if (!world_dir.empty() && colorado_world()) {
     std::vector<race::EventSummary> all;
     std::string e;
     if (race::list_events(game_root_of(), all, &e))
       for (const auto& ev : all)
         if (ev.ribbon >= 0) event_ids.push_back(ev.horizon_id);
+  } else if (!world_dir.empty()) {
+    // Another world (ColoradoDirt): its stages, one per route file with a
+    // loose AI line (SPEC-V4-CONTENT; the heats are route 24).
+    std::string w = world_dir.filename().string();
+    for (char& ch : w) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    for (int r = 0; r < 300; ++r) {
+      char route[40], line[40];
+      std::snprintf(route, sizeof route, "TrackRoute%03d.xml", r);
+      std::snprintf(line, sizeof line, "route_%03d.owt", r);
+      std::error_code ec;
+      if (std::filesystem::exists(world_dir / "Ribbon_00" / route, ec) &&
+          std::filesystem::exists(world_dir.parent_path().parent_path() / "aiopenworld" / w / "Ribbon_00" / line, ec))
+        event_ids.push_back("stage:" + std::to_string(r));
+    }
   }
   size_t event_pick = 0;
   for (size_t k = 0; k < event_ids.size(); ++k)

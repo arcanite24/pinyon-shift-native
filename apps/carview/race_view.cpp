@@ -1,6 +1,7 @@
 #include "race_view.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -56,14 +57,35 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       return false;
     }
   }
-  if (!race::load_event(root, event, o.difficulty, event_, &e) || !race::load_route(root, event_.route_id, route_, &e)) {
+  stage_ = event.rfind("stage:", 0) == 0;
+  if (stage_) {
+    // A Rally stage: no event row is read (the stages are in v4's
+    // database); the route and the AI line come from the world's folder.
+    event_ = {};
+    event_.horizon_id = event;
+    event_.route_id = std::atoi(event.c_str() + 6);
+    event_.player_grid_position = 1;  // slot 00 (SPEC-EVENTS' rule)
+    std::string world = o.stage_world.filename().string();
+    if (world.empty()) world = o.stage_world.parent_path().filename().string();
+    for (char& ch : world) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    char route_name[40], line_name[40];
+    std::snprintf(route_name, sizeof route_name, "TrackRoute%03d.xml", event_.route_id);
+    std::snprintf(line_name, sizeof line_name, "route_%03d.owt", event_.route_id);
+    const auto media = o.stage_world.parent_path().parent_path();
+    if (!race::load_route_file(o.stage_world / "Ribbon_00" / route_name, event_.route_id, route_, &e) ||
+        !race::load_owt_file(media / "aiopenworld" / world / "Ribbon_00" / line_name, owt_, &e)) {
+      error = e;
+      return false;
+    }
+  } else if (!race::load_event(root, event, o.difficulty, event_, &e) ||
+             !race::load_route(root, event_.route_id, route_, &e)) {
     error = e;
     return false;
   }
   // No AI line but checkpoints: a street or nemesis race on a line along
   // the road map (race/street_line.h; ours until Q47).
   street_ = false;
-  if (!race::load_owt(root, event_.route_id, owt_, &e)) {
+  if (!stage_ && !race::load_owt(root, event_.route_id, owt_, &e)) {
     if (race::checkpoints(route_).empty()) {
       error = e;
       return false;
@@ -84,6 +106,34 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   ribbon_ = std::make_unique<race::RibbonGround>(owt_);
   auto gate = route_.start_line();
   auto finish = route_.sprint_finish();
+  // A Rally stage finishes FinishLine x Length past the start along the AI
+  // line (v4's Tracks row; ours: SPEC-V4-CONTENT's interim is progress 1,
+  // and the line runs on past the stage), and the field's times are drawn.
+  have_stage_track_ = false;
+  stage_field_.clear(), split_times_.clear();
+  stage_place_ = 0;
+  if (stage_) {
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    std::string se;
+    have_stage_track_ = state && race::load_stage_track(state, event_.route_id, stage_track_, &se);
+    if (!have_stage_track_) {
+      std::fprintf(stderr, "race: note: no stage row (%s): the finish at the last waypoint\n",
+                   state ? se.c_str() : "SHIFT_STATE_ROOT not set");
+    } else {
+      if (gate) line_.gate_progress = line_.line.nearest(gate->x, gate->z, 0, std::min(2000.0, line_.line.length()));
+      const double p = std::min(line_.line.length() - 1,
+                                line_.gate_progress + stage_track_.finish_line * stage_track_.length);
+      double x, y, z, h;
+      line_.line.pose(p, 0, x, y, z, h);
+      finish = race::Gate{x, z, std::sin(h), std::cos(h), 40};
+      race::RallyField field;
+      if (race::load_rally_field(state, field, &se))
+        stage_field_ = race::field_times(field, stage_track_, int(o.difficulty), o.seed);
+      std::printf("race: stage track %lld, %.0f m, finish at %.4f, %zu splits, best %.2f s, field of %zu\n",
+                  (long long)stage_track_.track_id, stage_track_.length, stage_track_.finish_line,
+                  stage_track_.splits.size(), stage_track_.best_total(), stage_field_.size());
+    }
+  }
   const auto slots = route_.slots();
   if (street_ && !slots.empty()) {
     // The finish: the last checkpoint's plane, normal from the one before
@@ -515,6 +565,23 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     if (session_->finished(i) && session_->car(i).finish > session_->clock() - drive::Vehicle::kStep - 1e-9)
       std::printf("race: t %.2f s: %s finished %s in %.3f s\n", session_->clock(), name_of(i).c_str(),
                   ordinal(session_->car(i).place), session_->car(i).finish);
+  // A stage's splits (SplitPoints fractions of the length past the start)
+  // and, at the finish, the place among the timed field.
+  if (have_stage_track_ && stage_place_ == 0) {
+    if (session_->finished(n)) {
+      const double t = session_->car(n).finish;
+      stage_place_ = race::rally_place(stage_field_, t);
+      std::vector<double> sorted = stage_field_;
+      std::sort(sorted.begin(), sorted.end());
+      std::printf("race: stage time %.3f s: %d of %zu (field %.2f to %.2f s)\n", t, stage_place_,
+                  stage_field_.size() + 1, sorted.empty() ? 0.0 : sorted.front(), sorted.empty() ? 0.0 : sorted.back());
+    } else if (split_times_.size() < stage_track_.splits.size() && session_->clock() > 0 &&
+               field_->progress(n) >=
+                   line_.gate_progress + stage_track_.splits[split_times_.size()] * stage_track_.length) {
+      split_times_.push_back(session_->clock());
+      std::printf("race: t %.2f s: split %zu\n", session_->clock(), split_times_.size());
+    }
+  }
 }
 
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
@@ -545,7 +612,10 @@ std::string RaceView::banner() const {
   if (c < -3) std::snprintf(b, sizeof b, "%s - %s - %zu cars", event_.horizon_id.c_str(),
                             circuit_ ? (std::to_string(s.laps()) + " laps").c_str() : "sprint", n + 1);
   else if (c < 0) std::snprintf(b, sizeof b, "%d", s.digit());
-  else if (s.finished(n)) {
+  else if (s.finished(n) && have_stage_track_) {
+    clock_text(s.car(n).finish, t, sizeof t);
+    std::snprintf(b, sizeof b, "STAGE TIME %s  %d OF %zu", t, stage_place_, stage_field_.size() + 1);
+  } else if (s.finished(n)) {
     clock_text(s.car(n).finish, t, sizeof t);
     const int p = s.car(n).place;
     const int64_t credits = award_ ? award_->credits : credits_for(p);
