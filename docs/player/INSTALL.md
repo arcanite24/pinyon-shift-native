@@ -34,7 +34,8 @@ writes what the engine needs into a play folder on your machine.
 
 ## Linux and Steam Deck
 
-1. Unpack `shift-engine-linux-<version>.zip` anywhere, for example
+1. Unpack `shift-engine-linux-<version>.zip` anywhere with `unzip` or a file
+   manager (both keep the programs executable), for example
    `~/shift-engine`.
 2. Run setup:
 

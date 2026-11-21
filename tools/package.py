@@ -60,7 +60,13 @@ def main() -> int:
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for f in sorted(stage.rglob("*")):
             if f.is_file():
-                z.write(f, f"{name}/{f.relative_to(stage).as_posix()}")
+                info = zipfile.ZipInfo.from_file(f, f"{name}/{f.relative_to(stage).as_posix()}")
+                # Unix modes (a zip made on Windows has none): the programs and
+                # scripts executable.
+                run = f.stem in PROGRAMS or f.suffix in (".sh", ".py")
+                info.external_attr = (0o100755 if run else 0o100644) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(info, f.read_bytes())
     print(f"package: {zpath} ({zpath.stat().st_size / 2**20:.1f} MiB)")
     if a.check:
         if not a.game_root:
