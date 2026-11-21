@@ -695,6 +695,15 @@ Where the code is shaped per object for no reason, it is listed here.
 These are known gaps that don't block driving or features. Each runs on
 the interim noted here until a later polish sweep.
 
+- **Chase camera feel (first: it hurts the driving).** Brandon on
+  build-play: "the chase camera is super bad, the angles make the car
+  feeling like you're driving wrong, feels horrible". Suspects, all Q45
+  interims: the PitchAngleDegrees sign (inverted, the camera tilts the
+  wrong way on slopes and under braking or acceleration), the slope
+  term's limit and timing, the yaw spring's lag, and the half-angle
+  against full-angle FOV factor. To do: compare our chase with a game
+  chase capture at speed through corners and slopes and tune until it
+  feels right; feel wins over the interims.
 - **World bundle textures** (Q44 a). Type-1 and type-3 slots resolve
   through the 146 `.bundle` members of Colorado's bin.zip. Interim: a 4×4
   fallback, so the power-line cables (record 4203, about (33, 34, 33))
