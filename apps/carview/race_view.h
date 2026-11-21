@@ -116,6 +116,8 @@ class RaceView {
   double player_start_ = 0, finish_progress_ = 0;
   double ppx_ = 0, ppz_ = 0;
   bool circuit_ = true;
+  bool street_ = false;                   // a line built along the road map (no AI line)
+  std::vector<race::Gate> checkpoint_gates_;  // a street race's checkpoints in order
   std::vector<race::RouteTransform> slots_;
   // Per step, every car (opponents, then the player).
   std::vector<drive::AiCarState> states_;

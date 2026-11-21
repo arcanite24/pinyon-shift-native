@@ -771,6 +771,18 @@ the interim noted here until a later polish sweep.
   width apart (beyond the spec's passing rule); one AI line; stock cars;
   opponents take the free slots in row order. Pack contact is frequent
   (800 to 1,250 steps with a contact in an 8-car FR22, 1,400 to 3,500 in FR16).
+- **Street and nemesis races (Q47 open).** Ribbon-6 routes have no AI
+  line: the line is the shortest road-map path through slot 00 and the
+  checkpoints (`race/street_line.h`), smoothed to round the junctions, with
+  an assumed 5 m half width; the finish is the last checkpoint's plane
+  (normal from the one before; the oracle's measured rule) and the other
+  checkpoints are not enforced. `STREET_PLNS_002`: AI mean 137 s (oracle
+  124.1), 5 to 11 resets a run; `NR02` (one opponent): 161 s (130.7). No
+  traffic in races. Route 136 (`FR44`, `FR62`) has neither gantry nor
+  cannons: the start line through slot 00 and the finish across the AI
+  line nearest its last waypoint (ours). Ribbon-2 circuits and multi-lap
+  sprints (7 races, Q48) do not run yet: `race-census` counts 111 of 119
+  runnable.
 - **Race flow left out.** No event card, pre-race menu, cutscene camera,
   finish screen or results screen (the results print); no rewards
   applied to a save; no post-race placement; no checkpoints (street

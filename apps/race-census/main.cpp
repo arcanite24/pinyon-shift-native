@@ -11,6 +11,8 @@
 #include "race/event.h"
 #include "race/owt.h"
 #include "race/route.h"
+#include "race/street_line.h"
+#include "traffic/nav.h"
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -18,6 +20,23 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::filesystem::path root = argv[1];
+  // --street-line <route>: the street line's points as CSV (x, y, z), for
+  // comparing against an oracle path.
+  if (argc > 3 && std::string(argv[2]) == "--street-line") {
+    race::Route route;
+    traffic::NavMap nav;
+    race::AiLineFile line;
+    std::string err;
+    if (!race::load_route(root, std::atoi(argv[3]), route, &err) ||
+        !traffic::read_nav(root / "media" / "tracks" / "colorado" / "colorado.nav", nav, &err) ||
+        !race::build_street_line(nav, route, line, &err)) {
+      std::fprintf(stderr, "race-census: %s\n", err.c_str());
+      return 1;
+    }
+    std::printf("x,y,z\n");
+    for (const auto& p : line.points) std::printf("%.2f,%.2f,%.2f\n", p.x, p.y, p.z);
+    return 0;
+  }
   const bool quiet = argc > 2 && std::string(argv[2]) == "--quiet";
   std::vector<race::EventSummary> events;
   std::string e;
@@ -42,13 +61,16 @@ int main(int argc, char** argv) {
     // What carview runs today: an AI line; a closed line is a circuit (any
     // laps), an open one a one-lap sprint with a finish.
     const char* verdict = "ok";
+    const bool street = have_route && !have_line && !race::checkpoints(route).empty();
     if (!have_route) verdict = "no route";
+    else if (street) verdict = slots ? "ok" : "street, no slots";  // a line along the road map
     else if (!have_line) verdict = "no AI line";
-    else if (!gate || slots == 0) verdict = "no start line or slots";
-    else if (!owt.closed && !finish) verdict = "open line, no finish";
+    else if (slots == 0) verdict = "no slots";
+    else if (!gate && owt.closed) verdict = "no start line";
+    else if (!owt.closed && !finish && !route.find("route_waypoint_00")) verdict = "open line, no finish";
     else if (!owt.closed && ev.laps > 1) verdict = "open line, laps > 1";
     const bool ok = std::string(verdict) == "ok";
-    const bool supported = have_line && ((owt.closed && ev.ribbon == 0) || (!owt.closed && ev.laps == 1));
+    const bool supported = street || (have_line && ((owt.closed && ev.ribbon == 0) || (!owt.closed && ev.laps == 1)));
     if (supported && !ok) ++failures;
     runnable += ok;
     auto& c = by_type[ev.career_type];

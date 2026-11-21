@@ -8,6 +8,8 @@
 #include <numbers>
 
 #include "drive/from_physics.h"
+#include "race/street_line.h"
+#include "traffic/nav.h"
 #include "traffic_view.h"
 #include "world/collision.h"
 
@@ -53,19 +55,71 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       return false;
     }
   }
-  if (!race::load_event(root, event, o.difficulty, event_, &e) || !race::load_route(root, event_.route_id, route_, &e) ||
-      !race::load_owt(root, event_.route_id, owt_, &e)) {
+  if (!race::load_event(root, event, o.difficulty, event_, &e) || !race::load_route(root, event_.route_id, route_, &e)) {
     error = e;
     return false;
+  }
+  // No AI line but checkpoints: a street or nemesis race on a line along
+  // the road map (race/street_line.h; ours until Q47).
+  street_ = false;
+  if (!race::load_owt(root, event_.route_id, owt_, &e)) {
+    if (race::checkpoints(route_).empty()) {
+      error = e;
+      return false;
+    }
+    traffic::NavMap nav;
+    std::string ne;
+    if (!traffic::read_nav(root / "media" / "tracks" / "colorado" / "colorado.nav", nav, &ne) ||
+        !race::build_street_line(nav, route_, owt_, &ne)) {
+      error = ne;
+      return false;
+    }
+    street_ = true;
   }
   // Ribbon-0 lines are closed: circuits; open lines: one-lap sprints.
   circuit_ = owt_.closed;
   const int laps = circuit_ ? event_.laps : 1;
   line_ = race::build_race_line(owt_, &route_, circuit_ ? laps + 3 : 1);
   ribbon_ = std::make_unique<race::RibbonGround>(owt_);
-  const auto gate = route_.start_line();
-  const auto finish = route_.sprint_finish();
+  auto gate = route_.start_line();
+  auto finish = route_.sprint_finish();
   const auto slots = route_.slots();
+  if (street_ && !slots.empty()) {
+    // The finish: the last checkpoint's plane, normal from the one before
+    // (the oracle's measured rule); the start line (unused by a sprint):
+    // through slot 00 along its facing; the grid stands behind pole.
+    const auto cps = race::checkpoints(route_);
+    finish = race::checkpoint_gate(route_, cps.size() - 1);
+    const auto* s0 = slots[0];
+    gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
+    line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
+    for (size_t k = 0; k < cps.size(); ++k)
+      if (auto g = race::checkpoint_gate(route_, k)) checkpoint_gates_.push_back(*g);
+  }
+  if (!street_ && !circuit_ && !slots.empty() && (!gate || !finish)) {
+    // An open line with no gantry or cannons (route 136): the start line
+    // through slot 00; the finish across the AI line where it passes
+    // nearest the last route_waypoint after the grid (ours; SPEC-EVENTS
+    // names no rule, SPEC_QUESTIONS Q48).
+    if (!gate) {
+      const auto* s0 = slots[0];
+      gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
+      line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, line_.line.length()) + 5;
+    }
+    const race::RouteTransform* last = nullptr;
+    for (int k = 0; k < 100; ++k) {
+      char n[32];
+      std::snprintf(n, sizeof n, "route_waypoint_%02d", k);
+      if (const auto* t = route_.find(n)) last = t;
+      else break;
+    }
+    if (last && !finish) {
+      const double p = line_.line.nearest(last->x, last->z, line_.gate_progress + 200, line_.line.length());
+      double x, y, z, h;
+      line_.line.pose(p, 0, x, y, z, h);
+      finish = race::Gate{x, z, std::sin(h), std::cos(h), 40};
+    }
+  }
   if (!gate || slots.empty() || (!circuit_ && !finish)) {
     error = "route " + std::to_string(event_.route_id) + ": no start line, slots or finish";
     return false;
