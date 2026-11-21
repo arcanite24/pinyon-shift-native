@@ -990,6 +990,9 @@ neither the id-to-mode map nor what Amount scales; the AI's dirt grip
 factor is 1.0 to 1.5 with no rule. Meanwhile: modes drawn with no effect;
 dirt grip 1.25.
 
+answered in SPEC-RACE-AI (difficulty and rubber-banding: mode table, draw,
+hold time) and SPEC-CAR-PHYSICS (grip on dirt) 8f391c58
+
 ## Q50 (M5/M6): rewards, XP and the results screen
 
 Needed: the credits rule (EventScoring, CashPrize, RaceWinnings,
