@@ -287,7 +287,7 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
       full = lerp(p_.torque_curve[i], p_.torque_curve[i + 1], x - double(i));
     }
   }
-  full *= p_.torque_scale;
+  full *= p_.torque_scale * torque_factor_;
   const double closed = -p_.engine_braking * ramp(rpm, p_.idle_rpm, p_.redline_rpm);
   double t = throttle * full + (1 - throttle) * closed;
   if (rpm >= p_.redline_rpm) t = std::min(t, closed);  // the limiter cuts the fuel

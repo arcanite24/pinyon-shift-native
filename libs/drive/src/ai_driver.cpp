@@ -74,6 +74,40 @@ size_t RacingLine::segment(double distance, size_t hint) const {
   return i;
 }
 
+void RacingLine::pose(double distance, double lane, double& px, double& py, double& pz, double& heading) const {
+  px = py = pz = heading = 0;
+  if (size() < 2) return;
+  const size_t s = segment(distance, 0);
+  const double ex = x[s + 1] - x[s], ez = z[s + 1] - z[s];
+  const double len = std::hypot(ex, ez);
+  const double f = std::clamp((distance - dist[s]) / std::max(1e-6, double(dist[s + 1] - dist[s])), 0.0, 1.0);
+  px = x[s] + f * ex + (len > 0 ? lane * ez / len : 0);
+  pz = z[s] + f * ez - (len > 0 ? lane * ex / len : 0);
+  py = y.size() == size() ? y[s] + f * (y[s + 1] - y[s]) : 0;
+  heading = std::atan2(ex, ez);
+}
+
+double RacingLine::nearest(double px, double pz, double from, double to) const {
+  if (size() < 2) return 0;
+  size_t s = segment(from, 0);
+  double best = 1e300, at = from;
+  for (; s + 1 < size() && dist[s] <= to; ++s) {
+    const double ex = x[s + 1] - x[s], ez = z[s + 1] - z[s];
+    const double l2 = ex * ex + ez * ez;
+    const double f = l2 > 0 ? std::clamp(((px - x[s]) * ex + (pz - z[s]) * ez) / l2, 0.0, 1.0) : 0.0;
+    const double dx = px - (x[s] + f * ex), dz = pz - (z[s] + f * ez);
+    const double d2 = dx * dx + dz * dz;
+    if (d2 < best) best = d2, at = dist[s] + f * (dist[s + 1] - dist[s]);
+  }
+  return at;
+}
+
+double RacingLine::room(double distance, bool right) const {
+  const auto& r = right ? room_right : room_left;
+  if (r.size() != size() || size() < 2) return 1e9;
+  return r[segment(distance, 0)];
+}
+
 AiCarState ai_state(const Vehicle& v) {
   AiCarState s;
   const Vec3 p = v.position();
@@ -91,7 +125,46 @@ AiCarState ai_state(const Vehicle& v) {
 }
 
 AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
-    : line_(line), o_(options), seg_(cars, 0), progress_(cars, 0), lane_(cars, 0), skill_(cars, 1), cross_(cars, 0) {}
+    : line_(line),
+      o_(options),
+      seg_(cars, 0),
+      progress_(cars, 0),
+      lane_(cars, 0),
+      skill_(cars, 1),
+      cross_(cars, 0),
+      corner_(cars, 0),
+      decel_(cars, 0),
+      target_(cars, 0) {}
+
+void AiField::place_near(size_t i, double x, double z, double from, double to, float skill) {
+  place(i, line_.nearest(x, z, from, to), 0.0f, skill);
+}
+
+void AiField::set_progress(size_t i, double distance) {
+  seg_[i] = uint32_t(line_.segment(distance, 0));
+  progress_[i] = distance;
+}
+
+double AiField::planned_speed(size_t i, double p) const {
+  const RacingLine& L = line_;
+  if (L.size() < 2) return 0;
+  const size_t s0 = L.segment(p, seg_[i]);
+  const double a = corner_[i], d = decel_[i];
+  if (a <= 0 || L.radius.size() != L.size()) {
+    const float vf = std::clamp(float((p - L.dist[s0]) / std::max(1e-6f, L.dist[s0 + 1] - L.dist[s0])), 0.0f, 1.0f);
+    return skill_[i] * (L.speed[s0] + vf * (L.speed[s0 + 1] - L.speed[s0]));
+  }
+  // v^2 = min over the points ahead of a x radius + 2 d x the distance to
+  // them, until the braking term alone passes the best.
+  double best = double(o_.max_speed) * o_.max_speed;
+  for (size_t s = s0 + 1; s < L.size(); ++s) {
+    const double ds = std::max(0.0, L.dist[s] - p);
+    const double brake = 2 * d * ds;
+    if (brake >= best) break;
+    best = std::min(best, a * L.radius[s] + brake);
+  }
+  return std::sqrt(best);
+}
 
 void AiField::place(size_t i, double distance, float lane, float skill) {
   seg_[i] = uint32_t(line_.segment(distance, 0));
@@ -168,16 +241,15 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     Input& in = inputs[i];
     in = Input{};
     in.steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
-    // Speed: the line's target a little ahead, scaled by skill.
+    // Speed: the plan a little ahead. Past the line's end: stop.
     const double ahead = progress_[i] + o_.speed_lookahead_s * speed;
-    const size_t vs = L.segment(ahead, s);
-    const float vf = std::clamp(float((ahead - L.dist[vs]) / std::max(1e-6f, L.dist[vs + 1] - L.dist[vs])), 0.0f, 1.0f);
-    // Past the line's end: stop.
-    const float target = progress_[i] >= L.length() - 1
-                             ? 0.0f
-                             : skill_[i] * (L.speed[vs] + vf * (L.speed[vs + 1] - L.speed[vs]));
+    const float target = progress_[i] >= L.length() - 1 ? 0.0f : float(planned_speed(i, ahead));
+    target_[i] = target;
     const float err = target - c.speed;
-    if (err >= 0) in.throttle = std::clamp(0.15f + o_.throttle_gain * err, 0.0f, 1.0f);
+    if (o_.full_gas) {
+      if (err >= 0) in.throttle = 1.0f;
+      else if (err < -o_.deadband) in.brake = std::clamp(o_.brake_gain * (-err - o_.deadband) + 0.2f, 0.0f, 1.0f);
+    } else if (err >= 0) in.throttle = std::clamp(0.15f + o_.throttle_gain * err, 0.0f, 1.0f);
     else if (err < -o_.deadband) in.brake = std::clamp(o_.brake_gain * (-err - o_.deadband), 0.0f, 1.0f);
     else in.throttle = 0.1f;
   }

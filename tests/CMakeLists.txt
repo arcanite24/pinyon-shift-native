@@ -78,3 +78,7 @@ add_test(NAME freeroam_tests COMMAND freeroam_tests)
 add_executable(radio_tests radio_tests.cpp)
 target_link_libraries(radio_tests PRIVATE shift_audio)
 add_test(NAME radio_tests COMMAND radio_tests)
+
+add_executable(race_tests race_tests.cpp)
+target_link_libraries(race_tests PRIVATE shift_race)
+add_test(NAME race_tests COMMAND race_tests)

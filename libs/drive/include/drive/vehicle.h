@@ -325,6 +325,10 @@ class Vehicle {
   // 1, 1 by default and in pad play.
   void set_ai_grip(double front, double rear) { ai_grip_ = {front, rear}; }
   bool ai_controls() const { return ai_; }
+  // A factor on the engine's drive torque (SPEC-RACE-AI: the rubber-band
+  // torque cut and the race-start boost); 1 by default.
+  void set_torque_factor(double f) { torque_factor_ = f; }
+  double torque_factor() const { return torque_factor_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -413,6 +417,7 @@ class Vehicle {
   double abs_timer_[kWheels]{};
   bool abs_flag_ = false;
   bool ai_ = false;
+  double torque_factor_ = 1;
   std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
   double body_force_ = 0;
