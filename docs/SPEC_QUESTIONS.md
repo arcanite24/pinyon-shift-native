@@ -1111,3 +1111,18 @@ the profile the game plays: 38 cars, 119 event results, 1000 Club and
 Rally records) and 22 installed content packages. Interim: import the
 plaintext export of `tools/re/profile-export.py`; livery key open
 (paint from `DefaultManufacturerColorIndex`); 1000 Club layout a guess.
+
+AUTOSHOW-PAINT answered in docs/specs/AUTOSHOW_PAINT.md c58c6685
+(horizon1-recomp, branch reimplementation-plan, 2026-11-20). Items 4
+and 5: the listing rule and counts (127 listed on the disc, 127 with
+v4, 200 with the 21 packs; 16 unicorns, 23 not selectable, 10 Rally
+twins, 1 unlicensed), order, the All affordable entry, price =
+`BaseCost` (signs do not discount cars), the hand-off to
+SPEC-GARAGE-UPGRADES; `DefaultManufacturerColorIndex` is a
+`Combo_Colors.Sequence`; finishes are overlays of
+`Shared/ShaderSettings` (load at run time); special colours. Liveries
+for the M6 gate: paint every owned car from its stored Sequence, draw
+the 15 `HasRaceLivery` cars from their atlas, ignore `LiveryFileName`
+(the one file in the reference save is the default design). Open with
+interims: colour grids, two-tone blend, the metallic and matte look,
+the livery format, tokens (none).
