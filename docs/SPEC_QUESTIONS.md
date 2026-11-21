@@ -1417,3 +1417,20 @@ CAR_PHYSICS.md ("The Mini 1566's ride"):
   which does not change: 16.7 m/s^2 before transfer, cap trims 0.5 %.
   Whether the oracle Minis touch the bump stops at 2,700 m is not
   measurable (no suspension travel in the traces).
+
+## Q56 (M6): where a Rally stage finishes
+
+The ColoradoDirt AI lines run past the stage (route 7: line 5,297 m,
+gantry at 623 m; route 24: 8,456 m, gantry 572 m), so SPEC-V4-CONTENT's
+interim "progress 1" can't be the finish. The engine finishes at
+gantry + `Tracks.FinishLine` x `Tracks.Length` (0.9821 x 4,636 m on
+route 7), which lands within 150 m of `post_race_location_00` on the
+seven routes checked; the last `route_waypoint` is 100 to 146 m off the
+line on routes 1, 19 and 24. Needed: (a) the finish rule (a plane, a
+fraction of what, measured from where); (b) the heats (track 1137,
+route 24): its five best split times add up to 86.1 s (first split
+0.968 s) and it has no `SplitPoints`, against about 130 s driven to our
+finish, so does the heats end earlier, or are its timings another
+measure? (c) 8 to 11 CAFF textures in ColoradoDirt's bin.zip fail our
+layout check ("sizes do not fit the layout", e.g. `_0x00000b64.bin`);
+is there a CAFF variant the world spec doesn't cover yet?
