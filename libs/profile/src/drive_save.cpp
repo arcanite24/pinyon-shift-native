@@ -36,6 +36,11 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   for (const auto& s : p.signs)
     if (s.found) out.signs_found.push_back(s.name);
   for (const auto& b : p.barns) out.barns.push_back({b.name, int(b.status), b.rumour_at, b.found_at});
+  // Carried as is: the level, unlocks, Rally counters and the 1000 Club.
+  out.level = int(p.level);
+  out.event_unlocks = p.event_unlocks, out.hub_unlocks = p.hub_unlocks;
+  out.has_rally = p.rally_fields, out.num_rallies = int(p.num_rallies), out.num_rally_stages = int(p.num_rally_stages);
+  for (const auto& c : p.club) out.club.push_back({c.car_id, c.keys});
   // UpgradeDiscount: recomputed from the signs and compared.
   if (int64_t(p.signs_found()) != p.upgrade_discount)
     note("UpgradeDiscount " + std::to_string(p.upgrade_discount) + " but " + std::to_string(p.signs_found()) +

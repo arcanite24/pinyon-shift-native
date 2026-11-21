@@ -19,6 +19,11 @@
 //   race_result 143 3
 //   event_result 22 3
 //   prize_cars 1031
+//   level 12
+//   unlocks event 22 143
+//   unlocks hub 1 2
+//   rally 1 1
+//   club 1219 3735928559:1 12345:0
 //
 // Lines are "key values"; unknown keys are skipped, so later versions can
 // add lines. `spawn` (optional) is the last spawn point, where "back to the
@@ -33,6 +38,10 @@
 // total winnings, wristband points, the counters (races, victories,
 // podiums, festival, street and exhibition race time in s, top speed in
 // m/s), the best place per race and per event, and the prize cars.
+// From an imported profile (FORMAT-PROFILE) the save also carries the
+// driver level, the event and hub unlocks, the Rally counters (`rally`
+// races and stages, present only on a v4 profile) and the 1000 Club
+// record per car (each challenge's key and completed flag, in file order).
 #pragma once
 
 #include <array>
@@ -48,6 +57,11 @@ struct SavedBarn {
   std::string name;
   int status = 3;
   double rumour_at = 0, found_at = 0;
+};
+
+struct SavedClubCar {
+  int64_t car_id = 0;
+  std::vector<std::pair<uint32_t, bool>> challenges;  // key, completed
 };
 
 struct DriveSave {
@@ -70,6 +84,17 @@ struct DriveSave {
   double time_festival = 0, time_street = 0, time_exhibition = 0, top_speed = 0;
   std::vector<std::pair<int64_t, int>> race_results, event_results;
   std::vector<int64_t> prize_cars;
+  // Carried from an imported profile.
+  int level = 0;
+  std::vector<int64_t> event_unlocks, hub_unlocks;
+  bool has_rally = false;
+  int num_rallies = 0, num_rally_stages = 0;
+  std::vector<SavedClubCar> club;
+  // Copies the carried fields (the ones the drive does not change) from `s`.
+  void carry_from(const DriveSave& s) {
+    level = s.level, event_unlocks = s.event_unlocks, hub_unlocks = s.hub_unlocks;
+    has_rally = s.has_rally, num_rallies = s.num_rallies, num_rally_stages = s.num_rally_stages, club = s.club;
+  }
 };
 
 std::string save_to_text(const DriveSave& save);

@@ -301,13 +301,14 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
           car.car_id = r.u32();
           const uint32_t c = r.u32();
           for (uint32_t j = 0; j < c && r.ok; ++j) {
-            r.u32();  // the challenge's key (an opaque hash)
+            const uint32_t key = r.u32();  // an opaque hash of the definition
             const bool a = r.be(1) != 0;
             r.be(1);  // flag B: the online confirmation
             const uint32_t blob = r.u32();
             if (r.need(blob)) r.at += blob;
             ++car.challenges;
             car.done += a;
+            car.keys.emplace_back(key, a);
           }
           if (r.ok) out.club.push_back(car);
         }

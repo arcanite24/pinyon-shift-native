@@ -43,8 +43,13 @@ bool UpgradeShop::open(const cars::PartsDb& db, garage::Garage& g, int64_t garag
     slot.slot = &s;
     for (const auto& r : rows)
       if (r.part_enum == s.part_enum) slot.parts.push_back(r);
-    // A slot offers something only with more than its stock row.
+    // A slot offers something only with more than its stock row; a slot
+    // with no stock row (an induction the engine does not have) is an
+    // aspiration conversion, left out unless the car has one fitted.
     if (slot.parts.size() < 2) continue;
+    const bool has_stock = std::any_of(slot.parts.begin(), slot.parts.end(), [](const cars::PartRow& r) { return r.is_stock; });
+    const auto fitted_now = car->slots.find(s.column);
+    if (!has_stock && (fitted_now == car->slots.end() || fitted_now->second < 0)) continue;
     slots_.push_back(std::move(slot));
   }
   if (slots_.empty()) {
@@ -108,7 +113,7 @@ void UpgradeShop::fill(const std::vector<garage::ClassBand>& bands, int discount
   const garage::Car* car = garage_ ? garage_->find(garage_id_) : nullptr;
   char head[160];
   const double pi = car ? car->performance_index : 0;
-  std::snprintf(head, sizeof head, "upgrades  %s %d  %s CR  signs -%d%%",
+  std::snprintf(head, sizeof head, "upgrades  %s %d  %s CR  sign discount %d",
                 bands.empty() ? "?" : bands[size_t(garage::class_of(pi, bands))].name.c_str(),
                 garage::shown_index(pi, bands), credits_text(credits).c_str(), discount_percent);
   title = head;
@@ -123,7 +128,7 @@ void UpgradeShop::fill(const std::vector<garage::ClassBand>& bands, int discount
     std::string state = fitted ? "fitted" : p.is_stock ? "stock" : owned ? "owned"
                                                                        : credits_text(garage::discounted_price(p.price, discount_percent)) + " CR";
     char line[160];
-    std::snprintf(line, sizeof line, "%s  < %s %d >  %s", slot_name(s.slot->column).c_str(), p.is_stock ? "stock" : "level",
+    std::snprintf(line, sizeof line, "%s  [%s %d]  %s", slot_name(s.slot->column).c_str(), p.is_stock ? "stock" : "level",
                   p.level, state.c_str());
     lines.push_back(line);
   }

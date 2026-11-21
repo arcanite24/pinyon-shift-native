@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <locale>
 #include <sstream>
@@ -62,6 +63,19 @@ std::string save_to_text(const DriveSave& s) {
   if (!s.prize_cars.empty()) {
     out += "prize_cars";
     for (auto id : s.prize_cars) out += " " + std::to_string(id);
+    out += "\n";
+  }
+  if (s.level) out += "level " + std::to_string(s.level) + "\n";
+  for (const auto* list : {&s.event_unlocks, &s.hub_unlocks}) {
+    if (list->empty()) continue;
+    out += list == &s.event_unlocks ? "unlocks event" : "unlocks hub";
+    for (auto id : *list) out += " " + std::to_string(id);
+    out += "\n";
+  }
+  if (s.has_rally) out += "rally " + std::to_string(s.num_rallies) + " " + std::to_string(s.num_rally_stages) + "\n";
+  for (const auto& car : s.club) {
+    out += "club " + std::to_string(car.car_id);
+    for (const auto& [key, done] : car.challenges) out += " " + std::to_string(key) + (done ? ":1" : ":0");
     out += "\n";
   }
   return out;
@@ -125,6 +139,25 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         (key == "race_result" ? out.race_results : out.event_results).emplace_back(id, place);
     } else if (key == "prize_cars") {
       for (int64_t id; l >> id;) out.prize_cars.push_back(id);
+    } else if (key == "level") {
+      l >> out.level;
+    } else if (key == "unlocks") {
+      std::string kind;
+      l >> kind;
+      auto& list = kind == "event" ? out.event_unlocks : out.hub_unlocks;
+      if (kind == "event" || kind == "hub")
+        for (int64_t id; l >> id;) list.push_back(id);
+    } else if (key == "rally") {
+      out.has_rally = bool(l >> out.num_rallies >> out.num_rally_stages);
+    } else if (key == "club") {
+      SavedClubCar car;
+      if (!(l >> car.car_id)) continue;
+      for (std::string kv; l >> kv;) {
+        const auto colon = kv.find(':');
+        if (colon == std::string::npos) continue;
+        car.challenges.emplace_back(uint32_t(std::strtoul(kv.c_str(), nullptr, 10)), kv.substr(colon + 1) == "1");
+      }
+      out.club.push_back(std::move(car));
     }
   }
   if (out.car.empty()) return fail(error, "save without a car");

@@ -1112,7 +1112,8 @@ void drive_usage() {
                "usage: carview [options]   (the drive; the default mode)\n"
                "  where:   --play <dir> (play folder: play.txt, bake/, game) | --bake <dir> --world <colorado dir>\n"
                "           --car <media> --hour h --spawn x y z heading --near x z --cache file\n"
-               "           --save file | --no-save --import-profile <export folder>\n"
+               "           --save file | --no-save --import-profile <export folder> (once; then\n"
+               "           --import-profile-again <folder> replaces the career)\n"
                "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
                "           --shadows off|low|high --view chase|front --hud --no-reverse-z\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
@@ -1169,6 +1170,7 @@ int run_drive(int argc, char** argv) {
   // save; the drive starts at the festival and the first save replaces the
   // engine's save (the old one kept beside it as .pre-import).
   std::filesystem::path import_dir;
+  bool import_again = false;  // --import-profile-again: replace a save that came from an import
   bool no_save = false;
   const bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
@@ -1286,6 +1288,9 @@ int run_drive(int argc, char** argv) {
       no_save = true;
     } else if (a == "--import-profile") {
       import_dir = next();
+    } else if (a == "--import-profile-again") {
+      import_dir = next();
+      import_again = true;
     } else if (a == "--menu-png") {
       menu_png = next();
     } else if (a == "--no-collectibles") {
@@ -1321,6 +1326,21 @@ int run_drive(int argc, char** argv) {
     menu.show();
     menu.move(1);
     menu.fill(st);
+    // SHIFT_MENU_SAMPLE=shop or autoshow: those panels' longest lines.
+    if (const char* sample = std::getenv("SHIFT_MENU_SAMPLE")) {
+      st.menu.clear();
+      if (std::string(sample) == "shop") {
+        st.menu_title = "upgrades  S 700  4,075,645 CR  sign discount 100";
+        for (const char* l : {"pistons compression  [level 3]  owned", "transmission  [stock 0]  fitted",
+                              "tire width front  [level 11]  12,500 CR", "weight reduction  [level 3]  fitted"})
+          st.menu.push_back(l);
+      } else {
+        st.menu_title = "autoshow  137/137  available 13,225,340 CR";
+        for (const char* l : {"R1 999  FER_F40Competizione_89  1,000,000 CR", "B 437  MIT_LancerEvoXGSR_08  52,000 CR"})
+          st.menu.push_back(l);
+      }
+      st.menu_selected = 1;
+    }
     const HudImage img = draw_hud(st, 3);
     if (!write_png(menu_png.string(), img.width, img.height, 4, img.rgba.data())) return 1;
     std::printf("menu: %ux%u to %s\n", img.width, img.height, menu_png.string().c_str());
@@ -1430,6 +1450,14 @@ int run_drive(int argc, char** argv) {
   };
   // The profile import (FORMAT-PROFILE), with the cars the bake has.
   bool imported = false;
+  if (!import_dir.empty() && have_saved && saved.owned_garage && !import_again) {
+    // A second import would replace what was bought and driven since.
+    std::fprintf(stderr,
+                 "carview: the save already holds an imported career (%s); drop --import-profile, or use "
+                 "--import-profile-again to replace it\n",
+                 save_path.string().c_str());
+    return 2;
+  }
   if (!import_dir.empty()) {
     profile::Imported prof;
     std::string e;
@@ -2451,6 +2479,7 @@ int run_drive(int argc, char** argv) {
           s.garage = saved.garage;
         }
         s.owned_garage = have_saved && saved.owned_garage;
+        if (have_saved) s.carry_from(saved);
         std::string e;
         if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
         else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);

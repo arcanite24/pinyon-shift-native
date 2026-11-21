@@ -92,6 +92,7 @@ struct PurchasedPart {
 struct ClubCar {
   int64_t car_id = 0;
   int challenges = 0, done = 0;  // flag A set
+  std::vector<std::pair<uint32_t, bool>> keys;  // each challenge's key and flag A, in file order
 };
 
 // Everything M6 reads from a profile, with the parsed body kept whole.
