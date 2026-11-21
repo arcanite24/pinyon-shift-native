@@ -743,6 +743,19 @@ question Q38)" and "Colour byte order"). Built:
   Asked: the oracle's rear on dirt (its 622 to 647 m, rear slip 1.5 deg
   with three wheels on dirt), so the dirt's lateral peak, OffRoadDryPeakSA
   or RearGripMultiplier read for a rear wheel there.
+- **Answered in CAR_PHYSICS.md dc112515** ("A rear tyre on dirt"). No
+  off-road curve: the asphalt curve with s_y = alpha / 18 deg
+  (OffRoadDryPeakSA, OffRoadness 1), read at alpha x alpha_peak,road / 18,
+  x FrictionScale 0.95 x RearGripMultiplier 0.93. R34 rear, 5 kN: asphalt
+  peak F/N 1.63 at 8.2 deg, dirt 1.44 at 16.7 deg; at 2 to 3 deg dirt
+  gives about 0.55 of asphalt. The oracle's 622 to 647 m has only its
+  inner (light, about 1.7 kN) wheels on dirt, and the AI's grip factor
+  (rear 1.20 there) multiplies all four wheels. Ours has the outer rear
+  on dirt with ai_grip 1 replayed from the oracle, which off dirt is 1:
+  at 13.5 m/s^2 that needs 8.1 deg (factor 1) or 5.1 (factor 1.2), and
+  at 15 it is past the peak. The factor is the car's own state; compute
+  it from our wheels, not by the oracle's distance. The dirt
+  VelDepFriction lateral term (0.35) is still open.
 
 ## Q41 (M4): free-roam traffic (SPEC-TRAFFIC 33788840)
 
