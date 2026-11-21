@@ -1385,3 +1385,35 @@ mass ratio or ghosting between AI cars in the tunables or the records);
 (c) EXHIBITION's Minis: anything that lifts or stiffens the AI ride on
 that event (they bottom out braking into the dip at 2,700 m). Interim
 meanwhile: the spec's reset rule as written, full AI-to-AI contact.
+
+Answered in RACE_AI.md f9a514cc ("Contacts and resets (Q55)") and
+CAR_PHYSICS.md ("The Mini 1566's ride"):
+
+- (a) Zero resets (measured). No position jump (more than speed x step
+  + 3 m, or a stop from above 8 m/s in one ~18 Hz sample) on any race car
+  inside the race window of FR24, FR01, NR02 or EXHIBITION_FEST_003: 0 of
+  7, 7, 1 and 7 AI. The only jumps are the cars' return to free roam
+  after the results.
+- (b) Not ghosted (measured); softened in spin (probable, from the
+  settings' names; the code that reads them was not found). Race cars'
+  centres came within 2.5 m in 14 AI-to-AI episodes (2 FR24, 3 FR01, 9
+  Minis) but never closer than 1.5 m, and none led to a reset.
+  PhysicsSettings.ini [Collision]: RaceCarTorqueScaleInRace 0.2 (race car
+  vs race car in a race), VsTrafficInRace 0.05, PlayerTorqueScale 0,
+  HumanCarAICarCollYawTorqueScale0 0.75. CarCarResitution -0.1 is
+  misspelt in the file (the key is CarCarRestitution), so restitution
+  stays at the default, 0. Interim: full linear contact, angular part of
+  an AI-to-AI impulse x 0.2, restitution 0. After a reset: no car
+  collisions for 3 s.
+- (c) Nothing lifts or stiffens them. EXHIBITION_FEST_003 has UpgradeAI
+  0, so t = 0, and AI upgrades never touch suspension anyway. The AI
+  Minis use the stock spring row (level 0; rows 1566000/1566100): ride
+  height 0.1703 m, MaxCompressHeight 0.0852 m, springs 39.808/22.392,
+  bump 3.1408/1.7667, rebound 4.7112/2.6501, bump stop 200 with damping
+  2.0, all x the car's mass (606 kg stock: 24.1/13.6 kN/m per wheel,
+  bump stop 121 kN/m). Do not use the "upgraded" rows (level 3 is 0.1277
+  m, springs 94.9/86.2). Use the body row's CMBackFront 0.5875, not
+  WeightDistribution 0.64; this also corrects the Q53 Mini estimate,
+  which does not change: 16.7 m/s^2 before transfer, cap trims 0.5 %.
+  Whether the oracle Minis touch the bump stops at 2,700 m is not
+  measurable (no suspension travel in the traces).
