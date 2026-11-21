@@ -1,0 +1,104 @@
+# Installing shift-engine
+
+shift-engine is a native engine that plays a Forza Horizon (2012) game
+from your own copy of its files. The download holds only the engine's
+programs: no game files, no game code. Setup reads your files once and
+writes what the engine needs into a play folder on your machine.
+
+## What you need
+
+- **Your own game files.** The disc's contents, extracted to a folder that
+  holds `media/` and `default.xex`. Optionally, your installed title
+  update and content packages (the folder that holds `title-update-v4/`
+  and `user/.../00000002/`) for the updated database, the add-on cars and
+  the Rally pack. shift-engine never downloads game files and cannot play
+  without yours.
+- **Python 3.10 or newer** for setup (`python --version`).
+- **A GPU with Vulkan 1.2.** Tested on Intel UHD 620, AMD Van Gogh (Steam
+  Deck) and recent NVIDIA and AMD desktop cards.
+- **About 8 GB free** for the play folder (the cars take 7.4 GB).
+- **Optional: FFmpeg** on the path, for the engine sounds.
+
+## Windows
+
+1. Unzip `shift-engine-windows-<version>.zip` anywhere.
+2. In that folder, run setup with your disc folder (and, if you have
+   them, your packages):
+
+   ```powershell
+   .\setup.ps1 D:\fh1\disc --state D:\fh1\packages
+   ```
+
+3. Run `carview.exe`. With no arguments it finds the play folder
+   (`%APPDATA%\shift-engine\play`) and starts the drive.
+
+## Linux and Steam Deck
+
+1. Unpack `shift-engine-linux-<version>.zip` anywhere, for example
+   `~/shift-engine`.
+2. Run setup:
+
+   ```sh
+   ./setup.sh ~/fh1/disc --state ~/fh1/packages
+   ```
+
+3. Run `./carview`. The play folder is `~/.local/share/shift-engine/play`.
+   On the Deck, add `carview` to Steam as a non-Steam game to play in
+   Gaming Mode; the pad works as in the table below.
+
+## macOS
+
+Not released yet. The steps will follow Linux's: unpack, `./setup.sh`,
+then `./carview`, with the play folder in
+`~/Library/Application Support/shift-engine/play`.
+
+## Android
+
+Not released yet. Setup will run on a computer, and the play folder will
+be copied to the device.
+
+## Controls
+
+| | Keyboard | Pad |
+| --- | --- | --- |
+| Throttle | W or Up | Right trigger |
+| Brake (held at a stop: reverse) | S or Down | Left trigger |
+| Steer | A, D or Left, Right | Left stick |
+| Handbrake | Space | A |
+| Back on the nearest road | R | |
+| Chase or front view | V | |
+| Look around | | Right stick |
+| Look back (held) | C | Y |
+| Pause menu | Esc | Start |
+| Map | M | Back |
+| Radio station | , and . | D-pad left and right |
+| Hide or show the HUD | H | |
+
+The pause menu has the map, the races, the car picker, upgrades, the
+Autoshow, your career page and reset to road.
+
+## Your save
+
+Progress is saved in the user folder: `%APPDATA%\shift-engine\drive\save.txt`
+on Windows, `~/.local/share/shift-engine/drive/save.txt` on Linux and
+`~/Library/Application Support/shift-engine/drive/save.txt` on macOS. To
+bring in a career from your own console save, export it with the
+project's profile tool and run `carview --import-profile <export folder>`
+once.
+
+## Options
+
+`carview --help` lists every option. The common ones:
+
+- `--size 1280x720` window size; `--preset low|high` graphics preset;
+- `--no-sound`, `--no-radio`;
+- `--no-traffic`;
+- `--difficulty easy|med|hard|pro`, `--no-rubberband` for races.
+
+## Troubleshooting
+
+- **"no play folder found"**: run setup first, or pass `--play <dir>`.
+- **Black window or a Vulkan error**: update the GPU driver; the engine
+  needs Vulkan 1.2.
+- **No sound**: install FFmpeg and run setup again, or play with
+  `--no-sound`.
