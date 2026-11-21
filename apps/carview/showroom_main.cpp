@@ -2503,6 +2503,7 @@ int run_drive(int argc, char** argv) {
                         club_data.locations.size());
         }
         if (!club_loaded) return club_gate = club_why, void();
+        if (!colorado_world()) return club_gate = "the 1000 Club is in Colorado", void();
         bool owned = false;
         for (const auto& p : cars::list_packs(state ? state : ""))
           if (p.id == club_data.package) owned = p.owned();

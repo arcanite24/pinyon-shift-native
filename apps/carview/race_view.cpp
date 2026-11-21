@@ -647,7 +647,9 @@ int64_t RaceView::credits_for(int place) const {
 const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::WristbandTables& tables,
                                        double top_speed) {
   const size_t n = cars_.size();
-  if (award_ || !session_->finished(n)) return nullptr;
+  // A Rally stage pays nothing and writes no race result (SPEC-V4-CONTENT:
+  // stages pay 0; championships, XP and their records are later work).
+  if (stage_ || award_ || !session_->finished(n)) return nullptr;
   const auto& c = session_->car(n);
   award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
                             event_.cash_prize, int(session_->size()), c.place, true, c.finish, top_speed,
