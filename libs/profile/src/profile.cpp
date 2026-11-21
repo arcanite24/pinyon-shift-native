@@ -262,6 +262,8 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   out.total_winnings = num("TotalWinnings"), out.num_races = num("NumRaces");
   out.num_victories = num("NumVictories"), out.num_podiums = num("NumPodiums");
   out.top_speed = real("TopSpeed"), out.distance_driven = real("TotalDistanceDriven");
+  out.time_festival = real("TimeInFestivalRaces"), out.time_street = real("TimeInStreetRaces");
+  out.time_exhibition = real("TimeInExhibitionRaces");
   out.rally_fields = find(fs, "Main/NumRallies") != nullptr;
   out.num_rallies = num("NumRallies"), out.num_rally_stages = num("NumRallyStages");
 
@@ -276,6 +278,16 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
             Barn b;
             b.name = c.name;
             b.revealed = c.payload[0] != 0, b.discovered = c.payload[1] != 0, b.collected = c.payload[2] != 0;
+            auto f32 = [&](size_t at) {
+              const uint32_t u = uint32_t(c.payload[at]) << 24 | uint32_t(c.payload[at + 1]) << 16 |
+                                 uint32_t(c.payload[at + 2]) << 8 | c.payload[at + 3];
+              float f;
+              std::memcpy(&f, &u, 4);
+              return f;
+            };
+            // found first, then the rumour (the rumour is the earlier on every
+            // found barn, and 0 found on a rumoured one: ours, from the saves)
+            b.found_at = f32(3), b.rumour_at = f32(7);
             b.status = uint32_t(c.payload[11]) << 24 | uint32_t(c.payload[12]) << 16 | uint32_t(c.payload[13]) << 8 | c.payload[14];
             out.barns.push_back(b);
           }

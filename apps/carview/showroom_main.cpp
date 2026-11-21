@@ -63,6 +63,7 @@
 #include "fh1data/archive.h"
 #include "fh1data/xds.h"
 #include "freeroam/collectibles.h"
+#include "profile/drive_save.h"
 
 namespace carview {
 
@@ -1087,7 +1088,7 @@ void drive_usage() {
                "usage: carview [options]   (the drive; the default mode)\n"
                "  where:   --play <dir> (play folder: play.txt, bake/, game) | --bake <dir> --world <colorado dir>\n"
                "           --car <media> --hour h --spawn x y z heading --near x z --cache file\n"
-               "           --save file | --no-save\n"
+               "           --save file | --no-save --import-profile <export folder>\n"
                "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
                "           --shadows off|low|high --view chase|front --hud --no-reverse-z\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
@@ -1140,6 +1141,10 @@ int run_drive(int argc, char** argv) {
   // the file (headless too), --no-save turns it off. --menu-png writes the
   // HUD with the pause menu open and exits (a headless check of the menu).
   std::filesystem::path save_path, menu_png;
+  // --import-profile: the player's profile export (FORMAT-PROFILE) as the
+  // save; the drive starts at the festival and the first save replaces the
+  // engine's save (the old one kept beside it as .pre-import).
+  std::filesystem::path import_dir;
   bool no_save = false;
   const bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
@@ -1255,6 +1260,8 @@ int run_drive(int argc, char** argv) {
       save_path = next();
     } else if (a == "--no-save") {
       no_save = true;
+    } else if (a == "--import-profile") {
+      import_dir = next();
     } else if (a == "--menu-png") {
       menu_png = next();
     } else if (a == "--no-collectibles") {
@@ -1385,6 +1392,46 @@ int run_drive(int argc, char** argv) {
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
   }
+  // The profile import (FORMAT-PROFILE): the cars the bake has, by
+  // Data_Car id, from each physics file's "car <id> <media>" line.
+  bool imported = false;
+  if (!import_dir.empty()) {
+    profile::Imported prof;
+    std::string e;
+    if (!profile::import_profile(import_dir, prof, &e)) {
+      std::fprintf(stderr, "carview: --import-profile: %s\n", e.c_str());
+      return 2;
+    }
+    std::map<int64_t, std::string> baked;
+    std::error_code ec;
+    if (!bake_dir.empty())
+      for (const auto& f : std::filesystem::directory_iterator(bake_dir / "cars", ec)) {
+        if (!f.path().string().ends_with(".physics.txt")) continue;
+        std::ifstream in(f.path());
+        for (std::string line; std::getline(in, line);)
+          if (line.rfind("car ", 0) == 0) {
+            std::istringstream ls(line.substr(4));
+            int64_t id = 0;
+            std::string media;
+            if (ls >> id >> media) baked[id] = media;
+            break;
+          }
+      }
+    std::vector<std::string> notes;
+    profile::to_drive_save(prof, [&](int64_t id) { auto it = baked.find(id); return it == baked.end() ? std::string() : it->second; },
+                           saved, &notes);
+    have_saved = imported = true;
+    for (const auto& n : notes) std::printf("import: %s\n", n.c_str());
+    std::printf("import: %s: %lld credits, %d wristband points, %zu signs, %zu garage cars, car %s\n",
+                import_dir.string().c_str(), (long long)saved.credits, saved.wristband_points, saved.signs_found.size(),
+                saved.garage.size(), saved.car.empty() ? "(none baked)" : saved.car.c_str());
+    if (!car_given && !saved.car.empty()) car = saved.car;
+    if (!save_path.empty() && std::filesystem::exists(save_path, ec)) {
+      auto keep = save_path;
+      keep += ".pre-import";
+      if (!std::filesystem::exists(keep, ec)) std::filesystem::copy_file(save_path, keep, ec);
+    }
+  }
   // The event's race: its data, and the player's car on its slot (the
   // save does not override the grid).
   std::unique_ptr<carview::RaceView> race;
@@ -1430,7 +1477,7 @@ int run_drive(int argc, char** argv) {
     for (const auto& [id, place] : saved.event_results) career.event_places[id] = place;
     career.prize_cars = saved.prize_cars;
   }
-  if (have_saved && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
+  if (have_saved && !imported && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
     spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
     spawn[3] = saved.heading;
     have_spawn = true;

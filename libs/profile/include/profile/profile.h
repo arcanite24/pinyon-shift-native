@@ -74,6 +74,7 @@ struct Sign {
 struct Barn {
   std::string name;
   bool revealed = false, discovered = false, collected = false;
+  float rumour_at = 0, found_at = 0;  // m driven (the record has found first)
   uint32_t status = 3;  // 2: found and delivered (SPEC-FREEROAM-COLLECTIBLES)
 };
 struct GarageCar {
@@ -99,7 +100,9 @@ struct Imported {
   // Main/*: the career.
   int64_t credits = 0, xp = 0, wristband_level = 0, level = 0, career_car = 0, upgrade_discount = 0;
   int64_t total_winnings = 0, num_races = 0, num_victories = 0, num_podiums = 0;
-  double top_speed = 0, distance_driven = 0;
+  double top_speed = 0;        // m/s
+  double distance_driven = 0;  // TotalDistanceDriven, m
+  double time_festival = 0, time_street = 0, time_exhibition = 0;  // TimeIn*Races, s
   bool rally_fields = false;
   int64_t num_rallies = 0, num_rally_stages = 0;
   std::vector<Sign> signs;

@@ -1,6 +1,6 @@
-add_library(shift_profile STATIC src/profile.cpp)
+add_library(shift_profile STATIC src/profile.cpp src/drive_save.cpp)
 target_include_directories(shift_profile PUBLIC include)
-target_link_libraries(shift_profile PRIVATE shift_sqlite3)
+target_link_libraries(shift_profile PUBLIC shift_drive PRIVATE shift_sqlite3)
 target_compile_features(shift_profile PUBLIC cxx_std_20)
 if(MSVC)
   target_compile_options(shift_profile PRIVATE /W4)

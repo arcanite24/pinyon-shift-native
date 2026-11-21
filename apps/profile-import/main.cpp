@@ -2,6 +2,7 @@
 // (FORMAT-PROFILE) and prints what M6 imports.
 //
 //   profile-import <export folder>         prints the summary
+//   profile-import --fields <folder>       prints the Main fields
 //   profile-import --check <exports root>  checks each export folder under
 //                                          the root (user, user-modded)
 //                                          against its summary.json; exit
@@ -112,6 +113,19 @@ int main(int argc, char** argv) {
       return 77;
     }
     return bad ? 1 : 0;
+  }
+  if (argc == 3 && std::string(argv[1]) == "--fields") {
+    profile::Imported p;
+    std::string error;
+    if (!profile::import_profile(argv[2], p, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    if (const auto* m = profile::find(p.body.fields, "Main"))
+      for (const auto& f : m->value.fields)
+        if (f.value.type != profile::Value::kStruct)
+          std::printf("%-36s %g\n", f.name.c_str(), f.value.as_double());
+    return 0;
   }
   if (argc != 2) {
     std::fprintf(stderr, "usage: profile-import <export folder> | --check <exports root>\n");
