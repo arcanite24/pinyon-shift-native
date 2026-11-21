@@ -3,6 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
+#include <utility>
+#include <tuple>
+
+#include "fh1data/vfont.h"
 
 namespace carview::ui {
 namespace {
@@ -180,7 +185,125 @@ void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv
   items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint, kImage, 0});
 }
 
+// The vector fonts and their glyph atlas.
+namespace {
+
+struct VectorFonts {
+  std::shared_ptr<const fh1::VFont> font[3];  // A, B, E
+  std::vector<uint8_t> atlas = std::vector<uint8_t>(size_t(kAtlasSize) * kAtlasSize * 4, 0);
+  std::vector<std::array<uint32_t, 4>> dirty;
+  uint32_t shelf_x = 0, shelf_y = 0, shelf_h = 0;
+  struct Entry {
+    float u0, v0, u1, v1;  // atlas texels
+    float left, top;       // the bitmap's top-left from the pen, px at the cached size (y down from the baseline)
+    bool empty;
+  };
+  std::map<std::tuple<int, uint32_t, int>, Entry> cache;  // (font, code point, px per em) -> entry
+
+  void reset() {
+    std::fill(atlas.begin(), atlas.end(), uint8_t(0));
+    for (size_t i = 0; i < atlas.size(); i += 4) atlas[i] = atlas[i + 1] = atlas[i + 2] = 255;
+    cache.clear();
+    shelf_x = shelf_y = shelf_h = 0;
+    dirty.assign(1, {0, 0, kAtlasSize, kAtlasSize});
+  }
+};
+
+VectorFonts& vf() {
+  static VectorFonts v = [] {
+    VectorFonts x;
+    x.reset();
+    return x;
+  }();
+  return v;
+}
+
+// The style's font: 0 A, 1 B, 2 E, -1 the stroke font.
+int font_of(const TextStyle& s) {
+  int f = -1;
+  switch (s.font) {
+    case ui::Font::kStroke: return -1;
+    case ui::Font::kA: f = 0; break;
+    case ui::Font::kB: f = 1; break;
+    case ui::Font::kE: f = 2; break;
+    case ui::Font::kAuto: f = s.slant > 0.05f ? 2 : 1; break;
+  }
+  return vf().font[f] ? f : -1;
+}
+
+// The next code point of UTF-8 text (ASCII letters upper-cased, as the
+// stroke font draws them); 0xFFFD for a bad byte.
+uint32_t next_code_point(std::string_view t, size_t& i) {
+  const auto b = static_cast<unsigned char>(t[i++]);
+  if (b < 0x80) return b >= 'a' && b <= 'z' ? uint32_t(b - 32) : b;
+  int n = b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : -1;
+  if (n < 0) return 0xFFFD;
+  uint32_t c = b & (0x3F >> n);
+  for (; n > 0 && i < t.size(); --n) c = c << 6 | (static_cast<unsigned char>(t[i++]) & 0x3F);
+  return c;
+}
+
+// px per em for a cap height of `size` px.
+float em_px(const fh1::VFont& f, float size) { return size / f.cap_height(); }
+
+// The cached size: whole px up to 48 px per em, then steps of 4 (scaled).
+int cached_px(float px) { return px <= 48 ? std::max(1, int(std::lround(px))) : int(std::lround(px / 4)) * 4; }
+
+const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px) {
+  VectorFonts& v = vf();
+  const auto key = std::make_tuple(font, cp, px);
+  if (auto it = v.cache.find(key); it != v.cache.end()) return &it->second;
+  const fh1::VFontGlyph* g = v.font[font]->find(cp);
+  if (!g) return nullptr;
+  const float k = float(px);
+  const int pad = 2;
+  const int gx0 = int(std::floor(g->min_x * k)) - pad, gx1 = int(std::ceil(g->max_x * k)) + pad;
+  const int gy0 = int(std::floor(-g->max_y * k)) - pad, gy1 = int(std::ceil(-g->min_y * k)) + pad;
+  const int w = gx1 - gx0, h = gy1 - gy0;
+  if (w <= 0 || h <= 0 || w > int(kAtlasSize) || h > int(kAtlasSize)) return nullptr;
+  if (v.shelf_x + uint32_t(w) > kAtlasSize) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
+  if (v.shelf_y + uint32_t(h) > kAtlasSize) v.reset();  // full: start over (this frame may show stale glyphs)
+  const uint32_t ax = v.shelf_x, ay = v.shelf_y;
+  v.shelf_x += uint32_t(w) + 1;
+  v.shelf_h = std::max(v.shelf_h, uint32_t(h) + 1);
+  std::vector<uint8_t> cov;
+  fh1::rasterize_vfont_glyph(*g, k, float(-gx0), float(-gy0), cov, w, h);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x) v.atlas[((size_t(ay) + size_t(y)) * kAtlasSize + ax + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
+  v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
+  VectorFonts::Entry e{float(ax), float(ay), float(ax + uint32_t(w)), float(ay + uint32_t(h)), float(gx0), float(gy0), false};
+  return &(v.cache[key] = e);
+}
+
+float vector_measure(int font, std::string_view text, const TextStyle& s) {
+  const fh1::VFont& f = *vf().font[font];
+  const float k = em_px(f, s.size);
+  float w = 0;
+  size_t n = 0;
+  for (size_t i = 0; i < text.size();) {
+    const uint32_t cp = next_code_point(text, i);
+    const fh1::VFontGlyph* g = cp == ' ' ? nullptr : f.find(cp);
+    w += (g ? g->advance : f.space_width) * k + s.tracking * s.size;
+    ++n;
+  }
+  if (n) w -= s.tracking * s.size;
+  return w;
+}
+
+}  // namespace
+
+void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
+                      std::shared_ptr<const fh1::VFont> e) {
+  VectorFonts& v = vf();
+  v.font[0] = std::move(a), v.font[1] = std::move(b), v.font[2] = std::move(e);
+  v.reset();
+}
+bool vector_fonts_loaded() { return vf().font[1] != nullptr; }
+const std::vector<uint8_t>& atlas_pixels() { return vf().atlas; }
+std::vector<std::array<uint32_t, 4>> atlas_take_dirty() { return std::exchange(vf().dirty, {}); }
+
 float List::measure(std::string_view text, const TextStyle& s) {
+  if (const int f = font_of(s); f >= 0) return vector_measure(f, text, s);
   const float r = s.weight * 10;
   float units = 0;
   for (char c : text) units += advance_units(glyph(c), r, s.tracking * 10);
@@ -192,6 +315,36 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
   const float w = measure(text, s);
   if (s.align == Align::kCenter) x -= 0.5f * w;
   if (s.align == Align::kRight) x -= w;
+  if (const int f = font_of(s); f >= 0) {
+    // The game's font: the cap top at y, so the baseline at y + size.
+    const fh1::VFont& font = *vf().font[f];
+    const float k = em_px(font, s.size);
+    const int px = cached_px(k);
+    const float scale = k / float(px);
+    const float base = y + s.size;
+    float pen = x;
+    for (size_t i = 0; i < text.size();) {
+      const uint32_t cp = next_code_point(text, i);
+      const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
+      if (g) {
+        if (const auto* e = glyph_entry(f, cp, px)) {
+          // At the cached size the quad sits on whole pixels (no resampling blur).
+          float gx = pen + e->left * scale, gy = base + e->top * scale;
+          if (scale == 1.0f) gx = std::round(gx), gy = std::round(gy);
+          const float inv = 1.0f / float(kAtlasSize);
+          items_.push_back({{gx, gy, gx + (e->u1 - e->u0) * scale, gy + (e->v1 - e->v0) * scale},
+                            {0, 0, 0, 0},
+                            {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv},
+                            s.color,
+                            s.color,
+                            kImage,
+                            0});
+        }
+      }
+      pen += (g ? g->advance : font.space_width) * k + s.tracking * s.size;
+    }
+    return w;
+  }
   const float k = s.size / 10;  // px per unit
   const float r = s.weight * 10;
   float pen = x + r * k;  // the first stroke's left edge at x
@@ -276,8 +429,25 @@ float coverage(const Instance& it, float px, float py, float& mix) {
       const float d = (best - it.p[3]) * k;
       return std::clamp(0.5f - d, 0.0f, 1.0f);
     }
+    case kImage: {
+      // The atlas's alpha, bilinear like the GPU's sampler; the colour is
+      // white (glyphs) times the tint, so only coverage changes.
+      const float tx = (px - it.rect[0]) / std::max(1.0f, it.rect[2] - it.rect[0]);
+      const float ty = (py - it.rect[1]) / std::max(1.0f, it.rect[3] - it.rect[1]);
+      const float u = (it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize - 0.5f;
+      const float v = (it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize - 0.5f;
+      const auto& a = atlas_pixels();
+      auto at = [&](int x, int y) {
+        x = std::clamp(x, 0, int(kAtlasSize) - 1), y = std::clamp(y, 0, int(kAtlasSize) - 1);
+        return float(a[(size_t(y) * kAtlasSize + size_t(x)) * 4 + 3]) / 255.0f;
+      };
+      const int x0 = int(std::floor(u)), y0 = int(std::floor(v));
+      const float fx = u - float(x0), fy = v - float(y0);
+      return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
+             (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+    }
     default:
-      return 0;  // images: GPU only
+      return 0;
   }
 }
 

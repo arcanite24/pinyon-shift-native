@@ -5,7 +5,11 @@
 // from its signed distance in the fragment shader (shaders/ui.frag). The
 // same list rasterizes on the CPU (rasterize) for headless PNGs and tests.
 //
-// Text is the engine's own stroke font: capitals, digits and some
+// Text uses the game's vector fonts when they are loaded (set_vector_fonts,
+// FORMAT-FONTS): each glyph is rasterized once per size on the CPU by the
+// spec's coverage rule into the UI atlas (atlas_pixels, uploaded by the
+// renderer from atlas_take_dirty) and drawn as an image quad. Without them
+// it is the engine's own stroke font: capitals, digits and some
 // punctuation as polylines on a 10-unit cap height, drawn as round-capped
 // strokes; a glyph is one instance whose shader takes the nearest of its
 // segments (from a storage buffer), so strokes join without overlap.
@@ -16,9 +20,14 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <vector>
+
+namespace fh1 {
+struct VFont;
+}
 
 namespace carview::ui {
 
@@ -50,6 +59,22 @@ uint32_t fade(uint32_t c, double k);
 
 enum class Align { kLeft, kCenter, kRight };
 
+// FORMAT-FONTS' targets (interim roles: titles and menu items E, labels and
+// numbers B, paragraphs A). kAuto: E for slanted text, else B.
+enum class Font { kAuto, kStroke, kA, kB, kE };
+
+// The game's fonts (any may be null: that role falls back to the stroke
+// font). Clears the glyph cache.
+void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
+                      std::shared_ptr<const fh1::VFont> e);
+bool vector_fonts_loaded();
+
+// The UI atlas (kAtlasSize square, RGBA8, white with the glyphs' coverage
+// in alpha), owned here; the renderer uploads the rectangles that changed.
+inline constexpr uint32_t kAtlasSize = 1024;
+const std::vector<uint8_t>& atlas_pixels();
+std::vector<std::array<uint32_t, 4>> atlas_take_dirty();  // x, y, w, h
+
 struct TextStyle {
   float size = 20;        // cap height, px
   float weight = 0.11f;   // stroke radius over the cap height
@@ -57,6 +82,7 @@ struct TextStyle {
   float tracking = 0;     // extra space between letters, over the cap height
   uint32_t color = rgba(255, 255, 255);
   Align align = Align::kLeft;
+  Font font = Font::kAuto;
 };
 
 class List {

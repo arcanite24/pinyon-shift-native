@@ -626,6 +626,9 @@ ours until a sky spec): p50 10.5 and 10.5, p95 13.8 and 12.8, max 18.3 ms.
 The sky stage takes 1.28 ms (0.43 before): it shades every pixel before
 the world covers it. To do if the budget tightens: draw the sky after the
 opaque world, at the far depth only.
+With the game's vector fonts (FORMAT-FONTS, glyphs rasterised on the CPU
+into a 1024 atlas the first time a size is used, then drawn as image
+quads): low p95 13.9 and 13.9 ms; the UI pass 0.12-0.13 ms.
 
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
@@ -806,6 +809,9 @@ the interim noted here until a later polish sweep.
   drawn and fed to the camera between their last two steps
   (`Vehicle::Pose`, `Vehicle::blend`). Still stepped as drawn: traffic.
   To check on build-play: whether it feels right now.
+  FOV is not it either (spec 4b03a066): the game's R34 spans 427 px of
+  1280 at its 48.5 deg full vertical FOV, and ours frames it the same.
+  Don't retune the FOV.
 - **World bundle textures** (Q44 a). Done (2026-11-21). Type-1 and
   type-3 slots read from the 146 `.bundle` members, and the power-line
   cables (record 4203) draw near-black (`world_tests`). Interim: the

@@ -21,6 +21,7 @@
 #include "fh1data/props.h"
 #include "fh1data/rmb.h"
 #include "fh1data/stringtables.h"
+#include "fh1data/vfont.h"
 #include "fh1data/world_texture.h"
 #include "fh1data/xds.h"
 #include "fh1data/xmem.h"
@@ -1050,6 +1051,49 @@ void test_stringtables() {
   CHECK(!fh1::parse_string_table(bad, table, nullptr));
 }
 
+void test_vfont() {
+  // FORMAT-FONTS, Tests (synthetic).
+  CHECK(fh1::half_to_float(0x3C00) == 1.0f && fh1::half_to_float(0xBC00) == -1.0f &&
+        fh1::half_to_float(0x3800) == 0.5f && fh1::half_to_float(0x0000) == 0.0f);
+  CHECK(std::fabs(fh1::vfont_coverage(0.5f, 0.25f, 1, 0, 0, 1, 1) - 0.5f) < 1e-6f);  // on the curve
+  CHECK(fh1::vfont_coverage(0, 1, 0, 0, 0, 0, 1) == 1.0f);   // inside, zero gradient
+  CHECK(fh1::vfont_coverage(0, 1, 0, 0, 0, 0, -1) == 0.0f);  // skirt, zero gradient
+  // A straight skirt edge: v = distance in px outward, coverage 0.5 - v.
+  CHECK(std::fabs(fh1::vfont_coverage(0, 0.25f, 0, 0, 1, 0, -1) - 0.25f) < 1e-6f);
+  // One interior triangle covering a 4 x 4 bitmap's lower-left half.
+  fh1::VFontGlyph g;
+  g.vertices = {{0, 0, 0, 1, 1}, {4, 0, 0, 1, 1}, {0, 4, 0, 1, 1}};
+  g.indices = {0, 1, 2};
+  std::vector<uint8_t> cov;
+  fh1::rasterize_vfont_glyph(g, 1, 0, 4, cov, 4, 4);
+  CHECK(cov[3 * 4 + 0] == 255 && cov[0 * 4 + 3] == 0);
+  if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
+    auto zip = fh1::Archive::open(std::filesystem::path(root) / "media" / "ui" / "Fonts.zip", nullptr);
+    CHECK(zip != nullptr);
+    if (zip) {
+      for (const char* name : {"a_vector_aa.dt", "b_vector_aa.dt", "e_vector_aa.dt", "eru_vector_aa.dt"}) {
+        auto r = zip->read(name);
+        fh1::VFont f;
+        std::string e;
+        CHECK(r.ok() && fh1::parse_vfont(r.data, f, &e));
+        CHECK(f.glyphs.size() == (std::string(name).find("ru") != std::string::npos ? 303u : 237u));
+        CHECK(f.em_size == 991 && f.cap_height() > 0.4f && f.cap_height() < 1.0f);
+        const fh1::VFontGlyph* a = f.find('A');
+        CHECK(a && a->advance > 0.3f);
+        if (a) {
+          std::vector<uint8_t> bm;
+          fh1::rasterize_vfont_glyph(*a, 40, 4, 44, bm, 48, 52);
+          size_t full = 0;
+          for (uint8_t c : bm) full += c == 255;
+          CHECK(full > 50);
+          std::printf("vfont %s: %zu glyphs, cap %.3f em, A advance %.3f em, %zu full px at 40 px/em\n", name,
+                      f.glyphs.size(), f.cap_height(), a->advance, full);
+        }
+      }
+    }
+  }
+}
+
 void test_dlc_folder() {
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / "shift-engine-dlc-test";
@@ -1286,6 +1330,7 @@ int main() {
   test_bake_format();
   test_dlc_folder();
   test_stringtables();
+  test_vfont();
   test_xds_layout();
   test_inflate();
   test_carbin_round_trip();

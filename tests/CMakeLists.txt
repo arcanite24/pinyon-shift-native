@@ -103,5 +103,5 @@ add_test(NAME settings_tests COMMAND settings_tests)
 
 add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp)
 target_include_directories(ui_tests PRIVATE ../apps/carview)
-target_link_libraries(ui_tests PRIVATE shift_stb)
+target_link_libraries(ui_tests PRIVATE shift_stb fh1data)
 add_test(NAME ui_tests COMMAND ui_tests)

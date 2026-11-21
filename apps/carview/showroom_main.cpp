@@ -64,6 +64,7 @@
 #include "map_view.h"
 #include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
+#include "fh1data/vfont.h"
 #include "fh1data/xds.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
@@ -215,6 +216,43 @@ bool write_wav(const std::filesystem::path& path, int rate, const std::vector<fl
 
 bool write_png(const std::string& path, uint32_t w, uint32_t h, int channels, const uint8_t* data) {
   return stbi_write_png(path.c_str(), int(w), int(h), channels, data, int(w) * channels) != 0;
+}
+
+// The game's UI fonts (FORMAT-FONTS) from media/ui/Fonts.zip: A, B and E,
+// the Cyrillic variants (strict supersets). False, with the stroke font
+// kept, when the archive or a font is missing.
+bool load_ui_fonts(const std::filesystem::path& game_root) {
+  if (game_root.empty() || carview::ui::vector_fonts_loaded()) return carview::ui::vector_fonts_loaded();
+  std::string why;
+  auto zip = fh1::Archive::open(game_root / "media" / "ui" / "Fonts.zip", &why);
+  if (!zip) {
+    std::fprintf(stderr, "carview: note: no UI fonts (%s): the stroke font\n", why.c_str());
+    return false;
+  }
+  auto load = [&](const char* name) -> std::shared_ptr<const fh1::VFont> {
+    auto r = zip->read(name);
+    auto f = std::make_shared<fh1::VFont>();
+    std::string e;
+    if (!r.ok() || !fh1::parse_vfont(r.data, *f, &e)) {
+      std::fprintf(stderr, "carview: note: UI font %s: %s\n", name, r.ok() ? e.c_str() : r.error.c_str());
+      return nullptr;
+    }
+    return f;
+  };
+  carview::ui::set_vector_fonts(load("aru_vector_aa.dt"), load("bru_vector_aa.dt"), load("eru_vector_aa.dt"));
+  return carview::ui::vector_fonts_loaded();
+}
+
+// The UI atlas's changed rectangles to the renderer.
+void upload_ui_atlas(Renderer& renderer) {
+  const auto& a = carview::ui::atlas_pixels();
+  std::vector<uint8_t> rows;
+  for (const auto& [x, y, w, h] : carview::ui::atlas_take_dirty()) {
+    rows.resize(size_t(w) * h * 4);
+    for (uint32_t r = 0; r < h; ++r)
+      std::memcpy(&rows[size_t(r) * w * 4], &a[(size_t(y + r) * carview::ui::kAtlasSize + x) * 4], size_t(w) * 4);
+    renderer.ui_atlas_put(x, y, w, h, rows);
+  }
 }
 
 // A menu page (HudState's menu fields) on the UI layer, 1280 x 720, to a PNG.
@@ -1386,6 +1424,10 @@ int run_drive(int argc, char** argv) {
     std::printf("settings: saved %s\n", file.string().c_str());
   }
   if (!menu_png.empty()) {
+    {
+      const char* g = std::getenv("SHIFT_GAME_ROOT");
+      load_ui_fonts(!game_root_given.empty() ? game_root_given : std::filesystem::path(g ? g : ""));
+    }
     // The HUD with the pause menu open, the second item chosen, at scale 3.
     HudState st;
     st.kmh = 87;
@@ -1553,6 +1595,8 @@ int run_drive(int argc, char** argv) {
   auto game_root_of = [&]() -> std::filesystem::path {
     return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
   };
+  // The career page's PNGs and the HUD: the game's fonts.
+  if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of());
   // The screen's car names (FORMAT-STRINGTABLES), loaded on first use.
   auto car_names = std::make_shared<race::CarNames>();
   auto car_names_loaded = std::make_shared<bool>(false);
@@ -3040,6 +3084,7 @@ int run_drive(int argc, char** argv) {
         d.menu_selected = st.menu_selected;
         carview::ui::List list;
         carview::build_drive_hud(list, d, float(width), float(height));
+        upload_ui_atlas(renderer);
         renderer.set_ui(list.items());
         if (!legacy_hud_cleared) renderer.set_overlay({}, 0, 0, 0, 0, 0), legacy_hud_cleared = true;
         hud_height = int(carview::drive_hud_dial_height(float(height)));
