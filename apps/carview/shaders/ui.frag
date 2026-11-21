@@ -69,6 +69,15 @@ void main() {
     uint first = uint(q.x), count = uint(q.y);
     for (uint i = first; i < first + count; ++i) best = min(best, seg_dist(u, segments[i]));
     cov = clamp(0.5 - (best - p.w) * p.z, 0.0, 1.0);
+  } else if (kind == 4u && p.y > 0.0) {
+    // Rotated: centre the rect's, half size p.yz, p.w radians clockwise.
+    vec2 d = pix - 0.5 * (rect.xy + rect.zw);
+    float cs = cos(p.w), sn = sin(p.w);
+    vec2 lp = vec2(cs * d.x + sn * d.y, -sn * d.x + cs * d.y);
+    vec2 t = lp / (2.0 * p.yz) + 0.5;
+    color = texture(atlas, mix(q.xy, q.zw, clamp(t, 0.0, 1.0))) * c0;
+    vec2 e = abs(lp) - p.yz;
+    cov = clamp(0.5 - max(e.x, e.y), 0.0, 1.0);
   } else if (kind == 4u) {
     vec2 t = (pix - rect.xy) / max(rect.zw - rect.xy, vec2(1.0));
     color = texture(atlas, mix(q.xy, q.zw, t)) * c0;

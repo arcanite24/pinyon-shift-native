@@ -185,6 +185,14 @@ void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv
   items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint, kImage, 0});
 }
 
+void List::image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv, uint32_t tint) {
+  if (hw <= 0 || hh <= 0) return;
+  const float c = std::fabs(std::cos(angle)), s = std::fabs(std::sin(angle));
+  const float ex = c * hw + s * hh + 1, ey = s * hw + c * hh + 1;
+  items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey}, {0, hw, hh, angle}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint,
+                    kImage, 0});
+}
+
 // The vector fonts and their glyph atlas.
 namespace {
 
@@ -418,6 +426,22 @@ float seg_dist(float px, float py, const std::array<float, 4>& s) {
 
 constexpr float kPi = 3.14159265f;
 
+// An image quad's (u, v) over its rect (0..1) at a pixel, and its edge
+// coverage (1 inside; rotated quads fade over their edge pixel).
+void image_t(const Instance& it, float px, float py, float& tx, float& ty, float& edge) {
+  if (it.p[1] > 0) {
+    const float dx = px - 0.5f * (it.rect[0] + it.rect[2]), dy = py - 0.5f * (it.rect[1] + it.rect[3]);
+    const float c = std::cos(it.p[3]), s = std::sin(it.p[3]);
+    const float lx = c * dx + s * dy, ly = -s * dx + c * dy;
+    tx = std::clamp(lx / (2 * it.p[1]) + 0.5f, 0.0f, 1.0f), ty = std::clamp(ly / (2 * it.p[2]) + 0.5f, 0.0f, 1.0f);
+    edge = std::clamp(0.5f - std::max(std::fabs(lx) - it.p[1], std::fabs(ly) - it.p[2]), 0.0f, 1.0f);
+    return;
+  }
+  tx = (px - it.rect[0]) / std::max(1.0f, it.rect[2] - it.rect[0]);
+  ty = (py - it.rect[1]) / std::max(1.0f, it.rect[3] - it.rect[1]);
+  edge = 1;
+}
+
 // Coverage (0..1) and the colour's blend between color (0) and color2 (1).
 float coverage(const Instance& it, float px, float py, float& mix) {
   mix = 0;
@@ -470,8 +494,8 @@ float coverage(const Instance& it, float px, float py, float& mix) {
     case kImage: {
       // The atlas's alpha, bilinear like the GPU's sampler; the colour is
       // white (glyphs) times the tint, so only coverage changes.
-      const float tx = (px - it.rect[0]) / std::max(1.0f, it.rect[2] - it.rect[0]);
-      const float ty = (py - it.rect[1]) / std::max(1.0f, it.rect[3] - it.rect[1]);
+      float tx, ty, edge = 1;
+      image_t(it, px, py, tx, ty, edge);
       const float u = (it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize - 0.5f;
       const float v = (it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize - 0.5f;
       const auto& a = atlas_pixels();
@@ -481,8 +505,8 @@ float coverage(const Instance& it, float px, float py, float& mix) {
       };
       const int x0 = int(std::floor(u)), y0 = int(std::floor(v));
       const float fx = u - float(x0), fy = v - float(y0);
-      return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
-             (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy;
+      return edge * ((at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) +
+                     (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy);
     }
     default:
       return 0;
@@ -493,8 +517,8 @@ float to_linear_unit(uint32_t c, int shift) { return float((c >> shift) & 0xFF) 
 
 // An image quad's texel colour (nearest), times the tint in `c`.
 void image_rgb(const Instance& it, float px, float py, float c[4]) {
-  const float tx = (px - it.rect[0]) / std::max(1.0f, it.rect[2] - it.rect[0]);
-  const float ty = (py - it.rect[1]) / std::max(1.0f, it.rect[3] - it.rect[1]);
+  float tx, ty, edge;
+  image_t(it, px, py, tx, ty, edge);
   const int x = std::clamp(int((it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize), 0, int(kAtlasSize) - 1);
   const int y = std::clamp(int((it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize), 0, int(kAtlasSize) - 1);
   const uint8_t* t = &atlas_pixels()[(size_t(y) * kAtlasSize + size_t(x)) * 4];

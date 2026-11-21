@@ -46,7 +46,7 @@ enum Kind : uint32_t {
   kLine = 1,       // p: ax, ay, bx, by; q: half width
   kArc = 2,        // p: cx, cy, radius, half width; q: a0, a1 (radians clockwise from 12 o'clock, a0 <= a1)
   kGlyph = 3,      // p: origin x, y (top of the cap height), pixels per unit, stroke radius (units); q: first segment, count, slant
-  kImage = 4,      // p: radius; q: atlas u0, v0, u1, v1 (0..1), tinted by color
+  kImage = 4,      // p: radius (or rotated: -, half width, half height, radians clockwise about the rect's centre); q: atlas u0, v0, u1, v1 (0..1), tinted by color
 };
 
 // The font's segments (ax, ay, bx, by in units), uploaded once.
@@ -110,6 +110,10 @@ class List {
   void arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color);
   void image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint = rgba(255, 255, 255),
              float radius = 0);
+  // An image quad centred at (cx, cy), half size hw x hh, turned `angle`
+  // radians clockwise (y down).
+  void image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv,
+                     uint32_t tint = rgba(255, 255, 255));
   // Draws `text` with its cap-height top at y; returns its width.
   float text(float x, float y, std::string_view text, const TextStyle& style);
   static float measure(std::string_view text, const TextStyle& style);

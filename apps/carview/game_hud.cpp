@@ -226,7 +226,7 @@ void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float
 }
 
 // (a) The free-roam dial: centre 1122,587, ±137° from 12 o'clock.
-void dial(ui::List& l, const DriveHud& st, const Layout& g) {
+void dial_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
   const float s = g.s;
   // The numerals (SPEC-UI-LAYOUTS a, measured: centre 1122,587, radius
   // 78.5); the face, ticks and needle from 947_HUD GAUGE_ANALOG (centre
@@ -283,6 +283,96 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
   char gb[8];
   if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
   l.text(g.R(1093), g.B(607), gear, font(ui::Font::kE, 17 * s, kGear));
+}
+
+// The dial from 947_HUD's GAUGE_ANALOG: MainBackRing, the hatches
+// (HATCHLARGE / MID / SMALL quads at radius 82, turned to their angle),
+// the numerals (B 10 at radius 70), the NEEDLE quad (32 x 128, centred 50
+// out) with its NEEDLETRAIL swooshes, the speed's three E 17 x 1.6 digit
+// slots, the gear and the unit. The sweep is the numerals' rotation, 2.339
+// rad either side of 12 o'clock. Ours: the scale's top (whole thousands
+// past the redline), the trails' fade by the rev rate, and the redline
+// band, which follows REDLINE's look (a pink band brightening outward to a
+// rim at radius 85) as arcs, as how the scene turns its half ring isn't
+// known. Without the scene: the drawn dial above.
+void dial(ui::List& l, const DriveHud& st, const Layout& g) {
+  static const SceneDraw sc(ui_scene("947_HUD"));
+  const int gauge = sc.find("GAUGE_ANALOG");
+  const int ring = sc.find("MainBackRing", gauge), needle = sc.find("Rectangle", sc.find("_P_Tach_Needle", gauge));
+  std::array<float, 4> large, mid, small, nuv, trail;
+  if (gauge < 0 || ring < 0 || needle < 0 || !ui_texture("HUD/DIALS/HATCHLARGE", large) ||
+      !ui_texture("HUD/DIALS/HATCHMID", mid) || !ui_texture("HUD/DIALS/HATCHSMALL", small) ||
+      !ui_texture("HUD/DIALS/NEEDLE", nuv))
+    return dial_drawn(l, st, g);
+  const bool trails = ui_texture("HUD/DIALS/NEEDLETRAIL", trail);
+  const float s = g.s;
+  const SceneFrame f{g.w - 1280 * s, g.h - 720 * s, s};  // bottom-right anchored
+  const auto [gx, gy] = sc.at(gauge);
+  const float cx = f.x(gx), cy = f.y(gy);
+  constexpr float kSweep = 2.339f;
+  constexpr uint32_t kNeedle = rgba(250, 0, 99);  // the needle's material, 0.98 0 0.39
+  sc.model(l, f, ring, sc.alpha(ring));
+  const double red = std::max(1000.0, st.redline_rpm);
+  const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000) * 2000);
+  auto angle = [&](double rpm) { return -kSweep + 2 * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
+  // The redline band.
+  const float a_red = angle(red);
+  for (int r = 61; r <= 83; r += 2)
+    l.arc(cx, cy, float(r) * s, 1.0f * s, a_red, kSweep, ui::fade(kNeedle, 0.12 + 0.5 * (r - 60) / 24.0));
+  l.arc(cx, cy, 85 * s, 1.2f * s, a_red, kSweep, kNeedle);
+  // Hatches and numerals.
+  const TextStyle num = [&] {
+    TextStyle t = font(ui::Font::kB, 10 * s, kText, Align::kCenter);
+    return t;
+  }();
+  for (double k = 0; k <= top + 1; k += 250) {
+    const int q = int(std::lround(k / 250));
+    const bool is_large = q % 4 == 0, is_mid = q % 2 == 0;
+    const float a = angle(k), sa = std::sin(a), ca = std::cos(a);
+    const float hw = (is_large || is_mid ? 6.5f : 7.0f) * s, hh = 4.5f * s;
+    l.image_rotated(cx + 82 * s * sa, cy - 82 * s * ca, hw, hh, a, is_large ? large : is_mid ? mid : small,
+                    rgba(255, 255, 255, uint8_t(is_large ? 255 : is_mid ? 230 : 122)));
+    if (!is_large || (q / 4) % 2) continue;
+    char d[8];
+    std::snprintf(d, sizeof d, "%d", q / 4);
+    l.text(cx + 70 * s * sa, cy - 70 * s * ca - 0.5f * num.size, d, num);
+  }
+  // The needle and its trails (the trail behind the needle's travel).
+  const float a = angle(st.rpm), sa = std::sin(a), ca = std::cos(a);
+  if (trails) {
+    static double last_rpm = 0, last_t = -1, rate = 0;
+    const double dt = st.time - last_t;
+    if (last_t >= 0 && dt > 1e-4 && dt < 0.5) rate += (((st.rpm - last_rpm) / dt) - rate) * std::min(1.0, dt * 10);
+    last_rpm = st.rpm, last_t = st.time;
+    const float up = clamp01(rate / 6000), down = clamp01(-rate / 6000);
+    // Up: 50 left of the needle and 65 out; Down mirrored to the right.
+    for (int side : {-1, 1}) {
+      const float k = side < 0 ? up : down;
+      if (k <= 0.02f) continue;
+      const float ox = 50.0f * side, oy = -65.0f;
+      const float px = cx + s * (ox * ca - oy * sa), py = cy + s * (ox * sa + oy * ca);
+      std::array<float, 4> uv = trail;
+      if (side > 0) std::swap(uv[0], uv[2]);
+      l.image_rotated(px, py, 32 * s, 32 * s, a, uv, ui::fade(kNeedle, k));
+    }
+  }
+  l.image_rotated(cx + 50 * s * sa, cy - 50 * s * ca, 16 * s, 64 * s, a, nuv, kNeedle);
+  // The speed: three digit slots, the leading zeros at half white (ours).
+  const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
+  char digits[8];
+  std::snprintf(digits, sizeof digits, "%03d", v);
+  const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  const int speedo = sc.find("Speedo", gauge);
+  for (int i = 0; i < 3; ++i) {
+    const int node = sc.find("digit" + std::to_string(i), speedo);
+    sc.text(l, f, node, std::string(1, digits[i]), size_t(i) < lead ? rgba(255, 255, 255, 128) : kText, 0, 0, false);
+  }
+  const int unit = sc.find("TEXT_SPEED_UNIT_ANALOG", gauge);
+  sc.text(l, f, unit, str("UnitStrings", "IDS_Units_KMH", "km/h"), ui::fade(kText, sc.alpha(unit)), 0, 0, false);
+  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
+  char gb[8];
+  if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
+  sc.text(l, f, sc.find("TEXT_GEAR_ANALOG", gauge), gear, kGear, 0, 0, false);
 }
 
 // The discovery card (the interim of SPEC-UI-LAYOUTS: an E line on a pink
