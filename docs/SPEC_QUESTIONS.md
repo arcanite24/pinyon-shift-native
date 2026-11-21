@@ -956,6 +956,16 @@ ours meanwhile:
 - the look spring (ours: 0.1 s), and the heading spring's yaw-rate sign
   (as written).
 
+answered in CAMERAS.md 4d4e2ca4 (with 24a2044b) for (a) to (c) and the
+yaw-rate sign, from Q51's lap: (a) the slope term is the car's tilted
+plane at the eye (this frame's eye and up axis), limited to ±2 r
+(probable, never reached), applied while up.y > 0.7 and for 0.2 s after
+fewer than three wheels touch; (b) PitchAngleDegrees is positive nose up,
+ours was right, but both bands (past +3.5° and −3.5°) raise the eye and
+look down; (c) the factor is sin(F) / sin(F + ΔF) of the full angle, not
+a tangent; the heading spring damps ω − s · ψ' (as written it was +, 21°
+off in replay). Open: (d) the cockpit, the look spring.
+
 ## Q46 (M5, blocking the gate): oracle races over ten events
 
 The M5 gate compares AI mean distance (3 %) and finishing order over ten
@@ -1032,6 +1042,17 @@ popularity open with interims)
 For the chase camera's feel: an oracle capture (camera pose per frame
 against the car's pose) through corners, a crest and hard braking, so the
 engine's chase can be compared. Meanwhile: Q45's interims.
+
+answered in CAMERAS.md 4d4e2ca4 (Tests: chase at speed; rules in Chase
+cameras and Camera physics layers): the R34 oracle lap in the low chase,
+traced every frame twice. Export out/oracle/chase-r34-lap.csv (t, dt, car
+CoM, axes, velocity, contacts; view eye, forward, up, FOV; chase eye,
+look-at, heading, h, slope hold; layer sums), regenerate with
+horizon1-recomp tools/re/chase.py export. Replayed from the car's pose:
+heading 0.3 to 0.44° rms, h 0.3 mm, distance 0.2 mm, layer sums 7 to 23
+mm and 0.16°, final direction 0.15°. Layers compose as eye += car-axes
+offset, chase direction pitched by the pitch sum (no re-aim), roll from
+the layers only. Open: the high chase at speed (same rules assumed).
 
 ## Q52 (M5, not blocking): where CareerRaceModes.xml lives
 
