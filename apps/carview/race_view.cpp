@@ -491,13 +491,19 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     c.body->step(in, ribbon ? static_cast<const drive::Ground&>(*ribbon_) : near);
   }
   // Contacts: the player and traffic in group 1, the field in 0; a car
-  // just reset touches nothing for 3 s.
+  // just reset touches nothing for 3 s. No bounce, and the field's cars
+  // keep a fifth of a hit's spin (RACE_AI, Contacts and resets, Q55:
+  // RaceCarTorqueScaleInRace 0.2, the misspelt restitution key leaving
+  // it 0; interim: 0.2 against every body).
+  constexpr double kRaceCarTorqueScale = 0.2;
   contacts_.clear();
   if (session_->collides(n)) contacts_.push_back({&player, 1.0, 1});
   for (size_t k = 0; k < n; ++k)
-    if (session_->collides(k)) contacts_.push_back({cars_[k].body.get(), 1.0, 0});
+    if (session_->collides(k)) contacts_.push_back({cars_[k].body.get(), kRaceCarTorqueScale, 0});
   if (traffic) traffic->contact_bodies(contacts_, 1);
-  contact_count_ += drive::resolve_contacts(contacts_, {});
+  drive::ContactOptions contact_options;
+  contact_options.restitution = 0;
+  contact_count_ += drive::resolve_contacts(contacts_, contact_options);
   // The session: each car's move over the step.
   auto sample = [&](size_t i, const drive::Vehicle& v, double x0, double z0) {
     race::CarSample& s = samples_[i];

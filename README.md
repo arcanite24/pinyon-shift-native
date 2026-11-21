@@ -869,6 +869,18 @@ the interim noted here until a later polish sweep.
   louder than the game's (0.008). Raising the radio clips under throttle
   (peak 1.12 at 1.8 times), so the engine's own level wants the look.
 - **Races: against the oracle.** `python tools/race/gate.py` runs the M5
+  **Q55 contacts (2026-11-21, out/gate-q55, seeds 1 and 2):** no bounce,
+  the field's cars keep 0.2 of a hit's spin, nothing touches a car for
+  3 s after its reset. Resets fell from 132 to 76 over the 20 runs. AI
+  time within 3 % on 8 of 10 events: FR06 147.2/144.1, FR16 125.7/124.0,
+  FR22 162.4/161.5, FR33 234.3/233.3, HEADLINE 509.1/504.0, STREET
+  124.4/124.1, FR24 113.7/110.8, FR01 104.2/102.7. Outside: NR02
+  135.1/130.7 (3.4 %), EXHIBITION 206.6/179.0. Distances pass 10 of 10.
+  The player's place misses on FR06 (3rd against 5th), FR16 (2nd to 3rd
+  against 5th) and HEADLINE (5th to 6th against 8th), and our AI winner
+  isn't in the oracle's top 3 on FR33 and FR24. The front of our field is
+  slower than the oracle's (see the tail note below). The Minis already
+  run the stock rows Q55 c names. Gate: FAIL.
   gate (the player replays the oracle's path from `out/oracle/`). FR22 at
   Med, three seeds: AI mean 162.4 s (oracle 161.5), 4,673 m (4,638), the
   player 2nd to 3rd (3rd), winner slot 00: passes. FR16: AI mean 129 to
