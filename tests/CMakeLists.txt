@@ -100,3 +100,8 @@ add_test(NAME garage_tests COMMAND garage_tests)
 add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp)
 target_include_directories(settings_tests PRIVATE ../apps/carview)
 add_test(NAME settings_tests COMMAND settings_tests)
+
+add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp)
+target_include_directories(ui_tests PRIVATE ../apps/carview)
+target_link_libraries(ui_tests PRIVATE shift_stb)
+add_test(NAME ui_tests COMMAND ui_tests)

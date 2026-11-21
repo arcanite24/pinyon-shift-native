@@ -253,4 +253,59 @@ bool list_events(const std::filesystem::path& game_root, std::vector<EventSummar
       error);
 }
 
+std::string CarNames::split_words(const std::string& s) {
+  std::string out;
+  auto up = [](char c) { return c >= 'A' && c <= 'Z'; };
+  auto low = [](char c) { return c >= 'a' && c <= 'z'; };
+  auto digit = [](char c) { return c >= '0' && c <= '9'; };
+  for (size_t i = 0; i < s.size(); ++i) {
+    const char c = s[i], p = i ? s[i - 1] : ' ', n = i + 1 < s.size() ? s[i + 1] : ' ';
+    const bool cut = i > 0 && ((up(c) && low(p)) || (up(c) && (up(p) || digit(p)) && low(n)) || (digit(c) && low(p)));
+    if (cut && !out.empty() && out.back() != ' ') out += ' ';
+    out += c == '_' ? ' ' : c;
+  }
+  return out;
+}
+
+bool CarNames::load(const std::filesystem::path& game_root, std::string* error) {
+  Db db;
+  if (!db.open(game_root, error)) return false;
+  rows_.clear();
+  return db.each(
+      "select c.MediaName, coalesce(c.Year, 0), coalesce(m.IconPathBase, '') from Data_Car c "
+      "left join List_CarMake m on m.ID = c.MakeID",
+      {},
+      [&](sqlite3_stmt* s) {
+        const std::string media = txt(s, 0);
+        Row r;
+        r.year = int(i64(s, 1));
+        r.make = split_words(txt(s, 2));
+        // MAKE_Model_Words_YY: the parts between the make code and the year.
+        const size_t a = media.find('_'), b = media.rfind('_');
+        if (a != std::string::npos && b != std::string::npos && b > a) r.model = split_words(media.substr(a + 1, b - a - 1));
+        rows_[media] = std::move(r);
+      },
+      error);
+}
+
+std::string CarNames::short_name(const std::string& media) const {
+  auto it = rows_.find(media);
+  if (it == rows_.end() || it->second.model.empty()) return media;
+  const std::string& make = it->second.make;
+  const std::string& model = it->second.model;
+  // "Jeep Grand Cherokee", not "Jeep Jeep Grand Cherokee".
+  const bool has_make = !make.empty() && model.size() >= make.size() &&
+                        std::equal(make.begin(), make.end(), model.begin(), [](char x, char y) {
+                          return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                        }) &&
+                        (model.size() == make.size() || model[make.size()] == ' ');
+  return make.empty() || has_make ? model : make + " " + model;
+}
+
+std::string CarNames::full_name(const std::string& media) const {
+  auto it = rows_.find(media);
+  const std::string s = short_name(media);
+  return it != rows_.end() && it->second.year > 0 ? std::to_string(it->second.year) + " " + s : s;
+}
+
 }  // namespace race

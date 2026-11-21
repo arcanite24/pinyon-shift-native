@@ -74,6 +74,10 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       return false;
     }
   }
+  {
+    std::string ne;  // the names are optional: the media names stand in
+    names_.load(root, &ne);
+  }
   stage_ = event.rfind("stage:", 0) == 0;
   if (stage_) {
     // A Rally stage: no event row is read (the stages are in v4's
@@ -711,6 +715,47 @@ void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Ve
 std::string RaceView::name_of(size_t i) const {
   if (i >= cars_.size()) return "player";
   return "AI " + std::to_string(cars_[i].who.ai_player_id) + " (" + cars_[i].who.car_media + ")";
+}
+
+RaceHud RaceView::hud_info() const {
+  RaceHud h;
+  if (!session_) return h;
+  const size_t n = cars_.size();
+  const auto& s = *session_;
+  h.event = event_.horizon_id;
+  h.circuit = circuit_;
+  h.stage = have_stage_track_;
+  h.clock = s.clock();
+  h.digit = s.digit();
+  h.cars = int(n + 1);
+  h.laps = s.laps();
+  h.lap = s.lap(n);
+  const auto& me = s.car(n);
+  h.place = me.place;
+  h.best_lap = me.best_lap;
+  h.last_lap = me.laps.empty() ? -1 : me.laps.back();
+  const double run = std::max(1.0, finish_progress_ - line_.gate_progress);
+  h.progress = std::clamp((field_->progress(n) - line_.gate_progress) / run, 0.0, 1.0);
+  if (s.finished(n)) {
+    h.phase = RaceHud::kFinished;
+    h.finish_time = me.finish;
+    h.credits = award_ ? award_->credits : credits_for(me.place);
+    h.wristband = award_ ? award_->wristband_points : 0;
+    h.stage_place = stage_place_;
+    h.stage_field = int(stage_field_.size()) + 1;
+  } else {
+    h.phase = h.clock < -3 ? RaceHud::kGrid : h.clock < 0 ? RaceHud::kCountdown : RaceHud::kRacing;
+  }
+  for (size_t i : s.order()) {
+    RaceHudRow r;
+    r.player = i == n;
+    r.name = r.player ? "YOU" : names_.short_name(cars_[i].who.car_media);
+    r.place = int(h.rows.size()) + 1;
+    r.finished = s.finished(i);
+    r.time = s.car(i).finish;
+    h.rows.push_back(std::move(r));
+  }
+  return h;
 }
 
 std::string RaceView::banner() const {

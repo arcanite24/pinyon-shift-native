@@ -14,6 +14,8 @@
 #include "car_vert_spv.h"
 #include "post_frag_spv.h"
 #include "post_vert_spv.h"
+#include "ui_frag_spv.h"
+#include "ui_vert_spv.h"
 
 namespace carview {
 
@@ -73,6 +75,15 @@ Renderer::~Renderer() {
     destroy_buffer(vertex_buffer_);
     destroy_buffer(index_buffer_);
     destroy_buffer(overlay_buffer_);
+    destroy_buffer(ui_font_);
+    destroy_buffer(ui_instances_);
+    destroy_buffer(ui_staging_);
+    destroy_image(ui_atlas_);
+    if (ui_pipeline_) vkDestroyPipeline(device_, ui_pipeline_, nullptr);
+    if (ui_layout_) vkDestroyPipelineLayout(device_, ui_layout_, nullptr);
+    if (ui_set_layout_) vkDestroyDescriptorSetLayout(device_, ui_set_layout_, nullptr);
+    if (ui_pool_) vkDestroyDescriptorPool(device_, ui_pool_, nullptr);
+    if (ui_sampler_) vkDestroySampler(device_, ui_sampler_, nullptr);
     destroy_image(texture_);
     destroy_image(bench_output_);
     if (post_quarter_) vkDestroyPipeline(device_, post_quarter_, nullptr);
@@ -1010,6 +1021,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
     last_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   }
+  record_ui(cmd, final_image, final_view, layout, last_stage, last_access);
   if (final_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -1017,6 +1029,250 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
                   VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
   }
+}
+
+void Renderer::set_ui(std::span<const ui::Instance> items) { ui_items_.assign(items.begin(), items.end()); }
+
+void Renderer::ui_atlas_put(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::span<const uint8_t> rgba) {
+  if (!w || !h || x + w > kUiAtlas || y + h > kUiAtlas || rgba.size() < size_t(w) * h * 4) return;
+  ui_puts_.push_back({x, y, w, h, std::vector<uint8_t>(rgba.begin(), rgba.begin() + ptrdiff_t(size_t(w) * h * 4))});
+}
+
+bool Renderer::create_ui(std::string& error) {
+  const auto font = ui::font_segments();
+  if (!upload_buffer(font.data(), font.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ui_font_)) {
+    error = "UI font buffer";
+    return false;
+  }
+  if (!create_image(kUiAtlas, kUiAtlas, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, ui_atlas_)) {
+    error = "UI atlas";
+    return false;
+  }
+  VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
+  sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  VK_TRY(vkCreateSampler(device_, &sampler, nullptr, &ui_sampler_), "UI sampler");
+  const VkDescriptorSetLayoutBinding bindings[2] = {
+      {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+  VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  set.bindingCount = 2;
+  set.pBindings = bindings;
+  VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &ui_set_layout_), "UI set layout");
+  VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 8};
+  VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  layout.setLayoutCount = 1;
+  layout.pSetLayouts = &ui_set_layout_;
+  layout.pushConstantRangeCount = 1;
+  layout.pPushConstantRanges = &push;
+  VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &ui_layout_), "UI pipeline layout");
+  const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+  VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  pool.maxSets = 1;
+  pool.poolSizeCount = 2;
+  pool.pPoolSizes = sizes;
+  VK_TRY(vkCreateDescriptorPool(device_, &pool, nullptr, &ui_pool_), "UI descriptor pool");
+  VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  alloc.descriptorPool = ui_pool_;
+  alloc.descriptorSetCount = 1;
+  alloc.pSetLayouts = &ui_set_layout_;
+  VK_TRY(vkAllocateDescriptorSets(device_, &alloc, &ui_set_), "UI descriptor set");
+  VkDescriptorBufferInfo font_info{ui_font_.buffer, 0, VK_WHOLE_SIZE};
+  VkDescriptorImageInfo atlas_info{ui_sampler_, ui_atlas_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet writes[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+  writes[0].dstSet = ui_set_, writes[0].dstBinding = 0, writes[0].descriptorCount = 1;
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writes[0].pBufferInfo = &font_info;
+  writes[1].dstSet = ui_set_, writes[1].dstBinding = 1, writes[1].descriptorCount = 1;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[1].pImageInfo = &atlas_info;
+  vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+  // The atlas starts transparent, in its sampled layout.
+  if (!submit_once([&](VkCommandBuffer cmd) {
+        image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue clear{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, ui_atlas_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+        image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      })) {
+    error = "UI atlas clear";
+    return false;
+  }
+
+  auto make_module = [&](const uint32_t* code, size_t bytes, VkShaderModule& module) {
+    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info.codeSize = bytes;
+    info.pCode = code;
+    return vkCreateShaderModule(device_, &info, nullptr, &module);
+  };
+  VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+  VK_TRY(make_module(kUi_vert_spv, sizeof(kUi_vert_spv), vert), "UI vertex shader");
+  VK_TRY(make_module(kUi_frag_spv, sizeof(kUi_frag_spv), frag), "UI fragment shader");
+  const VkPipelineShaderStageCreateInfo stages[2] = {
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main",
+       nullptr},
+      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main",
+       nullptr}};
+  const VkVertexInputBindingDescription binding{0, sizeof(ui::Instance), VK_VERTEX_INPUT_RATE_INSTANCE};
+  const VkVertexInputAttributeDescription attributes[4] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+                                                           {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16},
+                                                           {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32},
+                                                           {3, 0, VK_FORMAT_R32G32B32A32_UINT, 48}};
+  VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  vertex_input.vertexBindingDescriptionCount = 1;
+  vertex_input.pVertexBindingDescriptions = &binding;
+  vertex_input.vertexAttributeDescriptionCount = 4;
+  vertex_input.pVertexAttributeDescriptions = attributes;
+  VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+  assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+  viewport.viewportCount = viewport.scissorCount = 1;
+  VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+  raster.polygonMode = VK_POLYGON_MODE_FILL;
+  raster.cullMode = VK_CULL_MODE_NONE;
+  raster.lineWidth = 1.0f;
+  VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+  multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+  VkPipelineColorBlendAttachmentState attachment{};
+  attachment.blendEnable = VK_TRUE;  // premultiplied
+  attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+  attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  attachment.colorBlendOp = VK_BLEND_OP_ADD;
+  attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+  attachment.colorWriteMask =
+      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+  blend.attachmentCount = 1;
+  blend.pAttachments = &attachment;
+  const VkDynamicState dynamic_states[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic.dynamicStateCount = 2;
+  dynamic.pDynamicStates = dynamic_states;
+  ui_format_ = color_format_;
+  VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+  rendering.colorAttachmentCount = 1;
+  rendering.pColorAttachmentFormats = &ui_format_;
+  VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+  info.pNext = &rendering;
+  info.stageCount = 2;
+  info.pStages = stages;
+  info.pVertexInputState = &vertex_input;
+  info.pInputAssemblyState = &assembly;
+  info.pViewportState = &viewport;
+  info.pRasterizationState = &raster;
+  info.pMultisampleState = &multisample;
+  info.pDepthStencilState = &depth;
+  info.pColorBlendState = &blend;
+  info.pDynamicState = &dynamic;
+  info.layout = ui_layout_;
+  const VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &ui_pipeline_);
+  vkDestroyShaderModule(device_, vert, nullptr);
+  vkDestroyShaderModule(device_, frag, nullptr);
+  VK_TRY(result, "UI pipeline");
+  return true;
+}
+
+void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view, VkImageLayout& layout,
+                         VkPipelineStageFlags2& last_stage, VkAccessFlags2& last_access) {
+  if (ui_items_.empty() && ui_puts_.empty()) return;
+  if (!ui_ready_) {
+    if (ui_failed_) return;
+    std::string e;
+    if (!create_ui(e)) {
+      std::fprintf(stderr, "carview: UI layer off: %s\n", e.c_str());
+      ui_failed_ = true;
+      return;
+    }
+    ui_ready_ = true;
+  }
+  // Atlas uploads: staged, copied, back to sampled.
+  if (!ui_puts_.empty()) {
+    VkDeviceSize bytes = 0;
+    for (const auto& p : ui_puts_) bytes += p.rgba.size();
+    if (ui_staging_.size < bytes) {
+      if (ui_staging_mapped_) vkUnmapMemory(device_, ui_staging_.memory);
+      ui_staging_mapped_ = nullptr;
+      destroy_buffer(ui_staging_);
+      if (create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_staging_))
+        vkMapMemory(device_, ui_staging_.memory, 0, bytes, 0, &ui_staging_mapped_);
+    }
+    if (ui_staging_mapped_) {
+      std::vector<VkBufferImageCopy> regions;
+      VkDeviceSize at = 0;
+      for (const auto& p : ui_puts_) {
+        std::memcpy(static_cast<uint8_t*>(ui_staging_mapped_) + at, p.rgba.data(), p.rgba.size());
+        VkBufferImageCopy r{};
+        r.bufferOffset = at;
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        r.imageOffset = {int32_t(p.x), int32_t(p.y), 0};
+        r.imageExtent = {p.w, p.h, 1};
+        regions.push_back(r);
+        at += p.rgba.size();
+      }
+      image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      vkCmdCopyBufferToImage(cmd, ui_staging_.buffer, ui_atlas_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             uint32_t(regions.size()), regions.data());
+      image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+    ui_puts_.clear();
+  }
+  if (ui_items_.empty() || ui_format_ != color_format_) return;
+  const VkDeviceSize bytes = ui_items_.size() * sizeof(ui::Instance);
+  if (ui_instances_.size < bytes) {
+    if (ui_instances_mapped_) vkUnmapMemory(device_, ui_instances_.memory);
+    ui_instances_mapped_ = nullptr;
+    destroy_buffer(ui_instances_);
+    const VkDeviceSize cap = std::max<VkDeviceSize>(bytes * 2, 64 * 1024);
+    if (!create_buffer(cap, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_instances_) ||
+        vkMapMemory(device_, ui_instances_.memory, 0, cap, 0, &ui_instances_mapped_) != VK_SUCCESS)
+      return;
+  }
+  std::memcpy(ui_instances_mapped_, ui_items_.data(), size_t(bytes));
+  image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                last_stage, last_access, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+  layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  last_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  last_access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  color.imageView = final_view;
+  color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  rendering.renderArea = {{0, 0}, {target_width_, target_height_}};
+  rendering.layerCount = 1;
+  rendering.colorAttachmentCount = 1;
+  rendering.pColorAttachments = &color;
+  vkCmdBeginRendering(cmd, &rendering);
+  VkViewport viewport{0, 0, float(target_width_), float(target_height_), 0.0f, 1.0f};
+  VkRect2D scissor{{0, 0}, {target_width_, target_height_}};
+  vkCmdSetViewport(cmd, 0, 1, &viewport);
+  vkCmdSetScissor(cmd, 0, 1, &scissor);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_pipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_layout_, 0, 1, &ui_set_, 0, nullptr);
+  const float inv[2] = {2.0f / float(target_width_), 2.0f / float(target_height_)};
+  vkCmdPushConstants(cmd, ui_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof inv, inv);
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &ui_instances_.buffer, &zero);
+  vkCmdDraw(cmd, 6, uint32_t(ui_items_.size()), 0, 0);
+  vkCmdEndRendering(cmd);
+  mark(cmd, "ui");
 }
 
 void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y,

@@ -5,10 +5,13 @@
 
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include <volk.h>
+
+#include "ui.h"
 
 struct SDL_Window;
 
@@ -124,6 +127,14 @@ class Renderer {
   // buffer only when set again.
   static constexpr int kOverlayLayers = 4;
   void set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y, int layer = 0);
+
+  // The UI layer (ui.h): shapes blended over every following frame after
+  // the post chain and the overlay panels, until set again; empty: none.
+  void set_ui(std::span<const ui::Instance> items);
+  // Copies `rgba` (w x h, sRGB-encoded RGBA8) into the UI atlas (kUiAtlas
+  // square) at (x, y), for kImage shapes; applied with the next frame.
+  static constexpr uint32_t kUiAtlas = 1024;
+  void ui_atlas_put(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::span<const uint8_t> rgba);
 
   const std::string& device_name() const { return device_name_; }
   uint32_t samples() const { return uint32_t(samples_); }
@@ -254,6 +265,28 @@ class Renderer {
   bool overlay_staged_ = false;     // this frame copies a layer
   bool overlay_supported_ = true;   // the swapchain allows transfers into it
   Buffer overlay_buffer_;
+  // The UI layer (made on first use).
+  bool create_ui(std::string& error);
+  void record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view, VkImageLayout& layout,
+                 VkPipelineStageFlags2& last_stage, VkAccessFlags2& last_access);
+  bool ui_ready_ = false, ui_failed_ = false;
+  VkPipeline ui_pipeline_ = VK_NULL_HANDLE;
+  VkPipelineLayout ui_layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout ui_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorPool ui_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet ui_set_ = VK_NULL_HANDLE;
+  VkSampler ui_sampler_ = VK_NULL_HANDLE;
+  VkFormat ui_format_ = VK_FORMAT_UNDEFINED;
+  Buffer ui_font_, ui_instances_, ui_staging_;
+  void* ui_instances_mapped_ = nullptr;
+  void* ui_staging_mapped_ = nullptr;
+  std::vector<ui::Instance> ui_items_;
+  struct UiAtlasPut {
+    uint32_t x, y, w, h;
+    std::vector<uint8_t> rgba;
+  };
+  std::vector<UiAtlasPut> ui_puts_;
+  Image ui_atlas_;
   void* overlay_mapped_ = nullptr;
   uint32_t validation_messages_ = 0;
   friend class Showroom;

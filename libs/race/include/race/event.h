@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -101,5 +102,27 @@ struct EventSummary {
   int career_type = 0, ribbon = 0, route_id = 0, laps = 1, opponents = 0;
 };
 bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error);
+
+// Car names for the HUD and menus. Interim until the string tables are
+// read (Data_Car.DisplayName is a string-table key): the make from
+// List_CarMake.IconPathBase, the model from the media name's middle part,
+// both split at their case and digit changes, and the year from Data_Car.
+class CarNames {
+ public:
+  bool load(const std::filesystem::path& game_root, std::string* error);
+  // "Ferrari California"; the media name itself when unknown.
+  std::string short_name(const std::string& media) const;
+  // "2009 Ferrari California".
+  std::string full_name(const std::string& media) const;
+  // The words of a media name's model part ("CamaroZL1" -> "Camaro ZL1").
+  static std::string split_words(const std::string& s);
+
+ private:
+  struct Row {
+    std::string make, model;
+    int year = 0;
+  };
+  std::map<std::string, Row> rows_;
+};
 
 }  // namespace race

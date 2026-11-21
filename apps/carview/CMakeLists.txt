@@ -13,7 +13,7 @@ set(shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${generated}")
 set(shader_headers "")
-foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag post.vert post.frag shadow.frag)
+foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag post.vert post.frag shadow.frag ui.vert ui.frag)
   string(REPLACE "." "_" id "${shader}")
   string(SUBSTRING "${id}" 0 1 first)
   string(TOUPPER "${first}" first)
@@ -50,6 +50,8 @@ set(carview_sources
   main.cpp
   car_model.cpp
   hud.cpp
+  ui.cpp
+  game_hud.cpp
   process_time.cpp
   renderer.cpp
   reference.cpp

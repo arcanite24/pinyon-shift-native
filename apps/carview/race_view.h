@@ -25,6 +25,7 @@
 #include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
+#include "game_hud.h"
 #include "showroom.h"
 
 namespace world {
@@ -100,6 +101,8 @@ class RaceView {
   const race::RaceAward* award(race::CareerRecord& career, const race::WristbandTables& tables, double top_speed);
   const race::EventData& event() const { return event_; }
   std::string banner() const;
+  // What the HUD shows of the race (game_hud.h), from the session.
+  RaceHud hud_info() const;
   std::string results() const;  // one line a car, by place
   const race::Session& session() const { return *session_; }
   // The opponents' positions (x, z), for the maps.
@@ -133,6 +136,7 @@ class RaceView {
   std::filesystem::path bake_dir_;
   Options o_;
   race::EventData event_;
+  race::CarNames names_;
   race::Route route_;
   race::AiLineFile owt_;
   race::RaceLine line_;

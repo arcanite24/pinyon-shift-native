@@ -522,6 +522,11 @@ void test_rally_field() {
 }  // namespace
 
 int main() {
+  CHECK(race::CarNames::split_words("CamaroZL1") == "Camaro ZL1");
+  CHECK(race::CarNames::split_words("Exige240") == "Exige 240");
+  CHECK(race::CarNames::split_words("F40Competizione") == "F40 Competizione");
+  CHECK(race::CarNames::split_words("AstonMartin") == "Aston Martin");
+  CHECK(race::CarNames::split_words("SkylineGTRVSpecII") == "Skyline GTRV Spec II");
   // SPEC-RACE-AI faked PI offset: California 1062 -> +1 (x 0x0DB2AA51).
   CHECK(race::faked_pi_offset(1062) == 1);
   CHECK(race::faked_pi_offset(1419, true) == 5);

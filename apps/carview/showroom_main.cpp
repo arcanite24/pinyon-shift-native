@@ -39,6 +39,7 @@
 #include "audio/bake.h"
 #include "audio/radio.h"
 #include "audio/xml.h"
+#include "game_hud.h"
 #include "hud.h"
 #include "process_time.h"
 #include "reference.h"
@@ -213,6 +214,22 @@ bool write_wav(const std::filesystem::path& path, int rate, const std::vector<fl
 
 bool write_png(const std::string& path, uint32_t w, uint32_t h, int channels, const uint8_t* data) {
   return stbi_write_png(path.c_str(), int(w), int(h), channels, data, int(w) * channels) != 0;
+}
+
+// A menu page (HudState's menu fields) on the UI layer, 1280 x 720, to a PNG.
+bool write_menu_png(const HudState& st, const std::string& path) {
+  carview::DriveHud d;
+  d.driving = false;
+  d.menu_title = st.menu_title;
+  d.menu = st.menu;
+  d.menu_selected = st.menu_selected;
+  carview::ui::List list;
+  // A backdrop for the glass panel.
+  list.rect(0, 0, 1280, 720, carview::ui::rgba(70, 92, 120), 0, carview::ui::rgba(150, 128, 96));
+  carview::build_drive_hud(list, d, 1280, 720);
+  std::vector<uint8_t> rgba;
+  carview::ui::rasterize(list.items(), rgba, 1280, 720);
+  return write_png(path, 1280, 720, 4, rgba.data());
 }
 
 bool read_png(const std::string& path, int channels, uint32_t w, uint32_t h, std::vector<uint8_t>& out,
@@ -1404,9 +1421,8 @@ int run_drive(int argc, char** argv) {
       }
       st.menu_selected = 1;
     }
-    const HudImage img = draw_hud(st, 3);
-    if (!write_png(menu_png.string(), img.width, img.height, 4, img.rgba.data())) return 1;
-    std::printf("menu: %ux%u to %s\n", img.width, img.height, menu_png.string().c_str());
+    if (!write_menu_png(st, menu_png.string())) return 1;
+    std::printf("menu: 1280x720 to %s\n", menu_png.string().c_str());
     return 0;
   }
   const bool car_given = !car.empty();
@@ -1696,9 +1712,8 @@ int run_drive(int argc, char** argv) {
       int sel = 0;
       page.fill(st.menu_title, st.menu, sel);
       st.menu_selected = sel;
-      const HudImage img = draw_hud(st, 2);
       const std::string f = career_png.string() + "_" + std::to_string(n) + ".png";
-      if (!write_png(f, img.width, img.height, 4, img.rgba.data())) return 1;
+      if (!write_menu_png(st, f)) return 1;
       std::printf("career: %s\n", f.c_str());
       for (const auto& l : st.menu) std::printf("career:   %s\n", l.c_str());
       const size_t before = st.menu.empty() ? 0 : st.menu.size();
@@ -2902,7 +2917,8 @@ int run_drive(int argc, char** argv) {
       auto discount = [&]() {
         return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
       };
-      auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
+      bool legacy_hud_cleared = false;
+      auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
         if (menu) menu->fill(st);
@@ -2934,11 +2950,22 @@ int run_drive(int argc, char** argv) {
         st.rpm = vehicle.rpm();
         st.redline_rpm = vehicle.params().redline_rpm;
         st.abs = vehicle.abs_active();
-        const int scale = hud_scale(height);
-        HudImage img = draw_hud(st, scale);
-        const int margin = -8 * scale;
-        hud_height = int(img.height);
-        renderer.set_overlay(std::move(img.rgba), img.width, img.height, margin, margin);
+        // The UI layer (game_hud.h); the old panel's layer is cleared once.
+        carview::DriveHud d;
+        d.kmh = st.kmh, d.rpm = st.rpm, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs;
+        d.time = vehicle.time();
+        carview::RaceHud race_hud;
+        const bool race_line = race && banner == race_banner();
+        if (race) race_hud = race->hud_info(), d.race = &race_hud;
+        if (!race_line) d.toast = banner;
+        d.menu_title = st.menu_title;
+        d.menu = st.menu;
+        d.menu_selected = st.menu_selected;
+        carview::ui::List list;
+        carview::build_drive_hud(list, d, float(width), float(height));
+        renderer.set_ui(list.items());
+        if (!legacy_hud_cleared) renderer.set_overlay({}, 0, 0, 0, 0, 0), legacy_hud_cleared = true;
+        hud_height = int(carview::drive_hud_dial_height(float(height)));
       };
       // The radio's popup (overlay layer 3), right-aligned above the HUD
       // panel; redrawn when what it shows changes.
@@ -3311,7 +3338,7 @@ int run_drive(int argc, char** argv) {
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), every));
           if (hud) {
-            set_hud(int(height), vehicle.time() < notice_until  ? notice
+            set_hud(int(width), int(height), vehicle.time() < notice_until  ? notice
                                  : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
                                                                   : club_banner());
@@ -3447,6 +3474,7 @@ int run_drive(int argc, char** argv) {
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
           for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+          renderer.set_ui({});
           popup_key.clear();
           save_now("map");
         };
@@ -3874,8 +3902,10 @@ int run_drive(int argc, char** argv) {
               }
               if (e.key.key == SDLK_H) {
                 show_hud = !show_hud;
-                if (!show_hud)
+                if (!show_hud) {
                   for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+                  renderer.set_ui({});
+                }
                 popup_key.clear();
                 minimap_at = -1;
               }
@@ -4023,7 +4053,7 @@ int run_drive(int argc, char** argv) {
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
                             baked_cars[pick].c_str());
-            set_hud(h,
+            set_hud(w, h,
                     picking                          ? std::string(line)
                     : vehicle.time() < notice_until  ? notice
                     : race ? race_banner()
