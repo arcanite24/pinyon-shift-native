@@ -5,7 +5,8 @@
 param(
     [string]$BuildDir = 'build',
     [string]$Config = 'Release',
-    [switch]$Clean
+    [switch]$Clean,
+    [string]$Target = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -26,5 +27,5 @@ $build = Join-Path $root $BuildDir
 if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 cmake -S $root -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
-cmake --build $build
+if ($Target) { cmake --build $build --target $Target } else { cmake --build $build }
 exit $LASTEXITCODE

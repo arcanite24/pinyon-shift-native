@@ -82,3 +82,8 @@ add_test(NAME radio_tests COMMAND radio_tests)
 add_executable(race_tests race_tests.cpp)
 target_link_libraries(race_tests PRIVATE shift_race)
 add_test(NAME race_tests COMMAND race_tests)
+
+# The Pinyon Shift reference save's counts (FORMAT-PROFILE Tests) over the
+# plaintext exports in out/profile (skipped, exit 77, without them).
+add_test(NAME profile_import_counts COMMAND profile-import --check ${CMAKE_SOURCE_DIR}/out/profile)
+set_tests_properties(profile_import_counts PROPERTIES SKIP_RETURN_CODE 77 LABELS corpus)
