@@ -701,6 +701,24 @@ question Q38)" and "Colour byte order"). Built:
   braking zone peaks at -14.8 m/s^2 (the oracle -16.8). Scenario B's ABS
   phase 12.06 (oracle 11.9 to 12.1); the turn circle 3.35 m (3.37). Not
   chased.
+- **The skidpad (2026-11-21, physics_tests, report only).** Under the
+  AI's controls on flat ground, held at speed, with the road wheels at a
+  fixed angle, the R34 reaches the oracle's cornering. At 28 m/s it holds
+  5.0, 9.5, 12.8 and 14.3 m/s^2 at 1, 2, 3 and 4 deg, peaking at 14.8.
+  At 20 m/s it peaks at 14.7. Steady grip isn't the gap.
+- **What the lap loses instead: speed while cornering.** From 600 to
+  650 m both cars are at full throttle in third on asphalt. The oracle
+  gains 131 -> 137 km/h at 13 to 15 m/s^2 lateral; ours loses
+  126 -> 120 at about 10. On the 1,025 to 1,100 m straight our third
+  gear pulls as hard as the oracle's (2.56 against 2.32 m/s^2). So the
+  cornering drag (the tyre force's rearward share at our slip angles:
+  front 0.5 to 0.8 of the peak at 13 to 14 m/s^2) or the rolling
+  resistance under lateral load costs more than the game's. Needed: the
+  oracle's longitudinal acceleration at a steady 12 to 14 m/s^2 corner at
+  full throttle, or the rule that sets the slip angle (and so the drag)
+  for a given lateral force. The pure-pursuit lookahead moves the lap
+  between +4.0 % (0.45 s) and +5.8 % (0.3 s) without a trend; left at
+  0.5 s.
 
 ## Q41 (M4): free-roam traffic (SPEC-TRAFFIC 33788840)
 

@@ -336,6 +336,44 @@ void turn_circle(const drive::CarParams& p) {
   GATE(near_rel(radius, 3.37, 0.02));
 }
 
+// The skidpad (report only, ours; Q40's corner): under the AI's controls,
+// held at a speed by the gas, the road wheels at a fixed angle; the steady
+// lateral acceleration (speed x yaw rate) and both axles' normalised slip
+// angles after 4 s. Q40's oracle turns at 12 to 14 m/s^2 on 3 to 4 deg.
+void skidpad(const drive::CarParams& p) {
+  const drive::FlatGround flat;
+  for (double speed : {20.0, 28.0}) {
+    std::printf("skidpad at %.0f m/s:", speed);
+    for (double deg : {1.0, 2.0, 3.0, 4.0, 6.0, 8.0}) {
+      drive::Vehicle v(p);
+      v.set_ai_controls(true);
+      v.reset({0, 0, 0}, 0);
+      for (int i = 0; i < 2; ++i) v.step({}, flat);
+      const double steer = deg * kPi / 180 / p.max_steer;
+      double ay = 0, sy_f = 0, sy_r = 0;
+      int n = 0, since = 0;
+      for (int k = 0; k < 120 * 40; ++k) {
+        const double sp = v.speed();
+        const bool cornering = sp >= speed - 0.3 || k > 120 * 25;
+        const double gas = std::clamp((speed - sp) * 0.8, 0.0, 1.0);
+        v.step({cornering ? steer : 0.0, gas, 0, false}, flat);
+        if (!cornering) since = 0;
+        else if (++since > 120 * 4 && since <= 120 * 6) {
+          ay += v.speed() * std::fabs(v.angular_velocity().y);
+          sy_f += 0.5 * (std::fabs(v.wheels()[0].slip_angle) + std::fabs(v.wheels()[1].slip_angle));
+          sy_r += 0.5 * (std::fabs(v.wheels()[2].slip_angle) + std::fabs(v.wheels()[3].slip_angle));
+          ++n;
+        }
+        if (since > 120 * 6) break;
+      }
+      if (n) std::printf("  %.0f deg: %.1f m/s^2 (slip f %.2f r %.2f, %.1f m/s)", deg, ay / n, sy_f / n, sy_r / n,
+                         v.speed());
+      else std::printf("  %.0f deg: -", deg);
+    }
+    std::printf("\n");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -383,6 +421,7 @@ int main() {
   scenario_a(p);
   scenario_b(p);
   turn_circle(p);
+  skidpad(p);
   const char* g = std::getenv("PHYSICS_GATE");
   const bool gate = !g || std::atoi(g) != 0;
   std::printf("physics_tests: %d failures; %d scenario gate misses%s; %d report-only misses (SPEC_QUESTIONS)\n",
