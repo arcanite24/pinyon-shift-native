@@ -1605,6 +1605,20 @@ light on the road); (c) the glow's intensity and blend against the post
 chain's exposure. A shader/technique list with parameter names is
 enough; no capture needed.
 
+## Q59 (M6/UI, not blocking): skills, the chain and popularity
+
+The HUD's skill chain and the popularity rank disc (947_HUD DrivingSkill
+and PopularityBar; SPEC-UI-LAYOUTS b rows 115-116, states measured) are
+laid out, but nothing says what drives them, so the engine draws neither
+(interim: no skill scoring, no rank). Needed, narrow: (a) the skill list
+(RaceFeats ids) and each skill's trigger and points (drift angle/speed,
+draft distance, near miss, air, clean pass), from tunables if they are
+data; (b) the chain: how points add up, the multiplier's steps, what
+breaks or banks a chain (a contact, a time without a skill); (c)
+popularity: points to rank (the 250-to-1 ladder and its thresholds), and
+what the rank unlocks; (d) where the banked points go (the save field).
+Tunable file names and the rules as tables are enough; no capture needed.
+
 ## Q58 (M1/M5/M6): string tables and fonts
 
 FORMAT-STRINGTABLES answered in docs/formats/STRINGTABLES.md ebae56f2
