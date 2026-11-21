@@ -59,8 +59,12 @@ struct ShowroomFrame {
   // distance and its band, and where the props fade out at the gather's
   // edge (start, end), in metres from the eye. Band 0: off.
   float world_fade[4];
+  // The drive's light (showroom.frag; set by set_world_light's state each
+  // frame): xyz the world's up in the car frame, w 1 to light the car by
+  // the world's sun and sky rather than the studio.
+  float drive[4];
 };
-static_assert(sizeof(ShowroomFrame) == 352);
+static_assert(sizeof(ShowroomFrame) == 368);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -485,6 +489,7 @@ class Showroom {
   std::vector<VkDescriptorPool> world_pools_;
   uint32_t world_pool_left_ = 0;
   float world_sun_[4] = {0.3848f, 0.8754f, 0.2926f, 1}, world_up_[4] = {0, 1, 0, 1};
+  bool world_lit_ = false;  // set_world_light was called: light the car by the world's sun and sky
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
 };
 

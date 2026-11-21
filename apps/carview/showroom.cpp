@@ -1453,6 +1453,17 @@ bool Showroom::upload(std::string& error) {
   if (guest_) return true;
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) {
+    if (world_lit_ && draw_car_) {
+      // The drive: the car takes the world's sun and sky (showroom.frag).
+      for (int k = 0; k < 3; ++k) frame_.key_light[k] = world_sun_[k], frame_.drive[k] = world_up_[k];
+      frame_.key_light[3] = 1.0f;
+      frame_.fill_light[3] = 0.0f;
+      frame_.options[0] = 1.0f;
+      frame_.drive[3] = 1.0f;
+      for (int k = 0; k < 3; ++k) frame_.tint[k] = frame_.reflect_tint[k] = 1.0f;
+    } else {
+      frame_.drive[3] = 0.0f;
+    }
     const bool shadows = shadows_on();
     if (shadows) {
       place_shadow();
@@ -2411,6 +2422,7 @@ void Showroom::set_world_transform(const float transform[16]) {
 void Showroom::set_world_light(const float sun[3], const float up[3], float exposure) {
   for (int k = 0; k < 3; ++k) world_sun_[k] = sun[k], world_up_[k] = up[k];
   world_up_[3] = exposure;
+  world_lit_ = true;
 }
 
 bool Showroom::allocate_world_set(VkDescriptorSet& out, std::string& error) {

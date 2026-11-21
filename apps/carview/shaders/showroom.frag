@@ -21,8 +21,14 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 reflect_tint;
   mat4 transparent_view_projection;  // glass and lamp covers
   vec4 stripe;  // the factory stripe colour (linear rgb)
+  mat4 shadow_matrix;  // the drive's sun shadow (world.frag's block)
+  vec4 shadow;
+  vec4 shadow_bias;
+  vec4 world_fade;
+  vec4 drive;  // xyz world up in the car frame, w 1 in the drive: sun and sky lighting
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
+layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 
 layout(set = 1, binding = 0) uniform sampler2D slot0;
 layout(set = 1, binding = 1) uniform sampler2D slot1;
@@ -59,7 +65,45 @@ vec3 encode_srgb(vec3 c) {
 layout(constant_id = 0) const bool kLinearOut = false;
 vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
 
+// The drive's light (ours, as world.frag's: the daytime free-roam
+// constants of WORLD-MATERIALS, Lighting). The sky the paint reflects is
+// the world's gradient with a soft sun glow, over a sunlit desert floor
+// that meets it at a horizon line sharpening with the surface's gloss.
+const vec3 kSunColour = vec3(0.9695, 0.8358, 0.584);
+const vec3 kSkyColour = vec3(0.1687, 0.2229, 0.2746);
+const vec3 kGroundColour = vec3(0.1788, 0.1729, 0.1024);
+const vec3 kSkyHorizon = vec3(0.42, 0.56, 0.72);
+const vec3 kSkyZenith = vec3(0.05, 0.16, 0.50);
+const vec3 kDirtReflect = vec3(0.50, 0.29, 0.15);  // lit ground seen in a reflection (ours)
+
+vec3 drive_env(vec3 dir, float lod) {
+  vec3 up = normalize(frame.drive.xyz), sun = normalize(frame.key_light.xyz);
+  float rough = lod / 7.0;
+  float h = dot(dir, up);
+  vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(clamp(h, 0.0, 1.0), 0.55));
+  float toward = max(dot(dir, sun), 0.0);
+  sky = mix(sky, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - clamp(h, 0.0, 1.0)) * 0.55);
+  sky += kSunColour * pow(toward, mix(48.0, 6.0, rough)) * mix(0.9, 0.25, rough);
+  float edge = mix(0.02, 0.5, rough);
+  return mix(kDirtReflect * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
+}
+
+// The sun's shadow on the car (ours, world.frag's map): 1 where lit.
+float drive_shadow(vec3 p, vec3 n) {
+  if (frame.shadow.x < 0.5) return 1.0;
+  vec4 s = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x * 2.0, 1.0);
+  float edge = max(abs(s.x), abs(s.y));
+  if (edge >= 1.0 || s.z <= 0.0 || s.z >= 1.0) return 1.0;
+  vec2 uv = s.xy * 0.5 + 0.5;
+  float t = frame.shadow.y * 0.5;
+  float lit = 0.25 * (texture(shadow_map, vec3(uv + vec2(-t, -t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, -t), s.z)) +
+                      texture(shadow_map, vec3(uv + vec2(-t, t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, t), s.z)));
+  lit = mix(lit, 1.0, smoothstep(0.8, 1.0, edge));
+  return mix(frame.shadow.z, 1.0, lit);
+}
+
 vec3 env(vec3 dir, float lod) {
+  if (frame.drive.w > 0.5) return drive_env(dir, lod);
   return textureLod(environment, dir, lod).rgb * frame.options.y;
 }
 
@@ -165,6 +209,19 @@ void main() {
   vec3 h = normalize(view + key);
   vec3 highlight = pow(max(dot(n, h), 0.0), mix(8.0, 400.0, gloss)) * frame.key_light.w * gloss * frame.tint_light.rgb;
 
+  if (frame.drive.w > 0.5) {
+    // Sun and sky as the world has them: the sun's N.L under the shadow
+    // map, the two-colour hemisphere under the baked occlusion, the sun's
+    // highlight (normalised Blinn-Phong) and the sky's reflection.
+    vec3 up = normalize(frame.drive.xyz);
+    float ndl = max(dot(n, key), 0.0);
+    float lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
+    diffuse_light = kSunColour * ndl * lit * mix(0.6, 1.0, occlusion) +
+                    mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up)) * occlusion * 1.4;
+    reflection *= mix(0.5, 1.0, lit);
+    float power = mix(8.0, 400.0, gloss);
+    highlight = kSunColour * pow(max(dot(n, h), 0.0), power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
+  }
   vec3 colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
   if (klass == kGlass) {
     // Premultiplied: the tint over what is behind, plus the reflection.
