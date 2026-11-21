@@ -1434,3 +1434,16 @@ finish, so does the heats end earlier, or are its timings another
 measure? (c) 8 to 11 CAFF textures in ColoradoDirt's bin.zip fail our
 layout check ("sizes do not fit the layout", e.g. `_0x00000b64.bin`);
 is there a CAFF variant the world spec doesn't cover yet?
+
+## Q57 (polish): car lamps and their glow
+
+No spec text covers car lamps. Engine interim: red covers and tail-lamp
+techniques glow while a front wheel brakes, and cover tints (red, amber,
+clear) are picked by technique name; the showroom reference masks leave
+the lamps' additive glow out (IoU-g). Needed, narrow: (a) the brake-lamp
+rule (brake input, threshold) and which techniques it lights; (b)
+headlamps: when they are on (time of day, always) and what they draw
+(the emissive cover only, a glow card/sprite with its texture and size,
+light on the road); (c) the glow's intensity and blend against the post
+chain's exposure. A shader/technique list with parameter names is
+enough; no capture needed.
