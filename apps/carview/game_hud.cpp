@@ -224,6 +224,15 @@ void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, doubl
            TextStyle{.size = 72 * s * grow, .weight = 0.14f, .slant = 0.14f, .color = ui::fade(kGreen, a),
                      .align = Align::kCenter});
   }
+  if (r.phase == RaceHud::kRacing && r.wrong_way) {
+    // Wrong way: a red plate, top centre, pulsing.
+    const float pulse = 0.75f + 0.25f * float(std::cos(t * 6.2832 * 1.5));
+    const TextStyle ws{.size = 26 * s, .weight = 0.14f, .slant = 0.12f, .color = kText, .align = Align::kCenter};
+    const float ww = ui::List::measure("WRONG WAY", ws) + 64 * s, wy = 0.2f * h;
+    l.shadow(0.5f * w - 0.5f * ww, wy + 3 * s, 0.5f * w + 0.5f * ww, wy + 55 * s, kShadow, 10 * s, 12 * s);
+    l.rect(0.5f * w - 0.5f * ww, wy, 0.5f * w + 0.5f * ww, wy + 52 * s, ui::fade(kRed, pulse), 10 * s);
+    l.text(0.5f * w, wy + 13 * s, "WRONG WAY", ws);
+  }
   if (r.phase == RaceHud::kRacing) {
     // Position.
     const float pw = 132 * s, ph = 86 * s;

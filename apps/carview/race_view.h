@@ -155,6 +155,7 @@ class RaceView {
   int player_slot_ = 0;
   double player_start_ = 0, finish_progress_ = 0, stage_finish_progress_ = 0;
   double ppx_ = 0, ppz_ = 0;
+  double wrong_way_ = 0;  // s the player has driven against the line (ours)
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)
   bool stage_ = false;                    // a Rally stage (Options::stage_world)

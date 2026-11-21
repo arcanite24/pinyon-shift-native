@@ -37,6 +37,7 @@ struct RaceHud {
   int band_before = -1, band_after = -1, band_lo = 0, band_hi = -1;
   std::string band_name, band_next;
   bool band_up = false;
+  bool wrong_way = false;  // the player drives against the race (ours)
 };
 
 // The career page's board (ours), right of the page's list: the wristband

@@ -1087,11 +1087,14 @@ the interim noted here until a later polish sweep.
   line nearest its last waypoint (ours). Races on ribbon-2 routes run once
   to the sprint finish whatever `NumLaps` says (the spec's rule); `FR37`
   (ribbon-0 sprint, 3 laps) is untested.
-- **Race flow left out.** No event card, pre-race menu, cutscene camera,
-  finish screen or results screen (the banner carries the result, then
-  A/Enter continues in free roam at the route's post-race spot and Y
-  restarts); the pause menu's race item picks any runnable event. No
-  player wrong-way warning or rewind. Opponents show as red dots on the
+- **Race flow left out.** No pre-race menu, cutscene camera or rewind.
+  Ours (2026-11-21): an event card at the grid, the countdown, GO, the
+  results card (standings, credits, the wristband bar and a NEW WRISTBAND
+  banner), then A/Enter continues in free roam at the route's post-race
+  spot and Y restarts; the pause menu's race item picks any runnable
+  event. A WRONG WAY plate shows after 1 s facing back along the race
+  line (cos < -0.35) above 3 m/s; `--menu-png` writes `<name>_race.png`
+  with it. Opponents show as red dots on the
   minimap and the pause map (ours; the profiles' opponent icon is unmapped).
 - **Ribbon ground.** The far cars' road is the AI line's centre +- its half
   width plus 8 m, flat across (within 6 cm of the collision on the line

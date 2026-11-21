@@ -1492,6 +1492,25 @@ int run_drive(int argc, char** argv) {
       if (!write_png(hud_png.string(), 1280, 720, 4, rgba.data())) return 1;
       std::printf("hud: 1280x720 to %s\n", hud_png.string().c_str());
     }
+    {
+      // And <name>_race.png: a race's HUD mid-race, driving the wrong way.
+      carview::RaceHud r;
+      r.phase = carview::RaceHud::kRacing, r.event = "SAMPLE", r.circuit = true, r.lap = 2, r.laps = 4;
+      r.place = 3, r.cars = 8, r.clock = 74.2, r.best_lap = 40.07, r.wrong_way = true;
+      for (int i = 1; i <= 8; ++i)
+        r.rows.push_back({i == 3 ? "YOU" : "OPPONENT " + std::to_string(i), i, i == 3, false, -1});
+      carview::DriveHud d;
+      d.kmh = 42, d.rpm = 3100, d.redline_rpm = 7500, d.gear = 2, d.time = 0.1, d.race = &r;
+      carview::ui::List list;
+      list.rect(0, 0, 1280, 720, carview::ui::rgba(70, 92, 120), 0, carview::ui::rgba(150, 128, 96));
+      carview::build_drive_hud(list, d, 1280, 720);
+      std::vector<uint8_t> rgba;
+      carview::ui::rasterize(list.items(), rgba, 1280, 720);
+      auto race_png = menu_png;
+      race_png.replace_filename(menu_png.stem().string() + "_race.png");
+      if (!write_png(race_png.string(), 1280, 720, 4, rgba.data())) return 1;
+      std::printf("race: 1280x720 to %s\n", race_png.string().c_str());
+    }
     std::printf("menu: 1280x720 to %s\n", menu_png.string().c_str());
     return 0;
   }

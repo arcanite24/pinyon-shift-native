@@ -652,6 +652,14 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     }
   }
   session_->step(drive::Vehicle::kStep, samples_);
+  // Wrong way (ours: no player wrong-way rule in the specs): facing back
+  // along the line and moving; it builds over a second, clears in a third.
+  {
+    const auto& q = samples_[n];
+    const bool against = session_->started() && !session_->finished(n) && q.heading_cos < -0.35 && q.speed > 3;
+    wrong_way_ = against ? std::min(3.0, wrong_way_ + drive::Vehicle::kStep)
+                         : std::max(0.0, wrong_way_ - 3 * drive::Vehicle::kStep);
+  }
   // SHIFT_RACE_TRACE=<file>: every car 4 times a second (JSON lines).
   static FILE* trace = [] {
     const char* p = std::getenv("SHIFT_RACE_TRACE");
@@ -734,6 +742,7 @@ RaceHud RaceView::hud_info() const {
   h.stage = have_stage_track_;
   h.clock = s.clock();
   h.digit = s.digit();
+  h.wrong_way = wrong_way_ > 1.0;
   h.cars = int(n + 1);
   h.laps = s.laps();
   h.lap = s.lap(n);
