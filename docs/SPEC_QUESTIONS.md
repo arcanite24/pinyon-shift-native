@@ -1435,6 +1435,43 @@ measure? (c) 8 to 11 CAFF textures in ColoradoDirt's bin.zip fail our
 layout check ("sizes do not fit the layout", e.g. `_0x00000b64.bin`);
 is there a CAFF variant the world spec doesn't cover yet?
 
+Q56 answered in horizon1-recomp docs/specs/V4_CONTENT.md ("Where a
+stage ends", "The heats") and docs/formats/WORLD_MATERIALS.md ("CAFF
+`.bin`"), 92071f5c (branch reimplementation-plan, 2026-11-21).
+
+- (a) Probable: progress runs over the track's range [`StartLine`,
+  `FinishLine`] (0 and 0.9821 on every Rally track); the stage finishes
+  when progress reaches `FinishLine`, and split k sits at StartLine +
+  (FinishLine - StartLine) x Split_k, so the last split ends with the
+  range. From v4 code: the track loader keeps both values, the range
+  setter takes them and the split inserter interpolates inside the
+  range. No finish gantry, transform or trigger in the route file.
+  Progress = distance along the AI line from the start line / `Length`
+  is probable (festival fits), not traced on a stage. Your interim
+  (gantry + 0.9821 x Length along the line) is the rule; keep it.
+- (b) The heats do not end earlier. Track 1137 is track 1132's road:
+  same waypoints, post-race location, identical AI line file, same
+  Length 4,548 and range, so ~4,467 m; 130 s is 124 km/h, a normal
+  stage pace. The 1137 timing row is placeholder data (86.1 s total,
+  first split 1.1 %, 187 km/h implied; NumSplitPoints 4 but no
+  SplitPoints rows, the stages are the reverse). Interim: no split
+  display; AI times from the row's total by the spec's formula.
+- (c) Not a texture variant: the texel offset is not fixed. The CAFF
+  `.data` block size (u32 at 0x1C4) leads to the source-path length;
+  the path follows 8 bytes later, then 0x40 bytes (texel size u32 at
+  path end + 0x1A), then the texels at the next 4-byte boundary.
+  Colorado's paths are 100 bytes (texels at 0x2B0); ColoradoDirt's are
+  118 (texels at 0x2C4), so a fixed 0x2B0 reads every ColoradoDirt
+  CAFF 20 bytes off with 20 extra bytes at the end, not only the
+  failing ones. With the computed offset 1,821 of 1,824 fit the 2D
+  layout exactly. The 13 non-power-of-two ones fit too: eleven 768 wide
+  (`_0x00000b64` is 768 x 128, 10 levels, DXT1), 255 x 256, 7 x 256; if
+  your check fails 8 to 11 of these, the width handling differs from
+  tools/re/world-materials.py, not the file. The other 3 (`_0x000001a3`,
+  `_0x00000793`, `_0x0000192a`; Colorado has 3 alike) are resource kind
+  2 at 0x1AC, block size 0x3C, 256 x 256 DXT1, 196,608 bytes = six
+  faces: probably cube maps, face order unverified.
+
 ## Q57 (polish): car lamps and their glow
 
 No spec text covers car lamps. Engine interim: red covers and tail-lamp
