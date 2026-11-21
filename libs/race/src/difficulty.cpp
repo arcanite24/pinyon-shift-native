@@ -54,7 +54,7 @@ void DriverAi::init(const SkillRow& skill, const RubberbandRow* row, uint64_t se
   roll();
   braking_ = base_braking_, cornering_ = base_cornering_;
   torque_ = skill_.nominal_torque_scale;
-  state_ = State::kNormal, mode_ = 0, catch_up_ = false;
+  state_ = State::kNormal, mode_ = 0, catch_up_ = false, max_ = false;
 }
 
 void DriverAi::update(double gap, int places_behind) {
@@ -63,16 +63,19 @@ void DriverAi::update(double gap, int places_behind) {
   if (enabled_) {
     const double behind = -gap;
     const double per = row_.catch_up_gap_per_position * std::max(0, places_behind);
-    if (behind > skill_.dist_behind_for_max) next = State::kMaxPerformance;
+    // Behind the player: catch-up (with its hysteresis) over the far-behind
+    // maxima; ahead: rubber-band mode.
+    if (has_row_ && gap < 0) {
+      if (!catch_up_ && behind > row_.start_catch_up + per) catch_up_ = true;
+      else if (catch_up_ && behind < row_.stop_catch_up + per) catch_up_ = false;
+    } else catch_up_ = false;
+    max_ = behind > skill_.dist_behind_for_max;
+    if (catch_up_) next = State::kCatchUp;
+    else if (max_) next = State::kMaxPerformance;
     else if (gap >= 0 && gap >= row_.start_rubberbanding && !row_.modes.empty()) {
       next = State::kRubberband;
       if (gap > row_.start_torque_cut) torque = torque_cut(row_, gap);
-    } else if (has_row_ && gap < 0) {
-      if (!catch_up_ && behind > row_.start_catch_up + per) catch_up_ = true;
-      else if (catch_up_ && behind < row_.stop_catch_up + per) catch_up_ = false;
-      if (catch_up_) next = State::kCatchUp;
     }
-    if (next != State::kCatchUp) catch_up_ = false;
   }
   if (next != state_) {
     // A threshold crossed: roll again; entering rubber-band mode draws a mode.
@@ -94,13 +97,13 @@ void DriverAi::update(double gap, int places_behind) {
   }
   if (state_ == State::kRubberband && gap > row_.start_torque_cut) mode_ = 8;
   braking_ = base_braking_, cornering_ = base_cornering_;
-  if (state_ == State::kMaxPerformance) braking_ = skill_.braking_max, cornering_ = skill_.cornering_max;
-  else if (state_ == State::kCatchUp) {
+  if (max_) braking_ = skill_.braking_max, cornering_ = skill_.cornering_max;
+  if (state_ == State::kCatchUp) {
     braking_ += (1.0 - braking_) * row_.catch_up_factor;
     cornering_ += (1.25 - cornering_) * row_.catch_up_factor;
   }
-  // Modes 1-7 (under/over braking and cornering, lags): their Amount's
-  // meaning is not in the spec; interim no effect.
+  // The drawn modes (under/over braking or cornering, lags): which id is
+  // which and what Amount means are not in the spec; interim no effect.
   torque_ = skill_.nominal_torque_scale * torque;
 }
 

@@ -79,7 +79,6 @@ class RaceView {
     double px = 0, pz = 0;  // before the step
     bool far = false;
   };
-  const drive::Ground& ground_for(size_t i, double x, double z, const drive::Ground& near) const;
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
   std::string name_of(size_t i) const;
 
@@ -108,7 +107,7 @@ class RaceView {
   std::vector<race::LaneParams> lane_params_;
   std::vector<race::CarSample> samples_;
   std::vector<drive::ContactBody> contacts_;
-  int contact_count_ = 0, resets_ = 0, far_steps_ = 0;
+  int contact_count_ = 0, resets_ = 0, far_steps_ = 0, hole_steps_ = 0;
   double cx_ = 0, cz_ = 0, radius_ = 0;
   bool center_known_ = false;
 };

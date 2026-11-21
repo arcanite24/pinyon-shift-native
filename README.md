@@ -743,12 +743,16 @@ the interim noted here until a later polish sweep.
   (peak 1.12 at 1.8 times), so the engine's own level wants the look.
 - **Races: against the oracle.** `FR22` at Med, the player's car under
   the AI from slot 05 (our controller; the oracle's player path is not
-  replayed): AI mean race time 161.9 s (oracle 161.53 s, gate 156.7 to
-  166.4), AI mean distance 4,654 m (oracle 4,637), the winner from slot 00
-  (the front three), the player 5th (oracle 3rd: outside "within one");
-  the winner's margin 14.0 s (oracle 7.6). `FR16`: 7 of 8 finish, slot to
-  finish 4,079 to 4,186 m (spec 4,079 to 4,142), the player 138 s (oracle
-  124.8 s); its rear-drive cars spin and reset (10 resets a run).
+  replayed), three seeds: AI mean race time 163.5, 164.1 and 160.6 s (the
+  last over 6 finishers; oracle 161.53 s, gate 156.7 to 166.4), AI mean
+  distance 4,645 to 4,677 m (oracle 4,637), the winner from slot 00 each
+  time (the front three), the player 5th to 7th (oracle 3rd: outside
+  "within one"); the winner's margin about 14 s (oracle 7.6). `FR16`: 5 to
+  7 of 8 finish, slot to finish 4,079 to 4,186 m (spec 4,079 to 4,142), the
+  player 138 s (oracle 124.8 s); its rear-drive cars spin and reset (10 to
+  15 resets a run). Headless runs outrun the background gather
+  (`--async-stream`, `--bench`: 4 to 7 times real time), so the player
+  falls off the collision there; the window's real-time pace was not run.
 - **Race AI interims (ours where the spec has none).** The steer is capped
   at the pad's speed-narrowed lock (past it the fronts slide wide); a car
   more than 1 m off its lane slows 8 % a metre (the corner speed is the
@@ -765,8 +769,9 @@ the interim noted here until a later polish sweep.
   races) or ribbon-2 circuits; no player wrong-way warning or rewind.
   Opponents are not on the minimap.
 - **Ribbon ground.** The far cars' road is the AI line's centre +- its half
-  width plus 8 m, flat across: a car on it laps a little differently from
-  one on the collision. Refactor candidate: step the far cars on a worker
+  width plus 8 m, flat across (within 6 cm of the collision on the line
+  near the grid): a car on it laps a little differently from one on the
+  collision. A near car with no collision under it steps on it too. Refactor candidate: step the far cars on a worker
   (they are independent of the player's ground).
 - **AI drivers.** The physics is the cost (46 to 74 us a car a step); the
   cars step one after another on one thread (a worker pool is the next

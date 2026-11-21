@@ -3037,6 +3037,10 @@ int run_drive(int argc, char** argv) {
     }
   }
   if (status == 0 && !next_car.empty()) {
+    if (race) {
+      std::printf("race: left for a car change\n");
+      race.reset();
+    }
     car = next_car;
     next_car.clear();
     again = true;

@@ -63,7 +63,7 @@ class DriverAi {
   double braking_ = 1, cornering_ = 1, torque_ = 1;
   State state_ = State::kNormal;
   int mode_ = 0, rolls_ = 0;
-  bool catch_up_ = false;
+  bool catch_up_ = false, max_ = false;
 };
 
 }  // namespace race

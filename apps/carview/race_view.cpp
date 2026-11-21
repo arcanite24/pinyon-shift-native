@@ -130,16 +130,31 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     c.body->reset({s.x, y + 0.05, s.z}, std::atan2(s.fx, s.fz));
     c.px = s.x, c.pz = s.z;
   }
+  // The ribbon against the collision: heights at the line's centre points
+  // within 300 m of the player's slot (a car handed between the two should
+  // not drop or climb).
+  {
+    const auto& ps = slots_[size_t(player_slot_)];
+    std::vector<double> dy;
+    for (size_t i = 0; i < owt_.points.size(); i += 5) {
+      const auto& q = owt_.points[i];
+      if (std::hypot(q.x - ps.x, q.z - ps.z) > 300) continue;
+      double a = 0, b = 0;
+      if (world::ground_height(ground, q.x, q.z, q.y + 10, a) && world::ground_height(*ribbon_, q.x, q.z, q.y + 10, b))
+        dy.push_back(b - a);
+    }
+    if (!dy.empty()) {
+      std::sort(dy.begin(), dy.end());
+      std::printf("race: ribbon minus collision height at %zu line points: median %.2f m, %.2f to %.2f m\n", dy.size(),
+                  dy[dy.size() / 2], dy.front(), dy.back());
+    }
+  }
   return true;
 }
 
 void RaceView::release_models() {
   for (auto& c : cars_) c.model = nullptr;
   models_.clear();
-}
-
-const drive::Ground& RaceView::ground_for(size_t i, double, double, const drive::Ground& near) const {
-  return cars_[i].far ? static_cast<const drive::Ground&>(*ribbon_) : near;
 }
 
 drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::Input& user) {
@@ -208,8 +223,16 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     const double d = std::hypot(at.x - cx, at.z - cz);
     if (c.far && d < radius - 80) c.far = false;
     else if (!c.far && d > radius - 40) c.far = true;
-    far_steps_ += c.far;
-    c.body->step(in, ground_for(k, at.x, at.z, near));
+    // Near but with no collision under the car (a hole in the strips, or
+    // a gather still on its way): the ribbon for this step.
+    bool ribbon = c.far;
+    if (!ribbon) {
+      double gy = 0;
+      ribbon = !world::ground_height(near, at.x, at.z, at.y + 3, gy) || gy < at.y - 10;
+      hole_steps_ += ribbon;
+    }
+    far_steps_ += ribbon;
+    c.body->step(in, ribbon ? static_cast<const drive::Ground&>(*ribbon_) : near);
   }
   // Contacts: the player and traffic in group 1, the field in 0; a car
   // just reset touches nothing for 3 s.
@@ -297,7 +320,7 @@ std::string RaceView::banner() const {
     clock_text(c, t, sizeof t);
     const char* go = c < 1.5 ? "GO!  " : "";
     if (circuit_)
-      std::snprintf(b, sizeof b, "%sLAP %d/%d  P%d/%zu  %s", go, std::max(1, s.lap(n)), s.laps(), s.car(n).place, n + 1, t);
+      std::snprintf(b, sizeof b, "%sLAP %d/%d  P%d/%zu  %s", go, s.lap(n), s.laps(), s.car(n).place, n + 1, t);
     else
       std::snprintf(b, sizeof b, "%sP%d/%zu  %s  %.0f m to go", go, s.car(n).place, n + 1, t,
                     std::max(0.0, finish_progress_ - field_->progress(n)));
@@ -327,8 +350,10 @@ std::string RaceView::results() const {
 
 std::string RaceView::summary() const {
   char b[240];
-  std::snprintf(b, sizeof b, "race: %d car-to-car contacts, %d resets, %.1f car-seconds on the ribbon; progress", contact_count_,
-                resets_, far_steps_ * drive::Vehicle::kStep);
+  std::snprintf(b, sizeof b,
+                "race: %d car-to-car contacts, %d resets, %.1f car-seconds on the ribbon (%.1f over collision holes); "
+                "progress",
+                contact_count_, resets_, far_steps_ * drive::Vehicle::kStep, hole_steps_ * drive::Vehicle::kStep);
   std::string s = b;
   for (size_t k = 0; k <= cars_.size(); ++k) s += " " + std::to_string(int(field_->progress(k)));
   return s;

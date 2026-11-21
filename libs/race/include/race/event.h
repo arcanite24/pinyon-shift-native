@@ -26,7 +26,7 @@ struct SkillRow {
 };
 
 struct RubberbandModeChoice {
-  int mode = 0;  // 0 none, 1/2 under-braking/cornering, 3/4 over-, 5-7 lags (spec order)
+  int mode = 0;  // AIRubberbandModes id; what each id does is not in RACE_AI.md (no effect yet)
   double frequency = 0, amount = 0;
 };
 

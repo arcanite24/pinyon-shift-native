@@ -211,8 +211,12 @@ void test_difficulty() {
   CHECK(ai.state() == race::DriverAi::State::kCatchUp);
   ai.update(-29, 0);
   CHECK(ai.state() == race::DriverAi::State::kNormal);
-  ai.update(-250, 0);  // more than 200 m behind: the maxima
-  CHECK(ai.state() == race::DriverAi::State::kMaxPerformance && near(ai.braking(), 0.6) && near(ai.cornering(), 0.5));
+  ai.update(-250, 0);  // more than 200 m behind: the maxima, with catch-up on top
+  CHECK(ai.state() == race::DriverAi::State::kCatchUp && near(ai.braking(), 0.8) && near(ai.cornering(), 0.875));
+  race::DriverAi lone;  // no rubber-band row: the maxima alone
+  lone.init(e.skills[0], nullptr, 7);
+  lone.update(-250, 0);
+  CHECK(lone.state() == race::DriverAi::State::kMaxPerformance && near(lone.braking(), 0.6) && near(lone.cornering(), 0.5));
   race::DriverAi off;
   off.init(e.skills[0], &row, 7, false);
   off.update(250, -1);
