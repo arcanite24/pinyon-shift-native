@@ -1651,3 +1651,5 @@ SPEC-UI-LAYOUTS answered in docs/specs/UI_LAYOUTS.md 793f9ff9
 AI steering answered in RACE_AI.md 89fa4414: no speed-sensitive lock (wheel = 41.85 deg x steer, only the full lock bounds it; Minis use up to 13 deg at speed, mostly counter-steer); fit delta = 0.27 alpha + 0.29 beta, alpha the bearing of the line point 1.0 s x v ahead and beta the slip, both from the body heading (probable, R2 0.69); interim: that rule, no cap below the full lock.
 
 UI states answered in UI_LAYOUTS.md af0e37b6; captures in out/oracle/ui
+
+UI follow-up Q1-Q3 answered in docs/specs/UI_SCREENS.md 943ecc1f: HUD 947_HUD, pause 925_PAUSE_MENU, map H_MAP, help bar BUTTON_BAR_SCENE, finish H_POST_RACE_FINISHED then H_POST_RACE_RESULTS (probable); 7xx and split-screen scenes never open in retail; 63 scenes unreferenced; text node = alignment point (left/centre probable, right guess) at the line's vertical middle; material floats 0-3 = diffuse RGBA (confirmed), tint and crop rule 0 <= s*u + o <= 1 probable; pre-race and post-race pages interim, four frame checks listed.
