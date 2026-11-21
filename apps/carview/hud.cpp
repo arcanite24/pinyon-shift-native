@@ -178,6 +178,7 @@ const char* PauseMenu::label(int item) {
   switch (item) {
     case kResume: return "resume";
     case kMap: return "map";
+    case kEvent: return "race";
     case kChangeCar: return "change car";
     case kReset: return "reset to road";
     case kQuit: return "quit";
@@ -189,7 +190,8 @@ void PauseMenu::fill(HudState& st) const {
   if (!open) return;
   st.menu_title = "paused";
   st.menu.clear();
-  for (int k = 0; k < kCount; ++k) st.menu.push_back(label(k));
+  for (int k = 0; k < kCount; ++k)
+    st.menu.push_back(k == kEvent && !event_label.empty() ? event_label : std::string(label(k)));
   st.menu_selected = selected;
 }
 

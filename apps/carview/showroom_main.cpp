@@ -1377,22 +1377,33 @@ int run_drive(int argc, char** argv) {
   race::CareerRecord career;
   race::WristbandTables wristbands;
   double race_top_speed = 0;
+  // Opens event `id`'s race and puts the player on its slot; false with
+  // `why` (the drive goes on in free roam).
+  auto start_race = [&](const std::string& id, std::string& why) {
+    race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
+    auto r = std::make_unique<carview::RaceView>(bake_dir);
+    if (!r->open(world_dir.parent_path().parent_path().parent_path(), id, race_options, why)) return false;
+    race = std::move(r);
+    race->player_spawn(spawn);
+    have_spawn = true;
+    race_top_speed = 0;
+    if (wristbands.levels.empty()) {
+      std::string e;
+      if (!race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e))
+        std::fprintf(stderr, "carview: note: no wristband tables: %s\n", e.c_str());
+    }
+    return true;
+  };
   if (!race_event.empty()) {
     if (world_dir.empty()) {
       std::fprintf(stderr, "carview: --event needs the world (--world)\n");
       return 2;
     }
-    race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
-    race = std::make_unique<carview::RaceView>(bake_dir);
     std::string why;
-    if (!race->open(world_dir.parent_path().parent_path().parent_path(), race_event, race_options, why)) {
+    if (!start_race(race_event, why)) {
       std::fprintf(stderr, "carview: --event %s: %s\n", race_event.c_str(), why.c_str());
       return 2;
     }
-    race->player_spawn(spawn);
-    have_spawn = true;
-    if (!race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &why))
-      std::fprintf(stderr, "carview: note: no wristband tables: %s\n", why.c_str());
   }
   // The career (SPEC-EVENT-REWARDS) from the save.
   if (have_saved) {
@@ -1494,6 +1505,23 @@ int run_drive(int argc, char** argv) {
     std::sort(baked_cars.begin(), baked_cars.end());
   }
   std::string next_car;
+  // The pause menu's event pick (ours): every race carview runs, by
+  // HorizonEventID; picking one restarts the drive on its grid. After a
+  // finish, Continue leaves the race at the route's post-race spot and
+  // Restart runs it again (SPEC-EVENT-REWARDS, Results screen).
+  std::vector<std::string> event_ids;
+  if (!world_dir.empty()) {
+    std::vector<race::EventSummary> all;
+    std::string e;
+    if (race::list_events(world_dir.parent_path().parent_path().parent_path(), all, &e))
+      for (const auto& ev : all)
+        if (ev.ribbon >= 0 && !(ev.ribbon == 2 && ev.laps > 1)) event_ids.push_back(ev.horizon_id);
+  }
+  size_t event_pick = 0;
+  for (size_t k = 0; k < event_ids.size(); ++k)
+    if (event_ids[k] == race_event) event_pick = k;
+  std::string next_event;
+  bool leave_race = false;
   // The free-roam progress outlives car changes; the map loads once.
   freeroam::Collectibles collectibles;
   freeroam::Progress progress;
@@ -2284,7 +2312,10 @@ int run_drive(int argc, char** argv) {
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
       // The race line on the HUD (RaceView: the count, the lap, place and
       // time, the result).
-      auto race_banner = [&]() -> std::string { return race ? race->banner() : std::string(); };
+      auto race_banner = [&]() -> std::string {
+        if (!race) return {};
+        return race->player_finished() && !headless ? race->banner() + "  A/Enter continue  Y restart" : race->banner();
+      };
       int hud_height = 0;  // the panel's, for the radio popup above it
       auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
@@ -2769,10 +2800,42 @@ int run_drive(int argc, char** argv) {
           menu.open = false;
           if (item == PauseMenu::kMap) open_map();
           if (item == PauseMenu::kChangeCar) browse(0);
+          if (item == PauseMenu::kEvent && !event_ids.empty()) {
+            next_event = event_ids[event_pick];
+            running = false;
+          }
           if (item == PauseMenu::kReset) put_back();
           if (item == PauseMenu::kQuit) running = false;
         };
+        auto set_event_label = [&]() {
+          menu.event_label = event_ids.empty() ? std::string("race (none)")
+                                               : "< race " + event_ids[event_pick] + " >";
+        };
+        auto pick_event = [&](int by) {
+          if (event_ids.empty()) return;
+          const int n = int(event_ids.size());
+          event_pick = size_t(((int(event_pick) + by) % n + n) % n);
+          set_event_label();
+        };
+        // After the player's finish (SPEC-EVENT-REWARDS, Results screen):
+        // Continue puts the car at the route's post-race spot (or where it
+        // stands) in free roam; Restart runs the event again.
+        auto race_continue = [&]() {
+          if (!race->post_race_spawn(spawn)) {
+            const drive::Vec3 at = vehicle.position();
+            const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            spawn[0] = at.x, spawn[1] = at.y, spawn[2] = at.z, spawn[3] = std::atan2(f.x, f.z);
+          }
+          have_spawn = true;
+          leave_race = true;
+          running = false;
+        };
+        auto race_restart = [&]() {
+          next_event = race_event;
+          running = false;
+        };
         auto open_menu = [&]() {
+          set_event_label();
           menu.show();
           picking = false;
           save_now("pause");
@@ -2824,6 +2887,8 @@ int run_drive(int argc, char** argv) {
                 if (k == SDLK_ESCAPE) menu.open = false;
                 if (k == SDLK_UP || k == SDLK_W) menu.move(-1);
                 if (k == SDLK_DOWN || k == SDLK_S) menu.move(1);
+                if (menu.selected == PauseMenu::kEvent && (k == SDLK_LEFT || k == SDLK_A)) pick_event(-1);
+                if (menu.selected == PauseMenu::kEvent && (k == SDLK_RIGHT || k == SDLK_D)) pick_event(1);
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) choose();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -2831,6 +2896,8 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) menu.open = false;
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) menu.move(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) menu.move(1);
+                if (menu.selected == PauseMenu::kEvent && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pick_event(-1);
+                if (menu.selected == PauseMenu::kEvent && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) pick_event(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) choose();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
@@ -2851,7 +2918,10 @@ int run_drive(int argc, char** argv) {
               }
               if (e.key.key == SDLK_LEFTBRACKET) browse(-1);
               if (e.key.key == SDLK_RIGHTBRACKET) browse(1);
-              if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) take_pick();
+              const bool results = race && race->player_finished() && !picking;
+              if (results && (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER)) race_continue();
+              else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) take_pick();
+              if (results && e.key.key == SDLK_Y) race_restart();
               if (e.key.key == SDLK_T && traffic) {
                 const bool back = (e.key.mod & SDL_KMOD_SHIFT) != 0;
                 traffic->set_hour(std::fmod(traffic->hour() + (back ? 23 : 1), 24.0));
@@ -2905,6 +2975,10 @@ int run_drive(int argc, char** argv) {
                 else rig.cycle();
               }
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) take_pick();
+              if (race && race->player_finished() && !picking) {
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) race_continue();
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH) race_restart();
+              }
             }
             if (e.type == SDL_EVENT_GAMEPAD_ADDED)
               if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) {
@@ -3080,6 +3154,29 @@ int run_drive(int argc, char** argv) {
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
     }
+  }
+  if (status == 0 && leave_race) {
+    leave_race = false;
+    if (race) {
+      race.reset();
+      race_event.clear();
+      std::printf("race: left for free roam\n");
+    }
+    again = true;
+  }
+  if (status == 0 && !next_event.empty()) {
+    std::string why;
+    const std::string id = next_event;
+    next_event.clear();
+    race.reset();
+    if (start_race(id, why)) {
+      race_event = id;
+      std::printf("race: %s from the pause menu\n", id.c_str());
+    } else {
+      std::fprintf(stderr, "carview: event %s: %s\n", id.c_str(), why.c_str());
+    }
+    again = true;
+    SDL_SetWindowTitle(window, ("carview drive - loading " + id).c_str());
   }
   if (status == 0 && !next_car.empty()) {
     if (race) {

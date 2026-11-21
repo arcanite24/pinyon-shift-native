@@ -49,6 +49,9 @@ class RaceView {
   bool open(const std::filesystem::path& game_root, const std::string& event, const Options& o, std::string& error);
   // The player's slot pose: x, y, z, heading.
   void player_spawn(double out[4]) const;
+  // Where the player stands after the race (the route's
+  // post_race_location_00, SPEC-EVENTS); false when the route has none.
+  bool post_race_spawn(double out[4]) const;
   // Loads the opponents' cars (models and physics) and stands them on their
   // slots on `ground`.
   bool load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error);

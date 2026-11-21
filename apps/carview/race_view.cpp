@@ -178,6 +178,13 @@ void RaceView::player_spawn(double out[4]) const {
   out[0] = s.x, out[1] = s.y, out[2] = s.z, out[3] = std::atan2(s.fx, s.fz);
 }
 
+bool RaceView::post_race_spawn(double out[4]) const {
+  const race::RouteTransform* t = route_.find("post_race_location_00");
+  if (!t) return false;
+  out[0] = t->x, out[1] = t->y, out[2] = t->z, out[3] = std::atan2(t->fx, t->fz);
+  return true;
+}
+
 bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error) {
   for (auto& c : cars_) {
     auto it = models_.find(c.who.car_media);
