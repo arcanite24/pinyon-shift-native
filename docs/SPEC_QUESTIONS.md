@@ -1392,6 +1392,15 @@ and "Measured grids"); partial:
     are built in participant order); HEADLINE splits confirmed (Zonda slot
     2, MC12 slot 4).
 
+- Offset step (spec, 2026-11-21, horizon1-recomp 85473942, SPEC-RACE-AI
+  AI car upgrades step 1): with v the car's `Ordinal`,
+  x = (214013 v + 2531011) mod 2^32 (0x343FD, 0x269EC3, unsigned 32-bit);
+  u = floor(x / 2^16) mod 2^15; k = u mod 5; r = +k for odd k, -k for
+  even k (0, +1, -2, +3, -4); the flag sets r = +5. Example: California
+  1062 gives x = 229812817, u = 3506, k = 1, r = +1 (base 507, shown 508).
+  FR06 grid, consistent in both specs: California 1062, Exige 454, Camaro
+  1419, 370Z 1103, Ford GT 348, TVR 433, player, Diablo 325.
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
