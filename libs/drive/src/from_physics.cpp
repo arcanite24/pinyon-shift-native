@@ -245,6 +245,25 @@ CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesy
   return params_for_car_text(car, ss.str(), notes);
 }
 
+CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::filesystem::path& bake_dir,
+                                const cars::CarPhysics& rows, std::vector<std::string>* notes) {
+  std::string name = car.media_name;
+  for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
+  std::ifstream in(bake_dir / "cars" / (name + ".physics.txt"), std::ios::binary);
+  CarParams p = params_from_bake(car);
+  std::stringstream ss;
+  ss << in.rdbuf();
+  cars::CarPhysics stock;
+  cars::PhysicsSettings settings;
+  std::string error;
+  if (!in || !cars::physics_from_text(ss.str(), stock, settings, &error)) {
+    if (notes) notes->push_back("no physics settings for " + car.media_name + ": the synthetic car's physics");
+    return p;
+  }
+  apply_physics(rows, settings, p, notes);
+  return p;
+}
+
 CarParams params_for_car_text(const cars::bake::CarInfo& car, const std::string& text, std::vector<std::string>* notes) {
   CarParams p = params_from_bake(car);
   cars::CarPhysics rows;

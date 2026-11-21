@@ -23,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <random>
 #include <memory>
@@ -64,6 +65,8 @@
 #include "fh1data/xds.h"
 #include "freeroam/collectibles.h"
 #include "profile/drive_save.h"
+#include "garage/garage.h"
+#include "upgrade_shop.h"
 
 namespace carview {
 
@@ -1412,6 +1415,18 @@ int run_drive(int argc, char** argv) {
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
   }
+  // The career garage (SPEC-GARAGE-UPGRADES): garage.txt beside the save,
+  // made by the profile import; the cars the bake has, by Data_Car id.
+  garage::Garage career_garage;
+  bool have_garage = false;
+  std::filesystem::path garage_path;
+  if (!save_path.empty()) garage_path = save_path.parent_path() / "garage.txt";
+  const auto baked_ids = bake_dir.empty() ? std::map<int64_t, std::string>{} : baked_car_ids(bake_dir);
+  auto write_career_garage = [&]() {
+    std::string e;
+    if (have_garage && !garage_path.empty() && !garage::write_garage(garage_path, career_garage, &e))
+      std::fprintf(stderr, "carview: %s\n", e.c_str());
+  };
   // The profile import (FORMAT-PROFILE), with the cars the bake has.
   bool imported = false;
   if (!import_dir.empty()) {
@@ -1422,7 +1437,7 @@ int run_drive(int argc, char** argv) {
       return 2;
     }
     std::error_code ec;
-    const auto baked = bake_dir.empty() ? std::map<int64_t, std::string>{} : baked_car_ids(bake_dir);
+    const auto& baked = baked_ids;
     std::vector<std::string> notes;
     profile::to_drive_save(prof, [&](int64_t id) { auto it = baked.find(id); return it == baked.end() ? std::string() : it->second; },
                            saved, &notes);
@@ -1437,6 +1452,44 @@ int run_drive(int argc, char** argv) {
       keep += ".pre-import";
       if (!std::filesystem::exists(keep, ec)) std::filesystem::copy_file(save_path, keep, ec);
     }
+    career_garage = profile::to_garage(prof);
+    have_garage = true;
+    if (!garage_path.empty() && std::filesystem::exists(garage_path, ec)) {
+      auto keep = garage_path;
+      keep += ".pre-import";
+      if (!std::filesystem::exists(keep, ec)) std::filesystem::copy_file(garage_path, keep, ec);
+    }
+    write_career_garage();
+  }
+  if (!have_garage && have_saved && saved.owned_garage && !garage_path.empty()) {
+    std::string e;
+    have_garage = garage::read_garage(garage_path, career_garage, &e);
+    if (!have_garage && !e.empty()) std::fprintf(stderr, "carview: note: garage ignored: %s\n", e.c_str());
+  }
+  // The selected garage car is the car (unless --car names one).
+  if (have_garage && !car_given)
+    if (const garage::Car* gc = career_garage.selected_car())
+      if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end()) car = it->second;
+  // The parts database (the merged one: SHIFT_STATE_ROOT's packages when
+  // set), opened in the background; the class bands from the disc.
+  std::shared_future<std::shared_ptr<cars::PartsDb>> parts_db;
+  std::vector<garage::ClassBand> class_bands;
+  if (have_garage && !world_dir.empty()) {
+    const auto game_root = world_dir.parent_path().parent_path().parent_path();
+    std::string e;
+    if (!garage::load_class_bands(game_root, class_bands, &e)) std::fprintf(stderr, "carview: note: %s\n", e.c_str());
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    const std::string state_root = state ? state : "";
+    parts_db = std::async(std::launch::async, [game_root, state_root]() -> std::shared_ptr<cars::PartsDb> {
+                 cars::Install install;
+                 auto db = std::make_shared<cars::PartsDb>();
+                 std::string why;
+                 if (!cars::discover_install(game_root, state_root, "", install, &why) || !db->open(install, &why)) {
+                   std::fprintf(stderr, "carview: note: no parts database: %s\n", why.c_str());
+                   return nullptr;
+                 }
+                 return db;
+               }).share();
   }
   // The event's race: its data, and the player's car on its slot (the
   // save does not override the grid).
@@ -1567,12 +1620,27 @@ int run_drive(int argc, char** argv) {
   // save from the player's profile, only the owned cars the bake has (the
   // garage, barn finds included).
   std::vector<std::string> baked_cars;
+  std::vector<int64_t> pick_ids;  // the garage Id of each, with a garage
   {
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(bake_dir / "cars", ec))
       if (e.path().extension() == ".shiftbake") baked_cars.push_back(e.path().stem().string());
     std::sort(baked_cars.begin(), baked_cars.end());
-    if (have_saved && saved.owned_garage) {
+    if (have_garage) {
+      // The garage's cars the bake has, by class then index (SPEC-GARAGE-
+      // UPGRADES, The active car and switching).
+      std::vector<const garage::Car*> rows;
+      for (const auto& c : career_garage.cars)
+        if (baked_ids.count(c.car_id)) rows.push_back(&c);
+      std::stable_sort(rows.begin(), rows.end(), [](const garage::Car* a, const garage::Car* b) {
+        return a->class_id != b->class_id ? a->class_id < b->class_id : a->performance_index < b->performance_index;
+      });
+      std::vector<std::string> keep;
+      for (const auto* c : rows) keep.push_back(lower_ascii(baked_ids.at(c->car_id))), pick_ids.push_back(c->id);
+      std::printf("garage: %zu cars, %zu baked\n", career_garage.cars.size(), keep.size());
+      if (!keep.empty()) baked_cars = std::move(keep);
+      else pick_ids.clear();
+    } else if (have_saved && saved.owned_garage) {
       const auto ids = baked_car_ids(bake_dir);
       std::vector<std::string> owned;
       for (int id : saved.garage)
@@ -1658,7 +1726,27 @@ int run_drive(int argc, char** argv) {
     } else {
       const auto& info = showroom.car();
       std::vector<std::string> physics_notes;
-      drive::Vehicle vehicle(drive::params_for_baked_car(info, bake_dir, &physics_notes));
+      drive::Vehicle vehicle([&] {
+        // The selected garage car with its fitted parts (SPEC-GARAGE-UPGRADES,
+        // What a part changes).
+        if (have_garage && parts_db.valid())
+          if (const garage::Car* gc = career_garage.selected_car())
+            if (auto it = baked_ids.find(gc->car_id);
+                it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car)) {
+              const auto t0 = std::chrono::steady_clock::now();
+              const auto db = parts_db.get();
+              cars::CarPhysics rows;
+              std::string e = "no parts database";
+              if (db && db->physics(gc->car_id, garage::fitted(*gc), rows, &e)) {
+                std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
+                            it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
+                            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+                return drive::params_for_fitted_car(info, bake_dir, rows, &physics_notes);
+              }
+              physics_notes.push_back("garage parts not applied: " + e);
+            }
+        return drive::params_for_baked_car(info, bake_dir, &physics_notes);
+      }());
       for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
       // The engine sound: the baked loops, mixed at 48 kHz.
       constexpr int kAudioRate = 48000;
@@ -2400,10 +2488,17 @@ int run_drive(int argc, char** argv) {
         return race->player_finished() && !headless ? race->banner() + "  A/Enter continue  Y restart" : race->banner();
       };
       int hud_height = 0;  // the panel's, for the radio popup above it
+      // The upgrade shop (SPEC-GARAGE-UPGRADES) on the selected garage car;
+      // the discount is the signs found.
+      carview::UpgradeShop shop;
+      auto discount = [&]() {
+        return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
+      };
       auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
         if (menu) menu->fill(st);
+        if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         st.kmh = vehicle.speed() * 3.6;
         st.gear = vehicle.gear();
         st.rpm = vehicle.rpm();
@@ -2807,7 +2902,7 @@ int run_drive(int argc, char** argv) {
         size_t pick = 0;
         bool picking = false;
         for (size_t k = 0; k < baked_cars.size(); ++k)
-          if (baked_cars[k] == lower_ascii(car)) pick = k;
+          if (pick_ids.empty() ? baked_cars[k] == lower_ascii(car) : pick_ids[k] == career_garage.selected) pick = k;
         auto browse = [&](int by) {
           if (baked_cars.empty()) return;
           pick = (pick + baked_cars.size() + size_t(by + int(baked_cars.size()))) % baked_cars.size();
@@ -2825,6 +2920,10 @@ int run_drive(int argc, char** argv) {
           spawn[3] = std::atan2(fwd.x, fwd.z);
           have_spawn = true;
           next_car = baked_cars[pick];
+          if (!pick_ids.empty()) {
+            career_garage.selected = pick_ids[pick];
+            write_career_garage();
+          }
           running = false;
         };
         bool show_hud = true;
@@ -2884,6 +2983,23 @@ int run_drive(int argc, char** argv) {
           menu.open = false;
           if (item == PauseMenu::kMap) open_map();
           if (item == PauseMenu::kChangeCar) browse(0);
+          if (item == PauseMenu::kUpgrades) {
+            std::string why = "upgrades need a garage (--import-profile)";
+            bool ready = false;
+            if (have_garage && parts_db.valid()) {
+              why = "loading the parts database, try again";
+              if (parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                why = "no parts database";
+                if (const auto db = parts_db.get())
+                  ready = shop.open(*db, career_garage, career_garage.selected_car() ? career_garage.selected_car()->id : 0,
+                                    why);
+              }
+            }
+            if (!ready) {
+              notice = why;
+              notice_until = vehicle.time() + 3;
+            }
+          }
           if (item == PauseMenu::kEvent && !event_ids.empty()) {
             next_event = event_ids[event_pick];
             running = false;
@@ -2962,6 +3078,47 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pan_by(0, -pan);
               }
               if (close) close_map();
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // The upgrade shop takes the keys and buttons while open; leaving it
+            // after a change rebuilds the car where it stands.
+            if (shop.is_open()) {
+              auto leave_shop = [&]() {
+                shop.close();
+                if (!shop.changed()) return;
+                write_career_garage();
+                save_now("upgrade");
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                spawn[0] = at.x, spawn[1] = at.y, spawn[2] = at.z, spawn[3] = std::atan2(f.x, f.z);
+                have_spawn = true;
+                next_car = car;
+                running = false;
+              };
+              auto fit = [&]() {
+                std::string message;
+                shop.fit(discount(), career.credits, message);
+                notice = message;
+                notice_until = vehicle.time() + 3;
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE) leave_shop();
+                if (k == SDLK_UP || k == SDLK_W) shop.move_slot(-1);
+                if (k == SDLK_DOWN || k == SDLK_S) shop.move_slot(1);
+                if (k == SDLK_LEFT || k == SDLK_A) shop.move_part(-1);
+                if (k == SDLK_RIGHT || k == SDLK_D) shop.move_part(1);
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) fit();
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) leave_shop();
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) shop.move_slot(-1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) shop.move_slot(1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) shop.move_part(-1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) shop.move_part(1);
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) fit();
+              }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
             // The pause menu takes the keys and buttons while open.
@@ -3116,7 +3273,7 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open) accumulator += frame_dt;
+          if (!menu.open && !map_open && !shop.is_open()) accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
@@ -3126,7 +3283,7 @@ int run_drive(int argc, char** argv) {
             save_due = false;
             save_now("collectible");
           }
-          while (!menu.open && !map_open && accumulator >= drive::Vehicle::kStep) {
+          while (!menu.open && !map_open && !shop.is_open() && accumulator >= drive::Vehicle::kStep) {
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
               status = 1;

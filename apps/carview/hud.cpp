@@ -180,6 +180,7 @@ const char* PauseMenu::label(int item) {
     case kMap: return "map";
     case kEvent: return "race";
     case kChangeCar: return "change car";
+    case kUpgrades: return "upgrades";
     case kReset: return "reset to road";
     case kQuit: return "quit";
   }

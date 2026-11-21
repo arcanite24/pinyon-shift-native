@@ -34,4 +34,10 @@ double sidewall_stretch(double width_mm, double aspect, const cars::PhysicsSetti
 CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesystem::path& bake_dir,
                                std::vector<std::string>* notes = nullptr);
 
+// The same car with other rows (its fitted parts, SPEC-GARAGE-UPGRADES):
+// the bake's geometry and the PhysicsSettings the bake wrote, `rows` for
+// the rest. Without the bake's physics file, the synthetic car.
+CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::filesystem::path& bake_dir,
+                                const cars::CarPhysics& rows, std::vector<std::string>* notes = nullptr);
+
 }  // namespace drive

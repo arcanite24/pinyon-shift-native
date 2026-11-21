@@ -770,6 +770,17 @@ the interim noted here until a later polish sweep.
   width apart (beyond the spec's passing rule); one AI line; stock cars;
   opponents take the free slots in row order. Pack contact is frequent
   (800 to 1,250 steps with a contact in an 8-car FR22, 1,400 to 3,500 in FR16).
+- **Garage and upgrades (SPEC-GARAGE-UPGRADES interims).** `--import-profile`
+  writes `garage.txt` beside the save. The selected garage car drives
+  with its fitted parts, from the merged database (`SHIFT_STATE_ROOT`'s
+  packages when set, the disc's otherwise; opened in the background). The
+  pause menu's upgrades list is ours: up and down pick a slot, left and
+  right a part, Enter buys it at the sign-discounted price or refits an
+  owned one, Esc rebuilds the car where it stands. Interims: the index and
+  class stay the stored ones after a part change (the virtual lap is
+  open); engine, drivetrain and body conversions are not offered; the
+  wheel geometry stays the stock bake's (a rim or width part changes the
+  grip, not the drawn wheel); no Auto Upgrade; no selling.
 - **Race AI speed planner (SPEC-RACE-AI Speed planning, Q53).** Each car
   plans from its own lateral, braking and drive capacity tables (40 speeds,
   from the engine's tyre model at 0.98 of the car's mass), the line's
