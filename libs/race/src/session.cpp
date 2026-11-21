@@ -158,8 +158,9 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       // overlaps this car's lane within 40 m, keep a speed from which this
       // car can still brake to the other's before closing to 4 m, so a car
       // braking for a corner is not run into. b: a braking rate every car
-      // reaches (ours).
-      constexpr float kFollowRange = 40, kMinGap = 4, kBrake = 9;
+      // reaches (ours: under the lowest planned braking of the gate's
+      // fields, 14.9 m/s^2; a 25 m pass trigger was tried and hurt FR24).
+      constexpr float kFollowRange = 40, kMinGap = 4, kBrake = 14;
       for (size_t j = 0; j < n; ++j) {
         if (j == i) continue;
         const double gap = progress[j] - progress[i];
