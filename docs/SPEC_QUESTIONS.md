@@ -1645,3 +1645,5 @@ text boxes (font, px size, width) read for 204 of 205 scenes; text
 content, rows, stacker reflow, states and animations come from the C++
 contracts at run time (no string ids in any scene). Projection, BGF
 properties and non-quad geometry open.
+
+SPEC-UI-LAYOUTS answered in docs/specs/UI_LAYOUTS.md 793f9ff9
