@@ -985,6 +985,13 @@ graph? a line built from the checkpoints?). Meanwhile: checkpoints as the
 route file's gates in order, crossed as planes; the AI follows a line
 through the checkpoints on the road graph (ours).
 
+answered in SPEC-EVENTS (checkpoint races) and SPEC-RACE-AI (routes with
+no AI line) 933fc0ff: checkpoints in number order, a plane crossing within
+half the width in either direction, the finish at the last one
+(probable); the AI drives the nav road graph, about ±4.5 m around the
+centre line. Open with interims: missed checkpoints, the route choice
+between checkpoints, the line within the road.
+
 ## Q48 (M5): ribbon-2 circuits and multi-lap sprints
 
 The AI line is open and runs past both ends. Needed: how a lap is
