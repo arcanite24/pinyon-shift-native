@@ -676,7 +676,8 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     TextStyle bs = font(ui::Font::kB, 16 * s, kDark);
     l.text(g.L(162), g.T(490), str("OnlineRewards", "IDS_Balance", "BALANCE"), bs);
     bs.align = Align::kRight;
-    l.text(g.L(398), g.T(490), thousands(r.balance) + " CR", bs);
+    bs.keep_case = true;  // "117,881 Cr" as shown
+    l.text(g.L(398), g.T(490), thousands(r.balance) + " " + cr, bs);
   }
   // The wristband (ours: where the title shows it is not specified).
   if (r.band_after >= 0) wristband_row(l, r, g.L(150), g.T(545), g.L(880) - g.L(150), s, since - 1.0, 1.0f);
@@ -770,6 +771,7 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   if (!st.car_name.empty()) {
     l.rect(g.R(912), g.T(62), g.R(1208), g.T(89), kBlack60);
     TextStyle cs = font(ui::Font::kB, 19 * s, kText);
+    cs.keep_case = true;  // the display name as written (SPEC-UI-LAYOUTS d)
     fit(st.car_name, cs, g.R(1120) - g.R(922), 9 * s);
     l.text(g.R(922), g.T(69), st.car_name, cs);
     std::array<float, 4> class_uv;
@@ -793,8 +795,10 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   }
   if (st.credits >= 0) {
     l.rect(g.R(1090), g.T(88), g.R(1202), g.T(113), kLight);
-    const std::string c = thousands(st.credits) + " CR";
+    // UnitStrings / IDS_Units_Credits, mixed case as shown ("117,700 Cr").
+    const std::string c = thousands(st.credits) + " " + str("UnitStrings", "IDS_Units_Credits", "Cr");
     TextStyle cs = font(ui::Font::kB, 16 * s, kDark, Align::kRight);
+    cs.keep_case = true;
     fit(c, cs, g.R(1196) - g.R(1096), 8 * s);
     l.text(g.R(1196), g.T(93) + (16 * s - cs.size) * 0.5f, c, cs);
   }

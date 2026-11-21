@@ -330,7 +330,7 @@ bool write_menu_png(const HudState& st, const std::string& path, const carview::
   if (st.menu_title == "paused") {
     // The pause menu's panels, with a sample career.
     d.credits = 4075645, d.band_name = "ORANGE WRISTBAND", d.band_next = "Purple", d.band_level = 4;
-    d.car_name = "2002 Nissan Skyline GT-R V-Spec II", d.car_class = "B", d.car_pi = 584;
+    d.car_name = "Nissan Skyline GT-R V-spec II", d.car_class = "B", d.car_pi = 584;
   }
   carview::ui::List list;
   // A backdrop for the glass panel.
