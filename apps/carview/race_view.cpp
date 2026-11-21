@@ -311,6 +311,16 @@ void RaceView::player_spawn(double out[4]) const {
   out[0] = s.x, out[1] = s.y, out[2] = s.z, out[3] = std::atan2(s.fx, s.fz);
 }
 
+void RaceView::route_near(std::vector<std::array<double, 2>>& out) const {
+  out.clear();
+  if (!field_) return;
+  const auto& L = line_.line;
+  const double p = field_->progress(cars_.size());
+  const double to = std::min(p + 600, finish_progress_ > 0 ? finish_progress_ : L.length());
+  for (size_t i = 0; i < L.size(); ++i)
+    if (L.dist[i] >= p - 150 && L.dist[i] <= to) out.push_back({L.x[i], L.z[i]});
+}
+
 void RaceView::opponent_positions(std::vector<std::array<double, 2>>& out) const {
   out.clear();
   for (const auto& c : cars_)

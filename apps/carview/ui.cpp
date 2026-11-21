@@ -257,6 +257,35 @@ VectorFonts& vf() {
 
 }  // namespace
 
+namespace {
+// Copies w x h pixels to (ax, ay) with one texel of edge padding all round,
+// so bilinear taps stay inside.
+void atlas_put(VectorFonts& v, uint32_t ax, uint32_t ay, uint32_t w, uint32_t h, std::span<const uint8_t> rgba) {
+  for (int y = -1; y <= int(h); ++y)
+    for (int x = -1; x <= int(w); ++x) {
+      const uint32_t sx = uint32_t(std::clamp(x, 0, int(w) - 1)), sy = uint32_t(std::clamp(y, 0, int(h) - 1));
+      std::memcpy(&v.atlas[((size_t(int(ay) + y)) * kAtlasSize + size_t(int(ax) + x)) * 4], &rgba[(size_t(sy) * w + sx) * 4], 4);
+    }
+  v.dirty.push_back({ax - 1, ay - 1, w + 2, h + 2});
+}
+}  // namespace
+
+bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
+                  std::array<float, 4>& uv) {
+  VectorFonts& v = vf();
+  if (auto it = v.images.find(key); it != v.images.end()) {
+    const auto& u = it->second;
+    const uint32_t ax = uint32_t(std::lround(u[0] * kAtlasSize)), ay = uint32_t(std::lround(u[1] * kAtlasSize));
+    const uint32_t ew = uint32_t(std::lround(u[2] * kAtlasSize)) - ax, eh = uint32_t(std::lround(u[3] * kAtlasSize)) - ay;
+    if (ew == w && eh == h && rgba.size() >= size_t(w) * h * 4) {
+      atlas_put(v, ax, ay, w, h, rgba);
+      return uv = u, true;
+    }
+    v.images.erase(it);  // another size: a new place (the old one is left unused)
+  }
+  return atlas_image(key, w, h, rgba, uv);
+}
+
 bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
                  std::array<float, 4>& uv) {
   VectorFonts& v = vf();
@@ -264,14 +293,8 @@ bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const
   if (!w || !h || w + 2 > kAtlasSize || rgba.size() < size_t(w) * h * 4) return false;
   if (v.image_x + w + 2 > kAtlasSize) v.image_x = 0, v.image_y += v.image_h, v.image_h = 0;
   if (v.image_y + h + 2 > kAtlasSize) return false;
-  // One texel of edge padding all round, so bilinear taps stay inside.
   const uint32_t ax = v.image_x + 1, ay = v.image_y + 1;
-  for (int y = -1; y <= int(h); ++y)
-    for (int x = -1; x <= int(w); ++x) {
-      const uint32_t sx = uint32_t(std::clamp(x, 0, int(w) - 1)), sy = uint32_t(std::clamp(y, 0, int(h) - 1));
-      std::memcpy(&v.atlas[((size_t(int(ay) + y)) * kAtlasSize + size_t(int(ax) + x)) * 4], &rgba[(size_t(sy) * w + sx) * 4], 4);
-    }
-  v.dirty.push_back({ax - 1, ay - 1, w + 2, h + 2});
+  atlas_put(v, ax, ay, w, h, rgba);
   v.image_x += w + 2;
   v.image_h = std::max(v.image_h, h + 2);
   const float k = 1.0f / float(kAtlasSize);

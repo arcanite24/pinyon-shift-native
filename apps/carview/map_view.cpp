@@ -111,18 +111,23 @@ bool read_texture(fh1::Archive& zip, const std::string& name, MapView::Atlas& ou
 // A panel being drawn: sRGB-encoded colour, blended in that space (UI).
 struct Canvas {
   int w = 0, h = 0;
-  std::vector<float> rgb;
-  Canvas(int width, int height, MapView::Rgba fill) : w(width), h(height), rgb(size_t(width) * height * 3) {
+  std::vector<float> rgb, alpha;  // straight colour and coverage (0-1)
+  Canvas(int width, int height, MapView::Rgba fill)
+      : w(width), h(height), rgb(size_t(width) * height * 3), alpha(size_t(width) * height, fill.a / 255.0f) {
     for (size_t i = 0; i < rgb.size(); i += 3) rgb[i] = fill.r, rgb[i + 1] = fill.g, rgb[i + 2] = fill.b;
   }
   void blend(int x, int y, const MapView::Rgba& c, float cover) {
     if (x < 0 || y < 0 || x >= w || y >= h) return;
     const float a = std::clamp(cover * c.a / 255.0f, 0.0f, 1.0f);
     if (a <= 0) return;
-    float* p = &rgb[(size_t(y) * w + x) * 3];
-    p[0] += (c.r - p[0]) * a;
-    p[1] += (c.g - p[1]) * a;
-    p[2] += (c.b - p[2]) * a;
+    const size_t i = size_t(y) * w + x;
+    float* p = &rgb[i * 3];
+    // Over: on an opaque canvas the plain mix.
+    const float A = alpha[i], out = a + A * (1 - a), k = a / out;
+    p[0] += (c.r - p[0]) * k;
+    p[1] += (c.g - p[1]) * k;
+    p[2] += (c.b - p[2]) * k;
+    alpha[i] = out;
   }
   // An antialiased capsule from a to b, `width` pixels across.
   void line(double ax, double ay, double bx, double by, double width, const MapView::Rgba& c) {
@@ -219,9 +224,18 @@ struct Canvas {
       out.rgba[j] = uint8_t(std::clamp(rgb[i], 0.0f, 255.0f) + 0.5f);
       out.rgba[j + 1] = uint8_t(std::clamp(rgb[i + 1], 0.0f, 255.0f) + 0.5f);
       out.rgba[j + 2] = uint8_t(std::clamp(rgb[i + 2], 0.0f, 255.0f) + 0.5f);
-      out.rgba[j + 3] = 255;
+      out.rgba[j + 3] = uint8_t(std::clamp(alpha[i / 3] * 255.0f * fade_at(int(i / 3) % w, int(i / 3) / w), 0.0f, 255.0f) + 0.5f);
     }
     return out;
+  }
+  // > 0: the coverage fades to nothing towards the panel's edge, from this
+  // fraction of the half size in (an ellipse).
+  float edge_fade = 0;
+  float fade_at(int x, int y) const {
+    if (edge_fade <= 0) return 1;
+    const float dx = (x + 0.5f - 0.5f * w) / (0.5f * w), dy = (y + 0.5f - 0.5f * h) / (0.5f * h);
+    const float r = std::sqrt(dx * dx + dy * dy);
+    return std::clamp((1 - r) / edge_fade, 0.0f, 1.0f);
   }
 };
 
@@ -300,7 +314,10 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
 }
 
 HudImage MapView::minimap(const MapScene& scene, int size) const {
-  Canvas cv(size, size, {28, 31, 36, 255});
+  // SPEC-UI-LAYOUTS a: no frame; the roads fade to transparent towards the
+  // edge (ours: over the outer 45 % of the half size, as an ellipse).
+  Canvas cv(size, size, {0, 0, 0, 0});
+  cv.edge_fade = 0.3f;
   // The camera (ours, the spec's interim): 120 m up and 60 m behind the
   // point it looks at, 60 m ahead of the car, pitched down 45 degrees, a
   // half field of view of atan(0.5): the far edge 300 m ahead, the car at
@@ -362,8 +379,12 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     std::sort(segs.begin(), segs.end());
     segs.erase(std::unique(segs.begin(), segs.end()), segs.end());
   }
-  constexpr double kMetresPerUnit = 0.25;  // ours: a profile size unit as road width on the minimap
-  for (int pass = 0; pass < 3; ++pass)
+  // As the original's frames show (SPEC-UI-LAYOUTS a: roads white): wide
+  // white roads with a faint shadow, each road_type's width by its
+  // profile line size against the widest (the main road about 9 m, ours).
+  double widest = 1;
+  for (const auto& [k, ls] : mini_.roads) widest = std::max(widest, double(ls.line_size));
+  for (int pass = 0; pass < 2; ++pass)
     for (int style = 0; style < kRoadTypeCount; ++style) {
       const auto st = mini_.roads.find(kRoadTypes[style]);
       if (st == mini_.roads.end()) continue;
@@ -374,11 +395,21 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
         const auto& b = roads_[r].points[s + 1];
         const P pa = project(a[0], a[1]), pb = project(b[0], b[1]);
         if (pa.depth < 1 || pb.depth < 1) continue;
-        const double scale = focal / ((pa.depth + pb.depth) / 2) * kMetresPerUnit;
-        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.0, (ls.under_size + 4) * scale), ls.under);
-        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.0, ls.line_size * scale), ls.edge);
-        if (pass == 2) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(0.8, ls.line_size * 0.55 * scale), ls.core);
+        const double px = focal / ((pa.depth + pb.depth) / 2) * 9.0 * std::max(0.35, ls.line_size / widest);
+        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.0, px + 2.5), Rgba{0, 0, 0, 50});
+        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.2, px), Rgba{246, 246, 246, 255});
       }
+    }
+
+  // A race's route, green over the roads (SPEC-UI-LAYOUTS a; the width and
+  // shades ours, from the race frames).
+  for (int pass = 0; pass < 2; ++pass)
+    for (size_t i = 0; i + 1 < scene.route.size(); ++i) {
+      const P pa = project(scene.route[i][0], scene.route[i][1]), pb = project(scene.route[i + 1][0], scene.route[i + 1][1]);
+      if (pa.depth < 1 || pb.depth < 1) continue;
+      const double wpx = focal / ((pa.depth + pb.depth) / 2) * 9.0;  // the main road's width
+      if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.0, wpx + 1.5), Rgba{20, 60, 25, 140});
+      else cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.5, wpx), Rgba{40, 128, 52, 235});
     }
 
   // Icons, standing up (a constant size on screen).
@@ -392,18 +423,19 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     for (const auto& ic : it->second)
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y - ic.size * unit * 0.4, ic.size * unit, 0, ic.colour);
   }
-  // Opponents: red dots with a dark rim.
+  // Opponents: white discs with a grey rim, as the race frames show.
   for (const auto& o : scene.opponents) {
     if (std::hypot(o[0] - scene.x, o[1] - scene.z) > reach) continue;
     const P p = project(o[0], o[1]);
     if (p.depth < 1) continue;
-    cv.line(p.x, p.y, p.x, p.y, 7 * unit + 2, Rgba{20, 20, 20, 220});
-    cv.line(p.x, p.y, p.x, p.y, 7 * unit, Rgba{230, 60, 50, 255});
+    cv.line(p.x, p.y, p.x, p.y, 15 * unit + 2, Rgba{120, 120, 125, 230});
+    cv.line(p.x, p.y, p.x, p.y, 15 * unit - 1, Rgba{236, 236, 238, 255});
   }
   // The player, heading up.
   if (const auto it = mini_.icons.find("player_local"); it != mini_.icons.end()) {
     const P p = project(scene.x, scene.z);
-    for (const auto& ic : it->second) cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 0.8, 0, ic.colour);
+    // About 35 px at 720 lines, as the frames show.
+    for (const auto& ic : it->second) cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 1.8, 0, ic.colour);
   }
   // No frame (SPEC-UI-LAYOUTS a).
   return cv.image();

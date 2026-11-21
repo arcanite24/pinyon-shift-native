@@ -38,6 +38,8 @@ struct MapScene {
   // A race's opponents (x, z), drawn as dots (ours: the profiles' opponent
   // icon is not mapped yet).
   std::vector<std::array<double, 2>> opponents;
+  // A race's route ahead (x, z), drawn green on the minimap (SPEC-UI-LAYOUTS a).
+  std::vector<std::array<double, 2>> route;
 };
 
 class MapView {

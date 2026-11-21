@@ -108,6 +108,9 @@ class RaceView {
   const race::Session& session() const { return *session_; }
   // The opponents' positions (x, z), for the maps.
   void opponent_positions(std::vector<std::array<double, 2>>& out) const;
+  // The race's line (x, z) from 150 m behind the player to 600 m ahead,
+  // up to the finish, for the minimap's route.
+  void route_near(std::vector<std::array<double, 2>>& out) const;
   // The frame's fraction of a step past the last one: instances() draws
   // each car between its last two steps (1: as stepped).
   void set_blend(double alpha) { blend_ = alpha; }

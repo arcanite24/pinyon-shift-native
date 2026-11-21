@@ -3222,6 +3222,10 @@ int run_drive(int argc, char** argv) {
       int results_page = 0;
       bool results_table = false;  // the RACE RESULTS table over the banner (X opens, B closes)
       bool results_points = false;  // a wristband points page follows the cash reward
+      // The minimap in the UI atlas, blended by the UI pass (lower left;
+      // mm_size 0: none).
+      std::array<float, 4> mm_uv{};
+      float mm_x = 0, mm_y = 0, mm_size = 0;
       double points_at = -1;        // the points page's start (the drive clock)
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
@@ -3307,6 +3311,10 @@ int run_drive(int argc, char** argv) {
         carview::CareerBoard board;
         if (career_page.is_open()) board = career_board(career_page), d.career = &board;
         carview::ui::List list;
+        // The minimap under the HUD's shapes; hidden in the pause menu
+        // (SPEC-UI-LAYOUTS a).
+        if (mm_size > 0 && st.menu.empty() && !career_page.is_open())
+          list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
         upload_ui_atlas(renderer);
         renderer.set_ui(list.items());
@@ -3358,7 +3366,7 @@ int run_drive(int argc, char** argv) {
         sc.data = progress_loaded ? &collectibles : nullptr;
         sc.progress = progress_loaded ? &progress : nullptr;
         sc.reveal = reveal;
-        if (race) race->opponent_positions(sc.opponents);
+        if (race) race->opponent_positions(sc.opponents), race->route_near(sc.route);
         return sc;
       };
       double minimap_at = -1;
@@ -3366,7 +3374,7 @@ int run_drive(int argc, char** argv) {
         if (!map_view.ready() || !streamer) return;
         // The results card: no minimap.
         if (race && race->player_finished()) {
-          if (minimap_at > -2) renderer.set_overlay({}, 0, 0, 0, 0, 1), minimap_at = -2;
+          if (minimap_at > -2) mm_size = 0, minimap_at = -2;
           return;
         }
         const double t = vehicle.time();
@@ -3375,8 +3383,12 @@ int run_drive(int argc, char** argv) {
         // SPEC-UI-LAYOUTS a: 90,420-280,600 at 1280x720, no frame.
         const double k = height / 720.0;
         HudImage img = map_view.minimap(map_scene(), std::max(96, int(std::lround(180 * k))));
-        renderer.set_overlay(std::move(img.rgba), img.width, img.height, int(std::lround(90 * k)),
-                             -int(std::lround(120 * k)), 1);
+        if (carview::ui::atlas_update("minimap", img.width, img.height, img.rgba, mm_uv)) {
+          mm_size = float(img.width);
+          mm_x = float(90 * k), mm_y = float(height) - float(120 * k) - mm_size;
+        } else {
+          mm_size = 0;
+        }
       };
       if (status == 0 && streamer) {
         const auto& st = streamer->stats();
@@ -3693,11 +3705,11 @@ int run_drive(int argc, char** argv) {
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), every));
           if (hud) {
+            set_minimap(int(height), true);
             set_hud(int(width), int(height), vehicle.time() < notice_until  ? notice
                                  : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
                                                                   : club_banner());
-            set_minimap(int(height), true);
             set_radio_popup(int(height));
           }
           std::vector<uint8_t> rgba;
@@ -3830,6 +3842,7 @@ int run_drive(int argc, char** argv) {
           map_cz = vehicle.position().z;
           for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
           renderer.set_ui({});
+          mm_size = 0;
           popup_key.clear();
           save_now("map");
         };
@@ -4291,6 +4304,7 @@ int run_drive(int argc, char** argv) {
                 if (!show_hud) {
                   for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
                   renderer.set_ui({});
+                  mm_size = 0;
                 }
                 popup_key.clear();
                 minimap_at = -1;

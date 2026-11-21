@@ -83,6 +83,10 @@ bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const
                  std::array<float, 4>& uv);
 // An image put before; false when there is none.
 bool atlas_find(const std::string& key, std::array<float, 4>& uv);
+// Like atlas_image, but a key already there at the same size has its
+// pixels replaced in place (a panel redrawn on the CPU, as the minimap).
+bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
+                  std::array<float, 4>& uv);
 
 struct TextStyle {
   float size = 20;        // cap height, px
