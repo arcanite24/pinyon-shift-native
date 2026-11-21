@@ -719,6 +719,15 @@ question Q38)" and "Colour byte order"). Built:
   for a given lateral force. The pure-pursuit lookahead moves the lap
   between +4.0 % (0.45 s) and +5.8 % (0.3 s) without a trend; left at
   0.5 s.
+- **Answered in CAR_PHYSICS.md 3ab1fd15** ("Force direction, surface
+  drag and cornering drag"; "Check: speed in a full-throttle corner").
+  F_y acts across the wheel's heading, so drag = sum |F_y| sin(alpha).
+  The oracle loses only 0.4 to 0.6 m/s^2 to a 12 to 15 m/s^2 corner at
+  full throttle (3rd, 130 to 140 km/h: 1.97 along the path against 2.42
+  straight, gravity removed; not `a_long`), with the fronts at about 3 deg
+  (s_y about 0.3) and the rears at 2.2. From 622 to 647 m its left wheels
+  are on dirt. Our s_y of 0.5 to 0.8 explains at most about 0.8 m/s^2 of
+  the gap; the rest is open.
 
 ## Q41 (M4): free-roam traffic (SPEC-TRAFFIC 33788840)
 
