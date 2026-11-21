@@ -1005,9 +1005,10 @@ the interim noted here until a later polish sweep.
     times come from the row's total, so the field runs about 35 % fast.
   - CAFF texels start after the source path (Q56 c; 0x2C4 on
     ColoradoDirt, was a fixed 0x2B0).
-  - A headless sweep (2026-11-21) opened and finished all 29 stages. On
-    route 18 autopilot's 101.9 s beats the whole field (123 to 141 s):
-    check for an early finish or a cut.
+  - A headless sweep (2026-11-21) opened and finished all 29 stages.
+    Route 18 finished 1.5 km early (101.9 s) because the start search
+    covered only the first 2 km of the line. Fixed: the whole line is
+    searched, and autopilot now takes 150.8 s.
   - Not done yet: championships (four stages totalled), Rally XP and
     level, entry gates (yellow wristband, Rally-upgraded car), the
     stage's own car, the co-driver and a stage-results screen.

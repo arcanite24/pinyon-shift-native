@@ -140,7 +140,7 @@ class RaceView {
   bool planner_fit_ = false;
   bool plan_dumped_ = false;  // SHIFT_PLAN_DUMP written
   int player_slot_ = 0;
-  double player_start_ = 0, finish_progress_ = 0;
+  double player_start_ = 0, finish_progress_ = 0, stage_finish_progress_ = 0;
   double ppx_ = 0, ppz_ = 0;
   bool circuit_ = true;
   bool street_ = false;                   // a line built along the road map (no AI line)

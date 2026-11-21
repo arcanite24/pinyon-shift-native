@@ -120,12 +120,18 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       std::fprintf(stderr, "race: note: no stage row (%s): the finish at the last waypoint\n",
                    state ? se.c_str() : "SHIFT_STATE_ROOT not set");
     } else {
-      if (gate) line_.gate_progress = line_.line.nearest(gate->x, gate->z, 0, std::min(2000.0, line_.line.length()));
-      const double p = std::min(line_.line.length() - 1,
-                                line_.gate_progress + stage_track_.finish_line * stage_track_.length);
+      // The whole line: route 18's start is 3.5 km along it (a 2 km
+      // window put its finish 1.5 km early).
+      if (gate) line_.gate_progress = line_.line.nearest(gate->x, gate->z, 0, line_.line.length());
+      const double want = line_.gate_progress + stage_track_.finish_line * stage_track_.length;
+      const double p = std::min(line_.line.length() - 1, want);
+      if (p < want)
+        std::fprintf(stderr, "race: note: route %d's line ends %.0f m short of the stage finish (%.0f of %.0f m)\n",
+                     event_.route_id, want - p, p - line_.gate_progress, want - line_.gate_progress);
       double x, y, z, h;
       line_.line.pose(p, 0, x, y, z, h);
       finish = race::Gate{x, z, std::sin(h), std::cos(h), 40};
+      stage_finish_progress_ = p;
       race::RallyField field;
       if (race::load_rally_field(state, field, &se))
         stage_field_ = race::field_times(field, stage_track_, int(o.difficulty), o.seed);
@@ -242,6 +248,9 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     }
   }
   if (finish) finish_progress_ = line_.line.nearest(finish->x, finish->z, line_.gate_progress, line_.line.length());
+  // A stage's finish is placed by progress; the nearest point can be an
+  // earlier pass where the line doubles back.
+  if (stage_ && have_stage_track_) finish_progress_ = stage_finish_progress_;
   const size_t n = size_t(cars);
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
   samples_.resize(n);
