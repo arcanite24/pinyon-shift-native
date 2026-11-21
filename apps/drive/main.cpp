@@ -407,6 +407,7 @@ int main(int argc, char** argv) {
     drive::LineFollower::Options fo;
     fo.lookahead_s = lookahead_s;
     if (const char* k = std::getenv("SHIFT_LAP_CROSS_GAIN")) fo.cross_gain = std::atof(k);
+    const bool live_dirt = std::getenv("SHIFT_LAP_DIRT_REPLAY") == nullptr;
     drive::LineFollower follower(line, fo);
     drive::GateTimer timer(gate, follower.length() / 2);
     std::ofstream out;
@@ -429,10 +430,17 @@ int main(int argc, char** argv) {
       if (racing) {
         v.set_ai_controls(true);  // the oracle lap is the AI driving (SPEC-CAR-PHYSICS)
         in = follower.input(v);
-        // The AI's grip factor on dirt, replayed by distance like the pedals.
-        double gf = 1, gr = 1;
-        follower.grip_at(follower.progress(), gf, gr);
-        v.set_ai_grip(gf, gr);
+        // The AI's grip factor on dirt from the car's own wheels (CAR_PHYSICS,
+        // grip on dirt; Q40: replaying the oracle's by distance leaves our
+        // car at 1 where only ours is on dirt). SHIFT_LAP_DIRT_REPLAY=1
+        // replays the oracle's file instead.
+        if (live_dirt) {
+          v.set_ai_dirt_grip(true);
+        } else {
+          double gf = 1, gr = 1;
+          follower.grip_at(follower.progress(), gf, gr);
+          v.set_ai_grip(gf, gr);
+        }
       }
       v.step(in, *ground);
       const double t = v.time() - settle;

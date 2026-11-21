@@ -743,6 +743,16 @@ question Q38)" and "Colour byte order"). Built:
   Asked: the oracle's rear on dirt (its 622 to 647 m, rear slip 1.5 deg
   with three wheels on dirt), so the dirt's lateral peak, OffRoadDryPeakSA
   or RearGripMultiplier read for a rear wheel there.
+- **Answered (CAR_PHYSICS dc112515) and applied (2026-11-21).** The lap
+  now computes the AI grip factor from its own wheels each step (races
+  already did); the oracle's `ai_grip` replay is behind
+  SHIFT_LAP_DIRT_REPLAY=1. **Lap 40.478 s, +4.37 %** (was +5.49 %). At 600
+  to 622 m rear slip is 4.6 deg (was 9 to 17; oracle 2.2). Splits +0.37 s
+  at 600 m, +0.82 at 900, +1.32 at 1,000, +1.60 at 1,100. What is left is
+  mostly the 900 to 1,000 m hairpin: on the oracle's line within 1 m, ours
+  turns at 11.6 m/s^2 lateral and 78.6 km/h against the oracle's 13.4 and
+  86.5, under the same replayed pedals. Open, with the dirt lateral drag
+  (0.35).
 - **Answered in CAR_PHYSICS.md dc112515** ("A rear tyre on dirt"). No
   off-road curve: the asphalt curve with s_y = alpha / 18 deg
   (OffRoadDryPeakSA, OffRoadness 1), read at alpha x alpha_peak,road / 18,
