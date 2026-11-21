@@ -1319,6 +1319,38 @@ player-relative rules.
   weaker piece: the 20 m maxima step, the pull form, the 20 m per place,
   or the torque cut and mistakes on the cars ahead.
 
+Field-spread follow-up (FR06, HEADLINE) answered in RACE_AI.md 1e1c0617
+("Oracle grids and the tail on FR06"):
+
+1. Slot to car (slot 0 = pole; car from trace mass / CurbWeight and the
+   upgrade rule; "prob" = a pair with near-equal curb split by the
+   bigger detune going to the car further above the target).
+   - FR06 (target 506; the player in slot 6, 5th, 144.02): 0 California
+     1062 (down 0.19, 2nd 142.65), 1 Exige 454 (down 0.15, 3rd 143.19),
+     2 Camaro ZL1 1419 (down 0.47, 1st 141.60), 3 370Z 1103 (down 0.03,
+     4th 143.58), 4 Diablo SV 325 prob (down 0.37, 6th 145.31), 5 TVR 433
+     (down 0.53, 7th 145.59), 7 Ford GT 348 prob (down 0.65, 8th 145.97).
+   - HEADLINE (target 906; the player in slot 7, 8th, 513.33): 0 599XX
+     1171 (up 0.12, 1st 496.82), 1 FXX 1006 (down 0.03, 2nd 503.24), 2
+     Zonda R 1175 prob (down 0.41, 7th 506.65), 3 SR8 LM 1247 (down 0.33,
+     5th 506.35), 4 MC12 Corsa 1539 prob (down 0.56, 3rd 503.33), 5 F40
+     Competizione 1023 (down 0.39, 6th 506.45), 6 F50 GT 1020 (down 0.58,
+     4th 505.30).
+   The engine's FR06 tail (370Z, Camaro, Exige, TVR) holds the oracle's
+   1st, 3rd and 4th, so check the engine's slots first.
+2. On FR06 the field mostly ran ahead of the player: five of seven AI
+   were never more than 20 m behind it, and the leaders were torque-cut
+   (159 and 66 of ~270 samples). Only two AI went more than 60 m behind,
+   for 90 and 39 samples. Per-car mean speed per 500 m of each car's own
+   path from its grid is in the spec table for the engine to compare.
+   No other lift (decoded):
+   - catch-up writes only b' and c', not the AI grip factor;
+   - C = c' x 1.0 can exceed 1 (1.14), so the plan goes about 7 % over
+     the capacity-table corner speed, and the physics decides; the boost
+     clamp acts only while a code-only boost is on;
+   - no torque cut behind the player;
+   - the detune at negative t is intended (the Camaro at t -0.47 won).
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
