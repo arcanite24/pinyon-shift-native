@@ -266,6 +266,8 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   out.time_exhibition = real("TimeInExhibitionRaces");
   out.rally_fields = find(fs, "Main/NumRallies") != nullptr;
   out.num_rallies = num("NumRallies"), out.num_rally_stages = num("NumRallyStages");
+  out.num_rally_victories = num("NumRallyVictories"), out.rally_winnings = num("RallyWinnings");
+  out.rally_xp = num("RallyXP"), out.rally_level = num("RallyWristbandLevel");
 
   // The records: signs and barns under Colorado, the 1000 Club.
   for (const auto& blk : out.body.blocks)
@@ -383,7 +385,11 @@ std::map<std::string, int64_t> summary(const Imported& p) {
   s["upgrade_discount"] = p.upgrade_discount;
   s["wristband_level"] = p.wristband_level;
   s["rally_fields"] = p.rally_fields;
-  if (p.rally_fields) s["num_rallies"] = p.num_rallies, s["num_rally_stages"] = p.num_rally_stages;
+  if (p.rally_fields) {
+    s["num_rallies"] = p.num_rallies, s["num_rally_stages"] = p.num_rally_stages;
+    s["num_rally_victories"] = p.num_rally_victories, s["rally_winnings"] = p.rally_winnings;
+    s["rally_xp"] = p.rally_xp, s["rally_level"] = p.rally_level;
+  }
   if (!p.club.empty()) {
     int64_t c = 0, a = 0;
     for (const auto& car : p.club) c += car.challenges, a += car.done;

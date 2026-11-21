@@ -72,7 +72,10 @@ std::string save_to_text(const DriveSave& s) {
     for (auto id : *list) out += " " + std::to_string(id);
     out += "\n";
   }
-  if (s.has_rally) out += "rally " + std::to_string(s.num_rallies) + " " + std::to_string(s.num_rally_stages) + "\n";
+  if (s.has_rally)
+    out += "rally " + std::to_string(s.num_rallies) + " " + std::to_string(s.num_rally_stages) + " " +
+           std::to_string(s.num_rally_victories) + " " + std::to_string(s.rally_winnings) + " " +
+           std::to_string(s.rally_xp) + " " + std::to_string(s.rally_level) + "\n";
   for (const auto& car : s.club) {
     out += "club " + std::to_string(car.car_id);
     for (const auto& [key, done] : car.challenges) out += " " + std::to_string(key) + (done ? ":1" : ":0");
@@ -149,6 +152,8 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         for (int64_t id; l >> id;) list.push_back(id);
     } else if (key == "rally") {
       out.has_rally = bool(l >> out.num_rallies >> out.num_rally_stages);
+      // Older saves stop after the stage count.
+      if (out.has_rally) l >> out.num_rally_victories >> out.rally_winnings >> out.rally_xp >> out.rally_level;
     } else if (key == "club") {
       SavedClubCar car;
       if (!(l >> car.car_id)) continue;

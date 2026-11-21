@@ -3078,8 +3078,14 @@ int run_drive(int argc, char** argv) {
             for (const auto& c : saved.club)
               for (const auto& [key, done] : c.challenges) cs.club_total++, cs.club_done += done;
             cs.has_rally = saved.has_rally, cs.rallies = saved.num_rallies, cs.rally_stages = saved.num_rally_stages;
+            cs.rally_victories = saved.num_rally_victories, cs.rally_winnings = saved.rally_winnings;
+            cs.rally_xp = saved.rally_xp, cs.rally_level = saved.rally_level;
             const char* state = std::getenv("SHIFT_STATE_ROOT");
-            career_page.open(cs, cars::list_packs(state ? state : ""));
+            auto packs = cars::list_packs(state ? state : "");
+            // SPEC-V4-CONTENT, Progression: Rally needs its package (offer 1600).
+            cs.rally_owned = std::any_of(packs.begin(), packs.end(),
+                                         [](const cars::PackInfo& p) { return p.puboffer == 1600 && p.owned(); });
+            career_page.open(cs, std::move(packs));
           }
           if (item == PauseMenu::kReset) put_back();
           if (item == PauseMenu::kQuit) running = false;

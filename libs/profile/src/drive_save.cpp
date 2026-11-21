@@ -40,6 +40,8 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   out.level = int(p.level);
   out.event_unlocks = p.event_unlocks, out.hub_unlocks = p.hub_unlocks;
   out.has_rally = p.rally_fields, out.num_rallies = int(p.num_rallies), out.num_rally_stages = int(p.num_rally_stages);
+  out.num_rally_victories = int(p.num_rally_victories), out.rally_winnings = p.rally_winnings;
+  out.rally_xp = int(p.rally_xp), out.rally_level = int(p.rally_level);
   for (const auto& c : p.club) out.club.push_back({c.car_id, c.keys});
   // UpgradeDiscount: recomputed from the signs and compared.
   if (int64_t(p.signs_found()) != p.upgrade_discount)

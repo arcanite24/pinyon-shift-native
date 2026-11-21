@@ -36,8 +36,12 @@ void CareerPage::open(const CareerSummary& s, std::vector<cars::PackInfo> packs)
   lines_.push_back("garage  " + std::to_string(s.garage_cars) + " cars");
   lines_.push_back("1000 club  " + std::to_string(s.club_cars) + " cars  " + std::to_string(s.club_done) + "/" +
                    std::to_string(s.club_total) + " challenges");
-  if (s.has_rally)
-    lines_.push_back("rally  " + std::to_string(s.rallies) + " races  " + std::to_string(s.rally_stages) + " stages");
+  if (s.has_rally) {
+    lines_.push_back("rally  level " + std::to_string(s.rally_level) + "  " + std::to_string(s.rally_xp) + " xp" +
+                     (s.rally_owned ? "" : "  (pack not owned)"));
+    lines_.push_back("rally  " + std::to_string(s.rallies) + " events  " + std::to_string(s.rally_stages) +
+                     " stages  " + std::to_string(s.rally_victories) + " wins  " + credits_text(s.rally_winnings) + " CR");
+  }
   owned_ = 0, packs_ = int(packs.size());
   for (const auto& p : packs) owned_ += p.owned();
   lines_.push_back("packs owned  " + std::to_string(owned_) + "/" + std::to_string(packs_));

@@ -100,6 +100,7 @@ std::string lower(std::string s);
 // package is left out.
 struct PackInfo {
   std::string id, name;  // name: the record's display_name (id without it)
+  int64_t puboffer = -1;  // Media/<n>.puboffer (-1: none or not installed)
   bool installed = false, header = false, enabled = false;
   bool owned() const { return installed && header && enabled; }
 };

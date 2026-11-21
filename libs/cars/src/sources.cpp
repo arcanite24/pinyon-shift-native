@@ -375,6 +375,14 @@ std::vector<PackInfo> list_packs(const fs::path& state_root) {
   scan(title / "Disabled" / "00000002", 2);
   for (auto& [id, p] : by_id) {
     if (id == lower(kCommunityPackage)) continue;
+    for (const char* where : {"00000002", "Disabled/00000002"})
+      for (const auto& e : fs::directory_iterator(title / where / p.id / "Media", ec))
+        if (e.is_regular_file() && lower(e.path().extension().string()) == ".puboffer") {
+          const std::string stem = e.path().stem().string();
+          char* end = nullptr;
+          const long long n = std::strtoll(stem.c_str(), &end, 10);
+          if (end && *end == 0 && !stem.empty()) p.puboffer = n;
+        }
     if (p.name.empty()) p.name = p.id;
     out.push_back(p);
   }

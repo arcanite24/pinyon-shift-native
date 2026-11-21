@@ -88,12 +88,15 @@ struct DriveSave {
   int level = 0;
   std::vector<int64_t> event_unlocks, hub_unlocks;
   bool has_rally = false;
-  int num_rallies = 0, num_rally_stages = 0;
+  int num_rallies = 0, num_rally_stages = 0, num_rally_victories = 0, rally_xp = 0, rally_level = 0;
+  int64_t rally_winnings = 0;
   std::vector<SavedClubCar> club;
   // Copies the carried fields (the ones the drive does not change) from `s`.
   void carry_from(const DriveSave& s) {
     level = s.level, event_unlocks = s.event_unlocks, hub_unlocks = s.hub_unlocks;
     has_rally = s.has_rally, num_rallies = s.num_rallies, num_rally_stages = s.num_rally_stages, club = s.club;
+    num_rally_victories = s.num_rally_victories, rally_xp = s.rally_xp, rally_level = s.rally_level;
+    rally_winnings = s.rally_winnings;
   }
 };
 

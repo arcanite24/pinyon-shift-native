@@ -107,7 +107,8 @@ struct Imported {
   double distance_driven = 0;  // TotalDistanceDriven, m
   double time_festival = 0, time_street = 0, time_exhibition = 0;  // TimeIn*Races, s
   bool rally_fields = false;
-  int64_t num_rallies = 0, num_rally_stages = 0;
+  int64_t num_rallies = 0, num_rally_stages = 0, num_rally_victories = 0, rally_winnings = 0;
+  int64_t rally_xp = 0, rally_level = 0;  // RallyXP, RallyWristbandLevel
   std::vector<Sign> signs;
   std::vector<Barn> barns;
   std::vector<ClubCar> club;

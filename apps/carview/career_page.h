@@ -20,7 +20,9 @@ struct CareerSummary {
   int garage_cars = 0;
   int club_cars = 0, club_done = 0, club_total = 0;
   bool has_rally = false;
-  int rallies = 0, rally_stages = 0;
+  int rallies = 0, rally_stages = 0, rally_victories = 0, rally_xp = 0, rally_level = 0;
+  int64_t rally_winnings = 0;
+  bool rally_owned = true;  // the Rally package (offer 1600) is owned
 };
 
 class CareerPage {
