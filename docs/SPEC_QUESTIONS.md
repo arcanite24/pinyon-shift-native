@@ -1619,6 +1619,15 @@ popularity: points to rank (the 250-to-1 ladder and its thresholds), and
 what the rank unlocks; (d) where the banked points go (the save field).
 Tunable file names and the rules as tables are enough; no capture needed.
 
+Q59 answered in docs/specs/SKILLS_POPULARITY.md 06dbea33 (horizon1-recomp;
+spec a8cd57ba, status fix 06dbea33): 54 skill types from HorizonFeats.xml
+with grades and points; multiplier x1/x2/x3 at 0/3/6 skills (data;
+m x P at bank probable); cancel on a collision over 12, under 10 speed,
+then 3 s lockout; bank timing not in the data (interim 3 s); ladder
+Fame.xml 249 targets, 15,000 to 2,042,782; ranks gate 10 showcases
+(Events.PopularityPointsReq) and pay the Fame sponsor; popularity points
+guessed at the last float of the Player0 CPlayerState record.
+
 ## Q58 (M1/M5/M6): string tables and fonts
 
 FORMAT-STRINGTABLES answered in docs/formats/STRINGTABLES.md ebae56f2
