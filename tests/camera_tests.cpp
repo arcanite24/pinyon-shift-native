@@ -190,6 +190,11 @@ void replay_chase(const drive::CameraTuning& t, const Built& b, const char* path
                   cx * up[0] + cy * up[1] + cz * up[2], cx * fwd[0] + cy * fwd[1] + cz * fwd[2], d);
       std::printf("      game chase eye - car y %.3f, h %.3f; ours eye - car y %.3f\n", g("chase_eye_y") - com[1],
                   g("chase_h"), v.eye[1] - com[1]);
+      auto yaw_of = [](double x, double z) { return std::atan2(x, z) * 180 / kPi; };
+      std::printf("      view yaw ours-game %+.2f, pitch ours %.2f game %.2f, layer pitch %.2f; up ours %.3f %.3f %.3f game %.3f %.3f %.3f\n",
+                  std::remainder(yaw_of(v.forward[0], v.forward[2]) - yaw_of(g("view_fwd_x"), g("view_fwd_z")), 360.0),
+                  std::asin(-v.forward[1]) * 180 / kPi, std::asin(-g("view_fwd_y")) * 180 / kPi, g("layer_pitch_deg"),
+                  v.up[0], v.up[1], v.up[2], g("view_up_x"), g("view_up_y"), g("view_up_z"));
     }
     eye_worst = std::max(eye_worst, e), dir_worst = std::max(dir_worst, d);
   }
@@ -198,13 +203,11 @@ void replay_chase(const drive::CameraTuning& t, const Built& b, const char* path
   std::printf("  chase replay (%d frames): eye %.3f m rms (worst %.3f), direction %.2f deg rms (worst %.2f), fov %.3f deg rms\n",
               n, eye_rms, eye_worst, dir_rms, dir_worst, fov_rms);
   // The spec's checks: final direction within 0.5 deg rms, FOV within
-  // 0.1 deg. The R34's low chase sits 5.8 cm higher in the game than the
-  // rule (SPEC-CAMERAS Unknowns, open), which leaves the eye about 5 cm
-  // low and the view about 0.6 deg off over the lap; the bounds carry
-  // that until it is settled. Horizontally the eye is within a few cm.
-  CHECK(dir_rms < 1.2);
+  // 0.1 deg; the eye (ours: the g inputs come from the trace's velocity
+  // differences) within 4 cm rms.
+  CHECK(dir_rms < 0.5);
   CHECK(fov_rms < 0.1);
-  CHECK(eye_rms < 0.08);
+  CHECK(eye_rms < 0.04);
 }
 
 }  // namespace
@@ -243,10 +246,9 @@ int main() {
   Built r34, crx;
   if (!build(install, db, 445, r34) || !build(install, db, 320, crx)) return 1;
   // SPEC-CAMERAS, Tests: "Rule against oracle, parked", the rule column
-  // (the R34's low chase on the band: 1.800 m, the oracle's 1.858 m is an
-  // open failed check).
+  // (the R34's low chase has a height override: no band, 1.860 m).
   {
-    double low[2] = {5.191, 1.800}, high[2] = {5.291, 2.080};
+    double low[2] = {5.191, 1.860}, high[2] = {5.291, 2.080};
     const double cockpit[3] = {0.360, 0.938, -0.180}, hood[3] = {0, 0.945, 0.940}, bumper[3] = {0, 0.943, 1.450};
     check_car(t, r34, "R34", low, high, cockpit, hood, bumper);
   }

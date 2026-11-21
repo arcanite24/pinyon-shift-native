@@ -115,7 +115,8 @@ class DriveCamera {
   // Measured constants (SPEC-CAMERAS: d_base, the look-at drop, the hood
   // anchor, the bumper's box inset).
   static constexpr double kBaseDistance[2] = {2.95, 3.10};
-  static constexpr double kLookDrop[2] = {0.335, 0.58};
+  // The chase eye's fixed lift over the box top, L (code constants).
+  static constexpr double kEyeLift[2] = {0.35, 0.60};
   static constexpr double kHoodAnchor[3] = {0, 0.45, 0.60};
   static constexpr double kBoxInset = 0.6096;
   static constexpr double kClearance = 0.3;

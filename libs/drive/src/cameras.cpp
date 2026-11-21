@@ -286,12 +286,18 @@ void DriveCamera::start(const CameraInput& in) {
     const double h_over = car_.override(p + "HeightOffset");
     const double height = h_over != 0 ? h_over : t.height;
     // The start correction: the eye into the band above the ground under
-    // the physics wheel 2 (LR here).
-    const double start = car_.box_max[1] - in.wheel_ground_y[2] + height;
-    c_ = start < t.height_min ? t.height_min - start : start > t.height_max ? t.height_max - start : 0;
+    // the physics wheel 2 (LR here), only for a car with no override for
+    // this camera (any non-zero height, radius or target skips it).
+    const bool any_override = h_over != 0 || car_.override(p + "RadiusOffset") != 0 ||
+                              car_.override(p + "TargetYOffset") != 0;
+    const double start = car_.box_max[1] - in.wheel_ground_y[2] + kEyeLift[i] + height;
+    c_ = any_override ? 0
+         : start < t.height_min ? t.height_min - start
+         : start > t.height_max ? t.height_max - start
+                                : 0;
     theta_ = in.heading;
     omega_ = 0;
-    h_ = car_.box_max[1] - car_.com[1];
+    h_ = car_.box_max[1] - car_.com[1] + kEyeLift[i];
     h_rate_ = 0;
     slope_hold_ = 0;  // three or more wheels down
   }
@@ -366,7 +372,7 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
   const double slope = slope_at(yaw);
   // Swinging round on a slope moves h at once by the term's change.
   if (dt < kSettle && sloped) h_ += slope - slope_at(old_yaw);
-  const double h_target = car_.box_max[1] - car_.com[1] + slope;
+  const double h_target = car_.box_max[1] - car_.com[1] + kEyeLift[i] + slope;
   if (dt >= kSettle || t.height_k <= 0) {
     h_ = h_target;
     h_rate_ = 0;
@@ -375,6 +381,10 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     h_ += dt * h_rate_;
   }
   eye[1] = com[1] + height + c_ + h_;
+  // The view's direction is the chase eye's to the look-at, not re-aimed
+  // from the eye the layers move (SPEC-CAMERAS, How the layers compose).
+  const V3 look_at = add(com, {0, car_.box_max[1] - car_.com[1] + target + c_, 0});
+  V3 f = normalise(add(look_at, mul(eye, -1)));
   // The layers' car-space offsets (the speed pull-back, the pitch lift).
   eye = add(eye, vector(in.car_to_world, l.car_xyz));
   // Clearance (probable): 0.3 m above the world under the eye.
@@ -382,8 +392,6 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     double gy = 0;
     if (in.ground_below(eye[0], eye[1] + 2.0, eye[2], gy) && eye[1] < gy + kClearance) eye[1] = gy + kClearance;
   }
-  const V3 look_at = add(com, {0, car_.box_max[1] - car_.com[1] + target + c_ - kLookDrop[i], 0});
-  V3 f = normalise(add(look_at, mul(eye, -1)));
   // The layers' pitch (positive down), about the view's right axis.
   const double pitch = (l.car_ypr[1] + l.camera_ypr[1]) * kDeg;
   if (pitch != 0) {
