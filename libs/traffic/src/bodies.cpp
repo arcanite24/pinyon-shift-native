@@ -93,10 +93,11 @@ void Bodies::hold_lane(drive::Vehicle& v, double target, const std::array<double
   v.set_velocity(vel, ang);
 }
 
-bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b) {
+bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b, double* impulse) {
   double j = 0;
   if (!drive::car_contact(a, scale_a, b, scale_b, {o_.restitution, o_.friction}, &j)) return false;
   largest_ = std::max(largest_, j);
+  if (impulse) *impulse = j;
   return true;
 }
 
@@ -148,9 +149,12 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
   // Contacts: each body with the player's car and with the others.
   std::vector<Body*> list;
   for (auto& [id, b] : bodies_) list.push_back(&b);
+  step_player_ = 0;
   for (size_t i = 0; i < list.size(); ++i) {
-    if (player && collide(*player, 1.0, *list[i]->v, o_.torque_scale)) {
+    double j = 0;
+    if (player && collide(*player, 1.0, *list[i]->v, o_.torque_scale, &j)) {
       ++contacts_, ++player_contacts_;
+      step_player_ = std::max(step_player_, j);
       list[i]->since_contact = 0;
     }
     for (size_t k = i + 1; k < list.size(); ++k)

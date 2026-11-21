@@ -94,6 +94,8 @@ class Bodies {
   // impulse one of them gave (N s).
   int player_contacts() const { return player_contacts_; }
   double largest_impulse() const { return largest_; }
+  // The largest impulse a body gave the player's car in the last step (N s).
+  double player_impulse() const { return step_player_; }
 
  private:
   struct Body {
@@ -101,14 +103,14 @@ class Bodies {
     double since_contact = 1e9;  // s
   };
   drive::Input drive_input(const Car& car, const drive::Vehicle& v) const;
-  bool collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b);
+  bool collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b, double* impulse = nullptr);
 
   Population& pop_;
   Params params_;
   BodiesOptions o_;
   std::map<uint32_t, Body> bodies_;
   int contacts_ = 0, player_contacts_ = 0;
-  double largest_ = 0;
+  double largest_ = 0, step_player_ = 0;
 };
 
 }  // namespace traffic

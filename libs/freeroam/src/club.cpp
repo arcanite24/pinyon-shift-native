@@ -406,8 +406,15 @@ Run::Result Run::advance(const Node& n, State& st, const Signal& s) {
     case Kind::kAToB: {
       const Location& a = locs_->at(n.start_loc);
       const Location& b = locs_->at(n.end_loc);
+      // The trip arms in A's first circle and starts as the car leaves it
+      // (ours: the spec's "enters A" would restart a car parked there
+      // after every timeout; the difference is the circle's radius).
       if (!st.started) {
-        if (!a.inside_first(s.x, s.z)) return Result::kRunning;
+        const bool in_a = a.inside_first(s.x, s.z);
+        if (in_a || !st.was_true) {
+          st.was_true = in_a;
+          return Result::kRunning;
+        }
         st.started = true;
         st.start = s.time;
         for (size_t i = 0; i < n.children.size(); ++i) activate(n.children[i], st.children[i], s.time, true);
@@ -469,7 +476,8 @@ std::string Run::status(const Signal& s) const {
     auto [n, st] = stack.back();
     stack.pop_back();
     if (n->kind == Kind::kAToB) {
-      if (!st->started) std::snprintf(b, sizeof b, "drive into %s", n->start_loc.c_str());
+      if (!st->started)
+        std::snprintf(b, sizeof b, st->was_true ? "leave %s to start" : "drive into %s", n->start_loc.c_str());
       else std::snprintf(b, sizeof b, "%.0f s on the way to %s", s.time - st->start, n->end_loc.c_str());
       return b;
     }

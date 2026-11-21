@@ -122,6 +122,19 @@ int main() {
     }
     CHECK(!passed && run.failures() == 1);
   }
+  // Parked in A: the trip never starts, so it never fails; leaving starts it.
+  {
+    Run run(cs[1], locs);
+    Signal s;
+    bool passed = false;
+    for (int k = 0; k < 120 * 200 && !passed; ++k) {
+      s.time = k * dt;
+      s.x = s.time < 150 ? 2.0 : std::min(1000.0, 2.0 + 40 * (s.time - 150));
+      passed = run.step(s);
+      if (k == 120 * 100) CHECK(run.status(s) == "leave here to start" && run.failures() == 0);
+    }
+    CHECK(passed && run.failures() == 0);
+  }
   // The jump: 20 m then landing restarts it; a 35 m jump passes both steps.
   {
     Run run(cs[2], locs);

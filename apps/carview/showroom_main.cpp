@@ -2523,8 +2523,10 @@ int run_drive(int argc, char** argv) {
         s.in_air = air;
         s.jump_m = air ? std::hypot(at.x - club_takeoff.x, at.z - club_takeoff.z) : 0;
         // A serious collision (interim, ours): one body contact pushing
-        // with more than four times the car's weight.
-        s.collided = vehicle.strongest_body_contact().force > 4 * vehicle.params().mass * 9.81;
+        // with more than four times the car's weight, or a traffic car's
+        // impulse worth over 2 m/s of the car's speed.
+        s.collided = vehicle.strongest_body_contact().force > 4 * vehicle.params().mass * 9.81 ||
+                     (traffic && traffic->player_impulse() > 2.0 * vehicle.params().mass);
         s.x = at.x, s.z = at.z;
         const auto& list = club_data.cars.at(club_car);
         drive::SavedClubCar* rec = club_record();
@@ -2554,6 +2556,34 @@ int run_drive(int argc, char** argv) {
           }
           ++k;
         }
+      };
+      // The page's title and lines (the pause menu's 1000 club).
+      auto club_page = [&](std::string& title, std::vector<std::string>& lines) {
+        lines.clear();
+        const auto* list = club_gate.empty() ? &club_data.cars.at(club_car) : nullptr;
+        const drive::SavedClubCar* rec = club_record();
+        int done = 0;
+        if (rec)
+          for (const auto& c : rec->challenges) done += c.second;
+        if (!list) {
+          title = "1000 club";
+          lines.push_back(club_gate);
+          return;
+        }
+        title = "1000 club: " + std::to_string(done) + "/" + std::to_string(list->size()) +
+                " medals in this car (esc leaves)";
+        for (size_t i = 0; i < list->size(); ++i) {
+          std::string line = (*list)[i].label() + " - ";
+          if (rec && i < rec->challenges.size() && rec->challenges[i].second) line += "medal";
+          else if (!(*list)[i].supported) line += "not measured yet";
+          else if (!rec) line += (*list)[i].summary();
+          else
+            for (const auto& r : club_runs)
+              if (r.index == i) line += r.run.status(club_signal);
+          if (line.size() > 90) line = line.substr(0, 87) + "...";
+          lines.push_back(line);
+        }
+        lines.push_back(rec ? "challenges running in this car" : "begin challenges in this car");
       };
       // The banner while a challenge is under way.
       auto club_banner = [&]() -> std::string {
@@ -2622,6 +2652,7 @@ int run_drive(int argc, char** argv) {
         }
         log_contacts();
         if (traffic) traffic->step(vehicle);
+        club_step();  // after traffic: its contacts count as crashes
         if (race && streamer)
           race->after_step(vehicle, *ground, streamer->centre_x(), streamer->centre_z(),
                            streamer->collision_radius(), traffic.get());
@@ -2638,7 +2669,6 @@ int run_drive(int argc, char** argv) {
           }
         }
         free_roam_step();
-        club_step();
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
@@ -2775,6 +2805,13 @@ int run_drive(int argc, char** argv) {
                                         : club_runs.empty() && !club_record() ? "not begun in this car"
                                                                               : (std::to_string(club_runs.size()) +
                                                                                  " challenges running in this car").c_str());
+      if (std::getenv("SHIFT_CLUB_PAGE")) {  // debug: the page as the menu shows it
+        std::string title;
+        std::vector<std::string> lines;
+        club_page(title, lines);
+        std::printf("%s\n", title.c_str());
+        for (const auto& l : lines) std::printf("  %s\n", l.c_str());
+      }
       WheelPose poses[4];
       CameraPull camera_pull;
       // SPEC-CAMERAS' rig (the old chase when it cannot load, and for
@@ -2841,31 +2878,7 @@ int run_drive(int argc, char** argv) {
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
         if (club_open) {
-          st.menu.clear();
-          const auto* list = club_gate.empty() ? &club_data.cars.at(club_car) : nullptr;
-          const drive::SavedClubCar* rec = club_record();
-          int done = 0;
-          if (rec)
-            for (const auto& c : rec->challenges) done += c.second;
-          if (!list) {
-            st.menu_title = "1000 club";
-            st.menu.push_back(club_gate);
-          } else {
-            st.menu_title = "1000 club: " + std::to_string(done) + "/" + std::to_string(list->size()) +
-                            " medals in this car (esc leaves)";
-            for (size_t i = 0; i < list->size(); ++i) {
-              std::string line = (*list)[i].label() + " - ";
-              if (rec && i < rec->challenges.size() && rec->challenges[i].second) line += "medal";
-              else if (!(*list)[i].supported) line += "not measured yet";
-              else if (!rec) line += (*list)[i].summary();
-              else
-                for (const auto& r : club_runs)
-                  if (r.index == i) line += r.run.status(club_signal);
-              if (line.size() > 90) line = line.substr(0, 87) + "...";
-              st.menu.push_back(line);
-            }
-            st.menu.push_back(rec ? "challenges running in this car" : "begin challenges in this car");
-          }
+          club_page(st.menu_title, st.menu);
           st.menu_selected = int(std::min(club_pick, st.menu.size() - 1));
         }
         if (paint_open) {

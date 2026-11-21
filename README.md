@@ -615,8 +615,9 @@ Rechecked 2026-11-21 with the sun shadow, the post chain, bundle textures
 and the cockpit/paint work in (an optimised build, two runs): low GPU
 p50 10.7 and 9.8, p95 12.3 and 11.4, max 15.6 ms; frame CPU p95 2.1 ms.
 A build without `/O2` (an empty `CMAKE_CXX_FLAGS_RELEASE` in the cache)
-reads 16.1 / 18.7 ms on the same GPU: the slower CPU takes the shared
-power budget, so bench only optimised builds.
+reads 16.1 / 18.7 ms on the same GPU (probably the slower CPU taking
+the shared power budget), so bench only optimised builds. The Deck
+wasn't rechecked.
 
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
@@ -702,7 +703,12 @@ copy's packages.
   crashes are measured, which covers 237 of 1,145 (timed and clean
   road trips, top speed, long jump). A challenge using skills, speed
   cameras, events, smashables or encounters doesn't start. A serious
-  crash is one body contact over 4x the car's weight (ours). A jump's
+  crash is one body contact over 4x the car's weight, or a traffic car's
+impulse over 2 m/s of the car's speed (ours). A trip arms in A's first
+circle and starts as the car leaves it, so a car parked there doesn't
+fail and restart (the spec says it starts on entering). No measured
+challenge saves progress (`save_progress`), so the record's blob isn't
+written. `SHIFT_CLUB_PAGE=1` prints the page headless. A jump's
   length is metres, horizontal, from take-off (ours). The page shows
   the title id as words and our summary until the string tables are
   read. The key of a new car's record is 0 (the hash is open). Medals'
