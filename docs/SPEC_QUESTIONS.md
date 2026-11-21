@@ -1053,3 +1053,27 @@ along the line (what it reads per car: grip, mass, power, aero; how
 cornering and braking scale it; any look-ahead or per-segment speed table
 in the line file or the car), with an oracle trace of target against
 actual speed on one more car. Meanwhile: the fit.
+
+## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
+
+M6's gate is "the reference save imports and shows the same progress
+(signs, cars, DLC)". The engine has its own save (drive/save.h) with
+position, collectibles, barn cars and the career records. Needed, each a
+narrow spec with its own tests:
+
+1. FORMAT-PROFILE: the Pinyon Shift / game profile as the reference save
+   stores it (container, encryption or checksum if any, the tables and
+   counters): credits, wristband points and level, owned cars with their
+   colour, upgrades and tuning, found signs and barns, event results, DLC
+   ownership flags. Counts and field layouts only.
+2. Garage and ownership: the starting car, the car list a garage shows,
+   selling, the car a race starts in.
+3. Upgrades: the parts tables (CarPartsList.xml and the database), what a
+   part changes in the physics parameters, prices, PI and class, and the
+   discount signs' effect (SPEC-FREEROAM-COLLECTIBLES gives the discount).
+4. Autoshow: which cars are buyable when, prices, unlocks.
+5. Paint: the colour picker rows and how a colour lands in the car's
+   paint (FORMAT-CARS has the paint inputs).
+6. The 1000 Club, Horizon Rally and the DLC packs (what each pack adds:
+   cars, events, the Rally expansion).
+Meanwhile: none of this in the engine.
