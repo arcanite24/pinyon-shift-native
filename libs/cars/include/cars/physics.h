@@ -100,6 +100,15 @@ struct PartRow {
   int64_t price = 0, manufacturer = 0;
 };
 
+// A car the Autoshow can list (SPEC-AUTOSHOW-PAINT, Which cars are
+// listed: drivable, selectable, not a unicorn, with a PowerTrains row).
+struct DealerCar {
+  int64_t id = 0, base_cost = 0, year = 0, class_id = 0;
+  double performance_index = 0;
+  std::string media_name;
+  int64_t first_colour = 0;  // the lowest Combo_Colors Sequence: the swatch the showroom opens on
+};
+
 // The merged database kept open (opening merges every package, so the
 // garage opens it once): a car's rows with its fitted parts, and the rows
 // each slot offers for the car (keyed through its fitted engine,
@@ -114,6 +123,11 @@ class PartsDb {
   bool is_open() const { return impl_ != nullptr; }
   bool physics(int64_t car_id, const FittedParts& fit, CarPhysics& out, std::string* error) const;
   bool options(int64_t car_id, const FittedParts& fit, std::vector<PartRow>& out, std::string* error) const;
+  // The listable cars, by ClassID, PerformanceIndex, then Id.
+  bool dealer(std::vector<DealerCar>& out, std::string* error) const;
+  // A new car's slots: each slot's stock row (the first by Id when a table
+  // has several), by Career_Garage column.
+  bool stock_slots(int64_t car_id, std::map<std::string, int64_t>& out, std::string* error) const;
 
  private:
   struct Impl;

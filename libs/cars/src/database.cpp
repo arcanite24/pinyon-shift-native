@@ -719,6 +719,44 @@ bool PartsDb::options(int64_t car_id, const FittedParts& fit, std::vector<PartRo
   return true;
 }
 
+bool PartsDb::dealer(std::vector<DealerCar>& out, std::string* error) const {
+  out.clear();
+  if (!impl_) {
+    if (error) *error = "parts database not open";
+    return false;
+  }
+  Query q(impl_->merged.db,
+          "SELECT Id, BaseCost, Year, ClassID, PerformanceIndex, MediaName, (SELECT MIN(Sequence) FROM Combo_Colors k "
+          "WHERE k.Ordinal = d.Id) FROM Data_Car d WHERE IsDrivable = 1 AND "
+          "IsSelectable = 1 AND IsUnicorn = 0 AND EXISTS (SELECT 1 FROM PowerTrains p WHERE p.Id = d.PowertrainID) "
+          "ORDER BY ClassID, PerformanceIndex, Id");
+  if (!q.ok()) {
+    if (error) *error = "Data_Car: the dealer query failed";
+    return false;
+  }
+  while (q.step()) {
+    DealerCar c;
+    c.id = q.i(0), c.base_cost = q.i(1), c.year = q.i(2), c.class_id = q.i(3), c.performance_index = q.d(4);
+    c.media_name = q.s(5);
+    c.first_colour = q.type(6) == SQLITE_NULL ? 0 : q.i(6);
+    out.push_back(std::move(c));
+  }
+  return true;
+}
+
+bool PartsDb::stock_slots(int64_t car_id, std::map<std::string, int64_t>& out, std::string* error) const {
+  out.clear();
+  std::vector<PartRow> rows;
+  if (!options(car_id, {}, rows, error)) return false;
+  for (const UpgradeSlot& s : upgrade_slots())
+    for (const PartRow& r : rows)
+      if (r.part_enum == s.part_enum && r.is_stock) {
+        auto it = out.find(s.column);
+        if (it == out.end() || r.id < it->second) out[s.column] = r.id;
+      }
+  return true;
+}
+
 const std::vector<UpgradeSlot>& upgrade_slots() {
   // SPEC-GARAGE-UPGRADES, Areas, slots and tables: the part enum, the
   // Career_Garage column, the table and its key (0 car, 1 engine,

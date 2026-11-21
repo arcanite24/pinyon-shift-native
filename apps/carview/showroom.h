@@ -162,6 +162,9 @@ WorldGeometry build_world(const WorldTriangles& world);
 struct ShowroomOptions {
   size_t colour = 0;            // index into the car's colours (by Sequence)
   int64_t match_rgb = -1;       // when set (r x 65536 + g x 256 + b): the colour with that sRGB
+  // When set: the colour with that Combo_Colors Sequence (a garage row's
+  // DefaultManufacturerColorIndex, SPEC-AUTOSHOW-PAINT); none: the lowest.
+  int64_t match_sequence = -1;
   bool livery_overlay = false;  // tint the livery mask magenta on the paint
   bool all_variants = false;    // draw every part variant and upgrade part
   // The Data_Car row shown (0: the baked row). Rows sharing a model can

@@ -67,6 +67,7 @@
 #include "profile/drive_save.h"
 #include "garage/garage.h"
 #include "upgrade_shop.h"
+#include "autoshow.h"
 
 namespace carview {
 
@@ -1621,25 +1622,31 @@ int run_drive(int argc, char** argv) {
   // garage, barn finds included).
   std::vector<std::string> baked_cars;
   std::vector<int64_t> pick_ids;  // the garage Id of each, with a garage
+  std::set<std::string> all_baked;  // every baked car (the Autoshow's)
+  // The garage's cars the bake has, by class then index (SPEC-GARAGE-
+  // UPGRADES, The active car and switching); again after a purchase.
+  auto garage_picker = [&]() {
+    std::vector<const garage::Car*> rows;
+    for (const auto& c : career_garage.cars)
+      if (baked_ids.count(c.car_id)) rows.push_back(&c);
+    std::stable_sort(rows.begin(), rows.end(), [](const garage::Car* a, const garage::Car* b) {
+      return a->class_id != b->class_id ? a->class_id < b->class_id : a->performance_index < b->performance_index;
+    });
+    std::vector<std::string> keep;
+    std::vector<int64_t> ids;
+    for (const auto* c : rows) keep.push_back(lower_ascii(baked_ids.at(c->car_id))), ids.push_back(c->id);
+    if (!keep.empty()) baked_cars = std::move(keep), pick_ids = std::move(ids);
+    return rows.size();
+  };
   {
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(bake_dir / "cars", ec))
       if (e.path().extension() == ".shiftbake") baked_cars.push_back(e.path().stem().string());
     std::sort(baked_cars.begin(), baked_cars.end());
+    for (const auto& c : baked_cars) all_baked.insert(lower_ascii(c));
     if (have_garage) {
-      // The garage's cars the bake has, by class then index (SPEC-GARAGE-
-      // UPGRADES, The active car and switching).
-      std::vector<const garage::Car*> rows;
-      for (const auto& c : career_garage.cars)
-        if (baked_ids.count(c.car_id)) rows.push_back(&c);
-      std::stable_sort(rows.begin(), rows.end(), [](const garage::Car* a, const garage::Car* b) {
-        return a->class_id != b->class_id ? a->class_id < b->class_id : a->performance_index < b->performance_index;
-      });
-      std::vector<std::string> keep;
-      for (const auto* c : rows) keep.push_back(lower_ascii(baked_ids.at(c->car_id))), pick_ids.push_back(c->id);
-      std::printf("garage: %zu cars, %zu baked\n", career_garage.cars.size(), keep.size());
-      if (!keep.empty()) baked_cars = std::move(keep);
-      else pick_ids.clear();
+      const size_t n = garage_picker();
+      std::printf("garage: %zu cars, %zu baked\n", career_garage.cars.size(), n);
     } else if (have_saved && saved.owned_garage) {
       const auto ids = baked_car_ids(bake_dir);
       std::vector<std::string> owned;
@@ -1696,6 +1703,11 @@ int run_drive(int argc, char** argv) {
     // SHIFT_NO_CULL=1: every world draw, for comparison with the culled frame.
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options;
+    // The garage car's paint: its stored colour Sequence (SPEC-AUTOSHOW-PAINT).
+    if (have_garage)
+      if (const garage::Car* gc = career_garage.selected_car())
+        if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car))
+          options.match_sequence = gc->colour;
     Renderer::Options render_options{window, validation, msaa};
     render_options.reverse_z = reverse_z;
     if (post_on) {
@@ -2491,6 +2503,7 @@ int run_drive(int argc, char** argv) {
       // The upgrade shop (SPEC-GARAGE-UPGRADES) on the selected garage car;
       // the discount is the signs found.
       carview::UpgradeShop shop;
+      carview::Autoshow autoshow;
       auto discount = [&]() {
         return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
       };
@@ -2499,6 +2512,7 @@ int run_drive(int argc, char** argv) {
         st.banner = banner;
         if (menu) menu->fill(st);
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
+        if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         st.kmh = vehicle.speed() * 3.6;
         st.gear = vehicle.gear();
         st.rpm = vehicle.rpm();
@@ -2983,16 +2997,18 @@ int run_drive(int argc, char** argv) {
           menu.open = false;
           if (item == PauseMenu::kMap) open_map();
           if (item == PauseMenu::kChangeCar) browse(0);
-          if (item == PauseMenu::kUpgrades) {
-            std::string why = "upgrades need a garage (--import-profile)";
+          if (item == PauseMenu::kUpgrades || item == PauseMenu::kAutoshow) {
+            std::string why = "the garage needs a career (--import-profile)";
             bool ready = false;
             if (have_garage && parts_db.valid()) {
               why = "loading the parts database, try again";
               if (parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 why = "no parts database";
                 if (const auto db = parts_db.get())
-                  ready = shop.open(*db, career_garage, career_garage.selected_car() ? career_garage.selected_car()->id : 0,
-                                    why);
+                  ready = item == PauseMenu::kAutoshow
+                              ? autoshow.open(*db, all_baked, why)
+                              : shop.open(*db, career_garage,
+                                          career_garage.selected_car() ? career_garage.selected_car()->id : 0, why);
               }
             }
             if (!ready) {
@@ -3118,6 +3134,47 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) shop.move_part(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) shop.move_part(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) fit();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // The Autoshow takes the keys and buttons while open; a purchase
+            // drives the new car away from where this one stands.
+            if (autoshow.is_open()) {
+              auto buy = [&]() {
+                const auto db = parts_db.valid() ? parts_db.get() : nullptr;
+                std::string media, message = "no parts database";
+                const bool bought = db && autoshow.buy(*db, career_garage, career.credits, media, message);
+                notice = message;
+                notice_until = vehicle.time() + 4;
+                if (!bought) return;
+                autoshow.close();
+                garage_picker();
+                write_career_garage();
+                save_now("purchase");
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                spawn[0] = at.x, spawn[1] = at.y, spawn[2] = at.z, spawn[3] = std::atan2(f.x, f.z);
+                have_spawn = true;
+                next_car = media;
+                running = false;
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE) autoshow.close();
+                if (k == SDLK_UP || k == SDLK_W) autoshow.move(-1);
+                if (k == SDLK_DOWN || k == SDLK_S) autoshow.move(1);
+                if (k == SDLK_LEFT || k == SDLK_A) autoshow.jump_class(-1);
+                if (k == SDLK_RIGHT || k == SDLK_D) autoshow.jump_class(1);
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) buy();
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) autoshow.close();
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move(-1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move(1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) autoshow.jump_class(-1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) autoshow.jump_class(1);
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) buy();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -3273,7 +3330,7 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open && !shop.is_open()) accumulator += frame_dt;
+          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open()) accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
@@ -3283,7 +3340,8 @@ int run_drive(int argc, char** argv) {
             save_due = false;
             save_now("collectible");
           }
-          while (!menu.open && !map_open && !shop.is_open() && accumulator >= drive::Vehicle::kStep) {
+          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() &&
+                 accumulator >= drive::Vehicle::kStep) {
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
               status = 1;

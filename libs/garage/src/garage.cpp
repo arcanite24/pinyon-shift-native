@@ -70,6 +70,22 @@ FitResult fit_part(Garage& g, int64_t garage_id, const cars::PartRow& part, cons
   return r;
 }
 
+bool buy_car(Garage& g, int64_t car_id, int64_t price, double performance_index, int class_id, int colour,
+             const std::map<std::string, int64_t>& stock, int64_t& credits, int64_t* new_id) {
+  if (credits < price) return false;
+  credits -= price;
+  int64_t last = g.last_id;
+  for (const auto& c : g.cars) last = std::max(last, c.id);
+  Car c;
+  c.id = last + 1, c.car_id = car_id, c.performance_index = performance_index, c.class_id = class_id;
+  c.colour = colour, c.slots = stock;
+  g.cars.push_back(std::move(c));
+  g.last_id = last + 1;
+  g.selected = last + 1;
+  if (new_id) *new_id = last + 1;
+  return true;
+}
+
 int class_of(double raw, const std::vector<ClassBand>& bands) {
   for (size_t k = 0; k < bands.size(); ++k)
     if (bands[k].raw_max >= raw) return int(k);

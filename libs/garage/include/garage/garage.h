@@ -72,6 +72,13 @@ struct FitResult {
 FitResult fit_part(Garage& g, int64_t garage_id, const cars::PartRow& part, const char* column, int discount_percent,
                    int64_t& credits);
 
+// Buys a car (SPEC-GARAGE-UPGRADES, A purchase): refused (false) when
+// `credits` < `price`; else the credits pay, a row with Id last + 1, the
+// listed index and class, `stock` slots, parts value 0 and `colour` is
+// added, and it becomes the selected car. `new_id` gets the Id.
+bool buy_car(Garage& g, int64_t car_id, int64_t price, double performance_index, int class_id, int colour,
+             const std::map<std::string, int64_t>& stock, int64_t& credits, int64_t* new_id = nullptr);
+
 // The class bands (CarClasses: raw and shown ceilings, by Id).
 struct ClassBand {
   double raw_max = 0, shown_max = 0;

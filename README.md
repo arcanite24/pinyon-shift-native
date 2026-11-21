@@ -781,6 +781,13 @@ the interim noted here until a later polish sweep.
   open); engine, drivetrain and body conversions are not offered; the
   wheel geometry stays the stock bake's (a rim or width part changes the
   grip, not the drawn wheel); no Auto Upgrade; no selling.
+- **Autoshow and paint (SPEC-AUTOSHOW-PAINT interims).** The pause menu's
+  autoshow is one list (class, then index; left and right jump a class)
+  instead of the make carousel, of the cars the bake has; the offer
+  visibility rule is not applied (on the disc alone the 10 offer-only cars
+  are listed); the bought car takes its first colour (no colour bar); no
+  tutorial list. A garage car is drawn in its stored colour Sequence; the
+  paint shop and player liveries are not done.
 - **Race AI speed planner (SPEC-RACE-AI Speed planning, Q53).** Each car
   plans from its own lateral, braking and drive capacity tables (40 speeds,
   from the engine's tyre model at 0.98 of the car's mass), the line's

@@ -290,6 +290,18 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     if (!found) notes_.push_back("no colour row with the requested sRGB: drawing colour " +
                                  std::to_string(options_.colour));
   }
+  if (options_.match_sequence >= 0) {
+    bool found = false;
+    for (size_t i = 0; i < info.colours.size() && !found; ++i)
+      if (info.colours[i].sequence == options_.match_sequence) {
+        options_.colour = i;
+        found = true;
+      }
+    if (!found) {
+      options_.colour = 0;
+      notes_.push_back("no colour with Sequence " + std::to_string(options_.match_sequence) + ": the lowest");
+    }
+  }
   if (!bake::read_file(bake_dir / "wheels" / (info.wheel_media + ".shiftbake"), wheel_, &err)) {
     error = "wheel " + info.wheel_media + ": " + err;
     return false;

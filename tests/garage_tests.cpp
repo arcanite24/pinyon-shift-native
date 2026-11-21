@@ -40,6 +40,18 @@ int main() {
   CHECK(r.ok && r.refit && r.charged == 0 && credits == 58500 && g.bought.size() == 1 && g.cars[0].parts_value == 1500);
   CHECK(fitted(g.cars[0]).at("List_UpgradeBrakes") == 309003);
 
+  // Buying a car.
+  {
+    Garage b;
+    b.last_id = 7;
+    b.cars.push_back({7, 309, 0.5, 2, 0, 0, {}});
+    int64_t cr = 51999, id = 0;
+    CHECK(!buy_car(b, 1009, 52000, 0.6, 4, 1, {{"Brakes", 1009000}}, cr, &id) && cr == 51999 && b.cars.size() == 1);
+    cr = 60000;
+    CHECK(buy_car(b, 1009, 52000, 0.6, 4, 1, {{"Brakes", 1009000}}, cr, &id) && cr == 8000 && id == 8);
+    CHECK(b.last_id == 8 && b.selected == 8 && b.cars.back().parts_value == 0 && b.cars.back().slots["Brakes"] == 1009000);
+  }
+
   // Class bands (the disc's CarClasses ceilings).
   const std::vector<ClassBand> bands = {{0.005, 99, "F"},   {0.459, 200, "E"},  {0.539, 300, "D"},
                                         {0.5975, 400, "C"}, {0.6505, 500, "B"}, {0.739, 600, "A"},

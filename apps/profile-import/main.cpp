@@ -166,6 +166,17 @@ int main(int argc, char** argv) {
                   bands[size_t(std::clamp(c.class_id, 0, int(bands.size()) - 1))].name.c_str(),
                   garage::shown_index(c.performance_index, bands), mass, stored, ok ? "ok" : "OFF", (long long)c.parts_value);
     }
+    {
+      // The Autoshow list and a new car's stock slots (SPEC-AUTOSHOW-PAINT).
+      std::vector<cars::DealerCar> dealer;
+      std::map<std::string, int64_t> stock;
+      std::vector<cars::PartRow> options;
+      db.dealer(dealer, &error);
+      db.stock_slots(1009, stock, &error);
+      if (const auto* sel = g.selected_car()) db.options(sel->car_id, garage::fitted(*sel), options, &error);
+      std::printf("dealer: %zu listable cars; car 1009: %zu stock slots; the selected car: %zu part rows\n",
+                  dealer.size(), stock.size(), options.size());
+    }
     std::printf("garage: %zu cars; class %d, parts value %d; mass rule %d of %d in the database (%d not in it)\n",
                 g.cars.size(), class_ok, value_ok, mass_ok, checked, missing);
     return 0;
