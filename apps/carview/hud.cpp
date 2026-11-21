@@ -185,6 +185,7 @@ const char* PauseMenu::label(int item) {
     case kClub: return "1000 club";
     case kAutoshow: return "autoshow";
     case kCareer: return "career";
+    case kSettings: return "settings";
     case kReset: return "reset to road";
     case kQuit: return "quit";
   }

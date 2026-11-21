@@ -966,9 +966,13 @@ the interim noted here until a later polish sweep.
   - **macOS:** not built. minivac has no CMake, Ninja or Vulkan SDK
     (MoltenVK) and its disk is 94 % full; installing them is Brandon's
     decision.
-- **Settings and mods (M7 interims).** There is no settings page in the
-  pause menu yet: settings are the file and `--save-settings`, and a change
-  to the preset or size takes effect on the next start. Mods replace files
+- **Settings and mods (M7 interims).** The pause menu's settings page
+  (2026-11-21) steps preset, shadows, bloom, difficulty, rubber-banding,
+  traffic, collectibles, radio, sound and the starting camera with left and
+  right. Enter on "save" writes settings.txt, keeping its other options
+  (size, msaa, exposure, hour, play, mods). Changes apply on the next
+  start; there is no live apply. The page is tested headless
+  (settings_tests); its keys aren't yet exercised in a window. Mods replace files
   only, and the car list (`baked_car_ids`, traffic) still comes from the
   play folder, so a mod cannot add a car. Mods are read once at start-up.
 - **Career page and Rally (SPEC-V4-CONTENT interims).** The pause menu's

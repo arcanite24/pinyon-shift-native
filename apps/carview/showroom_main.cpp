@@ -72,6 +72,7 @@
 #include "cars/mods.h"
 #include "career_page.h"
 #include "settings.h"
+#include "settings_page.h"
 
 namespace carview {
 
@@ -2478,6 +2479,7 @@ int run_drive(int argc, char** argv) {
       std::string club_gate;  // empty: open
       bool club_open = false;
       size_t club_pick = 0;
+      SettingsPage settings_page;  // the pause menu's settings (M7)
       freeroam::club::Signal club_signal;
       bool club_was_air = false;
       drive::Vec3 club_takeoff{};
@@ -2902,6 +2904,7 @@ int run_drive(int argc, char** argv) {
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
+        if (settings_page.is_open()) settings_page.fill(st.menu_title, st.menu, st.menu_selected);
         if (club_open) {
           club_page(st.menu_title, st.menu);
           st.menu_selected = int(std::min(club_pick, st.menu.size() - 1));
@@ -3493,6 +3496,10 @@ int run_drive(int argc, char** argv) {
             paint_open = !paint_order.empty();
             if (!paint_open) notice = "this car has no colour rows", notice_until = vehicle.time() + 3;
           }
+          if (item == PauseMenu::kSettings) {
+            settings_page.load(read_settings(settings_path(), nullptr));
+            settings_page.open();
+          }
           if (item == PauseMenu::kCareer) {
             std::vector<cars::PackInfo> packs;
             const carview::CareerSummary cs = career_summary(packs);
@@ -3737,6 +3744,40 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            // The settings page: up and down pick a row, left and right
+            // change it, enter on the last line writes the file (the next
+            // start applies it), escape leaves without writing.
+            if (settings_page.is_open()) {
+              auto save = [&]() {
+                if (!settings_page.on_save_line()) return;
+                std::string why;
+                const auto file = settings_path();
+                if (file.empty()) why = "no user folder";
+                else if (!write_settings(file, settings_page.tokens(), &why)) why = why.empty() ? "not written" : why;
+                notice = why.empty() ? "settings saved: they apply on the next start" : "settings: " + why;
+                notice_until = vehicle.time() + 4;
+                if (why.empty()) settings_page.close();
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) settings_page.close();
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) save();
+                else if (k == SDLK_UP || k == SDLK_W) settings_page.move(-1);
+                else if (k == SDLK_DOWN || k == SDLK_S) settings_page.move(1);
+                else if (k == SDLK_LEFT || k == SDLK_A) settings_page.step(-1);
+                else if (k == SDLK_RIGHT || k == SDLK_D) settings_page.step(1);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) settings_page.close();
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) save();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) settings_page.move(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) settings_page.move(1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) settings_page.step(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) settings_page.step(1);
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             // The career page scrolls while open; it changes nothing.
             if (career_page.is_open()) {
               if (e.type == SDL_EVENT_KEY_DOWN) {
@@ -3905,7 +3946,7 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open &&
+          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !settings_page.is_open() && !paint_open &&
               !club_open)
             accumulator += frame_dt;
           last = now;
@@ -3917,7 +3958,7 @@ int run_drive(int argc, char** argv) {
             save_due = false;
             save_now("collectible");
           }
-          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open &&
+          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !settings_page.is_open() && !paint_open &&
                  !club_open && accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
             if (!step(cruise ? follower.input(vehicle) : in)) {

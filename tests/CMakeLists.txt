@@ -95,3 +95,8 @@ set_tests_properties(profile_import_counts PROPERTIES SKIP_RETURN_CODE 77 LABELS
 add_executable(garage_tests garage_tests.cpp)
 target_link_libraries(garage_tests PRIVATE shift_garage)
 add_test(NAME garage_tests COMMAND garage_tests)
+
+# The pause menu's settings page (plain C++).
+add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp)
+target_include_directories(settings_tests PRIVATE ../apps/carview)
+add_test(NAME settings_tests COMMAND settings_tests)
