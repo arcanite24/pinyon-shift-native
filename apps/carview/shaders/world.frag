@@ -61,6 +61,8 @@ float dither_threshold() {
 const vec3 kSkyHorizon = vec3(0.42, 0.56, 0.72);
 const vec3 kSkyZenith = vec3(0.05, 0.16, 0.50);
 
+const float kFogNear = 200.0, kFogFar = 4000.0, kFogMax = 0.9;
+
 // The frame's lighting constants (daytime free-roam dump).
 const vec3 kSunColour = vec3(0.9695, 0.8358, 0.584);
 const vec3 kSkyColour = vec3(0.1687, 0.2229, 0.2746);
@@ -110,6 +112,25 @@ vec3 sky_colour(vec3 dir, vec3 up, vec3 sun) {
     sky = mix(sky, cloud, cover * 0.85);
   }
   return sky * (h < 0.0 ? 0.85 : 1.0);
+}
+
+// Distance haze (WORLD-MATERIALS, Lighting: FogConsts2 (200, 4000, 0.9) is
+// start, end and the most fog; the ramp between and the colour are ours):
+// an exponential rise from the start to most of the maximum at the end, towards the sky's own haze in
+// that direction, so far scenery dissolves into the horizon, tinted warm
+// towards the sun.
+vec3 haze_colour(vec3 dir, vec3 up, vec3 sun) {
+  float hc = clamp(dot(dir, up), 0.0, 1.0);
+  vec3 c = mix(kSkyHorizon, kSkyZenith, pow(hc, 0.55));
+  float toward = max(dot(dir, sun), 0.0);
+  return mix(c, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - hc) * 0.55);
+}
+vec3 apply_haze(vec3 colour, vec3 position, vec3 up, vec3 sun) {
+  vec3 to = position - frame.eye.xyz;
+  float d = length(to);
+  // Exponential from the start, its scale a third of the span (ours).
+  float f = kFogMax * (1.0 - exp(-max(d - kFogNear, 0.0) / ((kFogFar - kFogNear) * 0.47)));
+  return mix(colour, haze_colour(to / max(d, 1e-3), up, sun), f);
 }
 
 vec3 encode_srgb(vec3 c) {
@@ -198,6 +219,7 @@ void main() {
   float shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n) : 1.0;
   vec3 light = kSunColour * ndl * shade + mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up));
   vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
+  colour = apply_haze(colour, v_position, up, sun);
 
   float alpha = 1.0;
   if (blend == kCoverage) {
