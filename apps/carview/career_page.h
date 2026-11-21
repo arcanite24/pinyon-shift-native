@@ -18,6 +18,8 @@ struct CareerSummary {
   int wristband_points = 0, races = 0, victories = 0, podiums = 0;
   int64_t credits = 0, total_winnings = 0;
   int garage_cars = 0;
+  int signs_found = 0, barns_found = 0, barns = 0;  // free roam (SPEC-FREEROAM-COLLECTIBLES)
+  int level = -1;  // the wristband level's index, shown when its name is a string key
   int club_cars = 0, club_done = 0, club_total = 0;
   bool has_rally = false;
   int rallies = 0, rally_stages = 0, rally_victories = 0, rally_xp = 0, rally_level = 0;

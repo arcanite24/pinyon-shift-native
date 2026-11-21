@@ -34,6 +34,8 @@ void CareerPage::open(const CareerSummary& s, std::vector<cars::PackInfo> packs)
   lines_.push_back("races " + std::to_string(s.races) + "  wins " + std::to_string(s.victories) + "  podiums " +
                    std::to_string(s.podiums));
   lines_.push_back("garage  " + std::to_string(s.garage_cars) + " cars");
+  lines_.push_back("discount signs  " + std::to_string(s.signs_found) + "  barn finds  " +
+                   std::to_string(s.barns_found) + "/" + std::to_string(s.barns));
   lines_.push_back("1000 club  " + std::to_string(s.club_cars) + " cars  " + std::to_string(s.club_done) + "/" +
                    std::to_string(s.club_total) + " challenges");
   if (s.has_rally) {

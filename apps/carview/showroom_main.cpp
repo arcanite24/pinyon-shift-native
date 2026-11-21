@@ -1206,7 +1206,7 @@ int run_drive(int argc, char** argv) {
   // --map-png writes the pause map and the minimap at the end.
   bool collectibles_on = true, reveal = false;
   double seed_distance = 0;
-  std::filesystem::path map_png;
+  std::filesystem::path map_png, career_png;  // --career-png: the career page's windows, then exit
   int gather_route = 0;  // --route: the placements' route (-1: every one)
   int camera_mode = 0;   // --camera: the drive camera to start in (0-4, SPEC-CAMERAS' cycle order)
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
@@ -1332,6 +1332,8 @@ int run_drive(int argc, char** argv) {
       seed_distance = std::atof(next());
     } else if (a == "--map-png") {
       map_png = next();
+    } else if (a == "--career-png") {
+      career_png = next();
     }
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
@@ -1625,6 +1627,66 @@ int run_drive(int argc, char** argv) {
     for (const auto& [id, place] : saved.race_results) career.race_places[id] = place;
     for (const auto& [id, place] : saved.event_results) career.event_places[id] = place;
     career.prize_cars = saved.prize_cars;
+  }
+  // The career page's records (career_page.h): the pause menu's page and
+  // --career-png.
+  auto career_summary = [&](std::vector<cars::PackInfo>& packs) {
+    carview::CareerSummary cs;
+    if (wristbands.levels.empty() && !world_dir.empty()) {
+      std::string e;
+      race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e);
+    }
+    const int li = wristbands.level_index(career.wristband_points);
+    if (li >= 0) cs.level_name = wristbands.levels[size_t(li)].second;
+    // A name that is a string-table key (the tables are not read: interim):
+    // the level's number instead.
+    if (cs.level_name.rfind("_&", 0) == 0) cs.level_name = std::to_string(li);
+    cs.level = li;
+    cs.signs_found = int(saved.signs_found.size());
+    cs.barns = int(saved.barns.size());
+    for (const auto& b : saved.barns) cs.barns_found += b.status == freeroam::kBarnFound;
+    cs.wristband_points = career.wristband_points, cs.credits = career.credits;
+    cs.total_winnings = career.total_winnings, cs.races = career.num_races;
+    cs.victories = career.num_victories, cs.podiums = career.num_podiums;
+    cs.garage_cars = int(career_garage.cars.size());
+    cs.club_cars = int(saved.club.size());
+    for (const auto& c : saved.club)
+      for (const auto& [key, done] : c.challenges) cs.club_total++, cs.club_done += done;
+    cs.has_rally = saved.has_rally, cs.rallies = saved.num_rallies, cs.rally_stages = saved.num_rally_stages;
+    cs.rally_victories = saved.num_rally_victories, cs.rally_winnings = saved.rally_winnings;
+    cs.rally_xp = saved.rally_xp, cs.rally_level = saved.rally_level;
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    packs = cars::list_packs(state ? state : "");
+    // SPEC-V4-CONTENT, Progression: Rally needs its package (offer 1600).
+    cs.rally_owned = std::any_of(packs.begin(), packs.end(),
+                                 [](const cars::PackInfo& p) { return p.puboffer == 1600 && p.owned(); });
+    return cs;
+  };
+  // --career-png: every window of the career page as the game's save left
+  // it (prefix_N.png), then exit: the M6 gate's view of the import.
+  if (!career_png.empty()) {
+    std::vector<cars::PackInfo> packs;
+    const carview::CareerSummary cs = career_summary(packs);
+    carview::CareerPage page;
+    page.open(cs, std::move(packs));
+    for (int n = 0; n < 8; ++n) {
+      HudState st;
+      int sel = 0;
+      page.fill(st.menu_title, st.menu, sel);
+      st.menu_selected = sel;
+      const HudImage img = draw_hud(st, 2);
+      const std::string f = career_png.string() + "_" + std::to_string(n) + ".png";
+      if (!write_png(f, img.width, img.height, 4, img.rgba.data())) return 1;
+      std::printf("career: %s\n", f.c_str());
+      for (const auto& l : st.menu) std::printf("career:   %s\n", l.c_str());
+      const size_t before = st.menu.empty() ? 0 : st.menu.size();
+      page.move(7);
+      HudState probe;
+      int sel2 = 0;
+      page.fill(probe.menu_title, probe.menu, sel2);
+      if (probe.menu == st.menu || before == 0) break;
+    }
+    return 0;
   }
   if (have_saved && !imported && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
     spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
@@ -3114,28 +3176,8 @@ int run_drive(int argc, char** argv) {
             running = false;
           }
           if (item == PauseMenu::kCareer) {
-            carview::CareerSummary cs;
-            if (wristbands.levels.empty() && !world_dir.empty()) {
-              std::string e;
-              race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e);
-            }
-            const int li = wristbands.level_index(career.wristband_points);
-            if (li >= 0) cs.level_name = wristbands.levels[size_t(li)].second;
-            cs.wristband_points = career.wristband_points, cs.credits = career.credits;
-            cs.total_winnings = career.total_winnings, cs.races = career.num_races;
-            cs.victories = career.num_victories, cs.podiums = career.num_podiums;
-            cs.garage_cars = int(career_garage.cars.size());
-            cs.club_cars = int(saved.club.size());
-            for (const auto& c : saved.club)
-              for (const auto& [key, done] : c.challenges) cs.club_total++, cs.club_done += done;
-            cs.has_rally = saved.has_rally, cs.rallies = saved.num_rallies, cs.rally_stages = saved.num_rally_stages;
-            cs.rally_victories = saved.num_rally_victories, cs.rally_winnings = saved.rally_winnings;
-            cs.rally_xp = saved.rally_xp, cs.rally_level = saved.rally_level;
-            const char* state = std::getenv("SHIFT_STATE_ROOT");
-            auto packs = cars::list_packs(state ? state : "");
-            // SPEC-V4-CONTENT, Progression: Rally needs its package (offer 1600).
-            cs.rally_owned = std::any_of(packs.begin(), packs.end(),
-                                         [](const cars::PackInfo& p) { return p.puboffer == 1600 && p.owned(); });
+            std::vector<cars::PackInfo> packs;
+            const carview::CareerSummary cs = career_summary(packs);
             career_page.open(cs, std::move(packs));
           }
           if (item == PauseMenu::kReset) put_back();

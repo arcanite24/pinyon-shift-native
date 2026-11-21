@@ -657,6 +657,31 @@ stuck-car recovery (48.5 s); over SSH a first background swap sometimes
 stalls 5-6 ms on the driver (a fence destroy while another thread frees
 the old gather), taking the maximum to 7.7-8.8 ms.
 
+## Status (M6 gate, 2026-11-21)
+
+Gate: "the reference save imports and shows the same progress (signs,
+cars, DLC)", on the `user-modded` tree (Brandon's choice) with the state
+copy's packages.
+
+- **Imports:** `profile-import --check out/profile` reads both trees
+  against the game-side summaries: `user-modded` 30 counts, `user` 24,
+  0 wrong (100 of 100 signs, 8 of 9 barns, 38 garage cars, 119 event
+  results, 22 content packages, wristband level 6, 8,724,875 CR, 1000
+  Club 9 cars and 49 challenges, Rally 1 championship, 1 stage, 67,950 CR).
+- **Shows:** `carview --import-profile out/profile/user-modded --save <file>
+  --career-png <prefix>` writes the career page from the imported save:
+  level 6 and 12,580 points, the credits and winnings, 38 garage cars,
+  100 discount signs and 8 of 9 barn finds, the 1000 Club's 9 cars and
+  8 of 49 challenges, Rally (1 event, 1 stage, 67,950 CR) and 21 of 21
+  packs owned by name. The drive itself starts in the save's car
+  (FER_599XXEvolution_12), and free roam reports 100 of 100 signs
+  (upgrades 100 % off), 8 of 9 barn finds and 1,717.6 km driven.
+- **Interims (backlog):** the wristband level's name is a string-table
+  key, so the page shows its number. Paint and liveries, a 1000 Club
+  challenge driven, and a Rally stage driven are later work (SPEC-V4-
+  CONTENT: "Driving a 1000 Club challenge or a Rally stage is later
+  work").
+
 ## Refactor candidates (performance)
 
 Standing rule (2026-11-20): match the specs' behaviour, numbers and gates,
