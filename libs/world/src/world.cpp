@@ -567,10 +567,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         mm.effect = "TREE_BILLBOARD";  // ours: the sprite shader's name is not in the files
         mm.blend = Blend::kCoverage;
         mm.layers = Layers::kBillboard;
-        if (t.atlas < impl_->table.textures.size() &&
-            (impl_->table.textures[t.atlas].type == fh1::kPvsTextureBix ||
-             impl_->table.textures[t.atlas].type == fh1::kPvsTextureCaff))
-          mm.albedo = t.atlas;
+        if (t.atlas < impl_->table.textures.size()) mm.albedo = t.atlas;  // a file or a bundle entry
         auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
         if (fresh) out.materials.push_back(mm);
         mit = material_of.emplace(t.atlas, it->second).first;
