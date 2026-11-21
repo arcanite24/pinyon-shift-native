@@ -2996,6 +2996,7 @@ int run_drive(int argc, char** argv) {
         std::vector<SDL_Gamepad*> pads;
         uint64_t last = SDL_GetTicksNS(), title_at = 0;
         double accumulator = 0;
+        drive::Vehicle::Pose drawn_before = vehicle.pose();  // the pose before the last step
         bool running = true;
         std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
                     "Space handbrake, R put back on the road, V chase/front view, C (held) look back, H hide/show "
@@ -3475,6 +3476,7 @@ int run_drive(int argc, char** argv) {
           }
           while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() &&
                  accumulator >= drive::Vehicle::kStep) {
+            drawn_before = vehicle.pose();
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
               status = 1;
@@ -3541,11 +3543,17 @@ int run_drive(int argc, char** argv) {
                     &menu);
             set_radio_popup(h);  // after the panel: its height
           }
+          // The car and the camera at the frame's time: between the last
+          // two steps (Vehicle::Pose), put back after the frame is built.
+          const drive::Vehicle::Pose stepped = vehicle.pose();
+          vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
+          if (race) race->set_blend(accumulator / drive::Vehicle::kStep);
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
           place_world();
           showroom.set_frame(drive_frame(h > 0 ? float(w) / float(h) : 1.0f, frame_dt));
+          vehicle.set_pose(stepped);
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;

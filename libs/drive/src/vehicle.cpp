@@ -230,6 +230,30 @@ void Vehicle::reset(const Vec3& position, double heading) {
 
 Vec3 Vehicle::position() const { return pos_ - rotate(rot_, com_local_); }
 
+Vehicle::Pose Vehicle::blend(const Pose& a, const Pose& b, double t) {
+  t = std::clamp(t, 0.0, 1.0);
+  const Vec3 d = b.pos - a.pos;
+  if (t >= 1 || dot(d, d) > 25) return b;
+  auto mix = [t](const Vec3& x, const Vec3& y) { return x + (y - x) * t; };
+  Pose p = b;
+  p.pos = mix(a.pos, b.pos), p.vel = mix(a.vel, b.vel), p.ang = mix(a.ang, b.ang);
+  // The shorter way round, then normalised (the step is too small for slerp to differ).
+  const double s = a.rot.x * b.rot.x + a.rot.y * b.rot.y + a.rot.z * b.rot.z + a.rot.w * b.rot.w < 0 ? -1.0 : 1.0;
+  Quat q{a.rot.x + (s * b.rot.x - a.rot.x) * t, a.rot.y + (s * b.rot.y - a.rot.y) * t,
+         a.rot.z + (s * b.rot.z - a.rot.z) * t, a.rot.w + (s * b.rot.w - a.rot.w) * t};
+  const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  p.rot = {q.x / n, q.y / n, q.z / n, q.w / n};
+  for (size_t i = 0; i < p.wheels.size(); ++i) {
+    const WheelState &wa = a.wheels[i], &wb = b.wheels[i];
+    WheelState& w = p.wheels[i];
+    w.centre = mix(wa.centre, wb.centre);
+    w.compression = wa.compression + (wb.compression - wa.compression) * t;
+    w.steer = wa.steer + (wb.steer - wa.steer) * t;
+    w.spin = wa.spin + std::remainder(wb.spin - wa.spin, 2 * kPi) * t;
+  }
+  return p;
+}
+
 double Vehicle::speed() const { return dot(vel_, rotate(rot_, {0, 0, 1})); }
 
 double Vehicle::rpm() const { return engine_omega_ * kRpm; }

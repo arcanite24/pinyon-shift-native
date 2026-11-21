@@ -437,6 +437,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       hole_steps_ += ribbon;
     }
     far_steps_ += ribbon;
+    c.before = c.body->pose();
     c.body->step(in, ribbon ? static_cast<const drive::Ground&>(*ribbon_) : near);
   }
   // Contacts: the player and traffic in group 1, the field in 0; a car
@@ -519,7 +520,16 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                          std::vector<Showroom::Instance>& out) const {
   for (const auto& c : cars_)
-    if (c.model && c.body) out.push_back(guest_instance(player_info, player, *c.model, *c.body));
+    if (c.model && c.body) {
+      if (blend_ >= 1) {
+        out.push_back(guest_instance(player_info, player, *c.model, *c.body));
+        continue;
+      }
+      const drive::Vehicle::Pose now = c.body->pose();
+      c.body->set_pose(drive::Vehicle::blend(c.before, now, blend_));
+      out.push_back(guest_instance(player_info, player, *c.model, *c.body));
+      c.body->set_pose(now);
+    }
 }
 
 std::string RaceView::name_of(size_t i) const {

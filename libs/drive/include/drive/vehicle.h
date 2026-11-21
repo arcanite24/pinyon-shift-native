@@ -324,6 +324,20 @@ class Vehicle {
   void set_velocity(const Vec3& linear, const Vec3& angular) { vel_ = linear, ang_ = angular; }
   // Advances one fixed step with the given raw input.
   void step(const Input& input, const Ground& ground);
+  // The drawn state between two steps (ours, rendering): the body's pose
+  // and velocities and the wheels. A window takes one before each step and
+  // draws blend(before, now, alpha), alpha the frame's fraction of a step
+  // past the last one, so the car and the camera move every frame by the
+  // frame's own time. set_pose puts a pose back (after the draw).
+  struct Pose {
+    Vec3 pos{}, vel{}, ang{};
+    Quat rot{};
+    std::array<WheelState, 4> wheels{};
+  };
+  Pose pose() const { return {pos_, vel_, ang_, rot_, w_}; }
+  void set_pose(const Pose& p) { pos_ = p.pos, vel_ = p.vel, ang_ = p.ang, rot_ = p.rot, w_ = p.wheels; }
+  // a at t = 0, b at t = 1; b alone when the body jumped (over 5 m: a reset).
+  static Pose blend(const Pose& a, const Pose& b, double t);
   // The AI's input mode (SPEC-CAR-PHYSICS, "What the AI's controls mean"):
   // gas and brake unshaped, the steer a fraction of SteerMaxAngle at the
   // road wheels (no narrowing, no rate), the brakes linear with the AI's

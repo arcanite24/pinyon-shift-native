@@ -90,6 +90,9 @@ class RaceView {
   const race::Session& session() const { return *session_; }
   // The opponents' positions (x, z), for the maps.
   void opponent_positions(std::vector<std::array<double, 2>>& out) const;
+  // The frame's fraction of a step past the last one: instances() draws
+  // each car between its last two steps (1: as stepped).
+  void set_blend(double alpha) { blend_ = alpha; }
   bool player_finished() const { return session_->finished(player_index()); }
   size_t player_index() const { return cars_.size(); }
   std::string summary() const;
@@ -101,6 +104,7 @@ class RaceView {
     race::DriverAi ai;
     int slot = 0;
     std::unique_ptr<drive::Vehicle> body;
+    drive::Vehicle::Pose before;  // the body before its last step (drawn between, Vehicle::Pose)
     Showroom* model = nullptr;
     double start_progress = 0;
     double px = 0, pz = 0;  // before the step
@@ -150,6 +154,7 @@ class RaceView {
   int contact_count_ = 0, resets_ = 0, far_steps_ = 0, hole_steps_ = 0;
   double cx_ = 0, cz_ = 0, radius_ = 0;
   bool center_known_ = false;
+  double blend_ = 1;
   struct ReplayRow {
     double t, x, y, z, heading, speed;
   };

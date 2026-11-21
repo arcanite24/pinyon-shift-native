@@ -714,6 +714,19 @@ the interim noted here until a later polish sweep.
   against full-angle FOV factor. To do: compare our chase with a game
   chase capture at speed through corners and slopes and tune until it
   feels right; feel wins over the interims.
+  2026-11-21: the camera's rules are not it. Replayed from the game's own
+  car motion (`SHIFT_CHASE_CSV=out/oracle/chase-r34-lap.csv
+  camera_tests`) our chase is 0.030 m rms from the game's eye (worst
+  0.091) and 0.20 deg rms in direction (worst 0.66). The window was:
+  physics steps at 120 Hz, but the car was drawn as of its last step,
+  while the camera springs ran on the frame's time. So on a display
+  that is not a multiple of 120 Hz the car jumped 0, 1 or 2 steps a
+  frame against a smooth camera (0.33 m at 40 m/s). The g layers'
+  input, the velocity change over the frame, read 0 or twice the
+  acceleration likewise. Now the player's car and the race field are
+  drawn and fed to the camera between their last two steps
+  (`Vehicle::Pose`, `Vehicle::blend`). Still stepped as drawn: traffic.
+  To check on build-play: whether it feels right now.
 - **World bundle textures** (Q44 a). Type-1 and type-3 slots resolve
   through the 146 `.bundle` members of Colorado's bin.zip. Interim: a 4×4
   fallback, so the power-line cables (record 4203, about (33, 34, 33))
