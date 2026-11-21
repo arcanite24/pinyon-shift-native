@@ -159,9 +159,13 @@ struct GatherOptions {
   // The far ring (ours; needs render_data): the MIDDIST and UberLOD terrain
   // the near gather skips, from models whose header box comes within this,
   // finest LOD per family; their triangles wholly within far_inner of the
-  // point (MIDDIST) or 1.5 x far_inner (UberLOD) are left out. 0: none.
+  // point (MIDDIST) or far_inner_uberlod (UberLOD) are left out. 0: none.
+  // MIDDIST's 150 m (ours): some MIDDIST hills have no near terrain over
+  // them (MIDDIST_06 at 353 m in the hill frame, WORLD_MATERIALS Q44e),
+  // and the gather point can sit a regather step from the eye.
   double far_radius = 0;
-  double far_inner = 400;
+  double far_inner = 150;
+  double far_inner_uberlod = 600;
   // Tree sprites (needs render_data): the kind-7 tiles' billboard records
   // whose base is within this of the point and within their far distance
   // of it. 0: none.

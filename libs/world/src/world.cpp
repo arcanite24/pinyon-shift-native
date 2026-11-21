@@ -333,7 +333,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         continue;
       }
       // The far ring leaves out triangles wholly near the point.
-      const double inner = far == 2 ? 1.5 * options.far_inner : options.far_inner;
+      const double inner = far == 2 ? options.far_inner_uberlod : options.far_inner;
       if (lowest) {
         int lod;
         const std::string family = lod_family(o.name, lod);
