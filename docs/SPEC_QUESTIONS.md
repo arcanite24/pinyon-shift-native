@@ -1371,6 +1371,27 @@ and "Measured grids"); partial:
   1006, Zonda R 1175 (prob), SR8 LM 1247, MC12 1539 (prob), F40C 1023,
   F50 GT 1020, player. Other events: ID order until resolved.
 
+- Answer (spec, 2026-11-21, grid hidden run; horizon1-recomp e6b5ec95,
+  SPEC-EVENTS Grid, SPEC-RACE-AI AI car upgrades): a new read-only log of
+  each participant's faked PI, on hidden FR06 and HEADLINE_EVENT runs.
+  - Seed: the car's `Ordinal`. One LCG step on it gives k in 0..4, r = +k
+    odd, -k even; 14 of 14 cars match. A per-participant flag forces +5
+    (one car per event: FR06 Camaro 1419, HEADLINE 599XX 1171; what sets
+    it is open).
+  - Direction: AI sorted by faked PI (shared target + r), highest on
+    pole. HEADLINE 7 of 7 (+5, +3, 0, 0, -4, -4, -4); FR06 6 of 7. The
+    exception is the flagged Camaro (+5): it started on slot 2 behind the
+    two +1 cars (open; interim: sort it like the rest).
+  - Ties (exactly equal PI): neither row order nor its reverse, and no
+    entry field explains them (open). Interim: row order.
+  - PlayerGridPosition: the player takes slot p - 1 (p = 0: last). The AI
+    fill the other slots in sorted order, so on FR06 (p = 7) the slowest
+    AI, the Diablo, starts on slot 7 behind the player.
+  - Grids matched the earlier oracle runs (fixed per event). Correction:
+    FR06 slot 4 is the Ford GT 348 and slot 7 the Diablo 325 (the tables
+    are built in participant order); HEADLINE splits confirmed (Zonda slot
+    2, MC12 slot 4).
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
