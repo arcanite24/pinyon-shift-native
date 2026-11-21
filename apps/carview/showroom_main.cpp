@@ -68,6 +68,7 @@
 #include "garage/garage.h"
 #include "upgrade_shop.h"
 #include "autoshow.h"
+#include "career_page.h"
 
 namespace carview {
 
@@ -1334,6 +1335,16 @@ int run_drive(int argc, char** argv) {
         for (const char* l : {"pistons compression  [level 3]  owned", "transmission  [stock 0]  fitted",
                               "tire width front  [level 11]  12,500 CR", "weight reduction  [level 3]  fitted"})
           st.menu.push_back(l);
+      } else if (std::string(sample) == "career") {
+        carview::CareerSummary cs;
+        cs.level_name = "Orange", cs.wristband_points = 41250, cs.credits = 4075645, cs.total_winnings = 13225340;
+        cs.races = 87, cs.victories = 52, cs.podiums = 74, cs.garage_cars = 38;
+        cs.club_cars = 12, cs.club_done = 9, cs.club_total = 30, cs.has_rally = true, cs.rallies = 3, cs.rally_stages = 9;
+        carview::CareerPage page;
+        page.open(cs, cars::list_packs(std::getenv("SHIFT_STATE_ROOT") ? std::getenv("SHIFT_STATE_ROOT") : ""));
+        page.move(6);
+        int sel = 0;
+        page.fill(st.menu_title, st.menu, sel);
       } else {
         st.menu_title = "autoshow  137/137  available 13,225,340 CR";
         for (const char* l : {"R1 999  FER_F40Competizione_89  1,000,000 CR", "B 437  MIT_LancerEvoXGSR_08  52,000 CR"})
@@ -2533,6 +2544,7 @@ int run_drive(int argc, char** argv) {
       // the discount is the signs found.
       carview::UpgradeShop shop;
       carview::Autoshow autoshow;
+      carview::CareerPage career_page;
       auto discount = [&]() {
         return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
       };
@@ -2542,6 +2554,7 @@ int run_drive(int argc, char** argv) {
         if (menu) menu->fill(st);
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
+        if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
         st.kmh = vehicle.speed() * 3.6;
         st.gear = vehicle.gear();
         st.rpm = vehicle.rpm();
@@ -3049,6 +3062,25 @@ int run_drive(int argc, char** argv) {
             next_event = event_ids[event_pick];
             running = false;
           }
+          if (item == PauseMenu::kCareer) {
+            carview::CareerSummary cs;
+            if (wristbands.levels.empty() && !world_dir.empty()) {
+              std::string e;
+              race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e);
+            }
+            const int li = wristbands.level_index(career.wristband_points);
+            if (li >= 0) cs.level_name = wristbands.levels[size_t(li)].second;
+            cs.wristband_points = career.wristband_points, cs.credits = career.credits;
+            cs.total_winnings = career.total_winnings, cs.races = career.num_races;
+            cs.victories = career.num_victories, cs.podiums = career.num_podiums;
+            cs.garage_cars = int(career_garage.cars.size());
+            cs.club_cars = int(saved.club.size());
+            for (const auto& c : saved.club)
+              for (const auto& [key, done] : c.challenges) cs.club_total++, cs.club_done += done;
+            cs.has_rally = saved.has_rally, cs.rallies = saved.num_rallies, cs.rally_stages = saved.num_rally_stages;
+            const char* state = std::getenv("SHIFT_STATE_ROOT");
+            career_page.open(cs, cars::list_packs(state ? state : ""));
+          }
           if (item == PauseMenu::kReset) put_back();
           if (item == PauseMenu::kQuit) running = false;
         };
@@ -3207,6 +3239,22 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            // The career page scrolls while open; it changes nothing.
+            if (career_page.is_open()) {
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) career_page.close();
+                if (k == SDLK_UP || k == SDLK_W) career_page.move(-1);
+                if (k == SDLK_DOWN || k == SDLK_S) career_page.move(1);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) career_page.close();
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) career_page.move(-1);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) career_page.move(1);
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             // The pause menu takes the keys and buttons while open.
             if (menu.open) {
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
@@ -3359,7 +3407,7 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open()) accumulator += frame_dt;
+          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open()) accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
@@ -3369,7 +3417,7 @@ int run_drive(int argc, char** argv) {
             save_due = false;
             save_now("collectible");
           }
-          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() &&
+          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() &&
                  accumulator >= drive::Vehicle::kStep) {
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;

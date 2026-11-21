@@ -331,4 +331,55 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
   return true;
 }
 
+namespace {
+
+std::string json_text(const std::string& text, const char* key) {
+  const auto k = text.find(std::string("\"") + key + "\"");
+  if (k == std::string::npos) return {};
+  const auto q0 = text.find('"', text.find(':', k) + 1);
+  const auto q1 = q0 == std::string::npos ? q0 : text.find('"', q0 + 1);
+  return q1 == std::string::npos ? std::string() : text.substr(q0 + 1, q1 - q0 - 1);
+}
+
+}  // namespace
+
+std::vector<PackInfo> list_packs(const fs::path& state_root) {
+  std::vector<PackInfo> out;
+  if (state_root.empty()) return out;
+  std::error_code ec;
+  const fs::path title = state_root / "user" / "0000000000000000" / "4D5309C9";
+  std::map<std::string, PackInfo> by_id;
+  for (const auto& e : fs::directory_iterator(state_root / "dlc", ec))
+    if (e.is_regular_file() && lower(e.path().extension().string()) == ".json") {
+      PackInfo p;
+      p.id = e.path().stem().string();
+      std::ifstream f(e.path());
+      const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      p.name = json_text(text, "display_name");
+      by_id[lower(p.id)] = p;
+    }
+  auto scan = [&](const fs::path& dir, int what) {
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      std::string id = what == 1 ? e.path().stem().string() : e.path().filename().string();
+      if (what == 1 && lower(e.path().extension().string()) != ".header") continue;
+      if (what != 1 && !e.is_directory()) continue;
+      auto& p = by_id[lower(id)];
+      if (p.id.empty()) p.id = id;
+      if (what == 0) p.installed = p.enabled = true;
+      else if (what == 1) p.header = true;
+      else p.installed = true;  // disabled: present but not enabled
+    }
+  };
+  scan(title / "00000002", 0);
+  scan(title / "Headers" / "00000002", 1);
+  scan(title / "Disabled" / "00000002", 2);
+  for (auto& [id, p] : by_id) {
+    if (id == lower(kCommunityPackage)) continue;
+    if (p.name.empty()) p.name = p.id;
+    out.push_back(p);
+  }
+  std::sort(out.begin(), out.end(), [](const PackInfo& a, const PackInfo& b) { return a.name < b.name; });
+  return out;
+}
+
 }  // namespace cars

@@ -63,6 +63,7 @@ add_executable(carview
   map_view.cpp
   upgrade_shop.cpp
   autoshow.cpp
+  career_page.cpp
   ${shader_headers})
 target_include_directories(carview PRIVATE "${generated}")
 target_link_libraries(carview PRIVATE fh1data shift_cars shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_volk SDL3::SDL3-static shift_stb)

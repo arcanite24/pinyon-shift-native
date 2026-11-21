@@ -94,4 +94,15 @@ bool discover_install(const std::filesystem::path& game_root, const std::filesys
 
 std::string lower(std::string s);
 
+// One content package of the state root (SPEC-V4-CONTENT): its record
+// under dlc/, and whether it is installed (folder under 00000002, header
+// under Headers/00000002) and enabled (not under Disabled/). The community
+// package is left out.
+struct PackInfo {
+  std::string id, name;  // name: the record's display_name (id without it)
+  bool installed = false, header = false, enabled = false;
+  bool owned() const { return installed && header && enabled; }
+};
+std::vector<PackInfo> list_packs(const std::filesystem::path& state_root);
+
 }  // namespace cars
