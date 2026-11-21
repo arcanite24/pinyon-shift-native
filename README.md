@@ -759,7 +759,14 @@ the interim noted here until a later polish sweep.
   resets a run, from pack contact (a car hit from behind spins and pins on
   a wall for the 3 s no-progress rule). To do: fewer rear-end hits at the
   start and in the pack, then a per-car look at the rear-drive cars.
-  Headless runs with `--async-stream` or `--bench` outrun the background
+  Ten events, seeds 1 and 2 (out/gate-u, after 18976f18), AI mean time
+  against the oracle; within 3 %: FR06 146.0/144.1, FR22 165.6/161.5,
+  FR33 234.0/233.3, HEADLINE 505.7/504.0. Outside: NR02 134.7/130.7
+  (3.1 %), FR16 128.0/124.0, FR24 120.7/110.8, FR01 111.6/102.7, STREET
+  135.9/124.1, EXHIBITION 211.4/179.0 (the showcase Minis). Distances
+  pass on 9 of 10 (EXHIBITION does not). The capacity cap moved the means
+  under 1 s from the seed 1 run, so the loss is pack contact and the
+  Mini's ride, not the lateral limit. Headless runs with `--async-stream` or `--bench` outrun the background
   gather and fall off the collision (the gate runs synchronously).
 - **Race AI interims (ours where the spec has none).** The steer is capped
   at the pad's speed-narrowed lock (past it the fronts slide wide); a car
