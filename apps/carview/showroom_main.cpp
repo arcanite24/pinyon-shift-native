@@ -913,6 +913,7 @@ struct WorldTextureLoader {
       fh1::WorldTexture t;
       std::string e;
       if (!colorado.read_texture(record, t, &e)) {
+        std::fprintf(stderr, "carview: texture record %u: %s\n", record, e.c_str());
         failed.insert(record);
         record = kNoWorldTexture;
         return;

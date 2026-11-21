@@ -1,5 +1,6 @@
 #include "fh1data/world_texture.h"
 
+#include <algorithm>
 #include <cstring>
 #include <numeric>
 
@@ -118,6 +119,49 @@ bool decode_caff(std::span<const uint8_t> bin, WorldTexture& out, std::string* e
     at += sizes[r];
   }
   if (exact) *exact = std::accumulate(sizes.begin(), sizes.end(), size_t(0)) == payload.size();
+  return extract_region_blocks(h, regions, out.blocks, error);
+}
+
+bool parse_bundle(std::span<const uint8_t> bundle, std::vector<BundleEntry>& out, std::string* error) {
+  out.clear();
+  if (bundle.size() < 4) return fail(error, "bundle: no count");
+  const uint32_t count = load_be32(&bundle[0]);
+  size_t at = 4;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (bundle.size() - at < 28) return fail(error, "bundle: entry " + std::to_string(i) + " cut short");
+    BundleEntry e;
+    e.record = load_be32(&bundle[at]);
+    e.width = load_be32(&bundle[at + 4]);
+    e.height = load_be32(&bundle[at + 8]);
+    e.levels = load_be32(&bundle[at + 12]);
+    e.format_word = load_be32(&bundle[at + 16]);
+    const uint32_t size = load_be32(&bundle[at + 24]);
+    at += 28;
+    if (bundle.size() - at < size) return fail(error, "bundle: payload " + std::to_string(i) + " cut short");
+    e.payload = bundle.subspan(at, size);
+    at += size;
+    out.push_back(e);
+  }
+  if (at != bundle.size()) return fail(error, "bundle: bytes after the last entry");
+  return true;
+}
+
+bool decode_bundle_entry(const BundleEntry& e, WorldTexture& out, std::string* error) {
+  out = WorldTexture{};
+  out.format = world_texture_format(e.format_word);
+  out.width = e.width, out.height = e.height, out.levels = e.levels;
+  const XdsHeader h = world_xds_header(e.width, e.height, e.levels, e.format_word);
+  std::vector<size_t> sizes = xds_trimmed_regions(h);
+  if (sizes.empty()) return fail(error, "format " + std::to_string(out.format.format) + " not laid out");
+  if (sizes.size() == 1) sizes[0] = xds_layout_bytes(h);
+  // WORLD-MATERIALS: the payload stops at the last byte the levels touch,
+  // rounded up, so the tail region past it reads as zero (the 24 entries
+  // whose levels read past the payload are open; they get zeros there).
+  std::vector<uint8_t> padded(e.payload.begin(), e.payload.end());
+  padded.resize(std::max(padded.size(), std::accumulate(sizes.begin(), sizes.end(), size_t(0))));
+  std::vector<std::span<const uint8_t>> regions;
+  size_t at = 0;
+  for (size_t s : sizes) regions.push_back(std::span<const uint8_t>(padded).subspan(at, s)), at += s;
   return extract_region_blocks(h, regions, out.blocks, error);
 }
 

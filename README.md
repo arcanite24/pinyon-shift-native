@@ -752,10 +752,14 @@ the interim noted here until a later polish sweep.
   drawn and fed to the camera between their last two steps
   (`Vehicle::Pose`, `Vehicle::blend`). Still stepped as drawn: traffic.
   To check on build-play: whether it feels right now.
-- **World bundle textures** (Q44 a). Type-1 and type-3 slots resolve
-  through the 146 `.bundle` members of Colorado's bin.zip. Interim: a 4×4
-  fallback, so the power-line cables (record 4203, about (33, 34, 33))
-  draw flat. The bundles also hold low mips for far LOD.
+- **World bundle textures** (Q44 a). Done (2026-11-21). Type-1 and
+  type-3 slots read from the 146 `.bundle` members, and the power-line
+  cables (record 4203) draw near-black (`world_tests`). Interim: the
+  index (18,185 records) is read in full on the first such slot, about
+  2 s on the gather worker; cache it if load time matters. Not used yet:
+  the bundles' low mips for type-0/4 records while they stream, and the
+  white-AO and black-lightmap rule for records in no bundle (we don't
+  sample those slots).
 - **Warm hill shading** (Q44 c). The game shades lerp(Blend_A, Blend_B,
   R/255) under the warm sun (0.97, 0.84, 0.58). Interim: the current
   terrain shading, which leaves grey bands. Reference pose: camera

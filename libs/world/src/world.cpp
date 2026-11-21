@@ -2,12 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <tuple>
+#include <unordered_map>
 
 #include "fh1data/members.h"
 #include "fh1data/placements.h"
@@ -103,6 +107,32 @@ Surface classify(const std::string& object, const std::string& material) {
 
 struct World::Impl {
   fh1::MemberSource source;
+  // The `.bundle` members' entries by texture record (WORLD-MATERIALS,
+  // Small textures), read on the first bundle-only record. A record in
+  // several bundles has the same payload in all: the first is kept.
+  struct Small {
+    uint32_t width = 0, height = 0, levels = 0, format_word = 0;
+    std::vector<uint8_t> payload;
+  };
+  std::mutex small_mutex;
+  bool small_read = false;
+  std::unordered_map<uint32_t, Small> small;
+  void read_small() {
+    if (small_read) return;
+    small_read = true;
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<uint8_t> data;
+    std::vector<fh1::BundleEntry> entries;
+    for (const auto& name : source.with_suffix(".bundle")) {
+      if (!source.read(name, data, nullptr) || !fh1::parse_bundle(data, entries, nullptr)) continue;
+      for (const auto& e : entries)
+        if (!small.count(e.record))
+          small[e.record] = {e.width, e.height, e.levels, e.format_word, {e.payload.begin(), e.payload.end()}};
+    }
+    if (std::getenv("SHIFT_WORLD_DEBUG"))
+      std::fprintf(stderr, "world: %zu bundle textures in %.0f ms\n", small.size(),
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+  }
   fh1::PvsObjectTable table;
   fh1::PropWorld props;
   std::unique_ptr<fh1::PropModels> prop_models;
@@ -135,8 +165,16 @@ bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* e
     std::snprintf(name, sizeof name, "_0x%08x.bin", t.id);
     ok = impl_->source.read(name, a, error) && fh1::decode_caff(a, out, error, &exact);
   } else {
-    if (error) *error = "texture record type " + std::to_string(t.type) + " has no file";
-    return false;
+    // Types 1 and 3: the bundle entry is the only copy.
+    std::lock_guard<std::mutex> lock(impl_->small_mutex);
+    impl_->read_small();
+    const auto it = impl_->small.find(record);
+    if (it == impl_->small.end()) {
+      if (error) *error = "texture record " + std::to_string(record) + " is in no bundle";
+      return false;
+    }
+    const auto& s = it->second;
+    return fh1::decode_bundle_entry({record, s.width, s.height, s.levels, s.format_word, s.payload}, out, error);
   }
   if (ok && !exact) {
     if (error) *error = std::string(name) + ": sizes do not fit the layout";
@@ -314,16 +352,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             mm.fade = fade;
             mm.effect = model.effects[m.effect];
             mm.blend = effect_blend(mm.effect);
-            // A slot's texture record when it has a file (types 4 and 0).
+            // A slot's texture record: a file (types 4 and 0) or a bundle
+            // entry (types 1 and 3; WORLD-MATERIALS, Small textures).
             auto slot_record = [&](size_t slot) {
               const int32_t v = slot < m.slots.size() ? m.slots[slot] : -2;
               if (v < 0 || !texture_list || size_t(v) >= texture_list->size()) return kNoTexture;
               const uint32_t record = (*texture_list)[size_t(v)];
-              if (record < impl_->table.textures.size() &&
-                  (impl_->table.textures[record].type == fh1::kPvsTextureBix ||
-                   impl_->table.textures[record].type == fh1::kPvsTextureCaff))
-                return record;
-              return kNoTexture;
+              return record < impl_->table.textures.size() ? record : kNoTexture;
             };
             mm.albedo = slot_record(0);
             for (size_t k = 0; k < 3; ++k) {

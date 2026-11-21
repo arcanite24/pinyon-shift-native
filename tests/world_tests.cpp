@@ -121,6 +121,33 @@ int main() {
                 gs.no_material);
     CHECK(!textures.empty() && decoded == textures.size() && gs.no_material == 0);
 
+    // A bundle-only record (WORLD-MATERIALS, Small textures): the power-line
+    // cables' 4203, a 4 x 4 DXT1 of 3 levels, level 0 all (33, 34, 33).
+    {
+      fh1::WorldTexture cable;
+      std::string e;
+      const bool ok = w.read_texture(4203, cable, &e);
+      if (!ok) std::printf("  record 4203: %s\n", e.c_str());
+      CHECK(ok && cable.width == 4 && cable.height == 4 && cable.levels == 3 && cable.blocks.levels.size() == 3);
+      if (ok && cable.blocks.levels[0].blocks.size() >= 8) {
+        const uint8_t* b = cable.blocks.levels[0].blocks.data();
+        // Texel 0 of the first DXT1 block (four-colour mode when c0 > c1).
+        const uint16_t c[2] = {uint16_t(b[0] | b[1] << 8), uint16_t(b[2] | b[3] << 8)};
+        int rgb[2][3];
+        for (int k = 0; k < 2; ++k)
+          rgb[k][0] = (c[k] >> 11) * 255 / 31, rgb[k][1] = ((c[k] >> 5) & 63) * 255 / 63, rgb[k][2] = (c[k] & 31) * 255 / 31;
+        const int index = b[4] & 3;
+        int texel[3];
+        for (int i = 0; i < 3; ++i)
+          texel[i] = index < 2 ? rgb[index][i]
+                     : c[0] > c[1] ? (index == 2 ? (2 * rgb[0][i] + rgb[1][i]) / 3 : (rgb[0][i] + 2 * rgb[1][i]) / 3)
+                                   : (index == 2 ? (rgb[0][i] + rgb[1][i]) / 2 : 0);
+        const int r = texel[0], g = texel[1], bl = texel[2];
+        std::printf("  record 4203 texel 0: %d %d %d\n", r, g, bl);
+        CHECK(std::abs(r - 33) <= 4 && std::abs(g - 34) <= 4 && std::abs(bl - 33) <= 4);
+      }
+    }
+
     // The far ring (ours): MIDDIST and UberLOD terrain beyond far_inner,
     // never ground or road, its materials marked far.
     world::GatherOptions fo = o;

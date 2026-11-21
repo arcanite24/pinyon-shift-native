@@ -59,6 +59,19 @@ bool decode_bix(std::span<const uint8_t> bix, std::span<const uint8_t> base, Wor
                 bool* exact = nullptr);
 bool decode_caff(std::span<const uint8_t> bin, WorldTexture& out, std::string* error, bool* exact = nullptr);
 
+// One entry of a `.bundle` member (WORLD-MATERIALS, Small textures): a
+// small texture keyed by texture record index, every level in the packed
+// tail. Big-endian: count, then per entry record, width, height, levels,
+// format word, a marker (all ones), payload size and the payload.
+struct BundleEntry {
+  uint32_t record = 0, width = 0, height = 0, levels = 0, format_word = 0;
+  std::span<const uint8_t> payload;
+};
+// False when the bundle does not parse to its last byte.
+bool parse_bundle(std::span<const uint8_t> bundle, std::vector<BundleEntry>& out, std::string* error);
+// The entry's levels (CAFF rules for a texture all in the packed tail).
+bool decode_bundle_entry(const BundleEntry& entry, WorldTexture& out, std::string* error);
+
 // Whether the texture's base level has any texel with alpha under 128: DXT3
 // or DXT5 alpha, or a DXT1 block in its three-colour mode using index 3.
 bool world_texture_has_cutout(const WorldTexture& texture);
