@@ -931,15 +931,15 @@ the interim noted here until a later polish sweep.
   ties in row order, and the +5 flag on FR06 car 1419 and HEADLINE car
   1171. Gate: FAIL; parked for the UI and feel work (Brandon, 2026-11-21).
   **EXHIBITION (2026-11-21, out/gate-exh, seed 1):** AI 211.8 / 179.0 s,
-  distance 5,339 / ~4,975 m. Two causes. Pace: the Minis' best clean laps
-  are 61 to 65 s against the oracle's 57 to 59 s (the speed planner or the
-  Mini's grip on this route). Resets: 29, of which 22 are a car beached on
-  its body (contact normal up, on Concrete, Brick, Grass and Asphalt;
-  `SHIFT_SURFACES=1` prints the surface table), 1 to 4 m past the road's
-  room at lap 430 to 510, 790 to 830 and 1,520 to 1,580 m, at full throttle
-  with the front wheels unloaded. A 0.35 m sill or 0.2 body friction (both
-  ours) leaves 23 to 25 resets and the same time, so the body box isn't
-  the lever: next is why the field runs wide there, then the pace.
+  5,339 m. 22 of 29 resets are a car beached on its body past the road's
+  room (`SHIFT_SURFACES=1` names the surfaces: Concrete, Brick, Grass),
+  clustered at lap 430 to 510, 790 to 830 and 1,520 to 1,580 m. At 790 m
+  a Mini holds 33 m/s with a target of 34.5 and 0.07 steer while the line
+  bends, drifts from 1.3 to 4.5 m off it, brakes late and hits the edge
+  (6 kN, 31 to 20 m/s in 0.4 s): the corner speed is too high, consistent
+  with the planner's 17.5 m/s^2 lateral against the title's 16.24 (see the
+  speed planner item). A 0.35 m sill or 0.2 body friction leaves 23 to 25
+  resets and the same time.
   gate (the player replays the oracle's path from `out/oracle/`). FR22 at
   Med, three seeds: AI mean 162.4 s (oracle 161.5), 4,673 m (4,638), the
   player 2nd to 3rd (3rd), winner slot 00: passes. FR16: AI mean 129 to
