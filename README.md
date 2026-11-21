@@ -816,6 +816,25 @@ the interim noted here until a later polish sweep.
   packs); the bought car takes its first colour (no colour bar); no
   tutorial list. A garage car is drawn in its stored colour Sequence; the
   paint shop and player liveries are not done.
+- **Release packages (M7, 2026-11-21).** `tools/package.py` makes the
+  Windows (`build-play`) and Linux zips (WSL Ubuntu 24.04 `build-rel`: SDL
+  with PulseAudio loaded at run time and ALSA linked, from headers in a
+  local prefix; `CMAKE_SKIP_RPATH`), and both pass
+  `tools/check-binary-content.py` (11 files each, 0 problems; the
+  reference is 14.2 M fingerprints over 9.9 GiB). The Linux zip unpacks
+  with `unzip` with its modes, and `carview --help` and `setup.sh --help`
+  run from it. Interims:
+  - **Android:** the arm64 `build-android` carview (an executable, run
+    over adb) builds and passes the check (4.6 MiB stripped), but there is
+    no installable package. An APK needs carview as a shared library under
+    SDL's activity (SDL's Java glue, javac, d8, aapt2, zipalign and
+    apksigner are all on multivac, no Gradle needed), a play-folder home
+    in the app's external files folder, and a run on a device. The
+    emulator images are x86_64, and installing on the Odin is Brandon's
+    decision.
+  - **macOS:** not built. minivac has no CMake, Ninja or Vulkan SDK
+    (MoltenVK) and its disk is 94 % full; installing them is Brandon's
+    decision.
 - **Settings and mods (M7 interims).** There is no settings page in the
   pause menu yet: settings are the file and `--save-settings`, and a change
   to the preset or size takes effect on the next start. Mods replace files
