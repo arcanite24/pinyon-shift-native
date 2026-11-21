@@ -527,6 +527,17 @@ int main() {
   CHECK(race::CarNames::split_words("F40Competizione") == "F40 Competizione");
   CHECK(race::CarNames::split_words("AstonMartin") == "Aston Martin");
   CHECK(race::CarNames::split_words("SkylineGTRVSpecII") == "Skyline GTRV Spec II");
+  if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
+    // FORMAT-STRINGTABLES, What resolves: every disc car's ModelShort.
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    race::CarNames names;
+    std::string e;
+    CHECK(names.load(root, state ? state : "", &e));
+    std::printf("car names: %zu resolved; %s, %s\n", names.resolved(), names.full_name("FER_California_09").c_str(),
+                names.short_name("NIS_SkylineGTRVSpecII_02").c_str());
+    CHECK(names.short_name("NIS_SkylineGTRVSpecII_02") == "Nissan Skyline GT-R V-spec II");
+    CHECK(names.resolved() >= 176);
+  }
   // SPEC-RACE-AI faked PI offset: California 1062 -> +1 (x 0x0DB2AA51).
   CHECK(race::faked_pi_offset(1062) == 1);
   CHECK(race::faked_pi_offset(1419, true) == 5);

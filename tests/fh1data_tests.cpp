@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <span>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "fh1data/placements.h"
 #include "fh1data/props.h"
 #include "fh1data/rmb.h"
+#include "fh1data/stringtables.h"
 #include "fh1data/world_texture.h"
 #include "fh1data/xds.h"
 #include "fh1data/xmem.h"
@@ -1004,6 +1006,50 @@ void test_xds_layout() {
 
 // A package's offer ZIP with one car folder whose members are stored,
 // deflated and LZX (XMem), found through the install layout and read back.
+void test_stringtables() {
+  // FORMAT-STRINGTABLES, Tests (synthetic).
+  CHECK(fh1::string_hash("") == 0xFFFF);
+  CHECK(fh1::string_hash("a") == 0xCF7F);
+  CHECK(fh1::string_hash("ab") == 0x8EE7);
+  CHECK(fh1::string_hash("A") == fh1::string_hash("a"));
+  CHECK(fh1::string_hash("DATA_CAR") == fh1::string_hash("Data_Car"));
+  CHECK(fh1::string_hash("Data_Car") == 0xCD49 && fh1::string_hash("List_CarMake") == 0x3323 &&
+        fh1::string_hash("PauseMenu") == 0x3739 && fh1::string_hash("Events") == 0x0C15 &&
+        fh1::string_hash("Tracks") == 0xC992);
+  CHECK(fh1::string_hash("IDS_Multiplayer") == 0xDD6B);
+  CHECK(fh1::string_hash("IDS_Make_PinyonMotors") == 0xFBDE);
+  CHECK((uint32_t(0x3323) << 16 | 0xFBDE) == 857996254u);
+  // A table: S = 36, C = 2 (keys 0xFBDE "A", and 7 at offset 5: "Hi"),
+  // the sentinel at 56, the pool at 62.
+  std::vector<uint8_t> t = {'L', 'S', 'B', '2', 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 36, 0, 0, 0, 4,
+                            0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  auto u16 = [&](uint16_t v) { t.push_back(uint8_t(v >> 8)), t.push_back(uint8_t(v)); };
+  auto u32 = [&](uint32_t v) { u16(uint16_t(v >> 16)), u16(uint16_t(v)); };
+  u32(0), u32(2);  // size (unchecked), count
+  u16(7), u32(5);
+  u16(0xFBDE), u32(0);
+  u16(0xFFFF), u32(8);
+  CHECK(t.size() == 62);
+  for (uint16_t c : {0x0041, 0, 0, 0, 0, 0x0048, 0x0069, 0, 0}) u16(c);  // "A" at 0, "Hi" at 5, "" at 8
+  fh1::StringTable table;
+  std::string e;
+  CHECK(fh1::parse_string_table(t, table, &e));
+  CHECK(table.keys.size() == 2 && table.find(7) && *table.find(7) == u"Hi" && *table.find(0xFBDE) == u"A");
+  fh1::StringTables all;
+  all.put("List_CarMake.str", table);
+  CHECK(all.resolve("_&857996254") == std::optional<std::string>("A"));
+  CHECK(!all.resolve("_&857996255") && !all.resolve("plain text"));
+  CHECK(fh1::StringTables::is_reference("_&857996254") && !fh1::StringTables::is_reference("_&"));
+  CHECK(fh1::utf16_to_utf8(u"é…") == "\xc3\xa9\xe2\x80\xa6");
+  // Not ascending, or without the sentinel: rejected.
+  auto bad = t;
+  bad[44] = 0xFB, bad[45] = 0xDF;  // entry 0's key above entry 1's
+  CHECK(!fh1::parse_string_table(bad, table, nullptr));
+  bad = t;
+  bad[56] = 0x12;
+  CHECK(!fh1::parse_string_table(bad, table, nullptr));
+}
+
 void test_dlc_folder() {
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / "shift-engine-dlc-test";
@@ -1239,6 +1285,7 @@ int main() {
   test_reference();
   test_bake_format();
   test_dlc_folder();
+  test_stringtables();
   test_xds_layout();
   test_inflate();
   test_carbin_round_trip();

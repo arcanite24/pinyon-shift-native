@@ -5,7 +5,11 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <map>
+#include <mutex>
 
+#include "cars/sources.h"
+#include "cars/strings.h"
 #include "race/route.h"
 
 namespace race {
@@ -267,25 +271,61 @@ std::string CarNames::split_words(const std::string& s) {
   return out;
 }
 
-bool CarNames::load(const std::filesystem::path& game_root, std::string* error) {
+bool CarNames::load(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                    std::string* error) {
+  static std::mutex lock;
+  static std::map<std::string, std::pair<std::map<std::string, Row>, size_t>> cache;
+  const std::string key = game_root.string() + "|" + state_root.string();
+  {
+    std::lock_guard<std::mutex> g(lock);
+    if (auto it = cache.find(key); it != cache.end()) {
+      rows_ = it->second.first, resolved_ = it->second.second;
+      return true;
+    }
+  }
+  fh1::StringTables strings;
+  {
+    cars::Install install;
+    std::string why;
+    if (!cars::discover_install(game_root, state_root, "", install, &why) ||
+        !cars::load_string_tables(install, strings, &why))
+      strings = {};  // the media names stand in
+  }
   Db db;
   if (!db.open(game_root, error)) return false;
   rows_.clear();
-  return db.each(
-      "select c.MediaName, coalesce(c.Year, 0), coalesce(m.IconPathBase, '') from Data_Car c "
-      "left join List_CarMake m on m.ID = c.MakeID",
+  resolved_ = 0;
+  const bool ok = db.each(
+      "select c.MediaName, coalesce(c.Year, 0), coalesce(m.IconPathBase, ''), coalesce(c.ModelShort, ''), "
+      "coalesce(m.DisplayName, ''), coalesce(c.DisplayName, '') from Data_Car c left join List_CarMake m on m.ID = c.MakeID",
       {},
       [&](sqlite3_stmt* s) {
         const std::string media = txt(s, 0);
         Row r;
         r.year = int(i64(s, 1));
-        r.make = split_words(txt(s, 2));
-        // MAKE_Model_Words_YY: the parts between the make code and the year.
-        const size_t a = media.find('_'), b = media.rfind('_');
-        if (a != std::string::npos && b != std::string::npos && b > a) r.model = split_words(media.substr(a + 1, b - a - 1));
+        const auto make = strings.resolve(txt(s, 4));
+        // DisplayName is the model's full name ("Skyline GT-R V-spec II");
+        // ModelShort an abbreviation ("GT-R R34"), the fallback.
+        auto model = strings.resolve(txt(s, 5));
+        if (!model || model->empty()) model = strings.resolve(txt(s, 3));
+        r.make = make && !make->empty() ? *make : split_words(txt(s, 2));
+        if (model && !model->empty()) {
+          r.model = *model;
+          ++resolved_;
+        } else {
+          // MAKE_Model_Words_YY: the parts between the make code and the year.
+          const size_t a = media.find('_'), b = media.rfind('_');
+          if (a != std::string::npos && b != std::string::npos && b > a)
+            r.model = split_words(media.substr(a + 1, b - a - 1));
+        }
         rows_[media] = std::move(r);
       },
       error);
+  if (ok) {
+    std::lock_guard<std::mutex> g(lock);
+    cache[key] = {rows_, resolved_};
+  }
+  return ok;
 }
 
 std::string CarNames::short_name(const std::string& media) const {

@@ -5,7 +5,8 @@ add_library(shift_cars STATIC
   src/bake.cpp
   src/bake_format.cpp
   src/physics.cpp
-  src/mods.cpp)
+  src/mods.cpp
+  src/strings.cpp)
 target_include_directories(shift_cars PUBLIC include)
 target_link_libraries(shift_cars PUBLIC fh1data PRIVATE shift_sqlite3)
 if(MSVC)

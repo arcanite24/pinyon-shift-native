@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,11 @@ void build_drive_hud(ui::List& out, const DriveHud& state, float w, float h);
 
 // The dial's top edge (px from the bottom), for things stacked above it.
 float drive_hud_dial_height(float h);
+
+// A car's name for the screen ("Nissan Skyline GT-R V-spec II"), from the
+// source set (the string tables' names); the media name without one.
+void set_car_names(std::function<std::string(const std::string&)> source);
+std::string car_name(const std::string& media);
 
 // "12,500".
 std::string thousands(int64_t v);

@@ -109,7 +109,14 @@ bool list_events(const std::filesystem::path& game_root, std::vector<EventSummar
 // both split at their case and digit changes, and the year from Data_Car.
 class CarNames {
  public:
-  bool load(const std::filesystem::path& game_root, std::string* error);
+  // The names from the string tables (FORMAT-STRINGTABLES: Data_Car
+  // DisplayName (ModelShort without one) and Year, List_CarMake DisplayName,
+  // English), merged from
+  // the disc, v4 and the packages under `state_root` (may be empty). A car
+  // whose reference does not resolve keeps the words of its media name.
+  // Cached per root pair.
+  bool load(const std::filesystem::path& game_root, const std::filesystem::path& state_root, std::string* error);
+  size_t resolved() const { return resolved_; }
   // "Ferrari California"; the media name itself when unknown.
   std::string short_name(const std::string& media) const;
   // "2009 Ferrari California".
@@ -123,6 +130,7 @@ class CarNames {
     int year = 0;
   };
   std::map<std::string, Row> rows_;
+  size_t resolved_ = 0;
 };
 
 }  // namespace race

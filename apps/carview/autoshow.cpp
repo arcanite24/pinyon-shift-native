@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "game_hud.h"
+
 namespace carview {
 
 namespace {
@@ -83,7 +85,7 @@ bool Autoshow::buy(const cars::PartsDb& db, garage::Garage& g, int64_t& credits,
                        &id))
     return false;
   media = c.media_name;
-  message = c.media_name + " bought for " + credits_text(c.base_cost) + " CR";
+  message = car_name(c.media_name) + " bought for " + credits_text(c.base_cost) + " CR";
   return true;
 }
 
@@ -99,7 +101,7 @@ void Autoshow::fill(const std::vector<garage::ClassBand>& bands, int64_t credits
     const std::string cls = bands.empty() ? "?" : bands[size_t(garage::class_of(c.performance_index, bands))].name;
     char line[160];
     std::snprintf(line, sizeof line, "%s %d  %s  %s CR", cls.c_str(), garage::shown_index(c.performance_index, bands),
-                  c.media_name.c_str(), credits_text(c.base_cost).c_str());
+                  car_name(c.media_name).c_str(), credits_text(c.base_cost).c_str());
     lines.push_back(line);
   }
   selected = int(selected_) - first;

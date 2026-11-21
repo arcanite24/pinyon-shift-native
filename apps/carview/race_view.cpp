@@ -76,7 +76,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   }
   {
     std::string ne;  // the names are optional: the media names stand in
-    names_.load(root, &ne);
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    names_.load(root, state ? state : "", &ne);
   }
   stage_ = event.rfind("stage:", 0) == 0;
   if (stage_) {

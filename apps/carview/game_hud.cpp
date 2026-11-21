@@ -167,7 +167,11 @@ void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, doubl
                                                     .align = Align::kRight});
       TextStyle name{.size = 9 * s, .weight = 0.1f, .color = ink};
       std::string text = row.name;
-      while (text.size() > 4 && ui::List::measure(text, name) > rw - 90 * s) text.pop_back();
+      const float room = rw - (row.finished ? 90 : 46) * s;
+      while (name.size > 7.5f * s && ui::List::measure(text, name) > room) name.size *= 0.95f;
+      // Still too long: whole words, then a cut.
+      while (ui::List::measure(text, name) > room && text.find(' ') != std::string::npos) text.erase(text.rfind(' '));
+      while (text.size() > 4 && ui::List::measure(text, name) > room) text.pop_back();
       l.text(x0 + 34 * s, y + 6 * s, text, name);
       if (row.finished)
         l.text(x0 + rw - 14 * s, y + 6 * s, race_clock(row.time),
@@ -276,6 +280,16 @@ void menu_panel(ui::List& l, const DriveHud& st, float w, float h, float s) {
 }
 
 }  // namespace
+
+namespace {
+std::function<std::string(const std::string&)>& names() {
+  static std::function<std::string(const std::string&)> f;
+  return f;
+}
+}  // namespace
+
+void set_car_names(std::function<std::string(const std::string&)> source) { names() = std::move(source); }
+std::string car_name(const std::string& media) { return names() ? names()(media) : media; }
 
 std::string thousands(int64_t v) {
   std::string d = std::to_string(v < 0 ? -v : v), out;

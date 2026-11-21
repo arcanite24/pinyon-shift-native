@@ -881,6 +881,17 @@ the interim noted here until a later polish sweep.
   isn't in the oracle's top 3 on FR33 and FR24. The front of our field is
   slower than the oracle's (see the tail note below). The Minis already
   run the stock rows Q55 c names. Gate: FAIL.
+  **Faked-PI grid and wall clip (1e8158cc; out/gate-head, seeds 1 and
+  2, with a 1.5 m floor and kerbs left out of the clip):** FR06
+  148.6/144.1, STREET 128.6/124.1, NR02 134.6/130.7 and EXHIBITION
+  208.7/179.0 outside 3 %. EXHIBITION also fails distance. The other six
+  pass. Place misses on FR06, FR16, HEADLINE and FR01; the AI winner
+  misses on FR33 and FR24. The clip shortens FR06's wall hits, but STREET
+  loses 4 s against Q55 (the room trimmed up to 8 m on 33,537 contacts).
+  The floor and kerb change didn't win it back, so it was dropped. To do:
+  clip only off-street, then look at EXHIBITION's line. Interims: grid
+  ties in row order, and the +5 flag on FR06 car 1419 and HEADLINE car
+  1171. Gate: FAIL; parked for the UI and feel work (Brandon, 2026-11-21).
   gate (the player replays the oracle's path from `out/oracle/`). FR22 at
   Med, three seeds: AI mean 162.4 s (oracle 161.5), 4,673 m (4,638), the
   player 2nd to 3rd (3rd), winner slot 00: passes. FR16: AI mean 129 to

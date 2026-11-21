@@ -1535,6 +1535,18 @@ int run_drive(int argc, char** argv) {
   auto game_root_of = [&]() -> std::filesystem::path {
     return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
   };
+  // The screen's car names (FORMAT-STRINGTABLES), loaded on first use.
+  auto car_names = std::make_shared<race::CarNames>();
+  auto car_names_loaded = std::make_shared<bool>(false);
+  carview::set_car_names([=](const std::string& media) {
+    if (!*car_names_loaded) {
+      *car_names_loaded = true;
+      const char* state = std::getenv("SHIFT_STATE_ROOT");
+      std::string e;
+      car_names->load(game_root_of(), state ? state : "", &e);
+    }
+    return car_names->short_name(media);
+  });
   // The career garage (SPEC-GARAGE-UPGRADES): garage.txt beside the save,
   // made by the profile import; the cars the bake has, by Data_Car id.
   garage::Garage career_garage;
@@ -2895,7 +2907,7 @@ int run_drive(int argc, char** argv) {
       // The car's name and the keys, over the HUD for the first seconds.
       constexpr double kIntroSeconds = 6;
       // (The display name is a string-table key: the media name is shown.)
-      const std::string intro = car + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
+      const std::string intro = carview::car_name(car) + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
       // The race line on the HUD (RaceView: the count, the lap, place and
       // time, the result).
@@ -4052,7 +4064,7 @@ int run_drive(int argc, char** argv) {
             char line[160] = "";
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
-                            baked_cars[pick].c_str());
+                            carview::car_name(baked_cars[pick]).c_str());
             set_hud(w, h,
                     picking                          ? std::string(line)
                     : vehicle.time() < notice_until  ? notice
