@@ -61,12 +61,12 @@ enum class Align { kLeft, kCenter, kRight };
 
 // FORMAT-FONTS' targets (interim roles: titles and menu items E, labels and
 // numbers B, paragraphs A). kAuto: E for slanted text, else B.
-enum class Font { kAuto, kStroke, kA, kB, kE };
+enum class Font { kAuto, kStroke, kA, kB, kD, kE };
 
 // The game's fonts (any may be null: that role falls back to the stroke
 // font). Clears the glyph cache.
 void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
-                      std::shared_ptr<const fh1::VFont> e);
+                      std::shared_ptr<const fh1::VFont> e, std::shared_ptr<const fh1::VFont> d = nullptr);
 bool vector_fonts_loaded();
 
 // The UI atlas (kAtlasSize square, RGBA8, white with the glyphs' coverage
@@ -83,6 +83,7 @@ struct TextStyle {
   uint32_t color = rgba(255, 255, 255);
   Align align = Align::kLeft;
   Font font = Font::kAuto;
+  bool keep_case = false;  // vector fonts: draw lower case as written (else upper-cased)
 };
 
 class List {

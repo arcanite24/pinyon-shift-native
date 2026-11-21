@@ -405,12 +405,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     const P p = project(scene.x, scene.z);
     for (const auto& ic : it->second) cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 0.8, 0, ic.colour);
   }
-  // A thin frame.
-  const Rgba frame{200, 200, 200, 160};
-  cv.line(0.5, 0.5, size - 0.5, 0.5, 1, frame);
-  cv.line(0.5, size - 0.5, size - 0.5, size - 0.5, 1, frame);
-  cv.line(0.5, 0.5, 0.5, size - 0.5, 1, frame);
-  cv.line(size - 0.5, 0.5, size - 0.5, size - 0.5, 1, frame);
+  // No frame (SPEC-UI-LAYOUTS a).
   return cv.image();
 }
 

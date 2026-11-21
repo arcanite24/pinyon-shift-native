@@ -750,6 +750,8 @@ RaceHud RaceView::hud_info() const {
   h.place = me.place;
   h.best_lap = me.best_lap;
   h.last_lap = me.laps.empty() ? -1 : me.laps.back();
+  h.lap_time = h.clock;
+  for (double t : me.laps) h.lap_time -= t;
   const double run = std::max(1.0, finish_progress_ - line_.gate_progress);
   h.progress = std::clamp((field_->progress(n) - line_.gate_progress) / run, 0.0, 1.0);
   if (s.finished(n)) {
@@ -762,13 +764,25 @@ RaceHud RaceView::hud_info() const {
   } else {
     h.phase = h.clock < -3 ? RaceHud::kGrid : h.clock < 0 ? RaceHud::kCountdown : RaceHud::kRacing;
   }
+  // The standings (SPEC-UI-LAYOUTS b2): the drivers' names (AIPlayers),
+  // and each car's gap to the leader, from the distance along the line
+  // over the car's speed (ours: the title's gap rule is not specified).
+  double lead = -1;
   for (size_t i : s.order()) {
     RaceHudRow r;
     r.player = i == n;
-    r.name = r.player ? "YOU" : names_.short_name(cars_[i].who.car_media);
+    if (r.player) {
+      r.name = "YOU";
+    } else {
+      r.name = cars_[i].who.driver.empty() ? std::string() : names_.text(cars_[i].who.driver);
+      if (r.name.empty() || r.name.rfind("_&", 0) == 0) r.name = names_.short_name(cars_[i].who.car_media);
+    }
     r.place = int(h.rows.size()) + 1;
     r.finished = s.finished(i);
     r.time = s.car(i).finish;
+    const double p = field_->progress(i);
+    if (lead < 0) lead = p;
+    else if (i < samples_.size()) r.gap = std::max(0.0, lead - p) / std::max(5.0, double(samples_[i].speed));
     h.rows.push_back(std::move(r));
   }
   return h;

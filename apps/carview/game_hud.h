@@ -20,6 +20,7 @@ struct RaceHudRow {
   int place = 0;
   bool player = false, finished = false;
   double time = -1;  // the finish time, or -1
+  double gap = -1;   // s behind the leader while racing (-1: the leader)
 };
 struct RaceHud {
   enum Phase { kGrid, kCountdown, kRacing, kFinished } phase = kGrid;
@@ -27,6 +28,7 @@ struct RaceHud {
   bool circuit = false, stage = false;
   int lap = 0, laps = 1, place = 0, cars = 1, digit = 0;
   double clock = 0, progress = 0, best_lap = -1, last_lap = -1, finish_time = -1;
+  double lap_time = 0;  // s into the current lap
   int64_t credits = 0;
   int wristband = 0;
   int stage_place = 0, stage_field = 0;
@@ -38,6 +40,9 @@ struct RaceHud {
   std::string band_name, band_next;
   bool band_up = false;
   bool wrong_way = false;  // the player drives against the race (ours)
+  int results_page = 0;    // after the finish: 0 the FINISHED banner, 1 the cash reward
+  int64_t balance = -1;    // the credits after the award (the cash reward page)
+  std::string event_type;  // the title card's event type line (a string-table text)
 };
 
 // The career page's board (ours), right of the page's list: the wristband
@@ -72,6 +77,11 @@ struct DriveHud {
   int64_t credits = -1;
   std::string band_name;
   int band_points = 0, band_lo = 0, band_hi = -1;
+  // The pause menu's panels (SPEC-UI-LAYOUTS d): the next band's name, the
+  // band's level (1 up), the car's name, class and index.
+  bool pause = false;
+  std::string band_next, car_name, car_class;
+  int band_level = 0, car_pi = 0;
   // A discovery card (top centre): a sign, a barn find, a medal. Shown
   // for kPopupSeconds from popup_at (drive time); empty title: none.
   std::string popup_title, popup_text;

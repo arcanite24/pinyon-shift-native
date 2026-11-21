@@ -863,10 +863,17 @@ the interim noted here until a later polish sweep.
 - **The F12 screenshot.** F12 saves the pose but not an image yet (the
   window has no swapchain read-back).
 - **UI parity (first; Brandon, 2026-11-21: "UX and UI should have a
-  strong focus on parity with the original game").** Every screen in
-  `game_hud.cpp` is ours and an interim: the dial, race panels, results
-  card, career board, discovery cards, WRONG WAY plate and pause menu, and
-  also the font choice by slant and the ASCII upper-casing. The game's own
+  strong focus on parity with the original game").** Done to
+  SPEC-UI-LAYOUTS (rects within about 4 px at 1280x720; `--menu-png`
+  writes `_hud`, `_race`, `_results0|1` samples): the free-roam dial, the
+  grid's event card, the race HUD (laps, RACE/LAP/LAST/BEST, PLACE, four
+  standings rows with driver names and gaps, GO!), the FINISHED banner then
+  the CASH REWARD page (A, A), the pause menu with its career panels and
+  help bar, and the minimap's spot (no frame). Labels come from the string
+  tables. Still ours: brushes are flat rects (the textures need the scene
+  reader), the class colours other than B, the gap rule, the reward
+  breakdown (one line), the wristband bar on the cash page, the discovery
+  card, WRONG WAY, and the career board. The game's own
   screens are data in `media/UI.zip` (`Scenes/ui4/*.bgf|.bsg|.fbf` with Lua
   behaviours: `947_HUD`, `925_PAUSE_MENU`, `924_POST_RACE`,
   `4_C_INI_PRERACE`, `H_BARN_FIND_HUD`, ...). Asked of the spec side: the

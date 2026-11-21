@@ -36,52 +36,6 @@ void panel(ui::List& l, float x0, float y0, float x1, float y1, float s, uint32_
   l.rect(x0, y0, x1, y1, color, 10 * s, ui::fade(color, 1.15));
 }
 
-void dial(ui::List& l, const DriveHud& st, float w, float h, float s) {
-  const float R = 80 * s;
-  const float cx = w - 30 * s - R, cy = h - 26 * s - R;
-  l.shadow(cx - R - 16 * s, cy - R - 16 * s, cx + R + 16 * s, cy + R + 16 * s, kShadow, R + 16 * s, 14 * s);
-  l.circle(cx, cy, R + 16 * s, rgba(8, 10, 14, 205));
-  const double red = std::max(1000.0, st.redline_rpm);
-  const double top = std::ceil(red * 1.1 / 1000) * 1000;  // the dial's end, whole thousands
-  auto angle = [&](double rpm) { return kDialA0 + (kDialA1 - kDialA0) * float(std::clamp(rpm / top, 0.0, 1.0)); };
-  const float track = 7 * s;
-  l.arc(cx, cy, R, track, kDialA0, kDialA1, rgba(255, 255, 255, 38));
-  l.arc(cx, cy, R, track, angle(red), kDialA1, rgba(236, 52, 44, 110));
-  const bool shift = st.rpm > 0.94 * red;
-  const bool blink = st.rpm > 0.985 * red && std::fmod(st.time, 0.16) < 0.08;
-  const uint32_t fill = blink ? rgba(255, 255, 255) : shift ? kRed : kText;
-  l.arc(cx, cy, R, track, kDialA0, std::max(kDialA0 + 0.01f, angle(st.rpm)), fill);
-  // A tick and digit per thousand.
-  TextStyle digits{.size = 8.5f * s, .weight = 0.11f, .color = kDim, .align = Align::kCenter};
-  for (double k = 0; k <= top + 1; k += 1000) {
-    const float a = angle(k);
-    const float sa = std::sin(a), ca = -std::cos(a);
-    const bool in_red = k >= red;
-    l.line(cx + (R - 12 * s) * sa, cy + (R - 12 * s) * ca, cx + (R - 6 * s) * sa, cy + (R - 6 * s) * ca, 2 * s,
-           in_red ? kRed : rgba(255, 255, 255, 150));
-    digits.color = in_red ? kRed : kDim;
-    char d[8];
-    std::snprintf(d, sizeof d, "%d", int(k / 1000));
-    l.text(cx + (R - 24 * s) * sa, cy + (R - 24 * s) * ca - 4.25f * s, d, digits);
-  }
-  // The speed and the gear.
-  char speed[16];
-  std::snprintf(speed, sizeof speed, "%d", int(std::lround(std::fabs(st.kmh))));
-  l.text(cx + 2 * s, cy - 22 * s, speed,
-         TextStyle{.size = 34 * s, .weight = 0.12f, .slant = 0.12f, .color = kText, .align = Align::kCenter});
-  l.text(cx, cy + 19 * s, "KM/H",
-         TextStyle{.size = 7.5f * s, .weight = 0.11f, .tracking = 0.35f, .color = kDim, .align = Align::kCenter});
-  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
-  char g[8];
-  if (!gear) std::snprintf(g, sizeof g, "%d", st.gear), gear = g;
-  const float gy = cy + 52 * s;
-  l.rect(cx - 15 * s, gy - 15 * s, cx + 15 * s, gy + 15 * s, shift ? kRed : kAccent, 7 * s);
-  l.text(cx, gy - 9 * s, gear, TextStyle{.size = 18 * s, .weight = 0.14f, .color = kInk, .align = Align::kCenter});
-  if (st.abs)
-    l.text(cx - R - 22 * s, cy + R - 4 * s, "ABS",
-           TextStyle{.size = 10 * s, .weight = 0.13f, .color = kAccent, .align = Align::kRight});
-}
-
 void label(ui::List& l, float x, float y, const char* text, float s, uint32_t color = kAccent,
            Align align = Align::kLeft) {
   l.text(x, y, text, TextStyle{.size = 8 * s, .weight = 0.12f, .tracking = 0.3f, .color = color, .align = align});
@@ -135,278 +89,456 @@ void wristband_row(ui::List& l, const RaceHud& r, float x, float y, float width,
                      .align = Align::kRight});
 }
 
-// Free roam's career chip: credits, then the wristband with its bar.
-void career_chip(ui::List& l, const DriveHud& st, float w, float s) {
-  const float cw = 260 * s, x1 = w - 26 * s, x0 = x1 - cw, y0 = 26 * s;
-  const bool band = !st.band_name.empty();
-  panel(l, x0, y0, x1, y0 + (band ? 62 : 38) * s, s, rgba(10, 12, 17, 175));
-  l.circle(x0 + 22 * s, y0 + 19 * s, 8 * s, kAccent);
-  l.text(x0 + 22 * s, y0 + 14.5f * s, "C", TextStyle{.size = 9 * s, .weight = 0.15f, .color = kInk, .align = Align::kCenter});
-  l.text(x0 + 38 * s, y0 + 12 * s, thousands(st.credits) + " CR",
-         TextStyle{.size = 14 * s, .weight = 0.12f, .color = kText});
-  if (!band) return;
-  const uint32_t c = band_colour(st.band_name);
-  l.text(x0 + 14 * s, y0 + 36 * s, st.band_name, TextStyle{.size = 8 * s, .weight = 0.12f, .tracking = 0.2f, .color = c});
-  if (st.band_hi > st.band_lo) {
-    char pts[48];
-    std::snprintf(pts, sizeof pts, "%s / %s", thousands(st.band_points).c_str(), thousands(st.band_hi).c_str());
-    l.text(x1 - 14 * s, y0 + 36 * s, pts,
-           TextStyle{.size = 8 * s, .weight = 0.11f, .color = kDim, .align = Align::kRight});
+// ---- SPEC-UI-LAYOUTS: the title's 1280x720 layout, scaled to the screen's
+// height and anchored to the edges it sits by. Brushes are flat rects until
+// the scene reader brings the textures (FORMAT-UISCENES).
+constexpr uint32_t kPink = rgba(0xF5, 0x04, 0x5C);
+constexpr uint32_t kPinkRow = rgba(0xFF, 0x03, 0x61);
+constexpr uint32_t kBlack60 = rgba(0, 0, 0, 153);
+constexpr uint32_t kBrush = rgba(0, 0, 0, 215);
+constexpr uint32_t kGear = rgba(0xBA, 0xB9, 0xB8);
+constexpr uint32_t kDark = rgba(0x2D, 0x2D, 0x2D);
+constexpr uint32_t kLight = rgba(0xD8, 0xD8, 0xD8, 235);
+constexpr uint32_t kSoft = rgba(0, 0, 0, 120);
+
+struct Layout {
+  float w, h, s;
+  float L(float x) const { return x * s; }                  // left-anchored x
+  float R(float x) const { return w - (1280 - x) * s; }     // right-anchored x
+  float T(float y) const { return y * s; }                  // top-anchored y
+  float B(float y) const { return h - (720 - y) * s; }      // bottom-anchored y
+  float C(float x) const { return 0.5f * w + (x - 640) * s; }  // centred x
+};
+
+// A string-table text (FORMAT-STRINGTABLES `_&N`: the table's and the id's
+// hashes); `fallback` when the tables do not resolve it.
+uint16_t table_hash(std::string_view v) {
+  uint16_t h = 0xFFFF;
+  for (char c : v) {
+    h ^= uint16_t(std::tolower(static_cast<unsigned char>(c)));
+    h = uint16_t((h << 7) | (h >> 9));
   }
-  const float bx0 = x0 + 14 * s, bx1 = x1 - 14 * s, by = y0 + 49 * s;
-  l.rect(bx0, by, bx1, by + 5 * s, rgba(255, 255, 255, 36), 2.5f * s);
-  const float k = st.band_hi > st.band_lo
-                      ? float(std::clamp(double(st.band_points - st.band_lo) / double(st.band_hi - st.band_lo), 0.0, 1.0))
-                      : 1.0f;
-  l.rect(bx0, by, std::max(bx0 + 5 * s, bx0 + (bx1 - bx0) * k), by + 5 * s, c, 2.5f * s);
+  return h;
+}
+std::string str(std::string_view table, std::string_view id, const char* fallback) {
+  const uint32_t key = uint32_t(table_hash(table)) << 16 | table_hash(id);
+  const std::string ref = "_&" + std::to_string(key);
+  std::string t = game_text(ref);
+  if (t.empty() || t == ref) return fallback;
+  return t;
 }
 
-// The discovery card: drops in, holds, fades.
-void popup_card(ui::List& l, const DriveHud& st, float w, float s) {
+TextStyle font(ui::Font f, float size, uint32_t color, Align align = Align::kLeft) {
+  return TextStyle{.size = size, .weight = 0.11f, .color = color, .align = align, .font = f};
+}
+// Text with the HUD's soft drop shadow.
+float shadowed(ui::List& l, float x, float y, std::string_view t, TextStyle ts, float s) {
+  TextStyle sh = ts;
+  sh.color = ui::fade(kSoft, float((ts.color >> 24) & 0xFF) / 255.0f);
+  l.text(x + 1.5f * s, y + 1.5f * s, t, sh);
+  return l.text(x, y, t, ts);
+}
+// Shrinks `ts` until `t` fits `room` px.
+void fit(std::string_view t, TextStyle& ts, float room, float floor) {
+  while (ts.size > floor && ui::List::measure(t, ts) > room) ts.size *= 0.96f;
+}
+
+// "01:23.456".
+std::string clock_ms(double t) {
+  if (t < 0) t = 0;
+  const int64_t ms = int64_t(std::llround(t * 1000));
+  char b[32];
+  std::snprintf(b, sizeof b, "%02lld:%02lld.%03lld", (long long)(ms / 60000), (long long)(ms / 1000 % 60),
+                (long long)(ms % 1000));
+  return b;
+}
+// "+1.234".
+std::string gap_ms(double t) {
+  char b[32];
+  std::snprintf(b, sizeof b, "+%.3f", std::max(0.0, t));
+  return b;
+}
+
+// A controller button's help item on a black panel: the face's coloured
+// disc, its letter and the action (B 14).
+void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float y1, const char* face,
+               uint32_t colour, const std::string& text, bool bottom = true) {
+  auto Y = [&](float y) { return bottom ? g.B(y) : g.T(y); };
+  const float s = g.s;
+  l.rect(g.L(x0), Y(y0), g.L(x1), Y(y1), kBlack60);
+  const float cy = 0.5f * (Y(y0) + Y(y1)), cx = g.L(x0) + 16 * s;
+  l.circle(cx, cy, 9.5f * s, colour);
+  l.text(cx, cy - 5 * s, face, font(ui::Font::kB, 10 * s, kInk, Align::kCenter));
+  l.text(cx + 16 * s, cy - 7 * s, text, font(ui::Font::kB, 14 * s, kText));
+}
+
+// (a) The free-roam dial: centre 1122,587, ±137° from 12 o'clock.
+void dial(ui::List& l, const DriveHud& st, const Layout& g) {
+  const float s = g.s;
+  const float cx = g.R(1122), cy = g.B(587), R = 88 * s;
+  constexpr float kSweep = 2.391f;  // 137°
+  l.circle(cx, cy, R, rgba(0, 0, 0, 140));
+  const double red = std::max(1000.0, st.redline_rpm);
+  // The scale: whole thousands, at least 10, numerals every second one.
+  const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000) * 2000);
+  auto angle = [&](double rpm) { return -kSweep + 2 * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
+  l.arc(cx, cy, R - 1 * s, 2 * s, -kSweep, kSweep, rgba(255, 255, 255, 230));
+  l.arc(cx, cy, R - 5 * s, 6 * s, angle(red), kSweep, kPink);
+  const TextStyle num = font(ui::Font::kB, 15 * s, kText, Align::kCenter);
+  for (double k = 0; k <= top + 1; k += 1000) {
+    const float a = angle(k), sa = std::sin(a), ca = -std::cos(a);
+    const bool major = int(std::lround(k / 1000)) % 2 == 0;
+    const float r0 = major ? R - 4 * s : R - 7 * s;
+    l.line(cx + r0 * sa, cy + r0 * ca, cx + (R - 2 * s) * sa, cy + (R - 2 * s) * ca, (major ? 2.0f : 1.5f) * s,
+           rgba(255, 255, 255, 220));
+    if (!major) continue;
+    char d[8];
+    std::snprintf(d, sizeof d, "%d", int(std::lround(k / 1000)));
+    const float rn = 78.5f * s;
+    l.text(cx + rn * sa, cy + rn * ca - 7.5f * s, d, num);
+  }
+  // The needle.
+  const float a = angle(st.rpm), sa = std::sin(a), ca = -std::cos(a);
+  l.line(cx - 10 * s * sa, cy - 10 * s * ca, cx + (R - 8 * s) * sa, cy + (R - 8 * s) * ca, 3 * s, kPink);
+  l.circle(cx, cy, 5 * s, kPink);
+  // The speed: three digits, the leading zeros at half white.
+  const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
+  char digits[8];
+  std::snprintf(digits, sizeof digits, "%03d", v);
+  const std::string all = digits;
+  const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  const TextStyle sp = font(ui::Font::kE, 28 * s, kText, Align::kRight);
+  const float x1 = g.R(1162), y = g.B(571);
+  const float tail = l.text(x1, y, all.substr(lead), sp);
+  if (lead) {
+    TextStyle z = sp;
+    z.color = rgba(255, 255, 255, 128);
+    l.text(x1 - tail, y, all.substr(0, lead), z);
+  }
+  TextStyle unit = font(ui::Font::kA, 10 * s, kDim);
+  unit.keep_case = true;
+  l.text(g.R(1112), g.B(553), str("UnitStrings", "IDS_Units_KMH", "km/h"), unit);
+  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
+  char gb[8];
+  if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
+  l.text(g.R(1093), g.B(607), gear, font(ui::Font::kE, 17 * s, kGear));
+}
+
+// The discovery card (the interim of SPEC-UI-LAYOUTS: an E line on a pink
+// brush, a B line under it, top centre): drops in, holds, fades.
+void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
   const double age = st.time - st.popup_at;
   if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
-  const float in = ease_in_time(age, 0, 0.35);
-  const float out = 1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5);
-  const float a = in * out;
-  const uint32_t c = st.popup_colour ? st.popup_colour : kAccent;
-  const TextStyle ts{.size = 20 * s, .weight = 0.13f, .slant = 0.1f, .color = ui::fade(kText, a), .align = Align::kCenter};
-  TextStyle body{.size = 10 * s, .weight = 0.11f, .tracking = 0.08f, .color = ui::fade(kDim, a), .align = Align::kCenter};
-  const float cw = std::max({300 * s, ui::List::measure(st.popup_title, ts) + 60 * s,
-                             ui::List::measure(st.popup_text, body) + 60 * s});
-  const bool meter = st.popup_progress >= 0;
-  const float ch = (meter ? 90 : 74) * s;
-  const float x0 = 0.5f * w - 0.5f * cw, y0 = 26 * s - (1 - in) * 30 * s;
-  l.shadow(x0, y0 + 3 * s, x0 + cw, y0 + ch + 3 * s, ui::fade(kShadow, a), 10 * s, 12 * s);
-  l.rect(x0, y0, x0 + cw, y0 + ch, ui::fade(kPanelLow, a), 10 * s);
-  l.rect(x0, y0, x0 + cw, y0 + 4 * s, ui::fade(c, a), 2 * s);
-  l.text(0.5f * w, y0 + 14 * s, st.popup_title, ts);
-  l.text(0.5f * w, y0 + 50 * s, st.popup_text, body);
-  if (meter) {
-    const float bx0 = x0 + 30 * s, bx1 = x0 + cw - 30 * s, by = y0 + 72 * s;
+  const float s = g.s;
+  const float in = ease_in_time(age, 0, 0.3);
+  const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
+  TextStyle ts = font(ui::Font::kE, 30 * s, ui::fade(kText, a), Align::kCenter);
+  fit(st.popup_title, ts, g.w - 200 * s, 16 * s);
+  TextStyle body = font(ui::Font::kB, 14 * s, ui::fade(kText, a), Align::kCenter);
+  const float tw = ui::List::measure(st.popup_title, ts) + 60 * s;
+  const float y0 = g.T(60) - (1 - in) * 20 * s;
+  const uint32_t c = st.popup_colour ? st.popup_colour : kPink;
+  l.rect(0.5f * g.w - 0.5f * tw, y0, 0.5f * g.w + 0.5f * tw, y0 + 46 * s, ui::fade(c, a));
+  l.text(0.5f * g.w, y0 + 8 * s, st.popup_title, ts);
+  if (!st.popup_text.empty()) {
+    const float bw = ui::List::measure(st.popup_text, body) + 30 * s;
+    l.rect(0.5f * g.w - 0.5f * bw, y0 + 46 * s, 0.5f * g.w + 0.5f * bw, y0 + 72 * s, ui::fade(kBlack60, a));
+    l.text(0.5f * g.w, y0 + 52 * s, st.popup_text, body);
+  }
+  if (st.popup_progress >= 0) {
+    const float bx0 = 0.5f * g.w - 0.5f * tw, bx1 = 0.5f * g.w + 0.5f * tw, by = y0 + 76 * s;
     const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
-    l.rect(bx0, by, bx1, by + 5 * s, rgba(255, 255, 255, uint8_t(36 * a)), 2.5f * s);
-    l.rect(bx0, by, std::max(bx0 + 5 * s, bx0 + (bx1 - bx0) * k), by + 5 * s, ui::fade(c, a), 2.5f * s);
+    l.rect(bx0, by, bx1, by + 4 * s, ui::fade(kBlack60, a));
+    l.rect(bx0, by, bx0 + (bx1 - bx0) * k, by + 4 * s, ui::fade(kText, a));
   }
 }
 
-void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, double t) {
-  const float x0 = 26 * s, y0 = 26 * s;
-  if (r.phase == RaceHud::kGrid || r.phase == RaceHud::kCountdown) {
-    // The event's card, top centre.
-    TextStyle title{.size = 20 * s, .weight = 0.12f, .color = kText, .align = Align::kCenter};
-    while (title.size > 12 * s && ui::List::measure(r.event, title) > w - 160 * s) title.size *= 0.94f;
-    const float cw = std::max(300 * s, ui::List::measure(r.event, title) + 60 * s);
-    panel(l, 0.5f * w - 0.5f * cw, y0, 0.5f * w + 0.5f * cw, y0 + 66 * s, s);
-    l.text(0.5f * w, y0 + 14 * s + (20 * s - title.size) * 0.5f, r.event, title);
-    char sub[64];
-    if (r.stage) std::snprintf(sub, sizeof sub, "RALLY STAGE");
-    else if (r.circuit) std::snprintf(sub, sizeof sub, "CIRCUIT   %d LAPS   %d CARS", r.laps, r.cars);
-    else std::snprintf(sub, sizeof sub, "SPRINT   %d CARS", r.cars);
-    label(l, 0.5f * w, y0 + 44 * s, sub, s, kDim, Align::kCenter);
-  }
-  if (r.phase == RaceHud::kCountdown && r.digit > 0) {
-    // 3, 2, 1: a digit over a ring that empties with the second.
-    const float k = float(r.clock - std::floor(r.clock));  // 0 at the second's start
-    const float cx = 0.5f * w, cy = 0.42f * h, R = 62 * s;
-    const uint32_t c = r.digit == 3 ? kRed : kAccent;
-    l.circle(cx, cy, R + 12 * s, rgba(8, 10, 14, 170));
-    l.arc(cx, cy, R, 8 * s, -3.1416f, -3.1416f + 6.2832f * (1 - k), c);
-    char d[4];
-    std::snprintf(d, sizeof d, "%d", r.digit);
-    const float pop = 1 + 0.25f * (1 - ease_in_time(k, 0, 0.25));
-    l.text(cx, cy - 32 * s * pop, d,
-           TextStyle{.size = 64 * s * pop, .weight = 0.13f, .slant = 0.1f, .color = kText, .align = Align::kCenter});
-  }
-  if (r.phase == RaceHud::kRacing && r.clock < 1.5) {
-    const float a = 1 - clamp01((r.clock - 0.9) / 0.6);
-    const float grow = 1 + 0.3f * float(r.clock / 1.5);
-    l.text(0.5f * w, 0.42f * h - 36 * s * grow, "GO!",
-           TextStyle{.size = 72 * s * grow, .weight = 0.14f, .slant = 0.14f, .color = ui::fade(kGreen, a),
-                     .align = Align::kCenter});
-  }
-  if (r.phase == RaceHud::kRacing && r.wrong_way) {
-    // Wrong way: a red plate, top centre, pulsing.
-    const float pulse = 0.75f + 0.25f * float(std::cos(t * 6.2832 * 1.5));
-    const TextStyle ws{.size = 26 * s, .weight = 0.14f, .slant = 0.12f, .color = kText, .align = Align::kCenter};
-    const float ww = ui::List::measure("WRONG WAY", ws) + 64 * s, wy = 0.2f * h;
-    l.shadow(0.5f * w - 0.5f * ww, wy + 3 * s, 0.5f * w + 0.5f * ww, wy + 55 * s, kShadow, 10 * s, 12 * s);
-    l.rect(0.5f * w - 0.5f * ww, wy, 0.5f * w + 0.5f * ww, wy + 52 * s, ui::fade(kRed, pulse), 10 * s);
-    l.text(0.5f * w, wy + 13 * s, "WRONG WAY", ws);
-  }
-  if (r.phase == RaceHud::kRacing) {
-    // Position.
-    const float pw = 132 * s, ph = 86 * s;
-    panel(l, x0, y0, x0 + pw, y0 + ph, s);
-    label(l, x0 + 16 * s, y0 + 14 * s, "POSITION", s);
-    char p[8], of[8];
-    std::snprintf(p, sizeof p, "%d", r.place);
-    std::snprintf(of, sizeof of, "/%d", r.cars);
-    const TextStyle big{.size = 40 * s, .weight = 0.13f, .slant = 0.12f, .color = kText};
-    const float pwid = l.text(x0 + 16 * s, y0 + 32 * s, p, big);
-    l.text(x0 + 22 * s + pwid, y0 + 52 * s, of, TextStyle{.size = 18 * s, .weight = 0.12f, .color = kDim});
-    // Lap or progress, and time.
-    const float lx = x0 + pw + 10 * s, lw = 168 * s;
-    panel(l, lx, y0, lx + lw, y0 + ph, s);
+// (b1) The event's title card, on the grid.
+void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
+  const float s = g.s;
+  l.rect(0, g.B(547), g.L(968), g.B(647), kPink);
+  l.rect(g.L(75), g.B(535), g.L(440), g.B(590), kBrush);
+  const std::string type =
+      !r.event_type.empty() ? r.event_type : str("CareerEventUI", "IDS_TitleFestivalRace", "FESTIVAL RACE");
+  TextStyle ts = font(ui::Font::kE, 36 * s, kText);
+  fit(type, ts, g.L(440) - g.L(100) - 10 * s, 18 * s);
+  l.text(g.L(100), g.B(546) + (36 * s - ts.size) * 0.5f, type, ts);
+  TextStyle ns = font(ui::Font::kE, 47 * s, kText);
+  fit(r.event, ns, g.L(950) - g.L(100), 20 * s);
+  l.text(g.L(100), g.B(588) + (47 * s - ns.size) * 0.5f, r.event, ns);
+}
+
+// (b2) The race HUD: laps (or the distance), the timers, place, standings.
+void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
+  const float s = g.s;
+  const bool racing = r.phase == RaceHud::kRacing;
+  // Laps: "1/3 LAPS"; sprints: the distance done.
+  {
+    char big[16], of[16];
     if (r.circuit) {
-      label(l, lx + 16 * s, y0 + 14 * s, "LAP", s);
-      char lap[16];
-      std::snprintf(lap, sizeof lap, "%d/%d", std::max(1, r.lap), r.laps);
-      l.text(lx + 16 * s, y0 + 30 * s, lap, TextStyle{.size = 20 * s, .weight = 0.12f, .color = kText});
+      std::snprintf(big, sizeof big, "%d", racing ? std::max(1, r.lap) : 0);
+      std::snprintf(of, sizeof of, "/%d", r.laps);
     } else {
-      label(l, lx + 16 * s, y0 + 14 * s, r.stage ? "STAGE" : "PROGRESS", s);
-      const float bx0 = lx + 16 * s, bx1 = lx + lw - 16 * s, by = y0 + 38 * s;
-      l.rect(bx0, by, bx1, by + 6 * s, rgba(255, 255, 255, 40), 3 * s);
-      l.rect(bx0, by, bx0 + std::max(6 * s, (bx1 - bx0) * float(r.progress)), by + 6 * s, kAccent, 3 * s);
+      std::snprintf(big, sizeof big, "%d", int(std::lround(r.progress * 100)));
+      std::snprintf(of, sizeof of, "%%");
     }
-    l.text(lx + 16 * s, y0 + 58 * s, race_clock(r.clock),
-           TextStyle{.size = 15 * s, .weight = 0.11f, .color = kText});
-    if (r.circuit && r.best_lap > 0) {
-      label(l, lx + lw - 16 * s, y0 + 14 * s, "BEST", s, kDim, Align::kRight);
-      l.text(lx + lw - 16 * s, y0 + 30 * s, race_clock(r.best_lap),
-             TextStyle{.size = 11 * s, .weight = 0.11f, .color = kDim, .align = Align::kRight});
+    const float bw = shadowed(l, g.L(70), g.T(34), big, font(ui::Font::kE, 48 * s, kText), s);
+    const float ow = shadowed(l, std::max(g.L(118), g.L(70) + bw + 1 * s), g.T(33), of,
+                              font(ui::Font::kE, 27 * s, kText), s);
+    if (r.circuit)
+      shadowed(l, std::max(g.L(182), g.L(70) + bw + ow + 18 * s), g.T(34), str("InGame", "IDS_Laps", "LAPS"),
+               font(ui::Font::kE, 16 * s, kText), s);
+  }
+  // The timers: RACE from the start, LAP on circuits, LAST and BEST after a lap.
+  {
+    struct Row { std::string name; double t; };
+    std::vector<Row> rows;
+    rows.push_back({str("InGame", "IDS_Race", "RACE"), std::max(0.0, r.clock)});
+    if (r.circuit) {
+      rows.push_back({str("InGame", "IDS_CurrentLapTimeLabel", "LAP"), std::max(0.0, r.lap_time)});
+      if (r.last_lap > 0) rows.push_back({str("InGame", "IDS_Last", "LAST"), r.last_lap});
+      if (r.best_lap > 0) rows.push_back({str("InGame", "IDS_Best", "BEST"), r.best_lap});
     }
-    // The standings, below.
-    const float ry = y0 + ph + 10 * s, rh = 21 * s, rw = pw + 10 * s + lw;
-    const size_t rows = std::min<size_t>(r.rows.size(), 8);
-    panel(l, x0, ry, x0 + rw, ry + 10 * s + rh * float(rows), s, rgba(10, 12, 17, 160));
-    for (size_t i = 0; i < rows; ++i) {
-      const auto& row = r.rows[i];
-      const float y = ry + 5 * s + rh * float(i);
-      if (row.player) l.rect(x0 + 5 * s, y, x0 + rw - 5 * s, y + rh, ui::fade(kAccent, 0.9), 5 * s);
-      const uint32_t ink = row.player ? kInk : kText;
-      char n[8];
-      std::snprintf(n, sizeof n, "%d", row.place);
-      l.text(x0 + 24 * s, y + 6 * s, n, TextStyle{.size = 9 * s, .weight = 0.12f, .color = row.player ? kInk : kDim,
-                                                    .align = Align::kRight});
-      TextStyle name{.size = 9 * s, .weight = 0.1f, .color = ink};
-      std::string text = row.name;
-      const float room = rw - (row.finished ? 90 : 46) * s;
-      while (name.size > 7.5f * s && ui::List::measure(text, name) > room) name.size *= 0.95f;
-      // Still too long: whole words, then a cut.
-      while (ui::List::measure(text, name) > room && text.find(' ') != std::string::npos) text.erase(text.rfind(' '));
-      while (text.size() > 4 && ui::List::measure(text, name) > room) text.pop_back();
-      l.text(x0 + 34 * s, y + 6 * s, text, name);
-      if (row.finished)
-        l.text(x0 + rw - 14 * s, y + 6 * s, race_clock(row.time),
-               TextStyle{.size = 9 * s, .weight = 0.1f, .color = row.player ? kInk : kDim, .align = Align::kRight});
+    const float ink[] = {115, 143, 171, 198};
+    for (size_t i = 0; i < rows.size() && i < 4; ++i) {
+      const float y = g.T(ink[i]);
+      l.rect(g.L(64), y - 5 * s, g.L(224), y + 19 * s, kBlack60);
+      l.text(g.L(74), y, rows[i].name, font(ui::Font::kB, 14 * s, kText));
+      l.text(g.L(215), y, clock_ms(rows[i].t), font(ui::Font::kB, 14 * s, kText, Align::kRight));
     }
   }
-  if (r.phase == RaceHud::kFinished) {
-    // The results card, sliding up.
-    const double since = r.clock - r.finish_time;
-    const float in = ease_in_time(since, 0, 0.5);
-    const float cw = 520 * s;
-    const size_t rows = std::min<size_t>(r.rows.size(), 8);
-    const bool band = r.band_after >= 0;
-    const float ch = 214 * s + 24 * s * float(rows) + (band ? 62 * s : 0);
-    const float cx0 = 0.5f * w - 0.5f * cw, cy0 = 0.5f * h - 0.5f * ch + (1 - in) * 40 * s;
-    l.rect(0, 0, w, h, rgba(0, 0, 0, uint8_t(90 * in)));
-    panel(l, cx0, cy0, cx0 + cw, cy0 + ch, s, ui::fade(kPanelLow, in));
-    label(l, cx0 + 28 * s, cy0 + 22 * s, r.stage ? "STAGE COMPLETE" : "RACE COMPLETE", s);
-    char place[16];
-    if (r.stage) std::snprintf(place, sizeof place, "%d%s", r.stage_place, place_suffix(r.stage_place));
-    else std::snprintf(place, sizeof place, "%d%s", r.place, place_suffix(r.place));
-    l.text(cx0 + 28 * s, cy0 + 40 * s, place,
-           TextStyle{.size = 44 * s, .weight = 0.13f, .slant = 0.12f, .color = r.place == 1 ? kAccent : kText});
-    l.text(cx0 + cw - 28 * s, cy0 + 46 * s, race_clock(r.finish_time),
-           TextStyle{.size = 24 * s, .weight = 0.12f, .color = kText, .align = Align::kRight});
-    if (r.stage) {
-      char of[48];
-      std::snprintf(of, sizeof of, "OF %d DRIVERS", r.stage_field);
-      label(l, cx0 + cw - 28 * s, cy0 + 80 * s, of, s, kDim, Align::kRight);
+  // Place: "PLACE 3/8".
+  {
+    char p[8], of[8];
+    std::snprintf(p, sizeof p, "%d", std::max(1, r.place));
+    std::snprintf(of, sizeof of, "/%d", r.cars);
+    shadowed(l, g.R(1024), g.T(34), str("InGame", "IDS_Place", "PLACE"), font(ui::Font::kE, 16 * s, kText), s);
+    const float ow = shadowed(l, g.R(1217), g.T(33), of, font(ui::Font::kE, 27 * s, kText, Align::kRight), s);
+    shadowed(l, g.R(1217) - ow - 1 * s, g.T(32), p, font(ui::Font::kE, 50 * s, kText, Align::kRight), s);
+  }
+  // The standings: the leader and the rows round the player, four in all.
+  if (!r.rows.empty()) {
+    std::vector<size_t> pick;
+    const size_t n = r.rows.size();
+    size_t me = 0;
+    for (size_t i = 0; i < n; ++i)
+      if (r.rows[i].player) me = i;
+    if (n <= 4 || me < 3) {
+      for (size_t i = 0; i < std::min<size_t>(n, 4); ++i) pick.push_back(i);
+    } else {
+      const size_t last = std::min(n - 1, me + 1);
+      pick = {0, last - 2, last - 1, last};
     }
-    const float ty = cy0 + 108 * s;
-    for (size_t i = 0; i < rows; ++i) {
-      const auto& row = r.rows[i];
-      const float y = ty + 24 * s * float(i);
-      const float a = ease_in_time(since, 0.25 + 0.06 * double(i), 0.3);
-      if (row.player) l.rect(cx0 + 18 * s, y - 5 * s, cx0 + cw - 18 * s, y + 17 * s, ui::fade(kAccent, a), 5 * s);
-      const uint32_t ink = ui::fade(row.player ? kInk : kText, a);
-      char n[8];
-      std::snprintf(n, sizeof n, "%d", row.place);
-      l.text(cx0 + 44 * s, y, n, TextStyle{.size = 11 * s, .weight = 0.12f, .color = ink, .align = Align::kRight});
-      TextStyle ns{.size = 11 * s, .weight = 0.1f, .color = ink};
-      const float room = cw - (58 + 32 + 84) * s;
-      while (ns.size > 8 * s && ui::List::measure(row.name, ns) > room) ns.size *= 0.95f;
-      l.text(cx0 + 58 * s, y + (11 * s - ns.size) * 0.5f, row.name, ns);
-      l.text(cx0 + cw - 32 * s, y, row.finished ? race_clock(row.time) : "--",
-             TextStyle{.size = 11 * s, .weight = 0.1f, .color = ink, .align = Align::kRight});
+    const float ty[] = {116, 143, 172, 200};
+    const double lead_time = r.rows[0].finished ? r.rows[0].time : r.clock;
+    for (size_t k = 0; k < pick.size(); ++k) {
+      const RaceHudRow& row = r.rows[pick[k]];
+      const float y = g.T(ty[k]);
+      l.rect(g.R(944), y - 5 * s, g.R(1033), y + 19 * s, kBlack60);
+      l.rect(g.R(1037), y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kBlack60);
+      if (racing) {
+        std::string t;
+        if (pick[k] == 0) t = clock_ms(lead_time);
+        else if (row.finished && r.rows[0].finished) t = gap_ms(row.time - r.rows[0].time);
+        else if (row.gap >= 0) t = gap_ms(row.gap);
+        l.text(g.R(1027), y, t, font(ui::Font::kB, 14 * s, kText, Align::kRight));
+      }
+      char pos[8];
+      std::snprintf(pos, sizeof pos, "%d", row.place);
+      l.text(g.R(1046), y - 0.5f * s, pos, font(ui::Font::kE, 15 * s, kText));
+      TextStyle ns = font(ui::Font::kB, 14 * s, kText);
+      fit(row.name, ns, g.R(1207) - g.R(1068), 9 * s);
+      l.text(g.R(1068), y + (14 * s - ns.size) * 0.5f, row.name, ns);
     }
-    // The rewards, counting up.
-    const float ry = ty + 24 * s * float(rows) + 14 * s;
-    l.line(cx0 + 28 * s, ry, cx0 + cw - 28 * s, ry, 1.5f * s, rgba(255, 255, 255, uint8_t(40 * in)));
-    const float count = ease_in_time(since, 0.8, 1.2);
-    std::string cr = "+" + thousands(int64_t(std::llround(double(r.credits) * count))) + " CR";
-    l.circle(cx0 + 38 * s, ry + 26 * s, 9 * s, ui::fade(kAccent, in));
-    l.text(cx0 + 38 * s, ry + 21 * s, "C", TextStyle{.size = 10 * s, .weight = 0.15f, .color = kInk, .align = Align::kCenter});
-    l.text(cx0 + 56 * s, ry + 17 * s, cr, TextStyle{.size = 18 * s, .weight = 0.12f, .color = ui::fade(kText, in)});
-    if (r.wristband > 0) {
-      char wb[32];
-      std::snprintf(wb, sizeof wb, "+%d WRISTBAND", r.wristband);
-      l.text(cx0 + cw - 28 * s, ry + 19 * s, wb,
-             TextStyle{.size = 13 * s, .weight = 0.12f, .color = ui::fade(kAccent, in), .align = Align::kRight});
-    }
-    if (band) wristband_row(l, r, cx0 + 28 * s, ry + 52 * s, cw - 56 * s, s, since, in);
-    if (band && r.band_up) {
-      // A new band: a banner over the card.
-      const float a = ease_in_time(since, 2.3, 0.35);
-      const float pop = 1 + 0.2f * (1 - ease_in_time(since, 2.3, 0.5));
-      const std::string text = "NEW WRISTBAND: " + r.band_name;
-      const TextStyle bs{.size = 18 * s * pop, .weight = 0.13f, .slant = 0.1f, .color = ui::fade(kInk, a),
-                         .align = Align::kCenter};
-      const float bw = ui::List::measure(text, bs) + 48 * s, by = cy0 - 58 * s;
-      l.shadow(0.5f * w - 0.5f * bw, by + 3 * s, 0.5f * w + 0.5f * bw, by + 43 * s, ui::fade(kShadow, a), 10 * s, 12 * s);
-      l.rect(0.5f * w - 0.5f * bw, by, 0.5f * w + 0.5f * bw, by + 40 * s, ui::fade(band_colour(r.band_name), a), 8 * s);
-      l.text(0.5f * w, by + 20 * s - 0.5f * bs.size, text, bs);
-    }
-    label(l, 0.5f * w, cy0 + ch - 22 * s, "A / ENTER CONTINUE      Y RESTART", s, ui::fade(kDim, in), Align::kCenter);
+  }
+  // GO!: 40 frames at the start signal.
+  if (racing && r.clock < 40.0 / 60.0) {
+    const float a = 1 - clamp01((r.clock - 0.5) / 0.17);
+    shadowed(l, g.C(637.5f), g.T(230), "GO!", font(ui::Font::kE, 64 * s, ui::fade(kText, a), Align::kCenter), s);
+  }
+  // Wrong way (ours): a pulsing red plate, top centre.
+  if (racing && r.wrong_way) {
+    const float pulse = 0.75f + 0.25f * float(std::cos(r.clock * 6.2832 * 1.5));
+    const TextStyle ws = font(ui::Font::kE, 30 * s, kText, Align::kCenter);
+    const float ww = ui::List::measure("WRONG WAY", ws) + 60 * s, wy = g.T(140);
+    l.rect(0.5f * g.w - 0.5f * ww, wy, 0.5f * g.w + 0.5f * ww, wy + 48 * s, ui::fade(kRed, pulse));
+    l.text(0.5f * g.w, wy + 9 * s, "WRONG WAY", ws);
   }
 }
 
-void menu_panel(ui::List& l, const DriveHud& st, float w, float h, float s) {
-  l.rect(0, 0, w, h, rgba(0, 0, 0, 80));
-  const float pw = std::min(w, 440 * s);
-  l.rect(0, 0, pw, h, rgba(9, 11, 15, 238), 0, rgba(9, 11, 15, 210));
-  l.rect(pw - 2 * s, 0, pw, h, ui::fade(kAccent, 0.5));
-  const float x = 40 * s;
-  float y = 44 * s;
-  // The title: the part before ":" large, the rest (a page's hint) small.
+// (c) After the finish: the FINISHED banner with the place, then the cash
+// reward page.
+void results(ui::List& l, const RaceHud& r, const Layout& g) {
+  const float s = g.s;
+  const double since = r.clock - r.finish_time;
+  if (r.results_page == 0) {
+    const float in = ease_in_time(since, 0, 0.35);
+    const float dx = (1 - in) * -120 * s;
+    l.rect(dx, g.T(204), g.L(753) + dx, g.T(337), kPink);
+    l.rect(g.L(75) + dx, g.T(167), g.L(383) + dx, g.T(233), kBrush);
+    TextStyle fs = font(ui::Font::kE, 45 * s, kText);
+    fit(str("InGame", "IDS_Finished", "FINISHED"), fs, g.L(372) - g.L(85), 20 * s);
+    l.text(g.L(85) + dx, g.T(171), str("InGame", "IDS_Finished", "FINISHED"), fs);
+    const int place = r.stage ? r.stage_place : r.place;
+    char p[16];
+    std::snprintf(p, sizeof p, "%d%s ", place, place_suffix(place));
+    const std::string text = p + str("InGame", "IDS_Place", "PLACE");
+    TextStyle ps = font(ui::Font::kE, 80 * s, kText);
+    fit(text, ps, g.L(735) - g.L(95), 30 * s);
+    l.text(g.L(95) + dx, g.T(230) + (80 * s - ps.size) * 0.5f, text, ps);
+    help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
+    help_item(l, g, 195, 307, 653, 689, "Y", kAccent, str("HelpButtons", "IDS_RestartMenu", "RESTART"));
+    return;
+  }
+  // The cash reward.
+  l.rect(0, 0, g.w, g.h, rgba(0, 0, 0, 90));
+  l.rect(g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
+  TextStyle ts = font(ui::Font::kE, 57 * s, kText);
+  const std::string title = str("ScreenTitles", "IDS_PostRace_Winnings", "CASH REWARD");
+  fit(title, ts, g.L(519) - g.L(108), 24 * s);
+  l.text(g.L(108), g.T(151), title, ts);
+  const std::string cr = str("UnitStrings", "IDS_Units_Credits", "Cr");
+  auto tag = [&](float x1, float y, int64_t v, float size) {
+    TextStyle vs = font(ui::Font::kE, size * s, kText, Align::kRight);
+    vs.keep_case = true;
+    const std::string t = thousands(v) + " " + cr;
+    const float tw = ui::List::measure(t, vs);
+    l.rect(x1 - tw - 12 * s, y - 5 * s, x1 + 6 * s, y + (size + 5) * s, kPink);
+    l.text(x1, y, t, vs);
+  };
+  // The breakdown: the place's prize (the title's other lines, the
+  // bonuses, are not ours yet).
+  char line[48];
+  const int place = r.stage ? r.stage_place : r.place;
+  std::snprintf(line, sizeof line, "%d%s %s", place, place_suffix(place), str("InGame", "IDS_Place", "PLACE").c_str());
+  l.rect(g.L(140), g.T(236), g.L(880), g.T(268), kBlack60);
+  l.text(g.L(148), g.T(243), line, font(ui::Font::kB, 20 * s, kText));
+  tag(g.L(870), g.T(244), r.credits, 18);
+  // TOTAL and its value.
+  const float count = ease_in_time(since, 0.3, 1.0);
+  {
+    const std::string t = str("OnlineRewards", "IDS_Total", "TOTAL");
+    TextStyle ts = font(ui::Font::kE, 75 * s, kText);
+    fit(t, ts, g.L(449) - g.L(140), 30 * s);
+    l.text(g.L(140), g.T(390) + (75 * s - ts.size), t, ts);
+  }
+  l.rect(g.L(476), g.T(360), g.L(880), g.T(464), kPink);
+  TextStyle vs = font(ui::Font::kE, 70 * s, kText, Align::kRight);
+  vs.keep_case = true;
+  const std::string total = thousands(int64_t(std::llround(double(r.credits) * count))) + " " + cr;
+  fit(total, vs, g.L(860) - g.L(490), 30 * s);
+  l.text(g.L(860), g.T(377) + (70 * s - vs.size) * 0.5f, total, vs);
+  if (r.balance >= 0) {
+    l.rect(g.L(150), g.T(475), g.L(410), g.T(520), kLight);
+    TextStyle bs = font(ui::Font::kB, 16 * s, kDark);
+    l.text(g.L(162), g.T(490), str("OnlineRewards", "IDS_Balance", "BALANCE"), bs);
+    bs.align = Align::kRight;
+    l.text(g.L(398), g.T(490), thousands(r.balance) + " CR", bs);
+  }
+  // The wristband (ours: where the title shows it is not specified).
+  if (r.band_after >= 0) wristband_row(l, r, g.L(150), g.T(545), g.L(880) - g.L(150), s, since - 1.0, 1.0f);
+  help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
+}
+
+// A class's colour (B: #FF9203 per the layouts; the others ours).
+uint32_t class_colour(const std::string& c) {
+  if (c == "D") return rgba(0x2C, 0xB8, 0xF0);
+  if (c == "C") return rgba(0xF5, 0xD0, 0x1C);
+  if (c == "B") return rgba(0xFF, 0x92, 0x03);
+  if (c == "A") return rgba(0xF0, 0x2C, 0x2C);
+  if (c == "S") return rgba(0xB0, 0x3C, 0xE8);
+  if (!c.empty() && c[0] == 'R') return rgba(0x3C, 0x6C, 0xF0);
+  return rgba(0x80, 0x80, 0x80);
+}
+
+// (d) The pause menu: the items down the left on brushes, the career's
+// panels top right, the help bar.
+void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
+  const float s = g.s;
+  l.rect(0, 0, g.w, g.h, rgba(0, 0, 0, 110));
+  const bool pause = st.pause || st.menu_title == "paused";
+  // A page's title (ours: the pause menu has none).
   std::string title = st.menu_title, hint;
   if (auto c = title.find(':'); c != std::string::npos) {
     hint = title.substr(c + 1);
     title = title.substr(0, c);
     while (!hint.empty() && hint.front() == ' ') hint.erase(hint.begin());
   }
-  l.rect(x, y, x + 5 * s, y + 24 * s, kAccent, 2 * s);
-  TextStyle ts{.size = 24 * s, .weight = 0.12f, .slant = 0.1f, .color = kText};
-  while (ts.size > 12 * s && ui::List::measure(title, ts) > pw - x - 40 * s) ts.size *= 0.92f;
-  l.text(x + 18 * s, y, title, ts);
-  y += 50 * s;
-  if (!hint.empty()) {
-    TextStyle hs{.size = 8.5f * s, .weight = 0.11f, .tracking = 0.15f, .color = kDim};
-    while (hs.size > 6 * s && ui::List::measure(hint, hs) > pw - x - 30 * s) hs.size *= 0.92f;
-    l.text(x, y, hint, hs);
-    y += 24 * s;
-  }
-  y += 10 * s;
-  // The items, scrolled so the selected one shows.
-  const float row = 36 * s;
-  const int fit = std::max(1, int((h - y - 70 * s) / row));
-  const int n = int(st.menu.size());
-  const int first = std::clamp(st.menu_selected - fit / 2, 0, std::max(0, n - fit));
-  for (int i = first; i < n && i < first + fit; ++i) {
-    const bool sel = i == st.menu_selected;
-    const float ry = y + row * float(i - first);
-    if (sel) {
-      l.rect(x - 14 * s, ry - 9 * s, pw - 24 * s, ry + 25 * s, kAccent, 6 * s);
+  if (!pause && !title.empty()) {
+    TextStyle ts = font(ui::Font::kE, 30 * s, kText);
+    fit(title, ts, g.L(800), 14 * s);
+    l.rect(g.L(130), g.T(50), g.L(150) + ui::List::measure(title, ts) + 20 * s, g.T(94), kBrush);
+    l.text(g.L(150), g.T(57), title, ts);
+    if (!hint.empty()) {
+      TextStyle hs = font(ui::Font::kB, 12 * s, kDim);
+      fit(hint, hs, g.w - g.L(150) - 40 * s, 7 * s);
+      l.text(g.L(150), g.T(102), hint, hs);
     }
-    TextStyle it{.size = 15 * s, .weight = 0.11f, .color = sel ? kInk : kText};
-    while (it.size > 8 * s && ui::List::measure(st.menu[size_t(i)], it) > pw - x - 44 * s) it.size *= 0.93f;
-    l.text(x, ry + (15 * s - it.size) * 0.5f, st.menu[size_t(i)], it);
   }
-  if (first > 0) label(l, pw - 40 * s, y - 16 * s, "MORE", s, kDim, Align::kRight);
-  if (first + fit < n) label(l, pw - 40 * s, h - 66 * s, "MORE", s, kDim, Align::kRight);
-  label(l, x, h - 40 * s, st.menu_footer.c_str(), s, kDim);
+  // The items, scrolled so the selected one shows: bottoms 186 + 50 each.
+  const int n = int(st.menu.size());
+  const int fit_rows = std::max(1, int((g.B(610) - g.T(186)) / (50 * s)) + 1);
+  const int first = std::clamp(st.menu_selected - fit_rows / 2, 0, std::max(0, n - fit_rows));
+  for (int i = first; i < n && i < first + fit_rows; ++i) {
+    const bool sel = i == st.menu_selected;
+    // The selected brush is taller: the items from it down move 12 px.
+    const float bottom = g.T(186 + 50.0f * float(i - first) + (i >= st.menu_selected && st.menu_selected > first ? 12 : 0));
+    const std::string& item = st.menu[size_t(i)];
+    TextStyle it = font(ui::Font::kE, (sel ? 40 : 37) * s, kText);
+    fit(item, it, g.w - g.L(260), 12 * s);
+    const float tw = ui::List::measure(item, it);
+    if (sel) {
+      l.rect(g.L(147), bottom - 61 * s, std::max(g.L(362), g.L(185) + tw + 39 * s), bottom + 9 * s, kPink);
+      l.text(g.L(185), bottom - it.size, item, it);
+    } else {
+      l.rect(g.L(160), bottom - it.size - 8 * s, g.L(188) + tw + 24 * s, bottom + 8 * s, kBrush);
+      l.text(g.L(188), bottom - it.size, item, it);
+    }
+  }
+  // The help bar.
+  help_item(l, g, 70, 168, 654, 684, "A", kGreen, str("HelpButtons", "IDS_Select", "SELECT"));
+  help_item(l, g, 173, 275, 654, 684, "B", kRed, str("HelpButtons", "IDS_Resume", pause ? "RESUME" : "BACK"));
+  if (!pause) return;
+  // The career's panels, top right.
+  if (!st.band_next.empty()) {
+    const uint32_t c = band_colour(st.band_next);
+    l.rect(g.R(825), g.T(36), g.R(1040), g.T(62), kBlack60);
+    std::string goal = str("InGame", "IDS_CollectWristband", "COLLECT %s WRISTBAND");
+    if (auto p = goal.find("%s"); p != std::string::npos) goal.replace(p, 2, st.band_next);
+    else if (auto q = goal.find("{0}"); q != std::string::npos) goal.replace(q, 3, st.band_next);
+    TextStyle gs = font(ui::Font::kB, 14 * s, c);
+    fit(goal, gs, g.R(1034) - g.R(833), 8 * s);
+    l.text(g.R(833), g.T(42), goal, gs);
+  }
+  if (!st.band_name.empty()) {
+    l.rect(g.R(1045), g.T(34), g.R(1209), g.T(61), band_colour(st.band_name));
+    TextStyle bs = font(ui::Font::kE, 16 * s, kText, Align::kCenter);
+    std::string band = "HORIZON 2012";
+    if (st.band_level > 0) band += " " + std::to_string(st.band_level);
+    fit(band, bs, g.R(1203) - g.R(1051), 8 * s);
+    l.text(0.5f * (g.R(1045) + g.R(1209)), g.T(39), band, bs);
+  }
+  if (!st.car_name.empty()) {
+    l.rect(g.R(912), g.T(62), g.R(1208), g.T(89), kBlack60);
+    TextStyle cs = font(ui::Font::kB, 19 * s, kText);
+    fit(st.car_name, cs, g.R(1140) - g.R(922), 9 * s);
+    l.text(g.R(922), g.T(69), st.car_name, cs);
+    if (!st.car_class.empty()) {
+      l.rect(g.R(1144), g.T(64), g.R(1172), g.T(86), class_colour(st.car_class));
+      l.text(g.R(1158), g.T(66), st.car_class, font(ui::Font::kE, 17 * s, kText, Align::kCenter));
+      l.rect(g.R(1172), g.T(64), g.R(1205), g.T(86), rgba(255, 255, 255));
+      char pi[8];
+      std::snprintf(pi, sizeof pi, "%d", st.car_pi);
+      l.text(g.R(1202), g.T(68), pi, font(ui::Font::kB, 14 * s, kDark, Align::kRight));
+    }
+  }
+  if (st.credits >= 0) {
+    l.rect(g.R(1090), g.T(88), g.R(1202), g.T(113), kLight);
+    const std::string c = thousands(st.credits) + " CR";
+    TextStyle cs = font(ui::Font::kB, 16 * s, kDark, Align::kRight);
+    fit(c, cs, g.R(1196) - g.R(1096), 8 * s);
+    l.text(g.R(1196), g.T(93) + (16 * s - cs.size) * 0.5f, c, cs);
+  }
 }
 
 // A tile: a big number and its label.
@@ -551,26 +683,32 @@ std::string race_clock(double t) {
   return b;
 }
 
-float drive_hud_dial_height(float h) { return (26 + 2 * 80 + 16) * (h / 720.0f); }
+float drive_hud_dial_height(float h) { return (720 - 587 + 88) * (h / 720.0f); }
 
 void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   const float s = h / 720.0f;
+  const Layout g{w, h, s};
   const bool menu = !st.menu_title.empty() || !st.menu.empty();
-  if (st.driving) {
-    if (st.race) race_panels(l, *st.race, w, h, s, st.time);
-    else if (st.credits >= 0 && !menu) career_chip(l, st, w, s);
-    if (!menu) popup_card(l, st, w, s);
-    if (!(st.race && st.race->phase == RaceHud::kFinished)) dial(l, st, w, h, s);
+  // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
+  if (st.driving && !menu) {
+    if (st.race) {
+      const RaceHud& r = *st.race;
+      if (r.phase == RaceHud::kGrid) event_card(l, r, g);
+      else if (r.phase == RaceHud::kFinished) results(l, r, g);
+      else race_hud(l, r, g);
+    }
+    popup_card(l, st, g);
+    if (!(st.race && st.race->phase == RaceHud::kFinished)) dial(l, st, g);
   }
   if (!st.toast.empty() && !menu) {
-    TextStyle ts{.size = 10 * s, .weight = 0.11f, .tracking = 0.08f, .color = kText, .align = Align::kCenter};
-    while (ts.size > 7 * s && ui::List::measure(st.toast, ts) > w - 120 * s) ts.size *= 0.93f;
+    TextStyle ts = font(ui::Font::kB, 14 * s, kText, Align::kCenter);
+    fit(st.toast, ts, w - 120 * s, 8 * s);
     const float tw = ui::List::measure(st.toast, ts);
-    const float y = h - 52 * s;
-    panel(l, 0.5f * w - 0.5f * tw - 18 * s, y, 0.5f * w + 0.5f * tw + 18 * s, y + 30 * s, s);
-    l.text(0.5f * w, y + 15 * s - 0.5f * ts.size, st.toast, ts);
+    const float y = g.B(653);
+    l.rect(0.5f * w - 0.5f * tw - 14 * s, y, 0.5f * w + 0.5f * tw + 14 * s, y + 28 * s, kBlack60);
+    l.text(0.5f * w, y + 7 * s, st.toast, ts);
   }
-  if (menu) menu_panel(l, st, w, h, s);
+  if (menu) menu_panel(l, st, g);
   if (menu && st.career) career_board(l, *st.career, w, h, s);
 }
 

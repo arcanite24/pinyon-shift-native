@@ -239,7 +239,8 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
     }
     return f;
   };
-  carview::ui::set_vector_fonts(load("aru_vector_aa.dt"), load("bru_vector_aa.dt"), load("eru_vector_aa.dt"));
+  carview::ui::set_vector_fonts(load("aru_vector_aa.dt"), load("bru_vector_aa.dt"), load("eru_vector_aa.dt"),
+                                   load("dru_vector_aa.dt"));
   return carview::ui::vector_fonts_loaded();
 }
 
@@ -263,6 +264,11 @@ bool write_menu_png(const HudState& st, const std::string& path, const carview::
   d.menu_title = st.menu_title;
   d.menu = st.menu;
   d.menu_selected = st.menu_selected;
+  if (st.menu_title == "paused") {
+    // The pause menu's panels, with a sample career.
+    d.credits = 4075645, d.band_name = "ORANGE WRISTBAND", d.band_next = "Purple", d.band_level = 4;
+    d.car_name = "2002 Nissan Skyline GT-R V-Spec II", d.car_class = "B", d.car_pi = 584;
+  }
   carview::ui::List list;
   // A backdrop for the glass panel.
   list.rect(0, 0, 1280, 720, carview::ui::rgba(70, 92, 120), 0, carview::ui::rgba(150, 128, 96));
@@ -1510,6 +1516,26 @@ int run_drive(int argc, char** argv) {
       race_png.replace_filename(menu_png.stem().string() + "_race.png");
       if (!write_png(race_png.string(), 1280, 720, 4, rgba.data())) return 1;
       std::printf("race: 1280x720 to %s\n", race_png.string().c_str());
+    }
+    for (int page = 0; page < 2; ++page) {
+      // And <name>_results<page>.png: the FINISHED banner, then the cash reward.
+      carview::RaceHud r;
+      r.phase = carview::RaceHud::kFinished, r.event = "SAMPLE", r.circuit = true, r.laps = 4;
+      r.place = 6, r.cars = 8, r.clock = 186, r.finish_time = 182, r.credits = 2500, r.wristband = 400;
+      r.results_page = page, r.balance = 4078145;
+      r.band_before = 41250 - 400, r.band_after = 41250, r.band_lo = 30000, r.band_hi = 60000;
+      r.band_name = "Orange", r.band_next = "Purple";
+      carview::DriveHud d;
+      d.race = &r, d.time = 10;
+      carview::ui::List list;
+      list.rect(0, 0, 1280, 720, carview::ui::rgba(70, 92, 120), 0, carview::ui::rgba(150, 128, 96));
+      carview::build_drive_hud(list, d, 1280, 720);
+      std::vector<uint8_t> rgba;
+      carview::ui::rasterize(list.items(), rgba, 1280, 720);
+      auto res_png = menu_png;
+      res_png.replace_filename(menu_png.stem().string() + "_results" + std::to_string(page) + ".png");
+      if (!write_png(res_png.string(), 1280, 720, 4, rgba.data())) return 1;
+      std::printf("results: 1280x720 to %s\n", res_png.string().c_str());
     }
     std::printf("menu: 1280x720 to %s\n", menu_png.string().c_str());
     return 0;
@@ -3112,6 +3138,8 @@ int run_drive(int argc, char** argv) {
         return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
       };
       bool legacy_hud_cleared = false;
+      // The results' page (SPEC-UI-LAYOUTS c): 0 the FINISHED banner, 1 the cash reward.
+      int results_page = 0;
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
@@ -3152,6 +3180,8 @@ int run_drive(int argc, char** argv) {
         const bool race_line = race && banner == race_banner();
         if (race) {
           race_hud = race->hud_info(), d.race = &race_hud;
+          race_hud.results_page = results_page;
+          race_hud.balance = career.credits;
           // The wristband after the award (the results card).
           if (race_hud.phase == carview::RaceHud::kFinished && race_hud.wristband > 0 && !wristbands.levels.empty()) {
             const int after = career.wristband_points, before = after - race_hud.wristband;
@@ -3175,6 +3205,15 @@ int run_drive(int argc, char** argv) {
           d.band_lo = li >= 0 ? wristbands.levels[size_t(li)].first : 0;
           d.band_hi = size_t(li + 1) < wristbands.levels.size() ? wristbands.levels[size_t(li + 1)].first : -1;
           if (li >= 0) d.band_name = carview::game_text(wristbands.levels[size_t(li)].second) + " WRISTBAND";
+          d.band_level = li + 1;
+          if (d.band_hi > 0) d.band_next = carview::game_text(wristbands.levels[size_t(li + 1)].second);
+        }
+        // The pause menu's car panel: the name, the class and its index.
+        d.pause = st.menu_title == "paused";
+        d.car_name = carview::car_name(car);
+        if (const garage::Car* sc = career_garage.selected_car(); sc && !class_bands.empty()) {
+          d.car_class = class_bands[size_t(garage::class_of(sc->performance_index, class_bands))].name;
+          d.car_pi = garage::shown_index(sc->performance_index, class_bands);
         }
         d.menu_title = st.menu_title;
         d.menu = st.menu;
@@ -3247,9 +3286,11 @@ int run_drive(int argc, char** argv) {
         const double t = vehicle.time();
         if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 1.0 / 15) return;
         minimap_at = t;
-        const int scale = hud_scale(height);
-        HudImage img = map_view.minimap(map_scene(), std::max(96, height * 26 / 100));
-        renderer.set_overlay(std::move(img.rgba), img.width, img.height, 8 * scale, -8 * scale, 1);
+        // SPEC-UI-LAYOUTS a: 90,420-280,600 at 1280x720, no frame.
+        const double k = height / 720.0;
+        HudImage img = map_view.minimap(map_scene(), std::max(96, int(std::lround(180 * k))));
+        renderer.set_overlay(std::move(img.rgba), img.width, img.height, int(std::lround(90 * k)),
+                             -int(std::lround(120 * k)), 1);
       };
       if (status == 0 && streamer) {
         const auto& st = streamer->stats();
@@ -3793,6 +3834,12 @@ int run_drive(int argc, char** argv) {
         // Continue puts the car at the route's post-race spot (or where it
         // stands) in free roam; Restart runs the event again.
         auto race_continue = [&]() {
+          // A: the FINISHED banner, then the cash reward, then free roam.
+          if (results_page == 0) {
+            results_page = 1;
+            return;
+          }
+          results_page = 0;
           if (!race->post_race_spawn(spawn)) {
             const drive::Vec3 at = vehicle.position();
             const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -3803,6 +3850,7 @@ int run_drive(int argc, char** argv) {
           running = false;
         };
         auto race_restart = [&]() {
+          results_page = 0;
           next_event = race_event;
           running = false;
         };

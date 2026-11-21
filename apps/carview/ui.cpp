@@ -189,7 +189,7 @@ void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv
 namespace {
 
 struct VectorFonts {
-  std::shared_ptr<const fh1::VFont> font[3];  // A, B, E
+  std::shared_ptr<const fh1::VFont> font[4];  // A, B, E, D
   std::vector<uint8_t> atlas = std::vector<uint8_t>(size_t(kAtlasSize) * kAtlasSize * 4, 0);
   std::vector<std::array<uint32_t, 4>> dirty;
   uint32_t shelf_x = 0, shelf_y = 0, shelf_h = 0;
@@ -226,6 +226,7 @@ int font_of(const TextStyle& s) {
     case ui::Font::kA: f = 0; break;
     case ui::Font::kB: f = 1; break;
     case ui::Font::kE: f = 2; break;
+    case ui::Font::kD: f = 3; break;
     case ui::Font::kAuto: f = s.slant > 0.05f ? 2 : 1; break;
   }
   return vf().font[f] ? f : -1;
@@ -233,9 +234,9 @@ int font_of(const TextStyle& s) {
 
 // The next code point of UTF-8 text (ASCII letters upper-cased, as the
 // stroke font draws them); 0xFFFD for a bad byte.
-uint32_t next_code_point(std::string_view t, size_t& i) {
+uint32_t next_code_point(std::string_view t, size_t& i, bool keep_case = false) {
   const auto b = static_cast<unsigned char>(t[i++]);
-  if (b < 0x80) return b >= 'a' && b <= 'z' ? uint32_t(b - 32) : b;
+  if (b < 0x80) return !keep_case && b >= 'a' && b <= 'z' ? uint32_t(b - 32) : b;
   int n = b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : -1;
   if (n < 0) return 0xFFFD;
   uint32_t c = b & (0x3F >> n);
@@ -281,7 +282,7 @@ float vector_measure(int font, std::string_view text, const TextStyle& s) {
   float w = 0;
   size_t n = 0;
   for (size_t i = 0; i < text.size();) {
-    const uint32_t cp = next_code_point(text, i);
+    const uint32_t cp = next_code_point(text, i, s.keep_case);
     const fh1::VFontGlyph* g = cp == ' ' ? nullptr : f.find(cp);
     w += (g ? g->advance : f.space_width) * k + s.tracking * s.size;
     ++n;
@@ -293,9 +294,9 @@ float vector_measure(int font, std::string_view text, const TextStyle& s) {
 }  // namespace
 
 void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
-                      std::shared_ptr<const fh1::VFont> e) {
+                      std::shared_ptr<const fh1::VFont> e, std::shared_ptr<const fh1::VFont> d) {
   VectorFonts& v = vf();
-  v.font[0] = std::move(a), v.font[1] = std::move(b), v.font[2] = std::move(e);
+  v.font[0] = std::move(a), v.font[1] = std::move(b), v.font[2] = std::move(e), v.font[3] = std::move(d);
   v.reset();
 }
 bool vector_fonts_loaded() { return vf().font[1] != nullptr; }
@@ -324,7 +325,7 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
     const float base = y + s.size;
     float pen = x;
     for (size_t i = 0; i < text.size();) {
-      const uint32_t cp = next_code_point(text, i);
+      const uint32_t cp = next_code_point(text, i, s.keep_case);
       const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
       if (g) {
         if (const auto* e = glyph_entry(f, cp, px)) {
