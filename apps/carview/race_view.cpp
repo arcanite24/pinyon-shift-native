@@ -211,9 +211,24 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     }
     c.model = it->second.get();
     std::vector<std::string> notes;
-    c.body = std::make_unique<drive::Vehicle>(drive::params_for_baked_car(c.model->car(), bake_dir_, &notes));
+    drive::CarParams params = drive::params_for_baked_car(c.model->car(), bake_dir_, &notes);
+    if (event_.upgrade_ai) {
+      // SPEC-RACE-AI, The opponents' cars: UpgradeAI events tune the AI cars
+      // (AIAutoUpgrades: mass down to 0.9, torque up to 1.4, tyre friction
+      // up to 1.2; the iteration is open). Interim: one fraction s of each
+      // limit, s = 0.3 from the FR22 masses (0.96 to 0.98 of stock);
+      // SHIFT_AI_UPGRADE overrides it.
+      double s = 0.3;
+      if (const char* e = std::getenv("SHIFT_AI_UPGRADE")) s = std::atof(e);
+      params.mass *= 1 - 0.1 * s;
+      params.torque_scale *= 1 + 0.4 * s;
+      for (int a = 0; a < 2; ++a) params.long_scale[size_t(a)] *= 1 + 0.2 * s, params.lat_scale[size_t(a)] *= 1 + 0.2 * s;
+    }
+    c.body = std::make_unique<drive::Vehicle>(params);
     c.body->set_ai_controls(true);
-    {
+    if (event_.upgrade_ai) {
+      c.capacity = drive::ai_capacity(params);
+    } else {
       // The title's AI cars weigh 0.98 of the stock car (SPEC-RACE-AI,
       // the measured tables); the tables take that mass, the physics the
       // car's own.

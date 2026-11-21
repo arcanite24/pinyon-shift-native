@@ -65,6 +65,7 @@ struct EventData {
   int64_t race_id = 0;
   int level = 0, style = 0, career_type = 0;
   int64_t prize_car = 0;
+  bool upgrade_ai = false;  // Events.UpgradeAI: the AI cars are auto-upgraded (SPEC-RACE-AI, open)
   std::vector<Opponent> opponents;  // by ascending ID
   std::vector<SkillRow> skills;     // every AISkills row, by id
   std::vector<RubberbandRow> rubberbands;
