@@ -862,6 +862,22 @@ the interim noted here until a later polish sweep.
   drive straight into a rail; headless runs put it back.
 - **The F12 screenshot.** F12 saves the pose but not an image yet (the
   window has no swapchain read-back).
+- **UI parity (first; Brandon, 2026-11-21: "UX and UI should have a
+  strong focus on parity with the original game").** Every screen in
+  `game_hud.cpp` is ours and an interim: the dial, race panels, results
+  card, career board, discovery cards, WRONG WAY plate and pause menu, and
+  also the font choice by slant and the ASCII upper-casing. The game's own
+  screens are data in `media/UI.zip` (`Scenes/ui4/*.bgf|.bsg|.fbf` with Lua
+  behaviours: `947_HUD`, `925_PAUSE_MENU`, `924_POST_RACE`,
+  `4_C_INI_PRERACE`, `H_BARN_FIND_HUD`, ...). Asked of the spec side: the
+  measured layouts per screen (SPEC-UI-LAYOUTS) and a go/no-go on reading
+  the scenes (FORMAT-UISCENES). Never commit UI textures or scene data.
+  Unverified live: the NEW WRISTBAND banner (a headless level-up, yellow
+  to green, shows the band change but the run ended first) and a sign
+  smash (`SHIFT_LIST_SIGNS=1` prints the signs; a car spawned beside
+  flyer_002 fell through and was put back on the road, likely the
+  collision not yet gathered at a `--spawn`; whether every sign stands on
+  collision is still to count).
 - **Collectibles presentation.** A discovery card (ours, 2026-11-21) drops
   in at the top for a sign (with the n/100 meter and the discount), a barn
   rumour, a barn find (the car's name from the `Barnfind` table) and a
