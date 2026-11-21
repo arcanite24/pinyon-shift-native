@@ -773,7 +773,10 @@ the interim noted here until a later polish sweep.
 - **Garage and upgrades (SPEC-GARAGE-UPGRADES interims).** `--import-profile`
   writes `garage.txt` beside the save. The selected garage car drives
   with its fitted parts, from the merged database (`SHIFT_STATE_ROOT`'s
-  packages when set, the disc's otherwise; opened in the background). The
+  packages when set, the disc's otherwise; opened in the background; point
+  it at the sanctioned copy `out/state-copy`, never the AppData tree:
+  both import trees then find every garage car, class and parts value all
+  match, mass 18 of 19 and 37 of 38, the Corrado 6.7 kg off). The
   pause menu's upgrades list is ours: up and down pick a slot, left and
   right a part, Enter buys it at the sign-discounted price or refits an
   owned one, Esc rebuilds the car where it stands. Interims: the index and
