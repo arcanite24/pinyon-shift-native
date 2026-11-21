@@ -1009,6 +1009,9 @@ constexpr double kPropLod0 = 80, kPropLodBand = 20, kPropEdgeBand = 40, kSwapFad
 // exposure, 0.31 on Colorado, applies to a scene the game lights more
 // brightly than ours; set so the free-roam reference frame's mean is met).
 constexpr double kPostExposure = 0.8;
+// The cockpit view's cabin shade (interim, ours): the interior techniques'
+// texel times this until the spec gives their colour.
+constexpr float kCabinShade = 0.12f;
 // Ours: the warm grade after the curve (PostSettings::balance), fitted to
 // the hill reference frame (hill-2244-707): the game is warmer than ours.
 constexpr float kPostBalance[3] = {1.10f, 0.88f, 0.88f};
@@ -2640,8 +2643,10 @@ int run_drive(int argc, char** argv) {
             rig_min_distance = std::min(rig_min_distance, d);
             rig_max_distance = std::max(rig_max_distance, d);
           }
-          // No interior is baked yet: the cockpit view leaves the car out.
-          showroom.set_draw_car(!interior);
+          // The cockpit view draws the car from inside (the _cockpit model's
+          // cabin), darkened (interim: Showroom::set_interior_shade).
+          showroom.set_draw_car(true);
+          showroom.set_interior_shade(interior ? kCabinShade : 1.0f);
           return f;
         }
         showroom.set_draw_car(true);

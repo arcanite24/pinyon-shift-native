@@ -125,6 +125,7 @@ void main() {
     emissive = vec3(max(base.r, 0.3) * 3.0, 0.06, 0.04) * draw.params.z;
   } else if (klass == kInterior || klass == kGauge) {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
+    if (klass == kInterior) base *= draw.tint.rgb;  // the cabin's shade (Showroom::set_interior_shade)
     gloss = 0.2;
   } else if (klass == kTyre) {
     // The sidewall and tread sheets are single-channel (BC4, no sRGB form).

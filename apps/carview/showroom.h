@@ -270,6 +270,10 @@ class Showroom {
   }
   // Whether the car is drawn (the world reference frame leaves it out).
   void set_draw_car(bool draw) { draw_car_ = draw; }
+  // The cabin's shade (interim, ours): times the interior techniques' texel.
+  // The colour the game gives them is a spec question; 1 leaves them as
+  // sampled (the showroom), the cockpit view darkens them.
+  void set_interior_shade(float shade) { interior_shade_ = shade; }
   // A prop's reach from its origin (m): the box test of LOD00 cells allows
   // an instance whose origin is inside the band but whose corners are not.
   static constexpr float kPropReach = 40;
@@ -461,6 +465,7 @@ class Showroom {
   // The textured world.
   bool world_textured_ = false;
   bool draw_car_ = true;
+  float interior_shade_ = 1.0f;
   VkPipeline world_opaque_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
   std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
   // Held for writes to world_textures_ and for the worker's reads.

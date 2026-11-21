@@ -774,8 +774,15 @@ the interim noted here until a later polish sweep.
   the sky at (530, 207) of hill-2244-707; the question is with the spec.
   `SHIFT_WORLD_PICK=x,y` with `--world-reference` prints the triangles
   and materials under a pixel.
-- **Camera details** (Q45). The slope term, pitch sign, speed-FOV factor
-  and cockpit interior. Interim: as in `libs/drive/src/cameras.cpp`.
+- **Camera details** (Q45). The slope term, pitch sign and speed-FOV
+  factor. Interim: as in `libs/drive/src/cameras.cpp`.
+- **Cockpit interior.** Drawn (2026-11-21): the cockpit view shows the
+  `_cockpit` model from inside. Interims: the cabin techniques' texel times
+  0.12 (`kCabinShade`; their colour is a spec question with OpenFH1),
+  numbered copies (`bump_plastic2`) count as cabin, and the mirror glass is
+  flat dark grey (no reflection). The steering wheel doesn't turn and the
+  needles stay at `_min`. The Abarth shows a small green triangle at the
+  top right.
 - **Lamps.** CARS.md gives no brake-lamp rule. Interim: red covers and
   tail-lamp techniques glow while a front wheel brakes. Cover tints
   (red, amber, clear) are picked by technique name.

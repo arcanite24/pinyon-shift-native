@@ -2,6 +2,7 @@
 #include "showroom.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -775,6 +776,13 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         flags |= kFlagFlat;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = 0.02f;
       }
+      // The mirror glass (mirrorLeft, mirrorRight, mirrorMiddle): no
+      // reflection yet, a flat dark grey (interim, ours) rather than the
+      // atlas corner it maps to.
+      if (technique.rfind("mirror", 0) == 0) {
+        flags |= kFlagFlat;
+        d.push.tint[0] = 0.05f, d.push.tint[1] = 0.055f, d.push.tint[2] = 0.06f;
+      }
       // Lamp covers (detail_glass_red, _amber, _clear): coloured glass by
       // the technique's name, not the cabin glass's dark tint (an interim:
       // the glass constants are not known).
@@ -792,7 +800,20 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.brake_lamp = red_cover || (s.material == MaterialClass::kLamp && (technique.rfind("taillight", 0) == 0 ||
                                                                          technique.rfind("tail_light", 0) == 0));
       d.push.tint[3] = 1;
-      d.push.params[0] = float(uint32_t(s.material));
+      // Numbered copies of the interior techniques (the R34's bump_plastic2,
+      // bump_leather2) bake as opaque; they are cabin surfaces (FORMAT-CARS'
+      // interior list by name; interim, ours).
+      MaterialClass klass = s.material;
+      if (klass == MaterialClass::kOpaque) {
+        std::string base_name = technique;
+        while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
+        static const char* const kCabin[] = {"leather", "cloth", "plastic", "solid", "mottled", "headliner",
+                                             "bump_leather", "bump_plastic", "bump_stitching"};
+        if (base_name != technique)
+          for (const char* c : kCabin)
+            if (base_name == c) klass = MaterialClass::kInterior;
+      }
+      d.push.params[0] = float(uint32_t(klass));
       d.push.params[1] = float(flags);
       d.textures = {t0 == UINT32_MAX ? 0u : t0, t1 == UINT32_MAX ? 0u : t1,
                     livery == UINT32_MAX ? 1u : livery};
@@ -1505,8 +1526,11 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   auto draw = [&](const Draw& d) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
                             &material_sets_[d.descriptor], 0, nullptr);
+    ShowroomPush push = d.push;
+    if (uint32_t(push.params[0] + 0.5f) == uint32_t(MaterialClass::kInterior))
+      push.tint[0] = push.tint[1] = push.tint[2] = interior_shade_;
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(ShowroomPush), &d.push);
+                       sizeof(ShowroomPush), &push);
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
   };
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
