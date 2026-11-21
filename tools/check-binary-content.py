@@ -4,6 +4,8 @@ no game data.
 
 Every file of the package (a folder or a .zip) is checked four ways:
 
+0. Text: none of tools/check-provenance.py's patterns (guest function
+   names and addresses, generated-code idioms) anywhere in a file's bytes.
 1. Names: no file named like a file of the game (disc media, executables,
    title update, content packages), and no game-data extension.
 2. Magics: no file that starts as a game container (XEX, XPR, the
@@ -31,6 +33,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -46,8 +49,16 @@ CHUNK = 1 << 24             # bytes hashed at a time
 P = np.uint64(0x100000001B3)                 # odd: invertible mod 2^64
 P_INV = np.uint64(pow(0x100000001B3, -1, 1 << 64))
 MIX = np.uint64(0x9E3779B97F4A7C15)
-GAME_EXT = {".xex", ".xpr", ".xds", ".bix", ".slt", ".pgeo", ".pvsz", ".col", ".fiz", ".owt", ".owr", ".oww", ".nav",
+GAME_EXT = {".xex", ".xexp", ".xpr", ".xds", ".bix", ".slt", ".pgeo", ".pvsz", ".col", ".fiz", ".owt", ".owr", ".oww", ".nav",
             ".rmb", ".xma", ".xwb", ".xsb", ".fsb", ".fev", ".puboffer", ".header", ".bundle", ".crowd", ".hex", ".pvs"}
+# tools/check-provenance.py's list, on the binaries' text: guest function
+# names and addresses, and the generated code's idioms.
+PROVENANCE = [
+    (re.compile(rb"\bsub_8[23][0-9A-Fa-f]{6}\b"), "a guest function name"),
+    (re.compile(rb"\b0x8[23][0-9A-Fa-f]{6}\b"), "a guest code or data address"),
+    (re.compile(rb"\bctx\.(?:r|f|v|cr|lr|ctr)\d*\b"), "generated-code register access"),
+    (re.compile(rb"\bREX_(?:LOAD|STORE)_|\b__imp__sub_|\bPPC_FUNC|\bDEFINE_REX_FUNC"), "generated-code macro"),
+]
 MAGICS = [(b"XEX2", "an XEX executable"), (b"XPR2", "an XPR resource"), (b"SQLite format 3\0", "a database")]
 
 
@@ -159,6 +170,10 @@ def main() -> int:
         for magic, what in MAGICS:
             if data.startswith(magic):
                 problems.append(f"{rel}: starts as {what}")
+        for rx, what in PROVENANCE:
+            hit = rx.search(data)
+            if hit:
+                problems.append(f"{rel}: {what} ({hit.group(0)[:32].decode('latin-1')})")
         nb, nm = data.count(blr), data.count(mflr)
         if nb > GUEST_LIMIT or nm > GUEST_LIMIT:
             problems.append(f"{rel}: PowerPC code words (blr {nb}, mflr r0 {nm})")
