@@ -11,6 +11,13 @@ int player_slot(int p, int cars) {
   return std::max(0, cars - 1);
 }
 
+int faked_pi_offset(int64_t ordinal, bool flagged) {
+  if (flagged) return 5;
+  const uint32_t x = uint32_t(214013u * uint32_t(ordinal) + 2531011u);
+  const int k = int((x >> 16) & 0x7FFFu) % 5;
+  return (k & 1) ? k : -k;
+}
+
 std::vector<int> opponent_slots(int player, int opponents) {
   std::vector<int> out;
   for (int s = 0; int(out.size()) < opponents; ++s)

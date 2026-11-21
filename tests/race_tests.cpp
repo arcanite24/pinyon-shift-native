@@ -522,6 +522,17 @@ void test_rally_field() {
 }  // namespace
 
 int main() {
+  // SPEC-RACE-AI faked PI offset: California 1062 -> +1 (x 0x0DB2AA51).
+  CHECK(race::faked_pi_offset(1062) == 1);
+  CHECK(race::faked_pi_offset(1419, true) == 5);
+  // The two measured grids (EVENTS Grid): FR06 and HEADLINE_EVENT's AI.
+  const std::pair<int64_t, int> measured[] = {{454, 1},   {1103, 0},  {348, 0},   {433, -2}, {325, -4},
+                                              {1006, 3},  {1175, 0},  {1247, 0},  {1539, -4},
+                                              {1023, -4}, {1020, -4}};
+  for (const auto& [v, r] : measured) {
+    if (race::faked_pi_offset(v) != r) std::printf("faked_pi_offset(%lld) = %d, want %d\n", (long long)v, race::faked_pi_offset(v), r);
+    CHECK(race::faked_pi_offset(v) == r);
+  }
   test_rally_field();
   test_owt();
   test_route();

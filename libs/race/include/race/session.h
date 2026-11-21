@@ -22,6 +22,10 @@ namespace race {
 // in order fill the other slots from pole back (interim).
 int player_slot(int player_grid_position, int cars);
 std::vector<int> opponent_slots(int player_slot, int opponents);
+// SPEC-RACE-AI, AI car upgrades step 1: the faked PI's offset r from the
+// car's Ordinal (one LCG step, k = bits 16..30 mod 5; +k odd, -k even:
+// 0, +1, -2, +3, -4), +5 on a flagged participant.
+int faked_pi_offset(int64_t ordinal, bool flagged = false);
 
 struct CarSample {
   double x0 = 0, z0 = 0, x1 = 0, z1 = 0;  // the body reference point before and after the step

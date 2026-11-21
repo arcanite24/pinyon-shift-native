@@ -27,6 +27,10 @@
 #include "race/session.h"
 #include "showroom.h"
 
+namespace world {
+class Collision;
+}
+
 namespace carview {
 
 class TrafficView;
@@ -67,6 +71,11 @@ class RaceView {
   bool load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error);
   // Frees the models (before their renderer goes).
   void release_models();
+  // Ours (SPEC-RACE-AI leaves the room to the line): trims the line's room
+  // on each side to the nearest wall of the collision (a face within 50
+  // degrees of vertical, 0.6 m up) less a car's half width, so a car moved
+  // off the line to pass does not run into a barrier inside the room.
+  void clip_room(world::Collision& collision);
 
   // Before the player's step: the field's pass; returns what the player's
   // car does (held until the signal; the AI's input under autopilot or

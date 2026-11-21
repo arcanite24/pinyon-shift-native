@@ -2215,6 +2215,7 @@ int run_drive(int argc, char** argv) {
           std::fprintf(stderr, "carview: race: %s\n", streamer ? e.c_str() : "needs the streamed world");
           status = 1;
         }
+        if (status == 0 && !render_ground) race->clip_room(collision);
       }
       if (status == 0 && streamer && colorado_world() &&
           (traffic_flag == 1 || (traffic_flag < 0 && !headless && !race))) {

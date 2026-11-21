@@ -29,6 +29,23 @@ const char* ordinal(int p) {
   return p >= 1 && p <= 8 ? kNames[p] : "";
 }
 
+// SPEC-RACE-AI, AI car upgrades: the faked PI each AI aims at, with P the
+// player's and C the car's shown points and the class lo..hi: P pulled 5
+// inside the class plus the offset r, else C + 300 when P is further above.
+int faked_target(int P, int C, int lo, int hi, int r) {
+  if (P > C + 300) return C + 300;
+  int t = P;
+  if (hi - 5 <= t + 5) t = hi - 5;
+  if (t - 5 <= lo + 5) t = lo + 5;
+  return std::clamp(t + r, lo, hi);
+}
+
+// The +5 flag (SPEC-RACE-AI; what sets it is open). Interim: the one
+// flagged car of each measured grid (EVENTS Grid).
+bool flagged_participant(const std::string& event, int64_t car) {
+  return (event == "FR06" && car == 1419) || (event == "HEADLINE_EVENT" && car == 1171);
+}
+
 }  // namespace
 
 RaceView::RaceView(std::filesystem::path bake_dir) : bake_dir_(std::move(bake_dir)) {}
@@ -187,6 +204,24 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     return false;
   }
   for (const auto* s : slots) slots_.push_back(*s);
+  // SPEC-EVENTS Grid (PIWithPlayerLast): the AI by faked PI, highest on
+  // pole, around the player's slot; ties in row order (interim).
+  if (event_.upgrade_ai) {
+    std::vector<garage::ClassBand> bands;
+    std::string be;
+    const double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car);
+    const int k = event_.target_class;
+    if (ppi > 0 && garage::load_class_bands(root, bands, &be) && k >= 1 && size_t(k) < bands.size()) {
+      const int lo = int(bands[size_t(k - 1)].shown_max) + 1, hi = int(bands[size_t(k)].shown_max);
+      const int P = garage::shown_index(ppi, bands);
+      auto faked = [&](const race::Opponent& w) {
+        return faked_target(P, garage::shown_index(w.performance_index, bands), lo, hi,
+                            race::faked_pi_offset(w.car_id, flagged_participant(event_.horizon_id, w.car_id)));
+      };
+      std::stable_sort(event_.opponents.begin(), event_.opponents.end(),
+                       [&](const race::Opponent& a, const race::Opponent& b) { return faked(a) > faked(b); });
+    }
+  }
   const int cars = std::min(int(slots.size()), int(event_.opponents.size()) + 1);
   player_slot_ = race::player_slot(event_.player_grid_position, cars);
   const auto opp = race::opponent_slots(player_slot_, cars - 1);
@@ -216,9 +251,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     player_start_ = field_->progress(cars_.size());
   }
   // SPEC-RACE-AI, AI car upgrades (interim until the PI lap): each AI aims
-  // at the player's shown points pulled 5 inside the event's class (offset
-  // 0), or its own + 300 when the player is further above; t = gap / 240 up,
-  // gap / 170 down, capped at 1.
+  // at its faked PI (faked_target); t = gap / 240 up, gap / 170 down,
+  // capped at 1.
   if (event_.upgrade_ai) {
     std::vector<garage::ClassBand> bands;
     std::string be;
@@ -229,15 +263,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       const int P = garage::shown_index(ppi, bands);
       for (auto& c : cars_) {
         const int C = garage::shown_index(c.who.performance_index, bands);
-        int target;
-        if (P > C + 300) {
-          target = C + 300;
-        } else {
-          target = P;
-          if (hi - 5 <= target + 5) target = hi - 5;
-          if (target - 5 <= lo + 5) target = lo + 5;
-          target = std::clamp(target, lo, hi);
-        }
+        const int target = faked_target(
+            P, C, lo, hi, race::faked_pi_offset(c.who.car_id, flagged_participant(event_.horizon_id, c.who.car_id)));
         const int gap = target - C;
         c.upgrade_t = gap >= 0 ? std::min(1.0, gap / 240.0) : -std::min(1.0, -gap / 170.0);
         std::printf("race: AI upgrade %-28s %d points, target %d (player %d, class %d to %d): t %+.2f\n",
@@ -355,6 +382,73 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     }
   }
   return true;
+}
+
+void RaceView::clip_room(world::Collision& collision) {
+  auto& L = line_.line;
+  const size_t n = L.size();
+  if (n < 2 || L.room_right.size() != n || L.room_left.size() != n) return;
+  constexpr double kChunk = 100, kRadius = 90, kHalfCar = 1.0, kUp = 0.6;
+  world::CollisionMesh mesh;
+  std::vector<std::array<float, 9>> walls;
+  double chunk_at = -1e9;
+  size_t clipped = 0;
+  double worst = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const double d = L.dist[i];
+    if (d - chunk_at > kChunk) {
+      chunk_at = d;
+      double cx, cy, cz, ch;
+      L.pose(std::min(L.length(), d + 0.5 * kChunk), 0, cx, cy, cz, ch);
+      mesh = {};
+      std::string e;
+      if (!collision.gather(cx, cz, kRadius, mesh, &e)) continue;
+      walls.clear();
+      for (size_t t = 0; t < mesh.triangles(); ++t) {
+        if (!world::Collision::collides(mesh, t)) continue;
+        const auto& a = mesh.positions[3 * t], &b = mesh.positions[3 * t + 1], &c = mesh.positions[3 * t + 2];
+        const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (len < 1e-9 || std::fabs(ny) / len > 0.64) continue;  // floors and ramps
+        walls.push_back({a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]});
+      }
+    }
+    double x, y, z, h;
+    L.pose(d, 0, x, y, z, h);
+    if (L.y.size() == n) y = L.y[i];
+    y += kUp;
+    // Right of the line: heading 0 faces +z, positive towards +x.
+    const double rx = std::cos(h), rz = -std::sin(h);
+    for (int side = 0; side < 2; ++side) {
+      float& room = side == 0 ? L.room_right[i] : L.room_left[i];
+      const double sx = side == 0 ? rx : -rx, sz = side == 0 ? rz : -rz;
+      const double reach = room + kHalfCar;
+      double best = reach;
+      for (const auto& w : walls) {
+        // Moller-Trumbore, the ray (x, y, z) + s (sx, 0, sz).
+        const double e1x = w[3] - w[0], e1y = w[4] - w[1], e1z = w[5] - w[2];
+        const double e2x = w[6] - w[0], e2y = w[7] - w[1], e2z = w[8] - w[2];
+        const double px = -sz * e2y, py = sz * e2x - sx * e2z, pz = sx * e2y;
+        const double det = e1x * px + e1y * py + e1z * pz;
+        if (std::fabs(det) < 1e-9) continue;
+        const double tx = x - w[0], ty = y - w[1], tz = z - w[2];
+        const double u = (tx * px + ty * py + tz * pz) / det;
+        if (u < 0 || u > 1) continue;
+        const double qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+        const double v = (sx * qx + sz * qz) / det;
+        if (v < 0 || u + v > 1) continue;
+        const double s = (e2x * qx + e2y * qy + e2z * qz) / det;
+        if (s > 0 && s < best) best = s;
+      }
+      if (best < reach) {
+        const float to = float(std::max(0.3, best - kHalfCar));
+        if (to < room) worst = std::max(worst, double(room - to)), room = to, ++clipped;
+      }
+    }
+  }
+  std::printf("race: room clipped to a wall at %zu of %zu line sides (up to %.1f m)\n", clipped, 2 * n, worst);
 }
 
 void RaceView::release_models() {
