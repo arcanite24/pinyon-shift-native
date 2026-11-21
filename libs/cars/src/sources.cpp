@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <set>
@@ -299,6 +300,28 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
       }
       if (p.priority == UINT32_MAX) p.priority = 0;
       packages.push_back(std::move(p));
+    }
+  }
+  // The offer number and licence mask of each package (SPEC-V4-CONTENT,
+  // Ownership: offers and licence masks).
+  if (!state_root.empty()) {
+    const fs::path market = state_root / "user" / "0000000000000000" / "4D5309C9" / "00000002";
+    for (auto& p : packages) {
+      for (const auto& e : fs::directory_iterator(market / p.id / "Media", ec))
+        if (e.is_regular_file() && lower(e.path().extension().string()) == ".puboffer") {
+          const std::string stem = e.path().stem().string();
+          char* end = nullptr;
+          const long long n = std::strtoll(stem.c_str(), &end, 10);
+          if (end && *end == 0 && !stem.empty()) p.puboffer = n;
+        }
+      std::ifstream f(state_root / "dlc" / (p.id + ".json"));
+      const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      const auto key = text.find("\"license_mask\"");
+      if (key != std::string::npos) {
+        const auto q0 = text.find('"', text.find(':', key) + 1);
+        const auto q1 = q0 == std::string::npos ? q0 : text.find('"', q0 + 1);
+        if (q1 != std::string::npos) p.licence_mask = uint32_t(std::strtoul(text.substr(q0 + 1, q1 - q0 - 1).c_str(), nullptr, 16));
+      }
     }
   }
   std::sort(packages.begin(), packages.end(), [](const Package& a, const Package& b) {

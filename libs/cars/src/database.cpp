@@ -655,6 +655,7 @@ bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, s
 
 struct PartsDb::Impl {
   Merged merged;
+  std::map<int64_t, uint32_t> offers;  // the enabled packages' offer numbers -> licence masks
 };
 
 PartsDb::PartsDb() = default;
@@ -663,6 +664,8 @@ PartsDb::~PartsDb() = default;
 bool PartsDb::open(const Install& install, std::string* error) {
   auto impl = std::make_unique<Impl>();
   if (!open_merged(install, impl->merged, error)) return false;
+  for (const auto& p : install.packages)
+    if (p.puboffer >= 0) impl->offers[p.puboffer] |= p.licence_mask;
   impl_ = std::move(impl);
   return true;
 }
@@ -734,9 +737,27 @@ bool PartsDb::dealer(std::vector<DealerCar>& out, std::string* error) const {
     if (error) *error = "Data_Car: the dealer query failed";
     return false;
   }
+  // SPEC-AUTOSHOW-PAINT, Which cars are listed, 4: a row no offer maps is
+  // visible; a mapped row is visible when one of its offers is owned, that
+  // is its publication's package is installed and the offer's mask is 0 or
+  // shares a bit with the package's licence mask (SPEC-V4-CONTENT).
+  std::map<int64_t, bool> visible;  // car id -> owned through some offer
+  {
+    Query m(impl_->merged.db,
+            "SELECT m.ContentId, o.PubOfferingID, o.LicenseMask FROM ContentOffersMapping m JOIN ContentOffers o ON "
+            "o.OfferId = m.OfferId WHERE m.ContentType = 1");
+    while (m.ok() && m.step()) {
+      const auto pkg = impl_->offers.find(m.i(1));
+      const uint32_t mask = uint32_t(m.i(2));
+      const bool owned = pkg != impl_->offers.end() && (mask == 0 || (mask & pkg->second) != 0);
+      bool& v = visible.try_emplace(m.i(0), false).first->second;
+      v = v || owned;
+    }
+  }
   while (q.step()) {
     DealerCar c;
     c.id = q.i(0), c.base_cost = q.i(1), c.year = q.i(2), c.class_id = q.i(3), c.performance_index = q.d(4);
+    if (const auto it = visible.find(c.id); it != visible.end() && !it->second) continue;
     c.media_name = q.s(5);
     c.first_colour = q.type(6) == SQLITE_NULL ? 0 : q.i(6);
     out.push_back(std::move(c));

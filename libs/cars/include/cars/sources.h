@@ -61,6 +61,11 @@ struct Package {
   std::map<std::string, FolderRef> cars, wheels;
   // Merge databases: (archive, member name), in archive and name order.
   std::vector<std::pair<std::filesystem::path, std::string>> merges;
+  // SPEC-V4-CONTENT, Ownership: the publication (offer) number, from the
+  // package's Media/<n>.puboffer (-1: none), and its licence mask, from the
+  // state root's dlc/<package>.json (interim FFFFFFFF without the record).
+  int64_t puboffer = -1;
+  uint32_t licence_mask = 0xFFFFFFFFu;
 };
 
 struct Install {
