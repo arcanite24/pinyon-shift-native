@@ -784,7 +784,18 @@ the interim noted here until a later polish sweep.
   m): the car drifts 2 m right of its line at 50 m/s with the steer near
   0, touches the dirt edge's step and spins. Tried and dropped: a
   cross-track steering term (k 1 unstable, k 0.3 no better), a 25 m pass
-  trigger (FR24 worse), a flat 0.3 upgrade for every car. Headless runs with `--async-stream` or `--bench` outrun the background
+  trigger (FR24 worse), a flat 0.3 upgrade for every car, a 7 m and a
+  5.5 m braking gap (2026-11-21: 7 m cut the resets on FR24, FR01, NR02
+  and EXHIBITION from 86 to 60 but left their times within 0.3 s and
+  failed STREET at 3.2 %; 5.5 m passed STREET and lost 2-3 s on FR24 and
+  FR01, so the gap is within the two-seed noise), and lower body friction
+  on floor contacts (more Mini resets). Traced FR24 seed 1: the early
+  resets are a pack pile-up at 560-620 m (a car pushed from behind spins,
+  the next runs into it), not line drift. EXHIBITION's Minis bottom out
+  (contact normal up) in a dip at 2700 m while braking. The AI front
+  runners are 1-3 s off the oracle's; the loss is the tail (oracle field
+  3.8 s from first to last AI, ours 10-15 s), and catch-up already follows
+  SPEC-RACE-AI (state counts in the trace), so it is contact. Headless runs with `--async-stream` or `--bench` outrun the background
   gather and fall off the collision (the gate runs synchronously).
 - **Race AI interims (ours where the spec has none).** The steer is capped
   at the pad's speed-narrowed lock (past it the fronts slide wide); a car
