@@ -22,6 +22,7 @@ constexpr uint32_t kShadow = rgba(0, 0, 0, 110);
 constexpr uint32_t kText = rgba(244, 245, 248);
 constexpr uint32_t kDim = rgba(160, 166, 178);
 constexpr uint32_t kAccent = rgba(255, 186, 20);
+constexpr uint32_t kBlue = rgba(0x2C, 0x8C, 0xE8);  // the X button's disc without its texture (ours)
 constexpr uint32_t kRed = rgba(236, 52, 44);
 constexpr uint32_t kGreen = rgba(70, 220, 110);
 constexpr uint32_t kInk = rgba(14, 14, 16);
@@ -621,9 +622,88 @@ struct Turn {
   ~Turn() { l.unturn(); }
 };
 
+// The RACE RESULTS table (SPEC-UI-LAYOUTS c, the race results table; X
+// from the FINISHED banner, B back): H_POST_RACE_RESULTS as laid out, each
+// node turned by its own rotation; the rows' text from the session. The
+// scene's opacities are its intro's start (0): drawn at full.
+void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
+  static const SceneDraw sc(ui_scene("H_POST_RACE_RESULTS"), true);
+  const float s = g.s;
+  help_item(l, g, 70, 150, 653, 689, "B", kRed, str("HelpButtons", "IDS_Back", "BACK"));
+  if (!sc.ok()) return;
+  const SceneFrame f{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
+  sc.model(l, f, sc.find("BG_Noise"), 0.5f);
+  // The title on its tape: the tapes cropped to the text (ours: a 40 px
+  // margin past the text, as the frame shows).
+  const int tape = sc.find("TitleTape");
+  {
+    const int tt = sc.find("TitleTapeText", tape);
+    const std::string title = str("ScreenTitles", "IDS_PostRace_RaceResults", "RACE RESULTS");
+    const float tw = ui::List::measure(title, sc.style(tt, f, kText)) / s;
+    const float tx = sc.at(tt)[0];
+    sc.model(l, f, sc.find("Clipon_2", tape));
+    for (const char* name : {"Smudge_Tape", "Crisp_Tape"}) {
+      const int n = sc.find(name, tape);
+      sc.model(l, f, n, 1, 0, 0, tx + tw + 40 - sc.rect(n)[0]);
+    }
+    sc.text(l, f, tt, title, kText);
+  }
+  // The heading strip.
+  const int head = sc.find("Heading");
+  sc.model(l, f, sc.find("Pill_left", head));
+  sc.model(l, f, sc.find("Pill_right", head));
+  const std::pair<const char*, std::string> heads[] = {
+      {"TEXT_POSITION", str("Scoreboard", "IDS_Pos", "POS")},
+      {"TEXT_PLAYER", str("Scoreboard", "IDS_Driver", "DRIVER")},
+      {"TEXT_CLASS", str("Scoreboard", "IDS_Class", "CLASS")},
+      {"TEXT_CAR", str("Scoreboard", "IDS_Car", "CAR")},
+      {"TEXT_BEST_LAP", str("InGame", "IDS_Header_Best_Lap", "BEST LAP")},
+      {"TEXT_TOTAL_TIME", str("InGame", "IDS_Header_Total", "TOTAL")}};
+  for (const auto& [node, text] : heads) {
+    const int n = sc.find(node, head);
+    // Upper case, as the frame shows.
+    std::string up = text;
+    for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+    sc.text(l, f, n, up, kDark);
+  }
+  // The rows: I_LIST_ITEM, I_LIST_ITEM2 ... I_LIST_ITEM8, by place.
+  for (size_t i = 0; i < r.rows.size() && i < 8; ++i) {
+    const RaceHudRow& row = r.rows[i];
+    const int item = sc.find(i == 0 ? std::string("I_LIST_ITEM") : "I_LIST_ITEM" + std::to_string(i + 1));
+    if (item < 0) break;
+    // The player's row on a lighter grey (measured, about 0.24).
+    const uint32_t tint = row.player ? rgba(61, 61, 61) : 0;
+    const int pill = sc.find("Pill", item);
+    sc.model(l, f, sc.find("Pill_left", pill), 1, 0, 0, 0, tint);
+    sc.model(l, f, sc.find("Pill_right", pill), 1, 0, 0, 0, tint);
+    sc.text(l, f, sc.find("TEXT_POSITION", item), std::to_string(row.place), kText);
+    sc.text(l, f, sc.find("TEXT_PLAYER", item), row.name, kText);
+    sc.text(l, f, sc.find("TEXT_CAR", item), row.car, kText);
+    sc.text(l, f, sc.find("TEXT_BEST_LAP", item), row.best_lap > 0 ? clock_ms(row.best_lap) : "--:--.---", kText);
+    sc.text(l, f, sc.find("TEXT_TOTAL_TIME", item), row.finished ? clock_ms(row.time) : "--:--.---", kText);
+    // The class badge: PICLASS/CLASS_<class> at CLASS_A's place, scaled by
+    // its CLASS_SM group (0.75); the index on its white part.
+    const int badge = sc.find("CLASS_A", item);
+    std::array<float, 4> uv;
+    if (!row.car_class.empty() && badge >= 0 && ui_texture("PICLASS/CLASS_" + row.car_class, uv)) {
+      const auto b = sc.rect(badge);
+      const float cx = 0.5f * (b[0] + b[2]), cy = 0.5f * (b[1] + b[3]);
+      // (The frame's badge is CLASS_A's full rect, about 52 px of ink.)
+      const float hw = 0.5f * (b[2] - b[0]), hh = 0.5f * (b[3] - b[1]);
+      const float angle = -sc.angle(badge);
+      l.image_rotated(f.x(cx), f.y(cy), hw * s, hh * s, angle, uv);
+      if (row.pi >= 0) sc.text(l, f, sc.find("TEXT_PI", item), std::to_string(row.pi), kDark);
+    }
+  }
+}
+
 void results(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
   const double since = r.clock - r.finish_time;
+  if (r.results_page == 0 && r.results_table) {
+    results_table(l, r, g);
+    return;
+  }
   if (r.results_page == 0) {
     const float in = ease_in_time(since, 0, 0.35);
     const float dx = (1 - in) * -120 * s;
@@ -647,6 +727,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     }
     help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
     help_item(l, g, 195, 307, 653, 689, "Y", kAccent, str("HelpButtons", "IDS_RestartMenu", "RESTART"));
+    help_item(l, g, 312, 465, 653, 689, "X", kBlue, str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS"));
     return;
   }
   // The cash reward.

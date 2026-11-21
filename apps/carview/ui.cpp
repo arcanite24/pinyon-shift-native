@@ -358,7 +358,7 @@ float vector_measure(int font, std::string_view text, const TextStyle& s) {
     ++n;
   }
   if (n) w -= s.tracking * s.size;
-  return w;
+  return w * s.stretch;
 }
 
 }  // namespace
@@ -400,14 +400,15 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
       if (g) {
         if (const auto* e = glyph_entry(f, cp, px)) {
           // At the cached size the quad sits on whole pixels (no resampling blur).
-          float gx = pen + e->left * scale, gy = base + e->top * scale;
-          if (scale == 1.0f) gx = std::round(gx), gy = std::round(gy);
+          const float sx = scale * s.stretch;
+          float gx = pen + e->left * sx, gy = base + e->top * scale;
+          if (scale == 1.0f && s.stretch == 1.0f) gx = std::round(gx), gy = std::round(gy);
           const float inv = 1.0f / float(kAtlasSize);
-          image(gx, gy, gx + (e->u1 - e->u0) * scale, gy + (e->v1 - e->v0) * scale,
+          image(gx, gy, gx + (e->u1 - e->u0) * sx, gy + (e->v1 - e->v0) * scale,
                 {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, s.color);
         }
       }
-      pen += (g ? g->advance : font.space_width) * k + s.tracking * s.size;
+      pen += ((g ? g->advance : font.space_width) * k + s.tracking * s.size) * s.stretch;
     }
     return w;
   }

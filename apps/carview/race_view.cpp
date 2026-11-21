@@ -78,6 +78,10 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     std::string ne;  // the names are optional: the media names stand in
     const char* state = std::getenv("SHIFT_STATE_ROOT");
     names_.load(root, state ? state : "", &ne);
+    bands_.clear();
+    std::string be;
+    if (!garage::load_class_bands(root, bands_, &be)) bands_.clear();
+    player_pi_ = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car);
   }
   stage_ = event.rfind("stage:", 0) == 0;
   if (stage_) {
@@ -787,6 +791,16 @@ RaceHud RaceView::hud_info() const {
     r.place = int(h.rows.size()) + 1;
     r.finished = s.finished(i);
     r.time = s.car(i).finish;
+    r.best_lap = s.car(i).best_lap;
+    // The results table's car and class (interim: the AI's stock index,
+    // not its upgraded one).
+    const std::string& media = r.player ? o_.player_car : cars_[i].who.car_media;
+    r.car = names_.short_name(media);
+    const double raw = r.player ? player_pi_ : cars_[i].who.performance_index;
+    if (raw > 0 && !bands_.empty()) {
+      r.car_class = bands_[size_t(garage::class_of(raw, bands_))].name;
+      r.pi = garage::shown_index(raw, bands_);
+    }
     const double p = field_->progress(i);
     if (lead < 0) lead = p;
     else if (i < samples_.size()) r.gap = std::max(0.0, lead - p) / std::max(5.0, double(samples_[i].speed));

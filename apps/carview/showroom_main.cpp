@@ -1580,12 +1580,26 @@ int run_drive(int argc, char** argv) {
       if (!write_png(race_png.string(), 1280, 720, 4, rgba.data())) return 1;
       std::printf("race: 1280x720 to %s\n", race_png.string().c_str());
     }
-    for (int page = 0; page < 2; ++page) {
-      // And <name>_results<page>.png: the FINISHED banner, then the cash reward.
+    for (int page = 0; page < 3; ++page) {
+      // And <name>_results<page>.png: the FINISHED banner, the cash reward,
+      // then (2) the RACE RESULTS table.
       carview::RaceHud r;
       r.phase = carview::RaceHud::kFinished, r.event = "SAMPLE", r.circuit = true, r.laps = 4;
       r.place = 6, r.cars = 8, r.clock = 186, r.finish_time = 182, r.credits = 2500, r.wristband = 400;
-      r.results_page = page, r.balance = 4078145;
+      r.results_page = page == 2 ? 0 : page, r.results_table = page == 2, r.balance = 4078145;
+      if (page == 2) {
+        const char* who[] = {"Alan Brewer", "Marko Baran", "Peter Bankov", "User", "Don Funk", "Jason Zander", "Scott Mitchell", "Bjorn Rettig"};
+        const char* cars[] = {"Lancer Evo.6 GSR", "Range Rover'12", "Jeep SRT8 '12", "Nissan GT-R R34", "Nissan GT-R R34", "Audi Quattro", "Nissan GT-R R34", "Audi RS 4"};
+        const int pis[] = {510, 511, 509, 461, 508, 507, 508, 507};
+        const double best[] = {38.109, 37.472, 38.337, 39.960, 39.375, 39.173, 40.033, 39.864};
+        const double total[] = {162.187, 162.562, 164.211, 164.961, 165.682, 166.026, 166.391, 167.381};
+        for (int i = 0; i < 8; ++i) {
+          carview::RaceHudRow row;
+          row.name = who[i], row.place = i + 1, row.player = i == 3, row.finished = true, row.time = total[i];
+          row.car = cars[i], row.car_class = i == 3 ? "B" : "A", row.pi = pis[i], row.best_lap = best[i];
+          r.rows.push_back(row);
+        }
+      }
       r.band_before = 41250 - 400, r.band_after = 41250, r.band_lo = 30000, r.band_hi = 60000;
       r.band_name = "Orange", r.band_next = "Purple";
       carview::DriveHud d;
@@ -3205,6 +3219,7 @@ int run_drive(int argc, char** argv) {
       bool legacy_hud_cleared = false;
       // The results' page (SPEC-UI-LAYOUTS c): 0 the FINISHED banner, 1 the cash reward.
       int results_page = 0;
+      bool results_table = false;  // the RACE RESULTS table over the banner (X opens, B closes)
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
@@ -3246,6 +3261,8 @@ int run_drive(int argc, char** argv) {
         if (race) {
           race_hud = race->hud_info(), d.race = &race_hud;
           race_hud.results_page = results_page;
+          if (!race->player_finished()) results_table = false;  // a new race starts on the banner
+          race_hud.results_table = results_table && results_page == 0;
           race_hud.balance = career.credits;
           // The wristband after the award (the results card).
           if (race_hud.phase == carview::RaceHud::kFinished && race_hud.wristband > 0 && !wristbands.levels.empty()) {
@@ -3900,6 +3917,7 @@ int run_drive(int argc, char** argv) {
         // stands) in free roam; Restart runs the event again.
         auto race_continue = [&]() {
           // A: the FINISHED banner, then the cash reward, then free roam.
+          if (results_table) return;  // the table takes only B
           if (results_page == 0) {
             results_page = 1;
             return;
@@ -3915,6 +3933,7 @@ int run_drive(int argc, char** argv) {
           running = false;
         };
         auto race_restart = [&]() {
+          if (results_table) return;
           results_page = 0;
           next_event = race_event;
           running = false;
@@ -4201,10 +4220,14 @@ int run_drive(int argc, char** argv) {
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+              const bool on_banner = race && race->player_finished() && !picking && results_page == 0;
               if (e.key.key == SDLK_ESCAPE) {
-                if (picking) picking = false;
+                if (on_banner && results_table) results_table = false;  // B: back to the banner
+                else if (picking) picking = false;
                 else open_menu();
               }
+              if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
+              if (on_banner && e.key.key == SDLK_X) results_table = true;  // X: RACE RESULTS
               if (e.key.key == SDLK_R) put_back();
               if (e.key.key == SDLK_M) open_map();
               if (e.key.key == SDLK_COMMA) radio_press(-1);
@@ -4274,10 +4297,13 @@ int run_drive(int argc, char** argv) {
                 if (picking || !have_rig) browse(1);
                 else rig.cycle();
               }
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) take_pick();
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(race && race->player_finished())) take_pick();
               if (race && race->player_finished() && !picking) {
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) race_continue();
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH) race_restart();
+                // X opens the RACE RESULTS table from the banner, B closes it.
+                if (results_page == 0 && e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST) results_table = true;
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) results_table = false;
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_ADDED)

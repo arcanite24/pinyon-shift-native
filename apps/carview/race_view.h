@@ -18,6 +18,7 @@
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
 #include "drive/vehicle.h"
+#include "garage/garage.h"
 #include "race/difficulty.h"
 #include "race/event.h"
 #include "race/race_line.h"
@@ -138,6 +139,9 @@ class RaceView {
   race::EventData event_;
   race::CarNames names_;
   race::Route route_;
+  // The class bands and the player's raw index, for the results table.
+  std::vector<garage::ClassBand> bands_;
+  double player_pi_ = -1;
   race::AiLineFile owt_;
   race::RaceLine line_;
   std::unique_ptr<race::RibbonGround> ribbon_;

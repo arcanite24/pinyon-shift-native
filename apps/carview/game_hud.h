@@ -22,6 +22,11 @@ struct RaceHudRow {
   bool player = false, finished = false;
   double time = -1;  // the finish time, or -1
   double gap = -1;   // s behind the leader while racing (-1: the leader)
+  // The RACE RESULTS table's columns (SPEC-UI-LAYOUTS c): the car's short
+  // name, its class and shown index (empty / < 0: none), the best lap.
+  std::string car, car_class;
+  int pi = -1;
+  double best_lap = -1;
 };
 struct RaceHud {
   enum Phase { kGrid, kCountdown, kRacing, kFinished } phase = kGrid;
@@ -41,7 +46,8 @@ struct RaceHud {
   std::string band_name, band_next;
   bool band_up = false;
   bool wrong_way = false;  // the player drives against the race (ours)
-  int results_page = 0;    // after the finish: 0 the FINISHED banner, 1 the cash reward
+  int results_page = 0;
+  bool results_table = false;  // the RACE RESULTS table over the FINISHED banner (X; B closes)    // after the finish: 0 the FINISHED banner, 1 the cash reward
   int64_t balance = -1;    // the credits after the award (the cash reward page)
   std::string event_type;  // the title card's event type line (a string-table text)
 };

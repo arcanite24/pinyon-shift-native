@@ -93,6 +93,7 @@ struct TextStyle {
   Align align = Align::kLeft;
   Font font = Font::kAuto;
   bool keep_case = false;  // vector fonts: draw lower case as written (else upper-cased)
+  float stretch = 1;       // vector fonts: the glyphs' width scale (a scene text's x over y scale)
 };
 
 class List {
@@ -103,6 +104,7 @@ class List {
   // turn as quads; other shapes only move with the turn.
   void turn(float cx, float cy, float angle) { turn_x_ = cx, turn_y_ = cy, turn_a_ = angle; }
   void unturn() { turn_a_ = 0; }
+  bool turned() const { return turn_a_ != 0; }
   std::span<const Instance> items() const { return items_; }
   bool empty() const { return items_.empty(); }
 

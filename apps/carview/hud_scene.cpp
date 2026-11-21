@@ -62,6 +62,8 @@ std::array<float, 4> SceneDraw::rect(int node) const {
           cy - n.bounds_min[1] * n.sy};
 }
 
+float SceneDraw::angle(int node) const { return sc_ && node >= 0 ? sc_->nodes[size_t(node)].angle : 0; }
+
 float SceneDraw::alpha(int node) const { return sc_ && node >= 0 ? sc_->nodes[size_t(node)].alpha : 0; }
 
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
@@ -83,6 +85,16 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
   }
   auto r = rect(node);
   r[0] += dx, r[2] += dx, r[1] += dy, r[3] += dy;
+  // The node's own rotation (scene y up: counter-clockwise on screen).
+  const bool turning = turn_ && n.angle != 0 && !l.turned();
+  if (turning) l.turn(f.x(0.5f * (r[0] + r[2])), f.y(0.5f * (r[1] + r[3])), -n.angle);
+  struct Unturn {
+    ui::List& l;
+    bool on;
+    ~Unturn() {
+      if (on) l.unturn();
+    }
+  } unturn{l, turning};
   const uint32_t c = tint ? ui::fade(tint, opacity) : colour_of(mat ? mat->colour : std::array<float, 4>{1, 1, 1, 1}, opacity);
   if (ntex == 0) {
     l.rect(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), c);
@@ -97,7 +109,16 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
   auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
   const float u0 = m[12], u1 = m[12] + m[0], v0 = std::min(m[13], m[13] + m[5]), v1 = std::max(m[13], m[13] + m[5]);
   if (ntex < 2) {
-    l.image(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), {U(u0), V(v0), U(u1), V(v1)}, c);
+    // A texture offset past its edge (clamped, no wrap): the part outside
+    // 0-1 is empty, so the quad is cut there.
+    float x0 = r[0], x1 = r[2], a = u0, b = u1;
+    if (b > a && (a < 0 || b > 1)) {
+      const float w = (x1 - x0) / (b - a);
+      if (a < 0) x0 -= a * w, a = 0;
+      if (b > 1) x1 -= (b - 1) * w, b = 1;
+      if (x1 <= x0) return false;
+    }
+    l.image(f.x(x0), f.y(r[1]), f.x(x1), f.y(r[3]), {U(a), V(v0), U(b), V(v1)}, c);
     return true;
   }
   // A crop: the strip's left part to the visible width, then the strip's
@@ -125,6 +146,7 @@ ui::TextStyle SceneDraw::style(int node, const SceneFrame& f, uint32_t colour) c
   ts.font = last == 'a' ? ui::Font::kA : last == 'd' ? ui::Font::kD : last == 'e' ? ui::Font::kE : ui::Font::kB;
   ts.size = float(o.text_size) * n.sy * f.s;
   ts.align = o.text_align == 1 ? ui::Align::kCenter : o.text_align == 2 ? ui::Align::kRight : ui::Align::kLeft;
+  if (turn_ && n.sy > 0) ts.stretch = n.sx / n.sy;
   return ts;
 }
 
@@ -145,7 +167,11 @@ float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_vi
     for (float w = ui::List::measure(s, ts); w > box && ts.size > 6 * f.s; w = ui::List::measure(s, ts))
       ts.size *= std::max(0.8f, box / w);
   const auto [cx, cy] = at(node);
+  const float angle = sc_->nodes[size_t(node)].angle;
+  const bool turning = turn_ && angle != 0 && !l.turned();
+  if (turning) l.turn(f.x(cx + dx), f.y(cy + dy), -angle);
   const float w = l.text(f.x(cx + dx), f.y(cy + dy) - 0.5f * ts.size, s, ts);
+  if (turning) l.unturn();
   return w / f.s;
 }
 

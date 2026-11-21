@@ -27,7 +27,10 @@ struct SceneFrame {
 
 class SceneDraw {
  public:
-  explicit SceneDraw(const fh1::UiScene* scene) : sc_(scene) {}
+  // `turn`: each node drawn turned by its own rotation, about its centre
+  // (a text about its anchor), unless the list is already turned; a text
+  // drawn at its node's x over y scale.
+  explicit SceneDraw(const fh1::UiScene* scene, bool turn = false) : sc_(scene), turn_(turn) {}
   bool ok() const { return sc_ != nullptr; }
   // The first node whose object is called `name`, under `under` (-1: any).
   int find(std::string_view name, int under = -1) const;
@@ -36,6 +39,8 @@ class SceneDraw {
   std::array<float, 4> rect(int node) const;
   // The scene's own opacity for the node (its parents' times its own).
   float alpha(int node) const;
+  // The node's rotation about z (radians, scene y up).
+  float angle(int node) const;
   // Draws a model node: the material's colour times its textures. A
   // material with two textures is a crop (the first copy's u offset hides
   // the strip from 1 - offset): `visible` > 0 overrides the visible width
@@ -55,6 +60,7 @@ class SceneDraw {
 
  private:
   const fh1::UiScene* sc_;
+  bool turn_ = false;
 };
 
 }  // namespace carview
