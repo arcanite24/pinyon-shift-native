@@ -146,7 +146,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
     return false;
   if (!db.each("select p.ID, p.Ordinal, coalesce(c.MediaName, ''), p.AIPlayerID, coalesce(a.Name, ''), "
                "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0), "
-               "coalesce(c.PerformanceIndex, 0) "
+               "coalesce(c.PerformanceIndex, 0), coalesce(p.ColorSequence, 0) "
                "from EventParticipants p left join AIPlayers a on a.Id = p.AIPlayerID "
                "left join Data_Car c on c.Id = p.Ordinal where p.EventID = ? order by p.ID",
                {ev},
@@ -161,6 +161,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  o.aggro_modifier = int(i64(s, 6));
                  o.rubberband_modifier = int(i64(s, 7));
                  o.performance_index = d(s, 8);
+                 o.color_sequence = i64(s, 9);
                  out.opponents.push_back(std::move(o));
                },
                error))

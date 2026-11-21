@@ -322,16 +322,20 @@ bool RaceView::post_race_spawn(double out[4]) const {
 
 bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error) {
   for (auto& c : cars_) {
-    auto it = models_.find(c.who.car_media);
+    // One model per car and paint: the row's ColorSequence picks the colour.
+    const std::string key = c.who.car_media + "#" + std::to_string(c.who.color_sequence);
+    auto it = models_.find(key);
     if (it == models_.end()) {
       auto m = std::make_unique<Showroom>(renderer);
       m->set_guest();
+      ShowroomOptions options;
+      if (c.who.color_sequence > 0) options.match_sequence = c.who.color_sequence;
       std::string e;
-      if (!m->load(bake_dir_, c.who.car_media, ShowroomOptions{}, e) || !m->upload(e)) {
+      if (!m->load(bake_dir_, c.who.car_media, options, e) || !m->upload(e)) {
         error = c.who.car_media + ": " + e;
         return false;
       }
-      it = models_.emplace(c.who.car_media, std::move(m)).first;
+      it = models_.emplace(key, std::move(m)).first;
     }
     c.model = it->second.get();
     std::vector<std::string> notes;

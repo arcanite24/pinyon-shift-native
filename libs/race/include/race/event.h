@@ -52,6 +52,10 @@ struct Opponent {
   std::string driver;          // AIPlayers.Name (a string id)
   int skill_modifier = 0, aggro_modifier = 0, rubberband_modifier = 0;
   double performance_index = 0;  // Data_Car.PerformanceIndex (raw)
+  // EventParticipants.ColorSequence: the car's Combo_Colors Sequence
+  // (SPEC-RACE-AI, The opponents' cars: it chooses the paint; the match by
+  // Sequence is ours, interim). 0: none.
+  int64_t color_sequence = 0;
 };
 
 struct EventData {
