@@ -231,31 +231,31 @@ bool build_street_line(const traffic::NavMap& nav, const Route& route, AiLineFil
     p.lx = float(-dz * o.half_width), p.ly = 0, p.lz = float(dx * o.half_width);
     p.offset = 0;
   }
-  // The racing offset: the signed heading change over +-span (left turns
-  // positive) per metre, as a fraction of 1 / inside_radius, then smoothed
-  // so the line eases in and out of each bend.
+  // The racing offset: a minimum-curvature line inside the road. Each
+  // pass moves every point along its lateral towards the point that zeroes
+  // its second difference against the neighbours k and 2k points either
+  // side, (4 (r[i-k] + r[i+k]) - (r[i-2k] + r[i+2k])) / 6 (coarse chords
+  // first, then finer), clamped to max_offset half widths; the ends stay on
+  // the centre. Minimising curvature, not length, spreads each turn over
+  // its apex instead of a kink where the line meets the road's edge. It
+  // cuts each bend to its inside across the road's width, as the measured
+  // AI spread (about +-4.5 m about the centre) does.
   const size_t n = out.points.size();
-  const int w = std::max(1, int(o.span / o.spacing));
   std::vector<double> off(n, 0.0);
-  for (size_t i = size_t(w); i + size_t(w) < n; ++i) {
-    const auto& a = out.points[i - size_t(w)];
-    const auto& c = out.points[i];
-    const auto& b = out.points[i + size_t(w)];
-    const double h0 = std::atan2(c.x - a.x, c.z - a.z), h1 = std::atan2(b.x - c.x, b.z - c.z);
-    double turn = h1 - h0;  // positive: towards +x of travel, which is right when +z is forward
-    while (turn > 3.14159265358979) turn -= 2 * 3.14159265358979;
-    while (turn < -3.14159265358979) turn += 2 * 3.14159265358979;
-    const double curvature = -turn / (2 * o.span);  // left positive, 1/m
-    off[i] = std::clamp(curvature * o.inside_radius, -o.max_offset, o.max_offset);
-  }
-  for (int pass = 0; pass < 2; ++pass) {
-    std::vector<double> s = off;
-    for (size_t i = size_t(w); i + size_t(w) < n; ++i) {
-      double t = 0;
-      for (int k = -w; k <= w; ++k) t += off[i + size_t(k)];
-      s[i] = t / (2 * w + 1);
-    }
-    off.swap(s);
+  auto rx = [&](size_t i) { return out.points[i].x + off[i] * out.points[i].lx; };
+  auto rz = [&](size_t i) { return out.points[i].z + off[i] * out.points[i].lz; };
+  const double hw2 = o.half_width * o.half_width;
+  for (const int k : {12, 8, 5, 3, 2}) {
+    const size_t K = size_t(k);
+    if (n <= 4 * K) continue;
+    for (int pass = 0; pass < o.relax_passes; ++pass)
+      for (size_t i = 2 * K; i + 2 * K < n; ++i) {
+        const double mx = (4 * (rx(i - K) + rx(i + K)) - (rx(i - 2 * K) + rx(i + 2 * K))) / 6;
+        const double mz = (4 * (rz(i - K) + rz(i + K)) - (rz(i - 2 * K) + rz(i + 2 * K))) / 6;
+        const auto& p = out.points[i];
+        const double d = ((mx - rx(i)) * p.lx + (mz - rz(i)) * p.lz) / hw2;  // in half widths
+        off[i] = std::clamp(off[i] + 0.5 * d, -o.max_offset, o.max_offset);
+      }
   }
   for (size_t i = 0; i < n; ++i) out.points[i].offset = float(off[i]);
   return true;

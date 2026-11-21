@@ -285,6 +285,18 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
     if (planner_fit_) field_->set_limits(n, float(race::corner_accel(C)), float(race::brake_decel(B)));
     else field_->set_planner(n, &player_capacity_, C, B);
   }
+  // SHIFT_PLAN_DUMP=<file>: the player's corner pass per line point, once.
+  if (const char* dump = std::getenv("SHIFT_PLAN_DUMP"); dump && !plan_dumped_ && !planner_fit_) {
+    plan_dumped_ = true;
+    if (FILE* f = std::fopen(dump, "w")) {
+      const auto& L = line_.line;
+      std::fprintf(f, "dist,x,y,z,kappa,kappa_v,bank,grade,corner\n");
+      for (size_t j = 0; j < L.size(); ++j)
+        std::fprintf(f, "%.1f,%.2f,%.2f,%.2f,%.5f,%.5f,%.4f,%.4f,%.2f\n", L.dist[j], L.x[j], L.y.empty() ? 0.f : L.y[j],
+                     L.z[j], L.curvature[j], L.curvature_v[j], L.bank_left[j], L.grade[j], field_->corner_speed(n, j));
+      std::fclose(f);
+    }
+  }
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;

@@ -30,9 +30,10 @@ struct StreetLineOptions {
   double spacing = 4.0;     // m between the line's points
   int smooth_passes = 3;    // corner rounding (see build_street_line)
   // The racing offset (SPEC-RACE-AI, Routes with no AI line: "to the
-  // inside of bends"; the amount is ours): the curvature over +-span m
-  // times `inside_radius`, at most `max_offset` half widths.
-  double span = 24.0, inside_radius = 25.0, max_offset = 0.6;
+  // inside of bends"; the amount is ours): a minimum-curvature relaxation
+  // (relax_passes per chord) within `max_offset` half widths.
+  int relax_passes = 80;
+  double max_offset = 0.9;
 };
 
 // The line from slot 00 through every checkpoint along the road map; false

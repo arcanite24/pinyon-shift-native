@@ -124,6 +124,7 @@ class RaceView {
   // SHIFT_RACE_PLANNER=fit: the old flat fit (corner 1.7 g x C, braking
   // 2.0 g x B) for comparison; else the spec's planner.
   bool planner_fit_ = false;
+  bool plan_dumped_ = false;  // SHIFT_PLAN_DUMP written
   int player_slot_ = 0;
   double player_start_ = 0, finish_progress_ = 0;
   double ppx_ = 0, ppz_ = 0;

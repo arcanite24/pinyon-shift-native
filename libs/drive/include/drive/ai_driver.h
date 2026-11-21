@@ -185,6 +185,8 @@ class AiField {
   float target_speed(size_t i) const { return target_[i]; }
   // The speed car i plans at `distance` along the line (m/s).
   double planned_speed(size_t i, double distance) const;
+  // The planner's corner speed of car i at line point j (m/s; the corner pass).
+  double corner_speed(size_t i, size_t j) const { return corner_at(i, j); }
 
  private:
   const RacingLine& line_;
