@@ -8,6 +8,7 @@
 #include <numbers>
 
 #include "drive/from_physics.h"
+#include "garage/garage.h"
 #include "race/street_line.h"
 #include "traffic/nav.h"
 #include "traffic_view.h"
@@ -158,6 +159,38 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     field_->place_near(cars_.size(), s.x, s.z, from, line_.gate_progress + 1);
     player_start_ = field_->progress(cars_.size());
   }
+  // SPEC-RACE-AI, AI car upgrades (interim until the PI lap): each AI aims
+  // at the player's shown points pulled 5 inside the event's class (offset
+  // 0), or its own + 300 when the player is further above; t = gap / 240 up,
+  // gap / 170 down, capped at 1.
+  if (event_.upgrade_ai) {
+    std::vector<garage::ClassBand> bands;
+    std::string be;
+    double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car);
+    const int k = event_.target_class;
+    if (ppi > 0 && garage::load_class_bands(root, bands, &be) && k >= 1 && size_t(k) < bands.size()) {
+      const int lo = int(bands[size_t(k - 1)].shown_max) + 1, hi = int(bands[size_t(k)].shown_max);
+      const int P = garage::shown_index(ppi, bands);
+      for (auto& c : cars_) {
+        const int C = garage::shown_index(c.who.performance_index, bands);
+        int target;
+        if (P > C + 300) {
+          target = C + 300;
+        } else {
+          target = P;
+          if (hi - 5 <= target + 5) target = hi - 5;
+          if (target - 5 <= lo + 5) target = lo + 5;
+          target = std::clamp(target, lo, hi);
+        }
+        const int gap = target - C;
+        c.upgrade_t = gap >= 0 ? std::min(1.0, gap / 240.0) : -std::min(1.0, -gap / 170.0);
+        std::printf("race: AI upgrade %-28s %d points, target %d (player %d, class %d to %d): t %+.2f\n",
+                    c.who.car_media.c_str(), C, target, P, lo, hi, c.upgrade_t);
+      }
+    } else {
+      std::fprintf(stderr, "race: note: no AI upgrades (player PI %.3f, class %d)\n", ppi, k);
+    }
+  }
   if (finish) finish_progress_ = line_.line.nearest(finish->x, finish->z, line_.gate_progress, line_.line.length());
   const size_t n = size_t(cars);
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
@@ -213,16 +246,15 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     std::vector<std::string> notes;
     drive::CarParams params = drive::params_for_baked_car(c.model->car(), bake_dir_, &notes);
     if (event_.upgrade_ai) {
-      // SPEC-RACE-AI, The opponents' cars: UpgradeAI events tune the AI cars
-      // (AIAutoUpgrades: mass down to 0.9, torque up to 1.4, tyre friction
-      // up to 1.2; the iteration is open). Interim: one fraction s of each
-      // limit, s = 0.3 from the FR22 masses (0.96 to 0.98 of stock);
-      // SHIFT_AI_UPGRADE overrides it.
-      double s = 0.3;
-      if (const char* e = std::getenv("SHIFT_AI_UPGRADE")) s = std::atof(e);
-      params.mass *= 1 - 0.1 * s;
-      params.torque_scale *= 1 + 0.4 * s;
-      for (int a = 0; a < 2; ++a) params.long_scale[size_t(a)] *= 1 + 0.2 * s, params.lat_scale[size_t(a)] *= 1 + 0.2 * s;
+      // SPEC-RACE-AI, AI car upgrades: one fraction t per car moves mass,
+      // torque and the four tyre-friction scales together (t from open()).
+      const double t = c.upgrade_t;
+      const double m = t >= 0 ? 1 - 0.1 * t : 1 - 0.111 * t;
+      const double q = t >= 0 ? 1 + 0.4 * t : 1 + 0.286 * t;
+      const double f = t >= 0 ? 1 + 0.2 * t : 1 + 0.167 * t;
+      params.mass *= m;
+      params.torque_scale *= q;
+      for (int a = 0; a < 2; ++a) params.long_scale[size_t(a)] *= f, params.lat_scale[size_t(a)] *= f;
     }
     c.body = std::make_unique<drive::Vehicle>(params);
     c.body->set_ai_controls(true);

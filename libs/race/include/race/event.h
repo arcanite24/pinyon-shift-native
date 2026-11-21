@@ -50,6 +50,7 @@ struct Opponent {
   int64_t ai_player_id = 0;
   std::string driver;          // AIPlayers.Name (a string id)
   int skill_modifier = 0, aggro_modifier = 0, rubberband_modifier = 0;
+  double performance_index = 0;  // Data_Car.PerformanceIndex (raw)
 };
 
 struct EventData {
@@ -65,6 +66,7 @@ struct EventData {
   int64_t race_id = 0;
   int level = 0, style = 0, career_type = 0;
   int64_t prize_car = 0;
+  int target_class = 0;     // Events.TargetClass (CarClasses.Id)
   bool upgrade_ai = false;  // Events.UpgradeAI: the AI cars are auto-upgraded (SPEC-RACE-AI, open)
   std::vector<Opponent> opponents;  // by ascending ID
   std::vector<SkillRow> skills;     // every AISkills row, by id
@@ -78,6 +80,10 @@ struct EventData {
 };
 
 // The database is <game_root>/media/db/gamedb.slt.
+// Data_Car.PerformanceIndex (raw) of the car with `media` (case-insensitive);
+// -1 when the disc has no such car.
+double stock_performance_index(const std::filesystem::path& game_root, const std::string& media);
+
 bool load_event(const std::filesystem::path& game_root, const std::string& horizon_id, Difficulty difficulty,
                 EventData& out, std::string* error);
 

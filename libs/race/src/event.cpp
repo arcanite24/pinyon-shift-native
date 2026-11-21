@@ -76,6 +76,15 @@ const TemperamentRow* EventData::temperament(int id) const {
   return nullptr;
 }
 
+double stock_performance_index(const std::filesystem::path& game_root, const std::string& media) {
+  Db db;
+  if (!db.open(game_root, nullptr)) return -1;
+  double pi = -1;
+  db.each("select PerformanceIndex from Data_Car where lower(MediaName) = lower(?) limit 1", {media},
+          [&](sqlite3_stmt* s) { pi = d(s, 0); }, nullptr);
+  return pi;
+}
+
 bool load_event(const std::filesystem::path& game_root, const std::string& horizon_id, Difficulty difficulty,
                 EventData& out, std::string* error) {
   Db db;
@@ -87,7 +96,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   bool found = false;
   if (!db.each("select Id, AISkill" + sfx + ", AITemperament" + sfx + ", AIRubberband" + sfx +
                    ", PlayerGridPosition, CashPrize, coalesce(Level, 0), coalesce(CareerEventStyle, 0), "
-                   "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0) from Events where HorizonEventID = ?",
+                   "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0), coalesce(TargetClass, 0) from Events where HorizonEventID = ?",
                {horizon_id},
                [&](sqlite3_stmt* s) {
                  found = true;
@@ -101,6 +110,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  out.style = int(i64(s, 7));
                  out.career_type = int(i64(s, 8));
                  out.upgrade_ai = i64(s, 9) != 0;
+                 out.target_class = int(i64(s, 10));
                },
                error))
     return false;
@@ -131,7 +141,8 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                [&](sqlite3_stmt* s) { out.prize_car = i64(s, 0); }, error))
     return false;
   if (!db.each("select p.ID, p.Ordinal, coalesce(c.MediaName, ''), p.AIPlayerID, coalesce(a.Name, ''), "
-               "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0) "
+               "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0), "
+               "coalesce(c.PerformanceIndex, 0) "
                "from EventParticipants p left join AIPlayers a on a.Id = p.AIPlayerID "
                "left join Data_Car c on c.Id = p.Ordinal where p.EventID = ? order by p.ID",
                {ev},
@@ -145,6 +156,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  o.skill_modifier = int(i64(s, 5));
                  o.aggro_modifier = int(i64(s, 6));
                  o.rubberband_modifier = int(i64(s, 7));
+                 o.performance_index = d(s, 8);
                  out.opponents.push_back(std::move(o));
                },
                error))

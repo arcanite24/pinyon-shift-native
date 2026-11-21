@@ -1541,6 +1541,7 @@ int run_drive(int argc, char** argv) {
   // `why` (the drive goes on in free roam).
   auto start_race = [&](const std::string& id, std::string& why) {
     race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
+    race_options.player_car = car;  // its stock PI for the AI upgrades (interim: not the garage row)
     auto r = std::make_unique<carview::RaceView>(bake_dir);
     if (!r->open(world_dir.parent_path().parent_path().parent_path(), id, race_options, why)) return false;
     race = std::move(r);

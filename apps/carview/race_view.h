@@ -42,6 +42,10 @@ class RaceView {
     // the specification side's export), so the rubber bands see the
     // oracle's gaps. Empty: no replay.
     std::filesystem::path replay;
+    // The player's car for the AI upgrades (SPEC-RACE-AI, AI car upgrades):
+    // its raw PerformanceIndex, or < 0 to take `player_car`'s stock row.
+    std::string player_car;
+    double player_pi = -1;
   };
   explicit RaceView(std::filesystem::path bake_dir);
   ~RaceView();
@@ -103,6 +107,7 @@ class RaceView {
     bool far = false;
     float traction_cap = 1;  // drive::ai_traction's state
     drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
+    double upgrade_t = 0;        // AI car upgrades: > 0 up, < 0 down (fraction of the range)
   };
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
   std::string name_of(size_t i) const;
