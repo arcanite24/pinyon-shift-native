@@ -60,8 +60,17 @@ then `./carview`, with the play folder in
 
 ## Android
 
-Not released yet. Setup will run on a computer, and the play folder will
-be copied to the device.
+A preview build for arm64 phones and handhelds with Vulkan 1.1 (Android
+10 or later). It hasn't been tested on a device yet.
+
+1. Run setup on a computer (Windows or Linux steps above) to make the play
+   folder.
+2. Install `shift-drive-arm64.apk` on the device, for example with
+   `adb install shift-drive-arm64.apk`.
+3. Copy the whole play folder to the device as
+   `Android/data/net.shiftengine.drive/files/play`, for example with
+   `adb push play /sdcard/Android/data/net.shiftengine.drive/files/`.
+4. Start Shift Drive. A pad is the easiest way to play.
 
 ## Controls
 
@@ -80,8 +89,9 @@ be copied to the device.
 | Radio station | , and . | D-pad left and right |
 | Hide or show the HUD | H | |
 
-The pause menu has the map, the races, the car picker, upgrades, the
-Autoshow, your career page and reset to road.
+The pause menu has the map, the races, the car picker, upgrades, paint,
+the 1000 Club, the Autoshow, your career page, settings and reset to
+road. Settings take effect the next time you start.
 
 ## Your save
 

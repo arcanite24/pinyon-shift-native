@@ -1439,6 +1439,10 @@ int run_drive(int argc, char** argv) {
     std::vector<std::filesystem::path> where;
     if (const char* p = std::getenv("SHIFT_PLAY_DIR")) where.emplace_back(p);
     if (const char* b = SDL_GetBasePath()) where.emplace_back(b);
+#ifdef SDL_PLATFORM_ANDROID
+    // The app's external files folder (Android/data/<app>/files/play).
+    if (const char* x = SDL_GetAndroidExternalStoragePath()) where.emplace_back(std::filesystem::path(x) / "play");
+#endif
     if (char* pref = SDL_GetPrefPath("shift-engine", "play")) {
       where.emplace_back(pref);
       SDL_free(pref);

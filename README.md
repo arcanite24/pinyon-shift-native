@@ -955,14 +955,17 @@ the interim noted here until a later polish sweep.
   reference is 14.2 M fingerprints over 9.9 GiB). The Linux zip unpacks
   with `unzip` with its modes, and `carview --help` and `setup.sh --help`
   run from it. Interims:
-  - **Android:** the arm64 `build-android` carview (an executable, run
-    over adb) builds and passes the check (4.6 MiB stripped), but there is
-    no installable package. An APK needs carview as a shared library under
-    SDL's activity (SDL's Java glue, javac, d8, aapt2, zipalign and
-    apksigner are all on multivac, no Gradle needed), a play-folder home
-    in the app's external files folder, and a run on a device. The
-    emulator images are x86_64, and installing on the Odin is Brandon's
-    decision.
+  - **Android (2026-11-21):** `python tools/android-apk.py --build
+    build-android` makes `out/release/shift-drive-arm64.apk` (6.4 MiB;
+    package `net.shiftengine.drive`, min API 29, Vulkan 1.1). It holds
+    carview as `libmain.so` under SDL's activity (no Gradle: javac, d8,
+    aapt2, zipalign, then apksigner with a debug key made once in
+    `out/android`). It passes `apksigner verify` and the binary-content
+    check (7 files, 0 problems). The drive finds its play folder in
+    `Android/data/net.shiftengine.drive/files/play`.
+    `-DSHIFT_ANDROID_EXECUTABLE=ON` keeps the adb executable. Not yet run
+    on a device: the emulator images are x86_64, and installing on the
+    Odin is Brandon's decision. Touch controls aren't done (pad only).
   - **macOS:** not built. minivac has no CMake, Ninja or Vulkan SDK
     (MoltenVK) and its disk is 94 % full; installing them is Brandon's
     decision.

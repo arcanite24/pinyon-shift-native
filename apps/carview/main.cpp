@@ -166,7 +166,7 @@ int xds_png(int argc, char** argv) {
              : 1;
 }
 
-int main(int argc, char** argv) {
+static int carview_main(int argc, char** argv) {
   // No arguments: the drive with its play-test defaults (run_drive).
   if (argc == 1) {
     SDL_SetMainReady();
@@ -375,3 +375,13 @@ int main(int argc, char** argv) {
   SDL_Quit();
   return status;
 }
+
+int main(int argc, char** argv) { return carview_main(argc, argv); }
+
+#ifdef SDL_PLATFORM_ANDROID
+// SDL's activity looks SDL_main up in libmain.so (SDL_MAIN_HANDLED above
+// keeps main's own name on the desktops).
+extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv) {
+  return carview_main(argc, argv);
+}
+#endif

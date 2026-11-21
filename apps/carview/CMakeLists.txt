@@ -46,7 +46,7 @@ else()
   message(STATUS "carview shaders: no GLSL compiler found, using shaders/prebuilt")
 endif()
 
-add_executable(carview
+set(carview_sources
   main.cpp
   car_model.cpp
   hud.cpp
@@ -67,6 +67,16 @@ add_executable(carview
   settings.cpp
   settings_page.cpp
   ${shader_headers})
+# Android (M7): libmain.so for SDL's activity (tools/android-apk.py makes the
+# APK); SHIFT_ANDROID_EXECUTABLE keeps the executable run over adb.
+option(SHIFT_ANDROID_EXECUTABLE "Android: build carview as an executable, not the app's libmain.so" OFF)
+if(ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE)
+  add_library(carview SHARED ${carview_sources})
+  set_target_properties(carview PROPERTIES OUTPUT_NAME main)
+  target_link_libraries(carview PRIVATE android log)
+else()
+  add_executable(carview ${carview_sources})
+endif()
 target_include_directories(carview PRIVATE "${generated}")
 target_link_libraries(carview PRIVATE fh1data shift_cars shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_volk SDL3::SDL3-static shift_stb)
 if(NOT WIN32)
