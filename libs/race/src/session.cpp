@@ -154,6 +154,21 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       cap[i] = 1e9f;
       if (block < n && std::fabs(lane[i] - cross[block]) < kWidth + p.car_clearance)
         cap[i] = speed[block] + 0.5f * std::max(0.0f, float(best) - 5.0f);
+      // Ours (the spec leaves contact to the physics): behind a car that
+      // overlaps this car's lane within 40 m, keep a speed from which this
+      // car can still brake to the other's before closing to 4 m, so a car
+      // braking for a corner is not run into. b: a braking rate every car
+      // reaches (ours).
+      constexpr float kFollowRange = 40, kMinGap = 4, kBrake = 9;
+      for (size_t j = 0; j < n; ++j) {
+        if (j == i) continue;
+        const double gap = progress[j] - progress[i];
+        if (gap <= 0 || gap > kFollowRange) continue;
+        if (std::fabs(lane[i] - cross[j]) > kWidth + p.car_clearance) continue;
+        const float vj = std::max(0.0f, speed[j]);
+        const float room = std::max(0.0f, float(gap) - kMinGap);
+        cap[i] = std::min(cap[i], std::sqrt(vj * vj + 2 * kBrake * room));
+      }
     }
   }
 }
