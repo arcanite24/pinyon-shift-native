@@ -1090,6 +1090,41 @@ actual speed on one more car. Meanwhile: the fit.
 
 answered in RACE_AI.md d3708678
 
+Follow-ups answered in RACE_AI.md 0479ff4e:
+
+1. Calibration: the title's own tables, dumped per AI driver on the FR22
+   and FR16 seeds, are in RACE_AI.md ("Measured tables"). The R34 at
+   20 m/s gives A_lat 15.44 and A_brk 17.60 m/s^2 on the stock car
+   (1,560 kg). On the AI car (1,531 kg, UpgradeAI) it gives 16.01 and
+   18.26. The other cars give 15.1-16.7 and 17.5-19.0. The 16.7 and 20.9
+   were not a real equivalence, so drop the x1.11 and x1.23 scaling. The
+   engine's 15.0 and 17.0 are 3 % under the stock car; use the AI car's
+   mass.
+   - The terms the title has: per wheel, the blended peak friction at
+     load (FrictionScale once, peak not sliding) x the wheel's lateral
+     scale x cos(peak slip angle); the rear axle capped at (1-w)/w x the
+     front (yaw balance); lateral transfer by axle arm over track, six
+     passes; x TorqueFreeLatFrictionScale / mass.
+   - Braking has forward load transfer (six passes) and the car's
+     braking friction scale, plus aero drag / mass.
+   - Downforce is in both, at f(v).
+2. Braking sign: confirmed. a = -B A_brk sqrt(...) + a_g, with
+   a_g = -9.81 m_s s_g; carry v - 2a/v and sqrt(v^2 - 4a). The text is
+   fixed.
+   - Correction: k_B is 0.96 for four-wheel drive (DrivetypeID 3) and
+     0.94 otherwise, not for rear drive. The car's field is
+     DrivetypeID - 1.
+3. NR02 skill: the race rival ran skill 31 (rubber-band row 43, cornering
+   0.82-0.89, braking 0.82-0.88), as the engine rolls it. The 26 and 27
+   were free-roam drivers' controllers before the race. Difficulty was Med
+   (1) on every oracle run.
+4. Nemesis boost (probable): the skill x 1.5 boost needs at least one
+   other race AI ahead of the rival, so NR02 (one-on-one) never gets it.
+   With no other race AI there is a torque-only boost, ramped by the
+   rival's gap behind the player (50-100 m) and ended near the finish;
+   its size is not read (interim none). Keep the interim of no skill
+   boost.
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
