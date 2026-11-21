@@ -135,6 +135,32 @@ void wristband_row(ui::List& l, const RaceHud& r, float x, float y, float width,
                      .align = Align::kRight});
 }
 
+// Free roam's career chip: credits, then the wristband with its bar.
+void career_chip(ui::List& l, const DriveHud& st, float w, float s) {
+  const float cw = 260 * s, x1 = w - 26 * s, x0 = x1 - cw, y0 = 26 * s;
+  const bool band = !st.band_name.empty();
+  panel(l, x0, y0, x1, y0 + (band ? 62 : 38) * s, s, rgba(10, 12, 17, 175));
+  l.circle(x0 + 22 * s, y0 + 19 * s, 8 * s, kAccent);
+  l.text(x0 + 22 * s, y0 + 14.5f * s, "C", TextStyle{.size = 9 * s, .weight = 0.15f, .color = kInk, .align = Align::kCenter});
+  l.text(x0 + 38 * s, y0 + 12 * s, thousands(st.credits) + " CR",
+         TextStyle{.size = 14 * s, .weight = 0.12f, .color = kText});
+  if (!band) return;
+  const uint32_t c = band_colour(st.band_name);
+  l.text(x0 + 14 * s, y0 + 36 * s, st.band_name, TextStyle{.size = 8 * s, .weight = 0.12f, .tracking = 0.2f, .color = c});
+  if (st.band_hi > st.band_lo) {
+    char pts[48];
+    std::snprintf(pts, sizeof pts, "%s / %s", thousands(st.band_points).c_str(), thousands(st.band_hi).c_str());
+    l.text(x1 - 14 * s, y0 + 36 * s, pts,
+           TextStyle{.size = 8 * s, .weight = 0.11f, .color = kDim, .align = Align::kRight});
+  }
+  const float bx0 = x0 + 14 * s, bx1 = x1 - 14 * s, by = y0 + 49 * s;
+  l.rect(bx0, by, bx1, by + 5 * s, rgba(255, 255, 255, 36), 2.5f * s);
+  const float k = st.band_hi > st.band_lo
+                      ? float(std::clamp(double(st.band_points - st.band_lo) / double(st.band_hi - st.band_lo), 0.0, 1.0))
+                      : 1.0f;
+  l.rect(bx0, by, std::max(bx0 + 5 * s, bx0 + (bx1 - bx0) * k), by + 5 * s, c, 2.5f * s);
+}
+
 void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, double t) {
   const float x0 = 26 * s, y0 = 26 * s;
   if (r.phase == RaceHud::kGrid || r.phase == RaceHud::kCountdown) {
@@ -398,6 +424,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   const bool menu = !st.menu_title.empty() || !st.menu.empty();
   if (st.driving) {
     if (st.race) race_panels(l, *st.race, w, h, s, st.time);
+    else if (st.credits >= 0 && !menu) career_chip(l, st, w, s);
     if (!(st.race && st.race->phase == RaceHud::kFinished)) dial(l, st, w, h, s);
   }
   if (!st.toast.empty() && !menu) {

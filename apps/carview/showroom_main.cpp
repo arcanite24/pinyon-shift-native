@@ -2987,6 +2987,15 @@ int run_drive(int argc, char** argv) {
           }
         }
         if (!race_line) d.toast = banner;
+        // The career chip (free roam): credits and the wristband.
+        d.credits = career.credits;
+        if (!wristbands.levels.empty()) {
+          const int li = wristbands.level_index(career.wristband_points);
+          d.band_points = career.wristband_points;
+          d.band_lo = li >= 0 ? wristbands.levels[size_t(li)].first : 0;
+          d.band_hi = size_t(li + 1) < wristbands.levels.size() ? wristbands.levels[size_t(li + 1)].first : -1;
+          if (li >= 0) d.band_name = carview::game_text(wristbands.levels[size_t(li)].second) + " WRISTBAND";
+        }
         d.menu_title = st.menu_title;
         d.menu = st.menu;
         d.menu_selected = st.menu_selected;

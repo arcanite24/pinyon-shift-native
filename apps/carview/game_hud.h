@@ -51,6 +51,11 @@ struct DriveHud {
   int menu_selected = 0;
   std::string menu_footer = "ENTER SELECT   ESC BACK";
   double time = 0;              // s, for the animations
+  // The career chip in free roam (top right; credits < 0: none): credits,
+  // the wristband's name, points, its threshold and the next's (-1: top).
+  int64_t credits = -1;
+  std::string band_name;
+  int band_points = 0, band_lo = 0, band_hi = -1;
 };
 
 // Builds the HUD for a w x h screen into `out` (appended).
