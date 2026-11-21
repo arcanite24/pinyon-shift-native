@@ -619,6 +619,10 @@ reads 16.1 / 18.7 ms on the same GPU (probably the slower CPU taking
 the shared power budget), so bench only optimised builds. The Deck
 wasn't rechecked.
 
+With the vector HUD (`--bench --hud`, 2026-11-21, two runs): low GPU p50
+11.5 and 11.0, p95 12.9 and 14.0, max 15.9 ms; the UI pass 0.19-0.20 ms
+(0.14 on high).
+
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
 (1.4 ms) and the sky dome (0.6 ms). It does not follow the resolution

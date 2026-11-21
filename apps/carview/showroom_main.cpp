@@ -3229,6 +3229,8 @@ int run_drive(int argc, char** argv) {
           showroom.set_braking(brake_glow(vehicle));
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), 2 * drive::Vehicle::kStep));
+          // --hud: the HUD's cost (its build on the CPU, the UI pass on the GPU).
+          if (hud) set_hud(int(width), int(height), race ? race_banner() : intro);
           const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
           double rec = 0, gpu = 0;
           if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
