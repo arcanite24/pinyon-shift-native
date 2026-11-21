@@ -131,18 +131,20 @@ void brush(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour)
 // scene crops it with a second, offset copy, here the strip's left part
 // and its right end): a flat rect without the texture.
 constexpr uint32_t kPillGrey = rgba(33, 33, 33);  // the bars' material, 0.13
-void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, bool second = false) {
+void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, bool second = false,
+          const char* texture = nullptr, float texels = 1024) {
   std::array<float, 4> uv;
-  if (!ui_texture(second ? "DIRTMASKS/HUD/HUDPILL02" : "DIRTMASKS/HUD/HUDPILL01", uv)) {
+  if (!texture) texture = second ? "DIRTMASKS/HUD/HUDPILL02" : "DIRTMASKS/HUD/HUDPILL01";
+  if (!ui_texture(texture, uv)) {
     l.rect(x0, y0, x1, y1, colour == kPillGrey ? kBlack60 : colour);
     return;
   }
   const float texel = (y1 - y0) / 26.0f;  // px per texel
   const float ty0 = y0 - 3 * texel, ty1 = y1 + 3 * texel;
   const float cap = std::min(12 * texel, 0.5f * (x1 - x0));
-  const float du = (uv[2] - uv[0]) / 1024.0f;
+  const float du = (uv[2] - uv[0]) / texels;
   const float body = (x1 - cap - x0) / texel;  // texels
-  l.image(x0, ty0, x1 - cap, ty1, {uv[0], uv[1], uv[0] + du * std::min(body, 1012.0f), uv[3]}, colour);
+  l.image(x0, ty0, x1 - cap, ty1, {uv[0], uv[1], uv[0] + du * std::min(body, texels - 12), uv[3]}, colour);
   l.image(x1 - cap, ty0, x1, ty1, {uv[2] - du * 12, uv[1], uv[2], uv[3]}, colour);
 }
 
@@ -201,8 +203,16 @@ void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float
                uint32_t colour, const std::string& text, bool bottom = true) {
   auto Y = [&](float y) { return bottom ? g.B(y) : g.T(y); };
   const float s = g.s;
-  l.rect(g.L(x0), Y(y0), g.L(x1), Y(y1), kBlack60);
-  const float cy = 0.5f * (Y(y0) + Y(y1)), cx = g.L(x0) + 16 * s;
+  // 925_PAUSE_MENU's help item: DIRTMASKS\PILL01 (512 wide) tinted 0.13
+  // grey, its PILLPIN tab (16 px) under the left end.
+  std::array<float, 4> pin;
+  if (ui_texture("DIRTMASKS/PILL01", pin)) {
+    pill(l, g.L(x0), Y(y0), g.L(x1), Y(y1) - 10 * s, kPillGrey, false, "DIRTMASKS/PILL01", 512);
+    if (ui_texture("DIRTMASKS/PILLPIN", pin)) l.image(g.L(x0), Y(y1) - 14 * s, g.L(x0) + 16 * s, Y(y1) + 2 * s, pin, kPillGrey);
+  } else {
+    l.rect(g.L(x0), Y(y0), g.L(x1), Y(y1), kBlack60);
+  }
+  const float cy = 0.5f * (Y(y0) + Y(y1) - 10 * s), cx = g.L(x0) + 16 * s;
   std::array<float, 4> uv;
   if (ui_texture(std::string("CONTROLLER/") + face + "_BUTTON", uv)) {
     l.image(cx - 11 * s, cy - 11 * s, cx + 11 * s, cy + 11 * s, uv);  // 22 px (925_PAUSE_MENU BUTTON_LOGO)
