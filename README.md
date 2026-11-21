@@ -787,10 +787,29 @@ the interim noted here until a later polish sweep.
 - **Autoshow and paint (SPEC-AUTOSHOW-PAINT interims).** The pause menu's
   autoshow is one list (class, then index; left and right jump a class)
   instead of the make carousel, of the cars the bake has; the offer
-  visibility rule is not applied (on the disc alone the 10 offer-only cars
-  are listed); the bought car takes its first colour (no colour bar); no
+  rule hides unowned pack cars (127 listable on the disc, 200 with the 21
+  packs); the bought car takes its first colour (no colour bar); no
   tutorial list. A garage car is drawn in its stored colour Sequence; the
   paint shop and player liveries are not done.
+- **Career page and Rally (SPEC-V4-CONTENT interims).** The pause menu's
+  career page lists the imported records (level, credits, races, garage,
+  1000 Club challenges, Rally XP, level, events, stages, wins and
+  winnings) and the state root's packs. It replaces the game's career and
+  marketplace screens and changes nothing. Rally is shown, not yet driven.
+  Checked so far on the staged world (`out/world/rally`, from the state
+  copy's Rally package; the zips need the engine's extractor): the
+  ColoradoDirt `.col` parses with the Colorado reader (route 24's start,
+  surfaces 68 and 69), and 29 of the 36 routes have a loose AI line
+  (route 24 among them). Still to do for a stage:
+  - The world's file names come from its folder, not the literal
+    `Colorado`: `.col`, `.pvs`, `.nav` and the `coloradoout.` model prefix.
+  - The game root is passed explicitly instead of three `parent_path()`
+    calls.
+  - Rally events are read from the merged v4 database. Use it as a
+    fallback after the disc's, so the M5 grids don't move.
+  - AI lines are read from the loose folder.
+  - Collectibles, traffic and the map are off in ColoradoDirt.
+  - The stage finishes at progress 1, with the 49-driver timed field.
 - **Race AI speed planner (SPEC-RACE-AI Speed planning, Q53).** Each car
   plans from its own lateral, braking and drive capacity tables (40 speeds,
   from the engine's tyre model at 0.98 of the car's mass), the line's
