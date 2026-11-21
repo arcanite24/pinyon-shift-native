@@ -770,7 +770,11 @@ the interim noted here until a later polish sweep.
   full fields, 5 to 10 s each) and the Mini's ride. Interims: the AI
   upgrade target uses the player's stock PerformanceIndex, not the garage
   row, and offset 0 (the seed field is open); the braking gap (40 m, 14
-  m/s^2, 4 m) is ours. Headless runs with `--async-stream` or `--bench` outrun the background
+  m/s^2, 4 m) is ours. A traced reset (FR01 seed 2, the Charger at 700
+  m): the car drifts 2 m right of its line at 50 m/s with the steer near
+  0, touches the dirt edge's step and spins. Tried and dropped: a
+  cross-track steering term (k 1 unstable, k 0.3 no better), a 25 m pass
+  trigger (FR24 worse), a flat 0.3 upgrade for every car. Headless runs with `--async-stream` or `--bench` outrun the background
   gather and fall off the collision (the gate runs synchronously).
 - **Race AI interims (ours where the spec has none).** The steer is capped
   at the pad's speed-narrowed lock (past it the fronts slide wide); a car
