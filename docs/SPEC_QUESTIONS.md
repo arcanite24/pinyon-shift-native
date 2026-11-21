@@ -1181,6 +1181,31 @@ AI auto-upgrade follow-up answered in RACE_AI.md f16fbf95 and 0e634b9a
   0.75, and s = 0.3 would wrongly speed up the Corvette. FR22's mean
   (about 0.27) is close to 0.3, but the RS4 is detuned.
 
+Field-compression follow-up answered in RACE_AI.md ce706361 ("Catch-up",
+"What else compresses the field"): no such thing beyond the
+player-relative rules.
+
+1. No torque or speed boost while behind (confirmed): DistBehindFor-
+   TorqueBoost is 0 on skill rows 1-80 and FarBehindTorqueBoost is 1.0
+   on every row. On the FR24, FR01 and NR02 traces AI torque never
+   exceeds 1.000; the values below 1 are torque cuts over 140 m ahead.
+2. Catch-up is measured to the player (confirmed in code and traces): on
+   FR24/FR01/FR22 it was on only while the AI was behind the player in
+   place (119/709, 159/593, 1,420/3,488 samples), never while ahead of
+   the player however far behind the leading AI.
+3. Row 6: rubber-banding from 10 m ahead; torque cut 140-500 m, factor
+   0.4; catch-up on at 60 + 20n m, off at 40 + 20n m (n = places behind
+   the player), CatchUpFactor 0.8. While on: b' = b + 0.8 (1.0 - b),
+   c' = c + 0.8 (1.25 - c), a pull and not a multiplier (skill 50 at its
+   maxima: 0.953 and 1.14). Before that, any AI more than 20 m behind
+   the player already sits at its row's maxima (0.763 / 0.700), every
+   sample in the traces. The trace's scalars are the rolled ones;
+   catch-up writes the pulled values to the planner.
+- So the oracle's 3.8 s spread comes from compression around the
+  player from both sides. A 10-15 s engine tail points at a missing or
+  weaker piece: the 20 m maxima step, the pull form, the 20 m per place,
+  or the torque cut and mistakes on the cars ahead.
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
