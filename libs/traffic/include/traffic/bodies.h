@@ -83,6 +83,12 @@ class Bodies {
   const drive::Vehicle* body(uint32_t car) const;
   drive::Vehicle* body(uint32_t car);
   size_t count() const { return bodies_.size(); }
+  double torque_scale() const { return o_.torque_scale; }
+  // Every body, for a contact pass with other cars.
+  template <class F>
+  void for_each(F f) {
+    for (auto& [id, b] : bodies_) f(*b.v);
+  }
   int contacts() const { return contacts_; }  // since the start
   // Contacts with the player's car since the start, and the largest
   // impulse one of them gave (N s).

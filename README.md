@@ -218,6 +218,18 @@ the HUD panel: a station's after 1 s for 4 s, RADIO OFF at once, a new track
 RMS, the game's 0.08 to 0.10), about 15 dB over our idling engine. `--no-radio` turns it off; headless, it plays with
 `--audio-out`, and `--radio-press <s>` presses D-pad right every s seconds.
 
+**An informal race (M5 groundwork, before SPEC-EVENTS).** `--ai N --ai-line
+<oracle-lap>/lap.jsonl` puts N AI cars of the same car on the oracle's line
+(`drive/ai_driver.h`), the player at the back of a staggered grid in two
+lanes. After a 3 s count the HUD shows the place, the race time and the
+metres to go, by distance along the line, and the result at the end of
+the line. Cars touch each other, the player and traffic bodies through
+`drive/contact.h` (the box contact traffic used, moved to libs/drive and
+given a normal chosen from the step before, so closing at 300 km/h does
+not pass through). The save is not overridden by a race start: `--ai`
+places the player on the grid. For example:
+`carview --drive --ai 7 --ai-line <oracle-lap>/lap.jsonl`.
+
 **Traffic.** Free roam has the game's traffic (SPEC-TRAFFIC; `libs/traffic`):
 the road map in `colorado.nav`, the freeroam car list and density table of
 `AIOpenWorld.xml`, and the registry's spawning and driving values. Around
@@ -716,6 +728,11 @@ the interim noted here until a later polish sweep.
   the idling engine; ours is about 15 dB, because our idle (0.022 RMS) is
   louder than the game's (0.008). Raising the radio clips under throttle
   (peak 1.12 at 1.8 times), so the engine's own level wants the look.
+- **The informal race.** One point-to-point run of the oracle's line,
+  no laps, gates or checkpoints; the time is from the count's end and
+  the finish is the line's end. AI cars are the player's car, hold still
+  further than 240 m from the player (the collision is gathered round the
+  player) and are not on the minimap. A false start is allowed.
 - **AI drivers (before SPEC-RACE-AI).** Ours: pure pursuit on the line
   with a blind lane offset, the line's speed times a skill, proportional
   pedals. No avoidance between cars or of walls (in the 8-car run one car

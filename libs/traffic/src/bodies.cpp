@@ -1,5 +1,7 @@
 #include "traffic/bodies.h"
 
+#include "drive/contact.h"
+
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -9,43 +11,6 @@ namespace traffic {
 namespace {
 
 using drive::Vec3;
-
-// A body's box on the ground plane: centre, unit forward and right, half
-// length and width, and its height band.
-struct Box {
-  Vec3 c;
-  double fx, fz, rx, rz, hl, hw, y0, y1;
-};
-
-Box box_of(const drive::Vehicle& v) {
-  const auto& p = v.params();
-  const Vec3 local{0, p.sill_height + 0.5 * p.size.y, p.centre_of_mass.z};
-  Box b;
-  b.c = v.position() + drive::rotate(v.orientation(), local);
-  const Vec3 f = drive::rotate(v.orientation(), {0, 0, 1});
-  const double l = std::max(1e-6, std::hypot(f.x, f.z));
-  b.fx = f.x / l, b.fz = f.z / l;
-  const auto r = right_of(b.fx, b.fz);
-  b.rx = r[0], b.rz = r[1];
-  b.hl = 0.5 * p.size.z, b.hw = 0.5 * p.size.x;
-  b.y0 = b.c.y - 0.5 * p.size.y, b.y1 = b.c.y + 0.5 * p.size.y;
-  return b;
-}
-
-// The corners of a box (x, z).
-std::array<std::array<double, 2>, 4> corners(const Box& b) {
-  std::array<std::array<double, 2>, 4> out;
-  int k = 0;
-  for (double sl : {-1.0, 1.0})
-    for (double sw : {-1.0, 1.0})
-      out[size_t(k++)] = {b.c.x + b.fx * b.hl * sl + b.rx * b.hw * sw, b.c.z + b.fz * b.hl * sl + b.rz * b.hw * sw};
-  return out;
-}
-
-bool inside(const Box& b, double x, double z) {
-  const double dx = x - b.c.x, dz = z - b.c.z;
-  return std::fabs(dx * b.fx + dz * b.fz) <= b.hl && std::fabs(dx * b.rx + dz * b.rz) <= b.hw;
-}
 
 }  // namespace
 
@@ -129,59 +94,8 @@ void Bodies::hold_lane(drive::Vehicle& v, double target, const std::array<double
 }
 
 bool Bodies::collide(drive::Vehicle& a, double scale_a, drive::Vehicle& b, double scale_b) {
-  const Box A = box_of(a), B = box_of(b);
-  if (A.y1 < B.y0 || B.y1 < A.y0) return false;
-  if (std::hypot(A.c.x - B.c.x, A.c.z - B.c.z) > A.hl + A.hw + B.hl + B.hw) return false;
-  // Separating axes: both boxes' forward and right.
-  const double axes[4][2] = {{A.fx, A.fz}, {A.rx, A.rz}, {B.fx, B.fz}, {B.rx, B.rz}};
-  double depth = 1e30;
-  double nx = 0, nz = 0;
-  for (const auto& ax : axes) {
-    auto extent = [&](const Box& q) {
-      return q.hl * std::fabs(q.fx * ax[0] + q.fz * ax[1]) + q.hw * std::fabs(q.rx * ax[0] + q.rz * ax[1]);
-    };
-    const double dist = (B.c.x - A.c.x) * ax[0] + (B.c.z - A.c.z) * ax[1];
-    const double overlap = extent(A) + extent(B) - std::fabs(dist);
-    if (overlap <= 0) return false;
-    if (overlap < depth) {
-      depth = overlap;
-      const double s = dist < 0 ? -1 : 1;
-      nx = ax[0] * s, nz = ax[1] * s;  // from A towards B
-    }
-  }
-  // The contact point: the corners of each box inside the other.
-  double px = 0, pz = 0;
-  int n = 0;
-  for (const auto& c : corners(B))
-    if (inside(A, c[0], c[1])) px += c[0], pz += c[1], ++n;
-  for (const auto& c : corners(A))
-    if (inside(B, c[0], c[1])) px += c[0], pz += c[1], ++n;
-  if (n == 0) px = 0.5 * (A.c.x + B.c.x), pz = 0.5 * (A.c.z + B.c.z), n = 1;
-  const Vec3 point{px / n, 0.5 * (std::max(A.y0, B.y0) + std::min(A.y1, B.y1)), pz / n};
-  const Vec3 normal{nx, 0, nz};
-  const double ia = a.inverse_mass_along(point, normal, scale_a), ib = b.inverse_mass_along(point, normal, scale_b);
-  // Separation, shared by inverse mass.
-  const double ma = 1 / a.params().mass, mb = 1 / b.params().mass;
-  const double push = std::max(0.0, depth - 0.01);
-  a.translate(normal * (-push * ma / (ma + mb)));
-  b.translate(normal * (push * mb / (ma + mb)));
-  const Vec3 rel = b.point_velocity(point) - a.point_velocity(point);
-  const double vn = drive::dot(rel, normal);
-  if (vn >= 0) return true;
-  const double j = -(1 + o_.restitution) * vn / (ia + ib);
-  a.apply_impulse(point, normal * -j, scale_a);
-  b.apply_impulse(point, normal * j, scale_b);
-  // Friction along the contact, at most friction x j.
-  Vec3 t = rel - normal * vn;
-  t.y = 0;
-  const double tl = std::sqrt(drive::dot(t, t));
-  if (tl > 1e-6) {
-    t = t * (1 / tl);
-    const double it = a.inverse_mass_along(point, t, scale_a) + b.inverse_mass_along(point, t, scale_b);
-    const double jt = std::min(o_.friction * j, tl / it);
-    a.apply_impulse(point, t * jt, scale_a);
-    b.apply_impulse(point, t * -jt, scale_b);
-  }
+  double j = 0;
+  if (!drive::car_contact(a, scale_a, b, scale_b, {o_.restitution, o_.friction}, &j)) return false;
   largest_ = std::max(largest_, j);
   return true;
 }

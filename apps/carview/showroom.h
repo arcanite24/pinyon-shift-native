@@ -286,6 +286,7 @@ class Showroom {
     float model[16];
   };
   void set_instances(std::vector<Instance> list) { instances_ = std::move(list); }
+  void add_instances(const std::vector<Instance>& more) { instances_.insert(instances_.end(), more.begin(), more.end()); }
   size_t instance_count() const { return instances_.size(); }
   size_t world_texture_count() const { return world_textures_.size(); }
   // The world draws the last frame's shadow pass drew (0 without shadows).

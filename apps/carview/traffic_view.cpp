@@ -216,6 +216,31 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
   host_.set_instances(std::move(list));
 }
 
+void TrafficView::contact_bodies(std::vector<drive::ContactBody>& out, int group) {
+  if (!bodies_) return;
+  const double scale = bodies_->torque_scale();
+  bodies_->for_each([&](drive::Vehicle& v) { out.push_back({&v, scale, group}); });
+}
+
+Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,
+                                  const drive::Vehicle& body) {
+  float pm[16];
+  drive::model_to_world(player_info, player, pm);
+  double pmd[16], world_to_player[16];
+  to_double(pm, pmd);
+  invert_affine(pmd, world_to_player);
+  float gm[16];
+  drive::model_to_world(guest.car(), body.orientation(), {0, 0, 0}, gm);
+  double gmd[16];
+  to_double(gm, gmd);
+  const drive::Vec3 at = body.position();
+  gmd[12] += at.x, gmd[13] += at.y, gmd[14] += at.z;
+  Showroom::Instance in;
+  in.car = &guest;
+  multiply(world_to_player, gmd, in.model);
+  return in;
+}
+
 std::string TrafficView::summary() const {
   if (!population_) return "traffic: off";
   const auto& st = population_->stats();

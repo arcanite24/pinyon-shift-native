@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 
+#include "drive/contact.h"
 #include "drive/vehicle.h"
 #include "showroom.h"
 #include "traffic/bodies.h"
@@ -44,6 +45,9 @@ class TrafficView {
   size_t bodies() const { return bodies_ ? bodies_->count() : 0; }
   size_t drawn() const { return drawn_; }
   std::string summary() const;
+  // The traffic bodies for a contact pass, in `group` (traffic with
+  // traffic and with the player is resolved in step()).
+  void contact_bodies(std::vector<drive::ContactBody>& out, int group);
 
  private:
   struct Guest {
@@ -71,5 +75,10 @@ class TrafficView {
   int uploads_ = 0;
   double guests_at_ = -1;  // the population time guests were last refreshed from step()
 };
+
+// Another car drawn with the host's camera: `guest`'s model where `body`
+// stands, in the player's car model frame.
+Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,
+                                  const drive::Vehicle& body);
 
 }  // namespace carview

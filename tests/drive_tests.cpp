@@ -12,6 +12,7 @@
 #include "drive/from_bake.h"
 #include "drive/mesh_ground.h"
 #include "drive/ai_driver.h"
+#include "drive/contact.h"
 #include "drive/oracle_lap.h"
 #include "drive/save.h"
 #include "drive/vehicle.h"
@@ -344,6 +345,34 @@ void test_ai_field() {
   CHECK(worst_lane_error < 1.5);
 }
 
+// Car-to-car contact: head-on and side-on at 300 km/h closing, one
+// contact pass a step; the cars never pass through each other.
+void test_contact_no_tunnelling() {
+  const drive::FlatGround ground;
+  auto run = [&](double heading_b, double bx, double bz, double speed_a, double speed_b, const char* what) {
+    drive::Vehicle a(test_car()), b(test_car());
+    a.launch({0, 0, 0}, 0, speed_a);  // towards +z
+    b.launch({bx, 0, bz}, heading_b, speed_b);
+    std::vector<drive::ContactBody> list{{&a, 1, 0}, {&b, 1, 0}};
+    const double side0 = bz != 0 ? bz : bx;
+    int touches = 0;
+    bool crossed = false;
+    for (int i = 0; i < int(3 / drive::Vehicle::kStep); ++i) {
+      a.step({}, ground);
+      b.step({}, ground);
+      touches += drive::resolve_contacts(list, {});
+      const double rel = bz != 0 ? b.position().z - a.position().z : b.position().x - a.position().x;
+      crossed |= rel * side0 < 0;
+    }
+    std::printf("contact %s: %d steps in contact, crossed %d\n", what, touches, int(crossed));
+    CHECK(touches > 0);
+    CHECK(!crossed);
+  };
+  run(3.14159265358979323846, 0, 40, 41.7, 41.7, "head-on");  // B towards -z
+  // T-bone: A drives into B's side (B across the road, still).
+  run(3.14159265358979323846 / 2, 0, 30, 83.3, 0, "side-on");
+}
+
 int main() {
   test_save();
   test_rest_pose();
@@ -356,6 +385,7 @@ int main() {
   test_model_to_world();
   test_oracle_lap();
   test_ai_field();
+  test_contact_no_tunnelling();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;
