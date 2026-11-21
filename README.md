@@ -36,7 +36,7 @@ readers, and a car drawn from the game's own files.
 | `libs/cars` | Cars (FORMAT-CARS): the install (disc, v4 title update, installed DLC packages in priority order), the merged car database (v4 `gamedb.slt` plus each package's patch databases), and the baked format `.shiftbake` with its writer and reader |
 | `apps/car-corpus` | Reproduces every count of FORMAT-CARS's Tests section over the player's files (`--check` fails on a mismatch) |
 | `apps/carbake` | Bakes every distinct car (240), its stock wheel, the tyre archives and the shared textures to `.shiftbake` files, deterministically and in parallel; `--dump` lists a bake |
-| `libs/audio` | Engine sound (SPEC-ENGINE-SOUND): the tuning XMLs (engine, harmonics, car model listener), FSB4 bank headers and XMA2 wave wrapping, the rpm map, crossfades, pitch and parameter curves, the loop index rule, a stereo mixer, and the bake to PCM with its reader |
+| `libs/audio` | Engine sound (SPEC-ENGINE-SOUND): the tuning XMLs (engine, harmonics, car model listener), FSB4 bank headers and XMA2 wave wrapping, the rpm map, crossfades, pitch and parameter curves, the loop index rule, a stereo mixer, and the bake to PCM with its reader; the radio (SPEC-RADIO): RadioSystem.xml and the sound-bank info files, the station schedules on one clock, the cycle and popup timing, and a player that streams the MPEG clips through dr_mp3 |
 | `libs/freeroam` | Free-roam collectibles (SPEC-FREEROAM-COLLECTIBLES): the discount signs and barn finds from `gamemodes.zip` and `GameObjs.xml`, the player's progress, the smash, rumour and discovery rules, the upgrade discount and the map projection |
 | `apps/soundbake` | Decodes each car's engine loops to 16-bit PCM under `out/sound/<car>/` with copies of its tuning files (FFmpeg, bake time only) |
 | `apps/carview` | SDL3 + Vulkan 1.3 car viewer: dynamic rendering, depth, 4x MSAA, orbit camera (mouse or gamepad), and a headless mode that renders offscreen to a PNG. `--bake` is the showroom over baked cars (our car shader and lighting, paint, livery masks, wheels, brakes, glass last) with a reference mode that renders at a reference camera and writes the car-coverage mask; `--world` draws one Colorado sector headless at a game camera and compares it with a capture |
@@ -162,6 +162,7 @@ placed props out, `--no-far` the far ring, `--no-trees` the tree sprites.
 | Pause menu: resume, map, change car, reset to road, quit | Esc | Start |
 | In the menu: choose, take, close | Up/Down (W/S), Enter or Space, Esc | D-pad, A, B or Start |
 | Map (the drive waits): close, zoom, pan | M; M or Esc, + and -, arrows | Back; B, LB and RB, D-pad |
+| Radio station: previous, next (Bass Arena, Pulse, Rocks, off) | , and . | D-pad left, right |
 | Chase or front view | V | |
 | Look around | | right stick |
 | Look back (held) | C | Y |
@@ -199,6 +200,22 @@ painted map. Unfound signs and barns show only with `--reveal`.
 `--distance <m>` adds to the total driven (a rumour sooner),
 `--no-collectibles` turns them off (`--bench` too), and `--map-png
 <prefix>` writes the map, a close-up and the minimap at the end of a run.
+
+**The radio.** Bass Arena, Pulse and Rocks play from the disc's
+`media/audio/radio` banks (SPEC-RADIO; `audio/radio.h`), on from the start
+on Bass Arena (the spec's interim). Clips resolve through the info files'
+`SoundBankIndex`; the MPEG frames are decoded as they play (dr_mp3), not
+baked. Each station has its own shuffled schedule: a track to its
+`IdentStart`, an ident, the next track at the ident's
+`OffsetStartNextTrack`, and a regular DJ line over the intro when one ends
+before `EventStart` (music ducked to `duckValue`). Every station runs on one
+clock while the radio is on and stops while it is off, so switching joins a
+station where it has got to. A change fades over
+`stationChangeFadeTimeUser` and shows the popup (logo, title, artist) above
+the HUD panel: a station's after 1 s for 4 s, RADIO OFF at once, a new track
+2 s after it starts. Our level: 1.8 times the files' levels, about 20 dB over
+the idling engine. `--no-radio` turns it off; headless, it plays with
+`--audio-out`, and `--radio-press <s>` presses D-pad right every s seconds.
 
 **Traffic.** Free roam has the game's traffic (SPEC-TRAFFIC; `libs/traffic`):
 the road map in `colorado.nav`, the freeroam car list and density table of
@@ -683,6 +700,14 @@ the interim noted here until a later polish sweep.
 - **Barn find 01 spawn.** A car placed off the road east of the Bugatti
   barn (1448, -5363) falls through the ground; the barn is reached from
   its road only through the rail. Worth a collision look.
+- **Radio details.** No snapshot levels (pause, loading, speed, place) and
+  no engine duck under DJ lines; no RADIO VOLUME, RADIO DJ or saved station
+  (the profile is not read yet); a clip's bytes are read on the main thread
+  when it starts (a 10 MB read for a long track: prefetch on a worker). The
+  popup is an opaque panel whose content fades (the overlay has no alpha),
+  in the HUD's 5x7 font, upper case; characters it lacks are left out.
+  Special, festival and story DJ lines and the 3D location stations are out
+  of M4's scope.
 
 ## Licence
 

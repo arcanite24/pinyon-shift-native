@@ -119,7 +119,7 @@ class Renderer {
   // Up to kOverlayLayers panels (the HUD, the minimap, the pause map), each
   // its own layer; they must not overlap. A layer is copied to the GPU's
   // buffer only when set again.
-  static constexpr int kOverlayLayers = 3;
+  static constexpr int kOverlayLayers = 4;
   void set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t height, int32_t x, int32_t y, int layer = 0);
 
   const std::string& device_name() const { return device_name_; }

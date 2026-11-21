@@ -50,4 +50,17 @@ HudImage draw_hud(const HudState& state, int scale);
 // ninth of it.
 int hud_scale(int height);
 
+// The radio's popup (SPEC-RADIO "HUD"): the station's logo, the track's
+// title and its artist on a pink label, right-aligned; RADIO OFF beside the
+// off logo. `alpha` fades the content over the panel (the overlay is
+// opaque). The logo is about 44 pixels tall at 720.
+struct RadioPopupState {
+  const uint8_t* logo = nullptr;  // straight-alpha RGBA, or null
+  uint32_t logo_width = 0, logo_height = 0;
+  std::string title, artist;
+  bool off = false;
+  double alpha = 1;
+};
+HudImage draw_radio_popup(const RadioPopupState& state, int height);
+
 }  // namespace carview

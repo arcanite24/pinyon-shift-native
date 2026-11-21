@@ -64,6 +64,13 @@ constexpr Glyph kFont[] = {
     {'[', {".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###."}},
     {']', {".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###."}},
     {'>', {".#...", "..#..", "...#.", "....#", "...#.", "..#..", ".#..."}},
+    {'&', {".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"}},
+    {'(', {"...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."}},
+    {')', {".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."}},
+    {'\'', {"..#..", "..#..", ".#...", ".....", ".....", ".....", "....."}},
+    {',', {".....", ".....", ".....", ".....", ".##..", "..#..", ".#..."}},
+    {'!', {"..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."}},
+    {'?', {".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.."}},
 };
 
 const Glyph* glyph(char c) {
@@ -99,6 +106,73 @@ struct Canvas {
 }  // namespace
 
 int hud_scale(int height) { return std::max(1, height / 300); }
+
+HudImage draw_radio_popup(const RadioPopupState& st, int height) {
+  const int scale = hud_scale(height);
+  auto upper = [](std::string s) {
+    for (char& ch : s) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+    return s;
+  };
+  const std::string title = upper(st.off ? std::string("radio off") : st.title), artist = upper(st.artist);
+  // The logo in screen pixels: 44 at 720, its aspect kept.
+  const int logo_h = st.logo && st.logo_height ? std::max(8, height * 44 / 720) : 0;
+  const int logo_w = logo_h ? int(int64_t(logo_h) * st.logo_width / st.logo_height) : 0;
+  // Font pixels: 4 of padding, lines of 11 (title) and 11 (artist label).
+  const int text_w = 6 * int(std::max(title.size(), st.off ? size_t(0) : artist.size())) + 8;
+  const int w_fp = std::max(text_w, (logo_w + scale - 1) / scale + 8);
+  const int logo_fp = logo_h ? (logo_h + scale - 1) / scale + 4 : 0;
+  const int h_fp = 4 + logo_fp + 11 + (st.off || artist.empty() ? 0 : 12) + 2;
+  HudImage img;
+  img.width = uint32_t(w_fp * scale);
+  img.height = uint32_t(h_fp * scale);
+  img.rgba.assign(size_t(img.width) * img.height * 4, 0);
+  Canvas c{img, scale};
+  static constexpr uint8_t kBack[3] = {18, 20, 24};
+  const double a = std::clamp(st.alpha, 0.0, 1.0);
+  auto fade = [&](const uint8_t rgb[3], uint8_t out[3]) {
+    for (int i = 0; i < 3; ++i) out[i] = uint8_t(std::lround(kBack[i] + (rgb[i] - kBack[i]) * a));
+  };
+  c.rect(0, 0, w_fp, h_fp, kBack);
+  if (logo_h) {
+    // Box-filtered into place, right-aligned, blended over the panel.
+    const int x0 = int(img.width) - 4 * scale - logo_w, y0 = 4 * scale;
+    for (int y = 0; y < logo_h; ++y)
+      for (int x = 0; x < logo_w; ++x) {
+        const uint32_t sx0 = uint32_t(int64_t(x) * st.logo_width / logo_w),
+                       sx1 = std::max(sx0 + 1, uint32_t(int64_t(x + 1) * st.logo_width / logo_w));
+        const uint32_t sy0 = uint32_t(int64_t(y) * st.logo_height / logo_h),
+                       sy1 = std::max(sy0 + 1, uint32_t(int64_t(y + 1) * st.logo_height / logo_h));
+        double acc[4] = {0, 0, 0, 0};
+        int n = 0;
+        for (uint32_t sy = sy0; sy < sy1 && sy < st.logo_height; ++sy)
+          for (uint32_t sx = sx0; sx < sx1 && sx < st.logo_width; ++sx, ++n) {
+            const uint8_t* p = st.logo + (size_t(sy) * st.logo_width + sx) * 4;
+            const double al = p[3] / 255.0;
+            for (int k = 0; k < 3; ++k) acc[k] += p[k] * al;
+            acc[3] += al;
+          }
+        if (!n || acc[3] <= 0) continue;
+        const double cover = acc[3] / n * a;
+        const int px = x0 + x, py = y0 + y;
+        if (px < 0 || py < 0 || px >= int(img.width) || py >= int(img.height)) continue;
+        uint8_t* q = &img.rgba[(size_t(py) * img.width + size_t(px)) * 4];
+        for (int k = 0; k < 3; ++k) q[k] = uint8_t(std::lround(q[k] + (acc[k] / acc[3] - q[k]) * cover));
+      }
+  }
+  static constexpr uint8_t kWhite[3] = {240, 242, 245}, kPink[3] = {226, 38, 128};
+  uint8_t col[3];
+  const int y_title = 4 + logo_fp;
+  fade(kWhite, col);
+  c.text(w_fp - 4 - 6 * int(title.size()) + 1, y_title + 2, title.c_str(), 1, col);
+  if (!st.off && !artist.empty()) {
+    const int lw = 6 * int(artist.size()) + 3, y = y_title + 11;
+    fade(kPink, col);
+    c.rect(w_fp - 4 - lw + 1, y, lw, 11, col);
+    fade(kWhite, col);
+    c.text(w_fp - 4 - 6 * int(artist.size()) + 1, y + 2, artist.c_str(), 1, col);
+  }
+  return img;
+}
 
 const char* PauseMenu::label(int item) {
   switch (item) {

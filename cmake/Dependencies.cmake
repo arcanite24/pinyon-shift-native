@@ -40,6 +40,16 @@ else()
   target_compile_options(shift_sqlite3 PRIVATE -w)
 endif()
 
+# dr_mp3 (public domain / MIT-0), pinned to the mp3-0.7.4 release: the radio
+# streams the disc's MPEG samples (SPEC-RADIO).
+FetchContent_Declare(dr_libs
+  GIT_REPOSITORY https://github.com/mackron/dr_libs.git
+  GIT_TAG aec2dd20667f54acfdb66031217df6d240f56c52
+  SOURCE_SUBDIR _no_cmake_)
+FetchContent_MakeAvailable(dr_libs)
+add_library(shift_dr_libs INTERFACE)
+target_include_directories(shift_dr_libs INTERFACE "${dr_libs_SOURCE_DIR}")
+
 if(SHIFT_BUILD_CARVIEW)
   # Vulkan headers and the volk loader: no Vulkan SDK needed to build.
   FetchContent_Declare(vulkan_headers

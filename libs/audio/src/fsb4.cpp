@@ -22,7 +22,7 @@ void tag(std::vector<uint8_t>& v, const char* t) { v.insert(v.end(), t, t + 4); 
 
 }  // namespace
 
-bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::string* error) {
+bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::string* error, uint64_t bank_size) {
   auto fail = [&](const char* what) {
     if (error) *error = what;
     return false;
@@ -47,7 +47,7 @@ bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::
     s.rate = int32_t(u32(bank, at + 52));
     s.channels = u16(bank, at + 62);
     s.offset = offset;
-    if (offset + s.bytes > bank.size()) return fail("sample data past the end of the bank");
+    if (offset + s.bytes > (bank_size ? bank_size : bank.size())) return fail("sample data past the end of the bank");
     out.push_back(std::move(s));
     offset = (offset + out.back().bytes + kAlign - 1) & ~uint64_t(kAlign - 1);
     at += record;

@@ -23,7 +23,10 @@ struct FsbSample {
   bool xma() const { return (mode & 0x01000000u) != 0; }
 };
 
-bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::string* error);
+// `bank_size`: the whole bank's size when `bank` is only its headers (a
+// large bank read in part); 0: `bank` is the whole bank.
+bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::string* error,
+               uint64_t bank_size = 0);
 
 // A RIFF WAVE with an XMA2WAVEFORMATEX header (format 0x166, one stream,
 // 2048-byte packets) around one sample's packets, which FFmpeg's xma2

@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <random>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -35,6 +36,7 @@
 #include <stb_image_write.h>
 
 #include "audio/bake.h"
+#include "audio/radio.h"
 #include "audio/xml.h"
 #include "hud.h"
 #include "process_time.h"
@@ -55,6 +57,8 @@
 #include "contact_log.h"
 #include "safe_reset.h"
 #include "map_view.h"
+#include "fh1data/archive.h"
+#include "fh1data/xds.h"
 #include "freeroam/collectibles.h"
 
 namespace carview {
@@ -1071,7 +1075,8 @@ void drive_usage() {
                "           --shadows off|low|high --view chase|front --hud --no-reverse-z\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
-               "  sound:   --sound <dir> | --no-sound\n"
+               "  sound:   --sound <dir> | --no-sound --no-radio --radio-press s (headless: D-pad right every\n"
+               "           s seconds); in the window , and . (D-pad left and right) change the station\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
                "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad\n"
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
@@ -1119,6 +1124,8 @@ int run_drive(int argc, char** argv) {
   // The engine sound (SPEC-ENGINE-SOUND), baked by soundbake.
   std::filesystem::path sound_dir = "out/sound", audio_out;
   bool sound = true, sound_given = false;
+  bool radio_on = true;
+  double radio_press_every = 0;
   // The play folder (tools/setup.py; README, Play the drive).
   std::filesystem::path play_dir;
   // Free-roam traffic (SPEC-TRAFFIC): on in the window with the world, off
@@ -1189,6 +1196,8 @@ int run_drive(int argc, char** argv) {
     else if (a == "--sound") sound_dir = next(), sound_given = true;
     else if (a == "--play") play_dir = next();
     else if (a == "--no-sound") sound = false;
+    else if (a == "--no-radio") radio_on = false;
+    else if (a == "--radio-press") radio_press_every = std::atof(next());
     else if (a == "--traffic") traffic_flag = 1;
     else if (a == "--no-traffic") traffic_flag = 0;
     else if (a == "--hour") hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
@@ -1436,6 +1445,16 @@ int run_drive(int argc, char** argv) {
   bool progress_loaded = false;
   MapView map_view;
   bool map_tried = false;
+  // The radio (SPEC-RADIO) also outlives car changes: its stations keep
+  // playing. The popup logos by station.
+  audio::RadioData radio_data;
+  std::unique_ptr<audio::Radio> radio;
+  bool radio_tried = false;
+  struct Logo {
+    std::vector<uint8_t> rgba;
+    uint32_t width = 0, height = 0;
+  };
+  std::map<std::string, Logo> radio_logos;
   for (bool again = true; again;) {
   again = false;
   {
@@ -1478,8 +1497,12 @@ int run_drive(int argc, char** argv) {
       for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
       // The engine sound: the baked loops, mixed at 48 kHz.
       constexpr int kAudioRate = 48000;
+      // Ours: the radio's level against the engine (SPEC-RADIO: about 20 dB
+      // over the idling engine), set from a headless idle capture.
+      constexpr double kRadioMaster = 1.8;  // idle engine RMS 0.022, radio 0.21
       audio::BakedSound baked_sound;
       std::unique_ptr<audio::EnginePlayer> engine_sound;
+      std::unique_ptr<audio::RadioPlayer> radio_player;
       if (sound && (!headless || !audio_out.empty())) {
         std::string sound_error;
         if (audio::load_baked_sound(sound_dir, car, baked_sound, &sound_error) &&
@@ -1617,6 +1640,39 @@ int run_drive(int argc, char** argv) {
               map_tried = true;
               std::string why;
               if (!map_view.open(game_root, &why)) std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
+            }
+          }
+          // The radio: read once, played with the sound (as the engine).
+          if (radio_on && sound && !bench && (!headless || !audio_out.empty())) {
+            const auto game_root = world_dir.parent_path().parent_path().parent_path();
+            if (!radio_tried) {
+              radio_tried = true;
+              std::string why;
+              if (audio::load_radio(game_root, radio_data, &why)) {
+                radio = std::make_unique<audio::Radio>(radio_data, std::random_device{}());
+                radio->select(radio_data.cycle[0]);  // Bass Arena (the spec's interim)
+                std::printf("radio: %zu stations in the cycle, %zu tracks, %zu voice clips\n", radio_data.cycle.size(),
+                            radio_data.music.size(), radio_data.vo.size());
+                std::string zwhy;
+                if (auto zip = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", &zwhy)) {
+                  const std::pair<const char*, const char*> kLogos[] = {
+                      {"Radio1", "RS_BassArena"}, {"Radio2", "RS_Pulse"}, {"Radio3", "RS_2Eleven"},
+                      {"Radio4_Silent", "RS_Off"}};
+                  for (const auto& [station, file] : kLogos) {
+                    auto r = zip->read(std::string("Hud/Radio/") + file + ".xds");
+                    if (!r.ok()) continue;
+                    auto x = fh1::decode_xds(r.data);
+                    if (x.levels.empty() || x.levels[0].rgba.empty()) continue;
+                    radio_logos[station] = {std::move(x.levels[0].rgba), x.levels[0].width, x.levels[0].height};
+                  }
+                }
+              } else {
+                std::fprintf(stderr, "carview: note: no radio: %s\n", why.c_str());
+              }
+            }
+            if (radio) {
+              radio_player = std::make_unique<audio::RadioPlayer>(*radio, kAudioRate);
+              radio_player->master = kRadioMaster;
             }
           }
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
@@ -2101,6 +2157,7 @@ int run_drive(int argc, char** argv) {
       // (The display name is a string-table key: the media name is shown.)
       const std::string intro = car + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
+      int hud_height = 0;  // the panel's, for the radio popup above it
       auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
@@ -2113,7 +2170,40 @@ int run_drive(int argc, char** argv) {
         const int scale = hud_scale(height);
         HudImage img = draw_hud(st, scale);
         const int margin = -8 * scale;
+        hud_height = int(img.height);
         renderer.set_overlay(std::move(img.rgba), img.width, img.height, margin, margin);
+      };
+      // The radio's popup (overlay layer 3), right-aligned above the HUD
+      // panel; redrawn when what it shows changes.
+      std::string popup_key;
+      auto set_radio_popup = [&](int height) {
+        const audio::Radio::Popup p = radio ? radio->popup() : audio::Radio::Popup{};
+        if (p.alpha <= 0 || p.station < 0) {
+          if (!popup_key.empty()) renderer.set_overlay({}, 0, 0, 0, 0, 3);
+          popup_key.clear();
+          return;
+        }
+        const auto& st = radio_data.stations[size_t(p.station)];
+        RadioPopupState ps;
+        ps.off = st.off;
+        if (p.track >= 0) ps.title = st.tracks[size_t(p.track)].title, ps.artist = st.tracks[size_t(p.track)].artist;
+        if (auto it = radio_logos.find(st.name); it != radio_logos.end())
+          ps.logo = it->second.rgba.data(), ps.logo_width = it->second.width, ps.logo_height = it->second.height;
+        ps.alpha = std::round(p.alpha * 16) / 16;
+        const std::string key = st.name + "|" + std::to_string(p.track) + "|" + std::to_string(ps.alpha) + "|" +
+                                std::to_string(height) + "|" + std::to_string(hud_height);
+        if (key == popup_key) return;
+        popup_key = key;
+        const int scale = hud_scale(height);
+        HudImage img = draw_radio_popup(ps, height);
+        renderer.set_overlay(std::move(img.rgba), img.width, img.height, -8 * scale,
+                             -(8 * scale + hud_height + 4 * scale), 3);
+      };
+      auto radio_press = [&](int dir) {
+        if (!radio) return;
+        radio->press(dir);
+        const auto& st = radio_data.stations[size_t(radio->selected())];
+        std::printf("t %.2f s: radio %s\n", vehicle.time(), st.off ? "off" : st.name.c_str());
       };
       // The maps (SPEC-FREEROAM-COLLECTIBLES): the minimap in the lower-left
       // corner (overlay layer 1, redrawn up to 15 times a second of drive
@@ -2370,13 +2460,21 @@ int run_drive(int argc, char** argv) {
           const auto t0 = std::chrono::steady_clock::now();
           const bool ok =
               s == 0 || step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()));
-          if (engine_sound && s > 0) {
-            // One physics step of sound, the inputs set once per step.
-            engine_sound->set(sound_inputs(front));
+          if (radio && radio_press_every > 0 && s > 0) {
+            const double t = vehicle.time(), was = t - drive::Vehicle::kStep;
+            if (std::floor(t / radio_press_every) > std::floor(was / radio_press_every)) radio_press(+1);
+          }
+          if ((engine_sound || radio_player) && s > 0) {
+            // One physics step of sound, the inputs set once per step; the
+            // radio adds to the engine.
             const int frames = int(std::lround(kAudioRate * drive::Vehicle::kStep));
             const size_t at = audio_track.size();
-            audio_track.resize(at + 2 * size_t(frames));
-            engine_sound->render(audio_track.data() + at, frames);
+            audio_track.resize(at + 2 * size_t(frames), 0.0f);
+            if (engine_sound) {
+              engine_sound->set(sound_inputs(front));
+              engine_sound->render(audio_track.data() + at, frames);
+            }
+            if (radio_player) radio_player->render(audio_track.data() + at, frames);
           }
           longest_step =
               std::max(longest_step, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -2396,6 +2494,7 @@ int run_drive(int argc, char** argv) {
                                  : vehicle.time() < kIntroSeconds ? intro
                                                                   : std::string());
             set_minimap(int(height), true);
+            set_radio_popup(int(height));
           }
           std::vector<uint8_t> rgba;
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
@@ -2424,6 +2523,11 @@ int run_drive(int argc, char** argv) {
         if (streamer)
           std::printf("longest step with its streaming: %.1f ms (%s gathers)\n", longest_step * 1000,
                       async_stream ? "background" : "synchronous");
+        if (radio) {
+          const auto& st = radio_data.stations[size_t(radio->selected())];
+          std::printf("radio: %s at the end, %.1f s on the radio clock\n", st.off ? "off" : st.name.c_str(),
+                      radio->clock());
+        }
         if (!audio_out.empty() && !audio_track.empty()) {
           float peak = 0;
           for (float x : audio_track) peak = std::max(peak, std::fabs(x));
@@ -2474,7 +2578,7 @@ int run_drive(int argc, char** argv) {
         double next_save = 30;  // s of drive time: the save is also written every 30 s
         // The engine sound's stream: about 60 ms queued ahead.
         SDL_AudioStream* audio_stream = nullptr;
-        if (engine_sound) {
+        if (engine_sound || radio_player) {
           const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kAudioRate};
           audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
           if (audio_stream) SDL_ResumeAudioStreamDevice(audio_stream);
@@ -2511,8 +2615,8 @@ int run_drive(int argc, char** argv) {
           map_zoom = 2;
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
-          renderer.set_overlay({}, 0, 0, 0, 0, 0);
-          renderer.set_overlay({}, 0, 0, 0, 0, 1);
+          for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+          popup_key.clear();
           save_now("map");
         };
         auto close_map = [&]() {
@@ -2599,6 +2703,8 @@ int run_drive(int argc, char** argv) {
               }
               if (e.key.key == SDLK_R) put_back();
               if (e.key.key == SDLK_M) open_map();
+              if (e.key.key == SDLK_COMMA) radio_press(-1);
+              if (e.key.key == SDLK_PERIOD) radio_press(+1);
               // V: SwitchCamera (the rig); without the rig, the front view.
               if (e.key.key == SDLK_V) {
                 if (have_rig) rig.cycle();
@@ -2640,13 +2746,17 @@ int run_drive(int argc, char** argv) {
               }
               if (e.key.key == SDLK_H) {
                 show_hud = !show_hud;
-                if (!show_hud) renderer.set_overlay({}, 0, 0, 0, 0), renderer.set_overlay({}, 0, 0, 0, 0, 1);
+                if (!show_hud)
+                  for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+                popup_key.clear();
                 minimap_at = -1;
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) open_map();
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT) radio_press(-1);
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) radio_press(+1);
               // The right shoulder is SwitchCamera (SPEC-CAMERAS: the default
               // layout); in the picker it pages forward. The left one opens
               // the picker and pages back.
@@ -2750,12 +2860,13 @@ int run_drive(int argc, char** argv) {
             SDL_SetWindowTitle(window, title);
           }
           if (audio_stream) {
-            engine_sound->set(sound_inputs(front));
+            if (engine_sound) engine_sound->set(sound_inputs(front));
             const int queued = SDL_GetAudioStreamQueued(audio_stream) / int(2 * sizeof(float));
             const int frames = int(0.06 * kAudioRate) - queued;
             if (frames > 0) {
-              audio_block.resize(2 * size_t(frames));
-              engine_sound->render(audio_block.data(), frames);
+              audio_block.assign(2 * size_t(frames), 0.0f);
+              if (engine_sound) engine_sound->render(audio_block.data(), frames);
+              if (radio_player) radio_player->render(audio_block.data(), frames);
               SDL_PutAudioStreamData(audio_stream, audio_block.data(), int(audio_block.size() * sizeof(float)));
             }
           }
@@ -2772,6 +2883,7 @@ int run_drive(int argc, char** argv) {
             }
           } else if (show_hud) {
             set_minimap(h, false);
+            set_radio_popup(h);
             char line[160] = "";
             if (picking)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
