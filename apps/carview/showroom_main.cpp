@@ -1889,12 +1889,13 @@ int run_drive(int argc, char** argv) {
   // finish, Continue leaves the race at the route's post-race spot and
   // Restart runs it again (SPEC-EVENT-REWARDS, Results screen).
   std::vector<std::string> event_ids;
+  std::map<std::string, std::string> event_names;  // id -> Events.Name reference
   if (!world_dir.empty() && colorado_world()) {
     std::vector<race::EventSummary> all;
     std::string e;
     if (race::list_events(game_root_of(), all, &e))
       for (const auto& ev : all)
-        if (ev.ribbon >= 0) event_ids.push_back(ev.horizon_id);
+        if (ev.ribbon >= 0) event_ids.push_back(ev.horizon_id), event_names[ev.horizon_id] = ev.name;
   } else if (!world_dir.empty()) {
     // Another world (ColoradoDirt): its stages, one per route file with a
     // loose AI line (SPEC-V4-CONTENT; the heats are route 24).
@@ -3620,8 +3621,18 @@ int run_drive(int argc, char** argv) {
           if (item == PauseMenu::kQuit) running = false;
         };
         auto set_event_label = [&]() {
-          menu.event_label = event_ids.empty() ? std::string("race (none)")
-                                               : "< race " + event_ids[event_pick] + " >";
+          if (event_ids.empty()) {
+            menu.event_label = "race (none)";
+            return;
+          }
+          // The event's name (string tables), its id without one.
+          const std::string& id = event_ids[event_pick];
+          std::string name = id;
+          if (auto it = event_names.find(id); it != event_names.end() && !it->second.empty()) {
+            const std::string t = carview::game_text(it->second);
+            if (!t.empty() && t.rfind("_&", 0) != 0) name = t;
+          }
+          menu.event_label = "< race: " + name + " >";
         };
         auto pick_event = [&](int by) {
           if (event_ids.empty()) return;

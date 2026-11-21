@@ -243,7 +243,7 @@ bool list_events(const std::filesystem::path& game_root, std::vector<EventSummar
   out.clear();
   return db.each(
       "select e.HorizonEventID, e.CareerTypeId, t.RibbonConfiguration, t.RouteId, r.NumLaps, "
-      "(select count(*) from EventParticipants p where p.EventID = e.Id) "
+      "(select count(*) from EventParticipants p where p.EventID = e.Id), coalesce(e.Name, '') "
       "from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId order by e.HorizonEventID",
       {},
       [&](sqlite3_stmt* s) {
@@ -254,6 +254,7 @@ bool list_events(const std::filesystem::path& game_root, std::vector<EventSummar
         e.route_id = int(i64(s, 3));
         e.laps = std::max(1, int(i64(s, 4)));
         e.opponents = int(i64(s, 5));
+        e.name = txt(s, 6);
         out.push_back(std::move(e));
       },
       error);

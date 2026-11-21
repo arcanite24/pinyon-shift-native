@@ -108,6 +108,7 @@ bool event_census(const std::filesystem::path& game_root, EventCensus& out, std:
 struct EventSummary {
   std::string horizon_id;
   int career_type = 0, ribbon = 0, route_id = 0, laps = 1, opponents = 0;
+  std::string name;  // Events.Name (a `_&N` reference)
 };
 bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error);
 
