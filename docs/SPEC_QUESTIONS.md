@@ -1014,6 +1014,24 @@ look down; (c) the factor is sin(F) / sin(F + ΔF) of the full angle, not
 a tangent; the heading spring damps ω − s · ψ' (as written it was +, 21°
 off in replay). Open: (d) the cockpit, the look spring.
 
+(d) the cockpit's interior colours and mirrors: answered in CARS.md
+62e6916c (horizon1-recomp, branch reimplementation-plan, "Cockpit
+interior and mirrors"), 2026-11-21. (1) No colour constant, database
+column or vertex colour: albedo = interior_LOD0 texel at UV0 through the
+sub-section's UV0 transform x a per-technique scale (plastic 0.5,
+mottled 0.35, bump_plastic 0.3, cloth and solid 0.5, gauge_emissive 1.0;
+effect defaults that ShaderSettings.xml can override), then the usual
+lighting. The R34's dash texels are already near black (sRGB 24, 22, 24;
+wheel 11, 9, 11). The interior shaders have no slot-0 sampler: the body
+atlas there is white paint texels, so don't read it. Many interior
+sub-sections sample a tiny swatch (UV0 scale about 0.005), so a white
+result means that the transform or the texel read is wrong. (2) UV0,
+which the effect calls "uv1" (confirmed on plastic, mottled and gauges;
+probable on the two-UV techniques). (3) The mirrors sample a mirror
+texture in per-mirror x bands (right 0.7 to 1.0, middle 0 to 1). The
+showroom binds a zeroed 32x32 texture, and a rear-view target while
+driving is probable. Interim: flat near-black. Open: the look spring.
+
 ## Q46 (M5, blocking the gate): oracle races over ten events
 
 The M5 gate compares AI mean distance (3 %) and finishing order over ten
