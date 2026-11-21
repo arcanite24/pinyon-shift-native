@@ -1635,3 +1635,5 @@ code point (size = largest code point + 1); 40-byte records; meshes of
 (x, y, u, v) half floats with u16 indices; coverage
 clamp(0.5 - s(u^2 - v)/|grad|, 0, 1); no kerning; `*ru` fonts are
 strict supersets.
+
+Q45 FOV check answered in CAMERAS.md 4b03a066: 427/1280, vFOV 48.5 (full vertical angle, not half), confirmed
