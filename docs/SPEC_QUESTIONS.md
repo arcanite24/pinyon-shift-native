@@ -1649,3 +1649,5 @@ properties and non-quad geometry open.
 SPEC-UI-LAYOUTS answered in docs/specs/UI_LAYOUTS.md 793f9ff9
 
 AI steering answered in RACE_AI.md 89fa4414: no speed-sensitive lock (wheel = 41.85 deg x steer, only the full lock bounds it; Minis use up to 13 deg at speed, mostly counter-steer); fit delta = 0.27 alpha + 0.29 beta, alpha the bearing of the line point 1.0 s x v ahead and beta the slip, both from the body heading (probable, R2 0.69); interim: that rule, no cap below the full lock.
+
+UI states answered in UI_LAYOUTS.md af0e37b6; captures in out/oracle/ui
