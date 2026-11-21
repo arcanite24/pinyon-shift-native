@@ -291,24 +291,38 @@ void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
   const float s = g.s;
   const float in = ease_in_time(age, 0, 0.3);
   const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
-  TextStyle ts = font(ui::Font::kE, 30 * s, ui::fade(kText, a), Align::kCenter);
-  fit(st.popup_title, ts, g.w - 200 * s, 16 * s);
-  TextStyle body = font(ui::Font::kB, 14 * s, ui::fade(kText, a), Align::kCenter);
-  const float tw = ui::List::measure(st.popup_title, ts) + 60 * s;
-  const float y0 = g.T(60) - (1 - in) * 20 * s;
-  const uint32_t c = st.popup_colour ? st.popup_colour : kPink;
-  l.rect(0.5f * g.w - 0.5f * tw, y0, 0.5f * g.w + 0.5f * tw, y0 + 46 * s, ui::fade(c, a));
-  l.text(0.5f * g.w, y0 + 8 * s, st.popup_title, ts);
-  if (!st.popup_text.empty()) {
-    const float bw = ui::List::measure(st.popup_text, body) + 30 * s;
-    l.rect(0.5f * g.w - 0.5f * bw, y0 + 46 * s, 0.5f * g.w + 0.5f * bw, y0 + 72 * s, ui::fade(kBlack60, a));
-    l.text(0.5f * g.w, y0 + 52 * s, st.popup_text, body);
+  // H_BARN_FIND_HUD's CombinedNotification (DoubleTape), bottom centre:
+  // the HUDPANEL02 panel tinted 0.13 grey from x 450 (the pill in rows 4-58
+  // of 64, so 603-657 here), the notification icon at 473-537 x 598-662,
+  // TEXT2 (B 16) over TEXT1 (B 12) from x 532. The text boxes' anchor is
+  // taken as their centre (ours); the meter under the text is ours.
+  TextStyle ts = font(ui::Font::kB, 16 * s, ui::fade(kText, a));
+  TextStyle body = font(ui::Font::kB, 12 * s, ui::fade(kText, a));
+  fit(st.popup_title, ts, g.w - g.C(560) - 40 * s, 9 * s);
+  const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, body));
+  const float x0 = g.C(450), x1 = std::max(g.C(917), g.C(532) + tw + 30 * s);
+  const float dy = (1 - in) * 20 * s;
+  const float y0 = g.B(599) + dy, y1 = g.B(663) + dy;
+  std::array<float, 4> uv;
+  if (ui_texture("DIRTMASKS/HUD/HUDPANEL02", uv)) {
+    const float texel = (y1 - y0) / 64.0f, cap = 24 * texel, du = (uv[2] - uv[0]) / 1024.0f;
+    const uint32_t c = ui::fade(kPillGrey, a);
+    l.image(x0, y0, x1 - cap, y1, {uv[0], uv[1], uv[0] + du * std::min((x1 - cap - x0) / texel, 1000.0f), uv[3]}, c);
+    l.image(x1 - cap, y0, x1, y1, {uv[2] - du * 24, uv[1], uv[2], uv[3]}, c);
+  } else {
+    l.rect(x0, y0 + 4 * s, x1, y1 - 6 * s, ui::fade(kBlack60, a));
   }
+  if (ui_texture("ICONS/NOTIFICATION/MISCTEMP", uv))
+    l.image(g.C(473), g.B(598) + dy, g.C(537), g.B(662) + dy, uv, ui::fade(rgba(255, 255, 255), a));
+  else
+    l.rect(g.C(489), g.B(614) + dy, g.C(521), g.B(646) + dy, ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
+  l.text(g.C(532) + 10 * s, g.B(620) - 0.5f * ts.size + dy, st.popup_title, ts);
+  if (!st.popup_text.empty()) l.text(g.C(532) + 10 * s, g.B(643) - 0.5f * body.size + dy, st.popup_text, body);
   if (st.popup_progress >= 0) {
-    const float bx0 = 0.5f * g.w - 0.5f * tw, bx1 = 0.5f * g.w + 0.5f * tw, by = y0 + 76 * s;
+    const float bx0 = g.C(542), bx1 = x1 - 30 * s, by = g.B(654) + dy;
     const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
-    l.rect(bx0, by, bx1, by + 4 * s, ui::fade(kBlack60, a));
-    l.rect(bx0, by, bx0 + (bx1 - bx0) * k, by + 4 * s, ui::fade(kText, a));
+    l.rect(bx0, by, bx1, by + 3 * s, ui::fade(rgba(255, 255, 255, 50), a));
+    l.rect(bx0, by, bx0 + (bx1 - bx0) * k, by + 3 * s, ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
   }
 }
 
