@@ -102,6 +102,7 @@ class RaceView {
     double px = 0, pz = 0;  // before the step
     bool far = false;
     float traction_cap = 1;  // drive::ai_traction's state
+    drive::AiCapacity capacity;  // the speed planner's tables (SPEC-RACE-AI)
   };
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
   std::string name_of(size_t i) const;
@@ -118,6 +119,11 @@ class RaceView {
   std::vector<Car> cars_;
   std::map<std::string, std::unique_ptr<Showroom>> models_;
   race::DriverAi player_ai_;
+  drive::AiCapacity player_capacity_;
+  bool player_capacity_known_ = false;
+  // SHIFT_RACE_PLANNER=fit: the old flat fit (corner 1.7 g x C, braking
+  // 2.0 g x B) for comparison; else the spec's planner.
+  bool planner_fit_ = false;
   int player_slot_ = 0;
   double player_start_ = 0, finish_progress_ = 0;
   double ppx_ = 0, ppz_ = 0;

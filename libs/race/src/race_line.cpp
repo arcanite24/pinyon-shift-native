@@ -12,11 +12,12 @@ RaceLine build_race_line(const AiLineFile& f, const Route* route, int copies) {
   if (n < 3) return r;
   // Per point of the file: the racing point, the radius from the points 4
   // either side (wrapping on a closed line) and the room to each edge.
-  std::vector<float> rx(n), ry(n), rz(n), rad(n, 1e6f), left(n), right(n);
+  std::vector<float> rx(n), ry(n), rz(n), rad(n, 1e6f), left(n), right(n), rise(n, 0);
   for (size_t i = 0; i < n; ++i) {
     const auto& p = f.points[i];
     rx[i] = p.race_x(), ry[i] = p.race_y(), rz[i] = p.race_z();
     const float hw = p.half_width();
+    if (hw > 1e-3f) rise[i] = p.ly / hw;  // the left edge's rise over the half width
     left[i] = hw * (1 - p.offset);
     right[i] = hw * (1 + p.offset);
   }
@@ -39,6 +40,7 @@ RaceLine build_race_line(const AiLineFile& f, const Route* route, int copies) {
   }
   const int reps = f.closed ? std::max(1, copies) : 1;
   drive::RacingLine& L = r.line;
+  std::vector<float> bank_rise;
   double s = 0;
   for (int c = 0; c < reps; ++c)
     for (size_t i = 0; i < n; ++i) {
@@ -51,9 +53,14 @@ RaceLine build_race_line(const AiLineFile& f, const Route* route, int copies) {
       L.dist.push_back(float(s));
       L.radius.push_back(rad[i]);
       L.room_left.push_back(left[i]), L.room_right.push_back(right[i]);
+      bank_rise.push_back(rise[i]);
       if (c == 0 && i == n - 1 && f.closed) r.lap_length = s + std::hypot(rx[0] - rx[i], rz[0] - rz[i]);
     }
   if (!f.closed) r.lap_length = s;
+  // The speed planner's geometry (SPEC-RACE-AI, Speed planning): 14 m
+  // chords, the vertical curvature and grade from the line's height, the
+  // bank from the file's lateral.
+  L.plan_geometry(bank_rise);
   // A default speed profile (the old controller's): corner 11 m/s^2, braking 14.
   const size_t m = L.size();
   L.speed.resize(m);

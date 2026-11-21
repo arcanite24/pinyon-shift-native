@@ -78,6 +78,26 @@ FrictionCurve synthetic_curve(double max_slip, double peak, double tail) {
   return c;
 }
 
+double tyre_peak_mu(const CarParams& p, int axle, TyrePeak kind, double load_n, double speed) {
+  const bool lat = kind == TyrePeak::kLateral;
+  const TyreCurves& c = lat ? p.lateral : p.longitudinal;
+  const auto& scale = lat ? p.lat_curve_scale : p.long_curve_scale;
+  const double kgf = std::max(0.0, load_n) / kKgf;
+  // The light- and heavy-load curves' peaks (times their FrictionScale),
+  // blended by load (SPEC-RACE-AI, the capacity queries).
+  auto top = [](const FrictionCurve& f) {
+    double m = 0;
+    for (double x : f.values) m = std::max(m, x);
+    return m;
+  };
+  double peak = top(c.light) * scale[0] + (top(c.heavy) * scale[1] - top(c.light) * scale[0]) * c.blend(kgf);
+  peak *= p.width_scale[size_t(axle)] * p.long_misc_scale;
+  if (lat) return peak * p.lat_scale[size_t(axle)] * p.lat_compound_scale;
+  peak *= p.long_scale[size_t(axle)];
+  if (kind == TyrePeak::kBraking) return peak * p.brake_friction_scale;
+  return peak * lerp(p.accel_scale0, p.accel_scale1, ramp(std::fabs(speed), p.accel_speed0, p.accel_speed1));
+}
+
 Vec3 rotate(const Quat& q, const Vec3& v) {
   const Vec3 u{q.x, q.y, q.z};
   const Vec3 t = cross(u, v) * 2.0;

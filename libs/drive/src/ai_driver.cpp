@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace drive {
 
@@ -48,6 +49,141 @@ RacingLine RacingLine::from_points(std::span<const float> xs, std::span<const fl
     l.speed[i] = float(std::min<double>(l.speed[i], std::sqrt(double(l.speed[i + 1]) * l.speed[i + 1] + 2 * decel * ds)));
   }
   return l;
+}
+
+void RacingLine::plan_geometry(std::span<const float> lateral_y) {
+  const size_t m = size();
+  curvature.assign(m, 0), curvature_v.assign(m, 0), bank_left.assign(m, 0), grade.assign(m, 0);
+  if (m < 3) return;
+  const bool has_y = y.size() == m;
+  // The circle through the points 7 m either side (the spec's points i - 7
+  // and i + 7 at its 2 m spacing), by distance so any spacing works.
+  constexpr double kHalf = 7.0;
+  std::vector<uint8_t> known(m, 0);
+  size_t a = 0, b = 0;
+  for (size_t i = 0; i < m; ++i) {
+    while (a + 1 < i && dist[i] - dist[a + 1] >= kHalf) ++a;
+    b = std::max(b, i);
+    while (b + 1 < m && dist[b] - dist[i] < kHalf) ++b;
+    if (i > 0 && i + 1 < m) {
+      const double run = dist[i + 1] - dist[i - 1];
+      if (has_y && run > 1e-6) grade[i] = float((y[i + 1] - y[i - 1]) / run);
+    }
+    if (lateral_y.size() == m) bank_left[i] = float(std::asin(std::clamp(double(lateral_y[i]), -1.0, 1.0)));
+    if (a >= i || b <= i || dist[i] - dist[a] < 0.5 * kHalf || dist[b] - dist[i] < 0.5 * kHalf) continue;
+    known[i] = 1;
+    const double ax = x[a] - x[i], az = z[a] - z[i], bx = x[b] - x[i], bz = z[b] - z[i];
+    const double cross = ax * bz - az * bx;  // > 0: turning right
+    const double la = std::hypot(ax, az), lb = std::hypot(bx, bz), lc = std::hypot(bx - ax, bz - az);
+    if (la * lb * lc > 0) curvature[i] = float(2 * cross / (la * lb * lc));
+    if (has_y) {
+      const double da = dist[i] - dist[a], db = dist[b] - dist[i];
+      curvature_v[i] = float(2 * ((y[b] - y[i]) / db - (y[i] - y[a]) / da) / (da + db));
+    }
+  }
+  for (size_t i = 1; i < m; ++i)
+    if (!known[i] && known[i - 1]) curvature[i] = curvature[i - 1], curvature_v[i] = curvature_v[i - 1], known[i] = 1;
+  for (size_t i = m - 1; i-- > 0;)
+    if (!known[i] && known[i + 1]) curvature[i] = curvature[i + 1], curvature_v[i] = curvature_v[i + 1], known[i] = 1;
+}
+
+int AiCapacity::index(double v) { return std::clamp(int(std::floor(0.4 * v)), 0, kEntries - 1); }
+
+double ai_aero_factor(double v) {
+  if (v <= 15) return 1;
+  if (v >= 75.1) return 0.78;
+  return 1 - 0.22 * std::pow((v - 15) / 60.1, 3.8);
+}
+
+AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
+  AiCapacity c;
+  c.braking_k = p.layout == CarParams::Layout::kAll ? 0.96f : 0.94f;
+  constexpr double kG = 9.80665;
+  const double m = p.mass, W = m * kG;
+  const auto& wc = p.wheel_centres;
+  const double zf = 0.5 * (wc[0].z + wc[1].z), zr = 0.5 * (wc[2].z + wc[3].z);
+  const double wb = std::max(0.5, std::fabs(zf - zr));
+  const double share = std::fabs(zf - zr) > 0.1 ? std::clamp((p.centre_of_mass.z - zr) / (zf - zr), 0.05, 0.95) : 0.5;
+  const double h = std::max(0.0, p.centre_of_mass.y);
+  const double track = std::max(0.5, std::fabs(wc[0].x - wc[1].x));
+  const double axle_w[2] = {W * share, W * (1 - share)};
+  // An axle's force at its load: both wheels at half of it.
+  auto axle = [&](int a, TyrePeak k, double load, double v) {
+    load = std::max(0.0, load);
+    return load * tyre_peak_mu(p, a, k, load / 2, v);
+  };
+  const bool driven[2] = {p.layout != CarParams::Layout::kRear, p.layout != CarParams::Layout::kFront};
+  for (int n = 0; n < AiCapacity::kEntries; ++n) {
+    const double v = 2.5 * n;
+    // Braking: load moves forwards by the deceleration x the height over
+    // the wheelbase.
+    double a = 0;
+    for (int pass = 0; pass < 6; ++pass) {
+      const double t = m * a * h / wb;
+      a = (axle(0, TyrePeak::kBraking, axle_w[0] + t, v) + axle(1, TyrePeak::kBraking, axle_w[1] - t, v)) / m;
+    }
+    c.braking[size_t(n)] = float(cal.braking * (a + p.drag_quadratic * v * v / m));
+    // Lateral: each axle's force moves load inner to outer by the force x
+    // the CoM height / the track; the rear capped by the yaw balance.
+    double force[2] = {0, 0};
+    for (int pass = 0; pass < 6; ++pass) {
+      double next[2];
+      for (int ax = 0; ax < 2; ++ax) {
+        const double dn = force[ax] * h / track;
+        double f = 0;
+        for (double side : {0.5 * axle_w[ax] + dn, 0.5 * axle_w[ax] - dn}) {
+          side = std::max(0.0, side);
+          const double kgf = side / kG;
+          const double alpha = std::clamp(p.lateral.peak_slip(kgf, p.sidewall_stretch[size_t(ax)]),
+                                          p.lateral_peak_min_deg, p.lateral_peak_max_deg);
+          f += side * tyre_peak_mu(p, ax, TyrePeak::kLateral, side, v) * std::cos(alpha * 3.14159265358979 / 180);
+        }
+        next[ax] = f;
+      }
+      next[1] = std::min(next[1], (1 - share) / share * next[0]);
+      force[0] = next[0], force[1] = next[1];
+    }
+    c.lateral[size_t(n)] = float(cal.lateral * (force[0] + force[1]) / m);
+    // Forward: the driven axles, load moving rearwards (tyre-limited only).
+    a = 0;
+    for (int pass = 0; pass < 6; ++pass) {
+      const double t = m * a * h / wb;
+      double f = 0;
+      if (driven[0]) f += axle(0, TyrePeak::kDriving, axle_w[0] - t, v);
+      if (driven[1]) f += axle(1, TyrePeak::kDriving, axle_w[1] + t, v);
+      a = f / m;
+    }
+    c.forward[size_t(n)] = float(a);
+  }
+  return c;
+}
+
+double ai_braking_left(double full, double v_lim, double v_corner) {
+  return full * std::sqrt(1 - std::min(v_lim * v_lim / std::max(1e-6, v_corner * v_corner), 1.0));
+}
+
+double ai_brake_carry(double v, double a, double ds) {
+  return v >= 10 ? v - a * ds / v : std::sqrt(std::max(0.0, v * v - 2 * a * ds));
+}
+
+double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top) {
+  constexpr double kG = 9.81;
+  const double k = std::fabs(kappa);
+  if (k < 1e-9 && std::fabs(kappa_v) < 1e-9) return top;
+  const double s = std::sin(theta), co = std::cos(theta);
+  double v = top;
+  int idx = -1;
+  for (int it = 0; it < 10; ++it) {
+    const int n = AiCapacity::index(v);
+    if (n == idx) break;
+    idx = n;
+    const double mu = cornering * cap.lateral[size_t(n)] / kG;
+    const double num = kG * (s + mu * co), den = k * (co - mu * s) - 0.75 * kappa_v * (s + mu * co);
+    // A negative result: no limit.
+    const double v2 = den > 0 && num > 0 ? num / den : 1e6;
+    v = std::min(top, std::sqrt(v2));
+  }
+  return v;
 }
 
 RacingLine RacingLine::from_oracle(const OracleLine& line) {
@@ -170,7 +306,28 @@ AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
       corner_(cars, 0),
       decel_(cars, 0),
       target_(cars, 0),
-      cap_(cars, 1e9f) {}
+      cap_(cars, 1e9f),
+      capacity_(cars, nullptr),
+      plan_c_(cars, 0),
+      plan_b_(cars, 0),
+      corner_speed_(cars) {}
+
+void AiField::set_planner(size_t i, const AiCapacity* cap, float cornering, float braking) {
+  if (cap != capacity_[i] || cornering != plan_c_[i]) corner_speed_[i].clear();
+  capacity_[i] = cap, plan_c_[i] = cornering, plan_b_[i] = braking;
+}
+
+double AiField::corner_at(size_t i, size_t j) const {
+  auto& cache = corner_speed_[i];
+  if (cache.size() != line_.size()) cache.assign(line_.size(), std::numeric_limits<float>::quiet_NaN());
+  float& v = cache[j];
+  if (std::isnan(v)) {
+    const double kappa = line_.curvature[j];
+    const double theta = kappa > 0 ? line_.bank_left[j] : -line_.bank_left[j];
+    v = float(ai_corner_speed(*capacity_[i], plan_c_[i], kappa, line_.curvature_v[j], theta, o_.max_speed));
+  }
+  return v;
+}
 
 void AiField::place_near(size_t i, double x, double z, double from, double to, float skill) {
   place(i, line_.nearest(x, z, from, to), 0.0f, skill);
@@ -185,6 +342,31 @@ double AiField::planned_speed(size_t i, double p) const {
   const RacingLine& L = line_;
   if (L.size() < 2) return 0;
   const size_t s0 = L.segment(p, seg_[i]);
+  if (capacity_[i] && L.curvature.size() == L.size()) {
+    // SPEC-RACE-AI, Speed planning, the braking pass: from the farthest
+    // point within 420 m back to the car's, each point's limit is the
+    // carried speed or the three-point mean of the corner speeds; the
+    // braking the corner leaves (the friction circle) and the grade carry
+    // it back one segment. a < 0 decelerates; the carry v - a ds / v (from
+    // 10 m/s) or sqrt(v^2 - 2 a ds) gives the spec's 30 -> 31.0 and
+    // 8 -> 11.136 m/s for a = -15 over 2 m.
+    size_t j0 = s0;
+    if (j0 + 1 < L.size() && L.dist[j0 + 1] - p < p - L.dist[j0]) ++j0;
+    size_t jmax = j0;
+    while (jmax + 1 < L.size() && L.dist[jmax + 1] - L.dist[j0] <= 420) ++jmax;
+    const AiCapacity& c = *capacity_[i];
+    const double B = plan_b_[i] * c.braking_k;
+    const size_t last = L.size() - 1;
+    double carry = 1000;
+    for (size_t j = jmax;; --j) {
+      const double vc = corner_at(i, j);
+      const double mean = (corner_at(i, j > 0 ? j - 1 : j) + vc + corner_at(i, std::min(j + 1, last))) / 3;
+      const double vlim = std::max(0.001, std::min(carry, mean));
+      if (j == j0 || j == 0) return vlim;
+      const double a = -ai_braking_left(B * c.braking[size_t(AiCapacity::index(vlim))], vlim, vc) - 9.81 * L.grade[j];
+      carry = ai_brake_carry(vlim, a, L.dist[j] - L.dist[j - 1]);
+    }
+  }
   const double a = corner_[i], d = decel_[i];
   if (a <= 0 || L.radius.size() != L.size()) {
     const float vf = std::clamp(float((p - L.dist[s0]) / std::max(1e-6f, L.dist[s0 + 1] - L.dist[s0])), 0.0f, 1.0f);

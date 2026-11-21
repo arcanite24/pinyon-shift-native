@@ -101,6 +101,15 @@ struct TyreCurves {
 // `peak`, falls to `tail` at the end (no game data).
 FrictionCurve synthetic_curve(double max_slip, double peak, double tail);
 
+struct CarParams;
+// The tyre's peak friction (force over load) on `axle` at `load_n` N on the
+// wheel and `speed` m/s, through the same chain of scales the step uses
+// (the curves' FrictionScale, the width, axle, compound and misc scales;
+// braking: the braking friction scale; driving: the accel blend), on
+// asphalt with no AI grip factor. For the AI's capacity tables.
+enum class TyrePeak { kLateral, kBraking, kDriving };
+double tyre_peak_mu(const CarParams& p, int axle, TyrePeak kind, double load_n, double speed);
+
 // Everything the model needs about one car. See from_physics.h for where
 // each comes from on a real car; the defaults are the synthetic car's.
 struct CarParams {

@@ -763,14 +763,26 @@ the interim noted here until a later polish sweep.
   gather and fall off the collision (the gate runs synchronously).
 - **Race AI interims (ours where the spec has none).** The steer is capped
   at the pad's speed-narrowed lock (past it the fronts slide wide); a car
-  more than 1 m off its lane slows 8 % a metre (the corner speed is the
-  R34's fit for every car); the over-braking and over-cornering mistakes hold
+  more than 1 m off its lane slows 8 % a metre; the over-braking and over-cornering mistakes hold
   1 + Amount for 1 s (the spec's interim) and the lags have no effect;
   a slide guard (throttle cap on wheelspin, cut and counter-steer past 5 to
   13 degrees of body slip) and a speed cap behind a slower car in the way; cars alongside keep a car's
   width apart (beyond the spec's passing rule); one AI line; stock cars;
   opponents take the free slots in row order. Pack contact is frequent
   (800 to 1,250 steps with a contact in an 8-car FR22, 1,400 to 3,500 in FR16).
+- **Race AI speed planner (SPEC-RACE-AI Speed planning, Q53).** Each car
+  plans from its own lateral, braking and drive capacity tables (40 speeds,
+  from the engine's tyre model at 0.98 of the car's mass), the line's
+  curvature, dip and bank, and a 420 m braking pass. Interim: the tables are
+  scaled by the R34's shortfall against its measured AI row (lateral
+  16.01/14.6, braking 18.26/17.1), and the heavy SUVs plan higher than the
+  title's yaw-capped 15.3 to 15.5 (sent to the spec side).
+  `SHIFT_RACE_PLANNER=fit` restores the old flat fit. Gate, one seed: AI
+  mean time within 3 % on FR06, FR22, FR33 and HEADLINE; slow on
+  EXHIBITION_FEST_003 (213.7 against 179.0 s), NR02 (145.5/130.7),
+  STREET_PLNS_002 (134.3/124.1), FR24 (119.9/110.8), FR01 (109.5/102.7)
+  and FR16 (127.9/124.0). To do: find where those laps lose the time
+  (straights, the line, the pack) with `tools/race/corners.py`.
 - **Street and nemesis races (SPEC-EVENTS, SPEC-RACE-AI interims).**
   Ribbon-6 routes have no AI line: the line is the shortest road-map path
   through slot 00 and the checkpoints (`race/street_line.h`), smoothed to

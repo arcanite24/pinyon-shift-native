@@ -345,6 +345,51 @@ void test_ai_field() {
   CHECK(worst_lane_error < 1.5);
 }
 
+// SPEC-RACE-AI, Speed planning (Q53): the spec's synthetic cases.
+void test_speed_planner() {
+  auto near = [](double a, double b, double tol) { return std::fabs(a - b) <= tol; };
+  CHECK(near(drive::ai_aero_factor(10), 1, 1e-9) && near(drive::ai_aero_factor(15), 1, 1e-9));
+  CHECK(near(drive::ai_aero_factor(45.05), 0.9842, 1e-4) && near(drive::ai_aero_factor(60), 0.9267, 1e-4));
+  CHECK(near(drive::ai_aero_factor(75.1), 0.78, 1e-9) && near(drive::ai_aero_factor(90), 0.78, 1e-9));
+  CHECK(drive::AiCapacity::index(0) == 0 && drive::AiCapacity::index(2.4) == 0);
+  CHECK(drive::AiCapacity::index(2.5) == 1 && drive::AiCapacity::index(120) == 39);
+  drive::AiCapacity flat;
+  flat.lateral.fill(9.81f);
+  const double kDeg = 3.14159265358979323846 / 180;
+  CHECK(near(drive::ai_corner_speed(flat, 1.0, 0.02, 0, 0, 100), 22.15, 0.01));
+  CHECK(near(drive::ai_corner_speed(flat, 1.0, 0.02, 0, 5 * kDeg, 100), 24.18, 0.01));
+  CHECK(near(drive::ai_corner_speed(flat, 1.0, 0.02, 0.005, 0, 100), 24.57, 0.01));
+  CHECK(near(drive::ai_corner_speed(flat, 1.0, 0, 0, 0, 80), 80, 1e-9));  // no curve: the top speed
+  CHECK(near(drive::ai_brake_carry(30, -15, 2), 31.0, 1e-9));
+  CHECK(near(drive::ai_brake_carry(8, -15, 2), 11.136, 1e-3));
+  CHECK(near(drive::ai_braking_left(14, 20, 25), 8.4, 1e-9));
+  CHECK(near(drive::ai_boost(0.90, 1.5, 1.25), 1.25, 1e-9) && near(drive::ai_boost(0.84, 1.5, 1.0), 1.0, 1e-9));
+  CHECK(near(drive::ai_boost(1.30, 1.5, 1.25), 1.30, 1e-9));
+  drive::CarParams p = test_car();
+  p.layout = drive::CarParams::Layout::kRear;
+  const drive::AiCapacity rwd = drive::ai_capacity(p);
+  p.layout = drive::CarParams::Layout::kAll;
+  const drive::AiCapacity awd = drive::ai_capacity(p);
+  CHECK(near(rwd.braking_k, 0.94, 1e-6) && near(awd.braking_k, 0.96, 1e-6));
+  CHECK(awd.lateral[8] > 5 && awd.braking[8] > 5 && awd.forward[8] > rwd.forward[8] * 0.5);
+  // On a circle of 60 m the plan is the corner speed all round.
+  std::vector<float> xs, zs;
+  const double r = 60;
+  for (int i = 0; i <= 720; ++i) {
+    const double a = 2 * 3.14159265358979323846 * i / 360.0;
+    xs.push_back(float(r - r * std::cos(a)));
+    zs.push_back(float(r * std::sin(a)));
+  }
+  drive::RacingLine line = drive::RacingLine::from_points(xs, zs);
+  line.plan_geometry();
+  CHECK(near(std::fabs(line.curvature[300]), 1 / r, 0.002));
+  drive::AiField field(line, 1);
+  field.set_planner(0, &flat, 1.0f, 1.0f);
+  CHECK(near(field.planned_speed(0, 300), std::sqrt(9.81 * r), 0.3));
+  std::printf("speed planner: test car lateral %.1f braking %.1f m/s^2 at 20 m/s, circle %.2f m/s\n", awd.lateral[8],
+              awd.braking[8], field.planned_speed(0, 300));
+}
+
 // Car-to-car contact: head-on and side-on at 300 km/h closing, one
 // contact pass a step; the cars never pass through each other.
 void test_contact_no_tunnelling() {
@@ -385,6 +430,7 @@ int main() {
   test_model_to_world();
   test_oracle_lap();
   test_ai_field();
+  test_speed_planner();
   test_contact_no_tunnelling();
   if (failures) {
     std::printf("%d failure(s)\n", failures);

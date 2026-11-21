@@ -10,6 +10,7 @@
 // avoidance between cars.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -28,6 +29,15 @@ struct RacingLine {
   // the line's curve (m; large on a straight) for the per-car speed plan,
   // and the room from the line to the road's right and left edges (m).
   std::vector<float> y, radius, room_right, room_left;
+  // Optional, per point, the speed planner's geometry (SPEC-RACE-AI, Speed
+  // planning): the horizontal curvature from 14 m chords (1/m, positive
+  // turning right, towards +x when facing +z), the vertical curvature
+  // (1/m, positive in a dip), the bank (rad, the left edge up) and the
+  // grade (rise over run).
+  std::vector<float> curvature, curvature_v, bank_left, grade;
+  // Fills the four from x, y, z (and `lateral_y`, the left edge's rise
+  // over the half width per point, when given; else no bank).
+  void plan_geometry(std::span<const float> lateral_y = {});
   double length() const { return dist.empty() ? 0 : dist.back(); }
   size_t size() const { return dist.size(); }
 
@@ -51,6 +61,54 @@ struct RacingLine {
   // the left at `distance`; 1e9 when the line has none.
   double room(double distance, bool right) const;
 };
+
+// SPEC-RACE-AI, Speed planning (Q53): the car's capacity tables, 40
+// entries over speed (entry n at 2.5 n m/s), looked up at floor(0.4 v)
+// clamped, no interpolation; m/s^2.
+struct AiCapacity {
+  static constexpr int kEntries = 40;
+  std::array<float, kEntries> lateral{}, braking{}, forward{};
+  float braking_k = 0.94f;  // k_B: 0.96 four-wheel drive, 0.94 otherwise
+  static int index(double v);
+};
+// From the car's own physics (the spec's interim: the engine's tyre model
+// at the 40 speeds, the title's terms), six fixed-point passes each:
+// - lateral: each wheel's load x its peak friction x cos(the peak slip
+//   angle), the rear axle capped at (1 - w) / w x the front (w the front
+//   weight share: the yaw balance), load moved inner to outer by each
+//   axle's force x the CoM height / its track; over the mass;
+// - braking: load moved forwards by the deceleration x the CoM height /
+//   the wheelbase, with the braking friction scale, plus the aero drag;
+//   over the mass.
+// The engine's car model has no downforce, so the aero factor
+// (ai_aero_factor) has nothing to scale yet. Pass the AI car's mass (the
+// title's AI cars weigh 0.98 of the stock car on its races).
+// Then times a calibration (ours): the engine's tyre model gives the AI's
+// R34 14.6 and 17.1 m/s^2 at 20 m/s against the title's measured 16.01
+// and 18.26 (SPEC-RACE-AI, Measured tables), so every car's tables are
+// scaled by that and keep their differences from the car's own physics.
+struct AiCapacityCalibration {
+  double lateral = 16.01 / 14.6, braking = 18.26 / 17.1;
+};
+AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal = {});
+// The planner's share of the downforce at speed v: 1 to 15 m/s, then
+// 1 - 0.22 ((v - 15) / 60.1)^3.8, 0.78 from 75.1 m/s.
+double ai_aero_factor(double v);
+// The corner speed (m/s) for `cornering` C at curvature kappa (1/m,
+// either sign), vertical curvature kappa_v (1/m, + in a dip) and bank
+// theta (rad, + leaning into the turn), at most `top`: v^2 = g (sin + mu
+// cos) / (|k| (cos - mu sin) - 0.75 k_v (sin + mu cos)), mu = C x
+// lateral(v) / g, iterated up to 10 times on the table entry.
+double ai_corner_speed(const AiCapacity& cap, double cornering, double kappa, double kappa_v, double theta, double top);
+// The braking pass's two steps. The braking a corner leaves at v_lim
+// under its corner speed v_c (the friction circle), from the deceleration
+// `full` = B x A_brk: full x sqrt(1 - min(v_lim^2 / v_c^2, 1)). The carry
+// one step of `ds` m back under acceleration a (< 0 decelerating): from
+// 10 m/s v - a ds / v, below sqrt(v^2 - 2 a ds).
+double ai_braking_left(double full, double v_lim, double v_corner);
+double ai_brake_carry(double v, double a, double ds);
+// The nemesis or start boost's clamp on a scalar s: min(m s, max(s, cap)).
+inline double ai_boost(double s, double m, double cap) { return s >= cap ? s : std::min(m * s, cap); }
 
 // A car's state as the controller reads it (game frame).
 struct AiCarState {
@@ -107,6 +165,11 @@ class AiField {
   // with a corner acceleration `corner` and braking `decel` (m/s^2); 0 keeps
   // the line's own speed x skill. Needs the line's radius.
   void set_limits(size_t i, float corner, float decel) { corner_[i] = corner, decel_[i] = decel; }
+  // SPEC-RACE-AI, Speed planning: car i plans from its capacity tables
+  // and its cornering C and braking B scalars (the corner pass and the
+  // braking pass over the 420 m ahead); `cap` null: set_limits' plan.
+  // Needs the line's plan_geometry.
+  void set_planner(size_t i, const AiCapacity* cap, float cornering, float braking);
   void set_lane(size_t i, float lane) { lane_[i] = lane; }
   // A cap on car i's planned speed, m/s (a car in the way; 1e9: none).
   void set_speed_cap(size_t i, float cap) { cap_[i] = cap; }
@@ -129,6 +192,12 @@ class AiField {
   std::vector<uint32_t> seg_;
   std::vector<double> progress_;
   std::vector<float> lane_, skill_, cross_, corner_, decel_, target_, cap_;
+  // The planner's per car: the tables, C, B and the corner speeds by line
+  // point for the current C (NaN: not computed yet).
+  std::vector<const AiCapacity*> capacity_;
+  std::vector<float> plan_c_, plan_b_;
+  mutable std::vector<std::vector<float>> corner_speed_;
+  double corner_at(size_t i, size_t j) const;
 };
 
 }  // namespace drive

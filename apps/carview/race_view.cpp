@@ -213,6 +213,14 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     std::vector<std::string> notes;
     c.body = std::make_unique<drive::Vehicle>(drive::params_for_baked_car(c.model->car(), bake_dir_, &notes));
     c.body->set_ai_controls(true);
+    {
+      // The title's AI cars weigh 0.98 of the stock car (SPEC-RACE-AI,
+      // the measured tables); the tables take that mass, the physics the
+      // car's own.
+      drive::CarParams ai = c.body->params();
+      ai.mass *= 0.98;
+      c.capacity = drive::ai_capacity(ai);
+    }
     c.body->set_ai_dirt_grip(true);
     const auto& s = slots_[size_t(c.slot)];
     double y = s.y;
@@ -252,12 +260,31 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   const size_t n = cars_.size();
   const drive::Vec3 pp = player.position();
   ppx_ = pp.x, ppz_ = pp.z;
+  if (!player_capacity_known_) {
+    player_capacity_ = drive::ai_capacity(player.params());
+    player_capacity_known_ = true;
+    const char* e = std::getenv("SHIFT_RACE_PLANNER");
+    planner_fit_ = e && std::string(e) == "fit";
+    const auto& pc = player_capacity_;
+    std::printf("race: planner %s; the player's car plans lateral %.1f, braking %.1f (x %.2f) m/s^2 at 20 m/s\n",
+                planner_fit_ ? "fit (1.7 g, 2.0 g)" : "SPEC-RACE-AI tables", pc.lateral[8], pc.braking[8],
+                pc.braking_k);
+    for (const auto& c : cars_)
+      std::printf("race:   %-28s lateral %.1f braking %.1f m/s^2 at 20 m/s\n", c.who.car_media.c_str(),
+                  c.capacity.lateral[8], c.capacity.braking[8]);
+  }
   for (size_t k = 0; k < n; ++k) {
     states_[k] = drive::ai_state(*cars_[k].body);
-    field_->set_limits(k, float(race::corner_accel(cars_[k].ai.cornering())), float(race::brake_decel(cars_[k].ai.braking())));
+    const float C = float(cars_[k].ai.cornering()), B = float(cars_[k].ai.braking());
+    if (planner_fit_) field_->set_limits(k, float(race::corner_accel(C)), float(race::brake_decel(B)));
+    else field_->set_planner(k, &cars_[k].capacity, C, B);
   }
   states_[n] = drive::ai_state(player);
-  field_->set_limits(n, float(race::corner_accel(player_ai_.cornering())), float(race::brake_decel(player_ai_.braking())));
+  {
+    const float C = float(player_ai_.cornering()), B = float(player_ai_.braking());
+    if (planner_fit_) field_->set_limits(n, float(race::corner_accel(C)), float(race::brake_decel(B)));
+    else field_->set_planner(n, &player_capacity_, C, B);
+  }
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
@@ -396,7 +423,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     return p ? std::fopen(p, "w") : nullptr;
   }();
   static long trace_step = 0;
-  if (trace && trace_step++ % 30 == 0) {
+  if (trace && trace_step++ % 24 == 0) {  // every 0.2 s
     for (size_t i = 0; i <= n; ++i) {
       const drive::Vehicle& v = i < n ? *cars_[i].body : player;
       const auto& q = samples_[i];
