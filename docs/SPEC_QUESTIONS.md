@@ -953,6 +953,14 @@ where they overlap, has no alpha source (the game's `H_DIFF_1` is
 opaque, no coverage), and none of the 53 is drawn in the free-roam or
 hill frames. Rule: skip every material whose slot 0 resolves to
 `_0x00002CA9` (WORLD_MATERIALS "Placeholder models").
+(e) The sky hole at pixel (530, 207) of hill-2244-707 is terrain in the
+game: `TERR_CLRD_ZONE02_AREA3_MIDDIST_06_LOD00` (coloradoout.12436,
+`H_VBLND_NORM_AO_LM`, 353 to 377 m), drawn in that frame; `_LOD01`
+(12437) and `_LOD02` (12438) cover the same pixels, so any level fills
+it. Not a CAGE, TERR_CUBE, occluder or placeholder model; the aspens are
+billboards in front of it. Check why the engine's gather drops
+MIDDIST_06 there (its box is about 314 m from the camera). Confirmed;
+horizon1-recomp 7e842336.
 
 ## Q45 (M4): the driving cameras (SPEC-CAMERAS 163ffec3)
 
