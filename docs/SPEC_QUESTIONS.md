@@ -1189,6 +1189,15 @@ the stock index by the engine's own lap-time difference after a part
 change; selling at 0.5 x (BaseCost + PartsValue); no garage limit;
 starter Corrado 309 with stock parts; Auto Upgrade by table order.
 
+GARAGE-UPGRADES follow-ups answered in docs/specs/GARAGE_UPGRADES.md
+e6296d17 (2026-11-21). (1) `CMHeightDiff` is unused: the executable
+never names the column and it is 1.0 on all 623 chassis-stiffness rows;
+leave `CMHeight` as is (the engine's multiply is equivalent). (2) The
+torque combine is additive, confirmed from the part loader:
+S = 1 + sum(TorqueScale - 1) over the nine engine part tables, times the
+fitted camshaft curve. Car 1566: S = 1.893 x curve 112.50/107.20 =
+1.987 against the game's 2.1297/1.07 = 1.99; the product gives 2.45.
+
 V4-CONTENT answered in docs/specs/V4_CONTENT.md b07ea92a
 (horizon1-recomp, branch reimplementation-plan, 2026-11-20). Item 6:
 DLC packages (folder layout, `<offer>.puboffer`, content archive and
