@@ -2210,6 +2210,11 @@ int run_drive(int argc, char** argv) {
           if (!error.empty()) std::fprintf(stderr, "carview: note: %s\n", error.c_str());
           if (!warning.empty()) std::fprintf(stderr, "carview: note: %s", warning.c_str());
           error.clear();
+          // SHIFT_SURFACES=1: the surface table (the numbers in traces and logs).
+          if (std::getenv("SHIFT_SURFACES"))
+            for (size_t i = 0; i < collision.surfaces().size(); ++i)
+              std::printf("surface %zu %s grip %.2f\n", i, collision.surfaces()[i].name.c_str(),
+                          collision.grip(int(i)));
           world::GatherOptions gather_options;
           gather_options.render_data = !flat_world;
           gather_options.props = !no_props;
