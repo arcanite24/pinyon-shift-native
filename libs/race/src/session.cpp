@@ -107,7 +107,7 @@ std::vector<size_t> Session::order() const {
 
 void plan_lanes(const drive::RacingLine& line, std::span<const double> progress, std::span<const float> cross,
                 std::span<const float> speed, std::span<const LaneParams> params, size_t ai, std::span<float> lane,
-                double dt, double rate) {
+                double dt, double rate, std::span<float> cap) {
   const size_t n = std::min({progress.size(), cross.size(), speed.size()});
   constexpr float kWidth = 2.0f;  // a car's width, m (ours)
   for (size_t i = 0; i < ai && i < n && i < lane.size(); ++i) {
@@ -150,6 +150,11 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
                           float(std::max(0.0, right - p.edge_clearance)));
     const float step = float(rate * dt);
     lane[i] += std::clamp(target - lane[i], -step, step);
+    if (i < cap.size()) {
+      cap[i] = 1e9f;
+      if (block < n && std::fabs(lane[i] - cross[block]) < kWidth + p.car_clearance)
+        cap[i] = speed[block] + 0.5f * std::max(0.0f, float(best) - 5.0f);
+    }
   }
 }
 

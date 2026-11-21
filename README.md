@@ -750,28 +750,27 @@ the interim noted here until a later polish sweep.
   the idling engine; ours is about 15 dB, because our idle (0.022 RMS) is
   louder than the game's (0.008). Raising the radio clips under throttle
   (peak 1.12 at 1.8 times), so the engine's own level wants the look.
-- **Races: against the oracle.** `FR22` at Med, the player's car under
-  the AI from slot 05 (our controller; the oracle's player path is not
-  replayed), three seeds: AI mean race time 163.5, 164.1 and 160.6 s (the
-  last over 6 finishers; oracle 161.53 s, gate 156.7 to 166.4), AI mean
-  distance 4,645 to 4,677 m (oracle 4,637), the winner from slot 00 each
-  time (the front three), the player 5th to 7th (oracle 3rd: outside
-  "within one"); the winner's margin about 14 s (oracle 7.6). `FR16`: 5 to
-  7 of 8 finish, slot to finish 4,079 to 4,186 m (spec 4,079 to 4,142), the
-  player 138 s (oracle 124.8 s); its rear-drive cars spin and reset (10 to
-  15 resets a run). Headless runs outrun the background gather
-  (`--async-stream`, `--bench`: 4 to 7 times real time), so the player
-  falls off the collision there; the window's real-time pace was not run.
+- **Races: against the oracle.** `python tools/race/gate.py` runs the M5
+  gate (the player replays the oracle's path from `out/oracle/`). FR22 at
+  Med, three seeds: AI mean 162.4 s (oracle 161.5), 4,673 m (4,638), the
+  player 2nd to 3rd (3rd), winner slot 00: passes. FR16: AI mean 129 to
+  134 s against 124.0 (fails 3 %), the AI R34 itself 125.5 s inside the
+  oracle's 122 to 126 s pack, the rear-drive cars 128 to 132 s; 4 to 7
+  resets a run, from pack contact (a car hit from behind spins and pins on
+  a wall for the 3 s no-progress rule). To do: fewer rear-end hits at the
+  start and in the pack, then a per-car look at the rear-drive cars.
+  Headless runs with `--async-stream` or `--bench` outrun the background
+  gather and fall off the collision (the gate runs synchronously).
 - **Race AI interims (ours where the spec has none).** The steer is capped
   at the pad's speed-narrowed lock (past it the fronts slide wide); a car
   more than 1 m off its lane slows 8 % a metre (the corner speed is the
-  R34's fit for every car); the AI's grip on dirt is a constant 1.25 on
-  surfaces with off-roadness (the spec: 1.0 to 1.5, no rule); rubber-band
-  modes 1 to 7 (under/over braking and cornering, lags) are drawn but have
-  no effect (their Amount is not in the spec); cars alongside keep a car's
+  R34's fit for every car); the over-braking and over-cornering mistakes hold
+  1 + Amount for 1 s (the spec's interim) and the lags have no effect;
+  a slide guard (throttle cap on wheelspin, cut and counter-steer past 5 to
+  13 degrees of body slip) and a speed cap behind a slower car in the way; cars alongside keep a car's
   width apart (beyond the spec's passing rule); one AI line; stock cars;
   opponents take the free slots in row order. Pack contact is frequent
-  (about 3,600 steps with a contact in an 8-car FR22).
+  (800 to 1,250 steps with a contact in an 8-car FR22, 1,400 to 3,500 in FR16).
 - **Race flow left out.** No event card, pre-race menu, cutscene camera,
   finish screen or results screen (the results print); no rewards
   applied to a save; no post-race placement; no checkpoints (street

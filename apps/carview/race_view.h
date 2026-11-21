@@ -114,7 +114,7 @@ class RaceView {
   std::vector<drive::AiCarState> states_;
   std::vector<drive::Input> inputs_;
   std::vector<double> progress_;
-  std::vector<float> cross_, speed_, lanes_;
+  std::vector<float> cross_, speed_, lanes_, caps_;
   std::vector<race::LaneParams> lane_params_;
   std::vector<race::CarSample> samples_;
   std::vector<drive::ContactBody> contacts_;

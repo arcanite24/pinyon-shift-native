@@ -325,10 +325,14 @@ class Vehicle {
   // 1, 1 by default and in pad play.
   void set_ai_grip(double front, double rear) { ai_grip_ = {front, rear}; }
   bool ai_controls() const { return ai_; }
-  // Under the AI on dirt (a surface with off-roadness): the front axle's
-  // grip factor, the rear's excess 1.1 x the front's (SPEC-CAR-PHYSICS,
-  // grip on dirt: 1.0 to 1.5 with no rule; a race sets an interim value).
-  void set_ai_dirt_grip(double front) { dirt_grip_ = front; }
+  // The AI's grip on dirt (SPEC-CAR-PHYSICS, grip on dirt): while a wheel
+  // stands on a surface with off-roadness and the car moves, both tyre
+  // forces of every wheel x 1 + 0.5 k (front) and 1 + 0.55 k (rear); k is 1
+  // below 10 m/s, else k_yaw (0 under a yaw rate of 0.3 rad/s, 1 over 0.6)
+  // x k_time (1 for the first second on dirt, 0.5 from 3 s); the factor a
+  // step writes applies from the next. On only under the AI's controls.
+  void set_ai_dirt_grip(bool on) { dirt_rule_ = on; }
+  double dirt_k() const { return dirt_k_; }
   // A factor on the engine's drive torque (SPEC-RACE-AI: the rubber-band
   // torque cut and the race-start boost); 1 by default.
   void set_torque_factor(double f) { torque_factor_ = f; }
@@ -422,7 +426,8 @@ class Vehicle {
   bool abs_flag_ = false;
   bool ai_ = false;
   double torque_factor_ = 1;
-  double dirt_grip_ = 1;
+  bool dirt_rule_ = false, any_dirt_ = false, on_dirt_ = false;
+  double dirt_k_ = 0, dirt_time_ = 0;
   std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
   double body_force_ = 0;

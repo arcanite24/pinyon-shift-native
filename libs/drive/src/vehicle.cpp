@@ -457,8 +457,23 @@ void Vehicle::step(const Input& input, const Ground& ground) {
   abs_flag_ = false;
   strongest_ = {};
   const double dt = kStep / substeps_;
+  any_dirt_ = false;
   for (int s = 0; s < substeps_; ++s) substep(dt, ground);
   time_ += kStep;
+  // The AI's grip on dirt for the next step (SPEC-CAR-PHYSICS).
+  const double speed = std::sqrt(vel_.x * vel_.x + vel_.y * vel_.y + vel_.z * vel_.z);
+  if (any_dirt_ && speed > 0.5) {
+    if (!on_dirt_) dirt_time_ = 0;
+    on_dirt_ = true;
+    dirt_time_ += kStep;
+    const double yaw = std::fabs(ang_.y);
+    const double k_yaw = std::clamp((yaw - 0.3) / 0.3, 0.0, 1.0);
+    const double k_time = dirt_time_ <= 1 ? 1.0 : dirt_time_ >= 3 ? 0.5 : 1 - 0.25 * (dirt_time_ - 1);
+    dirt_k_ = speed < 10 ? 1.0 : k_yaw * k_time;
+  } else {
+    on_dirt_ = false;
+    dirt_k_ = 0;
+  }
 }
 
 void Vehicle::substep(double dt, const Ground& ground) {
@@ -504,6 +519,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
       normal[i] = hit.normal;
       grip[i] = hit.grip;
       surf[i] = hit.tyre;
+      if (hit.tyre.off_roadness > 0) any_dirt_ = true;
       contact[i] = probe + down * hit.distance;
     }
     // The suspension's speed from the travel itself, so a car running down
@@ -618,7 +634,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double rear = a == 1 ? surf[i].rear_grip : 1.0;
     // The AI's grip factor on dirt (an off-road surface): the rear's
     // excess over 1 is 1.1 x the front's.
-    const double dirt = ai_ && dirt_grip_ > 1 && surf[i].off_roadness > 0 ? (a == 0 ? dirt_grip_ : 1 + 1.1 * (dirt_grip_ - 1)) : 1;
+    const double dirt = ai_ && dirt_rule_ ? std::clamp(1 + (a == 0 ? 0.5 : 0.55) * dirt_k_, 0.0, 2.0) : 1.0;
     const double ai = ai_grip_[a] * dirt;
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).

@@ -169,7 +169,8 @@ AiField::AiField(const RacingLine& line, size_t cars, const Options& options)
       cross_(cars, 0),
       corner_(cars, 0),
       decel_(cars, 0),
-      target_(cars, 0) {}
+      target_(cars, 0),
+      cap_(cars, 1e9f) {}
 
 void AiField::place_near(size_t i, double x, double z, double from, double to, float skill) {
   place(i, line_.nearest(x, z, from, to), 0.0f, skill);
@@ -284,7 +285,8 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     // runs wide).
     const float off = std::fabs(cross_[i] - lane_[i]);
     const float scale = std::clamp(1.0f - o_.off_line_slow * std::max(0.0f, off - o_.off_line_slack), 0.6f, 1.0f);
-    const float target = progress_[i] >= L.length() - 1 ? 0.0f : scale * float(planned_speed(i, ahead));
+    const float target =
+        progress_[i] >= L.length() - 1 ? 0.0f : std::min(cap_[i], scale * float(planned_speed(i, ahead)));
     target_[i] = target;
     const float err = target - c.speed;
     if (o_.full_gas) {

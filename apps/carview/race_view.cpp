@@ -20,9 +20,6 @@ void clock_text(double t, char* out, size_t n) {
   std::snprintf(out, n, "%d:%05.2f", m, t - 60 * m);
 }
 
-// SPEC-RACE-AI, Grip on dirt: 1.0 to 1.5 with no rule; interim the middle.
-constexpr double kDirtGrip = 1.25;
-
 const char* ordinal(int p) {
   static const char* kNames[] = {"", "1ST", "2ND", "3RD", "4TH", "5TH", "6TH", "7TH", "8TH"};
   return p >= 1 && p <= 8 ? kNames[p] : "";
@@ -104,7 +101,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   }
   if (finish) finish_progress_ = line_.line.nearest(finish->x, finish->z, line_.gate_progress, line_.line.length());
   const size_t n = size_t(cars);
-  states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0);
+  states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
   samples_.resize(n);
   lane_params_.resize(n);
   for (size_t k = 0; k < cars_.size(); ++k) {
@@ -144,7 +141,7 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     std::vector<std::string> notes;
     c.body = std::make_unique<drive::Vehicle>(drive::params_for_baked_car(c.model->car(), bake_dir_, &notes));
     c.body->set_ai_controls(true);
-    c.body->set_ai_dirt_grip(kDirtGrip);
+    c.body->set_ai_dirt_grip(true);
     const auto& s = slots_[size_t(c.slot)];
     double y = s.y;
     double gy = y;
@@ -192,8 +189,8 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
-  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep);
-  for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]);
+  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 1.5, caps_);
+  for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
   // Held on the grid in first: brake under the reverse-select press (0.5) and the handbrake.
   if (!session_->started()) return drive::Input{0, 0, 0.4, true};
@@ -248,7 +245,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   const bool player_ai = o_.autopilot || session_->finished(n);
   if (player.ai_controls() != player_ai) {
     player.set_ai_controls(player_ai);
-    player.set_ai_dirt_grip(player_ai ? kDirtGrip : 1.0);
+    player.set_ai_dirt_grip(player_ai);
   }
   const double grid_cars = double(n + 1);
   for (size_t k = 0; k < n; ++k) {

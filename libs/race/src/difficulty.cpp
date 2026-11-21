@@ -55,9 +55,33 @@ void DriverAi::init(const SkillRow& skill, const RubberbandRow* row, uint64_t se
   braking_ = base_braking_, cornering_ = base_cornering_;
   torque_ = skill_.nominal_torque_scale;
   state_ = State::kNormal, mode_ = 0, catch_up_ = false, max_ = false;
+  amount_ = 0, mistake_left_ = 0, have_last_ = false;
 }
 
-void DriverAi::update(double gap, int places_behind) {
+void DriverAi::draw_mode() {
+  // SPEC-RACE-AI, The draw: the rows in Id order, a running total of their
+  // RelativeFrequency, the first row whose total reaches u (u uniform in
+  // [0, 1), not normalised); the last row if none. An id with no row: the
+  // three built-in choices.
+  static const RubberbandModeChoice kBuiltIn[] = {{2, 0.67, 0.45}, {1, 0.29, 0.35}, {3, 0.04, 1.0}};
+  const RubberbandModeChoice* rows = row_.modes.empty() ? kBuiltIn : row_.modes.data();
+  const size_t n = row_.modes.empty() ? 3 : row_.modes.size();
+  const double u = uniform();
+  double total = 0;
+  size_t pick = n - 1;
+  for (size_t i = 0; i < n; ++i) {
+    total += rows[i].frequency;
+    if (total >= u) {
+      pick = i;
+      break;
+    }
+  }
+  mode_ = rows[pick].mode;
+  amount_ = rows[pick].amount;
+  mistake_left_ = 1.0;  // interim: the raised scalar for 1 s (measured 0.5 to 2 s)
+}
+
+void DriverAi::update(double gap, int places_behind, double dt) {
   State next = State::kNormal;
   double torque = 1;
   if (enabled_) {
@@ -72,38 +96,55 @@ void DriverAi::update(double gap, int places_behind) {
     max_ = behind > skill_.dist_behind_for_max;
     if (catch_up_) next = State::kCatchUp;
     else if (max_) next = State::kMaxPerformance;
-    else if (gap >= 0 && gap >= row_.start_rubberbanding && !row_.modes.empty()) {
+    else if (gap >= 0 && gap >= row_.start_rubberbanding) {
       next = State::kRubberband;
       if (gap > row_.start_torque_cut) torque = torque_cut(row_, gap);
     }
   }
+  // When a mode is drawn: on entering rubber-band mode, and while in it
+  // whenever the place changes or the gap crosses StartRubberbandingDistance,
+  // StartTorqueCutDistance or 0. (-DistBehindForTorqueBoost is not read.)
+  const auto crossed = [&](double at) { return (last_gap_ < at) != (gap < at); };
+  const bool threshold = have_last_ && (crossed(row_.start_rubberbanding) || crossed(row_.start_torque_cut) ||
+                                        crossed(0) || places_behind != last_places_);
   if (next != state_) {
-    // A threshold crossed: roll again; entering rubber-band mode draws a mode.
-    roll();
-    if (next == State::kRubberband) {
-      double total = 0;
-      for (const auto& m : row_.modes) total += m.frequency;
-      double u = uniform() * total;
-      mode_ = 0;
-      for (const auto& m : row_.modes) {
-        if (u < m.frequency) {
-          mode_ = m.mode;
-          break;
-        }
-        u -= m.frequency;
-      }
-    } else mode_ = 0;
+    roll();  // a threshold crossed: roll again
     state_ = next;
+    if (state_ == State::kRubberband) draw_mode();
+    else mode_ = 0, amount_ = 0;
+  } else if (state_ == State::kRubberband && threshold) {
+    draw_mode();
   }
-  if (state_ == State::kRubberband && gap > row_.start_torque_cut) mode_ = 8;
+  last_gap_ = gap, last_places_ = places_behind, have_last_ = true;
   braking_ = base_braking_, cornering_ = base_cornering_;
   if (max_) braking_ = skill_.braking_max, cornering_ = skill_.cornering_max;
   if (state_ == State::kCatchUp) {
     braking_ += (1.0 - braking_) * row_.catch_up_factor;
     cornering_ += (1.25 - cornering_) * row_.catch_up_factor;
   }
-  // The drawn modes (under/over braking or cornering, lags): which id is
-  // which and what Amount means are not in the spec; interim no effect.
+  if (state_ == State::kRubberband) {
+    mistake_left_ -= dt;
+    if (gap > row_.start_torque_cut) {
+      // Mode 8, the torque cut: braking and cornering at the row's minima.
+      braking_ = skill_.braking_min, cornering_ = skill_.cornering_min;
+    } else {
+      // The mode table: under- modes take Amount off the row's minimum
+      // (floor 0.25), over- modes put the scalar at 1 + Amount for the
+      // mistake's hold, then the rolled value; the lags (5 to 7, unused on
+      // the disc) have no effect.
+      switch (mode_) {
+        case 1: braking_ = std::max(skill_.braking_min - amount_, 0.25); break;
+        case 2: cornering_ = std::max(skill_.cornering_min - amount_, 0.25); break;
+        case 3:
+          if (mistake_left_ > 0) braking_ = 1 + amount_;
+          break;
+        case 4:
+          if (mistake_left_ > 0) cornering_ = 1 + amount_;
+          break;
+        default: break;
+      }
+    }
+  }
   torque_ = skill_.nominal_torque_scale * torque;
 }
 

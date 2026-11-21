@@ -108,6 +108,8 @@ class AiField {
   // the line's own speed x skill. Needs the line's radius.
   void set_limits(size_t i, float corner, float decel) { corner_[i] = corner, decel_[i] = decel; }
   void set_lane(size_t i, float lane) { lane_[i] = lane; }
+  // A cap on car i's planned speed, m/s (a car in the way; 1e9: none).
+  void set_speed_cap(size_t i, float cap) { cap_[i] = cap; }
   float lane(size_t i) const { return lane_[i]; }
   // Moves car i's progress (a reset, or a car moved along the line).
   void set_progress(size_t i, double distance);
@@ -126,7 +128,7 @@ class AiField {
   Options o_;
   std::vector<uint32_t> seg_;
   std::vector<double> progress_;
-  std::vector<float> lane_, skill_, cross_, corner_, decel_, target_;
+  std::vector<float> lane_, skill_, cross_, corner_, decel_, target_, cap_;
 };
 
 }  // namespace drive

@@ -223,6 +223,40 @@ void test_difficulty() {
   CHECK(off.state() == race::DriverAi::State::kNormal && near(off.torque(), 1));
 }
 
+// SPEC-RACE-AI mode table: over-braking holds 1 + Amount for 1 s, then the
+// rolled value; under-cornering is the minimum less Amount (floor 0.25);
+// the torque cut puts both at the row's minima.
+void test_rubberband_modes() {
+  auto e = made_up_rows();
+  race::RubberbandRow r = e.rubberbands[0];
+  r.modes = {{3, 1.0, 6.5}};
+  race::DriverAi ai;
+  ai.init(e.skills[0], &r, 11);
+  ai.update(20, -1, 0.5);  // 20 m ahead: rubber band, mode 3 drawn
+  CHECK(ai.mode() == 3 && near(ai.braking(), 7.5));
+  ai.update(21, -1, 0.6);  // 1.1 s into the mistake
+  CHECK(ai.mode() == 3 && ai.braking() >= 0.5 && ai.braking() <= 0.6);
+  ai.update(150, -1, 0.1);  // past the torque cut
+  CHECK(ai.mode() == 8 && near(ai.braking(), 0.5) && near(ai.cornering(), 0.4));
+  r.modes = {{2, 1.0, 0.1}};
+  ai.init(e.skills[0], &r, 11);
+  ai.update(20, -1);
+  CHECK(ai.mode() == 2 && near(ai.cornering(), 0.3));
+  r.modes = {{2, 1.0, 0.3}};
+  ai.init(e.skills[0], &r, 11);
+  ai.update(20, -1);
+  CHECK(near(ai.cornering(), 0.25));
+  // No row: the built-in choices (under-cornering, under-braking, over-braking).
+  int seen[4] = {};
+  for (uint64_t seed = 1; seed <= 400; ++seed) {
+    race::DriverAi b;
+    b.init(e.skills[0], nullptr, seed);
+    b.update(150, -1);
+    if (b.mode() >= 1 && b.mode() <= 3) ++seen[b.mode()];
+  }
+  CHECK(seen[2] > seen[1] && seen[1] > seen[3] && seen[3] > 0 && seen[1] + seen[2] + seen[3] == 400);
+}
+
 void test_line_and_ground() {
   // A made-up closed circle of radius 50 m (points 2 m apart), half width 6, offset 0.
   race::AiLineFile f;
@@ -407,6 +441,7 @@ int main() {
   test_route();
   test_session();
   test_difficulty();
+  test_rubberband_modes();
   test_line_and_ground();
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
