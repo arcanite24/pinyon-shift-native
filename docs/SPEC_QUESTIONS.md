@@ -1054,6 +1054,8 @@ cornering and braking scale it; any look-ahead or per-segment speed table
 in the line file or the car), with an oracle trace of target against
 actual speed on one more car. Meanwhile: the fit.
 
+answered in RACE_AI.md d3708678
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
