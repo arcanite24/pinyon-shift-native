@@ -1011,3 +1011,12 @@ popularity open with interims)
 For the chase camera's feel: an oracle capture (camera pose per frame
 against the car's pose) through corners, a crest and hard braking, so the
 engine's chase can be compared. Meanwhile: Q45's interims.
+
+## Q52 (M5, not blocking): where CareerRaceModes.xml lives
+
+SPEC-EVENT-REWARDS reads each mode's WinningsDistribution from
+`CareerRaceModes.xml`; no loose file of that name is on the disc (inside
+an archive?). Needed: its archive and member, and how an event names its
+mode (CareerEventTypes.RaceModeId?). Meanwhile: the distribution from the
+career type (headline: winner takes all; street and nemesis: top three;
+else the default split).

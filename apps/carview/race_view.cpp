@@ -354,8 +354,11 @@ std::string RaceView::banner() const {
   else if (s.finished(n)) {
     clock_text(s.car(n).finish, t, sizeof t);
     const int p = s.car(n).place;
-    const double credits = p >= 1 && p <= int(event_.scoring.size()) ? event_.scoring[size_t(p - 1)] * event_.cash_prize / 1000 : 0;
-    std::snprintf(b, sizeof b, "FINISHED %s PLACE  %s  %.0f CR", ordinal(p), t, credits);
+    const int64_t credits = award_ ? award_->credits : credits_for(p);
+    if (award_ && award_->wristband_points > 0)
+      std::snprintf(b, sizeof b, "FINISHED %s PLACE  %s  %lld CR  +%d WRISTBAND", ordinal(p), t, (long long)credits,
+                    award_->wristband_points);
+    else std::snprintf(b, sizeof b, "FINISHED %s PLACE  %s  %lld CR", ordinal(p), t, (long long)credits);
   } else {
     clock_text(c, t, sizeof t);
     const char* go = c < 1.5 ? "GO!  " : "";
@@ -366,6 +369,22 @@ std::string RaceView::banner() const {
                     std::max(0.0, finish_progress_ - field_->progress(n)));
   }
   return b;
+}
+
+int64_t RaceView::credits_for(int place) const {
+  return race::race_credits(event_.cash_prize, race::winnings_for_career_type(event_.career_type),
+                            int(session_->size()), place, true);
+}
+
+const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::WristbandTables& tables,
+                                       double top_speed) {
+  const size_t n = cars_.size();
+  if (award_ || !session_->finished(n)) return nullptr;
+  const auto& c = session_->car(n);
+  award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
+                            event_.cash_prize, int(session_->size()), c.place, true, c.finish, top_speed,
+                            event_.prize_car, tables);
+  return &*award_;
 }
 
 std::string RaceView::results() const {
@@ -380,9 +399,9 @@ std::string RaceView::results() const {
     if (c.best_lap > 0) clock_text(c.best_lap, best, sizeof best);
     else std::snprintf(best, sizeof best, "--");
     const int slot = i < cars_.size() ? cars_[i].slot : player_slot_;
-    const double credits = k < event_.scoring.size() ? event_.scoring[k] * event_.cash_prize / 1000 : 0;
+    const int64_t credits = credits_for(int(k) + 1);
     std::snprintf(line, sizeof line, "  P%zu  %-9s best %-9s slot %02d  %5.0f m  %s%s\n", k + 1, t, best, slot,
-                  c.distance, name_of(i).c_str(), i == cars_.size() ? (" " + std::to_string(int(credits)) + " CR").c_str() : "");
+                  c.distance, name_of(i).c_str(), i == cars_.size() ? (" " + std::to_string(credits) + " CR").c_str() : "");
     out += line;
   }
   return out;

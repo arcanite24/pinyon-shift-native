@@ -60,6 +60,11 @@ struct EventData {
   int player_grid_position = 0;
   int event_skill = 50, event_temperament = 5, event_rubberband = 0;
   double cash_prize = 0;
+  // SPEC-EVENT-REWARDS: Races.Id, Events.Level, CareerEventStyle and
+  // CareerTypeId, and the event's Rewards_EventPrizes car (0: none).
+  int64_t race_id = 0;
+  int level = 0, style = 0, career_type = 0;
+  int64_t prize_car = 0;
   std::vector<Opponent> opponents;  // by ascending ID
   std::vector<SkillRow> skills;     // every AISkills row, by id
   std::vector<RubberbandRow> rubberbands;

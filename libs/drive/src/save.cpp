@@ -47,6 +47,22 @@ std::string save_to_text(const DriveSave& s) {
     for (int id : s.garage) out += " " + std::to_string(id);
     out += "\n";
   }
+  if (s.credits || s.total_winnings)
+    out += "credits " + std::to_string(s.credits) + " " + std::to_string(s.total_winnings) + "\n";
+  if (s.wristband_points) out += "wristband " + std::to_string(s.wristband_points) + "\n";
+  if (s.num_races)
+    out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
+           std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
+           num(s.time_exhibition) + " " + num(s.top_speed) + "\n";
+  for (const auto& [id, place] : s.race_results)
+    out += "race_result " + std::to_string(id) + " " + std::to_string(place) + "\n";
+  for (const auto& [id, place] : s.event_results)
+    out += "event_result " + std::to_string(id) + " " + std::to_string(place) + "\n";
+  if (!s.prize_cars.empty()) {
+    out += "prize_cars";
+    for (auto id : s.prize_cars) out += " " + std::to_string(id);
+    out += "\n";
+  }
   return out;
 }
 
@@ -91,6 +107,20 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       if (l >> b.name >> b.status >> b.rumour_at >> b.found_at) out.barns.push_back(b);
     } else if (key == "garage") {
       for (int id; l >> id;) out.garage.push_back(id);
+    } else if (key == "credits") {
+      l >> out.credits >> out.total_winnings;
+    } else if (key == "wristband") {
+      l >> out.wristband_points;
+    } else if (key == "stats") {
+      l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
+          out.time_exhibition >> out.top_speed;
+    } else if (key == "race_result" || key == "event_result") {
+      int64_t id = 0;
+      int place = 0;
+      if (l >> id >> place && place >= 1)
+        (key == "race_result" ? out.race_results : out.event_results).emplace_back(id, place);
+    } else if (key == "prize_cars") {
+      for (int64_t id; l >> id;) out.prize_cars.push_back(id);
     }
   }
   if (out.car.empty()) return fail(error, "save without a car");

@@ -20,6 +20,7 @@
 #include "race/event.h"
 #include "race/owt.h"
 #include "race/race_line.h"
+#include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
 
@@ -257,6 +258,36 @@ void test_rubberband_modes() {
   CHECK(seen[2] > seen[1] && seen[1] > seen[3] && seen[3] > 0 && seen[1] + seen[2] + seen[3] == 400);
 }
 
+// SPEC-EVENT-REWARDS, Tests (synthetic).
+void test_rewards() {
+  using race::Winnings;
+  CHECK(race::race_credits(10000, Winnings::kDefault, 8, 3, true) == 7500);
+  CHECK(race::race_credits(10000, Winnings::kDefault, 8, 2, true) == 8800);
+  CHECK(race::race_credits(10000, Winnings::kDefault, 8, 8, true) == 1300);
+  CHECK(race::race_credits(10000, Winnings::kTopThree, 8, 2, true) == 5000);
+  CHECK(race::race_credits(10000, Winnings::kTopThree, 8, 4, true) == 0);
+  CHECK(race::race_credits(10000, Winnings::kWinnerTakesAll, 8, 2, true) == 0);
+  CHECK(race::race_credits(10000, Winnings::kDefault, 1, 1, true) == 0);
+  CHECK(race::race_credits(10000, Winnings::kDefault, 8, 1, false) == 0);
+  CHECK(race::round_prize(9) == 0 && race::round_prize(10) == 10 && race::round_prize(1250) == 1300);
+  race::WristbandTables t;
+  for (int p = 1; p <= 8; ++p) t.points[2][p] = 90 - 10 * p;  // made up
+  t.levels = {{0, "a"}, {100, "b"}};
+  race::CareerRecord r;
+  auto a = race::award_race(r, 22, 143, 2, 1, 2, 10000, 8, 3, true, 160.9, 60, 0, t);
+  CHECK(a.credits == 7500 && a.wristband_points == 60 && a.first_completion && r.event_places[22] == 3);
+  a = race::award_race(r, 22, 143, 2, 1, 2, 10000, 8, 5, true, 161, 60, 0, t);
+  CHECK(a.wristband_points == 0 && r.event_places[22] == 3 && r.race_places[143] == 3);
+  a = race::award_race(r, 22, 143, 2, 1, 2, 10000, 8, 1, true, 155, 61, 777, t);
+  CHECK(a.wristband_points == 20 && a.won && r.event_places[22] == 1 && a.prize_car == 777);
+  CHECK(r.num_races == 3 && r.num_victories == 1 && r.num_podiums == 2 && r.wristband_points == 80 && t.level_index(80) == 0);
+  a = race::award_race(r, 22, 143, 2, 1, 2, 10000, 8, 1, true, 155, 61, 777, t);
+  CHECK(a.prize_car == 0 && r.prize_cars.size() == 1);
+  const int races = r.num_races;
+  a = race::award_race(r, 23, 144, 2, 1, 2, 10000, 8, 2, false, 0, 0, 0, t);
+  CHECK(a.credits == 0 && r.num_races == races && !r.event_places.count(23));
+}
+
 void test_line_and_ground() {
   // A made-up closed circle of radius 50 m (points 2 m apart), half width 6, offset 0.
   race::AiLineFile f;
@@ -442,6 +473,7 @@ int main() {
   test_session();
   test_difficulty();
   test_rubberband_modes();
+  test_rewards();
   test_line_and_ground();
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");

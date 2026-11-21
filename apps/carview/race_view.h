@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "race/difficulty.h"
 #include "race/event.h"
 #include "race/race_line.h"
+#include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
 #include "showroom.h"
@@ -70,6 +72,11 @@ class RaceView {
 
   void instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                  std::vector<Showroom::Instance>& out) const;
+  // Once the player has finished: the race's award applied to `career`
+  // (SPEC-EVENT-REWARDS), once a race; null before then or when already
+  // awarded this call. `top_speed` m/s for the counters.
+  const race::RaceAward* award(race::CareerRecord& career, const race::WristbandTables& tables, double top_speed);
+  const race::EventData& event() const { return event_; }
   std::string banner() const;
   std::string results() const;  // one line a car, by place
   const race::Session& session() const { return *session_; }
@@ -125,6 +132,9 @@ class RaceView {
     double t, x, y, z, heading, speed;
   };
   std::vector<ReplayRow> replay_;
+  std::optional<race::RaceAward> award_;
+  // The player's credits for place p (the spec's share; before the award).
+  int64_t credits_for(int place) const;
 };
 
 }  // namespace carview

@@ -1374,6 +1374,9 @@ int run_drive(int argc, char** argv) {
   // The event's race: its data, and the player's car on its slot (the
   // save does not override the grid).
   std::unique_ptr<carview::RaceView> race;
+  race::CareerRecord career;
+  race::WristbandTables wristbands;
+  double race_top_speed = 0;
   if (!race_event.empty()) {
     if (world_dir.empty()) {
       std::fprintf(stderr, "carview: --event needs the world (--world)\n");
@@ -1388,6 +1391,19 @@ int run_drive(int argc, char** argv) {
     }
     race->player_spawn(spawn);
     have_spawn = true;
+    if (!race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &why))
+      std::fprintf(stderr, "carview: note: no wristband tables: %s\n", why.c_str());
+  }
+  // The career (SPEC-EVENT-REWARDS) from the save.
+  if (have_saved) {
+    career.credits = saved.credits, career.total_winnings = saved.total_winnings;
+    career.wristband_points = saved.wristband_points;
+    career.num_races = saved.num_races, career.num_victories = saved.num_victories, career.num_podiums = saved.num_podiums;
+    career.time_in_festival = saved.time_festival, career.time_in_street = saved.time_street;
+    career.time_in_exhibition = saved.time_exhibition, career.top_speed = saved.top_speed;
+    for (const auto& [id, place] : saved.race_results) career.race_places[id] = place;
+    for (const auto& [id, place] : saved.event_results) career.event_places[id] = place;
+    career.prize_cars = saved.prize_cars;
   }
   if (have_saved && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
     spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
@@ -2099,6 +2115,18 @@ int run_drive(int argc, char** argv) {
         if (race && streamer)
           race->after_step(vehicle, *ground, streamer->centre_x(), streamer->centre_z(),
                            streamer->collision_radius(), traffic.get());
+        if (race && race->session().started()) {
+          race_top_speed = std::max(race_top_speed, std::fabs(vehicle.speed()));
+          if (const race::RaceAward* a = race->award(career, wristbands, race_top_speed)) {
+            const int lvl = wristbands.level_index(career.wristband_points);
+            std::printf("race: award %lld CR, %d wristband points (total %d, %s), credits %lld%s%s\n",
+                        (long long)a->credits, a->wristband_points, career.wristband_points,
+                        lvl >= 0 ? wristbands.levels[size_t(lvl)].second.c_str() : "no wristband",
+                        (long long)career.credits, a->first_completion ? ", first completion" : "",
+                        a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
+            save_due = true;  // the window saves the award at once
+          }
+        }
         free_roam_step();
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
@@ -2196,6 +2224,14 @@ int run_drive(int argc, char** argv) {
         s.has_spawn = streamer != nullptr;
         s.spawn = {start.x, start.y, start.z};
         s.spawn_heading = start_heading;
+        s.credits = career.credits, s.total_winnings = career.total_winnings;
+        s.wristband_points = career.wristband_points;
+        s.num_races = career.num_races, s.num_victories = career.num_victories, s.num_podiums = career.num_podiums;
+        s.time_festival = career.time_in_festival, s.time_street = career.time_in_street;
+        s.time_exhibition = career.time_in_exhibition, s.top_speed = career.top_speed;
+        for (const auto& [id, place] : career.race_places) s.race_results.emplace_back(id, place);
+        for (const auto& [id, place] : career.event_places) s.event_results.emplace_back(id, place);
+        s.prize_cars = career.prize_cars;
         if (progress_loaded) {
           progress_to_save(collectibles, progress, s);
         } else if (have_saved) {  // no collectibles this run: keep what the save had

@@ -12,6 +12,12 @@
 //   signs flyer_001 flyer_017
 //   barn barnfind_01 2 50000.0 51200.3
 //   garage 1219
+//   credits 7500 7500
+//   wristband 120
+//   stats 1 0 1 160.93 0 0 61.2
+//   race_result 143 3
+//   event_result 22 3
+//   prize_cars 1031
 //
 // Lines are "key values"; unknown keys are skipped, so later versions can
 // add lines. `spawn` (optional) is the last spawn point, where "back to the
@@ -19,10 +25,16 @@
 // (SPEC-FREEROAM-COLLECTIBLES; freeroam::Progress) is optional: `distance`
 // is the total driven (m), `signs` the found discount signs, one `barn`
 // line per barn find off its starting state (name, status, rumour and
-// discovery distances), `garage` the Data_Car ids barn finds gave.
+// discovery distances), `garage` the Data_Car ids barn finds gave. The
+// career (SPEC-EVENT-REWARDS; race::CareerRecord) is optional: credits and
+// total winnings, wristband points, the counters (races, victories,
+// podiums, festival, street and exhibition race time in s, top speed in
+// m/s), the best place per race and per event, and the prize cars.
 #pragma once
 
 #include <array>
+#include <cstdint>
+#include <utility>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -47,6 +59,13 @@ struct DriveSave {
   std::vector<std::string> signs_found;
   std::vector<SavedBarn> barns;
   std::vector<int> garage;
+  // The career.
+  int64_t credits = 0, total_winnings = 0;
+  int wristband_points = 0;
+  int num_races = 0, num_victories = 0, num_podiums = 0;
+  double time_festival = 0, time_street = 0, time_exhibition = 0, top_speed = 0;
+  std::vector<std::pair<int64_t, int>> race_results, event_results;
+  std::vector<int64_t> prize_cars;
 };
 
 std::string save_to_text(const DriveSave& save);

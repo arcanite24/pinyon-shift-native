@@ -86,7 +86,8 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   const std::string sfx = kSuffix[int(difficulty)];
   bool found = false;
   if (!db.each("select Id, AISkill" + sfx + ", AITemperament" + sfx + ", AIRubberband" + sfx +
-                   ", PlayerGridPosition, CashPrize from Events where HorizonEventID = ?",
+                   ", PlayerGridPosition, CashPrize, coalesce(Level, 0), coalesce(CareerEventStyle, 0), "
+                   "coalesce(CareerTypeId, 0) from Events where HorizonEventID = ?",
                {horizon_id},
                [&](sqlite3_stmt* s) {
                  found = true;
@@ -96,6 +97,9 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  out.event_rubberband = int(i64(s, 3));
                  out.player_grid_position = int(i64(s, 4));
                  out.cash_prize = d(s, 5);
+                 out.level = int(i64(s, 6));
+                 out.style = int(i64(s, 7));
+                 out.career_type = int(i64(s, 8));
                },
                error))
     return false;
@@ -105,7 +109,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   }
   found = false;
   const std::string ev = std::to_string(out.event_id);
-  if (!db.each("select r.TrackId, r.NumLaps, t.RouteId, t.Length from Races r join Tracks t on t.id = r.TrackId "
+  if (!db.each("select r.TrackId, r.NumLaps, t.RouteId, t.Length, r.Id from Races r join Tracks t on t.id = r.TrackId "
                "where r.EventId = ? order by r.RaceNumber limit 1",
                {ev},
                [&](sqlite3_stmt* s) {
@@ -114,6 +118,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  out.laps = std::max(1, int(i64(s, 1)));
                  out.route_id = int(i64(s, 2));
                  out.track_length = d(s, 3);
+                 out.race_id = i64(s, 4);
                },
                error))
     return false;
@@ -121,6 +126,9 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
     if (error) *error = "gamedb: event " + horizon_id + " has no race and track";
     return false;
   }
+  if (!db.each("select RewardCarId from Rewards_EventPrizes where EventId = ? order by Id limit 1", {ev},
+               [&](sqlite3_stmt* s) { out.prize_car = i64(s, 0); }, error))
+    return false;
   if (!db.each("select p.ID, p.Ordinal, coalesce(c.MediaName, ''), p.AIPlayerID, coalesce(a.Name, ''), "
                "coalesce(a.SkillModifier, 0), coalesce(a.AggroModifier, 0), coalesce(a.RubberBandModifier, 0) "
                "from EventParticipants p left join AIPlayers a on a.Id = p.AIPlayerID "
