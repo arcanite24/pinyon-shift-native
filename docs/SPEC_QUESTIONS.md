@@ -955,3 +955,51 @@ ours meanwhile:
   there for now;
 - the look spring (ours: 0.1 s), and the heading spring's yaw-rate sign
   (as written).
+
+## Q46 (M5, blocking the gate): oracle races over ten events
+
+The M5 gate compares AI mean distance (3 %) and finishing order over ten
+events; the oracle has FR22 and FR16 only. Needed: eight more oracle races
+covering the race types of SPEC-EVENTS (ribbon-0 circuit, ribbon-2
+circuit, ribbon-2 sprint, multi-lap sprint, street point-to-point,
+single make, headline, nemesis), each with the RACE_AI Tests table (AI
+times, mean distance, places, slots) and the player's path by time as a
+readable oracle output (a CSV of t, x, y, z, distance along the route), so
+the engine can replay the player and the rubber-banding sees the same
+gaps. Meanwhile: FR22 and FR16 only, the player under our AI.
+
+## Q47 (M5): street and nemesis races (checkpoints, no AI line)
+
+Ribbon-6 routes have no OWTM line. Needed: the checkpoint data in the
+route file and the pass rule (radius or gate plane, order, missed
+checkpoint), the finish, and what the AI follows there (the nav road
+graph? a line built from the checkpoints?). Meanwhile: checkpoints as the
+route file's gates in order, crossed as planes; the AI follows a line
+through the checkpoints on the road graph (ours).
+
+## Q48 (M5): ribbon-2 circuits and multi-lap sprints
+
+The AI line is open and runs past both ends. Needed: how a lap is
+counted and where cars rejoin (do they U-turn, or is the lap a there and
+back?). Meanwhile: not run.
+
+## Q49 (M5): rubber-band mode ids and Amount, AI grip on dirt
+
+SPEC-RACE-AI draws modes 1 to 7 from AIRubberbandModeChoices but gives
+neither the id-to-mode map nor what Amount scales; the AI's dirt grip
+factor is 1.0 to 1.5 with no rule. Meanwhile: modes drawn with no effect;
+dirt grip 1.25.
+
+## Q50 (M5/M6): rewards, XP and the results screen
+
+Needed: the credits rule (EventScoring, CashPrize, RaceWinnings,
+CreditsMultiplier), XP or popularity for a race, what the results screen
+lists, and how the profile records an event win (wristband progress).
+Meanwhile: the interim of SPEC-EVENTS (EventScoring row × CashPrize /
+1,000, no XP).
+
+## Q51 (polish, queued last): a chase capture at speed
+
+For the chase camera's feel: an oracle capture (camera pose per frame
+against the car's pose) through corners, a crest and hard braking, so the
+engine's chase can be compared. Meanwhile: Q45's interims.
