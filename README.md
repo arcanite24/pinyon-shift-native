@@ -944,8 +944,11 @@ the interim noted here until a later polish sweep.
   car barely steers (0.07) as it drifts out: the steering at speed (the
   pad's narrowed lock as the AI's cap, interim) is the next suspect: the
   car's lane is 0 (it aims at the line itself), so the 3 m error with
-  0.07 steer is the controller's, not the lane spread. Next: the steer
-  against the line's curvature there (`SHIFT_PLAN_DUMP`).
+  0.07 steer is the controller's, not the lane spread. The 0.07 is the
+  cap: the pad's speed-narrowed lock at 33 m/s is about 1.7 deg. Lifting
+  the cap 2x or 3x makes it worse (216.3 and 219.3 s, 39 and 38 resets):
+  more lock without a matching controller unsettles the Minis. The AI's
+  real steer rule at speed is the open question (sent to the spec side).
   gate (the player replays the oracle's path from `out/oracle/`). FR22 at
   Med, three seeds: AI mean 162.4 s (oracle 161.5), 4,673 m (4,638), the
   player 2nd to 3rd (3rd), winner slot 00: passes. FR16: AI mean 129 to
