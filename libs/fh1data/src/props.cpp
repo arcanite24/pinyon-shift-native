@@ -145,10 +145,10 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
   return true;
 }
 
-std::string PropModels::member_name(uint32_t member) {
-  char name[40];
-  std::snprintf(name, sizeof name, "coloradoout.%05u.rmb.bin", member);
-  return name;
+std::string PropModels::member_name(uint32_t member, const std::string& prefix) {
+  char number[16];
+  std::snprintf(number, sizeof number, ".%05u.rmb.bin", member);
+  return prefix + number;
 }
 
 const RenderModel* PropModels::model(uint32_t member, std::string* error) {
@@ -157,7 +157,7 @@ const RenderModel* PropModels::model(uint32_t member, std::string* error) {
     return it->second.get();
   }
   auto& slot = models_[member];
-  const std::string name = member_name(member);
+  const std::string name = name_of(member);
   std::vector<uint8_t> bytes;
   std::string why;
   if (!source_.contains(name)) {

@@ -91,9 +91,13 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
 // part counting up by one (a model without one is a set of one).
 class PropModels {
  public:
-  explicit PropModels(MemberSource& source) : source_(source) {}
+  // `prefix`: the world's model prefix, its folder name in lower case and
+  // "out" (coloradoout, coloradodirtout).
+  explicit PropModels(MemberSource& source, std::string prefix = "coloradoout")
+      : source_(source), prefix_(std::move(prefix)) {}
 
-  static std::string member_name(uint32_t member);  // coloradoout.NNNNN.rmb.bin
+  static std::string member_name(uint32_t member, const std::string& prefix = "coloradoout");  // <prefix>.NNNNN.rmb.bin
+  std::string name_of(uint32_t member) const { return member_name(member, prefix_); }
 
   // The parsed model, or null (missing or failing; `error` says which).
   const RenderModel* model(uint32_t member, std::string* error = nullptr);
@@ -112,6 +116,7 @@ class PropModels {
  private:
 
   MemberSource& source_;
+  std::string prefix_;
   std::map<uint32_t, std::unique_ptr<RenderModel>> models_;
   std::map<uint32_t, std::string> errors_;
 };

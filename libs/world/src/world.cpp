@@ -201,7 +201,28 @@ Blend effect_blend(const std::string& e) {
   return Blend::kOpaque;
 }
 
+fs::path ribbon_file(const fs::path& world, const std::string& suffix) {
+  auto lower = [](std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+  };
+  const fs::path ribbon = world / "Ribbon_00";
+  const std::string name = (world.has_filename() ? world : world.parent_path()).filename().string();
+  const std::string want = lower(name + suffix);
+  std::error_code ec;
+  for (const auto& f : fs::directory_iterator(ribbon, ec))
+    if (lower(f.path().filename().string()) == want) return f.path();
+  return ribbon / (name + suffix);
+}
+
+std::string model_prefix(const fs::path& world) {
+  std::string s = (world.has_filename() ? world : world.parent_path()).filename().string();
+  for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+  return s + "out";
+}
+
 bool World::open(const fs::path& colorado, const fs::path& cache, std::string* error) {
+  name_ = (colorado.has_filename() ? colorado : colorado.parent_path()).filename().string();
   const fs::path zip = colorado / "bin.zip";
   if (!impl_->source.open(zip, error)) return false;
   std::error_code ec;
@@ -259,7 +280,7 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
   }
 
   // Props: the object table and every placement.
-  const fs::path pvs = colorado / "Ribbon_00" / "Colorado_00.pvs";
+  const fs::path pvs = ribbon_file(colorado, "_00.pvs");
   std::ifstream f(pvs, std::ios::binary);
   if (f) {
     std::vector<uint8_t> pvs_bytes((std::istreambuf_iterator<char>(f)), {});
@@ -268,7 +289,7 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
     std::string e;
     if (fh1::parse_object_table(pvs_bytes, impl_->table, &e) &&
         fh1::load_props(impl_->source, impl_->props, &e, options)) {
-      impl_->prop_models = std::make_unique<fh1::PropModels>(impl_->source);
+      impl_->prop_models = std::make_unique<fh1::PropModels>(impl_->source, model_prefix(colorado));
       impl_->have_props = true;
     } else if (error) {
       *error = "props: " + e;  // not fatal: the caller may go on without props
@@ -291,7 +312,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     const std::vector<uint32_t>* texture_list = nullptr;
     if (options.render_data && model_index < models_.size()) {
       const std::string& name = models_[model_index].name;
-      const unsigned long member = name.size() > 17 ? std::strtoul(name.c_str() + 12, nullptr, 10) : 0;
+      const size_t dot = name.find('.');  // <prefix>.NNNNN.rmb.bin
+      const unsigned long member = dot != std::string::npos ? std::strtoul(name.c_str() + dot + 1, nullptr, 10) : 0;
       if (member >= 1 && member - 1 < impl_->table.model_textures.size())
         texture_list = &impl_->table.model_textures[member - 1];
       if (model.uv_offset_scale.empty()) st.default_uv_models.insert(name);
@@ -665,7 +687,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       // The gameplay beacon column (WORLD-MATERIALS item 7: coloradoout.06509,
       // the only DIFF_GLOW_1 model, 105 placements) never drew in the frames
       // checked, day or night: interim rule, not drawn.
-      if (fh1::PropModels::member_name(m) == "coloradoout.06509.rmb.bin") {
+      if (impl_->prop_models->name_of(m) == "coloradoout.06509.rmb.bin") {
         ++st.props_beacons;
         continue;
       }
@@ -678,11 +700,11 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           drawn = true;  // the same spot's other LOD object
           continue;
         }
-        if (fh1::PropModels::member_name(uint32_t(member)) == "coloradoout.06509.rmb.bin") {
+        if (impl_->prop_models->name_of(uint32_t(member)) == "coloradoout.06509.rmb.bin") {
           beacon = true;
           continue;
         }
-        const auto it = index_of.find(fh1::PropModels::member_name(uint32_t(member)));
+        const auto it = index_of.find(impl_->prop_models->name_of(uint32_t(member)));
         add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr, false, fade);
         drawn = true;
         if (fade != 1) ++st.props;

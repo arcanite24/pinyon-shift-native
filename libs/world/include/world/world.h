@@ -188,6 +188,13 @@ struct GatherStats {
   size_t no_material = 0;
 };
 
+// A world folder's own file: Ribbon_00/<folder name><suffix> found
+// without case (Colorado_00.pvs in colorado/, ColoradoDirt_track_00.col in
+// ColoradoDirt/); the literal name when there is no such file.
+std::filesystem::path ribbon_file(const std::filesystem::path& world, const std::string& suffix);
+// Its render models' prefix: the folder name in lower case and "out".
+std::string model_prefix(const std::filesystem::path& world);
+
 class World {
  public:
   World();
@@ -196,6 +203,8 @@ class World {
   // `cache`: a file for the model index (header boxes); built on first use
   // (a full parse of every model) and reused while bin.zip's size matches.
   bool open(const std::filesystem::path& colorado, const std::filesystem::path& cache, std::string* error);
+  // The world's name (its folder: colorado, ColoradoDirt) and its files.
+  const std::string& name() const { return name_; }
   const std::vector<ModelInfo>& models() const { return models_; }
   size_t placement_count() const;
   // The ribbon's texture records (WORLD-MATERIALS), by record index.
@@ -215,6 +224,7 @@ class World {
   struct Impl;
   std::unique_ptr<Impl> impl_;
   std::vector<ModelInfo> models_;
+  std::string name_;
 };
 
 // A stand-in spawn: the centre of the upward-facing road triangle nearest

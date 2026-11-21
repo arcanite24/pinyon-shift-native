@@ -1164,6 +1164,10 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path bake_dir, script_path, world_dir, cache_path;
   double near_x = world::kDumpCameraX, near_z = world::kDumpCameraZ, near_heading = world::kDumpCameraHeading;
   double cruise_kmh = 40, spawn[4] = {0, 0, 0, 0};
+  // The disc's root (media/ inside): from --game, else three folders up
+  // from --world (media/tracks/<world>). A world staged elsewhere (the
+  // Rally package's ColoradoDirt) needs --game.
+  std::filesystem::path game_root_given;
   bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false,
        no_far = false, no_trees = false;
   bool bench = false;     // headless: render every frame, timed, no images
@@ -1259,6 +1263,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--seconds") seconds = std::atof(next());
     else if (a == "--every") every = std::atof(next());
     else if (a == "--world") world_dir = next();
+    else if (a == "--game") game_root_given = next();
     else if (a == "--cache") cache_path = next();
     else if (a == "--speed") cruise_kmh = std::atof(next());
     else if (a == "--render-ground") render_ground = true;
@@ -1506,6 +1511,12 @@ int run_drive(int argc, char** argv) {
       std::printf("mod: %s (%s), %d files, %s\n", m.name.c_str(), m.title.c_str(), m.files,
                   m.enabled ? "on" : "off (mod.txt: enabled 0)");
   }
+  // Colorado's own features (collectibles, the map, traffic) stay off in
+  // another world (ColoradoDirt: SPEC-V4-CONTENT, no traffic on a stage).
+  auto colorado_world = [&]() { return world_dir.empty() || world::model_prefix(world_dir) == "coloradoout"; };
+  auto game_root_of = [&]() -> std::filesystem::path {
+    return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
+  };
   // The career garage (SPEC-GARAGE-UPGRADES): garage.txt beside the save,
   // made by the profile import; the cars the bake has, by Data_Car id.
   garage::Garage career_garage;
@@ -1574,7 +1585,7 @@ int run_drive(int argc, char** argv) {
   std::shared_future<std::shared_ptr<cars::PartsDb>> parts_db;
   std::vector<garage::ClassBand> class_bands;
   if (have_garage && !world_dir.empty()) {
-    const auto game_root = world_dir.parent_path().parent_path().parent_path();
+    const auto game_root = game_root_of();
     std::string e;
     if (!garage::load_class_bands(game_root, class_bands, &e)) std::fprintf(stderr, "carview: note: %s\n", e.c_str());
     const char* state = std::getenv("SHIFT_STATE_ROOT");
@@ -1602,14 +1613,14 @@ int run_drive(int argc, char** argv) {
     race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
     race_options.player_car = car;  // its stock PI for the AI upgrades (interim: not the garage row)
     auto r = std::make_unique<carview::RaceView>(bake_dir);
-    if (!r->open(world_dir.parent_path().parent_path().parent_path(), id, race_options, why)) return false;
+    if (!r->open(game_root_of(), id, race_options, why)) return false;
     race = std::move(r);
     race->player_spawn(spawn);
     have_spawn = true;
     race_top_speed = 0;
     if (wristbands.levels.empty()) {
       std::string e;
-      if (!race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e))
+      if (!race::load_wristband_tables(game_root_of(), wristbands, &e))
         std::fprintf(stderr, "carview: note: no wristband tables: %s\n", e.c_str());
     }
     return true;
@@ -1642,7 +1653,7 @@ int run_drive(int argc, char** argv) {
     carview::CareerSummary cs;
     if (wristbands.levels.empty() && !world_dir.empty()) {
       std::string e;
-      race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e);
+      race::load_wristband_tables(game_root_of(), wristbands, &e);
     }
     const int li = wristbands.level_index(career.wristband_points);
     if (li >= 0) cs.level_name = wristbands.levels[size_t(li)].second;
@@ -1829,7 +1840,7 @@ int run_drive(int argc, char** argv) {
   if (!world_dir.empty()) {
     std::vector<race::EventSummary> all;
     std::string e;
-    if (race::list_events(world_dir.parent_path().parent_path().parent_path(), all, &e))
+    if (race::list_events(game_root_of(), all, &e))
       for (const auto& ev : all)
         if (ev.ribbon >= 0) event_ids.push_back(ev.horizon_id);
   }
@@ -2014,13 +2025,13 @@ int run_drive(int argc, char** argv) {
                                                          : showroom.set_world(std::move(*staged), error);
       };
       if (!world_dir.empty()) {
-        if (cache_path.empty()) cache_path = std::filesystem::path("out") / "world" / "colorado.index";
+        if (cache_path.empty()) cache_path = std::filesystem::path("out") / "world" / (world::model_prefix(world_dir).substr(0, world::model_prefix(world_dir).size() - 3) + ".index");
         world::Spawn sp;
         std::string warning;
         const char* how = "";
         if (!colorado.open(world_dir, cache_path, &error)) {
           status = 1;
-        } else if (!render_ground && !collision.open(world_dir, world_dir.parent_path().parent_path() / "physics.zip",
+        } else if (!render_ground && !collision.open(world_dir, (game_root_given.empty() ? world_dir.parent_path().parent_path() : game_root_of() / "media") / "physics.zip",
                                                      &error, &warning)) {
           status = 1;
         } else {
@@ -2057,8 +2068,8 @@ int run_drive(int argc, char** argv) {
           }
           // Free roam: found signs and each barn's other door variant are
           // left out of the gathers from the first one on.
-          if (collectibles_on && !bench && !flat_world) {
-            const auto game_root = world_dir.parent_path().parent_path().parent_path();
+          if (collectibles_on && !bench && !flat_world && colorado_world()) {
+            const auto game_root = game_root_of();
             if (collectibles.signs.empty()) {
               std::string why;
               if (!freeroam::load_collectibles(game_root, collectibles, &why)) {
@@ -2086,7 +2097,7 @@ int run_drive(int argc, char** argv) {
           }
           // The radio: read once, played with the sound (as the engine).
           if (radio_on && sound && !bench && (!headless || !audio_out.empty())) {
-            const auto game_root = world_dir.parent_path().parent_path().parent_path();
+            const auto game_root = game_root_of();
             if (!radio_tried) {
               radio_tried = true;
               std::string why;
@@ -2187,12 +2198,13 @@ int run_drive(int argc, char** argv) {
           status = 1;
         }
       }
-      if (status == 0 && streamer && (traffic_flag == 1 || (traffic_flag < 0 && !headless && !race))) {
+      if (status == 0 && streamer && colorado_world() &&
+          (traffic_flag == 1 || (traffic_flag < 0 && !headless && !race))) {
         // The test driver keeps to the right lane among traffic (SPEC-TRAFFIC,
         // Driving a lane: 2.2 m right of the centre line).
         follower.set_keep_right(2.2);
         traffic = std::make_unique<TrafficView>(renderer, showroom, bake_dir, headless && !async_stream);
-        const auto game_root = world_dir.parent_path().parent_path().parent_path();
+        const auto game_root = game_root_of();
         if (!traffic->open(game_root, &ground, hour, traffic_seed, error)) {
           std::fprintf(stderr, "carview: note: no traffic: %s\n", error.c_str());
           error.clear();
@@ -2206,7 +2218,7 @@ int run_drive(int argc, char** argv) {
       bool safe_reset_ok = false;
       if (status == 0 && streamer) {
         std::string why;
-        safe_reset_ok = safe_reset.open(world_dir.parent_path().parent_path().parent_path(), &why);
+        safe_reset_ok = safe_reset.open(game_root_of(), &why);
         if (!safe_reset_ok) std::fprintf(stderr, "carview: note: reset on the nearest road triangle (%s)\n", why.c_str());
       }
       // The contacts log: a hard contact is one point pushing with more than
@@ -2482,7 +2494,7 @@ int run_drive(int argc, char** argv) {
         if (!owned) return club_gate = "the 1000 Club package is not enabled", void();
         if (wristbands.levels.empty() && !world_dir.empty()) {
           std::string e;
-          race::load_wristband_tables(world_dir.parent_path().parent_path().parent_path(), wristbands, &e);
+          race::load_wristband_tables(game_root_of(), wristbands, &e);
         }
         if (wristbands.level_index(career.wristband_points) < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND"))
           return club_gate = "needs the green wristband", void();
@@ -2821,7 +2833,7 @@ int run_drive(int argc, char** argv) {
       double rig_min_distance = 1e9, rig_max_distance = 0;  // the chase eye from the CoM, over the run
       if (!world_dir.empty()) {
         std::string note;
-        have_rig = load_camera_rig(world_dir.parent_path().parent_path().parent_path(), bake_dir, info, vehicle, rig, note);
+        have_rig = load_camera_rig(game_root_of(), bake_dir, info, vehicle, rig, note);
         if (!have_rig) std::fprintf(stderr, "carview: note: the camera spec's rig is off: %s\n", note.c_str());
         else if (!note.empty()) std::fprintf(stderr, "carview: note: camera: %s\n", note.c_str());
         rig.set_mode(drive::CameraMode(std::clamp(camera_mode, 0, drive::kCameraModes - 1)));

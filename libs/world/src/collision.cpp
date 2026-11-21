@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "fh1data/members.h"
+#include "world/world.h"
 
 namespace fs = std::filesystem;
 
@@ -18,7 +19,7 @@ Collision::~Collision() = default;
 
 bool Collision::open(const fs::path& colorado, const fs::path& physics_zip, std::string* error, std::string* warning) {
   if (!impl_->source.open(colorado / "bin.zip", error)) return false;
-  const fs::path col = colorado / "Ribbon_00" / "Colorado_track_00.col";
+  const fs::path col = ribbon_file(colorado, "_track_00.col");
   fh1::MemberSource ribbon;
   std::vector<uint8_t> bytes;
   if (!ribbon.open(col.parent_path(), error) || !ribbon.read(col.filename().string(), bytes, error)) return false;
