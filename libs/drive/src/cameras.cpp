@@ -11,9 +11,6 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDeg = kPi / 180;
 constexpr double kMph = 2.2369362920544;  // m/s to mph
-// Springs step at most this long (layer springs reach about 36 /s of
-// damping; explicit steps longer than ~50 ms would diverge).
-constexpr double kSubstep = 1.0 / 240;
 // A frame this long settles every spring at once (headless frames).
 constexpr double kSettle = 0.5;
 
@@ -40,18 +37,16 @@ V3 direction(double yaw, double pitch) {
   return {std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
 }
 
-// One spring step toward `target` (K, D), substepped; dt >= kSettle lands.
-void spring(double& x, double& v, double target, double k, double d, double dt) {
+// A layer's spring, one implicit step a frame (SPEC-CAMERAS, Spring):
+// x' from (x' + dt K (f - x)) / (1 + dt C + dt^2 K), then x += dt x'.
+void spring_implicit(double& x, double& v, double target, double k, double c, double dt) {
   if (dt >= kSettle || k <= 0) {
     x = target;
     v = 0;
     return;
   }
-  for (double left = dt; left > 1e-12; left -= kSubstep) {
-    const double h = std::min(left, kSubstep);
-    v += (k * (target - x) - d * v) * h;
-    x += v * h;
-  }
+  v = (v + dt * k * (target - x)) / (1 + dt * c + dt * dt * k);
+  x += dt * v;
 }
 
 // --- Parsing ---------------------------------------------------------------
@@ -172,6 +167,8 @@ bool parse_camera_physics(std::string_view xml, CameraTuning& out, std::string* 
       if (input == "SpeedMPH") l.input = CameraLayer::Input::kSpeedMph;
       else if (input == "ConstantOne") l.input = CameraLayer::Input::kConstantOne;
       else if (input == "PitchAngleDegrees") l.input = CameraLayer::Input::kPitchDegrees;
+      else if (input == "Gs_Longitudinal") l.input = CameraLayer::Input::kGsLongitudinal;
+      else if (input == "Gs_Lateral") l.input = CameraLayer::Input::kGsLateral;
       else kept = false;
       if (output == "CarSpaceXYZOffset") l.output = CameraLayer::Output::kCarXYZ;
       else if (output == "CarSpaceYPROffset") l.output = CameraLayer::Output::kCarYPR;
@@ -231,6 +228,8 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
     const CameraLayer& l = layers[i];
     double x = l.input == CameraLayer::Input::kSpeedMph       ? std::fabs(in.speed) * kMph
                : l.input == CameraLayer::Input::kPitchDegrees ? in.pitch_degrees
+               : l.input == CameraLayer::Input::kGsLongitudinal ? in.g_longitudinal
+               : l.input == CameraLayer::Input::kGsLateral    ? in.g_lateral
                                                               : 1.0;
     x = std::clamp(x, l.clamp_min, l.clamp_max);
     double s = 1;
@@ -255,7 +254,7 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
     LayerState& st = layer_state_[i];
     if (l.sprung && st.started) {
       // Damping SpringDPercent of critical (2 sqrt K): the spec's reading.
-      spring(st.x, st.v, s, l.spring_k, l.spring_d_percent * 2 * std::sqrt(l.spring_k), dt);
+      spring_implicit(st.x, st.v, s, l.spring_k, l.spring_d_percent * 2 * std::sqrt(l.spring_k), dt);
     } else {
       st.x = s;
       st.v = 0;
@@ -294,7 +293,7 @@ void DriveCamera::start(const CameraInput& in) {
     omega_ = 0;
     h_ = car_.box_max[1] - car_.com[1];
     h_rate_ = 0;
-    slope_hold_ = 0;
+    slope_hold_ = 0;  // three or more wheels down
   }
   if (mode_ == CameraMode::kBumper) bumper_ground_ = in.wheel_ground_y[0];
 }
@@ -325,42 +324,56 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
                target = pick("TargetYOffset", t.target);
   const V3 com = point(in.car_to_world, car_.com);
 
-  // Heading spring (ground contact scales it; YRotMaxSpeed limits it).
+  // Heading spring (SPEC-CAMERAS, Q51): the damping acts on the camera's
+  // rate relative to s times the car's yaw rate (omega - s psi'); ground
+  // contact scales it; YRotMaxSpeed limits it. One step a frame, as the
+  // title's update (the replay's fit).
+  const double old_yaw = theta_ + look_old_;
   if (dt >= kSettle) {
     theta_ = in.heading;
     omega_ = 0;
   } else {
-    for (double left = dt; left > 1e-12; left -= kSubstep) {
-      const double h = std::min(left, kSubstep);
-      const double e = std::remainder(in.heading - theta_, 2 * kPi);
-      omega_ += in.contact * (t.yaw_k * e - t.yaw_d * (omega_ + t.yaw_car_damp * in.yaw_rate)) * h;
-      omega_ = std::clamp(omega_, -t.yaw_max_speed, t.yaw_max_speed);
-      theta_ = std::remainder(theta_ + omega_ * h, 2 * kPi);
-    }
+    const double e = std::remainder(in.heading - theta_, 2 * kPi);
+    omega_ += dt * in.contact * (t.yaw_k * e - t.yaw_d * (omega_ - t.yaw_car_damp * in.yaw_rate));
+    omega_ = std::clamp(omega_, -t.yaw_max_speed, t.yaw_max_speed);
+    theta_ = std::remainder(theta_ + dt * omega_, 2 * kPi);
   }
+  look_old_ = look_;
 
   // Distance: the box's rear behind the CoM, the radius offset and d_base,
-  // times tan(F/2) / tan((F + dF)/2) as the lens widens (the half angle is
-  // ours: the spec leaves it open), then the speed layer's car-space z.
+  // times sin(F) / sin(F + dF), F the full vertical tuning FOV (Q51).
   const double fov = t.fov + l.fov;
   const double rear = car_.com[2] - car_.box_min[2];
   double r = rear + radius + kBaseDistance[i];
-  r *= std::tan(t.fov * kDeg / 2) / std::tan(fov * kDeg / 2);
+  r *= std::sin(t.fov * kDeg) / std::sin(fov * kDeg);
   const double yaw = theta_ + look_;
   const V3 ahead{std::sin(yaw), 0, std::cos(yaw)};
   V3 eye = add(com, mul(ahead, -r));
 
-  // Height: the box top above the CoM plus the slope term, sprung.
+  // Height: the box top above the CoM plus the slope term, sprung
+  // semi-implicitly. The slope term applies while the car's up axis has
+  // n_y > 0.7 and fewer than three wheels have touched for under 0.2 s.
   const V3 up_car = normalise(vector(in.car_to_world, {0, 1, 0}));
-  const bool grounded = in.contact >= 0.75 && up_car[1] > 0.7;
-  slope_hold_ = grounded ? kSlopeHold : std::max(0.0, slope_hold_ - dt);
-  double slope = 0;
-  if (slope_hold_ > 0 && up_car[1] > 1e-3) {
-    // The car's own ground plane at the eye's spot, relative to under it.
-    slope = -(up_car[0] * (eye[0] - com[0]) + up_car[2] * (eye[2] - com[2])) / up_car[1];
-    slope = std::clamp(slope, -kSlopeLimit * r, kSlopeLimit * r);
+  slope_hold_ = in.contact >= 0.75 ? 0.0 : slope_hold_ + dt;
+  const bool sloped = up_car[1] > 0.7 && slope_hold_ < kSlopeHold;
+  // The car's own plane at the eye's spot (at distance r along `y`),
+  // relative to the CoM, limited to +-2 r.
+  auto slope_at = [&](double y) {
+    if (!sloped) return 0.0;
+    const double dx = -r * std::sin(y), dz = -r * std::cos(y);
+    return std::clamp(-(up_car[0] * dx + up_car[2] * dz) / up_car[1], -kSlopeLimit * r, kSlopeLimit * r);
+  };
+  const double slope = slope_at(yaw);
+  // Swinging round on a slope moves h at once by the term's change.
+  if (dt < kSettle && sloped) h_ += slope - slope_at(old_yaw);
+  const double h_target = car_.box_max[1] - car_.com[1] + slope;
+  if (dt >= kSettle || t.height_k <= 0) {
+    h_ = h_target;
+    h_rate_ = 0;
+  } else {
+    h_rate_ += dt * (t.height_k * (h_target - h_) - t.height_d * h_rate_);
+    h_ += dt * h_rate_;
   }
-  spring(h_, h_rate_, car_.box_max[1] - car_.com[1] + slope, t.height_k, t.height_d, dt);
   eye[1] = com[1] + height + c_ + h_;
   // The layers' car-space offsets (the speed pull-back, the pitch lift).
   eye = add(eye, vector(in.car_to_world, l.car_xyz));
@@ -381,7 +394,18 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
   CameraView v;
   v.eye = eye;
   v.forward = f;
-  v.up = {0, 1, 0};
+  // Roll: the layers' sum alone (SPEC-CAMERAS, How the layers compose),
+  // about the view direction; the car's own roll never reaches the view.
+  const double roll = (l.car_ypr[2] + l.camera_ypr[2]) * kDeg;
+  V3 up{0, 1, 0};
+  if (roll != 0) {
+    // The world up made perpendicular to f, turned by roll about f.
+    const double d = f[1];
+    const V3 u = normalise({-d * f[0], 1 - d * f[1], -d * f[2]});
+    const V3 right{f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]};
+    up = add(mul(u, std::cos(roll)), mul(right, std::sin(roll)));
+  }
+  v.up = up;
   v.fov_degrees = fov;
   v.near_clip = t.near_clip;
   return v;

@@ -779,6 +779,20 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   in.heading = std::atan2(fwd.x, fwd.z);
   in.yaw_rate = v.angular_velocity().y;
   in.pitch_degrees = std::asin(std::clamp(fwd.y, -1.0, 1.0)) * 180 / 3.14159265358979323846;
+  // The g layers' inputs: the body's acceleration over the frame along its
+  // forward and right axes, gravity left out (SPEC-CAMERAS, Inputs).
+  {
+    static drive::Vec3 last_vel{};
+    static bool have_last = false;
+    if (have_last && dt > 1e-4 && dt < 0.25) {
+      const drive::Vec3 a{(vel.x - last_vel.x) / dt, (vel.y - last_vel.y) / dt, (vel.z - last_vel.z) / dt};
+      const drive::Vec3 right = drive::rotate(v.orientation(), {1, 0, 0});
+      in.g_longitudinal = (a.x * fwd.x + a.y * fwd.y + a.z * fwd.z) / 9.81;
+      in.g_lateral = (a.x * right.x + a.y * right.y + a.z * right.z) / 9.81;
+    }
+    last_vel = vel;
+    have_last = true;
+  }
   int down = 0;
   const double c = std::cos(info.pitch), s = std::sin(info.pitch);
   for (int i = 0; i < 4; ++i) {

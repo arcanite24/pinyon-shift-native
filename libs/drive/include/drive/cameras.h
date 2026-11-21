@@ -25,7 +25,7 @@ const char* camera_mode_name(CameraMode m);
 // the layers without noise whose input is the speed, a constant one or the
 // car's pitch are kept; the rest (motion effects and shake) are counted.
 struct CameraLayer {
-  enum class Input { kSpeedMph, kConstantOne, kPitchDegrees };
+  enum class Input { kSpeedMph, kConstantOne, kPitchDegrees, kGsLongitudinal, kGsLateral };
   enum class Output { kCarXYZ, kCarYPR, kCameraXYZ, kCameraYPR, kFov };
   enum class Mapping { kConstantOne, kLinear, kPoints };
   Input input = Input::kConstantOne;
@@ -79,6 +79,10 @@ struct CameraInput {
   double yaw_rate = 0;   // rad/s
   double contact = 1;    // the mean ground contact of the four wheels (0-1)
   double pitch_degrees = 0;  // the car's pitch, nose up positive
+  // The body's acceleration along its forward and right axes in g (9.81
+  // m/s^2), gravity left out; forward positive speeding up (SPEC-CAMERAS,
+  // Inputs).
+  double g_longitudinal = 0, g_lateral = 0;
   // Each wheel's ground point's height in the car frame (LF, RF, LR, RR).
   std::array<double, 4> wheel_ground_y{};
   // The world's height under a point (for the chase clearance); empty: none.
@@ -115,10 +119,10 @@ class DriveCamera {
   static constexpr double kHoodAnchor[3] = {0, 0.45, 0.60};
   static constexpr double kBoxInset = 0.6096;
   static constexpr double kClearance = 0.3;
-  // Ours, until the spec settles them (SPEC_QUESTIONS Q45): the slope
-  // term's limit as a fraction of the distance, how long it stays on after
-  // the wheels leave the ground, and the look spring's time constant.
-  static constexpr double kSlopeLimit = 0.25, kSlopeHold = 0.5, kLookTime = 0.1;
+  // SPEC-CAMERAS (Q51): the slope term's limit as a multiple of the
+  // distance and how long it stays on once fewer than three wheels touch;
+  // the look spring's time constant is ours (open).
+  static constexpr double kSlopeLimit = 2.0, kSlopeHold = 0.2, kLookTime = 0.1;
 
  private:
   struct LayerState {
@@ -141,6 +145,8 @@ class DriveCamera {
   std::vector<LayerState> layer_state_;
   double look_ = 0, look_target_ = 0;
   // Chase state.
+  // slope_hold_: seconds since three or more wheels last touched.
+  double look_old_ = 0;  // the look angle the eye stood at last frame
   double theta_ = 0, omega_ = 0, h_ = 0, h_rate_ = 0, c_ = 0, slope_hold_ = 0;
   // The bumper's ground height, taken when it starts.
   double bumper_ground_ = 0;
