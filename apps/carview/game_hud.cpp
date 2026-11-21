@@ -1,5 +1,7 @@
 #include "game_hud.h"
 
+#include "hud_scene.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -285,7 +287,7 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
 
 // The discovery card (the interim of SPEC-UI-LAYOUTS: an E line on a pink
 // brush, a B line under it, top centre): drops in, holds, fades.
-void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
+void popup_card_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
   const double age = st.time - st.popup_at;
   if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
   const float s = g.s;
@@ -323,6 +325,45 @@ void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
     const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
     l.rect(bx0, by, bx1, by + 3 * s, ui::fade(rgba(255, 255, 255, 50), a));
     l.rect(bx0, by, bx0 + (bx1 - bx0) * k, by + 3 * s, ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
+  }
+}
+
+// The notification from the scene itself (H_BARN_FIND_HUD,
+// CombinedNotification/State/DoubleTape): Panel and Panel2 (HUDPANEL02 crops
+// tinted 0.13), the MiscIcon, TEXT2 over TEXT1. The panels' visible width
+// follows the text out to RightAnchor at least (ours: the scene's crop is
+// the width for its sample strings); the slide, fade and meter are ours.
+// Without the scene: the drawn version above.
+void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
+  const double age = st.time - st.popup_at;
+  if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
+  static const SceneDraw sc(ui_scene("H_BARN_FIND_HUD"));
+  const int tape = sc.find("DoubleTape");
+  const int panel = sc.find("Panel", tape), panel2 = sc.find("Panel2", tape);
+  const int title = sc.find("TEXT2", tape), body = sc.find("TEXT1", tape), icon = sc.find("MiscIcon", tape);
+  if (panel < 0 || panel2 < 0 || title < 0 || body < 0) return popup_card_drawn(l, st, g);
+  const float in = ease_in_time(age, 0, 0.3);
+  const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
+  // Bottom-centre anchored.
+  const SceneFrame f{0.5f * g.w - 640 * g.s, g.h - 720 * g.s, g.s};
+  const float dy = (1 - in) * 20;
+  const float tx = sc.at(title)[0];
+  ui::TextStyle ts = sc.style(title, f, kText), bs = sc.style(body, f, kText);
+  const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, bs)) / g.s;
+  const float right = std::max(sc.at(sc.find("RightAnchor", tape))[0], tx + std::min(tw, sc.text_width(title)) + 30);
+  for (int p : {panel2, panel}) {
+    const float x0 = sc.rect(p)[0];
+    sc.model(l, f, p, a, 0, dy, right - x0);
+  }
+  if (!sc.model(l, f, icon, a, 0, dy))
+    l.rect(f.x(489), f.y(614 + dy), f.x(521), f.y(646 + dy), ui::fade(kPink, a));
+  sc.text(l, f, title, st.popup_title, ui::fade(kText, a), 0, dy);
+  if (!st.popup_text.empty()) sc.text(l, f, body, st.popup_text, ui::fade(kText, a), 0, dy);
+  if (st.popup_progress >= 0) {
+    const float bx0 = tx, bx1 = right - 30, by = 654 + dy;
+    const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
+    l.rect(f.x(bx0), f.y(by), f.x(bx1), f.y(by + 3), ui::fade(rgba(255, 255, 255, 50), a));
+    l.rect(f.x(bx0), f.y(by), f.x(bx0 + (bx1 - bx0) * k), f.y(by + 3), ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
   }
 }
 

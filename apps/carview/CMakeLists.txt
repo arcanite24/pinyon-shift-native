@@ -52,6 +52,7 @@ set(carview_sources
   hud.cpp
   ui.cpp
   game_hud.cpp
+  hud_scene.cpp
   process_time.cpp
   renderer.cpp
   reference.cpp

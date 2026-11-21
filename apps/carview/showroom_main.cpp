@@ -40,6 +40,7 @@
 #include "audio/radio.h"
 #include "audio/xml.h"
 #include "game_hud.h"
+#include "hud_scene.h"
 #include "hud.h"
 #include "process_time.h"
 #include "reference.h"
@@ -248,18 +249,47 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
     static std::set<std::string> failed;
     static bool opened = false;
     if (failed.count(path)) return false;
+    static std::unique_ptr<fh1::Archive> other;
     if (!opened) {
       opened = true;
       std::string e;
       zip = fh1::Archive::open(root / "media" / "ui" / "textures" / "Horizon.zip", &e);
+      other = fh1::Archive::open(root / "media" / "ui" / "Textures.zip", &e);
     }
-    fh1::ReadResult r = zip ? zip->read(path + ".xds") : fh1::ReadResult{};
-    const fh1::XdsResult x = zip && r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+    // "T:" names a Textures.zip member, else Horizon.zip's.
+    const bool t = path.rfind("T:", 0) == 0;
+    fh1::Archive* a = t ? other.get() : zip.get();
+    fh1::ReadResult r = a ? a->read((t ? path.substr(2) : path) + ".xds") : fh1::ReadResult{};
+    const fh1::XdsResult x = a && r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
     if (x.levels.empty() || !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
       failed.insert(path);
       return false;
     }
     return true;
+  });
+  // The UI scenes by name, on first use (FORMAT-UISCENES: media/UI.zip
+  // Scenes/ui4/<name>.fbf and .bsg).
+  carview::set_ui_scenes([root = game_root](const std::string& name) -> const fh1::UiScene* {
+    static std::unique_ptr<fh1::Archive> zip;
+    static std::map<std::string, std::unique_ptr<fh1::UiScene>> cache;
+    static bool opened = false;
+    if (auto it = cache.find(name); it != cache.end()) return it->second.get();
+    if (!opened) {
+      opened = true;
+      std::string e;
+      zip = fh1::Archive::open(root / "media" / "UI.zip", &e);
+    }
+    auto& slot = cache[name];
+    if (!zip) return nullptr;
+    auto fbf = zip->read("Scenes/ui4/" + name + ".fbf");
+    auto bsg = zip->read("Scenes/ui4/" + name + ".bsg");
+    auto sc = std::make_unique<fh1::UiScene>();
+    std::string e;
+    if (fbf.ok() && bsg.ok() && fh1::parse_ui_fbf(fbf.data, *sc, &e) && fh1::parse_ui_bsg(bsg.data, *sc, &e))
+      slot = std::move(sc);
+    else
+      std::fprintf(stderr, "carview: note: UI scene %s not loaded%s%s\n", name.c_str(), e.empty() ? "" : ": ", e.c_str());
+    return slot.get();
   });
   // The brushes' tape masks (FORMAT-UISCENES: HORIZON\DIRTMASKS in
   // media/ui/textures/Horizon.zip) into the UI atlas.
