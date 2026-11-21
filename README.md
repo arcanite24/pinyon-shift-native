@@ -873,11 +873,13 @@ the interim noted here until a later polish sweep.
   measured layouts per screen (SPEC-UI-LAYOUTS) and a go/no-go on reading
   the scenes (FORMAT-UISCENES). Never commit UI textures or scene data.
   Unverified live: the NEW WRISTBAND banner (a headless level-up, yellow
-  to green, shows the band change but the run ended first) and a sign
-  smash (`SHIFT_LIST_SIGNS=1` prints the signs; a car spawned beside
-  flyer_002 fell through and was put back on the road, likely the
-  collision not yet gathered at a `--spawn`; whether every sign stands on
-  collision is still to count).
+  to green, shows the band change, but headless frames stop about 1.9 s
+  after the finish and the banner comes at 2.3 s) and a sign smash.
+  `SHIFT_LIST_SIGNS=1` prints each sign and whether car collision lies
+  within 2 m: 99 of 100 do; flyer_053 (6498.0, 91.7, -227.2, the east
+  edge) has none, so it can't be smashed yet (sent to the spec side with
+  the collision holes). A car `--spawn`ed beside flyer_002 fell through:
+  the collision there wasn't gathered yet at the spawn, not a hole.
 - **Collectibles presentation.** A discovery card (ours, 2026-11-21) drops
   in at the top for a sign (with the n/100 meter and the discount), a barn
   rumour, a barn find (the car's name from the `Barnfind` table) and a

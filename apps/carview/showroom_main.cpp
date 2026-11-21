@@ -2257,9 +2257,36 @@ int run_drive(int argc, char** argv) {
                 progress_loaded = true;
               }
               // SHIFT_LIST_SIGNS=1: each sign's id and position (for --spawn).
-              if (std::getenv("SHIFT_LIST_SIGNS"))
-                for (const auto& sg : collectibles.signs)
-                  std::printf("sign %s %.1f %.1f %.1f\n", sg.id.c_str(), sg.at.x, sg.at.y, sg.at.z);
+              // Each also says whether car collision lies within 2 m of it
+              // (a sign is found by touching it).
+              if (std::getenv("SHIFT_LIST_SIGNS")) {
+                int reachable = 0;
+                for (const auto& sg : collectibles.signs) {
+                  world::CollisionMesh cm;
+                  std::string e;
+                  bool near = false;
+                  if (collision.gather(sg.at.x, sg.at.z, 4, cm, &e))
+                    for (size_t t = 0; t < cm.triangles() && !near; ++t) {
+                      if (!world::Collision::collides(cm, t)) continue;
+                      const auto& a = cm.positions[3 * t];
+                      const auto& b = cm.positions[3 * t + 1];
+                      const auto& c = cm.positions[3 * t + 2];
+                      if (std::fabs((a[1] + b[1] + c[1]) / 3 - sg.at.y) > 4) continue;
+                      for (int k = 0; k < 9 && !near; ++k) {
+                        const double px = sg.at.x + (k % 3 - 1) * 1.4, pz = sg.at.z + (k / 3 - 1) * 1.4;
+                        auto side = [&](const std::array<float, 3>& p, const std::array<float, 3>& q) {
+                          return (q[0] - p[0]) * (pz - p[2]) - (q[2] - p[2]) * (px - p[0]);
+                        };
+                        const double d0 = side(a, b), d1 = side(b, c), d2 = side(c, a);
+                        near = (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
+                      }
+                    }
+                  reachable += near;
+                  std::printf("sign %s %.1f %.1f %.1f%s\n", sg.id.c_str(), sg.at.x, sg.at.y, sg.at.z,
+                              near ? "" : "  (no collision within 2 m)");
+                }
+                std::printf("signs: %d of %zu with collision within 2 m\n", reachable, collectibles.signs.size());
+              }
               free_roam = std::make_unique<freeroam::FreeRoam>(collectibles, progress);
               gather_options.hidden = hidden_sent = free_roam->hidden();
               std::printf("free roam: %d of %zu signs, %d of %zu barn finds, %.1f km driven\n",
