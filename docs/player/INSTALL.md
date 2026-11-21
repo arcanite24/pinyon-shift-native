@@ -14,7 +14,7 @@ writes what the engine needs into a play folder on your machine.
   the Rally pack. shift-engine never downloads game files and cannot play
   without yours.
 - **Python 3.10 or newer** for setup (`python --version`).
-- **A GPU with Vulkan 1.2.** Tested on Intel UHD 620, AMD Van Gogh (Steam
+- **A GPU with Vulkan 1.3.** Tested on Intel UHD 620, AMD Van Gogh (Steam
   Deck) and recent NVIDIA and AMD desktop cards.
 - **About 8 GB free** for the play folder (the cars take 7.4 GB).
 - **Optional: FFmpeg** on the path, for the engine sounds.
@@ -33,6 +33,11 @@ writes what the engine needs into a play folder on your machine.
    (`%APPDATA%\shift-engine\play`) and starts the drive.
 
 ## Linux and Steam Deck
+
+The Linux build needs glibc 2.38 or newer (current SteamOS, Ubuntu 24.04,
+Fedora 39) and the system's ALSA library (`libasound.so.2`, present on
+SteamOS and desktop systems); sound goes through PulseAudio or PipeWire
+when they run, otherwise ALSA.
 
 1. Unpack `shift-engine-linux-<version>.zip` anywhere with `unzip` or a file
    manager (both keep the programs executable), for example
@@ -122,6 +127,6 @@ play folder without changing it.
 
 - **"no play folder found"**: run setup first, or pass `--play <dir>`.
 - **Black window or a Vulkan error**: update the GPU driver; the engine
-  needs Vulkan 1.2.
+  needs Vulkan 1.3.
 - **No sound**: install FFmpeg and run setup again, or play with
   `--no-sound`.

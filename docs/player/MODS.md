@@ -38,7 +38,10 @@ the folder name in alphabetical order. A folder whose name starts with
 
 ## What a mod can replace
 
-The paths are the play folder's, below `bake/` and `sound/`:
+The paths are the play folder's, below `bake/` and `sound/`. A car's
+files apply wherever that car appears: your car, race opponents and
+traffic (the engine sound plays for your car only). A sound folder is
+named after the car's media name, as in the play folder's `sound/`.
 
 | File | What it is |
 | --- | --- |

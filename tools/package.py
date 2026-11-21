@@ -65,6 +65,7 @@ def main() -> int:
                 # scripts executable.
                 run = f.stem in PROGRAMS or f.suffix in (".sh", ".py")
                 info.external_attr = (0o100755 if run else 0o100644) << 16
+                info.create_system = 3  # Unix, so extractors apply the modes
                 info.compress_type = zipfile.ZIP_DEFLATED
                 z.writestr(info, f.read_bytes())
     print(f"package: {zpath} ({zpath.stat().st_size / 2**20:.1f} MiB)")

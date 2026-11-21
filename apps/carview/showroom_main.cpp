@@ -1867,7 +1867,7 @@ int run_drive(int argc, char** argv) {
                                                                vehicle.params().redline_rpm);
           engine_sound->master = 0.6;  // ours, by the mix's peaks
           std::printf("engine sound: %zu groups from %s\n", baked_sound.loaded.sound.groups.size(),
-                      (sound_dir / car).string().c_str());
+                      cars::mods::resolve(sound_dir / car).string().c_str());
         } else {
           std::fprintf(stderr, "carview: no engine sound (%s)\n",
                        sound_error.empty() ? "no loops" : sound_error.c_str());
