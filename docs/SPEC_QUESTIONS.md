@@ -1351,6 +1351,26 @@ Field-spread follow-up (FR06, HEADLINE) answered in RACE_AI.md 1e1c0617
    - no torque cut behind the player;
    - the detune at negative t is intended (the Camaro at t -0.47 won).
 
+Grid-order follow-up answered in EVENTS.md 20a9063a (Grid, "Opponents"
+and "Measured grids"); partial:
+- Not a per-run shuffle: two FR22 oracle runs gave the same grid and
+  the same AI masses (fixed per event, measured).
+- The rule is PIWithPlayerLast (CareerRaceModes.xml, every career race
+  mode but one Random one). The PI is probably each AI's faked PI after
+  the auto-upgrade: the shared target plus the per-participant offset 0,
+  +1, -2, +3, -4. So the order is set by that offset plus a tie order.
+  Open: the offset's seed (a value in the participant's runtime entry;
+  none of ID, Ordinal, AIPlayerID, ColorSequence or the row index fits),
+  the sort direction, and the tie order. The sort code was not found.
+- Interim: use the measured grids (slot 0 first, the player as listed):
+  FR01 Raptor 1460, Jeep 1554, FR-S 1548, Firebird 1276, Charger 513,
+  Corvette 312, player, Focus ST 1399. FR06 California 1062, Exige 454,
+  Camaro 1419, 370Z 1103, Diablo 325 (prob), TVR 433, player, Ford GT 348
+  (prob). FR22 Quattro 633 or Evo 375, Jeep 1554, Range Rover 1525, R34,
+  R34, player, RS4 419, the other of 633/375. HEADLINE 599XX 1171, FXX
+  1006, Zonda R 1175 (prob), SR8 LM 1247, MC12 1539 (prob), F40C 1023,
+  F50 GT 1020, player. Other events: ID order until resolved.
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
