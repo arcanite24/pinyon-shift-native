@@ -932,6 +932,28 @@ headless car, and the drive with `--no-post`).
   none there). Whether the game draws anything at about (2665, 115, 1315),
   or keeps an invisible rail there, needs a frame.
 
+Q44 answered in horizon1-recomp (branch reimplementation-plan):
+ecf6b0b3, eb31ad8f, 1ca50963 (2026-11-20), 9bccba4e (2026-11-21).
+(a) Type-1 and type-3 records are textures in the 146 `.bundle`
+members (WORLD_MATERIALS "Small textures"); the cables' record 4203 is
+a 4 x 4 DXT1 gamma texture of (33, 34, 33), opaque. Records in no
+bundle: white AO/AOMap, black Light_Map. Confirmed. (b) The tiles hold
+two 50 m vertical GuardRail walls; the +x wall has a drawn armco along
+its length, the -x wall (your point) none from z 1258 to 1555: an
+invisible rail by design. Confirmed for four frames (COLLISION "Bare
+GuardRail walls"). (c) The game's far hills are dark warm browns, never
+grey; grey is the far UberLOD peak. Interim: lerp(Blend_A, Blend_B,
+R/255), AO 1, warm sunColor (0.97, 0.84, 0.58); check Blend_B pixels
+by hue (red about twice blue). Probable. (d) coloradoout.06765 is
+placeholder geometry, not foliage: slot 0 `_0x00002CA9` is the
+missing-material marker (yellow with a caption), shared by 53 `H_DIFF_1`
+models (terrain blockouts incl. the 06760 far ring, shadow stand-ins,
+tunnels, two `_CAGE` walls). It lies about 80 m below the drawn terrain
+where they overlap, has no alpha source (the game's `H_DIFF_1` is
+opaque, no coverage), and none of the 53 is drawn in the free-roam or
+hill frames. Rule: skip every material whose slot 0 resolves to
+`_0x00002CA9` (WORLD_MATERIALS "Placeholder models").
+
 ## Q45 (M4): the driving cameras (SPEC-CAMERAS 163ffec3)
 
 `drive::DriveCamera` (libs/drive cameras.h) places the five cameras from
