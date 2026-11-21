@@ -114,16 +114,26 @@ vec3 sky_colour(vec3 dir, vec3 up, vec3 sun) {
   return sky * (h < 0.0 ? 0.85 : 1.0);
 }
 
+// The drive renders linear HDR for its post chain (post.frag), clipped at
+// 4.0 as the game's resolve is; the showroom encodes sRGB here.
+layout(constant_id = 0) const bool kLinearOut = false;
+
 // Distance haze (WORLD-MATERIALS, Lighting: FogConsts2 (200, 4000, 0.9) is
 // start, end and the most fog; the ramp between and the colour are ours):
 // an exponential rise from the start to most of the maximum at the end, towards the sky's own haze in
 // that direction, so far scenery dissolves into the horizon, tinted warm
 // towards the sun.
+// The post chain's warm grade (showroom_main's kPostBalance, ours) is fitted
+// to the lit ground and would tint the sky and haze pink: they are written
+// pre-divided by it, so they reach the screen as designed (the drive only).
+const vec3 kPostGrade = vec3(1.10, 0.88, 0.88);
+vec3 sky_grade(vec3 c) { return kLinearOut ? c / kPostGrade : c; }
+
 vec3 haze_colour(vec3 dir, vec3 up, vec3 sun) {
   float hc = clamp(dot(dir, up), 0.0, 1.0);
   vec3 c = mix(kSkyHorizon, kSkyZenith, pow(hc, 0.55));
   float toward = max(dot(dir, sun), 0.0);
-  return mix(c, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - hc) * 0.55);
+  return sky_grade(mix(c, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - hc) * 0.55));
 }
 vec3 apply_haze(vec3 colour, vec3 position, vec3 up, vec3 sun) {
   vec3 to = position - frame.eye.xyz;
@@ -138,9 +148,6 @@ vec3 encode_srgb(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
 
-// The drive renders linear HDR for its post chain (post.frag), clipped at
-// 4.0 as the game's resolve is; the showroom encodes sRGB here.
-layout(constant_id = 0) const bool kLinearOut = false;
 vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
 
 // The drive's sun shadow (ours): one orthographic map around the car.
@@ -170,7 +177,7 @@ void main() {
   uint blend = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
   if ((flags & kFlagSky) != 0u) {
-    out_color = vec4(out_rgb(sky_colour(normalize(v_position), normalize(draw.up.xyz), normalize(draw.sun.xyz))), 1.0);
+    out_color = vec4(out_rgb(sky_grade(sky_colour(normalize(v_position), normalize(draw.up.xyz), normalize(draw.sun.xyz)))), 1.0);
     return;
   }
   // Cross-fades by the screen door (ours). A swapped-in scenery takes the

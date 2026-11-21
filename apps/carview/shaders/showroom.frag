@@ -84,6 +84,7 @@ vec3 drive_env(vec3 dir, float lod) {
   float toward = max(dot(dir, sun), 0.0);
   sky = mix(sky, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - clamp(h, 0.0, 1.0)) * 0.55);
   sky += kSunColour * pow(toward, mix(48.0, 6.0, rough)) * mix(0.9, 0.25, rough);
+  sky /= vec3(1.10, 0.88, 0.88);  // the post chain's warm grade (world.frag's sky_grade)
   float edge = mix(0.02, 0.5, rough);
   return mix(kDirtReflect * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
 }
