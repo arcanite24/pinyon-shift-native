@@ -601,12 +601,27 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
             v[std::string(d.group) + ".FrictionScale" + std::to_string(c)] = q.d(col);
       }
     }
-    if (!fit.empty()) {
+    // No fit: the stock row of every slot (the first by Id), so a car whose
+    // stock rows are upgrades (the showcase cars: SimPeakPower twice the
+    // base model's) gets their mass and torque deltas as a fitted car does.
+    FittedParts stock_fit;
+    if (fit.empty()) {
+      const int64_t keys[4] = {id, engine, drivetrain, body};
+      for (const UpgradeSlot& s : upgrade_slots()) {
+        const char* col = s.key == 0 ? "Ordinal" : s.key == 1 ? "EngineID" : s.key == 2 ? "DrivetrainID" : "CarBodyID";
+        Query q(db, std::string("SELECT Id FROM ") + s.table + " WHERE " + col + " = ? AND IsStock = 1 ORDER BY Id LIMIT 1");
+        if (!q.ok()) continue;
+        q.bind(1, keys[s.key]);
+        if (q.step()) stock_fit[s.table] = q.i(0);
+      }
+    }
+    const FittedParts& eff = fit.empty() ? stock_fit : fit;
+    if (!eff.empty()) {
       // The fitted rows the stock chain does not read, then the deltas.
-      for (const auto& [t, row] : fit)
+      for (const auto& [t, row] : eff)
         if (row >= 0 && !car.has(t + ".Id")) row_into(db, "SELECT * FROM " + t + " WHERE Id = ?", row, t, v);
       double mass_diff = 0, torque = 1, share = 0;
-      for (const auto& [t, row] : fit) {
+      for (const auto& [t, row] : eff) {
         if (row < 0 || t == "List_UpgradeCarBodyWeight") continue;
         mass_diff += car.get(t + ".MassDiff", 0);
         share += car.get(t + ".WeightDistDiff", 0);
@@ -621,8 +636,11 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
       v["List_UpgradeCarBodyWeight.Mass"] = car.get("List_UpgradeCarBodyWeight.Mass", 0) + mass_diff;
       v["List_TorqueCurve.TorqueScale"] = car.get("List_TorqueCurve.TorqueScale", 1) * torque;
       v["List_UpgradeCarBodyWeight.CMBackFront"] = car.get("List_UpgradeCarBodyWeight.CMBackFront", 0.5) + share;
-      v["List_UpgradeCarBodyWeight.CMHeight"] = car.get("List_UpgradeCarBodyWeight.CMHeight", 0) +
-                                               car.get("List_UpgradeCarBodyChassisStiffness.CMHeightDiff", 0);
+      // CMHeightDiff is 1 on every chassis row of the disc and packages
+      // (stock and upgraded), so it scales the height (the spec's "added",
+      // probable, would lift every car by 1 m).
+      v["List_UpgradeCarBodyWeight.CMHeight"] = car.get("List_UpgradeCarBodyWeight.CMHeight", 0) *
+                                               car.get("List_UpgradeCarBodyChassisStiffness.CMHeightDiff", 1);
       for (const std::string a : {"Front", "Rear"}) {
         const std::string w = "List_UpgradeCarBodyTireWidth" + a + "." + a + "TireWidth";
         const std::string r = "List_UpgradeRimSize" + a + "." + a + "WheelDiameter";

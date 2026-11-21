@@ -296,6 +296,13 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
                      L.z[j], L.curvature[j], L.curvature_v[j], L.bank_left[j], L.grade[j], field_->corner_speed(n, j));
       std::fclose(f);
     }
+    // And the AI line file's points beside it (<file>.owt.csv).
+    if (FILE* f = std::fopen((std::string(dump) + ".owt.csv").c_str(), "w")) {
+      std::fprintf(f, "x,y,z,lx,ly,lz,offset\n");
+      for (const auto& p : owt_.points)
+        std::fprintf(f, "%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f\n", p.x, p.y, p.z, p.lx, p.ly, p.lz, p.offset);
+      std::fclose(f);
+    }
   }
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
