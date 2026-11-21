@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -71,9 +72,17 @@ bool vector_fonts_loaded();
 
 // The UI atlas (kAtlasSize square, RGBA8, white with the glyphs' coverage
 // in alpha), owned here; the renderer uploads the rectangles that changed.
-inline constexpr uint32_t kAtlasSize = 1024;
+// The glyphs use the rows above kGlyphRows; the images (the game's UI
+// textures) the rows below, kept for the run.
+inline constexpr uint32_t kAtlasSize = 2048, kGlyphRows = 1024;
 const std::vector<uint8_t>& atlas_pixels();
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty();  // x, y, w, h
+// An image (straight-alpha RGBA, sRGB) in the atlas under `key`, once; its
+// uv rectangle (0..1). False when it does not fit.
+bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
+                 std::array<float, 4>& uv);
+// An image put before; false when there is none.
+bool atlas_find(const std::string& key, std::array<float, 4>& uv);
 
 struct TextStyle {
   float size = 20;        // cap height, px

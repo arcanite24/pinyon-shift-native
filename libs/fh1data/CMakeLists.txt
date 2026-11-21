@@ -11,7 +11,8 @@ add_library(fh1data STATIC
   src/props.cpp
   src/collision.cpp
   src/stringtables.cpp
-  src/vfont.cpp)
+  src/vfont.cpp
+  src/ui_scene.cpp)
 target_include_directories(fh1data PUBLIC include)
 target_link_libraries(fh1data PRIVATE shift_mspack_lzxd)
 if(MSVC)

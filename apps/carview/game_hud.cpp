@@ -1,6 +1,7 @@
 #include "game_hud.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -110,6 +111,21 @@ struct Layout {
   float C(float x) const { return 0.5f * w + (x - 640) * s; }  // centred x
 };
 
+// A brush (FORMAT-UISCENES: the scenes' tapes are white alpha masks,
+// HORIZON\DIRTMASKS\SMUDGETAPE01 under CRISPTAPE01, tinted by the
+// material): the masks stretched over the rect; a flat rect without them.
+void brush(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour) {
+  std::array<float, 4> smudge, crisp;
+  if (!ui::atlas_find("tape.smudge", smudge) || !ui::atlas_find("tape.crisp", crisp)) {
+    l.rect(x0, y0, x1, y1, colour);
+    return;
+  }
+  // The tapes' ragged ends reach past the rect a little.
+  const float px = 0.03f * (y1 - y0), py = 0.1f * (y1 - y0);
+  l.image(x0 - px, y0 - py, x1 + px, y1 + py, smudge, colour);
+  l.image(x0 - px, y0 - py, x1 + px, y1 + py, crisp, colour);
+}
+
 // A string-table text (FORMAT-STRINGTABLES `_&N`: the table's and the id's
 // hashes); `fallback` when the tables do not resolve it.
 uint16_t table_hash(std::string_view v) {
@@ -167,8 +183,13 @@ void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float
   const float s = g.s;
   l.rect(g.L(x0), Y(y0), g.L(x1), Y(y1), kBlack60);
   const float cy = 0.5f * (Y(y0) + Y(y1)), cx = g.L(x0) + 16 * s;
-  l.circle(cx, cy, 9.5f * s, colour);
-  l.text(cx, cy - 5 * s, face, font(ui::Font::kB, 10 * s, kInk, Align::kCenter));
+  std::array<float, 4> uv;
+  if (ui_texture(std::string("CONTROLLER/") + face + "_BUTTON", uv)) {
+    l.image(cx - 11 * s, cy - 11 * s, cx + 11 * s, cy + 11 * s, uv);  // 22 px (925_PAUSE_MENU BUTTON_LOGO)
+  } else {
+    l.circle(cx, cy, 9.5f * s, colour);
+    l.text(cx, cy - 5 * s, face, font(ui::Font::kB, 10 * s, kInk, Align::kCenter));
+  }
   l.text(cx + 16 * s, cy - 7 * s, text, font(ui::Font::kB, 14 * s, kText));
 }
 
@@ -256,8 +277,8 @@ void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
 // (b1) The event's title card, on the grid.
 void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
-  l.rect(0, g.B(547), g.L(968), g.B(647), kPink);
-  l.rect(g.L(75), g.B(535), g.L(440), g.B(590), kBrush);
+  brush(l, 0, g.B(547), g.L(968), g.B(647), kPink);
+  brush(l, g.L(75), g.B(535), g.L(440), g.B(590), kBrush);
   const std::string type =
       !r.event_type.empty() ? r.event_type : str("CareerEventUI", "IDS_TitleFestivalRace", "FESTIVAL RACE");
   TextStyle ts = font(ui::Font::kE, 36 * s, kText);
@@ -374,8 +395,8 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
   if (r.results_page == 0) {
     const float in = ease_in_time(since, 0, 0.35);
     const float dx = (1 - in) * -120 * s;
-    l.rect(dx, g.T(204), g.L(753) + dx, g.T(337), kPink);
-    l.rect(g.L(75) + dx, g.T(167), g.L(383) + dx, g.T(233), kBrush);
+    brush(l, dx, g.T(204), g.L(753) + dx, g.T(337), kPink);
+    brush(l, g.L(75) + dx, g.T(167), g.L(383) + dx, g.T(233), kBrush);
     TextStyle fs = font(ui::Font::kE, 45 * s, kText);
     fit(str("InGame", "IDS_Finished", "FINISHED"), fs, g.L(372) - g.L(85), 20 * s);
     l.text(g.L(85) + dx, g.T(171), str("InGame", "IDS_Finished", "FINISHED"), fs);
@@ -392,7 +413,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   // The cash reward.
   l.rect(0, 0, g.w, g.h, rgba(0, 0, 0, 90));
-  l.rect(g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
+  brush(l, g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
   TextStyle ts = font(ui::Font::kE, 57 * s, kText);
   const std::string title = str("ScreenTitles", "IDS_PostRace_Winnings", "CASH REWARD");
   fit(title, ts, g.L(519) - g.L(108), 24 * s);
@@ -403,7 +424,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     vs.keep_case = true;
     const std::string t = thousands(v) + " " + cr;
     const float tw = ui::List::measure(t, vs);
-    l.rect(x1 - tw - 12 * s, y - 5 * s, x1 + 6 * s, y + (size + 5) * s, kPink);
+    brush(l, x1 - tw - 12 * s, y - 5 * s, x1 + 6 * s, y + (size + 5) * s, kPink);
     l.text(x1, y, t, vs);
   };
   // The breakdown: the place's prize (the title's other lines, the
@@ -422,7 +443,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     fit(t, ts, g.L(449) - g.L(140), 30 * s);
     l.text(g.L(140), g.T(390) + (75 * s - ts.size), t, ts);
   }
-  l.rect(g.L(476), g.T(360), g.L(880), g.T(464), kPink);
+  brush(l, g.L(476), g.T(360), g.L(880), g.T(464), kPink);
   TextStyle vs = font(ui::Font::kE, 70 * s, kText, Align::kRight);
   vs.keep_case = true;
   const std::string total = thousands(int64_t(std::llround(double(r.credits) * count))) + " " + cr;
@@ -467,7 +488,7 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   if (!pause && !title.empty()) {
     TextStyle ts = font(ui::Font::kE, 30 * s, kText);
     fit(title, ts, g.L(800), 14 * s);
-    l.rect(g.L(130), g.T(50), g.L(150) + ui::List::measure(title, ts) + 20 * s, g.T(94), kBrush);
+    brush(l, g.L(130), g.T(50), g.L(150) + ui::List::measure(title, ts) + 20 * s, g.T(94), kBrush);
     l.text(g.L(150), g.T(57), title, ts);
     if (!hint.empty()) {
       TextStyle hs = font(ui::Font::kB, 12 * s, kDim);
@@ -488,10 +509,10 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
     fit(item, it, g.w - g.L(260), 12 * s);
     const float tw = ui::List::measure(item, it);
     if (sel) {
-      l.rect(g.L(147), bottom - 61 * s, std::max(g.L(362), g.L(185) + tw + 39 * s), bottom + 9 * s, kPink);
+      brush(l, g.L(147), bottom - 61 * s, std::max(g.L(362), g.L(185) + tw + 39 * s), bottom + 9 * s, kPink);
       l.text(g.L(185), bottom - it.size, item, it);
     } else {
-      l.rect(g.L(160), bottom - it.size - 8 * s, g.L(188) + tw + 24 * s, bottom + 8 * s, kBrush);
+      brush(l, g.L(160), bottom - it.size - 8 * s, g.L(188) + tw + 24 * s, bottom + 8 * s, kBrush);
       l.text(g.L(188), bottom - it.size, item, it);
     }
   }
@@ -510,7 +531,13 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
     fit(goal, gs, g.R(1034) - g.R(833), 8 * s);
     l.text(g.R(833), g.T(42), goal, gs);
   }
-  if (!st.band_name.empty()) {
+  std::array<float, 4> band_uv;
+  std::string colour_word = st.band_name.substr(0, st.band_name.find(' '));
+  for (char& ch : colour_word) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+  if (!colour_word.empty() && ui_texture("WRISTBANDS/" + colour_word, band_uv)) {
+    // The band's texture (925_PAUSE_MENU Wristband: 1000,15-1256,79).
+    l.image(g.R(1000), g.T(15), g.R(1256), g.T(79), band_uv);
+  } else if (!st.band_name.empty()) {
     l.rect(g.R(1045), g.T(34), g.R(1209), g.T(61), band_colour(st.band_name));
     TextStyle bs = font(ui::Font::kE, 16 * s, kText, Align::kCenter);
     std::string band = "HORIZON 2012";
@@ -521,9 +548,19 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   if (!st.car_name.empty()) {
     l.rect(g.R(912), g.T(62), g.R(1208), g.T(89), kBlack60);
     TextStyle cs = font(ui::Font::kB, 19 * s, kText);
-    fit(st.car_name, cs, g.R(1140) - g.R(922), 9 * s);
+    fit(st.car_name, cs, g.R(1120) - g.R(922), 9 * s);
     l.text(g.R(922), g.T(69), st.car_name, cs);
-    if (!st.car_class.empty()) {
+    std::array<float, 4> class_uv;
+    if (!st.car_class.empty() && ui_texture("PICLASS/CLASS_" + st.car_class, class_uv)) {
+      // The class badge (925_PAUSE_MENU CLASS_A: 1125,63-1214,86), the index on its white part.
+      l.image(g.R(1125), g.T(63), g.R(1214), g.T(86), class_uv);
+      char pi[8];
+      std::snprintf(pi, sizeof pi, "%d", st.car_pi);
+      // The texture's white box spans u 56-99 of 128: x 1164-1194 here.
+      TextStyle ps = font(ui::Font::kB, 14 * s, kDark, Align::kRight);
+      fit(pi, ps, g.R(1192) - g.R(1166), 8 * s);
+      l.text(g.R(1192), g.T(68) + (14 * s - ps.size) * 0.5f, pi, ps);
+    } else if (!st.car_class.empty()) {
       l.rect(g.R(1144), g.T(64), g.R(1172), g.T(86), class_colour(st.car_class));
       l.text(g.R(1158), g.T(66), st.car_class, font(ui::Font::kE, 17 * s, kText, Align::kCenter));
       l.rect(g.R(1172), g.T(64), g.R(1205), g.T(86), rgba(255, 255, 255));
@@ -653,6 +690,16 @@ std::function<std::string(const std::string&)>& texts() {
 
 void set_car_names(std::function<std::string(const std::string&)> source) { names() = std::move(source); }
 void set_game_text(std::function<std::string(const std::string&)> source) { texts() = std::move(source); }
+namespace {
+std::function<bool(const std::string&, std::array<float, 4>&)>& textures() {
+  static std::function<bool(const std::string&, std::array<float, 4>&)> f;
+  return f;
+}
+}  // namespace
+void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>&)> source) {
+  textures() = std::move(source);
+}
+bool ui_texture(const std::string& path, std::array<float, 4>& uv) { return textures() && textures()(path, uv); }
 std::string game_text(const std::string& value) { return texts() ? texts()(value) : value; }
 std::string car_name(const std::string& media) { return names() ? names()(media) : media; }
 

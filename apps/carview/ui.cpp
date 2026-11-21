@@ -193,6 +193,8 @@ struct VectorFonts {
   std::vector<uint8_t> atlas = std::vector<uint8_t>(size_t(kAtlasSize) * kAtlasSize * 4, 0);
   std::vector<std::array<uint32_t, 4>> dirty;
   uint32_t shelf_x = 0, shelf_y = 0, shelf_h = 0;
+  uint32_t image_x = 0, image_y = kGlyphRows, image_h = 0;  // the image shelf
+  std::map<std::string, std::array<float, 4>> images;
   struct Entry {
     float u0, v0, u1, v1;  // atlas texels
     float left, top;       // the bitmap's top-left from the pen, px at the cached size (y down from the baseline)
@@ -200,12 +202,14 @@ struct VectorFonts {
   };
   std::map<std::tuple<int, uint32_t, int>, Entry> cache;  // (font, code point, px per em) -> entry
 
+  // Clears the glyph rows (the images stay).
   void reset() {
-    std::fill(atlas.begin(), atlas.end(), uint8_t(0));
-    for (size_t i = 0; i < atlas.size(); i += 4) atlas[i] = atlas[i + 1] = atlas[i + 2] = 255;
+    const size_t glyph_bytes = size_t(kAtlasSize) * kGlyphRows * 4;
+    std::fill(atlas.begin(), atlas.begin() + ptrdiff_t(glyph_bytes), uint8_t(0));
+    for (size_t i = 0; i < glyph_bytes; i += 4) atlas[i] = atlas[i + 1] = atlas[i + 2] = 255;
     cache.clear();
     shelf_x = shelf_y = shelf_h = 0;
-    dirty.assign(1, {0, 0, kAtlasSize, kAtlasSize});
+    dirty.push_back({0, 0, kAtlasSize, kGlyphRows});
   }
 };
 
@@ -217,6 +221,39 @@ VectorFonts& vf() {
   }();
   return v;
 }
+
+}  // namespace
+
+bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
+                 std::array<float, 4>& uv) {
+  VectorFonts& v = vf();
+  if (auto it = v.images.find(key); it != v.images.end()) return uv = it->second, true;
+  if (!w || !h || w + 2 > kAtlasSize || rgba.size() < size_t(w) * h * 4) return false;
+  if (v.image_x + w + 2 > kAtlasSize) v.image_x = 0, v.image_y += v.image_h, v.image_h = 0;
+  if (v.image_y + h + 2 > kAtlasSize) return false;
+  // One texel of edge padding all round, so bilinear taps stay inside.
+  const uint32_t ax = v.image_x + 1, ay = v.image_y + 1;
+  for (int y = -1; y <= int(h); ++y)
+    for (int x = -1; x <= int(w); ++x) {
+      const uint32_t sx = uint32_t(std::clamp(x, 0, int(w) - 1)), sy = uint32_t(std::clamp(y, 0, int(h) - 1));
+      std::memcpy(&v.atlas[((size_t(int(ay) + y)) * kAtlasSize + size_t(int(ax) + x)) * 4], &rgba[(size_t(sy) * w + sx) * 4], 4);
+    }
+  v.dirty.push_back({ax - 1, ay - 1, w + 2, h + 2});
+  v.image_x += w + 2;
+  v.image_h = std::max(v.image_h, h + 2);
+  const float k = 1.0f / float(kAtlasSize);
+  uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
+  v.images[key] = uv;
+  return true;
+}
+
+bool atlas_find(const std::string& key, std::array<float, 4>& uv) {
+  const VectorFonts& v = vf();
+  if (auto it = v.images.find(key); it != v.images.end()) return uv = it->second, true;
+  return false;
+}
+
+namespace {
 
 // The style's font: 0 A, 1 B, 2 E, -1 the stroke font.
 int font_of(const TextStyle& s) {
@@ -263,7 +300,7 @@ const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px) {
   const int w = gx1 - gx0, h = gy1 - gy0;
   if (w <= 0 || h <= 0 || w > int(kAtlasSize) || h > int(kAtlasSize)) return nullptr;
   if (v.shelf_x + uint32_t(w) > kAtlasSize) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
-  if (v.shelf_y + uint32_t(h) > kAtlasSize) v.reset();  // full: start over (this frame may show stale glyphs)
+  if (v.shelf_y + uint32_t(h) > kGlyphRows) v.reset();  // full: start over (this frame may show stale glyphs)
   const uint32_t ax = v.shelf_x, ay = v.shelf_y;
   v.shelf_x += uint32_t(w) + 1;
   v.shelf_h = std::max(v.shelf_h, uint32_t(h) + 1);
@@ -454,6 +491,16 @@ float coverage(const Instance& it, float px, float py, float& mix) {
 
 float to_linear_unit(uint32_t c, int shift) { return float((c >> shift) & 0xFF) / 255.0f; }
 
+// An image quad's texel colour (nearest), times the tint in `c`.
+void image_rgb(const Instance& it, float px, float py, float c[4]) {
+  const float tx = (px - it.rect[0]) / std::max(1.0f, it.rect[2] - it.rect[0]);
+  const float ty = (py - it.rect[1]) / std::max(1.0f, it.rect[3] - it.rect[1]);
+  const int x = std::clamp(int((it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize), 0, int(kAtlasSize) - 1);
+  const int y = std::clamp(int((it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize), 0, int(kAtlasSize) - 1);
+  const uint8_t* t = &atlas_pixels()[(size_t(y) * kAtlasSize + size_t(x)) * 4];
+  for (int ch = 0; ch < 3; ++ch) c[ch] *= float(t[ch]) / 255.0f;
+}
+
 }  // namespace
 
 void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint32_t width, uint32_t height) {
@@ -471,6 +518,7 @@ void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint3
           const int shift = ch == 3 ? 24 : 16 - 8 * ch;
           c[ch] = to_linear_unit(it.color, shift) * (1 - mix) + to_linear_unit(it.color2, shift) * mix;
         }
+        if (it.kind == kImage) image_rgb(it, float(x) + 0.5f, float(y) + 0.5f, c);
         const float a = c[3] * cov;
         uint8_t* p = &out[(size_t(y) * width + size_t(x)) * 4];
         for (int ch = 0; ch < 3; ++ch) p[ch] = uint8_t(std::lround(c[ch] * 255 * a + p[ch] * (1 - a)));

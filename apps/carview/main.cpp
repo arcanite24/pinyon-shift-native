@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,7 @@
 
 #include "car_model.h"
 #include "fh1data/archive.h"
+#include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
 #include "renderer.h"
 #include "world_view.h"
@@ -166,6 +168,150 @@ int xds_png(int argc, char** argv) {
              : 1;
 }
 
+// carview --ui-scene <UI.zip> <scene>: the scene's objects and nodes
+// (FORMAT-UISCENES), one line each, for checking the reader.
+int ui_scene_dump(int argc, char** argv) {
+  std::string error;
+  auto zip = fh1::Archive::open(argv[2], &error);
+  if (!zip) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+  const std::string base = std::string("Scenes/ui4/") + argv[3];
+  auto fbf = zip->read(base + ".fbf");
+  auto bsg = zip->read(base + ".bsg");
+  if (!fbf.ok() || !bsg.ok()) return std::fprintf(stderr, "carview: %s%s\n", fbf.error.c_str(), bsg.error.c_str()), 1;
+  std::printf("bsg header:");
+  for (size_t i = 0; i < 48 && i < bsg.data.size(); ++i) std::printf("%s%02x", i % 4 ? "" : " ", bsg.data[i]);
+  std::printf("\n");
+  fh1::UiScene sc;
+  if (!fh1::parse_ui_fbf(fbf.data, sc, &error) || !fh1::parse_ui_bsg(bsg.data, sc, &error))
+    return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+  std::printf("version %u, %zu objects, %zu nodes, %zu pool\n", sc.version, sc.objects.size(), sc.nodes.size(), sc.pool.size());
+  const bool all = argc > 4;
+  for (size_t i = 0; i < sc.objects.size() && (all || i < 400); ++i) {
+    const auto& o = sc.objects[i];
+    std::printf("obj %zu kind %u id %u %s", i, uint32_t(o.kind), o.id, o.name.c_str());
+    if (o.kind == fh1::UiObjectKind::kText) std::printf(" font %s size %u align %u width %.0f", o.font.c_str(), o.text_size, o.text_align, o.text_width);
+    if (o.kind == fh1::UiObjectKind::kMaterial) std::printf(" rgba %.2f %.2f %.2f %.2f", o.colour[0], o.colour[1], o.colour[2], o.colour[3]);
+    if (o.kind == fh1::UiObjectKind::kTexture) std::printf(" owner %u %s m %.3g %.3g %.3g %.3g / %.3g %.3g %.3g %.3g / %.3g %.3g %.3g %.3g / %.3g %.3g %.3g %.3g", o.owner, o.path.c_str(),
+        o.matrix[0], o.matrix[1], o.matrix[2], o.matrix[3], o.matrix[4], o.matrix[5], o.matrix[6], o.matrix[7], o.matrix[8], o.matrix[9], o.matrix[10], o.matrix[11], o.matrix[12], o.matrix[13], o.matrix[14], o.matrix[15]);
+    std::printf("\n");
+  }
+  for (size_t i = 0; i < sc.nodes.size() && (all || i < 400); ++i) {
+    const auto& n = sc.nodes[i];
+    const auto* o = n.object_index >= 0 ? &sc.objects[size_t(n.object_index)] : nullptr;
+    const float hw = 0.5f * (n.bounds_max[0] - n.bounds_min[0]) * n.sx, hh = 0.5f * (n.bounds_max[1] - n.bounds_min[1]) * n.sy;
+    std::printf("node %zu parent %d obj %u kind %d %s at %.1f,%.1f rot %.3f scale %.3f,%.3f alpha %.2f%s rect %.0f,%.0f-%.0f,%.0f\n", i, n.parent, n.object,
+                o ? int(o->kind) : -1, o ? o->name.c_str() : "?", 640 + n.x, 360 - n.y, n.angle, n.sx, n.sy, n.alpha,
+                n.drawable ? " draw" : "", 640 + n.x - hw, 360 - n.y - hh, 640 + n.x + hw, 360 - n.y + hh);
+  }
+  return 0;
+}
+
+// carview --ui-scene-png <UI.zip> <scene> <out.png>: the scene's static
+// layout drawn on the CPU (FORMAT-UISCENES interims: orthographic, the
+// BSG's opacity as the state, a model's material and textures multiplied,
+// text boxes outlined), for checking the reader against frames.
+int ui_scene_png(int argc, char** argv) {
+  (void)argc;
+  std::string error;
+  const std::filesystem::path ui_zip = argv[2];
+  auto zip = fh1::Archive::open(ui_zip, &error);
+  if (!zip) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+  const std::string base = std::string("Scenes/ui4/") + argv[3];
+  auto fbf = zip->read(base + ".fbf");
+  auto bsg = zip->read(base + ".bsg");
+  fh1::UiScene sc;
+  if (!fbf.ok() || !bsg.ok() || !fh1::parse_ui_fbf(fbf.data, sc, &error) || !fh1::parse_ui_bsg(bsg.data, sc, &error))
+    return std::fprintf(stderr, "carview: %s%s%s\n", fbf.error.c_str(), bsg.error.c_str(), error.c_str()), 1;
+  const auto media = ui_zip.parent_path();
+  auto horizon = fh1::Archive::open(media / "ui" / "textures" / "Horizon.zip", &error);
+  auto textures = fh1::Archive::open(media / "ui" / "Textures.zip", &error);
+  std::map<std::string, fh1::RgbaImage> cache;
+  auto texture = [&](const std::string& path) -> const fh1::RgbaImage* {
+    if (auto it = cache.find(path); it != cache.end()) return it->second.width ? &it->second : nullptr;
+    bool hz = false;
+    const std::string member = fh1::ui_texture_member(path, hz);
+    fh1::RgbaImage& img = cache[path];
+    auto* a = hz ? horizon.get() : textures.get();
+    if (!a) return nullptr;
+    auto r = a->read(member);
+    if (!r.ok()) return nullptr;
+    auto x = fh1::decode_xds(r.data, false);
+    if (x.levels.empty()) return nullptr;
+    img = std::move(x.levels[0]);
+    return &img;
+  };
+  const int W = 1280, H = 720;
+  std::vector<float> px(size_t(W) * H * 3, 0.35f);
+  auto blend = [&](int x, int y, const float c[4]) {
+    if (x < 0 || y < 0 || x >= W || y >= H || c[3] <= 0) return;
+    float* p = &px[(size_t(y) * W + size_t(x)) * 3];
+    for (int k = 0; k < 3; ++k) p[k] = c[k] * c[3] + p[k] * (1 - c[3]);
+  };
+  size_t drawn = 0, missing = 0;
+  for (size_t i = 0; i < sc.nodes.size(); ++i) {
+    const fh1::UiNode& n = sc.nodes[i];
+    if (n.object_index < 0 || n.alpha <= 0.001f) continue;
+    const fh1::UiObject& o = sc.objects[size_t(n.object_index)];
+    const float c = std::cos(n.angle), s = std::sin(n.angle);
+    const float cx = 640 + n.x, cy = 360 - n.y;
+    if (o.kind == fh1::UiObjectKind::kText) {
+      const float w = o.text_width > 0 ? o.text_width * n.sx : float(o.text_size) * 4, h = float(o.text_size) * n.sy;
+      const float x0 = o.text_align == 1 ? cx - w / 2 : o.text_align == 2 ? cx - w : cx;
+      const float col[4] = {1, 0.9f, 0.1f, 0.8f * n.alpha};
+      for (int x = int(x0); x < int(x0 + w); ++x) blend(x, int(cy), col), blend(x, int(cy + h), col);
+      for (int y = int(cy); y < int(cy + h); ++y) blend(int(x0), y, col), blend(int(x0 + w), y, col);
+      continue;
+    }
+    if (o.kind != fh1::UiObjectKind::kModel) continue;
+    // The material and its textures follow the model in the FBF.
+    const fh1::UiObject* mat = nullptr;
+    std::vector<const fh1::UiObject*> tex;
+    for (size_t k = size_t(n.object_index) + 1; k < sc.objects.size(); ++k) {
+      const auto& q = sc.objects[k];
+      if (q.kind == fh1::UiObjectKind::kMaterial && !mat) mat = &q;
+      else if (q.kind == fh1::UiObjectKind::kTexture && mat && q.owner == mat->id) tex.push_back(&q);
+      else break;
+    }
+    std::vector<const fh1::RgbaImage*> img;
+    for (auto* t : tex) {
+      img.push_back(texture(t->path));
+      if (!img.back()) ++missing;
+    }
+    const float bx0 = n.bounds_min[0], bx1 = n.bounds_max[0], by0 = n.bounds_min[1], by1 = n.bounds_max[1];
+    if (bx1 <= bx0 || by1 <= by0) continue;
+    const float hw = 0.5f * (bx1 - bx0) * std::fabs(n.sx), hh = 0.5f * (by1 - by0) * std::fabs(n.sy);
+    const float r = std::sqrt(hw * hw + hh * hh);
+    ++drawn;
+    for (int y = int(cy - r); y <= int(cy + r); ++y)
+      for (int x = int(cx - r); x <= int(cx + r); ++x) {
+        // Into the node's frame (y up), then to (u, v) over the bounds.
+        const float dx = float(x) + 0.5f - cx, dy = cy - (float(y) + 0.5f);
+        const float lx = (c * dx + s * dy) / n.sx, ly = (-s * dx + c * dy) / n.sy;
+        const float u = (lx - bx0) / (bx1 - bx0), v = (ly - by0) / (by1 - by0);
+        if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+        float col[4] = {1, 1, 1, n.alpha};
+        if (mat)
+          for (int k = 0; k < 4; ++k) col[k] *= mat->colour[size_t(k)];
+        for (size_t t = 0; t < tex.size(); ++t) {
+          if (!img[t]) continue;
+          const auto& m = tex[t]->matrix;
+          float tu = u * m[0] + v * m[4] + m[12], tv = u * m[1] + v * m[5] + m[13];
+          tu -= std::floor(tu), tv -= std::floor(tv);
+          const auto& im = *img[t];
+          const uint32_t ix = std::min(im.width - 1, uint32_t(tu * float(im.width)));
+          const uint32_t iy = std::min(im.height - 1, uint32_t(tv * float(im.height)));
+          const uint8_t* tp = &im.rgba[(size_t(iy) * im.width + ix) * 4];
+          for (int k = 0; k < 4; ++k) col[k] *= float(tp[k]) / 255.0f;
+        }
+        blend(x, y, col);
+      }
+  }
+  std::vector<uint8_t> out(size_t(W) * H * 3);
+  for (size_t k = 0; k < out.size(); ++k) out[k] = uint8_t(std::lround(std::clamp(px[k], 0.0f, 1.0f) * 255));
+  std::printf("%s: %zu models drawn, %zu textures missing\n", argv[3], drawn, missing);
+  return stbi_write_png(argv[4], W, H, 3, out.data(), W * 3) ? 0 : 1;
+}
+
 static int carview_main(int argc, char** argv) {
   // No arguments: the drive with its play-test defaults (run_drive).
   if (argc == 1) {
@@ -173,6 +319,8 @@ static int carview_main(int argc, char** argv) {
     return carview::run_drive(argc, argv);
   }
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
+  if (argc >= 4 && std::strcmp(argv[1], "--ui-scene") == 0) return ui_scene_dump(argc, argv);
+  if (argc >= 5 && std::strcmp(argv[1], "--ui-scene-png") == 0) return ui_scene_png(argc, argv);
   if (argc >= 2 && std::strcmp(argv[1], "--world") == 0) return carview::run_world(argc, argv);
   for (int i = 1; i < argc; ++i)
     if (std::strcmp(argv[i], "--drive") == 0) {

@@ -5,6 +5,7 @@
 // the menus (the pause menu and its pages) as a side panel.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -105,6 +106,11 @@ std::string car_name(const std::string& media);
 // set; the value itself without one.
 void set_game_text(std::function<std::string(const std::string&)> source);
 std::string game_text(const std::string& value);
+// The game's UI textures by their path under HORIZON (FORMAT-UISCENES,
+// "WRISTBANDS/ORANGE"): the source puts one into the UI atlas and gives its
+// uv rectangle; false without it (the HUD draws its interim).
+void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>&)> source);
+bool ui_texture(const std::string& path, std::array<float, 4>& uv);
 
 // "12,500".
 std::string thousands(int64_t v);

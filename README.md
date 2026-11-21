@@ -870,8 +870,13 @@ the interim noted here until a later polish sweep.
   standings rows with driver names and gaps, GO!), the FINISHED banner then
   the CASH REWARD page (A, A), the pause menu with its career panels and
   help bar, and the minimap's spot (no frame). Labels come from the string
-  tables. Still ours: brushes are flat rects (the textures need the scene
-  reader), the class colours other than B, the gap rule, the reward
+  tables. The scene reader (`libs/fh1data` ui_scene, FORMAT-UISCENES;
+  `carview --ui-scene <UI.zip> <scene>` dumps one, `--ui-scene-png ...
+  out.png` draws its static layout) gives the brushes the game's tape
+  masks (DIRTMASKS SMUDGETAPE01 and CRISPTAPE01, tinted), and the pause
+  panels the wristband, class badge and controller-button textures, read
+  from the player's Horizon.zip at run time. Still ours: the class colours
+  without a texture, the gap rule, the reward
   breakdown (one line), the wristband bar on the cash page, the discovery
   card, WRONG WAY, and the career board. The game's own
   screens are data in `media/UI.zip` (`Scenes/ui4/*.bgf|.bsg|.fbf` with Lua

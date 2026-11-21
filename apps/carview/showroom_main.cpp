@@ -241,6 +241,39 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
   };
   carview::ui::set_vector_fonts(load("aru_vector_aa.dt"), load("bru_vector_aa.dt"), load("eru_vector_aa.dt"),
                                    load("dru_vector_aa.dt"));
+  // The game's UI textures by path, on first use (FORMAT-UISCENES).
+  carview::set_ui_textures([root = game_root](const std::string& path, std::array<float, 4>& uv) {
+    if (carview::ui::atlas_find(path, uv)) return true;
+    static std::unique_ptr<fh1::Archive> zip;
+    static std::set<std::string> failed;
+    static bool opened = false;
+    if (failed.count(path)) return false;
+    if (!opened) {
+      opened = true;
+      std::string e;
+      zip = fh1::Archive::open(root / "media" / "ui" / "textures" / "Horizon.zip", &e);
+    }
+    fh1::ReadResult r = zip ? zip->read(path + ".xds") : fh1::ReadResult{};
+    const fh1::XdsResult x = zip && r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+    if (x.levels.empty() || !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
+      failed.insert(path);
+      return false;
+    }
+    return true;
+  });
+  // The brushes' tape masks (FORMAT-UISCENES: HORIZON\DIRTMASKS in
+  // media/ui/textures/Horizon.zip) into the UI atlas.
+  if (auto hz = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", &why)) {
+    for (const auto& [key, member] : {std::pair{"tape.smudge", "DIRTMASKS/SMUDGETAPE01.xds"},
+                                      std::pair{"tape.crisp", "DIRTMASKS/CRISPTAPE01.xds"}}) {
+      auto r = hz->read(member);
+      const fh1::XdsResult x = r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+      std::array<float, 4> uv;
+      if (x.levels.empty() ||
+          !carview::ui::atlas_image(key, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv))
+        std::fprintf(stderr, "carview: note: UI brush %s not loaded: flat brushes\n", member);
+    }
+  }
   return carview::ui::vector_fonts_loaded();
 }
 
