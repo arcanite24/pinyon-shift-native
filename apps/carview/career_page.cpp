@@ -4,15 +4,6 @@
 #include <cstring>
 
 namespace carview {
-namespace {
-
-std::string credits_text(int64_t v) {
-  std::string s = std::to_string(v < 0 ? -v : v);
-  for (int k = int(s.size()) - 3; k > 0; k -= 3) s.insert(size_t(k), ",");
-  return (v < 0 ? "-" : "") + s;
-}
-
-}  // namespace
 
 std::string font_text(const std::string& s) {
   static const char* kMarks = "/_-.:[]>&()\\,!? ";
@@ -27,26 +18,11 @@ std::string font_text(const std::string& s) {
 
 void CareerPage::open(const CareerSummary& s, std::vector<cars::PackInfo> packs) {
   lines_.clear();
-  lines_.push_back("level  " + (s.level_name.empty() ? std::string("none") : font_text(s.level_name)) + "  " +
-                   std::to_string(s.wristband_points) + " points");
-  lines_.push_back("credits  " + credits_text(s.credits) + " CR");
-  lines_.push_back("total winnings  " + credits_text(s.total_winnings) + " CR");
-  lines_.push_back("races " + std::to_string(s.races) + "  wins " + std::to_string(s.victories) + "  podiums " +
-                   std::to_string(s.podiums));
-  lines_.push_back("garage  " + std::to_string(s.garage_cars) + " cars");
-  lines_.push_back("discount signs  " + std::to_string(s.signs_found) + "  barn finds  " +
-                   std::to_string(s.barns_found) + "/" + std::to_string(s.barns));
-  lines_.push_back("1000 club  " + std::to_string(s.club_cars) + " cars  " + std::to_string(s.club_done) + "/" +
-                   std::to_string(s.club_total) + " challenges");
-  if (s.has_rally) {
-    lines_.push_back("rally  level " + std::to_string(s.rally_level) + "  " + std::to_string(s.rally_xp) + " xp" +
-                     (s.rally_owned ? "" : "  (pack not owned)"));
-    lines_.push_back("rally  " + std::to_string(s.rallies) + " events  " + std::to_string(s.rally_stages) +
-                     " stages  " + std::to_string(s.rally_victories) + " wins  " + credits_text(s.rally_winnings) + " CR");
-  }
+  summary_ = s;
   owned_ = 0, packs_ = int(packs.size());
   for (const auto& p : packs) owned_ += p.owned();
-  lines_.push_back("packs owned  " + std::to_string(owned_) + "/" + std::to_string(packs_));
+  // The records are on the board (game_hud.h CareerBoard); the list is the packs.
+  lines_.push_back("content packs  " + std::to_string(owned_) + "/" + std::to_string(packs_) + " owned");
   for (const auto& p : packs)
     lines_.push_back("  " + font_text(p.name) +
                      (p.owned() ? "" : !p.installed ? "  (not installed)" : !p.enabled ? "  (disabled)" : "  (no header)"));

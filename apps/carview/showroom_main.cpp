@@ -256,8 +256,9 @@ void upload_ui_atlas(Renderer& renderer) {
 }
 
 // A menu page (HudState's menu fields) on the UI layer, 1280 x 720, to a PNG.
-bool write_menu_png(const HudState& st, const std::string& path) {
+bool write_menu_png(const HudState& st, const std::string& path, const carview::CareerBoard* board = nullptr) {
   carview::DriveHud d;
+  d.career = board;
   d.driving = false;
   d.menu_title = st.menu_title;
   d.menu = st.menu;
@@ -1440,6 +1441,8 @@ int run_drive(int argc, char** argv) {
     menu.move(1);
     menu.fill(st);
     // SHIFT_MENU_SAMPLE=shop or autoshow: those panels' longest lines.
+    carview::CareerBoard sample_board;
+    bool has_board = false;
     if (const char* sample = std::getenv("SHIFT_MENU_SAMPLE")) {
       st.menu.clear();
       if (std::string(sample) == "shop") {
@@ -1457,6 +1460,13 @@ int run_drive(int argc, char** argv) {
         page.move(6);
         int sel = 0;
         page.fill(st.menu_title, st.menu, sel);
+        auto& b = sample_board;
+        b.band_name = "ORANGE WRISTBAND", b.band_next = "Purple", b.points = 41250, b.band_lo = 30000, b.band_hi = 60000;
+        b.credits = cs.credits, b.winnings = cs.total_winnings, b.races = 87, b.wins = 52, b.podiums = 74;
+        b.garage = 38, b.signs = 64, b.barns = 9, b.barns_total = 9, b.club_done = 9, b.club_total = 30;
+        b.rally = true, b.rally_level = 4, b.rally_xp = 18200, b.rallies = 3, b.rally_wins = 2;
+        b.packs_owned = page.packs_owned(), b.packs_total = page.packs_total();
+        has_board = true;
       } else {
         st.menu_title = "autoshow  137/137  available 13,225,340 CR";
         for (const char* l : {"R1 999  FER_F40Competizione_89  1,000,000 CR", "B 437  MIT_LancerEvoXGSR_08  52,000 CR"})
@@ -1464,7 +1474,7 @@ int run_drive(int argc, char** argv) {
       }
       st.menu_selected = 1;
     }
-    if (!write_menu_png(st, menu_png.string())) return 1;
+    if (!write_menu_png(st, menu_png.string(), has_board ? &sample_board : nullptr)) return 1;
     {
       // Beside it, <name>_hud.png: free roam's HUD with a discovery card.
       carview::DriveHud d;
@@ -1778,6 +1788,29 @@ int run_drive(int argc, char** argv) {
                                  [](const cars::PackInfo& p) { return p.puboffer == 1600 && p.owned(); });
     return cs;
   };
+  // The career page's board (game_hud.h): the summary with the wristband
+  // table's thresholds.
+  auto career_board = [&](const carview::CareerPage& page) {
+    const carview::CareerSummary& cs = page.summary();
+    carview::CareerBoard b;
+    if (!cs.level_name.empty()) b.band_name = cs.level_name + " WRISTBAND";
+    b.points = cs.wristband_points;
+    const int li = wristbands.levels.empty() ? -1 : wristbands.level_index(cs.wristband_points);
+    b.band_lo = li >= 0 ? wristbands.levels[size_t(li)].first : 0;
+    if (size_t(li + 1) < wristbands.levels.size()) {
+      b.band_hi = wristbands.levels[size_t(li + 1)].first;
+      b.band_next = carview::game_text(wristbands.levels[size_t(li + 1)].second);
+      if (b.band_next.rfind("_&", 0) == 0) b.band_next.clear();
+    }
+    b.credits = cs.credits, b.winnings = cs.total_winnings;
+    b.races = cs.races, b.wins = cs.victories, b.podiums = cs.podiums, b.garage = cs.garage_cars;
+    b.signs = cs.signs_found, b.barns = cs.barns_found, b.barns_total = cs.barns;
+    b.club_cars = cs.club_cars, b.club_done = cs.club_done, b.club_total = cs.club_total;
+    b.rally = cs.has_rally, b.rally_level = cs.rally_level, b.rally_xp = cs.rally_xp;
+    b.rallies = cs.rallies, b.rally_wins = cs.rally_victories;
+    b.packs_owned = page.packs_owned(), b.packs_total = page.packs_total();
+    return b;
+  };
   // --career-png: every window of the career page as the game's save left
   // it (prefix_N.png), then exit: the M6 gate's view of the import.
   if (!career_png.empty()) {
@@ -1791,8 +1824,17 @@ int run_drive(int argc, char** argv) {
       page.fill(st.menu_title, st.menu, sel);
       st.menu_selected = sel;
       const std::string f = career_png.string() + "_" + std::to_string(n) + ".png";
-      if (!write_menu_png(st, f)) return 1;
+      const carview::CareerBoard board = career_board(page);
+      if (!write_menu_png(st, f, &board)) return 1;
       std::printf("career: %s\n", f.c_str());
+      if (n == 0)
+        std::printf("career:   %s  %d points (next %d)  %lld CR  winnings %lld CR  races %d wins %d podiums %d  "
+                    "garage %d  signs %d  barns %d/%d  club %d cars %d/%d  rally %s level %d %d xp %d/%d\n",
+                    board.band_name.empty() ? "no wristband" : board.band_name.c_str(), board.points, board.band_hi,
+                    static_cast<long long>(board.credits), static_cast<long long>(board.winnings), board.races,
+                    board.wins, board.podiums, board.garage, board.signs, board.barns, board.barns_total,
+                    board.club_cars, board.club_done, board.club_total, board.rally ? "yes" : "no", board.rally_level,
+                    board.rally_xp, board.rally_wins, board.rallies);
       for (const auto& l : st.menu) std::printf("career:   %s\n", l.c_str());
       const size_t before = st.menu.empty() ? 0 : st.menu.size();
       page.move(7);
@@ -3082,6 +3124,8 @@ int run_drive(int argc, char** argv) {
         d.menu_title = st.menu_title;
         d.menu = st.menu;
         d.menu_selected = st.menu_selected;
+        carview::CareerBoard board;
+        if (career_page.is_open()) board = career_board(career_page), d.career = &board;
         carview::ui::List list;
         carview::build_drive_hud(list, d, float(width), float(height));
         upload_ui_atlas(renderer);
@@ -3140,6 +3184,11 @@ int run_drive(int argc, char** argv) {
       double minimap_at = -1;
       auto set_minimap = [&](int height, bool force) {
         if (!map_view.ready() || !streamer) return;
+        // The results card: no minimap.
+        if (race && race->player_finished()) {
+          if (minimap_at > -2) renderer.set_overlay({}, 0, 0, 0, 0, 1), minimap_at = -2;
+          return;
+        }
         const double t = vehicle.time();
         if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 1.0 / 15) return;
         minimap_at = t;

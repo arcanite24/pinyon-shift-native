@@ -400,6 +400,102 @@ void menu_panel(ui::List& l, const DriveHud& st, float w, float h, float s) {
   label(l, x, h - 40 * s, st.menu_footer.c_str(), s, kDim);
 }
 
+// A tile: a big number and its label.
+void stat_tile(ui::List& l, float x0, float y0, float x1, float y1, const std::string& value, const char* name,
+               float s, uint32_t colour = kText) {
+  panel(l, x0, y0, x1, y1, s, rgba(10, 12, 17, 190));
+  TextStyle vs{.size = 26 * s, .weight = 0.12f, .slant = 0.1f, .color = colour};
+  while (vs.size > 10 * s && ui::List::measure(value, vs) > x1 - x0 - 32 * s) vs.size *= 0.92f;
+  l.text(x0 + 16 * s, y0 + 16 * s + (26 * s - vs.size), value, vs);
+  label(l, x0 + 16 * s, y1 - 22 * s, name, s, kDim);
+}
+
+// A collection row: the name, "found / total" and a bar.
+void collection_row(ui::List& l, float x0, float x1, float y, const char* name, int found, int total, float s,
+                    uint32_t colour = kAccent) {
+  l.text(x0, y, name, TextStyle{.size = 11 * s, .weight = 0.12f, .tracking = 0.1f, .color = kText});
+  char v[48];
+  if (total > 0) std::snprintf(v, sizeof v, "%d / %d", found, total);
+  else std::snprintf(v, sizeof v, "%d", found);
+  l.text(x1, y, v, TextStyle{.size = 11 * s, .weight = 0.11f, .color = kDim, .align = Align::kRight});
+  const float by = y + 19 * s, bh = 6 * s;
+  l.rect(x0, by, x1, by + bh, rgba(255, 255, 255, 30), 3 * s);
+  if (total > 0 && found > 0) {
+    const float k = float(std::clamp(double(found) / total, 0.0, 1.0));
+    l.rect(x0, by, std::max(x0 + bh, x0 + (x1 - x0) * k), by + bh, found >= total ? kGreen : colour, 3 * s);
+  }
+}
+
+void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) {
+  const float x0 = std::min(w, 440 * s) + 44 * s, x1 = w - 44 * s;
+  if (x1 - x0 < 300 * s) return;
+  float y = 44 * s;
+  // The wristband card.
+  const bool band = !c.band_name.empty();
+  const uint32_t bc = band ? band_colour(c.band_name) : kDim;
+  const float ch = 132 * s;
+  panel(l, x0, y, x1, y + ch, s, rgba(10, 12, 17, 205));
+  l.rect(x0, y, x0 + 8 * s, y + ch, bc, 4 * s);
+  label(l, x0 + 28 * s, y + 18 * s, "WRISTBAND", s, kDim);
+  l.text(x0 + 28 * s, y + 36 * s, band ? c.band_name : std::string("NO WRISTBAND YET"),
+         TextStyle{.size = 30 * s, .weight = 0.13f, .slant = 0.1f, .color = bc});
+  label(l, x1 - 24 * s, y + 18 * s, "CREDITS", s, kDim, Align::kRight);
+  l.text(x1 - 24 * s, y + 38 * s, thousands(c.credits) + " CR",
+         TextStyle{.size = 22 * s, .weight = 0.12f, .color = kText, .align = Align::kRight});
+  const float bx0 = x0 + 28 * s, bx1 = x1 - 24 * s, by = y + 86 * s, bh = 10 * s;
+  l.rect(bx0, by, bx1, by + bh, rgba(255, 255, 255, 32), 5 * s);
+  const float k = c.band_hi > c.band_lo
+                      ? float(std::clamp(double(c.points - c.band_lo) / double(c.band_hi - c.band_lo), 0.0, 1.0))
+                      : 1.0f;
+  if (band || c.points > 0) l.rect(bx0, by, std::max(bx0 + bh, bx0 + (bx1 - bx0) * k), by + bh, bc, 5 * s);
+  char pts[64];
+  if (c.band_hi > 0)
+    std::snprintf(pts, sizeof pts, "%s / %s POINTS", thousands(c.points).c_str(), thousands(c.band_hi).c_str());
+  else
+    std::snprintf(pts, sizeof pts, "%s POINTS", thousands(c.points).c_str());
+  l.text(bx0, by + bh + 8 * s, pts, TextStyle{.size = 9 * s, .weight = 0.11f, .tracking = 0.12f, .color = kDim});
+  if (c.band_hi > 0 && !c.band_next.empty())
+    l.text(bx1, by + bh + 8 * s, "NEXT: " + c.band_next + "  IN " + thousands(c.band_hi - c.points),
+           TextStyle{.size = 9 * s, .weight = 0.11f, .tracking = 0.12f, .color = kDim, .align = Align::kRight});
+  else if (band)
+    l.text(bx1, by + bh + 8 * s, "TOP WRISTBAND",
+           TextStyle{.size = 9 * s, .weight = 0.11f, .tracking = 0.12f, .color = kAccent, .align = Align::kRight});
+  y += ch + 16 * s;
+  // Records: four tiles.
+  const float gap = 12 * s, tw = (x1 - x0 - 3 * gap) / 4, th = 84 * s;
+  char rate[16];
+  std::snprintf(rate, sizeof rate, "%d%%", c.races > 0 ? int(std::lround(100.0 * c.wins / c.races)) : 0);
+  const std::pair<std::string, const char*> tiles[] = {
+      {std::to_string(c.races), "RACES"}, {std::to_string(c.wins), "WINS"},
+      {std::to_string(c.podiums), "PODIUMS"}, {rate, "WIN RATE"}};
+  for (int i = 0; i < 4; ++i) {
+    const float tx = x0 + i * (tw + gap);
+    stat_tile(l, tx, y, tx + tw, y + th, tiles[i].first, tiles[i].second, s, i == 1 ? kAccent : kText);
+  }
+  y += th + gap;
+  const float tw2 = (x1 - x0 - gap) / 2;
+  stat_tile(l, x0, y, x0 + tw2, y + th, thousands(c.winnings) + " CR", "TOTAL WINNINGS", s);
+  stat_tile(l, x0 + tw2 + gap, y, x1, y + th, std::to_string(c.garage) + (c.garage == 1 ? " CAR" : " CARS"), "GARAGE",
+            s);
+  y += th + 16 * s;
+  // Collections.
+  const float rows = c.rally ? 5.f : 4.f;
+  const float rh = 40 * s, ph = 24 * s + rows * rh;
+  if (y + ph > h - 30 * s) return;
+  panel(l, x0, y, x1, y + ph, s, rgba(10, 12, 17, 190));
+  const float rx0 = x0 + 24 * s, rx1 = x1 - 24 * s;
+  float ry = y + 16 * s;
+  collection_row(l, rx0, rx1, ry, "DISCOUNT SIGNS", c.signs, c.signs_total, s), ry += rh;
+  collection_row(l, rx0, rx1, ry, "BARN FINDS", c.barns, c.barns_total, s), ry += rh;
+  collection_row(l, rx0, rx1, ry, "1000 CLUB CHALLENGES", c.club_done, c.club_total, s), ry += rh;
+  if (c.rally) {
+    char rn[64];
+    std::snprintf(rn, sizeof rn, "RALLY  LEVEL %d  %s XP", c.rally_level, thousands(c.rally_xp).c_str());
+    collection_row(l, rx0, rx1, ry, rn, c.rally_wins, c.rallies, s, rgba(60, 140, 255)), ry += rh;
+  }
+  collection_row(l, rx0, rx1, ry, "CONTENT PACKS", c.packs_owned, c.packs_total, s, rgba(200, 205, 215));
+}
+
 }  // namespace
 
 namespace {
@@ -466,6 +562,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     l.text(0.5f * w, y + 15 * s - 0.5f * ts.size, st.toast, ts);
   }
   if (menu) menu_panel(l, st, w, h, s);
+  if (menu && st.career) career_board(l, *st.career, w, h, s);
 }
 
 }  // namespace carview

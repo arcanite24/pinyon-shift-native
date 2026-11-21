@@ -2,7 +2,8 @@
 // list of the career's records (SPEC-EVENT-REWARDS: credits, winnings,
 // wristband points and level) and of the content packages the state root
 // owns (SPEC-V4-CONTENT, Ownership). Ours: one scrolled list in place of
-// the game's career and marketplace screens.
+// the game's career and marketplace screens: the records on a board
+// (game_hud.h CareerBoard), the packs in the scrolled list.
 #pragma once
 
 #include <cstdint>
@@ -34,9 +35,13 @@ class CareerPage {
   bool is_open() const { return open_; }
   void move(int by);
   void fill(std::string& title, std::vector<std::string>& lines, int& selected) const;
+  const CareerSummary& summary() const { return summary_; }
+  int packs_owned() const { return owned_; }
+  int packs_total() const { return packs_; }
 
  private:
   std::vector<std::string> lines_;
+  CareerSummary summary_;
   int owned_ = 0, packs_ = 0;
   size_t selected_ = 0;
   bool open_ = false;

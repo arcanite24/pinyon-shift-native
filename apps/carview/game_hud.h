@@ -39,7 +39,22 @@ struct RaceHud {
   bool band_up = false;
 };
 
+// The career page's board (ours), right of the page's list: the wristband
+// and its progress, money, race records and the collections.
+struct CareerBoard {
+  std::string band_name, band_next;  // the level reached ("" : none), the next
+  int points = 0, band_lo = 0, band_hi = -1;  // wristband points, the band's threshold and the next's
+  int64_t credits = 0, winnings = 0;
+  int races = 0, wins = 0, podiums = 0, garage = 0;
+  int signs = 0, signs_total = 100, barns = 0, barns_total = 0;
+  int club_cars = 0, club_done = 0, club_total = 0;
+  bool rally = false;
+  int rally_level = 0, rally_xp = 0, rallies = 0, rally_wins = 0;
+  int packs_owned = 0, packs_total = 0;
+};
+
 struct DriveHud {
+  const CareerBoard* career = nullptr;  // the career page's board, beside the menu
   double kmh = 0, rpm = 0, redline_rpm = 7000;
   int gear = 1;  // < 0 reverse, 0 neutral
   bool abs = false;
