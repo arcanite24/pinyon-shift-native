@@ -1125,6 +1125,27 @@ Follow-ups answered in RACE_AI.md 0479ff4e:
    its size is not read (interim none). Keep the interim of no skill
    boost.
 
+Mini 1566 follow-up answered in RACE_AI.md 9d11eccd ("Measured tables",
+"The Mini 1566"):
+
+- The title's seven Minis on EXHIBITION_FEST_003 share one table (606 kg,
+  drivetrain field 0 = front drive, top speed 56.3 m/s). At 20 m/s:
+  A_lat 16.24 and A_brk 19.12 m/s^2. Lateral at 0/20/40/60 m/s: 16.22,
+  16.24, 16.27, 16.32 (nearly flat, almost no downforce). Braking: 18.73,
+  19.12, 20.29, 22.23.
+- The tyre limits it, not the yaw cap. Per wheel at static load (194 kgf
+  front, 109 kgf rear): the 1.18/0.93 FrictionScale pair blended by load
+  gives 1.135 front, 1.155 rear; width scale 0.8625 (145 mm clamps at the
+  150 mm end); TorqueFreeLatFrictionScale 1.73. Front 1.083 g, rear
+  0.621 g against a cap of 0.609 g: the cap trims 0.7 % of the total.
+  The 1.69 g (16.6) less lateral transfer and cos(alpha_peak) is the
+  measured 16.22.
+- The engine's 20.7 is 1.27 x the title's; neither the cap nor the
+  FrictionScale pair explains it. Check the terms one by one: leaving
+  out the width scale alone gives 19.2. Braking is 1.06 x high.
+- At C 0.9 on a 50 m radius the title plans 27.0 m/s; a 20.7 table
+  plans 30.5.
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
