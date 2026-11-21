@@ -126,6 +126,26 @@ void brush(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour)
   l.image(x0 - px, y0 - py, x1 + px, y1 + py, crisp, colour);
 }
 
+// A HUD pill (947_HUD's leaderboard and timer bars: DIRTMASKS/HUD/HUDPILL01
+// or 02, 1024 x 32 with the pill in rows 3-28, tinted; the
+// scene crops it with a second, offset copy, here the strip's left part
+// and its right end): a flat rect without the texture.
+constexpr uint32_t kPillGrey = rgba(33, 33, 33);  // the bars' material, 0.13
+void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, bool second = false) {
+  std::array<float, 4> uv;
+  if (!ui_texture(second ? "DIRTMASKS/HUD/HUDPILL02" : "DIRTMASKS/HUD/HUDPILL01", uv)) {
+    l.rect(x0, y0, x1, y1, colour == kPillGrey ? kBlack60 : colour);
+    return;
+  }
+  const float texel = (y1 - y0) / 26.0f;  // px per texel
+  const float ty0 = y0 - 3 * texel, ty1 = y1 + 3 * texel;
+  const float cap = std::min(12 * texel, 0.5f * (x1 - x0));
+  const float du = (uv[2] - uv[0]) / 1024.0f;
+  const float body = (x1 - cap - x0) / texel;  // texels
+  l.image(x0, ty0, x1 - cap, ty1, {uv[0], uv[1], uv[0] + du * std::min(body, 1012.0f), uv[3]}, colour);
+  l.image(x1 - cap, ty0, x1, ty1, {uv[2] - du * 12, uv[1], uv[2], uv[3]}, colour);
+}
+
 // A string-table text (FORMAT-STRINGTABLES `_&N`: the table's and the id's
 // hashes); `fallback` when the tables do not resolve it.
 uint16_t table_hash(std::string_view v) {
@@ -331,7 +351,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     const float ink[] = {115, 143, 171, 198};
     for (size_t i = 0; i < rows.size() && i < 4; ++i) {
       const float y = g.T(ink[i]);
-      l.rect(g.L(64), y - 5 * s, g.L(224), y + 19 * s, kBlack60);
+      pill(l, g.L(64), y - 5 * s, g.L(224), y + 19 * s, kPillGrey, true);
       l.text(g.L(74), y, rows[i].name, font(ui::Font::kB, 14 * s, kText));
       l.text(g.L(215), y, clock_ms(rows[i].t), font(ui::Font::kB, 14 * s, kText, Align::kRight));
     }
@@ -363,8 +383,8 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     for (size_t k = 0; k < pick.size(); ++k) {
       const RaceHudRow& row = r.rows[pick[k]];
       const float y = g.T(ty[k]);
-      l.rect(g.R(944), y - 5 * s, g.R(1033), y + 19 * s, kBlack60);
-      l.rect(g.R(1037), y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kBlack60);
+      pill(l, g.R(944), y - 5 * s, g.R(1033), y + 19 * s, kPillGrey);
+      pill(l, g.R(1037), y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kPillGrey);
       if (racing) {
         std::string t;
         if (pick[k] == 0) t = clock_ms(lead_time);
