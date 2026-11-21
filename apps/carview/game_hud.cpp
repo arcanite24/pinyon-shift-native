@@ -697,9 +697,71 @@ void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
   }
 }
 
+// (c) The wristband points page (SPEC-UI-LAYOUTS, the wristband points
+// banner, measured): POINTS EARNED on a black brush, the band's large
+// wristband, COLLECT IT FROM RACE CENTRAL on a light panel when a level is
+// reached (else the band's progress, ours), PLEASE WAIT bottom left. The
+// scene (H_POST_RACE_CAREER_POINTS) starts off screen and its animation is
+// not read: the frame's rects stand.
+void points_page(ui::List& l, const RaceHud& r, const Layout& g) {
+  const float s = g.s;
+  // The grainy dark panel behind the wristband (the frame: x 0-520, y 235-365).
+  {
+    Turn t(l, g.L(260), g.T(300), -0.03f);
+    std::array<float, 4> noise;
+    if (ui_texture("DIRTMASKS/BGNOISE01", noise)) l.image(g.L(-10), g.T(238), g.L(520), g.T(362), noise, rgba(0, 0, 0, 235));
+    else l.rect(g.L(-10), g.T(238), g.L(520), g.T(362), rgba(0, 0, 0, 120));
+  }
+  {
+    Turn t(l, g.L(339), g.T(192));
+    brush(l, g.L(95), g.T(156), g.L(585), g.T(229), kBrush);
+    const std::string title = str("PostRaceFlow", "IDS_PointsEarned", "POINTS EARNED");
+    TextStyle ts = font(ui::Font::kE, 56 * s, kText);
+    fit(title, ts, g.L(570) - g.L(108), 24 * s);
+    l.text(g.L(108), g.T(166) + (56 * s - ts.size) * 0.5f, title, ts);
+  }
+  // The band's texture by the colour in its name (HORIZON\WRISTBANDS\<colour>XL).
+  std::string lower, band;
+  for (char c : r.band_name) lower += char(std::tolower(static_cast<unsigned char>(c)));
+  for (const char* k : {"yellow", "green", "orange", "blue", "purple", "pink", "gold", "platinum"})
+    if (lower.find(k) != std::string::npos) {
+      for (const char* p = k; *p; ++p) band += char(std::toupper(static_cast<unsigned char>(*p)));
+      if (band != "PLATINUM") band += "XL";
+      break;
+    }
+  std::array<float, 4> uv;
+  if (!band.empty() && ui_texture("WRISTBANDS/" + band, uv)) {
+    // The texture's margins: its ink fills the frame's 95,222-454,361.
+    l.image_rotated(g.L(274.5f), g.T(291.5f), 255 * s, 99 * s, -0.07f, uv);
+  } else if (!r.band_name.empty()) {
+    Turn t(l, g.L(274.5f), g.T(291.5f), -0.07f);
+    l.rect(g.L(95), g.T(232), g.L(454), g.T(351), band_colour(r.band_name));
+  }
+  if (r.band_up) {
+    Turn t(l, g.L(270), g.T(375));
+    l.rect(g.L(100), g.T(359), g.L(440), g.T(391), kLight);
+    const std::string c = str("PostRaceFlow", "IDS_WristbandAvailableLn2", "COLLECT IT FROM RACE CENTRAL");
+    TextStyle cs = font(ui::Font::kB, 18 * s, kDark);
+    fit(c, cs, g.L(432) - g.L(106), 10 * s);
+    l.text(g.L(106), g.T(366) + (18 * s - cs.size) * 0.5f, c, cs);
+  } else if (r.band_after >= 0) {
+    const double since = r.clock - r.finish_time;
+    wristband_row(l, r, g.L(100), g.T(368), g.L(440) - g.L(100), s, since, 1.0f);
+  }
+  // PLEASE WAIT: the festival spinner and the words on a dark panel.
+  std::array<float, 4> sp;
+  if (ui_texture("LOADING/LOADINGSPINNER50PX", sp)) l.image(g.L(60), g.B(638), g.L(112), g.B(690), sp);
+  l.rect(g.L(110), g.B(653), g.L(234), g.B(681), kBlack60);
+  l.text(g.L(118), g.B(660), str("Main", "IDS_Please_Wait_Title", "PLEASE WAIT"), font(ui::Font::kB, 15 * s, kText));
+}
+
 void results(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
   const double since = r.clock - r.finish_time;
+  if (r.results_page == 2) {
+    points_page(l, r, g);
+    return;
+  }
   if (r.results_page == 0 && r.results_table) {
     results_table(l, r, g);
     return;
@@ -791,8 +853,6 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     bs.keep_case = true;  // "117,881 Cr" as shown
     l.text(g.L(398), g.T(490), thousands(r.balance) + " " + cr, bs);
   }
-  // The wristband (ours: where the title shows it is not specified).
-  if (r.band_after >= 0) wristband_row(l, r, g.L(150), g.T(545), g.L(880) - g.L(150), s, since - 1.0, 1.0f);
   help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
 }
 

@@ -1580,13 +1580,13 @@ int run_drive(int argc, char** argv) {
       if (!write_png(race_png.string(), 1280, 720, 4, rgba.data())) return 1;
       std::printf("race: 1280x720 to %s\n", race_png.string().c_str());
     }
-    for (int page = 0; page < 3; ++page) {
+    for (int page = 0; page < 4; ++page) {
       // And <name>_results<page>.png: the FINISHED banner, the cash reward,
       // then (2) the RACE RESULTS table.
       carview::RaceHud r;
       r.phase = carview::RaceHud::kFinished, r.event = "SAMPLE", r.circuit = true, r.laps = 4;
       r.place = 6, r.cars = 8, r.clock = 186, r.finish_time = 182, r.credits = 2500, r.wristband = 400;
-      r.results_page = page == 2 ? 0 : page, r.results_table = page == 2, r.balance = 4078145;
+      r.results_page = page == 2 ? 0 : page == 3 ? 2 : page, r.results_table = page == 2, r.balance = 4078145;
       if (page == 2) {
         const char* who[] = {"Alan Brewer", "Marko Baran", "Peter Bankov", "User", "Don Funk", "Jason Zander", "Scott Mitchell", "Bjorn Rettig"};
         const char* cars[] = {"Lancer Evo.6 GSR", "Range Rover'12", "Jeep SRT8 '12", "Nissan GT-R R34", "Nissan GT-R R34", "Audi Quattro", "Nissan GT-R R34", "Audi RS 4"};
@@ -1602,6 +1602,7 @@ int run_drive(int argc, char** argv) {
       }
       r.band_before = 41250 - 400, r.band_after = 41250, r.band_lo = 30000, r.band_hi = 60000;
       r.band_name = "Orange", r.band_next = "Purple";
+      if (page == 3) r.band_name = "Blue", r.band_up = true;
       carview::DriveHud d;
       d.race = &r, d.time = 10;
       carview::ui::List list;
@@ -3220,6 +3221,8 @@ int run_drive(int argc, char** argv) {
       // The results' page (SPEC-UI-LAYOUTS c): 0 the FINISHED banner, 1 the cash reward.
       int results_page = 0;
       bool results_table = false;  // the RACE RESULTS table over the banner (X opens, B closes)
+      bool results_points = false;  // a wristband points page follows the cash reward
+      double points_at = -1;        // the points page's start (the drive clock)
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
@@ -3263,6 +3266,7 @@ int run_drive(int argc, char** argv) {
           race_hud.results_page = results_page;
           if (!race->player_finished()) results_table = false;  // a new race starts on the banner
           race_hud.results_table = results_table && results_page == 0;
+          results_points = race_hud.wristband > 0;
           race_hud.balance = career.credits;
           // The wristband after the award (the results card).
           if (race_hud.phase == carview::RaceHud::kFinished && race_hud.wristband > 0 && !wristbands.levels.empty()) {
@@ -3922,6 +3926,12 @@ int run_drive(int argc, char** argv) {
             results_page = 1;
             return;
           }
+          // Then the wristband points on their own (SPEC-UI-LAYOUTS c,
+          // PLEASE WAIT: it moves on by itself), when the race gave any.
+          if (results_page == 1 && results_points) {
+            results_page = 2, points_at = vehicle.time();
+            return;
+          }
           results_page = 0;
           if (!race->post_race_spawn(spawn)) {
             const drive::Vec3 at = vehicle.position();
@@ -3945,6 +3955,8 @@ int run_drive(int argc, char** argv) {
           save_now("pause");
         };
         while (running) {
+          // The points page waits about 3 s (ours), then back to free roam.
+          if (race && results_page == 2 && vehicle.time() - points_at > 3.0) race_continue();
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;

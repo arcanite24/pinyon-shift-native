@@ -46,7 +46,7 @@ struct RaceHud {
   std::string band_name, band_next;
   bool band_up = false;
   bool wrong_way = false;  // the player drives against the race (ours)
-  int results_page = 0;
+  int results_page = 0;  // 0 the FINISHED banner, 1 the cash reward, 2 the wristband points
   bool results_table = false;  // the RACE RESULTS table over the FINISHED banner (X; B closes)    // after the finish: 0 the FINISHED banner, 1 the cash reward
   int64_t balance = -1;    // the credits after the award (the cash reward page)
   std::string event_type;  // the title card's event type line (a string-table text)
