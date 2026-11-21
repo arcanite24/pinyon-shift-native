@@ -1637,3 +1637,11 @@ clamp(0.5 - s(u^2 - v)/|grad|, 0, 1); no kerning; `*ru` fonts are
 strict supersets.
 
 Q45 FOV check answered in CAMERAS.md 4b03a066: 427/1280, vFOV 48.5 (full vertical angle, not half), confirmed
+
+FORMAT-UISCENES answered in docs/formats/UI_SCENES.md 8f4a5c61: partial go
+(probable). Tree, BSG transforms (centre origin, y up, 1280x720 px),
+unit quads, textures (Horizon.zip / Textures.zip .xds), materials and
+text boxes (font, px size, width) read for 204 of 205 scenes; text
+content, rows, stacker reflow, states and animations come from the C++
+contracts at run time (no string ids in any scene). Projection, BGF
+properties and non-quad geometry open.
