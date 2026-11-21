@@ -285,6 +285,16 @@ bool Renderer::create_device(std::string& error) {
   f13.shaderDemoteToHelperInvocation = VK_TRUE;
   VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   f2.pNext = &f13;
+  {
+    VkPhysicalDeviceFeatures offered{};
+    vkGetPhysicalDeviceFeatures(physical_, &offered);
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(physical_, &props);
+    if (offered.samplerAnisotropy && options_.anisotropy > 1.0f) {
+      f2.features.samplerAnisotropy = VK_TRUE;
+      anisotropy_ = std::min(options_.anisotropy, props.limits.maxSamplerAnisotropy);
+    }
+  }
   std::vector<const char*> extensions;
   if (surface_) extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
   VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};

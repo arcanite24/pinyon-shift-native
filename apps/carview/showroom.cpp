@@ -1380,6 +1380,10 @@ bool Showroom::upload(std::string& error) {
   sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
   sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
   sampler.maxLod = VK_LOD_CLAMP_NONE;
+  if (r_.sampler_anisotropy() > 1.0f) {
+    sampler.anisotropyEnable = VK_TRUE;
+    sampler.maxAnisotropy = r_.sampler_anisotropy();
+  }
   VK_TRY(vkCreateSampler(r_.device_, &sampler, nullptr, &sampler_), "vkCreateSampler");
 
   // One material set per distinct (slot 0, slot 1, livery).

@@ -72,6 +72,9 @@ class Renderer {
     bool validation = false;
     uint32_t msaa = 4;
     PostSettings post;
+    // Anisotropic filtering of the scene's textures, clamped to what the
+    // device offers (1: off). Set by the preset (ours).
+    float anisotropy = 1.0f;
     ShadowSettings shadow;
     // Reversed depth (ours, the drive): the scene clears depth to 0, tests
     // GREATER(_OR_EQUAL), and the camera's projection maps the near plane to
@@ -112,6 +115,9 @@ class Renderer {
   bool reverse_z() const { return options_.reverse_z; }
   // The MSAA sample count in use (1 when off).
   uint32_t sample_count() const { return uint32_t(samples_); }
+  // The anisotropy the scene's samplers use: options.anisotropy within the
+  // device's limit, 1 when the device has none.
+  float sampler_anisotropy() const { return anisotropy_; }
   // Windowed: renders and presents one frame. Returns false on a fatal error.
   bool draw_frame(const FrameConstants& constants, std::string& error);
 
@@ -196,6 +202,7 @@ class Renderer {
   uint32_t queue_family_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;
   VkCommandPool pool_ = VK_NULL_HANDLE;
+  float anisotropy_ = 1.0f;
   uint64_t frames_submitted_ = 0, frames_done_ = 0;
   VkPhysicalDeviceMemoryProperties memory_properties_{};
   VkSampleCountFlagBits samples_ = VK_SAMPLE_COUNT_1_BIT;

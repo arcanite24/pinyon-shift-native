@@ -2152,6 +2152,8 @@ int run_drive(int argc, char** argv) {
     if (paint_sequence >= 0 && lower_ascii(paint_car) == lower_ascii(car)) options.match_sequence = paint_sequence;
     Renderer::Options render_options{window, validation, msaa};
     render_options.reverse_z = reverse_z;
+    // Anisotropic filtering of the ground's grazing textures (ours): the low preset stays cheap.
+    render_options.anisotropy = low_preset ? 2.0f : 16.0f;
     if (post_on) {
       PostSettings& post = render_options.post;
       post.enabled = true;
