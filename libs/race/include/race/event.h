@@ -63,6 +63,7 @@ struct Opponent {
 
 struct EventData {
   std::string horizon_id;
+  std::string name;  // Events.Name: a `_&N` string-table reference (CarNames::text)
   int64_t event_id = 0, track_id = 0;
   int route_id = 0, laps = 1;
   double track_length = 0;  // Tracks.Length (not the race distance)

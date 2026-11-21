@@ -100,7 +100,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   bool found = false;
   if (!db.each("select Id, AISkill" + sfx + ", AITemperament" + sfx + ", AIRubberband" + sfx +
                    ", PlayerGridPosition, CashPrize, coalesce(Level, 0), coalesce(CareerEventStyle, 0), "
-                   "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0), coalesce(TargetClass, 0) from Events where HorizonEventID = ?",
+                   "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0), coalesce(TargetClass, 0), coalesce(Name, '') from Events where HorizonEventID = ?",
                {horizon_id},
                [&](sqlite3_stmt* s) {
                  found = true;
@@ -115,6 +115,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  out.career_type = int(i64(s, 8));
                  out.upgrade_ai = i64(s, 9) != 0;
                  out.target_class = int(i64(s, 10));
+                 out.name = txt(s, 11);
                },
                error))
     return false;

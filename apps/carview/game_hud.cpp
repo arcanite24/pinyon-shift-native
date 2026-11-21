@@ -193,10 +193,11 @@ void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, doubl
   const float x0 = 26 * s, y0 = 26 * s;
   if (r.phase == RaceHud::kGrid || r.phase == RaceHud::kCountdown) {
     // The event's card, top centre.
-    const float cw = 300 * s;
+    TextStyle title{.size = 20 * s, .weight = 0.12f, .color = kText, .align = Align::kCenter};
+    while (title.size > 12 * s && ui::List::measure(r.event, title) > w - 160 * s) title.size *= 0.94f;
+    const float cw = std::max(300 * s, ui::List::measure(r.event, title) + 60 * s);
     panel(l, 0.5f * w - 0.5f * cw, y0, 0.5f * w + 0.5f * cw, y0 + 66 * s, s);
-    l.text(0.5f * w, y0 + 14 * s, r.event,
-           TextStyle{.size = 20 * s, .weight = 0.12f, .color = kText, .align = Align::kCenter});
+    l.text(0.5f * w, y0 + 14 * s + (20 * s - title.size) * 0.5f, r.event, title);
     char sub[64];
     if (r.stage) std::snprintf(sub, sizeof sub, "RALLY STAGE");
     else if (r.circuit) std::snprintf(sub, sizeof sub, "CIRCUIT   %d LAPS   %d CARS", r.laps, r.cars);

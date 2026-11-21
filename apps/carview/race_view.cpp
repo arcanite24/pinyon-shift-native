@@ -727,7 +727,9 @@ RaceHud RaceView::hud_info() const {
   if (!session_) return h;
   const size_t n = cars_.size();
   const auto& s = *session_;
-  h.event = event_.horizon_id;
+  // The event's name from the string tables; its id without one.
+  h.event = event_.name.empty() ? event_.horizon_id : names_.text(event_.name);
+  if (h.event.empty() || h.event.rfind("_&", 0) == 0) h.event = event_.horizon_id;
   h.circuit = circuit_;
   h.stage = have_stage_track_;
   h.clock = s.clock();
