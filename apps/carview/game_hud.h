@@ -31,6 +31,12 @@ struct RaceHud {
   int wristband = 0;
   int stage_place = 0, stage_field = 0;
   std::vector<RaceHudRow> rows;  // by place
+  // The wristband after the award (the results card; band_after < 0:
+  // none): the points before and after, the band's threshold and the
+  // next band's (-1: the top band), the names, and whether it went up.
+  int band_before = -1, band_after = -1, band_lo = 0, band_hi = -1;
+  std::string band_name, band_next;
+  bool band_up = false;
 };
 
 struct DriveHud {
@@ -57,6 +63,10 @@ float drive_hud_dial_height(float h);
 // source set (the string tables' names); the media name without one.
 void set_car_names(std::function<std::string(const std::string&)> source);
 std::string car_name(const std::string& media);
+// A database text value (`_&N` -> the string table's text), from the source
+// set; the value itself without one.
+void set_game_text(std::function<std::string(const std::string&)> source);
+std::string game_text(const std::string& value);
 
 // "12,500".
 std::string thousands(int64_t v);

@@ -1,6 +1,7 @@
 #include "game_hud.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
@@ -84,6 +85,54 @@ void dial(ui::List& l, const DriveHud& st, float w, float h, float s) {
 void label(ui::List& l, float x, float y, const char* text, float s, uint32_t color = kAccent,
            Align align = Align::kLeft) {
   l.text(x, y, text, TextStyle{.size = 8 * s, .weight = 0.12f, .tracking = 0.3f, .color = color, .align = align});
+}
+
+// A wristband's colour by its name (ours); amber for an unknown name.
+uint32_t band_colour(const std::string& name) {
+  std::string n;
+  for (char c : name) n += char(std::tolower(static_cast<unsigned char>(c)));
+  const std::pair<const char*, uint32_t> named[] = {
+      {"yellow", rgba(255, 214, 40)}, {"green", rgba(70, 210, 100)},  {"orange", rgba(255, 140, 30)},
+      {"blue", rgba(60, 140, 255)},   {"purple", rgba(170, 90, 240)}, {"red", rgba(236, 52, 44)},
+      {"gold", rgba(240, 196, 70)},   {"silver", rgba(200, 205, 215)}, {"black", rgba(90, 92, 100)},
+      {"white", rgba(240, 240, 240)}, {"pink", rgba(255, 110, 180)}};
+  for (const auto& [k, c] : named)
+    if (n.find(k) != std::string::npos) return c;
+  return kAccent;
+}
+
+// The wristband row of the results card: the band's name, the points and
+// a bar that fills from before to after (from the new band's start when it
+// went up).
+void wristband_row(ui::List& l, const RaceHud& r, float x, float y, float width, float s, double since, float in) {
+  const uint32_t c = band_colour(r.band_name);
+  l.text(x, y, (r.band_name.empty() ? std::string("NO") : r.band_name) + " WRISTBAND",
+         TextStyle{.size = 10 * s, .weight = 0.12f, .tracking = 0.12f, .color = ui::fade(c, in)});
+  const float k = ease_in_time(since, 1.0, 1.3);
+  const double from = r.band_up ? r.band_lo : r.band_before;
+  const double now = from + (r.band_after - from) * k;
+  char pts[64];
+  if (r.band_hi > 0)
+    std::snprintf(pts, sizeof pts, "%s / %s", thousands(int64_t(std::llround(now))).c_str(),
+                  thousands(r.band_hi).c_str());
+  else
+    std::snprintf(pts, sizeof pts, "%s", thousands(int64_t(std::llround(now))).c_str());
+  l.text(x + width, y, pts, TextStyle{.size = 10 * s, .weight = 0.11f, .color = ui::fade(kDim, in), .align = Align::kRight});
+  const float by = y + 18 * s, bh = 8 * s;
+  l.rect(x, by, x + width, by + bh, rgba(255, 255, 255, uint8_t(36 * in)), 4 * s);
+  const double span = r.band_hi > r.band_lo ? double(r.band_hi - r.band_lo) : 1.0;
+  auto at = [&](double v) { return x + width * float(std::clamp((v - r.band_lo) / span, 0.0, 1.0)); };
+  if (r.band_hi <= 0) {
+    l.rect(x, by, x + width, by + bh, ui::fade(c, in), 4 * s);
+  } else {
+    l.rect(x, by, std::max(x + bh, at(now)), by + bh, ui::fade(c, in), 4 * s);
+    if (!r.band_up && r.band_before > r.band_lo)  // the points that were there, a shade darker
+      l.rect(x, by, std::max(x + bh, at(r.band_before)), by + bh, ui::fade(rgba(0, 0, 0, 90), in), 4 * s);
+  }
+  if (!r.band_next.empty() && r.band_hi > 0)
+    l.text(x + width, by + bh + 6 * s, "NEXT: " + r.band_next,
+           TextStyle{.size = 7.5f * s, .weight = 0.11f, .tracking = 0.2f, .color = ui::fade(kDim, in),
+                     .align = Align::kRight});
 }
 
 void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, double t) {
@@ -184,7 +233,8 @@ void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, doubl
     const float in = ease_in_time(since, 0, 0.5);
     const float cw = 520 * s;
     const size_t rows = std::min<size_t>(r.rows.size(), 8);
-    const float ch = 214 * s + 24 * s * float(rows);
+    const bool band = r.band_after >= 0;
+    const float ch = 214 * s + 24 * s * float(rows) + (band ? 62 * s : 0);
     const float cx0 = 0.5f * w - 0.5f * cw, cy0 = 0.5f * h - 0.5f * ch + (1 - in) * 40 * s;
     l.rect(0, 0, w, h, rgba(0, 0, 0, uint8_t(90 * in)));
     panel(l, cx0, cy0, cx0 + cw, cy0 + ch, s, ui::fade(kPanelLow, in));
@@ -211,7 +261,10 @@ void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, doubl
       char n[8];
       std::snprintf(n, sizeof n, "%d", row.place);
       l.text(cx0 + 44 * s, y, n, TextStyle{.size = 11 * s, .weight = 0.12f, .color = ink, .align = Align::kRight});
-      l.text(cx0 + 58 * s, y, row.name, TextStyle{.size = 11 * s, .weight = 0.1f, .color = ink});
+      TextStyle ns{.size = 11 * s, .weight = 0.1f, .color = ink};
+      const float room = cw - (58 + 32 + 84) * s;
+      while (ns.size > 8 * s && ui::List::measure(row.name, ns) > room) ns.size *= 0.95f;
+      l.text(cx0 + 58 * s, y + (11 * s - ns.size) * 0.5f, row.name, ns);
       l.text(cx0 + cw - 32 * s, y, row.finished ? race_clock(row.time) : "--",
              TextStyle{.size = 11 * s, .weight = 0.1f, .color = ink, .align = Align::kRight});
     }
@@ -228,6 +281,19 @@ void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, doubl
       std::snprintf(wb, sizeof wb, "+%d WRISTBAND", r.wristband);
       l.text(cx0 + cw - 28 * s, ry + 19 * s, wb,
              TextStyle{.size = 13 * s, .weight = 0.12f, .color = ui::fade(kAccent, in), .align = Align::kRight});
+    }
+    if (band) wristband_row(l, r, cx0 + 28 * s, ry + 52 * s, cw - 56 * s, s, since, in);
+    if (band && r.band_up) {
+      // A new band: a banner over the card.
+      const float a = ease_in_time(since, 2.3, 0.35);
+      const float pop = 1 + 0.2f * (1 - ease_in_time(since, 2.3, 0.5));
+      const std::string text = "NEW WRISTBAND: " + r.band_name;
+      const TextStyle bs{.size = 18 * s * pop, .weight = 0.13f, .slant = 0.1f, .color = ui::fade(kInk, a),
+                         .align = Align::kCenter};
+      const float bw = ui::List::measure(text, bs) + 48 * s, by = cy0 - 58 * s;
+      l.shadow(0.5f * w - 0.5f * bw, by + 3 * s, 0.5f * w + 0.5f * bw, by + 43 * s, ui::fade(kShadow, a), 10 * s, 12 * s);
+      l.rect(0.5f * w - 0.5f * bw, by, 0.5f * w + 0.5f * bw, by + 40 * s, ui::fade(band_colour(r.band_name), a), 8 * s);
+      l.text(0.5f * w, by + 20 * s - 0.5f * bs.size, text, bs);
     }
     label(l, 0.5f * w, cy0 + ch - 22 * s, "A / ENTER CONTINUE      Y RESTART", s, ui::fade(kDim, in), Align::kCenter);
   }
@@ -288,7 +354,14 @@ std::function<std::string(const std::string&)>& names() {
 }
 }  // namespace
 
+std::function<std::string(const std::string&)>& texts() {
+  static std::function<std::string(const std::string&)> f;
+  return f;
+}
+
 void set_car_names(std::function<std::string(const std::string&)> source) { names() = std::move(source); }
+void set_game_text(std::function<std::string(const std::string&)> source) { texts() = std::move(source); }
+std::string game_text(const std::string& value) { return texts() ? texts()(value) : value; }
 std::string car_name(const std::string& media) { return names() ? names()(media) : media; }
 
 std::string thousands(int64_t v) {

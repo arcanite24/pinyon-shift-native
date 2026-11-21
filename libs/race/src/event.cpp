@@ -275,16 +275,22 @@ std::string CarNames::split_words(const std::string& s) {
 bool CarNames::load(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
                     std::string* error) {
   static std::mutex lock;
-  static std::map<std::string, std::pair<std::map<std::string, Row>, size_t>> cache;
+  struct Cached {
+    std::map<std::string, Row> rows;
+    size_t resolved = 0;
+    std::shared_ptr<const fh1::StringTables> strings;
+  };
+  static std::map<std::string, Cached> cache;
   const std::string key = game_root.string() + "|" + state_root.string();
   {
     std::lock_guard<std::mutex> g(lock);
     if (auto it = cache.find(key); it != cache.end()) {
-      rows_ = it->second.first, resolved_ = it->second.second;
+      rows_ = it->second.rows, resolved_ = it->second.resolved, strings_ = it->second.strings;
       return true;
     }
   }
-  fh1::StringTables strings;
+  auto loaded = std::make_shared<fh1::StringTables>();
+  fh1::StringTables& strings = *loaded;
   {
     cars::Install install;
     std::string why;
@@ -324,7 +330,8 @@ bool CarNames::load(const std::filesystem::path& game_root, const std::filesyste
       error);
   if (ok) {
     std::lock_guard<std::mutex> g(lock);
-    cache[key] = {rows_, resolved_};
+    strings_ = loaded;
+    cache[key] = {rows_, resolved_, strings_};
   }
   return ok;
 }
@@ -341,6 +348,12 @@ std::string CarNames::short_name(const std::string& media) const {
                         }) &&
                         (model.size() == make.size() || model[make.size()] == ' ');
   return make.empty() || has_make ? model : make + " " + model;
+}
+
+std::string CarNames::text(const std::string& value) const {
+  if (!strings_ || !fh1::StringTables::is_reference(value)) return value;
+  auto t = strings_->resolve(value);
+  return t ? *t : value;
 }
 
 std::string CarNames::full_name(const std::string& media) const {

@@ -1547,6 +1547,10 @@ int run_drive(int argc, char** argv) {
     }
     return car_names->short_name(media);
   });
+  carview::set_game_text([=](const std::string& value) {
+    if (!*car_names_loaded) carview::car_name("");  // loads the tables
+    return car_names->text(value);
+  });
   // The career garage (SPEC-GARAGE-UPGRADES): garage.txt beside the save,
   // made by the profile import; the cars the bake has, by Data_Car id.
   garage::Garage career_garage;
@@ -1687,7 +1691,7 @@ int run_drive(int argc, char** argv) {
       race::load_wristband_tables(game_root_of(), wristbands, &e);
     }
     const int li = wristbands.level_index(career.wristband_points);
-    if (li >= 0) cs.level_name = wristbands.levels[size_t(li)].second;
+    if (li >= 0) cs.level_name = carview::game_text(wristbands.levels[size_t(li)].second);
     // A name that is a string-table key (the tables are not read: interim):
     // the level's number instead.
     if (cs.level_name.rfind("_&", 0) == 0) cs.level_name = std::to_string(li);
@@ -2968,7 +2972,20 @@ int run_drive(int argc, char** argv) {
         d.time = vehicle.time();
         carview::RaceHud race_hud;
         const bool race_line = race && banner == race_banner();
-        if (race) race_hud = race->hud_info(), d.race = &race_hud;
+        if (race) {
+          race_hud = race->hud_info(), d.race = &race_hud;
+          // The wristband after the award (the results card).
+          if (race_hud.phase == carview::RaceHud::kFinished && race_hud.wristband > 0 && !wristbands.levels.empty()) {
+            const int after = career.wristband_points, before = after - race_hud.wristband;
+            const int la = wristbands.level_index(after), lb = wristbands.level_index(before);
+            race_hud.band_before = before, race_hud.band_after = after;
+            race_hud.band_lo = la >= 0 ? wristbands.levels[size_t(la)].first : 0;
+            race_hud.band_hi = size_t(la + 1) < wristbands.levels.size() ? wristbands.levels[size_t(la + 1)].first : -1;
+            if (la >= 0) race_hud.band_name = carview::game_text(wristbands.levels[size_t(la)].second);
+            if (race_hud.band_hi > 0) race_hud.band_next = carview::game_text(wristbands.levels[size_t(la + 1)].second);
+            race_hud.band_up = la > lb;
+          }
+        }
         if (!race_line) d.toast = banner;
         d.menu_title = st.menu_title;
         d.menu = st.menu;

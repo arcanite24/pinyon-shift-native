@@ -9,8 +9,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include "fh1data/stringtables.h"
 
 namespace race {
 
@@ -107,10 +110,7 @@ struct EventSummary {
 };
 bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error);
 
-// Car names for the HUD and menus. Interim until the string tables are
-// read (Data_Car.DisplayName is a string-table key): the make from
-// List_CarMake.IconPathBase, the model from the media name's middle part,
-// both split at their case and digit changes, and the year from Data_Car.
+// Car names (and any other `_&N` text) for the HUD and menus.
 class CarNames {
  public:
   // The names from the string tables (FORMAT-STRINGTABLES: Data_Car
@@ -121,6 +121,9 @@ class CarNames {
   // Cached per root pair.
   bool load(const std::filesystem::path& game_root, const std::filesystem::path& state_root, std::string* error);
   size_t resolved() const { return resolved_; }
+  // A database text column's value: the string table's text for a `_&N`
+  // reference, the value itself otherwise (or when it does not resolve).
+  std::string text(const std::string& value) const;
   // "Ferrari California"; the media name itself when unknown.
   std::string short_name(const std::string& media) const;
   // "2009 Ferrari California".
@@ -135,6 +138,7 @@ class CarNames {
   };
   std::map<std::string, Row> rows_;
   size_t resolved_ = 0;
+  std::shared_ptr<const fh1::StringTables> strings_;
 };
 
 }  // namespace race

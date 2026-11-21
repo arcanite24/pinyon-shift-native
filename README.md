@@ -688,8 +688,11 @@ copy's packages.
   packs owned by name. The drive itself starts in the save's car
   (FER_599XXEvolution_12), and free roam reports 100 of 100 signs
   (upgrades 100 % off), 8 of 9 barn finds and 1,717.6 km driven.
-- **Interims (backlog):** the wristband level's name is a string-table
-  key, so the page shows its number. Rally stages drive (see "Career
+- **Interims (backlog):** the wristband level's name now comes from the
+  string tables (FORMAT-STRINGTABLES, 2026-11-21). The race's results card
+  shows the band, a bar that fills with the race's points, the next band,
+  and a banner when the band goes up. The band colours are ours. Rally
+  stages drive (see "Career
   page and Rally"); championships and Rally XP are later work.
 - **1000 Club driving (2026-11-21):** `freeroam/club.h` parses the
   package's 218 challenge files (1,145 challenges) and v4's 30 named
