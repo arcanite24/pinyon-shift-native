@@ -476,8 +476,34 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
 void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
   const bool racing = r.phase == RaceHud::kRacing;
+  // 947_HUD's EndConditionBlock and PlaceBlock (E 48 current, E 26 slash
+  // and total, E 16 label; right-aligned boxes end at their node); the
+  // drop shadow is ours. Without the scene: the drawn blocks below.
+  static const SceneDraw sc(ui_scene("947_HUD"));
+  const int endcon = sc.find("EndConditionBlock"), placeblk = sc.find("PlaceBlock");
+  const bool scened = endcon >= 0 && placeblk >= 0;
+  auto stext = [&](const SceneFrame& f, int node, const std::string& t) {
+    sc.text(l, f, node, t, rgba(0, 0, 0, 140), 1.5f, 1.5f, false);
+    sc.text(l, f, node, t, kText, 0, 0, false);
+  };
+  if (scened) {
+    const SceneFrame tl{0, 0, s}, tr{g.w - 1280 * s, 0, s};
+    if (r.circuit) {
+      stext(tl, sc.find("TEXT_ENDCON_CURRENT", endcon), std::to_string(racing ? std::max(1, r.lap) : 0));
+      stext(tl, sc.find("TEXT_ENDCON_SLASH", endcon), "/");
+      stext(tl, sc.find("TEXT_ENDCON_FINAL", endcon), std::to_string(r.laps));
+      stext(tl, sc.find("TEXT_ENDCON_UNITS", endcon), str("InGame", "IDS_Laps", "LAPS"));
+    } else {
+      stext(tl, sc.find("TEXT_ENDCON_CURRENT", endcon), std::to_string(int(std::lround(r.progress * 100))));
+      stext(tl, sc.find("TEXT_ENDCON_UNITS", endcon), "%");
+    }
+    stext(tr, sc.find("TEXT_PLACE_LABEL", placeblk), str("InGame", "IDS_Place", "PLACE"));
+    stext(tr, sc.find("TEXT_PLACE", placeblk), std::to_string(std::max(1, r.place)));
+    stext(tr, sc.find("TEXT_PLACE_SLASH", placeblk), "/");
+    stext(tr, sc.find("TEXT_PLACE_MAX", placeblk), std::to_string(r.cars));
+  }
   // Laps: "1/3 LAPS"; sprints: the distance done.
-  {
+  if (!scened) {
     char big[16], of[16];
     if (r.circuit) {
       std::snprintf(big, sizeof big, "%d", racing ? std::max(1, r.lap) : 0);
@@ -512,7 +538,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     }
   }
   // Place: "PLACE 3/8".
-  {
+  if (!scened) {
     char p[8], of[8];
     std::snprintf(p, sizeof p, "%d", std::max(1, r.place));
     std::snprintf(of, sizeof of, "/%d", r.cars);
