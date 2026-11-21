@@ -1146,6 +1146,41 @@ Mini 1566 follow-up answered in RACE_AI.md 9d11eccd ("Measured tables",
 - At C 0.9 on a 50 m radius the title plans 27.0 m/s; a 20.7 table
   plans 30.5.
 
+AI auto-upgrade follow-up answered in RACE_AI.md f16fbf95 and 0e634b9a
+("AI car upgrades"):
+
+- Bottom line for FR01: the title's Corvette (-0.03) and Focus (-0.03)
+  are slightly detuned and the FR-S gets only t 0.08 (torque 1.03). The
+  upgrade does not explain their 5-7 s; look elsewhere for those. It
+  does explain the Charger (t 0.45), Raptor (0.61) and Firebird (0.75).
+- 1. Target (confirmed rule; probable that the input is the player's
+  PI): each AI aims at the player's shown points P, pulled to hi - 5 if
+  P + 5 >= hi - 5 and to lo + 5 if near the bottom, plus a fixed
+  per-car offset 0, +1, -2, +3 or -4, clamped to the event class. Not
+  the class cap; +300 only applies when P > the car's points + 300.
+  With the stock R34 (461): FR01 targets 395, FR22 506. Compute it from
+  the player's car at run time; never hardcode.
+- 2. Steps (confirmed): six scales (mass, torque, 2 front + 2 rear
+  friction) between stock and mass 0.9 / torque 1.4 / friction 1.2 (the
+  inverse for a car above its target). Far end rated first; then 10
+  bisection steps on the midpoint of all six together. No order: one
+  fraction t. Up: mass 1 - 0.1t, torque 1 + 0.4t, friction 1 + 0.2t.
+  Down: mass 1 + 0.111t, torque 1 - 0.286t, friction 1 - 0.167t.
+- 3. Per car (confirmed), each from its own PI.
+- 4. Oracle (masses confirmed; trace mass / CurbWeight): FR01 Corvette
+  1.004, Focus 1.003, Jeep 0.997, FR-S 0.992, Charger 0.955, Raptor
+  0.939, Firebird 0.925. FR22 RS4 1.018, R34 0.982, Quattro/Evo
+  0.970/0.965, Range Rover 0.960, Jeep 0.961. Friction from the
+  ai.tables ratios matches t (R34 1.037, Jeep 1.08); torque from the
+  forward tables 1.050 and 1.147 against 1.074 and 1.159 (probable:
+  take torque from t).
+- Interim (the engine has no PI lap): t = min(1, gap / 240) up,
+  min(1, -gap / 170) down, gap in shown points to the target above.
+- Your one-s-per-event interim: the 0.1/0.4/0.2 shape is right for cars
+  going up, but one s per event is not. FR01's t runs from -0.03 to
+  0.75, and s = 0.3 would wrongly speed up the Corvette. FR22's mean
+  (about 0.27) is close to 0.3, but the RS4 is detuned.
+
 ## Q54 (M6, queued after the M5 items): the specs M6 needs, in order
 
 M6's gate is "the reference save imports and shows the same progress
