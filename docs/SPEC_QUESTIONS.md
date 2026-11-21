@@ -728,6 +728,21 @@ question Q38)" and "Colour byte order"). Built:
   (s_y about 0.3) and the rears at 2.2. From 622 to 647 m its left wheels
   are on dirt. Our s_y of 0.5 to 0.8 explains at most about 0.8 m/s^2 of
   the gap; the rest is open.
+- **Engine check (2026-11-21), by the body motion as the oracle's.** To
+  560 m the two cars match (130 to 135 km/h, 13 to 17 m/s^2 lateral, body
+  slip -0.4 to -3.9 deg, rear slip 0.9 to 5.1 deg against 1.2 to 4.4). Our
+  car drifts wide of the oracle's path from 540 m (+0.4 m, +1.5 m at 570,
+  +3.7 m at 615); from 575 m its outside wheels are on dirt where the
+  oracle's are on asphalt, and the rear steps out: at 600 to 622 m body
+  slip -8 to -16 deg and rear slip 9 to 17 deg (oracle -1.4 and 2.2),
+  along-path -0.2 to -2.0 m/s^2 (oracle +1.76). A cross-track term on the
+  lap's follower (`cross_gain`, SHIFT_LAP_CROSS_GAIN; 0.2 holds 2.6 m max)
+  only moves the lap from +5.5 % to +5.0 to +5.3 % and the rear still
+  slides (9 deg) once wheel 3 touches dirt. So the loss is the rear's grip
+  with one or two wheels on the dirt edge at 130 km/h, not cornering drag.
+  Asked: the oracle's rear on dirt (its 622 to 647 m, rear slip 1.5 deg
+  with three wheels on dirt), so the dirt's lateral peak, OffRoadDryPeakSA
+  or RearGripMultiplier read for a rear wheel there.
 
 ## Q41 (M4): free-roam traffic (SPEC-TRAFFIC 33788840)
 

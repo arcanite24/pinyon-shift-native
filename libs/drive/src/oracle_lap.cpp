@@ -244,7 +244,8 @@ Input LineFollower::input(const Vehicle& v) {
   const auto& c = v.params().wheel_centres;
   const double wheelbase = std::fabs((c[0].z + c[1].z) / 2 - (c[2].z + c[3].z) / 2);
   const double alpha = std::atan2(rel.x, rel.z);
-  const double delta = ld > 1e-6 ? std::atan(2 * wheelbase * std::sin(alpha) / ld) : 0;
+  double delta = ld > 1e-6 ? std::atan(2 * wheelbase * std::sin(alpha) / ld) : 0;
+  delta -= std::atan(options_.cross_gain * cross_ / (speed + 1));
   const double lock = v.steer_lock();
   const double stick = lock > 0 ? delta / lock : 0;
   saturated_ = std::fabs(stick) > 1;

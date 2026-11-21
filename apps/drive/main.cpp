@@ -406,6 +406,7 @@ int main(int argc, char** argv) {
     // SPEC-CAR-PHYSICS, "Oracle lap for the M3 gate".
     drive::LineFollower::Options fo;
     fo.lookahead_s = lookahead_s;
+    if (const char* k = std::getenv("SHIFT_LAP_CROSS_GAIN")) fo.cross_gain = std::atof(k);
     drive::LineFollower follower(line, fo);
     drive::GateTimer timer(gate, follower.length() / 2);
     std::ofstream out;

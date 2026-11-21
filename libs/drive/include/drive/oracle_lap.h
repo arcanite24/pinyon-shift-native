@@ -48,6 +48,10 @@ class LineFollower {
     double lookahead_s = 0.5;    // look-ahead: this many seconds at the car's speed...
     double min_lookahead = 5.0;  // ...but at least this many metres
     double search = 60.0;        // m of line ahead searched for the projection
+    // Cross-track feedback (ours): atan(k x offset / (v + 1)) added to the
+    // pure-pursuit angle, so a corner taken with body slip holds the line
+    // (pure pursuit from the body point settles wide). 0: pure pursuit only.
+    double cross_gain = 0;
   };
   LineFollower(const OracleLine& line, const Options& options);
 
