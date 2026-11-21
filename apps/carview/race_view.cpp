@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <numbers>
 
 #include "drive/from_physics.h"
 #include "traffic_view.h"
@@ -34,6 +36,26 @@ RaceView::~RaceView() = default;
 bool RaceView::open(const std::filesystem::path& root, const std::string& event, const Options& o, std::string& error) {
   o_ = o;
   std::string e;
+  replay_.clear();
+  if (!o.replay.empty()) {
+    std::ifstream f(o.replay);
+    if (!f) {
+      error = "cannot read " + o.replay.string();
+      return false;
+    }
+    std::string line;
+    std::getline(f, line);  // the header
+    while (std::getline(f, line)) {
+      double v[8] = {};
+      if (std::sscanf(line.c_str(), "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6],
+                      &v[7]) == 8)
+        replay_.push_back({v[0], v[1], v[2], v[3], v[4] * std::numbers::pi / 180, v[7]});
+    }
+    if (replay_.size() < 2) {
+      error = o.replay.string() + ": no rows";
+      return false;
+    }
+  }
   if (!race::load_event(root, event, o.difficulty, event_, &e) || !race::load_route(root, event_.route_id, route_, &e) ||
       !race::load_owt(root, event_.route_id, owt_, &e)) {
     error = e;
@@ -179,6 +201,26 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   return user;
 }
 
+void RaceView::replay_player(drive::Vehicle& player) const {
+  if (replay_.empty() || !session_->started()) return;
+  const double t = session_->clock() + drive::Vehicle::kStep;  // the clock after this step
+  if (t > replay_.back().t) return;
+  auto it = std::lower_bound(replay_.begin(), replay_.end(), t, [](const ReplayRow& r, double v) { return r.t < v; });
+  if (it == replay_.begin()) ++it;
+  const ReplayRow& a = *(it - 1);
+  const ReplayRow& b = *it;
+  const double u = b.t > a.t ? std::clamp((t - a.t) / (b.t - a.t), 0.0, 1.0) : 0.0;
+  double dh = b.heading - a.heading;
+  while (dh > std::numbers::pi) dh -= 2 * std::numbers::pi;
+  while (dh < -std::numbers::pi) dh += 2 * std::numbers::pi;
+  const double h = a.heading + u * dh, speed = a.speed + u * (b.speed - a.speed);
+  // The body on the path, level, moving along its heading (a kinematic
+  // stand-in: its gaps, not its physics, are what the gate needs).
+  const drive::Vec3 at{a.x + u * (b.x - a.x), a.y + u * (b.y - a.y), a.z + u * (b.z - a.z)};
+  player.place(at, h);
+  player.set_velocity(drive::Vec3{speed * std::sin(h), 0, speed * std::cos(h)}, drive::Vec3{0, 0, 0});
+}
+
 void RaceView::reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius) {
   const double p = field_->progress(i);
   double x, y, z, h;
@@ -216,6 +258,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     drive::Input in = inputs_[k];
     // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
     if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
+    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in);
     const double boost = race::start_boost(c.slot, int(grid_cars), field_->progress(k) - c.start_progress);
     c.body->set_torque_factor(c.ai.torque() * (1 + boost));
     // The gathered collision covers `radius` round (cx, cz); outside it

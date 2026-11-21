@@ -65,6 +65,14 @@ struct AiCarState {
 };
 AiCarState ai_state(const Vehicle& v);
 
+// The AI's traction and slide guard (ours; SPEC-CAR-PHYSICS leaves open
+// which assists the AI-driven car has, and traces a traction-control
+// signal on it, SPEC_QUESTIONS Q49): the throttle is capped while a wheel
+// spins past the tyre curve's peak (the cap falls at 4 a second and comes
+// back at 2), and is cut as the body's slip angle grows past 7 degrees, to
+// nothing at 13. `cap` is the car's state, 1 at rest.
+void ai_traction(const Vehicle& v, float& cap, double dt, Input& in);
+
 class AiField {
  public:
   struct Options {

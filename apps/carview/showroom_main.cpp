@@ -1083,6 +1083,7 @@ void drive_usage() {
                "  race:    --event <id> (FR22, FR16, ...): the event's race on its route, grid and opponents;\n"
                "           --difficulty easy|med|hard|pro --no-rubberband --race-auto (the AI drives the\n"
                "           player's car; the default headless) --race-seed N\n"
+               "           --race-replay <csv> (the player on an oracle path by race time; the M5 gate)\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
                "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad\n"
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
@@ -1215,6 +1216,7 @@ int run_drive(int argc, char** argv) {
       }
     } else if (a == "--no-rubberband") race_options.rubberband = false;
     else if (a == "--race-auto") race_auto = 1;
+    else if (a == "--race-replay") race_options.replay = next();
     else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--radio-press") radio_press_every = std::atof(next());
     else if (a == "--traffic") traffic_flag = 1;
@@ -2078,6 +2080,7 @@ int run_drive(int argc, char** argv) {
       auto step = [&](const drive::Input& user_in) {
         const drive::Input in = race ? race->player_input(vehicle, user_in) : user_in;
         vehicle.step(in, *ground);
+        if (race) race->replay_player(vehicle);
         {
           // A car that left the numbers (NaN) stops the run: a gather around
           // NaN takes the whole map.
@@ -2545,6 +2548,7 @@ int run_drive(int argc, char** argv) {
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
         const int stride = std::max(1, int(std::lround(every / drive::Vehicle::kStep)));
         double longest_step = 0;  // wall time of one step with its streaming, s
+        double race_done_at = -1;
         for (int s = 0; s <= steps && status == 0; ++s) {
           const auto t0 = std::chrono::steady_clock::now();
           const bool ok =
@@ -2571,6 +2575,11 @@ int run_drive(int argc, char** argv) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
+          }
+          // A race ends the run 2 s after its last car finishes.
+          if (race && race->session().all_finished()) {
+            if (race_done_at < 0) race_done_at = vehicle.time();
+            else if (vehicle.time() > race_done_at + 2) break;
           }
           if (s % stride != 0) continue;
           wheel_poses(vehicle, poses);

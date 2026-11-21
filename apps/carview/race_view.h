@@ -34,6 +34,11 @@ class RaceView {
     bool autopilot = false;   // the player's car under the AI (headless runs)
     bool rubberband = true;   // false: the "no rubber-banding" option
     uint64_t seed = 1;
+    // The M5 gate's replay (SPEC-RACE-AI Tests): the player's car follows an
+    // oracle path by race time (CSV t, x, y, z, heading deg, ..., speed m/s;
+    // the specification side's export), so the rubber bands see the
+    // oracle's gaps. Empty: no replay.
+    std::filesystem::path replay;
   };
   explicit RaceView(std::filesystem::path bake_dir);
   ~RaceView();
@@ -58,6 +63,11 @@ class RaceView {
   void after_step(drive::Vehicle& player, const drive::Ground& near, double cx, double cz, double radius,
                   TrafficView* traffic);
 
+  // After the player's step, under --race-replay: the car put on the oracle
+  // path at the race clock (held on the grid before the signal, driven by
+  // the AI once the path ends).
+  void replay_player(drive::Vehicle& player) const;
+
   void instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                  std::vector<Showroom::Instance>& out) const;
   std::string banner() const;
@@ -78,6 +88,7 @@ class RaceView {
     double start_progress = 0;
     double px = 0, pz = 0;  // before the step
     bool far = false;
+    float traction_cap = 1;  // drive::ai_traction's state
   };
   void reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius);
   std::string name_of(size_t i) const;
@@ -110,6 +121,10 @@ class RaceView {
   int contact_count_ = 0, resets_ = 0, far_steps_ = 0, hole_steps_ = 0;
   double cx_ = 0, cz_ = 0, radius_ = 0;
   bool center_known_ = false;
+  struct ReplayRow {
+    double t, x, y, z, heading, speed;
+  };
+  std::vector<ReplayRow> replay_;
 };
 
 }  // namespace carview

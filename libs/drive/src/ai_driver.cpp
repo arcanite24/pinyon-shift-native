@@ -108,6 +108,34 @@ double RacingLine::room(double distance, bool right) const {
   return r[segment(distance, 0)];
 }
 
+void ai_traction(const Vehicle& v, float& cap, double dt, Input& in) {
+  double spin = 0;
+  for (const auto& w : v.wheels())
+    if (w.contact) spin = std::max(spin, w.slip_ratio);
+  if (in.throttle > 0 && spin > 1.1) cap = std::max(0.25f, cap - float(4 * dt));
+  else cap = std::min(1.0f, cap + float(2 * dt));
+  double t = std::min(in.throttle, double(cap));
+  // The body's slip angle: the velocity's direction in the body frame
+  // (z forward, x towards positive steer).
+  const Vec3 vb = rotate_inverse(v.orientation(), v.velocity());
+  const double sp = std::hypot(vb.x, vb.z);
+  if (sp > 6 && vb.z > 0) {
+    const double beta = std::atan2(vb.x, vb.z);
+    const double a = std::fabs(beta);
+    constexpr double kDeg = 3.14159265358979 / 180;
+    if (a > 7 * kDeg) t *= std::max(0.0, 1 - (a - 7 * kDeg) / (6 * kDeg));
+    // Past 5 degrees the steer turns towards the velocity (a counter-steer,
+    // free of the speed-narrowed lock), all of it by 12 degrees.
+    const double w = std::clamp((a - 5 * kDeg) / (7 * kDeg), 0.0, 1.0);
+    if (w > 0) {
+      const double lock = std::max(0.05, v.steer_lock());
+      in.steer = (1 - w) * in.steer + w * std::clamp(beta / lock, -1.0, 1.0);
+      in.brake = std::min(in.brake, 0.3 * (1 - w) + 0.0);
+    }
+  }
+  in.throttle = t;
+}
+
 AiCarState ai_state(const Vehicle& v) {
   AiCarState s;
   const Vec3 p = v.position();

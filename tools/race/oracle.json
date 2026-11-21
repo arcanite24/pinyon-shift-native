@@ -1,0 +1,19 @@
+{
+  "_note": "Oracle race tables from SPEC-EVENTS and SPEC-RACE-AI (numbers only). Each spec run the specification side exports to out/oracle/<event>-results.json in the same shape overrides an entry here.",
+  "FR22": {
+    "spec": "SPEC-RACE-AI e82fba97 Tests",
+    "difficulty": "med",
+    "ai_times": [157.22, 157.61, 161.29, 162.32, 163.55, 163.90, 164.79],
+    "ai_mean_distance": 4637,
+    "player_place": 3,
+    "player_time": 160.93,
+    "winner_slot": 0,
+    "last_slot": 7
+  },
+  "FR16": {
+    "spec": "SPEC-EVENTS e82fba97 Sprint finish (partial: no AI times)",
+    "difficulty": "med",
+    "ai_mean_distance": 4110,
+    "player_time": 124.775
+  }
+}
