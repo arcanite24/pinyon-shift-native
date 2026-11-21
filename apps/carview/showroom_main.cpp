@@ -1008,6 +1008,9 @@ constexpr double kPropLod0 = 80, kPropLodBand = 20, kPropEdgeBand = 40, kSwapFad
 // exposure, 0.31 on Colorado, applies to a scene the game lights more
 // brightly than ours; set so the free-roam reference frame's mean is met).
 constexpr double kPostExposure = 0.8;
+// Ours: the warm grade after the curve (PostSettings::balance), fitted to
+// the hill reference frame (hill-2244-707): the game is warmer than ours.
+constexpr float kPostBalance[3] = {1.10f, 0.88f, 0.88f};
 
 // The post chain's constants from the track's TrackSettings.xml
 // (SHOWROOM_LIGHTING, Post chain: filmicTone's day curve, DesaturateAmount,
@@ -1867,6 +1870,9 @@ int run_drive(int argc, char** argv) {
       if (!world_dir.empty()) read_post_settings(world_dir, post);
       post.exposure = float(exposure_given > 0 ? exposure_given : kPostExposure);
       post.bloom = bloom_flag >= 0 ? bloom_flag == 1 : !low_preset;
+      post.balance[0] = kPostBalance[0], post.balance[1] = kPostBalance[1], post.balance[2] = kPostBalance[2];
+      if (const char* b = std::getenv("SHIFT_BALANCE"))  // tuning: r,g,b
+        std::sscanf(b, "%f,%f,%f", &post.balance[0], &post.balance[1], &post.balance[2]);
     }
     {
       const std::string level = !shadows_flag.empty() ? shadows_flag : low_preset ? "low" : "high";
@@ -2821,6 +2827,53 @@ int run_drive(int argc, char** argv) {
         frame.options[0] = 1;
         showroom.set_draw_car(false);
         showroom.set_frame(frame);
+        // SHIFT_WORLD_PICK=x,y (debug, ours): the nearest scenery triangles
+        // under that pixel of the reference view, with their materials.
+        if (const char* pick = std::getenv("SHIFT_WORLD_PICK"); pick && streamer) {
+          float px = 0, py = 0;
+          std::sscanf(pick, "%f,%f", &px, &py);
+          const auto& mesh = streamer->mesh();
+          const float* m = world_reference.clip_from_world;
+          std::vector<std::pair<float, size_t>> hits;
+          for (size_t t = 0; t * 3 + 2 < mesh.positions.size(); ++t) {
+            float sx[3], sy[3], sz[3];
+            bool ok = true;
+            for (int k = 0; k < 3 && ok; ++k) {
+              const auto& v = mesh.positions[t * 3 + size_t(k)];
+              const float f[4] = {float(v[0]), float(v[1]), -float(v[2]), 1};
+              float c[4] = {};
+              for (int r = 0; r < 4; ++r)
+                for (int j = 0; j < 4; ++j) c[r] += m[j * 4 + r] * f[j];
+              if (c[3] <= 0.01f) ok = false;
+              sx[k] = (c[0] / c[3] * 0.5f + 0.5f) * float(width);
+              sy[k] = (0.5f - c[1] / c[3] * 0.5f) * float(height);
+              sz[k] = c[2] / c[3];
+            }
+            if (!ok || int(mesh.materials[mesh.material[t]].layers) == 4) continue;
+            if ((sz[0] + sz[1] + sz[2]) / 3 < 0 || (sz[0] + sz[1] + sz[2]) / 3 > 1) continue;
+            auto edge = [&](int a, int b) { return (sx[b] - sx[a]) * (py - sy[a]) - (sy[b] - sy[a]) * (px - sx[a]); };
+            const float e0 = edge(0, 1), e1 = edge(1, 2), e2 = edge(2, 0);
+            if ((e0 >= 0 && e1 >= 0 && e2 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0))
+              hits.push_back({(sz[0] + sz[1] + sz[2]) / 3, t});
+          }
+          std::sort(hits.begin(), hits.end());
+          auto id = [&](uint32_t r) { return r < colorado.textures().size() ? colorado.textures()[r].id : 0u; };
+          for (size_t i = 0; i < hits.size() && i < 6; ++i) {
+            const size_t t = hits[i].second;
+            const auto& mm = mesh.materials[mesh.material[t]];
+            if (fh1::WorldTexture wt; i == 0 && colorado.read_texture(mm.albedo, wt, nullptr) && !wt.blocks.levels.empty())
+              std::printf("pick: albedo format %d %ux%u levels %zu gamma %d cut-out %d\n", int(wt.blocks.format),
+                          wt.blocks.levels[0].width, wt.blocks.levels[0].height, wt.blocks.levels.size(),
+                          int(wt.format.gamma), int(fh1::world_texture_has_cutout(wt)));
+            std::printf("pick: depth %.5f tri %zu material %u %s albedo _0x%08X layers %d B _0x%08X splat _0x%08X "
+                        "far %d blend %d surface %d colour %d %d %d %d model %s\n",
+                        hits[i].first, t, mesh.material[t], mm.effect.c_str(), id(mm.albedo), int(mm.layers),
+                        id(mm.layer_b), id(mm.splat), int(mm.far), int(mm.blend), int(mesh.surface[t]),
+                        mesh.colours[t * 3][0], mesh.colours[t * 3][1], mesh.colours[t * 3][2], mesh.colours[t * 3][3],
+                        t < mesh.model.size() && mesh.model[t] < colorado.models().size()
+                            ? colorado.models()[mesh.model[t]].name.c_str() : "?");
+          }
+        }
         std::vector<uint8_t> rgba;
         if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
           std::fprintf(stderr, "carview: %s\n", error.c_str());

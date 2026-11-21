@@ -738,7 +738,7 @@ bool Renderer::create_post(std::string& error) {
   set.bindingCount = 2;
   set.pBindings = bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
-  VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80};
+  VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96};
   VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   layout.setLayoutCount = 1;
   layout.pSetLayouts = &post_set_layout_;
@@ -824,13 +824,14 @@ bool Renderer::create_post(std::string& error) {
 void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
   const PostSettings& s = options_.post;
   struct {
-    float mode[4], abc[4], def[4], desat[4], bloom[4];
+    float mode[4], abc[4], def[4], desat[4], bloom[4], balance[4];
   } push = {{0, 0, 0, 0},
             {s.hable[0], s.hable[1], s.hable[2], s.white},
             {s.hable[3], s.hable[4], s.hable[5], s.exposure},
             {s.luminance[0], s.luminance[1], s.luminance[2], s.desaturate},
-            {s.bloom_cutoff, s.bloom_scale, s.bloom ? 1.0f : 0.0f, 0}};
-  static_assert(sizeof(push) == 80);
+            {s.bloom_cutoff, s.bloom_scale, s.bloom ? 1.0f : 0.0f, 0},
+            {s.balance[0], s.balance[1], s.balance[2], 0}};
+  static_assert(sizeof(push) == 96);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;

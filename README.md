@@ -759,7 +759,16 @@ the interim noted here until a later polish sweep.
 - **Warm hill shading** (Q44 c). The game shades lerp(Blend_A, Blend_B,
   R/255) under the warm sun (0.97, 0.84, 0.58). Interim: the current
   terrain shading, which leaves grey bands. Reference pose: camera
-  (2243.8, 119.8, 706.9).
+  (2243.8, 119.8, 706.9). Grade (ours, 2026-11-21): a linear gain
+  (1.10, 0.88, 0.88) after the tone curve (`kPostBalance`). It brings
+  the tree band within 3 % of the game's means. The hills stay about 10 %
+  brighter and greener than the game's; that's material, not grade.
+  Tune with `SHIFT_BALANCE=r,g,b`.
+- **Yellow hill shells.** Model `coloradoout.06765` (H_DIFF_1,
+  _0x2CA9, coverage blend, BC1 with no alpha) draws as solid yellow
+  blobs on the hills in the reference view. The question is with the spec.
+  `SHIFT_WORLD_PICK=x,y` with `--world-reference` prints the triangles
+  and materials under a pixel.
 - **Camera details** (Q45). The slope term, pitch sign, speed-FOV factor
   and cockpit interior. Interim: as in `libs/drive/src/cameras.cpp`.
 - **Lamps.** CARS.md gives no brake-lamp rule. Interim: red covers and

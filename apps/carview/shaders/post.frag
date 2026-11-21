@@ -19,6 +19,7 @@ layout(push_constant) uniform Post {
   vec4 def;     // Hable D, E, F, exposure
   vec4 desat;   // luminance weights rgb, amount s
   vec4 bloom_p; // cutoff, scale, on
+  vec4 balance; // rgb gain after the curve (ours: the warm grade)
 } p;
 
 layout(location = 0) in vec2 v_uv;
@@ -57,7 +58,7 @@ void main() {
     vec3 c = scene(v_uv);
     if (p.bloom_p.z > 0.5) c += texture(bloom, v_uv).rgb * p.bloom_p.y;
     vec3 t = hable(c) / hable(vec3(p.abc.w));
-    t = clamp(t, vec3(0.0), vec3(1.0));
+    t = clamp(t * p.balance.rgb, vec3(0.0), vec3(1.0));
     float l = dot(t, p.desat.rgb);
     t = mix(vec3(l), t, p.desat.w);
     out_color = vec4(encode_srgb(t), 1.0);

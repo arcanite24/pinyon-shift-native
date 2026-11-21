@@ -48,6 +48,9 @@ struct PostSettings {
   float desaturate = 0.9f;  // the colour's share; the rest is its luminance
   float luminance[3] = {0.2126f, 0.7152f, 0.0722f};
   float bloom_cutoff = 1.0f, bloom_scale = 1.0f;
+  // Ours, not the spec's (WORLD_MATERIALS leaves the grade open): a linear
+  // gain after the curve, fitted to the game's frames of the hills.
+  float balance[3] = {1.0f, 1.0f, 1.0f};
 };
 
 // The drive's sun shadow (ours): one orthographic cascade around the car,
