@@ -1628,3 +1628,10 @@ worth it and cheap: about 1 to 2 h, confidence high (glyph encoding
 probable). Alternative: ship an open (OFL) font; quickest, but no
 installed font matched the advances within 5 %, so layout would shift.
 CJK text uses separate bitmap fonts in `media/ui/fonts` either way.
+
+FORMAT-FONTS answered in docs/formats/FONTS.md b399812a
+(horizon1-recomp): 16 fonts, 2,421 glyphs; code-point table slot =
+code point (size = largest code point + 1); 40-byte records; meshes of
+(x, y, u, v) half floats with u16 indices; coverage
+clamp(0.5 - s(u^2 - v)/|grad|, 0, 1); no kerning; `*ru` fonts are
+strict supersets.
