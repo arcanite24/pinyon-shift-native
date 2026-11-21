@@ -968,6 +968,14 @@ readable oracle output (a CSV of t, x, y, z, distance along the route), so
 the engine can replay the player and the rubber-banding sees the same
 gaps. Meanwhile: FR22 and FR16 only, the player under our AI.
 
+answered in SPEC-RACE-AI (Tests: oracle races over ten events) and
+SPEC-EVENTS (grid: PlayerGridPosition 0 is the last slot; sprint finish
+offset varies) 6346f8ee. Exports in out/oracle: <event>-player.csv and
+<event>-results.json for FR22, FR33, EXHIBITION_FEST_003, HEADLINE_EVENT,
+FR16, FR06, FR24, FR01, STREET_PLNS_002, NR02 (regenerate with
+horizon1-recomp tools/re/race.py export). Sprint and checkpoint finish
+planes are fitted to the player's race record per race.
+
 ## Q47 (M5): street and nemesis races (checkpoints, no AI line)
 
 Ribbon-6 routes have no OWTM line. Needed: the checkpoint data in the
