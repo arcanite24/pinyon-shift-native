@@ -63,6 +63,7 @@
 #include "race_view.h"
 #include "map_view.h"
 #include "fh1data/archive.h"
+#include "fh1data/stringtables.h"
 #include "fh1data/xds.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
@@ -1422,6 +1423,23 @@ int run_drive(int argc, char** argv) {
       st.menu_selected = 1;
     }
     if (!write_menu_png(st, menu_png.string())) return 1;
+    {
+      // Beside it, <name>_hud.png: free roam's HUD with a discovery card.
+      carview::DriveHud d;
+      d.kmh = 87, d.rpm = 5200, d.redline_rpm = 7500, d.gear = 3, d.time = 1.5;
+      d.credits = 1300, d.band_name = "YELLOW WRISTBAND", d.band_points = 50, d.band_hi = 220;
+      d.popup_title = "DISCOUNT SIGN 12/100", d.popup_text = "UPGRADES 12% OFF", d.popup_at = 0;
+      d.popup_progress = 0.12;
+      carview::ui::List list;
+      list.rect(0, 0, 1280, 720, carview::ui::rgba(70, 92, 120), 0, carview::ui::rgba(150, 128, 96));
+      carview::build_drive_hud(list, d, 1280, 720);
+      std::vector<uint8_t> rgba;
+      carview::ui::rasterize(list.items(), rgba, 1280, 720);
+      auto hud_png = menu_png;
+      hud_png.replace_filename(menu_png.stem().string() + "_hud.png");
+      if (!write_png(hud_png.string(), 1280, 720, 4, rgba.data())) return 1;
+      std::printf("hud: 1280x720 to %s\n", hud_png.string().c_str());
+    }
     std::printf("menu: 1280x720 to %s\n", menu_png.string().c_str());
     return 0;
   }
@@ -2501,6 +2519,12 @@ int run_drive(int argc, char** argv) {
       // saved, a collectible).
       std::string notice;
       double notice_until = -1;
+      // The discovery card (game_hud.h), set with the drive time.
+      struct Popup {
+        std::string title, text;
+        double at = -1e9, progress = -1;
+        uint32_t colour = 0;
+      } popup;
       bool save_due = false;  // a collectible: the window saves at once
       // The 1000 Club in this car: the gate's answer, the car's Data_Car id
       // and, once begun, one run per incomplete challenge (SPEC-V4-CONTENT,
@@ -2606,8 +2630,9 @@ int run_drive(int argc, char** argv) {
             std::snprintf(line, sizeof line, "1000 club medal! %s (%d/%zu in this car)", label.c_str(), done,
                           list.size());
             std::printf("t %.2f s: %s\n", s.time, line);
-            notice = line;
-            notice_until = s.time + 5;
+            popup = {"1000 CLUB MEDAL",
+                     label + "   " + std::to_string(done) + "/" + std::to_string(list.size()) + " IN THIS CAR", s.time,
+                     double(done) / double(std::max<size_t>(1, list.size())), carview::ui::rgba(240, 196, 70)};
             save_due = true;
             club_runs.erase(club_runs.begin() + std::ptrdiff_t(k));
             continue;
@@ -2679,18 +2704,29 @@ int run_drive(int argc, char** argv) {
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, collectibles.signs.size(),
                           freeroam::upgrade_discount(n));
             std::printf("t %.2f s: %s smashed (%s)\n", vehicle.time(), collectibles.signs[size_t(ev.index)].id.c_str(), line);
+            popup = {"DISCOUNT SIGN " + std::to_string(n) + "/" + std::to_string(collectibles.signs.size()),
+                     "UPGRADES " + std::to_string(freeroam::upgrade_discount(n)) + "% OFF", vehicle.time(),
+                     double(n) / double(std::max<size_t>(1, collectibles.signs.size())), carview::ui::rgba(255, 186, 20)};
           } else if (ev.kind == freeroam::Event::kRumourStarted) {
             std::snprintf(line, sizeof line, "barn find rumour - M for the map");
+            popup = {"BARN FIND RUMOUR", "A CLASSIC IS HIDING NEARBY.  M FOR THE MAP", vehicle.time(), -1,
+                     carview::ui::rgba(70, 210, 100)};
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         collectibles.barns[size_t(ev.index)].name.c_str(), progress.total_distance / 1000);
           } else {
             const auto& b = collectibles.barns[size_t(ev.index)];
             std::snprintf(line, sizeof line, "barn find! %s is in the garage", barn_car_label(b).c_str());
+            // The car's name: the Barnfind table's IDS_ key, by the id rule.
+            std::string named = barn_car_label(b);
+            if (!b.car_name_key.empty()) {
+              const uint32_t ref = uint32_t(fh1::string_hash("Barnfind")) << 16 | fh1::string_hash(b.car_name_key);
+              const std::string t = carview::game_text("_&" + std::to_string(ref));
+              if (!t.empty() && t[0] != '_') named = t;
+            }
+            popup = {"BARN FIND!", named + " IS IN YOUR GARAGE", vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
             std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
                         barn_car_label(b).c_str(), b.car_id);
           }
-          notice = line;
-          notice_until = vehicle.time() + 4;
           save_due = true;
         }
         if (streamer && free_roam->hidden() != hidden_sent) streamer->set_hidden(hidden_sent = free_roam->hidden());
@@ -2987,6 +3023,8 @@ int run_drive(int argc, char** argv) {
           }
         }
         if (!race_line) d.toast = banner;
+        d.popup_title = popup.title, d.popup_text = popup.text, d.popup_at = popup.at;
+        d.popup_progress = popup.progress, d.popup_colour = popup.colour;
         // The career chip (free roam): credits and the wristband.
         d.credits = career.credits;
         if (!wristbands.levels.empty()) {

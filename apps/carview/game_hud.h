@@ -56,7 +56,14 @@ struct DriveHud {
   int64_t credits = -1;
   std::string band_name;
   int band_points = 0, band_lo = 0, band_hi = -1;
+  // A discovery card (top centre): a sign, a barn find, a medal. Shown
+  // for kPopupSeconds from popup_at (drive time); empty title: none.
+  std::string popup_title, popup_text;
+  double popup_at = -1e9;
+  double popup_progress = -1;  // 0..1: a meter under the text (-1: none)
+  uint32_t popup_colour = 0;   // 0: the accent
 };
+inline constexpr double kPopupSeconds = 4.5;
 
 // Builds the HUD for a w x h screen into `out` (appended).
 void build_drive_hud(ui::List& out, const DriveHud& state, float w, float h);

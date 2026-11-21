@@ -161,6 +161,34 @@ void career_chip(ui::List& l, const DriveHud& st, float w, float s) {
   l.rect(bx0, by, std::max(bx0 + 5 * s, bx0 + (bx1 - bx0) * k), by + 5 * s, c, 2.5f * s);
 }
 
+// The discovery card: drops in, holds, fades.
+void popup_card(ui::List& l, const DriveHud& st, float w, float s) {
+  const double age = st.time - st.popup_at;
+  if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
+  const float in = ease_in_time(age, 0, 0.35);
+  const float out = 1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5);
+  const float a = in * out;
+  const uint32_t c = st.popup_colour ? st.popup_colour : kAccent;
+  const TextStyle ts{.size = 20 * s, .weight = 0.13f, .slant = 0.1f, .color = ui::fade(kText, a), .align = Align::kCenter};
+  TextStyle body{.size = 10 * s, .weight = 0.11f, .tracking = 0.08f, .color = ui::fade(kDim, a), .align = Align::kCenter};
+  const float cw = std::max({300 * s, ui::List::measure(st.popup_title, ts) + 60 * s,
+                             ui::List::measure(st.popup_text, body) + 60 * s});
+  const bool meter = st.popup_progress >= 0;
+  const float ch = (meter ? 90 : 74) * s;
+  const float x0 = 0.5f * w - 0.5f * cw, y0 = 26 * s - (1 - in) * 30 * s;
+  l.shadow(x0, y0 + 3 * s, x0 + cw, y0 + ch + 3 * s, ui::fade(kShadow, a), 10 * s, 12 * s);
+  l.rect(x0, y0, x0 + cw, y0 + ch, ui::fade(kPanelLow, a), 10 * s);
+  l.rect(x0, y0, x0 + cw, y0 + 4 * s, ui::fade(c, a), 2 * s);
+  l.text(0.5f * w, y0 + 14 * s, st.popup_title, ts);
+  l.text(0.5f * w, y0 + 50 * s, st.popup_text, body);
+  if (meter) {
+    const float bx0 = x0 + 30 * s, bx1 = x0 + cw - 30 * s, by = y0 + 72 * s;
+    const float k = float(std::clamp(st.popup_progress, 0.0, 1.0)) * ease_in_time(age, 0.3, 0.8);
+    l.rect(bx0, by, bx1, by + 5 * s, rgba(255, 255, 255, uint8_t(36 * a)), 2.5f * s);
+    l.rect(bx0, by, std::max(bx0 + 5 * s, bx0 + (bx1 - bx0) * k), by + 5 * s, ui::fade(c, a), 2.5f * s);
+  }
+}
+
 void race_panels(ui::List& l, const RaceHud& r, float w, float h, float s, double t) {
   const float x0 = 26 * s, y0 = 26 * s;
   if (r.phase == RaceHud::kGrid || r.phase == RaceHud::kCountdown) {
@@ -425,6 +453,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   if (st.driving) {
     if (st.race) race_panels(l, *st.race, w, h, s, st.time);
     else if (st.credits >= 0 && !menu) career_chip(l, st, w, s);
+    if (!menu) popup_card(l, st, w, s);
     if (!(st.race && st.race->phase == RaceHud::kFinished)) dial(l, st, w, h, s);
   }
   if (!st.toast.empty() && !menu) {

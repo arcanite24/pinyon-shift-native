@@ -856,13 +856,16 @@ the interim noted here until a later polish sweep.
   drive straight into a rail; headless runs put it back.
 - **The F12 screenshot.** F12 saves the pose but not an image yet (the
   window has no swapchain read-back).
-- **Collectibles presentation.** No discovery cut scene, fade, achievement
-  or rumour-reveal map animation (a notice line instead); no smash debris or
+- **Collectibles presentation.** A discovery card (ours, 2026-11-21) drops
+  in at the top for a sign (with the n/100 meter and the discount), a barn
+  rumour, a barn find (the car's name from the `Barnfind` table) and a
+  1000 Club medal; `--menu-png` also writes `<name>_hud.png`, a sample.
+  No discovery cut scene, fade, achievement
+  or rumour-reveal map animation; no smash debris or
   sound. The barn's collision doesn't follow the doors (only the drawn
   props swap; the 10 m trigger is reachable from outside). A smashed sign
   stays drawn until the next gather lands (one frame headless, a moment
-  in the window). Barn car names come from the string-table key
-  (`Barnfind.str` is not read).
+  in the window).
 - **Map details.** The minimap's tilt, zoom and icon sizes are ours (the
   spec's interim: 45 degrees, about 300 m); its icons don't fade by
   `VisibleRange`. No traffic dots, place-name layers or the high
