@@ -32,11 +32,12 @@ struct RaceLine {
 RaceLine build_race_line(const AiLineFile& file, const Route* route, int copies);
 
 // The road the AI line describes: quads from each point to the next,
-// centre +- (1 + margin) x lateral, asphalt (grip 1). Raycasts look up a
-// uniform grid of cells.
+// centre +- lateral, widened by `margin` m each side (a car running wide
+// keeps ground under it), asphalt (grip 1). Raycasts look up a uniform
+// grid of cells.
 class RibbonGround : public drive::Ground {
  public:
-  explicit RibbonGround(const AiLineFile& file, double margin = 0.25, double cell = 24);
+  explicit RibbonGround(const AiLineFile& file, double margin = 8, double cell = 24);
   bool raycast(const drive::Vec3& origin, const drive::Vec3& dir, double max_distance, drive::Hit& hit) const override;
   size_t triangles() const { return tri_.size() / 9; }
 

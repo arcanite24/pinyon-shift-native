@@ -1,0 +1,337 @@
+#include "race_view.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+#include "drive/from_physics.h"
+#include "traffic_view.h"
+#include "world/collision.h"
+
+namespace carview {
+namespace {
+
+void clock_text(double t, char* out, size_t n) {
+  if (t < 0) t = 0;
+  const int m = int(t / 60);
+  std::snprintf(out, n, "%d:%05.2f", m, t - 60 * m);
+}
+
+// SPEC-RACE-AI, Grip on dirt: 1.0 to 1.5 with no rule; interim the middle.
+constexpr double kDirtGrip = 1.25;
+
+const char* ordinal(int p) {
+  static const char* kNames[] = {"", "1ST", "2ND", "3RD", "4TH", "5TH", "6TH", "7TH", "8TH"};
+  return p >= 1 && p <= 8 ? kNames[p] : "";
+}
+
+}  // namespace
+
+RaceView::RaceView(std::filesystem::path bake_dir) : bake_dir_(std::move(bake_dir)) {}
+RaceView::~RaceView() = default;
+
+bool RaceView::open(const std::filesystem::path& root, const std::string& event, const Options& o, std::string& error) {
+  o_ = o;
+  std::string e;
+  if (!race::load_event(root, event, o.difficulty, event_, &e) || !race::load_route(root, event_.route_id, route_, &e) ||
+      !race::load_owt(root, event_.route_id, owt_, &e)) {
+    error = e;
+    return false;
+  }
+  // Ribbon-0 lines are closed: circuits; open lines: one-lap sprints.
+  circuit_ = owt_.closed;
+  const int laps = circuit_ ? event_.laps : 1;
+  line_ = race::build_race_line(owt_, &route_, circuit_ ? laps + 3 : 1);
+  ribbon_ = std::make_unique<race::RibbonGround>(owt_);
+  const auto gate = route_.start_line();
+  const auto finish = route_.sprint_finish();
+  const auto slots = route_.slots();
+  if (!gate || slots.empty() || (!circuit_ && !finish)) {
+    error = "route " + std::to_string(event_.route_id) + ": no start line, slots or finish";
+    return false;
+  }
+  for (const auto* s : slots) slots_.push_back(*s);
+  const int cars = std::min(int(slots.size()), int(event_.opponents.size()) + 1);
+  player_slot_ = race::player_slot(event_.player_grid_position, cars);
+  const auto opp = race::opponent_slots(player_slot_, cars - 1);
+  session_ = std::make_unique<race::Session>(size_t(cars), circuit_, laps, *gate, finish);
+  field_ = std::make_unique<drive::AiField>(line_.line, size_t(cars),
+                                            drive::AiField::Options{.full_gas = true, .off_line_slow = 0.08f});
+  const double from = circuit_ ? line_.gate_progress - 0.5 * line_.lap_length : std::max(0.0, line_.gate_progress - 1500);
+  cars_.clear();
+  cars_.resize(size_t(cars - 1));
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    Car& c = cars_[k];
+    c.who = event_.opponents[k];
+    c.slot = opp[k];
+    c.setup = race::assign_driver(event_.event_skill, event_.event_temperament, event_.event_rubberband,
+                                  c.who.skill_modifier, c.who.aggro_modifier, c.who.rubberband_modifier, event_);
+    const race::SkillRow* sk = event_.skill(c.setup.skill);
+    c.ai.init(sk ? *sk : race::SkillRow{}, event_.rubberband(c.setup.rubberband_id), o.seed * 1000003u + k, o.rubberband);
+    const auto& s = slots_[size_t(c.slot)];
+    field_->place_near(k, s.x, s.z, from, line_.gate_progress + 1);
+    c.start_progress = field_->progress(k);
+  }
+  {
+    const race::SkillRow* sk = event_.skill(std::clamp(event_.event_skill, 1, 80));
+    player_ai_.init(sk ? *sk : race::SkillRow{}, nullptr, o.seed * 7919u, false);
+    const auto& s = slots_[size_t(player_slot_)];
+    field_->place_near(cars_.size(), s.x, s.z, from, line_.gate_progress + 1);
+    player_start_ = field_->progress(cars_.size());
+  }
+  if (finish) finish_progress_ = line_.line.nearest(finish->x, finish->z, line_.gate_progress, line_.line.length());
+  const size_t n = size_t(cars);
+  states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0);
+  samples_.resize(n);
+  lane_params_.resize(n);
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    if (const auto* t = event_.temperament(cars_[k].setup.temperament))
+      lane_params_[k] = {float(t->trailing_distance), float(t->car_clearance), float(t->edge_clearance)};
+  }
+  std::printf("race: %s, route %d (%s, %d lap%s, line %.0f m a lap), %d cars, player on slot %02d, %zu ribbon "
+              "triangles\n",
+              event.c_str(), event_.route_id, circuit_ ? "circuit" : "sprint", laps, laps == 1 ? "" : "s",
+              line_.lap_length, cars, player_slot_, ribbon_->triangles());
+  for (size_t k = 0; k < cars_.size(); ++k)
+    std::printf("race:   slot %02d %-28s skill %d temperament %d rubber band %d\n", cars_[k].slot,
+                cars_[k].who.car_media.c_str(), cars_[k].setup.skill, cars_[k].setup.temperament,
+                cars_[k].setup.rubberband_id);
+  return true;
+}
+
+void RaceView::player_spawn(double out[4]) const {
+  const auto& s = slots_[size_t(player_slot_)];
+  out[0] = s.x, out[1] = s.y, out[2] = s.z, out[3] = std::atan2(s.fx, s.fz);
+}
+
+bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error) {
+  for (auto& c : cars_) {
+    auto it = models_.find(c.who.car_media);
+    if (it == models_.end()) {
+      auto m = std::make_unique<Showroom>(renderer);
+      m->set_guest();
+      std::string e;
+      if (!m->load(bake_dir_, c.who.car_media, ShowroomOptions{}, e) || !m->upload(e)) {
+        error = c.who.car_media + ": " + e;
+        return false;
+      }
+      it = models_.emplace(c.who.car_media, std::move(m)).first;
+    }
+    c.model = it->second.get();
+    std::vector<std::string> notes;
+    c.body = std::make_unique<drive::Vehicle>(drive::params_for_baked_car(c.model->car(), bake_dir_, &notes));
+    c.body->set_ai_controls(true);
+    c.body->set_ai_dirt_grip(kDirtGrip);
+    const auto& s = slots_[size_t(c.slot)];
+    double y = s.y;
+    double gy = y;
+    if (world::ground_height(ground, s.x, s.z, y + 5, gy)) y = gy;
+    c.body->reset({s.x, y + 0.05, s.z}, std::atan2(s.fx, s.fz));
+    c.px = s.x, c.pz = s.z;
+  }
+  return true;
+}
+
+void RaceView::release_models() {
+  for (auto& c : cars_) c.model = nullptr;
+  models_.clear();
+}
+
+const drive::Ground& RaceView::ground_for(size_t i, double, double, const drive::Ground& near) const {
+  return cars_[i].far ? static_cast<const drive::Ground&>(*ribbon_) : near;
+}
+
+drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::Input& user) {
+  const size_t n = cars_.size();
+  const drive::Vec3 pp = player.position();
+  ppx_ = pp.x, ppz_ = pp.z;
+  for (size_t k = 0; k < n; ++k) {
+    states_[k] = drive::ai_state(*cars_[k].body);
+    field_->set_limits(k, float(race::corner_accel(cars_[k].ai.cornering())), float(race::brake_decel(cars_[k].ai.braking())));
+  }
+  states_[n] = drive::ai_state(player);
+  field_->set_limits(n, float(race::corner_accel(player_ai_.cornering())), float(race::brake_decel(player_ai_.braking())));
+  // Lanes from the last step's progress, then the field's pass.
+  for (size_t k = 0; k <= n; ++k)
+    progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
+  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep);
+  for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]);
+  field_->drive(states_, inputs_);
+  // Held on the grid in first: brake under the reverse-select press (0.5) and the handbrake.
+  if (!session_->started()) return drive::Input{0, 0, 0.4, true};
+  if (o_.autopilot || session_->finished(n)) return inputs_[n];
+  return user;
+}
+
+void RaceView::reset_car(drive::Vehicle& v, size_t i, const drive::Ground& near, double cx, double cz, double radius) {
+  const double p = field_->progress(i);
+  double x, y, z, h;
+  line_.line.pose(p, 0, x, y, z, h);
+  const bool inside = std::hypot(x - cx, z - cz) < radius - 40;
+  const drive::Ground& g = inside ? near : static_cast<const drive::Ground&>(*ribbon_);
+  if (i < cars_.size()) cars_[i].far = !inside;
+  double gy = y;
+  if (world::ground_height(g, x, z, y + 5, gy)) y = gy;
+  const double speed = 0.5 * field_->planned_speed(i, p);
+  v.launch({x, y + 0.05, z}, h, speed);
+  field_->set_lane(i, 0);
+  if (i < lanes_.size()) lanes_[i] = 0;
+  session_->reset_done(i);
+  ++resets_;
+  std::printf("race: t %.2f s: %s reset to the line at %.0f m (%.1f m/s; %s)\n", session_->clock(), name_of(i).c_str(),
+              p, speed, session_->car(i).reason);
+}
+
+void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, double cx, double cz, double radius,
+                          TrafficView* traffic) {
+  const size_t n = cars_.size();
+  const double clock = session_->clock() + drive::Vehicle::kStep;  // the session's clock after this step
+  // The player's car under the AI: the AI's controls and grip on dirt.
+  const bool player_ai = o_.autopilot || session_->finished(n);
+  if (player.ai_controls() != player_ai) {
+    player.set_ai_controls(player_ai);
+    player.set_ai_dirt_grip(player_ai ? kDirtGrip : 1.0);
+  }
+  const double grid_cars = double(n + 1);
+  for (size_t k = 0; k < n; ++k) {
+    Car& c = cars_[k];
+    const drive::Vec3 at = c.body->position();
+    c.px = at.x, c.pz = at.z;
+    drive::Input in = inputs_[k];
+    // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
+    if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
+    const double boost = race::start_boost(c.slot, int(grid_cars), field_->progress(k) - c.start_progress);
+    c.body->set_torque_factor(c.ai.torque() * (1 + boost));
+    // The gathered collision covers `radius` round (cx, cz); outside it
+    // (with a margin for the car and some hysteresis) the ribbon.
+    const double d = std::hypot(at.x - cx, at.z - cz);
+    if (c.far && d < radius - 80) c.far = false;
+    else if (!c.far && d > radius - 40) c.far = true;
+    far_steps_ += c.far;
+    c.body->step(in, ground_for(k, at.x, at.z, near));
+  }
+  // Contacts: the player and traffic in group 1, the field in 0; a car
+  // just reset touches nothing for 3 s.
+  contacts_.clear();
+  if (session_->collides(n)) contacts_.push_back({&player, 1.0, 1});
+  for (size_t k = 0; k < n; ++k)
+    if (session_->collides(k)) contacts_.push_back({cars_[k].body.get(), 1.0, 0});
+  if (traffic) traffic->contact_bodies(contacts_, 1);
+  contact_count_ += drive::resolve_contacts(contacts_, {});
+  // The session: each car's move over the step.
+  auto sample = [&](size_t i, const drive::Vehicle& v, double x0, double z0) {
+    race::CarSample& s = samples_[i];
+    const drive::Vec3 p = v.position();
+    s.x0 = x0, s.z0 = z0, s.x1 = p.x, s.z1 = p.z;
+    s.speed = v.speed();
+    s.progress = field_->progress(i);
+    double lx, ly, lz, h;
+    line_.line.pose(s.progress, 0, lx, ly, lz, h);
+    const drive::AiCarState st = drive::ai_state(v);
+    s.heading_cos = st.fwd_x * std::sin(h) + st.fwd_z * std::cos(h);
+    const double cr = field_->cross_track(i);
+    const double room = line_.line.room(s.progress, cr > 0);
+    s.off_route = std::max(0.0, std::fabs(cr) - room);
+  };
+  for (size_t k = 0; k < n; ++k) sample(k, *cars_[k].body, cars_[k].px, cars_[k].pz);
+  sample(n, player, ppx_, ppz_);
+  session_->step(drive::Vehicle::kStep, samples_);
+  // SHIFT_RACE_TRACE=<file>: every car 4 times a second (JSON lines).
+  static FILE* trace = [] {
+    const char* p = std::getenv("SHIFT_RACE_TRACE");
+    return p ? std::fopen(p, "w") : nullptr;
+  }();
+  static long trace_step = 0;
+  if (trace && trace_step++ % 30 == 0) {
+    for (size_t i = 0; i <= n; ++i) {
+      const drive::Vehicle& v = i < n ? *cars_[i].body : player;
+      const auto& q = samples_[i];
+      std::fprintf(trace,
+                   "{\"t\":%.3f,\"car\":%zu,\"x\":%.2f,\"z\":%.2f,\"v\":%.2f,\"p\":%.1f,\"cross\":%.2f,\"lane\":%.2f,"
+                   "\"target\":%.2f,\"thr\":%.2f,\"brk\":%.2f,\"steer\":%.2f,\"off\":%.2f,\"cos\":%.2f,\"gear\":%d,"
+                   "\"far\":%d,\"state\":%d,\"torque\":%.3f}\n",
+                   session_->clock(), i, q.x1, q.z1, q.speed, q.progress, field_->cross_track(i), lanes_[i],
+                   field_->target_speed(i), inputs_[i].throttle, inputs_[i].brake, inputs_[i].steer, q.off_route,
+                   q.heading_cos, v.gear(), i < n ? int(cars_[i].far) : 0, i < n ? int(cars_[i].ai.state()) : -1,
+                   v.torque_factor());
+    }
+    std::fflush(trace);
+  }
+  // Rubber bands: the gap to the player along the line and the places.
+  const int player_place = session_->car(n).place;
+  for (size_t k = 0; k < n; ++k)
+    cars_[k].ai.update(field_->progress(k) - field_->progress(n), session_->car(k).place - player_place);
+  for (size_t i : session_->resets()) reset_car(i < n ? *cars_[i].body : player, i, near, cx, cz, radius);
+  for (size_t i = 0; i <= n; ++i)
+    if (session_->finished(i) && session_->car(i).finish > session_->clock() - drive::Vehicle::kStep - 1e-9)
+      std::printf("race: t %.2f s: %s finished %s in %.3f s\n", session_->clock(), name_of(i).c_str(),
+                  ordinal(session_->car(i).place), session_->car(i).finish);
+}
+
+void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
+                         std::vector<Showroom::Instance>& out) const {
+  for (const auto& c : cars_)
+    if (c.model && c.body) out.push_back(guest_instance(player_info, player, *c.model, *c.body));
+}
+
+std::string RaceView::name_of(size_t i) const {
+  if (i >= cars_.size()) return "player";
+  return "AI " + std::to_string(cars_[i].who.ai_player_id) + " (" + cars_[i].who.car_media + ")";
+}
+
+std::string RaceView::banner() const {
+  const size_t n = cars_.size();
+  const auto& s = *session_;
+  char b[160], t[32];
+  const double c = s.clock();
+  if (c < -3) std::snprintf(b, sizeof b, "%s - %s - %zu cars", event_.horizon_id.c_str(),
+                            circuit_ ? (std::to_string(s.laps()) + " laps").c_str() : "sprint", n + 1);
+  else if (c < 0) std::snprintf(b, sizeof b, "%d", s.digit());
+  else if (s.finished(n)) {
+    clock_text(s.car(n).finish, t, sizeof t);
+    const int p = s.car(n).place;
+    const double credits = p >= 1 && p <= int(event_.scoring.size()) ? event_.scoring[size_t(p - 1)] * event_.cash_prize / 1000 : 0;
+    std::snprintf(b, sizeof b, "FINISHED %s PLACE  %s  %.0f CR", ordinal(p), t, credits);
+  } else {
+    clock_text(c, t, sizeof t);
+    const char* go = c < 1.5 ? "GO!  " : "";
+    if (circuit_)
+      std::snprintf(b, sizeof b, "%sLAP %d/%d  P%d/%zu  %s", go, std::max(1, s.lap(n)), s.laps(), s.car(n).place, n + 1, t);
+    else
+      std::snprintf(b, sizeof b, "%sP%d/%zu  %s  %.0f m to go", go, s.car(n).place, n + 1, t,
+                    std::max(0.0, finish_progress_ - field_->progress(n)));
+  }
+  return b;
+}
+
+std::string RaceView::results() const {
+  std::string out;
+  const auto ord = session_->order();
+  char line[200], t[32], best[32];
+  for (size_t k = 0; k < ord.size(); ++k) {
+    const size_t i = ord[k];
+    const auto& c = session_->car(i);
+    if (c.finish >= 0) clock_text(c.finish, t, sizeof t);
+    else std::snprintf(t, sizeof t, "--");
+    if (c.best_lap > 0) clock_text(c.best_lap, best, sizeof best);
+    else std::snprintf(best, sizeof best, "--");
+    const int slot = i < cars_.size() ? cars_[i].slot : player_slot_;
+    const double credits = k < event_.scoring.size() ? event_.scoring[k] * event_.cash_prize / 1000 : 0;
+    std::snprintf(line, sizeof line, "  P%zu  %-9s best %-9s slot %02d  %5.0f m  %s%s\n", k + 1, t, best, slot,
+                  c.distance, name_of(i).c_str(), i == cars_.size() ? (" " + std::to_string(int(credits)) + " CR").c_str() : "");
+    out += line;
+  }
+  return out;
+}
+
+std::string RaceView::summary() const {
+  char b[240];
+  std::snprintf(b, sizeof b, "race: %d car-to-car contacts, %d resets, %.1f car-seconds on the ribbon; progress", contact_count_,
+                resets_, far_steps_ * drive::Vehicle::kStep);
+  std::string s = b;
+  for (size_t k = 0; k <= cars_.size(); ++k) s += " " + std::to_string(int(field_->progress(k)));
+  return s;
+}
+
+}  // namespace carview

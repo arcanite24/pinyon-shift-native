@@ -56,6 +56,7 @@ void Session::step(double dt, std::span<const CarSample> s) {
     const CarSample& q = s[i];
     progress_[i] = q.progress;
     if (t0 + dt <= 0) continue;  // nothing counts before the signal
+    if (c.finish < 0) c.distance += std::hypot(q.x1 - q.x0, q.z1 - q.z0);
     // Crossings, at the fraction of the step where the plane was met.
     const double f = start_.crossing(q.x0, q.z0, q.x1, q.z1);
     if (f >= 0 && c.finish < 0) {
@@ -76,13 +77,14 @@ void Session::step(double dt, std::span<const CarSample> s) {
       if (g >= 0) c.finish = std::max(0.0, t0 + g * dt);
     }
     // The interim automatic resets (every car).
-    if (o_.resets) {
+    if (o_.resets && c.finish < 0) {
       const double mph = q.speed / 0.44704;
       c.wrong = (q.heading_cos < 0.342 && mph > 40) ? c.wrong + dt : 0;
       c.slow = mph < 5 ? c.slow + dt : 0;
       c.off5 = q.off_route > 5 ? c.off5 + dt : 0;
       c.off15 = q.off_route > 15 ? c.off15 + dt : 0;
-      if (c.wrong >= 3 || c.slow >= 3 || c.off5 >= 6 || c.off15 >= 3) resets_.push_back(i);
+      c.reason = c.wrong >= 3 ? "wrong way" : c.slow >= 3 ? "no progress" : c.off15 >= 3 ? "15 m off" : c.off5 >= 6 ? "5 m off" : "";
+      if (*c.reason) resets_.push_back(i);
     }
   }
   const auto ord = order();
@@ -130,6 +132,18 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       float side = lane[i] > 0.3f ? 1.0f : lane[i] < -0.3f ? -1.0f : 0.0f;
       if (side == 0) side = (right - cross[block]) >= (left + cross[block]) ? 1.0f : -1.0f;
       target = side * shift;
+    } else {
+      // Ours, beyond the spec's interim: a car alongside (within a car's
+      // length) and overlapping across: keep a car's width plus the
+      // clearance from it, on the side this car is already on.
+      for (size_t j = 0; j < n; ++j) {
+        if (j == i || std::fabs(progress[j] - progress[i]) > 5.0) continue;
+        const float d = cross[i] - cross[j];
+        if (std::fabs(d) > kWidth + p.car_clearance) continue;
+        const float side = d > 0 ? 1.0f : d < 0 ? -1.0f : (i < j ? 1.0f : -1.0f);
+        target = cross[j] + side * (kWidth + p.car_clearance + 0.3f);
+        break;
+      }
     }
     if (right < 1e8)
       target = std::clamp(target, -float(std::max(0.0, left - p.edge_clearance)),

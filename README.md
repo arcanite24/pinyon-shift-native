@@ -218,17 +218,30 @@ the HUD panel: a station's after 1 s for 4 s, RADIO OFF at once, a new track
 RMS, the game's 0.08 to 0.10), about 15 dB over our idling engine. `--no-radio` turns it off; headless, it plays with
 `--audio-out`, and `--radio-press <s>` presses D-pad right every s seconds.
 
-**An informal race (M5 groundwork, before SPEC-EVENTS).** `--ai N --ai-line
-<oracle-lap>/lap.jsonl` puts N AI cars of the same car on the oracle's line
-(`drive/ai_driver.h`), the player at the back of a staggered grid in two
-lanes. After a 3 s count the HUD shows the place, the race time and the
-metres to go, by distance along the line, and the result at the end of
-the line. Cars touch each other, the player and traffic bodies through
-`drive/contact.h` (the box contact traffic used, moved to libs/drive and
-given a normal chosen from the step before, so closing at 300 km/h does
-not pass through). The save is not overridden by a race start: `--ai`
-places the player on the grid. For example:
-`carview --drive --ai 7 --ai-line <oracle-lap>/lap.jsonl`.
+**Races (M5; SPEC-EVENTS, SPEC-RACE-AI).** `--event <id>` (the
+`HorizonEventID`, e.g. `FR22`, a 4-lap circuit on route 143, or `FR16`, a
+sprint on route 154) runs the event's first race: the route, the grid and
+the opponents from the disc (`libs/race`: the game database's Events,
+Races, Tracks and EventParticipants; the route file's slots, start line and
+sprint finish; the route's OWTM AI line from aiopenworld.zip). Each
+opponent drives its own car (the bake's model and physics) on the racing
+line with its skill, rubber band (torque cut ahead of the player,
+catch-up and the far-behind maxima behind) and the race-start boost. The
+countdown holds every car on its slot; 3, 2, 1, then the start signal at
+6 s; laps count at the start line (a circuit finishes on its NumLaps + 1th
+crossing), a sprint at its finish plane; the HUD shows the lap, place and
+time, then the finishing place and credits; the results (place, time,
+best lap, distance, driver and car) print at the end of a run. Cars
+reset onto the line when wrong-way, stopped or off the route (the
+interim rules). Cars outside the gathered collision drive on a ribbon
+ground built from the AI line, so the field keeps racing wherever the
+player is. `--difficulty easy|med|hard|pro`, `--no-rubberband`,
+`--race-auto` (the AI drives the player's car, the default headless) and
+`--race-seed N`. `SHIFT_RACE_TRACE=<file>` writes every car 4 times a
+second. Traffic is off in a race unless `--traffic`. For example:
+`carview --drive --event FR22`. Car-to-car contact is `drive/contact.h`
+(a box contact with the normal chosen from the step before, so closing
+at 300 km/h does not pass through).
 
 **Traffic.** Free roam has the game's traffic (SPEC-TRAFFIC; `libs/traffic`):
 the road map in `colorado.nav`, the freeroam car list and density table of
@@ -728,21 +741,38 @@ the interim noted here until a later polish sweep.
   the idling engine; ours is about 15 dB, because our idle (0.022 RMS) is
   louder than the game's (0.008). Raising the radio clips under throttle
   (peak 1.12 at 1.8 times), so the engine's own level wants the look.
-- **The informal race.** One point-to-point run of the oracle's line,
-  no laps, gates or checkpoints; the time is from the count's end and
-  the finish is the line's end. AI cars are the player's car, hold still
-  further than 240 m from the player (the collision is gathered round the
-  player) and are not on the minimap. A false start is allowed.
-- **AI drivers (before SPEC-RACE-AI).** Ours: pure pursuit on the line
-  with a blind lane offset, the line's speed times a skill, proportional
-  pedals. No avoidance between cars or of walls (in the 8-car run one car
-  in the right lane stops against something at 987 m), no rubber-banding,
-  no grid or race flow, and the cars are not drawn in carview yet. One
-  collision gather around the pack's middle serves every car. The physics
-  is the cost (46 to 74 us a car a step); the cars step one after another
-  on one thread (a worker pool is the next lever if a field grows). The
-  same exe ends a single-car run differently on the two machines (float
-  results differ by CPU), so runs are not bit-identical across machines.
+- **Races: against the oracle.** `FR22` at Med, the player's car under
+  the AI from slot 05 (our controller; the oracle's player path is not
+  replayed): AI mean race time 161.9 s (oracle 161.53 s, gate 156.7 to
+  166.4), AI mean distance 4,654 m (oracle 4,637), the winner from slot 00
+  (the front three), the player 5th (oracle 3rd: outside "within one");
+  the winner's margin 14.0 s (oracle 7.6). `FR16`: 7 of 8 finish, slot to
+  finish 4,079 to 4,186 m (spec 4,079 to 4,142), the player 138 s (oracle
+  124.8 s); its rear-drive cars spin and reset (10 resets a run).
+- **Race AI interims (ours where the spec has none).** The steer is capped
+  at the pad's speed-narrowed lock (past it the fronts slide wide); a car
+  more than 1 m off its lane slows 8 % a metre (the corner speed is the
+  R34's fit for every car); the AI's grip on dirt is a constant 1.25 on
+  surfaces with off-roadness (the spec: 1.0 to 1.5, no rule); rubber-band
+  modes 1 to 7 (under/over braking and cornering, lags) are drawn but have
+  no effect (their Amount is not in the spec); cars alongside keep a car's
+  width apart (beyond the spec's passing rule); one AI line; stock cars;
+  opponents take the free slots in row order. Pack contact is frequent
+  (about 3,600 steps with a contact in an 8-car FR22).
+- **Race flow left out.** No event card, pre-race menu, cutscene camera,
+  finish screen or results screen (the results print); no rewards
+  applied to a save; no post-race placement; no checkpoints (street
+  races) or ribbon-2 circuits; no player wrong-way warning or rewind.
+  Opponents are not on the minimap.
+- **Ribbon ground.** The far cars' road is the AI line's centre +- its half
+  width plus 8 m, flat across: a car on it laps a little differently from
+  one on the collision. Refactor candidate: step the far cars on a worker
+  (they are independent of the player's ground).
+- **AI drivers.** The physics is the cost (46 to 74 us a car a step); the
+  cars step one after another on one thread (a worker pool is the next
+  lever if a field grows). The same exe ends a run differently on two
+  machines (float results differ by CPU), so runs are not bit-identical
+  across machines.
 - **Radio details.** No snapshot levels (pause, loading, speed, place) and
   no engine duck under DJ lines; no RADIO VOLUME, RADIO DJ or saved station
   (the profile is not read yet); a clip's bytes are read on the main thread

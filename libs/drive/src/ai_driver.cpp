@@ -121,6 +121,13 @@ AiCarState ai_state(const Vehicle& v) {
   const auto& c = v.params().wheel_centres;
   s.wheelbase = float(std::fabs((c[0].z + c[1].z) / 2 - (c[2].z + c[3].z) / 2));
   s.steer_lock = float(v.steer_lock());
+  {
+    const auto& cp = v.params();
+    const double sp = std::fabs(v.speed());
+    s.max_delta = sp <= 0.1 ? float(cp.max_steer)
+                            : float(std::clamp(std::atan(cp.steer_gees_fit * cp.steer_max_gees * cp.gravity * s.wheelbase / (sp * sp)),
+                                               std::min(cp.steer_min_lock, cp.max_steer), cp.max_steer));
+  }
   return s;
 }
 
@@ -237,13 +244,19 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     const float lz = rx * c.fwd_x + rz * c.fwd_z, lx = rx * c.fwd_z - rz * c.fwd_x;  // car frame: x right
     const float ld = std::sqrt(lx * lx + lz * lz);
     const float alpha = std::atan2(lx, lz);
-    const float delta = ld > 1e-4f ? std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f;
+    const float delta = std::clamp(ld > 1e-4f ? std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f, -c.max_delta,
+                                   c.max_delta);
     Input& in = inputs[i];
     in = Input{};
     in.steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
     // Speed: the plan a little ahead. Past the line's end: stop.
     const double ahead = progress_[i] + o_.speed_lookahead_s * speed;
-    const float target = progress_[i] >= L.length() - 1 ? 0.0f : float(planned_speed(i, ahead));
+    // Off its lane by more than off_line_slack m, the car slows (ours: the
+    // plan's corner speed is the R34's, and a car that cannot hold it
+    // runs wide).
+    const float off = std::fabs(cross_[i] - lane_[i]);
+    const float scale = std::clamp(1.0f - o_.off_line_slow * std::max(0.0f, off - o_.off_line_slack), 0.6f, 1.0f);
+    const float target = progress_[i] >= L.length() - 1 ? 0.0f : scale * float(planned_speed(i, ahead));
     target_[i] = target;
     const float err = target - c.speed;
     if (o_.full_gas) {

@@ -616,7 +616,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double mu_x = p.longitudinal.value(s * sig_pk, kgf, stretch, p.long_curve_scale) * p.width_scale[a];
     const double mu_y = p.lateral.value(s * alpha_pk, kgf, stretch, p.lat_curve_scale) * p.width_scale[a];
     const double rear = a == 1 ? surf[i].rear_grip : 1.0;
-    const double ai = ai_grip_[a];
+    // The AI's grip factor on dirt (an off-road surface): the rear's
+    // excess over 1 is 1.1 x the front's.
+    const double dirt = ai_ && dirt_grip_ > 1 && surf[i].off_roadness > 0 ? (a == 0 ? dirt_grip_ : 1 + 1.1 * (dirt_grip_ - 1)) : 1;
+    const double ai = ai_grip_[a] * dirt;
     // Braking friction on a slowed wheel, else the speed-blended accel
     // scale (SPEC-CAR-PHYSICS, Brakes: Braking friction).
     double kx = grip[i] * rear * ai * p.long_scale[a] * p.long_misc_scale;

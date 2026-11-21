@@ -71,6 +71,7 @@ class Streamer {
   bool uses_collision() const { return collision_ != nullptr; }
   double centre_x() const { return cx_; }
   double centre_z() const { return cz_; }
+  double collision_radius() const { return collision_radius_; }
   int gathers() const { return gathers_; }
 
  private:

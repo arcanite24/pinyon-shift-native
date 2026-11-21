@@ -325,6 +325,10 @@ class Vehicle {
   // 1, 1 by default and in pad play.
   void set_ai_grip(double front, double rear) { ai_grip_ = {front, rear}; }
   bool ai_controls() const { return ai_; }
+  // Under the AI on dirt (a surface with off-roadness): the front axle's
+  // grip factor, the rear's excess 1.1 x the front's (SPEC-CAR-PHYSICS,
+  // grip on dirt: 1.0 to 1.5 with no rule; a race sets an interim value).
+  void set_ai_dirt_grip(double front) { dirt_grip_ = front; }
   // A factor on the engine's drive torque (SPEC-RACE-AI: the rubber-band
   // torque cut and the race-start boost); 1 by default.
   void set_torque_factor(double f) { torque_factor_ = f; }
@@ -418,6 +422,7 @@ class Vehicle {
   bool abs_flag_ = false;
   bool ai_ = false;
   double torque_factor_ = 1;
+  double dirt_grip_ = 1;
   std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
   double body_force_ = 0;

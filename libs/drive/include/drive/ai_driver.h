@@ -59,6 +59,9 @@ struct AiCarState {
   float speed = 0;             // m/s along forward
   float wheelbase = 2.6f;      // m
   float steer_lock = 0.6f;     // rad at full stick
+  // The widest road-wheel angle the controller asks for: the pad's lock at
+  // this speed (ours: past it the fronts slide and the car runs wide).
+  float max_delta = 0.6f;
 };
 AiCarState ai_state(const Vehicle& v);
 
@@ -76,6 +79,8 @@ class AiField {
     // brake above it (the AI's gas jumps between 1 and 0).
     bool full_gas = false;
     float max_speed = 90.0f;  // m/s, the plan's cap
+    float off_line_slack = 1.0f;  // m off the lane before the car slows...
+    float off_line_slow = 0.0f;   // ...by this fraction a metre (0: never)
   };
   AiField(const RacingLine& line, size_t cars, const Options& options);
   AiField(const RacingLine& line, size_t cars) : AiField(line, cars, Options{}) {}

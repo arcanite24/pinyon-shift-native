@@ -69,9 +69,10 @@ RaceLine build_race_line(const AiLineFile& f, const Route* route, int copies) {
 RibbonGround::RibbonGround(const AiLineFile& f, double margin, double cell) : cell_(cell) {
   const size_t n = f.points.size();
   if (n < 2) return;
-  const double k = 1 + margin;
   auto corner = [&](size_t i, double side, float* out) {
     const auto& p = f.points[i];
+    const double hw = std::max(1e-3f, p.half_width());
+    const double k = 1 + margin / hw;
     out[0] = float(p.x + side * k * p.lx), out[1] = float(p.y + side * k * p.ly), out[2] = float(p.z + side * k * p.lz);
   };
   double minx = 1e300, minz = 1e300, maxx = -1e300, maxz = -1e300;

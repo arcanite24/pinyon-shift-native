@@ -58,6 +58,7 @@
 #include "world/world.h"
 #include "contact_log.h"
 #include "safe_reset.h"
+#include "race_view.h"
 #include "map_view.h"
 #include "fh1data/archive.h"
 #include "fh1data/xds.h"
@@ -1079,8 +1080,9 @@ void drive_usage() {
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound --no-radio --radio-press s (headless: D-pad right every\n"
                "           s seconds); in the window , and . (D-pad left and right) change the station\n"
-               "  race:    --ai N --ai-line <lap.jsonl>: N AI cars of the same car on the oracle's line, the\n"
-               "           player at the back of the grid, a 3 s count, the time and place on the HUD\n"
+               "  race:    --event <id> (FR22, FR16, ...): the event's race on its route, grid and opponents;\n"
+               "           --difficulty easy|med|hard|pro --no-rubberband --race-auto (the AI drives the\n"
+               "           player's car; the default headless) --race-seed N\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
                "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad\n"
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
@@ -1130,8 +1132,10 @@ int run_drive(int argc, char** argv) {
   bool sound = true, sound_given = false;
   bool radio_on = true;
   double radio_press_every = 0;
-  int ai_count = 0;  // --ai N: AI cars on --ai-line
-  std::filesystem::path ai_line_path;
+  // --event: an event's race (SPEC-EVENTS, SPEC-RACE-AI).
+  std::string race_event;
+  carview::RaceView::Options race_options;
+  int race_auto = -1;  // -1: on headless, off in the window
   // The play folder (tools/setup.py; README, Play the drive).
   std::filesystem::path play_dir;
   // Free-roam traffic (SPEC-TRAFFIC): on in the window with the world, off
@@ -1203,8 +1207,15 @@ int run_drive(int argc, char** argv) {
     else if (a == "--play") play_dir = next();
     else if (a == "--no-sound") sound = false;
     else if (a == "--no-radio") radio_on = false;
-    else if (a == "--ai") ai_count = std::max(0, std::atoi(next()));
-    else if (a == "--ai-line") ai_line_path = next();
+    else if (a == "--event") race_event = next();
+    else if (a == "--difficulty") {
+      if (!race::parse_difficulty(next(), race_options.difficulty)) {
+        std::fprintf(stderr, "carview: --difficulty easy|med|hard|pro\n");
+        return 2;
+      }
+    } else if (a == "--no-rubberband") race_options.rubberband = false;
+    else if (a == "--race-auto") race_auto = 1;
+    else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--radio-press") radio_press_every = std::atof(next());
     else if (a == "--traffic") traffic_flag = 1;
     else if (a == "--no-traffic") traffic_flag = 0;
@@ -1358,32 +1369,23 @@ int run_drive(int argc, char** argv) {
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
   }
-  // The informal race (M5 groundwork): the line every car shares; slot
-  // ai_count is the player's, at the back.
-  drive::OracleLine ai_oracle;
-  std::unique_ptr<drive::RacingLine> ai_line;
-  auto place_grid = [&](drive::AiField& f) {
-    for (int k = 0; k < ai_count; ++k)
-      f.place(size_t(k), 5.0 + 9.0 * (k + 1), k % 2 ? 2.0f : -2.0f, 0.99f - 0.01f * float(k % 8));
-    f.place(size_t(ai_count), 5.0, 0.0f, 1.0f);
-  };
-  if (ai_count > 0) {
-    std::ifstream in(ai_line_path, std::ios::binary);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string why;
-    if (ai_line_path.empty() || !in || !drive::parse_oracle_line(ss.str(), ai_oracle, &why)) {
-      std::fprintf(stderr, "carview: --ai needs --ai-line <lap.jsonl> (%s)\n", why.empty() ? "unreadable" : why.c_str());
+  // The event's race: its data, and the player's car on its slot (the
+  // save does not override the grid).
+  std::unique_ptr<carview::RaceView> race;
+  if (!race_event.empty()) {
+    if (world_dir.empty()) {
+      std::fprintf(stderr, "carview: --event needs the world (--world)\n");
       return 2;
     }
-    ai_line = std::make_unique<drive::RacingLine>(drive::RacingLine::from_oracle(ai_oracle));
-    drive::AiField grid(*ai_line, size_t(ai_count) + 1);
-    place_grid(grid);
-    double x = 0, z = 0, h = 0;
-    grid.start_pose(size_t(ai_count), x, z, h);
-    spawn[0] = x, spawn[1] = ai_oracle.start.y, spawn[2] = z, spawn[3] = h;
+    race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
+    race = std::make_unique<carview::RaceView>(bake_dir);
+    std::string why;
+    if (!race->open(world_dir.parent_path().parent_path().parent_path(), race_event, race_options, why)) {
+      std::fprintf(stderr, "carview: --event %s: %s\n", race_event.c_str(), why.c_str());
+      return 2;
+    }
+    race->player_spawn(spawn);
     have_spawn = true;
-    std::printf("race: %d AI cars on %s (%.0f m)\n", ai_count, ai_line_path.string().c_str(), ai_line->length());
   }
   if (have_saved && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
     spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
@@ -1767,38 +1769,21 @@ int run_drive(int argc, char** argv) {
         if (status != 0) std::fprintf(stderr, "carview: %s\n", error.c_str());
       }
       std::unique_ptr<TrafficView> traffic;
-      // The race: the field (slot ai_count is the player), the AI cars and
-      // the model they are drawn with (this car's, as a guest).
-      std::unique_ptr<drive::AiField> race;
-      std::vector<std::unique_ptr<drive::Vehicle>> ai_cars;
-      std::unique_ptr<Showroom> ai_model;
-      std::vector<drive::AiCarState> ai_states;
-      std::vector<drive::Input> ai_inputs;
-      std::vector<drive::ContactBody> contact_list;
-      double race_clock = -3, race_finish = -1;  // s from the start signal
-      int race_place = 0, ai_contacts = 0;
-      if (status == 0 && streamer && ai_line) {
-        race = std::make_unique<drive::AiField>(*ai_line, size_t(ai_count) + 1);
-        place_grid(*race);
-        for (int k = 0; k < ai_count; ++k) {
-          double x = 0, z = 0, h = 0, y = ai_oracle.start.y;
-          race->start_pose(size_t(k), x, z, h);
-          double gy = y;
-          if (world::ground_height(streamer->ground(), x, z, y + 20, gy)) y = gy;
-          ai_cars.push_back(std::make_unique<drive::Vehicle>(vehicle.params()));
-          ai_cars.back()->reset({x, y + 0.3, z}, h);
+      // The race's models go with this scope (before the renderer).
+      struct RaceModels {
+        carview::RaceView* r;
+        ~RaceModels() {
+          if (r) r->release_models();
         }
-        ai_states.resize(size_t(ai_count) + 1);
-        ai_inputs.resize(size_t(ai_count) + 1);
-        ai_model = std::make_unique<Showroom>(renderer);
-        ai_model->set_guest();
+      } race_models{race.get()};
+      if (status == 0 && race) {
         std::string e;
-        if (!ai_model->load(bake_dir, car, ShowroomOptions{}, e) || !ai_model->upload(e)) {
-          std::fprintf(stderr, "carview: AI cars not drawn: %s\n", e.c_str());
-          ai_model.reset();
+        if (!streamer || !race->load_cars(renderer, *ground, e)) {
+          std::fprintf(stderr, "carview: race: %s\n", streamer ? e.c_str() : "needs the streamed world");
+          status = 1;
         }
       }
-      if (status == 0 && streamer && (traffic_flag == 1 || (traffic_flag < 0 && !headless))) {
+      if (status == 0 && streamer && (traffic_flag == 1 || (traffic_flag < 0 && !headless && !race))) {
         // The test driver keeps to the right lane among traffic (SPEC-TRAFFIC,
         // Driving a lane: 2.2 m right of the centre line).
         follower.set_keep_right(2.2);
@@ -2090,7 +2075,8 @@ int run_drive(int argc, char** argv) {
       };
       bool have_touch = false;
       double last_touch_y = 0;  // where the wheels last touched, for the fall check
-      auto step = [&](const drive::Input& in) {
+      auto step = [&](const drive::Input& user_in) {
+        const drive::Input in = race ? race->player_input(vehicle, user_in) : user_in;
         vehicle.step(in, *ground);
         {
           // A car that left the numbers (NaN) stops the run: a gather around
@@ -2107,42 +2093,14 @@ int run_drive(int argc, char** argv) {
         }
         log_contacts();
         if (traffic) traffic->step(vehicle);
-        if (race) {
-          // One pass for the field (the player's slot only tracks it), the
-          // AI cars stepped near the player (the collision is gathered
-          // round the player: a car further than 240 m holds), then every
-          // car-to-car contact the traffic step doesn't cover.
-          race_clock += drive::Vehicle::kStep;
-          const size_t n = ai_cars.size();
-          for (size_t k = 0; k < n; ++k) ai_states[k] = drive::ai_state(*ai_cars[k]);
-          ai_states[n] = drive::ai_state(vehicle);
-          race->drive(ai_states, ai_inputs);
-          const drive::Vec3 me = vehicle.position();
-          for (size_t k = 0; k < n; ++k) {
-            drive::Input in = ai_inputs[k];
-            if (race_clock < 0) in = drive::Input{0, 0, 1, true};
-            const drive::Vec3 at = ai_cars[k]->position();
-            if ((at.x - me.x) * (at.x - me.x) + (at.z - me.z) * (at.z - me.z) > 240.0 * 240.0) continue;
-            ai_cars[k]->step(in, *ground);
-          }
-          contact_list.clear();
-          contact_list.push_back({&vehicle, 1.0, 1});
-          for (auto& c : ai_cars) contact_list.push_back({c.get(), 1.0, 0});
-          if (traffic) traffic->contact_bodies(contact_list, 1);
-          ai_contacts += drive::resolve_contacts(contact_list, {});
-          race_place = 1;
-          for (size_t k = 0; k < n; ++k) race_place += race->progress(k) > race->progress(n);
-          if (race_finish < 0 && race_clock > 0 && race->progress(n) >= ai_line->length() - 1) {
-            race_finish = race_clock;
-            std::printf("t %.2f s: race finished in %.2f s, place %d of %zu\n", vehicle.time(), race_finish,
-                        race_place, n + 1);
-          }
-        }
+        if (race && streamer)
+          race->after_step(vehicle, *ground, streamer->centre_x(), streamer->centre_z(),
+                           streamer->collision_radius(), traffic.get());
         free_roam_step();
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
-        if (headless && follower.stuck(vehicle, in)) {
+        if (headless && !race && follower.stuck(vehicle, in)) {
           const drive::Vec3 at = vehicle.position();
           double away = 0;
           if (safe_reset_ok && safe_reset.place(*streamer, vehicle, &away))
@@ -2207,9 +2165,9 @@ int run_drive(int argc, char** argv) {
         showroom.set_world_transform(m);
         if (traffic) traffic->place(info, vehicle);
         else showroom.set_instances({});
-        if (ai_model) {
+        if (race) {
           std::vector<Showroom::Instance> more;
-          for (const auto& c : ai_cars) more.push_back(guest_instance(info, vehicle, *ai_model, *c));
+          race->instances(info, vehicle, more);
           showroom.add_instances(more);
         }
         const float up_game[3] = {0, 1, 0};
@@ -2285,28 +2243,9 @@ int run_drive(int argc, char** argv) {
       // (The display name is a string-table key: the media name is shown.)
       const std::string intro = car + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
-      // The race line on the HUD: the count, then the place, the time and
-      // the distance to go; the result at the end.
-      auto race_banner = [&]() -> std::string {
-        if (!race) return {};
-        char b[96];
-        auto clock_text = [](double t, char* out, size_t size) {
-          const int cs = int(std::lround(std::max(0.0, t) * 100));
-          std::snprintf(out, size, "%d:%02d.%02d", cs / 6000, cs / 100 % 60, cs % 100);
-        };
-        char t[24];
-        const size_t cars_n = ai_cars.size() + 1;
-        if (race_clock < 0) std::snprintf(b, sizeof b, "race - %zu cars - get ready %d", cars_n, int(std::ceil(-race_clock)));
-        else if (race_finish >= 0) {
-          clock_text(race_finish, t, sizeof t);
-          std::snprintf(b, sizeof b, "finished P%d/%zu in %s", race_place, cars_n, t);
-        } else {
-          clock_text(race_clock, t, sizeof t);
-          std::snprintf(b, sizeof b, "P%d/%zu  %s  %.0f m to go", race_place, cars_n, t,
-                        std::max(0.0, ai_line->length() - race->progress(ai_cars.size())));
-        }
-        return b;
-      };
+      // The race line on the HUD (RaceView: the count, the lap, place and
+      // time, the result).
+      auto race_banner = [&]() -> std::string { return race ? race->banner() : std::string(); };
       int hud_height = 0;  // the panel's, for the radio popup above it
       auto set_hud = [&](int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
@@ -2675,11 +2614,8 @@ int run_drive(int argc, char** argv) {
           std::printf("longest step with its streaming: %.1f ms (%s gathers)\n", longest_step * 1000,
                       async_stream ? "background" : "synchronous");
         if (race) {
-          std::printf("race: place %d of %zu, %s; %d car-to-car contacts; AI progress", race_place, ai_cars.size() + 1,
-                      race_finish >= 0 ? ("finished in " + std::to_string(race_finish) + " s").c_str() : "not finished",
-                      ai_contacts);
-          for (size_t k = 0; k < ai_cars.size(); ++k) std::printf(" %.0f", race->progress(k));
-          std::printf(" m\n");
+          std::printf("%s m\nrace: results at %.2f s%s\n%s", race->summary().c_str(), race->session().clock(),
+                      race->session().all_finished() ? "" : " (not every car finished)", race->results().c_str());
         }
         if (radio) {
           const auto& st = radio_data.stations[size_t(radio->selected())];

@@ -46,6 +46,8 @@ class Session {
     int place = 0;
     double wrong = 0, slow = 0, off5 = 0, off15 = 0;  // reset timers, s
     double no_collide_until = -1e9;
+    const char* reason = "";  // the last reset's condition
+    double distance = 0;      // m driven from the signal to the finish (horizontal)
   };
 
   // A circuit counts crossings of `start` (laps + 1 finish); a sprint
