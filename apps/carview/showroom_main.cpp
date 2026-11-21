@@ -2022,6 +2022,8 @@ int run_drive(int argc, char** argv) {
         }
         if (streamer && free_roam->hidden() != hidden_sent) streamer->set_hidden(hidden_sent = free_roam->hidden());
       };
+      bool have_touch = false;
+      double last_touch_y = 0;  // where the wheels last touched, for the fall check
       auto step = [&](const drive::Input& in) {
         vehicle.step(in, *ground);
         {
@@ -2052,6 +2054,28 @@ int run_drive(int argc, char** argv) {
           else if (world::Spawn sp; world::recover(*streamer, vehicle, &sp))
             std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away (nearest road "
                         "triangle)\n", vehicle.time(), at.x, at.y, at.z, sp.distance);
+        }
+        // Off the collision (the .fiz has holes outside the drivable strips):
+        // a car 20 m below where its wheels last touched goes back on the
+        // road, in the window too (ours; the game keeps cars out with walls).
+        {
+          bool touching = false;
+          for (const auto& w : vehicle.wheels()) touching |= w.contact;
+          const drive::Vec3 p = vehicle.position();
+          if (touching || !have_touch) last_touch_y = p.y, have_touch = true;
+          else if (p.y < last_touch_y - 20) {
+            double away = 0;
+            world::Spawn sp;
+            const bool placed = (safe_reset_ok && safe_reset.place(*streamer, vehicle, &away)) ||
+                                (world::recover(*streamer, vehicle, &sp) && ((away = sp.distance), true));
+            std::printf("t %.2f s: fell through the ground at %.1f %.1f %.1f (no collision there)%s\n", vehicle.time(),
+                        p.x, p.y, p.z, placed ? ", put back on the road" : "");
+            if (placed) {
+              notice = "off the world: put back on the road";
+              notice_until = vehicle.time() + 3;
+            }
+            last_touch_y = vehicle.position().y;
+          }
         }
         bool changed = false;
         const drive::Vec3 at = vehicle.position();

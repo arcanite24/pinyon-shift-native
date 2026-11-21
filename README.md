@@ -697,9 +697,13 @@ the interim noted here until a later polish sweep.
   `VisibleRange`. No traffic dots, place-name layers or the high
   background tiles (the low 2048×1229 level only), and no Treasure Map
   (`--reveal` stands in). Profile line sizes are scaled by our factors.
-- **Barn find 01 spawn.** A car placed off the road east of the Bugatti
-  barn (1448, -5363) falls through the ground; the barn is reached from
-  its road only through the rail. Worth a collision look.
+- **Holes in the collision.** The `.fiz` tiles cover the drivable strips
+  only: east of the Bugatti barn (1448, -5363, tile 193) there is no
+  triangle under the drawn ground, in either frame and before any filter
+  (the barn itself is covered). A car 20 m below where its wheels last
+  touched is put back on the road (ours; sent to the spec side to say what
+  the game does there). The barn is reached from its road only through the
+  rail.
 - **Radio against the engine.** The spec has the radio about 20 dB over
   the idling engine; ours is about 15 dB, because our idle (0.022 RMS) is
   louder than the game's (0.008). Raising the radio clips under throttle
