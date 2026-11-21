@@ -274,6 +274,12 @@ class Showroom {
   // The colour the game gives them is a spec question; 1 leaves them as
   // sampled (the showroom), the cockpit view darkens them.
   void set_interior_shade(float shade) { interior_shade_ = shade; }
+  // Paint (SPEC-AUTOSHOW-PAINT, Manufacturer colors): the car's colour
+  // rows, the drawn one, and a live preview that retints the paint draws
+  // (metallic flag and stripe too; a row's own atlas needs the car rebuilt).
+  const std::vector<cars::bake::Colour>& colours() const { return car_.car.colours; }
+  size_t colour_index() const { return options_.colour; }
+  void preview_colour(size_t index);
   // A prop's reach from its origin (m): the box test of LOD00 cells allows
   // an instance whose origin is inside the band but whose corners are not.
   static constexpr float kPropReach = 40;

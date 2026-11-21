@@ -677,10 +677,19 @@ copy's packages.
   (FER_599XXEvolution_12), and free roam reports 100 of 100 signs
   (upgrades 100 % off), 8 of 9 barn finds and 1,717.6 km driven.
 - **Interims (backlog):** the wristband level's name is a string-table
-  key, so the page shows its number. Paint and liveries, a 1000 Club
-  challenge driven, and a Rally stage driven are later work (SPEC-V4-
-  CONTENT: "Driving a 1000 Club challenge or a Rally stage is later
-  work").
+  key, so the page shows its number. A 1000 Club challenge driven and
+  a Rally stage driven are later work (SPEC-V4-CONTENT: "Driving a 1000
+  Club challenge or a Rally stage is later work").
+- **Paint (2026-11-21):** the pause menu's `paint` page lists the car's
+  factory colours (`Combo_Colors` rows in `Sequence` order, metallic
+  and stripe marked). Left and right preview live; Enter keeps the
+  colour, and Esc puts the old one back. Painting is free
+  (SPEC-AUTOSHOW-PAINT). The choice goes in the garage row's colour
+  (its `Sequence`), and the car rebuilds where it stands. Interims: the
+  game keeps paint-shop colours in the livery file, whose format is open,
+  so we use the garage row. The colour grid, special colours, finishes,
+  paint regions and vinyls aren't done. Without a career the choice
+  lasts the session.
 
 ## Refactor candidates (performance)
 

@@ -1853,6 +1853,10 @@ int run_drive(int argc, char** argv) {
     uint32_t width = 0, height = 0;
   };
   std::map<std::string, Logo> radio_logos;
+  // The paint page's last choice (SPEC-AUTOSHOW-PAINT: a Combo_Colors
+  // Sequence), kept across the rebuild it asks for.
+  int64_t paint_sequence = -1;
+  std::string paint_car;
   for (bool again = true; again;) {
   again = false;
   {
@@ -1866,6 +1870,8 @@ int run_drive(int argc, char** argv) {
       if (const garage::Car* gc = career_garage.selected_car())
         if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car))
           options.match_sequence = gc->colour;
+    // A colour picked in the pause menu's paint page for this car.
+    if (paint_sequence >= 0 && lower_ascii(paint_car) == lower_ascii(car)) options.match_sequence = paint_sequence;
     Renderer::Options render_options{window, validation, msaa};
     render_options.reverse_z = reverse_z;
     if (post_on) {
@@ -1897,6 +1903,9 @@ int run_drive(int argc, char** argv) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;
     } else {
+      // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of
+      // colour row i, as left and right show it.
+      if (const char* pp = std::getenv("SHIFT_PAINT_PREVIEW")) showroom.preview_colour(size_t(std::atoi(pp)));
       const auto& info = showroom.car();
       std::vector<std::string> physics_notes;
       drive::Vehicle vehicle([&] {
@@ -2667,6 +2676,11 @@ int run_drive(int argc, char** argv) {
       // The upgrade shop (SPEC-GARAGE-UPGRADES) on the selected garage car;
       // the discount is the signs found.
       carview::UpgradeShop shop;
+      // The paint page (SPEC-AUTOSHOW-PAINT, Manufacturer colors): the car's
+      // colour rows in Sequence order, previewed live; free.
+      bool paint_open = false;
+      std::vector<size_t> paint_order;
+      size_t paint_pick = 0, paint_before = 0;
       carview::Autoshow autoshow;
       carview::CareerPage career_page;
       auto discount = [&]() {
@@ -2679,6 +2693,21 @@ int run_drive(int argc, char** argv) {
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
+        if (paint_open) {
+          st.menu_title = "paint (free): left/right, enter keeps";
+          st.menu.clear();
+          const auto& rows = showroom.colours();
+          const size_t first = paint_pick >= 4 ? paint_pick - 4 : 0;
+          for (size_t i = first; i < paint_order.size() && i < first + 9; ++i) {
+            const auto& c = rows[paint_order[i]];
+            char line[96];
+            std::snprintf(line, sizeof line, "colour %lld  #%06X%s%s%s", static_cast<long long>(c.sequence), c.rgb,
+                          c.metallic ? "  metallic" : "", c.has_stripe ? "  stripe" : "",
+                          paint_order[i] == paint_before ? "  (now)" : "");
+            st.menu.push_back(line);
+          }
+          st.menu_selected = int(paint_pick - first);
+        }
         st.kmh = vehicle.speed() * 3.6;
         st.gear = vehicle.gear();
         st.rpm = vehicle.rpm();
@@ -3234,6 +3263,19 @@ int run_drive(int argc, char** argv) {
             next_event = event_ids[event_pick];
             running = false;
           }
+          if (item == PauseMenu::kPaint) {
+            const auto& rows = showroom.colours();
+            paint_order.resize(rows.size());
+            for (size_t i = 0; i < rows.size(); ++i) paint_order[i] = i;
+            std::stable_sort(paint_order.begin(), paint_order.end(),
+                             [&](size_t a, size_t b) { return rows[a].sequence < rows[b].sequence; });
+            paint_before = showroom.colour_index();
+            paint_pick = 0;
+            for (size_t i = 0; i < paint_order.size(); ++i)
+              if (paint_order[i] == paint_before) paint_pick = i;
+            paint_open = !paint_order.empty();
+            if (!paint_open) notice = "this car has no colour rows", notice_until = vehicle.time() + 3;
+          }
           if (item == PauseMenu::kCareer) {
             std::vector<cars::PackInfo> packs;
             const carview::CareerSummary cs = career_summary(packs);
@@ -3394,6 +3436,55 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) autoshow.jump_class(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) autoshow.jump_class(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) buy();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // The paint page previews while open; enter keeps the colour
+            // (the garage row's Sequence, then the car rebuilt where it
+            // stands), escape puts the old one back.
+            if (paint_open) {
+              auto pick = [&](int by) {
+                const int n = int(paint_order.size());
+                paint_pick = size_t(((int(paint_pick) + by) % n + n) % n);
+                showroom.preview_colour(paint_order[paint_pick]);
+              };
+              auto leave = [&](bool keep) {
+                paint_open = false;
+                const size_t chosen = paint_order[paint_pick];
+                if (!keep || chosen == paint_before) {
+                  showroom.preview_colour(paint_before);
+                  return;
+                }
+                paint_sequence = showroom.colours()[chosen].sequence;
+                paint_car = car;
+                if (have_garage)
+                  if (const garage::Car* sel = career_garage.selected_car())
+                    if (garage::Car* gc = career_garage.find(sel->id);
+                        gc && baked_ids.count(gc->car_id) && lower_ascii(baked_ids.at(gc->car_id)) == lower_ascii(car)) {
+                      gc->colour = int(paint_sequence);
+                      write_career_garage();
+                    }
+                save_now("paint");
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                spawn[0] = at.x, spawn[1] = at.y, spawn[2] = at.z, spawn[3] = std::atan2(f.x, f.z);
+                have_spawn = true;
+                next_car = car;
+                running = false;
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) leave(false);
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) leave(true);
+                else if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) pick(-1);
+                else if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) pick(1);
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) leave(false);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) leave(true);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) pick(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pick(1);
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -3565,7 +3656,7 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open()) accumulator += frame_dt;
+          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open) accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
@@ -3575,7 +3666,7 @@ int run_drive(int argc, char** argv) {
             save_due = false;
             save_now("collectible");
           }
-          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() &&
+          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !paint_open &&
                  accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
             if (!step(cruise ? follower.input(vehicle) : in)) {

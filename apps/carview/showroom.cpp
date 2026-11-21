@@ -1517,6 +1517,28 @@ void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const Showroo
   vkCmdPipelineBarrier2(cmd, &dep);
 }
 
+void Showroom::preview_colour(size_t index) {
+  const auto& colours = car_.car.colours;
+  if (index >= colours.size()) return;
+  options_.colour = index;
+  const bake::Colour& c = colours[index];
+  const float rgb[3] = {srgb_to_linear(float((c.rgb >> 16) & 0xFF) / 255.0f),
+                        srgb_to_linear(float((c.rgb >> 8) & 0xFF) / 255.0f), srgb_to_linear(float(c.rgb & 0xFF) / 255.0f)};
+  if (c.has_stripe) {
+    stripe_[0] = srgb_to_linear(float((c.stripe_rgb >> 16) & 0xFF) / 255.0f);
+    stripe_[1] = srgb_to_linear(float((c.stripe_rgb >> 8) & 0xFF) / 255.0f);
+    stripe_[2] = srgb_to_linear(float(c.stripe_rgb & 0xFF) / 255.0f);
+  }
+  for (auto& d : draws_) {
+    if (uint32_t(d.push.params[0] + 0.5f) != uint32_t(MaterialClass::kPaint)) continue;
+    uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    for (int k = 0; k < 3; ++k) d.push.tint[k] = rgb[k];
+    flags = c.metallic ? flags | kFlagMetallic : flags & ~kFlagMetallic;
+    if (!c.has_stripe) flags &= ~kFlagStripe;
+    d.push.params[1] = float(flags);
+  }
+}
+
 void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass) {
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
