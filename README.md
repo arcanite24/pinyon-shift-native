@@ -938,8 +938,11 @@ the interim noted here until a later polish sweep.
   bends, drifts from 1.3 to 4.5 m off it, brakes late and hits the edge
   (6 kN, 31 to 20 m/s in 0.4 s): the corner speed is too high, consistent
   with the planner's 17.5 m/s^2 lateral against the title's 16.24 (see the
-  speed planner item). A 0.35 m sill or 0.2 body friction leaves 23 to 25
-  resets and the same time.
+  speed planner item). But neither lever moves it: a 0.35 m sill or 0.2
+  body friction leaves 23 to 25 resets, and planning from 0.93 or 0.86 of
+  the lateral table gives 213.6 and 209.1 s with 27 and 23 resets. The
+  car barely steers (0.07) as it drifts out: the steering at speed (the
+  pad's narrowed lock as the AI's cap, interim) is the next suspect.
   gate (the player replays the oracle's path from `out/oracle/`). FR22 at
   Med, three seeds: AI mean 162.4 s (oracle 161.5), 4,673 m (4,638), the
   player 2nd to 3rd (3rd), winner slot 00: passes. FR16: AI mean 129 to
