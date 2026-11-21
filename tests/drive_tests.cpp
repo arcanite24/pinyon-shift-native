@@ -11,6 +11,7 @@
 
 #include "drive/from_bake.h"
 #include "drive/mesh_ground.h"
+#include "drive/ai_driver.h"
 #include "drive/oracle_lap.h"
 #include "drive/save.h"
 #include "drive/vehicle.h"
@@ -297,6 +298,52 @@ void test_save() {
 
 }  // namespace
 
+// AI drivers (M5 groundwork): a made-up 60 m circle, its speed profile from
+// curvature, and four cars in two lanes driving it on flat ground at once.
+void test_ai_field() {
+  std::vector<float> xs, zs;
+  const double r = 60, kPi = 3.14159265358979323846;
+  for (int i = 0; i <= 720; ++i) {
+    const double a = 2 * kPi * i / 360.0;  // twice round
+    xs.push_back(float(r - r * std::cos(a)));
+    zs.push_back(float(r * std::sin(a)));
+  }
+  const drive::RacingLine line = drive::RacingLine::from_points(xs, zs, 6.0, 4.0, 8.0, 40.0);
+  CHECK(std::fabs(line.length() - 4 * kPi * r) < 1.0);
+  // On a circle the curvature limit is sqrt(a r) all round.
+  const double v_curve = std::sqrt(6.0 * r);
+  CHECK(std::fabs(line.speed[line.size() / 2] - v_curve) < 0.3);
+  CHECK(*std::max_element(line.speed.begin(), line.speed.end()) < v_curve + 0.3);
+  CHECK(line.segment(100.0, 0) == line.segment(100.0, line.size() / 2));
+
+  const size_t n = 4;
+  drive::AiField field(line, n);
+  std::vector<drive::Vehicle> cars;
+  for (size_t i = 0; i < n; ++i) {
+    cars.emplace_back(test_car());
+    field.place(i, 5.0 + 12.0 * double(i), i % 2 ? 2.0f : -2.0f, 0.95f);
+    double x = 0, z = 0, h = 0;
+    field.start_pose(i, x, z, h);
+    cars[i].reset({x, 0, z}, h);
+  }
+  const drive::FlatGround ground;
+  std::vector<drive::AiCarState> states(n);
+  std::vector<drive::Input> inputs(n);
+  double worst_lane_error = 0;
+  for (int s = 0; s < int(40 / drive::Vehicle::kStep); ++s) {
+    for (size_t i = 0; i < n; ++i) states[i] = drive::ai_state(cars[i]);
+    field.drive(states, inputs);
+    for (size_t i = 0; i < n; ++i) cars[i].step(inputs[i], ground);
+    if (s * drive::Vehicle::kStep > 10)
+      for (size_t i = 0; i < n; ++i)
+        worst_lane_error = std::max(worst_lane_error, std::fabs(field.cross_track(i) - (i % 2 ? 2.0 : -2.0)));
+  }
+  for (size_t i = 0; i < n; ++i) CHECK(field.progress(i) > 300);  // well round the first lap
+  std::printf("ai field: progress %.0f %.0f %.0f %.0f m, lane error up to %.2f m\n", field.progress(0),
+              field.progress(1), field.progress(2), field.progress(3), worst_lane_error);
+  CHECK(worst_lane_error < 1.5);
+}
+
 int main() {
   test_save();
   test_rest_pose();
@@ -308,6 +355,7 @@ int main() {
   test_mesh_ground();
   test_model_to_world();
   test_oracle_lap();
+  test_ai_field();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

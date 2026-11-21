@@ -34,6 +34,7 @@ readers, and a car drawn from the game's own files.
 | `apps/fh1data-corpus` | Runs the readers over every archive under `media/` and reports what parses; `--names` and `--render-models` census an archive's directory and its render models; `--props` the object table, `.pgeo` tiles and `.pvsz` zones; `--world-materials` the materials, UV scales, vertex layouts and every world texture against WORLD_MATERIALS.md's counts |
 | `apps/event-restrictions-corpus` | Decodes every `EventRestrictions` row of the player's `media/db/gamedb.slt` (opened read-only) and checks each round-trips; prints counts only |
 | `libs/cars` | Cars (FORMAT-CARS): the install (disc, v4 title update, installed DLC packages in priority order), the merged car database (v4 `gamedb.slt` plus each package's patch databases), and the baked format `.shiftbake` with its writer and reader |
+| `libs/drive` | Car physics (SPEC-CAR-PHYSICS), the cameras, the drive save, the oracle-lap follower, and the AI drivers (`drive/ai_driver.h`, M5 groundwork before SPEC-RACE-AI): one racing line every car shares, and a field that updates N cars in one pass over arrays |
 | `apps/car-corpus` | Reproduces every count of FORMAT-CARS's Tests section over the player's files (`--check` fails on a mismatch) |
 | `apps/carbake` | Bakes every distinct car (240), its stock wheel, the tyre archives and the shared textures to `.shiftbake` files, deterministically and in parallel; `--dump` lists a bake |
 | `libs/audio` | Engine sound (SPEC-ENGINE-SOUND): the tuning XMLs (engine, harmonics, car model listener), FSB4 bank headers and XMA2 wave wrapping, the rpm map, crossfades, pitch and parameter curves, the loop index rule, a stereo mixer, and the bake to PCM with its reader; the radio (SPEC-RADIO): RadioSystem.xml and the sound-bank info files, the station schedules on one clock, the cycle and popup timing, and a player that streams the MPEG clips through dr_mp3 |
@@ -328,6 +329,13 @@ carview --drive --headless --bake out/bake --car FIA_500AbarthSS_10 --world <gam
 drive --bake out/bake --car NIS_SkylineGTRVSpecII_02 --world <game>/media/tracks/colorado \
       --run lap --line <oracle-lap>/lap.jsonl --physics-trace out/lap/lap.jsonl
 python <horizon1-recomp>/tools/physics-behaviour.py compare <oracle-lap>/lap.jsonl out/lap/lap.jsonl --clock-hz 60
+# AI drivers (M5 groundwork): N cars on the oracle's line in three lanes,
+# 15 m apart, with the cost of the AI pass and of the physics per step.
+# 8 cars, 60 s: physics 0.74 ms a 60 Hz frame on multivac (46 us a car a
+# 120 Hz step), 1.19 ms on blindvac's i7-8550U (74 us); the AI pass 0.2 to
+# 0.3 us a car on both
+drive --bake out/bake --car NIS_SkylineGTRVSpecII_02 --world <game>/media/tracks/colorado \
+      --line <oracle-lap>/lap.jsonl --ai 8 --seconds 60
 
 # Performance (M2): the cruise from the spawn, every frame at 60 Hz of game
 # time rendered and timed, no images: frame CPU, GPU by stage (timestamps)
@@ -708,6 +716,16 @@ the interim noted here until a later polish sweep.
   the idling engine; ours is about 15 dB, because our idle (0.022 RMS) is
   louder than the game's (0.008). Raising the radio clips under throttle
   (peak 1.12 at 1.8 times), so the engine's own level wants the look.
+- **AI drivers (before SPEC-RACE-AI).** Ours: pure pursuit on the line
+  with a blind lane offset, the line's speed times a skill, proportional
+  pedals. No avoidance between cars or of walls (in the 8-car run one car
+  in the right lane stops against something at 987 m), no rubber-banding,
+  no grid or race flow, and the cars are not drawn in carview yet. One
+  collision gather around the pack's middle serves every car. The physics
+  is the cost (46 to 74 us a car a step); the cars step one after another
+  on one thread (a worker pool is the next lever if a field grows). The
+  same exe ends a single-car run differently on the two machines (float
+  results differ by CPU), so runs are not bit-identical across machines.
 - **Radio details.** No snapshot levels (pause, loading, speed, place) and
   no engine duck under DJ lines; no RADIO VOLUME, RADIO DJ or saved station
   (the profile is not read yet); a clip's bytes are read on the main thread

@@ -30,6 +30,10 @@
 // or --gate x z nx nz. --physics-trace then writes every 60 Hz frame as a
 // mode-3 sample and ends with a dlc.rally.race_trace event, for
 // physics-behaviour.py compare.
+// --ai N --line <lap.jsonl> (with --world) runs N AI cars of --car on the
+// oracle's line (drive/ai_driver.h, M5 groundwork): staggered 15 m apart in
+// three lanes, each at a skill of 0.92 to 0.99 of the line's speed, and
+// prints the cost of the AI pass and of the cars' physics per 120 Hz step.
 // --materials prints the triangles per material name of the first gather
 // with our surface class.
 //
@@ -39,6 +43,7 @@
 // 0-100 km/h time, the top speed, the stopping distance from 100 km/h and
 // the rest pose. All physics constants are placeholders (libs/drive).
 
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -52,6 +57,7 @@
 
 #include "cars/bake_format.h"
 #include "cars/sources.h"
+#include "drive/ai_driver.h"
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive/mesh_ground.h"
@@ -79,6 +85,7 @@ const std::map<std::string, std::string> kRuns = {
 
 int main(int argc, char** argv) {
   fs::path bake_dir, script_path, trace_path, world_dir, cache_path, physics_trace_path, line_path, lap_json_path;
+  int ai_cars = 0;  // --ai N
   double settle = 2, lookahead_s = 0.5;
   bool have_gate = false, seconds_given = false;
   drive::Gate gate;
@@ -102,6 +109,10 @@ int main(int argc, char** argv) {
       seconds_given = true;
     }
     else if (a == "--line") line_path = next();
+    else if (a == "--ai") {
+      ai_cars = std::max(0, std::stoi(next()));
+      run = "lap";
+    }
     else if (a == "--lap-json") lap_json_path = next();
     else if (a == "--settle") settle = std::max(0.0, std::stod(next()));
     else if (a == "--lookahead") lookahead_s = std::stod(next());
@@ -313,6 +324,81 @@ int main(int argc, char** argv) {
                 streamer->uses_collision() ? collision.surface_name(under.surface).c_str() : "the render mesh");
     v.reset({s.position[0], s.position[1], s.position[2]}, s.heading);
     ground = &streamer->ground();
+  }
+  if (ai_cars > 0 && lap && streamer) {
+    const drive::RacingLine racing = drive::RacingLine::from_oracle(line);
+    const size_t n = size_t(ai_cars);
+    drive::AiField field(racing, n);
+    std::vector<drive::Vehicle> cars;
+    cars.reserve(n);
+    constexpr float kLanes[3] = {0.0f, 2.5f, -2.5f};
+    for (size_t i = 0; i < n; ++i) {
+      cars.emplace_back(params);
+      field.place(i, 5.0 + 15.0 * double(i), kLanes[i % 3], 0.99f - 0.01f * float(i % 8));
+      double x = 0, z = 0, h = 0, y = line.start.y;
+      field.start_pose(i, x, z, h);
+      double gy = y;
+      if (world::ground_height(streamer->ground(), x, z, y + 20, gy)) y = gy;
+      cars[i].reset({x, y + 0.5, z}, h);
+    }
+    std::vector<drive::AiCarState> states(n);
+    std::vector<drive::Input> inputs(n);
+    const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
+    std::vector<double> ai_us, phys_us;
+    ai_us.reserve(size_t(steps));
+    phys_us.reserve(size_t(steps));
+    double next_report = 10, next_stream = 1;
+    using clock = std::chrono::steady_clock;
+    for (int s = 0; s < steps; ++s) {
+      const auto t0 = clock::now();
+      for (size_t i = 0; i < n; ++i) states[i] = drive::ai_state(cars[i]);
+      field.drive(states, inputs);
+      const auto t1 = clock::now();
+      for (size_t i = 0; i < n; ++i) cars[i].step(inputs[i], streamer->ground());
+      const auto t2 = clock::now();
+      ai_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      phys_us.push_back(std::chrono::duration<double, std::micro>(t2 - t1).count());
+      const double t = (s + 1) * drive::Vehicle::kStep;
+      if (t >= next_stream) {
+        // The collision around the pack's middle (one gather for every car).
+        next_stream += 1;
+        double cx = 0, cz = 0;
+        for (const auto& c : cars) cx += c.position().x / double(n), cz += c.position().z / double(n);
+        if (!streamer->update(cx, cz, nullptr, &error)) {
+          std::fprintf(stderr, "drive: %s\n", error.c_str());
+          return 1;
+        }
+      }
+      if (t >= next_report) {
+        next_report += 10;
+        std::printf("t %.0f s:", t);
+        for (size_t i = 0; i < n; ++i)
+          std::printf(" [%zu %.0f m %.0f km/h %+.1f]", i, field.progress(i), cars[i].speed() * 3.6, field.cross_track(i));
+        std::printf("\n");
+      }
+    }
+    auto stats = [](std::vector<double> v, const char* what, size_t cars_n) {
+      std::sort(v.begin(), v.end());
+      double sum = 0;
+      for (double x : v) sum += x;
+      const double mean = v.empty() ? 0 : sum / double(v.size());
+      std::printf("%s per 120 Hz step: mean %.1f us, p50 %.1f, p99 %.1f, max %.1f (%.2f us a car; %.3f ms a 60 Hz "
+                  "frame)\n",
+                  what, mean, v.empty() ? 0 : v[v.size() / 2], v.empty() ? 0 : v[v.size() * 99 / 100],
+                  v.empty() ? 0 : v.back(), mean / double(cars_n), 2 * mean / 1000);
+    };
+    std::printf("ai: %zu cars on the oracle line (%.0f m, %zu points), %.0f s\n", n, racing.length(), racing.size(),
+                seconds);
+    stats(ai_us, "ai pass", n);
+    stats(phys_us, "physics", n);
+    double worst_cross = 0;
+    int finished = 0;
+    for (size_t i = 0; i < n; ++i) {
+      worst_cross = std::max(worst_cross, double(std::fabs(field.cross_track(i))));
+      finished += field.progress(i) >= racing.length() - 1;
+    }
+    std::printf("ai: %d of %zu at the line's end; last cross-track up to %.1f m\n", finished, n, worst_cross);
+    return 0;
   }
   if (lap) {
     // SPEC-CAR-PHYSICS, "Oracle lap for the M3 gate".
