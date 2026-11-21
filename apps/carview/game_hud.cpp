@@ -560,25 +560,21 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       pick = {0, last - 2, last - 1, last};
     }
     const float ty[] = {116, 143, 172, 200};
-    const double lead_time = r.rows[0].finished ? r.rows[0].time : r.clock;
     for (size_t k = 0; k < pick.size(); ++k) {
       const RaceHudRow& row = r.rows[pick[k]];
       const float y = g.T(ty[k]);
-      pill(l, g.R(944), y - 5 * s, g.R(1033), y + 19 * s, kPillGrey);
-      pill(l, g.R(1037), y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kPillGrey);
-      if (racing) {
-        std::string t;
-        if (pick[k] == 0) t = clock_ms(lead_time);
-        else if (row.finished && r.rows[0].finished) t = gap_ms(row.time - r.rows[0].time);
-        else if (row.gap >= 0) t = gap_ms(row.gap);
-        l.text(g.R(1027), y, t, font(ui::Font::kB, 14 * s, kText, Align::kRight));
-      }
+      // As the original's race frames show (out/oracle race-hud): one pill
+      // per row from x 1043 to 1213, the driver's name in B as written,
+      // right-aligned to 1181, the place in E right-aligned to 1206; no gap
+      // column.
+      pill(l, g.R(1043), y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kPillGrey);
       char pos[8];
       std::snprintf(pos, sizeof pos, "%d", row.place);
-      l.text(g.R(1046), y - 0.5f * s, pos, font(ui::Font::kE, 15 * s, kText));
-      TextStyle ns = font(ui::Font::kB, 14 * s, kText);
-      fit(row.name, ns, g.R(1207) - g.R(1068), 9 * s);
-      l.text(g.R(1068), y + (14 * s - ns.size) * 0.5f, row.name, ns);
+      l.text(g.R(1206), y - 0.5f * s, pos, font(ui::Font::kE, 15 * s, kText, Align::kRight));
+      TextStyle ns = font(ui::Font::kB, 14 * s, kText, Align::kRight);
+      ns.keep_case = true;
+      fit(row.name, ns, g.R(1181) - g.R(1052), 9 * s);
+      l.text(g.R(1181), y + (14 * s - ns.size) * 0.5f, row.name, ns);
     }
   }
   // GO!: 40 frames at the start signal.

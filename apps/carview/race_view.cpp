@@ -772,7 +772,14 @@ RaceHud RaceView::hud_info() const {
     RaceHudRow r;
     r.player = i == n;
     if (r.player) {
-      r.name = "YOU";
+      // The profile's name, as the original shows its gamertag: the
+      // SHIFT_PLAYER_NAME override, else the OS account's name, else User.
+      static const std::string me = [] {
+        for (const char* v : {"SHIFT_PLAYER_NAME", "USERNAME", "USER"})
+          if (const char* e = std::getenv(v); e && *e) return std::string(e).substr(0, 15);
+        return std::string("User");
+      }();
+      r.name = me;
     } else {
       r.name = cars_[i].who.driver.empty() ? std::string() : names_.text(cars_[i].who.driver);
       if (r.name.empty() || r.name.rfind("_&", 0) == 0) r.name = names_.short_name(cars_[i].who.car_media);
