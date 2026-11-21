@@ -814,17 +814,22 @@ the interim noted here until a later polish sweep.
   Tune with `SHIFT_BALANCE=r,g,b`.
 - **Yellow hill shells.** Done (2026-11-21). They were placeholder
   models (WORLD_MATERIALS, Placeholder models), and every material whose
-  slot 0 is _0x2CA9 is now skipped. Interim: one leaves a small hole to
-  the sky at (530, 207) of hill-2244-707; the question is with the spec.
+  slot 0 is _0x2CA9 is now skipped. The sky hole at (530, 207) of
+  hill-2244-707 was MIDDIST_06, a hill with no near terrain over it
+  (Q44e): the far ring now keeps MIDDIST triangles past 150 m of the
+  gather point (was 400; UberLOD stays at 600).
   `SHIFT_WORLD_PICK=x,y` with `--world-reference` prints the triangles
   and materials under a pixel.
 - **Camera details** (Q45). The slope term, pitch sign and speed-FOV
   factor. Interim: as in `libs/drive/src/cameras.cpp`.
 - **Cockpit interior.** Drawn (2026-11-21): the cockpit view shows the
-  `_cockpit` model from inside. Interims: the cabin techniques' texel times
-  0.12 (`kCabinShade`; their colour is a spec question with OpenFH1),
-  numbered copies (`bump_plastic2`) count as cabin, and the mirror glass is
-  flat dark grey (no reflection). The steering wheel doesn't turn and the
+  `_cockpit` model from inside. Cabin colour (2026-11-21, CARS "Cockpit
+  interior and mirrors"): interior_LOD0 at the sub-section's UV0, times
+  0.5 (plastic, cloth, solid), 0.35 (mottled) or 0.3 (bump_plastic), and
+  never the body atlas. Interims: leather, headliner and the other bump
+  techniques take 0.5; a cabin draw with no slot 1 (the R34's
+  `bump_plastic2` dash top) is near-black; numbered copies count as cabin;
+  the mirror glass is flat near-black (no rear-view render). The steering wheel doesn't turn and the
   needles stay at `_min`. The Abarth shows a small green triangle at the
   top right.
 - **Lamps.** CARS.md gives no brake-lamp rule. Interim: red covers and

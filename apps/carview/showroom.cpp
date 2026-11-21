@@ -813,6 +813,16 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           for (const char* c : kCabin)
             if (base_name == c) klass = MaterialClass::kInterior;
       }
+      // The cabin techniques' texel scale (CARS, Cockpit interior and
+      // mirrors: the effect defaults, then the car's lighting): plastic,
+      // cloth and solid 0.5, mottled 0.35, bump_plastic 0.3, gauges 1.
+      // Leather, headliner and the other bump techniques: 0.5 (ours).
+      if (klass == MaterialClass::kInterior) {
+        std::string base_name = technique;
+        while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
+        const float k = base_name == "mottled" ? 0.35f : base_name == "bump_plastic" ? 0.3f : 0.5f;
+        d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = k;
+      }
       d.push.params[0] = float(uint32_t(klass));
       d.push.params[1] = float(flags);
       d.textures = {t0 == UINT32_MAX ? 0u : t0, t1 == UINT32_MAX ? 0u : t1,
@@ -1548,9 +1558,7 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   auto draw = [&](const Draw& d) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
                             &material_sets_[d.descriptor], 0, nullptr);
-    ShowroomPush push = d.push;
-    if (uint32_t(push.params[0] + 0.5f) == uint32_t(MaterialClass::kInterior))
-      push.tint[0] = push.tint[1] = push.tint[2] = interior_shade_;
+    const ShowroomPush& push = d.push;
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(ShowroomPush), &push);
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
