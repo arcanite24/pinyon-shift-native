@@ -58,13 +58,59 @@ float dither_threshold() {
 }
 
 // The sky gradient (ours, linear): pale haze at the horizon to blue above.
-const vec3 kSkyHorizon = vec3(0.477, 0.604, 0.708);
-const vec3 kSkyZenith = vec3(0.089, 0.235, 0.571);
+const vec3 kSkyHorizon = vec3(0.42, 0.56, 0.72);
+const vec3 kSkyZenith = vec3(0.05, 0.16, 0.50);
 
 // The frame's lighting constants (daytime free-roam dump).
 const vec3 kSunColour = vec3(0.9695, 0.8358, 0.584);
 const vec3 kSkyColour = vec3(0.1687, 0.2229, 0.2746);
 const vec3 kGroundColour = vec3(0.1788, 0.1729, 0.1024);
+
+// The sky (ours, until a sky spec): the gradient, a warm glow and a disc
+// around the sun, and two layers of value-noise clouds on a plane above
+// the eye, thinning towards the horizon.
+float sky_hash(vec2 p) {  // no sin: stable at large coordinates
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+float sky_noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(sky_hash(i), sky_hash(i + vec2(1, 0)), f.x), mix(sky_hash(i + vec2(0, 1)), sky_hash(i + vec2(1, 1)), f.x),
+             f.y);
+}
+float sky_fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 5; ++i) {
+    v += a * sky_noise(p);
+    p = p * 2.03 + vec2(17.1, 9.2);
+    a *= 0.5;
+  }
+  return v;
+}
+vec3 sky_colour(vec3 dir, vec3 up, vec3 sun) {
+  float h = dot(dir, up);
+  float hc = clamp(h, 0.0, 1.0);
+  vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(hc, 0.55));
+  float toward = max(dot(dir, sun), 0.0);
+  // Haze warms towards the sun, low down.
+  sky = mix(sky, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - hc) * 0.55);
+  sky += kSunColour * (pow(toward, 64.0) * 0.6 + pow(toward, 900.0) * 6.0);
+  if (h > 0.02) {  // none lower: the clouds thin out to nothing there
+    // A plane 1 unit above: its point along dir, in the up frame.
+    vec3 side = normalize(abs(up.y) < 0.9 ? cross(up, vec3(0, 1, 0)) : cross(up, vec3(1, 0, 0)));
+    vec3 fwd = cross(side, up);
+    vec2 uv = vec2(dot(dir, side), dot(dir, fwd)) / (h + 0.08);
+    uv = clamp(uv, vec2(-40.0), vec2(40.0));
+    float c = sky_fbm(uv * 1.6);
+    float cover = smoothstep(0.48, 0.78, c) * smoothstep(0.02, 0.22, h);
+    vec3 cloud = mix(vec3(0.62, 0.65, 0.70), vec3(1.05, 1.0, 0.94), smoothstep(0.5, 0.9, c));
+    cloud += kSunColour * pow(toward, 8.0) * 0.35;
+    sky = mix(sky, cloud, cover * 0.85);
+  }
+  return sky * (h < 0.0 ? 0.85 : 1.0);
+}
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -103,9 +149,7 @@ void main() {
   uint blend = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
   if ((flags & kFlagSky) != 0u) {
-    float h = dot(normalize(v_position), normalize(draw.up.xyz));
-    vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(clamp(h, 0.0, 1.0), 0.6));
-    out_color = vec4(out_rgb(sky * (h < 0.0 ? 0.85 : 1.0)), 1.0);
+    out_color = vec4(out_rgb(sky_colour(normalize(v_position), normalize(draw.up.xyz), normalize(draw.sun.xyz))), 1.0);
     return;
   }
   // Cross-fades by the screen door (ours). A swapped-in scenery takes the

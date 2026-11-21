@@ -621,7 +621,11 @@ wasn't rechecked.
 
 With the vector HUD (`--bench --hud`, 2026-11-21, two runs): low GPU p50
 11.5 and 11.0, p95 12.9 and 14.0, max 15.9 ms; the UI pass 0.19-0.20 ms
-(0.14 on high).
+(0.14 on high). With the procedural sky (sun glow, value-noise clouds;
+ours until a sky spec): p50 10.5 and 10.5, p95 13.8 and 12.8, max 18.3 ms.
+The sky stage takes 1.28 ms (0.43 before): it shades every pixel before
+the world covers it. To do if the budget tightens: draw the sky after the
+opaque world, at the far depth only.
 
 On the UHD 620 (low) the GPU goes to the world's cut-outs (props'
 foliage and the tree sprites, 4.5 ms), its opaque draws (3.4 ms), the car
