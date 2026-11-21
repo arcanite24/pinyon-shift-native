@@ -747,8 +747,8 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           if (colour->metallic) flags |= kFlagMetallic;
           // The stripe constant on the exterior paint techniques of a
           // striped colour row (FORMAT-CARS, Paint).
-          if (colour->has_stripe && !(stock_ && stock_->race_livery) &&
-              (s.technique == "body" || s.technique == "body_2")) {
+          d.stripe_able = !(stock_ && stock_->race_livery) && (s.technique == "body" || s.technique == "body_2");
+          if (colour->has_stripe && d.stripe_able) {
             flags |= kFlagStripe;
             stripe_[0] = srgb_to_linear(float((colour->stripe_rgb >> 16) & 0xFF) / 255.0f);
             stripe_[1] = srgb_to_linear(float((colour->stripe_rgb >> 8) & 0xFF) / 255.0f);
@@ -1534,7 +1534,7 @@ void Showroom::preview_colour(size_t index) {
     uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
     for (int k = 0; k < 3; ++k) d.push.tint[k] = rgb[k];
     flags = c.metallic ? flags | kFlagMetallic : flags & ~kFlagMetallic;
-    if (!c.has_stripe) flags &= ~kFlagStripe;
+    flags = c.has_stripe && d.stripe_able ? flags | kFlagStripe : flags & ~kFlagStripe;
     d.push.params[1] = float(flags);
   }
 }

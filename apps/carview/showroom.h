@@ -338,6 +338,7 @@ class Showroom {
     uint32_t descriptor = 0;
     bool glass = false;
     bool brake_lamp = false;  // a tail-lamp part's lamp or red cover
+    bool stripe_able = false;  // an exterior paint draw a striped colour row tints (FORMAT-CARS, Paint)
     std::array<float, 3> centre{};  // car space, for sorting glass
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
     bool spins = false;  // rims, tyres and rotors roll; callipers do not
