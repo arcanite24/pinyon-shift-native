@@ -1041,3 +1041,15 @@ an archive?). Needed: its archive and member, and how an event names its
 mode (CareerEventTypes.RaceModeId?). Meanwhile: the distribution from the
 career type (headline: winner takes all; street and nemesis: top three;
 else the default split).
+
+## Q53 (M5, blocking the gate): the AI's speed planning rule
+
+SPEC-RACE-AI gives the AI's target speed as a measured fit (corner
+acceleration cornering x 1.7 g, braking x 2.0 g, fitted on FR22's R34).
+With it FR22 passes (AI mean +0.6 %), but the other oracle races are slow:
+FR16 +5 to 8 % (rear-drive cars), STREET_PLNS_002 +10 %, NR02 (a
+Challenger at skill 31) +23 %. Needed: how the title's AI plans its speed
+along the line (what it reads per car: grip, mass, power, aero; how
+cornering and braking scale it; any look-ahead or per-segment speed table
+in the line file or the car), with an oracle trace of target against
+actual speed on one more car. Meanwhile: the fit.
