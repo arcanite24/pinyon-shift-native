@@ -1604,3 +1604,27 @@ headlamps: when they are on (time of day, always) and what they draw
 light on the road); (c) the glow's intensity and blend against the post
 chain's exposure. A shader/technique list with parameter names is
 enough; no capture needed.
+
+## Q58 (M1/M5/M6): string tables and fonts
+
+FORMAT-STRINGTABLES answered in docs/formats/STRINGTABLES.md ebae56f2
+(horizon1-recomp): `.str` = big-endian `LSB2`, 36-byte header, strings
+chunk of sorted (u16 key, u32 char offset) entries with a 0xFFFF
+sentinel and a UTF-16BE pool; `_&N` = H(table) * 65536 + H(IDS_ name),
+H a 16-bit rotate-XOR hash over the lower-cased name; load disc
+`<LANG>.zip`, then v4 `stringtables/<lang>/`, then each pack's
+`StringTables_pri_<q>` by ascending q, a later table replacing an
+earlier one whole. 5,498 of 5,501 merged references resolve, all 250
+`Data_Car` DisplayName and ModelShort. Missing-id behaviour, markup
+rendering and the role of `stringtables.xml` are open with interims.
+
+Font estimate (not decoded further): `media/ui/Fonts.zip`
+`*_vector_aa.dt` are CAFF containers with a `vfont` asset: a code-point
+hash table, metrics, 40-byte glyph records (237 glyphs, 303 in the
+Cyrillic `*ru` variants) and half-float triangle meshes with curve
+coordinates, coverage from u^2 - v in the shader. Neither outlines nor
+an SDF. docs/UI_ASSETS.md already describes it, so a FORMAT-FONTS doc is
+worth it and cheap: about 1 to 2 h, confidence high (glyph encoding
+probable). Alternative: ship an open (OFL) font; quickest, but no
+installed font matched the advances within 5 %, so layout would shift.
+CJK text uses separate bitmap fonts in `media/ui/fonts` either way.
