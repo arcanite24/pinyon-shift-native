@@ -210,4 +210,26 @@ bool event_census(const std::filesystem::path& game_root, EventCensus& out, std:
   return true;
 }
 
+bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error) {
+  Db db;
+  if (!db.open(game_root, error)) return false;
+  out.clear();
+  return db.each(
+      "select e.HorizonEventID, e.CareerTypeId, t.RibbonConfiguration, t.RouteId, r.NumLaps, "
+      "(select count(*) from EventParticipants p where p.EventID = e.Id) "
+      "from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId order by e.HorizonEventID",
+      {},
+      [&](sqlite3_stmt* s) {
+        EventSummary e;
+        e.horizon_id = txt(s, 0);
+        e.career_type = int(i64(s, 1));
+        e.ribbon = int(i64(s, 2));
+        e.route_id = int(i64(s, 3));
+        e.laps = std::max(1, int(i64(s, 4)));
+        e.opponents = int(i64(s, 5));
+        out.push_back(std::move(e));
+      },
+      error);
+}
+
 }  // namespace race

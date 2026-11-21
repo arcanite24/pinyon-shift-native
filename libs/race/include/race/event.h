@@ -82,4 +82,12 @@ struct EventCensus {
 };
 bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error);
 
+// One line a race for the all-events census (SPEC-EVENTS, Race type):
+// Events.CareerTypeId and Tracks.RibbonConfiguration name the race type.
+struct EventSummary {
+  std::string horizon_id;
+  int career_type = 0, ribbon = 0, route_id = 0, laps = 1, opponents = 0;
+};
+bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error);
+
 }  // namespace race
