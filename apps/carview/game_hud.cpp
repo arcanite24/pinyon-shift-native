@@ -405,8 +405,14 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
     const float a = 1 - clamp01((r.clock - 0.5) / 0.17);
     shadowed(l, g.C(637.5f), g.T(230), "GO!", font(ui::Font::kE, 64 * s, ui::fade(kText, a), Align::kCenter), s);
   }
-  // Wrong way (ours): a pulsing red plate, top centre.
-  if (racing && r.wrong_way) {
+  // Wrong way: 947_HUD's WrongWay sign (WRONGWAYICON, 582,174-698,290),
+  // pulsing (ours: the scene's animation is not read); without the
+  // texture, a red plate.
+  std::array<float, 4> ww_uv;
+  if (racing && r.wrong_way && ui_texture("HUD/WRONGWAYICON", ww_uv)) {
+    const float pulse = 0.75f + 0.25f * float(std::cos(r.clock * 6.2832 * 1.5));
+    l.image(g.C(582), g.T(174), g.C(698), g.T(290), ww_uv, ui::fade(rgba(255, 255, 255), pulse));
+  } else if (racing && r.wrong_way) {
     const float pulse = 0.75f + 0.25f * float(std::cos(r.clock * 6.2832 * 1.5));
     const TextStyle ws = font(ui::Font::kE, 30 * s, kText, Align::kCenter);
     const float ww = ui::List::measure("WRONG WAY", ws) + 60 * s, wy = g.T(140);
