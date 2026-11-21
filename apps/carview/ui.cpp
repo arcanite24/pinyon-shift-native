@@ -143,7 +143,30 @@ uint32_t fade(uint32_t c, double k) {
   return (c & 0x00FFFFFFu) | uint32_t(std::lround(a)) << 24;
 }
 
+void List::turned(float& x, float& y) const {
+  const float c = std::cos(turn_a_), s = std::sin(turn_a_), dx = x - turn_x_, dy = y - turn_y_;
+  x = turn_x_ + c * dx - s * dy, y = turn_y_ + s * dx + c * dy;
+}
+
 void List::rect(float x0, float y0, float x1, float y1, uint32_t color, float radius, uint32_t color2) {
+  if (turn_a_ != 0) {
+    std::array<float, 4> white;
+    static const std::array<uint8_t, 64> kWhite = [] { std::array<uint8_t, 64> w; w.fill(255); return w; }();
+    if (radius <= 0 && (!color2 || color2 == color) &&
+        (atlas_find("ui.white", white) || atlas_image("ui.white", 4, 4, kWhite, white))) {
+      float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
+      turned(cx, cy);
+      const float du = 0.25f * (white[2] - white[0]), dv = 0.25f * (white[3] - white[1]);
+      const float a = turn_a_;
+      turn_a_ = 0;
+      image_rotated(cx, cy, 0.5f * (x1 - x0), 0.5f * (y1 - y0), a, {white[0] + du, white[1] + dv, white[2] - du, white[3] - dv}, color);
+      turn_a_ = a;
+      return;
+    }
+    float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1), ox = cx, oy = cy;
+    turned(cx, cy);
+    x0 += cx - ox, x1 += cx - ox, y0 += cy - oy, y1 += cy - oy;
+  }
   items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {0, 0, 0, 0}, color, color2 ? color2 : color, kRoundRect, 0});
 }
 
@@ -182,11 +205,13 @@ void List::arc(float cx, float cy, float radius, float width, float a0, float a1
 }
 
 void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint, float radius) {
+  if (turn_a_ != 0) return image_rotated(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (x1 - x0), 0.5f * (y1 - y0), 0, uv, tint);
   items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint, kImage, 0});
 }
 
 void List::image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv, uint32_t tint) {
   if (hw <= 0 || hh <= 0) return;
+  if (turn_a_ != 0) turned(cx, cy), angle += turn_a_;
   const float c = std::fabs(std::cos(angle)), s = std::fabs(std::sin(angle));
   const float ex = c * hw + s * hh + 1, ey = s * hw + c * hh + 1;
   items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey}, {0, hw, hh, angle}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint,
@@ -378,13 +403,8 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
           float gx = pen + e->left * scale, gy = base + e->top * scale;
           if (scale == 1.0f) gx = std::round(gx), gy = std::round(gy);
           const float inv = 1.0f / float(kAtlasSize);
-          items_.push_back({{gx, gy, gx + (e->u1 - e->u0) * scale, gy + (e->v1 - e->v0) * scale},
-                            {0, 0, 0, 0},
-                            {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv},
-                            s.color,
-                            s.color,
-                            kImage,
-                            0});
+          image(gx, gy, gx + (e->u1 - e->u0) * scale, gy + (e->v1 - e->v0) * scale,
+                {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, s.color);
         }
       }
       pen += (g ? g->advance : font.space_width) * k + s.tracking * s.size;

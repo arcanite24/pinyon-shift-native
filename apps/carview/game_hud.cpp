@@ -611,67 +611,98 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
 
 // (c) After the finish: the FINISHED banner with the place, then the cash
 // reward page.
+// The post-race and pause scenes' RotationHelper / Option_List: 0.052 rad,
+// rising to the right (FORMAT-UISCENES; the frames agree). Each element
+// turns about its own measured centre, so the measured rects hold.
+constexpr float kTilt = -0.052f;
+struct Turn {
+  ui::List& l;
+  Turn(ui::List& list, float cx, float cy, float a = kTilt) : l(list) { l.turn(cx, cy, a); }
+  ~Turn() { l.unturn(); }
+};
+
 void results(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
   const double since = r.clock - r.finish_time;
   if (r.results_page == 0) {
     const float in = ease_in_time(since, 0, 0.35);
     const float dx = (1 - in) * -120 * s;
-    brush(l, dx, g.T(204), g.L(753) + dx, g.T(337), kPink);
-    brush(l, g.L(75) + dx, g.T(167), g.L(383) + dx, g.T(233), kBrush);
-    TextStyle fs = font(ui::Font::kE, 45 * s, kText);
-    fit(str("InGame", "IDS_Finished", "FINISHED"), fs, g.L(372) - g.L(85), 20 * s);
-    l.text(g.L(85) + dx, g.T(171), str("InGame", "IDS_Finished", "FINISHED"), fs);
-    const int place = r.stage ? r.stage_place : r.place;
-    char p[16];
-    std::snprintf(p, sizeof p, "%d%s ", place, place_suffix(place));
-    const std::string text = p + str("InGame", "IDS_Place", "PLACE");
-    TextStyle ps = font(ui::Font::kE, 80 * s, kText);
-    fit(text, ps, g.L(735) - g.L(95), 30 * s);
-    l.text(g.L(95) + dx, g.T(230) + (80 * s - ps.size) * 0.5f, text, ps);
+    {
+      Turn t(l, g.L(376) + dx, g.T(270));
+      brush(l, dx, g.T(204), g.L(753) + dx, g.T(337), kPink);
+      const int place = r.stage ? r.stage_place : r.place;
+      char p[16];
+      std::snprintf(p, sizeof p, "%d%s ", place, place_suffix(place));
+      const std::string text = p + str("InGame", "IDS_Place", "PLACE");
+      TextStyle ps = font(ui::Font::kE, 80 * s, kText);
+      fit(text, ps, g.L(735) - g.L(95), 30 * s);
+      l.text(g.L(95) + dx, g.T(230) + (80 * s - ps.size) * 0.5f, text, ps);
+    }
+    {
+      Turn t(l, g.L(229) + dx, g.T(200));
+      brush(l, g.L(75) + dx, g.T(167), g.L(383) + dx, g.T(233), kBrush);
+      TextStyle fs = font(ui::Font::kE, 45 * s, kText);
+      fit(str("InGame", "IDS_Finished", "FINISHED"), fs, g.L(372) - g.L(85), 20 * s);
+      l.text(g.L(85) + dx, g.T(171), str("InGame", "IDS_Finished", "FINISHED"), fs);
+    }
     help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
     help_item(l, g, 195, 307, 653, 689, "Y", kAccent, str("HelpButtons", "IDS_RestartMenu", "RESTART"));
     return;
   }
   // The cash reward.
   l.rect(0, 0, g.w, g.h, rgba(0, 0, 0, 90));
-  brush(l, g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
-  TextStyle ts = font(ui::Font::kE, 57 * s, kText);
-  const std::string title = str("ScreenTitles", "IDS_PostRace_Winnings", "CASH REWARD");
-  fit(title, ts, g.L(519) - g.L(108), 24 * s);
-  l.text(g.L(108), g.T(151), title, ts);
+  {
+    Turn t(l, g.L(313), g.T(180));
+    brush(l, g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
+    TextStyle ts = font(ui::Font::kE, 57 * s, kText);
+    const std::string title = str("ScreenTitles", "IDS_PostRace_Winnings", "CASH REWARD");
+    fit(title, ts, g.L(519) - g.L(108), 24 * s);
+    l.text(g.L(108), g.T(151), title, ts);
+  }
   const std::string cr = str("UnitStrings", "IDS_Units_Credits", "Cr");
-  auto tag = [&](float x1, float y, int64_t v, float size) {
-    TextStyle vs = font(ui::Font::kE, size * s, kText, Align::kRight);
-    vs.keep_case = true;
-    const std::string t = thousands(v) + " " + cr;
-    const float tw = ui::List::measure(t, vs);
-    brush(l, x1 - tw - 12 * s, y - 5 * s, x1 + 6 * s, y + (size + 5) * s, kPink);
-    l.text(x1, y, t, vs);
-  };
-  // The breakdown: the place's prize (the title's other lines, the
-  // bonuses, are not ours yet).
+  // The breakdown (SPEC-UI-LAYOUTS c): labels in B 20 from x 148 at rows
+  // 243, 271, 299 on dark tape, each value on a pink tag just after its
+  // label. SPEC-EVENT-REWARDS: the finish prize, then Mileage and
+  // Difficulty & assists, whose values are not decoded (0 and +0%).
   char line[48];
   const int place = r.stage ? r.stage_place : r.place;
-  std::snprintf(line, sizeof line, "%d%s %s", place, place_suffix(place), str("InGame", "IDS_Place", "PLACE").c_str());
-  l.rect(g.L(140), g.T(236), g.L(880), g.T(268), kBlack60);
-  l.text(g.L(148), g.T(243), line, font(ui::Font::kB, 20 * s, kText));
-  tag(g.L(870), g.T(244), r.credits, 18);
+  std::snprintf(line, sizeof line, "%s %d%s", str("InGame", "IDS_Finished", "FINISHED").c_str(), place, place_suffix(place));
+  const std::pair<std::string, std::string> rows[] = {
+      {line, thousands(r.credits) + " " + cr},
+      {str("OnlineRewards", "IDS_Mileage_Bonus_Heading", "MILEAGE BONUS"), "0 " + cr},
+      {str("OnlineRewards", "IDS_Difficulty_Bonus_Heading", "DIFFICULTY & ASSISTS BONUS"), "+0%"}};
+  for (int i = 0; i < 3; ++i) {
+    const float y = g.T(243 + 28.0f * i);
+    const TextStyle ls = font(ui::Font::kB, 20 * s, kText);
+    TextStyle vs = font(ui::Font::kE, 18 * s, kText);
+    vs.keep_case = true;
+    const float lw = ui::List::measure(rows[i].first, ls), vw = ui::List::measure(rows[i].second, vs);
+    Turn t(l, g.L(148) + 0.5f * lw, y + 10 * s);
+    brush(l, g.L(140), y - 4 * s, g.L(148) + lw + 6 * s, y + 24 * s, kBrush);
+    l.text(g.L(148), y, rows[i].first, ls);
+    const float vx = g.L(148) + lw + 10 * s;
+    brush(l, vx - 4 * s, y - 2 * s, vx + vw + 6 * s, y + 21 * s, kPink);
+    l.text(vx, y + 1 * s, rows[i].second, vs);
+  }
   // TOTAL and its value.
   const float count = ease_in_time(since, 0.3, 1.0);
   {
+    Turn tn(l, g.L(295), g.T(430));
     const std::string t = str("OnlineRewards", "IDS_Total", "TOTAL");
     TextStyle ts = font(ui::Font::kE, 75 * s, kText);
     fit(t, ts, g.L(449) - g.L(140), 30 * s);
     l.text(g.L(140), g.T(390) + (75 * s - ts.size), t, ts);
   }
+  Turn tv(l, g.L(678), g.T(412));
   brush(l, g.L(476), g.T(360), g.L(880), g.T(464), kPink);
   TextStyle vs = font(ui::Font::kE, 70 * s, kText, Align::kRight);
   vs.keep_case = true;
   const std::string total = thousands(int64_t(std::llround(double(r.credits) * count))) + " " + cr;
   fit(total, vs, g.L(860) - g.L(490), 30 * s);
   l.text(g.L(860), g.T(377) + (70 * s - vs.size) * 0.5f, total, vs);
+  l.unturn();
   if (r.balance >= 0) {
+    Turn tb(l, g.L(280), g.T(497));
     l.rect(g.L(150), g.T(475), g.L(410), g.T(520), kLight);
     TextStyle bs = font(ui::Font::kB, 16 * s, kDark);
     l.text(g.L(162), g.T(490), str("OnlineRewards", "IDS_Balance", "BALANCE"), bs);
@@ -723,6 +754,8 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   const int n = int(st.menu.size());
   const int fit_rows = std::max(1, int((g.B(610) - g.T(186)) / (50 * s)) + 1);
   const int first = std::clamp(st.menu_selected - fit_rows / 2, 0, std::max(0, n - fit_rows));
+  // 925_PAUSE_MENU's Option_List turns the rows 0.052 rad about its first.
+  Turn list_turn(l, g.L(226), g.T(165));
   for (int i = first; i < n && i < first + fit_rows; ++i) {
     const bool sel = i == st.menu_selected;
     // The selected brush is taller: the items from it down move 12 px.
@@ -739,6 +772,7 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
       l.text(g.L(188), bottom - it.size, item, it);
     }
   }
+  l.unturn();
   // The help bar.
   help_item(l, g, 70, 168, 654, 684, "A", kGreen, str("HelpButtons", "IDS_Select", "SELECT"));
   help_item(l, g, 173, 275, 654, 684, "B", kRed, str("HelpButtons", "IDS_Resume", pause ? "RESUME" : "BACK"));

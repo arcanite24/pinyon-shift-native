@@ -97,7 +97,12 @@ struct TextStyle {
 
 class List {
  public:
-  void clear() { items_.clear(); }
+  void clear() { items_.clear(), turn_a_ = 0; }
+  // Turns what follows `angle` radians clockwise about (cx, cy) until
+  // unturn(): images and the game fonts' glyphs turn; flat rects (radius 0)
+  // turn as quads; other shapes only move with the turn.
+  void turn(float cx, float cy, float angle) { turn_x_ = cx, turn_y_ = cy, turn_a_ = angle; }
+  void unturn() { turn_a_ = 0; }
   std::span<const Instance> items() const { return items_; }
   bool empty() const { return items_.empty(); }
 
@@ -121,6 +126,9 @@ class List {
 
  private:
   std::vector<Instance> items_;
+  float turn_x_ = 0, turn_y_ = 0, turn_a_ = 0;
+  // A point under the turn.
+  void turned(float& x, float& y) const;
 };
 
 // The CPU rasterizer: `out` (sRGB RGBA8, width x height) gets the list
