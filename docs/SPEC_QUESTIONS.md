@@ -998,6 +998,12 @@ The AI line is open and runs past both ends. Needed: how a lap is
 counted and where cars rejoin (do they U-turn, or is the lap a there and
 back?). Meanwhile: not run.
 
+answered in SPEC-EVENTS (laps on an open route) ffe6ef0f: NumLaps is
+ignored on a ribbon-2 route; the race is one run from the grid to the
+sprint finish, the HUD shows progress in percent, opponents stop after
+finishing (FR24 and FR01 measured; probable for all seven). Open: the
+field that decides it (interim: RibbonConfiguration 2), FR37 on ribbon 0.
+
 ## Q49 (M5): rubber-band mode ids and Amount, AI grip on dirt
 
 SPEC-RACE-AI draws modes 1 to 7 from AIRubberbandModeChoices but gives
