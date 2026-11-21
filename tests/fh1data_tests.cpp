@@ -404,8 +404,17 @@ void test_world_textures() {
   caff[0x1B5] = 32;
   caff[0x1B7] = 16;
   caff[0x1C0] = 6;
+  // The block size (0x40) to the source path's length: Colorado's 100
+  // bytes put the texels at 0x2B0, ColoradoDirt's 118 at 0x2C4.
+  caff[0x1C7] = 0x40;
+  caff[0x207] = 100;
   CHECK(fh1::decode_caff(caff, tex, &error, &exact) && exact && tex.blocks.levels.size() == 6);
   CHECK(!fh1::world_texture_has_cutout(tex));
+  caff[0x207] = 118;
+  caff.insert(caff.begin() + 0x2B0, 20, uint8_t(0));
+  fh1::CaffHeader ch;
+  CHECK(fh1::parse_caff_header(caff, ch, &error) && ch.payload_offset == 0x2C4);
+  CHECK(fh1::decode_caff(caff, tex, &error, &exact) && exact && tex.blocks.levels.size() == 6);
 }
 
 void test_render_model() {

@@ -981,11 +981,14 @@ the interim noted here until a later polish sweep.
   autopilot, the R34 took 158.8 s on route 7 (47th of 50, field 139 to
   160 s) and 130.5 s on the heats, route 24.
   Interims:
-  - The heats' best times add up to 86 s, against about 130 s driven,
-    so their finish may sit earlier.
-  - The finish rule is ours; the spec's interim is the line's end, and
-    these lines run past the stage.
-  - 8 CAFF textures fail the layout check and draw flat.
+  - The finish at FinishLine x Length past the start is the spec's rule
+    (Q56 a). The heats' timing rows are placeholders (Q56 b): their field
+    times come from the row's total, so the field runs about 35 % fast.
+  - CAFF texels start after the source path (Q56 c; 0x2C4 on
+    ColoradoDirt, was a fixed 0x2B0).
+  - A headless sweep (2026-11-21) opened and finished all 29 stages. On
+    route 18 autopilot's 101.9 s beats the whole field (123 to 141 s):
+    check for an early finish or a cut.
   - Not done yet: championships (four stages totalled), Rally XP and
     level, entry gates (yellow wristband, Rally-upgraded car), the
     stage's own car, the co-driver and a stage-results screen.

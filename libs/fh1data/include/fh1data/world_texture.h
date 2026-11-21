@@ -41,8 +41,11 @@ struct BixHeader {
 bool parse_bix_header(std::span<const uint8_t> bix, BixHeader& out, std::string* error);
 
 // The CAFF fields WORLD-MATERIALS gives: the format word at 0x1A8, width and
-// height (u16) at 0x1B4 and 0x1B6, the level count (u8) at 0x1C0, texels
-// from 0x2B0 to the end.
+// height (u16) at 0x1B4 and 0x1B6, the level count (u8) at 0x1C0, and the
+// texels from the payload offset to the end: the block size B (u32 at
+// 0x1C4); at 0x1C4 + B the source path's length L, the path 8 bytes later,
+// then 0x40 bytes, then the texels at the next 4-byte boundary (0x2B0 on
+// Colorado's 100-byte paths, 0x2C4 on ColoradoDirt's 118).
 struct CaffHeader {
   uint32_t width = 0, height = 0, levels = 0, format_word = 0;
   size_t payload_offset = 0x2B0;

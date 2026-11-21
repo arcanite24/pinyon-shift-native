@@ -66,6 +66,11 @@ bool parse_caff_header(std::span<const uint8_t> bin, CaffHeader& out, std::strin
   out.width = load_be16(&bin[0x1B4]);
   out.height = load_be16(&bin[0x1B6]);
   out.levels = bin[0x1C0];
+  const size_t path_at = 0x1C4 + size_t(load_be32(&bin[0x1C4]));
+  if (path_at + 4 > bin.size()) return fail(error, "CAFF texture: block size past the end");
+  const size_t texels = (path_at + 8 + size_t(load_be32(&bin[path_at])) + 0x40 + 3) & ~size_t(3);
+  if (texels > bin.size()) return fail(error, "CAFF texture: source path past the end");
+  out.payload_offset = texels;
   if (out.width == 0 || out.height == 0 || out.width > 4096 || out.height > 4096 ||
       out.levels == 0 || out.levels > 13)
     return fail(error, "CAFF texture header out of range");
