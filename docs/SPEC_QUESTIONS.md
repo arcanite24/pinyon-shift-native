@@ -1370,3 +1370,18 @@ timed field, unlock chain, XP and level tables, 10 twins; block 2
 preserved. Interims: stage finish at AI-line progress 1, AI times =
 best / f(skill, difficulty), XP per championship place, credits and
 the Rally-upgraded test guessed.
+
+## Q55 (M5, blocking the gate): AI contact and resets in the oracle races
+
+Six of ten events pass the 3 % AI mean time; FR24, FR01, NR02 and
+EXHIBITION_FEST_003 fail (115.7/110.8, 107.7/102.7, 135.2/130.7,
+212.5/179.0 s). Our front runners sit 1 to 3 s off the oracle's; the
+loss is the tail (the oracle's field spans 3.8 s first to last, ours 10
+to 15 s), from 3 to 6 resets a run after AI-to-AI contact (800 to 3,500
+contact steps a race). Needed, from the oracle captures of those four
+races: (a) how many AI resets ("hand of God") happen, per car; (b)
+whether AI-to-AI contacts are softened or skipped (a collision scale,
+mass ratio or ghosting between AI cars in the tunables or the records);
+(c) EXHIBITION's Minis: anything that lifts or stiffens the AI ride on
+that event (they bottom out braking into the dip at 2,700 m). Interim
+meanwhile: the spec's reset rule as written, full AI-to-AI contact.
