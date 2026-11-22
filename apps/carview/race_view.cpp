@@ -32,6 +32,16 @@ const char* ordinal(int p) {
 // SPEC-RACE-AI, AI car upgrades: the faked PI each AI aims at, with P the
 // player's and C the car's shown points and the class lo..hi: P pulled 5
 // inside the class plus the offset r, else C + 300 when P is further above.
+// SPEC-RACE-AI's steering at speed (the slip rule); opt-in via
+// SHIFT_AI_STEER=slip while pure pursuit under the pad's lock stays default.
+bool slip_rule() {
+  static const bool on = [] {
+    const char* e = std::getenv("SHIFT_AI_STEER");
+    return e && std::string(e) == "slip";
+  }();
+  return on;
+}
+
 int faked_target(int P, int C, int lo, int hi, int r) {
   if (P > C + 300) return C + 300;
   int t = P;
@@ -236,7 +246,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   const auto opp = race::opponent_slots(player_slot_, cars - 1);
   session_ = std::make_unique<race::Session>(size_t(cars), circuit_, laps, *gate, finish);
   field_ = std::make_unique<drive::AiField>(line_.line, size_t(cars),
-                                            drive::AiField::Options{.full_gas = true, .off_line_slow = 0.08f});
+                                            drive::AiField::Options{.full_gas = true, .off_line_slow = 0.08f, .slip_rule = slip_rule()});
   const double from = circuit_ ? line_.gate_progress - 0.5 * line_.lap_length : std::max(0.0, line_.gate_progress - 1500);
   cars_.clear();
   cars_.resize(size_t(cars - 1));
@@ -596,7 +606,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     drive::Input in = inputs_[k];
     // Held on the grid; revving from 3.09 s before the signal, clutch dropped at it.
     if (clock < 0) in = clock >= -3.09 ? drive::Input{0, 1, 1, true} : drive::Input{0, 0, 0.4, true};
-    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in);
+    else drive::ai_traction(*c.body, c.traction_cap, drive::Vehicle::kStep, in, !slip_rule());
     const double boost = race::start_boost(c.slot, int(grid_cars), field_->progress(k) - c.start_progress);
     c.body->set_torque_factor(c.ai.torque() * (1 + boost));
     // The gathered collision covers `radius` round (cx, cz); outside it
@@ -752,6 +762,13 @@ RaceHud RaceView::hud_info() const {
   // The event's name from the string tables; its id without one.
   h.event = event_.name.empty() ? event_.horizon_id : names_.text(event_.name);
   if (h.event.empty() || h.event.rfind("_&", 0) == 0) h.event = event_.horizon_id;
+  switch (event_.style) {
+    case 2: h.event_type = "STREET RACE"; break;
+    case 3: h.event_type = "SHOWCASE"; break;
+    case 5: h.event_type = "STAR SHOWDOWN"; break;
+    case 6: h.event_type = "HORIZON FINALE"; break;
+    default: h.event_type = "FESTIVAL RACE"; break;
+  }
   h.circuit = circuit_;
   h.stage = have_stage_track_;
   h.clock = s.clock();
@@ -771,6 +788,10 @@ RaceHud RaceView::hud_info() const {
   if (s.finished(n)) {
     h.phase = RaceHud::kFinished;
     h.finish_time = me.finish;
+    h.base_credits = award_ ? award_->base_credits : credits_for(me.place);
+    h.mileage_bonus = award_ ? award_->mileage_bonus : 0;
+    h.difficulty_pct = award_ ? award_->difficulty_pct : race::difficulty_bonus_percent(int(o_.difficulty));
+    h.difficulty_bonus = award_ ? award_->difficulty_bonus : 0;
     h.credits = award_ ? award_->credits : credits_for(me.place);
     h.wristband = award_ ? award_->wristband_points : 0;
     h.stage_place = stage_place_;
@@ -868,8 +889,22 @@ const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::W
   const auto& c = session_->car(n);
   award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
                             event_.cash_prize, int(session_->size()), c.place, true, c.finish, top_speed,
-                            event_.prize_car, tables);
+                            event_.prize_car, tables, race::difficulty_bonus_percent(int(o_.difficulty)), c.distance);
   return &*award_;
+}
+
+void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
+  out.clear();
+  if (!session_) return;
+  const auto ord = session_->order();
+  const size_t lead_idx = ord.empty() ? cars_.size() : ord[0];
+  for (size_t i = 0; i < cars_.size(); ++i) {
+    if (!cars_[i].body) continue;
+    const drive::Vec3 p = cars_[i].body->position();
+    std::string nm = cars_[i].who.driver.empty() ? std::string() : names_.text(cars_[i].who.driver);
+    if (nm.empty() || nm.rfind("_&", 0) == 0) nm = names_.short_name(cars_[i].who.car_media);
+    out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), std::move(nm), i == lead_idx});
+  }
 }
 
 std::string RaceView::results() const {

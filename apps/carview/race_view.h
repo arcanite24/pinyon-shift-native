@@ -108,6 +108,17 @@ class RaceView {
   const race::Session& session() const { return *session_; }
   // The opponents' positions (x, z), for the maps.
   void opponent_positions(std::vector<std::array<double, 2>>& out) const;
+  // Opponents' 3D world positions + names + leader flag (for overhead tags and skill detection).
+  struct OpponentTag {
+    double x = 0, y = 0, z = 0;
+    double speed = 0;
+    std::string name;
+    bool leader = false;
+  };
+  void opponent_tags(std::vector<OpponentTag>& out) const;
+  // Allows updating difficulty on the pre-race grid menu before the race starts.
+  void set_difficulty(race::Difficulty d) { o_.difficulty = d; }
+  race::Difficulty difficulty() const { return o_.difficulty; }
   // The race's line (x, z) from 150 m behind the player to 600 m ahead,
   // up to the finish, for the minimap's route.
   void route_near(std::vector<std::array<double, 2>>& out) const;

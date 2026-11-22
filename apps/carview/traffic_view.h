@@ -42,6 +42,7 @@ class TrafficView {
   // car model frame).
   void place(const cars::bake::CarInfo& player_info, const drive::Vehicle& player);
   size_t active() const { return population_ ? population_->cars().size() : 0; }
+  const std::vector<traffic::Car>* cars() const { return population_ ? &population_->cars() : nullptr; }
   size_t bodies() const { return bodies_ ? bodies_->count() : 0; }
   // The largest impulse traffic gave the player's car in the last step (N s).
   double player_impulse() const { return bodies_ ? bodies_->player_impulse() : 0; }

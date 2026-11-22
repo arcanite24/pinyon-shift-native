@@ -174,20 +174,37 @@ HudImage draw_radio_popup(const RadioPopupState& st, int height) {
   return img;
 }
 
-const char* PauseMenu::label(int item) {
-  switch (item) {
-    case kResume: return "resume";
-    case kMap: return "map";
-    case kEvent: return "race";
-    case kChangeCar: return "change car";
-    case kUpgrades: return "upgrades";
-    case kPaint: return "paint";
-    case kClub: return "1000 club";
-    case kAutoshow: return "autoshow";
-    case kCareer: return "career";
-    case kSettings: return "settings";
-    case kReset: return "reset to road";
-    case kQuit: return "quit";
+std::vector<PauseMenu::Action> PauseMenu::items() const {
+  if (in_race) {
+    return {kResume, kRestartRace, kMap, kDifficulty, kSettings, kQuitRace};
+  }
+  return {kResume, kMap, kEvents, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kSettings, kQuitToTitle};
+}
+
+PauseMenu::Action PauseMenu::selected_action() const {
+  const auto list = items();
+  if (list.empty()) return kResume;
+  return list[size_t(std::clamp(selected, 0, int(list.size()) - 1))];
+}
+
+std::string PauseMenu::label(Action a) const {
+  switch (a) {
+    case kResume: return "RESUME";
+    case kMap: return "MAP";
+    case kEvents: return !events_label.empty() ? events_label : "EVENTS";
+    case kGarage: return "GARAGE";
+    case kUpgrades: return "UPGRADES";
+    case kPaint: return "PAINT";
+    case kAutoshow: return "AUTOSHOW";
+    case kCareer: return "MY PROFILE";
+    case kClub: return "1000 CLUB";
+    case kSettings: return "SETTINGS";
+    case kReset: return "RESET TO ROAD";
+    case kRestartRace: return "RESTART RACE";
+    case kDifficulty: return !difficulty_label.empty() ? difficulty_label : "DIFFICULTY";
+    case kQuitRace: return "QUIT RACE";
+    case kQuitToTitle: return "TITLE SCREEN";
+    case kQuit: return "QUIT";
   }
   return "";
 }
@@ -196,9 +213,8 @@ void PauseMenu::fill(HudState& st) const {
   if (!open) return;
   st.menu_title = "paused";
   st.menu.clear();
-  for (int k = 0; k < kCount; ++k)
-    st.menu.push_back(k == kEvent && !event_label.empty() ? event_label : std::string(label(k)));
-  st.menu_selected = selected;
+  for (Action a : items()) st.menu.push_back(label(a));
+  st.menu_selected = std::clamp(selected, 0, std::max(0, int(st.menu.size()) - 1));
 }
 
 HudImage draw_hud(const HudState& state, int scale) {

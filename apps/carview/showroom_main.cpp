@@ -69,12 +69,15 @@
 #include "fh1data/xds.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/skills.h"
+#include "race/career.h"
 #include "profile/drive_save.h"
 #include "garage/garage.h"
 #include "upgrade_shop.h"
 #include "autoshow.h"
-#include "cars/mods.h"
 #include "career_page.h"
+#include "events_page.h"
+#include "cars/mods.h"
 #include "settings.h"
 #include "settings_page.h"
 
@@ -307,9 +310,15 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
   return carview::ui::vector_fonts_loaded();
 }
 
-// The UI atlas's changed rectangles to the renderer.
-void upload_ui_atlas(Renderer& renderer) {
+// The UI atlas's changed rectangles to the renderer (`full`: upload the whole
+// atlas once on a fresh Renderer after a car/race reload).
+void upload_ui_atlas(Renderer& renderer, bool full = false) {
   const auto& a = carview::ui::atlas_pixels();
+  if (full) {
+    carview::ui::atlas_take_dirty();
+    renderer.ui_atlas_put(0, 0, carview::ui::kAtlasSize, carview::ui::kAtlasSize, a);
+    return;
+  }
   std::vector<uint8_t> rows;
   for (const auto& [x, y, w, h] : carview::ui::atlas_take_dirty()) {
     rows.resize(size_t(w) * h * 4);
@@ -330,6 +339,7 @@ bool write_menu_png(const HudState& st, const std::string& path, const carview::
   if (st.menu_title == "paused") {
     // The pause menu's panels, with a sample career.
     d.credits = 4075645, d.band_name = "ORANGE WRISTBAND", d.band_next = "Purple", d.band_level = 4;
+    d.band_collect_ready = true, d.popularity_rank = 142;
     d.car_name = "Nissan Skyline GT-R V-spec II", d.car_class = "B", d.car_pi = 584;
   }
   carview::ui::List list;
@@ -839,6 +849,47 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
   }
   return look_frame(transform(world_to_model, eye_used, 1), transform(world_to_model, target, 1),
                     norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false, reverse_z);
+}
+
+// Scenic orbiting camera around the car (Title Screen backdrop & Pre-Race Grid showcase).
+ShowroomFrame scenic_orbit_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, double yaw_rad,
+                                 float dist, float height, bool reverse_z) {
+  float model_to_world[16], world_to_model[16];
+  drive::model_to_world(car, v, model_to_world);
+  invert_affine(model_to_world, world_to_model);
+  const drive::Vec3 p = v.position();
+  const V3 base{float(p.x), float(p.y), float(p.z)};
+  const V3 eye{base.x + dist * float(std::sin(yaw_rad)), base.y + height, base.z + dist * float(std::cos(yaw_rad))};
+  const V3 target{base.x, base.y + 0.65f, base.z};
+  return look_frame(transform(world_to_model, eye, 1), transform(world_to_model, target, 1),
+                    norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false, reverse_z, 45.0f);
+}
+
+// Projects a world-frame point through the player car's current view_projection to screen px.
+bool project_world_point(const ShowroomFrame& frame, const cars::bake::CarInfo& car, const drive::Vehicle& v, double wx,
+                         double wy, double wz, float screen_w, float screen_h, float& sx, float& sy) {
+  float m2w[16], w2m[16];
+  drive::model_to_world(car, v, m2w);
+  invert_affine(m2w, w2m);
+  const V3 pm = transform(w2m, {float(wx), float(wy), float(wz)}, 1.0f);
+  const float* vp = frame.view_projection;
+  const float cx = vp[0] * pm.x + vp[4] * pm.y + vp[8] * pm.z + vp[12];
+  const float cy = vp[1] * pm.x + vp[5] * pm.y + vp[9] * pm.z + vp[13];
+  const float cw = vp[3] * pm.x + vp[7] * pm.y + vp[11] * pm.z + vp[15];
+  if (cw <= 0.1f) return false;
+  sx = (cx / cw * 0.5f + 0.5f) * screen_w;
+  sy = (cy / cw * 0.5f + 0.5f) * screen_h;
+  return true;
+}
+
+const char* difficulty_name(race::Difficulty d) {
+  switch (d) {
+    case race::Difficulty::kEasy: return "EASY";
+    case race::Difficulty::kMed: return "MED";
+    case race::Difficulty::kHard: return "HARD";
+    case race::Difficulty::kPro: return "PRO";
+  }
+  return "MED";
 }
 
 // SPEC-CAMERAS' rig for the drive: the tuning from camera.zip (v4's layers
@@ -1368,6 +1419,7 @@ int run_drive(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
   }
   bool save_settings = false;
+  bool no_title = false;
   std::filesystem::path mods_root;
   bool mods_off = false;
   for (size_t i = 0; i < args.size(); ++i) {
@@ -1375,6 +1427,7 @@ int run_drive(int argc, char** argv) {
     auto next = [&]() -> const char* { return i + 1 < args.size() ? args[++i].c_str() : ""; };
     if (a == "--drive" || a == "--no-settings") continue;
     if (a == "--save-settings") save_settings = true;
+    else if (a == "--no-title") no_title = true;
     else if (a == "--mods") mods_root = next(), mods_off = false;
     else if (a == "--no-mods") mods_off = true;
     else if (a == "--headless") headless = true;
@@ -1602,6 +1655,7 @@ int run_drive(int argc, char** argv) {
       }
       r.band_before = 41250 - 400, r.band_after = 41250, r.band_lo = 30000, r.band_hi = 60000;
       r.band_name = "Orange", r.band_next = "Purple";
+      r.base_credits = 2000, r.mileage_bonus = 200, r.difficulty_pct = 15, r.difficulty_bonus = 330, r.credits = 2530;
       if (page == 3) r.band_name = "Blue", r.band_up = true;
       carview::DriveHud d;
       d.race = &r, d.time = 10;
@@ -1614,6 +1668,73 @@ int run_drive(int argc, char** argv) {
       res_png.replace_filename(menu_png.stem().string() + "_results" + std::to_string(page) + ".png");
       if (!write_png(res_png.string(), 1280, 720, 4, rgba.data())) return 1;
       std::printf("results: 1280x720 to %s\n", res_png.string().c_str());
+    }
+    // Extended UI audit renders for visual parity verification against oracle frames.
+    auto dump_hud = [&](const std::string& suffix, const carview::DriveHud& d) {
+      carview::ui::List list;
+      list.rect(0, 0, 1280, 720, carview::ui::rgba(58, 80, 108), 0, carview::ui::rgba(146, 122, 92));
+      carview::build_drive_hud(list, d, 1280, 720);
+      std::vector<uint8_t> rgba;
+      carview::ui::rasterize(list.items(), rgba, 1280, 720);
+      auto out_p = menu_png;
+      out_p.replace_filename(menu_png.stem().string() + suffix + ".png");
+      if (!write_png(out_p.string(), 1280, 720, 4, rgba.data())) return false;
+      std::printf("audit: 1280x720 to %s\n", out_p.string().c_str());
+      return true;
+    };
+    {
+      carview::TitleScreenHud ts;
+      ts.active = true, ts.menu_phase = false;
+      carview::DriveHud d;
+      d.title_screen = &ts, d.time = 0.0;
+      if (!dump_hud("_title_splash", d)) return 1;
+      ts.menu_phase = true, ts.has_save = true;
+      ts.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
+      ts.selected = 0;
+      ts.save_band_name = "GREEN WRISTBAND", ts.save_band_points = 410, ts.save_pop_rank = 224;
+      ts.save_car_name = "1995 Volkswagen Corrado VR6", ts.save_car_class = "D", ts.save_car_pi = 285;
+      ts.save_credits = 18500, ts.save_races = 5, ts.save_wins = 3;
+      if (!dump_hud("_title_menu", d)) return 1;
+    }
+    {
+      carview::WorldMarkerHud wm;
+      wm.visible = true, wm.in_range = true, wm.screen_x = 580, wm.screen_y = 260;
+      wm.title = "RECARO RED ROCK RAMPAGE", wm.subtitle = "FESTIVAL RACE  •  CLASS B OR LOWER";
+      wm.prompt = "ENTER NOW", wm.badge = "NEW", wm.eligible = true;
+      carview::SkillChainHud sk;
+      sk.active = true, sk.chain_points = 750, sk.multiplier = 2, sk.last_skill = "GREAT DRIFT", sk.last_points = 250;
+      sk.popularity_rank = 238, sk.popularity_progress = 0.65;
+      carview::DriveHud d;
+      d.kmh = 114, d.rpm = 5600, d.redline_rpm = 7500, d.gear = 3, d.time = 2.0;
+      d.world_marker = &wm, d.skills = &sk;
+      if (!dump_hud("_freeroam_marker", d)) return 1;
+    }
+    {
+      carview::RaceHud r;
+      r.phase = carview::RaceHud::kGrid, r.event = "RECARO RED ROCK RAMPAGE", r.event_type = "FESTIVAL RACE";
+      r.grid_menu_open = true;
+      r.grid_menu = {"START RACE", "< DIFFICULTY: MED (+15%) >", "QUIT RACE"};
+      r.grid_selected = 0;
+      r.grid_car_info = "1995 Volkswagen Corrado VR6  [D 285]";
+      carview::DriveHud d;
+      d.race = &r, d.time = 1.0;
+      if (!dump_hud("_race_grid", d)) return 1;
+    }
+    {
+      carview::RaceHud r;
+      r.phase = carview::RaceHud::kFinished, r.results_page = 3, r.won_car_name = "1997 Mazda RX-7";
+      carview::DriveHud d;
+      d.race = &r, d.time = 10.0;
+      if (!dump_hud("_won_car", d)) return 1;
+    }
+    {
+      carview::CeremonyHud c;
+      c.active = true, c.headline = "NEW WRISTBAND EARNED!", c.band_name = "GREEN WRISTBAND";
+      c.band_colour = "GREEN", c.subtitle = "7 NEW FESTIVAL EVENTS UNLOCKED!";
+      c.bonus_car = "1997 Mazda RX-7";
+      carview::DriveHud d;
+      d.ceremony = &c, d.time = 2.0;
+      if (!dump_hud("_ceremony", d)) return 1;
     }
     std::printf("menu: 1280x720 to %s\n", menu_png.string().c_str());
     return 0;
@@ -1811,9 +1932,10 @@ int run_drive(int argc, char** argv) {
       if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end()) car = it->second;
   // The parts database (the merged one: SHIFT_STATE_ROOT's packages when
   // set), opened in the background; the class bands from the disc.
+  // Opened whenever we have a world so New Career, Autoshow and Upgrades work out of the box.
   std::shared_future<std::shared_ptr<cars::PartsDb>> parts_db;
   std::vector<garage::ClassBand> class_bands;
-  if (have_garage && !world_dir.empty()) {
+  if (!world_dir.empty()) {
     const auto game_root = game_root_of();
     std::string e;
     if (!garage::load_class_bands(game_root, class_bands, &e)) std::fprintf(stderr, "carview: note: %s\n", e.c_str());
@@ -1830,6 +1952,27 @@ int run_drive(int argc, char** argv) {
                  return db;
                }).share();
   }
+  // Career progression catalog (events, wristbands, restrictions, world triggers) & Skills/Popularity tables.
+  race::CareerCatalog career_catalog;
+  bool have_career_catalog = false;
+  freeroam::SkillsData skills_data;
+  bool have_skills_data = false;
+  if (!world_dir.empty() && colorado_world()) {
+    std::string e;
+    have_career_catalog = race::load_career_catalog(game_root_of(), career_catalog, &e);
+    if (!have_career_catalog && !e.empty()) std::fprintf(stderr, "carview: note: no career catalog: %s\n", e.c_str());
+    e.clear();
+    have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
+    if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());
+  }
+  // Title screen shown on windowed launch unless bypassed (--no-title, --event, --import-profile).
+  bool show_title = !headless && !no_title && race_event.empty() && import_dir.empty();
+  bool title_menu_phase = false;
+  bool title_confirm_new = false;
+  int title_selected = 0, title_confirm_selected = 1;
+  bool new_career_save_pending = false;
+  std::string pre_loaner_car;
+  int64_t pre_loaner_garage_id = 0;
   // The event's race: its data, and the player's car on its slot (the
   // save does not override the grid).
   std::unique_ptr<carview::RaceView> race;
@@ -1876,7 +2019,70 @@ int run_drive(int argc, char** argv) {
     for (const auto& [id, place] : saved.race_results) career.race_places[id] = place;
     for (const auto& [id, place] : saved.event_results) career.event_places[id] = place;
     career.prize_cars = saved.prize_cars;
+    if (saved.difficulty >= 0 && saved.difficulty <= 3) race_options.difficulty = race::Difficulty(saved.difficulty);
   }
+  if (wristbands.levels.empty() && !world_dir.empty()) {
+    std::string e;
+    race::load_wristband_tables(game_root_of(), wristbands, &e);
+  }
+  int collected_wristband = 0;
+  if (have_saved && saved.collected_wristband >= 0) {
+    collected_wristband = saved.collected_wristband;
+  } else if (have_career_catalog) {
+    collected_wristband = std::max(0, career_catalog.earned_wristband(career.wristband_points));
+  } else {
+    collected_wristband = std::max(0, wristbands.level_index(career.wristband_points));
+  }
+  std::unique_ptr<freeroam::SkillTracker> skill_tracker;
+  int64_t max_skills_car = have_saved ? saved.max_skills_car : 0;
+  if (have_skills_data) {
+    skill_tracker = std::make_unique<freeroam::SkillTracker>(
+        skills_data, have_saved ? saved.popularity_points : 0.0, have_saved ? saved.fame_rewards_claimed : 0,
+        have_saved ? saved.max_skills_score : 0);
+  }
+  auto current_pop_rank = [&]() -> int { return skill_tracker ? skill_tracker->popularity_rank() : 250; };
+  auto class_name_list = [&]() {
+    std::vector<std::string> out;
+    for (const auto& b : class_bands) out.push_back(b.name);
+    return out;
+  };
+  // Adds a prize/reward/starter car to the career garage and persists garage.txt.
+  auto award_garage_car = [&](int64_t car_id, int colour_seq, bool select_it) -> std::string {
+    const auto* spec = have_career_catalog ? career_catalog.find_car(car_id) : nullptr;
+    std::string media = spec ? spec->media_name : std::string();
+    if (media.empty()) {
+      auto it = baked_ids.find(car_id);
+      if (it != baked_ids.end()) media = it->second;
+    }
+    if (car_id <= 0 || media.empty()) return {};
+    // Ensure garage is enabled.
+    have_garage = true;
+    saved.owned_garage = true;
+    // Check if we already own this exact prize car (when not forced starter).
+    if (!select_it) {
+      for (const auto& gc : career_garage.cars)
+        if (gc.car_id == car_id) return carview::car_name(media);
+    }
+    std::map<std::string, int64_t> stock;
+    if (parts_db.valid()) {
+      if (const auto db = parts_db.get()) {
+        std::string ignored;
+        db->stock_slots(car_id, stock, &ignored);
+      }
+    }
+    garage::Car gc;
+    gc.id = ++career_garage.last_id;
+    gc.car_id = car_id;
+    gc.performance_index = spec ? spec->stock_pi : 0.5;
+    gc.class_id = spec ? spec->stock_class : (class_bands.empty() ? 2 : garage::class_of(gc.performance_index, class_bands));
+    gc.parts_value = 0;
+    gc.colour = colour_seq;
+    gc.slots = std::move(stock);
+    career_garage.cars.push_back(std::move(gc));
+    if (select_it || career_garage.selected <= 0) career_garage.selected = career_garage.cars.back().id;
+    write_career_garage();
+    return carview::car_name(media);
+  };
   // The career page's records (career_page.h): the pause menu's page and
   // --career-png.
   auto career_summary = [&](std::vector<cars::PackInfo>& packs) {
@@ -1927,6 +2133,8 @@ int run_drive(int argc, char** argv) {
     }
     b.credits = cs.credits, b.winnings = cs.total_winnings;
     b.races = cs.races, b.wins = cs.victories, b.podiums = cs.podiums, b.garage = cs.garage_cars;
+    b.popularity_rank = current_pop_rank();
+    b.max_skills = skill_tracker ? skill_tracker->max_skills_score() : 0;
     b.signs = cs.signs_found, b.barns = cs.barns_found, b.barns_total = cs.barns;
     b.club_cars = cs.club_cars, b.club_done = cs.club_done, b.club_total = cs.club_total;
     b.rally = cs.has_rally, b.rally_level = cs.rally_level, b.rally_xp = cs.rally_xp;
@@ -2152,6 +2360,7 @@ int run_drive(int argc, char** argv) {
   std::string club_why;
   for (bool again = true; again;) {
   again = false;
+  if (skill_tracker) skill_tracker->reset_session_clock();
   {
     Renderer renderer;
     Showroom showroom(renderer);
@@ -2773,7 +2982,10 @@ int run_drive(int argc, char** argv) {
         double at = -1e9, progress = -1;
         uint32_t colour = 0;
       } popup;
-      bool save_due = false;  // a collectible: the window saves at once
+      bool save_due = new_career_save_pending;  // a collectible or fresh career: the window saves at once
+      new_career_save_pending = false;
+      bool skip_end_save = false;
+      bool ui_atlas_synced = false;
       // The 1000 Club in this car: the gate's answer, the car's Data_Car id
       // and, once begun, one run per incomplete challenge (SPEC-V4-CONTENT,
       // Checking during driving).
@@ -2933,8 +3145,8 @@ int run_drive(int argc, char** argv) {
       };
       // One free-roam step: the rules, then their notices and the props
       // they hide.
-      auto free_roam_step = [&]() {
-        if (!free_roam) return;
+      auto free_roam_step = [&]() -> bool {
+        if (!free_roam) return false;
         freeroam::CarState cs;
         const drive::Vec3 at = vehicle.position();
         const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -2945,9 +3157,11 @@ int run_drive(int argc, char** argv) {
         cs.half_length = vehicle.params().size.z / 2;
         cs.speed = vehicle.speed();
         cs.moved = std::fabs(vehicle.speed()) * drive::Vehicle::kStep;
+        bool sign_smashed_now = false;
         for (const auto& ev : free_roam->step(cs)) {
           char line[160];
           if (ev.kind == freeroam::Event::kSignSmashed) {
+            sign_smashed_now = true;
             const int n = free_roam->signs_found();
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, collectibles.signs.size(),
                           freeroam::upgrade_discount(n));
@@ -2978,7 +3192,10 @@ int run_drive(int argc, char** argv) {
           save_due = true;
         }
         if (streamer && free_roam->hidden() != hidden_sent) streamer->set_hidden(hidden_sent = free_roam->hidden());
+        return sign_smashed_now;
       };
+      int prev_race_place = 0;
+      std::string won_car_name;
       bool have_touch = false;
       double last_touch_y = 0;  // where the wheels last touched, for the fall check
       auto step = [&](const drive::Input& user_in) {
@@ -3008,15 +3225,103 @@ int run_drive(int argc, char** argv) {
           race_top_speed = std::max(race_top_speed, std::fabs(vehicle.speed()));
           if (const race::RaceAward* a = race->award(career, wristbands, race_top_speed)) {
             const int lvl = wristbands.level_index(career.wristband_points);
-            std::printf("race: award %lld CR, %d wristband points (total %d, %s), credits %lld%s%s\n",
-                        (long long)a->credits, a->wristband_points, career.wristband_points,
+            std::printf("race: award %lld CR (base %lld, mileage %lld, diff +%d%% %lld), %d wristband points (total %d, %s), credits %lld%s%s\n",
+                        (long long)a->credits, (long long)a->base_credits, (long long)a->mileage_bonus,
+                        a->difficulty_pct, (long long)a->difficulty_bonus, a->wristband_points, career.wristband_points,
                         lvl >= 0 ? wristbands.levels[size_t(lvl)].second.c_str() : "no wristband",
                         (long long)career.credits, a->first_completion ? ", first completion" : "",
                         a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
+            if (a->prize_car > 0) {
+              int prize_col = 0;
+              if (const auto* cev = career_catalog.find_event(race_event)) prize_col = cev->prize_car_colour;
+              won_car_name = award_garage_car(a->prize_car, prize_col, false);
+              garage_picker();
+            }
             save_due = true;  // the window saves the award at once
           }
         }
-        free_roam_step();
+        const bool smashed_sign = free_roam_step();
+        // SPEC-SKILLS-POPULARITY: step driving skill detectors in free roam and active races.
+        if (skill_tracker && (!race || (race->session().started() && !race->player_finished()))) {
+          freeroam::SkillInput si;
+          si.dt = drive::Vehicle::kStep;
+          si.time = vehicle.time();
+          const drive::Vec3 vel = vehicle.velocity();
+          const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const drive::Vec3 right = drive::rotate(vehicle.orientation(), {1, 0, 0});
+          si.speed_ms = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+          si.forward_speed_ms = vel.x * fwd.x + vel.y * fwd.y + vel.z * fwd.z;
+          si.lateral_speed_ms = vel.x * right.x + vel.y * right.y + vel.z * right.z;
+          si.handbrake = in.handbrake;
+          int on_ground = 0;
+          double max_spin = 0;
+          for (const auto& w : vehicle.wheels()) {
+            if (w.contact) ++on_ground;
+            max_spin = std::max(max_spin, std::fabs(w.spin * 0.33 - si.forward_speed_ms));
+          }
+          si.wheels_on_ground = on_ground;
+          si.wheel_spin = max_spin;
+          const double mass = std::max(500.0, vehicle.params().mass);
+          si.world_impact_ms = vehicle.strongest_body_contact().force * drive::Vehicle::kStep / mass;
+          si.car_impact_ms = traffic ? traffic->player_impulse() / mass : 0.0;
+          si.smashed_object = smashed_sign;
+          const drive::Vec3 at = vehicle.position();
+          auto check_other = [&](double ox, double oz, double ospeed) {
+            const double dx = ox - at.x, dz = oz - at.z;
+            const double d = std::hypot(dx, dz);
+            si.nearest_car_dist = std::min(si.nearest_car_dist, d);
+            const double ahead = dx * fwd.x + dz * fwd.z;
+            const double side = std::fabs(dx * right.x + dz * right.z);
+            if (ahead > 4.0 && ahead < 28.0 && side < 2.2 && ospeed > 15.0)
+              si.draft_factor = std::max(si.draft_factor, std::clamp(1.0 - (ahead - 4.0) / 24.0, 0.0, 1.0));
+          };
+          if (traffic && traffic->cars())
+            for (const auto& tc : *traffic->cars()) check_other(tc.position.x, tc.position.z, tc.speed);
+          if (race) {
+            std::vector<carview::RaceView::OpponentTag> otags;
+            race->opponent_tags(otags);
+            for (const auto& ot : otags) check_other(ot.x, ot.z, ot.speed);
+            const int cur_place = race->session().car(race->player_index()).place;
+            if (prev_race_place > 0 && cur_place < prev_race_place && race->session().clock() > 2.0) {
+              si.passed_opponent = true;
+              si.pass_speed_diff_mph = std::max(5.0, si.speed_ms * 0.25);
+            }
+            prev_race_place = cur_place;
+          }
+          const int64_t prev_max_skills = skill_tracker->max_skills_score();
+          for (const auto& sev : skill_tracker->step(si)) {
+            if (sev.kind == freeroam::SkillEvent::kFameSponsor && sev.credits > 0) {
+              career.credits = std::min<int64_t>(999999999, career.credits + sev.credits);
+              career.total_winnings += sev.credits;
+              popup = {"FAME SPONSOR BONUS",
+                       "POPULARITY RANK " + std::to_string(sev.rank) + "  +" + carview::thousands(sev.credits) + " Cr",
+                       vehicle.time(), -1, carview::ui::rgba(247, 255, 38)};
+              save_due = true;
+            } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
+              // Notify if a Showcase event unlocked at this rank!
+              if (have_career_catalog) {
+                for (const auto& cev : career_catalog.events)
+                  if (cev.style == 3 && cev.popularity_rank_req == sev.rank) {
+                    const std::string ename = carview::game_text(cev.name_ref);
+                    popup = {"NEW SHOWCASE UNLOCKED!",
+                             (!ename.empty() && ename.rfind("_&", 0) != 0 ? ename : cev.horizon_id), vehicle.time(), -1,
+                             carview::ui::rgba(245, 4, 92)};
+                  }
+              }
+              save_due = true;
+            }
+          }
+          if (skill_tracker->max_skills_score() > prev_max_skills) {
+            int64_t cid = 0;
+            if (pre_loaner_car.empty() && have_garage) {
+              if (const garage::Car* sc = career_garage.selected_car()) cid = sc->car_id;
+            }
+            if (cid <= 0 && have_career_catalog) {
+              if (const auto* spec = career_catalog.find_car_by_media(car)) cid = spec->car_id;
+            }
+            if (cid > 0) max_skills_car = cid;
+          }
+        }
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
@@ -3105,7 +3410,7 @@ int run_drive(int argc, char** argv) {
       auto save_now = [&](const char* why) {
         if (save_path.empty() || status != 0) return;
         drive::DriveSave s;
-        s.car = car;
+        s.car = !pre_loaner_car.empty() ? pre_loaner_car : car;
         const drive::Vec3 at = vehicle.position();
         const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
         s.position = {at.x, at.y, at.z};
@@ -3129,7 +3434,14 @@ int run_drive(int argc, char** argv) {
           s.barns = saved.barns;
           s.garage = saved.garage;
         }
-        s.owned_garage = have_saved && saved.owned_garage;
+        s.owned_garage = have_garage || (have_saved && saved.owned_garage);
+        s.career_started = (have_saved && saved.career_started) || s.owned_garage || career.num_races > 0 || career.credits > 0;
+        s.collected_wristband = collected_wristband;
+        s.popularity_points = skill_tracker ? skill_tracker->popularity_points() : (have_saved ? saved.popularity_points : 0.0);
+        s.max_skills_score = skill_tracker ? skill_tracker->max_skills_score() : (have_saved ? saved.max_skills_score : 0);
+        s.max_skills_car = skill_tracker ? max_skills_car : (have_saved ? saved.max_skills_car : 0);
+        s.fame_rewards_claimed = skill_tracker ? skill_tracker->fame_rewards_claimed() : (have_saved ? saved.fame_rewards_claimed : 0);
+        s.difficulty = int(race_options.difficulty);
         if (have_saved) s.carry_from(saved);
         s.club = saved.club;
         std::string e;
@@ -3214,11 +3526,41 @@ int run_drive(int argc, char** argv) {
       size_t paint_pick = 0, paint_before = 0;
       carview::Autoshow autoshow;
       carview::CareerPage career_page;
+      carview::EventsPage events_page;
+      carview::CeremonyHud ceremony;
+      bool garage_open = false;
+      size_t garage_pick = 0;
+      bool grid_menu_open = race != nullptr && !headless && !bench && !race_options.autopilot;
+      int grid_menu_selected = 0;
+      double title_orbit_time = 0.0;
+      // Active world trigger in free roam (nearest Festival site, Street Hub, or unlocked Event).
+      carview::WorldTrigger active_trigger;
+      carview::WorldMarkerHud world_marker;
+      std::vector<carview::NameTagHud> name_tags;
+      carview::MapOverlayHud map_overlay;
+      std::vector<MapMarker> cached_map_markers;
+      int map_selected_marker = -1;
       auto discount = [&]() {
         return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
       };
+      auto current_car_info = [&](int64_t& out_car_id, int& out_class_id) {
+        out_car_id = 0, out_class_id = 2;
+        if (have_garage) {
+          if (const garage::Car* sc = career_garage.selected_car()) {
+            out_car_id = sc->car_id;
+            out_class_id = class_bands.empty() ? sc->class_id : garage::class_of(sc->performance_index, class_bands);
+            return;
+          }
+        }
+        if (have_career_catalog) {
+          if (const auto* spec = career_catalog.find_car_by_media(car)) {
+            out_car_id = spec->car_id;
+            out_class_id = class_bands.empty() ? spec->stock_class : garage::class_of(spec->stock_pi, class_bands);
+          }
+        }
+      };
       bool legacy_hud_cleared = false;
-      // The results' page (SPEC-UI-LAYOUTS c): 0 the FINISHED banner, 1 the cash reward.
+      // The results' page (SPEC-UI-LAYOUTS c): 0 FINISHED banner, 1 CASH REWARD, 2 POINTS EARNED, 3 NEW CAR WON.
       int results_page = 0;
       bool results_table = false;  // the RACE RESULTS table over the banner (X opens, B closes)
       bool results_points = false;  // a wristband points page follows the cash reward
@@ -3230,7 +3572,28 @@ int run_drive(int argc, char** argv) {
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
+        std::string detail_title;
+        std::vector<std::string> detail_lines;
         if (menu) menu->fill(st);
+        if (events_page.is_open()) events_page.fill(st.menu_title, st.menu, st.menu_selected, detail_title, detail_lines);
+        if (garage_open) {
+          st.menu_title = "GARAGE (" + std::to_string(baked_cars.size()) + " CARS): ENTER DRIVE   ESC BACK";
+          st.menu.clear();
+          const int n = int(baked_cars.size());
+          const int first = std::clamp(int(garage_pick) - 3, 0, std::max(0, n - 7));
+          for (int i = first; i < std::min(n, first + 7); ++i) {
+            std::string label = carview::car_name(baked_cars[size_t(i)]);
+            if (have_garage && size_t(i) < pick_ids.size()) {
+              if (const garage::Car* gc = career_garage.find(pick_ids[size_t(i)]); gc && !class_bands.empty()) {
+                const std::string cls = class_bands[size_t(garage::class_of(gc->performance_index, class_bands))].name;
+                label = "[" + cls + " " + std::to_string(garage::shown_index(gc->performance_index, class_bands)) + "]  " +
+                        label + (gc->id == career_garage.selected ? "  (ACTIVE)" : "");
+              }
+            }
+            st.menu.push_back(label);
+          }
+          st.menu_selected = int(garage_pick) - first;
+        }
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
@@ -3240,16 +3603,16 @@ int run_drive(int argc, char** argv) {
           st.menu_selected = int(std::min(club_pick, st.menu.size() - 1));
         }
         if (paint_open) {
-          st.menu_title = "paint (free): left/right, enter keeps";
+          st.menu_title = "PAINT SHOP (FREE): LEFT/RIGHT PREVIEW   ENTER APPLY";
           st.menu.clear();
           const auto& rows = showroom.colours();
           const size_t first = paint_pick >= 4 ? paint_pick - 4 : 0;
           for (size_t i = first; i < paint_order.size() && i < first + 9; ++i) {
             const auto& c = rows[paint_order[i]];
             char line[96];
-            std::snprintf(line, sizeof line, "colour %lld  #%06X%s%s%s", static_cast<long long>(c.sequence), c.rgb,
-                          c.metallic ? "  metallic" : "", c.has_stripe ? "  stripe" : "",
-                          paint_order[i] == paint_before ? "  (now)" : "");
+            std::snprintf(line, sizeof line, "COLOUR %lld  #%06X%s%s%s", static_cast<long long>(c.sequence), c.rgb,
+                          c.metallic ? "  METALLIC" : "", c.has_stripe ? "  STRIPE" : "",
+                          paint_order[i] == paint_before ? "  (CURRENT)" : "");
             st.menu.push_back(line);
           }
           st.menu_selected = int(paint_pick - first);
@@ -3259,51 +3622,139 @@ int run_drive(int argc, char** argv) {
         st.rpm = vehicle.rpm();
         st.redline_rpm = vehicle.params().redline_rpm;
         st.abs = vehicle.abs_active();
-        // The UI layer (game_hud.h); the old panel's layer is cleared once.
         carview::DriveHud d;
         d.kmh = st.kmh, d.rpm = st.rpm, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs;
-        d.time = vehicle.time();
+        d.time = show_title ? title_orbit_time : vehicle.time();
+        d.detail_title = std::move(detail_title);
+        d.detail_lines = std::move(detail_lines);
+        // Title Screen HUD (when active and settings isn't open over it).
+        carview::TitleScreenHud ts_hud;
+        if (show_title && !settings_page.is_open()) {
+          ts_hud.active = true;
+          ts_hud.menu_phase = title_menu_phase;
+          ts_hud.has_save = have_saved && (saved.career_started || saved.owned_garage || career.num_races > 0 || career.credits > 0);
+          ts_hud.confirm_new_career = title_confirm_new;
+          ts_hud.confirm_selected = title_confirm_selected;
+          if (ts_hud.has_save)
+            ts_hud.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
+          else
+            ts_hud.menu = {"NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
+          ts_hud.selected = std::clamp(title_selected, 0, int(ts_hud.menu.size()) - 1);
+          if (ts_hud.has_save) {
+            const int li = std::clamp(collected_wristband, 0, std::max(0, int(wristbands.levels.size()) - 1));
+            if (!wristbands.levels.empty())
+              ts_hud.save_band_name = carview::game_text(wristbands.levels[size_t(li)].second) + " WRISTBAND";
+            ts_hud.save_band_points = career.wristband_points;
+            ts_hud.save_pop_rank = current_pop_rank();
+            ts_hud.save_car_name = carview::car_name(car);
+            if (const garage::Car* sc = career_garage.selected_car(); sc && !class_bands.empty()) {
+              ts_hud.save_car_class = class_bands[size_t(garage::class_of(sc->performance_index, class_bands))].name;
+              ts_hud.save_car_pi = garage::shown_index(sc->performance_index, class_bands);
+            }
+            ts_hud.save_credits = career.credits;
+            ts_hud.save_races = career.num_races;
+            ts_hud.save_wins = career.num_victories;
+          }
+          d.title_screen = &ts_hud;
+        }
+        if (ceremony.active) d.ceremony = &ceremony;
+        if (map_overlay.active) d.map_overlay = &map_overlay;
+        carview::SkillChainHud sk_hud;
+        if (skill_tracker) {
+          const auto sh = skill_tracker->hud();
+          sk_hud.active = sh.active;
+          sk_hud.chain_points = sh.chain_points;
+          sk_hud.multiplier = sh.multiplier;
+          sk_hud.last_skill = sh.last_skill;
+          sk_hud.last_points = sh.last_points;
+          sk_hud.last_skill_at = sh.last_skill_at;
+          sk_hud.banked_total = sh.banked_total;
+          sk_hud.banked_at = sh.banked_at;
+          sk_hud.lost_at = sh.lost_at;
+          sk_hud.popularity_rank = sh.popularity_rank;
+          sk_hud.popularity_progress = sh.popularity_progress;
+          sk_hud.rank_up_at = sh.rank_up_at;
+          d.skills = &sk_hud;
+        }
+        if (world_marker.visible && !race) d.world_marker = &world_marker;
+        d.name_tags = name_tags;
         carview::RaceHud race_hud;
         const bool race_line = race && banner == race_banner();
         if (race) {
           race_hud = race->hud_info(), d.race = &race_hud;
           race_hud.results_page = results_page;
-          if (!race->player_finished()) results_table = false;  // a new race starts on the banner
+          race_hud.won_car_name = won_car_name;
+          if (!race->player_finished()) results_table = false;
           race_hud.results_table = results_table && results_page == 0;
           results_points = race_hud.wristband > 0;
           race_hud.balance = career.credits;
-          // The wristband after the award (the results card).
+          if (grid_menu_open) {
+            race_hud.phase = carview::RaceHud::kGrid;
+            race_hud.grid_menu_open = true;
+            char dbuf[64];
+            std::snprintf(dbuf, sizeof dbuf, "< DIFFICULTY: %s (+%d%%) >", difficulty_name(race_options.difficulty),
+                          race::difficulty_bonus_percent(int(race_options.difficulty)));
+            race_hud.grid_menu = {"START RACE", dbuf, "QUIT RACE"};
+            race_hud.grid_selected = std::clamp(grid_menu_selected, 0, int(race_hud.grid_menu.size()) - 1);
+            int64_t cid = 0;
+            int clid = 2;
+            current_car_info(cid, clid);
+            const std::string cname = !class_bands.empty() && size_t(clid) < class_bands.size()
+                                          ? class_bands[size_t(clid)].name
+                                          : "?";
+            const int cpi = [&]() {
+              if (const garage::Car* sc = career_garage.selected_car(); sc && !class_bands.empty())
+                return garage::shown_index(sc->performance_index, class_bands);
+              if (const auto* sp = have_career_catalog ? career_catalog.find_car(cid) : nullptr; sp && !class_bands.empty())
+                return garage::shown_index(sp->stock_pi, class_bands);
+              return 0;
+            }();
+            race_hud.grid_car_info = carview::car_name(car) + "  [" + cname + " " + std::to_string(cpi) + "]";
+          }
+          // Wristband progress after award: show COLLECT IT FROM RACE CENTRAL whenever a new wristband is pending!
           if (race_hud.phase == carview::RaceHud::kFinished && race_hud.wristband > 0 && !wristbands.levels.empty()) {
             const int after = career.wristband_points, before = after - race_hud.wristband;
-            const int la = wristbands.level_index(after), lb = wristbands.level_index(before);
+            const int pending = have_career_catalog ? career_catalog.pending_wristband(after, collected_wristband) : -1;
+            const int la = pending >= 0 ? pending : wristbands.level_index(after);
+            const int cur_i = std::clamp(collected_wristband, 0, int(wristbands.levels.size()) - 1);
             race_hud.band_before = before, race_hud.band_after = after;
-            race_hud.band_lo = la >= 0 ? wristbands.levels[size_t(la)].first : 0;
-            race_hud.band_hi = size_t(la + 1) < wristbands.levels.size() ? wristbands.levels[size_t(la + 1)].first : -1;
-            if (la >= 0) race_hud.band_name = carview::game_text(wristbands.levels[size_t(la)].second);
-            if (race_hud.band_hi > 0) race_hud.band_next = carview::game_text(wristbands.levels[size_t(la + 1)].second);
-            race_hud.band_up = la > lb;
+            race_hud.band_lo = wristbands.levels[size_t(cur_i)].first;
+            race_hud.band_hi = size_t(cur_i + 1) < wristbands.levels.size() ? wristbands.levels[size_t(cur_i + 1)].first : -1;
+            if (la >= 0 && size_t(la) < wristbands.levels.size())
+              race_hud.band_name = carview::game_text(wristbands.levels[size_t(la)].second);
+            if (race_hud.band_hi > 0) race_hud.band_next = carview::game_text(wristbands.levels[size_t(cur_i + 1)].second);
+            race_hud.band_up = pending >= 0;
           }
         }
         if (!race_line) d.toast = banner;
         d.popup_title = popup.title, d.popup_text = popup.text, d.popup_at = popup.at;
         d.popup_progress = popup.progress, d.popup_colour = popup.colour;
-        // The career chip (free roam): credits and the wristband.
+        // Career header panels (pause menu & sub-menus).
         d.credits = career.credits;
+        d.popularity_rank = current_pop_rank();
         if (!wristbands.levels.empty()) {
-          const int li = wristbands.level_index(career.wristband_points);
+          const int cur_i = std::clamp(collected_wristband, 0, int(wristbands.levels.size()) - 1);
+          const int pending = have_career_catalog ? career_catalog.pending_wristband(career.wristband_points, collected_wristband) : -1;
           d.band_points = career.wristband_points;
-          d.band_lo = li >= 0 ? wristbands.levels[size_t(li)].first : 0;
-          d.band_hi = size_t(li + 1) < wristbands.levels.size() ? wristbands.levels[size_t(li + 1)].first : -1;
-          if (li >= 0) d.band_name = carview::game_text(wristbands.levels[size_t(li)].second) + " WRISTBAND";
-          d.band_level = li + 1;
-          if (d.band_hi > 0) d.band_next = carview::game_text(wristbands.levels[size_t(li + 1)].second);
+          d.band_lo = wristbands.levels[size_t(cur_i)].first;
+          d.band_hi = size_t(cur_i + 1) < wristbands.levels.size() ? wristbands.levels[size_t(cur_i + 1)].first : -1;
+          d.band_name = carview::game_text(wristbands.levels[size_t(cur_i)].second) + " WRISTBAND";
+          d.band_level = cur_i + 1;
+          d.band_collect_ready = pending >= 0;
+          const int next_i = pending >= 0 ? pending : (cur_i + 1);
+          if (next_i >= 0 && size_t(next_i) < wristbands.levels.size())
+            d.band_next = carview::game_text(wristbands.levels[size_t(next_i)].second);
         }
-        // The pause menu's car panel: the name, the class and its index.
         d.pause = st.menu_title == "paused";
         d.car_name = carview::car_name(car);
         if (const garage::Car* sc = career_garage.selected_car(); sc && !class_bands.empty()) {
           d.car_class = class_bands[size_t(garage::class_of(sc->performance_index, class_bands))].name;
           d.car_pi = garage::shown_index(sc->performance_index, class_bands);
+        } else if (have_career_catalog && !class_bands.empty()) {
+          if (const auto* sp = career_catalog.find_car_by_media(car)) {
+            d.car_class = class_bands[size_t(garage::class_of(sp->stock_pi, class_bands))].name;
+            d.car_pi = garage::shown_index(sp->stock_pi, class_bands);
+          }
         }
         d.menu_title = st.menu_title;
         d.menu = st.menu;
@@ -3311,12 +3762,13 @@ int run_drive(int argc, char** argv) {
         carview::CareerBoard board;
         if (career_page.is_open()) board = career_board(career_page), d.career = &board;
         carview::ui::List list;
-        // The minimap under the HUD's shapes; hidden in the pause menu
-        // (SPEC-UI-LAYOUTS a).
-        if (mm_size > 0 && st.menu.empty() && !career_page.is_open())
+        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, and grid menu.
+        if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
+            !career_page.is_open())
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
-        upload_ui_atlas(renderer);
+        upload_ui_atlas(renderer, !ui_atlas_synced);
+        ui_atlas_synced = true;
         renderer.set_ui(list.items());
         if (!legacy_hud_cleared) renderer.set_overlay({}, 0, 0, 0, 0, 0), legacy_hud_cleared = true;
         hud_height = int(carview::drive_hud_dial_height(float(height)));
@@ -3366,7 +3818,57 @@ int run_drive(int argc, char** argv) {
         sc.data = progress_loaded ? &collectibles : nullptr;
         sc.progress = progress_loaded ? &progress : nullptr;
         sc.reveal = reveal;
-        if (race) race->opponent_positions(sc.opponents), race->route_near(sc.route);
+        if (race) {
+          race->opponent_positions(sc.opponents), race->route_near(sc.route);
+        } else if (have_career_catalog) {
+          // Populate Festival sites, unlocked Street Hubs, and unlocked Career Events!
+          for (const auto& site : career_catalog.sites) {
+            MapMarker mm;
+            mm.kind = MapMarker::kFestivalSite;
+            mm.icon_tag = site.map_tag;
+            mm.id = site.name;
+            mm.title = site.name;
+            mm.subtitle = site.kind == race::FestivalSite::kRaceCentral &&
+                                  career_catalog.pending_wristband(career.wristband_points, collected_wristband) >= 0
+                              ? "NEW WRISTBAND READY TO COLLECT!"
+                              : "HORIZON FESTIVAL";
+            mm.x = site.pos[0], mm.z = site.pos[2];
+            mm.is_new = site.kind == race::FestivalSite::kRaceCentral &&
+                        career_catalog.pending_wristband(career.wristband_points, collected_wristband) >= 0;
+            mm.site_or_hub = int(site.kind);
+            sc.markers.push_back(std::move(mm));
+          }
+          for (const auto& hub : career_catalog.hubs) {
+            if (!hub.has_trigger || !career_catalog.is_hub_unlocked(hub, career, collected_wristband)) continue;
+            MapMarker mm;
+            mm.kind = MapMarker::kStreetHub;
+            mm.icon_tag = "streetrace";
+            mm.id = "HUB_" + std::to_string(hub.id);
+            mm.title = "STREET RACE HUB " + std::to_string(hub.id);
+            mm.subtitle = "ILLEGAL STREET RACING";
+            mm.x = hub.trigger_pos[0], mm.z = hub.trigger_pos[2];
+            mm.site_or_hub = hub.id;
+            sc.markers.push_back(std::move(mm));
+          }
+          const int rank = current_pop_rank();
+          for (const auto& ev : career_catalog.events) {
+            if (!ev.has_trigger || !career_catalog.is_event_unlocked(ev, career, collected_wristband, rank)) continue;
+            MapMarker mm;
+            mm.kind = MapMarker::kEvent;
+            mm.icon_tag = race::CareerCatalog::event_map_tag(ev);
+            mm.id = ev.horizon_id;
+            const std::string ename = carview::game_text(ev.name_ref);
+            mm.title = (!ename.empty() && ename.rfind("_&", 0) != 0) ? ename : ev.horizon_id;
+            const int bp = career_catalog.best_place(ev, career);
+            mm.completed = bp > 0;
+            mm.is_new = !mm.completed;
+            mm.subtitle = std::string(race::CareerCatalog::event_style_label(ev)) + "  •  " +
+                          carview::thousands(int64_t(ev.cash_prize)) + " Cr";
+            mm.x = ev.trigger_pos[0], mm.z = ev.trigger_pos[2];
+            sc.markers.push_back(std::move(mm));
+          }
+          sc.selected_marker = map_selected_marker;
+        }
         return sc;
       };
       double minimap_at = -1;
@@ -3824,11 +4326,187 @@ int run_drive(int argc, char** argv) {
           camera_pull = CameraPull{};
           rig.restart();
         };
+        // Helpers for career progression actions (wristband collection, events, shops, new career).
+        auto open_paint = [&]() {
+          const auto& rows = showroom.colours();
+          paint_order.resize(rows.size());
+          for (size_t i = 0; i < rows.size(); ++i) paint_order[i] = i;
+          std::stable_sort(paint_order.begin(), paint_order.end(),
+                           [&](size_t a, size_t b) { return rows[a].sequence < rows[b].sequence; });
+          paint_before = showroom.colour_index();
+          paint_pick = 0;
+          for (size_t i = 0; i < paint_order.size(); ++i)
+            if (paint_order[i] == paint_before) paint_pick = i;
+          paint_open = !paint_order.empty();
+          if (!paint_open) notice = "this car has no colour rows", notice_until = vehicle.time() + 3;
+        };
+        auto open_shop_or_autoshow = [&](bool is_autoshow) {
+          // Ensure a career garage exists so Autoshow & Upgrades always work smoothly.
+          if (!have_garage && have_career_catalog) {
+            if (const auto* spec = career_catalog.find_car_by_media(car))
+              award_garage_car(spec->car_id, 0, true), garage_picker();
+          }
+          std::string why = "parts database unavailable";
+          bool ready = false;
+          if (have_garage && parts_db.valid()) {
+            why = "loading parts database, try again in a second";
+            if (parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+              why = "no parts database";
+              if (const auto db = parts_db.get())
+                ready = is_autoshow
+                            ? autoshow.open(*db, all_baked, why)
+                            : shop.open(*db, career_garage,
+                                        career_garage.selected_car() ? career_garage.selected_car()->id : 0, why);
+            }
+          }
+          if (!ready) notice = why, notice_until = vehicle.time() + 3;
+        };
+        auto collect_next_wristband = [&]() -> bool {
+          if (!have_career_catalog) return false;
+          const int pending = career_catalog.pending_wristband(career.wristband_points, collected_wristband);
+          if (pending < 0 || size_t(pending) >= career_catalog.wristbands.size()) return false;
+          collected_wristband = pending;
+          const auto& wb = career_catalog.wristbands[size_t(pending)];
+          int newly_unlocked = 0;
+          for (const auto& ev : career_catalog.events)
+            if (ev.style == 1 && ev.level == pending) ++newly_unlocked;
+          std::string cname = wb.colour_key;
+          for (char& ch : cname) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+          ceremony = carview::CeremonyHud{};
+          ceremony.active = true;
+          ceremony.headline = "NEW WRISTBAND EARNED!";
+          ceremony.band_name = cname + " WRISTBAND";
+          ceremony.band_colour = cname;
+          ceremony.subtitle = std::to_string(newly_unlocked) + " NEW FESTIVAL EVENTS UNLOCKED!";
+          if (wb.reward_car_id > 0) {
+            ceremony.bonus_car = award_garage_car(wb.reward_car_id, 0, false);
+            garage_picker();
+          }
+          save_due = true;
+          return true;
+        };
+        auto open_events_browser = [&](int hub_filter) {
+          if (!have_career_catalog) {
+            notice = "career catalog unavailable";
+            notice_until = vehicle.time() + 3;
+            return;
+          }
+          int64_t cid = 0;
+          int clid = 2;
+          current_car_info(cid, clid);
+          events_page.open(career_catalog, career, collected_wristband, current_pop_rank(), cid, clid, class_bands,
+                           hub_filter);
+        };
+        auto try_enter_event = [&](const race::CareerEvent& ev) {
+          int64_t cid = 0;
+          int clid = 2;
+          current_car_info(cid, clid);
+          const auto elig = career_catalog.check_eligibility(ev, cid, clid, class_name_list());
+          if (!elig.eligible) {
+            // Check if another car in the player's garage qualifies.
+            std::string hint;
+            if (have_garage) {
+              for (const auto& gc : career_garage.cars) {
+                const int gcls = class_bands.empty() ? gc.class_id : garage::class_of(gc.performance_index, class_bands);
+                if (career_catalog.check_eligibility(ev, gc.car_id, gcls, class_name_list()).eligible) {
+                  if (auto it = baked_ids.find(gc.car_id); it != baked_ids.end()) {
+                    hint = "  (TRY " + carview::car_name(it->second) + " IN GARAGE)";
+                    break;
+                  }
+                }
+              }
+            }
+            notice = elig.reason + hint;
+            notice_until = vehicle.time() + 4.5;
+            return false;
+          }
+          if (elig.uses_loaner && elig.loaner_car_id > 0) {
+            if (auto it = baked_ids.find(elig.loaner_car_id); it != baked_ids.end()) {
+              pre_loaner_car = car;
+              pre_loaner_garage_id = career_garage.selected;
+              car = it->second;
+            }
+          }
+          events_page.close();
+          next_event = ev.horizon_id;
+          running = false;
+          return true;
+        };
+        auto start_new_career = [&]() {
+          career = race::CareerRecord{};
+          career.credits = 0;
+          career.wristband_points = 0;
+          collected_wristband = 0;
+          free_roam.reset();
+          progress = freeroam::Progress{};
+          progress_loaded = false;
+          saved = drive::DriveSave{};
+          saved.career_started = true;
+          saved.owned_garage = true;
+          saved.collected_wristband = 0;
+          saved.difficulty = int(race_options.difficulty);
+          have_saved = true;
+          if (have_skills_data) {
+            skill_tracker = std::make_unique<freeroam::SkillTracker>(skills_data, 0.0, 0, 0);
+            skill_tracker->reset_session_clock();
+          }
+          max_skills_car = 0;
+          career_garage = garage::Garage{};
+          have_garage = true;
+          award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
+          garage_picker();
+          // Spawn inside the Horizon Festival grounds near Race Central & FESTIVAL_SECOND.
+          if (const auto* rc = have_career_catalog ? career_catalog.find_site(race::FestivalSite::kRaceCentral) : nullptr) {
+            spawn[0] = rc->pos[0] - 40.0;
+            spawn[1] = rc->pos[1];
+            spawn[2] = rc->pos[2] - 45.0;
+            spawn[3] = 3.14;
+          } else {
+            spawn[0] = -890.0, spawn[1] = -8.0, spawn[2] = -305.0, spawn[3] = 3.14;
+          }
+          have_spawn = true;
+          show_title = false;
+          title_menu_phase = false;
+          title_confirm_new = false;
+          race.reset();
+          race_event.clear();
+          pre_loaner_car.clear();
+          next_car = race::kStarterCarMedia;
+          if (!baked_ids.count(race::kStarterCarId) && !baked_cars.empty()) next_car = baked_cars[0];
+          skip_end_save = true;
+          new_career_save_pending = true;
+          running = false;
+        };
         // The pause map: M, or the pause menu's item; the drive waits while
         // it is open.
         bool map_open = false, map_dirty = false;
         double map_zoom = 2, map_cx = 0, map_cz = 0;
         int map_w = 0, map_h = 0;
+        auto update_map_selection = [&]() {
+          map_selected_marker = -1;
+          map_overlay = carview::MapOverlayHud{};
+          if (!map_open) return;
+          map_overlay.active = true;
+          const double snap_r = 280.0 / std::max(0.5, map_zoom);
+          double best_d = snap_r;
+          for (size_t i = 0; i < cached_map_markers.size(); ++i) {
+            const double d = std::hypot(cached_map_markers[i].x - map_cx, cached_map_markers[i].z - map_cz);
+            if (d < best_d) best_d = d, map_selected_marker = int(i);
+          }
+          const drive::Vec3 at = vehicle.position();
+          if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+            const auto& m = cached_map_markers[size_t(map_selected_marker)];
+            map_overlay.title = m.title;
+            map_overlay.subtitle = m.subtitle;
+            map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
+            map_overlay.action_hint = m.kind == MapMarker::kEvent ? "ENTER EVENT" : "FAST TRAVEL & ENTER";
+          } else {
+            map_overlay.title = "COLORADO MAP";
+            map_overlay.subtitle = "PAN TO ANY EVENT OR FESTIVAL SITE";
+            map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
+            map_overlay.action_hint = "FAST TRAVEL HERE";
+          }
+        };
         auto open_map = [&]() {
           if (!map_view.ready()) {
             notice = "no map (see the console)";
@@ -3841,108 +4519,99 @@ int run_drive(int argc, char** argv) {
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
           for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
-          renderer.set_ui({});
           mm_size = 0;
           popup_key.clear();
+          cached_map_markers = map_scene().markers;
+          update_map_selection();
           save_now("map");
         };
         auto close_map = [&]() {
           map_open = false;
+          map_overlay.active = false;
           renderer.set_overlay({}, 0, 0, 0, 0, 2);
           minimap_at = -1;
         };
-        // The chosen item: resume, the map, the picker, back on the road, or quit.
+        auto sync_pause_labels = [&]() {
+          const int pending =
+              have_career_catalog ? career_catalog.pending_wristband(career.wristband_points, collected_wristband) : -1;
+          if (pending >= 0 && size_t(pending) < career_catalog.wristbands.size()) {
+            std::string cn = career_catalog.wristbands[size_t(pending)].colour_key;
+            for (char& ch : cn) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+            menu.events_label = "COLLECT " + cn + " WRISTBAND!";
+          } else {
+            menu.events_label = "EVENTS";
+          }
+          char db[64];
+          std::snprintf(db, sizeof db, "< DIFFICULTY: %s (+%d%%) >", difficulty_name(race_options.difficulty),
+                        race::difficulty_bonus_percent(int(race_options.difficulty)));
+          menu.difficulty_label = db;
+        };
+        auto cycle_difficulty = [&](int by) {
+          const int d = ((int(race_options.difficulty) + by) % 4 + 4) % 4;
+          race_options.difficulty = race::Difficulty(d);
+          if (race) race->set_difficulty(race_options.difficulty);
+          sync_pause_labels();
+        };
+        // The chosen pause menu action.
         auto choose = [&]() {
-          const int item = menu.selected;
+          const PauseMenu::Action act = menu.selected_action();
           menu.open = false;
-          if (item == PauseMenu::kMap) open_map();
-          if (item == PauseMenu::kChangeCar) browse(0);
-          if (item == PauseMenu::kUpgrades || item == PauseMenu::kAutoshow) {
-            std::string why = "the garage needs a career (--import-profile)";
-            bool ready = false;
-            if (have_garage && parts_db.valid()) {
-              why = "loading the parts database, try again";
-              if (parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                why = "no parts database";
-                if (const auto db = parts_db.get())
-                  ready = item == PauseMenu::kAutoshow
-                              ? autoshow.open(*db, all_baked, why)
-                              : shop.open(*db, career_garage,
-                                          career_garage.selected_car() ? career_garage.selected_car()->id : 0, why);
-              }
-            }
-            if (!ready) {
-              notice = why;
-              notice_until = vehicle.time() + 3;
-            }
+          if (act == PauseMenu::kMap) open_map();
+          if (act == PauseMenu::kEvents) open_events_browser(0);
+          if (act == PauseMenu::kGarage) {
+            garage_open = true;
+            garage_pick = pick;
           }
-          if (item == PauseMenu::kEvent && !event_ids.empty()) {
-            next_event = event_ids[event_pick];
-            running = false;
-          }
-          if (item == PauseMenu::kClub) {
+          if (act == PauseMenu::kUpgrades) open_shop_or_autoshow(false);
+          if (act == PauseMenu::kAutoshow) open_shop_or_autoshow(true);
+          if (act == PauseMenu::kPaint) open_paint();
+          if (act == PauseMenu::kClub) {
             club_open = true;
             club_pick = club_gate.empty() ? club_data.cars.at(club_car).size() : 0;
           }
-          if (item == PauseMenu::kPaint) {
-            const auto& rows = showroom.colours();
-            paint_order.resize(rows.size());
-            for (size_t i = 0; i < rows.size(); ++i) paint_order[i] = i;
-            std::stable_sort(paint_order.begin(), paint_order.end(),
-                             [&](size_t a, size_t b) { return rows[a].sequence < rows[b].sequence; });
-            paint_before = showroom.colour_index();
-            paint_pick = 0;
-            for (size_t i = 0; i < paint_order.size(); ++i)
-              if (paint_order[i] == paint_before) paint_pick = i;
-            paint_open = !paint_order.empty();
-            if (!paint_open) notice = "this car has no colour rows", notice_until = vehicle.time() + 3;
-          }
-          if (item == PauseMenu::kSettings) {
+          if (act == PauseMenu::kSettings) {
             settings_page.load(read_settings(settings_path(), nullptr));
             settings_page.open();
           }
-          if (item == PauseMenu::kCareer) {
+          if (act == PauseMenu::kCareer) {
             std::vector<cars::PackInfo> packs;
             const carview::CareerSummary cs = career_summary(packs);
             career_page.open(cs, std::move(packs));
           }
-          if (item == PauseMenu::kReset) put_back();
-          if (item == PauseMenu::kQuit) running = false;
-        };
-        auto set_event_label = [&]() {
-          if (event_ids.empty()) {
-            menu.event_label = "race (none)";
-            return;
+          if (act == PauseMenu::kReset) put_back();
+          if (act == PauseMenu::kRestartRace && race) {
+            results_page = 0;
+            next_event = race_event;
+            running = false;
           }
-          // The event's name (string tables), its id without one.
-          const std::string& id = event_ids[event_pick];
-          std::string name = id;
-          if (auto it = event_names.find(id); it != event_names.end() && !it->second.empty()) {
-            const std::string t = carview::game_text(it->second);
-            if (!t.empty() && t.rfind("_&", 0) != 0) name = t;
+          if (act == PauseMenu::kQuitRace && race) {
+            results_page = 0;
+            leave_race = true;
+            running = false;
           }
-          menu.event_label = "< race: " + name + " >";
-        };
-        auto pick_event = [&](int by) {
-          if (event_ids.empty()) return;
-          const int n = int(event_ids.size());
-          event_pick = size_t(((int(event_pick) + by) % n + n) % n);
-          set_event_label();
+          if (act == PauseMenu::kQuitToTitle) {
+            save_now("title");
+            show_title = true;
+            title_menu_phase = true;
+            title_confirm_new = false;
+            title_selected = 0;
+          }
+          if (act == PauseMenu::kQuit) running = false;
         };
         // After the player's finish (SPEC-EVENT-REWARDS, Results screen):
-        // Continue puts the car at the route's post-race spot (or where it
-        // stands) in free roam; Restart runs the event again.
+        // FINISHED (0) -> CASH REWARD (1) -> POINTS EARNED (2) -> NEW CAR WON (3) -> free roam.
         auto race_continue = [&]() {
-          // A: the FINISHED banner, then the cash reward, then free roam.
           if (results_table) return;  // the table takes only B
           if (results_page == 0) {
             results_page = 1;
             return;
           }
-          // Then the wristband points on their own (SPEC-UI-LAYOUTS c,
-          // PLEASE WAIT: it moves on by itself), when the race gave any.
           if (results_page == 1 && results_points) {
             results_page = 2, points_at = vehicle.time();
+            return;
+          }
+          if ((results_page == 1 || results_page == 2) && !won_car_name.empty()) {
+            results_page = 3;
             return;
           }
           results_page = 0;
@@ -3962,32 +4631,206 @@ int run_drive(int argc, char** argv) {
           running = false;
         };
         auto open_menu = [&]() {
-          set_event_label();
-          menu.show();
+          sync_pause_labels();
+          menu.show(race != nullptr);
           picking = false;
           save_now("pause");
         };
+        auto activate_world_trigger = [&]() -> bool {
+          if (race || !active_trigger.in_range) return false;
+          if (active_trigger.kind == carview::WorldTrigger::kFestivalSite && active_trigger.site) {
+            switch (active_trigger.site->kind) {
+              case race::FestivalSite::kRaceCentral:
+                if (!collect_next_wristband()) open_events_browser(0);
+                return true;
+              case race::FestivalSite::kAutoshow: open_shop_or_autoshow(true); return true;
+              case race::FestivalSite::kWorkshop: open_shop_or_autoshow(false); return true;
+              case race::FestivalSite::kPaintShop: open_paint(); return true;
+            }
+          } else if (active_trigger.kind == carview::WorldTrigger::kStreetHub && active_trigger.hub) {
+            open_events_browser(active_trigger.hub->id);
+            return true;
+          } else if (active_trigger.kind == carview::WorldTrigger::kEvent && active_trigger.event) {
+            try_enter_event(*active_trigger.event);
+            return true;
+          }
+          return false;
+        };
         while (running) {
-          // The points page waits about 3 s (ours), then back to free roam.
-          if (race && results_page == 2 && vehicle.time() - points_at > 3.0) race_continue();
+          // The points page auto-advances after 4 s (Enter/A also advances early).
+          if (race && results_page == 2 && vehicle.time() - points_at > 4.0) race_continue();
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
-            // The map takes the keys and buttons while open.
+            // 1. Title Screen input (when settings isn't open on top of it).
+            if (show_title && !settings_page.is_open()) {
+              const bool has_save_opt =
+                  have_saved && (saved.career_started || saved.owned_garage || career.num_races > 0 || career.credits > 0);
+              const int item_count = has_save_opt ? 5 : 4;
+              auto confirm_title = [&]() {
+                if (!title_menu_phase) {
+                  title_menu_phase = true;
+                  title_selected = 0;
+                  return;
+                }
+                if (title_confirm_new) {
+                  if (title_confirm_selected == 0) start_new_career();
+                  else title_confirm_new = false;
+                  return;
+                }
+                const int idx = has_save_opt ? title_selected : (title_selected + 1);
+                if (idx == 0) {  // CONTINUE CAREER
+                  show_title = false;
+                } else if (idx == 1) {  // NEW CAREER
+                  if (has_save_opt) {
+                    title_confirm_new = true;
+                    title_confirm_selected = 1;
+                  } else {
+                    start_new_career();
+                  }
+                } else if (idx == 2) {  // FREE ROAM
+                  show_title = false;
+                } else if (idx == 3) {  // SETTINGS
+                  settings_page.load(read_settings(settings_path(), nullptr));
+                  settings_page.open();
+                } else if (idx == 4) {  // QUIT
+                  running = false;
+                }
+              };
+              auto back_title = [&]() {
+                if (title_confirm_new) title_confirm_new = false;
+                else if (title_menu_phase) title_menu_phase = false;
+                else running = false;
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_title();
+                else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) back_title();
+                else if (title_confirm_new && (k == SDLK_UP || k == SDLK_W || k == SDLK_DOWN || k == SDLK_S))
+                  title_confirm_selected = 1 - title_confirm_selected;
+                else if (title_menu_phase && (k == SDLK_UP || k == SDLK_W))
+                  title_selected = (title_selected + item_count - 1) % item_count;
+                else if (title_menu_phase && (k == SDLK_DOWN || k == SDLK_S))
+                  title_selected = (title_selected + 1) % item_count;
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH || b == SDL_GAMEPAD_BUTTON_START) confirm_title();
+                else if (b == SDL_GAMEPAD_BUTTON_EAST) back_title();
+                else if (title_confirm_new && (b == SDL_GAMEPAD_BUTTON_DPAD_UP || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN))
+                  title_confirm_selected = 1 - title_confirm_selected;
+                else if (title_menu_phase && b == SDL_GAMEPAD_BUTTON_DPAD_UP)
+                  title_selected = (title_selected + item_count - 1) % item_count;
+                else if (title_menu_phase && b == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
+                  title_selected = (title_selected + 1) % item_count;
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // 2. Wristband Collection Ceremony overlay.
+            if (ceremony.active) {
+              if ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                   (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE ||
+                    e.key.key == SDLK_ESCAPE)) ||
+                  (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                   (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH || e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST))) {
+                ceremony.active = false;
+                // Refresh Events page if it was open underneath.
+                if (events_page.is_open()) open_events_browser(events_page.hub_filter());
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // 3. Pre-Race Grid Menu (race-grid.png).
+            if (race && grid_menu_open && !menu.open && !settings_page.is_open()) {
+              auto confirm_grid = [&]() {
+                if (grid_menu_selected == 0) {  // START RACE
+                  grid_menu_open = false;
+                } else if (grid_menu_selected == 1) {  // DIFFICULTY
+                  cycle_difficulty(+1);
+                } else {  // QUIT RACE
+                  grid_menu_open = false;
+                  leave_race = true;
+                  running = false;
+                }
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_UP || k == SDLK_W) grid_menu_selected = (grid_menu_selected + 2) % 3;
+                else if (k == SDLK_DOWN || k == SDLK_S) grid_menu_selected = (grid_menu_selected + 1) % 3;
+                else if (grid_menu_selected == 1 && (k == SDLK_LEFT || k == SDLK_A)) cycle_difficulty(-1);
+                else if (grid_menu_selected == 1 && (k == SDLK_RIGHT || k == SDLK_D)) cycle_difficulty(+1);
+                else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_grid();
+                else if (k == SDLK_ESCAPE) {
+                  grid_menu_open = false;
+                  leave_race = true;
+                  running = false;
+                }
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) grid_menu_selected = (grid_menu_selected + 2) % 3;
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) grid_menu_selected = (grid_menu_selected + 1) % 3;
+                else if (grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) cycle_difficulty(-1);
+                else if (grid_menu_selected == 1 && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) cycle_difficulty(+1);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_grid();
+                else if (b == SDL_GAMEPAD_BUTTON_EAST) {
+                  grid_menu_open = false;
+                  leave_race = true;
+                  running = false;
+                }
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // 4. Interactive Pause Map (pan, zoom, and Enter/A to Enter Event or Fast Travel!).
             if (map_open) {
               bool close = false;
-              const double pan = 1500 / map_zoom;
+              const double pan = 1200 / map_zoom;
               auto zoom_by = [&](double f) {
                 map_zoom = std::clamp(map_zoom * f, 1.0, 24.0);
                 map_dirty = true;
+                update_map_selection();
               };
               auto pan_by = [&](double dx, double dz) {
                 map_cx += dx, map_cz += dz;
                 map_dirty = true;
+                update_map_selection();
+              };
+              auto map_activate = [&]() {
+                if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+                  const MapMarker m = cached_map_markers[size_t(map_selected_marker)];
+                  close_map();
+                  if (m.kind == MapMarker::kEvent) {
+                    if (const auto* ev = career_catalog.find_event(m.id)) try_enter_event(*ev);
+                    return;
+                  }
+                  if (m.kind == MapMarker::kFestivalSite) {
+                    const auto kind = race::FestivalSite::Kind(m.site_or_hub);
+                    if (kind == race::FestivalSite::kRaceCentral) {
+                      if (!collect_next_wristband()) open_events_browser(0);
+                    } else if (kind == race::FestivalSite::kAutoshow) open_shop_or_autoshow(true);
+                    else if (kind == race::FestivalSite::kWorkshop) open_shop_or_autoshow(false);
+                    else if (kind == race::FestivalSite::kPaintShop) open_paint();
+                  } else if (m.kind == MapMarker::kStreetHub) {
+                    open_events_browser(m.site_or_hub);
+                  }
+                  return;
+                }
+                if (race != nullptr) {
+                  close_map();
+                  notice = "QUIT RACE TO FAST TRAVEL";
+                  notice_until = vehicle.time() + 3.0;
+                  return;
+                }
+                // Fast travel to map cursor location on Colorado.
+                close_map();
+                spawn[0] = map_cx, spawn[1] = vehicle.position().y + 20.0, spawn[2] = map_cz, spawn[3] = 0.0;
+                have_spawn = true;
+                next_car = car;
+                running = false;
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (!e.key.repeat && (k == SDLK_M || k == SDLK_ESCAPE)) close = true;
+                if (!e.key.repeat && (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE)) map_activate();
                 if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.5);
                 if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.5);
                 if (k == SDLK_LEFT || k == SDLK_A) pan_by(-pan, 0);
@@ -3999,6 +4842,7 @@ int run_drive(int argc, char** argv) {
                 const auto b = e.gbutton.button;
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK)
                   close = true;
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) map_activate();
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) zoom_by(1.5);
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) zoom_by(1 / 1.5);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pan_by(-pan, 0);
@@ -4007,6 +4851,70 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pan_by(0, -pan);
               }
               if (close) close_map();
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // 5. Race Central / Events / Street Hub browser.
+            if (events_page.is_open()) {
+              auto confirm_event = [&]() {
+                const auto* sel = events_page.selected_entry();
+                if (!sel) return;
+                if (sel->is_collect_wristband) {
+                  collect_next_wristband();
+                  return;
+                }
+                if (!sel->unlocked) {
+                  notice = sel->reason;
+                  notice_until = vehicle.time() + 3.5;
+                  return;
+                }
+                if (sel->event) try_enter_event(*sel->event);
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) events_page.close();
+                else if (k == SDLK_UP || k == SDLK_W) events_page.move(-1);
+                else if (k == SDLK_DOWN || k == SDLK_S) events_page.move(1);
+                else if (k == SDLK_LEFT || k == SDLK_A) events_page.switch_tab(-1);
+                else if (k == SDLK_RIGHT || k == SDLK_D) events_page.switch_tab(1);
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) confirm_event();
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) events_page.close();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) events_page.move(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) events_page.move(1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
+                  events_page.switch_tab(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
+                  events_page.switch_tab(1);
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_event();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // 6. Garage car browser.
+            if (garage_open) {
+              const size_t n = baked_cars.size();
+              auto drive_selected = [&]() {
+                if (!n) return;
+                garage_open = false;
+                pick = garage_pick;
+                picking = true;
+                take_pick();
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) garage_open = false;
+                else if (n && (k == SDLK_UP || k == SDLK_W)) garage_pick = (garage_pick + n - 1) % n;
+                else if (n && (k == SDLK_DOWN || k == SDLK_S)) garage_pick = (garage_pick + 1) % n;
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) drive_selected();
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) garage_open = false;
+                else if (n && b == SDL_GAMEPAD_BUTTON_DPAD_UP) garage_pick = (garage_pick + n - 1) % n;
+                else if (n && b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) garage_pick = (garage_pick + 1) % n;
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) drive_selected();
+              }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
             // The upgrade shop takes the keys and buttons while open; leaving it
@@ -4229,8 +5137,10 @@ int run_drive(int argc, char** argv) {
                 if (k == SDLK_ESCAPE) menu.open = false;
                 if (k == SDLK_UP || k == SDLK_W) menu.move(-1);
                 if (k == SDLK_DOWN || k == SDLK_S) menu.move(1);
-                if (menu.selected == PauseMenu::kEvent && (k == SDLK_LEFT || k == SDLK_A)) pick_event(-1);
-                if (menu.selected == PauseMenu::kEvent && (k == SDLK_RIGHT || k == SDLK_D)) pick_event(1);
+                if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_LEFT || k == SDLK_A))
+                  cycle_difficulty(-1);
+                if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_RIGHT || k == SDLK_D))
+                  cycle_difficulty(+1);
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) choose();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -4238,8 +5148,10 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) menu.open = false;
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) menu.move(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) menu.move(1);
-                if (menu.selected == PauseMenu::kEvent && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pick_event(-1);
-                if (menu.selected == PauseMenu::kEvent && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) pick_event(1);
+                if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
+                  cycle_difficulty(-1);
+                if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
+                  cycle_difficulty(+1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) choose();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
@@ -4253,6 +5165,7 @@ int run_drive(int argc, char** argv) {
               }
               if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
               if (on_banner && e.key.key == SDLK_X) results_table = true;  // X: RACE RESULTS
+              if (!race && e.key.key == SDLK_E) activate_world_trigger();
               if (e.key.key == SDLK_R) put_back();
               if (e.key.key == SDLK_M) open_map();
               if (e.key.key == SDLK_COMMA) radio_press(-1);
@@ -4266,7 +5179,10 @@ int run_drive(int argc, char** argv) {
               if (e.key.key == SDLK_RIGHTBRACKET) browse(1);
               const bool results = race && race->player_finished() && !picking;
               if (results && (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER)) race_continue();
-              else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) take_pick();
+              else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) {
+                if (picking) take_pick();
+                else activate_world_trigger();
+              }
               if (results && e.key.key == SDLK_Y) race_restart();
               if (e.key.key == SDLK_T && traffic) {
                 const bool back = (e.key.mod & SDL_KMOD_SHIFT) != 0;
@@ -4323,7 +5239,10 @@ int run_drive(int argc, char** argv) {
                 if (picking || !have_rig) browse(1);
                 else rig.cycle();
               }
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(race && race->player_finished())) take_pick();
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(race && race->player_finished())) {
+                if (picking) take_pick();
+                else activate_world_trigger();
+              }
               if (race && race->player_finished() && !picking) {
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) race_continue();
                 if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH) race_restart();
@@ -4345,6 +5264,7 @@ int run_drive(int argc, char** argv) {
                   break;
                 }
           }
+          if (!running) break;
           // Keyboard, then the first gamepad with any input.
           const bool* keys = SDL_GetKeyboardState(nullptr);
           drive::Input in;
@@ -4383,21 +5303,22 @@ int run_drive(int argc, char** argv) {
           rig.set_look(rig_look);
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
+          title_orbit_time += frame_dt;
+          const bool sim_paused = show_title || ceremony.active || grid_menu_open || menu.open || map_open ||
+                                  events_page.is_open() || garage_open || shop.is_open() || autoshow.is_open() ||
+                                  career_page.is_open() || settings_page.is_open() || paint_open || club_open;
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !settings_page.is_open() && !paint_open &&
-              !club_open)
-            accumulator += frame_dt;
+          if (!sim_paused) accumulator += frame_dt;
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
             next_save = vehicle.time() + 30;
           }
-          if (save_due && !map_open) {  // a collectible: the game's micro-save
+          if (save_due && !map_open) {  // a collectible or award: micro-save
             save_due = false;
             save_now("collectible");
           }
-          while (!menu.open && !map_open && !shop.is_open() && !autoshow.is_open() && !career_page.is_open() && !settings_page.is_open() && !paint_open &&
-                 !club_open && accumulator >= drive::Vehicle::kStep) {
+          while (!sim_paused && accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
             if (!step(cruise ? follower.input(vehicle) : in)) {
               running = false;
@@ -4441,16 +5362,110 @@ int run_drive(int argc, char** argv) {
           }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
+          // Pose car & camera BEFORE building projected world HUD markers and opponent name tags!
+          const drive::Vehicle::Pose stepped = vehicle.pose();
+          vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
+          if (race) race->set_blend(accumulator / drive::Vehicle::kStep);
+          wheel_poses(vehicle, poses);
+          showroom.set_wheel_poses(poses);
+          showroom.set_braking(brake_glow(vehicle));
+          place_world();
+          const float aspect = h > 0 ? float(w) / float(h) : 1.0f;
+          const ShowroomFrame cam_frame =
+              show_title
+                  ? scenic_orbit_frame(info, vehicle, aspect, title_orbit_time * 0.22, 6.2f, 1.65f, renderer.reverse_z())
+                  : (race && grid_menu_open)
+                        ? scenic_orbit_frame(info, vehicle, aspect,
+                                             std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
+                                                        drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
+                                                 0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
+                                             5.6f, 1.35f, renderer.reverse_z())
+                        : drive_frame(aspect, frame_dt);
+          showroom.set_frame(cam_frame);
+
+          // Update projected Free-Roam World Event / Festival Marker.
+          active_trigger = carview::WorldTrigger{};
+          world_marker = carview::WorldMarkerHud{};
+          if (!race && !show_title && have_career_catalog && w > 0 && h > 0) {
+            const drive::Vec3 at = vehicle.position();
+            active_trigger = carview::select_world_trigger(career_catalog, career, collected_wristband,
+                                                           current_pop_rank(), at.x, at.z);
+            if (active_trigger.kind != carview::WorldTrigger::kNone) {
+              std::array<double, 3> p{};
+              if (active_trigger.site) {
+                p = active_trigger.site->pos;
+                world_marker.is_festival = true;
+                world_marker.title = active_trigger.site->name;
+                const bool wb_ready = active_trigger.site->kind == race::FestivalSite::kRaceCentral &&
+                                      career_catalog.pending_wristband(career.wristband_points, collected_wristband) >= 0;
+                world_marker.subtitle = wb_ready ? "NEW WRISTBAND READY TO COLLECT!" : "HORIZON FESTIVAL";
+                world_marker.prompt = wb_ready ? "COLLECT WRISTBAND" : "ENTER NOW";
+                if (wb_ready) world_marker.badge = "NEW";
+              } else if (active_trigger.hub) {
+                p = active_trigger.hub->trigger_pos;
+                world_marker.title = "STREET RACE HUB " + std::to_string(active_trigger.hub->id);
+                world_marker.subtitle = "STREET RACING";
+                world_marker.prompt = "ENTER HUB";
+              } else if (active_trigger.event) {
+                p = active_trigger.event->trigger_pos;
+                const std::string ename = carview::game_text(active_trigger.event->name_ref);
+                world_marker.title = (!ename.empty() && ename.rfind("_&", 0) != 0) ? ename : active_trigger.event->horizon_id;
+                int64_t cid = 0;
+                int clid = 2;
+                current_car_info(cid, clid);
+                const auto elig = career_catalog.check_eligibility(*active_trigger.event, cid, clid, class_name_list());
+                world_marker.eligible = elig.eligible;
+                world_marker.subtitle = elig.eligible
+                                            ? (std::string(race::CareerCatalog::event_style_label(*active_trigger.event)) +
+                                               "  •  " + carview::thousands(int64_t(active_trigger.event->cash_prize)) + " Cr")
+                                            : elig.reason;
+                world_marker.prompt = elig.eligible ? "ENTER NOW" : "INELIGIBLE";
+                const int bp = career_catalog.best_place(*active_trigger.event, career);
+                if (bp == 0) world_marker.badge = "NEW";
+                else if (bp == 1) world_marker.badge = "1ST";
+              }
+              float sx = 0.5f * float(w), sy = 0.35f * float(h);
+              const bool on_screen = project_world_point(cam_frame, info, vehicle, p[0], p[1] + 2.6, p[2], float(w),
+                                                         float(h), sx, sy);
+              if (on_screen || active_trigger.in_range) {
+                world_marker.visible = true;
+                world_marker.in_range = active_trigger.in_range;
+                world_marker.screen_x = on_screen ? sx : 0.5f * float(w);
+                world_marker.screen_y = on_screen ? sy : 0.32f * float(h);
+                world_marker.distance_m = active_trigger.dist;
+              }
+            }
+          }
+          // Update projected Opponent Overhead Name Tags in races (race-hud.png).
+          name_tags.clear();
+          if (race && !grid_menu_open && !race->player_finished() && w > 0 && h > 0) {
+            std::vector<carview::RaceView::OpponentTag> otags;
+            race->opponent_tags(otags);
+            const drive::Vec3 at = vehicle.position();
+            for (const auto& ot : otags) {
+              const double d = std::hypot(ot.x - at.x, ot.z - at.z);
+              if (d > 110.0) continue;
+              float sx = 0, sy = 0;
+              if (project_world_point(cam_frame, info, vehicle, ot.x, ot.y + 1.85, ot.z, float(w), float(h), sx, sy))
+                name_tags.push_back({sx, sy, ot.name, ot.leader});
+            }
+          }
+
           if (map_open) {
             if (w != map_w || h != map_h) map_dirty = true;
             if (map_dirty && w > 64 && h > 64) {
               map_dirty = false;
               map_w = w, map_h = h;
               const int m = std::max(16, h / 30);
-              HudImage img = map_view.pause_map(map_scene(), w - 2 * m, h - 2 * m, map_zoom, map_cx, map_cz);
+              MapScene ms = map_scene();
+              cached_map_markers = ms.markers;
+              update_map_selection();
+              ms.selected_marker = map_selected_marker;
+              HudImage img = map_view.pause_map(ms, w - 2 * m, h - 2 * m, map_zoom, map_cx, map_cz);
               renderer.set_overlay(std::move(img.rgba), img.width, img.height, m, m, 2);
             }
-          } else if (show_hud) {
+            set_hud(w, h, "", nullptr);  // draws MapOverlayHud (hovered card + help bar) on UI layer!
+          } else if (show_hud || show_title || ceremony.active) {
             set_minimap(h, false);
             char line[160] = "";
             if (picking)
@@ -4463,18 +5478,8 @@ int run_drive(int argc, char** argv) {
                                  : vehicle.time() < kIntroSeconds ? intro
                                                      : club_banner(),
                     &menu);
-            set_radio_popup(h);  // after the panel: its height
+            if (!show_title && !ceremony.active) set_radio_popup(h);
           }
-          // The car and the camera at the frame's time: between the last
-          // two steps (Vehicle::Pose), put back after the frame is built.
-          const drive::Vehicle::Pose stepped = vehicle.pose();
-          vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
-          if (race) race->set_blend(accumulator / drive::Vehicle::kStep);
-          wheel_poses(vehicle, poses);
-          showroom.set_wheel_poses(poses);
-          showroom.set_braking(brake_glow(vehicle));
-          place_world();
-          showroom.set_frame(drive_frame(h > 0 ? float(w) / float(h) : 1.0f, frame_dt));
           vehicle.set_pose(stepped);
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -4511,7 +5516,7 @@ int run_drive(int argc, char** argv) {
                     free_roam->signs_found(), collectibles.signs.size(),
                     freeroam::upgrade_discount(free_roam->signs_found()), free_roam->barns_found(),
                     collectibles.barns.size(), progress.total_distance / 1000);
-      save_now("end");
+      if (!skip_end_save) save_now("end");
       if (traffic) std::printf("%s\n", traffic->summary().c_str());
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
@@ -4523,6 +5528,12 @@ int run_drive(int argc, char** argv) {
       race.reset();
       race_event.clear();
       std::printf("race: left for free roam\n");
+    }
+    if (!pre_loaner_car.empty()) {
+      car = pre_loaner_car;
+      if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
+      pre_loaner_car.clear();
+      pre_loaner_garage_id = 0;
     }
     again = true;
   }

@@ -243,20 +243,28 @@ struct Canvas {
 struct Mark {
   std::string key;
   double x, z;
+  bool is_new = false;
+  bool completed = false;
+  int marker_index = -1;
 };
 std::vector<Mark> marks(const MapScene& s) {
   std::vector<Mark> out;
-  if (!s.data || !s.progress) return out;
-  for (const auto& sign : s.data->signs) {
-    const bool found = s.progress->signs_found.count(sign.id) > 0;
-    if (found) out.push_back({"flyer_collected", sign.at.x, sign.at.z});
-    else if (s.reveal) out.push_back({"flyer", sign.at.x, sign.at.z});
+  if (s.data && s.progress) {
+    for (const auto& sign : s.data->signs) {
+      const bool found = s.progress->signs_found.count(sign.id) > 0;
+      if (found) out.push_back({"flyer_collected", sign.at.x, sign.at.z, false, true, -1});
+      else if (s.reveal) out.push_back({"flyer", sign.at.x, sign.at.z, false, false, -1});
+    }
+    for (size_t i = 0; i < s.data->barns.size(); ++i) {
+      const auto& b = s.data->barns[i];
+      const int status = i < s.progress->barns.size() ? s.progress->barns[i].status : freeroam::kBarnNotSpawned;
+      if (status == freeroam::kBarnFound) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, -1});
+      else if (s.reveal) out.push_back({"barnfind", b.at.x, b.at.z, false, false, -1});
+    }
   }
-  for (size_t i = 0; i < s.data->barns.size(); ++i) {
-    const auto& b = s.data->barns[i];
-    const int status = i < s.progress->barns.size() ? s.progress->barns[i].status : freeroam::kBarnNotSpawned;
-    if (status == freeroam::kBarnFound) out.push_back({"barnfind_collected", b.at.x, b.at.z});
-    else if (s.reveal) out.push_back({"barnfind", b.at.x, b.at.z});
+  for (size_t i = 0; i < s.markers.size(); ++i) {
+    const auto& m = s.markers[i];
+    out.push_back({m.icon_tag, m.x, m.z, m.is_new, m.completed, int(i)});
   }
   return out;
 }
@@ -420,8 +428,19 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     if (it == mini_.icons.end()) continue;
     const P p = project(m.x, m.z);
     if (p.depth < 1) continue;
-    for (const auto& ic : it->second)
-      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y - ic.size * unit * 0.4, ic.size * unit, 0, ic.colour);
+    double top_y = p.y;
+    for (const auto& ic : it->second) {
+      Rgba tint = ic.colour;
+      if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
+      const double iy = p.y - ic.size * unit * 0.4;
+      top_y = std::min(top_y, iy - ic.size * unit * 0.45);
+      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, ic.size * unit, 0, tint);
+    }
+    // Pink NEW dot/tag above uncompleted events (hud-freeroam-event-marker.png).
+    if (m.is_new) {
+      const double bw = 14 * unit, bh = 5 * unit;
+      cv.line(p.x - bw * 0.5, top_y - bh * 0.5, p.x + bw * 0.5, top_y - bh * 0.5, bh, Rgba{245, 4, 92, 245});
+    }
   }
   // Opponents: white discs with a grey rim, as the race frames show.
   for (const auto& o : scene.opponents) {
@@ -525,7 +544,26 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     const auto it = full_.icons.find(m.key);
     if (it == full_.icons.end()) continue;
     const auto p = to_screen(m.x, m.z);
-    for (const auto& ic : it->second) cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], ic.size * unit, 0, ic.colour);
+    const bool sel = m.marker_index >= 0 && m.marker_index == scene.selected_marker;
+    if (sel) {
+      // Bright pink halo around hovered/selected map marker.
+      const double r = 24.0 * unit;
+      for (int k = 0; k < 24; ++k) {
+        const double a0 = 2 * kPi * k / 24, a1 = 2 * kPi * (k + 1) / 24;
+        cv.line(p[0] + r * std::cos(a0), p[1] + r * std::sin(a0), p[0] + r * std::cos(a1), p[1] + r * std::sin(a1), 3.0,
+                Rgba{245, 4, 92, 255});
+      }
+    }
+    for (const auto& ic : it->second) {
+      Rgba tint = ic.colour;
+      if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
+      const double sz = ic.size * unit * (sel ? 1.25 : 1.0);
+      cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, 0, tint);
+    }
+    if (m.is_new) {
+      const double oy = 18 * unit;
+      cv.line(p[0] - 8 * unit, p[1] - oy, p[0] + 8 * unit, p[1] - oy, 4.5 * unit, Rgba{245, 4, 92, 250});
+    }
   }
   for (const auto& o : scene.opponents) {
     const auto p = to_screen(o[0], o[1]);
@@ -539,6 +577,15 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       if ((ic.cell_x == 2 || ic.cell_x == 3) && ic.cell_y == 3)
         cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], std::max(28.0, ic.size * unit), scene.heading, ic.colour);
     }
+  }
+  // Central map cursor crosshair (subtle white reticle).
+  {
+    const double mx = width / 2.0, my = height / 2.0, g = 7.0, l = 16.0;
+    const Rgba ret{255, 255, 255, 210};
+    cv.line(mx - l, my, mx - g, my, 2.0, ret);
+    cv.line(mx + g, my, mx + l, my, 2.0, ret);
+    cv.line(mx, my - l, mx, my - g, 2.0, ret);
+    cv.line(mx, my + g, mx, my + l, 2.0, ret);
   }
   return cv.image();
 }

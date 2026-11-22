@@ -27,6 +27,19 @@
 
 namespace carview {
 
+struct MapMarker {
+  enum Kind { kEvent, kStreetHub, kFestivalSite };
+  Kind kind = kEvent;
+  std::string icon_tag;  // MapProfile key: race, exhibition, streetrace, nemesisrace, racecentral, autoshow, workshop, paintshop
+  std::string id;        // HorizonEventID, hub id, or site name
+  std::string title;
+  std::string subtitle;
+  double x = 0, z = 0;
+  bool is_new = false;
+  bool completed = false;
+  int site_or_hub = 0;  // FestivalSite::Kind or StreetHub::id
+};
+
 struct MapScene {
   double x = 0, z = 0;  // the player, game frame
   double heading = 0;   // rad, 0 faces +z (north), positive turns towards +x (east)
@@ -40,6 +53,9 @@ struct MapScene {
   std::vector<std::array<double, 2>> opponents;
   // A race's route ahead (x, z), drawn green on the minimap (SPEC-UI-LAYOUTS a).
   std::vector<std::array<double, 2>> route;
+  // Unlocked career events, Street Hubs, and Festival sites.
+  std::vector<MapMarker> markers;
+  int selected_marker = -1;  // highlighted marker on pause map (-1: none)
 };
 
 class MapView {

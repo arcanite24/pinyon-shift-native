@@ -67,6 +67,7 @@ set(carview_sources
   upgrade_shop.cpp
   autoshow.cpp
   career_page.cpp
+  events_page.cpp
   settings.cpp
   settings_page.cpp
   ${shader_headers})

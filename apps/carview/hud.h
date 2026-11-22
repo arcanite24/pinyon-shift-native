@@ -26,16 +26,43 @@ struct HudState {
 };
 
 // The windowed drive's pause menu: Esc or Start opens it; the items move
-// with up and down and wrap.
+// with up and down and wrap. Adapts cleanly between Free Roam and In-Race.
 struct PauseMenu {
-  enum Item { kResume, kMap, kEvent, kChangeCar, kUpgrades, kPaint, kClub, kAutoshow, kCareer, kSettings, kReset, kQuit, kCount };
-  // kEvent's line ("race FR22", left and right pick); empty: "race".
-  std::string event_label;
+  enum Action {
+    kResume,
+    kMap,
+    kEvents,
+    kGarage,
+    kUpgrades,
+    kPaint,
+    kAutoshow,
+    kCareer,
+    kClub,
+    kSettings,
+    kReset,
+    kRestartRace,
+    kDifficulty,
+    kQuitRace,
+    kQuitToTitle,
+    kQuit
+  };
   bool open = false;
-  int selected = kResume;
-  static const char* label(int item);
-  void show() { open = true, selected = kResume; }
-  void move(int by) { selected = ((selected + by) % kCount + kCount) % kCount; }
+  bool in_race = false;
+  std::string events_label;      // e.g. "COLLECT GREEN WRISTBAND!" or "RACE CENTRAL"
+  std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+15%) >"
+  int selected = 0;
+  std::vector<Action> items() const;
+  Action selected_action() const;
+  std::string label(Action a) const;
+  void show(bool racing = false) {
+    open = true;
+    in_race = racing;
+    selected = 0;
+  }
+  void move(int by) {
+    const int n = int(items().size());
+    if (n > 0) selected = ((selected + by) % n + n) % n;
+  }
   // Fills the HUD's menu fields (nothing while closed).
   void fill(HudState& st) const;
 };

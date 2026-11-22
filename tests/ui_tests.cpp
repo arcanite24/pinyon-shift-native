@@ -9,6 +9,9 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#include "events_page.h"
+#include "game_hud.h"
+#include "hud.h"
 #include "ui.h"
 
 static int failures = 0;
@@ -21,6 +24,337 @@ static int failures = 0;
   } while (0)
 
 using namespace carview::ui;
+
+namespace {
+
+void check_hud_screen(const carview::DriveHud& d) {
+  List l;
+  carview::build_drive_hud(l, d, 1280, 720);
+  CHECK(!l.items().empty());
+  std::vector<uint8_t> out_px;
+  rasterize(l.items(), out_px, 1280, 720);
+  size_t lit = 0;
+  for (size_t i = 3; i < out_px.size(); i += 4) lit += out_px[i] > 0;
+  CHECK(lit > 5000);
+}
+
+race::CareerCatalog make_test_catalog() {
+  race::CareerCatalog cat;
+  cat.wristbands = {
+      {0, 0, "", "Yellow", 0, 0},
+      {1, 220, "", "Green", 0, 424},
+      {2, 750, "", "Blue", 0, 0},
+      {3, 1500, "", "Gold", 0, 0},
+  };
+  cat.hubs = {{1, "", 300, {57}, true, {200, 0, 200}, 24.0}};
+  cat.sites = {{race::FestivalSite::kRaceCentral, "RACE CENTRAL", "racecentral", {0, 0, 0}, 24.0}};
+
+  race::CarSpec corrado;
+  corrado.car_id = 309, corrado.media_name = "VW_Corrado_95", corrado.stock_class = 2;
+  corrado.props.drive_type = shift::data::kDriveFwd;
+  race::CarSpec skyline;
+  skyline.car_id = 1219, skyline.media_name = "NIS_Skyline", skyline.stock_class = 5;
+  skyline.props.drive_type = shift::data::kDriveAwd;
+  race::CarSpec mustang;
+  mustang.car_id = 404, mustang.media_name = "FRD_MustangBoss_70", mustang.stock_class = 3;
+  race::CarSpec rx7;
+  rx7.car_id = 424, rx7.media_name = "MAZ_RX7_97", rx7.stock_class = 3;
+  cat.cars[309] = corrado;
+  cat.cars[1219] = skyline;
+  cat.cars[404] = mustang;
+  cat.cars[424] = rx7;
+
+  // Completed festival event (level 0)
+  race::CareerEvent fr02;
+  fr02.event_id = 26, fr02.horizon_id = "FR02", fr02.level = 0, fr02.style = 1, fr02.target_class = 3;
+  fr02.cash_prize = 4000, fr02.opponents = 7, fr02.has_trigger = true, fr02.trigger_pos = {50, 0, 0};
+  fr02.trigger_radius = 25.0;
+
+  // Uncompleted festival event (level 0)
+  race::CareerEvent fr05;
+  fr05.event_id = 27, fr05.horizon_id = "FR05", fr05.level = 0, fr05.style = 1, fr05.target_class = 2;
+  fr05.cash_prize = 5000, fr05.opponents = 7, fr05.has_trigger = true, fr05.trigger_pos = {80, 0, 0};
+  fr05.trigger_radius = 25.0;
+  shift::data::RestrictionSet fwd_only;
+  fwd_only.drive_type = shift::data::kDriveFwd;
+  fr05.restrictions.buckets[0] = fwd_only;
+
+  // Locked Green wristband event
+  race::CareerEvent fr10;
+  fr10.event_id = 30, fr10.horizon_id = "FR10", fr10.level = 1, fr10.style = 1, fr10.unlock_points_req = 220;
+  fr10.target_class = 3;
+
+  // Street event in Hub 1
+  race::CareerEvent st01;
+  st01.event_id = 57, st01.horizon_id = "ST01", st01.style = 2, st01.hub_id = 1, st01.unlock_points_req = 300;
+  st01.level = 1;
+
+  // Showcase with loaner car
+  race::CareerEvent sh01;
+  sh01.event_id = 101, sh01.horizon_id = "EXHIBITION_1", sh01.style = 3, sh01.popularity_rank_req = 225;
+  sh01.player_car_id = 404, sh01.prize_car_id = 424, sh01.cash_prize = 10000;
+
+  // Nemesis showdown with prereq
+  race::CareerEvent nm01;
+  nm01.event_id = 169, nm01.horizon_id = "NEM_1", nm01.style = 5, nm01.prereq_event_id = 999;
+
+  // Headline finale (style 6)
+  race::CareerEvent sd01;
+  sd01.event_id = 200, sd01.horizon_id = "FINALE", sd01.style = 6, sd01.unlock_points_req = 1500, sd01.level = 3;
+
+  cat.events = {fr02, fr05, fr10, st01, sh01, nm01, sd01};
+  // Extra locked events to verify locked-row cap (8) and 7-row scroll window.
+  for (int i = 0; i < 6; ++i) {
+    race::CareerEvent extra;
+    extra.event_id = 300 + i;
+    extra.horizon_id = "LOCKED_EXTRA_" + std::to_string(i);
+    extra.style = 1;
+    extra.level = 2;
+    extra.unlock_points_req = 750;
+    cat.events.push_back(extra);
+  }
+  return cat;
+}
+
+void test_events_page() {
+  const auto cat = make_test_catalog();
+  const std::vector<garage::ClassBand> bands = {
+      {0.2, 100, "F"}, {0.3, 200, "E"}, {0.4, 300, "D"}, {0.5, 400, "C"}, {0.6, 500, "B"}, {0.7, 600, "A"}};
+  race::CareerRecord rec;
+  rec.wristband_points = 220;  // Green pending while collected_wristband == 0
+  rec.event_places[26] = 1;    // FR02 completed in 1st
+
+  carview::EventsPage page;
+  page.open(cat, rec, /*collected_wristband=*/0, /*popularity_rank=*/250, /*car=*/309, /*class=*/2, bands, 0);
+  CHECK(page.is_open());
+  CHECK(page.hub_filter() == 0);
+
+  std::string title, dtitle;
+  std::vector<std::string> lines, dlines;
+  int sel = 0;
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(title.find("ALL EVENTS") != std::string::npos);
+  CHECK(lines.size() == 7);  // capped to 7 visible rows
+  CHECK(lines[0] == "* COLLECT GREEN WRISTBAND!");
+  CHECK(dtitle == "RACE CENTRAL WRISTBAND CEREMONY");
+  bool has_bonus = false;
+  for (const auto& dl : dlines)
+    if (dl.find("BONUS CAR:") != std::string::npos) has_bonus = true;
+  CHECK(has_bonus);
+
+  // Sort order after pending wristband: [NEW] (FR05) -> [1ST] (FR02) -> [LOCKED] (capped at 8)
+  CHECK(lines[1] == "[NEW] FR05");
+  CHECK(lines[2] == "[1ST] FR02");
+  CHECK(lines[3].rfind("[LOCKED] ", 0) == 0);
+
+  // Wrap-around on move(-1) lands on last entry, move(+1) returns to 0.
+  page.move(-1);
+  const auto* last_e = page.selected_entry();
+  CHECK(last_e != nullptr && !last_e->unlocked);
+  page.move(+1);
+  CHECK(page.selected_entry() && page.selected_entry()->is_collect_wristband);
+
+  // Check locked reason variants across tabs.
+  page.switch_tab(+1);  // kFestival
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(title.find("FESTIVAL") != std::string::npos);
+  // Move down to a locked Green wristband event.
+  page.move(3);
+  CHECK(page.selected_entry() && page.selected_entry()->reason.find("COLLECT GREEN WRISTBAND") != std::string::npos);
+
+  page.switch_tab(+2);  // kShowcase (index 0 is pending wristband, index 1 is EXHIBITION_1)
+  page.move(1);
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(title.find("SHOWCASES") != std::string::npos);
+  CHECK(page.selected_entry() && page.selected_entry()->reason == "REACH POPULARITY RANK 225");
+
+  page.switch_tab(+1);  // kShowdown (index 0 is pending wristband, index 1 is NEM_1, index 2 is FINALE)
+  page.move(1);
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(title.find("SHOWDOWNS") != std::string::npos);
+  CHECK(page.selected_entry() && page.selected_entry()->reason == "WIN PREREQUISITE EVENT FIRST");
+  page.move(1);
+  CHECK(page.selected_entry() && page.selected_entry()->reason.find("GOLD WRISTBAND & 1,500 PTS") != std::string::npos);
+
+  // Check eligibility failure (Skyline AWD in D-class FWD FR05) & Showcase loaner when rank 225 & Green collected.
+  page.open(cat, rec, /*collected_wristband=*/1, /*popularity_rank=*/225, /*car=*/1219, /*class=*/5, bands, 0);
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(lines[0] == "[NEW] FR05");  // pending wristband gone once collected
+  CHECK(page.selected_entry() && !page.selected_entry()->eligible);
+  CHECK(page.selected_entry()->reason.find("REQUIRES CLASS") != std::string::npos);
+  page.switch_tab(+3);  // kShowcase -> unlocked + loaner
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(page.selected_entry() && page.selected_entry()->unlocked && page.selected_entry()->uses_loaner);
+  bool has_loaner = false, has_ready = false;
+  for (const auto& dl : dlines) {
+    if (dl.find("SHOWCASE CAR PROVIDED:") != std::string::npos) has_loaner = true;
+    if (dl.find("READY TO RACE") != std::string::npos) has_ready = true;
+  }
+  CHECK(has_loaner && has_ready);
+
+  // Rasterize EventsPage detail card via build_drive_hud.
+  carview::DriveHud hud;
+  hud.driving = false;
+  hud.menu_title = title;
+  hud.menu = lines;
+  hud.menu_selected = sel;
+  hud.detail_title = dtitle;
+  hud.detail_lines = dlines;
+  check_hud_screen(hud);
+
+  // hub_filter > 0 locks tab to kStreet, omits pending wristband, and switch_tab is a no-op.
+  page.open(cat, rec, /*collected_wristband=*/0, /*popularity_rank=*/250, /*car=*/309, /*class=*/2, bands, 1);
+  page.switch_tab(+1);
+  page.fill(title, lines, sel, dtitle, dlines);
+  CHECK(page.hub_filter() == 1);
+  CHECK(title.find("STREET RACE HUB 1") != std::string::npos);
+  CHECK(!lines.empty() && lines[0].find("COLLECT GREEN WRISTBAND") == std::string::npos);
+}
+
+void test_pause_menu() {
+  carview::PauseMenu pm;
+  pm.events_label = "COLLECT GREEN WRISTBAND!";
+  pm.difficulty_label = "< DIFFICULTY: HARD (+30%) >";
+
+  // Closed fill() leaves HudState menu empty.
+  carview::HudState closed_st;
+  pm.fill(closed_st);
+  CHECK(closed_st.menu.empty() && closed_st.menu_title.empty());
+
+  // Free roam items & wrap-around.
+  pm.show(false);
+  const auto fr_items = pm.items();
+  CHECK(fr_items.size() == 10);
+  CHECK(fr_items.front() == carview::PauseMenu::kResume);
+  CHECK(fr_items.back() == carview::PauseMenu::kQuitToTitle);
+  CHECK(pm.selected_action() == carview::PauseMenu::kResume);
+  pm.move(-1);
+  CHECK(pm.selected_action() == carview::PauseMenu::kQuitToTitle);
+  pm.move(+1);
+  CHECK(pm.selected_action() == carview::PauseMenu::kResume);
+  CHECK(pm.label(carview::PauseMenu::kEvents) == "COLLECT GREEN WRISTBAND!");
+  CHECK(pm.label(carview::PauseMenu::kDifficulty) == "< DIFFICULTY: HARD (+30%) >");
+
+  // In-race items & HudState fill.
+  pm.show(true);
+  const auto race_items = pm.items();
+  CHECK(race_items.size() == 6);
+  CHECK(race_items[1] == carview::PauseMenu::kRestartRace);
+  CHECK(race_items.back() == carview::PauseMenu::kQuitRace);
+  pm.move(2);
+  carview::HudState st;
+  pm.fill(st);
+  CHECK(st.menu_title == "paused");
+  CHECK(st.menu.size() == 6 && st.menu_selected == 2);
+  CHECK(st.menu[2] == "MAP");
+}
+
+void test_hud_overlays() {
+  // TitleScreenHud confirm_new_career
+  {
+    carview::TitleScreenHud ts;
+    ts.active = true, ts.menu_phase = true, ts.has_save = true;
+    ts.confirm_new_career = true, ts.confirm_selected = 0;
+    ts.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
+    carview::DriveHud d;
+    d.title_screen = &ts, d.time = 1.0;
+    check_hud_screen(d);
+  }
+  // WorldMarkerHud out-of-range + ineligible + festival + empty prompt fallback
+  {
+    carview::WorldMarkerHud wm;
+    wm.visible = true, wm.in_range = false, wm.is_festival = true, wm.eligible = false;
+    wm.screen_x = 640, wm.screen_y = 260, wm.distance_m = 85.0;
+    wm.title = "RACE CENTRAL", wm.subtitle = "HORIZON FESTIVAL";
+    carview::DriveHud d;
+    d.world_marker = &wm, d.time = 1.0;
+    check_hud_screen(d);
+
+    wm.in_range = true, wm.is_festival = false, wm.prompt.clear();
+    check_hud_screen(d);
+  }
+  // SkillChainHud banked / lost / rank-up states
+  {
+    carview::SkillChainHud sk;
+    sk.active = false, sk.banked_total = 3200, sk.banked_at = 1.0, sk.popularity_rank = 240, sk.popularity_progress = 0.6;
+    carview::DriveHud d;
+    d.skills = &sk, d.time = 2.0;
+    check_hud_screen(d);
+
+    sk.banked_at = -1e9, sk.lost_at = 1.0;
+    d.time = 1.5;
+    check_hud_screen(d);
+
+    sk.lost_at = -1e9, sk.rank_up_at = 1.0, sk.popularity_rank = 225;
+    check_hud_screen(d);
+  }
+  // MapOverlayHud (hovered marker + fallback)
+  {
+    carview::MapOverlayHud mo;
+    mo.active = true, mo.title = "RED ROCK RAMPAGE", mo.subtitle = "FESTIVAL RACE", mo.action_hint = "ENTER EVENT";
+    mo.distance_m = 1450.0;
+    carview::DriveHud d;
+    d.map_overlay = &mo;
+    check_hud_screen(d);
+
+    mo.title.clear(), mo.subtitle.clear(), mo.action_hint.clear(), mo.distance_m = -1;
+    check_hud_screen(d);
+  }
+  // NameTagHud during RaceHud::kRacing (on-screen leader + normal + off-screen clipped)
+  {
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kRacing, r.event = "RED ROCK RAMPAGE", r.place = 2, r.cars = 8, r.clock = 42.5;
+    carview::DriveHud d;
+    d.race = &r, d.kmh = 160, d.rpm = 5500, d.gear = 4;
+    d.name_tags = {{640.0f, 220.0f, "DARIUS FLYNT", true},
+                   {480.0f, 250.0f, "ALI HOWARD", false},
+                   {-100.0f, 250.0f, "CLIPPED", false}};
+    check_hud_screen(d);
+  }
+  // RaceHud::kFinished results_page = 1 (mileage & difficulty bonus) and results_page = 3 (won_car_name)
+  {
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kFinished, r.event = "RED ROCK RAMPAGE", r.place = 1, r.cars = 8;
+    r.finish_time = 123.45, r.base_credits = 4000, r.mileage_bonus = 200, r.difficulty_pct = 30, r.difficulty_bonus = 1260;
+    r.credits = 5460, r.balance = 25460, r.won_car_name = "1997 Mazda RX-7";
+    r.results_page = 1;
+    carview::DriveHud d;
+    d.race = &r, d.time = 5.0;
+    check_hud_screen(d);
+
+    r.results_page = 3;
+    check_hud_screen(d);
+  }
+}
+
+void test_world_trigger() {
+  const auto cat = make_test_catalog();
+  race::CareerRecord rec;
+  // 140 m cutoff: at (141, 0) no site or event is within 140 m of RaceCentral(0,0), FR02(50,0), FR05(80,0)?
+  // Check (-141, 0): 141 m from RaceCentral(0,0), > 190 m from FR02/FR05.
+  CHECK(carview::select_world_trigger(cat, rec, 0, 250, -141.0, 0.0).kind == carview::WorldTrigger::kNone);
+  const auto far_site = carview::select_world_trigger(cat, rec, 0, 250, -139.0, 0.0);
+  CHECK(far_site.kind == carview::WorldTrigger::kFestivalSite && !far_site.in_range);
+
+  // in_range priority: place test site/event where player is closer to out-of-range A than in-range B.
+  race::CareerCatalog prio;
+  race::FestivalSite site_a{race::FestivalSite::kAutoshow, "AUTOSHOW", "autoshow", {0, 0, 0}, 10.0};
+  race::FestivalSite site_b{race::FestivalSite::kWorkshop, "WORKSHOP", "workshop", {45, 0, 0}, 30.0};
+  prio.sites = {site_a, site_b};
+  // At x = 18: dist to A = 18 m (not in_range, radius 10), dist to B = 27 m (in_range, radius 30) -> B wins!
+  const auto chosen = carview::select_world_trigger(prio, rec, 0, 250, 18.0, 0.0);
+  CHECK(chosen.kind == carview::WorldTrigger::kFestivalSite && chosen.site &&
+        chosen.site->kind == race::FestivalSite::kWorkshop && chosen.in_range);
+
+  // Locked Street Hub at (200, 0, 200) is excluded while points < 300, selected once unlocked.
+  CHECK(carview::select_world_trigger(cat, rec, 0, 250, 200.0, 200.0).kind == carview::WorldTrigger::kNone);
+  rec.wristband_points = 300;
+  const auto unlocked_hub = carview::select_world_trigger(cat, rec, 1, 250, 200.0, 200.0);
+  CHECK(unlocked_hub.kind == carview::WorldTrigger::kStreetHub && unlocked_hub.hub && unlocked_hub.hub->id == 1 &&
+        unlocked_hub.in_range);
+}
+
+}  // namespace
 
 int main() {
   // Every letter and digit has strokes.
@@ -45,6 +379,60 @@ int main() {
     }
   CHECK(inside > 200);
   CHECK(outside == 0);
+
+  // Verify all new Career & Horizon HUD screens build and rasterize cleanly at 1280x720.
+  auto check_screen = [&](const carview::DriveHud& d) {
+    List l;
+    carview::build_drive_hud(l, d, 1280, 720);
+    CHECK(!l.items().empty());
+    std::vector<uint8_t> out_px;
+    rasterize(l.items(), out_px, 1280, 720);
+    size_t lit = 0;
+    for (size_t i = 3; i < out_px.size(); i += 4) lit += out_px[i] > 0;
+    CHECK(lit > 5000);
+  };
+  {
+    carview::TitleScreenHud ts;
+    ts.active = true, ts.menu_phase = false;
+    carview::DriveHud d;
+    d.title_screen = &ts, d.time = 1.0;
+    check_screen(d);
+    ts.menu_phase = true, ts.has_save = true;
+    ts.menu = {"CONTINUE CAREER", "NEW CAREER", "FREE ROAM", "SETTINGS", "QUIT"};
+    ts.save_band_name = "YELLOW WRISTBAND", ts.save_car_name = "1995 Volkswagen Corrado VR6";
+    check_screen(d);
+  }
+  {
+    carview::WorldMarkerHud wm;
+    wm.visible = true, wm.in_range = true, wm.screen_x = 600, wm.screen_y = 300;
+    wm.title = "RED ROCK RAMPAGE", wm.subtitle = "FESTIVAL RACE", wm.prompt = "ENTER NOW", wm.badge = "NEW";
+    carview::SkillChainHud sk;
+    sk.active = true, sk.chain_points = 500, sk.multiplier = 2, sk.last_skill = "GREAT DRIFT", sk.last_points = 250;
+    sk.popularity_rank = 240, sk.popularity_progress = 0.5;
+    carview::DriveHud d;
+    d.world_marker = &wm, d.skills = &sk, d.time = 2.0;
+    check_screen(d);
+  }
+  {
+    carview::RaceHud r;
+    r.phase = carview::RaceHud::kGrid, r.event = "RED ROCK RAMPAGE", r.event_type = "FESTIVAL RACE";
+    r.grid_menu_open = true, r.grid_menu = {"START RACE", "< DIFFICULTY: MED (+15%) >", "QUIT RACE"};
+    carview::DriveHud d;
+    d.race = &r, d.time = 1.0;
+    check_screen(d);
+  }
+  {
+    carview::CeremonyHud c;
+    c.active = true, c.headline = "NEW WRISTBAND EARNED!", c.band_name = "GREEN WRISTBAND", c.band_colour = "GREEN";
+    c.subtitle = "7 NEW FESTIVAL EVENTS UNLOCKED", c.bonus_car = "1997 Mazda RX-7";
+    carview::DriveHud d;
+    d.ceremony = &c;
+    check_screen(d);
+  }
+  test_events_page();
+  test_pause_menu();
+  test_hud_overlays();
+  test_world_trigger();
 
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {
     const uint32_t W = 1280, H = 720;
