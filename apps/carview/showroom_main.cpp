@@ -42,7 +42,9 @@
 #include "audio/radio.h"
 #include "audio/xml.h"
 #include "drive_helpers.h"
+#include "fmv_player.h"
 #include "game_hud.h"
+#include "story_intro.h"
 #include "hud_scene.h"
 #include "hud.h"
 #include "process_time.h"
@@ -1609,6 +1611,11 @@ int run_drive(int argc, char** argv) {
   }
   bool save_settings = false;
   bool no_title = false;
+  bool skip_intro_movies = false;
+  bool start_in_single_player = false;
+  bool skip_vo_with_a = true;
+  bool story_intro_cli = false;
+  std::filesystem::path cli_fmv_path;
   std::filesystem::path mods_root;
   bool mods_off = false;
   for (size_t i = 0; i < args.size(); ++i) {
@@ -1617,6 +1624,14 @@ int run_drive(int argc, char** argv) {
     if (a == "--drive" || a == "--no-settings") continue;
     if (a == "--save-settings") save_settings = true;
     else if (a == "--no-title") no_title = true;
+    else if (a == "--skip-intro-movies") skip_intro_movies = true;
+    else if (a == "--no-skip-intro-movies") skip_intro_movies = false;
+    else if (a == "--start-in-single-player") start_in_single_player = true;
+    else if (a == "--no-start-in-single-player") start_in_single_player = false;
+    else if (a == "--skip-vo-with-a") skip_vo_with_a = true;
+    else if (a == "--no-skip-vo-with-a") skip_vo_with_a = false;
+    else if (a == "--story-intro") story_intro_cli = true;
+    else if (a == "--fmv") cli_fmv_path = next();
     else if (a == "--mods") mods_root = next(), mods_off = false;
     else if (a == "--no-mods") mods_off = true;
     else if (a == "--headless") headless = true;
@@ -2214,8 +2229,12 @@ int run_drive(int argc, char** argv) {
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
     if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());
   }
-  // Title screen shown on windowed launch unless bypassed (--no-title, --event, --import-profile).
-  bool show_title = !headless && !no_title && race_event.empty() && import_dir.empty();
+  // Title screen shown on windowed launch unless bypassed (--no-title, --start-in-single-player, --event, --import-profile).
+  bool show_title = !headless && !no_title && !start_in_single_player && race_event.empty() && import_dir.empty();
+  carview::FmvPlayer fmv_player;
+  carview::StoryIntro story_intro;
+  bool boot_intro_checked = false;
+  (void)skip_vo_with_a;
   bool title_menu_phase = false;
   bool title_confirm_new = false;
   int title_selected = 0, title_confirm_selected = 1;
@@ -5208,6 +5227,11 @@ int run_drive(int argc, char** argv) {
             !career_page.is_open())
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
+        if (story_intro.active()) story_intro.draw_hud(list, float(width), float(height));
+        if (fmv_player.active()) {
+          list.clear();
+          fmv_player.draw(list, float(width), float(height));
+        }
         if (rewind_buf.active()) {
           // 921_I_REWIND overlay (SPEC-REWIND section 4).
           const float wf = float(width), hf = float(height);
@@ -6069,6 +6093,7 @@ int run_drive(int argc, char** argv) {
           progress_loaded = false;
           saved = drive::DriveSave{};
           saved.career_started = true;
+          saved.intro_completed = false;
           saved.owned_garage = true;
           saved.collected_wristband = 0;
           saved.difficulty = int(race_options.difficulty);
@@ -6319,6 +6344,32 @@ int run_drive(int argc, char** argv) {
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
+            if (fmv_player.active()) {
+              const bool skip_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                                    (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE || e.key.key == SDLK_ESCAPE);
+              const bool skip_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                                    (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
+                                     e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
+              if (skip_key || skip_pad) {
+                fmv_player.skip();
+                audio_host.set_fmv_audio(nullptr, nullptr);
+              }
+              continue;
+            }
+            if (story_intro.active() && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_TAB) {
+              const auto sa = story_intro.skip_stage();
+              if (sa.play_fmv) {
+                const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), sa.fmv_id);
+                if (!mp.empty() && fmv_player.open(mp, language)) {
+                  audio_host.set_fmv_audio(
+                      [](void* ctx, float* out, int fr) { return static_cast<carview::FmvPlayer*>(ctx)->read_audio(out, fr); },
+                      &fmv_player);
+                }
+              }
+              if (sa.open_autoshow) open_shop_or_autoshow(true);
+              if (sa.intro_finished) saved.intro_completed = true;
+              continue;
+            }
             // 1. Title Screen input (when settings isn't open on top of it).
             if (show_title && !settings_page.is_open()) {
               const bool has_save_opt =
@@ -7357,10 +7408,68 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           title_orbit_time += frame_dt;
-          const bool menu_paused = show_title || ceremony.active || grid_menu_open || menu.open || map_open ||
-                                   events_page.is_open() || outpost_hub_open || garage_open || shop.is_open() ||
-                                   autoshow.is_open() || career_page.is_open() || settings_page.is_open() ||
-                                   paint_open || club_open;
+          auto apply_story_action = [&](const carview::StoryAction& sa) {
+            if (sa.play_fmv) {
+              const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), sa.fmv_id);
+              if (!mp.empty() && fmv_player.open(mp, language)) {
+                audio_host.set_fmv_audio(
+                    [](void* ctx, float* out, int fr) { return static_cast<carview::FmvPlayer*>(ctx)->read_audio(out, fr); },
+                    &fmv_player);
+              }
+            }
+            if (sa.enter_title_screen && !no_title) show_title = true;
+            if (sa.swap_car && !sa.car_media.empty() && sa.car_media != car) {
+              if (std::find(baked_cars.begin(), baked_cars.end(), sa.car_media) != baked_cars.end()) {
+                next_car = sa.car_media;
+                running = false;
+              }
+            }
+            if (sa.teleport) {
+              vehicle.reset(drive::Vec3{sa.pos[0], sa.pos[1], sa.pos[2]}, sa.heading);
+            }
+            if (sa.launch_qualify_race) {
+              std::string why;
+              if (start_race(std::to_string(sa.qualify_route_id), why)) {
+                grid_menu_open = true;
+                grid_menu_selected = 0;
+              }
+            }
+            if (sa.grant_starter) {
+              award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
+              if (career.credits < 15000) career.credits = 15000;
+            }
+            if (sa.open_autoshow) open_shop_or_autoshow(true);
+            if (sa.intro_finished) saved.intro_completed = true;
+          };
+          if (!boot_intro_checked && !headless) {
+            boot_intro_checked = true;
+            if (!cli_fmv_path.empty()) {
+              if (fmv_player.open(cli_fmv_path, language)) {
+                audio_host.set_fmv_audio(
+                    [](void* ctx, float* out, int fr) { return static_cast<carview::FmvPlayer*>(ctx)->read_audio(out, fr); },
+                    &fmv_player);
+              }
+            } else if (story_intro_cli) {
+              show_title = false;
+              apply_story_action(story_intro.begin_new_career(game_root_of(), skip_intro_movies));
+            } else if (!skip_intro_movies && show_title) {
+              show_title = false;
+              apply_story_action(story_intro.begin_boot(game_root_of(), skip_intro_movies, start_in_single_player,
+                                                        have_saved && !saved.intro_completed));
+            }
+          }
+          if (fmv_player.active()) {
+            if (!fmv_player.update(frame_dt, true)) audio_host.set_fmv_audio(nullptr, nullptr);
+          }
+          if (story_intro.active()) {
+            const drive::Vec3 vp = vehicle.position();
+            const bool rf = race && race->player_finished();
+            apply_story_action(story_intro.update(frame_dt, {vp.x, vp.z}, fmv_player.active(), rf));
+          }
+          const bool menu_paused = show_title || fmv_player.active() || ceremony.active || grid_menu_open || menu.open ||
+                                   map_open || events_page.is_open() || outpost_hub_open || garage_open ||
+                                   shop.is_open() || autoshow.is_open() || career_page.is_open() ||
+                                   settings_page.is_open() || paint_open || club_open;
           const bool sim_paused = menu_paused || rewind_buf.active();
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();

@@ -161,6 +161,30 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
        {{"stock", {}},
         {"no rubber-banding", {"--ai-mode", "fair"}},
         {"hard (+1 tier)", {"--ai-mode", "hard"}}}},
+      {"skip intro movies", {{"off", {}}, {"on", {"--skip-intro-movies"}}}},
+      {"start in single player", {{"off", {}}, {"on", {"--start-in-single-player"}}}},
+      {"skip vo with a", {{"on", {}}, {"off", {"--no-skip-vo-with-a"}}}},
+      {"language",
+       {{"english (us)", {}},
+        {"english (uk)", {"--language", "GB"}},
+        {"francais", {"--language", "FR"}},
+        {"deutsch", {"--language", "DE"}},
+        {"italiano", {"--language", "IT"}},
+        {"espanol (es)", {"--language", "ES"}},
+        {"espanol (mx)", {"--language", "MX"}},
+        {"portugues (br)", {"--language", "BR"}},
+        {"nederlands", {"--language", "NL"}},
+        {"dansk", {"--language", "DA"}},
+        {"norsk", {"--language", "NB"}},
+        {"svenska", {"--language", "SV"}},
+        {"suomi", {"--language", "FI"}},
+        {"polski", {"--language", "PL"}},
+        {"cestina", {"--language", "CZ"}},
+        {"magyar", {"--language", "HU"}},
+        {"russian", {"--language", "RU"}},
+        {"japanese", {"--language", "JP"}},
+        {"korean", {"--language", "KO"}},
+        {"chinese (trad)", {"--language", "CHT"}}}},
   };
 }
 
@@ -202,7 +226,9 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
         else if (w.size() == 2 && has_value) owned = true;  // a value no choice names: the row keeps its pick
       }
     if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
-                   t == "--motion-blur" || t == "--dof" || t == "--satnav" || t == "--no-treasure-map")) owned = true;
+                   t == "--motion-blur" || t == "--dof" || t == "--satnav" || t == "--no-treasure-map" ||
+                   t == "--no-skip-intro-movies" || t == "--no-start-in-single-player" ||
+                   t == "--skip-vo-with-a")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--ai-mode" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -305,6 +331,13 @@ LiveSettings SettingsPage::live_settings() const {
   ls.treasure_map = pick_label("treasure map") == "on";
   ls.motion_blur = pick_label("motion blur") != "off";
   ls.dof = pick_label("depth of field") != "off";
+  ls.skip_intro_movies = pick_label("skip intro movies") == "on";
+  ls.start_in_single_player = pick_label("start in single player") == "on";
+  ls.skip_vo_with_a = pick_label("skip vo with a") != "off";
+  {
+    const std::string lg = pick_val("language");
+    ls.language = lg.empty() ? "EN" : lg;
+  }
 
   const std::string dmg = pick_val("damage");
   if (dmg == "none") ls.damage_mode = 0;

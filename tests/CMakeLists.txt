@@ -203,6 +203,17 @@ target_link_libraries(livery_damage_tests PRIVATE carview_render shift_freeroam 
 add_test(NAME livery_damage_tests COMMAND livery_damage_tests)
 
 if(SHIFT_BUILD_CARVIEW)
+  add_executable(fmv_story_tests fmv_story_tests.cpp
+    ../apps/carview/fmv_player.cpp
+    ../apps/carview/story_intro.cpp
+    ../apps/carview/settings.cpp
+    ../apps/carview/settings_page.cpp)
+  target_include_directories(fmv_story_tests PRIVATE ../apps/carview)
+  target_link_libraries(fmv_story_tests PRIVATE carview_render shift_audio shift_drive)
+  add_test(NAME fmv_story_tests COMMAND fmv_story_tests)
+endif()
+
+if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)
   add_test(NAME showroom_vram_tests COMMAND showroom_vram_tests)

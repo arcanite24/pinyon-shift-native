@@ -82,6 +82,10 @@ class AudioEngine {
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
   void set_user_music(std::unique_ptr<UserMusicPlayer> player);
 
+  // Lock-free FMV stereo PCM callback (called on audio thread when non-null).
+  using FmvAudioFn = int (*)(void* ctx, float* out_stereo, int frames);
+  void set_fmv_audio(FmvAudioFn fn, void* ctx);
+
   // Lock-free discrete SFX/UI/VO triggers.
   void trigger_collision(const CollisionHit& hit);
   void trigger_ui(UiCue cue);
@@ -229,6 +233,8 @@ class AudioEngine {
   Sink sink_;
   std::atomic<bool> stop_{false};
   std::atomic<bool> running_{false};
+  std::atomic<FmvAudioFn> fmv_fn_{nullptr};
+  std::atomic<void*> fmv_ctx_{nullptr};
   std::thread thread_;
 };
 

@@ -186,6 +186,16 @@ void AudioEngine::set_user_music(std::unique_ptr<UserMusicPlayer> player) {
   }
 }
 
+void AudioEngine::set_fmv_audio(FmvAudioFn fn, void* ctx) {
+  if (!fn) {
+    fmv_fn_.store(nullptr, std::memory_order_release);
+    fmv_ctx_.store(nullptr, std::memory_order_release);
+  } else {
+    fmv_ctx_.store(ctx, std::memory_order_release);
+    fmv_fn_.store(fn, std::memory_order_release);
+  }
+}
+
 void AudioEngine::set_bus_level(Bus b, float level) {
   Command c;
   c.kind = Command::kBusLevel;
@@ -493,6 +503,17 @@ void AudioEngine::render_block(float* out, int frames) {
   drain_commands();
 
   const size_t samples = size_t(frames) * 2;
+  if (FmvAudioFn fn = fmv_fn_.load(std::memory_order_acquire)) {
+    std::fill(out, out + samples, 0.0f);
+    void* ctx = fmv_ctx_.load(std::memory_order_acquire);
+    const int got = fn(ctx, out, frames);
+    const float g = mixer_.muted() ? 0.0f : mixer_.master();
+    for (int i = 0; i < got * 2; ++i) out[i] = soft_limit(out[i] * g);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    publish_telemetry(ms, 1000.0 * double(frames) / double(rate_));
+    return;
+  }
+
   for (auto& b : bus_bufs_) {
     if (b.size() < samples) b.resize(samples, 0.0f);
   }

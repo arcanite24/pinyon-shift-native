@@ -81,6 +81,7 @@ struct DriveSave {
   bool owned_garage = false;
   // The career.
   bool career_started = false;
+  bool intro_completed = true;  // false on brand-new career until Viper->Corrado opening finishes
   int64_t credits = 0, total_winnings = 0;
   int wristband_points = 0;
   int collected_wristband = -1;  // -1: legacy/imported (inferred from wristband_points); 0..6: collected at Race Central
