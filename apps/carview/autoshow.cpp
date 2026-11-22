@@ -220,11 +220,39 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   make_index_ = 0;
   selected_ = 0;
   colour_index_ = 0;
+  step_ = AutoshowStep::kCarSelect;
   rebuild_visible(credits);
   // If "All Affordable" is empty on open, stay open and display "no affordable cars"
   // (user can press Left/Right on Make Carousel to browse all makes).
   open_ = true;
   return true;
+}
+
+bool Autoshow::advance_step() {
+  if (step_ == AutoshowStep::kMakeSelect) {
+    step_ = AutoshowStep::kCarSelect;
+    return false;
+  }
+  if (step_ == AutoshowStep::kCarSelect) {
+    if (selected_car() && !selected_car()->swatches.empty()) {
+      step_ = AutoshowStep::kColorSelect;
+      return false;
+    }
+    return true;
+  }
+  return true;
+}
+
+bool Autoshow::back_step() {
+  if (step_ == AutoshowStep::kColorSelect) {
+    step_ = AutoshowStep::kCarSelect;
+    return true;
+  }
+  if (step_ == AutoshowStep::kCarSelect && !tutorial_mode_ && makes_.size() > 1) {
+    step_ = AutoshowStep::kMakeSelect;
+    return true;
+  }
+  return false;
 }
 
 void Autoshow::rebuild_visible(int64_t credits) {

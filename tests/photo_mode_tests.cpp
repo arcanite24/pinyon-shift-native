@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -13,6 +14,7 @@
 
 #include "drive/save.h"
 #include "settings_page.h"
+#include "ui4_chrome.h"
 
 namespace {
 
@@ -191,12 +193,29 @@ void test_png_write_and_hud_build() {
   }
   std::filesystem::remove_all(tmp_dir, ec);
 
-  // Verify Photo Mode HUD builds instances cleanly.
+  // Verify 516_I_EFFECTSMODE Photo Mode HUD anchors effects on right edge (x>=1000) with real slider/arrow textures.
+  std::set<std::string> requested_tex;
+  carview::ui4::set_texture_loader([&](const std::string& path, std::array<float, 4>& uv) {
+    requested_tex.insert(path);
+    uv = {0.0f, 0.0f, 0.1f, 0.1f};
+    return true;
+  });
   carview::PhotoModeController ctrl;
   ctrl.enter({0, 0, 0}, 0.0, carview::PhotoLimits::from_settings(false, true));
   carview::ui::List list;
   ctrl.build_hud(list, 1280.0f, 720.0f);
+  carview::ui4::set_texture_loader({});
   check(!list.empty(), "PhotoModeController::build_hud emits UI shapes");
+  check(requested_tex.count("HUD/PHOTOMODEFOCUSRETICLE") > 0, "Photo Mode loads PHOTOMODEFOCUSRETICLE");
+  check(requested_tex.count("OPTIONS/OPT_SLIDER_FRAME") > 0, "Photo Mode loads OPT_SLIDER_FRAME");
+  check(requested_tex.count("DIRTTEXTURES/STATBARFILL") > 0, "Photo Mode loads STATBARFILL");
+  check(requested_tex.count("OPTIONS/OPT_BAR_ARROW") > 0, "Photo Mode loads OPT_BAR_ARROW");
+  // Confirm right-edge effects column exists (x >= 1000) and left-middle drawer area is open.
+  int right_items = 0;
+  for (const auto& it : list.items()) {
+    if (it.p[0] >= 1000.0f && it.p[1] >= 60.0f && it.p[1] <= 620.0f) ++right_items;
+  }
+  check(right_items >= 20, "516_I_EFFECTSMODE effects column is anchored on the right edge (x>=1000)");
 }
 
 }  // namespace

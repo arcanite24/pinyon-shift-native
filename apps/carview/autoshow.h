@@ -47,6 +47,14 @@ struct AutoshowMake {
   size_t car_count = 0;
 };
 
+// Authentic 3-step FH1 Autoshow flow:
+// 115_C_BUY_MFRSELECT -> 108_C_BUY_CARSELECT -> 114_C_BUY_BUYCAR_COLOR
+enum class AutoshowStep {
+  kMakeSelect = 0,
+  kCarSelect = 1,
+  kColorSelect = 2,
+};
+
 class Autoshow {
  public:
   // Opens the Autoshow. `baked`: lower-case media names (if empty, lists all
@@ -58,6 +66,14 @@ class Autoshow {
             bool include_hidden = false, double price_multiplier = 1.0);
   void close() { open_ = false; }
   bool is_open() const { return open_; }
+
+  // Authentic 3-step flow navigation (115 -> 108 -> 114).
+  AutoshowStep step() const { return step_; }
+  void set_step(AutoshowStep s) { step_ = s; }
+  // Advances step (Make -> Car -> Color); returns true if already on Color (ready to buy).
+  bool advance_step();
+  // Steps back (Color -> Car -> Make); returns false if already at first step (caller should close).
+  bool back_step();
 
   // Make Carousel navigation ("All Affordable" + alphabetical List_CarMake).
   void move_make(int by, int64_t credits);
@@ -98,6 +114,7 @@ class Autoshow {
   size_t make_index_ = 0;
   size_t selected_ = 0;
   size_t colour_index_ = 0;
+  AutoshowStep step_ = AutoshowStep::kCarSelect;
   bool tutorial_mode_ = false;
   std::string empty_reason_;
   bool open_ = false;

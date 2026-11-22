@@ -1772,137 +1772,269 @@ void collection_row(ui::List& l, float x0, float x1, float y, const char* name, 
 }
 
 void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) {
-  const float x0 = std::min(w, 480 * s) + 26 * s, x1 = w - 48 * s;
-  if (x1 - x0 < 300 * s) return;
-  float y = 38 * s;
+  if (c.show_sponsors) {
+    draw_sponsor_challenges_ui4(l, w, h, c.sponsors, c.sponsor_selected, c.credits);
+    return;
+  }
 
-  // Authentic FH1 My Profile Wristband hero card (sharp gritty panel + WRISTBANDS/* artwork + off-white credits strip).
+  // Authentic H_STATISTICS (+3.0 deg Background@(640,295) floating PILL02 rows + STATBARFILL/EMPTY
+  // over open Colorado — ZERO flat dark dashboard box!).
+  float tilt_rad = ui4::kTiltRad;
+  if (const fh1::UiScene* sc_ptr = ui_scene("H_STATISTICS")) {
+    SceneDraw sc(sc_ptr, true);
+    if (const int rn = sc.find("Background"); rn >= 0) {
+      const float a = -sc.angle(rn);
+      if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) tilt_rad = a;
+    }
+  }
+
+  const float x0 = std::min(w, 466.0f * s) + 18.0f * s;
+  const float x1 = w - 62.0f * s;
+  if (x1 - x0 < 300.0f * s) return;
+  const float rw = x1 - x0;
+
+  ui4::TiltScope rot(l, 0.5f * (x0 + x1), 0.46f * h, tilt_rad);
+  float y = 52.0f * s;
+
+  // 1. Floating Wristband Hero Ribbon (WRISTBANDS/<COLOR> + #DAFF00 BARBASE26PX + Off-white Credits)
   const bool band = !c.band_name.empty();
   const uint32_t bc = band ? band_colour(c.band_name) : ui4::kDim;
-  const float ch = 128 * s;
-  ui4::panel(l, x0, y, x1, y + ch, s, ui4::kCharcoalDark, bc, 0, true);
+  ui4::pill(l, x0, y, x1, y + 66.0f * s, ui4::kCharcoalDark, ui4::PillKind::kPillBig, false, true);
 
-  // Real WRISTBANDS/<COLOR> graphic if available.
   std::string wb_word = c.band_name.substr(0, c.band_name.find(' '));
   for (char& ch_w : wb_word) ch_w = char(std::toupper(static_cast<unsigned char>(ch_w)));
   std::array<float, 4> wb_uv{};
   const bool has_wb = !wb_word.empty() && ui4::texture("WRISTBANDS/" + wb_word, wb_uv);
-  const float text_x = has_wb ? (x0 + 132 * s) : (x0 + 22 * s);
-  if (has_wb) {
-    l.image(x0 + 14 * s, y + 12 * s, x0 + 122 * s, y + 64 * s, wb_uv);
-  }
+  const float text_x = has_wb ? (x0 + 124.0f * s) : (x0 + 18.0f * s);
+  if (has_wb) l.image(x0 + 12.0f * s, y + 8.0f * s, x0 + 116.0f * s, y + 58.0f * s, wb_uv);
 
-  l.text(text_x, y + 14 * s, "HORIZON WRISTBAND", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
-  ui::TextStyle bts = ui4::style(ui::Font::kE, 27 * s, bc);
+  ui::TextStyle bts = ui4::style(ui::Font::kE, 23.0f * s, bc);
   const std::string btitle = band ? c.band_name : std::string("NO WRISTBAND YET");
-  ui4::fit_text(btitle, bts, (x1 - 210 * s) - text_x, 14 * s);
-  l.text(text_x, y + 32 * s, btitle, bts);
+  ui4::fit_text(btitle, bts, (x1 - 196.0f * s) - text_x, 12.0f * s);
+  l.text(text_x, y + 10.0f * s, btitle, bts);
 
-  // Off-white Credits strip top-right inside card.
-  ui4::offwhite_strip(l, x1 - 196 * s, y + 16 * s, x1 - 18 * s, y + 48 * s, s, true);
-  ui::TextStyle crs = ui4::style(ui::Font::kB, 17 * s, ui4::kInk, Align::kRight, true);
+  // Off-white Credits strip right-aligned inside hero pill
+  ui4::offwhite_strip(l, x1 - 186.0f * s, y + 10.0f * s, x1 - 12.0f * s, y + 38.0f * s, s, true);
+  ui::TextStyle crs = ui4::style(ui::Font::kB, 15.5f * s, ui4::kInk, Align::kRight, true);
   const std::string crstr = ui4::format_credits(c.credits);
-  ui4::fit_text(crstr, crs, 162 * s, 10 * s);
-  l.text(x1 - 26 * s, y + 23 * s, crstr, crs);
+  ui4::fit_text(crstr, crs, 158.0f * s, 9.5f * s);
+  l.text(x1 - 20.0f * s, y + 16.0f * s, crstr, crs);
 
-  // Sharp FH1 wristband progress bar.
-  const float bx0 = x0 + 20 * s, bx1 = x1 - 20 * s, by = y + 82 * s, bh = 10 * s;
-  l.rect(bx0, by, bx1, by + bh, rgba(255, 255, 255, 30));
+  // #DAFF00 BARBASE26PX wristband progress bar
+  const float bx0 = text_x, bx1 = x1 - 16.0f * s, by = y + 44.0f * s, bh = 10.0f * s;
   const float k = c.band_hi > c.band_lo
                       ? float(std::clamp(double(c.points - c.band_lo) / double(c.band_hi - c.band_lo), 0.0, 1.0))
                       : 1.0f;
-  if (band || c.points > 0) l.rect(bx0, by, std::max(bx0 + 6 * s, bx0 + (bx1 - bx0) * k), by + bh, bc);
-  char pts[64];
-  if (c.band_hi > 0)
-    std::snprintf(pts, sizeof pts, "%s / %s POINTS", thousands(c.points).c_str(), thousands(c.band_hi).c_str());
-  else
-    std::snprintf(pts, sizeof pts, "%s POINTS", thousands(c.points).c_str());
-  l.text(bx0, by + bh + 9 * s, pts, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
-  if (c.band_hi > 0 && !c.band_next.empty())
-    l.text(bx1, by + bh + 9 * s, "NEXT: " + c.band_next + "  (" + thousands(c.band_hi - c.points) + " TO GO)",
-           ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim, Align::kRight));
-  else if (band)
-    l.text(bx1, by + bh + 9 * s, "TOP WRISTBAND", ui4::style(ui::Font::kE, 12 * s, ui4::kYellow, Align::kRight));
-  y += ch + 14 * s;
+  std::array<float, 4> bar_uv{};
+  const bool has_bar26 = ui_texture("KITPARTS/BARS/BARBASE26PX", bar_uv);
+  if (has_bar26) {
+    l.image(bx0, by, bx1, by + bh, bar_uv, rgba(255, 255, 255, 42));
+    if (band || c.points > 0) l.image(bx0, by, std::max(bx0 + 8.0f * s, bx0 + (bx1 - bx0) * k), by + bh, bar_uv, bc);
+  } else {
+    ui4::opt_slider(l, bx0, by, bx1, by + bh, k, s, bc, false);
+  }
+  y += 74.0f * s;
 
-  // Authentic gritty FH1 stat tiles (no rounded glass!).
-  auto fh1_tile = [&](float tx0, float ty0, float tx1, float ty1, const std::string& val, const char* lbl,
-                      uint32_t accent, uint32_t vcol) {
-    ui4::panel(l, tx0, ty0, tx1, ty1, s, ui4::kCharcoalDark, accent, 0, true);
-    l.text(tx0 + 14 * s, ty0 + 10 * s, lbl, ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
-    ui::TextStyle vs = ui4::style(ui::Font::kE, 26 * s, vcol);
-    ui4::fit_text(val, vs, (tx1 - tx0) - 26 * s, 12 * s);
-    l.text(tx0 + 14 * s, ty0 + 32 * s + 0.5f * (26 * s - vs.size), val, vs);
+  // 2. H_STATISTICS Header PILL01 (#BFBFBF) + PILLCLIPON01
+  ui4::pill(l, x0, y, x1, y + 26.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
+  l.text(x0 + 14.0f * s, y + 6.0f * s, "DRIVER STATISTICS  //  COLORADO", ui4::style(ui::Font::kD, 13.0f * s, ui4::kInk));
+  char fame_buf[64];
+  std::snprintf(fame_buf, sizeof fame_buf, "LVL %d  •  RANK #%d", std::max(1, c.driver_level), c.popularity_rank);
+  l.text(x1 - 14.0f * s, y + 6.0f * s, fame_buf, ui4::style(ui::Font::kE, 12.5f * s, ui4::kInk, Align::kRight));
+  y += 31.0f * s;
+
+  // 3. Floating +3.0 deg PILL02 Key Statistic Rows (28px pitch — open Colorado shows cleanly between rows!)
+  auto stat_pill_row = [&](std::string_view label_txt, std::string_view val_txt, uint32_t vcol = ui4::kWhite,
+                           bool pink = false) {
+    ui4::pill(l, x0, y, x1, y + 25.0f * s, pink ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kPill02);
+    l.text(x0 + 14.0f * s, y + 5.5f * s, label_txt,
+           ui4::style(ui::Font::kD, 13.5f * s, pink ? ui4::kWhite : ui4::kOffWhite));
+    l.text(x1 - 14.0f * s, y + 5.5f * s, val_txt,
+           ui4::style(ui::Font::kB, 14.0f * s, vcol, Align::kRight, true));
+    y += 28.0f * s;
   };
 
-  const float gap = 10 * s, tw = (x1 - x0 - 3 * gap) / 4, th = 72 * s;
-  char rate[16];
-  std::snprintf(rate, sizeof rate, "%d%%", c.races > 0 ? int(std::lround(100.0 * c.wins / c.races)) : 0);
-  const std::pair<std::string, const char*> tiles[] = {
-      {std::to_string(c.races), "RACES"}, {std::to_string(c.wins), "WINS"},
-      {std::to_string(c.podiums), "PODIUMS"}, {rate, "WIN RATE"}};
-  for (int i = 0; i < 4; ++i) {
-    const float tx = x0 + i * (tw + gap);
-    fh1_tile(tx, y, tx + tw, y + th, tiles[i].first, tiles[i].second, i == 1 ? ui4::kPink : rgba(255, 255, 255, 36),
-             i == 1 ? ui4::kYellow : ui4::kWhite);
-  }
-  y += th + gap;
+  char rate_buf[64];
+  std::snprintf(rate_buf, sizeof rate_buf, "%d WINS / %d RACES  (%d%%)", c.wins, c.races,
+                c.races > 0 ? int(std::lround(100.0 * c.wins / c.races)) : 0);
+  stat_pill_row("RACE VICTORIES", rate_buf, ui4::kYellow);
+  stat_pill_row("PODIUM FINISHES", std::to_string(c.podiums), ui4::kWhite);
+  stat_pill_row("TOTAL CAREER WINNINGS", ui4::format_credits(c.winnings), ui4::kGreen);
+  stat_pill_row("CARS IN GARAGE", std::to_string(c.garage) + (c.garage == 1 ? " CAR" : " CARS"), ui4::kWhite);
 
-  const float tw2 = (x1 - x0 - 2 * gap) / 3;
-  fh1_tile(x0, y, x0 + tw2, y + th, ui4::format_credits(c.winnings), "TOTAL WINNINGS", ui4::kPink, ui4::kWhite);
-  fh1_tile(x0 + tw2 + gap, y, x0 + 2 * tw2 + gap, y + th,
-           "LVL " + std::to_string(std::max(1, c.driver_level)) + " • #" + std::to_string(c.popularity_rank),
-           "DRIVER LEVEL / FAME", ui4::kYellow, ui4::kYellow);
-  fh1_tile(x0 + 2 * (tw2 + gap), y, x1, y + th, std::to_string(c.garage) + (c.garage == 1 ? " CAR" : " CARS"),
-           "GARAGE", ui4::kBlue, ui4::kWhite);
-  y += th + 14 * s;
+  y += 6.0f * s;
 
-  // Collections & Progress card (sharp gritty FH1 panel + flat-capped bars).
-  const bool has_outposts = c.outposts_total > 0;
-  const bool has_speed = c.speed_traps_total > 0 || c.speed_zones_total > 0;
-  const float rows = (c.rally ? 6.f : 5.f) + (has_outposts ? 2.f : 0.f) + (has_speed ? 2.f : 0.f);
-  const float rh = (has_outposts || has_speed) ? 27 * s : 36 * s;
-  const float ph = 42 * s + rows * rh;
-  if (y + ph > h - 68 * s) return;
-  ui4::panel(l, x0, y, x1, y + ph, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, x0 + 14 * s, y + 10 * s, x1 - 14 * s, y + 32 * s, s, false);
-  l.text(x0 + 24 * s, y + 14 * s, "COLORADO EXPLORATION & COLLECTIONS", ui4::style(ui::Font::kE, 13 * s, ui4::kInk));
+  // 4. Floating +3.0 deg PILL02 Collection Progress Rows with DIRTTEXTURES/STATBARFILL & STATBAREMPTY!
+  ui4::pill(l, x0, y, x1, y + 25.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
+  l.text(x0 + 14.0f * s, y + 5.5f * s, "FESTIVAL & EXPLORATION PROGRESS",
+         ui4::style(ui::Font::kD, 13.0f * s, ui4::kInk));
+  y += 29.0f * s;
 
-  const float rx0 = x0 + 20 * s, rx1 = x1 - 20 * s;
-  float ry = y + 40 * s;
-  auto fh1_coll_row = [&](const std::string& name, int done, int total, uint32_t col) {
-    l.text(rx0, ry + 2 * s, name, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+  std::array<float, 4> sb_empty{}, sb_fill{};
+  const bool has_sbe = ui_texture("DIRTTEXTURES/STATBAREMPTY", sb_empty);
+  const bool has_sbf = ui_texture("DIRTTEXTURES/STATBARFILL", sb_fill);
+
+  auto progress_pill_row = [&](std::string_view name, int done, int total, uint32_t bar_col) {
+    if (y + 27.0f * s > h - 76.0f * s) return;
+    ui4::pill(l, x0, y, x1, y + 25.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
+    l.text(x0 + 14.0f * s, y + 5.5f * s, name, ui4::style(ui::Font::kD, 12.5f * s, ui4::kWhite));
+
+    const float sbx0 = x0 + rw * 0.44f;
+    const float sbx1 = x1 - 92.0f * s;
+    const float sby0 = y + 7.0f * s, sby1 = y + 18.0f * s;
+    const float frac = total > 0 ? std::clamp(float(done) / float(total), 0.0f, 1.0f) : 0.0f;
+    if (has_sbe) l.image(sbx0, sby0, sbx1, sby1, sb_empty, rgba(255, 255, 255, 110));
+    else l.rect(sbx0, sby0, sbx1, sby1, rgba(255, 255, 255, 30));
+    if (frac > 0.005f) {
+      const float fx1 = sbx0 + (sbx1 - sbx0) * frac;
+      if (has_sbf) {
+        const float u1 = sb_fill[0] + (sb_fill[2] - sb_fill[0]) * frac;
+        l.image(sbx0, sby0, fx1, sby1, {sb_fill[0], sb_fill[1], u1, sb_fill[3]}, bar_col);
+      } else {
+        l.rect(sbx0, sby0, fx1, sby1, bar_col);
+      }
+    }
+
     char cnt[32];
     std::snprintf(cnt, sizeof cnt, "%d / %d", done, total);
-    l.text(rx1, ry + 2 * s, cnt, ui4::style(ui::Font::kE, 12 * s, done >= total && total > 0 ? ui4::kGreen : ui4::kWhite, Align::kRight));
-    const float by0 = ry + 18 * s;
-    l.rect(rx0, by0, rx1, by0 + 5 * s, rgba(255, 255, 255, 26));
-    if (total > 0 && done > 0) {
-      const float frac = std::clamp(float(done) / float(total), 0.0f, 1.0f);
-      l.rect(rx0, by0, rx0 + (rx1 - rx0) * frac, by0 + 5 * s, col);
-    }
-    ry += rh;
+    l.text(x1 - 14.0f * s, y + 5.5f * s, cnt,
+           ui4::style(ui::Font::kB, 12.5f * s, (done >= total && total > 0) ? ui4::kGreen : ui4::kOffWhite,
+                      Align::kRight));
+    y += 28.0f * s;
   };
 
-  fh1_coll_row("ROADS DISCOVERED", c.roads, c.roads_total, ui4::kGreen);
-  if (has_outposts) {
-    fh1_coll_row("HORIZON OUTPOSTS", c.outposts, c.outposts_total, rgba(255, 146, 3));
-    fh1_coll_row("OUTPOST PR STUNTS", c.pr_stunts, c.pr_stunts_total, ui4::kAmber);
+  progress_pill_row("ROADS DISCOVERED", c.roads, c.roads_total, ui4::kGreen);
+  if (c.outposts_total > 0) {
+    progress_pill_row("HORIZON OUTPOSTS", c.outposts, c.outposts_total, rgba(255, 146, 3));
+    progress_pill_row("OUTPOST PR STUNTS", c.pr_stunts, c.pr_stunts_total, ui4::kYellow);
   }
-  if (has_speed) {
-    fh1_coll_row("SPEED TRAPS", c.speed_traps, c.speed_traps_total, ui4::kBlue);
-    fh1_coll_row("SPEED ZONES", c.speed_zones, c.speed_zones_total, ui4::kPink);
+  if (c.speed_traps_total > 0 || c.speed_zones_total > 0) {
+    progress_pill_row("SPEED TRAPS", c.speed_traps, c.speed_traps_total, ui4::kBlue);
+    progress_pill_row("SPEED ZONES", c.speed_zones, c.speed_zones_total, ui4::kPink);
   }
-  fh1_coll_row("DISCOUNT SIGNS", c.signs, c.signs_total, ui4::kPink);
-  fh1_coll_row("BARN FINDS", c.barns, c.barns_total, ui4::kYellow);
-  fh1_coll_row("1000 CLUB CHALLENGES", c.club_done, c.club_total, ui4::kAmber);
+  progress_pill_row("DISCOUNT SIGNS", c.signs, c.signs_total, ui4::kPink);
+  progress_pill_row("BARN FINDS", c.barns, c.barns_total, ui4::kYellow);
+  progress_pill_row("1000 CLUB MEDALS", c.club_done, c.club_total, ui4::kAmber);
   if (c.rally) {
-    char rn[64];
-    std::snprintf(rn, sizeof rn, "RALLY  LVL %d  (%s XP)", c.rally_level, thousands(c.rally_xp).c_str());
-    fh1_coll_row(rn, c.rally_wins, c.rallies, ui4::kBlue);
+    progress_pill_row("HORIZON RALLY WINS", c.rally_wins, c.rallies, ui4::kBlue);
   }
-  fh1_coll_row("CONTENT PACKS", c.packs_owned, c.packs_total, rgba(200, 205, 215));
+  progress_pill_row("CONTENT PACKS", c.packs_owned, c.packs_total, rgba(200, 205, 215));
 }
+
+}  // namespace
+
+void draw_sponsor_challenges_ui4(ui::List& l, float w, float h, const std::vector<SponsorChallengeRow>& rows,
+                                 int selected, int64_t credits) {
+  const float s = h / 720.0f;
+  ui4::subtle_vignette(l, w, h, 0.22f);
+
+  float tilt_rad = ui4::kTiltRad;
+  if (const fh1::UiScene* sc_ptr = ui_scene("H_SPONSOR_CHALLENGE_STATUS")) {
+    SceneDraw sc(sc_ptr, true);
+    if (const int rn = sc.find("SponsorBars"); rn >= 0) {
+      const float a = -sc.angle(rn);
+      if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) tilt_rad = a;
+    }
+  }
+
+  // Top-right Credits strip (PlayerBar@(1207,38))
+  if (credits >= 0) {
+    const float rx = w - 60.0f * s;
+    ui4::offwhite_strip(l, rx - 186.0f * s, 30.0f * s, rx, 58.0f * s, s, true);
+    l.text(rx - 14.0f * s, 36.0f * s, ui4::format_credits(credits),
+           ui4::style(ui::Font::kB, 16.5f * s, ui4::kInk, Align::kRight, true));
+  }
+
+  // ---- H_SPONSOR_CHALLENGE_STATUS: SponsorBars@(630,322) tilted +3.0 deg over open Colorado ----
+  {
+    ui4::TiltScope rot(l, 0.5f * w, 0.48f * h, tilt_rad);
+
+    ui4::title_tape(l, s, 96.0f * s, 68.0f * s, "SPONSOR CHALLENGES", ui4::kPink, 36.0f, 560.0f);
+
+    const int n = int(rows.size());
+    const int sel = n > 0 ? std::clamp(selected, 0, n - 1) : 0;
+    const int max_vis = 6;
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+
+    std::array<float, 4> bar26_uv{}, obj_uv{};
+    const bool has_bar26 = ui_texture("KITPARTS/BARS/BARBASE26PX", bar26_uv);
+    const bool has_obj = ui_texture("HUD/OBJECTIVEICONS/OBJECTIVEICONSMALL", obj_uv);
+
+    const float row_x0 = 98.0f * s;
+    const float row_x1 = w - 98.0f * s;
+    const float pitch = 69.0f * s;
+    const float row_h = 62.0f * s;
+    float ry = 152.0f * s;
+
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
+      const auto& sp = rows[size_t(i)];
+      const bool act = (i == sel);
+
+      // Floating row pill (NO full-screen charcoal wall!)
+      ui4::pill(l, row_x0, ry, row_x1, ry + row_h, act ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kPillBig, false,
+                act);
+
+      // Authentic 128x64 SponsorLogoTile/*.xds logo ([112,203..240,267] in scene coordinates)
+      const float lx0 = row_x0 + 10.0f * s, ly0 = ry + 4.0f * s;
+      const float lw = 112.0f * s, lh = 54.0f * s;
+      l.rect(lx0, ly0, lx0 + lw, ly0 + lh, ui4::kWhite);
+      const std::string key = sp.logo_key.empty() ? sp.sponsor_name : sp.logo_key;
+      if (!ui4::sponsor_logo_tile(l, lx0 + 2.0f * s, ly0 + 2.0f * s, lx0 + lw - 2.0f * s, ly0 + lh - 2.0f * s, key)) {
+        l.text(lx0 + 0.5f * lw, ly0 + 18.0f * s, sp.sponsor_name,
+               ui4::style(ui::Font::kE, 14.0f * s, ui4::kInk, Align::kCenter));
+      }
+
+      // TEXT_SPONSOR (D@18px) + TEXT_TITLE (D@16px)
+      const float tx = lx0 + lw + 18.0f * s;
+      ui::TextStyle sn = ui4::style(ui::Font::kD, 17.5f * s, ui4::kWhite);
+      ui4::fit_text(sp.sponsor_name, sn, 260.0f * s, 11.0f * s);
+      l.text(tx, ry + 10.0f * s, sp.sponsor_name, sn);
+
+      ui::TextStyle ct = ui4::style(ui::Font::kB, 13.5f * s, act ? ui4::kOffWhite : ui4::kDim);
+      ui4::fit_text(sp.challenge_title, ct, 260.0f * s, 9.5f * s);
+      l.text(tx, ry + 34.0f * s, sp.challenge_title, ct);
+
+      // #DAFF00 BARBASE26PX Progress Bar ([521..837] in scene coordinates)
+      const float bx0 = row_x0 + 416.0f * s;
+      const float bx1 = row_x1 - 220.0f * s;
+      const float by0 = ry + 24.0f * s, by1 = ry + 44.0f * s;
+      const float frac = sp.target > 0 ? std::clamp(float(sp.current) / float(sp.target), 0.0f, 1.0f) : 1.0f;
+
+      char tbuf[48];
+      std::snprintf(tbuf, sizeof tbuf, "TIER %d/%d   •   %d / %d", sp.tier, std::max(1, sp.max_tiers), sp.current,
+                    sp.target);
+      l.text(bx0, ry + 7.0f * s, tbuf, ui4::style(ui::Font::kB, 11.5f * s, act ? ui4::kWhite : ui4::kOffWhite));
+
+      if (has_bar26) {
+        l.image(bx0, by0, bx1, by1, bar26_uv, rgba(0, 0, 0, 145));
+        if (frac > 0.005f) {
+          l.image(bx0, by0, std::max(bx0 + 10.0f * s, bx0 + (bx1 - bx0) * frac), by1, bar26_uv, ui4::kYellow);
+        }
+      } else {
+        l.rect(bx0, by0, bx1, by1, rgba(0, 0, 0, 145));
+        if (frac > 0.005f) l.rect(bx0, by0, bx0 + (bx1 - bx0) * frac, by1, ui4::kYellow);
+      }
+
+      // Reward strip on right + optional OBJECTIVEICONSMALL
+      const float rx = row_x1 - 16.0f * s;
+      if (has_obj) {
+        l.image(bx1 + 16.0f * s, ry + 20.0f * s, bx1 + 40.0f * s, ry + 44.0f * s, obj_uv, ui4::kYellow);
+      }
+      l.text(rx, ry + 12.0f * s, "NEXT REWARD",
+             ui4::style(ui::Font::kB, 10.5f * s, act ? ui4::kOffWhite : ui4::kDim, Align::kRight));
+      l.text(rx, ry + 29.0f * s, "+" + ui4::format_credits(sp.reward_cr),
+             ui4::style(ui::Font::kE, 17.0f * s, ui4::kYellow, Align::kRight, true));
+      ry += pitch;
+    }
+
+    // Authentic SCROLLINDICATOR + SPEC_SHEEN2
+    ui4::scroll_indicator(l, row_x1 + 10.0f * s, 152.0f * s, row_x1 + 18.0f * s, ry - 8.0f * s, first, max_vis, n, s);
+  }
+
+  ui4::button_bar(l, {{"DPAD_UD", "BROWSE SPONSORS"}, {"B", "BACK"}}, w, h, 56.0f);
+}
+
+namespace {
 
 // Airborne Showcase live progress & distance-gap bar (PLANE_RACE_001..007).
 void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g) {

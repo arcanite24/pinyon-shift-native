@@ -97,152 +97,350 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
                      const std::vector<garage::ClassBand>& bands) {
   if (!page.is_open()) return;
   const float s = screen_h / 720.0f;
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.36f);
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.24f);
+
+  float tilt_rad = ui4::kTiltRad;
+  if (const fh1::UiScene* sc_ptr = ui_scene("H_STREET_RACE_HUB")) {
+    SceneDraw sc(sc_ptr, true);
+    if (const int rn = sc.find("Rotation"); rn >= 0) {
+      const float a = -sc.angle(rn);
+      if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) tilt_rad = a;
+    }
+  }
 
   const bool is_hub = page.hub_filter() > 0;
-  ui4::title_banner(l, s, 56.0f * s, 26.0f * s,
-                    is_hub ? ("STREET RACE HUB " + std::to_string(page.hub_filter())) : "RACE CENTRAL",
-                    is_hub ? "COLORADO UNDERGROUND" : "HORIZON FESTIVAL EVENTS", true, 470.0f);
+  const std::string header =
+      is_hub ? ("STREET RACE HUB " + std::to_string(page.hub_filter())) : "RACE CENTRAL";
 
-  if (!is_hub) {
-    static const std::vector<std::string> kEventTabs = {"ALL", "FESTIVAL", "STREET", "SHOWCASES", "SHOWDOWNS"};
-    ui4::tab_strip(l, s, 56.0f * s, 102.0f * s, screen_w - 56.0f * s, kEventTabs, int(page.active_tab()), true,
-                   ui4::kPink);
+  // Top +3.0 deg H_STREET_RACE_HUB TitleTapeText + optional category tab strip
+  {
+    ui4::TiltScope top_rot(l, 0.5f * screen_w, 120.0f * s, tilt_rad);
+    ui4::title_tape(l, s, 82.0f * s, 42.0f * s, header, ui4::kPink, 38.0f, 520.0f);
+    if (!is_hub) {
+      static const std::vector<std::string> kEventTabs = {"ALL", "FESTIVAL", "STREET", "SHOWCASES", "SHOWDOWNS"};
+      ui4::tab_strip(l, s, 82.0f * s, 108.0f * s, screen_w - 82.0f * s, kEventTabs, int(page.active_tab()), true,
+                     ui4::kPink);
+    }
   }
 
-  const float top_y = is_hub ? 116.0f * s : 146.0f * s;
-  const float bot_y = screen_h - 82.0f * s;
-  const float lx0 = 56.0f * s, lw = 640.0f * s;
-  const float rx0 = lx0 + lw + 18.0f * s, rx1 = screen_w - 56.0f * s;
-
-  ui4::panel(l, lx0, top_y, lx0 + lw, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx0 + lw - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(lx0 + 22.0f * s, top_y + 15.0f * s,
-         "AVAILABLE EVENTS (" + std::to_string(page.entries().size()) + ")",
-         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-
+  // ---- H_STREET_RACE_HUB: +3.0 deg Horizontal Tilted Event Ticket Carousel (pitch ~288px, inner text +6 deg) ----
   const auto& entries = page.entries();
-  if (entries.empty()) {
-    l.text(lx0 + 0.5f * lw, top_y + 160.0f * s, "NO EVENTS IN THIS CATEGORY YET",
-           ui4::style(ui::Font::kB, 15.0f * s, ui4::kDim, ui::Align::kCenter));
-  } else {
-    const float row_h = 54.0f * s;
-    const int max_vis = std::max(1, int((bot_y - top_y - 50.0f * s) / row_h));
-    const int n = int(entries.size());
-    const int sel = int(std::min(page.selected_index(), entries.size() - 1));
-    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
-    float ry = top_y + 44.0f * s;
-    for (int i = first; i < std::min(n, first + max_vis); ++i) {
-      const auto& e = entries[size_t(i)];
-      const bool act = (i == sel);
-      if (act) {
-        ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s,
-                   e.is_collect_wristband ? ui4::kYellow : ui4::kPink);
-      } else {
-        l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-               (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
+  const uint32_t kTicketPink = ui::rgba(0xEF, 0x24, 0x93, 255);
+  std::array<float, 4> drop_uv{}, top_sr_uv{}, top_uv{}, tape_uv{}, new_uv{}, gold_uv{}, sil_uv{}, brz_uv{};
+  const bool has_drop = ui_texture("KITPARTS/DROPSHADOW", drop_uv);
+  const bool has_top_sr = ui_texture("KITPARTS/TICKETDIRTTOPSR", top_sr_uv);
+  const bool has_top = ui_texture("KITPARTS/TICKETDIRTTOP", top_uv);
+  const bool has_tape = ui_texture("KITPARTS/LARGETAPE", tape_uv);
+  const bool has_new = ui_texture("ICONS/TICKETSTICKERNEW", new_uv);
+  const bool has_gold = ui_texture("ICONS/TICKETSTICKERGOLD", gold_uv);
+  const bool has_sil = ui_texture("ICONS/TICKETSTICKERSILVER", sil_uv);
+  const bool has_brz = ui_texture("ICONS/TICKETSTICKERBRONZE", brz_uv);
+
+  {
+    ui4::TiltScope rot(l, 0.5f * screen_w, 0.58f * screen_h, tilt_rad);
+    if (entries.empty()) {
+      ui4::panel01(l, 320.0f * s, 260.0f * s, 960.0f * s, 360.0f * s, s, ui4::kCharcoalDark, ui4::kPink);
+      l.text(0.5f * screen_w, 300.0f * s, "NO EVENTS IN THIS CATEGORY YET",
+             ui4::style(ui::Font::kE, 18.0f * s, ui4::kDim, ui::Align::kCenter));
+    } else {
+      const int n = int(entries.size());
+      const int sel = int(std::min(page.selected_index(), entries.size() - 1));
+      const int count = std::min(n, 4);
+      const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
+      const float pitch = 288.0f * s;
+      const float cw = 268.0f * s;
+      const float ch = 354.0f * s;
+      const float total_w = float(count - 1) * pitch + cw;
+      const float start_x = std::max(56.0f * s, 0.5f * (screen_w - total_w));
+      const float card_y0 = is_hub ? 148.0f * s : 168.0f * s;
+
+      for (int i = first; i < first + count; ++i) {
+        const auto& e = entries[size_t(i)];
+        const bool act = (i == sel);
+        const float lift = act ? 14.0f * s : 0.0f;
+        const float cx0 = start_x + float(i - first) * pitch;
+        const float cy0 = card_y0 - lift;
+        const float cx1 = cx0 + cw;
+        const float cy1 = cy0 + ch;
+
+        // 1. KITPARTS/DROPSHADOW behind ticket
+        if (has_drop) {
+          l.image(cx0 - 8.0f * s, cy0 + 8.0f * s, cx1 + 14.0f * s, cy1 + 16.0f * s, drop_uv,
+                  ui::rgba(0, 0, 0, act ? 195 : 135));
+        } else {
+          l.rect(cx0 + 6.0f * s, cy0 + 8.0f * s, cx1 + 6.0f * s, cy1 + 8.0f * s, ui::rgba(0, 0, 0, 130));
+        }
+
+        // 2. Ticket body + REAL Horizon.zip/EventTickets/{FestivalRaces,StreetRaces,Showcases,NemesisTickets}/*.xds!
+        l.rect(cx0, cy0, cx1, cy1, ui::rgba(22, 24, 28, 244));
+        const float art_y0 = cy0 + 34.0f * s;
+        const float art_y1 = cy0 + 216.0f * s;
+        const int ev_id = e.event ? int(e.event->event_id) : (i + 1);
+        const int ev_style = e.event ? int(e.event->style) : (is_hub ? 2 : 1);
+        const uint32_t art_tint = !e.unlocked ? ui::rgba(145, 150, 160, 210)
+                                              : (act ? ui4::kWhite : ui::rgba(225, 228, 234, 232));
+        if (!ui4::event_ticket_art(l, cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ev_id, ev_style, art_tint)) {
+          l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(44, 48, 56, 230));
+        }
+
+        // 3. Top distressed ticket header (KITPARTS/TICKETDIRTTOPSR or TICKETDIRTTOP)
+        const uint32_t hdr_col = e.is_collect_wristband ? ui4::kYellow
+                                 : act                  ? kTicketPink
+                                                        : ui4::kPillGrey;
+        if ((ev_style == 2 || is_hub) && has_top_sr) {
+          l.image(cx0, cy0, cx1, cy0 + 38.0f * s, top_sr_uv, hdr_col);
+        } else if (has_top) {
+          l.image(cx0, cy0, cx1, cy0 + 38.0f * s, top_uv, hdr_col);
+        } else {
+          l.rect(cx0, cy0, cx1, cy0 + 34.0f * s, hdr_col);
+        }
+        const std::string kind_lbl = e.is_collect_wristband ? "WRISTBAND CEREMONY"
+                                     : e.event              ? std::string(race::CareerCatalog::event_style_label(*e.event))
+                                                            : "HORIZON EVENT";
+        l.text(cx0 + 12.0f * s, cy0 + 10.0f * s, kind_lbl,
+               ui4::style(ui::Font::kE, 12.5f * s, e.is_collect_wristband ? ui4::kInk : ui4::kWhite));
+
+        // 4. PICLASS/CLASS_* badge overlaid bottom-left of ticket art
+        if (e.event && e.event->target_class > 0 && size_t(e.event->target_class) < bands.size()) {
+          const auto& cb = bands[size_t(e.event->target_class)];
+          ui4::class_badge(l, cx0 + 10.0f * s, art_y1 - 30.0f * s, 22.0f * s, cb.name,
+                           int(std::lround(cb.shown_max)), e.event->target_class);
+        }
+
+        // 5. Authentic TICKETSTICKERNEW / GOLD / SILVER / BRONZE corner sticker!
+        const float st_sz = 58.0f * s;
+        const float sx0 = cx1 - st_sz - 4.0f * s, sy0 = cy0 + 26.0f * s;
+        if (e.best_place == 1 && has_gold) {
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, gold_uv);
+        } else if (e.best_place == 2 && has_sil) {
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, sil_uv);
+        } else if (e.best_place == 3 && has_brz) {
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, brz_uv);
+        } else if (e.unlocked && e.best_place == 0 && has_new) {
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv);
+        }
+
+        // 6. LARGETAPE title banner (#EF2493 active / #212121 inactive) + event name
+        const float tape_y0 = art_y1 + 4.0f * s, tape_y1 = art_y1 + 52.0f * s;
+        if (has_tape) {
+          l.image(cx0 - 4.0f * s, tape_y0, cx1 + 4.0f * s, tape_y1, tape_uv, act ? kTicketPink : ui4::kPillGrey);
+        } else {
+          l.rect(cx0, tape_y0, cx1, tape_y1, act ? kTicketPink : ui4::kPillGrey);
+        }
+        ui::TextStyle ts = ui4::style(ui::Font::kE, 17.0f * s, !e.unlocked ? ui4::kDim : ui4::kWhite);
+        ui4::fit_text(e.display_name, ts, cw - 24.0f * s, 10.5f * s);
+        l.text(cx0 + 12.0f * s, tape_y0 + 0.5f * ((tape_y1 - tape_y0) - ts.size), e.display_name, ts);
+
+        // 7. Bottom ticket stub: Cash Prize (E@22px) + status pill
+        const std::string prize_str =
+            e.is_collect_wristband ? "COLLECT WRISTBAND"
+            : e.event              ? ui4::format_credits(int64_t(e.event->cash_prize))
+                                   : "";
+        l.text(cx0 + 12.0f * s, tape_y1 + 10.0f * s, "1ST PRIZE", ui4::style(ui::Font::kB, 10.0f * s, ui4::kDim));
+        l.text(cx0 + 12.0f * s, tape_y1 + 24.0f * s, prize_str,
+               ui4::style(ui::Font::kE, 21.0f * s, act ? ui4::kYellow : ui4::kWhite));
+
+        std::string status = "READY TO RACE";
+        uint32_t st_col = ui4::kGreen;
+        if (e.is_collect_wristband) status = "CEREMONY READY", st_col = ui4::kYellow;
+        else if (!e.unlocked) status = "LOCKED", st_col = ui4::kRed;
+        else if (e.best_place == 1) status = "1ST PLACE WON", st_col = ui4::kYellow;
+        else if (e.best_place > 0) status = "BEST: " + std::to_string(e.best_place) + "ND/RD", st_col = ui4::kAmber;
+        else if (!e.eligible) status = "WRONG CAR CLASS", st_col = ui4::kRed;
+        ui4::pill(l, cx0 + 10.0f * s, cy1 - 30.0f * s, cx1 - 10.0f * s, cy1 - 8.0f * s,
+                  act ? ui4::kBrushBlack : ui::rgba(14, 16, 20, 200), ui4::PillKind::kPill02);
+        l.text(0.5f * (cx0 + cx1), cy1 - 24.5f * s, status,
+               ui4::style(ui::Font::kE, 11.5f * s, st_col, ui::Align::kCenter));
+
+        if (act) {
+          l.frame(cx0 - 2.0f * s, cy0 - 2.0f * s, cx1 + 2.0f * s, cy1 + 2.0f * s, kTicketPink, 2.8f * s);
+        }
       }
 
-      const uint32_t title_col =
-          (act && e.is_collect_wristband) ? ui4::kInk : (!e.unlocked ? ui4::kDim : ui4::kWhite);
-      ui::TextStyle ts = ui4::style(act ? ui::Font::kE : ui::Font::kB, (act ? 16.5f : 14.5f) * s, title_col);
-      ui4::fit_text(e.display_name, ts, lw - 170.0f * s, 10.0f * s);
-      l.text(lx0 + 22.0f * s, ry + 7.0f * s, e.display_name, ts);
-
-      std::string sub;
-      if (e.is_collect_wristband) {
-        sub = "WRISTBAND CEREMONY READY — PRESS [A] TO COLLECT";
-      } else if (e.event) {
-        sub = std::string(race::CareerCatalog::event_style_label(*e.event)) + "  •  " +
-              ui4::format_credits(int64_t(e.event->cash_prize));
+      // Compact bottom tilted cursor counter + selected restriction strip (ZERO giant side wall!)
+      std::string d_title, dummy_t;
+      std::vector<std::string> dummy_lines, d_lines;
+      int dummy_sel = 0;
+      page.fill(dummy_t, dummy_lines, dummy_sel, d_title, d_lines);
+      const float info_y = card_y0 + ch + 14.0f * s;
+      char cbuf[32];
+      std::snprintf(cbuf, sizeof cbuf, "%d / %d", sel + 1, n);
+      ui4::pill(l, 68.0f * s, info_y, 180.0f * s, info_y + 28.0f * s, ui4::kBrushBlack, ui4::PillKind::kMenu);
+      l.text(124.0f * s, info_y + 7.0f * s, cbuf, ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite, ui::Align::kCenter));
+      if (!d_lines.empty()) {
+        std::string summary = d_lines[0];
+        if (d_lines.size() > 1) summary += "   •   " + d_lines[1];
+        ui4::pill(l, 192.0f * s, info_y, screen_w - 68.0f * s, info_y + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPillBig);
+        ui::TextStyle ss = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+        ui4::fit_text(summary, ss, screen_w - 290.0f * s, 9.5f * s);
+        l.text(206.0f * s, info_y + 7.0f * s, summary, ss);
       }
-      l.text(lx0 + 22.0f * s, ry + 28.0f * s, sub,
-             ui4::style(ui::Font::kB, 11.0f * s,
-                        (act && e.is_collect_wristband) ? ui4::kInk : (act ? ui4::kYellow : ui4::kDim)));
-
-      std::string tag = "NEW";
-      uint32_t tag_bg = ui4::kBlue;
-      uint32_t tag_fg = ui4::kWhite;
-      if (e.is_collect_wristband) {
-        tag = "COLLECT", tag_bg = ui4::kBrushBlack, tag_fg = ui4::kYellow;
-      } else if (!e.unlocked) {
-        tag = "LOCKED", tag_bg = ui::rgba(60, 64, 74, 220), tag_fg = ui4::kDim;
-      } else if (e.best_place == 1) {
-        tag = "1ST", tag_bg = ui4::kGreen, tag_fg = ui4::kInk;
-      } else if (e.best_place > 0) {
-        tag = std::to_string(e.best_place) + (e.best_place == 2 ? "ND" : e.best_place == 3 ? "RD" : "TH");
-        tag_bg = ui4::kAmber, tag_fg = ui4::kInk;
-      } else if (!e.eligible) {
-        tag = "CLASS", tag_bg = ui4::kRed, tag_fg = ui4::kWhite;
-      }
-      l.rect(lx0 + lw - 96.0f * s, ry + 12.0f * s, lx0 + lw - 22.0f * s, ry + 34.0f * s, tag_bg);
-      l.text(lx0 + lw - 59.0f * s, ry + 17.0f * s, tag,
-             ui4::style(ui::Font::kE, 11.5f * s, tag_fg, ui::Align::kCenter));
-      ry += row_h;
     }
   }
 
-  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  std::string d_title, dummy_t;
-  std::vector<std::string> dummy_lines, d_lines;
-  int dummy_sel = 0;
-  page.fill(dummy_t, dummy_lines, dummy_sel, d_title, d_lines);
-
-  if (const auto* sel = page.selected_entry()) {
-    ui4::brush(l, rx0 + 8.0f * s, top_y + 12.0f * s, rx1 - 8.0f * s, top_y + 48.0f * s, ui4::kPink);
-    ui::TextStyle hst = ui4::style(ui::Font::kE, 18.0f * s, ui4::kWhite);
-    const std::string hdr = d_title.empty() ? sel->display_name : d_title;
-    ui4::fit_text(hdr, hst, (rx1 - rx0) - 34.0f * s, 11.0f * s);
-    l.text(rx0 + 20.0f * s, top_y + 20.0f * s + 0.5f * (18.0f * s - hst.size), hdr, hst);
-
-    float dy = top_y + 62.0f * s;
-    if (sel->event && sel->event->target_class > 0 && size_t(sel->event->target_class) < bands.size()) {
-      const auto& cb = bands[size_t(sel->event->target_class)];
-      ui4::class_badge(l, rx0 + 20.0f * s, dy, 26.0f * s, cb.name, int(std::lround(cb.shown_max)), sel->event->target_class);
-      ui4::offwhite_strip(l, rx0 + 130.0f * s, dy, rx1 - 20.0f * s, dy + 26.0f * s, s, false);
-      l.text(rx1 - 28.0f * s, dy + 6.0f * s, ui4::format_credits(int64_t(sel->event->cash_prize)),
-             ui4::style(ui::Font::kE, 15.0f * s, ui4::kInk, ui::Align::kRight));
-      dy += 40.0f * s;
-    }
-
-    for (const auto& line : d_lines) {
-      if (dy + 26.0f * s > bot_y - 16.0f * s) break;
-      const bool ready = line.rfind("READY TO RACE", 0) == 0;
-      const bool locked = line.rfind("LOCKED:", 0) == 0 || line.rfind("INELIGIBLE:", 0) == 0;
-      const bool prize = line.rfind("1ST PLACE PRIZE", 0) == 0 || line.rfind("BONUS CAR:", 0) == 0;
-      if (ready) {
-        ui4::brush(l, rx0 + 14.0f * s, dy, rx1 - 14.0f * s, dy + 32.0f * s, ui4::kGreen);
-        l.text(0.5f * (rx0 + rx1), dy + 9.0f * s, line,
-               ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk, ui::Align::kCenter));
-        dy += 38.0f * s;
-      } else {
-        ui::TextStyle ls = ui4::style(prize ? ui::Font::kE : ui::Font::kB, 13.0f * s,
-                                      locked ? ui4::kRed : (prize ? ui4::kYellow : ui4::kWhite), ui::Align::kLeft, true);
-        ui4::fit_text(line, ls, (rx1 - rx0) - 40.0f * s, 9.5f * s);
-        l.text(rx0 + 20.0f * s, dy, line, ls);
-        dy += 26.0f * s;
-      }
-    }
-  }
-
-  std::vector<ui4::Prompt> bar = {{"A", "START EVENT"}};
+  std::vector<ui4::Prompt> bar = {{"A", "START EVENT"}, {"DPAD_LR", "BROWSE TICKETS"}};
   if (!is_hub) bar.push_back({"LB", "FILTER TAB"});
   bar.push_back({"B", "BACK"});
   ui4::button_bar(l, bar, screen_w, screen_h, 56.0f);
 }
 
+void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::string_view outpost_name,
+                          const std::vector<OutpostMissionCard>& cards, int selected_index) {
+  const float s = screen_h / 720.0f;
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.22f);
+
+  float tilt_rad = ui4::kTiltRad;
+  if (const fh1::UiScene* sc_ptr = ui_scene("H_MISSIONS_HUB")) {
+    SceneDraw sc(sc_ptr, true);
+    if (const int rn = sc.find("Rotation"); rn >= 0) {
+      const float a = -sc.angle(rn);
+      if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) tilt_rad = a;
+    }
+  }
+
+  const std::string hdr = outpost_name.empty() ? std::string("HORIZON OUTPOST") : std::string(outpost_name);
+  {
+    ui4::TiltScope top_rot(l, 0.5f * screen_w, 96.0f * s, tilt_rad);
+    ui4::title_tape(l, s, 82.0f * s, 44.0f * s, hdr + "  //  PR STUNTS", ui4::kPink, 36.0f, 680.0f);
+  }
+
+  const uint32_t kTicketPink = ui::rgba(0xEF, 0x24, 0x93, 255);
+  std::array<float, 4> drop_uv{}, top_uv{}, tape_uv{}, done_uv{}, new_uv{};
+  const bool has_drop = ui_texture("KITPARTS/DROPSHADOW", drop_uv);
+  const bool has_top = ui_texture("KITPARTS/TICKETDIRTTOP", top_uv) || ui_texture("KITPARTS/TICKETDIRTTOPSR", top_uv);
+  const bool has_tape = ui_texture("KITPARTS/LARGETAPE", tape_uv);
+  const bool has_done = ui_texture("ICONS/MISSIONCOMPLETE", done_uv);
+  const bool has_new = ui_texture("ICONS/TICKETSTICKERNEW", new_uv);
+
+  {
+    ui4::TiltScope rot(l, 0.5f * screen_w, 0.56f * screen_h, tilt_rad);
+    const int n = int(cards.size());
+    if (n > 0) {
+      const int sel = std::clamp(selected_index, 0, n - 1);
+      const int count = std::min(n, 4);
+      const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
+      const float pitch = 288.0f * s;
+      const float cw = 268.0f * s;
+      const float ch = 358.0f * s;
+      const float total_w = float(count - 1) * pitch + cw;
+      const float start_x = std::max(56.0f * s, 0.5f * (screen_w - total_w));
+      const float card_y0 = 152.0f * s;
+
+      for (int i = first; i < first + count; ++i) {
+        const auto& c = cards[size_t(i)];
+        const bool act = (i == sel);
+        const float lift = act ? 14.0f * s : 0.0f;
+        const float cx0 = start_x + float(i - first) * pitch;
+        const float cy0 = card_y0 - lift;
+        const float cx1 = cx0 + cw;
+        const float cy1 = cy0 + ch;
+
+        if (has_drop) {
+          l.image(cx0 - 8.0f * s, cy0 + 8.0f * s, cx1 + 14.0f * s, cy1 + 16.0f * s, drop_uv,
+                  ui::rgba(0, 0, 0, act ? 195 : 135));
+        } else {
+          l.rect(cx0 + 6.0f * s, cy0 + 8.0f * s, cx1 + 6.0f * s, cy1 + 8.0f * s, ui::rgba(0, 0, 0, 130));
+        }
+
+        l.rect(cx0, cy0, cx1, cy1, ui::rgba(22, 24, 28, 244));
+        const float art_y0 = cy0 + 34.0f * s, art_y1 = cy0 + 216.0f * s;
+        if (!ui4::event_ticket_art(l, cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, c.event_id, c.art_style,
+                                   act ? ui4::kWhite : ui::rgba(224, 228, 235, 232))) {
+          l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(42, 46, 54, 232));
+        }
+
+        const uint32_t hdr_col = act ? kTicketPink : (c.completed ? ui4::kGreen : ui4::kPillGrey);
+        if (has_top) l.image(cx0, cy0, cx1, cy0 + 38.0f * s, top_uv, hdr_col);
+        else l.rect(cx0, cy0, cx1, cy0 + 34.0f * s, hdr_col);
+        l.text(cx0 + 12.0f * s, cy0 + 10.0f * s, c.kind_label,
+               ui4::style(ui::Font::kE, 12.5f * s, (!act && c.completed) ? ui4::kInk : ui4::kWhite));
+
+        // Authentic ICONS/MISSIONCOMPLETE or TICKETSTICKERNEW stamp!
+        const float st_sz = 62.0f * s;
+        const float sx0 = cx1 - st_sz - 6.0f * s, sy0 = cy0 + 28.0f * s;
+        if (c.completed && has_done) {
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, done_uv);
+        } else if (c.is_stunt && !c.completed && has_new) {
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv);
+        }
+
+        const float tape_y0 = art_y1 + 4.0f * s, tape_y1 = art_y1 + 52.0f * s;
+        if (has_tape) {
+          l.image(cx0 - 4.0f * s, tape_y0, cx1 + 4.0f * s, tape_y1, tape_uv, act ? kTicketPink : ui4::kPillGrey);
+        } else {
+          l.rect(cx0, tape_y0, cx1, tape_y1, act ? kTicketPink : ui4::kPillGrey);
+        }
+        ui::TextStyle ts = ui4::style(ui::Font::kE, 16.5f * s, ui4::kWhite);
+        ui4::fit_text(c.title, ts, cw - 24.0f * s, 10.0f * s);
+        l.text(cx0 + 12.0f * s, tape_y0 + 0.5f * ((tape_y1 - tape_y0) - ts.size), c.title, ts);
+
+        if (!c.target_line.empty()) {
+          ui::TextStyle tgs = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+          ui4::fit_text(c.target_line, tgs, cw - 24.0f * s, 9.0f * s);
+          l.text(cx0 + 12.0f * s, tape_y1 + 10.0f * s, c.target_line, tgs);
+        }
+        if (!c.reward_line.empty()) {
+          ui::TextStyle rws = ui4::style(ui::Font::kE, 14.0f * s, act ? ui4::kYellow : ui4::kOffWhite);
+          ui4::fit_text(c.reward_line, rws, cw - 24.0f * s, 9.5f * s);
+          l.text(cx0 + 12.0f * s, tape_y1 + 32.0f * s, c.reward_line, rws);
+        }
+
+        ui4::pill(l, cx0 + 10.0f * s, cy1 - 30.0f * s, cx1 - 10.0f * s, cy1 - 8.0f * s,
+                  act ? ui4::kBrushBlack : ui::rgba(14, 16, 20, 200), ui4::PillKind::kPill02);
+        l.text(0.5f * (cx0 + cx1), cy1 - 24.5f * s,
+               c.status_line.empty() ? (c.completed ? "COMPLETED" : "START STUNT") : c.status_line,
+               ui4::style(ui::Font::kE, 11.5f * s, c.completed ? ui4::kGreen : ui4::kYellow, ui::Align::kCenter));
+
+        if (act) {
+          l.frame(cx0 - 2.0f * s, cy0 - 2.0f * s, cx1 + 2.0f * s, cy1 + 2.0f * s, kTicketPink, 2.8f * s);
+        }
+      }
+
+      // Compact bottom instruction strip for focused card
+      const auto& sc = cards[size_t(sel)];
+      const float info_y = card_y0 + ch + 14.0f * s;
+      char cbuf[32];
+      std::snprintf(cbuf, sizeof cbuf, "%d / %d", sel + 1, n);
+      ui4::pill(l, 68.0f * s, info_y, 180.0f * s, info_y + 28.0f * s, ui4::kBrushBlack, ui4::PillKind::kMenu);
+      l.text(124.0f * s, info_y + 7.0f * s, cbuf, ui4::style(ui::Font::kD, 14.0f * s, ui4::kWhite, ui::Align::kCenter));
+      if (!sc.detail_lines.empty()) {
+        std::string line = sc.detail_lines[0];
+        if (sc.detail_lines.size() > 1) line += "   •   " + sc.detail_lines[1];
+        ui4::pill(l, 192.0f * s, info_y, screen_w - 68.0f * s, info_y + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPillBig);
+        ui::TextStyle ss = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+        ui4::fit_text(line, ss, screen_w - 290.0f * s, 9.5f * s);
+        l.text(206.0f * s, info_y + 7.0f * s, line, ss);
+      }
+    }
+  }
+
+  ui4::button_bar(l, {{"A", "SELECT"}, {"DPAD_LR", "BROWSE"}, {"B", "BACK"}}, screen_w, screen_h, 56.0f);
+}
+
 void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const SettingsPage& page, bool live_overlay) {
   if (!page.is_open()) return;
   const float s = screen_h / 720.0f;
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.42f);
+  // Subtle edge vignette only — NO giant enclosing charcoal wall over Colorado!
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.24f);
 
-  ui4::title_banner(l, s, 56.0f * s, 26.0f * s, live_overlay ? "LIVE SETTINGS" : "OPTIONS",
-                    live_overlay ? "PINYON SHIFT // F6 OVERLAY" : "HORIZON FESTIVAL", true, 430.0f);
+  const int cur_tab = int(page.active_tab());
+  const char* scene_name = (cur_tab == 1)   ? "837_I_AUDIO_OPTIONS"
+                           : (cur_tab == 2) ? "300_I_OPT_ASSISTS_DIFFICULTY"
+                           : (cur_tab == 3) ? "831_C_OPT_CONTROLLER"
+                                            : "H_FIXED_SETTING_LIST";
+  float tilt_rad = ui4::kTiltRad;
+  if (const fh1::UiScene* sc_ptr = ui_scene(scene_name)) {
+    SceneDraw sc(sc_ptr, true);
+    int rn = sc.find("RotationHelper");
+    if (rn < 0) rn = sc.find("Group_BLADE");
+    if (rn < 0) rn = sc.find("Group_BODY");
+    if (rn >= 0) {
+      const float a = -sc.angle(rn);
+      if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) tilt_rad = a;
+    }
+  }
 
   static const std::vector<std::string> kTabs = {"DISPLAY", "AUDIO", "GAMEPLAY", "CONTROLS", "PINYON SHIFT"};
-  const int cur_tab = int(page.active_tab());
-  ui4::tab_strip(l, s, 56.0f * s, 102.0f * s, screen_w - 56.0f * s, kTabs, cur_tab, true, ui4::kPink);
-
   const auto all_rows = page.display_rows();
   std::vector<SettingsPage::DisplayRow> tab_rows;
   int sel_in_tab = 0;
@@ -253,90 +451,147 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
     }
   }
 
-  const float top_y = 146.0f * s;
-  const float bot_y = screen_h - 82.0f * s;
-  const float lx0 = 56.0f * s, lw = 760.0f * s;
-  const float rx0 = lx0 + lw + 18.0f * s, rx1 = screen_w - 56.0f * s;
+  // ---- Entire Settings blade tilted +3.0 deg over open Colorado (H_FIXED_SETTING_LIST / 300_I_OPT_*) ----
+  {
+    ui4::TiltScope rot(l, 0.5f * screen_w, 0.5f * screen_h, tilt_rad);
 
-  ui4::panel(l, lx0, top_y, lx0 + lw, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx0 + lw - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(lx0 + 22.0f * s, top_y + 15.0f * s,
-         kTabs[size_t(std::clamp(cur_tab, 0, 4))] + " SETTINGS",
-         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-  l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s,
-         page.capturing_key() ? "PRESS ANY KEY TO BIND (ESC CANCELS)" : "CHANGES APPLY LIVE",
-         ui4::style(ui::Font::kB, 11.5f * s, page.capturing_key() ? ui4::kPink : ui4::kInk, ui::Align::kRight));
+    // 1. TitleTape (TAPECLIPON02 + SMUDGETAPE + CRISPTAPE + DIRTTILE01) + LB/RB category pills
+    ui4::title_tape(l, s, 82.0f * s, 40.0f * s,
+                    live_overlay ? "LIVE SETTINGS" : ("OPTIONS  //  " + kTabs[size_t(std::clamp(cur_tab, 0, 4))]),
+                    ui4::kPink, 36.0f, 620.0f);
+    ui4::tab_strip(l, s, 82.0f * s, 106.0f * s, screen_w - 82.0f * s, kTabs, cur_tab, true, ui4::kPink);
 
-  const float row_h = 44.0f * s;
-  const int max_vis = std::max(1, int((bot_y - top_y - 48.0f * s) / row_h));
-  const int n = int(tab_rows.size());
-  const int first = std::clamp(sel_in_tab - max_vis / 2, 0, std::max(0, n - max_vis));
-  float ry = top_y + 42.0f * s;
-  for (int i = first; i < std::min(n, first + max_vis); ++i) {
-    const auto& r = tab_rows[size_t(i)];
-    const bool act = r.selected;
-    if (act) {
-      ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s,
-                 r.is_save ? ui4::kGreen : ui4::kPink);
-    } else {
-      l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-             (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
+    // 2. Floating PILL02 / PILL03 Option Rows over open Colorado (NO giant enclosing charcoal box!)
+    const float lx0 = 82.0f * s, lw = 730.0f * s;
+    const float list_y0 = 152.0f * s;
+    const float list_y1 = screen_h - 102.0f * s;
+
+    // Header PILL01 (#BFBFBF) + PILLCLIPON01
+    ui4::pill(l, lx0, list_y0, lx0 + lw, list_y0 + 28.0f * s, ui::rgba(0xBF, 0xBF, 0xBF, 242), ui4::PillKind::kMenu,
+              false, true);
+    l.text(lx0 + 16.0f * s, list_y0 + 7.0f * s, kTabs[size_t(std::clamp(cur_tab, 0, 4))] + " OPTIONS",
+           ui4::style(ui::Font::kD, 13.5f * s, ui4::kInk));
+    l.text(lx0 + lw - 16.0f * s, list_y0 + 7.5f * s,
+           page.capturing_key() ? "PRESS ANY KEY TO BIND (ESC CANCELS)" : "CHANGES APPLY LIVE",
+           ui4::style(ui::Font::kB, 11.5f * s, page.capturing_key() ? ui4::kPink : ui4::kInk, ui::Align::kRight));
+
+    const float row_pitch = 38.0f * s;
+    const float row_h = 33.0f * s;
+    const float rows_top = list_y0 + 34.0f * s;
+    const int max_vis = std::max(1, int((list_y1 - rows_top) / row_pitch));
+    const int n = int(tab_rows.size());
+    const int first = std::clamp(sel_in_tab - max_vis / 2, 0, std::max(0, n - max_vis));
+
+    auto parse_slider_norm = [](const std::string& val, float& out_norm) -> bool {
+      if (val.empty()) return false;
+      // Match "75%", "80 %", "1.0x" or "0..100" percentage strings for STATBARFILL sliders!
+      const size_t pct_pos = val.find('%');
+      if (pct_pos != std::string::npos) {
+        try {
+          const float v = std::stof(val.substr(0, pct_pos));
+          if (v >= 0.0f && v <= 200.0f) {
+            out_norm = std::clamp(v / (v > 100.0f ? 200.0f : 100.0f), 0.0f, 1.0f);
+            return true;
+          }
+        } catch (...) {
+        }
+      }
+      return false;
+    };
+
+    float ry = rows_top;
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
+      const auto& r = tab_rows[size_t(i)];
+      const bool act = r.selected;
+      const uint32_t row_col = act ? (r.is_save ? ui4::kGreen : ui4::kPink)
+                                   : ((i % 2 == 0) ? ui4::kPillGrey : ui::rgba(0x18, 0x18, 0x1C, 236));
+      ui4::pill(l, lx0, ry, lx0 + lw, ry + row_h, row_col,
+                (i % 2 == 0) ? ui4::PillKind::kPill02 : ui4::PillKind::kPill03, false, act);
+
+      const uint32_t fg = (act && r.is_save) ? ui4::kInk : ui4::kWhite;
+      ui::TextStyle ls = ui4::style(act ? ui::Font::kE : ui::Font::kD, (act ? 15.0f : 14.0f) * s, fg);
+      ui4::fit_text(r.name, ls, lw - 310.0f * s, 9.5f * s);
+      l.text(lx0 + 18.0f * s, ry + 0.5f * (row_h - ls.size), r.name, ls);
+
+      const float vx0 = lx0 + lw - 278.0f * s;
+      const float vx1 = lx0 + lw - 18.0f * s;
+      const float vcy = ry + 0.5f * row_h;
+
+      float sl_norm = 0.0f;
+      if (r.is_save) {
+        l.text(vx1 - 8.0f * s, ry + 9.0f * s, r.value,
+               ui4::style(ui::Font::kE, 14.0f * s, act ? ui4::kInk : ui4::kGreen, ui::Align::kRight));
+      } else if (r.is_rebind) {
+        ui4::pill(l, vx0 + 14.0f * s, ry + 4.0f * s, vx1, ry + row_h - 4.0f * s,
+                  r.capturing ? ui4::kYellow : ui4::kBrushBlack, ui4::PillKind::kMenu);
+        l.text(0.5f * (vx0 + 14.0f * s + vx1), ry + 9.0f * s, r.value,
+               ui4::style(ui::Font::kE, 13.5f * s, r.capturing ? ui4::kInk : (act ? ui4::kYellow : ui4::kWhite),
+                          ui::Align::kCenter));
+      } else if (parse_slider_norm(r.value, sl_norm)) {
+        // Real DIRTTEXTURES/STATBARFILL + OPT_SLIDER_FRAME slider + value text (837_I_AUDIO_OPTIONS style)
+        ui4::opt_slider(l, vx0 + 4.0f * s, vcy - 5.5f * s, vx1 - 66.0f * s, vcy + 5.5f * s, sl_norm, s,
+                        act ? ui4::kYellow : ui4::kPink, act);
+        l.text(vx1 - 4.0f * s, ry + 9.0f * s, r.value,
+               ui4::style(ui::Font::kE, 13.5f * s, act ? ui4::kWhite : ui4::kOffWhite, ui::Align::kRight));
+      } else {
+        // Real OPTIONS/OPT_BAR_ARROW.xds arrows flanking centered value — ZERO ASCII "< >"!
+        const uint32_t arr_col = act ? ui4::kWhite : ui::rgba(190, 196, 208, 175);
+        ui4::opt_arrow(l, vx0 + 10.0f * s, vcy, 15.0f * s, -1, arr_col);
+        ui4::opt_arrow(l, vx1 - 10.0f * s, vcy, 15.0f * s, +1, arr_col);
+        ui::TextStyle vs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 14.0f * s,
+                                      act ? ui4::kYellow : ui4::kWhite, ui::Align::kCenter);
+        ui4::fit_text(r.value, vs, (vx1 - vx0) - 44.0f * s, 9.0f * s);
+        l.text(0.5f * (vx0 + vx1), ry + 0.5f * (row_h - vs.size), r.value, vs);
+      }
+      ry += row_pitch;
     }
-    const uint32_t fg = (act && r.is_save) ? ui4::kInk : ui4::kWhite;
-    l.text(lx0 + 24.0f * s, ry + 11.0f * s, r.name,
-           ui4::style(act ? ui::Font::kE : ui::Font::kB, (act ? 15.5f : 14.0f) * s, fg));
 
-    const std::string vstr = r.is_save ? r.value : (r.is_rebind ? ("[ " + r.value + " ]") : ("<  " + r.value + "  >"));
-    const float vx0 = lx0 + lw - 270.0f * s, vx1 = lx0 + lw - 22.0f * s;
-    if (!r.is_save) {
-      l.rect(vx0, ry + 7.0f * s, vx1, ry + row_h - 13.0f * s,
-             r.capturing ? ui4::kYellow : (act ? ui::rgba(14, 15, 20, 175) : ui::rgba(255, 255, 255, 16)));
+    // Authentic vertical COMMON/SCROLLINDICATOR + SPECULAR/SPEC_SHEEN2
+    ui4::scroll_indicator(l, lx0 + lw + 8.0f * s, rows_top, lx0 + lw + 16.0f * s, ry - 4.0f * s, first, max_vis, n, s);
+
+    // 3. Compact right-hand DIRTMASKS/PANEL01 Description Card (sized tightly to content — ZERO empty void!)
+    const float rx0 = lx0 + lw + 28.0f * s, rx1 = screen_w - 72.0f * s;
+    if (sel_in_tab >= 0 && sel_in_tab < int(tab_rows.size())) {
+      const auto& sr = tab_rows[size_t(sel_in_tab)];
+      const float card_h = 248.0f * s;
+      ui4::panel01(l, rx0, list_y0, rx1, list_y0 + card_h, s, ui4::kCharcoalDark, ui4::kPink);
+
+      ui4::brush(l, rx0 - 4.0f * s, list_y0 + 12.0f * s, rx1 + 4.0f * s, list_y0 + 44.0f * s, ui4::kPink);
+      ui::TextStyle stt = ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite);
+      ui4::fit_text(sr.name, stt, (rx1 - rx0) - 28.0f * s, 10.5f * s);
+      l.text(rx0 + 16.0f * s, list_y0 + 19.0f * s, sr.name, stt);
+
+      l.text(rx0 + 16.0f * s, list_y0 + 56.0f * s, "CURRENT VALUE", ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
+      l.text(rx0 + 16.0f * s, list_y0 + 72.0f * s, sr.value, ui4::style(ui::Font::kE, 21.0f * s, ui4::kYellow));
+
+      const char* hint = sr.is_save      ? "Writes changes to settings.txt and closes Settings."
+                         : sr.is_rebind  ? "Press [A] / Enter then any key to rebind control."
+                         : cur_tab == 0  ? "Display, camera rig, day length & post-FX."
+                         : cur_tab == 1  ? "FMOD master volume, radio DJ & 8-bus mixer."
+                         : cur_tab == 2  ? "Assists, AI difficulty, rubber-band & damage."
+                         : cur_tab == 3  ? "Controller layout, rumble, deadzones & keys."
+                                         : "Pinyon Shift QoL: language, intros & photo.";
+      ui::TextStyle hs = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(hint, hs, (rx1 - rx0) - 32.0f * s, 9.0f * s);
+      l.text(rx0 + 16.0f * s, list_y0 + 108.0f * s, hint, hs);
+
+      const LiveSettings ls = page.live_settings();
+      ui4::pill(l, rx0 + 12.0f * s, list_y0 + 144.0f * s, rx1 - 12.0f * s, list_y0 + 168.0f * s, ui4::kPillGrey,
+                ui4::PillKind::kPill02);
+      l.text(rx0 + 22.0f * s, list_y0 + 150.0f * s, "LANGUAGE: " + ls.language,
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+      ui4::pill(l, rx0 + 12.0f * s, list_y0 + 174.0f * s, rx1 - 12.0f * s, list_y0 + 198.0f * s, ui4::kPillGrey,
+                ui4::PillKind::kPill02);
+      l.text(rx0 + 22.0f * s, list_y0 + 180.0f * s,
+             std::string("AUDIO: ") + (ls.sound ? "ON" : "OFF") + "  •  RADIO: " + (ls.radio ? "ON" : "OFF"),
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+      ui4::pill(l, rx0 + 12.0f * s, list_y0 + 204.0f * s, rx1 - 12.0f * s, list_y0 + 228.0f * s, ui4::kPillGrey,
+                ui4::PillKind::kPill02);
+      l.text(rx0 + 22.0f * s, list_y0 + 210.0f * s,
+             std::string("REWIND: ") + (ls.controls.assists.rewind ? "ON" : "OFF") + "  •  TCS: " +
+                 (ls.controls.assists.traction_control ? "ON" : "OFF"),
+             ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
     }
-    ui::TextStyle vs = ui4::style(ui::Font::kE, 14.0f * s,
-                                  r.capturing ? ui4::kInk : (act && r.is_save ? ui4::kInk : (act ? ui4::kYellow : ui4::kWhite)),
-                                  ui::Align::kCenter);
-    ui4::fit_text(vstr, vs, (vx1 - vx0) - 12.0f * s, 9.5f * s);
-    l.text(0.5f * (vx0 + vx1), ry + 12.0f * s + 0.5f * (14.0f * s - vs.size), vstr, vs);
-    ry += row_h;
-  }
-
-  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, rx0 + 12.0f * s, top_y + 10.0f * s, rx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "OPTION DETAILS", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-
-  if (sel_in_tab >= 0 && sel_in_tab < int(tab_rows.size())) {
-    const auto& sr = tab_rows[size_t(sel_in_tab)];
-    ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-    ui::TextStyle stt = ui4::style(ui::Font::kE, 17.0f * s, ui4::kWhite);
-    ui4::fit_text(sr.name, stt, (rx1 - rx0) - 34.0f * s, 11.0f * s);
-    l.text(rx0 + 20.0f * s, top_y + 54.0f * s, sr.name, stt);
-
-    l.text(rx0 + 20.0f * s, top_y + 98.0f * s, "CURRENT VALUE", ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim));
-    l.text(rx0 + 20.0f * s, top_y + 116.0f * s, sr.value, ui4::style(ui::Font::kE, 22.0f * s, ui4::kYellow));
-
-    const char* hint = sr.is_save      ? "Writes changes to settings.txt and closes Settings."
-                       : sr.is_rebind  ? "Press [A] / Enter then any key to rebind control."
-                       : cur_tab == 0  ? "Display, camera rig, day length & post-FX."
-                       : cur_tab == 1  ? "FMOD master volume, radio DJ & 8-bus mixer."
-                       : cur_tab == 2  ? "Assists, AI difficulty, rubber-band & damage."
-                       : cur_tab == 3  ? "Controller layout, rumble, deadzones & keys."
-                                       : "Pinyon Shift QoL: language, intros & photo.";
-    ui::TextStyle hs = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-    ui4::fit_text(hint, hs, (rx1 - rx0) - 40.0f * s, 9.5f * s);
-    l.text(rx0 + 20.0f * s, top_y + 162.0f * s, hint, hs);
-
-    const LiveSettings ls = page.live_settings();
-    const float sy = bot_y - 124.0f * s;
-    l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 108.0f * s, ui::rgba(255, 255, 255, 14));
-    l.text(rx0 + 26.0f * s, sy + 10.0f * s, "LIVE STATUS", ui4::style(ui::Font::kE, 12.0f * s, ui4::kPink));
-    l.text(rx0 + 26.0f * s, sy + 32.0f * s, "LANGUAGE: " + ls.language, ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
-    l.text(rx0 + 26.0f * s, sy + 54.0f * s,
-           std::string("AUDIO: ") + (ls.sound ? "ON" : "OFF") + "  •  RADIO: " + (ls.radio ? "ON" : "OFF"),
-           ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
-    l.text(rx0 + 26.0f * s, sy + 76.0f * s,
-           std::string("REWIND: ") + (ls.controls.assists.rewind ? "ON" : "OFF") + "  •  TCS: " +
-               (ls.controls.assists.traction_control ? "ON" : "OFF"),
-           ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
   }
 
   ui4::button_bar(l,

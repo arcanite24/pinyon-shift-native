@@ -5958,6 +5958,28 @@ int run_drive(int argc, char** argv) {
             board.pr_stunts = outpost_progress.completed_stunt_count(outposts);
             board.pr_stunts_total = int(outposts.stunts.size());
           }
+          if (have_skills_data) {
+            for (const auto& sc : skills_data.sponsor_challenges) {
+              carview::SponsorChallengeRow srow;
+              srow.sponsor_name = sc.sponsor_name.empty() ? sc.id : sc.sponsor_name;
+              srow.challenge_title = sc.challenge_name.empty() ? sc.id : sc.challenge_name;
+              srow.logo_key = sc.sponsor_name.empty() ? sc.id : sc.sponsor_name;
+              srow.max_tiers = std::max(1, int(sc.tiers.size()));
+              if (skill_tracker) {
+                if (auto it = skill_tracker->sponsor_progress().find(sc.id);
+                    it != skill_tracker->sponsor_progress().end()) {
+                  srow.current = it->second.count;
+                  srow.tier = std::min(srow.max_tiers, it->second.claimed_tiers + 1);
+                }
+              }
+              const size_t ti = size_t(std::clamp(srow.tier - 1, 0, std::max(0, int(sc.tiers.size()) - 1)));
+              if (ti < sc.tiers.size()) {
+                srow.target = std::max(1, sc.tiers[ti].number);
+                srow.reward_cr = sc.tiers[ti].credits;
+              }
+              board.sponsors.push_back(std::move(srow));
+            }
+          }
           d.career = &board;
         }
         carview::RallyStageHud rally_stage_hud;
@@ -6168,7 +6190,89 @@ int run_drive(int argc, char** argv) {
         } else if (events_page.is_open()) {
           list.clear();
           carview::draw_events_ui4(list, float(width), float(height), events_page, class_bands);
+        } else if (outpost_hub_open) {
+          const freeroam::Outpost* op = have_outposts ? outposts.find_outpost(outpost_hub_id) : nullptr;
+          std::vector<carview::OutpostMissionCard> mcards;
+          mcards.reserve(outpost_hub_items.size());
+          for (const auto& item : outpost_hub_items) {
+            carview::OutpostMissionCard mc;
+            mc.title = item.detail_title.empty() ? item.label : item.detail_title;
+            mc.detail_lines = item.detail_lines;
+            if (item.kind == OutpostHubItem::kPrStunt) {
+              mc.is_stunt = true;
+              const freeroam::PrStunt* pst = have_outposts ? outposts.find_stunt(item.ref_id) : nullptr;
+              mc.completed = outpost_progress.is_stunt_completed(item.ref_id);
+              mc.kind_label = pst ? freeroam::pr_stunt_kind_name(pst->kind) : "PR STUNT";
+              mc.art_style = (pst && pst->kind == freeroam::PrStuntKind::kPhoto)   ? 12
+                             : (pst && pst->kind == freeroam::PrStuntKind::kSkill) ? 11
+                                                                                   : 10;
+              if (pst) {
+                if (pst->kind == freeroam::PrStuntKind::kSpeed)
+                  mc.target_line = "TARGET: " + std::to_string(int(std::lround(pst->target_mph))) + " MPH";
+                else if (pst->kind == freeroam::PrStuntKind::kSkill)
+                  mc.target_line = "TARGET: " + carview::thousands(pst->target_points) + " PTS";
+                else
+                  mc.target_line = "REACH LANDMARK & SNAP PHOTO";
+                mc.reward_line = carview::thousands(pst->reward_credits) + " Cr  +  " +
+                                 carview::thousands(pst->reward_popularity) + " POP";
+              }
+              mc.status_line = mc.completed ? "COMPLETED (REPLAY)" : "NEW PR STUNT";
+            } else {
+              mc.is_stunt = false;
+              mc.kind_label = (item.kind == OutpostHubItem::kGarage)       ? "GARAGE"
+                              : (item.kind == OutpostHubItem::kNearbyEvents) ? "EVENTS"
+                                                                             : "FAST TRAVEL";
+              mc.art_style = (item.kind == OutpostHubItem::kNearbyEvents) ? 2 : 1;
+              mc.target_line = item.detail_lines.empty() ? item.label : item.detail_lines[0];
+              mc.status_line = "SELECT";
+            }
+            mcards.push_back(std::move(mc));
+          }
+          list.clear();
+          carview::draw_outpost_hub_ui4(list, float(width), float(height),
+                                        op ? op->display_name : std::string("HORIZON OUTPOST"), mcards,
+                                        int(outpost_hub_pick));
         } else if (autoshow.is_open()) {
+          // Live 3D showroom car sync (108_C_BUY_CARSELECT / 114_C_BUY_BUYCAR_COLOR):
+          // sync the 3D showroom car model & factory swatch to the currently highlighted Autoshow car!
+          if (const carview::AutoshowCar* sel_as = autoshow.selected_car()) {
+            const std::string& target_media = sel_as->dealer.media_name;
+            cars::CarPaintSpec sw_paint{};
+            bool have_sw_paint = false;
+            if (const carview::AutoshowSwatch* sw = autoshow.selected_swatch()) {
+              sw_paint.body.rgb = sw->rgb;
+              sw_paint.body.finish = sw->metallic ? cars::PaintFinish::kMetallic : cars::PaintFinish::kNormal;
+              have_sw_paint = true;
+            }
+            if (!target_media.empty() && target_media != car) {
+              auto it = festival_guests.find(target_media);
+              if (it == festival_guests.end()) {
+                auto gs = std::make_unique<Showroom>(renderer);
+                gs->set_guest();
+                std::string ge;
+                if (gs->load(bake_dir, target_media, ShowroomOptions{}, ge) && gs->upload(ge)) {
+                  gs->load_car_lamps(game_root_of(), target_media);
+                  it = festival_guests.emplace(target_media, std::move(gs)).first;
+                } else {
+                  it = festival_guests.emplace(target_media, nullptr).first;
+                }
+              }
+              if (it != festival_guests.end() && it->second) {
+                if (have_sw_paint) it->second->set_paint_spec(sw_paint);
+                showroom.set_draw_car(false);
+                Showroom::Instance inst{};
+                inst.car = it->second.get();
+                inst.model[0] = 1.0f;
+                inst.model[5] = 1.0f;
+                inst.model[10] = 1.0f;
+                inst.model[15] = 1.0f;
+                showroom.set_instances({inst});
+              }
+            } else {
+              showroom.set_draw_car(true);
+              if (have_sw_paint) showroom.set_paint_spec(sw_paint);
+            }
+          }
           list.clear();
           carview::draw_autoshow_hud(list, float(width), float(height), autoshow, class_bands, career.credits,
                                      vehicle.time() < notice_until ? notice : std::string());
@@ -8264,29 +8368,47 @@ int run_drive(int argc, char** argv) {
                 next_car = media;
                 running = false;
               };
+              auto confirm_step = [&]() {
+                if (autoshow.advance_step()) buy();
+              };
+              auto cancel_step = [&]() {
+                if (!autoshow.back_step()) autoshow.close();
+              };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE) autoshow.close();
-                if (k == SDLK_UP || k == SDLK_W) autoshow.move(-1);
-                if (k == SDLK_DOWN || k == SDLK_S) autoshow.move(1);
-                if (k == SDLK_LEFT || k == SDLK_A) autoshow.jump_class(-1);
-                if (k == SDLK_RIGHT || k == SDLK_D) autoshow.jump_class(1);
-                if (k == SDLK_Q) autoshow.move_make(-1, career.credits);
-                if (k == SDLK_E) autoshow.move_make(1, career.credits);
-                if (k == SDLK_C) autoshow.move_colour(1);
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) buy();
+                if (k == SDLK_ESCAPE) cancel_step();
+                if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) autoshow.move_make(-1, career.credits);
+                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) autoshow.move_make(1, career.credits);
+                } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) autoshow.move_colour(-1);
+                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) autoshow.move_colour(1);
+                } else {
+                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) autoshow.move(-1);
+                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) autoshow.move(1);
+                  if (k == SDLK_Q) autoshow.move_make(-1, career.credits);
+                  if (k == SDLK_E) autoshow.move_make(1, career.credits);
+                  if (k == SDLK_C) autoshow.set_step(carview::AutoshowStep::kColorSelect);
+                }
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_step();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) autoshow.close();
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move(-1);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move(1);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) autoshow.jump_class(-1);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) autoshow.jump_class(1);
-                if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) autoshow.move_make(-1, career.credits);
-                if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) autoshow.move_make(1, career.credits);
-                if (b == SDL_GAMEPAD_BUTTON_NORTH) autoshow.move_colour(1);
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH) buy();
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) cancel_step();
+                if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move_make(-1, career.credits);
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move_make(1, career.credits);
+                } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move_colour(-1);
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move_colour(1);
+                } else {
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move(-1);
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move(1);
+                  if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) autoshow.move_make(-1, career.credits);
+                  if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) autoshow.move_make(1, career.credits);
+                  if (b == SDL_GAMEPAD_BUTTON_NORTH) autoshow.set_step(carview::AutoshowStep::kColorSelect);
+                }
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_step();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }

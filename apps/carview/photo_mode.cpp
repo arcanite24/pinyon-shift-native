@@ -565,89 +565,77 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
   out.line(w - mx - bl, h - my, w - mx, h - my, 2.0f * s, kBracket);
   out.line(w - mx, h - my - bl, w - mx, h - my, 2.0f * s, kBracket);
 
-  // Centre autofocus reticle (authentic Horizon.zip HUD/PHOTOMODEFOCUSRETICLE when available).
+  // 516_I_EFFECTSMODE FOCUS_RETICLE [576,296..704,424] subtle alpha=0.20 (NEVER obscures the car!)
   const float cx = 0.5f * w, cy = 0.5f * h;
   std::array<float, 4> ret_uv{};
   if (ui4::texture("HUD/PHOTOMODEFOCUSRETICLE", ret_uv)) {
-    const float rr = 34.0f * s;
-    out.image(cx - rr, cy - rr, cx + rr, cy + rr, ret_uv, rgba(255, 255, 255, 210));
+    const float rr = 64.0f * s;
+    out.image(cx - rr, cy - rr, cx + rr, cy + rr, ret_uv, rgba(255, 255, 255, 52));
   } else {
     const float rr = 14.0f * s;
-    out.line(cx - rr, cy, cx - 5.0f * s, cy, 1.5f * s, kBracket);
-    out.line(cx + 5.0f * s, cy, cx + rr, cy, 1.5f * s, kBracket);
-    out.line(cx, cy - rr, cx, cy - 5.0f * s, 1.5f * s, kBracket);
-    out.line(cx, cy + 5.0f * s, cx, cy + rr, 1.5f * s, kBracket);
+    out.line(cx - rr, cy, cx - 5.0f * s, cy, 1.5f * s, rgba(255, 255, 255, 80));
+    out.line(cx + 5.0f * s, cy, cx + rr, cy, 1.5f * s, rgba(255, 255, 255, 80));
+    out.line(cx, cy - rr, cx, cy - 5.0f * s, 1.5f * s, rgba(255, 255, 255, 80));
+    out.line(cx, cy + 5.0f * s, cx, cy + rr, 1.5f * s, rgba(255, 255, 255, 80));
   }
 
-  // Top-left tilted FH1 PHOTO MODE header + gritty camera telemetry strip.
-  ui4::title_banner(out, s, 56.0f * s, 26.0f * s, "PHOTO MODE", "HORIZON CAMERA", true, 320.0f);
+  // Compact top-left HUDPILL01 Horizon Promo + Camera Telemetry strip (NO top-center or top-right dark boxes!).
+  {
+    const float px0 = 56.0f * s;
+    float py = 30.0f * s;
+    const bool show_promo_banner =
+        banner_timer_ > 0.0 && (!last_promo_.newly_spotted_ids.empty() || !last_saved_label_.empty());
+    const PromoSpotResult& promo = show_promo_banner ? last_promo_ : live_promo_;
 
-  char cam_info[128];
-  std::snprintf(cam_info, sizeof cam_info, "FOV %.0f°   •   F/%.1f   •   %.1fm%s%s", camera_.fov_deg(),
-                1.4f + (1.0f - effects_.aperture / 100.0f) * 14.6f, effects_.focus_distance,
-                camera_.limits().cylinder_radius > 150.0 ? "   •   WIDER LIMITS" : "",
-                camera_.limits().through_walls ? "   •   NO-CLIP" : "");
-  ui4::panel(out, 388.0f * s, 32.0f * s, 772.0f * s, 64.0f * s, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  out.text(402.0f * s, 42.0f * s, cam_info, ui4::style(Font::kB, 12.0f * s, ui4::kWhite));
+    // Row 1: Compact pink PHOTO MODE + camera readout pill
+    char cam_info[128];
+    std::snprintf(cam_info, sizeof cam_info, "PHOTO MODE   •   FOV %.0f°   •   F/%.1f   •   %.1fm%s",
+                  camera_.fov_deg(), 1.4f + (1.0f - effects_.aperture / 100.0f) * 14.6f, effects_.focus_distance,
+                  camera_.limits().through_walls ? "   •   NO-CLIP" : "");
+    ui4::pill(out, px0, py, px0 + 382.0f * s, py + 26.0f * s, ui4::kPink, ui4::PillKind::kHud01);
+    ui::TextStyle cis = ui4::style(Font::kE, 12.0f * s, ui4::kWhite);
+    ui4::fit_text(cam_info, cis, 358.0f * s, 8.5f * s);
+    out.text(px0 + 12.0f * s, py + 6.5f * s, cam_info, cis);
+    py += 29.0f * s;
 
-  // Top-right Horizon Promo detection card (sharp gritty FH1 panel).
-  const bool show_promo_banner = banner_timer_ > 0.0 && (!last_promo_.newly_spotted_ids.empty() || !last_saved_label_.empty());
-  const PromoSpotResult& promo = show_promo_banner ? last_promo_ : live_promo_;
-  const float px1 = w - 56.0f * s;
-  const float px0 = px1 - 332.0f * s;
-  const float py0 = 32.0f * s;
-  const float py1 = py0 + (show_promo_banner ? 114.0f * s : 76.0f * s);
-  const uint32_t promo_acc = (show_promo_banner && !last_promo_.newly_spotted_ids.empty()) ? ui4::kYellow : ui4::kPink;
-  ui4::panel(out, px0, py0, px1, py1, s, ui4::kCharcoalDark, promo_acc, 0, true);
-  ui4::offwhite_strip(out, px0 + 10.0f * s, py0 + 8.0f * s, px1 - 10.0f * s, py0 + 30.0f * s, s, false);
-  out.text(px0 + 18.0f * s, py0 + 12.0f * s, "HORIZON PROMO", ui4::style(Font::kE, 12.0f * s, ui4::kInk));
-  char cnt_buf[48];
-  std::snprintf(cnt_buf, sizeof cnt_buf, "%d / %d CARS", promo.total_spotted, promo.total_cars);
-  out.text(px1 - 18.0f * s, py0 + 12.0f * s, cnt_buf, ui4::style(Font::kB, 12.0f * s, ui4::kInk, Align::kRight));
-
-  if (show_promo_banner) {
-    if (!last_promo_.newly_spotted_names.empty()) {
-      std::string cars_line = "NEW: " + last_promo_.newly_spotted_names[0];
-      if (last_promo_.newly_spotted_names.size() > 1)
-        cars_line += " +" + std::to_string(last_promo_.newly_spotted_names.size() - 1) + " MORE";
-      out.text(px0 + 14.0f * s, py0 + 38.0f * s, cars_line, ui4::style(Font::kB, 12.5f * s, ui4::kWhite));
-      out.text(px0 + 14.0f * s, py0 + 60.0f * s,
-               "+" + format_credits(last_promo_.credits_awarded) + " CR" +
-                   (last_promo_.milestone_reached ? "  (MILESTONE BONUS!)" : ""),
-               ui4::style(Font::kE, 14.0f * s, ui4::kYellow));
-    } else {
-      out.text(px0 + 14.0f * s, py0 + 42.0f * s, "PHOTO CAPTURED (4X SSAA)", ui4::style(Font::kE, 13.0f * s, ui4::kWhite));
-    }
-    if (!last_saved_label_.empty()) {
-      out.text(px0 + 14.0f * s, py0 + 86.0f * s, "SAVED: " + last_saved_label_,
-               ui4::style(Font::kB, 10.5f * s, ui4::kDim));
-    }
-  } else {
-    if (!promo.visible_names.empty()) {
+    // Row 2: Compact HUDPILL01 Horizon Promo strip
+    char promo_line[160];
+    uint32_t promo_col = ui4::kWhite;
+    if (show_promo_banner && !last_promo_.newly_spotted_names.empty()) {
+      std::snprintf(promo_line, sizeof promo_line, "PROMO %d/%d  •  NEW: %s (+%s Cr)", promo.total_spotted,
+                    promo.total_cars, last_promo_.newly_spotted_names[0].c_str(),
+                    format_credits(last_promo_.credits_awarded).c_str());
+      promo_col = ui4::kYellow;
+    } else if (show_promo_banner) {
+      std::snprintf(promo_line, sizeof promo_line, "PROMO %d/%d  •  SAVED 4X SSAA PHOTO", promo.total_spotted,
+                    promo.total_cars);
+      promo_col = ui4::kGreen;
+    } else if (!promo.visible_names.empty()) {
       const bool has_new = !promo.newly_spotted_ids.empty();
-      std::string line = (has_new ? "NEW IN FRAME: " : "IN FRAME: ") + promo.visible_names[0];
-      if (promo.visible_names.size() > 1) line += " (+" + std::to_string(promo.visible_names.size() - 1) + ")";
-      out.text(px0 + 14.0f * s, py0 + 38.0f * s, line,
-               ui4::style(Font::kB, 12.0f * s, has_new ? ui4::kYellow : ui4::kWhite));
-      out.text(px0 + 14.0f * s, py0 + 56.0f * s,
-               has_new ? "SNAP TO EARN +" + format_credits(promo.credits_awarded) + " CR" : "ALREADY PHOTOGRAPHED",
-               ui4::style(Font::kB, 10.0f * s, ui4::kDim));
+      std::snprintf(promo_line, sizeof promo_line, "PROMO %d/%d  •  %s%s", promo.total_spotted, promo.total_cars,
+                    has_new ? "NEW: " : "IN FRAME: ", promo.visible_names[0].c_str());
+      promo_col = has_new ? ui4::kYellow : ui4::kWhite;
     } else {
-      out.text(px0 + 14.0f * s, py0 + 42.0f * s, "FRAME A CAR TO SPOT FOR PROMO",
-               ui4::style(Font::kB, 11.0f * s, ui4::kDim));
+      std::snprintf(promo_line, sizeof promo_line, "HORIZON PROMO  %d / %d CARS SPOTTED", promo.total_spotted,
+                    promo.total_cars);
+      promo_col = ui4::kOffWhite;
     }
+    ui4::pill(out, px0, py, px0 + 382.0f * s, py + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kHud01);
+    ui::TextStyle prs = ui4::style(Font::kB, 11.5f * s, promo_col);
+    ui4::fit_text(promo_line, prs, 358.0f * s, 8.5f * s);
+    out.text(px0 + 12.0f * s, py + 5.5f * s, promo_line, prs);
   }
 
-  // Left collapsible Photo Effects slider drawer (sharp gritty FH1 panel + pink active brush).
+  // ---- 516_I_EFFECTSMODE: Sleek Right-Edge Effects Column (x=1012..1260) using PILL01 + OPT_SLIDER_FRAME ----
   if (effects_open_) {
-    const float dx0 = 56.0f * s;
-    const float dx1 = dx0 + 332.0f * s;
-    const float dy0 = 104.0f * s;
-    const float row_h = 37.0f * s;
-    const float dy1 = dy0 + 40.0f * s + float(kRowCount) * row_h + 10.0f * s;
-    ui4::panel(out, dx0, dy0, dx1, dy1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-    ui4::offwhite_strip(out, dx0 + 10.0f * s, dy0 + 8.0f * s, dx1 - 10.0f * s, dy0 + 30.0f * s, s, false);
-    out.text(dx0 + 18.0f * s, dy0 + 12.0f * s, "CAMERA EFFECTS", ui4::style(Font::kE, 12.5f * s, ui4::kInk));
+    const float dx0 = w - 268.0f * s;  // canvas x = 1012 at 1280px!
+    const float dx1 = w - 20.0f * s;   // canvas x = 1260
+    const float dy0 = 36.0f * s;
+    const float row_pitch = 47.0f * s;
+
+    // Header PILL01 (#BFBFBF) + PILLCLIPON01
+    ui4::pill(out, dx0, dy0, dx1, dy0 + 26.0f * s, rgba(0xBF, 0xBF, 0xBF, 240), ui4::PillKind::kMenu, false, true);
+    out.text(dx0 + 12.0f * s, dy0 + 6.0f * s, "CAMERA EFFECTS", ui4::style(Font::kD, 13.0f * s, ui4::kInk));
 
     struct RowInfo {
       const char* name;
@@ -662,13 +650,13 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     };
     char fbuf[24], zbuf[24], rbuf[24];
     std::snprintf(fbuf, sizeof fbuf, "%.1fm", effects_.focus_distance);
-    std::snprintf(zbuf, sizeof zbuf, "%.0f DEG", camera_.fov_deg());
-    std::snprintf(rbuf, sizeof rbuf, "%+.0f DEG", camera_.roll_deg());
+    std::snprintf(zbuf, sizeof zbuf, "%.0f°", camera_.fov_deg());
+    std::snprintf(rbuf, sizeof rbuf, "%+.0f°", camera_.roll_deg());
 
     const RowInfo rows[kRowCount] = {
         {"PRESET", 0.0f, photo_preset_name(effects_.preset), false},
-        {"SHUTTER SPEED", effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
-        {"APERTURE (DOF)", effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
+        {"SHUTTER", effects_.shutter_speed / 100.0f, fmt_pct(effects_.shutter_speed), true},
+        {"APERTURE", effects_.aperture / 100.0f, fmt_pct(effects_.aperture), true},
         {"FOCUS", (effects_.focus_distance - 1.5f) / 118.5f, fbuf, true},
         {"EXPOSURE", effects_.exposure / 100.0f, fmt_pct(effects_.exposure), true},
         {"CONTRAST", effects_.contrast / 100.0f, fmt_pct(effects_.contrast), true},
@@ -680,29 +668,33 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
          float((camera_.limits().max_fov_deg - camera_.fov_deg()) /
                std::max(1.0, camera_.limits().max_fov_deg - camera_.limits().min_fov_deg)),
          zbuf, true},
-        {"ROLL / TILT", float((camera_.roll_deg() + camera_.limits().max_roll_deg) / (2.0 * camera_.limits().max_roll_deg)),
-         rbuf, true},
+        {"ROLL / TILT",
+         float((camera_.roll_deg() + camera_.limits().max_roll_deg) / (2.0 * camera_.limits().max_roll_deg)), rbuf,
+         true},
     };
 
+    const float list_top = dy0 + 32.0f * s;
     for (int i = 0; i < kRowCount; ++i) {
-      const float ry0 = dy0 + 38.0f * s + float(i) * row_h;
-      const float ry1 = ry0 + row_h - 3.0f * s;
+      const float ry0 = list_top + float(i) * row_pitch;
+      const float ry1 = ry0 + 42.0f * s;
       const bool sel = (i == selected_row_);
-      if (sel) {
-        ui4::brush(out, dx0 + 4.0f * s, ry0, dx1 - 4.0f * s, ry1, ui4::kPink);
-      } else if (i % 2 == 0) {
-        out.rect(dx0 + 10.0f * s, ry0, dx1 - 10.0f * s, ry1, rgba(255, 255, 255, 10));
-      }
-      out.text(dx0 + 16.0f * s, ry0 + 6.0f * s, rows[i].name,
-               ui4::style(sel ? Font::kE : Font::kB, 11.0f * s, sel ? ui4::kWhite : ui4::kDim));
-      out.text(dx1 - 16.0f * s, ry0 + 6.0f * s, rows[i].value,
-               ui4::style(Font::kE, 11.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kRight));
-      if (rows[i].is_bar) {
-        const float bx0 = dx0 + 16.0f * s, bx1 = dx1 - 16.0f * s, by0 = ry1 - 8.0f * s, by1 = ry1 - 3.0f * s;
-        out.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, sel ? 80 : 34));
-        const float fill_x = bx0 + (bx1 - bx0) * std::clamp(rows[i].norm, 0.0f, 1.0f);
-        out.rect(bx0, by0, std::max(bx0 + 3.0f * s, fill_x), by1, sel ? ui4::kWhite : ui4::kPink);
-        out.rect(fill_x - 2.0f * s, by0 - 2.0f * s, fill_x + 2.0f * s, by1 + 2.0f * s, ui4::kWhite);
+
+      // Floating PILL01 row (#212121, focused #F90064) — NO giant enclosing dark wall!
+      ui4::pill(out, dx0, ry0, dx1, ry1, sel ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, sel);
+
+      out.text(dx0 + 12.0f * s, ry0 + 6.0f * s, rows[i].name,
+               ui4::style(sel ? Font::kD : Font::kB, 12.0f * s, sel ? ui4::kWhite : ui4::kOffWhite));
+      if (!rows[i].is_bar) {
+        ui4::opt_arrow(out, dx0 + 112.0f * s, ry0 + 28.0f * s, 12.0f * s, -1, sel ? ui4::kWhite : ui4::kDim);
+        ui4::opt_arrow(out, dx1 - 14.0f * s, ry0 + 28.0f * s, 12.0f * s, +1, sel ? ui4::kWhite : ui4::kDim);
+        ui::TextStyle vs = ui4::style(Font::kD, 12.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kCenter);
+        ui4::fit_text(rows[i].value, vs, (dx1 - dx0) - 134.0f * s, 8.5f * s);
+        out.text(0.5f * (dx0 + 112.0f * s + dx1 - 14.0f * s), ry0 + 22.0f * s, rows[i].value, vs);
+      } else {
+        out.text(dx1 - 12.0f * s, ry0 + 6.0f * s, rows[i].value,
+                 ui4::style(Font::kD, 12.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kRight));
+        ui4::opt_slider(out, dx0 + 12.0f * s, ry1 - 13.0f * s, dx1 - 12.0f * s, ry1 - 5.0f * s, rows[i].norm, s,
+                        sel ? ui4::kYellow : ui4::kPink, sel);
       }
     }
   }

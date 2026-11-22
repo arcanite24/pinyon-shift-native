@@ -43,11 +43,30 @@ struct ButtonBarItem {
 // Draws BUTTON_BAR_SCENE (authentic Horizon pill + controller face glyphs).
 void draw_button_bar_ui4(ui::List& l, const std::vector<ButtonBarItem>& items, float screen_w, float screen_h);
 
-// Draws authentic FH1 Race Central / Events browser (tab strip + event list + detail card).
+// Draws authentic FH1 Race Central / Street Race Hub (H_STREET_RACE_HUB +3.0 deg Event Tickets).
 void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPage& page,
                      const std::vector<garage::ClassBand>& bands);
 
-// Draws authentic FH1/Pinyon Shift tabbed Options & live F6 Settings overlay.
+// Outpost PR Stunt / Mission Ticket card for H_MISSIONS_HUB.
+struct OutpostMissionCard {
+  std::string title;
+  std::string kind_label;   // "SPEED STUNT", "SKILL STUNT", "PHOTO OP", "GARAGE", "FAST TRAVEL"
+  int art_style = 10;       // 10=Speed, 11=Skill, 12=Photo, 1=Festival, 2=Street
+  int event_id = 0;
+  std::string target_line;  // e.g. "TARGET: 145 MPH"
+  std::string reward_line;  // e.g. "25,000 Cr  +  2,500 POP"
+  std::string status_line;  // e.g. "NEW PR STUNT" or "COMPLETED"
+  bool completed = false;
+  bool is_stunt = true;
+  std::vector<std::string> detail_lines;
+};
+
+// Draws authentic FH1 Outpost PR Stunts Hub (H_MISSIONS_HUB +3.0 deg tilted Mission Tickets).
+void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::string_view outpost_name,
+                          const std::vector<OutpostMissionCard>& cards, int selected_index);
+
+// Draws authentic FH1/Pinyon Shift tabbed Options & live F6 Settings overlay
+// (H_FIXED_SETTING_LIST / 300_I_OPT_ASSISTS_DIFFICULTY / 837_I_AUDIO_OPTIONS / 831_C_OPT_CONTROLLER).
 void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const SettingsPage& page,
                        bool live_overlay = false);
 

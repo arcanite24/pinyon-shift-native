@@ -17,6 +17,7 @@
 #include "garage/pi_calc.h"
 #include "hub_scene.h"
 #include "ui.h"
+#include "ui4_chrome.h"
 #include "upgrade_shop.h"
 
 namespace {
@@ -216,14 +217,63 @@ void test_disc_hub_shops_and_garage() {
   CHECK(credits > cr_before_sell_car);
   CHECK(g.cars.size() == 2);
 
-  // 5. Render Autoshow, UpgradeShop, and Garage overlays via ui::rasterize.
-  carview::ui::List l1, l2, l3;
-  carview::draw_autoshow_hud(l1, 1280.0f, 720.0f, autoshow, bands, credits);
-  carview::draw_upgrade_shop_hud(l2, 1280.0f, 720.0f, shop, bands, 20, credits, "VW Corrado VR6");
+  // 5. Render Autoshow (all 3 steps: 115 Make -> 108 Car -> 114 Color), UpgradeShop (+Tuning), and Garage.
+  std::set<std::string> requested_textures;
+  carview::ui4::set_texture_loader([&](const std::string& path, std::array<float, 4>& uv) {
+    requested_textures.insert(path);
+    uv = {0.0f, 0.0f, 0.1f, 0.1f};
+    return true;
+  });
+
+  autoshow.set_step(carview::AutoshowStep::kMakeSelect);
+  CHECK(autoshow.step() == carview::AutoshowStep::kMakeSelect);
+  carview::ui::List l_make, l_car, l_col;
+  carview::draw_autoshow_hud(l_make, 1280.0f, 720.0f, autoshow, bands, credits);
+  CHECK(!autoshow.advance_step());
+  CHECK(autoshow.step() == carview::AutoshowStep::kCarSelect);
+  carview::draw_autoshow_hud(l_car, 1280.0f, 720.0f, autoshow, bands, credits);
+  CHECK(!autoshow.advance_step());
+  CHECK(autoshow.step() == carview::AutoshowStep::kColorSelect);
+  carview::draw_autoshow_hud(l_col, 1280.0f, 720.0f, autoshow, bands, credits);
+  CHECK(autoshow.advance_step());  // ready to buy
+  CHECK(autoshow.back_step() && autoshow.step() == carview::AutoshowStep::kCarSelect);
+
+  carview::ui::List l2_parts, l2_tune, l3;
+  shop.set_category(carview::ShopCategory::kEngine);
+  carview::draw_upgrade_shop_hud(l2_parts, 1280.0f, 720.0f, shop, bands, 20, credits, "VW Corrado VR6");
+  shop.set_category(carview::ShopCategory::kTuning);
+  carview::draw_upgrade_shop_hud(l2_tune, 1280.0f, 720.0f, shop, bands, 20, credits, "VW Corrado VR6");
   carview::draw_garage_hud(l3, 1280.0f, 720.0f, gb, bands, credits);
-  CHECK(!l1.empty() && !l2.empty() && !l3.empty());
-  std::printf("  hub UI instances: autoshow=%zu workshop=%zu garage=%zu\n", l1.items().size(), l2.items().size(),
-              l3.items().size());
+
+  // Verify Phase 3 authentic texture lookups across Autoshow, Upgrades, Tuning, and Garage.
+  auto has_prefix = [&](const std::string& pfx) {
+    for (const auto& t : requested_textures)
+      if (t.rfind(pfx, 0) == 0) return true;
+    return false;
+  };
+  CHECK(has_prefix("T:UI4/Upgrades/"));
+  CHECK(has_prefix("T:UI4/Tuning/"));
+  CHECK(requested_textures.count("DIRTTEXTURES/STATBARFILL") > 0);
+  CHECK(requested_textures.count("DIRTTEXTURES/STATBAREMPTY") > 0);
+  CHECK(requested_textures.count("OPTIONS/OPT_BAR_ARROW") > 0);
+  CHECK(requested_textures.count("COMMON/SCROLLINDICATOR") > 0);
+
+  // Also verify EventTickets/* and SponsorLogoTile/* helpers resolve real disc paths.
+  carview::ui::List l_extra;
+  CHECK(carview::ui4::event_ticket_art(l_extra, 0, 0, 200, 120, 50, 2));
+  CHECK(carview::ui4::event_ticket_art(l_extra, 0, 0, 200, 120, 0, 10));
+  CHECK(carview::ui4::sponsor_logo_tile(l_extra, 0, 0, 128, 64, "Oakley"));
+  CHECK(carview::ui4::sponsor_logo_tile(l_extra, 0, 0, 128, 64, "RedBull"));
+  CHECK(has_prefix("EVENTTICKETS/STREETRACES/"));
+  CHECK(has_prefix("EVENTTICKETS/MISSIONS/"));
+  CHECK(requested_textures.count("SPONSORLOGOTILE/OAKLEY") > 0);
+  CHECK(requested_textures.count("SPONSORLOGOTILE/REDBULL") > 0);
+
+  carview::ui4::set_texture_loader({});
+  CHECK(!l_make.empty() && !l_car.empty() && !l_col.empty() && !l2_parts.empty() && !l2_tune.empty() && !l3.empty());
+  std::printf("  hub UI instances: make=%zu car=%zu color=%zu workshop=%zu tuning=%zu garage=%zu\n",
+              l_make.items().size(), l_car.items().size(), l_col.items().size(), l2_parts.items().size(),
+              l2_tune.items().size(), l3.items().size());
 }
 
 }  // namespace

@@ -88,16 +88,60 @@ std::string format_credits(int64_t cr);
 void brush(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, bool big = false,
            float wipe_frac = 1.0f);
 
-// Cropped Horizon pill (DIRTMASKS/PILL01, HUDPILL01, HUDPILL02, or MAPPILLSMALL)
-// with optional bottom-left PILLPIN notch.
-enum class PillKind { kMenu, kHud01, kHud02, kMapSmall };
+// Cropped Horizon pill (DIRTMASKS/PILL01, PILL02, PILL03, PILL_BIG, HUDPILL01, HUDPILL02,
+// MAPPILLSMALL, or KITPARTS/PILL26PX) with optional bottom-left PILLPIN / PILLCLIPON01 notch.
+enum class PillKind { kMenu, kPill02, kPill03, kPillBig, kPill26, kHud01, kHud02, kMapSmall };
 void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, PillKind kind = PillKind::kMenu,
-          bool with_pin = false);
+          bool with_pin = false, bool with_clipon = false);
 
 // Authentic FH1 distressed sharp-edged panel (BGNOISE01 grit overlay, zero
 // generic rounded dark glass boxes). Optional top or left colour accent strip.
 void panel(ui::List& l, float x0, float y0, float x1, float y1, float s, uint32_t bg = kCharcoal,
            uint32_t top_accent = 0, uint32_t left_accent = 0, bool gritty = true);
+
+// Authentic FH1 DIRTMASKS/PANEL01 compact detail card (used by H_FIXED_SETTING_LIST,
+// 300_I_OPT_*, 104_C_CAR_DETAILS, and Phase 4 blades).
+void panel01(ui::List& l, float x0, float y0, float x1, float y1, float s, uint32_t bg = kCharcoalDark,
+             uint32_t header_accent = 0);
+
+// Authentic FH1 TitleTape (TAPECLIPON01/02 + SMUDGETAPE01 + CRISPTAPE01 + DIRTTILE01).
+void title_tape(ui::List& l, float s, float x, float y, std::string_view title, uint32_t colour = kBrushBlack,
+                float font_size = 38.0f, float max_w = 560.0f, bool clipon_left = true);
+
+// Authentic FH1 OPTIONS/OPT_BAR_ARROW selector arrow (dir < 0 = left, dir > 0 = right).
+bool opt_arrow(ui::List& l, float cx, float cy, float size, int dir, uint32_t tint = kWhite);
+
+// Authentic FH1 OPTIONS/OPT_SLIDER_FRAME + DIRTTEXTURES/STATBARFILL/STATBAREMPTY slider bar.
+void opt_slider(ui::List& l, float x0, float y0, float x1, float y1, float norm, float s, uint32_t fill_col = kPink,
+                bool focused = false, float default_norm = -1.0f);
+
+// Authentic FH1 vertical COMMON/SCROLLINDICATOR + SCROLLINDICATORMASK + SPECULAR/SPEC_SHEEN2 bar.
+void scroll_indicator(ui::List& l, float x0, float y0, float x1, float y1, int first_idx, int visible_count,
+                      int total_count, float s);
+
+// Authentic FH1 upgrade part icon from Textures.zip (UI4/Upgrades/*, 479 icons).
+bool upgrade_part_icon(ui::List& l, float x0, float y0, float x1, float y1, int part_enum, int level, bool is_stock,
+                       uint32_t tint = kWhite);
+
+// Authentic FH1 tuning icon from Textures.zip (UI4/Tuning/*, 31 textures).
+bool tuning_icon(ui::List& l, float x0, float y0, float x1, float y1, int tune_category, std::string_view slider_label,
+                 uint32_t tint = kWhite);
+
+// Authentic FH1 Event Ticket artwork from Horizon.zip (EventTickets/*, 142+ textures).
+// style: 1=Festival, 2=Street, 3=Showcase, 4=Nemesis/Showdown, 10=PR Speed, 11=PR Skill, 12=PR Photo.
+bool event_ticket_art(ui::List& l, float x0, float y0, float x1, float y1, int event_id, int style,
+                      uint32_t tint = kWhite);
+
+// Authentic FH1 Sponsor Logo Tile from Horizon.zip (SponsorLogoTile/*.xds, all 18 logos).
+bool sponsor_logo_tile(ui::List& l, float x0, float y0, float x1, float y1, std::string_view sponsor_or_id,
+                       uint32_t tint = kWhite);
+
+// Authentic FH1 medal / trophy / badge artwork (Icon_Gold, TicketStickerGold/Silver/Bronze, Trophy, Padlock).
+enum class BadgeIconKind { kGoldMedal, kSilverMedal, kBronzeMedal, kTrophy, kLocked, kNew, kComplete };
+bool badge_icon(ui::List& l, float x0, float y0, float x1, float y1, BadgeIconKind kind, uint32_t tint = kWhite);
+
+// Clean human-readable car display name resolver for internal media IDs (e.g. FER_F40_87 -> 1987 Ferrari F40).
+std::string pretty_car_media_name(std::string_view raw_media);
 
 // Distressed off-white strip (Balance, Credits, Results column header).
 void offwhite_strip(ui::List& l, float x0, float y0, float x1, float y1, float s, bool brushed = true);

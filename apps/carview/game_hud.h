@@ -161,6 +161,18 @@ struct MapOverlayHud {
   bool treasure_map = false;
 };
 
+// One sponsor challenge row for H_SPONSOR_CHALLENGE_STATUS (18 real SponsorLogoTile/*.xds logos).
+struct SponsorChallengeRow {
+  std::string sponsor_name;     // e.g. "OAKLEY", "HKS", "REDBULL", "ADIDAS", "BONDURANT", "GOPRO"
+  std::string challenge_title;  // e.g. "DRIFT KING", "NEAR MISS", "AIRBORNE", "TOP SPEED"
+  std::string logo_key;         // passed to ui4::sponsor_logo_tile()
+  int current = 0;
+  int target = 25;
+  int tier = 1;
+  int max_tiers = 5;
+  int64_t reward_cr = 10000;
+};
+
 // The career page's board (right of the career page list).
 struct CareerBoard {
   std::string band_name, band_next;
@@ -182,7 +194,14 @@ struct CareerBoard {
   bool rally = false;
   int rally_level = 0, rally_xp = 0, rallies = 0, rally_wins = 0;
   int packs_owned = 0, packs_total = 0;
+  std::vector<SponsorChallengeRow> sponsors;
+  bool show_sponsors = false;
+  int sponsor_selected = 0;
 };
+
+// Draws authentic FH1 H_SPONSOR_CHALLENGE_STATUS (+3.0 deg 6-row SponsorLogoTile/* + #DAFF00 BARBASE26PX).
+void draw_sponsor_challenges_ui4(ui::List& l, float w, float h, const std::vector<SponsorChallengeRow>& rows,
+                                 int selected, int64_t credits = -1);
 
 // Active Outpost PR Stunt HUD (Speed Trap, Skill/Drift, or Photo Op).
 struct PrStuntHud {

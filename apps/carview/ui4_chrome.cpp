@@ -288,11 +288,16 @@ void brush(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour,
   }
 }
 
-void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, PillKind kind, bool with_pin) {
+void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, PillKind kind, bool with_pin,
+          bool with_clipon) {
   if (x1 <= x0 || y1 <= y0) return;
   const char* tex_name = "DIRTMASKS/PILL01";
   float texels = 512.0f;
   switch (kind) {
+    case PillKind::kPill02: tex_name = "DIRTMASKS/PILL02"; texels = 512.0f; break;
+    case PillKind::kPill03: tex_name = "DIRTMASKS/PILL03"; texels = 512.0f; break;
+    case PillKind::kPillBig: tex_name = "DIRTMASKS/PILL_BIG"; texels = 1024.0f; break;
+    case PillKind::kPill26: tex_name = "KITPARTS/PILL26PX"; texels = 512.0f; break;
     case PillKind::kHud01: tex_name = "DIRTMASKS/HUD/HUDPILL01"; texels = 1024.0f; break;
     case PillKind::kHud02: tex_name = "DIRTMASKS/HUD/HUDPILL02"; texels = 1024.0f; break;
     case PillKind::kMapSmall: tex_name = "DIRTMASKS/MAPPILLSMALL"; texels = 256.0f; break;
@@ -300,7 +305,7 @@ void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, 
     default: tex_name = "DIRTMASKS/PILL01"; texels = 512.0f; break;
   }
   std::array<float, 4> uv{};
-  if (!texture(tex_name, uv)) {
+  if (!texture(tex_name, uv) && !texture("DIRTMASKS/PILL01", uv)) {
     l.rect(x0, y0, x1, y1, colour);
     return;
   }
@@ -318,12 +323,141 @@ void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, 
   } else {
     l.image(x0, ty0, x1, ty1, uv, colour);
   }
+  if (with_clipon) {
+    std::array<float, 4> clip{};
+    if (texture("DIRTMASKS/PILLCLIPON01", clip)) {
+      const float cw = 26.0f * texel;
+      l.image(x0 - cw * 0.45f, ty0, x0 + cw * 0.55f, ty1, clip, colour);
+    }
+  }
   if (with_pin) {
     std::array<float, 4> pin{};
     if (texture("DIRTMASKS/PILLPIN", pin)) {
       const float ps = 14.0f * texel;
       l.image(x0, y1 - 3.0f * texel, x0 + ps, y1 + ps - 3.0f * texel, pin, colour);
     }
+  }
+}
+
+void panel01(ui::List& l, float x0, float y0, float x1, float y1, float s, uint32_t bg, uint32_t header_accent) {
+  if (x1 <= x0 || y1 <= y0) return;
+  l.rect(x0 + 3.0f * s, y0 + 4.0f * s, x1 + 3.0f * s, y1 + 4.0f * s, ui::rgba(0, 0, 0, 96));
+  std::array<float, 4> p_uv{}, n_uv{};
+  if (texture("DIRTMASKS/PANEL01", p_uv)) {
+    if (texture("DIRTMASKS/BGNOISE01", n_uv)) {
+      l.image(x0, y0, x1, y1, p_uv, bg);
+      l.image_masked(x0, y0, x1, y1, n_uv, p_uv, ui::rgba(255, 255, 255, 26), {1.0f, 1.0f, 0.0f, 0.0f}, ui::kMaskRepeat);
+    } else {
+      l.image(x0, y0, x1, y1, p_uv, bg);
+    }
+  } else {
+    panel(l, x0, y0, x1, y1, s, bg, 0, 0, true);
+  }
+  if (header_accent != 0) {
+    l.rect(x0 + 2.0f * s, y0 + 2.0f * s, x1 - 2.0f * s, y0 + 5.0f * s, header_accent);
+  }
+}
+
+void title_tape(ui::List& l, float s, float x, float y, std::string_view title, uint32_t colour, float font_size,
+                float max_w, bool clipon_left) {
+  ui::TextStyle ts = style(ui::Font::kE, font_size * s, kWhite);
+  fit_text(title, ts, max_w * s, 16.0f * s);
+  const float tw = ui::List::measure(title, ts);
+  const float bh = ts.size + 18.0f * s;
+  const float x0 = x - 12.0f * s;
+  const float x1 = x + std::max(210.0f * s, tw + 44.0f * s);
+  if (clipon_left) {
+    std::array<float, 4> clip{};
+    if (texture("DIRTMASKS/TAPECLIPON02", clip) || texture("DIRTMASKS/TAPECLIPON01", clip)) {
+      l.image(x0 - 22.0f * s, y + 3.0f * s, x0 + 18.0f * s, y + bh - 2.0f * s, clip, colour);
+    }
+  }
+  brush(l, x0, y, x1, y + bh, colour, true);
+  l.text(x + 12.0f * s, y + 0.5f * (bh - ts.size), title, ts);
+}
+
+bool opt_arrow(ui::List& l, float cx, float cy, float size, int dir, uint32_t tint) {
+  const float r = size * 0.5f;
+  std::array<float, 4> uv{};
+  if (texture("OPTIONS/OPT_BAR_ARROW", uv) || texture("COMMON/ARROW", uv) || texture("DIRTMASKS/ARROW", uv)) {
+    // Flip U horizontally for left vs right so both directions point authentically.
+    const std::array<float, 4> oriented = (dir < 0) ? std::array<float, 4>{uv[2], uv[1], uv[0], uv[3]} : uv;
+    l.image(cx - r, cy - r, cx + r, cy + r, oriented, tint);
+    return true;
+  }
+  // Sharp vector chevron fallback (never ASCII "<" / ">").
+  const float dx = (dir < 0 ? -1.0f : 1.0f) * r * 0.45f;
+  const float dy = r * 0.58f;
+  const float stroke = std::max(1.6f, size * 0.14f);
+  l.line(cx - dx, cy - dy, cx + dx, cy, stroke, tint);
+  l.line(cx + dx, cy, cx - dx, cy + dy, stroke, tint);
+  return false;
+}
+
+void opt_slider(ui::List& l, float x0, float y0, float x1, float y1, float norm, float s, uint32_t fill_col,
+                bool focused, float default_norm) {
+  if (x1 <= x0 || y1 <= y0) return;
+  const float frac = clamp01(norm);
+  const float bw = x1 - x0;
+  std::array<float, 4> frame_uv{}, empty_uv{}, fill_uv{};
+  const bool has_empty = texture("DIRTTEXTURES/STATBAREMPTY", empty_uv);
+  const bool has_fill = texture("DIRTTEXTURES/STATBARFILL", fill_uv) || texture("OPTIONS/OPT_SLIDER_FILL", fill_uv);
+  const bool has_frame = texture("OPTIONS/OPT_SLIDER_FRAME", frame_uv);
+
+  if (has_empty) {
+    l.image(x0, y0, x1, y1, empty_uv, ui::rgba(255, 255, 255, focused ? 145 : 95));
+  } else {
+    l.rect(x0, y0, x1, y1, focused ? ui::rgba(0, 0, 0, 130) : ui::rgba(255, 255, 255, 36));
+  }
+
+  if (frac > 0.005f) {
+    const float fx1 = x0 + bw * frac;
+    if (has_fill) {
+      const float u1 = fill_uv[0] + (fill_uv[2] - fill_uv[0]) * frac;
+      l.image(x0, y0, fx1, y1, {fill_uv[0], fill_uv[1], u1, fill_uv[3]}, fill_col);
+    } else {
+      l.rect(x0, y0, fx1, y1, fill_col);
+    }
+  }
+  if (has_frame) {
+    l.image(x0 - 1.5f * s, y0 - 1.5f * s, x1 + 1.5f * s, y1 + 1.5f * s, frame_uv,
+            focused ? kWhite : ui::rgba(210, 214, 224, 150));
+  }
+  if (default_norm >= 0.0f && default_norm <= 1.0f) {
+    const float dx = x0 + bw * default_norm;
+    l.rect(dx - 1.0f * s, y0 - 2.5f * s, dx + 1.0f * s, y1 + 2.5f * s, kYellow);
+  }
+  const float kx = x0 + bw * frac;
+  l.rect(kx - 2.0f * s, y0 - 2.0f * s, kx + 2.0f * s, y1 + 2.0f * s, kWhite);
+}
+
+void scroll_indicator(ui::List& l, float x0, float y0, float x1, float y1, int first_idx, int visible_count,
+                      int total_count, float s) {
+  if (total_count <= visible_count || total_count <= 0 || y1 <= y0) return;
+  const float track_h = y1 - y0;
+  std::array<float, 4> ind_uv{}, mask_uv{}, sheen_uv{};
+  const bool has_ind = texture("COMMON/SCROLLINDICATOR", ind_uv);
+  const bool has_mask = texture("COMMON/SCROLLINDICATORMASK", mask_uv);
+  const bool has_sheen = texture("SPECULAR/SPEC_SHEEN2", sheen_uv);
+
+  // Subtle vertical track
+  l.rect(x0, y0, x1, y1, ui::rgba(255, 255, 255, 26));
+  const float frac_h = std::clamp(float(visible_count) / float(total_count), 0.12f, 1.0f);
+  const float thumb_h = std::max(22.0f * s, track_h * frac_h);
+  const float max_first = float(std::max(1, total_count - visible_count));
+  const float t = std::clamp(float(first_idx) / max_first, 0.0f, 1.0f);
+  const float ty0 = y0 + (track_h - thumb_h) * t;
+  const float ty1 = ty0 + thumb_h;
+
+  if (has_ind && has_mask) {
+    l.image_masked(x0, ty0, x1, ty1, ind_uv, mask_uv, kPink, {1.0f, 1.0f, 0.0f, 0.0f}, 0u);
+    if (has_sheen) {
+      l.image_masked(x0, ty0, x1, ty1, sheen_uv, mask_uv, ui::rgba(255, 255, 255, 110), {1.0f, 1.0f, 0.0f, 0.0f}, 0u);
+    }
+  } else if (has_ind) {
+    l.image(x0, ty0, x1, ty1, ind_uv, kPink);
+  } else {
+    l.rect(x0, ty0, x1, ty1, kPink);
   }
 }
 
@@ -624,15 +758,20 @@ void stat_bar(ui::List& l, float x, float y, float w, float h, std::string_view 
   ui::TextStyle ls = style(ui::Font::kB, 12.5f * s, kDim);
   l.text(x, y + 0.5f * (h - ls.size), label, ls);
 
-  // Track background (UPGRADES/UPG_STATBAR or crisp charcoal track with 10-segment dividers).
-  l.rect(bx0, by, bx1, by + bh, ui::rgba(255, 255, 255, 28));
+  // Authentic FH1 DIRTTEXTURES/STATBAREMPTY + STATBARFILL (fallback: UPGRADES/UPG_STATBAR).
+  std::array<float, 4> empty_uv{}, bar_uv{};
+  const bool has_empty = texture("DIRTTEXTURES/STATBAREMPTY", empty_uv);
+  const bool has_tex = texture("DIRTTEXTURES/STATBARFILL", bar_uv) || texture("UPGRADES/UPG_STATBAR", bar_uv);
+  if (has_empty) {
+    l.image(bx0, by, bx1, by + bh, empty_uv, ui::rgba(255, 255, 255, 110));
+  } else {
+    l.rect(bx0, by, bx1, by + bh, ui::rgba(255, 255, 255, 28));
+  }
 
   const float c0 = float(std::clamp(cur_val / 10.0, 0.0, 1.0));
   const float c1 = float(std::clamp(preview_val / 10.0, 0.0, 1.0));
   const float lo = show_diff ? std::min(c0, c1) : c0;
 
-  std::array<float, 4> bar_uv{};
-  const bool has_tex = texture("UPGRADES/UPG_STATBAR", bar_uv);
   auto fill_seg = [&](float f0, float f1, uint32_t col) {
     if (f1 <= f0 + 1e-4f) return;
     const float sx0 = bx0 + bw * f0;
@@ -743,6 +882,296 @@ void subtle_vignette(ui::List& l, float w, float h, float strength) {
   const uint8_t bot_a = uint8_t(std::lround(125.0f * k));
   l.rect(0, 0, w, h * 0.22f, ui::rgba(4, 6, 10, top_a), 0.0f, ui::rgba(4, 6, 10, 0));
   l.rect(0, h * 0.74f, w, h, ui::rgba(4, 6, 10, 0), 0.0f, ui::rgba(4, 6, 10, bot_a));
+}
+
+bool upgrade_part_icon(ui::List& l, float x0, float y0, float x1, float y1, int part_enum, int level, bool is_stock,
+                       uint32_t tint) {
+  auto try_draw = [&](const std::string& key) {
+    std::array<float, 4> uv{};
+    if (!texture(key, uv)) return false;
+    l.image(x0, y0, x1, y1, uv, tint);
+    return true;
+  };
+  const int tier = std::clamp(level, 1, 3);
+  auto try_tiered = [&](const char* dir, const char* base, int max_tier = 3) {
+    const int t = std::clamp(level, 1, max_tier);
+    if (!is_stock && level > 0) {
+      if (try_draw(std::string("T:UI4/Upgrades/") + dir + "/" + base + "_LG_" + std::to_string(t))) return true;
+      if (try_draw(std::string("T:UI4/Upgrades/") + dir + "/" + base + "_" + std::to_string(t))) return true;
+    }
+    if (try_draw(std::string("T:UI4/Upgrades/") + dir + "/" + base + "_LG_Icon")) return true;
+    return try_draw(std::string("T:UI4/Upgrades/") + dir + "/" + base + "_Icon");
+  };
+  (void)tier;
+
+  switch (part_enum) {
+    case 0: return try_tiered("Conversion", "conversion_engine", 1);
+    case 1: return try_tiered("Conversion", "conversion_drivetrain", 1);
+    case 2: return try_tiered("Conversion", "conversion", 1);
+    case 4: return try_tiered("Platform_Handling", "brakes");
+    case 5: return try_tiered("Platform_Handling", "springs_dampers");
+    case 6: return try_tiered("Platform_Handling", "anti_roll_bars_front");
+    case 7: return try_tiered("Platform_Handling", "anti_roll_bars_rear");
+    case 8: return try_tiered("Tires_Rims", "tire_compound", 4);
+    case 9: return try_tiered("Aero_Appearance", "rear_wing", 1);
+    case 10:
+    case 11: return try_tiered("Tires_Rims", "rim_size", 7);
+    case 12: return try_tiered("Engine_Power", "camshaft");
+    case 13: return try_tiered("Engine_Power", "valves");
+    case 14: return try_tiered("Engine_Power", "displacement");
+    case 15: return try_tiered("Engine_Power", "pistons_compression_NA");
+    case 16: return try_tiered("Engine_Power", "fuel_system_injection");
+    case 17: return try_tiered("Engine_Power", "ignition_electronic");
+    case 18: return try_tiered("Engine_Power", "exhaust");
+    case 19: return try_tiered("Engine_Power", "intake");
+    case 20: return try_tiered("Engine_Power", "flywheel");
+    case 21: return try_tiered("Engine_Power", "manifold_throttle_body");
+    case 22: return try_tiered("Engine_Power", "restrictor_plate");
+    case 23: return try_tiered("Engine_Power", "oil_cooling_system");
+    case 24: return try_tiered("Engine_Power", "turbo_single");
+    case 25: return try_tiered("Engine_Power", "turbo_twin");
+    case 27: return try_tiered("Engine_Power", "centrifugal_supercharger");
+    case 28: return try_tiered("Engine_Power", "pos_dis_supercharger");
+    case 29: return try_tiered("Engine_Power", "intercooler");
+    case 30: return try_tiered("Drivetrain", "clutch");
+    case 31: return try_tiered("Drivetrain", "transmission");
+    case 32: return try_tiered("Drivetrain", "driveline");
+    case 33: return try_tiered("Drivetrain", "diff");
+    case 34: return try_tiered("Aero_Appearance", "front_bumper", 1);
+    case 35: return try_tiered("Aero_Appearance", "rear_bumper", 1);
+    case 36: return try_tiered("Aero_Appearance", "hood", 1);
+    case 37: return try_tiered("Aero_Appearance", "side_skirts", 1);
+    case 38:
+    case 39: return try_tiered("Tires_Rims", "tire_width", 5);
+    case 40: return try_tiered("Platform_Handling", "weight_reduction");
+    case 41: return try_tiered("Platform_Handling", "chassis_reinforcement");
+    case 43: return is_stock ? try_draw("T:UI4/Upgrades/stock_LG_Icon") || try_draw("T:UI4/Upgrades/stock_Icon")
+                             : try_tiered("Tires_Rims", "rim_style", 1);
+    default:
+      return try_draw("T:UI4/Upgrades/Engine_Power/engine_power_Icon") || try_draw("T:UI4/Upgrades/stock_Icon");
+  }
+}
+
+bool tuning_icon(ui::List& l, float x0, float y0, float x1, float y1, int tune_category, std::string_view slider_label,
+                 uint32_t tint) {
+  const std::string lbl = lower_copy(slider_label);
+  const char* tex = "T:UI4/Tuning/I_TUN_Springs";
+  if (lbl.find("camber") != std::string::npos) tex = "T:UI4/Tuning/I_TUN_Alignment_Camber";
+  else if (lbl.find("toe") != std::string::npos) tex = "T:UI4/Tuning/I_TUN_Alignment_Toe";
+  else if (lbl.find("caster") != std::string::npos) tex = "T:UI4/Tuning/I_TUN_Alignment_Caster";
+  else if (lbl.find("ride height") != std::string::npos) tex = "T:UI4/Tuning/I_TUN_Springs_RideHeight";
+  else if (lbl.find("front") != std::string::npos && lbl.find("downforce") != std::string::npos)
+    tex = "T:UI4/Tuning/I_TUN_Aero_Front";
+  else if (lbl.find("rear") != std::string::npos && lbl.find("downforce") != std::string::npos)
+    tex = "T:UI4/Tuning/I_TUN_Aero_Rear";
+  else {
+    switch (tune_category) {
+      case 0: tex = "T:UI4/Tuning/I_TUN_TireCompound"; break;
+      case 1: tex = "T:UI4/Tuning/I_TUN_Differential_RWD"; break;
+      case 2: tex = "T:UI4/Tuning/I_TUN_Alignment_Camber"; break;
+      case 3: tex = "T:UI4/Tuning/I_TUN_AntiRoll"; break;
+      case 4: tex = "T:UI4/Tuning/I_TUN_Springs"; break;
+      case 5: tex = "T:UI4/Tuning/I_TUN_Damping"; break;
+      case 6: tex = "T:UI4/Tuning/I_TUN_Aero_Front"; break;
+      case 7: tex = "T:UI4/Tuning/I_TUN_Brakes"; break;
+      case 8: tex = "T:UI4/Tuning/I_TUN_Differential_AWD"; break;
+      default: tex = "T:UI4/Tuning/I_TUN_Springs"; break;
+    }
+  }
+  std::array<float, 4> uv{};
+  if (texture(tex, uv) || texture("T:UI4/Tuning/I_TUN_Springs", uv)) {
+    l.image(x0, y0, x1, y1, uv, tint);
+    return true;
+  }
+  return false;
+}
+
+bool event_ticket_art(ui::List& l, float x0, float y0, float x1, float y1, int event_id, int style, uint32_t tint) {
+  auto try_tex = [&](const std::string& path) {
+    std::array<float, 4> uv{};
+    if (!texture(path, uv)) return false;
+    l.image(x0, y0, x1, y1, uv, tint);
+    return true;
+  };
+  // Outpost PR Stunt mission tickets (note exact disc spelling: MissonTicket_*).
+  if (style == 10) {
+    return try_tex("EVENTTICKETS/MISSIONS/MISSONTICKET_SPEEDSTUNT") || try_tex("EVENTTICKETS/MISSIONSPEEDTEMPLATE");
+  }
+  if (style == 11) {
+    return try_tex("EVENTTICKETS/MISSIONS/MISSONTICKET_SKILLSTUNT") || try_tex("EVENTTICKETS/MISSIONPRTEMPLATE");
+  }
+  if (style == 12) {
+    return try_tex("EVENTTICKETS/MISSIONS/MISSONTICKET_PHOTOSHOOT") || try_tex("EVENTTICKETS/MISSIONPHOTOTEMPLATE");
+  }
+
+  char idbuf[16];
+  std::snprintf(idbuf, sizeof idbuf, "%03d", std::max(0, event_id));
+  if (style == 2) {
+    // Street Races (Horizon.zip/EventTickets/StreetRaces/038..099.xds)
+    if (event_id > 0 && try_tex(std::string("EVENTTICKETS/STREETRACES/") + idbuf)) return true;
+    static constexpr const char* kStreetFallback[] = {"050", "051", "052", "053", "054", "055", "056", "057", "080", "081"};
+    if (try_tex(std::string("EVENTTICKETS/STREETRACES/") + kStreetFallback[std::abs(event_id) % 10])) return true;
+  } else if (style == 3) {
+    // Showcases (Horizon.zip/EventTickets/Showcases/003..246.xds)
+    if (event_id > 0 && try_tex(std::string("EVENTTICKETS/SHOWCASES/") + idbuf)) return true;
+    static constexpr const char* kShowFallback[] = {"003", "058", "059", "101", "168", "172", "210", "211"};
+    if (try_tex(std::string("EVENTTICKETS/SHOWCASES/") + kShowFallback[std::abs(event_id) % 8])) return true;
+  } else if (style == 4 || style == 5) {
+    // Showdown / Nemesis (Horizon.zip/EventTickets/NemesisTickets/079..245.xds)
+    if (event_id > 0 && try_tex(std::string("EVENTTICKETS/NEMESISTICKETS/") + idbuf)) return true;
+    static constexpr const char* kNemFallback[] = {"079", "169", "241", "242", "243", "244", "245"};
+    if (try_tex(std::string("EVENTTICKETS/NEMESISTICKETS/") + kNemFallback[std::abs(event_id) % 7])) return true;
+  } else {
+    // Festival Races (Horizon.zip/EventTickets/FestivalRaces/004..*.xds)
+    if (event_id > 0 && try_tex(std::string("EVENTTICKETS/FESTIVALRACES/") + idbuf)) return true;
+    static constexpr const char* kFestFallback[] = {"004", "024", "026", "029", "030", "031", "034", "035", "060", "061"};
+    if (try_tex(std::string("EVENTTICKETS/FESTIVALRACES/") + kFestFallback[std::abs(event_id) % 10])) return true;
+  }
+  return try_tex("EVENTTICKETS/FESTIVALRACETEMPLATE") || try_tex("EVENTTICKETS/EXHIBITIONRACETEMPLATE");
+}
+
+bool sponsor_logo_tile(ui::List& l, float x0, float y0, float x1, float y1, std::string_view sponsor_or_id,
+                       uint32_t tint) {
+  const std::string key = alnum_lower(sponsor_or_id);
+  static const std::pair<const char*, const char*> kMap[] = {
+      {"adidas", "ADIDAS"},       {"bondurant", "BONDURANT"}, {"bose", "BOSE"},
+      {"diesel", "DIESEL"},       {"edefice", "EDEFICE"},     {"edifice", "EDEFICE"},
+      {"gopro", "GOPRO"},         {"gshock", "GSHOCK"},       {"hks", "HKS"},
+      {"horizon", "HORIZONLOGO"}, {"krashmax", "KRASHMAX"},   {"nike", "NIKE"},
+      {"nixon", "NIXON"},         {"oakley", "OAKLEY"},       {"pioneer", "PIONEER"},
+      {"puma", "PUMA"},           {"redbull", "REDBULL"},     {"rockstar", "ROCKSTAR"},
+      {"zooyork", "ZOOYORK"},
+      // Skill-challenge category aliases -> authentic FH1 sponsors
+      {"drift", "HKS"},           {"nearmiss", "BONDURANT"},  {"speed", "OAKLEY"},
+      {"air", "REDBULL"},         {"burnout", "ROCKSTAR"},    {"draft", "ADIDAS"},
+      {"pass", "PUMA"},           {"destruction", "DIESEL"},  {"fame", "HORIZONLOGO"},
+      {"skill", "GOPRO"},         {"tradingpaint", "KRASHMAX"}, {"donut", "ZOOYORK"},
+      {"turn180", "GSHOCK"},      {"twowheels", "NIKE"},      {"jturn", "NIXON"},
+      {"overtake", "PIONEER"},    {"audio", "BOSE"},          {"watch", "EDEFICE"},
+  };
+  const char* tex_name = "HORIZONLOGO";
+  for (const auto& [needle, tile] : kMap) {
+    if (key.find(needle) != std::string::npos) {
+      tex_name = tile;
+      break;
+    }
+  }
+  std::array<float, 4> uv{};
+  if (texture(std::string("SPONSORLOGOTILE/") + tex_name, uv) || texture("SPONSORLOGOTILE/HORIZONLOGO", uv)) {
+    l.image(x0, y0, x1, y1, uv, tint);
+    return true;
+  }
+  return false;
+}
+
+bool badge_icon(ui::List& l, float x0, float y0, float x1, float y1, BadgeIconKind kind, uint32_t tint) {
+  auto try_tex = [&](const char* key) {
+    std::array<float, 4> uv{};
+    if (!texture(key, uv)) return false;
+    l.image(x0, y0, x1, y1, uv, tint);
+    return true;
+  };
+  switch (kind) {
+    case BadgeIconKind::kGoldMedal:
+      return try_tex("T:UI4/COMMON/ICON_GOLD") || try_tex("ICONS/TICKETSTICKERGOLD") ||
+             try_tex("MAP/ICONS/STREETRACEICONS/GOLD") || try_tex("HUD/TROPHY");
+    case BadgeIconKind::kSilverMedal:
+      return try_tex("ICONS/TICKETSTICKERSILVER") || try_tex("MAP/ICONS/STREETRACEICONS/SILVER");
+    case BadgeIconKind::kBronzeMedal:
+      return try_tex("ICONS/TICKETSTICKERBRONZE") || try_tex("MAP/ICONS/STREETRACEICONS/BRONZE");
+    case BadgeIconKind::kTrophy:
+      return try_tex("HUD/TROPHY") || try_tex("T:UI4/COMMON/ICON_GOLD") || try_tex("ICONS/TICKETSTICKERGOLD");
+    case BadgeIconKind::kLocked:
+      return try_tex("T:A_MAP/A_COL_COLLECTIVE/A_COL_PADLOCK") || try_tex("T:UI4/BUYCAR/A_COL_PADLOCK") ||
+             try_tex("ICONS/ACTIVATIONZONEICONS/LOCKED");
+    case BadgeIconKind::kNew:
+      return try_tex("ICONS/TICKETSTICKERNEW");
+    case BadgeIconKind::kComplete:
+      return try_tex("ICONS/MISSIONCOMPLETE") || try_tex("COMMON/TICK");
+  }
+  return false;
+}
+
+std::string pretty_car_media_name(std::string_view raw_media) {
+  if (raw_media.empty()) return {};
+  // Already looks like a display name (contains a space and no underscores).
+  if (raw_media.find('_') == std::string_view::npos && raw_media.find(' ') != std::string_view::npos) {
+    return std::string(raw_media);
+  }
+  // Parse Forza media naming convention: MAKE_ModelName_YY (e.g. FER_F40_87, NIS_SKYLINEGTRVSPECII_02).
+  std::string s(raw_media);
+  const size_t u1 = s.find('_');
+  if (u1 == std::string::npos) return s;
+  const size_t u2 = s.rfind('_');
+  const std::string mk_raw = upper_copy(s.substr(0, u1));
+  std::string model_raw = (u2 > u1) ? s.substr(u1 + 1, u2 - u1 - 1) : s.substr(u1 + 1);
+  std::string yr_raw = (u2 > u1) ? s.substr(u2 + 1) : std::string{};
+
+  static const std::pair<const char*, const char*> kMakes[] = {
+      {"ABA", "Abarth"},       {"ACU", "Acura"},         {"ALF", "Alfa Romeo"}, {"AMC", "AMC"},
+      {"AST", "Aston Martin"}, {"AUD", "Audi"},          {"BEN", "Bentley"},    {"BMW", "BMW"},
+      {"BUG", "Bugatti"},      {"BUI", "Buick"},         {"CAD", "Cadillac"},   {"CHE", "Chevrolet"},
+      {"CHR", "Chrysler"},     {"CIT", "Citroen"},       {"DOD", "Dodge"},      {"FER", "Ferrari"},
+      {"FIA", "Fiat"},         {"FOR", "Ford"},          {"GMC", "GMC"},        {"GUM", "Gumpert"},
+      {"HEN", "Hennessey"},    {"HON", "Honda"},         {"HUM", "Hummer"},     {"HYU", "Hyundai"},
+      {"INF", "Infiniti"},     {"JAG", "Jaguar"},        {"JEE", "Jeep"},       {"KOE", "Koenigsegg"},
+      {"LAM", "Lamborghini"},  {"LAN", "Lancia"},        {"LEX", "Lexus"},      {"LOT", "Lotus"},
+      {"MAS", "Maserati"},     {"MAZ", "Mazda"},         {"MCL", "McLaren"},    {"MER", "Mercedes-Benz"},
+      {"MIN", "MINI"},         {"MIT", "Mitsubishi"},    {"NIS", "Nissan"},     {"NOB", "Noble"},
+      {"OLD", "Oldsmobile"},   {"PAG", "Pagani"},        {"PEU", "Peugeot"},    {"PLY", "Plymouth"},
+      {"PON", "Pontiac"},      {"RAD", "Radical"},       {"REN", "Renault"},    {"RUF", "RUF"},
+      {"SAL", "Saleen"},       {"SCI", "Scion"},         {"SHE", "Shelby"},     {"SRT", "SRT"},
+      {"SSC", "SSC"},          {"SUB", "Subaru"},        {"TOY", "Toyota"},     {"TVR", "TVR"},
+      {"ULT", "Ultima"},       {"VAU", "Vauxhall"},      {"VOL", "Volkswagen"}, {"VW", "Volkswagen"},
+  };
+  std::string make = mk_raw;
+  for (const auto& [code, name] : kMakes) {
+    if (mk_raw == code) {
+      make = name;
+      break;
+    }
+  }
+
+  // Known iconic model cleanups before generic CamelCase/token formatting.
+  const std::string model_up = upper_copy(model_raw);
+  std::string model;
+  if (model_up == "SKYLINEGTRVSPECII") model = "Skyline GT-R V-Spec II";
+  else if (model_up == "IMPREZA22B") model = "Impreza 22B STi";
+  else if (model_up == "CORRADOVR6") model = "Corrado VR6";
+  else if (model_up == "VIPERGTS" || model_up == "SRTVIPERGTS") model = "SRT Viper GTS";
+  else if (model_up == "ENZO") model = "Enzo Ferrari";
+  else if (model_up == "F40") model = "F40";
+  else if (model_up == "GT40") model = "GT40";
+  else if (model_up == "LANCEREVO10GSR" || model_up == "LANCEREVOX") model = "Lancer Evo X GSR";
+  else {
+    for (size_t i = 0; i < model_raw.size(); ++i) {
+      const char c = model_raw[i];
+      if (c == '_') {
+        if (!model.empty() && model.back() != ' ') model.push_back(' ');
+        continue;
+      }
+      if (i > 0 && std::isupper(static_cast<unsigned char>(c)) &&
+          std::islower(static_cast<unsigned char>(model_raw[i - 1]))) {
+        model.push_back(' ');
+      }
+      model.push_back(c);
+    }
+  }
+
+  std::string year;
+  if (yr_raw.size() == 2 && std::isdigit(static_cast<unsigned char>(yr_raw[0])) &&
+      std::isdigit(static_cast<unsigned char>(yr_raw[1]))) {
+    const int y2 = std::stoi(yr_raw);
+    year = std::to_string(y2 >= 40 ? (1900 + y2) : (2000 + y2));
+  } else if (yr_raw.size() == 4 && std::isdigit(static_cast<unsigned char>(yr_raw[0]))) {
+    year = yr_raw;
+  }
+
+  std::string out;
+  if (!year.empty()) out += year + " ";
+  out += make;
+  if (!model.empty()) out += " " + model;
+  return out;
 }
 
 }  // namespace carview::ui4
