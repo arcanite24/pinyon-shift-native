@@ -154,11 +154,15 @@ struct CarCameraRow {
 };
 bool load_car_camera(const Install& install, int64_t car_id, const std::string& media, CarCameraRow& out,
                      std::string* error);
-// media/camera.zip's CameraSettings.ini and CameraPhysics.xml; v4's own
+// media/camera.zip's CameraSettings.ini and CameraPhysics.xml (or
+// CameraPhysicsSansEffects.xml when camera_effects is false); v4's own
 // camera/CameraPhysics.xml from its media.zip when there is one (SPEC-
 // CAMERAS, Inputs).
 bool load_camera_files(const Install& install, std::string& settings_ini, std::string& physics_xml,
-                       std::string* error);
+                       std::string* error, bool camera_effects = true);
+// media/ControllerRumble.xml, or v4's media.zip controllerrumble.xml when
+// installed (SPEC-CAMERAS, Gamepad rumble).
+bool load_rumble_xml(const Install& install, std::string& xml, std::string* error);
 
 // A text form for the bake: "value <key> <number>", "curve <name> <n>
 // <numbers...>", "setting <key> <number>" and "car <id> <media name>".

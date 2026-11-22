@@ -53,6 +53,7 @@
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "drive/cameras.h"
+#include "drive/rumble.h"
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
 #include "drive/from_bake.h"
@@ -689,7 +690,10 @@ int run_showroom(int argc, char** argv) {
             break;
           }
         }
-        for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+        for (SDL_Gamepad* pad : pads) {
+          SDL_RumbleGamepad(pad, 0, 0, 0);
+          SDL_CloseGamepad(pad);
+        }
       }
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
@@ -3538,6 +3542,10 @@ int run_drive(int argc, char** argv) {
       // --view front).
       drive::DriveCamera rig;
       bool have_rig = false;
+      drive::GamepadRumble gamepad_rumble;
+      bool rumble_enabled = true;
+      double rumble_scale = 1.0;
+      int prev_rumble_gear = vehicle.gear();
       double rig_min_distance = 1e9, rig_max_distance = 0;  // the chase eye from the CoM, over the run
       if (!world_dir.empty()) {
         std::string note;
@@ -3545,6 +3553,15 @@ int run_drive(int argc, char** argv) {
         if (!have_rig) std::fprintf(stderr, "carview: note: the camera spec's rig is off: %s\n", note.c_str());
         else if (!note.empty()) std::fprintf(stderr, "carview: note: camera: %s\n", note.c_str());
         rig.set_mode(drive::CameraMode(std::clamp(camera_mode, 0, drive::kCameraModes - 1)));
+        cars::Install rumble_install;
+        const char* rumble_state = std::getenv("SHIFT_STATE_ROOT");
+        std::string rumble_xml, rumble_err;
+        drive::RumbleConfig rumble_cfg;
+        if (cars::discover_install(game_root_of(), rumble_state ? rumble_state : "", "", rumble_install, nullptr) &&
+            cars::load_rumble_xml(rumble_install, rumble_xml, &rumble_err) &&
+            drive::parse_controller_rumble(rumble_xml, rumble_cfg, &rumble_err)) {
+          gamepad_rumble.set_config(rumble_cfg);
+        }
       }
       auto audio_view = [&]() {
         return (have_rig && !front) ? carview::engine_audio_view(rig.mode())
@@ -5421,6 +5438,7 @@ int run_drive(int argc, char** argv) {
             save_due = false;
             save_now("collectible");
           }
+          double frame_world_impact = 0.0;
           while (!sim_paused && accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
             if (!step(cruise ? follower.input(vehicle) : in)) {
@@ -5429,7 +5447,48 @@ int run_drive(int argc, char** argv) {
               std::fprintf(stderr, "carview: %s\n", error.c_str());
               break;
             }
+            frame_world_impact = std::max(frame_world_impact, vehicle.body_contact_force());
             accumulator -= drive::Vehicle::kStep;
+          }
+          if (!pads.empty() && gamepad_rumble.config().loaded) {
+            drive::RumbleInput ri;
+            const auto& vp = vehicle.params();
+            const double rpm_span = std::max(1.0, vp.redline_rpm - vp.idle_rpm);
+            ri.engine_norm_rpm = std::clamp((vehicle.rpm() - vp.idle_rpm) / rpm_span, 0.0, 1.0);
+            const auto& ws = vehicle.wheels();
+            double fl_load = 0, fl_slip = 0, rl_load = 0, rl_slip = 0;
+            for (int wi = 0; wi < 4; ++wi) {
+              const double load = std::max(0.0, ws[size_t(wi)].load);
+              const double slip = std::hypot(ws[size_t(wi)].slip_ratio, ws[size_t(wi)].slip_angle);
+              if (wi < 2) fl_load += load, fl_slip += load * slip;
+              else rl_load += load, rl_slip += load * slip;
+            }
+            ri.tire_traction_front = fl_load > 1e-3 ? fl_slip / fl_load : 0.0;
+            ri.tire_traction_rear = rl_load > 1e-3 ? rl_slip / rl_load : 0.0;
+            ri.tire_traction = (fl_load + rl_load) > 1e-3 ? (fl_slip + rl_slip) / (fl_load + rl_load) : 0.0;
+            // Surface bumpiness scaled by speed / 22.352 m/s (50 mph).
+            double max_bump = 0.0;
+            const auto& surfs = collision.surfaces();
+            for (int wi = 0; wi < 4; ++wi) {
+              if (!ws[size_t(wi)].contact) continue;
+              const int si = ws[size_t(wi)].surface;
+              double bump = 0.02;
+              if (si >= 0 && size_t(si) < surfs.size()) {
+                const auto& sf = surfs[size_t(si)];
+                if (sf.off_roadness > 0.0f) bump = 0.02 + 0.38 * sf.off_roadness;
+                else if (sf.friction_scale < 0.95f) bump = 0.15;
+              }
+              max_bump = std::max(max_bump, bump);
+            }
+            ri.surface_bumpiness = 2.0 * max_bump * (std::fabs(vehicle.speed()) / 22.352);
+            ri.car_to_world_impulse = frame_world_impact / 500.0;
+            ri.on_shift = vehicle.gear() != prev_rumble_gear;
+            prev_rumble_gear = vehicle.gear();
+            ri.paused = sim_paused;
+            ri.enabled = rumble_enabled;
+            ri.scale = rumble_scale;
+            const auto ro = gamepad_rumble.update(frame_dt, ri);
+            for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, ro.left_u16(), ro.right_u16(), 100);
           }
           if (now - title_at > 100000000) {  // the speedometer, ten times a second
             title_at = now;
@@ -5601,7 +5660,10 @@ int run_drive(int argc, char** argv) {
           }
         }
         sync_picker = nullptr;
-        for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+        for (SDL_Gamepad* pad : pads) {
+          SDL_RumbleGamepad(pad, 0, 0, 0);
+          SDL_CloseGamepad(pad);
+        }
         if (audio_stream) SDL_DestroyAudioStream(audio_stream);
       }
       if (!map_png.empty() && status == 0) {

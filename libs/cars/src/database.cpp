@@ -491,15 +491,24 @@ bool load_car_camera(const Install& install, int64_t car_id, const std::string& 
 }
 
 bool load_camera_files(const Install& install, std::string& settings_ini, std::string& physics_xml,
-                       std::string* error) {
+                       std::string* error, bool camera_effects) {
   std::vector<uint8_t> bytes;
   if (!read_member(install.media / "camera.zip", "CameraSettings.ini", bytes, error)) return false;
   settings_ini.assign(bytes.begin(), bytes.end());
-  if (install.v4_media_zip.empty() ||
-      !read_member(install.v4_media_zip, "camera/CameraPhysics.xml", bytes, nullptr)) {
-    if (!read_member(install.media / "camera.zip", "CameraPhysics.xml", bytes, error)) return false;
+  const std::string member = camera_effects ? "CameraPhysics.xml" : "CameraPhysicsSansEffects.xml";
+  if (install.v4_media_zip.empty() || !read_member(install.v4_media_zip, "camera/" + member, bytes, nullptr)) {
+    if (!read_member(install.media / "camera.zip", member, bytes, error)) return false;
   }
   physics_xml.assign(bytes.begin(), bytes.end());
+  return true;
+}
+
+bool load_rumble_xml(const Install& install, std::string& xml, std::string* error) {
+  std::vector<uint8_t> bytes;
+  if (install.v4_media_zip.empty() || !read_member(install.v4_media_zip, "controllerrumble.xml", bytes, nullptr)) {
+    if (!read_member(install.media / "ControllerRumble.xml", "", bytes, error)) return false;
+  }
+  xml.assign(bytes.begin(), bytes.end());
   return true;
 }
 

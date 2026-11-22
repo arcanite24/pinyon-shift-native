@@ -53,6 +53,10 @@ target_link_libraries(camera_tests PRIVATE shift_drive)
 add_test(NAME camera_tests COMMAND camera_tests)
 set_tests_properties(camera_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
 
+add_executable(rumble_tests rumble_tests.cpp)
+target_link_libraries(rumble_tests PRIVATE shift_drive)
+add_test(NAME rumble_tests COMMAND rumble_tests)
+
 # SPEC-TRAFFIC: the road map, the settings and the time-of-day factor over
 # the player's files (skipped, exit 77, without SHIFT_GAME_ROOT).
 add_executable(traffic_tests traffic_tests.cpp)

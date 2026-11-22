@@ -7,6 +7,7 @@ add_library(shift_drive STATIC
   src/oracle_lap.cpp
   src/save.cpp
   src/cameras.cpp
+  src/rumble.cpp
   src/ai_driver.cpp
   src/contact.cpp)
 target_include_directories(shift_drive PUBLIC include)
