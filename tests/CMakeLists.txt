@@ -238,6 +238,12 @@ target_include_directories(replay_tests PRIVATE ../apps/carview)
 target_link_libraries(replay_tests PRIVATE shift_drive fh1data)
 add_test(NAME replay_tests COMMAND replay_tests)
 
+add_executable(achievements_tests achievements_tests.cpp ../apps/carview/achievements.cpp ../apps/carview/ui.cpp
+               ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp)
+target_include_directories(achievements_tests PRIVATE ../apps/carview)
+target_link_libraries(achievements_tests PRIVATE fh1data shift_drive shift_freeroam shift_stb shift_race shift_garage)
+add_test(NAME achievements_tests COMMAND achievements_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)

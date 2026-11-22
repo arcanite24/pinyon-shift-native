@@ -1,0 +1,378 @@
+// Unit tests for Slice 10: Xbox 360 XDBF / spa.bin parser, live achievement
+// evaluation, wristband tier math, persistence round-trip, and F7 screen HUD.
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image.h>
+#include <stb_image_write.h>
+
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+#include "achievements.h"
+#include "drive/save.h"
+#include "fh1data/spa.h"
+
+namespace {
+
+void put_u16_be(std::vector<uint8_t>& b, uint16_t v) {
+  b.push_back(uint8_t((v >> 8) & 0xFF));
+  b.push_back(uint8_t(v & 0xFF));
+}
+
+void put_u32_be(std::vector<uint8_t>& b, uint32_t v) {
+  b.push_back(uint8_t((v >> 24) & 0xFF));
+  b.push_back(uint8_t((v >> 16) & 0xFF));
+  b.push_back(uint8_t((v >> 8) & 0xFF));
+  b.push_back(uint8_t(v & 0xFF));
+}
+
+void put_u64_be(std::vector<uint8_t>& b, uint64_t v) {
+  put_u32_be(b, uint32_t(v >> 32));
+  put_u32_be(b, uint32_t(v & 0xFFFFFFFFu));
+}
+
+std::vector<uint8_t> make_test_png() {
+  uint8_t px[4 * 4 * 4];
+  for (int i = 0; i < 16; ++i) {
+    px[i * 4 + 0] = uint8_t(40 + i * 12);
+    px[i * 4 + 1] = uint8_t(120 + (i % 4) * 30);
+    px[i * 4 + 2] = 220;
+    px[i * 4 + 3] = 255;
+  }
+  std::vector<uint8_t> out;
+  auto cb = [](void* ctx, void* data, int size) {
+    auto* v = static_cast<std::vector<uint8_t>*>(ctx);
+    const auto* p = static_cast<const uint8_t*>(data);
+    v->insert(v->end(), p, p + size);
+  };
+  const int ok = stbi_write_png_to_func(cb, &out, 4, 4, 4, px, 4 * 4);
+  assert(ok != 0 && out.size() > 16);
+  return out;
+}
+
+struct XdbfBlobEntry {
+  uint16_t section;
+  uint64_t id;
+  std::vector<uint8_t> data;
+};
+
+std::vector<uint8_t> build_xdbf(const std::vector<XdbfBlobEntry>& entries) {
+  std::vector<uint8_t> out;
+  // 24-byte XDBF header
+  out.insert(out.end(), {'X', 'D', 'B', 'F'});
+  put_u32_be(out, 0x00010000u);
+  put_u32_be(out, uint32_t(entries.size()));
+  put_u32_be(out, uint32_t(entries.size()));
+  put_u32_be(out, 0u);  // free_table_len
+  put_u32_be(out, 0u);  // free_count
+
+  uint32_t offset = 0;
+  for (const auto& e : entries) {
+    put_u16_be(out, e.section);
+    put_u64_be(out, e.id);
+    put_u32_be(out, offset);
+    put_u32_be(out, uint32_t(e.data.size()));
+    offset += uint32_t(e.data.size());
+  }
+  for (const auto& e : entries) {
+    out.insert(out.end(), e.data.begin(), e.data.end());
+  }
+  return out;
+}
+
+std::vector<uint8_t> build_xstr(const std::vector<std::pair<uint16_t, std::string>>& strs) {
+  std::vector<uint8_t> body;
+  for (const auto& [id, s] : strs) {
+    put_u16_be(body, id);
+    put_u16_be(body, uint16_t(s.size()));
+    body.insert(body.end(), s.begin(), s.end());
+  }
+  std::vector<uint8_t> out;
+  out.insert(out.end(), {'X', 'S', 'T', 'R'});
+  put_u32_be(out, 1u);
+  put_u32_be(out, uint32_t(body.size() + 2));
+  put_u16_be(out, uint16_t(strs.size()));
+  out.insert(out.end(), body.begin(), body.end());
+  return out;
+}
+
+struct XachSpec {
+  uint16_t id;
+  uint16_t label_id;
+  uint16_t desc_id;
+  uint16_t unach_id;
+  uint32_t image_id;
+  uint16_t gamerscore;
+};
+
+std::vector<uint8_t> build_xach(const std::vector<XachSpec>& specs) {
+  std::vector<uint8_t> out;
+  out.insert(out.end(), {'X', 'A', 'C', 'H'});
+  put_u32_be(out, 1u);
+  put_u32_be(out, uint32_t(specs.size() * 36 + 2));
+  put_u16_be(out, uint16_t(specs.size()));
+  for (const auto& s : specs) {
+    put_u16_be(out, s.id);
+    put_u16_be(out, s.label_id);
+    put_u16_be(out, s.desc_id);
+    put_u16_be(out, s.unach_id);
+    put_u32_be(out, s.image_id);
+    put_u16_be(out, s.gamerscore);
+    put_u16_be(out, 0u);
+    put_u32_be(out, 0x00000008u);  // show unachieved
+    put_u32_be(out, 0u);
+    put_u32_be(out, 0u);
+    put_u32_be(out, 0u);
+    put_u32_be(out, 0u);
+  }
+  return out;
+}
+
+std::vector<uint8_t> make_synthetic_spa(bool include_dlc) {
+  std::vector<uint8_t> xthd;
+  xthd.insert(xthd.end(), {'X', 'T', 'H', 'D'});
+  put_u32_be(xthd, 1u);
+  put_u32_be(xthd, 20u);
+  put_u32_be(xthd, 0x4D5309C9u);  // title id
+  for (int i = 0; i < 4; ++i) put_u32_be(xthd, 0u);
+
+  std::vector<uint8_t> xstc;
+  xstc.insert(xstc.end(), {'X', 'S', 'T', 'C'});
+  put_u32_be(xstc, 1u);
+  put_u32_be(xstc, 4u);
+  put_u32_be(xstc, 1u);  // default language = English
+
+  std::vector<XachSpec> achs = {
+      {155, 1, 2, 3, 5001, 10},
+      {175, 4, 5, 6, 5002, 15},
+      {195, 7, 8, 9, 5003, 25},
+  };
+  if (include_dlc) {
+    achs.push_back({206, 10, 11, 12, 5004, 20});
+    achs.push_back({216, 13, 14, 15, 5005, 15});
+  }
+
+  std::string win1252_desc = "Start your Horizon journey";
+  win1252_desc.push_back(char(0x85));  // Win-1252 ellipsis -> "..."
+
+  std::vector<std::pair<uint16_t, std::string>> en_strings = {
+      {1, "Welcome to Horizon"},     {2, win1252_desc},
+      {3, "Arrive at the Festival"}, {4, "Yellow Wristband"},
+      {5, "Earned the Yellow Wristband"}, {6, "Win races to earn the Yellow Wristband"},
+      {7, "Vendetta"},               {8, "Smashed all 100 Discount Signs"},
+      {9, "Smash all 100 Discount Signs"},
+      {10, "Rally Debut"},           {11, "Completed your first Rally stage"},
+      {12, "Complete a Rally stage"},
+      {13, "Club Member"},           {14, "Earned your first 1000 Club medal"},
+      {15, "Earn a 1000 Club medal"},
+  };
+  std::vector<std::pair<uint16_t, std::string>> fr_strings = {
+      {1, "Bienvenue a Horizon"},
+      {2, "Commencez votre aventure"},
+      {3, "Arrivez au Festival"},
+  };
+
+  const std::vector<uint8_t> png = make_test_png();
+  std::vector<XdbfBlobEntry> entries = {
+      {1, 0x58544844ull, xthd},
+      {1, 0x58535443ull, xstc},
+      {1, 0x58414348ull, build_xach(achs)},
+      {3, 1ull, build_xstr(en_strings)},
+      {3, 4ull, build_xstr(fr_strings)},
+      {2, 5001ull, png},
+      {2, 5002ull, png},
+      {2, 5003ull, png},
+  };
+  if (include_dlc) {
+    entries.push_back({2, 5004ull, png});
+    entries.push_back({2, 5005ull, png});
+  }
+  return build_xdbf(entries);
+}
+
+void test_spa_parser() {
+  // 1. Corrupt / truncated rejection
+  fh1::SpaDatabase bad;
+  std::string err;
+  const uint8_t garbage[] = {'N', 'O', 'P', 'E', 0, 1, 2, 3};
+  assert(!fh1::parse_spa_xdbf(garbage, bad, fh1::spa_language_id("EN"), &err));
+  assert(!err.empty());
+
+  // 2. Valid EN parse + Win-1252 ellipsis cleanup + PNG icon extraction
+  const auto base_bytes = make_synthetic_spa(false);
+  fh1::SpaDatabase db;
+  assert(fh1::parse_spa_xdbf(base_bytes, db, fh1::spa_language_id("EN"), &err));
+  assert(db.title_id == 0x4D5309C9u);
+  assert(db.achievements.size() == 3);
+  assert(db.images.size() == 3);
+  const auto* a155 = db.find(155);
+  assert(a155 != nullptr);
+  assert(a155->label == "Welcome to Horizon");
+  assert(a155->description == "Start your Horizon journey...");
+  assert(a155->gamerscore == 10);
+  assert(a155->image_id == 5001);
+  assert(db.find_image(5001) != nullptr);
+
+  // 3. Language selection (FR with EN fallback)
+  fh1::SpaDatabase fr_db;
+  assert(fh1::parse_spa_xdbf(base_bytes, fr_db, fh1::spa_language_id("FR"), &err));
+  assert(fr_db.find(155)->label == "Bienvenue a Horizon");
+  assert(fr_db.find(195)->label == "Vendetta");  // fell back to EN default
+
+  // 4. Merge DLC SPA onto base SPA
+  const auto dlc_bytes = make_synthetic_spa(true);
+  fh1::SpaDatabase dlc_db;
+  assert(fh1::parse_spa_xdbf(dlc_bytes, dlc_db, fh1::spa_language_id("EN"), &err));
+  assert(dlc_db.achievements.size() == 5);
+  db.merge(dlc_db);
+  assert(db.achievements.size() == 5);
+  assert(db.find(206) != nullptr);
+  assert(db.find(216) != nullptr);
+  assert(db.images.size() == 5);
+}
+
+void test_wristband_tiers() {
+  assert(carview::achievement_completion_tier(0, 1000) == -1);
+  assert(carview::achievement_completion_tier(49, 1000) == -1);
+  assert(carview::achievement_completion_tier(50, 1000) == 0);    // Yellow
+  assert(carview::achievement_completion_tier(150, 1000) == 1);   // Green
+  assert(carview::achievement_completion_tier(300, 1000) == 2);   // Blue
+  assert(carview::achievement_completion_tier(450, 1000) == 3);   // Pink
+  assert(carview::achievement_completion_tier(600, 1000) == 4);   // Orange
+  assert(carview::achievement_completion_tier(750, 1000) == 5);   // Purple
+  assert(carview::achievement_completion_tier(900, 1000) == 6);   // Gold
+  assert(carview::achievement_completion_tier(1000, 1000) == 7);  // Platinum
+  assert(std::strcmp(carview::wristband_tier_info(7).name, "PLATINUM") == 0);
+}
+
+void test_achievements_system_and_persistence() {
+  const auto bytes = make_synthetic_spa(true);
+  fh1::SpaDatabase db;
+  assert(fh1::parse_spa_xdbf(bytes, db, fh1::spa_language_id("EN"), nullptr));
+
+  carview::AchievementsSystem sys;
+  int sound_triggers = 0;
+  sys.set_unlock_sound_callback([&]() { ++sound_triggers; });
+  sys.init(db);
+  assert(sys.total_count() >= 50);
+  assert(sys.find(155) != nullptr && sys.find(155)->name == "Welcome to Horizon");
+  assert(sys.find(206) != nullptr && sys.find(206)->name == "Rally Debut");
+  assert(sys.find(216) != nullptr && sys.find(216)->name == "Club Member");
+
+  // Build DriveSave with partial + complete progress
+  drive::DriveSave save;
+  save.career_started = true;
+  save.collected_wristband = 2;  // Yellow + Green
+  save.num_races = 12;
+  save.num_victories = 6;
+  save.num_podiums = 10;
+  save.total_winnings = 1250000;
+  save.top_speed = 95.0;  // ~212 mph
+  save.total_distance = 180000.0;
+  for (int i = 0; i < 75; ++i) save.signs_found.push_back("Sign_" + std::to_string(i));
+  for (int i = 0; i < 5; ++i) save.barns.push_back({"Barn_" + std::to_string(i), 0, 10.0, 20.0});
+  save.garage = {101, 102, 103, 104, 105};
+  save.promo_cars = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  save.discovered_outposts = {"GasStation_01", "GasStation_02", "GasStation_03"};
+  save.completed_pr_stunts = {"PR_1", "PR_2", "PR_3", "PR_4", "PR_5"};
+  save.club = {{100, {{1u, true}, {2u, true}}}, {200, {{1u, true}}}};
+
+  auto ags = carview::AchievementGameplayState::from_drive_save(save, 150, 2);
+  ags.has_rally = true;
+  ags.rally_stages_done = 2;
+  ags.rally_victories = 1;
+
+  const int first_unlocked = sys.evaluate(ags, true);
+  assert(first_unlocked >= 5);
+  assert(sound_triggers == first_unlocked);
+  assert(sys.find(155)->unlocked);
+  assert(sys.find(175)->unlocked);
+  assert(sys.find(206)->unlocked);
+  assert(sys.find(216)->unlocked);
+  assert(!sys.find(194)->unlocked);  // 75 / 100 discount signs
+  assert(sys.find(194)->progress.has_value());
+  assert(sys.find(194)->progress->current == 75);
+  assert(sys.find(194)->progress->target == 100);
+  assert(!sys.find(195)->unlocked);  // 5 / 9 barn finds
+  assert(sys.find(195)->progress.has_value());
+  assert(sys.find(195)->progress->current == 5);
+  assert(sys.find(195)->progress->target == 9);
+  assert(sys.active_toast() != nullptr);
+
+  // Re-evaluating the same state unlocks 0 new achievements
+  assert(sys.evaluate(ags, true) == 0);
+
+  // Toast expires after advancing time
+  for (int i = 0; i < 300 && sys.active_toast() != nullptr; ++i) sys.update(0.25);
+  assert(sys.active_toast() == nullptr);
+
+  // Navigation, sorting, tracking, and HUD generation
+  sys.open_screen();
+  assert(sys.screen_open());
+  sys.select_tab(carview::AchievementCategory::kExplore);
+  assert(sys.active_tab() == carview::AchievementCategory::kExplore);
+  sys.switch_tab(+1);
+  sys.select_tab(carview::AchievementCategory::kAll);
+  for (int i = 0; i < int(carview::AchievementSort::kCount); ++i) sys.cycle_sort();
+  sys.move_focus(+1, 0);
+  sys.move_focus(0, +1);
+  sys.set_tracked_id(195);
+  assert(sys.tracked_id() == 195);
+
+  // Trigger a fresh toast and verify both screen HUD and overlay HUD render shapes
+  assert(sys.unlock(195, 1730000000, true));
+  sys.update(0.6);
+  carview::ui::List screen_list;
+  sys.build_screen_hud(screen_list, 1280.0f, 720.0f);
+  assert(screen_list.items().size() > 20);
+
+  carview::ui::List overlay_list;
+  sys.build_hud_overlays(overlay_list, 1280.0f, 720.0f, true);
+  assert(!overlay_list.items().empty());
+
+  // Persistence round-trip
+  const auto tmp = std::filesystem::temp_directory_path() / "shift_achievements_test.txt";
+  std::error_code ec;
+  std::filesystem::remove(tmp, ec);
+  assert(sys.save_state(tmp));
+
+  carview::AchievementsSystem reloaded;
+  reloaded.init(db);
+  assert(reloaded.load_state(tmp));
+  assert(reloaded.unlocked_count() == sys.unlocked_count());
+  assert(reloaded.find(195)->unlocked);
+  assert(reloaded.find(195)->unlock_utc == 1730000000);
+  assert(reloaded.tracked_id() == 195);
+  std::filesystem::remove(tmp, ec);
+}
+
+void test_optional_real_spa() {
+  const std::filesystem::path state_root =
+      std::filesystem::path("c:/Users/neri/code/horizon1-recomp/.local/android/astra-state-20261008");
+  if (!std::filesystem::exists(state_root)) return;
+  fh1::SpaDatabase real_db;
+  std::string note;
+  assert(fh1::load_spa_packages({}, state_root, real_db, "EN", &note) > 0);
+  assert(real_db.achievements.size() == 70);
+  assert(real_db.images.size() >= 70);
+  assert(real_db.find(155) != nullptr && !real_db.find(155)->label.empty());
+  assert(real_db.find(206) != nullptr && !real_db.find(206)->label.empty());
+  assert(real_db.find(225) != nullptr && !real_db.find(225)->label.empty());
+  std::printf("real spa.bin verified: %s\n", note.c_str());
+}
+
+}  // namespace
+
+int main() {
+  test_spa_parser();
+  test_wristband_tiers();
+  test_achievements_system_and_persistence();
+  test_optional_real_spa();
+  std::printf("achievements_tests: ALL PASSED\n");
+  return 0;
+}

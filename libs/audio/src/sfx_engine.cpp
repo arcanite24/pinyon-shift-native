@@ -306,6 +306,8 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       add_ui(SfxSoundId::kUiMenuOpen, "MenuVisible", "UIInGame/UI/Nav/SidePanel");
       add_ui(SfxSoundId::kRewindTapeStart, "Skip", "UIInGame/UI/Mulligan/TapeStart");
       add_ui(SfxSoundId::kSignSmash, "Hud_Collection", "UIInGame/UI/HorizonHud/COLLECTION");
+      add_ui(SfxSoundId::kAchievementReward, "HUD_General_Notification_Reward",
+             "UIInGame/UI/HorizonHud/HUD_General_Notification_Reward");
       // Race 3-2-1 countdown cue.
       for (const auto& ev : ui_fev.events) {
         if (lower_str(ev.path).find("horizoncountdowns/") != std::string::npos) {
@@ -454,6 +456,10 @@ void SfxEngine::trigger_ui(UiCue cue) {
     case UiCue::kCountdown321: id = SfxSoundId::kCountdown321; gain = 0.85f; break;
     case UiCue::kSignSmash: id = SfxSoundId::kSignSmash; gain = 0.80f; break;
     case UiCue::kSkillAward: id = SfxSoundId::kUiAccept; gain = 0.65f; break;
+    case UiCue::kAchievementReward:
+      id = samples_[size_t(SfxSoundId::kAchievementReward)] ? SfxSoundId::kAchievementReward : SfxSoundId::kSignSmash;
+      gain = 0.90f;
+      break;
   }
   spawn_one_shot(id, Bus::kUi, gain, 0.707f, 0.707f);
 }

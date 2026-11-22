@@ -226,16 +226,23 @@ void test_pause_menu() {
   // Free roam items & wrap-around.
   pm.show(false);
   const auto fr_items = pm.items();
-  CHECK(fr_items.size() == 11);
+  CHECK(fr_items.size() == 14);
   CHECK(fr_items.front() == carview::PauseMenu::kResume);
   CHECK(fr_items.back() == carview::PauseMenu::kQuitToTitle);
   {
     bool found_club = false;
+    bool found_achievements = false;
     for (size_t i = 0; i + 1 < fr_items.size(); ++i) {
       if (fr_items[i] == carview::PauseMenu::kCareer && fr_items[i + 1] == carview::PauseMenu::kClub) found_club = true;
+      if (fr_items[i] == carview::PauseMenu::kClub && fr_items[i + 1] == carview::PauseMenu::kAchievements)
+        found_achievements = true;
     }
     CHECK(found_club);
+    CHECK(found_achievements);
     CHECK(pm.label(carview::PauseMenu::kClub) == "1000 CLUB");
+    CHECK(pm.label(carview::PauseMenu::kAchievements) == "ACHIEVEMENTS");
+    CHECK(pm.label(carview::PauseMenu::kPhotoMode) == "PHOTO MODE");
+    CHECK(pm.label(carview::PauseMenu::kReplay) == "REPLAYS");
   }
   CHECK(pm.selected_action() == carview::PauseMenu::kResume);
   pm.move(-1);
@@ -248,15 +255,15 @@ void test_pause_menu() {
   // In-race items & HudState fill.
   pm.show(true);
   const auto race_items = pm.items();
-  CHECK(race_items.size() == 6);
+  CHECK(race_items.size() == 8);
   CHECK(race_items[1] == carview::PauseMenu::kRestartRace);
   CHECK(race_items.back() == carview::PauseMenu::kQuitRace);
-  pm.move(2);
+  pm.move(4);
   carview::HudState st;
   pm.fill(st);
   CHECK(st.menu_title == "paused");
-  CHECK(st.menu.size() == 6 && st.menu_selected == 2);
-  CHECK(st.menu[2] == "MAP");
+  CHECK(st.menu.size() == 8 && st.menu_selected == 4);
+  CHECK(st.menu[4] == "MAP");
 }
 
 void test_hud_overlays() {

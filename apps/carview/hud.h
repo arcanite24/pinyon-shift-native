@@ -38,6 +38,7 @@ struct PauseMenu {
     kAutoshow,
     kCareer,
     kClub,
+    kAchievements,
     kPhotoMode,
     kReplay,
     kSettings,

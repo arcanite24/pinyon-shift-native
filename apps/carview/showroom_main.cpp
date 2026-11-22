@@ -38,6 +38,7 @@
 #include <stb_image.h>
 #include <stb_image_write.h>
 
+#include "achievements.h"
 #include "audio/bake.h"
 #include "audio/radio.h"
 #include "audio/xml.h"
@@ -80,6 +81,7 @@
 #include "race_view.h"
 #include "map_view.h"
 #include "fh1data/archive.h"
+#include "fh1data/spa.h"
 #include "fh1data/stringtables.h"
 #include "fh1data/vfont.h"
 #include "fh1data/xds.h"
@@ -1642,6 +1644,7 @@ int run_drive(int argc, char** argv) {
   bool photo_wider_limits_cli = false;
   std::filesystem::path demo_photo_png;
   std::filesystem::path demo_replay_png;
+  std::filesystem::path demo_achievements_png;
   bool save_settings = false;
   bool no_title = false;
   bool skip_intro_movies = false;
@@ -1712,6 +1715,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--photo-wider-limits") photo_wider_limits_cli = true;
     else if (a == "--demo-photo-mode") demo_photo_png = next(), headless = true;
     else if (a == "--demo-replay-view") demo_replay_png = next(), headless = true;
+    else if (a == "--demo-achievements") demo_achievements_png = next(), headless = true;
     else if (a == "--exposure") exposure_given = std::atof(next());
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
@@ -4423,6 +4427,18 @@ int run_drive(int argc, char** argv) {
       promo_tracker.load(have_saved ? saved.promo_cars : std::vector<int>{}, std::max(240, int(baked_cars.size())));
       const std::filesystem::path photos_dir = carview::default_photos_dir();
       const std::filesystem::path replays_dir = carview::default_replays_dir();
+      const std::filesystem::path achievements_path = carview::default_achievements_path();
+      fh1::SpaDatabase spa_db;
+      {
+        std::string spa_note;
+        if (fh1::load_spa_packages(game_root_of(), state_root, spa_db, language, &spa_note) && !headless)
+          std::printf("achievements: %s\n", spa_note.c_str());
+      }
+      carview::AchievementsSystem achievements;
+      achievements.init(spa_db);
+      if (demo_achievements_png.empty()) achievements.load_state(achievements_path);
+      achievements.set_unlock_sound_callback([&]() { audio_host.trigger_ui(audio::UiCue::kAchievementReward); });
+      double next_achievement_eval = 0.0;
       drive::ReplayRecorder replay_rec;
       carview::ReplayViewer replay_viewer;
       {
@@ -4788,6 +4804,31 @@ int run_drive(int argc, char** argv) {
         saved = s;
         have_saved = true;
       };
+      auto eval_achievements = [&](bool toasts) {
+        drive::DriveSave snap = have_saved ? saved : drive::DriveSave{};
+        snap.career_started = snap.career_started || have_garage || career.num_races > 0 || career.credits > 0;
+        snap.collected_wristband = std::max(snap.collected_wristband, collected_wristband);
+        snap.num_races = std::max(snap.num_races, career.num_races);
+        snap.num_victories = std::max(snap.num_victories, career.num_victories);
+        snap.num_podiums = std::max(snap.num_podiums, career.num_podiums);
+        snap.total_winnings = std::max(snap.total_winnings, career.total_winnings);
+        snap.top_speed = std::max({snap.top_speed, career.top_speed, vehicle.speed()});
+        if (progress_loaded) progress_to_save(collectibles, progress, snap);
+        if (skill_tracker) {
+          snap.popularity_points = std::max(snap.popularity_points, skill_tracker->popularity_points());
+          snap.max_skills_score = std::max(snap.max_skills_score, skill_tracker->max_skills_score());
+        }
+        snap.discovered_outposts.assign(outpost_progress.discovered_outposts.begin(),
+                                        outpost_progress.discovered_outposts.end());
+        snap.completed_pr_stunts.assign(outpost_progress.completed_pr_stunts.begin(),
+                                        outpost_progress.completed_pr_stunts.end());
+        snap.promo_cars = promo_tracker.save_ids();
+        const int roads_cnt = road_discovery.ready() ? road_discovery.discovered_count() : 0;
+        auto ags = carview::AchievementGameplayState::from_drive_save(snap, roads_cnt, 0);
+        if (achievements.evaluate(ags, toasts) > 0 && demo_achievements_png.empty())
+          achievements.save_state(achievements_path);
+      };
+      if (demo_achievements_png.empty()) eval_achievements(false);
       // The 1000 Club's gate for this car, and its runs when begun;
       // SHIFT_CLUB_BEGIN=1 (debug) begins them as the page's last line does.
       club_check();
@@ -5379,6 +5420,11 @@ int run_drive(int argc, char** argv) {
         if (barn_card.visible) {
           carview::draw_barn_find_hud(list, float(width), float(height), barn_card);
         }
+        const bool show_track_chip = !show_title && !fmv_player.active() && !barn_card.visible && !ceremony.active && !map_overlay.active && !grid_menu_open &&
+                                     st.menu.empty() && !career_page.is_open() && !settings_page.is_open() &&
+                                     !shop.is_open() && !autoshow.is_open() && !garage_open &&
+                                     !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open;
+        achievements.build_hud_overlays(list, float(width), float(height), show_track_chip);
         upload_ui_atlas(renderer, !ui_atlas_synced);
         ui_atlas_synced = true;
         renderer.set_ui(list.items());
@@ -5995,6 +6041,63 @@ int run_drive(int argc, char** argv) {
                            replay_viewer.duration(), replay_viewer.recording().frame_count());
         }
         replay_viewer.close();
+      } else if (!demo_achievements_png.empty()) {
+        // Headless Slice 10 verification capture: F7 Achievements screen with wristband header, tabs, progress bars & HUD unlock toast.
+        place_world();
+        const float aspect = float(width) / float(height);
+        showroom.set_frame(drive_frame(aspect, 0.016));
+        carview::AchievementGameplayState ds{};
+        ds.career_started = true;
+        ds.wristbands_earned = 3;
+        ds.num_races = 22;
+        ds.num_victories = 14;
+        ds.num_podiums = 18;
+        ds.street_races_won = 6;
+        ds.festival_races_won = 8;
+        ds.discount_signs_found = 78;
+        ds.barns_found = 6;
+        ds.roads_discovered = 184;
+        ds.outposts_discovered = 6;
+        ds.pr_stunts_completed = 9;
+        ds.garage_cars = 12;
+        ds.promo_cars_spotted = 34;
+        ds.total_distance_m = 420000.0;
+        ds.top_speed_mps = 102.0;
+        ds.total_winnings = 1650000;
+        ds.max_skills_score = 32500;
+        ds.popularity_points = 185000;
+        ds.driver_level = 25;
+        ds.has_rally = true;
+        ds.rally_stages_done = 5;
+        ds.rally_victories = 2;
+        ds.rally_level = 3;
+        ds.club_medals_total = 14;
+        ds.club_cars_with_medal = 5;
+        achievements.evaluate(ds, false);
+        achievements.set_tracked_id(194);
+        achievements.open_screen();
+        achievements.cycle_sort();  // NEAREST sort so tracked/in-progress achievement is focused in detail panel!
+        achievements.unlock(179, 0, true);  // live toast showcase
+        for (int ti = 0; ti < 12; ++ti) achievements.update(0.1);  // finish count-up & toast slide-in
+        carview::ui::List alist;
+        achievements.build_screen_hud(alist, float(width), float(height));
+        achievements.build_hud_overlays(alist, float(width), float(height), false);
+        upload_ui_atlas(renderer, !ui_atlas_synced);
+        ui_atlas_synced = true;
+        renderer.set_ui(alist.items());
+        std::vector<uint8_t> rgba;
+        if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+          std::fprintf(stderr, "carview: %s\n", error.c_str());
+          status = 1;
+        } else {
+          for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+          if (!write_png(demo_achievements_png.string(), width, height, 4, rgba.data())) status = 1;
+          else std::printf("demo achievements -> %s (%d/%d unlocked, %u/%uG, spa=%zu)\n",
+                           demo_achievements_png.string().c_str(), achievements.unlocked_count(),
+                           achievements.total_count(), achievements.earned_gamerscore(),
+                           achievements.available_gamerscore(), spa_db.achievements.size());
+        }
+        achievements.close_screen();
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
@@ -6469,6 +6572,10 @@ int run_drive(int argc, char** argv) {
           if (act == PauseMenu::kClub) {
             club_open = true;
             club_pick = club_gate.empty() ? club_data.cars.at(club_car).size() : 0;
+          }
+          if (act == PauseMenu::kAchievements) {
+            eval_achievements(false);
+            achievements.open_screen();
           }
           if (act == PauseMenu::kPhotoMode) {
             const drive::Vec3 pat = vehicle.position();
@@ -7375,6 +7482,46 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            if (achievements.screen_open()) {
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if ((k == SDLK_ESCAPE || k == SDLK_F7) && !e.key.repeat) {
+                  achievements.close_screen();
+                  achievements.save_state(achievements_path);
+                } else if (k == SDLK_LEFT || k == SDLK_A) achievements.move_focus(-1, 0);
+                else if (k == SDLK_RIGHT || k == SDLK_D) achievements.move_focus(+1, 0);
+                else if (k == SDLK_UP || k == SDLK_W) achievements.move_focus(0, -1);
+                else if (k == SDLK_DOWN || k == SDLK_S) achievements.move_focus(0, +1);
+                else if (k == SDLK_Q) achievements.switch_tab(-1);
+                else if (k == SDLK_E || k == SDLK_TAB) achievements.switch_tab((e.key.mod & SDL_KMOD_SHIFT) ? -1 : +1);
+                else if (k == SDLK_R && !e.key.repeat) achievements.cycle_sort();
+                else if ((k == SDLK_T || k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                  achievements.toggle_track_focused();
+                  achievements.save_state(achievements_path);
+                } else if (k == SDLK_F8 && !e.key.repeat) {
+                  pending_shot = PendingShot::kF8;
+                  renderer.request_capture(true);
+                }
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) {
+                  achievements.close_screen();
+                  achievements.save_state(achievements_path);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) achievements.move_focus(-1, 0);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) achievements.move_focus(+1, 0);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) achievements.move_focus(0, -1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) achievements.move_focus(0, +1);
+                else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) achievements.switch_tab(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) achievements.switch_tab(+1);
+                else if (b == SDL_GAMEPAD_BUTTON_WEST) achievements.cycle_sort();
+                else if (b == SDL_GAMEPAD_BUTTON_NORTH || b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  achievements.toggle_track_focused();
+                  achievements.save_state(achievements_path);
+                }
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             if (photo_mode.active()) {
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
@@ -7636,6 +7783,11 @@ int run_drive(int argc, char** argv) {
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
+              // F7: Pinyon Shift-style Achievements screen.
+              if (e.key.key == SDLK_F7) {
+                eval_achievements(false);
+                achievements.open_screen();
+              }
               // F8: real Vulkan swapchain PNG capture to <user-data>/photos/.
               if (e.key.key == SDLK_F8) {
                 pending_shot = PendingShot::kF8;
@@ -7875,8 +8027,9 @@ int run_drive(int argc, char** argv) {
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
                                    settings_page.is_open() || paint_open || club_open || photo_mode.active() ||
-                                   replay_viewer.active() || replay_viewer.browser_open();
+                                   replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open();
           const bool sim_paused = menu_paused || rewind_buf.active();
+          achievements.update(frame_dt);
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();
             was_sim_paused = sim_paused;
@@ -7942,6 +8095,11 @@ int run_drive(int argc, char** argv) {
           if (save_due && !map_open) {  // a collectible or award: micro-save
             save_due = false;
             save_now("collectible");
+            eval_achievements(true);
+          }
+          if (!sim_paused && vehicle.time() >= next_achievement_eval) {
+            eval_achievements(true);
+            next_achievement_eval = vehicle.time() + 1.0;
           }
           double frame_world_impact = 0.0;
           while (!sim_paused && accumulator >= drive::Vehicle::kStep) {
@@ -8465,6 +8623,14 @@ int run_drive(int argc, char** argv) {
             upload_ui_atlas(renderer, !ui_atlas_synced);
             ui_atlas_synced = true;
             renderer.set_ui(rlist.items());
+            for (int layer : {0, 1, 2, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+          } else if (achievements.screen_open()) {
+            carview::ui::List alist;
+            achievements.build_screen_hud(alist, float(w), float(h));
+            achievements.build_hud_overlays(alist, float(w), float(h), false);
+            upload_ui_atlas(renderer, !ui_atlas_synced);
+            ui_atlas_synced = true;
+            renderer.set_ui(alist.items());
             for (int layer : {0, 1, 2, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
           } else if (map_open) {
             // Smooth analog-stick panning and trigger zooming on the fullscreen map.

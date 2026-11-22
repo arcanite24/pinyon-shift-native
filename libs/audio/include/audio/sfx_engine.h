@@ -89,6 +89,7 @@ enum class UiCue : uint8_t {
   kCountdown321,
   kSignSmash,
   kSkillAward,
+  kAchievementReward,
 };
 
 enum class SfxSoundId : int {
@@ -122,6 +123,7 @@ enum class SfxSoundId : int {
   kRewindTapeStart,
   kCountdown321,
   kSignSmash,
+  kAchievementReward,
   kOtherCarLoop,
   kTrafficCarLoop,
   kCount
