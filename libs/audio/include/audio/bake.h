@@ -43,6 +43,8 @@ struct BakedSound {
   std::map<std::tuple<std::string, int, int>, PcmSample> pcm;
   // The player's pcm table: per group, per loop.
   std::vector<std::vector<const PcmSample*>> table() const;
+  // The intake chuff one-shot PCM, or nullptr if none.
+  const PcmSample* intake_chuff() const;
 };
 bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& media, BakedSound& out,
                       std::string* error, UpgradeLevels levels = {});

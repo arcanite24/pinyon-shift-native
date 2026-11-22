@@ -428,6 +428,106 @@ void mixer_checks() {
   CHECK(near(audio::soft_limit(0.5f), 0.5, 1e-6));
   CHECK(audio::soft_limit(3.0f) <= 1.0f && audio::soft_limit(3.0f) > 0.99f);
   CHECK(audio::soft_limit(-3.0f) < -0.99f);
+
+  // Confirmed NegTorque sign: braking raises x whether passed as -0.5 or +0.5.
+  audio::Param neg_p;
+  neg_p.present = true;
+  neg_p.neg_torque = 1.0;
+  neg_p.x = {0.0, 0.5, 1.0};
+  neg_p.y = {0.2, 0.6, 1.0};
+  CHECK(near(neg_p.eval({0.0, 0.0, 0.0, -0.5}), 0.6, 1e-6));
+  CHECK(near(neg_p.eval({0.0, 0.0, 0.0, 0.5}), 0.6, 1e-6));
+
+  // Engine DSP: LoadPEQ throttle interpolation, PEQ idle_gain_reset, Expander
+  // timing (Attack 20ms, Hold 100ms, Release 80ms, MaxGain 0.5), IntakeChuff.
+  audio::EngineSound ds;
+  ds.audio_rpm_idle = 800;
+  ds.audio_rpm_redline = 7000;
+  audio::Group eg;
+  eg.name = "ExhaustL";
+  eg.idle_gain_reset = 1001;  // blend from 800 to 1000
+  eg.loops.push_back(loop(500, 1500, 8000));
+  eg.peq.active = true;
+  eg.peq.gain.present = true;
+  eg.peq.gain.y = {2.0, 2.0, 2.0};
+  eg.peq.center_freq.present = true;
+  eg.peq.center_freq.y = {400, 400, 400};
+  eg.peq.bandwidth.present = true;
+  eg.peq.bandwidth.y = {1.0, 1.0, 1.0};
+  eg.load_peq.active = true;
+  eg.load_peq.pos_load.active = true;
+  eg.load_peq.pos_load.gain.present = true;
+  eg.load_peq.pos_load.gain.y = {1.8, 1.8, 1.8};
+  eg.load_peq.pos_load.center_freq.present = true;
+  eg.load_peq.pos_load.center_freq.y = {350, 350, 350};
+  eg.load_peq.pos_load.bandwidth.present = true;
+  eg.load_peq.pos_load.bandwidth.y = {2.0, 2.0, 2.0};
+  eg.load_peq.neg_load.active = true;
+  eg.load_peq.neg_load.gain.present = true;
+  eg.load_peq.neg_load.gain.y = {0.8, 0.8, 0.8};
+  eg.load_peq.neg_load.center_freq.present = true;
+  eg.load_peq.neg_load.center_freq.y = {450, 450, 450};
+  eg.load_peq.neg_load.bandwidth.present = true;
+  eg.load_peq.neg_load.bandwidth.y = {1.0, 1.0, 1.0};
+  eg.expander.present = true;
+  eg.expander.max_gain.present = true;
+  eg.expander.max_gain.y = {0.5, 0.5, 0.5};
+  eg.expander.attack_ms = 20.0;
+  eg.expander.hold_ms = 100.0;
+  eg.expander.release_ms = 80.0;
+  ds.groups.push_back(eg);
+
+  audio::PcmSample chuff;
+  chuff.rate = 48000;
+  chuff.data.assign(2400, 0.25f);
+  audio::PcmSample loop_pcm;
+  loop_pcm.rate = 48000;
+  loop_pcm.data.assign(4800, 0.2f);
+  audio::EnginePlayer dp(ds, {{&loop_pcm}}, 48000, 800, 7000, &chuff);
+
+  // Idle gain reset at 800 -> 1.0, at 900 (halfway to 1000) -> 1.5, at 2000 -> 2.0.
+  dp.set({800, 0.0, 0.0, 0.0, audio::View::kFollow});
+  CHECK(near(dp.peq_gain(0), 1.0, 1e-4));
+  CHECK(!dp.intake_chuff_active());
+  // Snap open throttle from 0.0 -> 0.5 at low rpm (n < 0.425): IntakeChuff triggers!
+  dp.set({900, 0.5, 0.5, 0.0, audio::View::kFollow});
+  CHECK(near(dp.peq_gain(0), 1.5, 1e-3));
+  CHECK(near(dp.load_peq_gain(0), 1.3, 1e-4));  // lerp(0.8, 1.8, 0.5) = 1.3
+  CHECK(dp.intake_chuff_active());
+
+  // Expander timing: t=10ms -> 0, t=50ms -> 0.5, t=150ms -> 0.5, t=200ms -> 0.
+  dp.trigger_expander();
+  dp.advance_dsp(0.010);
+  CHECK(near(dp.expander_state(0), 0.0, 1e-5));
+  dp.advance_dsp(0.040);  // total 50 ms
+  CHECK(near(dp.expander_state(0), 0.5, 1e-5));
+  dp.advance_dsp(0.100);  // total 150 ms
+  CHECK(near(dp.expander_state(0), 0.5, 1e-5));
+  dp.advance_dsp(0.050);  // total 200 ms
+  CHECK(near(dp.expander_state(0), 0.0, 1e-5));
+
+  // Disc check: VW_IECorrado_95 falls back to VW_BORAVR6_03; R34 has IntakeChuff & Expander/LoadPEQ.
+  if (const char* game = std::getenv("SHIFT_GAME_ROOT")) {
+    cars::Install inst;
+    audio::SoundFiles sf;
+    std::string e;
+    if (cars::discover_install(game, {}, {}, inst, &e) && sf.open(inst, &e)) {
+      audio::LoadedSound corrado;
+      CHECK(audio::load_engine_sound(sf, "VW_IECorrado_95", corrado, &e));
+      CHECK(!corrado.sound.groups.empty());
+      audio::LoadedSound r34;
+      CHECK(audio::load_engine_sound(sf, "NIS_SkylineGTRVSpecII_02", r34, &e));
+      CHECK(r34.sound.intake_chuff_sample >= 0);
+      bool saw_peq = false, saw_load_peq = false, saw_exp = false;
+      for (const auto& g : r34.sound.groups) {
+        saw_peq |= g.peq.active;
+        saw_load_peq |= g.load_peq.active;
+        saw_exp |= g.expander.present;
+      }
+      CHECK(saw_peq && saw_load_peq && saw_exp);
+      CHECK(!r34.sound.burble.wavebank.empty());
+    }
+  }
 }
 
 void write_tone_wav(const std::filesystem::path& path, int rate, int frames, double freq_hz, double amp = 0.5) {

@@ -145,8 +145,20 @@ bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound&
   out = {};
   out.sound.media = media;
   std::string text, e;
+  std::string tuning_media = media;
   XmlNode engine;
-  if (!files.read_tuning(TuningKind::kEngine, media + "_ET.xml", text, &e) || !parse_xml(text, engine, &e)) {
+  if (!files.read_tuning(TuningKind::kEngine, tuning_media + "_ET.xml", text, &e)) {
+    // Confirmed SPEC-ENGINE-SOUND fallback when _ET.xml is missing (e.g. VW_IECorrado_95).
+    std::string fb_err;
+    if (files.read_tuning(TuningKind::kEngine, "VW_BORAVR6_03_ET.xml", text, &fb_err)) {
+      tuning_media = "VW_BORAVR6_03";
+      out.notes.push_back(media + ": no engine tuning, fell back to VW_BORAVR6_03");
+    } else {
+      if (error) *error = media + ": engine tuning: " + e;
+      return false;
+    }
+  }
+  if (!parse_xml(text, engine, &e)) {
     if (error) *error = media + ": engine tuning: " + e;
     return false;
   }
@@ -164,7 +176,7 @@ bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound&
     if (!read_harmonic(engine, harmonic, h.element, out.sound, &e)) out.notes.push_back(h.element + ": " + e);
   }
   // Resolve each group's bank and loop indices; a group without its bank
-  // is dropped (silent).
+  // is dropped (silent). Also discover any IntakeChuff_* sample in the intake bank.
   std::vector<Group> kept;
   for (Group& g : out.sound.groups) {
     const std::string key = lower_name(g.bank);
@@ -181,13 +193,24 @@ bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound&
     }
     const auto& samples = out.banks[key];
     std::vector<int> channels;
-    for (const auto& s : samples) channels.push_back(s.channels);
+    for (size_t i = 0; i < samples.size(); ++i) {
+      channels.push_back(samples[i].channels);
+      if (iequals(g.name, "EngineIntake") && out.sound.intake_chuff_sample < 0) {
+        const std::string sname = lower_name(samples[i].name);
+        if (sname.find("chuff") != std::string::npos) {
+          out.sound.intake_chuff_bank = g.bank;
+          out.sound.intake_chuff_sample = int(i);
+        }
+      }
+    }
     resolve_loop_indices(g.loops, int(samples.size()), channels);
     kept.push_back(std::move(g));
   }
   out.sound.groups = std::move(kept);
   XmlNode model;
-  if (files.read_tuning(TuningKind::kModel, media + "_CMT.xml", text, &e) && parse_xml(text, model, &e))
+  if ((files.read_tuning(TuningKind::kModel, media + "_CMT.xml", text, &e) ||
+       (tuning_media != media && files.read_tuning(TuningKind::kModel, tuning_media + "_CMT.xml", text, &e))) &&
+      parse_xml(text, model, &e))
     read_model_tuning(model, out.sound);
   else
     out.notes.push_back("no model tuning: every view level 1");

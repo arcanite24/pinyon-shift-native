@@ -25,9 +25,39 @@ struct Param {
   bool present = false;
   double rpm = 0, throttle = 0, pos_torque = 0, neg_torque = 0;
   std::array<double, 3> x{0, 0.5, 1}, y{1, 1, 1};
-  // `neg_raises`: the open sign of NegTorque. false (the default) subtracts
-  // it, as the spec's formula reads; true adds it.
-  double eval(const SoundInputs& in, bool neg_raises = false) const;
+  // `neg_raises`: confirmed true (braking raises x whether `in.neg_torque`
+  // is passed as signed [-1, 0] or positive magnitude [0, 1]).
+  double eval(const SoundInputs& in, bool neg_raises = true) const;
+};
+
+struct PeqConfig {
+  bool active = false;
+  Param gain;
+  Param center_freq;
+  Param bandwidth;
+};
+
+struct LoadPeqConfig {
+  bool active = false;
+  PeqConfig pos_load;
+  PeqConfig neg_load;
+};
+
+struct ExpanderConfig {
+  bool present = false;
+  Param max_gain;
+  double attack_ms = 0;
+  double hold_ms = 0;
+  double release_ms = 0;
+};
+
+struct BurbleConfig {
+  std::string wavebank;
+  int burbles = 0, backfires = 0;
+  Param volume;
+  double min_time_ms = 0, max_time_ms = 0;
+  double min_rpm = 0, max_rpm = 0;
+  double silence_weighting = 100;
 };
 
 struct Loop {
@@ -50,8 +80,13 @@ struct Group {
   Param gain;               // the group gain (engine tuning over harmonic tuning)
   bool lowpass = false;
   Param lowpass_cutoff;     // Hz
+  Param lowpass_resonance;  // Q
+  PeqConfig peq;
+  LoadPeqConfig load_peq;
+  ExpanderConfig expander;
+  double idle_gain_reset = 0;  // audio_rpm_idle_gain_reset (ExhaustL PEQ blend)
   std::array<double, kViews> view_level{1, 1, 1, 1};
-  std::array<double, kViews> pan_left{1, 1, 1, 1}, pan_right{1, 1, 1, 1};  // folded 5.1 (ours)
+  std::array<double, kViews> pan_left{1, 1, 1, 1}, pan_right{1, 1, 1, 1};  // folded 5.1 (FMOD 0.707 matrix)
 };
 
 struct EngineSound {
@@ -59,6 +94,17 @@ struct EngineSound {
   double audio_rpm_idle = 800, audio_rpm_redline = 7000;
   Param global_volume;     // GlobalCarVolume
   double engine_volume = 1;  // VolumeAdjustments EngineVolume
+  double transmission_volume = 1, shift_volume = 1, supercharger_volume = 1;
+  double electric_motor_volume = 1, turbo_volume = 1, suspension_volume = 1;
+  double backfire_volume = 1, burble_volume = 0;
+  int num_cylinders = 0;
+  std::array<int, 3> blowoff_level{1, 2, 3};
+  std::array<int, 3> blowoff_choice{1, 1, 1};
+  Param intake_chuff_volume;
+  std::string intake_chuff_bank;
+  int intake_chuff_sample = -1;
+  BurbleConfig burble;
+  double exhaust_noise_volume = 0;
   std::vector<Group> groups;
 };
 

@@ -8,7 +8,9 @@ namespace audio {
 
 double Param::eval(const SoundInputs& in, bool neg_raises) const {
   if (!present) return 1;
-  const double neg = neg_raises ? in.neg_torque : -in.neg_torque;
+  // Confirmed SPEC-ENGINE-SOUND: braking raises x whether neg_torque is signed [-1, 0] or magnitude [0, 1].
+  const double mag = in.neg_torque < 0 ? -in.neg_torque : in.neg_torque;
+  const double neg = neg_raises ? mag : -mag;
   const double v = rpm * in.n + throttle * in.throttle + pos_torque * in.pos_torque + neg_torque * neg;
   if (v <= x[0]) return y[0];
   if (v >= x[2]) return y[2];
@@ -116,12 +118,36 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
   if (const XmlNode* s = engine.child("EngineSettings")) {
     out.audio_rpm_idle = std::min(32000.0, s->number("audio_rpm_idle", out.audio_rpm_idle));
     out.audio_rpm_redline = std::min(32000.0, s->number("audio_rpm_redline", out.audio_rpm_redline));
+    out.num_cylinders = int(s->number("num_cylinders", 0));
+    for (int k = 0; k < 3; ++k) {
+      const std::string pfx = "blowoffL" + std::to_string(k + 1);
+      out.blowoff_level[size_t(k)] = std::clamp(int(s->number(pfx + "Level", k + 1)), 1, 3);
+      out.blowoff_choice[size_t(k)] = std::clamp(int(s->number(pfx + "Choice", 1)), 1, 5);
+    }
   }
-  if (const XmlNode* v = engine.child("VolumeAdjustments")) out.engine_volume = v->number("EngineVolume", 1);
+  if (const XmlNode* v = engine.child("VolumeAdjustments")) {
+    out.engine_volume = v->number("EngineVolume", 1);
+    out.transmission_volume = v->number("TransmissionVolume", 1);
+    out.shift_volume = v->number("ShiftVolume", 1);
+    out.supercharger_volume = v->number("SuperChargerVolume", 1);
+    out.electric_motor_volume = v->number("ElectricMotorVolume", 1);
+    out.turbo_volume = v->number("TurboVolume", 1);
+    out.suspension_volume = v->number("SuspensionVolume", 1);
+    out.backfire_volume = v->number("BackfireVolume", 1);
+    out.burble_volume = v->number("BurbleVolume", 0);
+  }
   out.global_volume = read_param(engine.child("GlobalCarVolume"));
-  harmonics.clear();
   const int in_lv = std::clamp(levels.intake, 0, 3);
   const int ex_lv = std::clamp(levels.exhaust, 0, 3);
+  if (const XmlNode* chuff = engine.child("IntakeChuffVolume")) {
+    for (int k = in_lv; k >= 0; --k) {
+      if (const XmlNode* lv_node = chuff->child("L" + std::to_string(k))) {
+        out.intake_chuff_volume = read_param(lv_node);
+        break;
+      }
+    }
+  }
+  harmonics.clear();
   auto pick_upgrade = [](const XmlNode* up, int lv) -> std::string {
     if (!up) return {};
     for (int k = lv; k >= 0; --k) {
@@ -149,6 +175,37 @@ bool read_harmonic(const XmlNode& engine, const XmlNode& harmonic, const std::st
   }
   const std::string bank = harmonic.attr("name");
   if (bank.empty() || silent_name(bank)) return true;
+  double ht_idle_gain_reset = 0;
+  if (const XmlNode* es = harmonic.child("EngineSettings"))
+    ht_idle_gain_reset = es->number("audio_rpm_idle_gain_reset", 0);
+  if (iequals(element, "Exhaust")) {
+    if (const XmlNode* en = harmonic.child("ExhaustNoise"))
+      out.exhaust_noise_volume = en->number("Volume", out.exhaust_noise_volume);
+    if (const XmlNode* b = harmonic.child("Burble")) {
+      if (const XmlNode* wb = b->child("Wavebank")) {
+        out.burble.wavebank = wb->attr("name");
+        out.burble.burbles = int(wb->number("burbles", 0));
+        out.burble.backfires = int(wb->number("backfires", 0));
+      }
+      out.burble.volume = read_param(b->child("Volume"));
+      if (const XmlNode* tm = b->child("Timer")) {
+        out.burble.min_time_ms = tm->number("MinTime", 0);
+        out.burble.max_time_ms = tm->number("MaxTime", 0);
+        out.burble.min_rpm = tm->number("MinRPM", 0);
+        out.burble.max_rpm = tm->number("MaxRPM", 0);
+        out.burble.silence_weighting = tm->number("SilenceWeighting", 100);
+      }
+    }
+  }
+  auto read_peq = [](const XmlNode* node) -> PeqConfig {
+    PeqConfig p;
+    if (!node || node->number("Active", 0) < 1) return p;
+    p.gain = read_param(node->child("Gain"));
+    p.center_freq = read_param(node->child("CenterFrequency"));
+    p.bandwidth = read_param(node->child("Bandwidth"));
+    p.active = p.gain.present && p.center_freq.present && p.bandwidth.present;
+    return p;
+  };
   std::vector<std::string> names;
   if (iequals(element, "Exhaust")) names = {"ExhaustL", "ExhaustR"};
   else names = {element};
@@ -158,6 +215,7 @@ bool read_harmonic(const XmlNode& engine, const XmlNode& harmonic, const std::st
     Group g;
     g.name = name;
     g.bank = bank;
+    g.idle_gain_reset = ht_idle_gain_reset;
     for (const auto& l : set->children) {
       if (!iequals(l.name, "Loop") || g.loops.size() >= 16) continue;
       Loop loop;
@@ -172,21 +230,46 @@ bool read_harmonic(const XmlNode& engine, const XmlNode& harmonic, const std::st
       g.loops.push_back(loop);
     }
     if (g.loops.empty()) continue;
-    // The group gain: the engine tuning's EmissionGroup<g> when present
-    // (probable: read after the harmonic tuning), else the harmonic's DSP.
+    // Engine tuning's EmissionGroup<g> overrides harmonic tuning's DSP block.
     const std::string eg = "HarmonicTunings/EmissionGroup" + std::to_string(group_number(name));
     const XmlNode* engine_group = engine.find(eg);
     const XmlNode* dsp = harmonic.child("DSP");
     const XmlNode* gain = engine_group ? engine_group->find("Volume/Gain") : nullptr;
     if (!gain && dsp) gain = dsp->find("Volume/Gain");
     g.gain = read_param(gain);
+
     const XmlNode* lp = engine_group ? engine_group->child("Lowpass") : nullptr;
     if (!lp && dsp) lp = dsp->child("Lowpass");
     if (lp && lp->number("Active") >= 1) {
-      g.lowpass = true;
       g.lowpass_cutoff = read_param(lp->child("CutoffFrequency"));
+      g.lowpass_resonance = read_param(lp->child("Resonance"));
       g.lowpass = g.lowpass_cutoff.present;
     }
+
+    const XmlNode* peq = engine_group ? engine_group->child("PEQ") : nullptr;
+    if (!peq && dsp) peq = dsp->child("PEQ");
+    g.peq = read_peq(peq);
+
+    const XmlNode* lpeq = engine_group ? engine_group->child("LoadPEQ") : nullptr;
+    if (!lpeq && dsp) lpeq = dsp->child("LoadPEQ");
+    if (lpeq && (!lpeq->has("Active") || lpeq->number("Active", 1) >= 1)) {
+      g.load_peq.pos_load = read_peq(lpeq->child("PosLoad"));
+      g.load_peq.neg_load = read_peq(lpeq->child("NegLoad"));
+      g.load_peq.active = g.load_peq.pos_load.active || g.load_peq.neg_load.active;
+    }
+
+    const XmlNode* exp = engine_group ? engine_group->child("Expander") : nullptr;
+    if (!exp && dsp) exp = dsp->child("Expander");
+    if (exp) {
+      g.expander.max_gain = read_param(exp->child("MaxGain"));
+      if (const XmlNode* st = exp->child("Settings")) {
+        g.expander.attack_ms = std::max(0.0, st->number("AttackTime", 0));
+        g.expander.hold_ms = std::max(0.0, st->number("HoldTime", 0));
+        g.expander.release_ms = std::max(0.0, st->number("ReleaseTime", 0));
+      }
+      g.expander.present = g.expander.max_gain.present;
+    }
+
     out.groups.push_back(std::move(g));
   }
   return true;
@@ -202,12 +285,12 @@ void read_model_tuning(const XmlNode& model, EngineSound& out) {
     const XmlNode* levels = view->child("EmissionGroupVolumes");
     for (Group& g : out.groups) {
       if (levels && levels->has(g.name)) g.view_level[size_t(v)] = levels->number(g.name, 1);
-      // Our stereo fold of the 5.1 pan: L = Left + 0.7 Center + 0.7 LeftRear
-      // and the mirror, scaled so the louder side is 1 (spec "Mix basics").
+      // Confirmed FMOD Ex 5.1 -> stereo matrix (SPEC-ENGINE-SOUND):
+      // L = FL + 0.707*C + 0.707*RL, R = FR + 0.707*C + 0.707*RR (LFE omitted).
       if (const XmlNode* pan = view->child("SurroundPan" + g.name)) {
         const double c = pan->number("Center");
-        double l = pan->number("Left") + 0.7 * c + 0.7 * pan->number("LeftRear");
-        double r = pan->number("Right") + 0.7 * c + 0.7 * pan->number("RightRear");
+        double l = pan->number("Left") + 0.70710678 * c + 0.70710678 * pan->number("LeftRear");
+        double r = pan->number("Right") + 0.70710678 * c + 0.70710678 * pan->number("RightRear");
         const double m = std::max(l, r);
         if (m > 0) l /= m, r /= m;
         g.pan_left[size_t(v)] = l;

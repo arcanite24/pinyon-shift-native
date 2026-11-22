@@ -98,21 +98,32 @@ bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::f
     index << line << ' ' << file << '\n';
     return write_file(dir / file, text.data(), text.size());
   };
-  if (!copy(TuningKind::kEngine, media + "_ET.xml", "engine")) return fail("cannot copy the engine tuning");
-  copy(TuningKind::kModel, media + "_CMT.xml", "model");
+  std::string et_file = media + "_ET.xml";
+  std::string cmt_file = media + "_CMT.xml";
+  if (!copy(TuningKind::kEngine, et_file, "engine")) {
+    et_file = "VW_BORAVR6_03_ET.xml";
+    cmt_file = "VW_BORAVR6_03_CMT.xml";
+    if (!copy(TuningKind::kEngine, et_file, "engine")) return fail("cannot copy the engine tuning");
+  }
+  if (!copy(TuningKind::kModel, media + "_CMT.xml", "model") && cmt_file != media + "_CMT.xml")
+    copy(TuningKind::kModel, cmt_file, "model");
   {
     std::string text;
     XmlNode engine;
     std::vector<HarmonicRef> harmonics;
     EngineSound scratch;
-    if (files.read_tuning(TuningKind::kEngine, media + "_ET.xml", text, &e) && parse_xml(text, engine, &e) &&
+    if (files.read_tuning(TuningKind::kEngine, et_file, text, &e) && parse_xml(text, engine, &e) &&
         read_engine_tuning(engine, scratch, harmonics, &e, levels))
       for (const auto& h : harmonics) copy(TuningKind::kHarmonic, h.file, "harmonic " + h.element);
   }
-  // Every sample a loop uses, once per bank sample (all its channels).
+  // Every sample a loop uses, plus any IntakeChuff sample, once per bank sample.
   std::set<std::pair<std::string, int>> wanted;
   for (const auto& g : loaded.sound.groups)
     for (const auto& l : g.loops) wanted.insert({lower_name(g.bank), l.sample});
+  if (loaded.sound.intake_chuff_sample >= 0 && !loaded.sound.intake_chuff_bank.empty()) {
+    wanted.insert({lower_name(loaded.sound.intake_chuff_bank), loaded.sound.intake_chuff_sample});
+    index << "chuff " << lower_name(loaded.sound.intake_chuff_bank) << ' ' << loaded.sound.intake_chuff_sample << '\n';
+  }
   for (const auto& [bank, samples] : loaded.banks) index << "bank " << bank << ' ' << samples.size() << '\n';
 
   // Read each referenced FSB4 bank into memory once.
@@ -241,6 +252,12 @@ std::vector<std::vector<const PcmSample*>> BakedSound::table() const {
   return t;
 }
 
+const PcmSample* BakedSound::intake_chuff() const {
+  if (loaded.sound.intake_chuff_sample < 0 || loaded.sound.intake_chuff_bank.empty()) return nullptr;
+  const auto it = pcm.find({lower_name(loaded.sound.intake_chuff_bank), loaded.sound.intake_chuff_sample, 0});
+  return it == pcm.end() ? nullptr : &it->second;
+}
+
 bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& media, BakedSound& out,
                       std::string* error, UpgradeLevels levels) {
   out = {};
@@ -276,6 +293,12 @@ bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& m
       std::string element, f;
       ls >> element >> f;
       harmonics.emplace_back(element, f);
+    } else if (kind == "chuff") {
+      std::string bank;
+      int sample = -1;
+      ls >> bank >> sample;
+      out.loaded.sound.intake_chuff_bank = bank;
+      out.loaded.sound.intake_chuff_sample = sample;
     } else if (kind == "bank") {
       std::string bank;
       size_t count = 0;

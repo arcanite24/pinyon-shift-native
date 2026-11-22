@@ -150,7 +150,7 @@ bool AudioHost::load_car(const std::filesystem::path& sound_dir, const std::file
   }
   if (ok && !baked->loaded.sound.groups.empty()) {
     auto ep = std::make_unique<audio::EnginePlayer>(baked->loaded.sound, baked->table(), kAudioRate, idle_rpm,
-                                                    redline_rpm);
+                                                    redline_rpm, baked->intake_chuff());
     ep->master = kEngineMaster;
     baked_sound_ = std::move(baked);
     engine_.set_engine_player(std::move(ep));
