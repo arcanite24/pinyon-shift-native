@@ -14,7 +14,8 @@ add_library(shift_drive STATIC
   src/rewind.cpp
   src/driving_line.cpp
   src/lamps.cpp
-  src/damage.cpp)
+  src/damage.cpp
+  src/replay.cpp)
 target_include_directories(shift_drive PUBLIC include)
 target_link_libraries(shift_drive PUBLIC shift_cars)
 if(MSVC)

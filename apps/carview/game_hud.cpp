@@ -864,6 +864,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
     help_item(l, g, 195, 307, 653, 689, "Y", kAccent, str("HelpButtons", "IDS_RestartMenu", "RESTART"));
     help_item(l, g, 312, 465, 653, 689, "X", kBlue, str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS"));
+    help_item(l, g, 470, 632, 653, 689, "V", kPink, "VIEW REPLAY");
     return;
   }
   // The cash reward.

@@ -176,9 +176,9 @@ HudImage draw_radio_popup(const RadioPopupState& st, int height) {
 
 std::vector<PauseMenu::Action> PauseMenu::items() const {
   if (in_race) {
-    return {kResume, kRestartRace, kPhotoMode, kMap, kDifficulty, kSettings, kQuitRace};
+    return {kResume, kRestartRace, kPhotoMode, kReplay, kMap, kDifficulty, kSettings, kQuitRace};
   }
-  return {kResume, kMap, kEvents, kPhotoMode, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub, kSettings, kQuitToTitle};
+  return {kResume, kMap, kEvents, kPhotoMode, kReplay, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub, kSettings, kQuitToTitle};
 }
 
 PauseMenu::Action PauseMenu::selected_action() const {
@@ -199,6 +199,7 @@ std::string PauseMenu::label(Action a) const {
     case kCareer: return "MY PROFILE";
     case kClub: return "1000 CLUB";
     case kPhotoMode: return "PHOTO MODE";
+    case kReplay: return in_race ? "VIEW REPLAY" : "REPLAYS";
     case kSettings: return "SETTINGS";
     case kReset: return "RESET TO ROAD";
     case kRestartRace: return "RESTART RACE";

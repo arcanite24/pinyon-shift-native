@@ -233,6 +233,11 @@ target_include_directories(photo_mode_tests PRIVATE ../apps/carview)
 target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk)
 add_test(NAME photo_mode_tests COMMAND photo_mode_tests)
 
+add_executable(replay_tests replay_tests.cpp ../apps/carview/replay_view.cpp ../apps/carview/ui.cpp)
+target_include_directories(replay_tests PRIVATE ../apps/carview)
+target_link_libraries(replay_tests PRIVATE shift_drive fh1data)
+add_test(NAME replay_tests COMMAND replay_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)
