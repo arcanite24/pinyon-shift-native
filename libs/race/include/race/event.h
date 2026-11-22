@@ -21,8 +21,21 @@ class PartsDb;
 
 namespace race {
 
-enum class Difficulty { kEasy, kMed, kHard, kPro };
+enum class Difficulty { kEasy, kMed, kHard, kPro, kHardPlus };
 bool parse_difficulty(const std::string& s, Difficulty& out);
+
+// Pinyon Shift AI opponent mode:
+// - kStock: retail difficulty, rubber-banding, and dynamic AISkillAdjustments.
+// - kFair:  no rubber-banding, no catch-up, no dynamic AISkillAdjustments.
+// - kHard:  +1 difficulty tier (Pro -> AISkills row 1), max aggression
+//           (temperament 1), no rubber-banding, no dynamic AISkillAdjustments.
+enum class AiMode { kStock, kFair, kHard };
+bool parse_ai_mode(const std::string& s, AiMode& out);
+// Maps (difficulty, ai_mode) to the database column tier 0..3 (Easy..Pro).
+int effective_db_difficulty(Difficulty d, AiMode mode = AiMode::kStock);
+// True when Pinyon Shift HARD mode (+1 tier, max aggression, no rubber-band)
+// is active via either Difficulty::kHardPlus or AiMode::kHard.
+bool is_pinyon_hard(Difficulty d, AiMode mode);
 
 struct SkillRow {
   int id = 0;
@@ -86,6 +99,7 @@ struct EventData {
   std::vector<RubberbandRow> rubberbands;
   std::vector<TemperamentRow> temperaments;
   std::vector<double> scoring;  // EventScoring credits by place (1-based at [0])
+  std::vector<std::pair<int, int>> skill_adjustments;  // AISkillAdjustments (TimeRatio -> SkillAdjustment)
 
   const SkillRow* skill(int id) const;
   const RubberbandRow* rubberband(int id) const;
@@ -103,7 +117,8 @@ double stock_performance_index(const std::filesystem::path& game_root, const std
 bool load_event(const std::filesystem::path& game_root, const std::string& horizon_id, Difficulty difficulty,
                 EventData& out, std::string* error,
                 const std::filesystem::path& state_root = {},
-                const cars::PartsDb* db = nullptr);
+                const cars::PartsDb* db = nullptr,
+                AiMode ai_mode = AiMode::kStock);
 
 // The census (SPEC-EVENTS, Tests): row counts and how many races resolve
 // to a route file and an AI line name.

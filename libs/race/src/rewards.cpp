@@ -90,6 +90,7 @@ int difficulty_bonus_percent(int difficulty_index) {
     case 1: return 15;
     case 2: return 30;
     case 3: return 45;
+    case 4: return 60;  // Pinyon Shift HARD+ (+1 tier, no rubber-banding)
     default: return 0;
   }
 }

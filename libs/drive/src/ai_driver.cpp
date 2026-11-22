@@ -115,6 +115,12 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     return load * tyre_peak_mu(p, a, k, load / 2, v);
   };
   const bool driven[2] = {p.layout != CarParams::Layout::kRear, p.layout != CarParams::Layout::kFront};
+  // Calibrate to SPEC-RACE-AI measured tables: R34 (1531 kg) needs cal.lateral
+  // (16.01/14.6), while ultra-light cars (e.g. Mini 1566, 606 kg -> 16.24 lat,
+  // 19.12 brk) are already close to exact in the light-load tyre regime.
+  const double mass_blend = std::clamp((m - 600.0) / 500.0, 0.0, 1.0);
+  const double lat_cal = 1.02 + (cal.lateral - 1.02) * mass_blend;
+  const double brk_cal = 1.015 + (cal.braking - 1.015) * mass_blend;
   for (int n = 0; n < AiCapacity::kEntries; ++n) {
     const double v = 2.5 * n;
     // Braking: load moves forwards by the deceleration x the height over
@@ -124,7 +130,7 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
       const double t = std::min(m * a * h / wb, axle_w[1]);  // at most the whole rear on the front
       a = (axle(0, TyrePeak::kBraking, axle_w[0] + t, v) + axle(1, TyrePeak::kBraking, axle_w[1] - t, v)) / m;
     }
-    c.braking[size_t(n)] = float(cal.braking * (a + p.drag_quadratic * v * v / m));
+    c.braking[size_t(n)] = float(brk_cal * (a + p.drag_quadratic * v * v / m));
     // Lateral: each axle's force moves load inner to outer by the force x
     // the CoM height / the track; the rear capped by the yaw balance.
     double force[2] = {0, 0};
@@ -147,7 +153,7 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
       next[1] = std::min(next[1], (1 - share) / share * next[0]);
       force[0] = next[0], force[1] = next[1];
     }
-    c.lateral[size_t(n)] = float(cal.lateral * (force[0] + force[1]) / m);
+    c.lateral[size_t(n)] = float(lat_cal * (force[0] + force[1]) / m);
     if (n == 8 && std::getenv("SHIFT_CAPACITY_DEBUG")) {
       // The lateral terms at 20 m/s (SHIFT_CAPACITY_DEBUG=1).
       for (int ax = 0; ax < 2; ++ax) {
@@ -266,25 +272,26 @@ void ai_traction(const Vehicle& v, float& cap, double dt, Input& in, bool steer_
   double spin = 0;
   for (const auto& w : v.wheels())
     if (w.contact) spin = std::max(spin, w.slip_ratio);
-  if (in.throttle > 0 && spin > 1.1) cap = std::max(0.25f, cap - float(4 * dt));
-  else cap = std::min(1.0f, cap + float(2 * dt));
+  if (in.throttle > 0 && spin > 1.15) cap = std::max(0.45f, cap - float(3.5 * dt));
+  else cap = std::min(1.0f, cap + float(5.0 * dt));
   double t = std::min(in.throttle, double(cap));
   // The body's slip angle: the velocity's direction in the body frame
   // (z forward, x towards positive steer).
   const Vec3 vb = rotate_inverse(v.orientation(), v.velocity());
   const double sp = std::hypot(vb.x, vb.z);
-  if (sp > 6 && vb.z > 0) {
+  if (sp > 5 && vb.z > 0.5) {
     const double beta = std::atan2(vb.x, vb.z);
     const double a = std::fabs(beta);
     constexpr double kDeg = 3.14159265358979 / 180;
-    if (a > 7 * kDeg) t *= std::max(0.0, 1 - (a - 7 * kDeg) / (6 * kDeg));
-    // Past 5 degrees the steer turns towards the velocity (a counter-steer,
-    // free of the speed-narrowed lock), all of it by 12 degrees.
-    const double w = std::clamp((a - 5 * kDeg) / (7 * kDeg), 0.0, 1.0);
+    if (a > 7 * kDeg) t *= std::max(0.0, 1 - (a - 7 * kDeg) / (7 * kDeg));
+    // Active counter-steer past 7 deg body slip (normal cornering sits under
+    // 7 deg): steers into the slide without cutting braking in braking zones.
+    const double w = std::clamp((a - 7.0 * kDeg) / (8.0 * kDeg), 0.0, 1.0);
     if (w > 0 && steer_guard) {
       const double lock = std::max(0.05, v.steer_lock());
-      in.steer = (1 - w) * in.steer + w * std::clamp(beta / lock, -1.0, 1.0);
-      in.brake = std::min(in.brake, 0.3 * (1 - w) + 0.0);
+      const double yaw_damping = -0.08 * v.angular_velocity().y;
+      const double counter = std::clamp((beta + yaw_damping) / lock, -1.0, 1.0);
+      in.steer = (1 - w) * in.steer + w * counter;
     }
   }
   in.throttle = t;
@@ -346,7 +353,8 @@ double AiField::corner_at(size_t i, size_t j) const {
   if (std::isnan(v)) {
     const double kappa = line_.curvature[j];
     const double theta = kappa > 0 ? line_.bank_left[j] : -line_.bank_left[j];
-    v = float(ai_corner_speed(*capacity_[i], plan_c_[i], kappa, line_.curvature_v[j], theta, o_.max_speed));
+    const double kv = std::min<double>(line_.curvature_v[j], 0.002);
+    v = float(ai_corner_speed(*capacity_[i], plan_c_[i], kappa, kv, theta, o_.max_speed));
   }
   return v;
 }
@@ -465,37 +473,52 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
       cross_[i] = len > 0 ? (ox * ez - oz * ex) / len : 0.0f;
     }
     // Steering: pure pursuit to the look-ahead point, moved to the lane.
+    // SPEC-RACE-AI: AI cars have no gamepad speed-narrowed lock; keep a
+    // responsive bounded look-ahead (so tight hairpins aren't cut across) and
+    // generous steering authority so light/fast cars track curves & recover.
     const float speed = std::fabs(c.speed);
-    const double look = progress_[i] + (o_.slip_rule ? std::max<double>(2.0, o_.slip_lookahead_s * speed)
-                                                     : std::max<double>(o_.min_lookahead, o_.lookahead_s * speed));
+    const double look = progress_[i] + (o_.slip_rule
+                                            ? std::clamp<double>(0.90 * o_.slip_lookahead_s * speed, 3.0, 26.0)
+                                            : std::clamp<double>(o_.lookahead_s * speed, double(o_.min_lookahead), 24.0));
     const size_t ts = L.segment(look, s);
     const float tf = std::clamp(float((look - L.dist[ts]) / std::max(1e-6f, L.dist[ts + 1] - L.dist[ts])), 0.0f, 1.0f);
     const float tex = L.x[ts + 1] - L.x[ts], tez = L.z[ts + 1] - L.z[ts];
     const float tlen = std::sqrt(tex * tex + tez * tez);
-    const float tx = L.x[ts] + tf * tex + (tlen > 0 ? lane_[i] * tez / tlen : 0.0f);
-    const float tz = L.z[ts] + tf * tez - (tlen > 0 ? lane_[i] * tex / tlen : 0.0f);
+    // Keep the look-ahead aim point strictly inside the walls at `look`
+    // (clip_room already subtracts half a car width = 1.0 m).
+    float aim_lane = lane_[i];
+    if (L.room_right.size() == L.size() && L.room_left.size() == L.size()) {
+      const float rmax = std::max(0.0f, L.room_right[ts] - 0.35f);
+      const float lmax = std::max(0.0f, L.room_left[ts] - 0.35f);
+      aim_lane = std::clamp(aim_lane, -lmax, rmax);
+    }
+    const float tx = L.x[ts] + tf * tex + (tlen > 0 ? aim_lane * tez / tlen : 0.0f);
+    const float tz = L.z[ts] + tf * tez - (tlen > 0 ? aim_lane * tex / tlen : 0.0f);
     const float rx = tx - c.x, rz = tz - c.z;
     const float lz = rx * c.fwd_x + rz * c.fwd_z, lx = rx * c.fwd_z - rz * c.fwd_x;  // car frame: x right
     const float ld = std::sqrt(lx * lx + lz * lz);
     const float alpha = std::atan2(lx, lz);
-    float delta = std::clamp(ld > 1e-4f ? std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f, -c.max_delta,
-                             c.max_delta);
+    // Pure pursuit scaled for front tyre slip angle, with a speed-safe cap.
+    const float ai_cap = std::min(c.steer_lock, std::max(c.max_delta * 1.55f, 0.08f));
+    float delta = std::clamp(ld > 1e-4f ? 1.55f * std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f, -ai_cap, ai_cap);
     if (o_.slip_rule) {
-      // The velocity's direction in the car frame (x right), from 1 m/s.
+      // SPEC-RACE-AI measured steering at speed (EXHIBITION_FEST_003):
+      // delta = 0.27..0.29 * alpha + 0.29 * beta; cap turn-in by speed-safe
+      // lateral authority while leaving counter-steer (beta) full lock.
       const float vz = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z, vx = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
       const float beta = std::hypot(vx, vz) > 1.0f && vz > 0 ? std::atan2(vx, vz) : 0.0f;
-      delta = std::clamp(0.27f * alpha + 0.29f * beta, -c.steer_lock, c.steer_lock);
+      const float turn_cap = std::min(c.steer_lock, std::max(c.max_delta * 2.2f, 0.14f));
+      delta = std::clamp(std::clamp(0.29f * alpha, -turn_cap, turn_cap) + 0.29f * beta, -c.steer_lock, c.steer_lock);
     }
     Input& in = inputs[i];
     in = Input{};
     in.steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
     // Speed: the plan a little ahead. Past the line's end: stop.
     const double ahead = progress_[i] + o_.speed_lookahead_s * speed;
-    // Off its lane by more than off_line_slack m, the car slows (ours: the
-    // plan's corner speed is the R34's, and a car that cannot hold it
-    // runs wide).
+    // Slow down when far off its lane (approaching road edge / wall), not on
+    // clean overtakes.
     const float off = std::fabs(cross_[i] - lane_[i]);
-    const float scale = std::clamp(1.0f - o_.off_line_slow * std::max(0.0f, off - o_.off_line_slack), 0.6f, 1.0f);
+    const float scale = std::clamp(1.0f - o_.off_line_slow * std::max(0.0f, off - o_.off_line_slack), 0.65f, 1.0f);
     const float target =
         progress_[i] >= L.length() - 1 ? 0.0f : std::min(cap_[i], scale * float(planned_speed(i, ahead)));
     target_[i] = target;

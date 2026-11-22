@@ -13,7 +13,8 @@ namespace carview {
 
 struct LiveSettings {
   int camera_mode = -1;  // -1: unchanged/default, 0..4: CameraMode
-  int difficulty = -1;   // -1: unchanged/default, 0..3: Easy/Med/Hard/Pro
+  int difficulty = -1;   // -1: unchanged/default, 0..4: Easy/Med/Hard/Pro/Hard+
+  int ai_mode = 0;       // 0: stock, 1: fair (no rubber-band), 2: hard (+1 tier, max aggro, no rb)
   bool rubberband = true;
   bool radio = true;
   bool sound = true;

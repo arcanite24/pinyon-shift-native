@@ -25,11 +25,18 @@ struct ContactOptions {
 bool car_contact(Vehicle& a, double scale_a, Vehicle& b, double scale_b, const ContactOptions& o,
                  double* impulse = nullptr);
 
+// Role of a body in car-to-car contacts (PhysicsSettings.ini [Collision]:
+// PlayerTorqueScale 0.0, RaceCarTorqueScaleInRace 0.2,
+// RaceCarTorqueScaleVsTrafficInRace 0.05, TrafficTorqueScale 0.25).
+enum class ContactRole { kDefault, kPlayer, kRaceAi, kTraffic };
+
 // A car in a contact pass.
 struct ContactBody {
   Vehicle* v = nullptr;
   double angular_scale = 1;
   int group = 0;  // pairs inside one group > 0 are skipped (resolved elsewhere)
+  ContactRole role = ContactRole::kDefault;
+  double angular_scale_vs_traffic = -1;  // >= 0 overrides angular_scale when colliding with kTraffic
 };
 // Every pair of `bodies` once (a circle test first); the number in contact.
 int resolve_contacts(std::span<const ContactBody> bodies, const ContactOptions& o, double* largest = nullptr);

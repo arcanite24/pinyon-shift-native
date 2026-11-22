@@ -87,7 +87,9 @@ struct DriveSave {
   double popularity_points = 0;  // SPEC-SKILLS-POPULARITY: Fame ladder points
   int64_t max_skills_score = 0, max_skills_car = 0;
   int fame_rewards_claimed = 0;
-  int difficulty = 1;  // 0 Easy, 1 Med, 2 Hard, 3 Pro
+  int difficulty = 1;  // 0 Easy, 1 Med, 2 Hard, 3 Pro, 4 Hard+
+  int ai_skill = 10;   // Main/AISkill dynamic difficulty (1..20, lower = harder)
+  int ai_mode = 0;     // 0 Stock, 1 Fair (no rubber-band), 2 Hard (+1 tier)
   // Radio & Sat-Nav state (SPEC-RADIO: station, DJ, volume, SatNav).
   std::string radio_station;  // empty: default station; else e.g. Radio1..Radio4_Silent
   bool radio_dj = true;

@@ -140,6 +140,21 @@ int main() {
   CHECK(has(at, {"--mix-engine", "175"}) && has(at, {"--mix-music", "25"}) && has(at, {"--mix-vo", "200"}));
   CHECK(has(at, {"--your-music"}) && has(at, {"--your-music-shuffle"}) && has(at, {"--your-music-volume", "75"}));
 
+  // Slice 6: HARD+ (Pinyon) difficulty and AI opponents mode round-trip.
+  carview::SettingsPage ai_page;
+  ai_page.load({"--difficulty", "hard+", "--ai-mode", "hard"});
+  CHECK(ai_page.value("difficulty") == "hard+ (pinyon)");
+  CHECK(ai_page.value("ai opponents") == "hard (+1 tier)");
+  const auto als = ai_page.live_settings();
+  CHECK(als.difficulty == 4 && als.ai_mode == 2 && !als.rubberband);
+  const auto ait = ai_page.tokens();
+  CHECK(has(ait, {"--difficulty", "hard+"}) && has(ait, {"--ai-mode", "hard"}));
+
+  carview::SettingsPage fair_page;
+  fair_page.load({"--ai-mode", "fair"});
+  CHECK(fair_page.value("ai opponents") == "no rubber-banding");
+  CHECK(fair_page.live_settings().ai_mode == 1 && !fair_page.live_settings().rubberband);
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

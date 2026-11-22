@@ -45,6 +45,7 @@ class RaceView {
  public:
   struct Options {
     race::Difficulty difficulty = race::Difficulty::kMed;
+    race::AiMode ai_mode = race::AiMode::kStock;
     race::DifficultyAssists assists{};
     bool autopilot = false;   // the player's car under the AI (headless runs)
     bool rubberband = true;   // false: the "no rubber-banding" option
@@ -130,6 +131,11 @@ class RaceView {
   // Allows updating difficulty on the pre-race grid menu before the race starts.
   void set_difficulty(race::Difficulty d) { o_.difficulty = d; }
   race::Difficulty difficulty() const { return o_.difficulty; }
+  void set_ai_mode(race::AiMode m) { o_.ai_mode = m; }
+  race::AiMode ai_mode() const { return o_.ai_mode; }
+  // Mean finish time (s) of AI opponents that have finished (or estimated from
+  // race progress if still running), used for AISkillAdjustments dynamic skill.
+  double ai_reference_time() const;
   void set_assists(const race::DifficultyAssists& a) { o_.assists = a; }
   const race::DifficultyAssists& assists() const { return o_.assists; }
   // The active racing line and player's progress along it (for the 3D driving/braking line).

@@ -910,6 +910,7 @@ const char* difficulty_name(race::Difficulty d) {
     case race::Difficulty::kMed: return "MED";
     case race::Difficulty::kHard: return "HARD";
     case race::Difficulty::kPro: return "PRO";
+    case race::Difficulty::kHardPlus: return "HARD+";
   }
   return "MED";
 }
@@ -1666,10 +1667,19 @@ int run_drive(int argc, char** argv) {
     else if (a == "--event") race_event = next();
     else if (a == "--difficulty") {
       if (!race::parse_difficulty(next(), race_options.difficulty)) {
-        std::fprintf(stderr, "carview: --difficulty easy|med|hard|pro\n");
+        std::fprintf(stderr, "carview: --difficulty easy|med|hard|pro|hard+\n");
         return 2;
       }
-    } else if (a == "--no-rubberband") race_options.rubberband = false;
+    } else if (a == "--ai-mode") {
+      if (!race::parse_ai_mode(next(), race_options.ai_mode)) {
+        std::fprintf(stderr, "carview: --ai-mode stock|fair|hard\n");
+        return 2;
+      }
+      if (race_options.ai_mode != race::AiMode::kStock) race_options.rubberband = false;
+    } else if (a == "--no-rubberband") {
+      race_options.rubberband = false;
+      if (race_options.ai_mode == race::AiMode::kStock) race_options.ai_mode = race::AiMode::kFair;
+    }
     else if (a == "--race-auto") race_auto = 1;
     else if (a == "--race-replay") race_options.replay = next();
     else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
@@ -2254,8 +2264,10 @@ int run_drive(int argc, char** argv) {
     for (const auto& [id, place] : saved.race_results) career.race_places[id] = place;
     for (const auto& [id, place] : saved.event_results) career.event_places[id] = place;
     career.prize_cars = saved.prize_cars;
-    if (saved.difficulty >= 0 && saved.difficulty <= 3) race_options.difficulty = race::Difficulty(saved.difficulty);
+    if (saved.difficulty >= 0 && saved.difficulty <= 4) race_options.difficulty = race::Difficulty(saved.difficulty);
+    if (saved.ai_mode >= 0 && saved.ai_mode <= 2) race_options.ai_mode = race::AiMode(saved.ai_mode);
   }
+  int dynamic_ai_skill = have_saved ? saved.ai_skill : 10;
   if (wristbands.levels.empty() && !world_dir.empty()) {
     std::string e;
     race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
@@ -3838,6 +3850,16 @@ int run_drive(int argc, char** argv) {
               won_car_name = award_garage_car(a->prize_car, prize_col, false);
               garage_picker();
             }
+            // Dynamic difficulty (AISkillAdjustments): update profile Main/AISkill
+            // after finished races in STOCK mode (skipped in Fair / Hard+).
+            const double pl_t = race->session().car(race->player_index()).finish;
+            const double ai_ref = race->ai_reference_time();
+            const race::AiMode eff_mode =
+                race::is_pinyon_hard(race_options.difficulty, race_options.ai_mode)
+                    ? race::AiMode::kHard
+                    : (race_options.rubberband ? race_options.ai_mode : race::AiMode::kFair);
+            dynamic_ai_skill = race::update_dynamic_ai_skill(
+                dynamic_ai_skill, pl_t, ai_ref, career.num_races, eff_mode, race->event().skill_adjustments);
             save_due = true;  // the window saves the award at once
           }
         }
@@ -4323,6 +4345,8 @@ int run_drive(int argc, char** argv) {
         s.max_skills_car = skill_tracker ? max_skills_car : (have_saved ? saved.max_skills_car : 0);
         s.fame_rewards_claimed = skill_tracker ? skill_tracker->fame_rewards_claimed() : (have_saved ? saved.fame_rewards_claimed : 0);
         s.difficulty = int(race_options.difficulty);
+        s.ai_skill = dynamic_ai_skill;
+        s.ai_mode = int(race_options.ai_mode);
         audio_host.save_radio_state(s);
         s.treasure_map = treasure_map_setting;
         if (road_discovery.ready()) {
@@ -5752,7 +5776,7 @@ int run_drive(int argc, char** argv) {
           menu.difficulty_label = db;
         };
         auto cycle_difficulty = [&](int by) {
-          const int d = ((int(race_options.difficulty) + by) % 4 + 4) % 4;
+          const int d = ((int(race_options.difficulty) + by) % 5 + 5) % 5;
           race_options.difficulty = race::Difficulty(d);
           if (race) race->set_difficulty(race_options.difficulty);
           sync_pause_labels();
@@ -6480,8 +6504,13 @@ int run_drive(int argc, char** argv) {
                     loaded_camera_effects = ls.controls.camera_effects;
                   }
                 }
-                if (ls.difficulty >= 0 && ls.difficulty <= 3) race_options.difficulty = race::Difficulty(ls.difficulty);
+                if (ls.difficulty >= 0 && ls.difficulty <= 4) race_options.difficulty = race::Difficulty(ls.difficulty);
+                race_options.ai_mode = race::AiMode(std::clamp(ls.ai_mode, 0, 2));
                 race_options.rubberband = ls.rubberband;
+                if (race) {
+                  race->set_difficulty(race_options.difficulty);
+                  race->set_ai_mode(race_options.ai_mode);
+                }
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
                 treasure_map_setting = ls.treasure_map;

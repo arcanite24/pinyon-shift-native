@@ -453,6 +453,20 @@ void disc(const std::filesystem::path& root) {
     }
     CHECK(rally_count == 36);
     CHECK(rally_stage_route > 0);
+    // Verify every EventParticipants row across all events (including DLC
+    // participants) resolves a non-empty Data_Car.MediaName via merged PartsDb.
+    int total_opponents = 0, missing_media = 0;
+    for (const auto& ev : evs) {
+      race::EventData ev_data;
+      if (race::load_event(root, ev.horizon_id, race::Difficulty::kMed, ev_data, &e, state, &pdb)) {
+        for (const auto& op : ev_data.opponents) {
+          ++total_opponents;
+          if (op.car_media.empty()) ++missing_media;
+        }
+      }
+    }
+    std::printf("merged PartsDb EventParticipants: %d loaded, %d missing media\n", total_opponents, missing_media);
+    CHECK(total_opponents >= 500 && missing_media == 0);
     if (rally_stage_route > 0) {
       race::StageTrack st_db, st_v4;
       CHECK(race::load_stage_track(state, rally_stage_route, st_db, &e, &pdb));
@@ -647,6 +661,67 @@ int main() {
   test_rubberband_modes();
   test_rewards();
   test_line_and_ground();
+  // Slice 6: Pinyon Shift HARD AI mode, AISkillAdjustments dynamic difficulty,
+  // and Nemesis rival boost.
+  {
+    CHECK(race::is_pinyon_hard(race::Difficulty::kHardPlus, race::AiMode::kStock));
+    CHECK(race::is_pinyon_hard(race::Difficulty::kMed, race::AiMode::kHard));
+    CHECK(!race::is_pinyon_hard(race::Difficulty::kPro, race::AiMode::kStock));
+    CHECK(race::effective_db_difficulty(race::Difficulty::kEasy, race::AiMode::kHard) == 1);
+    CHECK(race::effective_db_difficulty(race::Difficulty::kMed, race::AiMode::kHard) == 2);
+    CHECK(race::effective_db_difficulty(race::Difficulty::kHard, race::AiMode::kHard) == 3);
+    CHECK(race::effective_db_difficulty(race::Difficulty::kPro, race::AiMode::kHard) == 3);
+    CHECK(race::effective_db_difficulty(race::Difficulty::kHardPlus, race::AiMode::kStock) == 3);
+    race::AiMode pm = race::AiMode::kStock;
+    CHECK(race::parse_ai_mode("fair", pm) && pm == race::AiMode::kFair);
+    CHECK(race::parse_ai_mode("hard", pm) && pm == race::AiMode::kHard);
+    CHECK(race::parse_ai_mode("stock", pm) && pm == race::AiMode::kStock);
+
+    race::EventData ed;
+    ed.skills.push_back({50, 0.686, 0.763, 0.63, 0.70, 20, 1, 1, 6});
+    ed.skills.push_back({1, 0.95, 1.0, 1.188, 1.25, 10, 1, 1, 1});
+    const auto hard_med = race::assign_driver_for_mode(35, 5, 0, 0, 0, 0, race::Difficulty::kMed, race::AiMode::kHard, ed);
+    CHECK(hard_med.temperament == 1 && hard_med.rubberband_id == 0 && hard_med.skill == 35);
+    const auto hard_pro = race::assign_driver_for_mode(20, 5, 6, 0, 0, 0, race::Difficulty::kPro, race::AiMode::kHard, ed);
+    CHECK(hard_pro.skill == 1 && hard_pro.temperament == 1 && hard_pro.rubberband_id == 0);
+    const auto hard_plus =
+        race::assign_driver_for_mode(20, 5, 6, 0, 0, 0, race::Difficulty::kHardPlus, race::AiMode::kStock, ed);
+    CHECK(hard_plus.skill == 1 && hard_plus.temperament == 1 && hard_plus.rubberband_id == 0);
+
+    // Dynamic difficulty (AISkillAdjustments): fast player lowers AISkill (harder);
+    // disabled under kFair and kHard.
+    const std::vector<std::pair<int, int>> empty_tbl;
+    CHECK(race::lookup_skill_adjustment(90, empty_tbl) == -9);
+    CHECK(race::lookup_skill_adjustment(100, empty_tbl) == 2);
+    CHECK(race::lookup_skill_adjustment(110, empty_tbl) == 15);
+    const int harder = race::update_dynamic_ai_skill(16, 92.0, 100.0, 1, race::AiMode::kStock, empty_tbl);
+    CHECK(harder == 7);  // 16 + (-9)/1
+    const int damped = race::update_dynamic_ai_skill(16, 92.0, 100.0, 5, race::AiMode::kStock, empty_tbl);
+    CHECK(damped == 13);  // 16 + round(-9 / 3)
+    CHECK(race::update_dynamic_ai_skill(16, 92.0, 100.0, 1, race::AiMode::kFair, empty_tbl) == 16);
+    CHECK(race::update_dynamic_ai_skill(16, 92.0, 100.0, 1, race::AiMode::kHard, empty_tbl) == 16);
+    CHECK(race::difficulty_from_dynamic_skill(1) == race::Difficulty::kPro);
+    CHECK(race::difficulty_from_dynamic_skill(4) == race::Difficulty::kHard);
+    CHECK(race::difficulty_from_dynamic_skill(16) == race::Difficulty::kMed);
+    CHECK(race::difficulty_from_dynamic_skill(20) == race::Difficulty::kEasy);
+
+    // Nemesis rival boost: multi-AI vs 1v1 torque ramp.
+    const auto off_start = race::nemesis_rival_boost(true, false, 6, 2, 80.0, 2000.0, 0.84, 0.90);
+    CHECK(!off_start.active && off_start.torque_add == 0.0 && near(off_start.cornering, 0.90));
+    const auto multi_on = race::nemesis_rival_boost(true, true, 6, 2, 0.0, 2000.0, 0.84, 0.90);
+    CHECK(multi_on.active && near(multi_on.braking, 1.0) && near(multi_on.cornering, 1.25) &&
+          near(multi_on.torque_add, 0.3));
+    const auto multi_lead = race::nemesis_rival_boost(true, true, 6, 0, 0.0, 2000.0, 0.84, 0.90);
+    CHECK(!multi_lead.active && multi_lead.torque_add == 0.0);
+    const auto one_v_one = race::nemesis_rival_boost(true, true, 0, 0, 75.0, 2000.0, 0.84, 0.90);
+    CHECK(one_v_one.active && near(one_v_one.braking, 0.84) && near(one_v_one.cornering, 0.90) &&
+          near(one_v_one.torque_add, 0.075, 1e-4));
+    const auto near_fin = race::nemesis_rival_boost(true, true, 0, 0, 100.0, 400.0, 0.84, 0.90);
+    CHECK(!near_fin.active && near_fin.torque_add == 0.0);
+
+    // Difficulty bonus for HARD+ (kHardPlus = 4 -> 60%).
+    CHECK(race::difficulty_bonus_percent(4) == 60);
+  }
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
   std::printf(failures ? "race_tests: %d failure(s)\n" : "race_tests: ok\n", failures);

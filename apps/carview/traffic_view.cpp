@@ -246,7 +246,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
 void TrafficView::contact_bodies(std::vector<drive::ContactBody>& out, int group) {
   if (!bodies_) return;
   const double scale = bodies_->torque_scale();
-  bodies_->for_each([&](drive::Vehicle& v) { out.push_back({&v, scale, group}); });
+  bodies_->for_each([&](drive::Vehicle& v) { out.push_back({&v, scale, group, drive::ContactRole::kTraffic}); });
 }
 
 Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,

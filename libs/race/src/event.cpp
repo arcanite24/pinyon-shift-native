@@ -34,8 +34,30 @@ bool parse_difficulty(const std::string& s0, Difficulty& out) {
   else if (s == "med" || s == "medium") out = Difficulty::kMed;
   else if (s == "hard") out = Difficulty::kHard;
   else if (s == "pro") out = Difficulty::kPro;
+  else if (s == "hard+" || s == "hard-plus" || s == "hardplus" || s == "unbeatable") out = Difficulty::kHardPlus;
   else return false;
   return true;
+}
+
+bool parse_ai_mode(const std::string& s0, AiMode& out) {
+  std::string s = s0;
+  for (auto& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "stock" || s == "default") out = AiMode::kStock;
+  else if (s == "fair" || s == "no-rubberband" || s == "clean") out = AiMode::kFair;
+  else if (s == "hard" || s == "hard+" || s == "pinyon") out = AiMode::kHard;
+  else return false;
+  return true;
+}
+
+bool is_pinyon_hard(Difficulty d, AiMode mode) {
+  return d == Difficulty::kHardPlus || mode == AiMode::kHard;
+}
+
+int effective_db_difficulty(Difficulty d, AiMode mode) {
+  int base = std::clamp(int(d), 0, 3);
+  if (d == Difficulty::kHardPlus) return 3;
+  if (mode == AiMode::kHard && base < 3) ++base;
+  return base;
 }
 
 const SkillRow* EventData::skill(int id) const {
@@ -66,13 +88,13 @@ double stock_performance_index(const std::filesystem::path& game_root, const std
 
 bool load_event(const std::filesystem::path& game_root, const std::string& horizon_id, Difficulty difficulty,
                 EventData& out, std::string* error, const std::filesystem::path& state_root,
-                const cars::PartsDb* shared_db) {
+                const cars::PartsDb* shared_db, AiMode ai_mode) {
   Db db;
   if (!db.open(game_root, state_root, shared_db, error)) return false;
   out = EventData{};
   out.horizon_id = horizon_id;
   static const char* kSuffix[] = {"Easy", "Med", "Hard", "Pro"};
-  const std::string sfx = kSuffix[int(difficulty)];
+  const std::string sfx = kSuffix[effective_db_difficulty(difficulty, ai_mode)];
   bool found = false;
   if (!db.each("select Id, AISkill" + sfx + ", AITemperament" + sfx + ", AIRubberband" + sfx +
                    ", PlayerGridPosition, CashPrize, coalesce(Level, 0), coalesce(CareerEventStyle, 0), "
@@ -192,8 +214,14 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                },
                error))
     return false;
-  return db.each("select Credits from EventScoring where ScoringID = 1 order by place", {},
-                 [&](sqlite3_stmt* s) { out.scoring.push_back(d(s, 0)); }, error);
+  if (!db.each("select Credits from EventScoring where ScoringID = 1 order by place", {},
+               [&](sqlite3_stmt* s) { out.scoring.push_back(d(s, 0)); }, error))
+    return false;
+  // Optional in minimal synthetic test databases.
+  std::string adj_err;
+  db.each("select TimeRatio, SkillAdjustment from AISkillAdjustments order by TimeRatio", {},
+          [&](sqlite3_stmt* s) { out.skill_adjustments.emplace_back(int(i64(s, 0)), int(i64(s, 1))); }, &adj_err);
+  return true;
 }
 
 bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error,

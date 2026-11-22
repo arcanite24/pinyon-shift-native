@@ -800,6 +800,51 @@ int main() {
   test_ai_slip_rule();
   test_speed_planner();
   test_contact_no_tunnelling();
+  // Slice 6: contact torque role scaling (PlayerTorqueScale = 0,
+  // RaceCarTorqueScaleVsTrafficInRace = 0.05) and non-finite guards.
+  {
+    auto p = test_car();
+    drive::Vehicle player(p), race_ai(p), traffic(p);
+    // Offset front-corner contact (normal along +z, lateral offset x = 0.7 m):
+    // player angular_scale 0 -> zero yaw impulse; race AI angular_scale 0.2 -> non-zero yaw.
+    player.launch({0, 0, 0}, 0, 10.0);
+    race_ai.launch({0.7, 0, 3.8}, 0, -10.0);
+    std::vector<drive::ContactBody> bodies{
+        {&player, 0.0, 0, drive::ContactRole::kPlayer, 0.0},
+        {&race_ai, 0.2, 0, drive::ContactRole::kRaceAi, 0.05},
+    };
+    const int n1 = drive::resolve_contacts(bodies, {0.0, 0.05});
+    CHECK(n1 == 1);
+    CHECK(std::fabs(player.angular_velocity().y) < 1e-9);
+    CHECK(std::fabs(race_ai.angular_velocity().y) > 1e-4);
+
+    // Race AI vs Traffic uses angular_scale_vs_traffic (0.05 < 0.2).
+    drive::Vehicle ai_vs_ai(p), ai_vs_tr(p), peer(p), tr_peer(p);
+    ai_vs_ai.launch({0, 0, 0}, 0, 12.0);
+    peer.launch({0.7, 0, 3.8}, 0, -12.0);
+    ai_vs_tr.launch({0, 0, 0}, 0, 12.0);
+    tr_peer.launch({0.7, 0, 3.8}, 0, -12.0);
+    std::vector<drive::ContactBody> b_ai{
+        {&ai_vs_ai, 0.2, 0, drive::ContactRole::kRaceAi, 0.05},
+        {&peer, 0.2, 0, drive::ContactRole::kRaceAi, 0.05},
+    };
+    std::vector<drive::ContactBody> b_tr{
+        {&ai_vs_tr, 0.2, 0, drive::ContactRole::kRaceAi, 0.05},
+        {&tr_peer, 0.25, 0, drive::ContactRole::kTraffic, -1.0},
+    };
+    CHECK(drive::resolve_contacts(b_ai, {0.0, 0.05}) == 1);
+    CHECK(drive::resolve_contacts(b_tr, {0.0, 0.05}) == 1);
+    CHECK(std::fabs(ai_vs_tr.angular_velocity().y) < std::fabs(ai_vs_ai.angular_velocity().y));
+
+    // Non-finite position must not infect other cars.
+    drive::Vehicle nan_car(p), ok_car(p);
+    const double qnan = std::numeric_limits<double>::quiet_NaN();
+    nan_car.place({qnan, 0, 0}, 0);
+    ok_car.launch({0, 0, 0}, 0, 10.0);
+    std::vector<drive::ContactBody> b_nan{{&nan_car, 0.2, 0}, {&ok_car, 0.2, 0}};
+    CHECK(drive::resolve_contacts(b_nan, {0.0, 0.05}) == 0);
+    CHECK(std::isfinite(ok_car.position().x) && std::isfinite(ok_car.velocity().z));
+  }
   test_per_car_physics();
   test_assists_and_transmission();
   if (failures) {

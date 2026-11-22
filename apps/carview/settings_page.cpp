@@ -36,7 +36,8 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"easy", {"--difficulty", "easy"}},
         {"medium", {"--difficulty", "med"}},
         {"hard", {"--difficulty", "hard"}},
-        {"pro", {"--difficulty", "pro"}}}},
+        {"pro", {"--difficulty", "pro"}},
+        {"hard+ (pinyon)", {"--difficulty", "hard+"}}}},
       {"rubber-banding", {{"on", {}}, {"off", {"--no-rubberband"}}}},
       {"traffic", {{"on", {}}, {"off", {"--no-traffic"}}}},
       {"collectibles", {{"on", {}}, {"off", {"--no-collectibles"}}}},
@@ -152,6 +153,10 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"midnight (00:00)", {"--tod-preset", "0"}}}},
       {"motion blur", {{"on", {}}, {"off", {"--no-motion-blur"}}}},
       {"depth of field", {{"on", {}}, {"off", {"--no-dof"}}}},
+      {"ai opponents",
+       {{"stock", {}},
+        {"no rubber-banding", {"--ai-mode", "fair"}},
+        {"hard (+1 tier)", {"--ai-mode", "hard"}}}},
   };
 }
 
@@ -195,7 +200,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
     if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
                    t == "--motion-blur" || t == "--dof" || t == "--satnav" || t == "--no-treasure-map")) owned = true;
     const bool takes_value =
-        has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--camera" ||
+        has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--ai-mode" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
                       t == "--mods" || t == "--language" || t == "--rumble-scale" || t == "--controller-layout" ||
                       t == "--steer-dz-in" || t == "--steer-dz-out" || t == "--throttle-dz-in" ||
@@ -282,8 +287,14 @@ LiveSettings SettingsPage::live_settings() const {
   else if (diff == "med") ls.difficulty = 1;
   else if (diff == "hard") ls.difficulty = 2;
   else if (diff == "pro") ls.difficulty = 3;
+  else if (diff == "hard+") ls.difficulty = 4;
 
-  ls.rubberband = pick_label("rubber-banding") != "off";
+  const std::string aim = pick_val("ai opponents");
+  if (aim == "fair") ls.ai_mode = 1;
+  else if (aim == "hard") ls.ai_mode = 2;
+  else ls.ai_mode = 0;
+
+  ls.rubberband = pick_label("rubber-banding") != "off" && ls.ai_mode == 0 && ls.difficulty != 4;
   ls.radio = pick_label("radio") != "off";
   ls.sound = pick_label("sound") != "off";
   ls.satnav = pick_label("satnav") != "off";

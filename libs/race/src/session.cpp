@@ -116,66 +116,91 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
                 std::span<const float> speed, std::span<const LaneParams> params, size_t ai, std::span<float> lane,
                 double dt, double rate, std::span<float> cap) {
   const size_t n = std::min({progress.size(), cross.size(), speed.size()});
-  constexpr float kWidth = 2.0f;  // a car's width, m (ours)
+  constexpr float kWidth = 2.05f;  // a car's width, m
   for (size_t i = 0; i < ai && i < n && i < lane.size(); ++i) {
     const LaneParams& p = params[std::min(i, params.size() - 1)];
-    // The nearest car ahead within the trailing distance, in the way and slower.
+    const float sep = kWidth + p.car_clearance + 0.25f;
+    // Look further ahead at speed so overtaking initiates ~0.9 s before closing
+    // rather than stacking in a conga line behind kFollowRange.
+    const double pass_range = std::max<double>(p.trailing, std::min(32.0, 0.9 * std::max(0.0f, speed[i])));
     size_t block = n;
     double best = 1e30;
     for (size_t j = 0; j < n; ++j) {
       if (j == i) continue;
       const double gap = progress[j] - progress[i];
-      if (gap <= 0 || gap > p.trailing || gap >= best) continue;
-      if (std::fabs(cross[j] - cross[i]) > kWidth + p.car_clearance) continue;
-      if (speed[i] <= speed[j]) continue;
+      if (gap <= 0 || gap > pass_range || gap >= best) continue;
+      if (std::fabs(cross[j] - cross[i]) > sep && std::fabs(cross[j] - lane[i]) > sep) continue;
+      // Trigger pass when faster OR close behind (even if follow-cap already matched speed).
+      if (speed[i] <= speed[j] && gap > p.trailing + 3.0) continue;
       block = j, best = gap;
     }
-    float target = 0;
-    const double right = line.room(progress[i], true), left = line.room(progress[i], false);
-    if (block < n) {
-      const double hw = right < 1e8 ? 0.5 * (right + left) : 4.0;
-      const float shift = float(0.5 * hw + p.car_clearance);
-      // Keep a side once chosen; else the side with more room past the car ahead.
-      float side = lane[i] > 0.3f ? 1.0f : lane[i] < -0.3f ? -1.0f : 0.0f;
-      if (side == 0) side = (right - cross[block]) >= (left + cross[block]) ? 1.0f : -1.0f;
-      target = side * shift;
-    } else {
-      // Ours, beyond the spec's interim: a car alongside (within a car's
-      // length) and overlapping across: keep a car's width plus the
-      // clearance from it, on the side this car is already on.
-      for (size_t j = 0; j < n; ++j) {
-        if (j == i || std::fabs(progress[j] - progress[i]) > 5.0) continue;
-        const float d = cross[i] - cross[j];
-        if (std::fabs(d) > kWidth + p.car_clearance) continue;
-        const float side = d > 0 ? 1.0f : d < 0 ? -1.0f : (i < j ? 1.0f : -1.0f);
-        target = cross[j] + side * (kWidth + p.car_clearance + 0.3f);
-        break;
+    double right = line.room(progress[i], true), left = line.room(progress[i], false);
+    if (right < 1e8) {
+      // Check room ahead as well so overtaking never pushes a car into a
+      // narrowing barrier 15-35 m down the road.
+      for (double da : {10.0, 20.0, 35.0}) {
+        const double pa = std::min(line.length(), progress[i] + da);
+        right = std::min(right, line.room(pa, true));
+        left = std::min(left, line.room(pa, false));
       }
     }
-    if (right < 1e8)
-      target = std::clamp(target, -float(std::max(0.0, left - p.edge_clearance)),
-                          float(std::max(0.0, right - p.edge_clearance)));
+    const double edge_pad = std::max<double>(p.edge_clearance, 0.35);
+    const float min_lane = right < 1e8 ? -float(std::max(0.0, left - edge_pad)) : -3.3f;
+    const float max_lane = right < 1e8 ? float(std::max(0.0, right - edge_pad)) : 3.3f;
+    float target = 0.0f;
+    if (block < n) {
+      // Check how much clear room exists on each side of the blocking car.
+      const float pass_r =
+          right < 1e8 ? std::min(3.3f, std::max(sep + 0.35f, float(0.5 * right + p.car_clearance))) : sep + 0.35f;
+      const float pass_l =
+          right < 1e8 ? std::min(3.3f, std::max(sep + 0.35f, float(0.5 * left + p.car_clearance))) : sep + 0.35f;
+      const float cand_right = std::clamp(cross[block] + pass_r, min_lane, max_lane);
+      const float cand_left = std::clamp(cross[block] - pass_l, min_lane, max_lane);
+      const float room_r = cand_right - cross[block];
+      const float room_l = cross[block] - cand_left;
+      // Keep current side if it has enough clearance; else take the wider side.
+      float side = lane[i] > 0.35f ? 1.0f : lane[i] < -0.35f ? -1.0f : 0.0f;
+      if (side > 0 && room_r < sep * 0.75f && room_l > room_r) side = -1.0f;
+      else if (side < 0 && room_l < sep * 0.75f && room_r > room_l) side = 1.0f;
+      if (side == 0) side = room_r >= room_l ? 1.0f : -1.0f;
+      target = side > 0 ? cand_right : cand_left;
+    }
+    // Check all cars alongside (within 5.8 m longitudinally) so cars never merge
+    // sideways into a neighbour or rub doors through a corner.
+    for (size_t j = 0; j < n; ++j) {
+      if (j == i || std::fabs(progress[j] - progress[i]) > 5.8) continue;
+      const float d_now = cross[i] - cross[j];
+      const float d_tgt = target - cross[j];
+      if (std::fabs(d_now) > sep + 0.2f && std::fabs(d_tgt) > sep) continue;
+      const float side = d_now > 0.05f ? 1.0f : d_now < -0.05f ? -1.0f : (i < j ? 1.0f : -1.0f);
+      const float push = cross[j] + side * (sep + 0.25f);
+      if (side > 0) target = std::max(target, push);
+      else target = std::min(target, push);
+    }
+    target = std::clamp(target, min_lane, max_lane);
     const float step = float(rate * dt);
     lane[i] += std::clamp(target - lane[i], -step, step);
     if (i < cap.size()) {
       cap[i] = 1e9f;
-      if (block < n && std::fabs(lane[i] - cross[block]) < kWidth + p.car_clearance)
-        cap[i] = speed[block] + 0.5f * std::max(0.0f, float(best) - 5.0f);
-      // Ours (the spec leaves contact to the physics): behind a car that
-      // overlaps this car's lane within 40 m, keep a speed from which this
-      // car can still brake to the other's before closing to 4 m, so a car
-      // braking for a corner is not run into. b: a braking rate every car
-      // reaches (ours: under the lowest planned braking of the gate's
-      // fields, 14.9 m/s^2; a 25 m pass trigger was tried and hurt FR24).
-      constexpr float kFollowRange = 40, kMinGap = 4, kBrake = 14;
+      // Only cap speed behind a car that still blocks both our current lateral
+      // position and our chosen target lane, so an active overtake is not
+      // brake-checked.
+      constexpr float kFollowRange = 36, kMinGap = 5.0f, kBrake = 15.0f;
       for (size_t j = 0; j < n; ++j) {
         if (j == i) continue;
         const double gap = progress[j] - progress[i];
         if (gap <= 0 || gap > kFollowRange) continue;
-        if (std::fabs(lane[i] - cross[j]) > kWidth + p.car_clearance) continue;
+        const bool in_curr = std::fabs(cross[i] - cross[j]) < kWidth + p.car_clearance;
+        const bool in_lane = std::fabs(lane[i] - cross[j]) < kWidth + p.car_clearance;
+        const bool in_tgt = std::fabs(target - cross[j]) < kWidth + p.car_clearance;
+        if (!(in_curr && (in_lane || (in_tgt && gap < 10.0)))) continue;
         const float vj = std::max(0.0f, speed[j]);
         const float room = std::max(0.0f, float(gap) - kMinGap);
         cap[i] = std::min(cap[i], std::sqrt(vj * vj + 2 * kBrake * room));
+      }
+      if (block < n && std::fabs(cross[i] - cross[block]) < kWidth + p.car_clearance &&
+          std::fabs(lane[i] - cross[block]) < kWidth + p.car_clearance && best < 9.0) {
+        cap[i] = std::min(cap[i], std::max(0.0f, speed[block]) + 0.5f * std::max(0.0f, float(best) - 5.0f));
       }
     }
   }

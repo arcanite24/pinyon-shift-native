@@ -59,6 +59,8 @@ std::string save_to_text(const DriveSave& s) {
     out += "max_skills " + std::to_string(s.max_skills_score) + " " + std::to_string(s.max_skills_car) + "\n";
   if (s.fame_rewards_claimed > 0) out += "fame_claimed " + std::to_string(s.fame_rewards_claimed) + "\n";
   if (s.difficulty != 1) out += "difficulty " + std::to_string(s.difficulty) + "\n";
+  if (s.ai_skill != 10) out += "ai_skill " + std::to_string(s.ai_skill) + "\n";
+  if (s.ai_mode != 0) out += "ai_mode " + std::to_string(s.ai_mode) + "\n";
   if (!s.radio_station.empty() || !s.radio_dj || std::fabs(s.radio_volume - 1.0) > 1e-4)
     out += "radio " + (s.radio_station.empty() ? std::string("-") : s.radio_station) + " " +
            (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
@@ -201,7 +203,13 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       l >> out.fame_rewards_claimed;
     } else if (key == "difficulty") {
       int d = 1;
-      if (l >> d && d >= 0 && d <= 3) out.difficulty = d;
+      if (l >> d && d >= 0 && d <= 4) out.difficulty = d;
+    } else if (key == "ai_skill") {
+      int sk = 10;
+      if (l >> sk && sk >= 1 && sk <= 20) out.ai_skill = sk;
+    } else if (key == "ai_mode") {
+      int m = 0;
+      if (l >> m && m >= 0 && m <= 2) out.ai_mode = m;
     } else if (key == "radio") {
       std::string st;
       int dj = 1;

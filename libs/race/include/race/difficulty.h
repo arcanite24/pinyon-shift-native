@@ -19,6 +19,44 @@ struct DriverSetup {
 // skill row's Rubberbands_id.
 DriverSetup assign_driver(int event_skill, int event_temperament, int event_rubberband, int skill_modifier,
                           int aggro_modifier, int rubberband_modifier, const EventData& rows);
+// Assigns driver parameters with Pinyon Shift's HARD mode (+1 tier, max
+// aggression temperament 1, skill 1 on Pro/HardPlus, rubber-banding disabled).
+DriverSetup assign_driver_for_mode(int event_skill, int event_temperament, int event_rubberband, int skill_modifier,
+                                   int aggro_modifier, int rubberband_modifier, Difficulty base_difficulty,
+                                   AiMode ai_mode, const EventData& rows);
+
+// Nemesis rival boost (SPEC-RACE-AI, Code-only boosts):
+// Runs only for a nemesis rival once the start boost has ended (s >= 1000 m).
+// - Multi-AI race with >= 1 other race AI ahead: braking/cornering boosted by
+//   1.5x (clamped to 1.0 / 1.25 via ai_boost), torque +0.3.
+// - 1v1 race (other_ai_count == 0): skill scalars untouched; torque-only ramp
+//   from 50 m to 100 m behind the player, shut off within 500 m of the finish.
+struct NemesisBoostResult {
+  double braking = 1.0;
+  double cornering = 1.0;
+  double torque_add = 0.0;
+  bool active = false;
+};
+NemesisBoostResult nemesis_rival_boost(bool is_nemesis, bool start_boost_done, int other_ai_count, int other_ai_ahead,
+                                       double gap_behind_player, double dist_to_finish, double braking,
+                                       double cornering);
+
+// Dynamic difficulty (GameTunableSettings.ini [DynamicDifficulty] +
+// AISkillAdjustments): adjusts profile Main/AISkill (1..20, lower = harder)
+// after a finished race in STOCK AI mode. Disabled when ai_mode != kStock.
+struct DynamicDifficultyConfig {
+  int skill_to_temperament_ratio = 4;
+  int easy_upper_bound = 20;
+  int medium_upper_bound = 16;
+  int hard_upper_bound = 4;
+  int pro_upper_bound = 1;
+  int max_num_races = 3;
+};
+int lookup_skill_adjustment(int time_ratio_pct, const std::vector<std::pair<int, int>>& table);
+int update_dynamic_ai_skill(int current_skill, double player_time, double ref_ai_time, int num_races_completed,
+                            AiMode mode, const std::vector<std::pair<int, int>>& table,
+                            const DynamicDifficultyConfig& cfg = {});
+Difficulty difficulty_from_dynamic_skill(int ai_skill, const DynamicDifficultyConfig& cfg = {});
 
 // The torque factor in torque-cut mode: 1 - r x TorqueCutFactor, r linear
 // from 0 at StartTorqueCutDistance to 1 at MaxTorqueCutDistance (clamped).

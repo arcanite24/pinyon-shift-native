@@ -1,6 +1,9 @@
 #include "race/difficulty.h"
 
 #include <algorithm>
+#include <cmath>
+
+#include "drive/ai_driver.h"
 
 namespace race {
 
@@ -13,6 +16,83 @@ DriverSetup assign_driver(int event_skill, int event_temperament, int event_rubb
   else if (const SkillRow* r = rows.skill(s.skill)) s.rubberband_id = r->rubberband_id;
   else s.rubberband_id = 0;
   return s;
+}
+
+DriverSetup assign_driver_for_mode(int event_skill, int event_temperament, int event_rubberband, int skill_modifier,
+                                   int aggro_modifier, int rubberband_modifier, Difficulty base_difficulty,
+                                   AiMode ai_mode, const EventData& rows) {
+  DriverSetup s = assign_driver(event_skill, event_temperament, event_rubberband, skill_modifier, aggro_modifier,
+                                rubberband_modifier, rows);
+  if (is_pinyon_hard(base_difficulty, ai_mode)) {
+    // Pinyon Shift HARD (+1 tier): max aggression (AITemperaments row 1),
+    // and at Pro / HardPlus base tier forces strongest AISkills row 1.
+    s.temperament = 1;
+    if (base_difficulty == Difficulty::kPro || base_difficulty == Difficulty::kHardPlus) s.skill = 1;
+    s.rubberband_id = 0;
+  }
+  return s;
+}
+
+NemesisBoostResult nemesis_rival_boost(bool is_nemesis, bool start_boost_done, int other_ai_count, int other_ai_ahead,
+                                       double gap_behind_player, double dist_to_finish, double braking,
+                                       double cornering) {
+  NemesisBoostResult r{braking, cornering, 0.0, false};
+  if (!is_nemesis || !start_boost_done) return r;
+  if (other_ai_count > 0) {
+    if (other_ai_ahead > 0) {
+      r.braking = drive::ai_boost(braking, 1.5, 1.0);
+      r.cornering = drive::ai_boost(cornering, 1.5, 1.25);
+      r.torque_add = 0.3;
+      r.active = true;
+    }
+    return r;
+  }
+  // 1v1 nemesis rival (e.g. NR02): skill scalars untouched; torque-only ramp
+  // from 50 m to 100 m behind the player, shut off within 500 m of the finish.
+  if (dist_to_finish > 500.0 && gap_behind_player > 50.0) {
+    const double f = std::clamp((gap_behind_player - 50.0) / 50.0, 0.0, 1.0);
+    r.torque_add = 0.15 * f;
+    r.active = r.torque_add > 0.0;
+  }
+  return r;
+}
+
+int lookup_skill_adjustment(int time_ratio_pct, const std::vector<std::pair<int, int>>& table) {
+  static const std::pair<int, int> kBuiltIn[] = {
+      {90, -9}, {91, -9}, {92, -9}, {93, -9}, {94, -7}, {95, -3}, {96, -2}, {97, -1}, {98, -1}, {99, 1}, {100, 2},
+      {101, 4}, {102, 6}, {103, 8}, {104, 10}, {105, 11}, {106, 12}, {107, 13}, {108, 14}, {109, 15}, {110, 15}};
+  const int r = std::clamp(time_ratio_pct, 90, 110);
+  if (!table.empty()) {
+    int best = table.front().second;
+    int best_dist = std::abs(table.front().first - r);
+    for (const auto& [ratio, adj] : table) {
+      const int dist = std::abs(ratio - r);
+      if (dist < best_dist) best_dist = dist, best = adj;
+    }
+    return best;
+  }
+  for (const auto& [ratio, adj] : kBuiltIn)
+    if (ratio == r) return adj;
+  return 0;
+}
+
+int update_dynamic_ai_skill(int current_skill, double player_time, double ref_ai_time, int num_races_completed,
+                            AiMode mode, const std::vector<std::pair<int, int>>& table,
+                            const DynamicDifficultyConfig& cfg) {
+  const int clamped = std::clamp(current_skill, 1, std::max(1, cfg.easy_upper_bound));
+  if (mode != AiMode::kStock || !(player_time > 0.0) || !(ref_ai_time > 0.0)) return clamped;
+  const int ratio = std::clamp(int(std::lround(100.0 * player_time / ref_ai_time)), 90, 110);
+  const int adj = lookup_skill_adjustment(ratio, table);
+  const int div = std::clamp(num_races_completed, 1, std::max(1, cfg.max_num_races));
+  const int delta = int(std::lround(double(adj) / double(div)));
+  return std::clamp(clamped + delta, 1, std::max(1, cfg.easy_upper_bound));
+}
+
+Difficulty difficulty_from_dynamic_skill(int ai_skill, const DynamicDifficultyConfig& cfg) {
+  if (ai_skill <= cfg.pro_upper_bound) return Difficulty::kPro;
+  if (ai_skill <= cfg.hard_upper_bound) return Difficulty::kHard;
+  if (ai_skill <= cfg.medium_upper_bound) return Difficulty::kMed;
+  return Difficulty::kEasy;
 }
 
 double torque_cut(const RubberbandRow& row, double gap) {

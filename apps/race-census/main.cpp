@@ -4,6 +4,7 @@
 // One line an event, then counts by career type. Exit 1 if a supported
 // race (an AI line, ribbon 0 closed or ribbon 2 open, one lap) fails.
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -38,9 +39,16 @@ int main(int argc, char** argv) {
     return 0;
   }
   const bool quiet = argc > 2 && std::string(argv[2]) == "--quiet";
+  std::filesystem::path state_root;
+  for (int i = 2; i < argc; ++i) {
+    if (std::string(argv[i]) == "--state-root" && i + 1 < argc) state_root = argv[++i];
+  }
+  if (state_root.empty()) {
+    if (const char* env_state = std::getenv("SHIFT_STATE_ROOT")) state_root = env_state;
+  }
   std::vector<race::EventSummary> events;
   std::string e;
-  if (!race::list_events(root, events, &e)) {
+  if (!race::list_events(root, events, &e, state_root)) {
     std::fprintf(stderr, "race-census: %s\n", e.c_str());
     return 1;
   }
