@@ -252,11 +252,14 @@ struct Mark {
 bool marker_matches_filter(const MapMarker& m, MapFilter f) {
   if (f == MapFilter::kAll) return true;
   switch (f) {
-    case MapFilter::kEvents: return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite;
+    case MapFilter::kEvents:
+      return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite || m.kind == MapMarker::kH2hFinish;
     case MapFilter::kStreetRaces: return m.kind == MapMarker::kStreetHub || m.icon_tag == "streetrace";
     case MapFilter::kOutposts: return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
     case MapFilter::kCollectibles: return false;
-    case MapFilter::kPrStunts: return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost;
+    case MapFilter::kPrStunts:
+      return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost || m.kind == MapMarker::kSpeedTrap ||
+             m.kind == MapMarker::kSpeedZone;
     default: return true;
   }
 }
@@ -550,6 +553,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     cv.line(p.x, p.y, p.x, p.y, 10 * unit + 1.5, Rgba{25, 28, 34, 210});
     cv.line(p.x, p.y, p.x, p.y, 8 * unit, Rgba{198, 204, 212, 235});
   }
+  // Roaming Festival AI racers: distinct Horizon-pink discs with bright rim.
+  for (const auto& f : scene.festival_ai) {
+    if (std::hypot(f[0] - scene.x, f[1] - scene.z) > reach) continue;
+    const P p = project(f[0], f[1]);
+    if (p.depth < 1) continue;
+    cv.line(p.x, p.y, p.x, p.y, 15 * unit + 2, Rgba{255, 255, 255, 240});
+    cv.line(p.x, p.y, p.x, p.y, 15 * unit - 1.5, Rgba{245, 0, 96, 255});
+  }
   // Opponents: white discs with a grey rim, as the race frames show.
   for (const auto& o : scene.opponents) {
     if (std::hypot(o[0] - scene.x, o[1] - scene.z) > reach) continue;
@@ -765,6 +776,11 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
               3.0, Rgba{74, 238, 97, 255});
     }
     cv.icon(large_icons_, 2, 4, dp[0], dp[1] - 10.0 * unit, 52.0 * unit, 0, Rgba{74, 238, 97, 255});
+  }
+  for (const auto& f : scene.festival_ai) {
+    const auto p = to_screen(f[0], f[1]);
+    cv.line(p[0], p[1], p[0], p[1], 13, Rgba{255, 255, 255, 235});
+    cv.line(p[0], p[1], p[0], p[1], 9, Rgba{245, 0, 96, 255});
   }
   for (const auto& o : scene.opponents) {
     const auto p = to_screen(o[0], o[1]);

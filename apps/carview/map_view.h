@@ -51,7 +51,7 @@ inline const char* map_filter_name(MapFilter f) {
 }
 
 struct MapMarker {
-  enum Kind { kEvent, kStreetHub, kFestivalSite, kOutpost, kPrStunt };
+  enum Kind { kEvent, kStreetHub, kFestivalSite, kOutpost, kPrStunt, kSpeedTrap, kSpeedZone, kH2hFinish };
   Kind kind = kEvent;
   std::string icon_tag;  // MapProfile key: race, exhibition, streetrace, nemesisrace, racecentral, autoshow, workshop, paintshop, gas_station, ...
   std::string id;        // HorizonEventID, hub id, site name, outpost id, or stunt id
@@ -79,6 +79,8 @@ struct MapScene {
   std::vector<std::array<double, 2>> opponents;
   // Free-roam traffic vehicles (x, z), drawn as subtle car dots on the minimap.
   std::vector<std::array<double, 2>> traffic;
+  // Roaming Festival AI racers (x, z), drawn as distinct amber/pink racer discs.
+  std::vector<std::array<double, 2>> festival_ai;
   // A race's route ahead (x, z), drawn green on the minimap (SPEC-UI-LAYOUTS a).
   std::vector<std::array<double, 2>> route;
   // Active free-roam GPS route (x, z) and destination point.

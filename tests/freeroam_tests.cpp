@@ -9,6 +9,9 @@
 #include <string>
 
 #include "freeroam/collectibles.h"
+#include "freeroam/festival_ai.h"
+#include "freeroam/skills.h"
+#include "freeroam/speed_zones.h"
 
 namespace {
 
@@ -138,6 +141,137 @@ int main() {
   CHECK(!parse_collectibles(R"(<A><Activity type="ActivityFlyers" name="flyer_404"/></A>)", "<A/>", kObjs, bad,
                             &error));
 
+  // Synthetic Speed Traps & Speed Zones.
+  {
+    const char* kCamXml = R"(<ActivityManager>
+      <Activity type="ActivitySpeedCamera" name="speed_camera_01" scoreboard_id="201"><SpeedThreshold minimumSpeed="30.0"/></Activity>
+    </ActivityManager>)";
+    const char* kAvgXml = R"(<ActivityManager>
+      <Activity type="ActivityAverageSpeed" name="average_speed_01" scoreboard_id="101"><SpeedThreshold minimumSpeed="30.0"/></Activity>
+    </ActivityManager>)";
+    const char* kSpeedObjs = R"(<GameObjs>
+      <Obj1 GameplayID="speed_camera_01_left"><Pos x="-10" y="0" z="50"/></Obj1>
+      <Obj2 GameplayID="speed_camera_01_right"><Pos x="10" y="0" z="50"/></Obj2>
+      <Obj3 GameplayID="average_speed_01_left1"><Pos x="-10" y="0" z="100"/></Obj3>
+      <Obj4 GameplayID="average_speed_01_right1"><Pos x="10" y="0" z="100"/></Obj4>
+      <Obj5 GameplayID="average_speed_01_left2"><Pos x="-10" y="0" z="300"/></Obj5>
+      <Obj6 GameplayID="average_speed_01_right2"><Pos x="10" y="0" z="300"/></Obj6>
+    </GameObjs>)";
+    SpeedActivitiesData sdata;
+    CHECK(parse_speed_activities(kCamXml, kAvgXml, kSpeedObjs, sdata, &error));
+    CHECK(sdata.traps.size() == 1 && sdata.zones.size() == 1);
+    SpeedActivityTracker st(sdata);
+    // Cross speed trap at 50 m/s (~111.8 mph).
+    auto ev1 = st.step(0.1, 1.0, 0, 48, 0, 52, 50.0);
+    CHECK(ev1.size() == 1 && ev1[0].kind == SpeedActivityEvent::kTrapTriggered && ev1[0].is_new_pb && ev1[0].flash);
+    CHECK(st.best_trap_mph("speed_camera_01") > 110.0);
+    CHECK(st.hud(1.05).flash_alpha > 0.3f && st.hud(1.05).banner_active);
+    // Enter speed zone gate 1 at t=2.0, drive 200 m in 4.0 s (~111.8 mph), exit gate 2 at t=6.0.
+    auto ev2 = st.step(0.1, 2.0, 0, 98, 0, 102, 50.0);
+    CHECK(ev2.size() == 1 && ev2[0].kind == SpeedActivityEvent::kZoneEntered);
+    CHECK(st.hud(2.5).zone_active);
+    for (int k = 1; k <= 38; ++k) st.step(0.1, 2.0 + k * 0.1, 0, 102 + (k - 1) * 5.0, 0, 102 + k * 5.0, 50.0);
+    auto ev3 = st.step(0.1, 6.0, 0, 297, 0, 303, 50.0);
+    CHECK(ev3.size() == 1 && ev3[0].kind == SpeedActivityEvent::kZoneCompleted && ev3[0].is_new_pb);
+    CHECK(st.best_zone_mph("average_speed_01") > 100.0);
+  }
+
+  // Synthetic 54-skill tracker: MinSpeedToCancelFeats (cancel vs bank), TagAwardInterval,
+  // MaxSkillsCarOrdinal, TwoWheels/TradingPaint/Landscaping/SideSwipe, and SkillChallenge sponsor payouts.
+  {
+    const char* kFame = R"(<Fame><Level rank="249" target="1000"/><Level rank="225" target="5000"/></Fame>)";
+    const char* kFeats = R"(<RaceFeats WorldCollisionThreshold="12" CarCollisionThreshold="12" MinSpeedToCancelFeats="10" DelayAfterCancelling="3" TagAwardInterval="0.3">
+      <Air><Grade LocString="IDS_Air1" Time="0.2" Fame="100"/></Air>
+      <TwoWheels MinSpeed="45"><Grade LocString="IDS_TwoWheels1" Time="0.2" Fame="100"/></TwoWheels>
+      <TradingPaint MinPlayerSpeedMPH="50" MaxDistance="3.2"><Grade LocString="IDS_TradingPaint" SpeedMPH="1" Fame="50"/></TradingPaint>
+      <NearMiss MinPlayerSpeedMPH="50" MaxDistance="4.0"><Grade LocString="IDS_NearMiss1" SpeedMPH="50" Fame="200"/></NearMiss>
+      <Destruction MaxTimeBetweenCollisions="4.0"><Grade LocString="IDS_Destruction1" NumChainedSmashables="1" Fame="100"/></Destruction>
+      <Landscaping RetriggerDelay="1.0" objectType="Fence"><Grade LocString="IDS_Landscaping" Threshold="0" Fame="1000"/></Landscaping>
+    </RaceFeats>)";
+    const char* kSpon = R"(<SkillChallenges>
+      <Challenge id="Fame" type="FameRankChallenge"><Rank levelRequired="225" credits="5000"/></Challenge>
+      <Challenge id="Air" type="SkillChallenge"><Rank skill="Air" grade="4" number="2" credits="5000"/></Challenge>
+      <Challenge id="AnySkill" type="SkillChallenge"><Rank skill="AnySkill" grade="0" number="1" credits="5000"/></Challenge>
+    </SkillChallenges>)";
+    SkillsData sd;
+    CHECK(parse_skills_data(kFame, kFeats, kSpon, sd, &error));
+    CHECK(sd.sponsor_challenges.size() == 3);
+    SkillTracker tr(sd, 0.0, 0, 0, 0);
+    // 1. Trigger Landscaping + Destruction -> TagAwardInterval queues second tag for 0.3 s later!
+    SkillInput in;
+    in.dt = 0.1;
+    in.time = 1.0;
+    in.speed_ms = 30.0;
+    in.forward_speed_ms = 30.0;
+    in.smashed_object = true;
+    in.smashed_type = SmashObjectType::kFence;
+    in.car_id = 1219;
+    auto e1 = tr.step(in);
+    CHECK(e1.size() == 1 && e1[0].kind == SkillEvent::kSkillAwarded);
+    in.smashed_object = false;
+    in.time = 1.4;  // >= 0.3 s later: queued Landscaping tag flushes & triggers AnySkill sponsor tier!
+    auto e2 = tr.step(in);
+    bool got_landscaping = false, got_sponsor = false;
+    for (const auto& ev : e2) {
+      if (ev.skill_id == "Landscaping") got_landscaping = true;
+      if (ev.kind == SkillEvent::kSponsorChallenge && ev.credits == 5000) got_sponsor = true;
+    }
+    CHECK(got_landscaping);
+    CHECK(got_sponsor);
+    // 2. Bank chain after timeout at speed -> updates MaxSkillsCarOrdinal!
+    in.time = 5.0;
+    auto e3 = tr.step(in);
+    CHECK(!e3.empty() && e3[0].kind == SkillEvent::kChainBanked);
+    CHECK(tr.max_skills_score() >= 1100 && tr.max_skills_car() == 1219);
+    // 3. MinSpeedToCancelFeats: dropping below 10 mph cancels active chain instead of banking!
+    in.time = 6.0;
+    in.car_impact_ms = 2.0;  // Trading Paint (below 12 m/s crash threshold)
+    in.nearest_car_dist = 2.0;
+    auto e4 = tr.step(in);
+    CHECK(!e4.empty() && e4[0].skill_id == "TradingPaint");
+    in.car_impact_ms = 0.0;
+    in.nearest_car_dist = 100.0;
+    in.speed_ms = 2.0;  // ~4.5 mph (< 10 mph)
+    in.forward_speed_ms = 2.0;
+    in.time = 7.5;
+    auto e5 = tr.step(in);
+    CHECK(!e5.empty() && e5[0].kind == SkillEvent::kChainLost);
+  }
+
+  // Synthetic Festival AI & Head-to-Head point-to-point race.
+  {
+    traffic::NavMap nm;
+    nm.keys = {"road_type", "traffic_density"};
+    nm.values = {"a", "5"};
+    for (uint32_t i = 0; i < 30; ++i) {
+      traffic::NavNode nd;
+      nd.id = i;
+      nd.z = float(i * 100);
+      nm.nodes.push_back(nd);
+      nm.way_nodes.push_back(i);
+    }
+    nm.tags = {{0, 0}, {1, 1}};
+    traffic::NavWay w;
+    w.node_count = 30;
+    w.tag_count = 2;
+    nm.ways.push_back(w);
+    traffic::Roads roads;
+    roads.build(nm);
+    traffic::TrafficConfig cfg;
+    FestivalManager fm(nm, roads, cfg, 7);
+    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "Marcus Vance", "A", 540}});
+    const uint32_t fid = fm.spawn_ahead({0, 0, 100}, 0.0, 20.0);
+    CHECK(fid > 0);
+    fm.step(0.05, 1.0, {0, 0, 100}, 0.0, 20.0);
+    CHECK(fm.hud(1.0).prompt_visible && fm.hud(1.0).prompt_wager == h2h_wager_credits(540, 0));
+    CHECK(fm.start_head_to_head({0, 0, 100}, 0.0, 1.0, fid));
+    CHECK(fm.h2h_active() && fm.h2h_route().size() >= 10);
+    const auto fin = fm.h2h_finish_pos();
+    HeadToHeadResult hres;
+    CHECK(fm.step(0.05, 5.0, {fin[0], fin[1], fin[2]}, 0.0, 40.0, &hres));
+    CHECK(hres.won && hres.payout_credits == h2h_wager_credits(540, 0));
+  }
+
   // The player's disc.
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
     Collectibles disc;
@@ -146,6 +280,19 @@ int main() {
     if (!error.empty()) std::printf("%s\n", error.c_str());
     std::printf("disc: %zu signs, %zu barn finds\n", disc.signs.size(), disc.barns.size());
     CHECK(disc.signs.size() == 100 && disc.barns.size() == 9);
+    // Disc check: 54/54 HorizonFeats & 14/14 SponsorshipChallenges.
+    SkillsData disc_skills;
+    CHECK(load_skills_data(root, disc_skills, &error));
+    std::printf("disc skills: %zu defs, %zu sponsor challenges\n", disc_skills.skill_def_count(),
+                disc_skills.sponsor_challenges.size());
+    CHECK(disc_skills.skill_def_count() == 54);
+    CHECK(disc_skills.sponsor_challenges.size() == 15);
+    CHECK(near(disc_skills.tag_award_interval, 0.3, 0.01));
+    // Disc check: Speed Traps & Speed Zones.
+    SpeedActivitiesData disc_speed;
+    CHECK(load_speed_activities(root, disc_speed, &error));
+    std::printf("disc speed activities: %zu traps, %zu zones\n", disc_speed.traps.size(), disc_speed.zones.size());
+    CHECK(disc_speed.traps.size() == 22 && disc_speed.zones.size() == 9);
     if (!disc.signs.empty()) {
       const auto& s = disc.signs[0];
       CHECK(s.id == "flyer_001" && near(s.at.x, 1410.35, 0.01) && near(s.at.z, 3126.53, 0.01));

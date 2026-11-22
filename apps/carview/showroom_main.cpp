@@ -79,9 +79,11 @@
 #include "fh1data/xds.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/festival_ai.h"
 #include "freeroam/outposts.h"
 #include "freeroam/road_discovery.h"
 #include "freeroam/skills.h"
+#include "freeroam/speed_zones.h"
 #include "race/career.h"
 #include "profile/drive_save.h"
 #include "garage/garage.h"
@@ -1572,6 +1574,7 @@ int run_drive(int argc, char** argv) {
   bool has_cli_gps = false;
   double cli_gps_x = 0.0, cli_gps_z = 0.0;
   std::string cli_pr_stunt, cli_outpost_hub;
+  bool demo_speed_trap = false, demo_h2h = false;
   std::filesystem::path pause_map_png;
   double cli_map_zoom = 4.5;
   double seed_distance = 0;
@@ -1686,6 +1689,8 @@ int run_drive(int argc, char** argv) {
     else if (a == "--radio-press") radio_press_every = std::atof(next());
     else if (a == "--traffic") traffic_flag = 1;
     else if (a == "--no-traffic") traffic_flag = 0;
+    else if (a == "--demo-speed-trap") demo_speed_trap = true;
+    else if (a == "--demo-h2h") demo_h2h = true;
     else if (a == "--hour") {
       hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
       hour_explicit = true;
@@ -2272,6 +2277,33 @@ int run_drive(int argc, char** argv) {
     std::string e;
     race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
   }
+  race::ProgressionTables prog_tables;
+  bool have_prog_tables = false;
+  if (!world_dir.empty()) {
+    std::string pe;
+    have_prog_tables = race::load_progression_tables(game_root_of(), state_root, shared_db, prog_tables, &pe);
+    if (have_prog_tables)
+      std::printf("progression: %zu driver levels, %zu affinity levels loaded\n", prog_tables.driver_levels.size(),
+                  prog_tables.affinity_levels.size());
+  }
+  if (have_saved) {
+    career.driver_xp = saved.driver_xp;
+    career.driver_level = have_prog_tables ? prog_tables.driver_level_for_xp(career.driver_xp)
+                                           : std::max(1, saved.level);
+    for (const auto& [mid, xp] : saved.make_affinity) career.make_affinity_xp[mid] = xp;
+  }
+  int h2h_races = have_saved ? saved.h2h_races : 0;
+  int h2h_wins = have_saved ? saved.h2h_wins : 0;
+  freeroam::SpeedActivitiesData speed_data;
+  std::unique_ptr<freeroam::SpeedActivityTracker> speed_tracker;
+  if (!world_dir.empty() && colorado_world()) {
+    std::string se;
+    if (freeroam::load_speed_activities(game_root_of(), speed_data, &se)) {
+      speed_tracker = std::make_unique<freeroam::SpeedActivityTracker>(speed_data);
+      if (have_saved) speed_tracker->load_records(saved.speed_traps, saved.speed_zones);
+      std::printf("speed activities: %zu traps, %zu zones loaded\n", speed_data.traps.size(), speed_data.zones.size());
+    }
+  }
   int collected_wristband = 0;
   if (have_saved && saved.collected_wristband >= 0) {
     collected_wristband = saved.collected_wristband;
@@ -2282,10 +2314,15 @@ int run_drive(int argc, char** argv) {
   }
   std::unique_ptr<freeroam::SkillTracker> skill_tracker;
   int64_t max_skills_car = have_saved ? saved.max_skills_car : 0;
+  std::string sponsor_banner_title, sponsor_banner_detail;
+  double sponsor_banner_at = -1e9;
   if (have_skills_data) {
     skill_tracker = std::make_unique<freeroam::SkillTracker>(
         skills_data, have_saved ? saved.popularity_points : 0.0, have_saved ? saved.fame_rewards_claimed : 0,
-        have_saved ? saved.max_skills_score : 0);
+        have_saved ? saved.max_skills_score : 0, max_skills_car);
+    if (have_saved) {
+      for (const auto& sp : saved.sponsors) skill_tracker->set_sponsor_progress(sp.id, sp.count, sp.claimed);
+    }
   }
   auto current_pop_rank = [&]() -> int { return skill_tracker ? skill_tracker->popularity_rank() : 250; };
   auto class_name_list = [&]() {
@@ -2382,6 +2419,14 @@ int run_drive(int argc, char** argv) {
     b.races = cs.races, b.wins = cs.victories, b.podiums = cs.podiums, b.garage = cs.garage_cars;
     b.popularity_rank = current_pop_rank();
     b.max_skills = skill_tracker ? skill_tracker->max_skills_score() : 0;
+    b.driver_level = std::max(1, career.driver_level);
+    b.driver_xp = career.driver_xp;
+    b.speed_traps = speed_tracker ? int(speed_tracker->traps_completed()) : int(saved.speed_traps.size());
+    b.speed_traps_total = int(speed_data.traps.size());
+    b.speed_zones = speed_tracker ? int(speed_tracker->zones_completed()) : int(saved.speed_zones.size());
+    b.speed_zones_total = int(speed_data.zones.size());
+    b.h2h_wins = h2h_wins;
+    b.h2h_races = h2h_races;
     b.signs = cs.signs_found, b.barns = cs.barns_found, b.barns_total = cs.barns;
     b.club_cars = cs.club_cars, b.club_done = cs.club_done, b.club_total = cs.club_total;
     b.rally = cs.has_rally, b.rally_level = cs.rally_level, b.rally_xp = cs.rally_xp;
@@ -3153,6 +3198,62 @@ int run_drive(int argc, char** argv) {
           traffic.reset();
         }
       }
+      // Free-roam Festival AI Racers & instant Head-to-Head (AIOpenWorld.xml cartype="festival").
+      traffic::NavMap festival_nav;
+      traffic::Roads festival_roads;
+      std::unique_ptr<freeroam::FestivalManager> festival_mgr;
+      std::map<std::string, std::unique_ptr<Showroom>> festival_guests;
+      struct FestivalGuestsGuard {
+        Showroom* host;
+        std::map<std::string, std::unique_ptr<Showroom>>* map;
+        ~FestivalGuestsGuard() {
+          if (host) host->set_instances({});
+          if (map) map->clear();
+        }
+      } festival_guard{&showroom, &festival_guests};
+      if (status == 0 && streamer && colorado_world() && !race && (!headless || demo_h2h)) {
+        std::string ferr;
+        traffic::TrafficConfig fcfg;
+        const auto game_root = game_root_of();
+        if (traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", festival_nav, &ferr) &&
+            traffic::read_traffic_config(game_root, fcfg, &ferr, false)) {
+          festival_roads.build(festival_nav);
+          std::set<int64_t> traffic_ids;
+          for (const auto& tm : fcfg.models) traffic_ids.insert(tm.id);
+          std::vector<freeroam::FestivalRacerSpec> roster;
+          for (const auto& [cid, media] : baked_ids) {
+            if (traffic_ids.count(cid) || media == car) continue;
+            freeroam::FestivalRacerSpec sp;
+            sp.car_id = cid;
+            sp.car_media = media;
+            if (have_career_catalog) {
+              if (const auto* cs = career_catalog.find_car(cid)) {
+                sp.pi = !class_bands.empty() ? garage::shown_index(cs->stock_pi, class_bands) : int(cs->stock_pi);
+                const int cl = !class_bands.empty() ? garage::class_of(cs->stock_pi, class_bands) : cs->stock_class;
+                if (cl >= 0 && size_t(cl) < class_bands.size()) sp.car_class = class_bands[size_t(cl)].name;
+              }
+            }
+            if (sp.car_class.empty()) sp.car_class = "B";
+            roster.push_back(std::move(sp));
+            if (roster.size() >= 12) break;
+          }
+          if (!roster.empty()) {
+            const size_t roster_n = roster.size();
+            festival_mgr = std::make_unique<freeroam::FestivalManager>(festival_nav, festival_roads, fcfg, traffic_seed + 17);
+            festival_mgr->set_roster(std::move(roster));
+            festival_mgr->set_hour(hour);
+            festival_mgr->set_wristband_level(collected_wristband);
+            festival_mgr->set_ground([&](double x, double z, double hint, double& y) {
+              if (!ground) return false;
+              drive::Hit h;
+              if (!ground->raycast({x, hint + 4, z}, {0, -1, 0}, 12, h)) return false;
+              y = hint + 4 - h.distance;
+              return true;
+            });
+            std::printf("festival AI: roaming roster ready (%zu models)\n", roster_n);
+          }
+        }
+      }
       // One fixed step, then the stream: gathers again (and swaps the
       // ground and the scenery) once the car is far from the last centre.
       // R and the headless driver's "stuck": a clear spot on the nav road.
@@ -3810,7 +3911,16 @@ int run_drive(int argc, char** argv) {
       std::string won_car_name;
       bool have_touch = false;
       double last_touch_y = 0;  // where the wheels last touched, for the fall check
+      bool have_prev_speed_pos = false;
+      double prev_speed_x = 0.0, prev_speed_z = 0.0;
+      bool demo_h2h_started = false, demo_speed_trap_done = false;
       carview::RigAccelState rig_accel;
+      auto current_make_id = [&]() -> int64_t {
+        if (have_career_catalog) {
+          if (const auto* spec = career_catalog.find_car_by_media(car)) return int64_t(spec->props.make);
+        }
+        return 0;
+      };
       auto step = [&](const drive::Input& user_in) {
         const drive::Input in = race ? race->player_input(vehicle, user_in, traffic.get()) : user_in;
         vehicle.step(in, *ground);
@@ -3836,12 +3946,36 @@ int run_drive(int argc, char** argv) {
                            streamer->collision_radius(), traffic.get());
         if (race && race->session().started()) {
           race_top_speed = std::max(race_top_speed, std::fabs(vehicle.speed()));
-          if (const race::RaceAward* a = race->award(career, wristbands, race_top_speed)) {
+          race::RaceBonusInputs bonus_in;
+          bonus_in.assists_pct = race::assist_difficulty_bonus_percent(race->assists());
+          bonus_in.skills_points = skill_tracker ? skill_tracker->race_skills_banked() : 0;
+          bonus_in.wristband_level = collected_wristband;
+          if (const race::RaceAward* a = race->award(career, wristbands, race_top_speed, bonus_in)) {
+            if (skill_tracker) skill_tracker->reset_race_skills_banked();
+            if (have_prog_tables) {
+              const auto pu = race::apply_progression_xp(career, a->driver_xp, current_make_id(), a->affinity_xp,
+                                                         prog_tables);
+              for (int64_t gcid : pu.gift_cars) {
+                const std::string gnm = award_garage_car(gcid, 0, false);
+                if (!gnm.empty()) {
+                  popup = {"DRIVER LEVEL " + std::to_string(pu.new_driver_level) + " GIFT CAR!", gnm, vehicle.time(),
+                           -1, carview::ui::rgba(247, 255, 38)};
+                  garage_picker();
+                }
+              }
+              if (pu.affinity_bonus_credits > 0) {
+                sponsor_banner_title = "AFFINITY LEVEL " + std::to_string(pu.new_affinity_level);
+                sponsor_banner_detail = "+" + carview::thousands(pu.affinity_bonus_credits) + " Cr  (" +
+                                        std::to_string(int(std::lround(pu.affinity_discount * 100.0))) + "% UPGRADE DISC)";
+                sponsor_banner_at = vehicle.time();
+              }
+            }
             const int lvl = wristbands.level_index(career.wristband_points);
-            std::printf("race: award %lld CR (base %lld, mileage %lld, diff +%d%% %lld), %d wristband points (total %d, %s), credits %lld%s%s\n",
+            std::printf("race: award %lld CR (base %lld, mileage %lld, diff +%d%% %lld, assists %lld, skills %lld, nemesis %lld), %d wristband points (total %d, %s), credits %lld%s%s\n",
                         (long long)a->credits, (long long)a->base_credits, (long long)a->mileage_bonus,
-                        a->difficulty_pct, (long long)a->difficulty_bonus, a->wristband_points, career.wristband_points,
-                        lvl >= 0 ? wristbands.levels[size_t(lvl)].second.c_str() : "no wristband",
+                        a->difficulty_pct, (long long)a->difficulty_bonus, (long long)a->assists_bonus,
+                        (long long)a->skills_bonus, (long long)a->nemesis_bonus, a->wristband_points,
+                        career.wristband_points, lvl >= 0 ? wristbands.levels[size_t(lvl)].second.c_str() : "no wristband",
                         (long long)career.credits, a->first_completion ? ", first completion" : "",
                         a->prize_car ? (", prize car " + std::to_string(a->prize_car)).c_str() : "");
             if (a->prize_car > 0) {
@@ -3984,7 +4118,11 @@ int run_drive(int argc, char** argv) {
           si.speed_ms = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
           si.forward_speed_ms = vel.x * fwd.x + vel.y * fwd.y + vel.z * fwd.z;
           si.lateral_speed_ms = vel.x * right.x + vel.y * right.y + vel.z * right.z;
+          si.yaw_rate = vehicle.angular_velocity().y;
           si.handbrake = in.handbrake;
+          if (have_career_catalog) {
+            if (const auto* spec = career_catalog.find_car_by_media(car)) si.car_id = spec->car_id;
+          }
           int on_ground = 0;
           double max_spin = 0;
           for (int wi = 0; wi < drive::kWheels; ++wi) {
@@ -4028,9 +4166,19 @@ int run_drive(int argc, char** argv) {
             if (sev.kind == freeroam::SkillEvent::kFameSponsor && sev.credits > 0) {
               career.credits = std::min<int64_t>(999999999, career.credits + sev.credits);
               career.total_winnings += sev.credits;
+              sponsor_banner_title = "FAME SPONSORSHIP TIER";
+              sponsor_banner_detail = "RANK " + std::to_string(sev.rank) + "  •  +" + carview::thousands(sev.credits) + " Cr";
+              sponsor_banner_at = vehicle.time();
               popup = {"FAME SPONSOR BONUS",
                        "POPULARITY RANK " + std::to_string(sev.rank) + "  +" + carview::thousands(sev.credits) + " Cr",
                        vehicle.time(), -1, carview::ui::rgba(247, 255, 38)};
+              save_due = true;
+            } else if (sev.kind == freeroam::SkillEvent::kSponsorChallenge && sev.credits > 0) {
+              career.credits = std::min<int64_t>(999999999, career.credits + sev.credits);
+              career.total_winnings += sev.credits;
+              sponsor_banner_title = "SPONSORSHIP TIER " + std::to_string(sev.rank) + ": " + sev.skill_id;
+              sponsor_banner_detail = "+" + carview::thousands(sev.credits) + " Cr REWARD";
+              sponsor_banner_at = vehicle.time();
               save_due = true;
             } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
               // Notify if a Showcase event unlocked at this rank!
@@ -4047,14 +4195,81 @@ int run_drive(int argc, char** argv) {
             }
           }
           if (skill_tracker->max_skills_score() > prev_max_skills) {
-            int64_t cid = 0;
-            if (pre_loaner_car.empty() && have_garage) {
+            int64_t cid = skill_tracker->max_skills_car();
+            if (cid <= 0 && pre_loaner_car.empty() && have_garage) {
               if (const garage::Car* sc = career_garage.selected_car()) cid = sc->car_id;
             }
             if (cid <= 0 && have_career_catalog) {
               if (const auto* spec = career_catalog.find_car_by_media(car)) cid = spec->car_id;
             }
             if (cid > 0) max_skills_car = cid;
+          }
+        }
+        // Speed Traps & Speed Zones (free-roam gate crossings, camera flash, audio cue, PB persistence).
+        if (!race && speed_tracker) {
+          const drive::Vec3 sp_at = vehicle.position();
+          if (!have_prev_speed_pos) {
+            prev_speed_x = sp_at.x;
+            prev_speed_z = sp_at.z;
+            have_prev_speed_pos = true;
+          }
+          if (demo_speed_trap && !demo_speed_trap_done && vehicle.time() >= 4.0 && !speed_data.traps.empty()) {
+            demo_speed_trap_done = true;
+            const auto& g = speed_data.traps.front().gate;
+            const double gx = g.right[0] - g.left[0], gz = g.right[2] - g.left[2];
+            const double gl = std::max(1.0, std::hypot(gx, gz));
+            const double nx = -gz / gl, nz = gx / gl;
+            speed_tracker->step(drive::Vehicle::kStep, vehicle.time(), g.center[0] - nx * 4.0, g.center[2] - nz * 4.0,
+                                g.center[0] + nx * 4.0, g.center[2] + nz * 4.0, 64.5);  // ~144.3 mph flash & PB
+          }
+          const auto speed_evs = speed_tracker->step(drive::Vehicle::kStep, vehicle.time(), prev_speed_x, prev_speed_z,
+                                                     sp_at.x, sp_at.z, vehicle.speed());
+          prev_speed_x = sp_at.x;
+          prev_speed_z = sp_at.z;
+          for (const auto& ev : speed_evs) {
+            if (ev.kind == freeroam::SpeedActivityEvent::kTrapTriggered ||
+                ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted) {
+              if (ev.is_new_pb && have_prog_tables) {
+                race::apply_progression_xp(career, 750, current_make_id(), 350, prog_tables);
+              }
+              if (skill_tracker) skill_tracker->add_popularity(ev.is_new_pb ? 500.0 : 150.0);
+              std::printf("speed activity: %s %.1f mph%s\n", ev.label.c_str(), ev.speed_mph,
+                          ev.is_new_pb ? " (NEW PB!)" : "");
+              save_due = true;
+            }
+          }
+        }
+        // Free-roam Festival AI Racers & instant Head-to-Head point-to-point race.
+        if (!race && festival_mgr) {
+          const drive::Vec3 fp = vehicle.position();
+          const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const double fh = std::atan2(ff.x, ff.z);
+          if (demo_h2h && !demo_h2h_started && vehicle.time() >= 3.0) {
+            demo_h2h_started = true;
+            const uint32_t fid = festival_mgr->spawn_ahead({fp.x, fp.y, fp.z}, fh, 18.0);
+            if (fid) festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, fh, vehicle.time(), fid);
+            if (have_prog_tables && career.driver_xp < 36000) {
+              race::apply_progression_xp(career, 36000, current_make_id(), 18000, prog_tables);
+            }
+            sponsor_banner_title = "SPONSORSHIP TIER 2: NEAR MISS";
+            sponsor_banner_detail = "+10,000 Cr  •  BONDURANT RACING SCHOOL";
+            sponsor_banner_at = vehicle.time();
+          }
+          freeroam::HeadToHeadResult hres;
+          if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
+                                 &hres)) {
+            ++h2h_races;
+            if (hres.won) {
+              ++h2h_wins;
+              career.credits = std::min<int64_t>(999999999, career.credits + hres.payout_credits);
+              career.total_winnings += hres.payout_credits;
+            }
+            if (skill_tracker) skill_tracker->add_popularity(double(hres.popularity_points));
+            if (have_prog_tables)
+              race::apply_progression_xp(career, hres.driver_xp, current_make_id(), hres.driver_xp / 2, prog_tables);
+            std::printf("h2h: %s vs %s (+%lld Cr, +%d Fame)\n", hres.won ? "WON" : "LOST",
+                        hres.opponent_name.c_str(), (long long)hres.payout_credits, hres.popularity_points);
+            save_due = true;
           }
         }
         if (!streamer) return true;
@@ -4145,6 +4360,53 @@ int run_drive(int argc, char** argv) {
           std::vector<Showroom::Instance> more;
           race->instances(info, vehicle, more);
           showroom.add_instances(more);
+        } else if (festival_mgr && !festival_mgr->cars().empty()) {
+          // Render roaming Festival AI racers & active H2H opponent as guest Showrooms.
+          float pm[16];
+          drive::model_to_world(info, vehicle, pm);
+          float world_to_player[16];
+          invert_affine(pm, world_to_player);
+          std::vector<Showroom::Instance> fmore;
+          const bool night_lamps = drive::CarLampState::tod_requests_headlamps(tod_clock.tod_sec);
+          for (const auto& fc : festival_mgr->cars()) {
+            auto it = festival_guests.find(fc.spec.car_media);
+            if (it == festival_guests.end() && festival_guests.size() < 6) {
+              auto gs = std::make_unique<Showroom>(renderer);
+              gs->set_guest();
+              std::string ge;
+              if (gs->load(bake_dir, fc.spec.car_media, ShowroomOptions{}, ge) && gs->upload(ge)) {
+                gs->load_car_lamps(game_root_of(), fc.spec.car_media);
+                it = festival_guests.emplace(fc.spec.car_media, std::move(gs)).first;
+              } else {
+                it = festival_guests.emplace(fc.spec.car_media, nullptr).first;
+              }
+            }
+            if (it == festival_guests.end() || !it->second) continue;
+            const drive::Quat yq{0, std::sin(fc.heading * 0.5), 0, std::cos(fc.heading * 0.5)};
+            const drive::Quat pq{std::sin(-fc.pitch * 0.5), 0, 0, std::cos(-fc.pitch * 0.5)};
+            const drive::Quat q{
+                yq.w * pq.x + yq.x * pq.w + yq.y * pq.z - yq.z * pq.y,
+                yq.w * pq.y - yq.x * pq.z + yq.y * pq.w + yq.z * pq.x,
+                yq.w * pq.z + yq.x * pq.y - yq.y * pq.x + yq.z * pq.w,
+                yq.w * pq.w - yq.x * pq.x - yq.y * pq.y - yq.z * pq.z,
+            };
+            float gm[16];
+            drive::model_to_world(it->second->car(), q, {fc.position.x, fc.position.y, fc.position.z}, gm);
+            Showroom::Instance inst;
+            inst.car = it->second.get();
+            for (int col = 0; col < 4; ++col)
+              for (int row = 0; row < 4; ++row) {
+                float sum = 0;
+                for (int k = 0; k < 4; ++k) sum += world_to_player[k * 4 + row] * gm[col * 4 + k];
+                inst.model[col * 4 + row] = sum;
+              }
+            drive::CarLampState ls;
+            ls.headlamps_on = night_lamps;
+            inst.lamps = ls.vectors();
+            inst.has_lamps = true;
+            fmore.push_back(inst);
+          }
+          if (!fmore.empty()) showroom.add_instances(fmore);
         }
         {
           drive::LampInputs lin{};
@@ -4290,6 +4552,7 @@ int run_drive(int argc, char** argv) {
           showroom.set_skidmarks(asph_tris, rut_tris);
           std::vector<world::DebrisVertex> debris_tris;
           smashables.build_debris_mesh(debris_tris);
+          if (race && race->is_showcase()) race->append_showcase_mesh(debris_tris);
           const drive::Vec3 vpos = vehicle.position();
           world_anim.build_mesh(vpos.x, vpos.y + 1.5, vpos.z, float(vehicle.time()), ground, debris_tris, !low_preset);
           showroom.set_debris_mesh(debris_tris);
@@ -4360,7 +4623,25 @@ int run_drive(int argc, char** argv) {
                                      outpost_progress.discovered_outposts.end());
         s.completed_pr_stunts.assign(outpost_progress.completed_pr_stunts.begin(),
                                      outpost_progress.completed_pr_stunts.end());
+        if (speed_tracker) {
+          s.speed_traps = speed_tracker->save_traps();
+          s.speed_zones = speed_tracker->save_zones();
+        } else if (have_saved) {
+          s.speed_traps = saved.speed_traps;
+          s.speed_zones = saved.speed_zones;
+        }
+        if (skill_tracker) {
+          for (const auto& [sid, prog] : skill_tracker->sponsor_progress())
+            s.sponsors.push_back({sid, prog.count, prog.claimed_tiers});
+        } else if (have_saved) {
+          s.sponsors = saved.sponsors;
+        }
+        s.h2h_races = h2h_races;
+        s.h2h_wins = h2h_wins;
+        s.driver_xp = career.driver_xp;
+        for (const auto& [mid, xp] : career.make_affinity_xp) s.make_affinity.emplace_back(mid, xp);
         if (have_saved) s.carry_from(saved);
+        if (career.driver_level > 0) s.level = career.driver_level;
         s.club = saved.club;
         s.has_controls = true;
         s.controls = live_controls;
@@ -4492,8 +4773,16 @@ int run_drive(int argc, char** argv) {
       carview::MapOverlayHud map_overlay;
       std::vector<MapMarker> cached_map_markers;
       int map_selected_marker = -1;
+      auto affinity_discount_pct = [&]() -> int {
+        if (!have_prog_tables) return 0;
+        const int64_t mid = current_make_id();
+        const auto it = career.make_affinity_xp.find(mid);
+        const int axp = it == career.make_affinity_xp.end() ? 0 : it->second;
+        return int(std::lround(prog_tables.affinity_discount_for_xp(axp) * 100.0));
+      };
       auto discount = [&]() {
-        return freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
+        const int signs_disc = freeroam::upgrade_discount(free_roam ? free_roam->signs_found() : int(saved.signs_found.size()));
+        return std::min(100, signs_disc + affinity_discount_pct());
       };
       auto current_car_info = [&](int64_t& out_car_id, int& out_class_id) {
         out_car_id = 0, out_class_id = 2;
@@ -4768,6 +5057,29 @@ int run_drive(int argc, char** argv) {
           pr_hud.is_photo = pst.kind == freeroam::PrStuntKind::kPhoto;
           d.pr_stunt = &pr_hud;
         }
+        freeroam::SpeedActivityHud speed_hud_state;
+        if (!race && speed_tracker) {
+          speed_hud_state = speed_tracker->hud(vehicle.time());
+          d.speed_hud = &speed_hud_state;
+        }
+        freeroam::HeadToHeadHud h2h_hud_state;
+        if (!race && festival_mgr) {
+          h2h_hud_state = festival_mgr->hud(vehicle.time());
+          d.h2h = &h2h_hud_state;
+        }
+        d.driver_level = std::max(1, career.driver_level);
+        d.driver_xp = career.driver_xp;
+        if (have_prog_tables) {
+          d.driver_next_xp = prog_tables.next_driver_level_xp(career.driver_xp);
+          const int64_t mid = current_make_id();
+          const auto ait = career.make_affinity_xp.find(mid);
+          const int axp = ait == career.make_affinity_xp.end() ? 0 : ait->second;
+          d.affinity_level = prog_tables.affinity_level_for_xp(axp);
+          d.affinity_discount_pct = prog_tables.affinity_discount_for_xp(axp) * 100.0;
+        }
+        d.sponsor_title = sponsor_banner_title;
+        d.sponsor_detail = sponsor_banner_detail;
+        d.sponsor_at = sponsor_banner_at;
         d.name_tags = name_tags;
         carview::RaceHud race_hud;
         const bool race_line = race && banner == race_banner();
@@ -5035,7 +5347,7 @@ int run_drive(int argc, char** argv) {
             for (const auto& st : outposts.stunts) {
               MapMarker mm;
               mm.kind = MapMarker::kPrStunt;
-              mm.icon_tag = st.kind == freeroam::PrStuntKind::kSpeed ? "speedtrap" : "exhibition";
+              mm.icon_tag = st.kind == freeroam::PrStuntKind::kSpeed ? "speed_camera_discovered" : "exhibition";
               mm.id = st.id;
               mm.title = st.title;
               mm.completed = outpost_progress.is_stunt_completed(st.id);
@@ -5044,6 +5356,58 @@ int run_drive(int argc, char** argv) {
                             carview::thousands(st.reward_credits) + " Cr";
               mm.x = st.target_pos.x;
               mm.z = st.target_pos.z;
+              sc.markers.push_back(std::move(mm));
+            }
+          }
+          if (speed_tracker) {
+            for (const auto& t : speed_data.traps) {
+              const double pb = speed_tracker->best_trap_mph(t.id);
+              MapMarker mm;
+              mm.kind = MapMarker::kSpeedTrap;
+              mm.icon_tag = pb > 0.0 ? "speed_camera_completed" : "speed_camera_discovered";
+              mm.id = t.id;
+              mm.title = "SPEED TRAP " + t.id.substr(t.id.rfind('_') + 1);
+              mm.completed = pb > 0.0;
+              mm.is_new = !mm.completed;
+              char sub[64];
+              if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED TRAP  •  PB %.1f MPH", pb);
+              else std::snprintf(sub, sizeof sub, "SPEED TRAP  •  MIN %.0f MPH", t.min_speed_mph);
+              mm.subtitle = sub;
+              mm.x = t.gate.center[0];
+              mm.z = t.gate.center[2];
+              sc.markers.push_back(std::move(mm));
+            }
+            for (const auto& z : speed_data.zones) {
+              const double pb = speed_tracker->best_zone_mph(z.id);
+              MapMarker mm;
+              mm.kind = MapMarker::kSpeedZone;
+              mm.icon_tag = pb > 0.0 ? "average_speed_camera_completed" : "average_speed_camera_discovered";
+              mm.id = z.id;
+              mm.title = "SPEED ZONE " + z.id.substr(z.id.rfind('_') + 1);
+              mm.completed = pb > 0.0;
+              mm.is_new = !mm.completed;
+              char sub[64];
+              if (pb > 0.0) std::snprintf(sub, sizeof sub, "SPEED ZONE  •  PB %.1f MPH AVG", pb);
+              else std::snprintf(sub, sizeof sub, "SPEED ZONE  •  AVG SPEED CHALLENGE");
+              mm.subtitle = sub;
+              mm.x = z.midpoint[0];
+              mm.z = z.midpoint[2];
+              sc.markers.push_back(std::move(mm));
+            }
+          }
+          if (festival_mgr) {
+            for (const auto& fc : festival_mgr->cars()) sc.festival_ai.push_back({fc.position.x, fc.position.z});
+            if (festival_mgr->h2h_active()) {
+              sc.route = festival_mgr->h2h_route();
+              const auto fin = festival_mgr->h2h_finish_pos();
+              MapMarker mm;
+              mm.kind = MapMarker::kH2hFinish;
+              mm.icon_tag = "race_encounter_finish";
+              mm.id = "H2H_FINISH";
+              mm.title = "HEAD-TO-HEAD FINISH";
+              mm.subtitle = "FIRST TO THE FINISH WINS THE WAGER";
+              mm.x = fin[0];
+              mm.z = fin[2];
               sc.markers.push_back(std::move(mm));
             }
           }
@@ -5389,7 +5753,27 @@ int run_drive(int argc, char** argv) {
           showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
-          showroom.set_frame(drive_frame(float(width) / float(height), every));
+          const ShowroomFrame hframe = drive_frame(float(width) / float(height), every);
+          showroom.set_frame(hframe);
+          name_tags.clear();
+          if (race && !race->player_finished()) {
+            carview::RaceView::OpponentTag stag;
+            if (race->showcase_tag(stag)) {
+              float sx = 0, sy = 0;
+              if (project_world_point(hframe, info, vehicle, stag.x, stag.y, stag.z, float(width), float(height), sx, sy))
+                name_tags.push_back({sx, sy, stag.name, stag.leader});
+            }
+          } else if (festival_mgr) {
+            const drive::Vec3 at = vehicle.position();
+            for (const auto& fc : festival_mgr->cars()) {
+              if (std::hypot(fc.position.x - at.x, fc.position.z - at.z) > 130.0) continue;
+              float sx = 0, sy = 0;
+              if (project_world_point(hframe, info, vehicle, fc.position.x, fc.position.y + 1.85, fc.position.z,
+                                      float(width), float(height), sx, sy))
+                name_tags.push_back({sx, sy, "[" + fc.spec.car_class + " " + std::to_string(fc.spec.pi) + "] " + fc.spec.driver_name,
+                                     fc.in_h2h});
+            }
+          }
           if (hud) {
             set_minimap(int(height), true);
             set_hud(int(width), int(height), vehicle.time() < notice_until  ? notice
@@ -6781,14 +7165,25 @@ int run_drive(int argc, char** argv) {
                 notice_until = vehicle.time() + 3;
               }
               if (e.key.key == SDLK_H) {
-                show_hud = !show_hud;
-                if (!show_hud) {
-                  for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
-                  renderer.set_ui({});
-                  mm_size = 0;
+                const bool h2h_prompt = festival_mgr && !race && festival_mgr->hud(vehicle.time()).prompt_visible;
+                if (h2h_prompt) {
+                  const drive::Vec3 fp = vehicle.position();
+                  const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                  if (festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, std::atan2(ff.x, ff.z), vehicle.time())) {
+                    notice = "HEAD-TO-HEAD RACE STARTED!";
+                    notice_until = vehicle.time() + 2.5;
+                    minimap_at = -1;
+                  }
+                } else {
+                  show_hud = !show_hud;
+                  if (!show_hud) {
+                    for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+                    renderer.set_ui({});
+                    mm_size = 0;
+                  }
+                  popup_key.clear();
+                  minimap_at = -1;
                 }
-                popup_key.clear();
-                minimap_at = -1;
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -7305,7 +7700,8 @@ int run_drive(int argc, char** argv) {
               }
             }
           }
-          // Update projected Opponent Overhead Name Tags in races (race-hud.png).
+          // Update projected Opponent Overhead Name Tags in races (race-hud.png),
+          // Airborne Showcases, and free-roam Festival AI racers.
           name_tags.clear();
           if (race && !grid_menu_open && !race->player_finished() && w > 0 && h > 0) {
             std::vector<carview::RaceView::OpponentTag> otags;
@@ -7317,6 +7713,22 @@ int run_drive(int argc, char** argv) {
               float sx = 0, sy = 0;
               if (project_world_point(cam_frame, info, vehicle, ot.x, ot.y + 1.85, ot.z, float(w), float(h), sx, sy))
                 name_tags.push_back({sx, sy, ot.name, ot.leader});
+            }
+            carview::RaceView::OpponentTag stag;
+            if (race->showcase_tag(stag)) {
+              float sx = 0, sy = 0;
+              if (project_world_point(cam_frame, info, vehicle, stag.x, stag.y, stag.z, float(w), float(h), sx, sy))
+                name_tags.push_back({sx, sy, stag.name, stag.leader});
+            }
+          } else if (!race && festival_mgr && w > 0 && h > 0) {
+            const drive::Vec3 at = vehicle.position();
+            for (const auto& fc : festival_mgr->cars()) {
+              if (std::hypot(fc.position.x - at.x, fc.position.z - at.z) > 120.0) continue;
+              float sx = 0, sy = 0;
+              if (project_world_point(cam_frame, info, vehicle, fc.position.x, fc.position.y + 1.85, fc.position.z,
+                                      float(w), float(h), sx, sy))
+                name_tags.push_back({sx, sy, "[" + fc.spec.car_class + " " + std::to_string(fc.spec.pi) + "] " + fc.spec.driver_name,
+                                     fc.in_h2h});
             }
           }
 

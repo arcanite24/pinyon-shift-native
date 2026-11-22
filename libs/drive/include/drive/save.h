@@ -102,6 +102,21 @@ struct DriveSave {
   // Discovered Festival Outposts (GasStation_01..10) & completed PR Stunts.
   std::vector<std::string> discovered_outposts;
   std::vector<std::string> completed_pr_stunts;
+  // Speed Traps & Speed Zones personal bests (id -> best mph).
+  std::vector<std::pair<std::string, double>> speed_traps;
+  std::vector<std::pair<std::string, double>> speed_zones;
+  // Sponsorship Challenges progress (challenge_id -> {count, tiers_claimed}).
+  struct SavedSponsor {
+    std::string id;
+    int count = 0;
+    int claimed = 0;
+  };
+  std::vector<SavedSponsor> sponsors;
+  // Head-to-Head counters.
+  int h2h_races = 0, h2h_wins = 0;
+  // Driver XP (PlayerLevelDef) & Manufacturer Affinity XP (AffinityLevelDef: make_id -> xp).
+  int driver_xp = 0;
+  std::vector<std::pair<int64_t, int>> make_affinity;
   int num_races = 0, num_victories = 0, num_podiums = 0;
   double time_festival = 0, time_street = 0, time_exhibition = 0, top_speed = 0;
   std::vector<std::pair<int64_t, int>> race_results, event_results;

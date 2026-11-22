@@ -26,6 +26,7 @@
 #include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
+#include "race/showcase.h"
 #include "game_hud.h"
 #include "showroom.h"
 
@@ -112,15 +113,8 @@ class RaceView {
   // Once the player has finished: the race's award applied to `career`
   // (SPEC-EVENT-REWARDS), once a race; null before then or when already
   // awarded this call. `top_speed` m/s for the counters.
-  const race::RaceAward* award(race::CareerRecord& career, const race::WristbandTables& tables, double top_speed);
-  const race::EventData& event() const { return event_; }
-  std::string banner() const;
-  // What the HUD shows of the race (game_hud.h), from the session.
-  RaceHud hud_info() const;
-  std::string results() const;  // one line a car, by place
-  const race::Session& session() const { return *session_; }
-  // The opponents' positions (x, z), for the maps.
-  void opponent_positions(std::vector<std::array<double, 2>>& out) const;
+  const race::RaceAward* award(race::CareerRecord& career, const race::WristbandTables& tables, double top_speed,
+                               const race::RaceBonusInputs& extras = {});
   // Opponents' 3D world positions + names + leader flag (for overhead tags and skill detection).
   struct OpponentTag {
     double x = 0, y = 0, z = 0;
@@ -130,6 +124,19 @@ class RaceView {
     double vx = 0, vy = 0, vz = 0;
     double rpm = 1000;
   };
+  // Airborne Showcase support (PLANE_RACE_001..007): 3D aircraft mesh & sky tag.
+  bool is_showcase() const { return showcase_.active(); }
+  const race::ShowcaseOpponent& showcase() const { return showcase_; }
+  void append_showcase_mesh(std::vector<world::DebrisVertex>& out) const;
+  bool showcase_tag(OpponentTag& out) const;
+  const race::EventData& event() const { return event_; }
+  std::string banner() const;
+  // What the HUD shows of the race (game_hud.h), from the session.
+  RaceHud hud_info() const;
+  std::string results() const;  // one line a car, by place
+  const race::Session& session() const { return *session_; }
+  // The opponents' positions (x, z), for the maps.
+  void opponent_positions(std::vector<std::array<double, 2>>& out) const;
   void opponent_tags(std::vector<OpponentTag>& out) const;
   // Allows updating difficulty on the pre-race grid menu before the race starts.
   void set_difficulty(race::Difficulty d) { o_.difficulty = d; }
@@ -231,6 +238,7 @@ class RaceView {
   };
   std::vector<ReplayRow> replay_;
   std::optional<race::RaceAward> award_;
+  race::ShowcaseOpponent showcase_;
   // The player's credits for place p (the spec's share; before the award).
   int64_t credits_for(int place) const;
 };

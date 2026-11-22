@@ -45,6 +45,12 @@ int WristbandTables::level_index(int total) const {
   return best;
 }
 
+int64_t WristbandTables::nemesis_bonus_for(int level) const {
+  if (nemesis_bonuses.empty()) return 0;
+  const int idx = std::clamp(level, 0, int(nemesis_bonuses.size()) - 1);
+  return nemesis_bonuses[size_t(idx)];
+}
+
 bool load_wristband_tables(const std::filesystem::path& root, WristbandTables& out, std::string* error) {
   return load_wristband_tables(root, {}, nullptr, out, error);
 }
@@ -60,12 +66,124 @@ bool load_wristband_tables(const std::filesystem::path& root, const std::filesys
                },
                error))
     return false;
-  return db.each("select XP, coalesce(Name, '') from CareerWristbandLevels order by XP", {},
+  return db.each("select XP, coalesce(Name, ''), coalesce(NemesisBonus, 0) from CareerWristbandLevels order by XP", {},
                  [&](sqlite3_stmt* s) {
                    const auto* t = sqlite3_column_text(s, 1);
                    out.levels.emplace_back(sqlite3_column_int(s, 0), t ? reinterpret_cast<const char*>(t) : "");
+                   out.nemesis_bonuses.push_back(sqlite3_column_int64(s, 2));
                  },
                  error);
+}
+
+int ProgressionTables::driver_level_for_xp(int xp) const {
+  if (driver_levels.empty()) return 1;
+  int lvl = driver_levels.front().level + 1;
+  for (const auto& row : driver_levels)
+    if (xp >= row.xp) lvl = row.level + 1;
+  return lvl;
+}
+
+int ProgressionTables::next_driver_level_xp(int xp) const {
+  for (const auto& row : driver_levels)
+    if (row.xp > xp) return row.xp;
+  return driver_levels.empty() ? 0 : driver_levels.back().xp;
+}
+
+int64_t ProgressionTables::driver_level_gift_car(int level) const {
+  const auto it = driver_level_cars.find(level);
+  if (it == driver_level_cars.end() || it->second.empty()) return 0;
+  return it->second.front();
+}
+
+int ProgressionTables::affinity_level_for_xp(int xp) const {
+  int lvl = 0;
+  for (const auto& row : affinity_levels)
+    if (xp >= row.xp) lvl = row.level;
+  return lvl;
+}
+
+double ProgressionTables::affinity_discount_for_xp(int xp) const {
+  double disc = 0.0;
+  for (const auto& row : affinity_levels)
+    if (xp >= row.xp) disc = row.discount;
+  return std::clamp(disc, 0.0, 1.0);
+}
+
+int64_t ProgressionTables::affinity_bonus_for_level(int level) const {
+  for (const auto& row : affinity_levels)
+    if (row.level == level) return row.bonus_credits;
+  return 0;
+}
+
+bool load_progression_tables(const std::filesystem::path& root, ProgressionTables& out, std::string* error) {
+  return load_progression_tables(root, {}, nullptr, out, error);
+}
+
+bool load_progression_tables(const std::filesystem::path& root, const std::filesystem::path& state_root,
+                             const cars::PartsDb* shared_db, ProgressionTables& out, std::string* error) {
+  detail::RaceDb db;
+  if (!db.open(root, state_root, shared_db, error)) return false;
+  out = ProgressionTables{};
+  if (!db.each("select Id, XP, coalesce(MaxGiftCars, 0) from PlayerLevelDef order by Id", {},
+               [&](sqlite3_stmt* s) {
+                 DriverLevelRow r;
+                 r.level = sqlite3_column_int(s, 0);
+                 r.xp = sqlite3_column_int(s, 1);
+                 r.max_gift_cars = sqlite3_column_int(s, 2);
+                 out.driver_levels.push_back(r);
+               },
+               error))
+    return false;
+  if (!db.each("select DriverLevel, RewardCarId from Rewards_DriverLevelv3 order by DriverLevel, SortOrder", {},
+               [&](sqlite3_stmt* s) {
+                 const int lvl = sqlite3_column_int(s, 0);
+                 const int64_t cid = sqlite3_column_int64(s, 1);
+                 if (cid > 0) out.driver_level_cars[lvl].push_back(cid);
+               },
+               error))
+    return false;
+  return db.each("select Id, XP, coalesce(Discount, 0), coalesce(BonusCredits, 0) from AffinityLevelDef order by Id", {},
+                 [&](sqlite3_stmt* s) {
+                   AffinityLevelRow r;
+                   r.level = sqlite3_column_int(s, 0);
+                   r.xp = sqlite3_column_int(s, 1);
+                   r.discount = sqlite3_column_double(s, 2);
+                   r.bonus_credits = sqlite3_column_int64(s, 3);
+                   out.affinity_levels.push_back(r);
+                 },
+                 error);
+}
+
+ProgressionUpdate apply_progression_xp(CareerRecord& record, int driver_xp_delta, int64_t make_id,
+                                       int affinity_xp_delta, const ProgressionTables& tables) {
+  ProgressionUpdate u;
+  u.old_driver_level = std::max(1, tables.driver_levels.empty() ? record.driver_level
+                                                                : tables.driver_level_for_xp(record.driver_xp));
+  if (driver_xp_delta > 0) record.driver_xp += driver_xp_delta;
+  u.new_driver_level = std::max(u.old_driver_level,
+                                tables.driver_levels.empty() ? record.driver_level
+                                                             : tables.driver_level_for_xp(record.driver_xp));
+  record.driver_level = u.new_driver_level;
+  for (int lv = u.old_driver_level + 1; lv <= u.new_driver_level; ++lv) {
+    const int64_t car = tables.driver_level_gift_car(lv);
+    if (car > 0) u.gift_cars.push_back(car);
+  }
+  if (make_id > 0) {
+    int& cur_xp = record.make_affinity_xp[make_id];
+    u.old_affinity_level = tables.affinity_level_for_xp(cur_xp);
+    if (affinity_xp_delta > 0) cur_xp += affinity_xp_delta;
+    u.new_affinity_level = tables.affinity_level_for_xp(cur_xp);
+    u.affinity_discount = tables.affinity_discount_for_xp(cur_xp);
+    for (int lv = u.old_affinity_level + 1; lv <= u.new_affinity_level; ++lv) {
+      const int64_t bonus = tables.affinity_bonus_for_level(lv);
+      if (bonus > 0) {
+        u.affinity_bonus_credits += bonus;
+        record.credits = std::min<int64_t>(999999999, record.credits + bonus);
+        record.total_winnings += bonus;
+      }
+    }
+  }
+  return u;
 }
 
 double rewind_difficulty_bonus(bool rewind_on, int session_mode) {
@@ -106,17 +224,35 @@ int64_t mileage_bonus_credits(double distance_m) {
 
 RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int career_type, int style, int level,
                      double prize, int racers, int place, bool finished, double race_time, double top_speed,
-                     int64_t prize_car, const WristbandTables& tables, int difficulty_pct, double distance_m) {
+                     int64_t prize_car, const WristbandTables& tables, int difficulty_pct, double distance_m,
+                     const RaceBonusInputs& extras) {
   RaceAward a;
-  a.base_credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
-  a.mileage_bonus = finished ? mileage_bonus_credits(distance_m) : 0;
-  a.difficulty_pct = std::max(0, difficulty_pct);
-  a.difficulty_bonus =
-      finished && a.difficulty_pct > 0 ? int64_t(std::llround(double(a.base_credits + a.mileage_bonus) * a.difficulty_pct / 100.0)) : 0;
-  a.credits = a.base_credits + a.mileage_bonus + a.difficulty_bonus;
-  if (!finished) return a;
-  // Wristband points: an improvement only (the previous best from the event record).
   const auto prev = r.event_places.find(event_id);
+  const bool first_win = (prev == r.event_places.end() || prev->second > 1);
+  a.base_credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
+  // SPEC-EVENT-REWARDS: Style-6 (Horizon Finale) awards 50,000 CR on first win.
+  if (finished && style == 6 && place == 1 && first_win && a.base_credits < 50000) a.base_credits = 50000;
+  a.mileage_bonus = finished ? mileage_bonus_credits(distance_m) : 0;
+  const int total_pct = std::max(0, difficulty_pct);
+  a.assists_pct = std::clamp(extras.assists_pct, 0, total_pct);
+  a.difficulty_pct = total_pct;
+  const int ai_pct = std::max(0, total_pct - a.assists_pct);
+  const double bonus_base = double(a.base_credits + a.mileage_bonus);
+  a.difficulty_bonus = finished && ai_pct > 0 ? int64_t(std::llround(bonus_base * ai_pct / 100.0)) : 0;
+  a.assists_bonus = finished && a.assists_pct > 0 ? int64_t(std::llround(bonus_base * a.assists_pct / 100.0)) : 0;
+  a.skills_bonus = finished && extras.skills_points > 0 ? round_prize(double(extras.skills_points) * 0.25) : 0;
+  a.bounty_bonus = finished && extras.bounty_bonus > 0 ? extras.bounty_bonus : 0;
+  if (finished && (career_type == 11 || style == 5) && place == 1) {
+    const int wb_lvl = extras.wristband_level >= 0 ? extras.wristband_level : std::max(0, tables.level_index(r.wristband_points));
+    a.nemesis_bonus = tables.nemesis_bonus_for(wb_lvl);
+  }
+  a.credits = a.base_credits + a.mileage_bonus + a.difficulty_bonus + a.assists_bonus + a.skills_bonus +
+              a.bounty_bonus + a.nemesis_bonus;
+  if (!finished) return a;
+  // Driver XP & Manufacturer Affinity XP earned from race finish + distance.
+  a.driver_xp = int(std::max<int64_t>(500, a.base_credits / 4 + int64_t(distance_m * 0.25) + (place == 1 ? 1000 : 0)));
+  a.affinity_xp = int(std::max<int64_t>(250, a.base_credits / 6 + int64_t(distance_m * 0.15) + (place == 1 ? 500 : 0)));
+  // Wristband points: an improvement only (the previous best from the event record).
   if (style == 1) {
     const int before = prev == r.event_places.end() ? 0 : tables.points_for(level, prev->second);
     a.wristband_points = std::max(0, tables.points_for(level, place) - before);

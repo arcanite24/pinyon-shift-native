@@ -877,26 +877,42 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     l.text(g.L(108), g.T(151), title, ts);
   }
   const std::string cr = str("UnitStrings", "IDS_Units_Credits", "Cr");
-  char line[48], diff_buf[24];
+  char line[64], diff_buf[32], assist_buf[32], xp_buf[64];
   const int place = r.stage ? r.stage_place : r.place;
   std::snprintf(line, sizeof line, "%s %d%s", str("InGame", "IDS_Finished", "FINISHED").c_str(), place, place_suffix(place));
-  std::snprintf(diff_buf, sizeof diff_buf, "+%d%%", std::max(0, r.difficulty_pct));
+  const int ai_pct = std::max(0, r.difficulty_pct - r.assists_pct);
+  std::snprintf(diff_buf, sizeof diff_buf, "+%d%% (%s %s)", ai_pct, thousands(r.difficulty_bonus).c_str(), cr.c_str());
   const int64_t base_cr = r.base_credits > 0 ? r.base_credits : r.credits;
-  const std::pair<std::string, std::string> rows[] = {
-      {line, thousands(base_cr) + " " + cr},
-      {str("OnlineRewards", "IDS_Mileage_Bonus_Heading", "MILEAGE BONUS"), thousands(r.mileage_bonus) + " " + cr},
-      {str("OnlineRewards", "IDS_Difficulty_Bonus_Heading", "DIFFICULTY & ASSISTS BONUS"), diff_buf}};
-  for (int i = 0; i < 3; ++i) {
-    const float y = g.T(243 + 28.0f * i);
-    const TextStyle ls = font(ui::Font::kB, 20 * s, kText);
-    TextStyle vs = font(ui::Font::kE, 18 * s, kText);
+  std::vector<std::pair<std::string, std::string>> rows;
+  rows.emplace_back(line, thousands(base_cr) + " " + cr);
+  rows.emplace_back(str("OnlineRewards", "IDS_Mileage_Bonus_Heading", "MILEAGE BONUS"),
+                    thousands(r.mileage_bonus) + " " + cr);
+  rows.emplace_back(str("OnlineRewards", "IDS_Difficulty_Bonus_Heading", "AI DIFFICULTY BONUS"), diff_buf);
+  if (r.assists_pct > 0 || r.assists_bonus > 0) {
+    std::snprintf(assist_buf, sizeof assist_buf, "+%d%% (%s %s)", r.assists_pct, thousands(r.assists_bonus).c_str(),
+                  cr.c_str());
+    rows.emplace_back("ASSISTS BONUS", assist_buf);
+  }
+  if (r.skills_bonus > 0) rows.emplace_back("SKILLS BONUS", thousands(r.skills_bonus) + " " + cr);
+  if (r.nemesis_bonus > 0) rows.emplace_back("NEMESIS BONUS", thousands(r.nemesis_bonus) + " " + cr);
+  if (r.bounty_bonus > 0) rows.emplace_back("BOUNTY BONUS", thousands(r.bounty_bonus) + " " + cr);
+  if (r.driver_xp > 0) {
+    std::snprintf(xp_buf, sizeof xp_buf, "+%s XP  •  AFFINITY +%s XP", thousands(r.driver_xp).c_str(),
+                  thousands(r.affinity_xp).c_str());
+    rows.emplace_back("DRIVER & AFFINITY XP", xp_buf);
+  }
+  const float row_step = rows.size() > 4 ? 24.0f : 28.0f;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const float y = g.T(234 + row_step * float(i));
+    const TextStyle ls = font(ui::Font::kB, (rows.size() > 5 ? 16 : 20) * s, kText);
+    TextStyle vs = font(ui::Font::kE, (rows.size() > 5 ? 15 : 18) * s, kText);
     vs.keep_case = true;
     const float lw = ui::List::measure(rows[i].first, ls), vw = ui::List::measure(rows[i].second, vs);
     Turn t(l, g.L(148) + 0.5f * lw, y + 10 * s);
-    brush(l, g.L(140), y - 4 * s, g.L(148) + lw + 6 * s, y + 24 * s, kBrush);
+    brush(l, g.L(140), y - 4 * s, g.L(148) + lw + 6 * s, y + 22 * s, kBrush);
     l.text(g.L(148), y, rows[i].first, ls);
     const float vx = g.L(148) + lw + 10 * s;
-    brush(l, vx - 4 * s, y - 2 * s, vx + vw + 6 * s, y + 21 * s, kPink);
+    brush(l, vx - 4 * s, y - 2 * s, vx + vw + 6 * s, y + 20 * s, kPink);
     l.text(vx, y + 1 * s, rows[i].second, vs);
   }
   // TOTAL and its value.
@@ -1664,15 +1680,17 @@ void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) 
   const float tw2 = (x1 - x0 - 2 * gap) / 3;
   stat_tile(l, x0, y, x0 + tw2, y + th, thousands(c.winnings) + " CR", "TOTAL WINNINGS", s);
   stat_tile(l, x0 + tw2 + gap, y, x0 + 2 * tw2 + gap, y + th,
-            std::to_string(c.popularity_rank) + place_suffix(c.popularity_rank), "POPULARITY RANK", s,
-            rgba(247, 255, 38));
+            "LVL " + std::to_string(std::max(1, c.driver_level)) + "  •  " + std::to_string(c.popularity_rank) +
+                place_suffix(c.popularity_rank),
+            "DRIVER LEVEL / FAME", s, rgba(247, 255, 38));
   stat_tile(l, x0 + 2 * (tw2 + gap), y, x1, y + th, std::to_string(c.garage) + (c.garage == 1 ? " CAR" : " CARS"),
             "GARAGE", s);
   y += th + 16 * s;
   // Collections.
   const bool has_outposts = c.outposts_total > 0;
-  const float rows = (c.rally ? 6.f : 5.f) + (has_outposts ? 2.f : 0.f);
-  const float rh = has_outposts ? 32 * s : 38 * s;
+  const bool has_speed = c.speed_traps_total > 0 || c.speed_zones_total > 0;
+  const float rows = (c.rally ? 6.f : 5.f) + (has_outposts ? 2.f : 0.f) + (has_speed ? 2.f : 0.f);
+  const float rh = (has_outposts || has_speed) ? 28 * s : 38 * s;
   const float ph = 20 * s + rows * rh;
   if (y + ph > h - 18 * s) return;
   panel(l, x0, y, x1, y + ph, s, rgba(10, 12, 17, 190));
@@ -1683,6 +1701,10 @@ void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) 
     collection_row(l, rx0, rx1, ry, "HORIZON OUTPOSTS", c.outposts, c.outposts_total, s, rgba(255, 146, 3)), ry += rh;
     collection_row(l, rx0, rx1, ry, "OUTPOST PR STUNTS", c.pr_stunts, c.pr_stunts_total, s, rgba(255, 196, 32)), ry += rh;
   }
+  if (has_speed) {
+    collection_row(l, rx0, rx1, ry, "SPEED TRAPS", c.speed_traps, c.speed_traps_total, s, rgba(60, 190, 255)), ry += rh;
+    collection_row(l, rx0, rx1, ry, "SPEED ZONES", c.speed_zones, c.speed_zones_total, s, rgba(245, 0, 96)), ry += rh;
+  }
   collection_row(l, rx0, rx1, ry, "DISCOUNT SIGNS", c.signs, c.signs_total, s), ry += rh;
   collection_row(l, rx0, rx1, ry, "BARN FINDS", c.barns, c.barns_total, s), ry += rh;
   collection_row(l, rx0, rx1, ry, "1000 CLUB CHALLENGES", c.club_done, c.club_total, s), ry += rh;
@@ -1692,6 +1714,144 @@ void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) 
     collection_row(l, rx0, rx1, ry, rn, c.rally_wins, c.rallies, s, rgba(60, 140, 255)), ry += rh;
   }
   collection_row(l, rx0, rx1, ry, "CONTENT PACKS", c.packs_owned, c.packs_total, s, rgba(200, 205, 215));
+}
+
+// Airborne Showcase live progress & distance-gap bar (PLANE_RACE_001..007).
+void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g) {
+  if (!r.showcase || r.phase != RaceHud::kRacing) return;
+  const float s = g.s;
+  const float cx = 0.5f * g.w;
+  const float bw = 440 * s, bh = 54 * s;
+  const float x0 = cx - 0.5f * bw, x1 = cx + 0.5f * bw;
+  const float y0 = g.T(24), y1 = y0 + bh;
+  panel(l, x0, y0, x1, y1, s, rgba(10, 14, 22, 205));
+  l.rect(x0, y0, x1, y0 + 3 * s, kPink);
+  char gap_buf[48];
+  const int gm = int(std::llround(std::fabs(r.showcase_gap_m)));
+  std::snprintf(gap_buf, sizeof gap_buf, "%s %d M", r.showcase_gap_m >= 0 ? "AHEAD" : "BEHIND", gm);
+  l.text(x0 + 12 * s, y0 + 8 * s, "SHOWCASE  //  VS " + r.showcase_aircraft, font(ui::Font::kB, 13 * s, kText));
+  l.text(x1 - 12 * s, y0 + 8 * s, gap_buf,
+         font(ui::Font::kE, 14 * s, r.showcase_gap_m >= 0 ? rgba(74, 238, 97) : rgba(255, 196, 40), Align::kRight));
+  // Dual progress bar: aircraft (amber) vs player (Horizon pink).
+  const float tx0 = x0 + 14 * s, tx1 = x1 - 14 * s, ty = y0 + 34 * s, th = 8 * s;
+  l.rect(tx0, ty, tx1, ty + th, rgba(255, 255, 255, 35));
+  const float ax = tx0 + float(std::clamp(r.showcase_progress, 0.0, 1.0)) * (tx1 - tx0);
+  const float px = tx0 + float(std::clamp(r.progress, 0.0, 1.0)) * (tx1 - tx0);
+  l.rect(tx0, ty, ax, ty + 4 * s, rgba(255, 188, 30, 235));
+  l.rect(tx0, ty + 4 * s, px, ty + th, kPink);
+  l.circle(ax, ty + 2 * s, 5 * s, rgba(255, 210, 50));
+  l.circle(px, ty + 6 * s, 5 * s, kText);
+}
+
+// Speed Trap & Speed Zone camera flash, trigger banner, and live average-speed strip.
+void speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, const Layout& g) {
+  const float s = g.s;
+  // Crisp white camera flash vignette.
+  if (sh.flash_alpha > 0.01f) {
+    l.rect(0, 0, g.w, g.h, rgba(255, 255, 255, uint8_t(std::clamp(sh.flash_alpha * 255.0f, 0.0f, 220.0f))));
+  }
+  // Live Speed Zone average speed strip while driving inside a zone.
+  if (sh.zone_active) {
+    const float cx = 0.5f * g.w;
+    const float x0 = cx - 190 * s, x1 = cx + 190 * s, y0 = g.T(124), y1 = y0 + 46 * s;
+    panel(l, x0, y0, x1, y1, s, rgba(12, 15, 22, 215));
+    l.rect(x0, y0, x1, y0 + 3 * s, rgba(60, 190, 255));
+    char avg[64];
+    std::snprintf(avg, sizeof avg, "AVG %.1f MPH  •  %.0f M", sh.live_avg_mph, sh.zone_distance_m);
+    l.text(cx, y0 + 8 * s, sh.active_zone_id + " ACTIVE", font(ui::Font::kB, 12 * s, rgba(60, 190, 255), Align::kCenter));
+    l.text(cx, y0 + 23 * s, avg, font(ui::Font::kE, 18 * s, kText, Align::kCenter));
+  }
+  // Speed Trap / Speed Zone completion banner.
+  if (sh.banner_active) {
+    const float cx = 0.5f * g.w;
+    const float x0 = cx - 235 * s, x1 = cx + 235 * s, y0 = g.T(178), y1 = y0 + 90 * s;
+    Turn t(l, cx, 0.5f * (y0 + y1), -0.025f);
+    brush(l, x0, y0, x1, y0 + 30 * s, kBrush);
+    l.text(cx, y0 + 6 * s, sh.banner_title + (sh.banner_new_pb ? "  •  NEW PERSONAL BEST!" : ""),
+           font(ui::Font::kB, 14 * s, sh.banner_new_pb ? rgba(247, 255, 38) : kText, Align::kCenter));
+    brush(l, x0 + 18 * s, y0 + 28 * s, x1 - 18 * s, y1, sh.banner_is_zone ? kPink : rgba(0, 152, 235));
+    char spd[64], best[48];
+    std::snprintf(spd, sizeof spd, "%.1f MPH%s", sh.banner_speed_mph, sh.banner_is_zone ? " AVG" : "");
+    std::snprintf(best, sizeof best, "PERSONAL BEST  %.1f MPH", sh.banner_best_mph);
+    l.text(cx, y0 + 34 * s, spd, font(ui::Font::kE, 29 * s, kText, Align::kCenter));
+    l.text(cx, y0 + 69 * s, best, font(ui::Font::kB, 11 * s, rgba(255, 255, 255, 230), Align::kCenter));
+  }
+}
+
+// Free-roam Head-to-Head challenge prompt, active H2H HUD, and finish banner.
+void h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g) {
+  const float s = g.s;
+  const float cx = 0.5f * g.w;
+  if (hh.prompt_visible && !hh.active) {
+    const float x0 = cx - 255 * s, x1 = cx + 255 * s, y0 = g.B(542), y1 = y0 + 52 * s;
+    panel(l, x0, y0, x1, y1, s, rgba(10, 14, 22, 220));
+    l.rect(x0, y0, x1, y0 + 3 * s, kPink);
+    char sub[128];
+    std::snprintf(sub, sizeof sub, "VS %s [%s %d]  •  WAGER %s CR", hh.prompt_driver.c_str(),
+                  hh.prompt_car_class.c_str(), hh.prompt_pi, thousands(hh.prompt_wager).c_str());
+    l.text(cx, y0 + 8 * s, "PRESS [H] OR [X] TO CHALLENGE TO HEAD-TO-HEAD",
+           font(ui::Font::kE, 16 * s, rgba(247, 255, 38), Align::kCenter));
+    l.text(cx, y0 + 30 * s, sub, font(ui::Font::kB, 13 * s, kText, Align::kCenter));
+  }
+  if (hh.active) {
+    const float x0 = cx - 235 * s, x1 = cx + 235 * s, y0 = g.T(134), y1 = y0 + 62 * s;
+    panel(l, x0, y0, x1, y1, s, rgba(10, 14, 22, 215));
+    l.rect(x0, y0, x1, y0 + 4 * s, kPink);
+    char hdr[96], stats[128];
+    std::snprintf(hdr, sizeof hdr, "HEAD-TO-HEAD  VS  %s", hh.opponent_name.c_str());
+    std::snprintf(stats, sizeof stats, "%d%s / 2   •   %.2f KM LEFT   •   GAP %+.0f M   •   WAGER %s CR", hh.place,
+                  place_suffix(hh.place), hh.player_remaining_m / 1000.0, hh.gap_m,
+                  thousands(hh.wager_credits).c_str());
+    l.text(cx, y0 + 10 * s, hdr, font(ui::Font::kE, 18 * s, kText, Align::kCenter));
+    l.text(cx, y0 + 32 * s, stats,
+           font(ui::Font::kB, 13 * s, hh.place == 1 ? rgba(74, 238, 97) : rgba(255, 196, 40), Align::kCenter));
+    const float bx0 = x0 + 14 * s, bx1 = x1 - 14 * s, by = y1 - 9 * s;
+    l.rect(bx0, by, bx1, by + 4 * s, rgba(255, 255, 255, 35));
+    l.rect(bx0, by, bx0 + float(hh.progress) * (bx1 - bx0), by + 4 * s, kPink);
+  }
+  if (hh.finish_banner) {
+    const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.T(210), y1 = y0 + 70 * s;
+    Turn t(l, cx, 0.5f * (y0 + y1), -0.02f);
+    brush(l, x0, y0, x1, y1, hh.finish_won ? kPink : kBrush);
+    l.text(cx, y0 + 10 * s, hh.finish_won ? "HEAD-TO-HEAD VICTORY!" : "HEAD-TO-HEAD DEFEAT",
+           font(ui::Font::kE, 26 * s, kText, Align::kCenter));
+    char detail[96];
+    if (hh.finish_won)
+      std::snprintf(detail, sizeof detail, "BEAT %s   •   +%s CR  +1,000 FAME", hh.finish_opponent.c_str(),
+                    thousands(hh.finish_credits).c_str());
+    else std::snprintf(detail, sizeof detail, "%s REACHED THE FINISH FIRST", hh.finish_opponent.c_str());
+    l.text(cx, y0 + 44 * s, detail, font(ui::Font::kB, 13 * s, rgba(247, 255, 38), Align::kCenter));
+  }
+}
+
+// Free-roam Driver Level / Manufacturer Affinity chip & Sponsorship Challenge banner.
+void progression_hud(ui::List& l, const DriveHud& st, const Layout& g) {
+  const float s = g.s;
+  // Compact top-left Driver Level & Affinity chip during free-roam.
+  if (!st.race && st.driver_level > 0) {
+    const float x0 = g.L(36), y0 = g.T(24), x1 = x0 + 258 * s, y1 = y0 + 42 * s;
+    panel(l, x0, y0, x1, y1, s, rgba(10, 14, 22, 185));
+    l.rect(x0, y0, x0 + 4 * s, y1, rgba(247, 255, 38));
+    char l1[64], l2[64];
+    std::snprintf(l1, sizeof l1, "DRIVER LVL %d   •   %s XP", st.driver_level, thousands(st.driver_xp).c_str());
+    std::snprintf(l2, sizeof l2, "AFFINITY LVL %d  •  %.0f%% UPGRADE DISC.", st.affinity_level,
+                  st.affinity_discount_pct);
+    l.text(x0 + 12 * s, y0 + 6 * s, l1, font(ui::Font::kB, 13 * s, rgba(247, 255, 38)));
+    l.text(x0 + 12 * s, y0 + 23 * s, l2, font(ui::Font::kB, 11 * s, kDim));
+  }
+  // Sponsorship Challenge tier reward toast (top-right).
+  const double age = st.time - st.sponsor_at;
+  if (!st.sponsor_title.empty() && age >= 0.0 && age < 5.5) {
+    const float x1 = g.R(1244), x0 = x1 - 392 * s, y0 = g.T(24), y1 = y0 + 54 * s;
+    panel(l, x0, y0, x1, y1, s, rgba(12, 16, 24, 224));
+    l.rect(x0, y0, x1, y0 + 3 * s, rgba(74, 238, 97));
+    TextStyle stt = font(ui::Font::kE, 15 * s, rgba(74, 238, 97));
+    fit(st.sponsor_title, stt, (x1 - x0) - 24 * s, 10 * s);
+    TextStyle stdt = font(ui::Font::kB, 13 * s, kText);
+    fit(st.sponsor_detail, stdt, (x1 - x0) - 24 * s, 9 * s);
+    l.text(x0 + 12 * s, y0 + 9 * s, st.sponsor_title, stt);
+    l.text(x0 + 12 * s, y0 + 31 * s, st.sponsor_detail, stdt);
+  }
 }
 
 }  // namespace
@@ -1770,19 +1930,25 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   const bool menu = !st.menu_title.empty() || !st.menu.empty();
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
-    if (!st.name_tags.empty() && st.race && st.race->phase == RaceHud::kRacing)
+    if (!st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing))
       opponent_name_tags(l, st.name_tags, g);
     if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g);
     if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
+    if (st.h2h && !st.race) h2h_hud(l, *st.h2h, g);
+    if (st.speed_hud && !st.race) speed_activity_hud(l, *st.speed_hud, g);
     if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
       skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
       const RaceHud& r = *st.race;
       if (r.phase == RaceHud::kGrid) event_card(l, r, g);
       else if (r.phase == RaceHud::kFinished) results(l, r, g);
-      else race_hud(l, r, g);
+      else {
+        race_hud(l, r, g);
+        showcase_hud(l, r, g);
+      }
     }
+    progression_hud(l, st, g);
     popup_card(l, st, g);
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);
     if (!hide_dial) dial(l, st, g);

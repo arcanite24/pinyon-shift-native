@@ -17,6 +17,7 @@
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "drive/oracle_lap.h"
+#include "drive/save.h"
 #include "fh1data/archive.h"
 #include "fh1data/stringtables.h"
 #include "race/difficulty.h"
@@ -27,6 +28,7 @@
 #include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
+#include "race/showcase.h"
 
 namespace {
 
@@ -748,9 +750,90 @@ int main() {
       for (int s = 0; s < 30; ++s) race::plan_lanes(rl, prog, cross, spd, lp, 1, lane, 1.0 / 60.0, 3.2, cap, obs);
       CHECK(lane[0] < -1.0f);  // moved left around traffic car at cross = +0.5
     }
+
+    // Airborne Showcases: all 7 PLANE_RACE events + animated 3D flight path & finish evaluation.
+    {
+      CHECK(race::is_airborne_showcase(8, "PLANE_RACE_001"));
+      CHECK(race::showcase_spec_for("PLANE_RACE_001").kind == race::ShowcaseAircraftKind::kMustangP51);
+      CHECK(race::showcase_spec_for("PLANE_RACE_002").kind == race::ShowcaseAircraftKind::kHotAirBalloon);
+      CHECK(race::showcase_spec_for("PLANE_RACE_003").kind == race::ShowcaseAircraftKind::kStuntJet);
+      CHECK(race::showcase_spec_for("PLANE_RACE_004").kind == race::ShowcaseAircraftKind::kBiplane);
+      CHECK(race::showcase_spec_for("PLANE_RACE_006").kind == race::ShowcaseAircraftKind::kHelicopter);
+      drive::RacingLine rl;
+      for (int i = 0; i <= 100; ++i) {
+        rl.x.push_back(0.0f);
+        rl.y.push_back(10.0f);
+        rl.z.push_back(float(i * 20));
+        rl.dist.push_back(float(i * 20));
+        rl.radius.push_back(1e6f);
+        rl.speed.push_back(50.0f);
+      }
+      race::ShowcaseOpponent opp;
+      opp.init(race::showcase_spec_for("PLANE_RACE_001"), rl, 0.0, 1500.0);
+      CHECK(opp.active());
+      for (int s = 0; s < 120; ++s) opp.step(0.05, s * 0.05, s * 2.5);
+      CHECK(opp.pose().position[1] > 18.0 && opp.pose().progress_m > 200.0);
+      CHECK(opp.player_place(1500.0, true, 25.0) == 1);
+    }
+
+    // Full post-race breakdown (Assists, Skills, Bounty, Nemesis) + Style-6 50k CR first-win override
+    // + Driver Level / Manufacturer Affinity progression.
+    {
+      race::WristbandTables wt;
+      wt.levels = {{0, "Yellow"}, {1000, "Green"}};
+      wt.nemesis_bonuses = {1000, 1500};
+      race::CareerRecord rec;
+      race::RaceBonusInputs ex;
+      ex.assists_pct = 20;
+      ex.skills_points = 4000;  // 1000 CR skills bonus
+      ex.bounty_bonus = 500;
+      const auto a1 = race::award_race(rec, 901, 901, 12, 6, 6, 10000.0, 8, 1, true, 120.0, 60.0, 0, wt, 50, 5000.0, ex);
+      CHECK(a1.base_credits == 50000);  // Style-6 Horizon Finale 50,000 CR first-win override!
+      CHECK(a1.assists_bonus > 0 && a1.difficulty_bonus > 0 && a1.skills_bonus == 1000 && a1.bounty_bonus == 500);
+      CHECK(a1.credits == a1.base_credits + a1.mileage_bonus + a1.difficulty_bonus + a1.assists_bonus + a1.skills_bonus +
+                              a1.bounty_bonus + a1.nemesis_bonus);
+      const auto a2 = race::award_race(rec, 902, 902, 11, 5, 1, 20000.0, 2, 1, true, 90.0, 55.0, 0, wt, 15, 4000.0, ex);
+      CHECK(a2.nemesis_bonus == 1000);  // Nemesis win bonus from CareerWristbandLevels
+
+      race::ProgressionTables pt;
+      pt.driver_levels = {{0, 0, 0}, {1, 5000, 1}, {2, 10000, 1}};
+      pt.driver_level_cars[2] = {1219};
+      pt.affinity_levels = {{0, 0, 0.0, 0}, {1, 2500, 0.25, 1000}, {2, 9000, 0.50, 2000}};
+      const auto pu = race::apply_progression_xp(rec, 6000, 42, 3000, pt);
+      CHECK(pu.new_driver_level == 2 && pu.gift_cars.size() == 1 && pu.gift_cars[0] == 1219);
+      CHECK(pu.new_affinity_level == 1 && near(pu.affinity_discount, 0.25) && pu.affinity_bonus_credits == 1000);
+    }
+
+    // DriveSave round-trip for Slice 6 persistence fields.
+    {
+      drive::DriveSave s1, s2;
+      s1.car = "NIS_SkylineGTRVSpecII_02";
+      s1.speed_traps = {{"speed_camera_01", 142.5}};
+      s1.speed_zones = {{"average_speed_01", 118.2}};
+      s1.sponsors = {{"NearMiss", 30, 1}};
+      s1.h2h_races = 4, s1.h2h_wins = 3;
+      s1.driver_xp = 18500;
+      s1.make_affinity = {{42, 9500}};
+      std::string err;
+      CHECK(drive::save_from_text(drive::save_to_text(s1), s2, &err));
+      CHECK(s2.speed_traps.size() == 1 && near(s2.speed_traps[0].second, 142.5, 1e-4));
+      CHECK(s2.speed_zones.size() == 1 && near(s2.speed_zones[0].second, 118.2, 1e-4));
+      CHECK(s2.sponsors.size() == 1 && s2.sponsors[0].id == "NearMiss" && s2.sponsors[0].count == 30 &&
+            s2.sponsors[0].claimed == 1);
+      CHECK(s2.h2h_races == 4 && s2.h2h_wins == 3 && s2.driver_xp == 18500);
+      CHECK(s2.make_affinity.size() == 1 && s2.make_affinity[0].first == 42 && s2.make_affinity[0].second == 9500);
+    }
   }
-  if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
-  else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
+  if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {
+    disc(root);
+    // Disc check: PlayerLevelDef (1000 levels), Rewards_DriverLevelv3, AffinityLevelDef (51 levels).
+    race::ProgressionTables pt;
+    std::string pe;
+    CHECK(race::load_progression_tables(root, pt, &pe));
+    std::printf("progression disc: %zu driver levels, %zu gift tiers, %zu affinity levels\n", pt.driver_levels.size(),
+                pt.driver_level_cars.size(), pt.affinity_levels.size());
+    CHECK(pt.driver_levels.size() == 1000 && pt.affinity_levels.size() == 51 && !pt.driver_level_cars.empty());
+  } else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
   std::printf(failures ? "race_tests: %d failure(s)\n" : "race_tests: ok\n", failures);
   return failures ? 1 : 0;
 }

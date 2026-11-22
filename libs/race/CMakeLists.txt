@@ -6,6 +6,7 @@ add_library(shift_race STATIC
   src/race_line.cpp
   src/session.cpp
   src/rewards.cpp
+  src/showcase.cpp
   src/street_line.cpp
   src/rally.cpp
   src/career.cpp)

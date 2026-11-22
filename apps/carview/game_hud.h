@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "freeroam/festival_ai.h"
+#include "freeroam/speed_zones.h"
 #include "ui.h"
 
 namespace carview {
@@ -35,8 +37,20 @@ struct RaceHud {
   int64_t mileage_bonus = 0;
   int difficulty_pct = 0;
   int64_t difficulty_bonus = 0;
+  int assists_pct = 0;
+  int64_t assists_bonus = 0;
+  int64_t bounty_bonus = 0;
+  int64_t skills_bonus = 0;
+  int64_t nemesis_bonus = 0;
   int64_t credits = 0;
   int wristband = 0;
+  int driver_xp = 0, driver_level = 0, affinity_xp = 0, affinity_level = 0;
+  int64_t affinity_bonus_credits = 0;
+  // Airborne Showcase live progress & gap (PLANE_RACE_001..007).
+  bool showcase = false;
+  std::string showcase_aircraft;
+  double showcase_progress = 0.0;
+  double showcase_gap_m = 0.0;  // + when player is ahead of the aircraft
   int stage_place = 0, stage_field = 0;
   std::vector<RaceHudRow> rows;  // by place
   // Wristband progress after the award.
@@ -159,6 +173,11 @@ struct CareerBoard {
   int club_cars = 0, club_done = 0, club_total = 0;
   int popularity_rank = 250;
   int64_t max_skills = 0;
+  int driver_level = 1, driver_xp = 0;
+  int speed_traps = 0, speed_traps_total = 0;
+  int speed_zones = 0, speed_zones_total = 0;
+  int h2h_wins = 0, h2h_races = 0;
+  int sponsors_tiers = 0;
   bool rally = false;
   int rally_level = 0, rally_xp = 0, rallies = 0, rally_wins = 0;
   int packs_owned = 0, packs_total = 0;
@@ -186,6 +205,13 @@ struct DriveHud {
   const MapOverlayHud* map_overlay = nullptr;
   const GpsHud* gps = nullptr;
   const PrStuntHud* pr_stunt = nullptr;
+  const freeroam::SpeedActivityHud* speed_hud = nullptr;
+  const freeroam::HeadToHeadHud* h2h = nullptr;
+  int driver_level = 1, driver_xp = 0, driver_next_xp = 0;
+  int affinity_level = 0;
+  double affinity_discount_pct = 0.0;
+  std::string sponsor_title, sponsor_detail;
+  double sponsor_at = -1e9;
   std::vector<NameTagHud> name_tags;
   double kmh = 0, rpm = 0, redline_rpm = 7000;
   int gear = 1;

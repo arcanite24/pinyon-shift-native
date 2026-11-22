@@ -312,6 +312,14 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   // A stage's finish is placed by progress; the nearest point can be an
   // earlier pass where the line doubles back.
   if (stage_ && have_stage_track_) finish_progress_ = stage_finish_progress_;
+  // Airborne Showcases (PLANE_RACE_001..007, CareerTypeId = 8): initialize the
+  // animated airborne opponent along the showcase route.
+  if (race::is_airborne_showcase(event_.career_type, event_.horizon_id)) {
+    const double fin_p = finish_progress_ > line_.gate_progress + 100.0 ? finish_progress_ : line_.line.length();
+    showcase_.init(race::showcase_spec_for(event_.horizon_id), line_.line, line_.gate_progress, fin_p);
+    std::printf("race: airborne showcase opponent %s (route %.0f m)\n", showcase_.spec().display_name.c_str(),
+                fin_p - line_.gate_progress);
+  }
   const size_t n = size_t(cars);
   states_.resize(n), inputs_.resize(n), progress_.resize(n), cross_.resize(n), speed_.resize(n), lanes_.assign(n, 0), caps_.assign(n, 1e9f);
   samples_.resize(n);
@@ -813,6 +821,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   const int player_place = session_->car(n).place;
   for (size_t k = 0; k < n; ++k)
     cars_[k].ai.update(field_->progress(k) - field_->progress(n), session_->car(k).place - player_place);
+  if (showcase_.active()) showcase_.step(drive::Vehicle::kStep, session_->clock(), field_->progress(n));
   for (size_t i : session_->resets()) reset_car(i < n ? *cars_[i].body : player, i, near, cx, cz, radius);
   for (size_t i = 0; i <= n; ++i)
     if (session_->finished(i) && session_->car(i).finish > session_->clock() - drive::Vehicle::kStep - 1e-9)
@@ -898,14 +907,29 @@ RaceHud RaceView::hud_info() const {
   for (double t : me.laps) h.lap_time -= t;
   const double run = std::max(1.0, finish_progress_ - line_.gate_progress);
   h.progress = std::clamp((field_->progress(n) - line_.gate_progress) / run, 0.0, 1.0);
+  if (showcase_.active()) {
+    h.showcase = true;
+    h.showcase_aircraft = showcase_.spec().display_name;
+    h.showcase_progress = showcase_.pose().fraction;
+    h.showcase_gap_m = showcase_.player_gap_m(field_->progress(n));
+    h.cars = 2;
+    h.place = showcase_.player_place(field_->progress(n), s.finished(n), me.finish);
+  }
   if (s.finished(n)) {
     h.phase = RaceHud::kFinished;
     h.finish_time = me.finish;
-    h.base_credits = award_ ? award_->base_credits : credits_for(me.place);
+    h.base_credits = award_ ? award_->base_credits : credits_for(h.place);
     h.mileage_bonus = award_ ? award_->mileage_bonus : 0;
     h.difficulty_pct = award_ ? award_->difficulty_pct : race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists);
     h.difficulty_bonus = award_ ? award_->difficulty_bonus : 0;
-    h.credits = award_ ? award_->credits : credits_for(me.place);
+    h.assists_pct = award_ ? award_->assists_pct : race::assist_difficulty_bonus_percent(o_.assists);
+    h.assists_bonus = award_ ? award_->assists_bonus : 0;
+    h.bounty_bonus = award_ ? award_->bounty_bonus : 0;
+    h.skills_bonus = award_ ? award_->skills_bonus : 0;
+    h.nemesis_bonus = award_ ? award_->nemesis_bonus : 0;
+    h.driver_xp = award_ ? award_->driver_xp : 0;
+    h.affinity_xp = award_ ? award_->affinity_xp : 0;
+    h.credits = award_ ? award_->credits : credits_for(h.place);
     h.wristband = award_ ? award_->wristband_points : 0;
     h.stage_place = stage_place_;
     h.stage_field = int(stage_field_.size()) + 1;
@@ -994,17 +1018,200 @@ int64_t RaceView::credits_for(int place) const {
 }
 
 const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::WristbandTables& tables,
-                                       double top_speed) {
+                                       double top_speed, const race::RaceBonusInputs& extras) {
   const size_t n = cars_.size();
   // A Rally stage pays nothing and writes no race result (SPEC-V4-CONTENT:
   // stages pay 0; championships, XP and their records are later work).
   if (stage_ || award_ || !session_->finished(n)) return nullptr;
   const auto& c = session_->car(n);
+  const int racers = showcase_.active() ? 2 : int(session_->size());
+  const int place = showcase_.active() ? showcase_.player_place(field_->progress(n), true, c.finish) : c.place;
+  race::RaceBonusInputs eff_extras = extras;
+  if (eff_extras.assists_pct == 0) eff_extras.assists_pct = race::assist_difficulty_bonus_percent(o_.assists);
   award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
-                            event_.cash_prize, int(session_->size()), c.place, true, c.finish, top_speed,
-                            event_.prize_car, tables, race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists),
-                            c.distance);
+                            event_.cash_prize, racers, place, true, c.finish, top_speed, event_.prize_car, tables,
+                            race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists), c.distance,
+                            eff_extras);
   return &*award_;
+}
+
+bool RaceView::showcase_tag(OpponentTag& out) const {
+  if (!showcase_.active()) return false;
+  const auto& p = showcase_.pose();
+  out = OpponentTag{};
+  out.x = p.position[0];
+  out.y = p.position[1] + (showcase_.spec().kind == race::ShowcaseAircraftKind::kHotAirBalloon ? 11.5 : 3.0);
+  out.z = p.position[2];
+  out.speed = p.speed_mps;
+  out.name = showcase_.spec().display_name;
+  out.leader = !p.finished && field_ && p.progress_m > field_->progress(cars_.size());
+  return true;
+}
+
+void RaceView::append_showcase_mesh(std::vector<world::DebrisVertex>& out) const {
+  if (!showcase_.active()) return;
+  const auto& sp = showcase_.spec();
+  const auto& pose = showcase_.pose();
+  const double sc = sp.scale;
+  const double cy = std::cos(pose.heading), sy = std::sin(pose.heading);
+  const double cp = std::cos(pose.pitch), sp_p = std::sin(pose.pitch);
+  const double cr = std::cos(pose.roll), sr = std::sin(pose.roll);
+
+  // Local (+X right, +Y up, +Z forward) -> game world rotation (roll, pitch, yaw).
+  auto xform_dir = [&](double lx, double ly, double lz) -> std::array<float, 3> {
+    // Roll about +Z
+    const double x1 = lx * cr - ly * sr;
+    const double y1 = lx * sr + ly * cr;
+    const double z1 = lz;
+    // Pitch about +X (positive nose up -> +Z tilts toward +Y)
+    const double x2 = x1;
+    const double y2 = y1 * cp + z1 * sp_p;
+    const double z2 = -y1 * sp_p + z1 * cp;
+    // Yaw about +Y (heading 0 -> +Z, +pi/2 -> +X)
+    const double wx = x2 * cy + z2 * sy;
+    const double wy = y2;
+    const double wz = -x2 * sy + z2 * cy;
+    return {float(wx), float(wy), float(wz)};
+  };
+  auto xform_pt = [&](double lx, double ly, double lz) -> std::array<float, 3> {
+    const auto d = xform_dir(lx * sc, ly * sc, lz * sc);
+    return {float(pose.position[0]) + d[0], float(pose.position[1]) + d[1], float(pose.position[2]) + d[2]};
+  };
+  auto push_tri = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c,
+                      std::array<uint8_t, 4> col) {
+    const float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const float nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+    if (nl > 1e-6f) nx /= nl, ny /= nl, nz /= nl;
+    else nx = 0, ny = 1, nz = 0;
+    out.push_back({a, {nx, ny, nz}, col});
+    out.push_back({b, {nx, ny, nz}, col});
+    out.push_back({c, {nx, ny, nz}, col});
+    out.push_back({a, {-nx, -ny, -nz}, col});
+    out.push_back({c, {-nx, -ny, -nz}, col});
+    out.push_back({b, {-nx, -ny, -nz}, col});
+  };
+  auto add_box = [&](double cx, double cy0, double cz, double hx, double hy, double hz, std::array<uint8_t, 4> col) {
+    const std::array<float, 3> v[8] = {
+        xform_pt(cx - hx, cy0 - hy, cz - hz), xform_pt(cx + hx, cy0 - hy, cz - hz),
+        xform_pt(cx + hx, cy0 + hy, cz - hz), xform_pt(cx - hx, cy0 + hy, cz - hz),
+        xform_pt(cx - hx, cy0 - hy, cz + hz), xform_pt(cx + hx, cy0 - hy, cz + hz),
+        xform_pt(cx + hx, cy0 + hy, cz + hz), xform_pt(cx - hx, cy0 + hy, cz + hz),
+    };
+    const int f[12][3] = {
+        {0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7}, {0, 1, 5}, {0, 5, 4},
+        {2, 3, 7}, {2, 7, 6}, {0, 4, 7}, {0, 7, 3}, {1, 2, 6}, {1, 6, 5},
+    };
+    for (const auto& t : f) push_tri(v[t[0]], v[t[1]], v[t[2]], col);
+  };
+
+  if (sp.kind == race::ShowcaseAircraftKind::kHotAirBalloon) {
+    // Horizon Festival Hot-Air Balloon: vibrant multi-panel envelope + rigging + wicker basket.
+    constexpr int kSegs = 14, kRings = 8;
+    constexpr double kPi = 3.14159265358979323846;
+    const std::array<uint8_t, 4> palette[4] = {
+        {240, 25, 105, 255},   // Horizon pink
+        {255, 195, 20, 255},   // Festival yellow
+        {255, 105, 15, 255},   // Sunset orange
+        {245, 245, 250, 255},  // Crisp white
+    };
+    auto env_r = [&](int r) {
+      const double u = double(r) / kRings;  // 0 bottom throat -> 1 top crown
+      return u < 0.2 ? 1.2 + u * 16.0 : 5.4 * std::sin(u * kPi * 0.92 + 0.15);
+    };
+    auto env_y = [&](int r) { return 3.0 + double(r) * 1.45; };
+    for (int r = 0; r < kRings; ++r) {
+      const double r0 = env_r(r), r1 = env_r(r + 1);
+      const double y0 = env_y(r), y1 = env_y(r + 1);
+      for (int s = 0; s < kSegs; ++s) {
+        const double a0 = 2.0 * kPi * s / kSegs, a1 = 2.0 * kPi * (s + 1) / kSegs;
+        const auto p00 = xform_pt(r0 * std::cos(a0), y0, r0 * std::sin(a0));
+        const auto p10 = xform_pt(r0 * std::cos(a1), y0, r0 * std::sin(a1));
+        const auto p11 = xform_pt(r1 * std::cos(a1), y1, r1 * std::sin(a1));
+        const auto p01 = xform_pt(r1 * std::cos(a0), y1, r1 * std::sin(a0));
+        const auto col = palette[(s + r / 2) % 4];
+        push_tri(p00, p10, p11, col);
+        push_tri(p00, p11, p01, col);
+      }
+    }
+    add_box(0, 0.7, 0, 0.95, 0.75, 0.95, {140, 95, 50, 255});    // wicker basket
+    add_box(0, 2.4, 0, 0.35, 0.5, 0.35, {255, 190, 60, 255});    // burner glow
+    for (double sx : {-0.8, 0.8})
+      for (double sz : {-0.8, 0.8}) add_box(sx, 2.1, sz, 0.06, 1.0, 0.06, {70, 70, 75, 255});
+    return;
+  }
+
+  if (sp.kind == race::ShowcaseAircraftKind::kHelicopter) {
+    // Attack Helicopter: dark tactical fuselage, canopy, tail boom, skids, spinning main + tail rotors.
+    const std::array<uint8_t, 4> body{48, 56, 62, 255}, accent{235, 65, 35, 255}, glass{25, 45, 68, 255},
+        rotor{32, 34, 38, 255};
+    add_box(0, 0.0, 0.6, 1.15, 0.95, 2.8, body);      // main cabin
+    add_box(0, 0.25, 2.6, 0.9, 0.65, 1.1, glass);     // cockpit glass
+    add_box(0, 0.2, -3.6, 0.35, 0.42, 3.2, body);     // tail boom
+    add_box(0, 1.05, -6.5, 0.12, 0.95, 0.55, accent); // tail fin
+    add_box(0, -0.3, 0.4, 2.4, 0.14, 0.55, accent);   // stub wings
+    for (double sx : {-1.1, 1.1}) add_box(sx, -1.25, 0.5, 0.10, 0.08, 2.4, rotor);  // skids
+    // Spinning 4-blade main rotor
+    for (int b = 0; b < 2; ++b) {
+      const double a = pose.rotor_angle + b * 1.5707963;
+      const double bx = std::cos(a) * 5.8, bz = std::sin(a) * 5.8;
+      const double px = -std::sin(a) * 0.22, pz = std::cos(a) * 0.22;
+      const auto p0 = xform_pt(-bx - px, 1.45, 0.3 - bz - pz);
+      const auto p1 = xform_pt(bx - px, 1.45, 0.3 + bz - pz);
+      const auto p2 = xform_pt(bx + px, 1.45, 0.3 + bz + pz);
+      const auto p3 = xform_pt(-bx + px, 1.45, 0.3 - bz + pz);
+      push_tri(p0, p1, p2, rotor);
+      push_tri(p0, p2, p3, rotor);
+      push_tri(p0, p2, p1, rotor);
+      push_tri(p0, p3, p2, rotor);
+    }
+    return;
+  }
+
+  // Fixed-wing aircraft: P-51 Mustang, Stunt Jet, or Biplane.
+  const bool is_jet = sp.kind == race::ShowcaseAircraftKind::kStuntJet;
+  const bool is_biplane = sp.kind == race::ShowcaseAircraftKind::kBiplane;
+  const std::array<uint8_t, 4> fuse = is_jet ? std::array<uint8_t, 4>{230, 234, 240, 255}
+                                             : (is_biplane ? std::array<uint8_t, 4>{210, 34, 34, 255}
+                                                           : std::array<uint8_t, 4>{214, 220, 228, 255});
+  const std::array<uint8_t, 4> trim = is_jet ? std::array<uint8_t, 4>{245, 0, 96, 255}
+                                             : (is_biplane ? std::array<uint8_t, 4>{245, 236, 212, 255}
+                                                           : std::array<uint8_t, 4>{215, 28, 32, 255});
+  const std::array<uint8_t, 4> canopy{30, 52, 78, 255};
+
+  add_box(0, 0.0, 0.0, 0.72, 0.75, 4.6, fuse);       // fuselage
+  add_box(0, 0.0, 4.9, 0.45, 0.45, 0.85, trim);      // nose cowling / spinner
+  add_box(0, 0.78, 0.4, 0.42, 0.36, 1.35, canopy);   // cockpit canopy
+  // Main wing(s)
+  add_box(0, -0.15, 0.7, is_jet ? 5.6 : 6.4, 0.14, is_jet ? 1.45 : 1.15, fuse);
+  add_box(0, -0.13, 0.7, is_jet ? 5.8 : 6.6, 0.15, 0.32, trim);  // wing stripe
+  if (is_biplane) {
+    add_box(0, 1.35, 0.9, 6.2, 0.12, 1.05, trim);  // upper biplane wing
+    for (double sx : {-3.6, -1.6, 1.6, 3.6}) add_box(sx, 0.6, 0.8, 0.06, 0.75, 0.06, {65, 65, 70, 255});
+  }
+  // Tailplane & vertical stabilizer(s)
+  add_box(0, 0.12, -4.1, 2.25, 0.10, 0.65, trim);
+  if (is_jet) {
+    add_box(-0.75, 0.95, -4.2, 0.10, 0.95, 0.75, trim);
+    add_box(0.75, 0.95, -4.2, 0.10, 0.95, 0.75, trim);
+    add_box(0, 0.0, -5.2, 0.45, 0.45, 0.65, {255, 145, 25, 255});  // afterburner glow
+  } else {
+    add_box(0, 1.05, -4.1, 0.12, 1.05, 0.80, trim);
+    // Spinning propeller blades
+    for (int b = 0; b < 2; ++b) {
+      const double a = pose.rotor_angle + b * 1.5707963;
+      const double bx = std::cos(a) * 1.85, by = std::sin(a) * 1.85;
+      const double px = -std::sin(a) * 0.12, py = std::cos(a) * 0.12;
+      const auto p0 = xform_pt(-bx - px, -by - py, 5.75);
+      const auto p1 = xform_pt(bx - px, by - py, 5.75);
+      const auto p2 = xform_pt(bx + px, by + py, 5.75);
+      const auto p3 = xform_pt(-bx + px, -by + py, 5.75);
+      const std::array<uint8_t, 4> prop{40, 42, 46, 255};
+      push_tri(p0, p1, p2, prop);
+      push_tri(p0, p2, p3, prop);
+    }
+  }
 }
 
 void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {

@@ -91,6 +91,17 @@ std::string save_to_text(const DriveSave& s) {
     for (const auto& id : s.completed_pr_stunts) out += " " + id;
     out += "\n";
   }
+  for (const auto& [id, mph] : s.speed_traps)
+    out += "speed_trap " + id + " " + num(mph) + "\n";
+  for (const auto& [id, mph] : s.speed_zones)
+    out += "speed_zone " + id + " " + num(mph) + "\n";
+  for (const auto& sp : s.sponsors)
+    out += "sponsor " + sp.id + " " + std::to_string(sp.count) + " " + std::to_string(sp.claimed) + "\n";
+  if (s.h2h_races > 0 || s.h2h_wins > 0)
+    out += "h2h " + std::to_string(s.h2h_races) + " " + std::to_string(s.h2h_wins) + "\n";
+  if (s.driver_xp > 0) out += "driver_xp " + std::to_string(s.driver_xp) + "\n";
+  for (const auto& [make_id, xp] : s.make_affinity)
+    if (xp > 0) out += "affinity " + std::to_string(make_id) + " " + std::to_string(xp) + "\n";
   if (s.num_races)
     out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
            std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
@@ -258,6 +269,25 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       for (std::string id; l >> id;) out.discovered_outposts.push_back(id);
     } else if (key == "pr_stunts") {
       for (std::string id; l >> id;) out.completed_pr_stunts.push_back(id);
+    } else if (key == "speed_trap") {
+      std::string id;
+      double mph = 0;
+      if (l >> id >> mph && std::isfinite(mph) && mph > 0) out.speed_traps.emplace_back(id, mph);
+    } else if (key == "speed_zone") {
+      std::string id;
+      double mph = 0;
+      if (l >> id >> mph && std::isfinite(mph) && mph > 0) out.speed_zones.emplace_back(id, mph);
+    } else if (key == "sponsor") {
+      DriveSave::SavedSponsor sp;
+      if (l >> sp.id >> sp.count >> sp.claimed && sp.count >= 0 && sp.claimed >= 0) out.sponsors.push_back(sp);
+    } else if (key == "h2h") {
+      l >> out.h2h_races >> out.h2h_wins;
+    } else if (key == "driver_xp") {
+      if (!(l >> out.driver_xp) || out.driver_xp < 0) out.driver_xp = 0;
+    } else if (key == "affinity") {
+      int64_t make_id = 0;
+      int xp = 0;
+      if (l >> make_id >> xp && make_id > 0 && xp > 0) out.make_affinity.emplace_back(make_id, xp);
     } else if (key == "stats") {
       l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
           out.time_exhibition >> out.top_speed;

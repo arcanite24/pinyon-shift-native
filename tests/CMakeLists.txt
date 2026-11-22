@@ -121,7 +121,7 @@ add_test(NAME settings_tests COMMAND settings_tests)
 add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp
                ../apps/carview/events_page.cpp ../apps/carview/hud.cpp)
 target_include_directories(ui_tests PRIVATE ../apps/carview)
-target_link_libraries(ui_tests PRIVATE shift_stb fh1data shift_race shift_garage)
+target_link_libraries(ui_tests PRIVATE shift_stb fh1data shift_race shift_garage shift_freeroam)
 add_test(NAME ui_tests COMMAND ui_tests)
 
 add_executable(career_tests career_tests.cpp)
