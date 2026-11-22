@@ -36,6 +36,19 @@ struct LiveSettings {
 
 class SettingsPage {
  public:
+  enum class Tab : int { kDisplay = 0, kAudio = 1, kGameplay = 2, kControls = 3, kPinyon = 4, kCount = 5 };
+
+  struct DisplayRow {
+    std::string name;
+    std::string value;
+    Tab tab = Tab::kDisplay;
+    int flat_index = 0;
+    bool is_rebind = false;
+    bool is_save = false;
+    bool capturing = false;
+    bool selected = false;
+  };
+
   // `tokens`: the file's options as command-line tokens (read_settings).
   void load(const std::vector<std::string>& tokens);
   bool is_open() const { return open_; }
@@ -43,6 +56,9 @@ class SettingsPage {
   void close() { open_ = false, capturing_ = false; }
   void move(int by);  // up and down, wrapping over the rows and the save line
   void step(int by);  // left and right on the selected row
+  void switch_tab(int by);  // jumps selection to the first setting in the next/prev category tab
+  Tab active_tab() const;
+  std::vector<DisplayRow> display_rows() const;
   bool on_save_line() const { return row_ == int(rows_.size() + rebinds_.size()); }
   bool on_rebind_row() const {
     return row_ >= int(rows_.size()) && row_ < int(rows_.size() + rebinds_.size());

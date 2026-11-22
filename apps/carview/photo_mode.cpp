@@ -11,6 +11,8 @@
 
 #include <stb_image_write.h>
 
+#include "ui4_chrome.h"
+
 namespace carview {
 namespace {
 
@@ -547,17 +549,11 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
   using ui::TextStyle;
 
   const float s = h / 720.0f;
-  const uint32_t kPink = rgba(0xF5, 0x04, 0x5C);
-  const uint32_t kAmber = rgba(255, 190, 48);
-  const uint32_t kGlass = rgba(10, 12, 18, 206);
-  const uint32_t kGlassHi = rgba(24, 28, 38, 224);
-  const uint32_t kWhite = rgba(246, 248, 252);
-  const uint32_t kDim = rgba(170, 178, 192);
-  const uint32_t kGrid = rgba(255, 255, 255, 34);
-  const uint32_t kBracket = rgba(255, 255, 255, 150);
+  const uint32_t kGrid = rgba(255, 255, 255, 30);
+  const uint32_t kBracket = rgba(255, 255, 255, 165);
 
-  // Subtle rule-of-thirds viewfinder grid + corner framing brackets.
-  const float mx = 42.0f * s, my = 34.0f * s;
+  // Subtle rule-of-thirds viewfinder grid + crisp corner framing brackets.
+  const float mx = 42.0f * s, my = 26.0f * s;
   out.line(w / 3.0f, my, w / 3.0f, h - my, 1.0f * s, kGrid);
   out.line(2.0f * w / 3.0f, my, 2.0f * w / 3.0f, h - my, 1.0f * s, kGrid);
   out.line(mx, h / 3.0f, w - mx, h / 3.0f, 1.0f * s, kGrid);
@@ -573,94 +569,89 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
   out.line(w - mx - bl, h - my, w - mx, h - my, 2.0f * s, kBracket);
   out.line(w - mx, h - my - bl, w - mx, h - my, 2.0f * s, kBracket);
 
-  // Centre autofocus reticle.
+  // Centre autofocus reticle (authentic Horizon.zip HUD/PHOTOMODEFOCUSRETICLE when available).
   const float cx = 0.5f * w, cy = 0.5f * h;
-  const float rr = 14.0f * s;
-  out.line(cx - rr, cy, cx - 5.0f * s, cy, 1.5f * s, kBracket);
-  out.line(cx + 5.0f * s, cy, cx + rr, cy, 1.5f * s, kBracket);
-  out.line(cx, cy - rr, cx, cy - 5.0f * s, 1.5f * s, kBracket);
-  out.line(cx, cy + 5.0f * s, cx, cy + rr, 1.5f * s, kBracket);
+  std::array<float, 4> ret_uv{};
+  if (ui4::texture("HUD/PHOTOMODEFOCUSRETICLE", ret_uv)) {
+    const float rr = 34.0f * s;
+    out.image(cx - rr, cy - rr, cx + rr, cy + rr, ret_uv, rgba(255, 255, 255, 210));
+  } else {
+    const float rr = 14.0f * s;
+    out.line(cx - rr, cy, cx - 5.0f * s, cy, 1.5f * s, kBracket);
+    out.line(cx + 5.0f * s, cy, cx + rr, cy, 1.5f * s, kBracket);
+    out.line(cx, cy - rr, cx, cy - 5.0f * s, 1.5f * s, kBracket);
+    out.line(cx, cy + 5.0f * s, cx, cy + rr, 1.5f * s, kBracket);
+  }
 
-  // Top-left header strip: PHOTO MODE + camera limits badges.
-  out.rect(mx + 6 * s, my + 6 * s, mx + 290 * s, my + 42 * s, kGlass, 4 * s);
-  out.rect(mx + 6 * s, my + 6 * s, mx + 12 * s, my + 42 * s, kPink, 2 * s);
-  out.text(mx + 22 * s, my + 14 * s, "PHOTO MODE",
-           TextStyle{.size = 18 * s, .weight = 0.12f, .tracking = 0.14f, .color = kWhite, .font = Font::kE});
+  // Top-left tilted FH1 PHOTO MODE header + gritty camera telemetry strip.
+  ui4::title_banner(out, s, 56.0f * s, 26.0f * s, "PHOTO MODE", "HORIZON CAMERA", true, 320.0f);
 
   char cam_info[128];
-  std::snprintf(cam_info, sizeof cam_info, "FOV %.0f   F/%.1f   %.1fm%s%s", camera_.fov_deg(),
+  std::snprintf(cam_info, sizeof cam_info, "FOV %.0f°   •   F/%.1f   •   %.1fm%s%s", camera_.fov_deg(),
                 1.4f + (1.0f - effects_.aperture / 100.0f) * 14.6f, effects_.focus_distance,
-                camera_.limits().cylinder_radius > 150.0 ? "   WIDER LIMITS" : "",
-                camera_.limits().through_walls ? "   NO-CLIP" : "");
-  out.rect(mx + 300 * s, my + 6 * s, mx + 720 * s, my + 42 * s, kGlass, 4 * s);
-  out.text(mx + 314 * s, my + 17 * s, cam_info,
-           TextStyle{.size = 11.5f * s, .weight = 0.11f, .tracking = 0.08f, .color = kDim, .font = Font::kB});
+                camera_.limits().cylinder_radius > 150.0 ? "   •   WIDER LIMITS" : "",
+                camera_.limits().through_walls ? "   •   NO-CLIP" : "");
+  ui4::panel(out, 388.0f * s, 32.0f * s, 772.0f * s, 64.0f * s, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  out.text(402.0f * s, 42.0f * s, cam_info, ui4::style(Font::kB, 12.0f * s, ui4::kWhite));
 
-  // Top-right Horizon Promo badge / live detection card.
+  // Top-right Horizon Promo detection card (sharp gritty FH1 panel).
   const bool show_promo_banner = banner_timer_ > 0.0 && (!last_promo_.newly_spotted_ids.empty() || !last_saved_label_.empty());
   const PromoSpotResult& promo = show_promo_banner ? last_promo_ : live_promo_;
-  const float px1 = w - mx - 6 * s;
-  const float px0 = px1 - 320 * s;
-  const float py0 = my + 6 * s;
-  const float py1 = py0 + (show_promo_banner ? 116 * s : 74 * s);
-  out.shadow(px0, py0 + 3 * s, px1, py1 + 3 * s, rgba(0, 0, 0, 120), 6 * s, 10 * s);
-  out.rect(px0, py0, px1, py1, kGlass, 6 * s, kGlassHi);
-  out.rect(px0, py0, px1, py0 + 4 * s, show_promo_banner && !last_promo_.newly_spotted_ids.empty() ? kAmber : kPink);
-
-  out.text(px0 + 14 * s, py0 + 13 * s, "HORIZON PROMO",
-           TextStyle{.size = 11 * s, .weight = 0.12f, .tracking = 0.18f, .color = kAmber, .font = Font::kE});
+  const float px1 = w - 56.0f * s;
+  const float px0 = px1 - 332.0f * s;
+  const float py0 = 32.0f * s;
+  const float py1 = py0 + (show_promo_banner ? 114.0f * s : 76.0f * s);
+  const uint32_t promo_acc = (show_promo_banner && !last_promo_.newly_spotted_ids.empty()) ? ui4::kYellow : ui4::kPink;
+  ui4::panel(out, px0, py0, px1, py1, s, ui4::kCharcoalDark, promo_acc, 0, true);
+  ui4::offwhite_strip(out, px0 + 10.0f * s, py0 + 8.0f * s, px1 - 10.0f * s, py0 + 30.0f * s, s, false);
+  out.text(px0 + 18.0f * s, py0 + 12.0f * s, "HORIZON PROMO", ui4::style(Font::kE, 12.0f * s, ui4::kInk));
   char cnt_buf[48];
   std::snprintf(cnt_buf, sizeof cnt_buf, "%d / %d CARS", promo.total_spotted, promo.total_cars);
-  out.text(px1 - 14 * s, py0 + 13 * s, cnt_buf,
-           TextStyle{.size = 11 * s, .weight = 0.11f, .color = kWhite, .align = Align::kRight, .font = Font::kB});
+  out.text(px1 - 18.0f * s, py0 + 12.0f * s, cnt_buf, ui4::style(Font::kB, 12.0f * s, ui4::kInk, Align::kRight));
 
   if (show_promo_banner) {
     if (!last_promo_.newly_spotted_names.empty()) {
       std::string cars_line = "NEW: " + last_promo_.newly_spotted_names[0];
       if (last_promo_.newly_spotted_names.size() > 1)
         cars_line += " +" + std::to_string(last_promo_.newly_spotted_names.size() - 1) + " MORE";
-      out.text(px0 + 14 * s, py0 + 36 * s, cars_line,
-               TextStyle{.size = 12 * s, .weight = 0.11f, .color = kWhite, .font = Font::kB});
-      out.text(px0 + 14 * s, py0 + 58 * s,
+      out.text(px0 + 14.0f * s, py0 + 38.0f * s, cars_line, ui4::style(Font::kB, 12.5f * s, ui4::kWhite));
+      out.text(px0 + 14.0f * s, py0 + 60.0f * s,
                "+" + format_credits(last_promo_.credits_awarded) + " CR" +
                    (last_promo_.milestone_reached ? "  (MILESTONE BONUS!)" : ""),
-               TextStyle{.size = 13 * s, .weight = 0.12f, .color = kAmber, .font = Font::kE});
+               ui4::style(Font::kE, 14.0f * s, ui4::kYellow));
     } else {
-      out.text(px0 + 14 * s, py0 + 40 * s, "PHOTO CAPTURED (4X SSAA)",
-               TextStyle{.size = 12 * s, .weight = 0.12f, .color = kWhite, .font = Font::kE});
+      out.text(px0 + 14.0f * s, py0 + 42.0f * s, "PHOTO CAPTURED (4X SSAA)", ui4::style(Font::kE, 13.0f * s, ui4::kWhite));
     }
     if (!last_saved_label_.empty()) {
-      out.text(px0 + 14 * s, py0 + 84 * s, "SAVED: " + last_saved_label_,
-               TextStyle{.size = 10 * s, .weight = 0.10f, .color = kDim, .font = Font::kB});
+      out.text(px0 + 14.0f * s, py0 + 86.0f * s, "SAVED: " + last_saved_label_,
+               ui4::style(Font::kB, 10.5f * s, ui4::kDim));
     }
   } else {
     if (!promo.visible_names.empty()) {
       const bool has_new = !promo.newly_spotted_ids.empty();
       std::string line = (has_new ? "NEW IN FRAME: " : "IN FRAME: ") + promo.visible_names[0];
-      if (promo.visible_names.size() > 1)
-        line += " (+" + std::to_string(promo.visible_names.size() - 1) + ")";
-      out.text(px0 + 14 * s, py0 + 36 * s, line,
-               TextStyle{.size = 11.5f * s, .weight = 0.11f, .color = has_new ? kAmber : kWhite, .font = Font::kB});
-      out.text(px0 + 14 * s, py0 + 54 * s,
+      if (promo.visible_names.size() > 1) line += " (+" + std::to_string(promo.visible_names.size() - 1) + ")";
+      out.text(px0 + 14.0f * s, py0 + 38.0f * s, line,
+               ui4::style(Font::kB, 12.0f * s, has_new ? ui4::kYellow : ui4::kWhite));
+      out.text(px0 + 14.0f * s, py0 + 56.0f * s,
                has_new ? "SNAP TO EARN +" + format_credits(promo.credits_awarded) + " CR" : "ALREADY PHOTOGRAPHED",
-               TextStyle{.size = 9.5f * s, .weight = 0.10f, .color = kDim, .font = Font::kB});
+               ui4::style(Font::kB, 10.0f * s, ui4::kDim));
     } else {
-      out.text(px0 + 14 * s, py0 + 40 * s, "FRAME A CAR TO SPOT FOR PROMO",
-               TextStyle{.size = 10.5f * s, .weight = 0.10f, .color = kDim, .font = Font::kB});
+      out.text(px0 + 14.0f * s, py0 + 42.0f * s, "FRAME A CAR TO SPOT FOR PROMO",
+               ui4::style(Font::kB, 11.0f * s, ui4::kDim));
     }
   }
 
-  // Left collapsible Photo Effects slider drawer.
+  // Left collapsible Photo Effects slider drawer (sharp gritty FH1 panel + pink active brush).
   if (effects_open_) {
-    const float dx0 = mx + 6 * s;
-    const float dx1 = dx0 + 318 * s;
-    const float dy0 = my + 56 * s;
-    const float row_h = 34.0f * s;
-    const float dy1 = dy0 + 34 * s + float(kRowCount) * row_h + 12 * s;
-    out.shadow(dx0, dy0 + 4 * s, dx1, dy1 + 4 * s, rgba(0, 0, 0, 120), 6 * s, 10 * s);
-    out.rect(dx0, dy0, dx1, dy1, kGlass, 6 * s, kGlassHi);
-    out.text(dx0 + 14 * s, dy0 + 10 * s, "CAMERA EFFECTS",
-             TextStyle{.size = 11 * s, .weight = 0.12f, .tracking = 0.16f, .color = kPink, .font = Font::kE});
+    const float dx0 = 56.0f * s;
+    const float dx1 = dx0 + 332.0f * s;
+    const float dy0 = 104.0f * s;
+    const float row_h = 37.0f * s;
+    const float dy1 = dy0 + 40.0f * s + float(kRowCount) * row_h + 10.0f * s;
+    ui4::panel(out, dx0, dy0, dx1, dy1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+    ui4::offwhite_strip(out, dx0 + 10.0f * s, dy0 + 8.0f * s, dx1 - 10.0f * s, dy0 + 30.0f * s, s, false);
+    out.text(dx0 + 18.0f * s, dy0 + 12.0f * s, "CAMERA EFFECTS", ui4::style(Font::kE, 12.5f * s, ui4::kInk));
 
     struct RowInfo {
       const char* name;
@@ -698,33 +689,35 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     };
 
     for (int i = 0; i < kRowCount; ++i) {
-      const float ry0 = dy0 + 34 * s + float(i) * row_h;
-      const float ry1 = ry0 + row_h - 3 * s;
+      const float ry0 = dy0 + 38.0f * s + float(i) * row_h;
+      const float ry1 = ry0 + row_h - 3.0f * s;
       const bool sel = (i == selected_row_);
       if (sel) {
-        out.rect(dx0 + 6 * s, ry0, dx1 - 6 * s, ry1, rgba(0xF5, 0x04, 0x5C, 210), 4 * s);
+        ui4::brush(out, dx0 + 4.0f * s, ry0, dx1 - 4.0f * s, ry1, ui4::kPink);
+      } else if (i % 2 == 0) {
+        out.rect(dx0 + 10.0f * s, ry0, dx1 - 10.0f * s, ry1, rgba(255, 255, 255, 10));
       }
-      out.text(dx0 + 16 * s, ry0 + 6 * s, rows[i].name,
-               TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = sel ? kWhite : kDim, .font = Font::kB});
-      out.text(dx1 - 16 * s, ry0 + 6 * s, rows[i].value,
-               TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = kWhite, .align = Align::kRight, .font = Font::kB});
+      out.text(dx0 + 16.0f * s, ry0 + 6.0f * s, rows[i].name,
+               ui4::style(sel ? Font::kE : Font::kB, 11.0f * s, sel ? ui4::kWhite : ui4::kDim));
+      out.text(dx1 - 16.0f * s, ry0 + 6.0f * s, rows[i].value,
+               ui4::style(Font::kE, 11.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kRight));
       if (rows[i].is_bar) {
-        const float bx0 = dx0 + 16 * s, bx1 = dx1 - 16 * s, by0 = ry1 - 7 * s, by1 = ry1 - 3 * s;
-        out.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, sel ? 85 : 42), 2 * s);
+        const float bx0 = dx0 + 16.0f * s, bx1 = dx1 - 16.0f * s, by0 = ry1 - 8.0f * s, by1 = ry1 - 3.0f * s;
+        out.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, sel ? 80 : 34));
         const float fill_x = bx0 + (bx1 - bx0) * std::clamp(rows[i].norm, 0.0f, 1.0f);
-        out.rect(bx0, by0, std::max(bx0 + 3 * s, fill_x), by1, sel ? kWhite : kAmber, 2 * s);
+        out.rect(bx0, by0, std::max(bx0 + 3.0f * s, fill_x), by1, sel ? ui4::kWhite : ui4::kPink);
+        out.rect(fill_x - 2.0f * s, by0 - 2.0f * s, fill_x + 2.0f * s, by1 + 2.0f * s, ui4::kWhite);
       }
     }
   }
 
   // Supersampling capture progress indicator.
   if (accum_.active()) {
-    const float bx0 = cx - 140 * s, bx1 = cx + 140 * s, by0 = cy + 32 * s, by1 = cy + 68 * s;
-    out.rect(bx0, by0, bx1, by1, kGlassHi, 6 * s);
+    const float bx0 = cx - 150.0f * s, bx1 = cx + 150.0f * s, by0 = cy + 36.0f * s, by1 = cy + 72.0f * s;
+    ui4::brush(out, bx0, by0, bx1, by1, ui4::kBrushBlack);
     char msg[64];
     std::snprintf(msg, sizeof msg, "CAPTURING %d / %d SSAA...", accum_.sample_index() + 1, accum_.target_samples());
-    out.text(cx, by0 + 11 * s, msg,
-             TextStyle{.size = 12 * s, .weight = 0.12f, .color = kAmber, .align = Align::kCenter, .font = Font::kE});
+    out.text(cx, by0 + 11.0f * s, msg, ui4::style(Font::kE, 13.0f * s, ui4::kYellow, Align::kCenter));
   }
 
   // Shutter flash feedback.
@@ -733,12 +726,15 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     out.rect(0, 0, w, h, rgba(255, 255, 255, uint8_t(alpha * 255.0f)));
   }
 
-  // Bottom controls help bar.
-  const float hy0 = h - my - 36 * s, hy1 = h - my - 6 * s;
-  out.rect(mx + 6 * s, hy0, w - mx - 6 * s, hy1, kGlass, 4 * s);
-  out.text(mx + 18 * s, hy0 + 9 * s,
-           "ENTER SNAP PHOTO   TAB EFFECTS   ARROWS ADJUST   WASD/QE MOVE   F AUTOFOCUS   R RESET   H HIDE UI   ESC EXIT",
-           TextStyle{.size = 10.5f * s, .weight = 0.11f, .tracking = 0.06f, .color = kWhite, .font = Font::kB});
+  // Authentic FH1 BUTTON_BAR_SCENE bottom bar.
+  ui4::button_bar(out,
+                  {{"A", "SNAP PHOTO"},
+                   {"Y", "EFFECTS"},
+                   {"DPAD_LR", "ADJUST"},
+                   {"X", "AUTOFOCUS"},
+                   {"LB", "RESET"},
+                   {"B", "EXIT"}},
+                  w, h, 56.0f);
 }
 
 }  // namespace carview

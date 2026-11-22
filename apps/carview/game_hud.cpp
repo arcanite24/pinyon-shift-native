@@ -517,14 +517,13 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   l.unturn();
   if (!r.grid_car_info.empty()) {
-    l.rect(g.R(840), g.T(44), g.R(1210), g.T(78), kBlack60);
+    ui4::panel(l, g.R(840), g.T(40), g.R(1210), g.T(78), s, ui4::kCharcoalDark, ui4::kPink, 0, true);
     TextStyle cs = font(ui::Font::kB, 16 * s, kText, Align::kRight);
     cs.keep_case = true;
-    fit(r.grid_car_info, cs, g.R(1198) - g.R(852), 9 * s);
-    l.text(g.R(1198), g.T(52) + (16 * s - cs.size) * 0.5f, r.grid_car_info, cs);
+    fit(r.grid_car_info, cs, g.R(1196) - g.R(854), 9 * s);
+    l.text(g.R(1196), g.T(51) + (16 * s - cs.size) * 0.5f, r.grid_car_info, cs);
   }
-  help_item(l, g, 70, 175, 654, 688, "A", kGreen, str("HelpButtons", "IDS_Select", "SELECT"));
-  help_item(l, g, 180, 308, 654, 688, "B", kRed, "QUIT RACE");
+  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_Select", "SELECT")}, {"B", "QUIT RACE"}}, g.w, g.h);
 }
 
 // (b2) The race HUD: laps (or the distance), the timers, place, standings.
@@ -801,7 +800,7 @@ void points_page(ui::List& l, const RaceHud& r, const Layout& g) {
 // (c4) Prize Car Won screen (H_POST_RACE_WON_CAR style).
 void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   const float s = g.s;
-  l.rect(0, 0, g.w, g.h, rgba(0, 0, 0, 120));
+  ui4::subtle_vignette(l, g.w, g.h, 0.30f);
   {
     Turn t(l, g.L(340), g.T(215));
     TextStyle ts = font(ui::Font::kE, 48 * s, kText);
@@ -820,10 +819,10 @@ void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
   }
   {
     Turn t(l, g.L(280), g.T(398));
-    l.rect(g.L(105), g.T(378), g.L(470), g.T(418), kLight);
+    ui4::offwhite_strip(l, g.L(105), g.T(378), g.L(470), g.T(418), s, true);
     l.text(g.L(122), g.T(389), "ADDED TO YOUR GARAGE", font(ui::Font::kB, 18 * s, kDark));
   }
-  help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
+  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
 void results(ui::List& l, const RaceHud& r, const Layout& g) {
@@ -862,14 +861,16 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
       fit(str("InGame", "IDS_Finished", "FINISHED"), fs, g.L(372) - g.L(85), 20 * s);
       l.text(g.L(85) + dx, g.T(171), str("InGame", "IDS_Finished", "FINISHED"), fs);
     }
-    help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
-    help_item(l, g, 195, 307, 653, 689, "Y", kAccent, str("HelpButtons", "IDS_RestartMenu", "RESTART"));
-    help_item(l, g, 312, 465, 653, 689, "X", kBlue, str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS"));
-    help_item(l, g, 470, 632, 653, 689, "V", kPink, "VIEW REPLAY");
+    ui4::button_bar(l,
+                    {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")},
+                     {"Y", str("HelpButtons", "IDS_RestartMenu", "RESTART")},
+                     {"X", str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS")},
+                     {"V", "VIEW REPLAY"}},
+                    g.w, g.h);
     return;
   }
-  // The cash reward.
-  l.rect(0, 0, g.w, g.h, rgba(0, 0, 0, 90));
+  // The cash reward (oracle results-credits.png).
+  ui4::subtle_vignette(l, g.w, g.h, 0.25f);
   {
     Turn t(l, g.L(313), g.T(180));
     brush(l, g.L(98), g.T(141), g.L(529), g.T(218), kBrush);
@@ -936,14 +937,14 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
   l.unturn();
   if (r.balance >= 0) {
     Turn tb(l, g.L(280), g.T(497));
-    l.rect(g.L(150), g.T(475), g.L(410), g.T(520), kLight);
+    ui4::offwhite_strip(l, g.L(150), g.T(475), g.L(410), g.T(520), s, true);
     TextStyle bs = font(ui::Font::kB, 16 * s, kDark);
     l.text(g.L(162), g.T(490), str("OnlineRewards", "IDS_Balance", "BALANCE"), bs);
     bs.align = Align::kRight;
     bs.keep_case = true;  // "117,881 Cr" as shown
     l.text(g.L(398), g.T(490), thousands(r.balance) + " " + cr, bs);
   }
-  help_item(l, g, 70, 190, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
+  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
 // A class's colour (B: #FF9203 per the layouts; the others ours).
@@ -997,10 +998,11 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   const float first_bottom = pause ? 186.0f : 204.0f;
   const int fit_rows = std::clamp(int((g.B(612) - g.T(first_bottom)) / (row_step * s)) + 1, 1, pause ? 8 : 8);
   const int first = std::clamp(st.menu_selected - fit_rows / 2, 0, std::max(0, n - fit_rows));
-  const float max_item_w = has_right ? g.L(495) : (g.w - g.L(300));
-  Turn list_turn(l, g.L(226), g.T(185), ui4::kTiltRad);
+  const float max_item_w = st.career ? g.L(265) : (has_right ? g.L(495) : (g.w - g.L(300)));
+  const float left_shift = st.career ? -62.0f * s : 0.0f;
+  Turn list_turn(l, g.L(226) + left_shift, g.T(185), ui4::kTiltRad);
   if (first > 0) {
-    l.text(g.L(188), g.T(first_bottom - 52.0f), "^ MORE", ui4::style(ui::Font::kB, 11 * s, ui4::kDim));
+    l.text(g.L(188) + left_shift, g.T(first_bottom - 52.0f), "^ MORE", ui4::style(ui::Font::kB, 11 * s, ui4::kDim));
   }
   for (int i = first; i < n && i < first + fit_rows; ++i) {
     const bool sel = i == st.menu_selected;
@@ -1012,13 +1014,15 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
     fit(item, it, max_item_w, 13 * s);
     const float tw = ui::List::measure(item, it);
     if (sel) {
-      ui4::brush(l, g.L(147), bottom - it.size - (pause ? 15 : 11) * s,
-                 std::max(g.L(362), g.L(185) + tw + 40 * s), bottom + 8 * s, ui4::kPink, true);
-      l.text(g.L(185), bottom - it.size, item, it);
+      ui4::brush(l, g.L(147) + left_shift, bottom - it.size - (pause ? 15 : 11) * s,
+                 std::max(g.L(362) + left_shift, g.L(185) + left_shift + tw + 36 * s), bottom + 8 * s, ui4::kPink,
+                 true);
+      l.text(g.L(185) + left_shift, bottom - it.size, item, it);
     } else {
-      ui4::brush(l, g.L(158), bottom - it.size - 6 * s, std::max(g.L(270), g.L(188) + tw + 26 * s), bottom + 5 * s,
-                 ui4::kBrushBlack, false);
-      l.text(g.L(188), bottom - it.size, item, it);
+      ui4::brush(l, g.L(158) + left_shift, bottom - it.size - 6 * s,
+                 std::max(g.L(270) + left_shift, g.L(188) + left_shift + tw + 26 * s), bottom + 5 * s, ui4::kBrushBlack,
+                 false);
+      l.text(g.L(188) + left_shift, bottom - it.size, item, it);
     }
   }
   if (first + fit_rows < n) {
@@ -1614,42 +1618,70 @@ void collection_row(ui::List& l, float x0, float x1, float y, const char* name, 
 }
 
 void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) {
-  const float x0 = std::min(w, 440 * s) + 44 * s, x1 = w - 44 * s;
+  const float x0 = std::min(w, 480 * s) + 26 * s, x1 = w - 48 * s;
   if (x1 - x0 < 300 * s) return;
-  float y = 44 * s;
-  // The wristband card.
+  float y = 38 * s;
+
+  // Authentic FH1 My Profile Wristband hero card (sharp gritty panel + WRISTBANDS/* artwork + off-white credits strip).
   const bool band = !c.band_name.empty();
-  const uint32_t bc = band ? band_colour(c.band_name) : kDim;
-  const float ch = 132 * s;
-  panel(l, x0, y, x1, y + ch, s, rgba(10, 12, 17, 205));
-  l.rect(x0, y, x0 + 8 * s, y + ch, bc, 4 * s);
-  label(l, x0 + 28 * s, y + 18 * s, "WRISTBAND", s, kDim);
-  l.text(x0 + 28 * s, y + 36 * s, band ? c.band_name : std::string("NO WRISTBAND YET"),
-         TextStyle{.size = 30 * s, .weight = 0.13f, .slant = 0.1f, .color = bc});
-  label(l, x1 - 24 * s, y + 18 * s, "CREDITS", s, kDim, Align::kRight);
-  l.text(x1 - 24 * s, y + 38 * s, thousands(c.credits) + " CR",
-         TextStyle{.size = 22 * s, .weight = 0.12f, .color = kText, .align = Align::kRight});
-  const float bx0 = x0 + 28 * s, bx1 = x1 - 24 * s, by = y + 86 * s, bh = 10 * s;
-  l.rect(bx0, by, bx1, by + bh, rgba(255, 255, 255, 32), 5 * s);
+  const uint32_t bc = band ? band_colour(c.band_name) : ui4::kDim;
+  const float ch = 128 * s;
+  ui4::panel(l, x0, y, x1, y + ch, s, ui4::kCharcoalDark, bc, 0, true);
+
+  // Real WRISTBANDS/<COLOR> graphic if available.
+  std::string wb_word = c.band_name.substr(0, c.band_name.find(' '));
+  for (char& ch_w : wb_word) ch_w = char(std::toupper(static_cast<unsigned char>(ch_w)));
+  std::array<float, 4> wb_uv{};
+  const bool has_wb = !wb_word.empty() && ui4::texture("WRISTBANDS/" + wb_word, wb_uv);
+  const float text_x = has_wb ? (x0 + 132 * s) : (x0 + 22 * s);
+  if (has_wb) {
+    l.image(x0 + 14 * s, y + 12 * s, x0 + 122 * s, y + 64 * s, wb_uv);
+  }
+
+  l.text(text_x, y + 14 * s, "HORIZON WRISTBAND", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+  ui::TextStyle bts = ui4::style(ui::Font::kE, 27 * s, bc);
+  const std::string btitle = band ? c.band_name : std::string("NO WRISTBAND YET");
+  ui4::fit_text(btitle, bts, (x1 - 210 * s) - text_x, 14 * s);
+  l.text(text_x, y + 32 * s, btitle, bts);
+
+  // Off-white Credits strip top-right inside card.
+  ui4::offwhite_strip(l, x1 - 196 * s, y + 16 * s, x1 - 18 * s, y + 48 * s, s, true);
+  ui::TextStyle crs = ui4::style(ui::Font::kB, 17 * s, ui4::kInk, Align::kRight, true);
+  const std::string crstr = ui4::format_credits(c.credits);
+  ui4::fit_text(crstr, crs, 162 * s, 10 * s);
+  l.text(x1 - 26 * s, y + 23 * s, crstr, crs);
+
+  // Sharp FH1 wristband progress bar.
+  const float bx0 = x0 + 20 * s, bx1 = x1 - 20 * s, by = y + 82 * s, bh = 10 * s;
+  l.rect(bx0, by, bx1, by + bh, rgba(255, 255, 255, 30));
   const float k = c.band_hi > c.band_lo
                       ? float(std::clamp(double(c.points - c.band_lo) / double(c.band_hi - c.band_lo), 0.0, 1.0))
                       : 1.0f;
-  if (band || c.points > 0) l.rect(bx0, by, std::max(bx0 + bh, bx0 + (bx1 - bx0) * k), by + bh, bc, 5 * s);
+  if (band || c.points > 0) l.rect(bx0, by, std::max(bx0 + 6 * s, bx0 + (bx1 - bx0) * k), by + bh, bc);
   char pts[64];
   if (c.band_hi > 0)
     std::snprintf(pts, sizeof pts, "%s / %s POINTS", thousands(c.points).c_str(), thousands(c.band_hi).c_str());
   else
     std::snprintf(pts, sizeof pts, "%s POINTS", thousands(c.points).c_str());
-  l.text(bx0, by + bh + 8 * s, pts, TextStyle{.size = 9 * s, .weight = 0.11f, .tracking = 0.12f, .color = kDim});
+  l.text(bx0, by + bh + 9 * s, pts, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
   if (c.band_hi > 0 && !c.band_next.empty())
-    l.text(bx1, by + bh + 8 * s, "NEXT: " + c.band_next + "  IN " + thousands(c.band_hi - c.points),
-           TextStyle{.size = 9 * s, .weight = 0.11f, .tracking = 0.12f, .color = kDim, .align = Align::kRight});
+    l.text(bx1, by + bh + 9 * s, "NEXT: " + c.band_next + "  (" + thousands(c.band_hi - c.points) + " TO GO)",
+           ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim, Align::kRight));
   else if (band)
-    l.text(bx1, by + bh + 8 * s, "TOP WRISTBAND",
-           TextStyle{.size = 9 * s, .weight = 0.11f, .tracking = 0.12f, .color = kAccent, .align = Align::kRight});
-  y += ch + 16 * s;
-  // Records: four tiles.
-  const float gap = 12 * s, tw = (x1 - x0 - 3 * gap) / 4, th = 84 * s;
+    l.text(bx1, by + bh + 9 * s, "TOP WRISTBAND", ui4::style(ui::Font::kE, 12 * s, ui4::kYellow, Align::kRight));
+  y += ch + 14 * s;
+
+  // Authentic gritty FH1 stat tiles (no rounded glass!).
+  auto fh1_tile = [&](float tx0, float ty0, float tx1, float ty1, const std::string& val, const char* lbl,
+                      uint32_t accent, uint32_t vcol) {
+    ui4::panel(l, tx0, ty0, tx1, ty1, s, ui4::kCharcoalDark, accent, 0, true);
+    l.text(tx0 + 14 * s, ty0 + 10 * s, lbl, ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
+    ui::TextStyle vs = ui4::style(ui::Font::kE, 26 * s, vcol);
+    ui4::fit_text(val, vs, (tx1 - tx0) - 26 * s, 12 * s);
+    l.text(tx0 + 14 * s, ty0 + 32 * s + 0.5f * (26 * s - vs.size), val, vs);
+  };
+
+  const float gap = 10 * s, tw = (x1 - x0 - 3 * gap) / 4, th = 72 * s;
   char rate[16];
   std::snprintf(rate, sizeof rate, "%d%%", c.races > 0 ? int(std::lround(100.0 * c.wins / c.races)) : 0);
   const std::pair<std::string, const char*> tiles[] = {
@@ -1657,46 +1689,65 @@ void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) 
       {std::to_string(c.podiums), "PODIUMS"}, {rate, "WIN RATE"}};
   for (int i = 0; i < 4; ++i) {
     const float tx = x0 + i * (tw + gap);
-    stat_tile(l, tx, y, tx + tw, y + th, tiles[i].first, tiles[i].second, s, i == 1 ? kAccent : kText);
+    fh1_tile(tx, y, tx + tw, y + th, tiles[i].first, tiles[i].second, i == 1 ? ui4::kPink : rgba(255, 255, 255, 36),
+             i == 1 ? ui4::kYellow : ui4::kWhite);
   }
   y += th + gap;
+
   const float tw2 = (x1 - x0 - 2 * gap) / 3;
-  stat_tile(l, x0, y, x0 + tw2, y + th, thousands(c.winnings) + " CR", "TOTAL WINNINGS", s);
-  stat_tile(l, x0 + tw2 + gap, y, x0 + 2 * tw2 + gap, y + th,
-            "LVL " + std::to_string(std::max(1, c.driver_level)) + "  •  " + std::to_string(c.popularity_rank) +
-                place_suffix(c.popularity_rank),
-            "DRIVER LEVEL / FAME", s, rgba(247, 255, 38));
-  stat_tile(l, x0 + 2 * (tw2 + gap), y, x1, y + th, std::to_string(c.garage) + (c.garage == 1 ? " CAR" : " CARS"),
-            "GARAGE", s);
-  y += th + 16 * s;
-  // Collections.
+  fh1_tile(x0, y, x0 + tw2, y + th, ui4::format_credits(c.winnings), "TOTAL WINNINGS", ui4::kPink, ui4::kWhite);
+  fh1_tile(x0 + tw2 + gap, y, x0 + 2 * tw2 + gap, y + th,
+           "LVL " + std::to_string(std::max(1, c.driver_level)) + " • #" + std::to_string(c.popularity_rank),
+           "DRIVER LEVEL / FAME", ui4::kYellow, ui4::kYellow);
+  fh1_tile(x0 + 2 * (tw2 + gap), y, x1, y + th, std::to_string(c.garage) + (c.garage == 1 ? " CAR" : " CARS"),
+           "GARAGE", ui4::kBlue, ui4::kWhite);
+  y += th + 14 * s;
+
+  // Collections & Progress card (sharp gritty FH1 panel + flat-capped bars).
   const bool has_outposts = c.outposts_total > 0;
   const bool has_speed = c.speed_traps_total > 0 || c.speed_zones_total > 0;
   const float rows = (c.rally ? 6.f : 5.f) + (has_outposts ? 2.f : 0.f) + (has_speed ? 2.f : 0.f);
-  const float rh = (has_outposts || has_speed) ? 28 * s : 38 * s;
-  const float ph = 20 * s + rows * rh;
-  if (y + ph > h - 18 * s) return;
-  panel(l, x0, y, x1, y + ph, s, rgba(10, 12, 17, 190));
-  const float rx0 = x0 + 24 * s, rx1 = x1 - 24 * s;
-  float ry = y + 14 * s;
-  collection_row(l, rx0, rx1, ry, "ROADS DISCOVERED", c.roads, c.roads_total, s, rgba(74, 238, 97)), ry += rh;
+  const float rh = (has_outposts || has_speed) ? 27 * s : 36 * s;
+  const float ph = 42 * s + rows * rh;
+  if (y + ph > h - 68 * s) return;
+  ui4::panel(l, x0, y, x1, y + ph, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::offwhite_strip(l, x0 + 14 * s, y + 10 * s, x1 - 14 * s, y + 32 * s, s, false);
+  l.text(x0 + 24 * s, y + 14 * s, "COLORADO EXPLORATION & COLLECTIONS", ui4::style(ui::Font::kE, 13 * s, ui4::kInk));
+
+  const float rx0 = x0 + 20 * s, rx1 = x1 - 20 * s;
+  float ry = y + 40 * s;
+  auto fh1_coll_row = [&](const std::string& name, int done, int total, uint32_t col) {
+    l.text(rx0, ry + 2 * s, name, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+    char cnt[32];
+    std::snprintf(cnt, sizeof cnt, "%d / %d", done, total);
+    l.text(rx1, ry + 2 * s, cnt, ui4::style(ui::Font::kE, 12 * s, done >= total && total > 0 ? ui4::kGreen : ui4::kWhite, Align::kRight));
+    const float by0 = ry + 18 * s;
+    l.rect(rx0, by0, rx1, by0 + 5 * s, rgba(255, 255, 255, 26));
+    if (total > 0 && done > 0) {
+      const float frac = std::clamp(float(done) / float(total), 0.0f, 1.0f);
+      l.rect(rx0, by0, rx0 + (rx1 - rx0) * frac, by0 + 5 * s, col);
+    }
+    ry += rh;
+  };
+
+  fh1_coll_row("ROADS DISCOVERED", c.roads, c.roads_total, ui4::kGreen);
   if (has_outposts) {
-    collection_row(l, rx0, rx1, ry, "HORIZON OUTPOSTS", c.outposts, c.outposts_total, s, rgba(255, 146, 3)), ry += rh;
-    collection_row(l, rx0, rx1, ry, "OUTPOST PR STUNTS", c.pr_stunts, c.pr_stunts_total, s, rgba(255, 196, 32)), ry += rh;
+    fh1_coll_row("HORIZON OUTPOSTS", c.outposts, c.outposts_total, rgba(255, 146, 3));
+    fh1_coll_row("OUTPOST PR STUNTS", c.pr_stunts, c.pr_stunts_total, ui4::kAmber);
   }
   if (has_speed) {
-    collection_row(l, rx0, rx1, ry, "SPEED TRAPS", c.speed_traps, c.speed_traps_total, s, rgba(60, 190, 255)), ry += rh;
-    collection_row(l, rx0, rx1, ry, "SPEED ZONES", c.speed_zones, c.speed_zones_total, s, rgba(245, 0, 96)), ry += rh;
+    fh1_coll_row("SPEED TRAPS", c.speed_traps, c.speed_traps_total, ui4::kBlue);
+    fh1_coll_row("SPEED ZONES", c.speed_zones, c.speed_zones_total, ui4::kPink);
   }
-  collection_row(l, rx0, rx1, ry, "DISCOUNT SIGNS", c.signs, c.signs_total, s), ry += rh;
-  collection_row(l, rx0, rx1, ry, "BARN FINDS", c.barns, c.barns_total, s), ry += rh;
-  collection_row(l, rx0, rx1, ry, "1000 CLUB CHALLENGES", c.club_done, c.club_total, s), ry += rh;
+  fh1_coll_row("DISCOUNT SIGNS", c.signs, c.signs_total, ui4::kPink);
+  fh1_coll_row("BARN FINDS", c.barns, c.barns_total, ui4::kYellow);
+  fh1_coll_row("1000 CLUB CHALLENGES", c.club_done, c.club_total, ui4::kAmber);
   if (c.rally) {
     char rn[64];
-    std::snprintf(rn, sizeof rn, "RALLY  LEVEL %d  %s XP", c.rally_level, thousands(c.rally_xp).c_str());
-    collection_row(l, rx0, rx1, ry, rn, c.rally_wins, c.rallies, s, rgba(60, 140, 255)), ry += rh;
+    std::snprintf(rn, sizeof rn, "RALLY  LVL %d  (%s XP)", c.rally_level, thousands(c.rally_xp).c_str());
+    fh1_coll_row(rn, c.rally_wins, c.rallies, ui4::kBlue);
   }
-  collection_row(l, rx0, rx1, ry, "CONTENT PACKS", c.packs_owned, c.packs_total, s, rgba(200, 205, 215));
+  fh1_coll_row("CONTENT PACKS", c.packs_owned, c.packs_total, rgba(200, 205, 215));
 }
 
 // Airborne Showcase live progress & distance-gap bar (PLANE_RACE_001..007).

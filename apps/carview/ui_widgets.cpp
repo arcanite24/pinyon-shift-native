@@ -5,7 +5,9 @@
 #include <cmath>
 #include <cstdio>
 
+#include "events_page.h"
 #include "game_hud.h"
+#include "settings_page.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -179,30 +181,44 @@ void draw_map_chrome_ui4(ui::List& l, const MapChromeUi4State& st, float screen_
 void draw_pre_post_race_ui4(ui::List& l, const PrePostRaceUi4State& st, float screen_w, float screen_h) {
   const float s = screen_h / 720.0f;
   (void)ui_scene("PRE_AND_POST_RACE");
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.25f);
   if (st.is_post_race) {
-    draw_brush_strip(l, 75.0f * s, 165.0f * s, 395.0f * s, 232.0f * s, kBlack);
-    ui::TextStyle ft{.size = 42.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-    l.text(92.0f * s, 178.0f * s, st.event_type.empty() ? "FINISHED" : st.event_type, ft);
-
-    draw_brush_strip(l, 0.0f, 214.0f * s, 740.0f * s, 336.0f * s, kPink);
-    ui::TextStyle pt{.size = 72.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-    l.text(92.0f * s, 238.0f * s, st.place_text, pt);
+    {
+      ui4::TiltScope tilt(l, 240.0f * s, 198.0f * s, ui4::kTiltRad);
+      ui4::brush(l, 75.0f * s, 165.0f * s, 395.0f * s, 232.0f * s, ui4::kBrushBlack);
+      ui::TextStyle ft = ui4::style(ui::Font::kE, 42.0f * s, ui4::kWhite);
+      l.text(92.0f * s, 178.0f * s, st.event_type.empty() ? "FINISHED" : st.event_type, ft);
+    }
+    {
+      ui4::TiltScope tilt(l, 370.0f * s, 275.0f * s, ui4::kTiltRad);
+      ui4::brush(l, -18.0f * s, 214.0f * s, 740.0f * s, 336.0f * s, ui4::kPink, true);
+      ui::TextStyle pt = ui4::style(ui::Font::kE, 72.0f * s, ui4::kWhite);
+      ui4::fit_text(st.place_text, pt, 620.0f * s, 30.0f * s);
+      l.text(92.0f * s, 238.0f * s + 0.5f * (72.0f * s - pt.size), st.place_text, pt);
+    }
   } else {
-    // Event title card bottom-left (SPEC-UI-LAYOUTS b1).
-    draw_brush_strip(l, 75.0f * s, screen_h - 185.0f * s, 450.0f * s, screen_h - 130.0f * s, kBlack);
-    ui::TextStyle et{.size = 30.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-    l.text(96.0f * s, screen_h - 173.0f * s, st.event_type, et);
+    {
+      ui4::TiltScope tilt(l, 450.0f * s, screen_h - 110.0f * s, ui4::kTiltRad);
+      ui4::brush(l, -18.0f * s, screen_h - 140.0f * s, 920.0f * s, screen_h - 74.0f * s, ui4::kPink, true);
+      ui::TextStyle en = ui4::style(ui::Font::kE, 40.0f * s, ui4::kWhite);
+      ui4::fit_text(st.event_name, en, 800.0f * s, 20.0f * s);
+      l.text(96.0f * s, screen_h - 127.0f * s + 0.5f * (40.0f * s - en.size), st.event_name, en);
+    }
+    {
+      ui4::TiltScope tilt(l, 260.0f * s, screen_h - 158.0f * s, ui4::kTiltRad);
+      ui4::brush(l, 75.0f * s, screen_h - 185.0f * s, 450.0f * s, screen_h - 130.0f * s, ui4::kBrushBlack);
+      ui::TextStyle et = ui4::style(ui::Font::kE, 30.0f * s, ui4::kWhite);
+      ui4::fit_text(st.event_type, et, 340.0f * s, 16.0f * s);
+      l.text(96.0f * s, screen_h - 173.0f * s + 0.5f * (30.0f * s - et.size), st.event_type, et);
+    }
 
-    draw_brush_strip(l, 0.0f, screen_h - 140.0f * s, 920.0f * s, screen_h - 74.0f * s, kPink);
-    ui::TextStyle en{.size = 40.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-    l.text(96.0f * s, screen_h - 127.0f * s, st.event_name, en);
-
-    const auto ys = fh1::reflow_stacker(175.0f * s, 50.0f * s, int(st.menu_items.size()));
+    const auto ys = fh1::reflow_stacker(175.0f * s, 52.0f * s, int(st.menu_items.size()));
+    ui4::TiltScope mt(l, 250.0f * s, 220.0f * s, ui4::kTiltRad);
     for (size_t i = 0; i < st.menu_items.size(); ++i) {
       const bool sel = int(i) == st.selected;
-      ui::TextStyle ts{.size = (sel ? 36.0f : 30.0f) * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
+      ui::TextStyle ts = ui4::style(ui::Font::kE, (sel ? 36.0f : 30.0f) * s, ui4::kWhite);
       const float bw = std::max(280.0f * s, ui::List::measure(st.menu_items[i], ts) + 74.0f * s);
-      draw_brush_strip(l, 147.0f * s, ys[i], 147.0f * s + bw, ys[i] + 46.0f * s, sel ? kPink : kBlack);
+      ui4::brush(l, 147.0f * s, ys[i], 147.0f * s + bw, ys[i] + 46.0f * s, sel ? ui4::kPink : ui4::kBrushBlack, sel);
       l.text(184.0f * s, ys[i] + 6.0f * s, st.menu_items[i], ts);
     }
   }
@@ -212,28 +228,307 @@ void draw_pre_post_race_ui4(ui::List& l, const PrePostRaceUi4State& st, float sc
 void draw_street_race_hub_ui4(ui::List& l, const StreetRaceHubUi4State& st, float screen_w, float screen_h) {
   const float s = screen_h / 720.0f;
   (void)ui_scene("H_STREET_RACE_HUB");
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(8, 10, 16, 155));
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.34f);
 
-  draw_brush_strip(l, 70.0f * s, 56.0f * s, 620.0f * s, 118.0f * s, kPink);
-  ui::TextStyle ht{.size = 34.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-  l.text(92.0f * s, 70.0f * s, st.hub_name.empty() ? "STREET RACE HUB" : st.hub_name, ht);
-  if (!st.hub_subtitle.empty()) {
-    ui::TextStyle hs{.size = 15.0f * s, .color = kDim, .font = ui::Font::kB, .keep_case = true};
-    l.text(92.0f * s, 128.0f * s, st.hub_subtitle, hs);
-  }
+  ui4::title_banner(l, s, 56.0f * s, 30.0f * s,
+                    st.hub_name.empty() ? "STREET RACE HUB" : st.hub_name,
+                    st.hub_subtitle.empty() ? "HORIZON UNDERGROUND" : st.hub_subtitle, true, 560.0f);
 
-  const auto ys = fh1::reflow_stacker(168.0f * s, 56.0f * s, int(st.races.size()));
+  const float px0 = 56.0f * s, py0 = 132.0f * s, px1 = screen_w - 56.0f * s;
+  const float ph = std::min(screen_h - 216.0f * s, std::max(180.0f * s, float(st.races.size()) * 58.0f * s + 54.0f * s));
+  ui4::panel(l, px0, py0, px1, py0 + ph, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::offwhite_strip(l, px0 + 14.0f * s, py0 + 12.0f * s, px1 - 14.0f * s, py0 + 36.0f * s, s, false);
+  l.text(px0 + 26.0f * s, py0 + 17.0f * s, "UNDERGROUND EVENTS", ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk));
+  l.text(px1 - 26.0f * s, py0 + 17.0f * s, "CLASS   •   STAKE / PRIZE",
+         ui4::style(ui::Font::kB, 12.5f * s, ui4::kInk, ui::Align::kRight));
+
+  const auto ys = fh1::reflow_stacker(py0 + 48.0f * s, 54.0f * s, int(st.races.size()));
   for (size_t i = 0; i < st.races.size(); ++i) {
+    if (ys[i] + 46.0f * s > py0 + ph - 8.0f * s) break;
     const auto& r = st.races[i];
     const bool sel = int(i) == st.selected;
-    draw_brush_strip(l, 90.0f * s, ys[i], screen_w - 140.0f * s, ys[i] + 48.0f * s, sel ? kPink : kBlack);
-    ui::TextStyle rt{.size = 20.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-    l.text(114.0f * s, ys[i] + 13.0f * s, r.name, rt);
-    ui::TextStyle st_ts{.size = 15.0f * s, .color = sel ? kWhite : kDim, .align = ui::Align::kRight, .font = ui::Font::kB, .keep_case = true};
-    l.text(screen_w - 165.0f * s, ys[i] + 15.0f * s,
-           r.car_class + "  •  " + r.stake + (r.completed ? "  [WON]" : ""), st_ts);
+    if (sel) {
+      ui4::brush(l, px0 + 8.0f * s, ys[i] - 2.0f * s, px1 - 8.0f * s, ys[i] + 48.0f * s, ui4::kPink, true);
+    } else {
+      l.rect(px0 + 14.0f * s, ys[i], px1 - 14.0f * s, ys[i] + 46.0f * s,
+             (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
+    }
+    ui::TextStyle rt = ui4::style(sel ? ui::Font::kE : ui::Font::kB, (sel ? 21.0f : 18.0f) * s, ui4::kWhite);
+    ui4::fit_text(r.name, rt, (px1 - px0) - 340.0f * s, 12.0f * s);
+    l.text(px0 + 28.0f * s, ys[i] + 0.5f * (46.0f * s - rt.size), r.name, rt);
+
+    float rx = px1 - 26.0f * s;
+    if (r.completed) {
+      ui4::brush(l, rx - 78.0f * s, ys[i] + 10.0f * s, rx, ys[i] + 36.0f * s, ui4::kGreen);
+      l.text(rx - 39.0f * s, ys[i] + 16.0f * s, "WON", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk, ui::Align::kCenter));
+      rx -= 90.0f * s;
+    }
+    if (!r.stake.empty()) {
+      ui::TextStyle sk = ui4::style(ui::Font::kE, 16.0f * s, sel ? ui4::kYellow : ui4::kWhite, ui::Align::kRight, true);
+      l.text(rx, ys[i] + 14.0f * s, r.stake, sk);
+      rx -= ui::List::measure(r.stake, sk) + 22.0f * s;
+    }
+    if (!r.car_class.empty()) {
+      l.rect(rx - 86.0f * s, ys[i] + 11.0f * s, rx, ys[i] + 35.0f * s, ui4::class_colour_by_name(r.car_class));
+      l.text(rx - 43.0f * s, ys[i] + 16.0f * s, r.car_class,
+             ui4::style(ui::Font::kE, 13.5f * s, ui4::kWhite, ui::Align::kCenter));
+    }
   }
   draw_button_bar_ui4(l, st.help_bar, screen_w, screen_h);
+}
+
+void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPage& page,
+                     const std::vector<garage::ClassBand>& bands) {
+  if (!page.is_open()) return;
+  const float s = screen_h / 720.0f;
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.36f);
+
+  const bool is_hub = page.hub_filter() > 0;
+  ui4::title_banner(l, s, 56.0f * s, 26.0f * s,
+                    is_hub ? ("STREET RACE HUB " + std::to_string(page.hub_filter())) : "RACE CENTRAL",
+                    is_hub ? "COLORADO UNDERGROUND" : "HORIZON FESTIVAL EVENTS", true, 470.0f);
+
+  if (!is_hub) {
+    static const std::vector<std::string> kEventTabs = {"ALL", "FESTIVAL", "STREET", "SHOWCASES", "SHOWDOWNS"};
+    ui4::tab_strip(l, s, 56.0f * s, 102.0f * s, screen_w - 56.0f * s, kEventTabs, int(page.active_tab()), true,
+                   ui4::kPink);
+  }
+
+  const float top_y = is_hub ? 116.0f * s : 146.0f * s;
+  const float bot_y = screen_h - 82.0f * s;
+  const float lx0 = 56.0f * s, lw = 640.0f * s;
+  const float rx0 = lx0 + lw + 18.0f * s, rx1 = screen_w - 56.0f * s;
+
+  ui4::panel(l, lx0, top_y, lx0 + lw, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx0 + lw - 12.0f * s, top_y + 34.0f * s, s, false);
+  l.text(lx0 + 22.0f * s, top_y + 15.0f * s,
+         "AVAILABLE EVENTS (" + std::to_string(page.entries().size()) + ")",
+         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+
+  const auto& entries = page.entries();
+  if (entries.empty()) {
+    l.text(lx0 + 0.5f * lw, top_y + 160.0f * s, "NO EVENTS IN THIS CATEGORY YET",
+           ui4::style(ui::Font::kB, 15.0f * s, ui4::kDim, ui::Align::kCenter));
+  } else {
+    const float row_h = 54.0f * s;
+    const int max_vis = std::max(1, int((bot_y - top_y - 50.0f * s) / row_h));
+    const int n = int(entries.size());
+    const int sel = int(std::min(page.selected_index(), entries.size() - 1));
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+    float ry = top_y + 44.0f * s;
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
+      const auto& e = entries[size_t(i)];
+      const bool act = (i == sel);
+      if (act) {
+        ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s,
+                   e.is_collect_wristband ? ui4::kYellow : ui4::kPink);
+      } else {
+        l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
+               (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
+      }
+
+      const uint32_t title_col =
+          (act && e.is_collect_wristband) ? ui4::kInk : (!e.unlocked ? ui4::kDim : ui4::kWhite);
+      ui::TextStyle ts = ui4::style(act ? ui::Font::kE : ui::Font::kB, (act ? 16.5f : 14.5f) * s, title_col);
+      ui4::fit_text(e.display_name, ts, lw - 170.0f * s, 10.0f * s);
+      l.text(lx0 + 22.0f * s, ry + 7.0f * s, e.display_name, ts);
+
+      std::string sub;
+      if (e.is_collect_wristband) {
+        sub = "WRISTBAND CEREMONY READY — PRESS [A] TO COLLECT";
+      } else if (e.event) {
+        sub = std::string(race::CareerCatalog::event_style_label(*e.event)) + "  •  " +
+              ui4::format_credits(int64_t(e.event->cash_prize));
+      }
+      l.text(lx0 + 22.0f * s, ry + 28.0f * s, sub,
+             ui4::style(ui::Font::kB, 11.0f * s,
+                        (act && e.is_collect_wristband) ? ui4::kInk : (act ? ui4::kYellow : ui4::kDim)));
+
+      std::string tag = "NEW";
+      uint32_t tag_bg = ui4::kBlue;
+      uint32_t tag_fg = ui4::kWhite;
+      if (e.is_collect_wristband) {
+        tag = "COLLECT", tag_bg = ui4::kBrushBlack, tag_fg = ui4::kYellow;
+      } else if (!e.unlocked) {
+        tag = "LOCKED", tag_bg = ui::rgba(60, 64, 74, 220), tag_fg = ui4::kDim;
+      } else if (e.best_place == 1) {
+        tag = "1ST", tag_bg = ui4::kGreen, tag_fg = ui4::kInk;
+      } else if (e.best_place > 0) {
+        tag = std::to_string(e.best_place) + (e.best_place == 2 ? "ND" : e.best_place == 3 ? "RD" : "TH");
+        tag_bg = ui4::kAmber, tag_fg = ui4::kInk;
+      } else if (!e.eligible) {
+        tag = "CLASS", tag_bg = ui4::kRed, tag_fg = ui4::kWhite;
+      }
+      l.rect(lx0 + lw - 96.0f * s, ry + 12.0f * s, lx0 + lw - 22.0f * s, ry + 34.0f * s, tag_bg);
+      l.text(lx0 + lw - 59.0f * s, ry + 17.0f * s, tag,
+             ui4::style(ui::Font::kE, 11.5f * s, tag_fg, ui::Align::kCenter));
+      ry += row_h;
+    }
+  }
+
+  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  std::string d_title, dummy_t;
+  std::vector<std::string> dummy_lines, d_lines;
+  int dummy_sel = 0;
+  page.fill(dummy_t, dummy_lines, dummy_sel, d_title, d_lines);
+
+  if (const auto* sel = page.selected_entry()) {
+    ui4::brush(l, rx0 + 8.0f * s, top_y + 12.0f * s, rx1 - 8.0f * s, top_y + 48.0f * s, ui4::kPink);
+    ui::TextStyle hst = ui4::style(ui::Font::kE, 18.0f * s, ui4::kWhite);
+    const std::string hdr = d_title.empty() ? sel->display_name : d_title;
+    ui4::fit_text(hdr, hst, (rx1 - rx0) - 34.0f * s, 11.0f * s);
+    l.text(rx0 + 20.0f * s, top_y + 20.0f * s + 0.5f * (18.0f * s - hst.size), hdr, hst);
+
+    float dy = top_y + 62.0f * s;
+    if (sel->event && sel->event->target_class > 0 && size_t(sel->event->target_class) < bands.size()) {
+      const auto& cb = bands[size_t(sel->event->target_class)];
+      ui4::class_badge(l, rx0 + 20.0f * s, dy, 26.0f * s, cb.name, int(std::lround(cb.shown_max)), sel->event->target_class);
+      ui4::offwhite_strip(l, rx0 + 130.0f * s, dy, rx1 - 20.0f * s, dy + 26.0f * s, s, false);
+      l.text(rx1 - 28.0f * s, dy + 6.0f * s, ui4::format_credits(int64_t(sel->event->cash_prize)),
+             ui4::style(ui::Font::kE, 15.0f * s, ui4::kInk, ui::Align::kRight));
+      dy += 40.0f * s;
+    }
+
+    for (const auto& line : d_lines) {
+      if (dy + 26.0f * s > bot_y - 16.0f * s) break;
+      const bool ready = line.rfind("READY TO RACE", 0) == 0;
+      const bool locked = line.rfind("LOCKED:", 0) == 0 || line.rfind("INELIGIBLE:", 0) == 0;
+      const bool prize = line.rfind("1ST PLACE PRIZE", 0) == 0 || line.rfind("BONUS CAR:", 0) == 0;
+      if (ready) {
+        ui4::brush(l, rx0 + 14.0f * s, dy, rx1 - 14.0f * s, dy + 32.0f * s, ui4::kGreen);
+        l.text(0.5f * (rx0 + rx1), dy + 9.0f * s, line,
+               ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk, ui::Align::kCenter));
+        dy += 38.0f * s;
+      } else {
+        ui::TextStyle ls = ui4::style(prize ? ui::Font::kE : ui::Font::kB, 13.0f * s,
+                                      locked ? ui4::kRed : (prize ? ui4::kYellow : ui4::kWhite), ui::Align::kLeft, true);
+        ui4::fit_text(line, ls, (rx1 - rx0) - 40.0f * s, 9.5f * s);
+        l.text(rx0 + 20.0f * s, dy, line, ls);
+        dy += 26.0f * s;
+      }
+    }
+  }
+
+  std::vector<ui4::Prompt> bar = {{"A", "START EVENT"}};
+  if (!is_hub) bar.push_back({"LB", "FILTER TAB"});
+  bar.push_back({"B", "BACK"});
+  ui4::button_bar(l, bar, screen_w, screen_h, 56.0f);
+}
+
+void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const SettingsPage& page, bool live_overlay) {
+  if (!page.is_open()) return;
+  const float s = screen_h / 720.0f;
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.42f);
+
+  ui4::title_banner(l, s, 56.0f * s, 26.0f * s, live_overlay ? "LIVE SETTINGS" : "OPTIONS",
+                    live_overlay ? "PINYON SHIFT // F6 OVERLAY" : "HORIZON FESTIVAL", true, 430.0f);
+
+  static const std::vector<std::string> kTabs = {"DISPLAY", "AUDIO", "GAMEPLAY", "CONTROLS", "PINYON SHIFT"};
+  const int cur_tab = int(page.active_tab());
+  ui4::tab_strip(l, s, 56.0f * s, 102.0f * s, screen_w - 56.0f * s, kTabs, cur_tab, true, ui4::kPink);
+
+  const auto all_rows = page.display_rows();
+  std::vector<SettingsPage::DisplayRow> tab_rows;
+  int sel_in_tab = 0;
+  for (const auto& r : all_rows) {
+    if (int(r.tab) == cur_tab || r.is_save) {
+      if (r.selected) sel_in_tab = int(tab_rows.size());
+      tab_rows.push_back(r);
+    }
+  }
+
+  const float top_y = 146.0f * s;
+  const float bot_y = screen_h - 82.0f * s;
+  const float lx0 = 56.0f * s, lw = 760.0f * s;
+  const float rx0 = lx0 + lw + 18.0f * s, rx1 = screen_w - 56.0f * s;
+
+  ui4::panel(l, lx0, top_y, lx0 + lw, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx0 + lw - 12.0f * s, top_y + 34.0f * s, s, false);
+  l.text(lx0 + 22.0f * s, top_y + 15.0f * s,
+         kTabs[size_t(std::clamp(cur_tab, 0, 4))] + " SETTINGS",
+         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+  l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s,
+         page.capturing_key() ? "PRESS ANY KEY TO BIND (ESC CANCELS)" : "CHANGES APPLY LIVE",
+         ui4::style(ui::Font::kB, 11.5f * s, page.capturing_key() ? ui4::kPink : ui4::kInk, ui::Align::kRight));
+
+  const float row_h = 44.0f * s;
+  const int max_vis = std::max(1, int((bot_y - top_y - 48.0f * s) / row_h));
+  const int n = int(tab_rows.size());
+  const int first = std::clamp(sel_in_tab - max_vis / 2, 0, std::max(0, n - max_vis));
+  float ry = top_y + 42.0f * s;
+  for (int i = first; i < std::min(n, first + max_vis); ++i) {
+    const auto& r = tab_rows[size_t(i)];
+    const bool act = r.selected;
+    if (act) {
+      ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s,
+                 r.is_save ? ui4::kGreen : ui4::kPink);
+    } else {
+      l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
+             (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
+    }
+    const uint32_t fg = (act && r.is_save) ? ui4::kInk : ui4::kWhite;
+    l.text(lx0 + 24.0f * s, ry + 11.0f * s, r.name,
+           ui4::style(act ? ui::Font::kE : ui::Font::kB, (act ? 15.5f : 14.0f) * s, fg));
+
+    const std::string vstr = r.is_save ? r.value : (r.is_rebind ? ("[ " + r.value + " ]") : ("<  " + r.value + "  >"));
+    const float vx0 = lx0 + lw - 270.0f * s, vx1 = lx0 + lw - 22.0f * s;
+    if (!r.is_save) {
+      l.rect(vx0, ry + 7.0f * s, vx1, ry + row_h - 13.0f * s,
+             r.capturing ? ui4::kYellow : (act ? ui::rgba(14, 15, 20, 175) : ui::rgba(255, 255, 255, 16)));
+    }
+    ui::TextStyle vs = ui4::style(ui::Font::kE, 14.0f * s,
+                                  r.capturing ? ui4::kInk : (act && r.is_save ? ui4::kInk : (act ? ui4::kYellow : ui4::kWhite)),
+                                  ui::Align::kCenter);
+    ui4::fit_text(vstr, vs, (vx1 - vx0) - 12.0f * s, 9.5f * s);
+    l.text(0.5f * (vx0 + vx1), ry + 12.0f * s + 0.5f * (14.0f * s - vs.size), vstr, vs);
+    ry += row_h;
+  }
+
+  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  ui4::offwhite_strip(l, rx0 + 12.0f * s, top_y + 10.0f * s, rx1 - 12.0f * s, top_y + 34.0f * s, s, false);
+  l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "OPTION DETAILS", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+
+  if (sel_in_tab >= 0 && sel_in_tab < int(tab_rows.size())) {
+    const auto& sr = tab_rows[size_t(sel_in_tab)];
+    ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
+    ui::TextStyle stt = ui4::style(ui::Font::kE, 17.0f * s, ui4::kWhite);
+    ui4::fit_text(sr.name, stt, (rx1 - rx0) - 34.0f * s, 11.0f * s);
+    l.text(rx0 + 20.0f * s, top_y + 54.0f * s, sr.name, stt);
+
+    l.text(rx0 + 20.0f * s, top_y + 98.0f * s, "CURRENT VALUE", ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim));
+    l.text(rx0 + 20.0f * s, top_y + 116.0f * s, sr.value, ui4::style(ui::Font::kE, 22.0f * s, ui4::kYellow));
+
+    const char* hint = sr.is_save      ? "Writes changes to settings.txt and closes Settings."
+                       : sr.is_rebind  ? "Press [A] / Enter then any key to rebind control."
+                       : cur_tab == 0  ? "Display, camera rig, day length & post-FX."
+                       : cur_tab == 1  ? "FMOD master volume, radio DJ & 8-bus mixer."
+                       : cur_tab == 2  ? "Assists, AI difficulty, rubber-band & damage."
+                       : cur_tab == 3  ? "Controller layout, rumble, deadzones & keys."
+                                       : "Pinyon Shift QoL: language, intros & photo.";
+    ui::TextStyle hs = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+    ui4::fit_text(hint, hs, (rx1 - rx0) - 40.0f * s, 9.5f * s);
+    l.text(rx0 + 20.0f * s, top_y + 162.0f * s, hint, hs);
+
+    const LiveSettings ls = page.live_settings();
+    const float sy = bot_y - 124.0f * s;
+    l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 108.0f * s, ui::rgba(255, 255, 255, 14));
+    l.text(rx0 + 26.0f * s, sy + 10.0f * s, "LIVE STATUS", ui4::style(ui::Font::kE, 12.0f * s, ui4::kPink));
+    l.text(rx0 + 26.0f * s, sy + 32.0f * s, "LANGUAGE: " + ls.language, ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
+    l.text(rx0 + 26.0f * s, sy + 54.0f * s,
+           std::string("AUDIO: ") + (ls.sound ? "ON" : "OFF") + "  •  RADIO: " + (ls.radio ? "ON" : "OFF"),
+           ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
+    l.text(rx0 + 26.0f * s, sy + 76.0f * s,
+           std::string("REWIND: ") + (ls.controls.assists.rewind ? "ON" : "OFF") + "  •  TCS: " +
+               (ls.controls.assists.traction_control ? "ON" : "OFF"),
+           ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim));
+  }
+
+  ui4::button_bar(l,
+                  {{"DPAD_LR", "CHANGE"},
+                   {"LB", "CATEGORY"},
+                   {"A", "REBIND / SAVE"},
+                   {"B", "BACK"}},
+                  screen_w, screen_h, 56.0f);
 }
 
 // ------------------------------------------------ Animated Loading Screen

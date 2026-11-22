@@ -264,6 +264,68 @@ void SettingsPage::step(int by) {
   r.pick = size_t(((int(r.pick) + by) % n + n) % n);
 }
 
+namespace {
+SettingsPage::Tab classify_setting_row(const std::string& name) {
+  if (name == "preset" || name == "shadows" || name == "bloom" || name == "camera" || name == "camera effects" ||
+      name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day") {
+    return SettingsPage::Tab::kDisplay;
+  }
+  if (name == "radio" || name == "sound" || name == "satnav" || name == "master volume" || name == "mute" ||
+      name == "full dynamic range" || name == "radio dj" || name == "radio volume" || name.rfind("mix ", 0) == 0 ||
+      name.rfind("your music", 0) == 0) {
+    return SettingsPage::Tab::kAudio;
+  }
+  if (name == "difficulty" || name == "rubber-banding" || name == "traffic" || name == "collectibles" ||
+      name == "treasure map" || name == "braking" || name == "steering" || name == "traction control" ||
+      name == "stability control" || name == "shifting" || name == "driving line" || name == "rewind" ||
+      name == "damage" || name == "ai opponents") {
+    return SettingsPage::Tab::kGameplay;
+  }
+  if (name == "rumble" || name == "rumble scale" || name == "controller layout" || name.find("deadzone") != std::string::npos) {
+    return SettingsPage::Tab::kControls;
+  }
+  return SettingsPage::Tab::kPinyon;
+}
+}  // namespace
+
+SettingsPage::Tab SettingsPage::active_tab() const {
+  if (row_ >= 0 && row_ < int(rows_.size())) return classify_setting_row(rows_[size_t(row_)].name);
+  if (on_rebind_row()) return Tab::kControls;
+  return Tab::kPinyon;
+}
+
+void SettingsPage::switch_tab(int by) {
+  if (capturing_) return;
+  const int count = int(Tab::kCount);
+  const int next = ((int(active_tab()) + by) % count + count) % count;
+  const Tab target = Tab(next);
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    if (classify_setting_row(rows_[i].name) == target) {
+      row_ = int(i);
+      return;
+    }
+  }
+  if (target == Tab::kControls && !rebinds_.empty()) row_ = int(rows_.size());
+}
+
+std::vector<SettingsPage::DisplayRow> SettingsPage::display_rows() const {
+  std::vector<DisplayRow> out;
+  out.reserve(rows_.size() + rebinds_.size() + 1);
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    out.push_back({rows_[i].name, rows_[i].choices[rows_[i].pick].label, classify_setting_row(rows_[i].name), int(i),
+                   false, false, false, row_ == int(i)});
+  }
+  for (size_t i = 0; i < rebinds_.size(); ++i) {
+    const int idx = int(rows_.size() + i);
+    const bool cap = capturing_ && row_ == idx;
+    out.push_back({rebinds_[i].name, cap ? "PRESS KEY..." : keys_.map[size_t(rebinds_[i].action)].primary,
+                   Tab::kControls, idx, true, false, cap, row_ == idx});
+  }
+  const int save_idx = int(rows_.size() + rebinds_.size());
+  out.push_back({"SAVE & APPLY SETTINGS", "CONFIRM", active_tab(), save_idx, false, true, false, row_ == save_idx});
+  return out;
+}
+
 void SettingsPage::begin_rebind() {
   if (on_rebind_row()) capturing_ = true;
 }

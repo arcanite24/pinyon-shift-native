@@ -221,10 +221,13 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/ui_widgets.cpp
     ../apps/carview/hud_scene.cpp
     ../apps/carview/game_hud.cpp
+    ../apps/carview/events_page.cpp
+    ../apps/carview/settings_page.cpp
     ../apps/carview/fmv_player.cpp
     ../apps/carview/story_intro.cpp)
   target_include_directories(ui4_cjk_l10n_tests PRIVATE ../apps/carview)
-  target_link_libraries(ui4_cjk_l10n_tests PRIVATE carview_render shift_freeroam shift_cars shift_audio shift_stb)
+  target_link_libraries(ui4_cjk_l10n_tests PRIVATE carview_render shift_freeroam shift_race shift_garage shift_drive
+                        shift_cars shift_audio shift_stb)
   add_test(NAME ui4_cjk_l10n_tests COMMAND ui4_cjk_l10n_tests)
 
   add_executable(ui4_parity_tests ui4_parity_tests.cpp

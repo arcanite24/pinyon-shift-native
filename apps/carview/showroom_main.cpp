@@ -3603,6 +3603,7 @@ int run_drive(int argc, char** argv) {
       bool club_open = false;
       size_t club_pick = 0;
       SettingsPage settings_page;  // the pause menu's settings (M7)
+      bool settings_live_overlay = false;  // true when opened via live F6 hotkey
       freeroam::club::Signal club_signal;
       bool club_was_air = false;
       drive::Vec3 club_takeoff{};
@@ -5401,7 +5402,13 @@ int run_drive(int argc, char** argv) {
           carview::ui4::title_banner(list, sf, 70.0f * sf, hf - 154.0f * sf, rw_title, "HORIZON REWIND", true, 480.0f);
           carview::ui4::button_bar(list, rw_prompts, wf, hf);
         }
-        if (autoshow.is_open()) {
+        if (settings_page.is_open()) {
+          list.clear();
+          carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
+        } else if (events_page.is_open()) {
+          list.clear();
+          carview::draw_events_ui4(list, float(width), float(height), events_page, class_bands);
+        } else if (autoshow.is_open()) {
           list.clear();
           carview::draw_autoshow_hud(list, float(width), float(height), autoshow, class_bands, career.credits,
                                      vehicle.time() < notice_until ? notice : std::string());
@@ -7046,23 +7053,47 @@ int run_drive(int argc, char** argv) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE && !e.key.repeat) events_page.close();
-                else if (k == SDLK_UP || k == SDLK_W) events_page.move(-1);
-                else if (k == SDLK_DOWN || k == SDLK_S) events_page.move(1);
-                else if (k == SDLK_LEFT || k == SDLK_A) events_page.switch_tab(-1);
-                else if (k == SDLK_RIGHT || k == SDLK_D) events_page.switch_tab(1);
-                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) confirm_event();
+                if (k == SDLK_ESCAPE && !e.key.repeat) {
+                  events_page.close();
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (k == SDLK_UP || k == SDLK_W) {
+                  events_page.move(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_DOWN || k == SDLK_S) {
+                  events_page.move(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_Q) {
+                  events_page.switch_tab(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_E) {
+                  events_page.switch_tab(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                  confirm_event();
+                }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) events_page.close();
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) events_page.move(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) events_page.move(1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
+                  events_page.close();
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                  events_page.move(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                  events_page.move(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
                   events_page.switch_tab(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
                   events_page.switch_tab(1);
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_event();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                  confirm_event();
+                }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -7419,31 +7450,65 @@ int run_drive(int argc, char** argv) {
                     }
                   }
                 } else {
-                  if (k == SDLK_ESCAPE && !e.key.repeat) settings_page.close();
-                  else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) confirm();
-                  else if (k == SDLK_UP || k == SDLK_W) settings_page.move(-1);
-                  else if (k == SDLK_DOWN || k == SDLK_S) settings_page.move(1);
-                  else if (k == SDLK_LEFT || k == SDLK_A) {
+                  if ((k == SDLK_ESCAPE || k == SDLK_F6) && !e.key.repeat) {
+                    settings_page.close();
+                    settings_live_overlay = false;
+                    audio_host.trigger_ui(audio::UiCue::kCancel);
+                  } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                    audio_host.trigger_ui(audio::UiCue::kAccept);
+                    confirm();
+                  } else if (k == SDLK_UP || k == SDLK_W) {
+                    settings_page.move(-1);
+                    audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_DOWN || k == SDLK_S) {
+                    settings_page.move(1);
+                    audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_Q) {
+                    settings_page.switch_tab(-1);
+                    audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_E || k == SDLK_TAB) {
+                    settings_page.switch_tab((e.key.mod & SDL_KMOD_SHIFT) ? -1 : +1);
+                    audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_LEFT || k == SDLK_A) {
                     settings_page.step(-1);
                     apply_live();
+                    audio_host.trigger_ui(audio::UiCue::kMove);
                   } else if (k == SDLK_RIGHT || k == SDLK_D) {
                     settings_page.step(1);
                     apply_live();
+                    audio_host.trigger_ui(audio::UiCue::kMove);
                   }
                 }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && !settings_page.capturing_key()) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) settings_page.close();
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm();
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) settings_page.move(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) settings_page.move(1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
+                  settings_page.close();
+                  settings_live_overlay = false;
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                  confirm();
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                  settings_page.move(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                  settings_page.move(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
+                  settings_page.switch_tab(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+                  settings_page.switch_tab(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
                   settings_page.step(-1);
                   apply_live();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
                 } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
                   settings_page.step(1);
                   apply_live();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
                 }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
@@ -7468,25 +7533,57 @@ int run_drive(int argc, char** argv) {
             if (menu.open) {
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE) menu.open = false;
-                if (k == SDLK_UP || k == SDLK_W) menu.move(-1);
-                if (k == SDLK_DOWN || k == SDLK_S) menu.move(1);
-                if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_LEFT || k == SDLK_A))
+                if (k == SDLK_ESCAPE) {
+                  menu.open = false;
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                }
+                if (k == SDLK_UP || k == SDLK_W) {
+                  menu.move(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (k == SDLK_DOWN || k == SDLK_S) {
+                  menu.move(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_LEFT || k == SDLK_A)) {
                   cycle_difficulty(-1);
-                if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_RIGHT || k == SDLK_D))
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (menu.selected_action() == PauseMenu::kDifficulty && (k == SDLK_RIGHT || k == SDLK_D)) {
                   cycle_difficulty(+1);
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) choose();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                  choose();
+                }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) menu.open = false;
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) menu.move(-1);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) menu.move(1);
-                if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT)
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
+                  menu.open = false;
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                }
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                  menu.move(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                  menu.move(1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
                   cycle_difficulty(-1);
-                if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (menu.selected_action() == PauseMenu::kDifficulty && b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
                   cycle_difficulty(+1);
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH) choose();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                }
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                  choose();
+                }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -7496,16 +7593,32 @@ int run_drive(int argc, char** argv) {
                 if ((k == SDLK_ESCAPE || k == SDLK_F7) && !e.key.repeat) {
                   achievements.close_screen();
                   achievements.save_state(achievements_path);
-                } else if (k == SDLK_LEFT || k == SDLK_A) achievements.move_focus(-1, 0);
-                else if (k == SDLK_RIGHT || k == SDLK_D) achievements.move_focus(+1, 0);
-                else if (k == SDLK_UP || k == SDLK_W) achievements.move_focus(0, -1);
-                else if (k == SDLK_DOWN || k == SDLK_S) achievements.move_focus(0, +1);
-                else if (k == SDLK_Q) achievements.switch_tab(-1);
-                else if (k == SDLK_E || k == SDLK_TAB) achievements.switch_tab((e.key.mod & SDL_KMOD_SHIFT) ? -1 : +1);
-                else if (k == SDLK_R && !e.key.repeat) achievements.cycle_sort();
-                else if ((k == SDLK_T || k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (k == SDLK_LEFT || k == SDLK_A) {
+                  achievements.move_focus(-1, 0);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_RIGHT || k == SDLK_D) {
+                  achievements.move_focus(+1, 0);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_UP || k == SDLK_W) {
+                  achievements.move_focus(0, -1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_DOWN || k == SDLK_S) {
+                  achievements.move_focus(0, +1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_Q) {
+                  achievements.switch_tab(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_E || k == SDLK_TAB) {
+                  achievements.switch_tab((e.key.mod & SDL_KMOD_SHIFT) ? -1 : +1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_R && !e.key.repeat) {
+                  achievements.cycle_sort();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if ((k == SDLK_T || k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
                   achievements.toggle_track_focused();
                   achievements.save_state(achievements_path);
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
                 } else if (k == SDLK_F8 && !e.key.repeat) {
                   pending_shot = PendingShot::kF8;
                   renderer.request_capture(true);
@@ -7516,16 +7629,32 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) {
                   achievements.close_screen();
                   achievements.save_state(achievements_path);
-                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) achievements.move_focus(-1, 0);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) achievements.move_focus(+1, 0);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) achievements.move_focus(0, -1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) achievements.move_focus(0, +1);
-                else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) achievements.switch_tab(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) achievements.switch_tab(+1);
-                else if (b == SDL_GAMEPAD_BUTTON_WEST) achievements.cycle_sort();
-                else if (b == SDL_GAMEPAD_BUTTON_NORTH || b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+                  achievements.move_focus(-1, 0);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+                  achievements.move_focus(+1, 0);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) {
+                  achievements.move_focus(0, -1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
+                  achievements.move_focus(0, +1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
+                  achievements.switch_tab(-1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+                  achievements.switch_tab(+1);
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
+                  achievements.cycle_sort();
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_NORTH || b == SDL_GAMEPAD_BUTTON_SOUTH) {
                   achievements.toggle_track_focused();
                   achievements.save_state(achievements_path);
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
                 }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
@@ -7791,10 +7920,18 @@ int run_drive(int argc, char** argv) {
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
+              // F6: live tabbed FH1/Pinyon Shift Settings overlay.
+              if (e.key.key == SDLK_F6) {
+                settings_page.load(read_settings(settings_path(), nullptr));
+                settings_page.open();
+                settings_live_overlay = true;
+                audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+              }
               // F7: Pinyon Shift-style Achievements screen.
               if (e.key.key == SDLK_F7) {
                 eval_achievements(false);
                 achievements.open_screen();
+                audio_host.trigger_ui(audio::UiCue::kMenuOpen);
               }
               // F8: real Vulkan swapchain PNG capture to <user-data>/photos/.
               if (e.key.key == SDLK_F8) {

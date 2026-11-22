@@ -42,6 +42,9 @@ class EventsPage {
   void move(int by);
   void switch_tab(int by);
   const Entry* selected_entry() const;
+  const std::vector<Entry>& entries() const { return entries_; }
+  size_t selected_index() const { return selected_; }
+  Tab active_tab() const { return tab_; }
   int hub_filter() const { return hub_filter_; }
 
   void fill(std::string& title, std::vector<std::string>& lines, int& selected, std::string& detail_title,

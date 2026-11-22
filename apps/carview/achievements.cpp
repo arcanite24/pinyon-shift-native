@@ -12,6 +12,7 @@
 #include <stb_image.h>
 
 #include "game_hud.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 namespace {
@@ -704,21 +705,11 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
   if (!screen_open_) return;
 
   const float s = h / 720.0f;
-  const uint32_t kPink = rgba(0xF5, 0x04, 0x5C);
-  const uint32_t kAmber = rgba(255, 190, 48);
-  const uint32_t kGreen = rgba(70, 224, 118);
-  const uint32_t kWhite = rgba(246, 248, 252);
-  const uint32_t kDim = rgba(168, 176, 192);
-  const uint32_t kGlass = rgba(10, 12, 18, 232);
-  const uint32_t kCard = rgba(18, 22, 32, 236);
+  ui4::subtle_vignette(out, w, h, 0.42f);
 
-  // Dark theatrical backdrop over Colorado.
-  out.rect(0, 0, w, h, rgba(6, 8, 14, 212), 0, rgba(12, 14, 22, 230));
-
-  const float left = 72.0f * s;
-  const float right = w - 72.0f * s;
-  const float top = 40.0f * s;
-  const float bottom = h - 38.0f * s;
+  const float left = 56.0f * s;
+  const float right = w - 56.0f * s;
+  const float top = 26.0f * s;
 
   const uint32_t earned = earned_gamerscore();
   const uint32_t total = total_gamerscore();
@@ -729,62 +720,42 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
   const uint32_t shown_earned = uint32_t(std::lround(float(earned) * intro));
   const float pct = avail > 0 ? float(earned) / float(avail) : 0.0f;
 
-  // --- HEADER ---
-  out.rect(left, top, left + 7 * s, top + 62 * s, tinfo.colour, 2 * s);
-  out.text(left + 18 * s, top + 2 * s, "ACHIEVEMENTS",
-           TextStyle{.size = 32 * s, .weight = 0.12f, .tracking = 0.10f, .color = kWhite, .font = Font::kE});
+  // --- AUTHENTIC FH1 TILTED HEADER + WRISTBAND TIER CARD ---
+  ui4::title_banner(out, s, left, top, "ACHIEVEMENTS", "PINYON SHIFT // HORIZON", true, 410.0f);
 
-  // Wristband tier emblem + gamerscore summary (right side of header).
   char gs_buf[64], pct_buf[32], cnt_buf[32];
   std::snprintf(gs_buf, sizeof gs_buf, "%u / %u G", shown_earned, total);
   std::snprintf(pct_buf, sizeof pct_buf, "%d%%", int(std::lround(pct * 100.0f * intro)));
   std::snprintf(cnt_buf, sizeof cnt_buf, "%d OF %d UNLOCKED", unlocked_count(), total_count());
 
-  // Wristband art or styled badge.
-  const float wb_x1 = right - 332 * s;
-  const float wb_x0 = wb_x1 - 116 * s;
-  std::array<float, 4> wb_uv;
-  if (tinfo.texture_key[0] != '\0' && ui_texture(tinfo.texture_key, wb_uv)) {
-    out.image(wb_x0, top - 2 * s, wb_x1, top + 48 * s, wb_uv);
+  // Top-right gritty Gamerscore & Wristband progress banner.
+  const float hc_x0 = right - 504.0f * s, hc_y0 = top + 2.0f * s, hc_y1 = top + 66.0f * s;
+  ui4::panel(out, hc_x0, hc_y0, right, hc_y1, s, ui4::kCharcoalDark, tinfo.colour, 0, true);
+  std::array<float, 4> wb_uv{};
+  if (tinfo.texture_key[0] != '\0' && ui4::texture(tinfo.texture_key, wb_uv)) {
+    out.image(hc_x0 + 10.0f * s, hc_y0 + 6.0f * s, hc_x0 + 114.0f * s, hc_y0 + 54.0f * s, wb_uv);
   } else {
-    out.rect(wb_x0, top + 8 * s, wb_x1, top + 38 * s, ui::fade(tinfo.colour, 0.25), 14 * s);
-    out.frame(wb_x0, top + 8 * s, wb_x1, top + 38 * s, tinfo.colour, 2.0f * s, 14 * s);
-    out.text(0.5f * (wb_x0 + wb_x1), top + 16 * s, tinfo.name,
-             TextStyle{.size = 12 * s, .weight = 0.12f, .color = tinfo.colour, .align = Align::kCenter, .font = Font::kE});
+    ui4::brush(out, hc_x0 + 10.0f * s, hc_y0 + 14.0f * s, hc_x0 + 114.0f * s, hc_y0 + 44.0f * s, tinfo.colour);
+    out.text(hc_x0 + 62.0f * s, hc_y0 + 23.0f * s, tinfo.name, ui4::style(Font::kE, 12.0f * s, ui4::kInk, Align::kCenter));
   }
-  out.text(right - 96 * s, top + 5 * s, gs_buf,
-           TextStyle{.size = 22 * s, .weight = 0.12f, .color = kWhite, .align = Align::kRight, .font = Font::kE});
-  out.text(right, top + 5 * s, pct_buf,
-           TextStyle{.size = 22 * s, .weight = 0.12f, .color = tinfo.colour, .align = Align::kRight, .font = Font::kE});
-  out.text(wb_x1 + 12 * s, top + 33 * s, std::string(tinfo.name) + " WRISTBAND",
-           TextStyle{.size = 10.5f * s, .weight = 0.12f, .tracking = 0.08f, .color = tinfo.colour, .font = Font::kE});
-  out.text(right, top + 33 * s, cnt_buf,
-           TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = kDim, .align = Align::kRight, .font = Font::kB});
+  ui4::offwhite_strip(out, right - 246.0f * s, hc_y0 + 8.0f * s, right - 92.0f * s, hc_y0 + 34.0f * s, s, false);
+  out.text(right - 100.0f * s, hc_y0 + 13.0f * s, gs_buf, ui4::style(Font::kE, 15.0f * s, ui4::kInk, Align::kRight));
+  out.text(right - 12.0f * s, hc_y0 + 11.0f * s, pct_buf, ui4::style(Font::kE, 21.0f * s, tinfo.colour, Align::kRight));
+  out.text(hc_x0 + 124.0f * s, hc_y0 + 13.0f * s, std::string(tinfo.name), ui4::style(Font::kE, 13.0f * s, tinfo.colour));
+  out.text(hc_x0 + 124.0f * s, hc_y0 + 30.0f * s, cnt_buf, ui4::style(Font::kB, 10.5f * s, ui4::kDim));
 
-  // Gamerscore progress bar with slow animated sheen sweep.
-  const float bar_y = top + 52 * s, bar_h = 10 * s;
-  const float bar_x0 = left + 18 * s, bar_x1 = right;
-  out.rect(bar_x0, bar_y, bar_x1, bar_y + bar_h, rgba(255, 255, 255, 32), 5 * s);
+  const float bar_x0 = hc_x0 + 124.0f * s, bar_x1 = right - 12.0f * s, bar_y = hc_y1 - 12.0f * s, bar_h = 6.0f * s;
+  out.rect(bar_x0, bar_y, bar_x1, bar_y + bar_h, rgba(255, 255, 255, 28));
   const float fill_w = (bar_x1 - bar_x0) * std::clamp(pct * intro, 0.0f, 1.0f);
-  if (fill_w > 2 * s) {
-    out.rect(bar_x0, bar_y, bar_x0 + fill_w, bar_y + bar_h, tinfo.colour, 5 * s, kPink);
-    const float sheen_t = float(std::fmod(global_time_ * 0.45, 1.4));
-    if (sheen_t < 1.0f) {
-      const float sx = bar_x0 + fill_w * sheen_t;
-      out.rect(std::max(bar_x0, sx - 28 * s), bar_y, std::min(bar_x0 + fill_w, sx + 28 * s), bar_y + bar_h,
-               rgba(255, 255, 255, 95), 4 * s);
-    }
+  if (fill_w > 2.0f * s) {
+    out.rect(bar_x0, bar_y, bar_x0 + fill_w, bar_y + bar_h, tinfo.colour, 0.0f, ui4::kPink);
   }
 
-  // --- CATEGORY TABS ---
-  const float tab_y = top + 76 * s;
-  const float tab_h = 30 * s;
-  float tx = left;
-  out.text(tx, tab_y + 8 * s, "[Q]",
-           TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = kDim, .font = Font::kB});
-  tx += 30 * s;
-  for (size_t i = 0; i < tabs_.size(); ++i) {
-    const AchievementCategory c = tabs_[i];
+  // --- CATEGORY TAB STRIP (LB / RB) ---
+  const float tab_y = top + 78.0f * s;
+  std::vector<std::string> tab_labels;
+  tab_labels.reserve(tabs_.size());
+  for (AchievementCategory c : tabs_) {
     int c_done = 0, c_tot = 0;
     for (const auto& e : entries_) {
       if (c == AchievementCategory::kAll || e.category == c) {
@@ -792,255 +763,213 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
         if (e.unlocked) ++c_done;
       }
     }
-    const bool sel = (i == tab_idx_);
-    const std::string lbl =
-        std::string(achievement_category_label(c)) + " " + std::to_string(c_done) + "/" + std::to_string(c_tot);
-    const TextStyle ts{.size = 11 * s, .weight = 0.11f, .color = sel ? kWhite : kDim, .font = Font::kB};
-    const float tw = ui::List::measure(lbl, ts) + 22 * s;
-    if (tx + tw > right - 34 * s) break;
-    out.rect(tx, tab_y, tx + tw, tab_y + tab_h, sel ? kPink : rgba(255, 255, 255, 20), 4 * s);
-    if (c_tot > 0 && c_done == c_tot) {
-      out.rect(tx, tab_y + tab_h - 3 * s, tx + tw, tab_y + tab_h, kGreen);
-    }
-    out.text(tx + 11 * s, tab_y + 9 * s, lbl, ts);
-    tx += tw + 7 * s;
+    tab_labels.push_back(std::string(achievement_category_label(c)) + " " + std::to_string(c_done) + "/" +
+                         std::to_string(c_tot));
   }
-  out.text(right, tab_y + 8 * s, "[E]",
-           TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = kDim, .align = Align::kRight, .font = Font::kB});
+  ui4::tab_strip(out, s, left, tab_y, right, tab_labels, int(tab_idx_), true, ui4::kPink);
 
-  // --- LEFT SIDE: ALMOST THERE + 5x3 TILE GRID ---
-  const float panel_left = left + 594 * s;
-  float grid_top = tab_y + tab_h + 18 * s;
+  // --- LEFT SIDE: ALMOST THERE + 5x3 SHARP GRITTY TILE GRID ---
+  const float panel_left = left + 592.0f * s;
+  float grid_top = tab_y + 42.0f * s;
 
   if (active_tab() == AchievementCategory::kAll && !almost_there_.empty()) {
-    out.text(left, grid_top, "ALMOST THERE",
-             TextStyle{.size = 11.5f * s, .weight = 0.12f, .tracking = 0.16f, .color = kAmber, .font = Font::kE});
-    const float ay = grid_top + 16 * s;
-    const float aw = 182 * s, ah = 58 * s;
+    ui4::offwhite_strip(out, left, grid_top, panel_left - 16.0f * s, grid_top + 22.0f * s, s, false);
+    out.text(left + 10.0f * s, grid_top + 4.0f * s, "ALMOST THERE", ui4::style(Font::kE, 12.5f * s, ui4::kInk));
+    const float ay = grid_top + 26.0f * s;
+    const float aw = 184.0f * s, ah = 58.0f * s;
     for (size_t i = 0; i < almost_there_.size(); ++i) {
       const auto& e = entries_[almost_there_[i]];
-      const float ax0 = left + float(i) * (aw + 12 * s);
-      out.rect(ax0, ay, ax0 + aw, ay + ah, kCard, 5 * s);
-      out.frame(ax0, ay, ax0 + aw, ay + ah, rgba(255, 190, 48, 120), 1.5f * s, 5 * s);
-      std::array<float, 4> iuv;
+      const float ax0 = left + float(i) * (aw + 12.0f * s);
+      ui4::panel(out, ax0, ay, ax0 + aw, ay + ah, s, ui4::kCharcoalDark, ui4::kYellow, 0, true);
+      std::array<float, 4> iuv{};
       if (ensure_icon_uv(e.image_id, false, iuv)) {
-        out.image(ax0 + 7 * s, ay + 6 * s, ax0 + 53 * s, ay + 52 * s, iuv, kWhite, 4 * s);
+        out.image(ax0 + 7.0f * s, ay + 6.0f * s, ax0 + 53.0f * s, ay + 52.0f * s, iuv, ui4::kWhite);
       } else {
-        out.rect(ax0 + 7 * s, ay + 6 * s, ax0 + 53 * s, ay + 52 * s, rgba(255, 255, 255, 22), 4 * s);
-        out.text(ax0 + 30 * s, ay + 22 * s, std::to_string(e.gamerscore) + "G",
-                 TextStyle{.size = 12 * s, .weight = 0.12f, .color = kAmber, .align = Align::kCenter, .font = Font::kE});
+        out.rect(ax0 + 7.0f * s, ay + 6.0f * s, ax0 + 53.0f * s, ay + 52.0f * s, rgba(255, 255, 255, 18));
+        out.text(ax0 + 30.0f * s, ay + 22.0f * s, std::to_string(e.gamerscore) + "G",
+                 ui4::style(Font::kE, 12.0f * s, ui4::kYellow, Align::kCenter));
       }
-      TextStyle nts{.size = 10 * s, .weight = 0.11f, .color = kWhite, .font = Font::kB};
       std::string short_name = e.name.size() > 17 ? (e.name.substr(0, 16) + "..") : e.name;
-      out.text(ax0 + 60 * s, ay + 8 * s, short_name, nts);
+      out.text(ax0 + 60.0f * s, ay + 8.0f * s, short_name, ui4::style(Font::kB, 10.5f * s, ui4::kWhite));
       if (e.progress) {
         char pbuf[32];
         std::snprintf(pbuf, sizeof pbuf, "%u / %u", e.progress->current, e.progress->target);
-        out.text(ax0 + 60 * s, ay + 24 * s, pbuf,
-                 TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = kAmber, .font = Font::kB});
-        const float px0 = ax0 + 60 * s, px1 = ax0 + aw - 10 * s, py0 = ay + 43 * s;
-        out.rect(px0, py0, px1, py0 + 6 * s, rgba(255, 255, 255, 34), 3 * s);
-        out.rect(px0, py0, px0 + (px1 - px0) * e.progress->fraction(), py0 + 6 * s, kAmber, 3 * s);
+        out.text(ax0 + 60.0f * s, ay + 24.0f * s, pbuf, ui4::style(Font::kE, 10.5f * s, ui4::kYellow));
+        const float px0 = ax0 + 60.0f * s, px1 = ax0 + aw - 10.0f * s, py0 = ay + 43.0f * s;
+        out.rect(px0, py0, px1, py0 + 5.0f * s, rgba(255, 255, 255, 30));
+        out.rect(px0, py0, px0 + (px1 - px0) * e.progress->fraction(), py0 + 5.0f * s, ui4::kYellow);
       }
     }
-    grid_top = ay + ah + 14 * s;
+    grid_top = ay + ah + 14.0f * s;
   }
 
-  // Tile grid (5 columns x 3 visible rows).
   constexpr int kCols = 5;
   const int vis_rows = 3;
-  const float tile = 104 * s;
-  const float gap = 12 * s;
-  const float row_gap = 10 * s;
+  const float tile = 104.0f * s;
+  const float gap = 12.0f * s;
+  const float row_gap = 10.0f * s;
   for (int r = 0; r < vis_rows; ++r) {
     for (int c = 0; c < kCols; ++c) {
       const int vi = (scroll_row_ + r) * kCols + c;
       if (vi < 0 || vi >= int(visible_.size())) continue;
       const auto& e = entries_[visible_[size_t(vi)]];
       const bool focused = (vi == focus_index_);
-      const float lift = focused ? 4.0f * s : 0.0f;
+      const float lift = focused ? 3.5f * s : 0.0f;
       const float x0 = left + float(c) * (tile + gap) - lift;
       const float y0 = grid_top + float(r) * (tile + row_gap) - lift;
-      const float x1 = x0 + tile + 2 * lift;
-      const float y1 = y0 + tile + 2 * lift;
+      const float x1 = x0 + tile + 2.0f * lift;
+      const float y1 = y0 + tile + 2.0f * lift;
 
-      out.rect(x0, y0, x1, y1, focused ? rgba(36, 20, 38, 245) : kCard, 6 * s);
-      // Value tier top accent stripe (Bronze / Silver / Gold).
-      out.rect(x0 + 4 * s, y0 + 2 * s, x1 - 4 * s, y0 + 5 * s,
-               e.unlocked ? value_stripe_colour(e.gamerscore) : rgba(255, 255, 255, 28), 2 * s);
+      const uint32_t tier_col = e.unlocked ? value_stripe_colour(e.gamerscore) : rgba(255, 255, 255, 32);
+      ui4::panel(out, x0, y0, x1, y1, s, focused ? rgba(36, 16, 30, 245) : ui4::kCharcoalDark,
+                 focused ? ui4::kPink : tier_col, 0, true);
 
-      // 64x64 XDBF PNG icon (colour if unlocked, grey if locked).
-      const float ic_sz = 58 * s;
+      const float ic_sz = 58.0f * s;
       const float ic_x = 0.5f * (x0 + x1) - 0.5f * ic_sz;
-      const float ic_y = y0 + 13 * s;
-      std::array<float, 4> iuv;
+      const float ic_y = y0 + 13.0f * s;
+      std::array<float, 4> iuv{};
       if (ensure_icon_uv(e.image_id, !e.unlocked, iuv)) {
-        out.image(ic_x, ic_y, ic_x + ic_sz, ic_y + ic_sz, iuv, e.unlocked ? kWhite : rgba(210, 215, 225, 215), 5 * s);
+        out.image(ic_x, ic_y, ic_x + ic_sz, ic_y + ic_sz, iuv, e.unlocked ? ui4::kWhite : rgba(210, 215, 225, 215));
       } else {
-        out.rect(ic_x, ic_y, ic_x + ic_sz, ic_y + ic_sz, e.unlocked ? rgba(255, 190, 48, 48) : rgba(255, 255, 255, 18),
-                 6 * s);
-        out.text(0.5f * (x0 + x1), ic_y + 20 * s, e.unlocked ? "WIN" : "LOCK",
-                 TextStyle{.size = 11 * s, .weight = 0.12f, .color = e.unlocked ? kAmber : kDim, .align = Align::kCenter, .font = Font::kE});
+        out.rect(ic_x, ic_y, ic_x + ic_sz, ic_y + ic_sz,
+                 e.unlocked ? rgba(255, 190, 48, 44) : rgba(255, 255, 255, 16));
+        out.text(0.5f * (x0 + x1), ic_y + 20.0f * s, e.unlocked ? "WIN" : "LOCK",
+                 ui4::style(Font::kE, 11.5f * s, e.unlocked ? ui4::kYellow : ui4::kDim, Align::kCenter));
       }
 
-      // Gamerscore pill bottom-left.
       char gpill[16];
       std::snprintf(gpill, sizeof gpill, "%uG", e.gamerscore);
-      out.rect(x0 + 7 * s, y1 - 24 * s, x0 + 46 * s, y1 - 8 * s,
-               e.unlocked ? rgba(244, 194, 68, 220) : rgba(255, 255, 255, 28), 3 * s);
-      out.text(x0 + 26.5f * s, y1 - 21 * s, gpill,
-               TextStyle{.size = 9.5f * s, .weight = 0.12f, .color = e.unlocked ? rgba(14, 14, 18) : kDim, .align = Align::kCenter, .font = Font::kE});
+      out.rect(x0 + 7.0f * s, y1 - 24.0f * s, x0 + 46.0f * s, y1 - 8.0f * s,
+               e.unlocked ? ui4::kYellow : rgba(255, 255, 255, 24));
+      out.text(x0 + 26.5f * s, y1 - 21.0f * s, gpill,
+               ui4::style(Font::kE, 9.5f * s, e.unlocked ? ui4::kInk : ui4::kDim, Align::kCenter));
 
-      // State badge bottom-right (TICK / TRACKED / NEW / LIVE).
       if (e.is_new) {
-        out.rect(x1 - 40 * s, y1 - 24 * s, x1 - 7 * s, y1 - 8 * s, kPink, 3 * s);
-        out.text(x1 - 23.5f * s, y1 - 21 * s, "NEW",
-                 TextStyle{.size = 8.5f * s, .weight = 0.12f, .color = kWhite, .align = Align::kCenter, .font = Font::kE});
+        out.rect(x1 - 40.0f * s, y1 - 24.0f * s, x1 - 7.0f * s, y1 - 8.0f * s, ui4::kPink);
+        out.text(x1 - 23.5f * s, y1 - 21.0f * s, "NEW", ui4::style(Font::kE, 8.5f * s, ui4::kWhite, Align::kCenter));
       } else if (e.unlocked) {
-        out.rect(x1 - 24 * s, y1 - 24 * s, x1 - 7 * s, y1 - 8 * s, kGreen, 3 * s);
-        out.text(x1 - 15.5f * s, y1 - 21 * s, "OK",
-                 TextStyle{.size = 8 * s, .weight = 0.12f, .color = rgba(12, 16, 14), .align = Align::kCenter, .font = Font::kE});
+        out.rect(x1 - 24.0f * s, y1 - 24.0f * s, x1 - 7.0f * s, y1 - 8.0f * s, ui4::kGreen);
+        out.text(x1 - 15.5f * s, y1 - 21.0f * s, "OK", ui4::style(Font::kE, 8.0f * s, ui4::kInk, Align::kCenter));
       } else if (tracked_id_ == e.id) {
-        out.rect(x1 - 44 * s, y1 - 24 * s, x1 - 7 * s, y1 - 8 * s, kAmber, 3 * s);
-        out.text(x1 - 25.5f * s, y1 - 21 * s, "PIN",
-                 TextStyle{.size = 8.5f * s, .weight = 0.12f, .color = rgba(14, 14, 18), .align = Align::kCenter, .font = Font::kE});
+        out.rect(x1 - 44.0f * s, y1 - 24.0f * s, x1 - 7.0f * s, y1 - 8.0f * s, ui4::kAmber);
+        out.text(x1 - 25.5f * s, y1 - 21.0f * s, "PIN", ui4::style(Font::kE, 8.5f * s, ui4::kInk, Align::kCenter));
       } else if (!e.available()) {
-        out.text(x1 - 8 * s, y1 - 21 * s, "LIVE",
-                 TextStyle{.size = 8.5f * s, .weight = 0.10f, .color = rgba(150, 156, 170, 170), .align = Align::kRight, .font = Font::kB});
+        out.text(x1 - 8.0f * s, y1 - 21.0f * s, "LIVE", ui4::style(Font::kB, 8.5f * s, rgba(150, 156, 170, 170), Align::kRight));
       }
 
-      // Thin progress bar along bottom edge for counted locked tiles.
       if (!e.unlocked && e.progress) {
-        out.rect(x0 + 6 * s, y1 - 5 * s, x1 - 6 * s, y1 - 2 * s, rgba(255, 255, 255, 34), 1.5f * s);
-        out.rect(x0 + 6 * s, y1 - 5 * s, x0 + 6 * s + (x1 - x0 - 12 * s) * e.progress->fraction(), y1 - 2 * s, kAmber,
-                 1.5f * s);
+        out.rect(x0 + 6.0f * s, y1 - 5.0f * s, x1 - 6.0f * s, y1 - 2.0f * s, rgba(255, 255, 255, 30));
+        out.rect(x0 + 6.0f * s, y1 - 5.0f * s, x0 + 6.0f * s + (x1 - x0 - 12.0f * s) * e.progress->fraction(),
+                 y1 - 2.0f * s, ui4::kYellow);
       }
 
       if (focused) {
-        out.frame(x0, y0, x1, y1, kPink, 2.5f * s, 6 * s);
+        out.frame(x0, y0, x1, y1, ui4::kPink, 2.5f * s);
       }
     }
   }
 
-  // --- RIGHT DETAIL PANEL ---
-  const float dp_y0 = tab_y + tab_h + 18 * s;
-  const float dp_y1 = bottom - 46 * s;
-  out.shadow(panel_left, dp_y0 + 4 * s, right, dp_y1 + 4 * s, rgba(0, 0, 0, 130), 8 * s, 14 * s);
-  out.rect(panel_left, dp_y0, right, dp_y1, kGlass, 8 * s, kCard);
-  out.rect(panel_left, dp_y0, right, dp_y0 + 4 * s, kPink);
+  // --- RIGHT DETAIL PANEL (sharp gritty FH1 card) ---
+  const float dp_y0 = tab_y + 42.0f * s;
+  const float dp_y1 = h - 84.0f * s;
+  ui4::panel(out, panel_left, dp_y0, right, dp_y1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
 
   if (const auto* fe = focused_entry()) {
-    const float dx = panel_left + 22 * s;
-    const float dw = (right - panel_left) - 44 * s;
-    // Large icon.
-    const float big_sz = 96 * s;
-    std::array<float, 4> iuv;
+    const float dx = panel_left + 20.0f * s;
+    const float dw = (right - panel_left) - 40.0f * s;
+    const float big_sz = 92.0f * s;
+    std::array<float, 4> iuv{};
     if (ensure_icon_uv(fe->image_id, !fe->unlocked, iuv)) {
-      out.image(dx, dp_y0 + 22 * s, dx + big_sz, dp_y0 + 22 * s + big_sz, iuv, kWhite, 8 * s);
+      out.image(dx, dp_y0 + 20.0f * s, dx + big_sz, dp_y0 + 20.0f * s + big_sz, iuv, ui4::kWhite);
     } else {
-      out.rect(dx, dp_y0 + 22 * s, dx + big_sz, dp_y0 + 22 * s + big_sz, rgba(255, 255, 255, 22), 8 * s);
+      out.rect(dx, dp_y0 + 20.0f * s, dx + big_sz, dp_y0 + 20.0f * s + big_sz, rgba(255, 255, 255, 20));
     }
-    out.frame(dx, dp_y0 + 22 * s, dx + big_sz, dp_y0 + 22 * s + big_sz,
-              fe->unlocked ? value_stripe_colour(fe->gamerscore) : rgba(255, 255, 255, 45), 2 * s, 8 * s);
+    out.frame(dx, dp_y0 + 20.0f * s, dx + big_sz, dp_y0 + 20.0f * s + big_sz,
+              fe->unlocked ? value_stripe_colour(fe->gamerscore) : rgba(255, 255, 255, 45), 2.0f * s);
 
-    // Gamerscore + status beside big icon.
-    const float sx = dx + big_sz + 18 * s;
-    out.text(sx, dp_y0 + 26 * s, std::to_string(fe->gamerscore) + " G",
-             TextStyle{.size = 28 * s, .weight = 0.12f, .color = value_stripe_colour(fe->gamerscore), .font = Font::kE});
+    const float sx = dx + big_sz + 18.0f * s;
+    out.text(sx, dp_y0 + 24.0f * s, std::to_string(fe->gamerscore) + " G",
+             ui4::style(Font::kE, 28.0f * s, value_stripe_colour(fe->gamerscore)));
     const std::string status_str = fe->unlocked ? "UNLOCKED"
                                    : !fe->available()
                                        ? (fe->availability == AchievementAvailability::kNeedsRivals ? "RIVALS (OFFLINE)"
                                                                                                     : "XBOX LIVE (OFFLINE)")
                                        : (tracked_id_ == fe->id ? "TRACKED ON HUD" : "LOCKED");
-    const uint32_t status_col = fe->unlocked ? kGreen : (tracked_id_ == fe->id ? kAmber : kDim);
-    out.text(sx, dp_y0 + 62 * s, status_str,
-             TextStyle{.size = 12 * s, .weight = 0.12f, .tracking = 0.12f, .color = status_col, .font = Font::kE});
+    const uint32_t status_col = fe->unlocked ? ui4::kGreen : (tracked_id_ == fe->id ? ui4::kYellow : ui4::kDim);
+    out.text(sx, dp_y0 + 60.0f * s, status_str, ui4::style(Font::kE, 12.5f * s, status_col));
     if (fe->unlocked && fe->unlock_utc > 0) {
-      out.text(sx, dp_y0 + 82 * s, format_utc_date(fe->unlock_utc),
-               TextStyle{.size = 11 * s, .weight = 0.10f, .color = kDim, .font = Font::kB});
+      out.text(sx, dp_y0 + 80.0f * s, format_utc_date(fe->unlock_utc), ui4::style(Font::kB, 11.5f * s, ui4::kDim));
     } else {
-      out.text(sx, dp_y0 + 82 * s, achievement_category_label(fe->category),
-               TextStyle{.size = 11 * s, .weight = 0.10f, .color = kDim, .font = Font::kB});
+      out.text(sx, dp_y0 + 80.0f * s, achievement_category_label(fe->category), ui4::style(Font::kB, 11.5f * s, ui4::kDim));
     }
 
-    // Achievement title + wrapped description.
-    float ty = dp_y0 + 136 * s;
-    const TextStyle title_ts{.size = 18 * s, .weight = 0.12f, .color = kWhite, .font = Font::kE};
-    for (const auto& tl : wrap_lines(fe->name, title_ts, dw, 2)) {
-      out.text(dx, ty, tl, title_ts);
-      ty += 24 * s;
-    }
-    ty += 8 * s;
+    // Pink brush strip behind focused achievement name!
+    float ty = dp_y0 + 128.0f * s;
+    ui4::brush(out, panel_left + 10.0f * s, ty - 4.0f * s, right - 10.0f * s, ty + 32.0f * s, ui4::kPink);
+    ui::TextStyle title_ts = ui4::style(Font::kE, 18.0f * s, ui4::kWhite);
+    ui4::fit_text(fe->name, title_ts, dw, 11.0f * s);
+    out.text(dx, ty + 3.0f * s + 0.5f * (18.0f * s - title_ts.size), fe->name, title_ts);
+    ty += 46.0f * s;
+
     const std::string& desc = (!fe->unlocked && !fe->unachieved_description.empty()) ? fe->unachieved_description
                                                                                      : fe->description;
-    const TextStyle desc_ts{.size = 12.5f * s, .weight = 0.10f, .color = kDim, .font = Font::kB};
+    const TextStyle desc_ts = ui4::style(Font::kB, 13.0f * s, ui4::kWhite, Align::kLeft, true);
     for (const auto& dl : wrap_lines(desc, desc_ts, dw, 5)) {
       out.text(dx, ty, dl, desc_ts);
-      ty += 19 * s;
+      ty += 20.0f * s;
     }
 
-    // Progress bar when known.
     if (!fe->unlocked && fe->progress) {
-      const float py = std::min(ty + 14 * s, dp_y1 - 126 * s);
+      const float py = std::min(ty + 18.0f * s, dp_y1 - 80.0f * s);
       char pb[48];
       std::snprintf(pb, sizeof pb, "PROGRESS   %u / %u  (%d%%)", fe->progress->current, fe->progress->target,
                     int(std::lround(fe->progress->fraction() * 100.0f)));
-      out.text(dx, py, pb, TextStyle{.size = 11.5f * s, .weight = 0.11f, .color = kAmber, .font = Font::kB});
-      out.rect(dx, py + 20 * s, dx + dw, py + 32 * s, rgba(255, 255, 255, 34), 5 * s);
-      out.rect(dx, py + 20 * s, dx + std::max(8 * s, dw * fe->progress->fraction()), py + 32 * s, kAmber, 5 * s, kPink);
+      out.text(dx, py, pb, ui4::style(Font::kE, 12.0f * s, ui4::kYellow));
+      out.rect(dx, py + 22.0f * s, dx + dw, py + 32.0f * s, rgba(255, 255, 255, 30));
+      out.rect(dx, py + 22.0f * s, dx + std::max(8.0f * s, dw * fe->progress->fraction()), py + 32.0f * s, ui4::kYellow,
+               0.0f, ui4::kPink);
     }
   }
 
-  // --- BOTTOM HELP BAR ---
-  const float hy0 = bottom - 32 * s;
-  out.rect(left, hy0, right, bottom, kGlass, 4 * s);
-  const std::string help = "ARROWS NAVIGATE   Q/E TAB   R SORT: " + std::string(achievement_sort_label(sort_)) +
-                           "   T TRACK ON HUD   ESC BACK";
-  out.text(left + 16 * s, hy0 + 9 * s, help,
-           TextStyle{.size = 10.5f * s, .weight = 0.11f, .tracking = 0.06f, .color = kWhite, .font = Font::kB});
+  // Authentic FH1 BUTTON_BAR_SCENE.
+  ui4::button_bar(out,
+                  {{"A", "TRACK ON HUD"},
+                   {"LB", "CATEGORY"},
+                   {"Y", "SORT: " + std::string(achievement_sort_label(sort_))},
+                   {"B", "BACK"}},
+                  w, h, 56.0f);
 }
 
 void AchievementsSystem::build_hud_overlays(ui::List& out, float w, float h, bool show_track_chip) const {
   const float s = h / 720.0f;
-  const uint32_t kPink = rgba(0xF5, 0x04, 0x5C);
-  const uint32_t kAmber = rgba(255, 190, 48);
-  const uint32_t kWhite = rgba(246, 248, 252);
-  const uint32_t kDim = rgba(174, 182, 196);
-  const uint32_t kGlass = rgba(10, 12, 18, 214);
-  const uint32_t kGlassHi = rgba(24, 28, 38, 232);
 
-  // 1. Tracked Achievement HUD chip (top-left of safe area in free roam).
+  // 1. Tracked Achievement HUD chip (sharp gritty FH1 panel).
   if (show_track_chip && !screen_open_ && tracked_id_ != 0) {
     if (const auto* tr = find(tracked_id_); tr && !tr->unlocked) {
-      const float cx0 = 36 * s, cy0 = 32 * s;
-      const float cw = 290 * s, ch = 58 * s;
-      out.shadow(cx0, cy0 + 3 * s, cx0 + cw, cy0 + ch + 3 * s, rgba(0, 0, 0, 120), 6 * s, 10 * s);
-      out.rect(cx0, cy0, cx0 + cw, cy0 + ch, kGlass, 6 * s, kGlassHi);
-      out.rect(cx0, cy0, cx0 + 4 * s, cy0 + ch, kAmber, 2 * s);
-      std::array<float, 4> iuv;
+      const float cx0 = 56.0f * s, cy0 = 32.0f * s;
+      const float cw = 296.0f * s, ch = 58.0f * s;
+      ui4::panel(out, cx0, cy0, cx0 + cw, cy0 + ch, s, ui4::kCharcoalDark, ui4::kYellow, 0, true);
+      std::array<float, 4> iuv{};
       if (ensure_icon_uv(tr->image_id, false, iuv)) {
-        out.image(cx0 + 10 * s, cy0 + 8 * s, cx0 + 52 * s, cy0 + 50 * s, iuv, kWhite, 4 * s);
+        out.image(cx0 + 10.0f * s, cy0 + 8.0f * s, cx0 + 52.0f * s, cy0 + 50.0f * s, iuv, ui4::kWhite);
       } else {
-        out.rect(cx0 + 10 * s, cy0 + 8 * s, cx0 + 52 * s, cy0 + 50 * s, rgba(255, 190, 48, 45), 4 * s);
+        out.rect(cx0 + 10.0f * s, cy0 + 8.0f * s, cx0 + 52.0f * s, cy0 + 50.0f * s, rgba(255, 190, 48, 45));
       }
-      out.text(cx0 + 60 * s, cy0 + 8 * s, "TRACKED ACHIEVEMENT",
-               TextStyle{.size = 8.5f * s, .weight = 0.12f, .tracking = 0.14f, .color = kAmber, .font = Font::kE});
+      out.text(cx0 + 60.0f * s, cy0 + 8.0f * s, "TRACKED ACHIEVEMENT", ui4::style(Font::kE, 9.0f * s, ui4::kYellow));
       std::string nm = tr->name.size() > 22 ? (tr->name.substr(0, 21) + "..") : tr->name;
-      out.text(cx0 + 60 * s, cy0 + 21 * s, nm,
-               TextStyle{.size = 11 * s, .weight = 0.11f, .color = kWhite, .font = Font::kB});
+      out.text(cx0 + 60.0f * s, cy0 + 21.0f * s, nm, ui4::style(Font::kB, 11.5f * s, ui4::kWhite));
       if (tr->progress) {
         char pb[24];
         std::snprintf(pb, sizeof pb, "%u / %u", tr->progress->current, tr->progress->target);
-        out.text(cx0 + cw - 12 * s, cy0 + 21 * s, pb,
-                 TextStyle{.size = 10.5f * s, .weight = 0.11f, .color = kAmber, .align = Align::kRight, .font = Font::kB});
-        const float px0 = cx0 + 60 * s, px1 = cx0 + cw - 12 * s, py0 = cy0 + 41 * s;
-        out.rect(px0, py0, px1, py0 + 6 * s, rgba(255, 255, 255, 34), 3 * s);
-        out.rect(px0, py0, px0 + (px1 - px0) * tr->progress->fraction(), py0 + 6 * s, kAmber, 3 * s);
+        out.text(cx0 + cw - 12.0f * s, cy0 + 21.0f * s, pb, ui4::style(Font::kE, 10.5f * s, ui4::kYellow, Align::kRight));
+        const float px0 = cx0 + 60.0f * s, px1 = cx0 + cw - 12.0f * s, py0 = cy0 + 41.0f * s;
+        out.rect(px0, py0, px1, py0 + 5.0f * s, rgba(255, 255, 255, 30));
+        out.rect(px0, py0, px0 + (px1 - px0) * tr->progress->fraction(), py0 + 5.0f * s, ui4::kYellow);
       }
     }
   }
 
-  // 2. Animated Achievement Unlock Toast (slides down from top centre).
+  // 2. Animated Achievement Unlock Toast (sharp gritty FH1 toast + pink/gold accent).
   if (!toasts_.empty()) {
     const auto& toast = toasts_.front();
     const float in_t = ease_out3(float(toast.elapsed / 0.18));
@@ -1050,35 +979,33 @@ void AchievementsSystem::build_hud_overlays(ui::List& out, float w, float h, boo
     const float slide = in_t * (1.0f - out_t);
     const float tw = (screen_open_ ? 506.0f : (toast.large_gold ? 520.0f : 480.0f)) * s;
     const float th = (toast.large_gold ? 90.0f : 82.0f) * s;
-    const float x0 = screen_open_ ? (w - 72.0f * s - tw - 18 * s) : (0.5f * (w - tw));
+    const float x0 = screen_open_ ? (w - 56.0f * s - tw - 16.0f * s) : (0.5f * (w - tw));
     const float y0 = screen_open_
-                         ? ((h - 102.0f * s - th) + (1.0f - slide) * 44.0f * s)
-                         : ((-th - 16 * s) + (th + 46 * s) * slide);
-    const uint32_t accent = toast.large_gold ? kAmber : kPink;
+                         ? ((h - 96.0f * s - th) + (1.0f - slide) * 44.0f * s)
+                         : ((-th - 16.0f * s) + (th + 46.0f * s) * slide);
+    const uint32_t accent = toast.large_gold ? ui4::kYellow : ui4::kPink;
 
-    out.shadow(x0, y0 + 4 * s, x0 + tw, y0 + th + 4 * s, rgba(0, 0, 0, 160), 8 * s, 16 * s);
-    out.rect(x0, y0, x0 + tw, y0 + th, kGlass, 8 * s, kGlassHi);
-    out.rect(x0, y0, x0 + 6 * s, y0 + th, accent, 3 * s);
-    out.frame(x0, y0, x0 + tw, y0 + th, ui::fade(accent, 0.8), 1.8f * s, 8 * s);
+    ui4::panel(out, x0, y0, x0 + tw, y0 + th, s, ui4::kCharcoalDark, accent, 0, true);
+    out.frame(x0, y0, x0 + tw, y0 + th, ui::fade(accent, 0.85f), 1.8f * s);
 
-    // Sheen sweep across toast during first 1.2 s.
     if (toast.elapsed > 0.20 && toast.elapsed < 1.25) {
       const float st = float((toast.elapsed - 0.20) / 1.05);
       const float sx = x0 + tw * st;
-      out.rect(std::max(x0, sx - 36 * s), y0 + 2 * s, std::min(x0 + tw, sx + 36 * s), y0 + th - 2 * s,
-               rgba(255, 255, 255, 42), 6 * s);
+      out.rect(std::max(x0, sx - 36.0f * s), y0 + 2.0f * s, std::min(x0 + tw, sx + 36.0f * s), y0 + th - 2.0f * s,
+               rgba(255, 255, 255, 42));
     }
 
-    // Popping icon (brief overshoot scale).
     const float pop = toast.elapsed < 0.28 ? (0.85f + 0.22f * std::sin(float(toast.elapsed / 0.28) * 3.14159f)) : 1.0f;
     const float isz = 58.0f * s * pop;
-    const float icx = x0 + 48 * s, icy = y0 + 0.5f * th;
-    std::array<float, 4> iuv;
+    const float icx = x0 + 48.0f * s, icy = y0 + 0.5f * th;
+    std::array<float, 4> iuv{};
     if (ensure_icon_uv(toast.image_id, false, iuv)) {
-      out.image(icx - 0.5f * isz, icy - 0.5f * isz, icx + 0.5f * isz, icy + 0.5f * isz, iuv, kWhite, 6 * s);
+      out.image(icx - 0.5f * isz, icy - 0.5f * isz, icx + 0.5f * isz, icy + 0.5f * isz, iuv, ui4::kWhite);
     } else {
-      out.rect(icx - 0.5f * isz, icy - 0.5f * isz, icx + 0.5f * isz, icy + 0.5f * isz, ui::fade(accent, 0.35), 6 * s);
+      out.rect(icx - 0.5f * isz, icy - 0.5f * isz, icx + 0.5f * isz, icy + 0.5f * isz, ui::fade(accent, 0.35f));
     }
+    const uint32_t kWhite = ui4::kWhite;
+    const uint32_t kDim = ui4::kDim;
 
     // Text + counting-up gamerscore.
     const float tx = x0 + 92 * s;

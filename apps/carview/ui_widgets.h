@@ -10,9 +10,12 @@
 
 #include "fh1data/ui_scene.h"
 #include "hud_scene.h"
+#include "garage/garage.h"
 #include "ui.h"
 
 namespace carview {
+class EventsPage;
+class SettingsPage;
 
 // ------------------------------------------------ GPU Vector-Font Radio Popup
 
@@ -97,6 +100,14 @@ struct StreetRaceHubUi4State {
 
 // Draws H_STREET_RACE_HUB authentic UI4 scene overlay.
 void draw_street_race_hub_ui4(ui::List& l, const StreetRaceHubUi4State& st, float screen_w, float screen_h);
+
+// Draws authentic FH1 Race Central / Events browser (tab strip + event list + detail card).
+void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPage& page,
+                     const std::vector<garage::ClassBand>& bands);
+
+// Draws authentic FH1/Pinyon Shift tabbed Options & live F6 Settings overlay.
+void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const SettingsPage& page,
+                       bool live_overlay = false);
 
 // ------------------------------------------------ Animated Loading Screen
 

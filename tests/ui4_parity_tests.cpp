@@ -555,6 +555,198 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
       check(lv.items().size() > 20, "LiveryEditor Vinyl Layers tab emits FH1 stack instances");
     }
   }
+
+  // ---------------- GROUP 3 SCREENSHOTS ----------------
+
+  // 9. ui4_prerace_postrace.png — Authentic FH1 Post-Race Cash Reward (H_POST_RACE_CREDITS_BREAKDOWN) + Pre-Race checks
+  {
+    carview::RaceHud rh;
+    rh.phase = carview::RaceHud::kFinished;
+    rh.results_page = 1;  // Cash Reward breakdown
+    rh.event = "RED ROCK DESCENT";
+    rh.event_type = "FESTIVAL RACE";
+    rh.place = 1;
+    rh.cars = 8;
+    rh.clock = 152.0;
+    rh.finish_time = 148.0;
+    rh.base_credits = 8500;
+    rh.mileage_bonus = 950;
+    rh.difficulty_pct = 55;
+    rh.difficulty_bonus = 2550;
+    rh.assists_pct = 25;
+    rh.assists_bonus = 2125;
+    rh.skills_bonus = 1850;
+    rh.driver_xp = 3400;
+    rh.affinity_xp = 1200;
+    rh.credits = 15975;
+    rh.balance = 264475;
+
+    carview::DriveHud d;
+    d.driving = true;
+    d.race = &rh;
+
+    carview::ui::List l;
+    carview::build_drive_hud(l, d, float(W), float(H));
+    save_frame("ui4_prerace_postrace.png", l, load_or_build_backdrop(world_bg_path));
+
+    // Also verify Pre-Race Grid Menu, Race Results Table, Points Earned, and Prize Car Won emit full UI4 chrome.
+    rh.phase = carview::RaceHud::kCountdown;
+    rh.grid_menu_open = true;
+    rh.grid_menu = {"START RACE", "DIFFICULTY", "QUIT RACE"};
+    rh.grid_car_info = "2002 Nissan Skyline GT-R V-spec II  •  B 461";
+    carview::ui::List lpre;
+    carview::build_drive_hud(lpre, d, float(W), float(H));
+    check(lpre.items().size() > 15, "Pre-Race Grid Menu emits FH1 UI4 chrome");
+
+    rh.phase = carview::RaceHud::kFinished;
+    rh.results_page = 3;
+    rh.won_car_name = "2012 Dodge SRT Viper GTS";
+    carview::ui::List lwon;
+    carview::build_drive_hud(lwon, d, float(W), float(H));
+    check(lwon.items().size() > 10, "Prize Car Won emits FH1 UI4 chrome");
+  }
+
+  // 10. ui4_career_events.png — Authentic FH1 My Profile / Career Board + Events & Street Race Hub checks
+  {
+    carview::CareerBoard cb;
+    cb.band_name = "GREEN WRISTBAND";
+    cb.band_next = "BLUE WRISTBAND";
+    cb.band_lo = 12500;
+    cb.band_hi = 35000;
+    cb.points = 26400;
+    cb.credits = 264475;
+    cb.races = 28;
+    cb.wins = 21;
+    cb.podiums = 26;
+    cb.winnings = 842500;
+    cb.driver_level = 14;
+    cb.popularity_rank = 64;
+    cb.garage = 18;
+    cb.roads = 189;
+    cb.roads_total = 216;
+    cb.outposts = 7;
+    cb.outposts_total = 8;
+    cb.pr_stunts = 16;
+    cb.pr_stunts_total = 24;
+    cb.speed_traps = 19;
+    cb.speed_traps_total = 24;
+    cb.speed_zones = 6;
+    cb.speed_zones_total = 10;
+    cb.signs = 74;
+    cb.signs_total = 100;
+    cb.barns = 6;
+    cb.barns_total = 9;
+    cb.club_done = 42;
+    cb.club_total = 1145;
+    cb.packs_owned = 4;
+    cb.packs_total = 7;
+
+    carview::DriveHud d;
+    d.driving = false;
+    d.menu_title = "MY PROFILE";
+    d.menu = {"CAREER OVERVIEW", "DRIVER STATS", "HORIZON PROMO", "1000 CLUB", "BACK"};
+    d.menu_selected = 0;
+    d.career = &cb;
+
+    carview::ui::List l;
+    carview::build_drive_hud(l, d, float(W), float(H));
+    save_frame("ui4_career_events.png", l, load_or_build_backdrop(world_bg_path));
+
+    // Also verify Street Race Hub UI4 chrome emits cleanly.
+    carview::StreetRaceHubUi4State srh;
+    srh.hub_name = "RED ROCK OUTPOST HUB";
+    srh.hub_subtitle = "COLORADO UNDERGROUND";
+    srh.races = {
+        {"RED ROCK CANYON SPRINT", "15,000 CR", "B", true},
+        {"MIDNIGHT MESA RUN", "22,500 CR", "A", false},
+        {"DESERT RIDGE SHOWDOWN", "35,000 CR", "S", false},
+    };
+    srh.selected = 1;
+    srh.help_bar = {{"A", "START RACE"}, {"B", "BACK"}};
+    carview::ui::List lsrh;
+    carview::draw_street_race_hub_ui4(lsrh, srh, float(W), float(H));
+    check(lsrh.items().size() > 25, "Street Race Hub UI4 emits gritty FH1 cards");
+    save_frame("ui4_events_preview.png", lsrh, load_or_build_backdrop(world_bg_path));
+  }
+
+  // 11. ui4_achievements_settings.png — Authentic FH1/Pinyon Shift F7 Achievements + Tabbed Settings & Photo/Replay
+  {
+    fh1::SpaDatabase spa;
+    fh1::load_spa_packages(game_root, {}, spa, "EN");
+    if (spa.empty()) {
+      // Seed clean English labels when loose spa.bin is not unpacked in game_root.
+      static const struct {
+        uint16_t id;
+        uint16_t gs;
+        const char* name;
+        const char* desc;
+      } kSeedAch[] = {
+          {155, 10, "Welcome to Horizon", "Arrive at the Horizon Festival in Colorado."},
+          {156, 15, "First Win", "Win your first Horizon Festival race event."},
+          {157, 20, "Yellow Wristband", "Earn the Yellow Wristband at Race Central."},
+          {158, 25, "Green Wristband", "Earn the Green Wristband and unlock new Colorado events."},
+          {159, 30, "Blue Wristband", "Earn the Blue Wristband by dominating Festival races."},
+          {164, 25, "Road Trip", "Drive down every road across Colorado."},
+          {191, 25, "Skill Legend", "Bank a 50,000 point Skill Chain in Free Roam."},
+          {194, 30, "Vendetta", "Smash all 100 Horizon Upgrade Discount Signs."},
+      };
+      for (const auto& sa : kSeedAch) {
+        fh1::SpaAchievement a;
+        a.id = sa.id;
+        a.gamerscore = sa.gs;
+        a.label = sa.name;
+        a.description = sa.desc;
+        a.unachieved_description = sa.desc;
+        spa.achievements.push_back(std::move(a));
+      }
+    }
+    carview::AchievementsSystem ach;
+    ach.init(spa);
+    carview::AchievementGameplayState st;
+    st.career_started = true;
+    st.wristbands_earned = 3;
+    st.num_races = 24;
+    st.num_victories = 18;
+    st.num_podiums = 22;
+    st.festival_races_won = 14;
+    st.street_races_won = 4;
+    st.roads_discovered = 192;
+    st.discount_signs_found = 86;
+    st.barns_found = 7;
+    st.outposts_discovered = 7;
+    st.pr_stunts_completed = 14;
+    st.garage_cars = 16;
+    st.promo_cars_spotted = 35;
+    st.driver_level = 14;
+    st.popularity_points = 120000.0;
+    st.total_winnings = 850000;
+    st.max_skills_score = 45000;
+    ach.evaluate(st, false);
+    ach.open_screen();
+    ach.update(1.0);  // finish intro animation so progress & gamerscore render at 100%
+
+    carview::ui::List l;
+    ach.build_screen_hud(l, float(W), float(H));
+    save_frame("ui4_achievements_settings.png", l, load_or_build_backdrop(world_bg_path));
+
+    // Also verify Tabbed FH1/Pinyon Settings overlay, Photo Mode HUD, and Replay Viewer HUD!
+    carview::SettingsPage sp;
+    sp.load({});
+    sp.open();
+    sp.switch_tab(2);  // GAMEPLAY tab
+    sp.move(1);
+    carview::ui::List lsp;
+    carview::draw_settings_ui4(lsp, float(W), float(H), sp, true);
+    check(lsp.items().size() > 30, "Tabbed Settings UI4 emits FH1 tabs & rows");
+    save_frame("ui4_settings_preview.png", lsp, load_or_build_backdrop(world_bg_path));
+
+    carview::PhotoModeController pm;
+    pm.enter({0, 1, 0}, 0.0, carview::PhotoLimits{});
+    carview::ui::List lpm;
+    pm.build_hud(lpm, float(W), float(H));
+    check(lpm.items().size() > 30, "Photo Mode HUD emits FH1 UI4 chrome");
+    save_frame("ui4_photo_preview.png", lpm, load_or_build_backdrop(world_bg_path));
+  }
 }
 
 }  // namespace
