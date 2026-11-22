@@ -271,6 +271,24 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
           "resolve 'b_swiss_721_medium medium'");
   }
 
+  // 3c. Verify media/ui/LoadingDefs.xml parses authentic FH1 loading tips & image groups!
+  {
+    const auto ldefs_path = game_root / "media/ui/LoadingDefs.xml";
+    if (std::filesystem::is_regular_file(ldefs_path, ec)) {
+      std::ifstream f(ldefs_path, std::ios::binary);
+      const std::string xml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      std::vector<fh1::UiLoadingTip> tips;
+      check(fh1::parse_loading_defs_xml(xml, tips) && tips.size() >= 10,
+            "LoadingDefs.xml parsed >= 10 loading tip definitions");
+      bool has_group = false, has_title = false;
+      for (const auto& t : tips) {
+        if (!t.group.empty()) has_group = true;
+        if (!t.title_key.empty()) has_title = true;
+      }
+      check(has_group && has_title, "LoadingDefs.xml tips carry group and title_key");
+    }
+  }
+
   // 4. Optional headless verification screenshots (1280x720) when SHIFT_SLICE9_SCREENSHOT_DIR is set.
   if (screenshot_dir.empty()) return;
   std::filesystem::create_directories(screenshot_dir, ec);

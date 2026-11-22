@@ -7,23 +7,83 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
+
+#include <fh1data/archive.h>
+#include <fh1data/xds.h>
 
 #include "launcher_core.h"
 #include "launcher_ui.h"
 #include "renderer.h"
 #include "ui.h"
+#include "ui4_chrome.h"
 
 namespace {
+
+bool load_launcher_fh1_assets(const std::filesystem::path& game_root) {
+  if (game_root.empty()) return false;
+  std::error_code ec;
+  const std::filesystem::path fonts_zip = game_root / "media" / "ui" / "Fonts.zip";
+  if (!std::filesystem::is_regular_file(fonts_zip, ec)) return false;
+  std::string why;
+  auto zip = fh1::Archive::open(fonts_zip, &why);
+  if (!zip) return false;
+  const bool loaded = carview::ui::load_fonts_from_zip(*zip);
+  carview::ui4::set_texture_loader([root = game_root](const std::string& path, std::array<float, 4>& uv) {
+    if (carview::ui::atlas_find(path, uv)) return true;
+    static std::unique_ptr<fh1::Archive> horizon_zip;
+    static std::unique_ptr<fh1::Archive> tex_zip;
+    static std::set<std::string> failed;
+    static bool opened = false;
+    if (failed.count(path)) return false;
+    if (!opened) {
+      opened = true;
+      std::string e;
+      horizon_zip = fh1::Archive::open(root / "media" / "ui" / "textures" / "Horizon.zip", &e);
+      tex_zip = fh1::Archive::open(root / "media" / "ui" / "Textures.zip", &e);
+    }
+    const bool t = path.rfind("T:", 0) == 0;
+    fh1::Archive* a = t ? tex_zip.get() : horizon_zip.get();
+    fh1::ReadResult r = a ? a->read((t ? path.substr(2) : path) + ".xds") : fh1::ReadResult{};
+    const fh1::XdsResult x = a && r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+    if (x.levels.empty() ||
+        !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
+      failed.insert(path);
+      return false;
+    }
+    return true;
+  });
+  return loaded;
+}
+
+void upload_launcher_ui_atlas(carview::Renderer& renderer, bool full) {
+  const auto& a = carview::ui::atlas_pixels();
+  if (full) {
+    carview::ui::atlas_take_dirty();
+    renderer.ui_atlas_put(0, 0, carview::ui::kAtlasSize, carview::ui::kAtlasSize, a);
+    return;
+  }
+  std::vector<uint8_t> rows;
+  for (const auto& [x, y, w, h] : carview::ui::atlas_take_dirty()) {
+    rows.resize(size_t(w) * h * 4);
+    for (uint32_t r = 0; r < h; ++r) {
+      std::memcpy(&rows[size_t(r) * w * 4], &a[(size_t(y + r) * carview::ui::kAtlasSize + x) * 4], size_t(w) * 4);
+    }
+    renderer.ui_atlas_put(x, y, w, h, rows);
+  }
+}
 
 void print_usage() {
   std::printf(
       "shift-launcher: Unified Cross-Platform GUI Launcher for Shift Engine\n"
-      "  shift-launcher [--portable] [--tab play|setup|dlc|mods|radio|wheel|update|android]\n"
-      "  shift-launcher --screenshot <out.png> [--tab <name>] [--width 1280] [--height 720] [--demo]\n");
+      "  shift-launcher [--portable] [--game <dir>] [--tab play|setup|dlc|mods|radio|wheel|update|android]\n"
+      "  shift-launcher --screenshot <out.png> [--game <dir>] [--tab <name>] [--width 1280] [--height 720] [--demo]\n");
 }
 
 void refresh_all(launcher::LauncherUiState& st) {
@@ -72,6 +132,7 @@ int main(int argc, char** argv) {
   bool force_portable = false;
   bool demo_mode = false;
   std::filesystem::path screenshot_out;
+  std::filesystem::path game_root_override;
   launcher::LauncherTab start_tab = launcher::LauncherTab::kPlay;
   uint32_t width = 1280;
   uint32_t height = 720;
@@ -85,6 +146,8 @@ int main(int argc, char** argv) {
       force_portable = true;
     } else if (a == "--demo") {
       demo_mode = true;
+    } else if (a == "--game" && i + 1 < argc) {
+      game_root_override = argv[++i];
     } else if (a == "--screenshot" && i + 1 < argc) {
       screenshot_out = argv[++i];
     } else if (a == "--tab" && i + 1 < argc) {
@@ -109,6 +172,20 @@ int main(int argc, char** argv) {
   state.hw_rec = launcher::recommend_preset(state.hw_info);
   refresh_all(state);
   if (demo_mode) launcher::populate_demo_state(state);
+
+  // Load real FH1 vector fonts & distressed UI textures whenever the game root is available.
+  {
+    std::vector<std::filesystem::path> candidates;
+    if (!game_root_override.empty()) candidates.push_back(game_root_override);
+    if (!state.play_cfg.game_root.empty()) candidates.push_back(state.play_cfg.game_root);
+    if (!state.disc_path_input.empty()) candidates.push_back(state.disc_path_input);
+    if (const char* env_root = std::getenv("SHIFT_GAME_ROOT"); env_root && *env_root) {
+      candidates.emplace_back(env_root);
+    }
+    for (const auto& root : candidates) {
+      if (load_launcher_fh1_assets(root)) break;
+    }
+  }
 
   // Headless verification screenshot mode (no window or display server needed).
   if (!screenshot_out.empty()) {
@@ -421,6 +498,9 @@ int main(int argc, char** argv) {
     int win_w = int(width), win_h = int(height);
     SDL_GetWindowSize(window, &win_w, &win_h);
     launcher::build_launcher_ui(ui_list, state, float(win_w), float(win_h), hitboxes);
+    static bool atlas_synced = false;
+    upload_launcher_ui_atlas(renderer, !atlas_synced);
+    atlas_synced = true;
     renderer.set_ui(ui_list.items());
     std::string ferr;
     if (!renderer.draw_frame(carview::FrameConstants{}, ferr)) break;

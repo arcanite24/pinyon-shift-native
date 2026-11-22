@@ -4,6 +4,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 #include "events_page.h"
 #include "game_hud.h"
@@ -533,7 +535,72 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
                   screen_w, screen_h, 56.0f);
 }
 
-// ------------------------------------------------ Animated Loading Screen
+// ------------------------------------------------ Animated Loading Screen (2_C_INI_LOADING)
+
+namespace {
+std::string resolve_loading_key(std::string_view key) {
+  if (key.empty()) return {};
+  // Format in LoadingDefs.xml: "Tips:IDS_PopularityTitle"
+  const size_t colon = key.find(':');
+  const std::string_view tbl = colon != std::string_view::npos ? key.substr(0, colon) : std::string_view("Tips");
+  const std::string_view id = colon != std::string_view::npos ? key.substr(colon + 1) : key;
+  // Try direct lookup via game_text("Tips/IDS_...") if bound, else format readable title from IDS_ name.
+  const std::string probe = std::string(tbl) + "/" + std::string(id);
+  const std::string resolved = game_text(probe);
+  if (!resolved.empty() && resolved != probe) return resolved;
+  // Clean human-readable fallback from "IDS_SpeedTrapTitle" -> "SPEED TRAP"
+  std::string s(id);
+  if (s.rfind("IDS_", 0) == 0) s = s.substr(4);
+  for (const char* suf : {"Title", "Tips", "Tip", "Desc"}) {
+    const size_t slen = std::strlen(suf);
+    if (s.size() > slen && s.compare(s.size() - slen, slen, suf) == 0) {
+      s.resize(s.size() - slen);
+      break;
+    }
+  }
+  std::string out;
+  for (size_t i = 0; i < s.size(); ++i) {
+    char c = s[i];
+    if (c == '_') {
+      if (!out.empty() && out.back() != ' ') out.push_back(' ');
+      continue;
+    }
+    if (i > 0 && std::isupper(static_cast<unsigned char>(c)) && std::islower(static_cast<unsigned char>(s[i - 1]))) {
+      out.push_back(' ');
+    }
+    out.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+  }
+  return out;
+}
+
+std::vector<std::string> wrap_tip_lines(std::string_view text, const ui::TextStyle& ts, float max_w, int max_lines = 6) {
+  std::vector<std::string> lines;
+  std::string cur;
+  size_t pos = 0;
+  while (pos < text.size() && int(lines.size()) < max_lines) {
+    while (pos < text.size() && text[pos] == ' ') ++pos;
+    if (pos >= text.size()) break;
+    if (text[pos] == '\n') {
+      if (!cur.empty()) lines.push_back(cur), cur.clear();
+      ++pos;
+      continue;
+    }
+    size_t end = pos;
+    while (end < text.size() && text[end] != ' ' && text[end] != '\n') ++end;
+    const std::string word(text.substr(pos, end - pos));
+    pos = end;
+    const std::string cand = cur.empty() ? word : (cur + " " + word);
+    if (!cur.empty() && ui::List::measure(cand, ts) > max_w) {
+      lines.push_back(cur);
+      cur = word;
+    } else {
+      cur = cand;
+    }
+  }
+  if (!cur.empty() && int(lines.size()) < max_lines) lines.push_back(cur);
+  return lines;
+}
+}  // namespace
 
 void LoadingScreen::start(std::string destination_title, std::string subtitle) {
   active_ = true;
@@ -543,6 +610,7 @@ void LoadingScreen::start(std::string destination_title, std::string subtitle) {
   tip_timer_ = 0.0;
   progress_ = 0.0f;
   if (tips_.empty()) {
+    tip_titles_ = {"POPULARITY & SKILLS", "DISCOUNT SIGNS", "FESTIVAL RADIO", "DRIVING ASSISTS"};
     tips_ = {
         "Chain together drifts, near misses, and drafting to build your Skill Multiplier.",
         "Smash all 100 Horizon Discount Signs across Colorado for free upgrades at the Horizon Garage.",
@@ -552,9 +620,47 @@ void LoadingScreen::start(std::string destination_title, std::string subtitle) {
   }
 }
 
+bool LoadingScreen::load_definitions(const std::filesystem::path& game_root, const std::string& group) {
+  std::ifstream f(game_root / "media" / "ui" / "LoadingDefs.xml", std::ios::binary);
+  if (!f) return false;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  std::vector<fh1::UiLoadingTip> parsed;
+  if (!fh1::parse_loading_defs_xml(ss.str(), parsed)) return false;
+
+  std::string want = group;
+  for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));
+  group_ = want.empty() ? "freeroam" : want;
+
+  std::vector<std::string> new_titles;
+  std::vector<std::string> new_msgs;
+  for (const auto& t : parsed) {
+    if (t.group != group_) continue;
+    const std::string ttl = resolve_loading_key(t.title_key);
+    const std::string msg = resolve_loading_key(t.message_key);
+    if (!msg.empty() || !ttl.empty()) {
+      new_titles.push_back(ttl.empty() ? "FESTIVAL TIP" : ttl);
+      new_msgs.push_back(msg.empty() ? ttl : msg);
+    }
+  }
+  if (new_msgs.empty()) {
+    for (const auto& t : parsed) {
+      new_titles.push_back(resolve_loading_key(t.title_key));
+      new_msgs.push_back(resolve_loading_key(t.message_key));
+      if (new_msgs.size() >= 12) break;
+    }
+  }
+  if (new_msgs.empty()) return false;
+  tip_titles_ = std::move(new_titles);
+  tips_ = std::move(new_msgs);
+  tip_idx_ = 0;
+  return true;
+}
+
 void LoadingScreen::set_tips(std::vector<std::string> tips) {
   if (!tips.empty()) {
     tips_ = std::move(tips);
+    tip_titles_.assign(tips_.size(), "FESTIVAL TIP");
     tip_idx_ = 0;
   }
 }
@@ -578,53 +684,146 @@ const std::string& LoadingScreen::current_tip() const {
   return tips_[size_t(tip_idx_ % int(tips_.size()))];
 }
 
+const std::string& LoadingScreen::current_tip_title() const {
+  static const std::string kDef = "FESTIVAL TIP";
+  if (tip_titles_.empty()) return kDef;
+  return tip_titles_[size_t(tip_idx_ % int(tip_titles_.size()))];
+}
+
 void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
   if (!active_) return;
   const float s = screen_h / 720.0f;
-  (void)ui_scene("2_C_INI_LOADING");
+  const SceneFrame f{0.5f * screen_w - 640.0f * s, 0.5f * screen_h - 360.0f * s, s};
+  const fh1::UiScene* sc_ptr = ui_scene("2_C_INI_LOADING");
+  SceneDraw sc(sc_ptr, true);
 
-  // Deep Horizon night-to-sunset loading backdrop.
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(14, 16, 24, 255), 0.0f, ui::rgba(36, 14, 34, 255));
-  // Subtle diagonal pink accent bar.
-  l.rect(0, screen_h - 170.0f * s, screen_w, screen_h, ui::rgba(8, 10, 14, 235));
-  l.rect(0, screen_h - 172.0f * s, screen_w, screen_h - 168.0f * s, kPink);
-
-  // Destination title & subtitle.
-  draw_brush_strip(l, 70.0f * s, 90.0f * s, 720.0f * s, 164.0f * s, kPink);
-  ui::TextStyle tt{.size = 42.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-  l.text(98.0f * s, 106.0f * s, title_.empty() ? "HORIZON COLORADO" : title_, tt);
-  if (!subtitle_.empty()) {
-    draw_brush_strip(l, 70.0f * s, 174.0f * s, 540.0f * s, 214.0f * s, kBlack);
-    ui::TextStyle st{.size = 18.0f * s, .color = kDim, .font = ui::Font::kB, .keep_case = true};
-    l.text(98.0f * s, 185.0f * s, subtitle_, st);
+  // 1. Real full-screen LOADING/BGLOADINGIMAGES/ImageN backdrop (ZERO flat purple gradient!).
+  std::array<float, 4> bg_uv{};
+  const int img_num = 1 + ((std::max(0, bg_idx_ - 1) + tip_idx_) % 10);
+  const bool have_bg = ui_texture("LOADING/BGLOADINGIMAGES/IMAGE" + std::to_string(img_num), bg_uv) ||
+                       ui_texture("LOADING/BGLOADINGIMAGES/IMAGE1", bg_uv) ||
+                       ui_texture("LOADING/BGLOADINGIMAGES/CONTROLLERLOADINGBACKGROUND", bg_uv);
+  if (have_bg) {
+    l.image(0, 0, screen_w, screen_h, bg_uv, ui::rgba(255, 255, 255, 255));
+    // Subtle dark scrim along bottom & left for legible typography over bright daylight photos.
+    l.rect(0, 0, screen_w, screen_h, ui::rgba(8, 10, 14, 72), 0.0f, ui::rgba(8, 10, 14, 155));
+  } else {
+    l.rect(0, 0, screen_w, screen_h, ui4::kCharcoalDark);
+    std::array<float, 4> noise{};
+    if (ui_texture("DIRTMASKS/BGNOISE01", noise)) {
+      l.image(0, 0, screen_w, screen_h, noise, ui::rgba(255, 255, 255, 24));
+    }
   }
 
-  // Cycling tip in bottom panel (supports multi-line \n & {colour=...} tags!).
-  ui::TextStyle tip_hdr{.size = 13.0f * s, .color = kPink, .font = ui::Font::kE};
-  l.text(72.0f * s, screen_h - 150.0f * s, "FESTIVAL TIP", tip_hdr);
-  ui::TextStyle tip_ts{.size = 17.0f * s, .color = kWhite, .font = ui::Font::kA, .keep_case = true};
-  l.text(72.0f * s, screen_h - 124.0f * s, current_tip(), tip_ts);
+  // Optional real LOADING/TIPIMAGES/<group> inset card on the right.
+  std::array<float, 4> tip_img_uv{};
+  std::string group_up = group_;
+  for (char& c : group_up) c = char(std::toupper(static_cast<unsigned char>(c)));
+  if (ui_texture("LOADING/TIPIMAGES/" + group_up, tip_img_uv) || ui_texture("LOADING/TIPIMAGES/FREEROAM", tip_img_uv)) {
+    ui4::TiltScope tip_tilt(l, f.x(980.0f), f.y(330.0f), ui4::kTiltRad);
+    l.rect(f.x(816.0f), f.y(226.0f), f.x(1152.0f), f.y(424.0f), ui::rgba(0, 0, 0, 160));
+    l.image(f.x(822.0f), f.y(232.0f), f.x(1146.0f), f.y(418.0f), tip_img_uv);
+  }
 
-  // Progress bar.
-  const float bx0 = 72.0f * s, bx1 = screen_w - 220.0f * s, by = screen_h - 52.0f * s, bh = 8.0f * s;
-  l.rect(bx0, by, bx1, by + bh, ui::rgba(255, 255, 255, 42), 4.0f * s);
-  const float fill_w = std::max(bh, (bx1 - bx0) * std::clamp(progress_, 0.0f, 1.0f));
-  l.rect(bx0, by, bx0 + fill_w, by + bh, kPink, 4.0f * s);
+  // 2. Drive 2_C_INI_LOADING +3.0 deg tilted TitleText, large pink Title, TipLayout PILL_BIG lines, and LOADSPINNER.
+  const std::string tip_hdr = current_tip_title();
+  const std::string dest_title = title_.empty() ? "HORIZON COLORADO" : title_;
+  const std::string tip_body = current_tip();
 
-  char pct[16];
-  std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(progress_ * 100.0f)));
-  ui::TextStyle pct_ts{.size = 14.0f * s, .color = kDim, .align = ui::Align::kRight, .font = ui::Font::kB};
-  l.text(bx1, by - 22.0f * s, pct, pct_ts);
+  // Top-left eyebrow / tip heading on #0E0E0E tape (2_C_INI_LOADING TitleText @(137,154), E@36px).
+  {
+    ui4::TiltScope tilt(l, f.x(360.0f), f.y(165.0f), ui4::kTiltRad);
+    const float hx = f.x(110.0f), hy = f.y(132.0f);
+    ui::TextStyle hts = ui4::style(ui::Font::kE, 30.0f * s, ui4::kWhite);
+    ui4::fit_text(tip_hdr, hts, 560.0f * s, 16.0f * s);
+    const float hw = ui::List::measure(tip_hdr, hts);
+    ui4::brush(l, hx - 16.0f * s, hy - 8.0f * s, hx + std::max(260.0f * s, hw + 44.0f * s), hy + hts.size + 12.0f * s,
+               ui4::kBrushBlack, true);
+    l.text(hx + 10.0f * s, hy + 2.0f * s, tip_hdr, hts);
+  }
 
-  // Animated rotating Horizon loading spinner bottom-right.
-  const float sx = screen_w - 110.0f * s;
-  const float sy = screen_h - 84.0f * s;
-  const float r = 24.0f * s;
-  const float ang = float(std::fmod(elapsed_ * 4.5, 6.2831853));
-  l.arc(sx, sy, r, 4.0f * s, 0.0f, 6.2831853f, ui::rgba(255, 255, 255, 40));
-  l.arc(sx, sy, r, 4.5f * s, ang, ang + 1.85f, kPink);
-  ui::TextStyle lw{.size = 11.0f * s, .color = kDim, .align = ui::Align::kCenter, .font = ui::Font::kB};
-  l.text(sx, sy + r + 10.0f * s, "LOADING", lw);
+  // Tilted TipLayout@(190,280, rot=+3 deg): white PILL_BIG tip lines (A@16px, 26px pitch) — zero rounded boxes!
+  {
+    ui4::TiltScope tilt(l, f.x(410.0f), f.y(295.0f), ui4::kTiltRad);
+    ui::TextStyle line_ts = ui4::style(ui::Font::kA, 16.0f * s, ui4::kInk, ui::Align::kLeft, true);
+    const auto lines = wrap_tip_lines(tip_body, line_ts, 560.0f * s, 6);
+    std::array<float, 4> pill_big{};
+    const bool has_pbig = ui_texture("DIRTMASKS/PILL_BIG", pill_big);
+    float ly = f.y(210.0f);
+    for (const auto& ln : lines) {
+      const float lw = ui::List::measure(ln, line_ts);
+      const float px0 = f.x(122.0f), px1 = px0 + lw + 30.0f * s;
+      const float py0 = ly - 4.0f * s, py1 = ly + 22.0f * s;
+      if (has_pbig) {
+        const float full_w = 640.0f * s;
+        const float off = 1.0f - std::clamp((px1 - px0) / full_w, 0.05f, 1.0f);
+        l.image_masked(px0, py0, px0 + full_w, py1, pill_big, pill_big, ui4::kOffWhite, {1.0f, 1.0f, off, 0.0f},
+                       ui::kMaskBorderTransparent);
+      } else {
+        ui4::offwhite_strip(l, px0, py0, px1, py1, s, false);
+      }
+      l.text(px0 + 14.0f * s, ly + 1.0f * s, ln, line_ts);
+      ly += 27.0f * s;
+    }
+  }
+
+  // Lower-left large pink destination title (2_C_INI_LOADING E@54px @(105,519) on CRISPTAPEBIG01/SMUDGETAPEBIG01).
+  {
+    ui4::TiltScope tilt(l, f.x(380.0f), f.y(540.0f), ui4::kTiltRad);
+    const float tx = f.x(92.0f), ty = f.y(500.0f);
+    ui::TextStyle tts = ui4::style(ui::Font::kE, 48.0f * s, ui4::kWhite);
+    ui4::fit_text(dest_title, tts, 740.0f * s, 22.0f * s);
+    const float tw = ui::List::measure(dest_title, tts);
+    ui4::brush(l, tx - 28.0f * s, ty - 12.0f * s, tx + std::max(340.0f * s, tw + 56.0f * s), ty + tts.size + 16.0f * s,
+               ui4::kPink, true);
+    l.text(tx + 12.0f * s, ty + 2.0f * s, dest_title, tts);
+
+    if (!subtitle_.empty()) {
+      ui::TextStyle sts = ui4::style(ui::Font::kB, 17.0f * s, ui4::kWhite);
+      ui4::fit_text(subtitle_, sts, 580.0f * s, 11.0f * s);
+      const float sw = ui::List::measure(subtitle_, sts);
+      const float sy = ty + tts.size + 22.0f * s;
+      ui4::brush(l, tx - 10.0f * s, sy - 4.0f * s, tx + std::max(220.0f * s, sw + 38.0f * s), sy + sts.size + 10.0f * s,
+                 ui4::kBrushBlack, false);
+      l.text(tx + 12.0f * s, sy + 2.0f * s, subtitle_, sts);
+    }
+  }
+
+  // Sharp FH1 progress strip (STATBARFILL / BARBASE8PX — ZERO rounded progress bar!).
+  if (progress_ > 0.0f) {
+    const float bx0 = f.x(92.0f), bx1 = f.x(1070.0f), by = f.y(648.0f), bh = 8.0f * s;
+    std::array<float, 4> bar_empty{}, bar_fill{};
+    if (ui_texture("KITPARTS/BARS/BARBASE8PX", bar_empty)) {
+      l.image(bx0, by, bx1, by + bh, bar_empty, ui::rgba(255, 255, 255, 64));
+    } else {
+      l.rect(bx0, by, bx1, by + bh, ui::rgba(255, 255, 255, 40));
+    }
+    const float fw = std::max(4.0f * s, (bx1 - bx0) * std::clamp(progress_, 0.0f, 1.0f));
+    if (ui_texture("KITPARTS/BARS/BARBASE8PX", bar_fill)) {
+      l.image(bx0, by, bx0 + fw, by + bh, bar_fill, ui4::kPink);
+    } else {
+      l.rect(bx0, by, bx0 + fw, by + bh, ui4::kPink);
+    }
+    char pct[16];
+    std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(progress_ * 100.0f)));
+    ui::TextStyle pct_ts = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+    l.text(bx1, by - 20.0f * s, pct, pct_ts);
+  }
+
+  // Real rotating COMMON/LOADSPINNER.xds (or LOADING/LOADINGSPINNER50PX) sprite!
+  const float sp_cx = f.x(1152.0f);
+  const float sp_cy = f.y(646.0f);
+  const float ang = float(std::fmod(elapsed_ * 4.2, 6.2831853));
+  std::array<float, 4> sp_uv{};
+  if (ui_texture("COMMON/LOADSPINNER", sp_uv) || ui_texture("LOADING/LOADINGSPINNER50PX", sp_uv) ||
+      ui_texture("COMMON/SPINNER", sp_uv)) {
+    l.image_rotated(sp_cx, sp_cy, 24.0f * s, 24.0f * s, ang, sp_uv, ui4::kWhite);
+  } else if (sc.ok()) {
+    const int sp_node = sc.find("LOADSPINNER");
+    if (sp_node >= 0) sc.model(l, f, sp_node, 1.0f, 0.0f, 0.0f, 0.0f, 0u, {}, -ang);
+  }
+  ui::TextStyle lw = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
+  l.text(sp_cx, sp_cy + 28.0f * s, "LOADING", lw);
 }
 
 // ------------------------------------------------ Virtual On-Screen Keyboard
@@ -731,57 +930,92 @@ void OnScreenKeyboard::cancel() {
 void OnScreenKeyboard::draw(ui::List& l, float screen_w, float screen_h) const {
   if (!open_) return;
   const float s = screen_h / 720.0f;
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(6, 8, 14, 175));
+  // Subtle backdrop scrim (no flat rounded modal!).
+  l.rect(0, 0, screen_w, screen_h, ui::rgba(6, 8, 12, 165));
 
-  const float pw = 760.0f * s, ph = 430.0f * s;
-  const float px0 = 0.5f * (screen_w - pw), py0 = 0.5f * (screen_h - ph);
-  l.rect(px0, py0, px0 + pw, py0 + ph, ui::rgba(14, 16, 22, 242), 8.0f * s);
-  l.frame(px0, py0, px0 + pw, py0 + ph, kPink, 2.0f * s, 8.0f * s);
+  // Authentic H_MESSAGE_POPUP styling: +3.0 deg tilted #C6C6C6 PILL01 header +
+  // PILLCLIPON01 + #0E0E0E 2-tex PANEL01 body + sharp PILL02 keys with #F90064 focus!
+  const float pw = 760.0f * s, ph = 428.0f * s;
+  const float px0 = 0.5f * (screen_w - pw), py0 = 0.5f * (screen_h - ph) - 10.0f * s;
+  const float cx = px0 + 0.5f * pw, cy = py0 + 0.5f * ph;
 
-  // Title header.
-  ui::TextStyle tt{.size = 22.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-  l.text(px0 + 28.0f * s, py0 + 20.0f * s, title_.empty() ? "ENTER TEXT" : title_, tt);
+  {
+    ui4::TiltScope tilt(l, cx, cy, ui4::kTiltRad);
+    // Drop shadow behind tilted H_MESSAGE_POPUP body.
+    l.rect(px0 + 6.0f * s, py0 + 38.0f * s, px0 + pw + 6.0f * s, py0 + ph + 6.0f * s, ui::rgba(0, 0, 0, 125));
 
-  char lenbuf[32];
-  std::snprintf(lenbuf, sizeof lenbuf, "%zu / %d", text_.size(), max_len_);
-  ui::TextStyle lt{.size = 13.0f * s, .color = kDim, .align = ui::Align::kRight, .font = ui::Font::kB};
-  l.text(px0 + pw - 28.0f * s, py0 + 26.0f * s, lenbuf, lt);
+    // Body: #0E0E0E 2-tex PANEL01 (or sharp charcoal + BGNOISE01, zero rounded corners).
+    std::array<float, 4> panel01{}, noise{};
+    l.rect(px0, py0 + 34.0f * s, px0 + pw, py0 + ph, ui4::kCharcoalDark);
+    if (ui_texture("DIRTMASKS/PANEL01", panel01) && ui_texture("DIRTMASKS/BGNOISE01", noise)) {
+      l.image_masked(px0, py0 + 34.0f * s, px0 + pw, py0 + ph, noise, panel01, ui::rgba(255, 255, 255, 34),
+                     {2.0f, 2.0f, 0.0f, 0.0f}, ui::kMaskRepeat);
+    } else if (ui_texture("DIRTMASKS/BGNOISE01", noise)) {
+      l.image(px0, py0 + 34.0f * s, px0 + pw, py0 + ph, noise, ui::rgba(255, 255, 255, 22));
+    }
 
-  // Text input box with blinking caret.
-  const float ix0 = px0 + 28.0f * s, ix1 = px0 + pw - 28.0f * s, iy0 = py0 + 58.0f * s, iy1 = iy0 + 48.0f * s;
-  l.rect(ix0, iy0, ix1, iy1, ui::rgba(28, 32, 42, 255), 4.0f * s);
-  l.frame(ix0, iy0, ix1, iy1, ui::rgba(255, 255, 255, 60), 1.5f * s, 4.0f * s);
-  const bool caret_on = std::fmod(blink_t_, 1.0) < 0.55;
-  const std::string shown = text_ + (caret_on ? "_" : "");
-  ui::TextStyle it{.size = 22.0f * s, .color = kWhite, .font = ui::Font::kB, .keep_case = true};
-  l.text(ix0 + 16.0f * s, iy0 + 13.0f * s, shown, it);
+    // Header bar: #C6C6C6 PILL01 + PILLCLIPON01 (authentic H_MESSAGE_POPUP header).
+    const uint32_t kHeaderGrey = ui::rgba(0xC6, 0xC6, 0xC6, 255);
+    ui4::pill(l, px0, py0, px0 + pw, py0 + 34.0f * s, kHeaderGrey, ui4::PillKind::kMenu, false);
+    std::array<float, 4> clipon{};
+    if (ui_texture("DIRTMASKS/PILLCLIPON01", clipon)) {
+      l.image(px0 - 6.0f * s, py0 - 4.0f * s, px0 + 28.0f * s, py0 + 38.0f * s, clipon, ui4::kPink);
+    } else {
+      l.rect(px0, py0, px0 + 6.0f * s, py0 + 34.0f * s, ui4::kPink);
+    }
 
-  // Key grid.
-  const auto lay = active_layout();
-  const float gx0 = px0 + 28.0f * s, gw = pw - 56.0f * s;
-  const float gy0 = iy1 + 20.0f * s;
-  const float gap = 8.0f * s;
-  const float key_h = 46.0f * s;
-  for (size_t r = 0; r < lay.size(); ++r) {
-    const auto& row_keys = lay[r];
-    const float kw = (gw - gap * float(row_keys.size() - 1)) / float(row_keys.size());
-    const float ky0 = gy0 + float(r) * (key_h + gap);
-    for (size_t c = 0; c < row_keys.size(); ++c) {
-      const bool sel = (int(r) == row_ && int(c) == col_);
-      const bool is_done = (row_keys[c] == "DONE");
-      const float kx0 = gx0 + float(c) * (kw + gap);
-      const uint32_t bg = sel ? kPink : is_done ? ui::rgba(40, 120, 72, 235) : ui::rgba(34, 38, 48, 240);
-      l.rect(kx0, ky0, kx0 + kw, ky0 + key_h, bg, 4.0f * s);
-      if (sel) l.frame(kx0, ky0, kx0 + kw, ky0 + key_h, kWhite, 2.0f * s, 4.0f * s);
-      ui::TextStyle kt;
-      kt.font = row_keys[c].size() > 1 ? ui::Font::kB : ui::Font::kE;
-      kt.size = (row_keys[c].size() > 1 ? 13.0f : 18.0f) * s;
-      kt.color = kWhite;
-      kt.align = ui::Align::kCenter;
-      kt.keep_case = true;
-      l.text(kx0 + 0.5f * kw, ky0 + 0.5f * (key_h - kt.size), row_keys[c], kt);
+    ui::TextStyle tt = ui4::style(ui::Font::kD, 17.0f * s, ui4::kInk);
+    l.text(px0 + 28.0f * s, py0 + 9.0f * s, title_.empty() ? "ENTER TEXT" : title_, tt);
+
+    char lenbuf[32];
+    std::snprintf(lenbuf, sizeof lenbuf, "%zu / %d", text_.size(), max_len_);
+    ui::TextStyle lt = ui4::style(ui::Font::kB, 13.0f * s, ui4::kInk, ui::Align::kRight);
+    l.text(px0 + pw - 22.0f * s, py0 + 11.0f * s, lenbuf, lt);
+
+    // Sharp text input strip (PILL02 charcoal + pink bottom hairline, zero radius).
+    const float ix0 = px0 + 24.0f * s, ix1 = px0 + pw - 24.0f * s, iy0 = py0 + 50.0f * s, iy1 = iy0 + 46.0f * s;
+    ui4::pill(l, ix0, iy0, ix1, iy1, ui4::kPillGrey, ui4::PillKind::kHud01, false);
+    l.rect(ix0, iy1 - 2.0f * s, ix1, iy1, ui4::kPink);
+    const bool caret_on = std::fmod(blink_t_, 1.0) < 0.55;
+    const std::string shown = text_ + (caret_on ? "_" : "");
+    ui::TextStyle it = ui4::style(ui::Font::kB, 22.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+    l.text(ix0 + 16.0f * s, iy0 + 11.0f * s, shown, it);
+
+    // Sharp key grid using PILL02 / #F90064 pink active key focus (ZERO rounded corners!).
+    const auto lay = active_layout();
+    const float gx0 = px0 + 24.0f * s, gw = pw - 48.0f * s;
+    const float gy0 = iy1 + 18.0f * s;
+    const float gap = 6.0f * s;
+    const float key_h = 46.0f * s;
+    std::array<float, 4> pill02{};
+    const bool has_p02 = ui_texture("DIRTMASKS/PILL02", pill02);
+    for (size_t r = 0; r < lay.size(); ++r) {
+      const auto& row_keys = lay[r];
+      const float kw = (gw - gap * float(row_keys.size() - 1)) / float(row_keys.size());
+      const float ky0 = gy0 + float(r) * (key_h + gap);
+      for (size_t c = 0; c < row_keys.size(); ++c) {
+        const bool sel = (int(r) == row_ && int(c) == col_);
+        const bool is_done = (row_keys[c] == "DONE");
+        const float kx0 = gx0 + float(c) * (kw + gap);
+        const uint32_t bg = sel ? ui4::kPink : is_done ? ui::rgba(36, 118, 68, 240) : ui4::kPillGrey;
+        if (has_p02) {
+          l.image(kx0, ky0, kx0 + kw, ky0 + key_h, pill02, bg);
+        } else {
+          l.rect(kx0, ky0, kx0 + kw, ky0 + key_h, bg);
+        }
+        if (sel) {
+          l.rect(kx0, ky0, kx0 + kw, ky0 + 3.0f * s, ui4::kYellow);
+          l.frame(kx0, ky0, kx0 + kw, ky0 + key_h, ui4::kWhite, 1.5f * s, 0.0f);
+        }
+        ui::TextStyle kt = ui4::style(row_keys[c].size() > 1 ? ui::Font::kB : ui::Font::kE,
+                                      (row_keys[c].size() > 1 ? 13.0f : 18.0f) * s, ui4::kWhite, ui::Align::kCenter,
+                                      true);
+        l.text(kx0 + 0.5f * kw, ky0 + 0.5f * (key_h - kt.size), row_keys[c], kt);
+      }
     }
   }
+
+  ui4::button_bar(l, {{"A", "TYPE"}, {"X", "BACKSPACE"}, {"START", "DONE"}, {"B", "CANCEL"}}, screen_w, screen_h);
 }
 
 }  // namespace carview

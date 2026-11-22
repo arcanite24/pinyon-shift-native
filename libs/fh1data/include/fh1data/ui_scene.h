@@ -189,4 +189,14 @@ struct UiFontMap {
 };
 bool parse_fontmap_xml(std::string_view xml, UiFontMap& out);
 
+// Loading tips parsed from media/ui/LoadingDefs.xml.
+struct UiLoadingTip {
+  std::string group;        // e.g. "freeroam", "festivalevent", "paintshop", "workshop"
+  std::string title_key;    // e.g. "Tips:IDS_PopularityTitle"
+  std::string message_key;  // e.g. "Tips:IDS_PopularityTip"
+  int layout = 1;
+  float display_time = 8.0f;
+};
+bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out);
+
 }  // namespace fh1

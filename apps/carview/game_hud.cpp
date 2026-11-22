@@ -1,6 +1,7 @@
 #include "game_hud.h"
 
 #include "hud_scene.h"
+#include "touch_controls.h"
 #include "ui4_chrome.h"
 
 #include <algorithm>
@@ -229,17 +230,23 @@ void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float
 
 // (a) The free-roam dial: centre 1122,587, ±137° from 12 o'clock.
 void dial_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
-  const float s = g.s;
-  // The numerals (SPEC-UI-LAYOUTS a, measured: centre 1122,587, radius
-  // 78.5); the face, ticks and needle from 947_HUD GAUGE_ANALOG (centre
-  // 1123,593.3; MAINBACKRING 256 px; hatches 13 x 9 at radius 82; NEEDLE's
-  // bar from radius 44 to 72, tinted pink).
-  const float nx = g.R(1122), ny = g.B(587);
-  const float cx = g.R(1123), cy = g.B(593.3f);
+  float s = g.s;
+  float cx = g.R(1123), cy = g.B(593.3f);
+  float nx = g.R(1122), ny = g.B(587);
+  if (st.touch_hud_active) {
+    TouchRect mm_r, tach_r;
+    TouchControls::hud_safe_rects(g.w, g.h, mm_r, tach_r);
+    s = std::min(g.s, (tach_r.h() * g.h) / 184.0f);
+    cx = tach_r.cx() * g.w;
+    cy = tach_r.cy() * g.h;
+    nx = cx - 1.0f * s;
+    ny = cy - 6.3f * s;
+  }
+  const float ox = cx - 1123 * s, oy = cy - 593.3f * s;
   constexpr float kSweep = 2.391f;  // 137°
   std::array<float, 4> ring;
   const bool textured = ui_texture("HUD/DIALS/MAINBACKRING", ring);
-  if (textured) l.image(g.R(995), g.B(465), g.R(1251), g.B(721), ring, rgba(255, 255, 255, 242));
+  if (textured) l.image(ox + 995 * s, oy + 465 * s, ox + 1251 * s, oy + 721 * s, ring, rgba(255, 255, 255, 242));
   else l.circle(cx, cy, 88 * s, rgba(0, 0, 0, 140));
   const double red = std::max(1000.0, st.redline_rpm);
   // The scale: whole thousands, at least 10, numerals every second one.
@@ -271,7 +278,7 @@ void dial_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
   const std::string all = digits;
   const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
   const TextStyle sp = font(ui::Font::kE, 28 * s, kText, Align::kRight);
-  const float x1 = g.R(1162), y = g.B(571);
+  const float x1 = ox + 1162 * s, y = oy + 571 * s;
   const float tail = l.text(x1, y, all.substr(lead), sp);
   if (lead) {
     TextStyle z = sp;
@@ -280,11 +287,11 @@ void dial_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
   }
   TextStyle unit = font(ui::Font::kA, 10 * s, kDim);
   unit.keep_case = true;
-  l.text(g.R(1112), g.B(553), str("UnitStrings", "IDS_Units_KMH", "km/h"), unit);
+  l.text(ox + 1112 * s, oy + 553 * s, str("UnitStrings", "IDS_Units_KMH", "km/h"), unit);
   const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
   char gb[8];
   if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
-  l.text(g.R(1093), g.B(607), gear, font(ui::Font::kE, 17 * s, kGear));
+  l.text(ox + 1093 * s, oy + 607 * s, gear, font(ui::Font::kE, 17 * s, kGear));
 }
 
 // The dial from 947_HUD's GAUGE_ANALOG: MainBackRing, the hatches
@@ -307,9 +314,15 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
       !ui_texture("HUD/DIALS/NEEDLE", nuv))
     return dial_drawn(l, st, g);
   const bool trails = ui_texture("HUD/DIALS/NEEDLETRAIL", trail);
-  const float s = g.s;
-  const SceneFrame f{g.w - 1280 * s, g.h - 720 * s, s};  // bottom-right anchored
   const auto [gx, gy] = sc.at(gauge);
+  float s = g.s;
+  SceneFrame f{g.w - 1280 * s, g.h - 720 * s, s};  // bottom-right anchored
+  if (st.touch_hud_active) {
+    TouchRect mm_r, tach_r;
+    TouchControls::hud_safe_rects(g.w, g.h, mm_r, tach_r);
+    s = std::min(g.s, (tach_r.h() * g.h) / 184.0f);
+    f = SceneFrame{tach_r.cx() * g.w - gx * s, tach_r.cy() * g.h - gy * s, s};
+  }
   const float cx = f.x(gx), cy = f.y(gy);
   constexpr float kSweep = 2.339f;
   constexpr uint32_t kNeedle = rgba(250, 0, 99);  // the needle's material, 0.98 0 0.39

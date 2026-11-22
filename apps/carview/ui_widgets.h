@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -117,6 +118,12 @@ class LoadingScreen {
   void stop() { active_ = false; }
   bool active() const { return active_; }
 
+  // Loads categorized tips from media/ui/LoadingDefs.xml (resolving Tips:IDS_*
+  // through game_text() / string tables when available) and selects matching
+  // LOADING/BGLOADINGIMAGES/* & LOADING/TIPIMAGES/* assets.
+  bool load_definitions(const std::filesystem::path& game_root, const std::string& group = "freeroam");
+  void set_group(const std::string& group) { group_ = group; }
+  void set_bg_index(int idx) { bg_idx_ = idx; }
   void set_tips(std::vector<std::string> tips);
   void set_progress(float p);
   void update(double dt);
@@ -125,6 +132,7 @@ class LoadingScreen {
   double elapsed() const { return elapsed_; }
   int tip_index() const { return tip_idx_; }
   const std::string& current_tip() const;
+  const std::string& current_tip_title() const;
 
   void draw(ui::List& l, float screen_w, float screen_h) const;
 
@@ -132,6 +140,9 @@ class LoadingScreen {
   bool active_ = false;
   std::string title_;
   std::string subtitle_;
+  std::string group_ = "freeroam";
+  int bg_idx_ = 1;  // 1..10 -> LOADING/BGLOADINGIMAGES/IMAGE<N>
+  std::vector<std::string> tip_titles_;
   std::vector<std::string> tips_;
   int tip_idx_ = 0;
   double elapsed_ = 0.0;

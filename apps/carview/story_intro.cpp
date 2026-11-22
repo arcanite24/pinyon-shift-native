@@ -4,6 +4,9 @@
 #include <cmath>
 #include <cstdio>
 
+#include "hud_scene.h"
+#include "ui4_chrome.h"
+
 namespace carview {
 
 const char* StoryIntro::stage_name(StoryStage s) {
@@ -317,17 +320,8 @@ StoryAction StoryIntro::advance_to(StoryStage stage) { return enter_stage(stage)
 void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
   if (!active() || stage_ == StoryStage::kBootSplash || stage_ == StoryStage::kOpeningFmv) return;
   const float s = screen_h / 720.0f;
-  constexpr uint32_t kPink = ui::rgba(0xF5, 0x04, 0x5C);
-  constexpr uint32_t kPanel = ui::rgba(10, 12, 18, 205);
-  constexpr uint32_t kWhite = ui::rgba(248, 249, 252);
-  constexpr uint32_t kDim = ui::rgba(195, 200, 212);
 
-  // Top-left story objective card (Horizon pink accent strip + dark panel).
-  ui::TextStyle title_ts;
-  title_ts.font = ui::Font::kE;
-  title_ts.size = 20.0f * s;
-  title_ts.color = kWhite;
-
+  // 947_HUD/HUDInstruction: slim sharp FH1 tilted tape + HUDPILL01 strips (ZERO 4px rounded boxes!).
   std::string sub = objective_detail_;
   if (stage_ == StoryStage::kViperDrive) {
     char dbuf[64];
@@ -337,40 +331,34 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
       std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d M REMAINING", int(std::lround(dist_to_festival_)));
     sub = dbuf;
   }
-  ui::TextStyle sub_ts;
-  sub_ts.font = ui::Font::kB;
-  sub_ts.size = 13.0f * s;
-  sub_ts.color = kDim;
+  ui::TextStyle title_ts = ui4::style(ui::Font::kE, 19.0f * s, ui4::kWhite);
+  ui::TextStyle sub_ts = ui4::style(ui::Font::kB, 13.5f * s, ui4::kWhite);
 
-  const float x0 = 64.0f * s, y0 = 38.0f * s, h = 66.0f * s;
-  const float w = std::max({440.0f * s, ui::List::measure(objective_title_, title_ts) + 40.0f * s,
-                            ui::List::measure(sub, sub_ts) + 40.0f * s});
-  l.rect(x0, y0, x0 + w, y0 + h, kPanel, 4.0f * s);
-  l.rect(x0, y0, x0 + 6.0f * s, y0 + h, kPink);
-  l.text(x0 + 18.0f * s, y0 + 10.0f * s, objective_title_, title_ts);
-  l.text(x0 + 18.0f * s, y0 + 38.0f * s, sub, sub_ts);
+  const float x0 = 64.0f * s, y0 = 38.0f * s;
+  const float tw = std::max(280.0f * s, ui::List::measure(objective_title_, title_ts) + 38.0f * s);
+  const float sw = std::max(260.0f * s, ui::List::measure(sub, sub_ts) + 34.0f * s);
+  {
+    ui4::TiltScope tilt(l, x0 + 0.5f * tw, y0 + 26.0f * s, ui4::kTiltRad * 0.5f);
+    ui4::brush(l, x0 - 6.0f * s, y0, x0 + tw, y0 + 32.0f * s, ui4::kPink, false);
+    l.text(x0 + 14.0f * s, y0 + 7.0f * s, objective_title_, title_ts);
+    if (!sub.empty()) {
+      ui4::pill(l, x0, y0 + 34.0f * s, x0 + sw, y0 + 60.0f * s, ui4::kPillGrey, ui4::PillKind::kHud01);
+      l.text(x0 + 14.0f * s, y0 + 40.0f * s, sub, sub_ts);
+    }
+  }
 
-  // Top-right skip hint for testing / fast-forward.
+  // Top-right skip hint on slim sharp HUDPILL01 (zero rounded corners).
   const float sx1 = screen_w - 64.0f * s;
-  l.rect(sx1 - 210.0f * s, y0, sx1, y0 + 30.0f * s, ui::rgba(10, 12, 18, 180), 4.0f * s);
-  ui::TextStyle skip_ts;
-  skip_ts.font = ui::Font::kB;
-  skip_ts.size = 12.0f * s;
-  skip_ts.color = kDim;
-  skip_ts.align = ui::Align::kRight;
-  l.text(sx1 - 12.0f * s, y0 + 9.0f * s, "[TAB] SKIP STORY STAGE", skip_ts);
+  ui4::pill(l, sx1 - 210.0f * s, y0, sx1, y0 + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kHud01);
+  l.text(sx1 - 12.0f * s, y0 + 8.0f * s, "[TAB] SKIP STORY STAGE",
+         ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim, ui::Align::kRight));
 
-  // Bottom-left character VO caption box (Alice / Dak / Scott), kept clear of tachometer.
+  // Bottom character VO caption on sharp HUDPILL01 + pink speaker brush (zero 4px rounded boxes!).
   if (!active_caption_.empty()) {
     const float cx0 = 64.0f * s;
-    const float cw = std::min(screen_w - 340.0f * s, 840.0f * s);
-    ui::TextStyle cap_ts;
-    cap_ts.font = ui::Font::kA;
-    cap_ts.size = 14.5f * s;
-    cap_ts.color = kWhite;
-    cap_ts.keep_case = true;
+    const float cw = std::min(screen_w - 340.0f * s, 820.0f * s);
+    ui::TextStyle cap_ts = ui4::style(ui::Font::kA, 14.5f * s, ui4::kWhite, ui::Align::kLeft, true);
 
-    // Word-wrap caption into lines that fit inside cw - 32*s.
     const float max_line_w = std::max(180.0f * s, cw - 32.0f * s);
     std::string wrapped;
     std::string cur;
@@ -397,18 +385,17 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
     }
 
     const float cap_h = ui::List::measure_height(wrapped, cap_ts);
-    const float box_h = std::max(58.0f * s, 36.0f * s + cap_h + 12.0f * s);
-    const float cy0 = screen_h - 44.0f * s - box_h;
-    l.rect(cx0, cy0, cx0 + cw, cy0 + box_h, ui::rgba(8, 10, 15, 215), 4.0f * s);
-    l.rect(cx0, cy0, cx0 + 4.0f * s, cy0 + box_h, kPink);
+    const float box_h = std::max(44.0f * s, cap_h + 20.0f * s);
+    const float cy0 = screen_h - 46.0f * s - box_h;
     if (!active_speaker_.empty()) {
-      ui::TextStyle sp_ts;
-      sp_ts.font = ui::Font::kE;
-      sp_ts.size = 13.0f * s;
-      sp_ts.color = kPink;
-      l.text(cx0 + 16.0f * s, cy0 + 8.0f * s, active_speaker_, sp_ts);
+      ui::TextStyle sp_ts = ui4::style(ui::Font::kE, 13.0f * s, ui4::kWhite);
+      const float spw = ui::List::measure(active_speaker_, sp_ts) + 28.0f * s;
+      ui4::brush(l, cx0 - 4.0f * s, cy0 - 24.0f * s, cx0 + spw, cy0 + 2.0f * s, ui4::kPink, false);
+      l.text(cx0 + 10.0f * s, cy0 - 18.0f * s, active_speaker_, sp_ts);
     }
-    l.text(cx0 + 16.0f * s, cy0 + 28.0f * s, wrapped, cap_ts);
+    ui4::pill(l, cx0, cy0, cx0 + cw, cy0 + box_h, ui4::kCharcoalDark, ui4::PillKind::kHud01);
+    l.rect(cx0, cy0, cx0 + 4.0f * s, cy0 + box_h, ui4::kPink);
+    l.text(cx0 + 16.0f * s, cy0 + 10.0f * s, wrapped, cap_ts);
   }
 }
 

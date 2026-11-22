@@ -223,6 +223,7 @@ struct DriveHud {
   bool abs = false;
   bool tcs = false;
   bool driving = true;
+  bool touch_hud_active = false;  // compacts & lifts tach above Android touch pedals
   const RaceHud* race = nullptr;
   std::string toast;
   std::string menu_title;

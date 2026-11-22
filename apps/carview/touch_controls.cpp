@@ -20,16 +20,22 @@ std::string lower_s(std::string s) {
 void draw_touch_pad(ui::List& l, const TouchRect& r, float w, float h, std::string_view label,
                     bool pressed, float fill_frac, uint32_t active_col, float s) {
   const float x0 = r.x0 * w, y0 = r.y0 * h, x1 = r.x1 * w, y1 = r.y1 * h;
-  const float rad = 10 * s;
-  const uint32_t bg = pressed ? ui::fade(active_col, 0.28) : ui::rgba(16, 18, 24, 120);
-  const uint32_t border = pressed ? active_col : ui::rgba(220, 226, 236, 155);
-  l.rect(x0, y0, x1, y1, bg, rad);
-  if (fill_frac > 0.01f) {
-    const float fh = (y1 - y0 - 6 * s) * std::clamp(fill_frac, 0.0f, 1.0f);
-    l.rect(x0 + 3 * s, y1 - 3 * s - fh, x1 - 3 * s, y1 - 3 * s, ui::fade(active_col, 0.44), 6 * s);
+  const uint32_t bg = pressed ? ui::fade(active_col, 0.34) : ui::fade(ui4::kBrushBlack, 0.78);
+  const uint32_t border = pressed ? active_col : ui::rgba(225, 225, 225, 165);
+  // Sharp FH1 charcoal chrome with distressed texture grit and pink/accent edge strip (zero rounded corners).
+  l.rect(x0, y0, x1, y1, bg);
+  std::array<float, 4> uv;
+  if (ui4::texture("DIRTMASKS/BGNOISE01", uv)) {
+    l.image(x0, y0, x1, y1, uv, ui::rgba(255, 255, 255, pressed ? 24 : 18));
   }
-  l.frame(x0, y0, x1, y1, border, (pressed ? 2.4f : 1.6f) * s, rad);
-  ui::TextStyle ts = ui4::style(ui::Font::kE, 15 * s, pressed ? ui4::kWhite : ui::rgba(236, 240, 246, 230),
+  if (fill_frac > 0.01f) {
+    const float fh = (y1 - y0 - 4 * s) * std::clamp(fill_frac, 0.0f, 1.0f);
+    l.rect(x0 + 2 * s, y1 - 2 * s - fh, x1 - 2 * s, y1 - 2 * s, ui::fade(active_col, 0.56));
+  }
+  // Top accent bar (FH1 street-poster stripe)
+  l.rect(x0, y0, x1, y0 + 3.0f * s, pressed ? active_col : ui::fade(active_col, 0.72));
+  l.frame(x0, y0, x1, y1, border, (pressed ? 2.0f : 1.2f) * s);
+  ui::TextStyle ts = ui4::style(ui::Font::kE, 15 * s, pressed ? ui4::kWhite : ui::rgba(240, 240, 240, 238),
                                 ui::Align::kCenter);
   ui4::fit_text(label, ts, (x1 - x0) - 10 * s, 9 * s);
   l.text(0.5f * (x0 + x1), 0.5f * (y0 + y1) - 0.5f * ts.size, label, ts);
@@ -38,9 +44,9 @@ void draw_touch_pad(ui::List& l, const TouchRect& r, float w, float h, std::stri
 void draw_touch_chip(ui::List& l, const TouchRect& r, float w, float h, std::string_view label,
                      bool pressed, uint32_t accent, float s) {
   const float x0 = r.x0 * w, y0 = r.y0 * h, x1 = r.x1 * w, y1 = r.y1 * h;
-  const float rad = 0.45f * (y1 - y0);
-  l.rect(x0, y0, x1, y1, pressed ? accent : ui::rgba(18, 20, 26, 175), rad);
-  l.frame(x0, y0, x1, y1, pressed ? ui4::kWhite : ui::rgba(200, 208, 220, 150), 1.4f * s, rad);
+  l.rect(x0, y0, x1, y1, pressed ? accent : ui::fade(ui4::kPillGrey, 0.88));
+  l.rect(x0, y1 - 2.5f * s, x1, y1, pressed ? ui4::kWhite : accent);
+  l.frame(x0, y0, x1, y1, pressed ? ui4::kWhite : ui::rgba(190, 190, 190, 130), 1.0f * s);
   ui::TextStyle ts = ui4::style(ui::Font::kE, 11.5f * s, ui4::kWhite, ui::Align::kCenter);
   ui4::fit_text(label, ts, (x1 - x0) - 8 * s, 8 * s);
   l.text(0.5f * (x0 + x1), 0.5f * (y0 + y1) - 0.5f * ts.size, label, ts);
@@ -82,11 +88,11 @@ TouchLayout TouchControls::compute_layout(float screen_w, float screen_h) {
   const float aspect = (screen_h > 1.0f) ? (screen_w / screen_h) : (16.0f / 9.0f);
   // Wide phones (20:9+) get extra horizontal cutout/notch safe margins; tablets (4:3) stay compact vertically.
   const float mx = aspect >= 2.0f ? 0.045f : (aspect <= 1.5f ? 0.025f : 0.030f);
-  const float my = aspect <= 1.5f ? 0.040f : 0.045f;
-  const float pad_w = aspect >= 2.0f ? 0.088f : (aspect <= 1.5f ? 0.115f : 0.098f);
-  const float pad_h = aspect <= 1.5f ? 0.24f : 0.28f;
+  const float my = aspect <= 1.5f ? 0.036f : 0.040f;
+  const float pad_w = aspect >= 2.0f ? 0.086f : (aspect <= 1.5f ? 0.110f : 0.095f);
+  const float pad_h = aspect <= 1.5f ? 0.215f : 0.240f;
 
-  // Bottom-left steering buttons (or floating thumbstick zone)
+  // Bottom-left steering buttons (compact so minimap sits cleanly above with zero overlap)
   const float sy1 = 1.0f - my;
   const float sy0 = sy1 - pad_h * 0.72f;
   lay.steer_left = {mx, sy0, mx + pad_w * 1.05f, sy1};
@@ -103,20 +109,20 @@ TouchLayout TouchControls::compute_layout(float screen_w, float screen_h) {
   lay.brake = {bx0, 1.0f - my - pad_h * 0.84f, bx1, 1.0f - my};
 
   // Handbrake above brake pedal
-  const float hbh = 0.095f;
-  lay.handbrake = {bx0, lay.brake.y0 - 0.020f - hbh, bx1, lay.brake.y0 - 0.020f};
+  const float hbh = 0.082f;
+  lay.handbrake = {bx0, lay.brake.y0 - 0.016f - hbh, bx1, lay.brake.y0 - 0.016f};
 
   // Shift Up (+) / Shift Down (-) beside pedals (left of brake/handbrake)
-  const float sh_w = pad_w * 0.58f;
-  const float sh_h = 0.090f;
-  const float sh_x1 = bx0 - 0.016f;
+  const float sh_w = pad_w * 0.56f;
+  const float sh_h = 0.082f;
+  const float sh_x1 = bx0 - 0.014f;
   const float sh_x0 = sh_x1 - sh_w;
-  lay.shift_up = {sh_x0, lay.brake.y0 - 0.015f, sh_x1, lay.brake.y0 - 0.015f + sh_h};
-  lay.shift_down = {sh_x0, lay.shift_up.y1 + 0.016f, sh_x1, lay.shift_up.y1 + 0.016f + sh_h};
+  lay.shift_up = {sh_x0, lay.brake.y0 - 0.012f, sh_x1, lay.brake.y0 - 0.012f + sh_h};
+  lay.shift_down = {sh_x0, lay.shift_up.y1 + 0.014f, sh_x1, lay.shift_up.y1 + 0.014f + sh_h};
 
-  // Top center-right quick-action bar (stays clear of top-left minimap and top-right notifications)
+  // Top center quick-action bar (stays clear of minimap and tachometer)
   const float top_y0 = my;
-  const float top_y1 = my + 0.068f;
+  const float top_y1 = my + 0.064f;
   const float cw = aspect >= 2.0f ? 0.064f : 0.072f;
   const float cg = 0.010f;
   const float group_w = 6.0f * cw + 5.0f * cg;
@@ -128,6 +134,31 @@ TouchLayout TouchControls::compute_layout(float screen_w, float screen_h) {
   lay.btn_map    = {gx0 + 4 * (cw + cg), top_y0, gx0 + 4 * (cw + cg) + cw, top_y1};
   lay.btn_pause  = {gx0 + 5 * (cw + cg), top_y0, gx0 + 5 * (cw + cg) + cw, top_y1};
   return lay;
+}
+
+bool TouchControls::rects_overlap(const TouchRect& a, const TouchRect& b) {
+  return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+}
+
+void TouchControls::hud_safe_rects(float screen_w, float screen_h, TouchRect& minimap_out, TouchRect& tach_out) {
+  const TouchLayout lay = compute_layout(screen_w, screen_h);
+  const float aspect = (screen_h > 1.0f) ? (screen_w / screen_h) : (16.0f / 9.0f);
+  const float mx = lay.steer_left.x0;
+  const float gap = 0.028f;
+
+  // Minimap: sits cleanly ABOVE steer_left / steer_right on the left side.
+  const float mm_y1 = lay.steer_left.y0 - gap;
+  const float mm_h = std::min(0.24f, std::max(0.14f, mm_y1 - (lay.btn_mode.y1 + 0.04f)));
+  const float mm_w = mm_h / std::max(0.5f, aspect);
+  minimap_out = {mx, mm_y1 - mm_h, mx + mm_w, mm_y1};
+
+  // Tachometer: sits cleanly ABOVE handbrake / throttle / shift_up on the right side.
+  const float right_top = std::min({lay.handbrake.y0, lay.throttle.y0, lay.shift_up.y0});
+  const float tach_y1 = right_top - gap;
+  const float tach_h = std::min(0.25f, std::max(0.16f, tach_y1 - (lay.btn_pause.y1 + 0.04f)));
+  const float tach_w = (tach_h / std::max(0.5f, aspect)) * 1.12f;
+  const float tx1 = lay.throttle.x1;
+  tach_out = {tx1 - tach_w, tach_y1 - tach_h, tx1, tach_y1};
 }
 
 bool TouchControls::handle_sdl_event(const SDL_Event& e, float screen_w, float screen_h, double now_s) {
@@ -334,17 +365,17 @@ void TouchControls::build_overlay(ui::List& l, float screen_w, float screen_h, d
     l.arc(cx, cy, R, 2.2f * s, 0.0f, 6.28318f, ui::rgba(230, 236, 244, 170));
     l.circle(kx, ky, 26 * s, std::fabs(steer) > 0.05 ? ui::fade(ui4::kPink, 0.85) : ui::rgba(220, 224, 232, 165));
   } else {
-    // Tilt steering indicator bar
+    // Tilt steering indicator bar (sharp FH1 strip)
     const float tx0 = lay.steer_left.x0 * screen_w;
     const float tx1 = lay.steer_right.x1 * screen_w;
     const float ty0 = lay.steer_left.cy() * screen_h - 14 * s;
     const float ty1 = ty0 + 28 * s;
-    l.rect(tx0, ty0, tx1, ty1, ui::rgba(16, 18, 24, 165), 8 * s);
-    l.frame(tx0, ty0, tx1, ty1, ui4::kAmber, 1.5f * s, 8 * s);
+    l.rect(tx0, ty0, tx1, ty1, ui::fade(ui4::kBrushBlack, 0.85));
+    l.frame(tx0, ty0, tx1, ty1, ui4::kPink, 1.5f * s);
     const float mid = 0.5f * (tx0 + tx1);
     const float kx = mid + float(steer) * (0.5f * (tx1 - tx0) - 10 * s);
-    l.circle(kx, 0.5f * (ty0 + ty1), 9 * s, ui4::kPink);
-    l.text(mid, ty0 - 18 * s, "TILT STEERING", ui4::style(ui::Font::kB, 11 * s, ui4::kAmber, ui::Align::kCenter));
+    l.rect(kx - 4 * s, ty0 + 3 * s, kx + 4 * s, ty1 - 3 * s, ui4::kPink);
+    l.text(mid, ty0 - 18 * s, "TILT STEERING", ui4::style(ui::Font::kB, 11 * s, ui4::kYellow, ui::Align::kCenter));
   }
 
   // Right-side pedals & paddles

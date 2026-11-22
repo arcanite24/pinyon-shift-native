@@ -410,127 +410,164 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
 
   if (ui_hidden_) return;
 
-  const float mx = 56.0f * s, my = 28.0f * s;
+  const float ox = 0.5f * w - 640.0f * s, oy = 0.5f * h - 360.0f * s;
+  auto fx = [&](float cx) { return ox + cx * s; };
+  auto fy = [&](float cy) { return oy + cy * s; };
+
   const auto* focus = focused_car();
   const auto* finfo = rec_.find_car_info(focus ? focus->slot : 0);
 
-  // Top-left REPLAY broadcast header (tilted FH1 brush badge + gritty event card).
-  ui4::title_banner(out, s, mx, my, rec_.meta.event_name.empty() ? "REPLAY" : rec_.meta.event_name, "HORIZON REPLAY",
-                    true, 440.0f);
-  std::string sub = std::string("CAM: ") + replay_camera_name(cam_mode_);
-  if (finfo && !finfo->driver_name.empty()) sub += "   •   " + finfo->driver_name;
-  else if (finfo && !finfo->car_media.empty()) sub += "   •   " + finfo->car_media;
-  ui4::pill(out, mx, my + 78.0f * s, mx + 390.0f * s, my + 104.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu);
-  out.text(mx + 14.0f * s, my + 85.0f * s, sub, ui4::style(Font::kB, 11.5f * s, ui4::kWhite));
+  // 1. 926_REPLAY_HUD CURRENT_PLAYER@(640,32): slim top-center driver/camera HUDPILL01
+  //    (replaces the raw top-left dark box!).
+  {
+    std::string drv = finfo && !finfo->driver_name.empty()
+                          ? finfo->driver_name
+                          : (finfo && !finfo->car_media.empty() ? finfo->car_media : "PLAYER");
+    std::string hdr = drv + "   •   " + replay_camera_name(cam_mode_);
+    if (!rec_.meta.event_name.empty()) hdr = rec_.meta.event_name + "   •   " + hdr;
 
-  // Top-right optional Telemetry HUD panel (sharp gritty FH1 panel).
+    ui::TextStyle pts = ui4::style(Font::kE, 14.0f * s, ui4::kWhite, Align::kCenter);
+    const float pw = std::clamp(ui::List::measure(hdr, pts) + 46.0f * s, 260.0f * s, 720.0f * s);
+    const float cx = 0.5f * w;
+    const float py0 = fy(22.0f), py1 = py0 + 28.0f * s;
+    ui4::pill(out, cx - 0.5f * pw, py0, cx + 0.5f * pw, py1, ui4::kPillGrey, ui4::PillKind::kHud01);
+    out.rect(cx - 0.5f * pw, py0, cx - 0.5f * pw + 4.0f * s, py1, ui4::kPink);
+    out.text(cx, py0 + 7.0f * s, hdr, pts);
+  }
+
+  // 2. Slim 926_REPLAY_HUD / 968_TELEMETRY right-hand HUDPILL01 strips + I_HUD_DAMAGE_* icon
+  //    (replaces the raw flat dark telemetry box!).
   if (telemetry_ && focus) {
-    const float tx1 = w - mx;
-    const float tx0 = tx1 - 286.0f * s;
-    const float ty0 = my;
-    const float ty1 = ty0 + 168.0f * s;
-    ui4::panel(out, tx0, ty0, tx1, ty1, s, ui4::kCharcoalDark, ui4::kYellow, 0, true);
-    ui4::offwhite_strip(out, tx0 + 10.0f * s, ty0 + 8.0f * s, tx1 - 10.0f * s, ty0 + 28.0f * s, s, false);
-    out.text(tx0 + 18.0f * s, ty0 + 12.0f * s, "TELEMETRY", ui4::style(Font::kE, 11.5f * s, ui4::kInk));
-    if (focus->race_place > 0) {
-      char pos_buf[24];
-      std::snprintf(pos_buf, sizeof pos_buf, "POS %d / %d", int(focus->race_place), std::max(1, rec_.meta.field_size));
-      out.text(tx1 - 18.0f * s, ty0 + 12.0f * s, pos_buf, ui4::style(Font::kB, 11.5f * s, ui4::kInk, Align::kRight));
-    }
+    const float rx1 = fx(1216.0f);
+    const float rx0 = fx(972.0f);
+    float ry = fy(64.0f);
 
-    char spd_buf[32], rpm_buf[32];
+    // Speed + Gear slim HUDPILL01
+    ui4::pill(out, rx0, ry, rx1, ry + 34.0f * s, ui4::kPillGrey, ui4::PillKind::kHud01);
     const int kmh = int(std::lround(std::fabs(focus->speed_mps) * 3.6f));
-    std::snprintf(spd_buf, sizeof spd_buf, "%3d", kmh);
-    std::snprintf(rpm_buf, sizeof rpm_buf, "%4d RPM", std::max(0, int(std::lround(focus->rpm / 10.0f) * 10)));
-    out.text(tx0 + 14.0f * s, ty0 + 34.0f * s, spd_buf, ui4::style(Font::kE, 34.0f * s, ui4::kWhite));
-    out.text(tx0 + 96.0f * s, ty0 + 54.0f * s, "KM/H", ui4::style(Font::kB, 10.5f * s, ui4::kDim));
+    char spd_buf[32];
+    std::snprintf(spd_buf, sizeof spd_buf, "%3d KM/H", kmh);
+    out.text(rx0 + 12.0f * s, ry + 7.0f * s, spd_buf, ui4::style(Font::kE, 19.0f * s, ui4::kWhite));
     const char gear_ch[2] = {focus->gear < 0 ? 'R' : focus->gear == 0 ? 'N' : char('0' + std::min<int>(focus->gear, 9)),
                              0};
-    out.rect(tx1 - 52.0f * s, ty0 + 34.0f * s, tx1 - 14.0f * s, ty0 + 72.0f * s, ui4::kPink);
-    out.text(tx1 - 33.0f * s, ty0 + 40.0f * s, gear_ch, ui4::style(Font::kE, 24.0f * s, ui4::kWhite, Align::kCenter));
+    out.rect(rx1 - 36.0f * s, ry + 2.0f * s, rx1 - 4.0f * s, ry + 32.0f * s, ui4::kPink);
+    out.text(rx1 - 20.0f * s, ry + 7.0f * s, gear_ch, ui4::style(Font::kE, 19.0f * s, ui4::kWhite, Align::kCenter));
+    ry += 38.0f * s;
 
-    // Sharp flat RPM & input bars.
-    const float rx0 = tx0 + 14.0f * s, rx1 = tx1 - 14.0f * s, ry0 = ty0 + 82.0f * s, ry1 = ry0 + 7.0f * s;
-    const float rpm_f = std::clamp(focus->rpm / std::max(1000.0f, focus->redline_rpm), 0.0f, 1.0f);
-    out.rect(rx0, ry0, rx1, ry1, rgba(255, 255, 255, 32));
-    out.rect(rx0, ry0, rx0 + (rx1 - rx0) * rpm_f, ry1, rpm_f > 0.88f ? ui4::kRed : ui4::kYellow);
-    out.text(tx0 + 96.0f * s, ty0 + 38.0f * s, rpm_buf, ui4::style(Font::kB, 10.5f * s, ui4::kDim));
-
-    auto draw_bar = [&](float y, const char* lbl, float frac, uint32_t col) {
-      out.text(rx0, y, lbl, ui4::style(Font::kB, 10.0f * s, ui4::kDim));
-      const float bx0 = rx0 + 68.0f * s, bx1 = rx1;
-      out.rect(bx0, y + 2.0f * s, bx1, y + 9.0f * s, rgba(255, 255, 255, 28));
-      if (frac > 0.01f) out.rect(bx0, y + 2.0f * s, bx0 + (bx1 - bx0) * std::clamp(frac, 0.0f, 1.0f), y + 9.0f * s, col);
+    // RPM + Throttle + Brake + Steer slim HUDPILL02 rows (using STATBARFILL / BARBASE8PX).
+    auto telem_bar = [&](const char* lbl, float frac, uint32_t col, bool centered) {
+      ui4::pill(out, rx0, ry, rx1, ry + 22.0f * s, ui4::kPillGrey, ui4::PillKind::kHud02);
+      out.text(rx0 + 10.0f * s, ry + 5.0f * s, lbl, ui4::style(Font::kB, 11.0f * s, ui4::kDim));
+      const float bx0 = rx0 + 74.0f * s, bx1 = rx1 - 10.0f * s, by0 = ry + 7.0f * s, by1 = ry + 15.0f * s;
+      out.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, 28));
+      if (centered) {
+        const float mid = 0.5f * (bx0 + bx1);
+        const float stx = mid + std::clamp(frac, -1.0f, 1.0f) * 0.5f * (bx1 - bx0);
+        out.rect(std::min(mid, stx), by0, std::max(mid, stx), by1, col);
+        out.line(mid, by0 - 1.0f * s, mid, by1 + 1.0f * s, 1.5f * s, ui4::kWhite);
+      } else if (frac > 0.01f) {
+        out.rect(bx0, by0, bx0 + (bx1 - bx0) * std::clamp(frac, 0.0f, 1.0f), by1, col);
+      }
+      ry += 25.0f * s;
     };
-    draw_bar(ty0 + 98.0f * s, "THROTTLE", float(focus->throttle_u8) / 255.0f, ui4::kGreen);
-    draw_bar(ty0 + 118.0f * s, "BRAKE", float(focus->brake_u8) / 255.0f, ui4::kRed);
+    const float rpm_f = std::clamp(focus->rpm / std::max(1000.0f, focus->redline_rpm), 0.0f, 1.0f);
+    telem_bar("RPM", rpm_f, rpm_f > 0.88f ? ui4::kPink : ui4::kYellow, false);
+    telem_bar("THROTTLE", float(focus->throttle_u8) / 255.0f, ui4::kGreen, false);
+    telem_bar("BRAKE", float(focus->brake_u8) / 255.0f, ui4::kRed, false);
+    telem_bar("STEER", float(focus->steer_i8) / 127.0f, ui4::kAmber, true);
 
-    const float sy = ty0 + 138.0f * s;
-    out.text(rx0, sy, "STEER", ui4::style(Font::kB, 10.0f * s, ui4::kDim));
-    const float sx0 = rx0 + 68.0f * s, sx1 = rx1, smid = 0.5f * (sx0 + sx1);
-    out.rect(sx0, sy + 2.0f * s, sx1, sy + 9.0f * s, rgba(255, 255, 255, 28));
-    const float st = std::clamp(float(focus->steer_i8) / 127.0f, -1.0f, 1.0f);
-    const float stx = smid + st * 0.5f * (sx1 - sx0);
-    out.rect(std::min(smid, stx), sy + 2.0f * s, std::max(smid, stx), sy + 9.0f * s, ui4::kAmber);
-    out.line(smid, sy, smid, sy + 11.0f * s, 1.5f * s, ui4::kWhite);
+    // Optional real T:I_MAP/I_HUD/I_HUD_DAMAGE_CAR chassis glyph from 926_REPLAY_HUD.
+    std::array<float, 4> dmg_uv{};
+    if (ui4::texture("T:I_MAP/I_HUD/I_HUD_DAMAGE_CAR", dmg_uv) ||
+        ui4::texture("T:I_MAP/I_HUD/I_HUD_DAMAGE_ENGINE", dmg_uv)) {
+      ui4::pill(out, rx1 - 68.0f * s, ry + 2.0f * s, rx1, ry + 66.0f * s, ui4::kPillGrey, ui4::PillKind::kHud02);
+      out.image(rx1 - 60.0f * s, ry + 6.0f * s, rx1 - 8.0f * s, ry + 62.0f * s, dmg_uv, ui4::kWhite);
+    }
   }
 
-  // Optional toast notice.
+  // Optional toast notice on tilted brush.
   if (notice_timer_ > 0.0 && !notice_.empty()) {
-    ui4::brush(out, 0.5f * w - 210.0f * s, my + 8.0f * s, 0.5f * w + 210.0f * s, my + 42.0f * s, ui4::kPink);
-    out.text(0.5f * w, my + 18.0f * s, notice_, ui4::style(Font::kE, 12.5f * s, ui4::kWhite, Align::kCenter));
+    ui4::brush(out, 0.5f * w - 200.0f * s, fy(58.0f), 0.5f * w + 200.0f * s, fy(88.0f), ui4::kPink);
+    out.text(0.5f * w, fy(66.0f), notice_, ui4::style(Font::kE, 13.0f * s, ui4::kWhite, Align::kCenter));
   }
 
-  // Bottom 926_REPLAY_HUD gritty timeline scrubber dock (sits cleanly above BUTTON_BAR_SCENE).
-  const float dy1 = h - 82.0f * s;
-  const float dy0 = dy1 - 88.0f * s;
-  ui4::panel(out, mx, dy0, w - mx, dy1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+  // 3. 926_REPLAY_HUD Group_FOOTER@(640,721): authentic DVR transport buttons
+  //    (T:UI4/HUD/DVR_BUTTON_*) + PILL_BIG / PILL36PX timeline bar — ZERO dark dev box!
+  {
+    const float foot_y = fy(574.0f);
+    const float bar_x0 = fx(70.0f), bar_x1 = fx(1210.0f);
 
-  const float top_y = dy0 + 12.0f * s;
-  const std::string sp_lbl = format_speed_pill(speed_, paused_);
-  ui4::brush(out, mx + 12.0f * s, top_y, mx + 148.0f * s, top_y + 26.0f * s, paused_ ? ui4::kYellow : ui4::kPink);
-  out.text(mx + 80.0f * s, top_y + 6.0f * s, sp_lbl,
-           ui4::style(Font::kE, 12.5f * s, paused_ ? ui4::kInk : ui4::kWhite, Align::kCenter));
+    // Transport icon row using real T:UI4/HUD/DVR_BUTTON_* textures from Textures.zip!
+    struct DvrBtn {
+      const char* tex;
+      const char* fallback;
+      bool active;
+    };
+    const DvrBtn btns[7] = {
+        {"T:UI4/HUD/DVR_BUTTON_RR", "<<", !paused_ && speed_ < 0.0},
+        {"T:UI4/HUD/DVR_BUTTON_PLAY", ">", !paused_ && speed_ > 0.0 && speed_ <= 1.05},
+        {"T:UI4/HUD/DVR_BUTTON_PAUSE", "||", paused_},
+        {"T:UI4/HUD/DVR_BUTTON_FF", ">>", !paused_ && speed_ > 1.05},
+        {"T:UI4/HUD/DVR_BUTTON_CAMERA", "CAM", false},
+        {"T:UI4/HUD/DVR_BUTTON_TELEMETRY", "TEL", telemetry_},
+        {"T:UI4/HUD/DVR_BUTTON_REPEAT", "RPT", false},
+    };
 
-  const char* ladder_lbls[6] = {"<< REW", "0.25x", "0.5x", "1x", "2x", "4x >>"};
-  const double ladder_vals[6] = {-2.0, 0.25, 0.5, 1.0, 2.0, 4.0};
-  float px = mx + 166.0f * s;
-  for (int i = 0; i < 6; ++i) {
-    const bool active_sp = !paused_ && ((i == 0 && speed_ < 0.0) || (i > 0 && std::fabs(speed_ - ladder_vals[i]) < 0.05));
-    const float pw = 64.0f * s;
-    if (active_sp) {
-      out.rect(px, top_y + 2.0f * s, px + pw, top_y + 24.0f * s, ui4::kYellow);
+    // Backing PILL36PX strip behind DVR transport + timecode.
+    std::array<float, 4> pill36{};
+    if (ui4::texture("KITPARTS/PILL36PX", pill36)) {
+      out.image(bar_x0, foot_y, bar_x1, foot_y + 38.0f * s, pill36, ui4::kPillGrey);
     } else {
-      ui4::pill(out, px, top_y + 2.0f * s, px + pw, top_y + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu);
+      ui4::pill(out, bar_x0, foot_y, bar_x1, foot_y + 38.0f * s, ui4::kPillGrey, ui4::PillKind::kHud01);
     }
-    out.text(px + 0.5f * pw, top_y + 7.0f * s, ladder_lbls[i],
-             ui4::style(Font::kB, 10.5f * s, active_sp ? ui4::kInk : ui4::kDim, Align::kCenter));
-    px += pw + 8.0f * s;
+
+    float bx = bar_x0 + 14.0f * s;
+    for (const auto& b : btns) {
+      std::array<float, 4> buv{};
+      const uint32_t col = b.active ? ui4::kPink : ui4::kWhite;
+      if (b.active) {
+        out.rect(bx - 3.0f * s, foot_y + 3.0f * s, bx + 31.0f * s, foot_y + 35.0f * s, ui::fade(ui4::kPink, 0.35));
+      }
+      if (ui4::texture(b.tex, buv)) {
+        out.image(bx, foot_y + 5.0f * s, bx + 28.0f * s, foot_y + 33.0f * s, buv, col);
+      } else {
+        out.rect(bx, foot_y + 7.0f * s, bx + 28.0f * s, foot_y + 31.0f * s,
+                 b.active ? ui4::kPink : ui::rgba(46, 48, 56, 220));
+        out.text(bx + 14.0f * s, foot_y + 13.0f * s, b.fallback,
+                 ui4::style(Font::kB, 10.0f * s, ui4::kWhite, Align::kCenter));
+      }
+      bx += 38.0f * s;
+    }
+
+    // Speed badge + timecode right-aligned inside Group_FOOTER strip.
+    const std::string sp_lbl = format_speed_pill(speed_, paused_);
+    ui4::brush(out, bx + 8.0f * s, foot_y + 5.0f * s, bx + 120.0f * s, foot_y + 33.0f * s,
+               paused_ ? ui4::kYellow : ui4::kPink);
+    out.text(bx + 64.0f * s, foot_y + 12.0f * s, sp_lbl,
+             ui4::style(Font::kE, 12.5f * s, paused_ ? ui4::kInk : ui4::kWhite, Align::kCenter));
+
+    const std::string tc = format_timecode(t_) + "  /  " + format_timecode(rec_.duration());
+    out.text(bar_x1 - 16.0f * s, foot_y + 11.0f * s, tc, ui4::style(Font::kE, 15.0f * s, ui4::kWhite, Align::kRight));
+
+    // Clean sharp timeline scrubber strip (PILL_BIG / BARBASE8PX, ZERO rounded box!).
+    const float sy0 = foot_y + 44.0f * s, sy1 = sy0 + 10.0f * s;
+    out.rect(bar_x0, sy0, bar_x1, sy1, ui::rgba(14, 14, 14, 215));
+    const float frac = float(std::clamp(progress(), 0.0, 1.0));
+    const float head_x = bar_x0 + (bar_x1 - bar_x0) * frac;
+    out.rect(bar_x0, sy0, std::max(bar_x0 + 4.0f * s, head_x), sy1, ui4::kPink);
+
+    const double dur = rec_.duration();
+    if (dur > 0.01) {
+      for (const auto& m : rec_.meta.markers) {
+        const float mf = float(std::clamp(m.time_s / dur, 0.0, 1.0));
+        const float mx_pt = bar_x0 + (bar_x1 - bar_x0) * mf;
+        out.line(mx_pt, sy0 - 3.0f * s, mx_pt, sy1 + 3.0f * s, 2.0f * s, ui4::kYellow);
+      }
+    }
+    out.rect(head_x - 3.0f * s, sy0 - 3.0f * s, head_x + 3.0f * s, sy1 + 3.0f * s, ui4::kWhite);
   }
 
-  const std::string tc = format_timecode(t_) + "  /  " + format_timecode(rec_.duration());
-  out.text(w - mx - 18.0f * s, top_y + 5.0f * s, tc, ui4::style(Font::kE, 14.5f * s, ui4::kWhite, Align::kRight));
-
-  // Scrubber timeline bar + event markers + playhead.
-  const float sx0 = mx + 18.0f * s, sx1 = w - mx - 18.0f * s;
-  const float sy0 = dy0 + 50.0f * s, sy1 = sy0 + 10.0f * s;
-  out.rect(sx0, sy0, sx1, sy1, rgba(255, 255, 255, 34));
-  const float frac = float(std::clamp(progress(), 0.0, 1.0));
-  const float head_x = sx0 + (sx1 - sx0) * frac;
-  out.rect(sx0, sy0, std::max(sx0 + 6.0f * s, head_x), sy1, ui4::kPink, 0.0f, ui4::kYellow);
-
-  const double dur = rec_.duration();
-  if (dur > 0.01) {
-    for (const auto& m : rec_.meta.markers) {
-      const float mf = float(std::clamp(m.time_s / dur, 0.0, 1.0));
-      const float mx_pt = sx0 + (sx1 - sx0) * mf;
-      out.line(mx_pt, sy0 - 4.0f * s, mx_pt, sy1 + 4.0f * s, 2.0f * s, ui4::kYellow);
-      out.text(mx_pt, sy1 + 6.0f * s, m.label, ui4::style(Font::kB, 9.0f * s, ui4::kYellow, Align::kCenter));
-    }
-  }
-  out.circle(head_x, 0.5f * (sy0 + sy1), 8.5f * s, ui4::kWhite);
-  out.circle(head_x, 0.5f * (sy0 + sy1), 4.5f * s, ui4::kPink);
-
+  // Authentic BUTTON_BAR_SCENE bottom prompts.
   ui4::button_bar(out,
                   {{"A", "PLAY/PAUSE"},
                    {"DPAD_LR", "SCRUB"},
@@ -538,7 +575,7 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
                    {"X", "TELEMETRY"},
                    {"LB", "PHOTO"},
                    {"B", "EXIT"}},
-                  w, h, 56.0f);
+                  w, h, 70.0f);
 }
 
 }  // namespace carview

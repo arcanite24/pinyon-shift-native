@@ -653,4 +653,38 @@ std::string UiFontMap::resolve(std::string_view font_name) const {
   return "B";
 }
 
+bool parse_loading_defs_xml(std::string_view xml, std::vector<UiLoadingTip>& out) {
+  out.clear();
+  std::string cur_group = "freeroam";
+  size_t pos = 0;
+  while (pos < xml.size()) {
+    const size_t lt = xml.find('<', pos);
+    if (lt == std::string_view::npos) break;
+    if (xml.compare(lt, 4, "<!--") == 0) {
+      const size_t cend = xml.find("-->", lt + 4);
+      if (cend == std::string_view::npos) break;
+      pos = cend + 3;
+      continue;
+    }
+    const size_t gt = xml.find('>', lt + 1);
+    if (gt == std::string_view::npos) break;
+    const std::string_view tag = xml.substr(lt, gt - lt + 1);
+    if (tag.rfind("<LoadingGroup", 0) == 0) {
+      std::string nm;
+      if (extract_xml_attr(tag, "name", nm) && !nm.empty()) cur_group = to_lower_ascii(nm);
+    } else if (tag.rfind("<Tip", 0) == 0 && (tag.size() == 4 || tag[4] == ' ' || tag[4] == '\t')) {
+      UiLoadingTip tip;
+      tip.group = cur_group;
+      extract_xml_attr(tag, "title", tip.title_key);
+      extract_xml_attr(tag, "message", tip.message_key);
+      std::string lay_s, dt_s;
+      if (extract_xml_attr(tag, "layout", lay_s)) tip.layout = std::atoi(lay_s.c_str());
+      if (extract_xml_attr(tag, "displaytime", dt_s)) tip.display_time = std::max(2.0f, float(std::atof(dt_s.c_str())));
+      if (!tip.title_key.empty() || !tip.message_key.empty()) out.push_back(std::move(tip));
+    }
+    pos = gt + 1;
+  }
+  return !out.empty();
+}
+
 }  // namespace fh1

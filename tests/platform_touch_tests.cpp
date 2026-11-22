@@ -23,8 +23,23 @@ void test_touch_layout_aspects() {
     assert(lay.handbrake.y1 < lay.brake.y0);
     assert(lay.shift_up.x1 < lay.brake.x0);
     assert(lay.btn_mode.x0 > 0.1f && lay.btn_pause.x1 < 0.9f);
+
+    // Phase 1 parity: minimap and tachometer safe rects must NEVER overlap any touch control.
+    carview::TouchRect mm, tach;
+    carview::TouchControls::hud_safe_rects(w, h, mm, tach);
+    assert(mm.x0 >= 0.0f && mm.y0 >= 0.0f && mm.x1 <= 1.0f && mm.y1 <= 1.0f);
+    assert(tach.x0 >= 0.0f && tach.y0 >= 0.0f && tach.x1 <= 1.0f && tach.y1 <= 1.0f);
+    assert(!carview::TouchControls::rects_overlap(mm, tach));
+    const carview::TouchRect pads[] = {lay.steer_left, lay.steer_right, lay.throttle,  lay.brake,
+                                       lay.handbrake,  lay.shift_up,    lay.shift_down, lay.btn_mode,
+                                       lay.btn_rewind, lay.btn_camera,  lay.btn_radio, lay.btn_map,
+                                       lay.btn_pause};
+    for (const auto& p : pads) {
+      assert(!carview::TouchControls::rects_overlap(mm, p));
+      assert(!carview::TouchControls::rects_overlap(tach, p));
+    }
   }
-  std::printf("  [ok] touch layout scaling across 20:9 phone, 16:9 Odin, 4:3 tablet\n");
+  std::printf("  [ok] touch layout scaling & zero HUD/touch overlap across 20:9 phone, 16:9 Odin, 4:3 tablet\n");
 }
 
 void test_touch_multitouch_buttons_and_pedals() {

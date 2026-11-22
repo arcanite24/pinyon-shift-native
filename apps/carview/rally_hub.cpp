@@ -1,26 +1,24 @@
 #include "rally_hub.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
 #include "game_hud.h"
+#include "hud_scene.h"
 #include "ui4_chrome.h"
 
 namespace carview {
 namespace {
 
-constexpr uint32_t kDarkBg = ui::rgba(14, 17, 22, 228);
-constexpr uint32_t kPanelBg = ui::rgba(20, 24, 31, 236);
-constexpr uint32_t kPanelAlt = ui::rgba(28, 34, 44, 230);
-constexpr uint32_t kBorder = ui::rgba(255, 255, 255, 36);
-constexpr uint32_t kWhite = ui::rgba(246, 248, 252, 255);
-constexpr uint32_t kMuted = ui::rgba(168, 178, 194, 255);
+constexpr uint32_t kWhite = ui::rgba(248, 249, 252, 255);
+constexpr uint32_t kMuted = ui::rgba(174, 180, 192, 255);
 constexpr uint32_t kRallyGold = ui::rgba(255, 184, 28, 255);
 constexpr uint32_t kRallyOrange = ui::rgba(242, 108, 30, 255);
 constexpr uint32_t kRallyRed = ui::rgba(228, 48, 52, 255);
 constexpr uint32_t kRallyGreen = ui::rgba(46, 204, 113, 255);
-constexpr uint32_t kRallyYellow = ui::rgba(250, 212, 42, 255);
+constexpr uint32_t kRallyYellow = ui::rgba(0xDA, 0xFF, 0x00, 255);
 constexpr uint32_t kRallyCyan = ui::rgba(62, 198, 242, 255);
 
 uint32_t icon_accent_color(race::PaceIconKind kind) {
@@ -42,93 +40,96 @@ uint32_t icon_accent_color(race::PaceIconKind kind) {
   }
 }
 
-// Draws crisp directional pace-note geometry inside box [cx - r, cy - r, cx + r, cy + r].
-void draw_pace_symbol(ui::List& out, race::PaceIconKind kind, float cx, float cy, float r, uint32_t col) {
-  const float lw = std::max(2.5f, r * 0.19f);
-  auto arrow_head = [&](float tx, float ty, float dx, float dy) {
-    const float len = std::hypot(dx, dy);
-    if (len < 1e-4f) return;
-    const float ux = dx / len, uy = dy / len;
-    const float px = -uy, py = ux;
-    const float ah = r * 0.36f, aw = r * 0.26f;
-    out.line(tx, ty, tx - ux * ah + px * aw, ty - uy * ah + py * aw, lw, col);
-    out.line(tx, ty, tx - ux * ah - px * aw, ty - uy * ah - py * aw, lw, col);
+// Formats a car name cleanly through car_name(), falling back to readable title case
+// if a raw internal car media ID (e.g. "SUB_IMPREZA22B_98") is passed without DB bound.
+std::string resolve_rally_car_name(const std::string& raw) {
+  if (raw.empty()) return "Rally Spec Car";
+  const std::string mapped = car_name(raw);
+  if (!mapped.empty() && mapped != raw) return mapped;
+  // Detect raw MEDIA_ID_YY pattern (underscores + uppercase).
+  if (raw.find('_') == std::string::npos) return raw;
+  static const std::pair<const char*, const char*> kKnown[] = {
+      {"SUB_IMPREZA22B_98", "1998 Subaru Impreza 22B STi"},
+      {"SUB_IMPREZAWRX_05", "2005 Subaru Impreza WRX STi"},
+      {"SUB_WRXSTI_11", "2011 Subaru WRX STI"},
+      {"MIT_LANCEREVO6_99", "1999 Mitsubishi Lancer Evo VI GSR"},
+      {"MIT_LANCEREVO10_08", "2008 Mitsubishi Lancer Evo X GSR"},
+      {"FOR_ESCORTCOSWORTH_92", "1992 Ford Escort RS Cosworth"},
+      {"FOR_SVTRAPTOR_11", "2011 Ford F-150 SVT Raptor"},
+      {"LAN_037STRADALE_82", "1982 Lancia 037 Stradale"},
+      {"LAN_DELTAS4_86", "1986 Lancia Delta S4"},
+      {"AUD_SPORTQUATTRO_83", "1983 Audi Sport Quattro"},
+      {"PEU_205TURBO16_84", "1984 Peugeot 205 Turbo 16"},
+      {"TOY_CELICAGT4_94", "1994 Toyota Celica GT-Four ST205"},
   };
+  for (const auto& [k, v] : kKnown) {
+    if (raw == k) return v;
+  }
+  std::string out;
+  for (char c : raw) out.push_back(c == '_' ? ' ' : c);
+  return out;
+}
 
+// CoDriverIconSet.xds is a 4x4 sprite atlas of right-turn & hazard pace-note glyphs.
+// Left turns mirror the right-turn cell horizontally (swap u0 <-> u1).
+bool codriver_atlas_cell(race::PaceIconKind kind, int& col, int& row, bool& mirror_x) {
+  mirror_x = false;
   switch (kind) {
-    case race::PaceIconKind::kEasyLeft:
-    case race::PaceIconKind::kEasyRight: {
-      const float s = (kind == race::PaceIconKind::kEasyRight) ? 1.0f : -1.0f;
-      // Gentle bend up-and-outward.
-      out.line(cx - s * r * 0.15f, cy + r * 0.65f, cx - s * r * 0.15f, cy + r * 0.05f, lw, col);
-      out.line(cx - s * r * 0.15f, cy + r * 0.05f, cx + s * r * 0.42f, cy - r * 0.58f, lw, col);
-      arrow_head(cx + s * r * 0.42f, cy - r * 0.58f, s * 0.57f, -0.63f);
-      break;
-    }
-    case race::PaceIconKind::kMediumLeft:
-    case race::PaceIconKind::kMediumRight: {
-      const float s = (kind == race::PaceIconKind::kMediumRight) ? 1.0f : -1.0f;
-      // Medium 45-degree corner.
-      out.line(cx - s * r * 0.25f, cy + r * 0.65f, cx - s * r * 0.25f, cy + r * 0.05f, lw, col);
-      out.line(cx - s * r * 0.25f, cy + r * 0.05f, cx + s * r * 0.55f, cy - r * 0.40f, lw, col);
-      arrow_head(cx + s * r * 0.55f, cy - r * 0.40f, s * 0.80f, -0.45f);
-      break;
-    }
-    case race::PaceIconKind::kHardLeft:
-    case race::PaceIconKind::kHardRight: {
-      const float s = (kind == race::PaceIconKind::kHardRight) ? 1.0f : -1.0f;
-      // Tight bend (approx 75 deg).
-      out.line(cx - s * r * 0.35f, cy + r * 0.65f, cx - s * r * 0.35f, cy - r * 0.10f, lw, col);
-      out.line(cx - s * r * 0.35f, cy - r * 0.10f, cx + s * r * 0.58f, cy - r * 0.28f, lw, col);
-      arrow_head(cx + s * r * 0.58f, cy - r * 0.28f, s * 0.93f, -0.18f);
-      break;
-    }
-    case race::PaceIconKind::kSquareLeft:
-    case race::PaceIconKind::kSquareRight: {
-      const float s = (kind == race::PaceIconKind::kSquareRight) ? 1.0f : -1.0f;
-      // Crisp 90-degree square corner.
-      out.line(cx - s * r * 0.38f, cy + r * 0.65f, cx - s * r * 0.38f, cy - r * 0.22f, lw, col);
-      out.line(cx - s * r * 0.38f, cy - r * 0.22f, cx + s * r * 0.58f, cy - r * 0.22f, lw, col);
-      arrow_head(cx + s * r * 0.58f, cy - r * 0.22f, s, 0.0f);
-      break;
-    }
-    case race::PaceIconKind::kHairpinLeft:
-    case race::PaceIconKind::kHairpinRight: {
-      const float s = (kind == race::PaceIconKind::kHairpinRight) ? 1.0f : -1.0f;
-      // 180-degree U-turn hairpin.
-      const float x0 = cx - s * r * 0.34f;
-      const float x1 = cx + s * r * 0.34f;
-      out.line(x0, cy + r * 0.65f, x0, cy - r * 0.22f, lw, col);
-      out.arc(cx, cy - r * 0.22f, r * 0.34f, lw, -1.5708f, 1.5708f, col);
-      out.line(x1, cy - r * 0.22f, x1, cy + r * 0.45f, lw, col);
-      arrow_head(x1, cy + r * 0.45f, 0.0f, 1.0f);
-      break;
-    }
-    case race::PaceIconKind::kCrest: {
-      // Hill crest arch + dashed road line.
-      out.line(cx - r * 0.68f, cy + r * 0.35f, cx - r * 0.22f, cy - r * 0.35f, lw, col);
-      out.line(cx - r * 0.22f, cy - r * 0.35f, cx + r * 0.22f, cy - r * 0.35f, lw, col);
-      out.line(cx + r * 0.22f, cy - r * 0.35f, cx + r * 0.68f, cy + r * 0.35f, lw, col);
-      break;
-    }
-    case race::PaceIconKind::kJump: {
-      // Ramp + airborne chevron.
-      out.line(cx - r * 0.65f, cy + r * 0.45f, cx + r * 0.15f, cy - r * 0.15f, lw, col);
-      out.line(cx + r * 0.25f, cy - r * 0.32f, cx + r * 0.65f, cy - r * 0.45f, lw * 0.9f, col);
-      arrow_head(cx + r * 0.65f, cy - r * 0.45f, 0.4f, -0.13f);
-      break;
-    }
-    case race::PaceIconKind::kCaution: {
-      // Warning triangle + exclamation mark.
-      out.line(cx, cy - r * 0.62f, cx - r * 0.62f, cy + r * 0.55f, lw * 0.85f, col);
-      out.line(cx, cy - r * 0.62f, cx + r * 0.62f, cy + r * 0.55f, lw * 0.85f, col);
-      out.line(cx - r * 0.62f, cy + r * 0.55f, cx + r * 0.62f, cy + r * 0.55f, lw * 0.85f, col);
-      out.line(cx, cy - r * 0.24f, cx, cy + r * 0.18f, lw * 0.9f, col);
-      out.circle(cx, cy + r * 0.36f, lw * 0.55f, col);
-      break;
-    }
+    case race::PaceIconKind::kEasyLeft: mirror_x = true; [[fallthrough]];
+    case race::PaceIconKind::kEasyRight: col = 0; row = 0; return true;
+    case race::PaceIconKind::kMediumLeft: mirror_x = true; [[fallthrough]];
+    case race::PaceIconKind::kMediumRight: col = 1; row = 0; return true;
+    case race::PaceIconKind::kHardLeft: mirror_x = true; [[fallthrough]];
+    case race::PaceIconKind::kHardRight: col = 2; row = 0; return true;
+    case race::PaceIconKind::kSquareLeft: mirror_x = true; [[fallthrough]];
+    case race::PaceIconKind::kSquareRight: col = 3; row = 0; return true;
+    case race::PaceIconKind::kHairpinLeft: mirror_x = true; [[fallthrough]];
+    case race::PaceIconKind::kHairpinRight: col = 0; row = 1; return true;
+    case race::PaceIconKind::kCrest: col = 1; row = 1; return true;
+    case race::PaceIconKind::kJump: col = 2; row = 1; return true;
+    case race::PaceIconKind::kCaution: col = 3; row = 1; return true;
+    default: return false;
+  }
+}
+
+void draw_codriver_icon(ui::List& out, race::PaceIconKind kind, float x0, float y0, float x1, float y1, uint32_t col) {
+  std::array<float, 4> sheet{};
+  int cx = 0, cy = 0;
+  bool mirror_x = false;
+  if (codriver_atlas_cell(kind, cx, cy, mirror_x) &&
+      (ui_texture("HUD/RALLY/CODRIVERICONSET", sheet) || ui_texture("Hud/Rally/CoDriverIconSet", sheet))) {
+    const float du = (sheet[2] - sheet[0]) * 0.25f;
+    const float dv = (sheet[3] - sheet[1]) * 0.25f;
+    float u0 = sheet[0] + float(cx) * du;
+    float u1 = u0 + du;
+    const float v0 = sheet[1] + float(cy) * dv;
+    const float v1 = v0 + dv;
+    if (mirror_x) std::swap(u0, u1);
+    out.image(x0, y0, x1, y1, {u0, v0, u1, v1}, col);
+    return;
+  }
+  // Crisp sharp-edged fallback glyph when Rally DLC CoDriverIconSet.xds is absent (never stick-figure boxes).
+  const char* sym = "!";
+  switch (kind) {
+    case race::PaceIconKind::kEasyLeft: sym = "6L"; break;
+    case race::PaceIconKind::kEasyRight: sym = "6R"; break;
+    case race::PaceIconKind::kMediumLeft: sym = "4L"; break;
+    case race::PaceIconKind::kMediumRight: sym = "4R"; break;
+    case race::PaceIconKind::kHardLeft: sym = "2L"; break;
+    case race::PaceIconKind::kHardRight: sym = "2R"; break;
+    case race::PaceIconKind::kSquareLeft: sym = "90L"; break;
+    case race::PaceIconKind::kSquareRight: sym = "90R"; break;
+    case race::PaceIconKind::kHairpinLeft: sym = "HP L"; break;
+    case race::PaceIconKind::kHairpinRight: sym = "HP R"; break;
+    case race::PaceIconKind::kCrest: sym = "CRST"; break;
+    case race::PaceIconKind::kJump: sym = "JUMP"; break;
+    case race::PaceIconKind::kCaution: sym = "!"; break;
     default: break;
   }
+  const float h = y1 - y0;
+  ui::TextStyle ts = ui4::style(ui::Font::kE, h * 0.56f, col, ui::Align::kCenter);
+  ui4::fit_text(sym, ts, x1 - x0 - 4.0f, h * 0.28f);
+  out.text(0.5f * (x0 + x1), 0.5f * (y0 + y1) - 0.5f * ts.size, sym, ts);
 }
 
 }  // namespace
@@ -155,456 +156,353 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
   if (!st.active) return;
   const float u = h / 720.0f;
 
-  // 1. Top-center Co-Driver Pace-Note Strip.
+  // 1. Top-center Co-Driver Pace-Note Strip: real CoDriverIconSet.xds on slim sharp FH1
+  //    tilted HUDPILL01 / CRISPTAPE01 strips (ZERO 10px rounded orange boxes or stick figures!).
   if (st.pace.active && (!st.pace.icons.empty() || !st.pace.modifiers.empty())) {
     const size_t n_icons = std::min<size_t>(st.pace.icons.size(), 4);
     const float card_w = 78.0f * u;
-    const float card_h = 84.0f * u;
-    const float gap = 10.0f * u;
-    const float strip_w = n_icons > 0 ? (float(n_icons) * card_w + float(n_icons - 1) * gap) : 220.0f * u;
+    const float card_h = 78.0f * u;
+    const float gap = 8.0f * u;
+    const float strip_w = n_icons > 0 ? (float(n_icons) * card_w + float(n_icons - 1) * gap) : 210.0f * u;
     const float x0 = 0.5f * (w - strip_w);
-    const float y0 = 24.0f * u;
+    const float y0 = 26.0f * u;
 
-    // Backing bar behind pace-note icons.
-    const float pad = 12.0f * u;
-    const float mods_h = st.pace.modifiers.empty() ? 0.0f : 28.0f * u;
-    out.shadow(x0 - pad, y0 - 8.0f * u, x0 + strip_w + pad, y0 + card_h + mods_h + 12.0f * u,
-               ui::rgba(0, 0, 0, 140), 10.0f * u, 10.0f * u);
-    out.rect(x0 - pad, y0 - 8.0f * u, x0 + strip_w + pad, y0 + card_h + mods_h + 12.0f * u,
-             ui::rgba(14, 17, 23, 210), 10.0f * u);
-    out.frame(x0 - pad, y0 - 8.0f * u, x0 + strip_w + pad, y0 + card_h + mods_h + 12.0f * u,
-              ui::rgba(255, 184, 28, 120), 1.5f * u, 10.0f * u);
-
+    ui4::TiltScope tilt(out, 0.5f * w, y0 + 0.5f * card_h, ui4::kTiltRad * 0.5f);
     for (size_t i = 0; i < n_icons; ++i) {
       const auto& ic = st.pace.icons[i];
       const float ix = x0 + float(i) * (card_w + gap);
       const uint32_t accent = icon_accent_color(ic.kind);
-      const uint32_t bg = ic.active ? ui::rgba(32, 38, 48, 245) : ui::rgba(22, 26, 34, 220);
-      out.rect(ix, y0, ix + card_w, y0 + card_h, bg, 8.0f * u);
-      out.rect(ix, y0, ix + card_w, y0 + 5.0f * u, accent, 2.0f * u);
-      out.frame(ix, y0, ix + card_w, y0 + card_h, ic.active ? accent : kBorder, ic.active ? 2.2f * u : 1.0f * u,
-                8.0f * u);
-      draw_pace_symbol(out, ic.kind, ix + card_w * 0.5f, y0 + card_h * 0.44f, card_w * 0.34f, accent);
+      const uint32_t bg = ic.active ? ui4::kBrushBlack : ui4::kPillGrey;
+      out.rect(ix, y0, ix + card_w, y0 + card_h, bg);
+      out.rect(ix, y0, ix + card_w, y0 + 4.0f * u, accent);
+      if (ic.active) {
+        out.rect(ix, y0 + card_h - 3.0f * u, ix + card_w, y0 + card_h, ui4::kPink);
+      }
+      draw_codriver_icon(out, ic.kind, ix + 11.0f * u, y0 + 7.0f * u, ix + card_w - 11.0f * u, y0 + card_h - 22.0f * u,
+                         accent);
 
-      ui::TextStyle ts;
-      ts.size = 15.0f * u;
-      ts.color = kWhite;
-      ts.align = ui::Align::kCenter;
-      ts.font = ui::Font::kE;
-      out.text(ix + card_w * 0.5f, y0 + card_h - 21.0f * u, ic.label, ts);
+      ui::TextStyle ts = ui4::style(ui::Font::kE, 14.0f * u, kWhite, ui::Align::kCenter);
+      out.text(ix + card_w * 0.5f, y0 + card_h - 19.0f * u, ic.label, ts);
     }
 
-    // Modifier pills ("50M", "DON'T CUT", "CREST", "CAUTION", etc.).
+    // Modifier pills ("50M", "DON'T CUT", "CREST", "CAUTION") on slim sharp HUDPILL01.
     if (!st.pace.modifiers.empty()) {
-      const float my = y0 + card_h + 8.0f * u;
+      const float my = y0 + card_h + 6.0f * u;
       std::string mod_line;
       for (const auto& m : st.pace.modifiers) {
         if (!mod_line.empty()) mod_line += "   •   ";
         mod_line += m;
       }
-      ui::TextStyle ms;
-      ms.size = 14.0f * u;
-      ms.color = kRallyGold;
-      ms.align = ui::Align::kCenter;
-      ms.font = ui::Font::kB;
-      out.text(w * 0.5f, my + 2.0f * u, mod_line, ms);
+      ui::TextStyle ms = ui4::style(ui::Font::kE, 13.0f * u, ui4::kYellow, ui::Align::kCenter);
+      const float mw = std::max(140.0f * u, ui::List::measure(mod_line, ms) + 34.0f * u);
+      ui4::pill(out, 0.5f * w - 0.5f * mw, my, 0.5f * w + 0.5f * mw, my + 24.0f * u, ui4::kBrushBlack,
+                ui4::PillKind::kHud01);
+      out.text(w * 0.5f, my + 5.0f * u, mod_line, ms);
     }
   }
 
-  // 2. Top-right Rally Stage Split Timer & Stage Progress (UI4 gritty charcoal panel).
-  const float rw = 336.0f * u;
-  const float rx1 = w - 24.0f * u;
+  // 2. Top-right Rally Stage Split Timer & Stage Progress (slim sharp HUDPILL01 rows, ZERO rounded rects!).
+  const float rw = 292.0f * u;
+  const float rx1 = w - 64.0f * u;
   const float rx0 = rx1 - rw;
-  const float ry0 = 24.0f * u;
-  const float rh = (st.last_split_age < 4.5 && st.splits_passed > 0) ? 124.0f * u : 92.0f * u;
+  const float ry0 = 32.0f * u;
 
-  ui4::panel(out, rx0, ry0, rx1, ry0 + rh, u, ui4::kCharcoalDark, kRallyGold, 0, true);
-
+  // Stage header brush strip
   {
-    ui::TextStyle hs;
-    hs.size = 11.5f * u;
-    hs.color = kRallyGold;
-    hs.font = ui::Font::kE;
+    ui4::TiltScope stilt(out, 0.5f * (rx0 + rx1), ry0 + 13.0f * u, ui4::kTiltRad * 0.5f);
+    ui4::brush(out, rx0, ry0, rx1, ry0 + 26.0f * u, ui4::kBrushBlack, false);
     char hdr[96];
-    std::snprintf(hdr, sizeof hdr, "STAGE %d / %d  •  %s", st.stage_number, st.total_stages,
+    std::snprintf(hdr, sizeof hdr, "STAGE %d/%d  %s", st.stage_number, st.total_stages,
                   st.championship_name.empty() ? "HORIZON RALLY" : st.championship_name.c_str());
-    out.text(rx0 + 12.0f * u, ry0 + 10.0f * u, hdr, hs);
-  }
-  {
-    ui::TextStyle cs;
-    cs.size = 24.0f * u;
-    cs.color = kWhite;
-    cs.font = ui::Font::kE;
-    out.text(rx0 + 12.0f * u, ry0 + 30.0f * u, rally_time_str(std::max(0.0, st.stage_clock)), cs);
-
-    ui::TextStyle ps;
-    ps.size = 14.0f * u;
-    ps.color = kMuted;
-    ps.align = ui::Align::kRight;
-    ps.font = ui::Font::kB;
-    char pct[24];
-    std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(std::clamp(st.progress, 0.0, 1.0) * 100.0)));
-    out.text(rx1 - 12.0f * u, ry0 + 36.0f * u, pct, ps);
+    ui::TextStyle hs = ui4::style(ui::Font::kE, 12.0f * u, kRallyGold);
+    ui4::fit_text(hdr, hs, rw - 20.0f * u, 8.5f * u);
+    out.text(rx0 + 12.0f * u, ry0 + 7.0f * u, hdr, hs);
   }
 
-  // 4-split progress bar segments (5 sectors).
+  // Live clock + percent pill
+  const float cy0 = ry0 + 30.0f * u;
+  ui4::pill(out, rx0, cy0, rx1, cy0 + 32.0f * u, ui4::kPillGrey, ui4::PillKind::kHud01);
+  out.text(rx0 + 12.0f * u, cy0 + 5.0f * u, rally_time_str(std::max(0.0, st.stage_clock)),
+           ui4::style(ui::Font::kE, 21.0f * u, kWhite));
+  char pct[24];
+  std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(std::clamp(st.progress, 0.0, 1.0) * 100.0)));
+  out.text(rx1 - 12.0f * u, cy0 + 9.0f * u, pct, ui4::style(ui::Font::kB, 14.0f * u, ui4::kYellow, ui::Align::kRight));
+
+  // Sharp flat 4-split sector bar (ZERO corner radius).
   const int sectors = std::max(1, st.total_splits + 1);
-  const float bar_x0 = rx0 + 12.0f * u;
-  const float bar_w = rw - 24.0f * u;
-  const float bar_y = ry0 + 66.0f * u;
-  const float seg_gap = 4.0f * u;
-  const float seg_w = (bar_w - seg_gap * float(sectors - 1)) / float(sectors);
+  const float bar_y = cy0 + 36.0f * u;
+  const float seg_gap = 3.0f * u;
+  const float seg_w = (rw - seg_gap * float(sectors - 1)) / float(sectors);
   for (int i = 0; i < sectors; ++i) {
-    const float sx0 = bar_x0 + float(i) * (seg_w + seg_gap);
+    const float sx0 = rx0 + float(i) * (seg_w + seg_gap);
     const float sec_lo = float(i) / float(sectors);
     const float sec_hi = float(i + 1) / float(sectors);
     const float fill = std::clamp((float(st.progress) - sec_lo) / std::max(1e-4f, sec_hi - sec_lo), 0.0f, 1.0f);
-    out.rect(sx0, bar_y, sx0 + seg_w, bar_y + 10.0f * u, ui::rgba(52, 60, 74, 220), 2.0f * u);
+    out.rect(sx0, bar_y, sx0 + seg_w, bar_y + 7.0f * u, ui::rgba(33, 33, 33, 210));
     if (fill > 0.001f) {
-      const uint32_t col = (i < st.splits_passed) ? kRallyGreen : kRallyGold;
-      out.rect(sx0, bar_y, sx0 + seg_w * fill, bar_y + 10.0f * u, col, 2.0f * u);
+      const uint32_t col = (i < st.splits_passed) ? kRallyGreen : ui4::kPink;
+      out.rect(sx0, bar_y, sx0 + seg_w * fill, bar_y + 7.0f * u, col);
     }
   }
 
-  // Live split delta callout banner.
+  // Live split delta callout strip (sharp HUDPILL02, ZERO rounded frame).
   if (st.last_split_age < 4.5 && st.splits_passed > 0) {
-    const float dy = ry0 + 86.0f * u;
+    const float dy = bar_y + 12.0f * u;
     const bool faster = st.last_split_delta <= 0.0;
-    const uint32_t dcol = faster ? kRallyGreen : kRallyRed;
-    out.rect(rx0 + 12.0f * u, dy, rx1 - 12.0f * u, dy + 26.0f * u, ui::fade(dcol, 0.22), 4.0f * u);
-    out.frame(rx0 + 12.0f * u, dy, rx1 - 12.0f * u, dy + 26.0f * u, dcol, 1.2f * u, 4.0f * u);
-    ui::TextStyle ds;
-    ds.size = 15.0f * u;
-    ds.color = dcol;
-    ds.font = ui::Font::kE;
+    const uint32_t dcol = faster ? kRallyGreen : ui4::kPink;
+    ui4::pill(out, rx0, dy, rx1, dy + 26.0f * u, dcol, ui4::PillKind::kHud02);
     char dbuf[64];
     std::snprintf(dbuf, sizeof dbuf, "SPLIT %d   %+.2fs", st.splits_passed, st.last_split_delta);
-    ds.align = ui::Align::kCenter;
-    out.text(rx0 + rw * 0.5f, dy + 5.0f * u, dbuf, ds);
+    out.text(rx0 + rw * 0.5f, dy + 6.0f * u, dbuf,
+             ui4::style(ui::Font::kE, 14.0f * u, faster ? ui4::kInk : kWhite, ui::Align::kCenter));
   }
 }
 
 void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
-  ui4::subtle_vignette(out, w, h, 0.36f);
+  const SceneFrame f{0.5f * w - 640.0f * u, 0.5f * h - 360.0f * u, u};
+  ui4::subtle_vignette(out, w, h, 0.28f);
 
-  const float mx = 46.0f * u;
-  const float my = 32.0f * u;
-  const float pw = w - 2.0f * mx;
-  const float ph = h - 2.0f * my;
+  // Drive from H_STREET_RACE_HUB (+3.0 deg horizontal tilted Event Ticket cards,
+  // clean open Colorado behind, ZERO rounded kPanelAlt boxes!).
+  const fh1::UiScene* hub_sc = ui_scene("H_STREET_RACE_HUB");
+  (void)hub_sc;
 
-  ui4::panel(out, mx, my, mx + pw, my + ph, u, ui4::kCharcoalDark, kRallyGold, 0, true);
+  // Top-right Career Strip (Wristband + Car + Credits).
+  ui4::CareerStripData csd;
+  csd.band_name = st.wristband_name.empty() ? "YELLOW WRISTBAND" : st.wristband_name;
+  csd.band_next = st.rally_level >= 1 ? "" : "RALLY CHAMPION";
+  csd.band_level = std::max(1, st.rally_level);
+  csd.band_points = st.rally_xp;
+  csd.band_hi = st.next_level_xp;
+  csd.car_name = resolve_rally_car_name(st.car_name);
+  csd.car_class = st.car_class;
+  csd.car_pi = st.car_pi;
+  csd.credits = st.credits;
+  ui4::career_strip(out, csd, w, h);
 
-  // Authentic tilted FH1 UI4 banner header.
-  ui4::title_banner(out, u, mx + 22.0f * u, my + 28.0f * u, "HORIZON RALLY HUB", "COLORADO DIRT EXPANSION", true,
-                    540.0f);
+  // Tilted +3.0 deg H_STREET_RACE_HUB title + horizontal ticket carousel.
   {
-    ui::TextStyle sub;
-    sub.size = 13.0f * u;
-    sub.color = kMuted;
-    sub.font = ui::Font::kB;
-    char sbuf[160];
-    std::snprintf(sbuf, sizeof sbuf, "%s  •  %d XP / %d XP  •  %d WINS  •  %d STAGES  •  %s CR",
-                  st.wristband_name.c_str(), st.rally_xp, st.next_level_xp > 0 ? st.next_level_xp : st.rally_xp,
-                  st.num_victories, st.num_stages, thousands(st.credits).c_str());
-    out.text(mx + 28.0f * u, my + 56.0f * u, sbuf, sub);
+    ui4::TiltScope tilt(out, f.x(640.0f), f.y(380.0f), ui4::kTiltRad);
 
-    // Rally XP progress bar (top right).
-    const float bx1 = mx + pw - 26.0f * u;
-    const float bx0 = bx1 - 240.0f * u;
-    const float by = my + 34.0f * u;
-    out.rect(bx0, by, bx1, by + 12.0f * u, ui::rgba(46, 54, 66, 220), 4.0f * u);
-    const float frac = st.next_level_xp > 0 ? std::clamp(float(st.rally_xp) / float(st.next_level_xp), 0.0f, 1.0f) : 1.0f;
-    if (frac > 0.0f) out.rect(bx0, by, bx0 + (bx1 - bx0) * frac, by + 12.0f * u, kRallyGold, 4.0f * u);
-    ui::TextStyle xs;
-    xs.size = 11.0f * u;
-    xs.color = kWhite;
-    xs.align = ui::Align::kRight;
-    xs.font = ui::Font::kB;
-    out.text(bx1, by - 16.0f * u, st.rally_level >= 1 ? "RALLY CHAMPION" : "NEXT: RALLY CHAMPION (310 XP)", xs);
-  }
+    // TitleTapeText ("HORIZON RALLY HUB")
+    ui4::brush(out, f.x(84.0f), f.y(104.0f), f.x(560.0f), f.y(162.0f), ui4::kPink, true);
+    out.text(f.x(106.0f), f.y(115.0f), "HORIZON RALLY", ui4::style(ui::Font::kE, 38.0f * u, kWhite));
 
-  // Left column: Event & Hub Actions list.
-  const float lx0 = mx + 26.0f * u;
-  const float lw = pw * 0.52f;
-  const float ly0 = my + 88.0f * u;
-  const float row_h = 44.0f * u;
-  const float row_gap = 6.0f * u;
+    // Horizontal tilted Event Ticket cards (up to 4 visible, centered around selected).
+    const int n = int(st.items.size());
+    const int vis = std::min(4, n);
+    const int start = std::clamp(st.selected - 1, 0, std::max(0, n - vis));
+    const float card_w = 264.0f * u;
+    const float card_h = 286.0f * u;
+    const float gap = 20.0f * u;
+    const float row_x0 = f.x(88.0f);
+    const float row_y0 = f.y(194.0f);
 
-  for (size_t i = 0; i < st.items.size(); ++i) {
-    const auto& it = st.items[i];
-    const float y = ly0 + float(i) * (row_h + row_gap);
-    if (y + row_h > my + ph - 52.0f * u) break;
-    const bool sel = int(i) == st.selected;
-    const uint32_t bg = sel ? ui::rgba(255, 184, 28, 46) : kPanelAlt;
-    const uint32_t brd = sel ? kRallyGold : kBorder;
-    out.rect(lx0, y, lx0 + lw, y + row_h, bg, 6.0f * u);
-    if (sel) out.rect(lx0, y, lx0 + 5.0f * u, y + row_h, kRallyGold, 2.0f * u);
-    out.frame(lx0, y, lx0 + lw, y + row_h, brd, sel ? 1.8f * u : 1.0f * u, 6.0f * u);
+    std::array<float, 4> dirt_top{}, shadow_uv{}, largetape{};
+    const bool has_dirt_top = ui_texture("KITPARTS/TICKETDIRTTOPSR", dirt_top);
+    const bool has_shadow = ui_texture("KITPARTS/DROPSHADOW", shadow_uv);
+    const bool has_ltape = ui_texture("KITPARTS/LARGETAPE", largetape);
 
-    // Class badge.
-    if (!it.class_badge.empty()) {
-      const uint32_t bcol = it.unlocked ? kRallyOrange : ui::rgba(90, 96, 108, 220);
-      out.rect(lx0 + 12.0f * u, y + 9.0f * u, lx0 + 62.0f * u, y + row_h - 9.0f * u, bcol, 4.0f * u);
-      ui::TextStyle bs;
-      bs.size = 13.0f * u;
-      bs.color = kWhite;
-      bs.align = ui::Align::kCenter;
-      bs.font = ui::Font::kE;
-      out.text(lx0 + 37.0f * u, y + 14.0f * u, it.class_badge, bs);
-    }
+    for (int k = 0; k < vis; ++k) {
+      const int idx = start + k;
+      const auto& it = st.items[size_t(idx)];
+      const bool sel = (idx == st.selected);
+      const float cx0 = row_x0 + float(k) * (card_w + gap);
+      const float cy0 = sel ? (row_y0 - 14.0f * u) : row_y0;
+      const float cx1 = cx0 + card_w;
+      const float cy1 = cy0 + card_h;
 
-    ui::TextStyle ts;
-    ts.size = 16.0f * u;
-    ts.color = it.unlocked ? (sel ? kWhite : ui::rgba(224, 230, 238, 255)) : kMuted;
-    ts.font = ui::Font::kE;
-    out.text(lx0 + 74.0f * u, y + 13.0f * u, it.title, ts);
-
-    if (!it.status_badge.empty()) {
-      ui::TextStyle st_s;
-      st_s.size = 12.0f * u;
-      st_s.align = ui::Align::kRight;
-      st_s.font = ui::Font::kB;
-      st_s.color = !it.unlocked ? kRallyRed : (!it.eligible ? kRallyOrange : kRallyGreen);
-      out.text(lx0 + lw - 14.0f * u, y + 15.0f * u, it.status_badge, st_s);
-    }
-  }
-
-  // Right column: Selected item detail + current car Rally Readiness card.
-  const float rx0 = lx0 + lw + 22.0f * u;
-  const float rx1 = mx + pw - 26.0f * u;
-  const float rw = rx1 - rx0;
-
-  // Top right card: Selected championship / action details.
-  const float dy0 = ly0;
-  const float dh = 276.0f * u;
-  out.rect(rx0, dy0, rx1, dy0 + dh, kPanelAlt, 8.0f * u);
-  out.frame(rx0, dy0, rx1, dy0 + dh, kBorder, 1.0f * u, 8.0f * u);
-
-  if (st.selected >= 0 && size_t(st.selected) < st.items.size()) {
-    const auto& sel = st.items[size_t(st.selected)];
-    ui::TextStyle dt;
-    dt.size = 20.0f * u;
-    dt.color = kRallyGold;
-    dt.font = ui::Font::kE;
-    out.text(rx0 + 16.0f * u, dy0 + 16.0f * u, sel.title, dt);
-
-    ui::TextStyle body;
-    body.size = 13.0f * u;
-    body.color = kWhite;
-    body.font = ui::Font::kB;
-    float y = dy0 + 48.0f * u;
-
-    if (sel.kind == RallyHubItem::kChampionship || sel.kind == RallyHubItem::kHeats) {
-      char meta[128];
-      std::snprintf(meta, sizeof meta, "CLASS: %s   •   PRIZE: %s CR   •   STAGES: %d", sel.class_badge.c_str(),
-                    thousands(sel.cash_prize).c_str(), sel.stages);
-      out.text(rx0 + 16.0f * u, y, meta, body);
-      y += 26.0f * u;
-
-      if (!sel.lock_reason.empty()) {
-        ui::TextStyle ws = body;
-        ws.color = kRallyRed;
-        out.text(rx0 + 16.0f * u, y, "GATE: " + sel.lock_reason, ws);
-        y += 24.0f * u;
+      if (has_shadow) {
+        out.image(cx0 - 8.0f * u, cy0 + 8.0f * u, cx1 + 10.0f * u, cy1 + 14.0f * u, shadow_uv,
+                  ui::rgba(0, 0, 0, sel ? 185 : 120));
+      } else {
+        out.rect(cx0 + 5.0f * u, cy0 + 7.0f * u, cx1 + 5.0f * u, cy1 + 7.0f * u, ui::rgba(0, 0, 0, 125));
       }
 
-      ui::TextStyle sh = body;
-      sh.color = kMuted;
-      out.text(rx0 + 16.0f * u, y, "STAGE SCHEDULE:", sh);
-      y += 22.0f * u;
-      for (size_t k = 0; k < sel.stage_names.size() && k < 4; ++k) {
-        char sl[128];
-        std::snprintf(sl, sizeof sl, "  %zu.  %s", k + 1, sel.stage_names[k].c_str());
-        out.text(rx0 + 16.0f * u, y, sl, body);
-        y += 22.0f * u;
+      // Ticket body (#0E0E0E sharp distressed card).
+      out.rect(cx0, cy0, cx1, cy1, ui4::kCharcoalDark);
+
+      // Top artwork zone: real RallyTickets/00N or EventTickets/FestivalRaces artwork!
+      const float art_h = 128.0f * u;
+      std::array<float, 4> art_uv{};
+      char rtk[64];
+      std::snprintf(rtk, sizeof rtk, "EVENTTICKETS/RALLYTICKETS/%03d", (idx % 8) + 1);
+      const bool has_art = ui_texture(rtk, art_uv) ||
+                           ui_texture("EVENTTICKETS/STREETRACES/SR_0" + std::to_string((idx % 9) + 1), art_uv) ||
+                           ui_texture("LOADING/BGLOADINGIMAGES/IMAGE" + std::to_string((idx % 10) + 1), art_uv);
+      if (has_art) {
+        out.image(cx0, cy0, cx1, cy0 + art_h, art_uv, it.unlocked ? kWhite : ui::rgba(110, 114, 122, 220));
+      } else {
+        out.rect(cx0, cy0, cx1, cy0 + art_h, sel ? ui::rgba(58, 22, 38, 255) : ui::rgba(32, 34, 40, 255));
       }
-    } else if (sel.kind == RallyHubItem::kFitRallyKit) {
-      out.text(rx0 + 16.0f * u, y, "INSTALL COMPLETE HORIZON RALLY CONVERSION KIT:", body);
-      y += 26.0f * u;
-      out.text(rx0 + 16.0f * u, y, "  • RALLY TIRES (COMPOUND 9) — REQUIRED FOR 0x80 EVENTS", body);
-      y += 22.0f * u;
-      out.text(rx0 + 16.0f * u, y, "  • RALLY SUSPENSION (RAISED GRAVEL RIDE HEIGHT)", body);
-      y += 22.0f * u;
-      out.text(rx0 + 16.0f * u, y, "  • RALLY TRANSMISSION (CLOSE RATIO, -0.15S SHIFT)", body);
-      y += 22.0f * u;
-      out.text(rx0 + 16.0f * u, y, "  • OPTIONAL RALLY AERO & LIGHT PODS (WHERE SUPPORTED)", body);
-      y += 28.0f * u;
-      char cbuf[96];
-      std::snprintf(cbuf, sizeof cbuf, "TOTAL CONVERSION COST: %s CR", thousands(st.rally_kit_cost).c_str());
-      ui::TextStyle cs = body;
-      cs.color = kRallyGold;
-      out.text(rx0 + 16.0f * u, y, cbuf, cs);
-    } else if (sel.kind == RallyHubItem::kFreeRoam) {
-      out.text(rx0 + 16.0f * u, y, "DRIVE FREELY ACROSS COLORADO DIRT GRAVEL ROADS", body);
-    } else {
-      out.text(rx0 + 16.0f * u, y, "SEAMLESSLY RETURN TO COLORADO FESTIVAL FREE ROAM", body);
+      if (has_dirt_top) {
+        out.image(cx0, cy0, cx1, cy0 + art_h, dirt_top, ui::rgba(255, 255, 255, 90));
+      }
+
+      // LARGETAPE header banner across ticket midpoint (#F90064 selected / #212121 unselected).
+      const float ty0 = cy0 + art_h - 14.0f * u;
+      const float ty1 = ty0 + 38.0f * u;
+      const uint32_t tape_col = sel ? ui4::kPink : ui4::kPillGrey;
+      if (has_ltape) {
+        out.image(cx0 - 4.0f * u, ty0, cx1 + 4.0f * u, ty1, largetape, tape_col);
+      } else {
+        ui4::brush(out, cx0 - 4.0f * u, ty0, cx1 + 4.0f * u, ty1, tape_col, false);
+      }
+      ui::TextStyle tt = ui4::style(ui::Font::kE, 16.0f * u, kWhite);
+      ui4::fit_text(it.title, tt, card_w - 20.0f * u, 10.0f * u);
+      out.text(cx0 + 10.0f * u, ty0 + 0.5f * (ty1 - ty0 - tt.size), it.title, tt);
+
+      // Class badge + Prize + Stages + Status strip (all sharp, zero rounded boxes).
+      if (!it.class_badge.empty()) {
+        out.rect(cx0 + 10.0f * u, ty1 + 10.0f * u, cx0 + 66.0f * u, ty1 + 32.0f * u,
+                 it.unlocked ? kRallyOrange : ui::rgba(80, 84, 92, 230));
+        out.text(cx0 + 38.0f * u, ty1 + 15.0f * u, it.class_badge,
+                 ui4::style(ui::Font::kE, 12.5f * u, kWhite, ui::Align::kCenter));
+      }
+      if (!it.status_badge.empty()) {
+        const uint32_t scol = !it.unlocked ? kRallyRed : (!it.eligible ? kRallyOrange : ui4::kYellow);
+        out.text(cx1 - 10.0f * u, ty1 + 15.0f * u, it.status_badge,
+                 ui4::style(ui::Font::kE, 12.0f * u, scol, ui::Align::kRight));
+      }
+      if (it.cash_prize > 0) {
+        out.text(cx0 + 10.0f * u, ty1 + 44.0f * u, thousands(it.cash_prize) + " Cr",
+                 ui4::style(ui::Font::kE, 19.0f * u, ui4::kYellow, ui::Align::kLeft, true));
+      }
+      if (it.stages > 0) {
+        char sbuf[48];
+        std::snprintf(sbuf, sizeof sbuf, "%d STAGE%s", it.stages, it.stages == 1 ? "" : "S");
+        out.text(cx1 - 10.0f * u, ty1 + 48.0f * u, sbuf,
+                 ui4::style(ui::Font::kB, 12.0f * u, kMuted, ui::Align::kRight));
+      }
+      if (!it.stage_names.empty()) {
+        ui::TextStyle ss = ui4::style(ui::Font::kB, 11.5f * u, kWhite);
+        ui4::fit_text(it.stage_names.front(), ss, card_w - 20.0f * u, 8.5f * u);
+        out.text(cx0 + 10.0f * u, ty1 + 76.0f * u, it.stage_names.front(), ss);
+      }
+      if (!it.lock_reason.empty()) {
+        ui::TextStyle ws = ui4::style(ui::Font::kB, 10.5f * u, kRallyRed);
+        ui4::fit_text(it.lock_reason, ws, card_w - 20.0f * u, 8.0f * u);
+        out.text(cx0 + 10.0f * u, cy1 - 24.0f * u, it.lock_reason, ws);
+      }
+      if (sel) {
+        out.rect(cx0, cy0, cx1, cy0 + 4.0f * u, ui4::kPink);
+        out.rect(cx0, cy1 - 4.0f * u, cx1, cy1, ui4::kPink);
+      }
     }
+
+    // Compact bottom-tilted Rally Readiness PILL02 strip (no rounded boxes!).
+    const float ry0 = f.y(510.0f);
+    ui4::pill(out, f.x(88.0f), ry0, f.x(1188.0f), ry0 + 36.0f * u, ui4::kPillGrey, ui4::PillKind::kHud01);
+    const std::string ready_txt =
+        st.kit_status.is_rally_upgraded
+            ? ("RALLY SPEC READY  •  " + resolve_rally_car_name(st.car_name) + "  •  TIRES / SUSPENSION / TRANS")
+            : ("RALLY KIT REQUIRED (0x80)  •  FIT RALLY TIRES (" + thousands(st.rally_kit_cost) + " Cr)");
+    out.text(f.x(104.0f), ry0 + 11.0f * u, ready_txt,
+             ui4::style(ui::Font::kB, 13.5f * u, st.kit_status.is_rally_upgraded ? kRallyGreen : kRallyOrange));
   }
 
-  // Bottom right card: Active Car Rally Readiness (0x80).
-  const float cy0 = dy0 + dh + 16.0f * u;
-  const float cy1 = my + ph - 52.0f * u;
-  out.rect(rx0, cy0, rx1, cy1, kPanelAlt, 8.0f * u);
-  out.frame(rx0, cy0, rx1, cy1, st.kit_status.is_rally_upgraded ? kRallyGreen : kRallyOrange, 1.4f * u, 8.0f * u);
-
-  {
-    ui::TextStyle ct;
-    ct.size = 15.0f * u;
-    ct.color = kWhite;
-    ct.font = ui::Font::kE;
-    char car_hdr[128];
-    std::snprintf(car_hdr, sizeof car_hdr, "ACTIVE CAR: %s  [%s %d]", st.car_name.c_str(), st.car_class.c_str(),
-                  st.car_pi);
-    out.text(rx0 + 16.0f * u, cy0 + 14.0f * u, car_hdr, ct);
-
-    ui::TextStyle st_s;
-    st_s.size = 13.0f * u;
-    st_s.font = ui::Font::kB;
-    st_s.color = st.kit_status.is_rally_upgraded ? kRallyGreen : kRallyOrange;
-    out.text(rx0 + 16.0f * u, cy0 + 40.0f * u,
-             st.kit_status.is_rally_upgraded ? "RALLY SPEC ELIGIBLE (0x80 PASS)" : "NOT RALLY-UPGRADED (NEEDS RALLY TIRES)",
-             st_s);
-
-    auto pill = [&](float px, float py, const char* lbl, bool ok) {
-      const float pw_p = (rw - 44.0f * u) * 0.5f;
-      out.rect(px, py, px + pw_p, py + 24.0f * u, ok ? ui::fade(kRallyGreen, 0.2) : ui::rgba(50, 56, 66, 200), 4.0f * u);
-      ui::TextStyle ps;
-      ps.size = 12.0f * u;
-      ps.color = ok ? kRallyGreen : kMuted;
-      ps.font = ui::Font::kB;
-      out.text(px + 8.0f * u, py + 5.0f * u, std::string(ok ? "[OK] " : "[--] ") + lbl, ps);
-    };
-    pill(rx0 + 16.0f * u, cy0 + 68.0f * u, "RALLY TIRES", st.kit_status.has_rally_tyres);
-    pill(rx0 + 28.0f * u + (rw - 44.0f * u) * 0.5f, cy0 + 68.0f * u, "RALLY SUSPENSION",
-         st.kit_status.has_rally_suspension);
-    pill(rx0 + 16.0f * u, cy0 + 98.0f * u, "RALLY TRANSMISSION", st.kit_status.has_rally_transmission);
-    pill(rx0 + 28.0f * u + (rw - 44.0f * u) * 0.5f, cy0 + 98.0f * u, "RALLY AERO / PODS",
-         st.kit_status.optional_aero_fitted > 0);
-  }
-
-  // Footer.
-  ui::TextStyle ft;
-  ft.size = 13.0f * u;
-  ft.color = !st.notice.empty() ? kRallyGold : kMuted;
-  ft.font = ui::Font::kB;
-  out.text(mx + 26.0f * u, my + ph - 32.0f * u,
-           !st.notice.empty() ? st.notice : "UP/DOWN SELECT   •   ENTER / [A] CONFIRM   •   ESC / [B] CLOSE", ft);
+  ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD_LR", "BROWSE"}, {"B", "BACK"}}, w, h);
 }
 
 void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
-  ui4::subtle_vignette(out, w, h, 0.38f);
+  const SceneFrame f{0.5f * w - 640.0f * u, 0.5f * h - 360.0f * u, u};
+  ui4::subtle_vignette(out, w, h, 0.34f);
 
-  const float mx = 46.0f * u;
-  const float my = 30.0f * u;
-  const float pw = w - 2.0f * mx;
-  const float ph = h - 76.0f * u;
-
-  ui4::panel(out, mx, my, mx + pw, my + ph, u, ui4::kCharcoalDark, kRallyOrange, 0, true);
-
-  // Iconic tilted FH1 UI4 screen banner.
+  // Tilted +3.0 deg FH1 Service Area layout (open Colorado backdrop, ZERO opaque full-screen wall!).
   {
     char eyebrow[128];
     std::snprintf(eyebrow, sizeof eyebrow, "%s  •  STAGE %d OF %d COMPLETE", st.championship_name.c_str(),
                   st.completed_stage, st.total_stages);
-    ui4::title_banner(out, u, mx + 22.0f * u, my + 28.0f * u, "SERVICE AREA", eyebrow, true, 560.0f);
+    ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f), "SERVICE AREA", eyebrow, true, 540.0f);
 
-    // Top-right next-stage distressed off-white pill.
-    const float nx1 = mx + pw - 22.0f * u;
-    const float nx0 = nx1 - 360.0f * u;
-    ui4::offwhite_strip(out, nx0, my + 24.0f * u, nx1, my + 56.0f * u, u, true);
-    ui::TextStyle ns = ui4::style(ui::Font::kE, 13.5f * u, ui4::kInk, ui::Align::kRight);
-    out.text(nx1 - 14.0f * u, my + 33.0f * u, "NEXT: " + st.next_stage_name, ns);
+    // Top-right next-stage off-white distressed strip.
+    ui4::TiltScope nt(out, f.x(1020.0f), f.y(66.0f), ui4::kTiltRad * 0.6f);
+    ui4::offwhite_strip(out, f.x(820.0f), f.y(48.0f), f.x(1206.0f), f.y(82.0f), u, true);
+    ui::TextStyle ns = ui4::style(ui::Font::kE, 14.0f * u, ui4::kInk, ui::Align::kRight);
+    ui4::fit_text("NEXT: " + st.next_stage_name, ns, 366.0f * u, 9.5f * u);
+    out.text(f.x(1194.0f), f.y(58.0f), "NEXT: " + st.next_stage_name, ns);
   }
 
-  // Left side: Stage summary, damage bar, and 4 Service Area brush menu items.
-  const float lx0 = mx + 24.0f * u;
-  const float lw = pw * 0.42f;
-  const float ly0 = my + 98.0f * u;
+  ui4::TiltScope screen_tilt(out, f.x(640.0f), f.y(380.0f), ui4::kTiltRad);
 
-  ui4::panel(out, lx0, ly0, lx0 + lw, ly0 + 146.0f * u, u, ui4::kCharcoal, 0, kRallyGold, true);
+  // Left side: Stage summary pills + Damage strip + 4 tilted brush actions.
+  const float lx0 = f.x(76.0f), lw = 452.0f * u, ly0 = f.y(152.0f);
+  ui4::panel(out, lx0, ly0, lx0 + lw, ly0 + 124.0f * u, u, ui4::kCharcoalDark, kRallyGold, 0, true);
   {
-    ui::TextStyle lb = ui4::style(ui::Font::kB, 12.5f * u, ui4::kDim);
-    ui::TextStyle vl = ui4::style(ui::Font::kE, 20.0f * u, ui4::kWhite);
+    ui::TextStyle lb = ui4::style(ui::Font::kB, 11.5f * u, ui4::kDim);
+    ui::TextStyle vl = ui4::style(ui::Font::kE, 19.0f * u, ui4::kWhite);
 
-    out.text(lx0 + 18.0f * u, ly0 + 14.0f * u, "STAGE TIME", lb);
-    out.text(lx0 + 18.0f * u, ly0 + 32.0f * u, rally_time_str(st.last_stage_time), vl);
+    out.text(lx0 + 16.0f * u, ly0 + 12.0f * u, "STAGE TIME", lb);
+    out.text(lx0 + 16.0f * u, ly0 + 29.0f * u, rally_time_str(st.last_stage_time), vl);
 
-    out.text(lx0 + lw * 0.54f, ly0 + 14.0f * u, "STAGE PLACE", lb);
+    out.text(lx0 + lw * 0.54f, ly0 + 12.0f * u, "STAGE PLACE", lb);
     char sp[32];
     std::snprintf(sp, sizeof sp, "%d%s / 50", st.stage_place, place_suffix(st.stage_place));
     vl.color = kRallyGold;
-    out.text(lx0 + lw * 0.54f, ly0 + 32.0f * u, sp, vl);
+    out.text(lx0 + lw * 0.54f, ly0 + 29.0f * u, sp, vl);
 
-    out.text(lx0 + 18.0f * u, ly0 + 74.0f * u, "CUMULATIVE TOTAL", lb);
+    out.text(lx0 + 16.0f * u, ly0 + 66.0f * u, "CUMULATIVE TOTAL", lb);
     vl.color = ui4::kWhite;
-    out.text(lx0 + 18.0f * u, ly0 + 92.0f * u, rally_time_str(st.total_time), vl);
+    out.text(lx0 + 16.0f * u, ly0 + 83.0f * u, rally_time_str(st.total_time), vl);
 
-    out.text(lx0 + lw * 0.54f, ly0 + 74.0f * u, "OVERALL", lb);
+    out.text(lx0 + lw * 0.54f, ly0 + 66.0f * u, "OVERALL", lb);
     char op[48];
     std::snprintf(op, sizeof op, "%d%s (%s)", st.overall_place, place_suffix(st.overall_place),
                   rally_gap_str(st.gap_to_leader).c_str());
     vl.color = st.overall_place <= 3 ? kRallyGreen : kRallyCyan;
-    vl.size = 18.0f * u;
-    out.text(lx0 + lw * 0.54f, ly0 + 94.0f * u, op, vl);
+    vl.size = 17.0f * u;
+    out.text(lx0 + lw * 0.54f, ly0 + 84.0f * u, op, vl);
   }
 
-  // Car Damage & Repair meter with authentic UI4 class badge and flat bar.
-  const float dmy = ly0 + 158.0f * u;
-  ui4::panel(out, lx0, dmy, lx0 + lw, dmy + 72.0f * u, u, ui4::kCharcoal, 0, ui4::kPink, true);
+  // Car Damage & Repair meter with real resolved car display name (never raw SUB_IMPREZA22B_98!).
+  const float dmy = ly0 + 136.0f * u;
+  ui4::panel(out, lx0, dmy, lx0 + lw, dmy + 66.0f * u, u, ui4::kCharcoalDark, 0, ui4::kPink, true);
   {
-    ui4::class_badge(out, lx0 + 16.0f * u, dmy + 12.0f * u, 22.0f * u, st.car_class.empty() ? "B" : st.car_class,
+    ui4::class_badge(out, lx0 + 14.0f * u, dmy + 10.0f * u, 22.0f * u, st.car_class.empty() ? "B" : st.car_class,
                      st.car_pi > 0 ? st.car_pi : 500, 4);
-    ui::TextStyle cs = ui4::style(ui::Font::kB, 13.0f * u, ui4::kWhite);
-    char cbuf[96];
-    std::snprintf(cbuf, sizeof cbuf, "%s  •  DAMAGE: %.0f%%", st.car_name.c_str(), st.damage_pct);
-    out.text(lx0 + 86.0f * u, dmy + 16.0f * u, cbuf, cs);
-    const float bx0 = lx0 + 16.0f * u, bx1 = lx0 + lw - 16.0f * u;
-    out.rect(bx0, dmy + 46.0f * u, bx1, dmy + 56.0f * u, ui::rgba(52, 56, 66, 230));
+    const std::string nice_car = resolve_rally_car_name(st.car_name);
+    char cbuf[128];
+    std::snprintf(cbuf, sizeof cbuf, "%s  •  DMG %.0f%%", nice_car.c_str(), st.damage_pct);
+    ui::TextStyle cs = ui4::style(ui::Font::kB, 13.0f * u, ui4::kWhite, ui::Align::kLeft, true);
+    ui4::fit_text(cbuf, cs, lw - 102.0f * u, 9.0f * u);
+    out.text(lx0 + 92.0f * u, dmy + 14.0f * u, cbuf, cs);
+    const float bx0 = lx0 + 14.0f * u, bx1 = lx0 + lw - 14.0f * u;
+    out.rect(bx0, dmy + 44.0f * u, bx1, dmy + 52.0f * u, ui::rgba(52, 56, 66, 230));
     const float dmg = float(std::clamp(st.damage_pct / 100.0, 0.0, 1.0));
     const uint32_t dcol = dmg < 0.05f ? ui4::kGreen : (dmg < 0.4f ? ui4::kAmber : ui4::kRed);
-    out.rect(bx0, dmy + 46.0f * u, bx0 + (bx1 - bx0) * std::max(0.03f, 1.0f - dmg), dmy + 56.0f * u, dcol);
+    out.rect(bx0, dmy + 44.0f * u, bx0 + (bx1 - bx0) * std::max(0.03f, 1.0f - dmg), dmy + 52.0f * u, dcol);
   }
 
-  // Service Area menu actions styled as authentic FH1 UI4 brush strips.
   const char* actions[4] = {
       "CONTINUE TO NEXT STAGE",
       st.repaired ? "CAR REPAIRED (100%)" : "REPAIR CAR DAMAGE (FREE)",
       "UPGRADES & TUNING",
       "RETIRE FROM CHAMPIONSHIP",
   };
-  const float my0 = dmy + 86.0f * u;
+  const float my0 = dmy + 80.0f * u;
   for (int i = 0; i < 4; ++i) {
-    const float y = my0 + float(i) * 46.0f * u;
+    const float y = my0 + float(i) * 44.0f * u;
     const bool sel = st.selected == i;
-    ui4::brush(out, lx0, y, lx0 + lw, y + 38.0f * u, sel ? ui4::kPink : ui4::kBrushBlack, false);
-    if (sel) out.rect(lx0, y, lx0 + 5.0f * u, y + 38.0f * u, ui4::kYellow);
+    ui4::brush(out, lx0, y, lx0 + lw, y + 36.0f * u, sel ? ui4::kPink : ui4::kBrushBlack, false);
     ui::TextStyle as = ui4::style(ui::Font::kE, 15.0f * u, sel ? ui4::kWhite : ui::rgba(220, 224, 234, 255));
-    out.text(lx0 + 18.0f * u, y + 10.0f * u, actions[i], as);
+    out.text(lx0 + 18.0f * u, y + 9.0f * u, actions[i], as);
   }
 
-  // Right side: 4-Stage Cumulative Standings Leaderboard (UI4 gritty table + off-white header strip).
-  const float rx0 = lx0 + lw + 20.0f * u;
-  const float rx1 = mx + pw - 24.0f * u;
-  const float ry1 = my + ph - 18.0f * u;
-  ui4::panel(out, rx0, ly0, rx1, ry1, u, ui4::kCharcoal, kRallyGold, 0, true);
-
-  {
-    ui::TextStyle th = ui4::style(ui::Font::kE, 15.0f * u, kRallyGold);
-    out.text(rx0 + 16.0f * u, ly0 + 12.0f * u, "CUMULATIVE CHAMPIONSHIP STANDINGS", th);
-
-    ui4::offwhite_strip(out, rx0 + 8.0f * u, ly0 + 36.0f * u, rx1 - 8.0f * u, ly0 + 58.0f * u, u, false);
-    ui::TextStyle ch = ui4::style(ui::Font::kB, 11.5f * u, ui4::kInk);
-    out.text(rx0 + 16.0f * u, ly0 + 41.0f * u, "POS", ch);
-    out.text(rx0 + 62.0f * u, ly0 + 41.0f * u, "DRIVER", ch);
-    ch.align = ui::Align::kRight;
-    out.text(rx1 - 210.0f * u, ly0 + 41.0f * u, "STAGE", ch);
-    out.text(rx1 - 104.0f * u, ly0 + 41.0f * u, "TOTAL", ch);
-    out.text(rx1 - 14.0f * u, ly0 + 41.0f * u, "GAP", ch);
-  }
+  // Right side: H_POST_RACE_RESULTS style floating tilted PILL03 standings table!
+  const float rx0 = lx0 + lw + 26.0f * u;
+  const float rx1 = f.x(1206.0f);
+  ui4::offwhite_strip(out, rx0, ly0, rx1, ly0 + 28.0f * u, u, false);
+  ui::TextStyle ch = ui4::style(ui::Font::kD, 12.0f * u, ui4::kInk);
+  out.text(rx0 + 14.0f * u, ly0 + 8.0f * u, "POS", ch);
+  out.text(rx0 + 58.0f * u, ly0 + 8.0f * u, "DRIVER", ch);
+  ch.align = ui::Align::kRight;
+  out.text(rx1 - 210.0f * u, ly0 + 8.0f * u, "STAGE", ch);
+  out.text(rx1 - 104.0f * u, ly0 + 8.0f * u, "TOTAL", ch);
+  out.text(rx1 - 14.0f * u, ly0 + 8.0f * u, "GAP", ch);
 
   std::vector<const race::RallyStandingRow*> rows;
   bool player_in_top = false;
@@ -621,197 +519,136 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
       }
     }
   }
-
   for (size_t i = 0; i < rows.size(); ++i) {
     const auto& r = *rows[i];
-    const float y = ly0 + 64.0f * u + float(i) * 34.0f * u;
-    if (y + 30.0f * u > ry1 - 8.0f * u) break;
+    const float y = ly0 + 34.0f * u + float(i) * 34.0f * u;
     if (r.is_player) {
-      ui4::brush(out, rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui4::kPink, false);
-      out.rect(rx0 + 8.0f * u, y, rx0 + 12.0f * u, y + 30.0f * u, ui4::kYellow);
-    } else if (i % 2 == 1) {
-      out.rect(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui4::kRowAlt);
+      ui4::brush(out, rx0 - 6.0f * u, y, rx1 + 4.0f * u, y + 30.0f * u, ui4::kPink, false);
+    } else {
+      ui4::pill(out, rx0, y, rx1, y + 30.0f * u, (i % 2 == 1) ? ui4::kRowAlt : ui4::kPillGrey, ui4::PillKind::kHud01);
     }
-    ui::TextStyle rs = ui4::style(r.is_player ? ui::Font::kE : ui::Font::kB, 13.0f * u,
-                                  r.is_player ? ui4::kWhite : ui4::kWhite);
-    out.text(rx0 + 18.0f * u, y + 7.0f * u, std::to_string(r.overall_place), rs);
-    out.text(rx0 + 62.0f * u, y + 7.0f * u, r.name, rs);
-    // Keep tabular time columns in crisp Font::kB so player & AI times align with generous spacing.
+    ui::TextStyle rs = ui4::style(r.is_player ? ui::Font::kE : ui::Font::kB, 13.0f * u, ui4::kWhite);
+    out.text(rx0 + 16.0f * u, y + 8.0f * u, std::to_string(r.overall_place), rs);
+    out.text(rx0 + 58.0f * u, y + 8.0f * u, r.name, rs);
     ui::TextStyle ts = ui4::style(ui::Font::kB, 13.0f * u, r.is_player ? ui4::kYellow : ui4::kWhite, ui::Align::kRight);
-    out.text(rx1 - 210.0f * u, y + 7.0f * u, rally_time_str(r.last_stage_time), ts);
-    out.text(rx1 - 104.0f * u, y + 7.0f * u, rally_time_str(r.total_time), ts);
+    out.text(rx1 - 210.0f * u, y + 8.0f * u, rally_time_str(r.last_stage_time), ts);
+    out.text(rx1 - 104.0f * u, y + 8.0f * u, rally_time_str(r.total_time), ts);
     ts.color = r.overall_place == 1 ? ui4::kGreen : (r.is_player ? ui4::kWhite : ui4::kDim);
-    out.text(rx1 - 14.0f * u, y + 7.0f * u, rally_gap_str(r.gap_to_leader), ts);
+    out.text(rx1 - 14.0f * u, y + 8.0f * u, rally_gap_str(r.gap_to_leader), ts);
   }
 
-  ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD", "NAVIGATE"}, {"B", "RETIRE"}}, w, h, 46.0f);
+  out.unturn();
+  ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD", "NAVIGATE"}, {"B", "RETIRE"}}, w, h);
 }
 
 void build_rally_championship_results_screen(ui::List& out, const RallyChampResultsState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
-  ui4::subtle_vignette(out, w, h, 0.40f);
+  const SceneFrame f{0.5f * w - 640.0f * u, 0.5f * h - 360.0f * u, u};
+  ui4::subtle_vignette(out, w, h, 0.34f);
 
-  const float mx = 48.0f * u;
-  const float my = 32.0f * u;
-  const float pw = w - 2.0f * mx;
-  const float ph = h - 76.0f * u;
-
-  ui4::panel(out, mx, my, mx + pw, my + ph, u, ui4::kCharcoalDark, kRallyGold, 0, true);
-
-  ui4::title_banner(out, u, mx + 22.0f * u, my + 28.0f * u,
+  // Authentic +3.0 deg tilted H_POST_RACE_RESULTS + H_POST_RACE_CREDITS_BREAKDOWN layout
+  // (ZERO 8px/4px rounded kPanelAlt boxes!).
+  ui4::title_banner(out, u, f.x(76.0f), f.y(42.0f),
                     st.is_heats ? "RALLY HEATS COMPLETE" : "CHAMPIONSHIP RESULTS", st.title, true, 600.0f);
 
-  // Left: Final Place, Rally XP, Credits Breakdown, Unlock Banner.
-  const float lx0 = mx + 26.0f * u;
-  const float lw = pw * 0.44f;
-  const float ly0 = my + 96.0f * u;
+  ui4::TiltScope tilt(out, f.x(640.0f), f.y(380.0f), ui4::kTiltRad);
 
-  out.rect(lx0, ly0, lx0 + lw, ly0 + 130.0f * u, kPanelAlt, 8.0f * u);
-  out.frame(lx0, ly0, lx0 + lw, ly0 + 130.0f * u, kRallyGold, 1.4f * u, 8.0f * u);
+  const float lx0 = f.x(76.0f), lw = 472.0f * u, ly0 = f.y(158.0f);
+
+  // Final Place + Time brush strip.
+  char pbuf[48];
+  std::snprintf(pbuf, sizeof pbuf, "%d%s PLACE  OF %d", st.final_place, place_suffix(st.final_place), st.field_size);
+  ui4::brush(out, lx0 - 12.0f * u, ly0, lx0 + lw, ly0 + 62.0f * u, st.final_place == 1 ? ui4::kPink : ui4::kBrushBlack,
+             true);
+  out.text(lx0 + 16.0f * u, ly0 + 12.0f * u, pbuf, ui4::style(ui::Font::kE, 32.0f * u, kWhite));
+
+  ui4::pill(out, lx0, ly0 + 70.0f * u, lx0 + lw, ly0 + 102.0f * u, ui4::kPillGrey, ui4::PillKind::kHud01);
+  out.text(lx0 + 14.0f * u, ly0 + 78.0f * u, "TOTAL TIME  " + rally_time_str(st.total_time),
+           ui4::style(ui::Font::kB, 15.0f * u, kWhite));
+  out.text(lx0 + lw - 14.0f * u, ly0 + 78.0f * u, rally_gap_str(st.gap_to_leader),
+           ui4::style(ui::Font::kE, 14.0f * u, kRallyCyan, ui::Align::kRight));
+
+  // Rally XP & Wristband strip (sharp flat progress bar).
+  const float xpy = ly0 + 118.0f * u;
+  ui4::panel(out, lx0, xpy, lx0 + lw, xpy + 88.0f * u, u, ui4::kCharcoalDark, kRallyGold, 0, true);
   {
-    ui::TextStyle ps;
-    ps.size = 46.0f * u;
-    ps.color = st.final_place == 1 ? kRallyGold : kWhite;
-    ps.font = ui::Font::kE;
-    char pbuf[32];
-    std::snprintf(pbuf, sizeof pbuf, "%d%s", st.final_place, place_suffix(st.final_place));
-    out.text(lx0 + 20.0f * u, ly0 + 20.0f * u, pbuf, ps);
-
-    ui::TextStyle ms;
-    ms.size = 14.0f * u;
-    ms.color = kMuted;
-    ms.font = ui::Font::kB;
-    char mbuf[64];
-    std::snprintf(mbuf, sizeof mbuf, "OF %d DRIVERS", st.field_size);
-    out.text(lx0 + 22.0f * u, ly0 + 78.0f * u, mbuf, ms);
-
-    ms.align = ui::Align::kRight;
-    out.text(lx0 + lw - 18.0f * u, ly0 + 26.0f * u, "TOTAL TIME", ms);
-    ui::TextStyle ts = ps;
-    ts.size = 24.0f * u;
-    ts.color = kWhite;
-    ts.align = ui::Align::kRight;
-    out.text(lx0 + lw - 18.0f * u, ly0 + 48.0f * u, rally_time_str(st.total_time), ts);
-    ms.color = kRallyCyan;
-    out.text(lx0 + lw - 18.0f * u, ly0 + 82.0f * u, rally_gap_str(st.gap_to_leader), ms);
-  }
-
-  // Rally XP & Wristband Card.
-  const float xpy = ly0 + 146.0f * u;
-  out.rect(lx0, xpy, lx0 + lw, xpy + 106.0f * u, kPanelAlt, 8.0f * u);
-  out.frame(lx0, xpy, lx0 + lw, xpy + 106.0f * u, st.wristband_up ? kRallyGreen : kBorder, 1.2f * u, 8.0f * u);
-  {
-    ui::TextStyle lb;
-    lb.size = 14.0f * u;
-    lb.color = kRallyGold;
-    lb.font = ui::Font::kE;
     char xbuf[96];
-    std::snprintf(xbuf, sizeof xbuf, "RALLY XP: +%d XP  (%d TOTAL)", st.rally_xp_earned, st.new_rally_xp);
-    out.text(lx0 + 16.0f * u, xpy + 14.0f * u, xbuf, lb);
-
-    ui::TextStyle wb;
-    wb.size = 13.0f * u;
-    wb.color = st.wristband_up ? kRallyGreen : kMuted;
-    wb.font = ui::Font::kB;
-    out.text(lx0 + 16.0f * u, xpy + 40.0f * u,
-             st.wristband_up ? ("WRISTBAND PROMOTION: " + st.wristband_name) : st.wristband_name, wb);
-
-    const float bx0 = lx0 + 16.0f * u, bx1 = lx0 + lw - 16.0f * u;
-    out.rect(bx0, xpy + 70.0f * u, bx1, xpy + 84.0f * u, ui::rgba(46, 54, 66, 220), 4.0f * u);
+    std::snprintf(xbuf, sizeof xbuf, "RALLY XP  +%d XP  (%d TOTAL)", st.rally_xp_earned, st.new_rally_xp);
+    out.text(lx0 + 14.0f * u, xpy + 12.0f * u, xbuf, ui4::style(ui::Font::kE, 14.0f * u, ui4::kYellow));
+    out.text(lx0 + 14.0f * u, xpy + 36.0f * u,
+             st.wristband_up ? ("PROMOTION: " + st.wristband_name) : st.wristband_name,
+             ui4::style(ui::Font::kB, 13.0f * u, st.wristband_up ? kRallyGreen : kMuted));
+    const float bx0 = lx0 + 14.0f * u, bx1 = lx0 + lw - 14.0f * u;
+    out.rect(bx0, xpy + 62.0f * u, bx1, xpy + 72.0f * u, ui::rgba(46, 54, 66, 220));
     const float frac = st.next_level_xp > 0 ? std::clamp(float(st.new_rally_xp) / float(st.next_level_xp), 0.0f, 1.0f) : 1.0f;
-    out.rect(bx0, xpy + 70.0f * u, bx0 + (bx1 - bx0) * frac, xpy + 84.0f * u, kRallyGold, 4.0f * u);
+    out.rect(bx0, xpy + 62.0f * u, bx0 + (bx1 - bx0) * frac, xpy + 72.0f * u, kRallyGold);
   }
 
-  // Credits Breakdown Card.
-  const float cry = xpy + 122.0f * u;
-  out.rect(lx0, cry, lx0 + lw, cry + 120.0f * u, kPanelAlt, 8.0f * u);
-  out.frame(lx0, cry, lx0 + lw, cry + 120.0f * u, kBorder, 1.0f * u, 8.0f * u);
-  {
-    ui::TextStyle lb;
-    lb.size = 13.0f * u;
-    lb.color = kMuted;
-    lb.font = ui::Font::kB;
-    ui::TextStyle vl = lb;
-    vl.color = kWhite;
-    vl.align = ui::Align::kRight;
-
-    out.text(lx0 + 16.0f * u, cry + 14.0f * u, "CHAMPIONSHIP PRIZE", lb);
-    out.text(lx0 + lw - 16.0f * u, cry + 14.0f * u, thousands(st.base_credits) + " CR", vl);
-    out.text(lx0 + 16.0f * u, cry + 38.0f * u, "DIFFICULTY & ASSISTS BONUS", lb);
-    out.text(lx0 + lw - 16.0f * u, cry + 38.0f * u, "+" + thousands(st.bonus_credits) + " CR", vl);
-
-    lb.size = 16.0f * u;
-    lb.color = kRallyGold;
-    lb.font = ui::Font::kE;
-    vl.size = 18.0f * u;
-    vl.color = kRallyGreen;
-    vl.font = ui::Font::kE;
-    out.text(lx0 + 16.0f * u, cry + 68.0f * u, "TOTAL CREDITS EARNED", lb);
-    out.text(lx0 + lw - 16.0f * u, cry + 66.0f * u, "+" + thousands(st.total_credits) + " CR", vl);
-
-    if (!st.unlocked_text.empty()) {
-      ui::TextStyle ul;
-      ul.size = 12.0f * u;
-      ul.color = kRallyCyan;
-      ul.font = ui::Font::kB;
-      out.text(lx0 + 16.0f * u, cry + 96.0f * u, "UNLOCKED: " + st.unlocked_text, ul);
-    }
+  // Credits Breakdown (H_POST_RACE_CREDITS_BREAKDOWN brush strips).
+  const float cry = xpy + 104.0f * u;
+  auto cr_row = [&](float y, const std::string& lbl, const std::string& val, bool total) {
+    ui4::brush(out, lx0, y, lx0 + lw * 0.64f, y + (total ? 36.0f : 28.0f) * u, ui4::kBrushBlack, total);
+    out.text(lx0 + 14.0f * u, y + (total ? 8.0f : 6.0f) * u, lbl,
+             ui4::style(total ? ui::Font::kE : ui::Font::kB, (total ? 17.0f : 13.0f) * u, kWhite));
+    ui4::brush(out, lx0 + lw * 0.66f, y, lx0 + lw, y + (total ? 36.0f : 28.0f) * u, ui4::kPink, total);
+    out.text(lx0 + lw - 14.0f * u, y + (total ? 8.0f : 6.0f) * u, val,
+             ui4::style(ui::Font::kE, (total ? 18.0f : 14.0f) * u, kWhite, ui::Align::kRight, true));
+  };
+  cr_row(cry, "CHAMPIONSHIP PRIZE", thousands(st.base_credits) + " Cr", false);
+  cr_row(cry + 34.0f * u, "DIFFICULTY & ASSISTS BONUS", "+" + thousands(st.bonus_credits) + " Cr", false);
+  cr_row(cry + 72.0f * u, "TOTAL EARNED", "+" + thousands(st.total_credits) + " Cr", true);
+  if (!st.unlocked_text.empty()) {
+    ui4::offwhite_strip(out, lx0, cry + 118.0f * u, lx0 + lw, cry + 146.0f * u, u, true);
+    out.text(lx0 + 14.0f * u, cry + 125.0f * u, "UNLOCKED: " + st.unlocked_text,
+             ui4::style(ui::Font::kD, 12.5f * u, ui4::kInk));
   }
 
-  // Right: Final Standings Table.
-  const float rx0 = lx0 + lw + 22.0f * u;
-  const float rx1 = mx + pw - 26.0f * u;
-  const float ry1 = my + ph - 52.0f * u;
-  out.rect(rx0, ly0, rx1, ry1, kPanelAlt, 8.0f * u);
-  out.frame(rx0, ly0, rx1, ry1, kBorder, 1.0f * u, 8.0f * u);
+  // Right: H_POST_RACE_RESULTS tilted standings table (PILL03 rows, off-white header, pink highlight).
+  const float rx0 = lx0 + lw + 26.0f * u;
+  const float rx1 = f.x(1206.0f);
+  ui4::offwhite_strip(out, rx0, ly0, rx1, ly0 + 28.0f * u, u, false);
   {
-    ui::TextStyle th;
-    th.size = 14.0f * u;
-    th.color = kRallyGold;
-    th.font = ui::Font::kE;
-    out.text(rx0 + 16.0f * u, ly0 + 14.0f * u, "FINAL STANDINGS", th);
-
-    std::vector<const race::RallyStandingRow*> rows;
-    bool in_top = false;
-    for (size_t i = 0; i < st.standings.size() && rows.size() < 11; ++i) {
-      rows.push_back(&st.standings[i]);
-      if (st.standings[i].is_player) in_top = true;
-    }
-    if (!in_top) {
-      for (const auto& r : st.standings)
-        if (r.is_player) {
-          if (rows.size() >= 11) rows.back() = &r;
-          else rows.push_back(&r);
-          break;
-        }
-    }
-    for (size_t i = 0; i < rows.size(); ++i) {
-      const auto& r = *rows[i];
-      const float y = ly0 + 48.0f * u + float(i) * 34.0f * u;
-      if (y + 30.0f * u > ry1 - 8.0f * u) break;
+    ui::TextStyle ch = ui4::style(ui::Font::kD, 12.5f * u, ui4::kInk);
+    out.text(rx0 + 14.0f * u, ly0 + 7.0f * u, "POS", ch);
+    out.text(rx0 + 58.0f * u, ly0 + 7.0f * u, "DRIVER", ch);
+    ch.align = ui::Align::kRight;
+    out.text(rx1 - 96.0f * u, ly0 + 7.0f * u, "TOTAL", ch);
+    out.text(rx1 - 14.0f * u, ly0 + 7.0f * u, "GAP", ch);
+  }
+  std::vector<const race::RallyStandingRow*> rows;
+  bool in_top = false;
+  for (size_t i = 0; i < st.standings.size() && rows.size() < 11; ++i) {
+    rows.push_back(&st.standings[i]);
+    if (st.standings[i].is_player) in_top = true;
+  }
+  if (!in_top) {
+    for (const auto& r : st.standings)
       if (r.is_player) {
-        out.rect(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui::rgba(255, 184, 28, 46), 4.0f * u);
-        out.frame(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, kRallyGold, 1.2f * u, 4.0f * u);
+        if (rows.size() >= 11) rows.back() = &r;
+        else rows.push_back(&r);
+        break;
       }
-      ui::TextStyle rs;
-      rs.size = 13.0f * u;
-      rs.color = r.is_player ? kRallyGold : kWhite;
-      rs.font = r.is_player ? ui::Font::kE : ui::Font::kB;
-      out.text(rx0 + 18.0f * u, y + 7.0f * u, std::to_string(r.overall_place), rs);
-      out.text(rx0 + 62.0f * u, y + 7.0f * u, r.name, rs);
-      rs.align = ui::Align::kRight;
-      out.text(rx1 - 92.0f * u, y + 7.0f * u, rally_time_str(r.total_time), rs);
-      rs.color = r.overall_place == 1 ? kRallyGreen : kMuted;
-      out.text(rx1 - 14.0f * u, y + 7.0f * u, rally_gap_str(r.gap_to_leader), rs);
+  }
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const auto& r = *rows[i];
+    const float y = ly0 + 34.0f * u + float(i) * 34.0f * u;
+    if (r.is_player) {
+      ui4::brush(out, rx0 - 6.0f * u, y, rx1 + 4.0f * u, y + 30.0f * u, ui4::kPink, false);
+    } else {
+      ui4::pill(out, rx0, y, rx1, y + 30.0f * u, (i % 2 == 1) ? ui4::kRowAlt : ui4::kPillGrey, ui4::PillKind::kHud01);
     }
+    ui::TextStyle rs = ui4::style(r.is_player ? ui::Font::kE : ui::Font::kB, 13.0f * u, kWhite);
+    out.text(rx0 + 16.0f * u, y + 8.0f * u, std::to_string(r.overall_place), rs);
+    out.text(rx0 + 58.0f * u, y + 8.0f * u, r.name, rs);
+    ui::TextStyle ts = ui4::style(ui::Font::kB, 13.0f * u, r.is_player ? ui4::kYellow : kWhite, ui::Align::kRight);
+    out.text(rx1 - 96.0f * u, y + 8.0f * u, rally_time_str(r.total_time), ts);
+    ts.color = r.overall_place == 1 ? kRallyGreen : (r.is_player ? kWhite : kMuted);
+    out.text(rx1 - 14.0f * u, y + 8.0f * u, rally_gap_str(r.gap_to_leader), ts);
   }
 
-  ui::TextStyle ft;
-  ft.size = 13.0f * u;
-  ft.color = kMuted;
-  ft.font = ui::Font::kB;
-  out.text(mx + 26.0f * u, my + ph - 32.0f * u, "ENTER / [A] RETURN TO RALLY HUB", ft);
+  out.unturn();
+  ui4::button_bar(out, {{"A", "CONTINUE"}}, w, h);
 }
 
 RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const drive::DriveSave& save,

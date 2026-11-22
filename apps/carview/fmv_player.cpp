@@ -1,5 +1,7 @@
 #include "fmv_player.h"
 
+#include "ui4_chrome.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -601,27 +603,18 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
 
   const float s = screen_h / 720.0f;
   if (!subtitle_text.empty()) {
-    const float pad_y = 610.0f * s;
-    l.rect(screen_w * 0.14f, pad_y - 8.0f * s, screen_w * 0.86f, pad_y + 34.0f * s, ui::rgba(0, 0, 0, 175), 4.0f * s);
-    ui::TextStyle ts;
-    ts.font = ui::Font::kA;
-    ts.size = 18.0f * s;
-    ts.color = ui::rgba(248, 248, 250);
-    ts.align = ui::Align::kCenter;
-    ts.keep_case = true;
+    const float pad_y = 602.0f * s;
+    ui::TextStyle ts = ui4::style(ui::Font::kA, 17.5f * s, ui4::kWhite, ui::Align::kCenter, true);
+    const float sw = std::clamp(ui::List::measure(subtitle_text, ts) + 56.0f * s, 320.0f * s, screen_w * 0.78f);
+    // Sharp FH1 HUDPILL01 subtitle strip (ZERO 4px rounded boxes!).
+    ui4::pill(l, 0.5f * (screen_w - sw), pad_y - 6.0f * s, 0.5f * (screen_w + sw), pad_y + 32.0f * s,
+              ui4::kCharcoalDark, ui4::PillKind::kHud01);
     l.text(screen_w * 0.5f, pad_y + 4.0f * s, subtitle_text, ts);
   }
 
   if (show_skip_prompt) {
-    const float bx1 = screen_w - 48.0f * s;
-    const float by1 = screen_h - 32.0f * s;
-    l.rect(bx1 - 150.0f * s, by1 - 30.0f * s, bx1, by1, ui::rgba(14, 16, 22, 185), 4.0f * s);
-    ui::TextStyle ts;
-    ts.font = ui::Font::kB;
-    ts.size = 14.0f * s;
-    ts.color = ui::rgba(240, 242, 246);
-    ts.align = ui::Align::kRight;
-    l.text(bx1 - 14.0f * s, by1 - 22.0f * s, "[A / ENTER] SKIP", ts);
+    // Authentic BUTTON_BAR_SCENE skip prompt (ZERO 4px rounded boxes!).
+    ui4::button_bar(l, {{"A", "SKIP"}}, screen_w, screen_h, 70.0f);
   }
 }
 

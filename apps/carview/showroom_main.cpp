@@ -293,11 +293,50 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
       zip = fh1::Archive::open(root / "media" / "ui" / "textures" / "Horizon.zip", &e);
       other = fh1::Archive::open(root / "media" / "ui" / "Textures.zip", &e);
     }
-    // "T:" names a Textures.zip member, else Horizon.zip's.
+    // "T:" names a Textures.zip member, else Horizon.zip's (or loose Rally/DLC xds fallback).
     const bool t = path.rfind("T:", 0) == 0;
+    const std::string rel = (t ? path.substr(2) : path) + ".xds";
     fh1::Archive* a = t ? other.get() : zip.get();
-    fh1::ReadResult r = a ? a->read((t ? path.substr(2) : path) + ".xds") : fh1::ReadResult{};
-    const fh1::XdsResult x = a && r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
+    fh1::ReadResult r = a ? a->read(rel) : fh1::ReadResult{};
+    if (!r.ok() && !t) {
+      // Fallback: loose textures under game_root or mounted Rally DLC directory (1600_pri_65).
+      std::error_code ec;
+      const std::filesystem::path loose = root / "media" / "ui" / "textures" / "Horizon" / rel;
+      if (std::filesystem::is_regular_file(loose, ec)) {
+        std::ifstream f(loose, std::ios::binary);
+        r.data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+      } else {
+        // Scan sibling .local/dlc or game_root/../dlc for Rally DLC 1600_pri_65 loose xds.
+        static std::filesystem::path rally_tex_dir;
+        static bool rally_probed = false;
+        if (!rally_probed) {
+          rally_probed = true;
+          const std::filesystem::path bases[] = {
+              root / ".." / ".." / "dlc",
+              root / ".." / "dlc",
+              root / "dlc",
+          };
+          for (const auto& base : bases) {
+            if (!std::filesystem::exists(base, ec)) continue;
+            for (const auto& ent : std::filesystem::recursive_directory_iterator(base, ec)) {
+              if (ent.is_regular_file(ec) && ent.path().filename() == "CoDriverIconSet.xds") {
+                rally_tex_dir = ent.path().parent_path().parent_path().parent_path();
+                break;
+              }
+            }
+            if (!rally_tex_dir.empty()) break;
+          }
+        }
+        if (!rally_tex_dir.empty()) {
+          const std::filesystem::path p = rally_tex_dir / rel;
+          if (std::filesystem::is_regular_file(p, ec)) {
+            std::ifstream f(p, std::ios::binary);
+            r.data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+          }
+        }
+      }
+    }
+    const fh1::XdsResult x = !r.data.empty() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
     if (x.levels.empty() || !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
       failed.insert(path);
       return false;
@@ -6029,6 +6068,7 @@ int run_drive(int argc, char** argv) {
           d.rally_service = &rally_service_state;
         }
         if (rally_results_open) d.rally_results = &rally_results_state;
+        d.touch_hud_active = touch_controls.visible(vehicle.time());
         carview::ui::List list;
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, and grid menu.
         if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
@@ -6425,11 +6465,24 @@ int run_drive(int argc, char** argv) {
         if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 1.0 / 15) return;
         minimap_at = t;
         // SPEC-UI-LAYOUTS a: 90,420-280,600 at 1280x720, no frame.
+        // When Android touch controls are visible, lift into non-overlapping safe rect.
         const double k = height / 720.0;
-        HudImage img = map_view.minimap(map_scene(), std::max(96, int(std::lround(180 * k))));
+        const bool touch_vis = touch_controls.visible(vehicle.time());
+        carview::TouchRect mm_safe, tach_safe;
+        int req_px = std::max(96, int(std::lround(180 * k)));
+        if (touch_vis) {
+          carview::TouchControls::hud_safe_rects(float(width), float(height), mm_safe, tach_safe);
+          req_px = std::max(96, int(std::lround(std::min(mm_safe.w() * float(width), mm_safe.h() * float(height)))));
+        }
+        HudImage img = map_view.minimap(map_scene(), req_px);
         if (carview::ui::atlas_update("minimap", img.width, img.height, img.rgba, mm_uv)) {
           mm_size = float(img.width);
-          mm_x = float(90 * k), mm_y = float(height) - float(120 * k) - mm_size;
+          if (touch_vis) {
+            mm_x = mm_safe.x0 * float(width);
+            mm_y = mm_safe.y1 * float(height) - mm_size;
+          } else {
+            mm_x = float(90 * k), mm_y = float(height) - float(120 * k) - mm_size;
+          }
         } else {
           mm_size = 0;
         }
@@ -6904,11 +6957,12 @@ int run_drive(int argc, char** argv) {
         place_world();
         const float aspect = float(width) / float(height);
         showroom.set_frame(drive_frame(aspect, 0.016));
-        set_minimap(int(height), true);
         touch_controls.set_visibility(carview::TouchVisibility::kAlwaysOn);
         touch_controls.set_steer_mode(carview::TouchSteerMode::kButtons);
-        touch_controls.on_finger_down(1, 0.06f, 0.86f, float(width), float(height), vehicle.time());
-        touch_controls.on_finger_down(2, 0.92f, 0.72f, float(width), float(height), vehicle.time());
+        const carview::TouchLayout tlay = carview::TouchControls::compute_layout(float(width), float(height));
+        touch_controls.on_finger_down(1, tlay.steer_left.cx(), tlay.steer_left.cy(), float(width), float(height), vehicle.time());
+        touch_controls.on_finger_down(2, tlay.throttle.cx(), tlay.throttle.cy(), float(width), float(height), vehicle.time());
+        set_minimap(int(height), true);
         set_hud(int(width), int(height), "ANDROID TOUCH CONTROLS - SMOOTH 60 PRESET");
         std::vector<uint8_t> rgba;
         if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {

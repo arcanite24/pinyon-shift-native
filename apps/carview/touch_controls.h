@@ -85,6 +85,11 @@ class TouchControls {
   // Computes aspect-ratio-aware layout (safe-area margins for phones, tablets, Odin).
   static TouchLayout compute_layout(float screen_w, float screen_h);
 
+  // Non-overlapping normalized [0..1] safe regions for the driving minimap and
+  // tachometer when touch controls are visible (guaranteed clear of all pads).
+  static void hud_safe_rects(float screen_w, float screen_h, TouchRect& minimap_out, TouchRect& tach_out);
+  static bool rects_overlap(const TouchRect& a, const TouchRect& b);
+
   // Processes an SDL finger event; returns true if consumed by touch controls.
   bool handle_sdl_event(const SDL_Event& e, float screen_w, float screen_h, double now_s);
 

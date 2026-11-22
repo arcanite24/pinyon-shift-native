@@ -40,17 +40,22 @@ void draw_fit_text(ui::List& l, float x, float y, std::string_view text, ui::Tex
 }
 
 void draw_card(ui::List& l, float x0, float y0, float x1, float y1, float s, uint32_t top_accent = 0) {
-  l.shadow(x0, y0 + 2 * s, x1, y1 + 4 * s, ui::rgba(0, 0, 0, 120), 6 * s, 10 * s);
-  l.rect(x0, y0, x1, y1, ui::rgba(24, 27, 33, 245), 6 * s, ui::rgba(18, 20, 25, 248));
-  l.frame(x0, y0, x1, y1, ui::rgba(70, 76, 88, 170), 1.2f * s, 6 * s);
+  // Sharp FH1 distressed charcoal card (zero rounded corners).
+  l.shadow(x0, y0 + 2 * s, x1, y1 + 4 * s, ui::rgba(0, 0, 0, 125), 0.0f, 10 * s);
+  l.rect(x0, y0, x1, y1, ui::rgba(19, 20, 24, 246), 0.0f, ui::rgba(14, 14, 16, 250));
+  std::array<float, 4> uv;
+  if (ui4::texture("DIRTMASKS/BGNOISE01", uv)) {
+    l.image(x0, y0, x1, y1, uv, ui::rgba(255, 255, 255, 16));
+  }
+  l.frame(x0, y0, x1, y1, ui::rgba(68, 72, 82, 165), 1.0f * s);
   if (top_accent != 0) {
-    l.rect(x0 + 1 * s, y0, x1 - 1 * s, y0 + 3.5f * s, top_accent, 2 * s);
+    l.rect(x0, y0, x1, y0 + 3.5f * s, top_accent);
   }
 }
 
 void draw_section_title(ui::List& l, float x, float y, std::string_view title, float s,
                         uint32_t accent = ui4::kPink) {
-  l.rect(x, y + 2 * s, x + 4 * s, y + 18 * s, accent, 1.5f * s);
+  l.rect(x, y + 2 * s, x + 4 * s, y + 18 * s, accent);
   ui::TextStyle ts = ui4::style(ui::Font::kE, 16 * s, ui4::kWhite);
   ts.weight = 0.12f;
   l.text(x + 12 * s, y + 1 * s, title, ts);
@@ -59,36 +64,42 @@ void draw_section_title(ui::List& l, float x, float y, std::string_view title, f
 void draw_button(ui::List& l, std::vector<HitBox>& hits, const std::string& id, float x0, float y0, float x1,
                  float y1, std::string_view label, float s, bool primary, bool hovered, bool active = false) {
   hits.push_back({id, x0, y0, x1, y1});
-  uint32_t bg = primary ? ui4::kPink : (active ? ui::rgba(56, 62, 74, 245) : ui::rgba(36, 40, 48, 240));
-  uint32_t bg2 = primary ? ui::rgba(190, 8, 72, 255) : ui::rgba(26, 29, 36, 245);
+  uint32_t bg = primary ? ui4::kPink : (active ? ui::rgba(52, 54, 62, 245) : ui4::kPillGrey);
+  uint32_t bg2 = primary ? ui::rgba(205, 0, 82, 255) : ui::rgba(22, 23, 27, 248);
   if (hovered) {
-    bg = primary ? ui4::kPinkHi : ui::rgba(64, 70, 84, 250);
-    bg2 = primary ? ui4::kPink : ui::rgba(46, 52, 64, 250);
+    bg = primary ? ui4::kPinkHi : ui::rgba(66, 70, 82, 250);
+    bg2 = primary ? ui4::kPink : ui::rgba(46, 49, 58, 250);
   }
-  l.rect(x0, y0, x1, y1, bg, 5 * s, bg2);
-  l.frame(x0, y0, x1, y1, hovered ? ui4::kWhite : (primary ? ui4::kPinkHi : ui::rgba(92, 98, 112, 180)),
-          1.3f * s, 5 * s);
+  if (primary && (x1 - x0) >= 180 * s) {
+    ui4::brush(l, x0, y0, x1, y1, bg, false, 1.0f);
+  } else {
+    l.rect(x0, y0, x1, y1, bg, 0.0f, bg2);
+    if (active && !primary) l.rect(x0, y0, x0 + 3.5f * s, y1, ui4::kPink);
+    l.frame(x0, y0, x1, y1, hovered ? ui4::kWhite : (primary ? ui4::kPinkHi : ui::rgba(88, 92, 104, 175)), 1.0f * s);
+  }
   ui::TextStyle ts = ui4::style(ui::Font::kE, 14 * s, ui4::kWhite, ui::Align::kCenter);
   ts.weight = primary ? 0.13f : 0.11f;
-  ui4::fit_text(label, ts, (x1 - x0) - 16 * s, 10 * s);
+  ui4::fit_text(label, ts, (x1 - x0) - 16 * s, 9.5f * s);
   l.text(0.5f * (x0 + x1), 0.5f * (y0 + y1) - 0.5f * ts.size, label, ts);
 }
 
 void draw_pill(ui::List& l, float x, float y, float w, float h, std::string_view label, uint32_t bg,
                uint32_t fg, float s) {
-  l.rect(x, y, x + w, y + h, bg, h * 0.45f);
+  // Sharp FH1 tag strip (zero pill rounding)
+  l.rect(x, y, x + w, y + h, bg);
+  l.rect(x, y, x + 3 * s, y + h, fg == ui4::kInk ? ui4::kWhite : fg);
   ui::TextStyle ts = ui4::style(ui::Font::kB, 11 * s, fg, ui::Align::kCenter);
   ts.weight = 0.12f;
-  ui4::fit_text(label, ts, w - 10 * s, 8 * s);
+  ui4::fit_text(label, ts, w - 12 * s, 8 * s);
   l.text(x + w * 0.5f, y + (h - ts.size) * 0.5f, label, ts);
 }
 
 void draw_progress_bar(ui::List& l, float x, float y, float w, float h, float frac, uint32_t fill, float s) {
   frac = std::clamp(frac, 0.0f, 1.0f);
-  l.rect(x, y, x + w, y + h, ui::rgba(14, 16, 20, 240), h * 0.4f);
-  l.frame(x, y, x + w, y + h, ui::rgba(74, 80, 94, 180), 1.0f * s, h * 0.4f);
+  l.rect(x, y, x + w, y + h, ui4::kBrushBlack);
+  l.frame(x, y, x + w, y + h, ui::rgba(74, 80, 94, 180), 1.0f * s);
   if (frac > 0.005f) {
-    l.rect(x + 1.5f * s, y + 1.5f * s, x + std::max(h, w * frac) - 1.5f * s, y + h - 1.5f * s, fill, h * 0.35f);
+    l.rect(x + 1.5f * s, y + 1.5f * s, x + std::max(4 * s, w * frac) - 1.5f * s, y + h - 1.5f * s, fill);
   }
 }
 
@@ -103,25 +114,25 @@ void draw_axis_bar(ui::List& l, float x, float y, float w, float h, std::string_
 
   const float by = y + 18 * s;
   const float bh = h;
-  l.rect(x, by, x + w, by + bh, ui::rgba(12, 14, 18, 245), 4 * s);
-  l.frame(x, by, x + w, by + bh, ui::rgba(68, 74, 88, 180), 1.0f * s, 4 * s);
+  l.rect(x, by, x + w, by + bh, ui4::kBrushBlack);
+  l.frame(x, by, x + w, by + bh, ui::rgba(68, 74, 88, 180), 1.0f * s);
   if (centered) {
     const float mid = x + w * 0.5f;
     // Deadzone band
     const float dz_w = std::clamp(dz_in, 0.0f, 0.45f) * (w * 0.5f);
-    l.rect(mid - dz_w, by + 2 * s, mid + dz_w, by + bh - 2 * s, ui::rgba(255, 255, 255, 26), 2 * s);
+    l.rect(mid - dz_w, by + 2 * s, mid + dz_w, by + bh - 2 * s, ui::rgba(255, 255, 255, 26));
     l.line(mid, by + 1 * s, mid, by + bh - 1 * s, 1.5f * s, ui::rgba(140, 148, 162, 180));
     const float clamped = std::clamp(val, -1.0f, 1.0f);
     const float end_x = mid + clamped * (w * 0.5f - 2 * s);
     if (std::fabs(end_x - mid) > 1.0f) {
-      l.rect(std::min(mid, end_x), by + 3 * s, std::max(mid, end_x), by + bh - 3 * s, fill, 2.5f * s);
+      l.rect(std::min(mid, end_x), by + 3 * s, std::max(mid, end_x), by + bh - 3 * s, fill);
     }
   } else {
     const float clamped = std::clamp(val, 0.0f, 1.0f);
     const float dz_w = std::clamp(dz_in, 0.0f, 0.45f) * w;
-    if (dz_w > 1.0f) l.rect(x + 2 * s, by + 2 * s, x + dz_w, by + bh - 2 * s, ui::rgba(255, 255, 255, 22), 2 * s);
+    if (dz_w > 1.0f) l.rect(x + 2 * s, by + 2 * s, x + dz_w, by + bh - 2 * s, ui::rgba(255, 255, 255, 22));
     if (clamped > 0.005f) {
-      l.rect(x + 2 * s, by + 3 * s, x + 2 * s + clamped * (w - 4 * s), by + bh - 3 * s, fill, 2.5f * s);
+      l.rect(x + 2 * s, by + 3 * s, x + 2 * s + clamped * (w - 4 * s), by + bh - 3 * s, fill);
     }
   }
 }
@@ -129,8 +140,8 @@ void draw_axis_bar(ui::List& l, float x, float y, float w, float h, std::string_
 void draw_play_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
   // Left Hero Card
   draw_card(l, 32 * s, 142 * s, 742 * s, 658 * s, s, ui4::kPink);
-  // Hero festival strip
-  l.rect(34 * s, 146 * s, 740 * s, 268 * s, ui::rgba(46, 16, 36, 220), 4 * s, ui::rgba(20, 22, 28, 235));
+  // Hero festival strip (sharp FH1 distressed panel)
+  l.rect(34 * s, 146 * s, 740 * s, 268 * s, ui::rgba(46, 12, 30, 225), 0.0f, ui::rgba(16, 17, 20, 240));
   draw_pill(l, 52 * s, 166 * s, 196 * s, 24 * s, "COLORADO FESTIVAL", ui4::kPink, ui4::kWhite, s);
   draw_fit_text(l, 52 * s, 202 * s, "FORZA HORIZON NATIVE DRIVE", ui4::style(ui::Font::kE, 25 * s, ui4::kWhite),
                 668 * s, 14 * s);
@@ -197,15 +208,16 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<
                             std::to_string(st.hw_info.refresh_hz) + " HZ";
 
   l.text(784 * s, 198 * s, "GPU:", kts);
-  draw_fit_text(l, 886 * s, 198 * s, gpu_name, vts, 340 * s, 9.5f * s);
+  draw_fit_text(l, 916 * s, 198 * s, gpu_name, vts, 312 * s, 9.5f * s);
   l.text(784 * s, 224 * s, "MEMORY:", kts);
-  draw_fit_text(l, 886 * s, 224 * s, vram_s + "  -  " + vk_s, vts, 340 * s, 9.5f * s);
+  draw_fit_text(l, 916 * s, 224 * s, vram_s + "  -  " + vk_s, vts, 312 * s, 9.5f * s);
   l.text(784 * s, 250 * s, "CPU / HZ:", kts);
-  draw_fit_text(l, 886 * s, 250 * s, cpu_s, vts, 340 * s, 9.5f * s);
+  draw_fit_text(l, 916 * s, 250 * s, cpu_s, vts, 312 * s, 9.5f * s);
 
-  // Recommended preset callout box
-  l.rect(784 * s, 284 * s, 1228 * s, 352 * s, ui::rgba(16, 36, 26, 220), 5 * s);
-  l.frame(784 * s, 284 * s, 1228 * s, 352 * s, ui4::kGreen, 1.2f * s, 5 * s);
+  // Recommended preset callout box (sharp FH1 strip)
+  l.rect(784 * s, 284 * s, 1228 * s, 352 * s, ui::rgba(14, 30, 22, 235));
+  l.rect(784 * s, 284 * s, 788 * s, 352 * s, ui4::kGreen);
+  l.frame(784 * s, 284 * s, 1228 * s, 352 * s, ui4::kGreen, 1.0f * s);
   draw_fit_text(l, 798 * s, 294 * s, "RECOMMENDED: " + st.hw_rec.label,
                 ui4::style(ui::Font::kE, 15 * s, ui4::kGreen), 416 * s, 11 * s);
   draw_fit_text(l, 798 * s, 322 * s, st.hw_rec.reason,
@@ -258,8 +270,8 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
 
   l.text(52 * s, 196 * s, "EXTRACTED DISC FOLDER (DROP FOLDER ONTO WINDOW OR EDIT PATH):",
          ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 218 * s, 960 * s, 254 * s, ui::rgba(12, 14, 18, 245), 4 * s);
-  l.frame(52 * s, 218 * s, 960 * s, 254 * s, ui::rgba(80, 86, 100, 200), 1.2f * s, 4 * s);
+  l.rect(52 * s, 218 * s, 960 * s, 254 * s, ui4::kBrushBlack);
+  l.frame(52 * s, 218 * s, 960 * s, 254 * s, ui::rgba(80, 86, 100, 200), 1.0f * s);
   l.text(64 * s, 229 * s,
          st.disc_path_input.empty() ? "DRAG & DROP YOUR EXTRACTED FH1 DISC FOLDER HERE (HOLDING MEDIA/)"
                                     : truncate_str(st.disc_path_input, 74),
@@ -300,7 +312,7 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
                     st.setup_progress.success ? ui4::kGreen : ui4::kPink, s);
 
   // Log box
-  l.rect(52 * s, 528 * s, 1228 * s, 644 * s, ui::rgba(10, 12, 16, 250), 4 * s);
+  l.rect(52 * s, 528 * s, 1228 * s, 644 * s, ui4::kBrushBlack);
   const size_t nlines = st.setup_progress.log_lines.size();
   const size_t start = nlines > 6 ? nlines - 6 : 0;
   for (size_t i = start; i < nlines; ++i) {
@@ -325,8 +337,7 @@ void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<H
   for (size_t i = 0; i < st.content_status.packages.size() && i < 8; ++i) {
     const auto& pkg = st.content_status.packages[i];
     const float ry = 312 * s + float(i) * 41 * s;
-    l.rect(52 * s, ry, 1228 * s, ry + 34 * s, (i % 2 == 0) ? ui::rgba(32, 35, 42, 235) : ui::rgba(26, 28, 34, 235),
-           4 * s);
+    l.rect(52 * s, ry, 1228 * s, ry + 34 * s, (i % 2 == 0) ? ui4::kPillGrey : ui::rgba(24, 25, 30, 240));
     l.circle(70 * s, ry + 17 * s, 5.5f * s, pkg.installed ? (pkg.enabled ? ui4::kGreen : ui4::kAmber) : ui::rgba(90, 96, 108, 220));
     l.text(88 * s, ry + 10 * s, truncate_str(pkg.title, 38), ui4::style(ui::Font::kE, 13 * s, ui4::kWhite));
     l.text(560 * s, ry + 11 * s, pkg.installed ? truncate_str(pkg.detail, 42) : "NOT INSTALLED (DROP STFS OR FOLDER)",
@@ -341,8 +352,8 @@ void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<H
 void draw_mods_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
   // Save-isolation banner
   const uint32_t iso_col = st.save_iso.kind == "own" ? ui4::kGreen : (st.save_iso.kind == "modded" ? ui4::kAmber : ui4::kPink);
-  l.rect(32 * s, 140 * s, 1248 * s, 180 * s, ui::rgba(28, 30, 36, 245), 5 * s);
-  l.frame(32 * s, 140 * s, 1248 * s, 180 * s, iso_col, 1.4f * s, 5 * s);
+  l.rect(32 * s, 140 * s, 1248 * s, 180 * s, ui4::kPillGrey);
+  l.frame(32 * s, 140 * s, 1248 * s, 180 * s, iso_col, 1.2f * s);
   draw_pill(l, 44 * s, 149 * s, 152 * s, 22 * s, "SAVE: " + st.save_iso.profile, iso_col, ui4::kInk, s);
   l.text(210 * s, 153 * s, truncate_str(st.save_iso.warning_banner, 86), ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
 
@@ -361,8 +372,8 @@ void draw_mods_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<
     const std::string row_id = "mod:sel:" + std::to_string(i);
     hits.push_back({row_id, 50 * s, ry, 540 * s, ry + 38 * s});
     l.rect(50 * s, ry, 662 * s, ry + 38 * s,
-           sel ? ui::rgba(58, 24, 42, 240) : ui::rgba(28, 31, 38, 235), 4 * s);
-    if (sel) l.frame(50 * s, ry, 662 * s, ry + 38 * s, ui4::kPink, 1.3f * s, 4 * s);
+           sel ? ui::rgba(58, 20, 38, 245) : ui4::kPillGrey);
+    if (sel) l.frame(50 * s, ry, 662 * s, ry + 38 * s, ui4::kPink, 1.2f * s);
     const uint32_t dot = !m.problems.empty() ? ui4::kRed : (m.enabled ? ui4::kGreen : ui::rgba(110, 116, 128, 220));
     l.circle(68 * s, ry + 19 * s, 5.5f * s, dot);
     l.text(84 * s, ry + 11 * s, "#" + std::to_string(i + 1) + "  " + truncate_str(m.title, 30),
@@ -405,7 +416,7 @@ void draw_mods_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<
            ui4::style(ui::Font::kB, 12 * s, m.shares_save ? ui4::kGreen : ui4::kAmber));
 
     if (!m.problems.empty()) {
-      l.rect(720 * s, 392 * s, 1228 * s, 430 * s, ui::rgba(80, 18, 24, 220), 4 * s);
+      l.rect(720 * s, 392 * s, 1228 * s, 430 * s, ui::rgba(80, 18, 24, 225));
       l.text(732 * s, 404 * s, "CONFLICT: " + truncate_str(m.problems[0], 50),
              ui4::style(ui::Font::kB, 12 * s, ui4::kRed));
     }
@@ -460,24 +471,24 @@ void draw_radio_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
 
   // Music folder & station name & logo
   l.text(52 * s, 356 * s, "USER MUSIC FOLDER (MP3 / WAV / FLAC / OGG):", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 376 * s, 616 * s, 410 * s, ui::rgba(12, 14, 18, 245), 4 * s);
-  l.frame(52 * s, 376 * s, 616 * s, 410 * s, ui::rgba(76, 82, 96, 200), 1.0f * s, 4 * s);
+  l.rect(52 * s, 376 * s, 616 * s, 410 * s, ui4::kBrushBlack);
+  l.frame(52 * s, 376 * s, 616 * s, 410 * s, ui::rgba(76, 82, 96, 200), 1.0f * s);
   l.text(64 * s, 386 * s,
          st.radio_cfg.music_folder.empty() ? "DROP MUSIC FOLDER HERE"
                                            : truncate_str(st.radio_cfg.music_folder.string(), 48),
          ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
 
   l.text(52 * s, 426 * s, "CUSTOM STATION NAME STRING:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 446 * s, 616 * s, 480 * s, ui::rgba(12, 14, 18, 245), 4 * s);
-  l.frame(52 * s, 446 * s, 616 * s, 480 * s, ui::rgba(76, 82, 96, 200), 1.0f * s, 4 * s);
+  l.rect(52 * s, 446 * s, 616 * s, 480 * s, ui4::kBrushBlack);
+  l.frame(52 * s, 446 * s, 616 * s, 480 * s, ui::rgba(76, 82, 96, 200), 1.0f * s);
   l.text(64 * s, 456 * s,
          st.radio_cfg.custom_station_name.empty() ? "(KEEP STOCK NAME)" : st.radio_cfg.custom_station_name,
          ui4::style(ui::Font::kB, 13 * s, ui4::kAmber));
 
   l.text(52 * s, 496 * s, "STATION LOGO PNG (210X100 REQUIRED):", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 516 * s, 616 * s, 550 * s, ui::rgba(12, 14, 18, 245), 4 * s);
+  l.rect(52 * s, 516 * s, 616 * s, 550 * s, ui4::kBrushBlack);
   l.frame(52 * s, 516 * s, 616 * s, 550 * s, st.radio_logo_check.valid ? ui4::kGreen : ui::rgba(76, 82, 96, 200),
-          1.2f * s, 4 * s);
+          1.2f * s);
   l.text(64 * s, 526 * s, truncate_str(st.radio_logo_check.message, 48),
          ui4::style(ui::Font::kB, 12 * s, st.radio_logo_check.valid ? ui4::kGreen : ui4::kDim));
 
@@ -493,9 +504,9 @@ void draw_radio_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
                      "PLAYLIST PREVIEW (" + std::to_string(st.radio_tracks.size()) + " TRACKS)", s, ui4::kAmber);
 
   // 210x100 logo preview box
-  l.rect(676 * s, 198 * s, 886 * s, 298 * s, ui::rgba(18, 20, 26, 250), 4 * s);
-  l.frame(676 * s, 198 * s, 886 * s, 298 * s, ui4::kPink, 1.4f * s, 4 * s);
-  l.rect(682 * s, 204 * s, 880 * s, 232 * s, ui4::kPink, 2 * s);
+  l.rect(676 * s, 198 * s, 886 * s, 298 * s, ui4::kBrushBlack);
+  l.frame(676 * s, 198 * s, 886 * s, 298 * s, ui4::kPink, 1.2f * s);
+  l.rect(682 * s, 204 * s, 880 * s, 232 * s, ui4::kPink);
   draw_fit_text(l, 781 * s, 211 * s,
                 st.radio_cfg.custom_station_name.empty() ? st.radio_cfg.station_slot : st.radio_cfg.custom_station_name,
                 ui4::style(ui::Font::kE, 13 * s, ui4::kWhite, ui::Align::kCenter), 186 * s, 8.5f * s);
@@ -517,8 +528,7 @@ void draw_radio_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
   for (size_t i = 0; i < st.radio_tracks.size() && i < 8; ++i) {
     const auto& t = st.radio_tracks[i];
     const float ry = 316 * s + float(i) * 38 * s;
-    l.rect(676 * s, ry, 1228 * s, ry + 32 * s, (i % 2 == 0) ? ui::rgba(32, 35, 42, 235) : ui::rgba(24, 27, 33, 235),
-           4 * s);
+    l.rect(676 * s, ry, 1228 * s, ry + 32 * s, (i % 2 == 0) ? ui4::kPillGrey : ui::rgba(22, 24, 28, 240));
     char idx_s[16];
     std::snprintf(idx_s, sizeof idx_s, "%02zu", i + 1);
     l.text(688 * s, ry + 9 * s, idx_s, ui4::style(ui::Font::kB, 12 * s, ui4::kAmber));
@@ -543,8 +553,8 @@ void draw_wheel_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
     const bool sel = int(i) == st.selected_device;
     const std::string did = "wheel:dev:" + std::to_string(i);
     hits.push_back({did, 52 * s, dy, 548 * s, dy + 38 * s});
-    l.rect(52 * s, dy, 548 * s, dy + 38 * s, sel ? ui::rgba(56, 24, 40, 240) : ui::rgba(28, 31, 38, 235), 4 * s);
-    if (sel) l.frame(52 * s, dy, 548 * s, dy + 38 * s, ui4::kPink, 1.3f * s, 4 * s);
+    l.rect(52 * s, dy, 548 * s, dy + 38 * s, sel ? ui::rgba(56, 20, 38, 245) : ui4::kPillGrey);
+    if (sel) l.frame(52 * s, dy, 548 * s, dy + 38 * s, ui4::kPink, 1.2f * s);
     l.circle(68 * s, dy + 19 * s, 5 * s, d.has_ffb ? ui4::kGreen : ui4::kBlue);
     l.text(84 * s, dy + 11 * s, truncate_str(d.name, 28), ui4::style(ui::Font::kE, 12 * s, ui4::kWhite));
     l.text(538 * s, dy + 12 * s,
@@ -610,8 +620,8 @@ void draw_wheel_tab(ui::List& l, const LauncherUiState& st, float s, std::vector
   for (int g = 0; g < 7; ++g) {
     const float gx = 608 * s + float(g) * 56 * s;
     const bool active = (g == 0 && st.live_gear == -1) || (g > 0 && st.live_gear == g);
-    l.rect(gx, 514 * s, gx + 48 * s, 560 * s, active ? ui4::kPink : ui::rgba(28, 32, 40, 240), 5 * s);
-    l.frame(gx, 514 * s, gx + 48 * s, 560 * s, active ? ui4::kWhite : ui::rgba(74, 80, 96, 180), 1.2f * s, 5 * s);
+    l.rect(gx, 514 * s, gx + 48 * s, 560 * s, active ? ui4::kPink : ui4::kPillGrey);
+    l.frame(gx, 514 * s, gx + 48 * s, 560 * s, active ? ui4::kWhite : ui::rgba(74, 80, 96, 180), 1.0f * s);
     l.text(gx + 24 * s, 528 * s, kGears[g], ui4::style(ui::Font::kE, 18 * s, ui4::kWhite, ui::Align::kCenter));
   }
 
@@ -641,8 +651,8 @@ void draw_update_tab(ui::List& l, const LauncherUiState& st, float s, std::vecto
 
   if (st.available_update) {
     const auto& u = *st.available_update;
-    l.rect(52 * s, 344 * s, 1228 * s, 540 * s, ui::rgba(18, 30, 44, 220), 6 * s);
-    l.frame(52 * s, 344 * s, 1228 * s, 540 * s, ui4::kBlue, 1.4f * s, 6 * s);
+    l.rect(52 * s, 344 * s, 1228 * s, 540 * s, ui::rgba(16, 24, 34, 235));
+    l.frame(52 * s, 344 * s, 1228 * s, 540 * s, ui4::kBlue, 1.2f * s);
     l.text(72 * s, 364 * s, "NEW RELEASE AVAILABLE: " + u.tag + " (" + u.asset_name + ")",
            ui4::style(ui::Font::kE, 18 * s, ui4::kWhite));
     l.text(72 * s, 398 * s, "DOWNLOAD SIZE: " + fmt_gb(u.size_bytes), ui4::style(ui::Font::kB, 13 * s, ui4::kDim));
@@ -660,8 +670,8 @@ void draw_android_tab(ui::List& l, const LauncherUiState& st, float s, std::vect
   draw_section_title(l, 52 * s, 162 * s, "ANDROID WI-FI SYNC SERVER (LOCAL LAN ONLY)", s, ui4::kGreen);
 
   // Pairing code highlight box
-  l.rect(52 * s, 198 * s, 728 * s, 286 * s, ui::rgba(16, 22, 20, 245), 6 * s);
-  l.frame(52 * s, 198 * s, 728 * s, 286 * s, st.sync_active ? ui4::kGreen : ui::rgba(76, 82, 96, 200), 1.5f * s, 6 * s);
+  l.rect(52 * s, 198 * s, 728 * s, 286 * s, ui4::kBrushBlack);
+  l.frame(52 * s, 198 * s, 728 * s, 286 * s, st.sync_active ? ui4::kGreen : ui::rgba(76, 82, 96, 200), 1.2f * s);
   l.text(70 * s, 210 * s, "6-DIGIT PAIRING CODE:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
   const std::string code_disp = st.sync_manifest.pairing_code.size() == 6
                                     ? (st.sync_manifest.pairing_code.substr(0, 3) + " " + st.sync_manifest.pairing_code.substr(3))
@@ -695,7 +705,7 @@ void draw_android_tab(ui::List& l, const LauncherUiState& st, float s, std::vect
               st.hovered_id == "sync:toggle");
 
   // Activity log
-  l.rect(52 * s, 492 * s, 728 * s, 642 * s, ui::rgba(10, 12, 16, 250), 4 * s);
+  l.rect(52 * s, 492 * s, 728 * s, 642 * s, ui4::kBrushBlack);
   l.text(64 * s, 502 * s, "TRANSFER LOG:", ui4::style(ui::Font::kB, 11 * s, ui4::kDim));
   const size_t an = st.sync_activity.size();
   const size_t as = an > 6 ? an - 6 : 0;
@@ -711,7 +721,7 @@ void draw_android_tab(ui::List& l, const LauncherUiState& st, float s, std::vect
   const float qr_box = 280 * s;
   const float qx = 0.5f * (768 * s + 1248 * s) - qr_box * 0.5f;
   const float qy = 204 * s;
-  l.rect(qx, qy, qx + qr_box, qy + qr_box, ui4::kWhite, 6 * s);
+  l.rect(qx, qy, qx + qr_box, qy + qr_box, ui4::kWhite);
   if (st.sync_qr.size > 0) {
     const float quiet = 18 * s;
     const float cell = (qr_box - 2.0f * quiet) / float(st.sync_qr.size);
@@ -914,12 +924,12 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
   l.rect(0, 0, width, 74 * s, ui::rgba(22, 24, 30, 255), 0, ui::rgba(16, 18, 24, 255));
   l.rect(0, 72 * s, width, 74.5f * s, ui4::kPink);
 
-  // Tilted FH1-styled Brand Header
+  // Tilted FH1-styled Brand Header (+3 deg feathered brush + clipon)
   {
     ui4::TiltScope tilt(l, 160 * s, 36 * s, ui4::kTiltRad * 0.7f);
-    l.rect(28 * s, 12 * s, 294 * s, 60 * s, ui4::kPink, 3 * s);
-    l.text(44 * s, 18 * s, "SHIFT ENGINE", ui4::style(ui::Font::kE, 21 * s, ui4::kWhite));
-    l.text(44 * s, 45 * s, "UNIFIED 4-PLATFORM LAUNCHER", ui4::style(ui::Font::kB, 9 * s, ui4::kOffWhite));
+    ui4::brush(l, 24 * s, 10 * s, 306 * s, 62 * s, ui4::kPink, false, 1.0f);
+    l.text(44 * s, 17 * s, "SHIFT ENGINE", ui4::style(ui::Font::kE, 21 * s, ui4::kWhite));
+    l.text(44 * s, 44 * s, "UNIFIED 4-PLATFORM LAUNCHER", ui4::style(ui::Font::kB, 9 * s, ui4::kOffWhite));
   }
 
   // Header status pills (right side)
@@ -946,8 +956,8 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
     hitboxes.push_back({cid, tx, 84 * s, tx + tab_w * s, 124 * s});
     const bool hov = st.hovered_id == cid;
     l.rect(tx, 84 * s, tx + tab_w * s, 124 * s,
-           active ? ui4::kPink : (hov ? ui::rgba(48, 52, 64, 240) : ui::rgba(26, 29, 36, 240)), 4 * s);
-    if (active) l.rect(tx + 4 * s, 121 * s, tx + tab_w * s - 4 * s, 124 * s, ui4::kWhite);
+           active ? ui4::kPink : (hov ? ui::rgba(48, 52, 64, 240) : ui4::kPillGrey));
+    if (active) l.rect(tx, 121 * s, tx + tab_w * s, 124 * s, ui4::kWhite);
     ui::TextStyle tts = ui4::style(ui::Font::kE, 13 * s, active ? ui4::kWhite : ui4::kDim, ui::Align::kCenter);
     l.text(tx + tab_w * 0.5f * s, 97 * s, tab_name(t), tts);
   }
