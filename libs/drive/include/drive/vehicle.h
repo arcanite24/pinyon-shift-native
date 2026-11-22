@@ -535,6 +535,7 @@ class Vehicle {
   double engine_torque(double rpm, double throttle) const;
   // Current boost pressure (psi) and combined boost multiplier (1.0 on NA cars).
   double boost_psi() const { return p_.has_turbo ? boost_psi_ : (p_.has_supercharger ? sc_psi_ : 0.0); }
+  bool bov_open() const { return bov_open_; }
   double boost_factor() const { return boost_factor_; }
   double launch_target() const { return launch_target_; }      // rpm, in the launch state
   // The clutch output's speed (driven-wheel speed x gear x final drive), rpm, signed.

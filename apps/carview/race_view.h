@@ -122,6 +122,8 @@ class RaceView {
     double speed = 0;
     std::string name;
     bool leader = false;
+    double vx = 0, vy = 0, vz = 0;
+    double rpm = 1000;
   };
   void opponent_tags(std::vector<OpponentTag>& out) const;
   // Allows updating difficulty on the pre-race grid menu before the race starts.

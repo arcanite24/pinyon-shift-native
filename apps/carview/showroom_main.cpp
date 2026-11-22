@@ -2585,6 +2585,7 @@ int run_drive(int argc, char** argv) {
       const auto& info = showroom.car();
       std::vector<std::string> physics_notes;
       audio::UpgradeLevels audio_upgrades{};
+      int audio_trans_level = 0, audio_turbo_level = 0, audio_sc_level = 0;
       drive::Vehicle vehicle([&] {
         // The selected garage car with its fitted parts (SPEC-GARAGE-UPGRADES,
         // What a part changes).
@@ -2599,6 +2600,9 @@ int run_drive(int argc, char** argv) {
               if (db && db->physics(gc->car_id, garage::fitted(*gc), rows, &e)) {
                 audio_upgrades.intake = int(rows.get("List_UpgradeEngineIntake.Level", 0));
                 audio_upgrades.exhaust = int(rows.get("List_UpgradeEngineExhaust.Level", 0));
+                audio_trans_level = int(rows.get("List_UpgradeDrivetrainTransmission.Level", 0));
+                audio_turbo_level = int(rows.get("List_UpgradeEngineTurboSingle.Level", 0));
+                audio_sc_level = int(rows.get("List_UpgradeEngineCSC.Level", 0));
                 std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
                             it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
                             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -2804,7 +2808,11 @@ int run_drive(int argc, char** argv) {
                 }
               }
             }
-            if (!headless) audio_host.init_user_music(user_music_dir, true);
+            if (!headless) {
+              audio_host.init_user_music(user_music_dir, true);
+              const auto sfx_cache = !sound_dir.empty() ? sound_dir : (state_root / "sound-cache");
+              audio_host.init_sfx(game_root, sfx_cache, audio_host.car_burble_bank());
+            }
           }
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        render_ground ? nullptr : &collision);
@@ -3340,6 +3348,12 @@ int run_drive(int argc, char** argv) {
           char line[160];
           if (ev.kind == freeroam::Event::kSignSmashed) {
             sign_smashed_now = true;
+            audio_host.trigger_ui(audio::UiCue::kSignSmash);
+            audio::CollisionHit bhit{};
+            bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
+            bhit.pos = {float(at.x), float(at.y), float(at.z)};
+            bhit.is_break = true;
+            audio_host.trigger_collision(bhit);
             const int n = free_roam->signs_found();
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, collectibles.signs.size(),
                           freeroam::upgrade_discount(n));
@@ -5807,6 +5821,25 @@ int run_drive(int argc, char** argv) {
               rewind_buf.record_step(vehicle.time(), rc, vehicle, cs, cap_ok);
             }
             frame_world_impact = std::max(frame_world_impact, vehicle.body_contact_force());
+            {
+              const double mass = std::max(100.0, vehicle.params().mass);
+              const auto& bc = vehicle.strongest_body_contact();
+              const double dv_world = bc.force * drive::Vehicle::kStep / mass;
+              const double dv_car = traffic ? traffic->player_impulse() / mass : 0.0;
+              if (dv_world > 1.0) {
+                audio::CollisionHit hit{};
+                hit.rel_speed_mps = float(dv_world);
+                hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
+                audio_host.trigger_collision(hit);
+              } else if (dv_car > 1.0) {
+                const drive::Vec3 vp = vehicle.position();
+                audio::CollisionHit hit{};
+                hit.rel_speed_mps = float(dv_car);
+                hit.pos = {float(vp.x), float(vp.y), float(vp.z)};
+                hit.is_car_on_car = true;
+                audio_host.trigger_collision(hit);
+              }
+            }
             accumulator -= drive::Vehicle::kStep;
           }
           if (!pads.empty() && gamepad_rumble.config().loaded) {
@@ -5875,9 +5908,115 @@ int run_drive(int argc, char** argv) {
             }
             SDL_SetWindowTitle(window, title);
           }
-          audio_host.update_frame(sound_inputs(audio_view()),
+          const audio::View cur_audio_view = audio_view();
+          audio_host.update_frame(sound_inputs(cur_audio_view),
                                   menu_paused || rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe(),
                                   menu.open || settings_page.is_open() || map_open, show_title, false);
+          {
+            audio::VehicleAudioState vst{};
+            const auto& vp = vehicle.params();
+            const drive::Vec3 vpos = vehicle.position();
+            const drive::Vec3 vvel = vehicle.velocity();
+            const drive::Vec3 vright = drive::rotate(vehicle.orientation(), {1, 0, 0});
+            vst.speed_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
+            vst.rpm = float(vehicle.rpm());
+            vst.idle_rpm = float(vp.idle_rpm);
+            vst.redline_rpm = float(vp.redline_rpm);
+            vst.throttle = float(vehicle.engine_throttle());
+            vst.gear = vehicle.gear();
+            vst.shifting = vehicle.shifting();
+            vst.clutch_pos = float(1.0 - vehicle.clutch());
+            vst.forced_induction = vp.has_turbo ? 1 : (vp.has_supercharger ? 2 : 0);
+            vst.turbo_psi = float(vehicle.boost_psi());
+            vst.turbo_norm_rpm = vp.has_turbo && vp.boost_max_psi > 1.0
+                                     ? float(std::clamp(vehicle.boost_psi() / vp.boost_max_psi, 0.0, 1.2))
+                                     : 0.0f;
+            vst.bov_open = vehicle.bov_open();
+            vst.supercharger_norm_rpm = vp.has_supercharger && vp.redline_rpm > 1.0
+                                            ? float(std::clamp(vehicle.rpm() / vp.redline_rpm, 0.0, 1.2))
+                                            : 0.0f;
+            vst.trans_level = audio_trans_level;
+            vst.turbo_level = audio_turbo_level;
+            vst.sc_level = audio_sc_level;
+            vst.backfire_level = std::max(audio_upgrades.exhaust, vp.has_turbo ? 1 : 0);
+            const auto& ws = vehicle.wheels();
+            const auto& surfs = collision.surfaces();
+            for (int wi = 0; wi < 4; ++wi) {
+              auto& wa = vst.wheels[size_t(wi)];
+              const auto& wstate = ws[size_t(wi)];
+              wa.slip_combined = float(std::hypot(wstate.slip_ratio, wstate.slip_angle));
+              wa.wheel_rpm = float(wstate.omega * 9.5492966);
+              const double sload = std::max(100.0, vehicle.static_load(wi));
+              wa.load = wstate.contact ? float(std::clamp(wstate.load / sload, 0.0, 2.0)) : 0.0f;
+              const int axle = wi < 2 ? 0 : 1;
+              if (wstate.contact && wstate.compression > vp.bump_travel[size_t(axle)] * 0.92)
+                wa.bottom_out_force = float(wstate.compression - vp.bump_travel[size_t(axle)] * 0.92);
+              uint8_t sgrp = 0;
+              if (wstate.surface >= 0 && size_t(wstate.surface) < surfs.size()) {
+                const auto& sf = surfs[size_t(wstate.surface)];
+                if (sf.off_roadness > 0.5f) sgrp = 2;
+                else if (sf.off_roadness > 0.05f) sgrp = 1;
+              }
+              wa.surface_group = sgrp;
+            }
+            vst.listener_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
+            vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
+            vst.listener_right = {float(vright.x), float(vright.y), float(vright.z)};
+            vst.cockpit_view = cur_audio_view == audio::View::kCockpit;
+            vst.in_race = race != nullptr;
+            vst.rewinding = rewind_buf.is_rewinding();
+
+            // Gather up to kMaxOtherCars nearest race opponents and traffic cars for 3D audio.
+            struct Cand {
+              double d2 = 0;
+              audio::OtherCarAudio car{};
+            };
+            std::vector<Cand> cands;
+            if (race) {
+              std::vector<carview::RaceView::OpponentTag> otags;
+              race->opponent_tags(otags);
+              for (const auto& ot : otags) {
+                const double dx = ot.x - vpos.x, dy = ot.y - vpos.y, dz = ot.z - vpos.z;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > 220.0 * 220.0) continue;
+                audio::OtherCarAudio oc{};
+                oc.active = true;
+                oc.is_traffic = false;
+                oc.pos = {float(ot.x), float(ot.y), float(ot.z)};
+                oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
+                oc.rpm = float(ot.rpm);
+                oc.speed_mph = float(std::fabs(ot.speed) * 2.2369363);
+                cands.push_back({d2, oc});
+              }
+            }
+            if (traffic && traffic->cars()) {
+              for (const auto& tc : *traffic->cars()) {
+                const double dx = tc.position.x - vpos.x, dy = tc.position.y - vpos.y, dz = tc.position.z - vpos.z;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > 140.0 * 140.0) continue;
+                audio::OtherCarAudio oc{};
+                oc.active = true;
+                oc.is_traffic = true;
+                oc.pos = {float(tc.position.x), float(tc.position.y), float(tc.position.z)};
+                oc.vel = {float(std::sin(tc.heading) * tc.speed), 0.0f, float(std::cos(tc.heading) * tc.speed)};
+                oc.rpm = float(1100.0 + std::fabs(tc.speed) * 90.0);
+                oc.speed_mph = float(std::fabs(tc.speed) * 2.2369363);
+                cands.push_back({d2, oc});
+              }
+            }
+            std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
+            const size_t n_other = std::min(cands.size(), size_t(audio::VehicleAudioState::kMaxOtherCars));
+            for (size_t oi = 0; oi < n_other; ++oi) vst.other_cars[oi] = cands[oi].car;
+
+            bool in_countdown = false;
+            int countdown_digit = -1;
+            if (race) {
+              const auto rh = race->hud_info();
+              in_countdown = rh.phase == carview::RaceHud::kCountdown;
+              countdown_digit = rh.digit;
+            }
+            audio_host.update_vehicle(vst, race != nullptr, rewind_buf.is_rewinding(), in_countdown, countdown_digit);
+          }
           int w = 0, h = 0;
           SDL_GetWindowSizeInPixels(window, &w, &h);
           // Pose car & camera BEFORE building projected world HUD markers and opponent name tags!

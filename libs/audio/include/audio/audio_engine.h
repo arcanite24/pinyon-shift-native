@@ -23,6 +23,7 @@
 #include "audio/mixer.h"
 #include "audio/radio.h"
 #include "audio/rt.h"
+#include "audio/sfx_engine.h"
 #include "audio/snapshots.h"
 #include "audio/user_music.h"
 
@@ -69,11 +70,17 @@ class AudioEngine {
 
   // Main-thread lock-free parameter & player handoff.
   void set_engine_input(const EnginePlayer::Update& u);
+  void set_vehicle_state(const VehicleAudioState& st);
   void set_engine_player(std::unique_ptr<EnginePlayer> player);
+  void set_sfx_engine(std::unique_ptr<SfxEngine> sfx);
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
   void set_user_music(std::unique_ptr<UserMusicPlayer> player);
+
+  // Lock-free discrete SFX/UI triggers.
+  void trigger_collision(const CollisionHit& hit);
+  void trigger_ui(UiCue cue);
 
   // Mixer controls (Sound Mix 0..2 per bus, master volume/mute, compressor).
   void set_bus_level(Bus b, float level);
@@ -135,8 +142,11 @@ class AudioEngine {
       kUserMusicNext,
       kUserMusicPrev,
       kSwapEngine,
+      kSwapSfx,
       kSwapRadio,
       kSwapUserMusic,
+      kTriggerCollision,
+      kTriggerUi,
       kMatrixActivate,
       kMatrixRestoreGameplay,
       kDynamicsSpeed,
@@ -146,12 +156,15 @@ class AudioEngine {
     int i0 = 0;
     float f0 = 0.0f;
     float f1 = 0.0f;
+    float f2 = 0.0f;
+    float f3 = 0.0f;
     bool b0 = false;
+    bool b1 = false;
     void* ptr0 = nullptr;
     void* ptr1 = nullptr;
   };
   struct Retired {
-    enum Kind : uint8_t { kEngine, kRadio, kUserMusic };
+    enum Kind : uint8_t { kEngine, kSfx, kRadio, kUserMusic };
     Kind kind = kEngine;
     void* ptr = nullptr;
   };
@@ -170,7 +183,7 @@ class AudioEngine {
   bool use_matrix_ = false;
   SnapshotMatrix matrix_;
   GlobalDspConfig global_dsp_{};
-  CarBusEq car_eq_;
+  std::array<CarBusEq, 4> car_eqs_;
   MasterRmsStage rms_stage_;
   std::array<float, kBuses> matrix_bus_smooth_{};
   float matrix_master_smooth_ = 1.0f;
@@ -179,18 +192,20 @@ class AudioEngine {
 
   // Owned/used exclusively by the audio thread while running.
   EnginePlayer* engine_ = nullptr;
+  SfxEngine* sfx_ = nullptr;
   Radio* radio_ = nullptr;
   RadioPlayer* radio_player_ = nullptr;
   UserMusicPlayer* user_music_ = nullptr;
 
   EnginePlayer::Update last_engine_in_{};
   bool have_engine_in_ = false;
+  VehicleAudioState last_veh_state_{};
 
-  std::vector<float> bus_engine_;
-  std::vector<float> bus_music_;
+  std::array<std::vector<float>, kBuses> bus_bufs_;
   std::vector<float> out_buf_;
 
   TripleBuffer<EnginePlayer::Update> engine_in_;
+  TripleBuffer<VehicleAudioState> veh_state_in_;
   TripleBuffer<AudioTelemetry> telemetry_buf_;
   SpscQueue<Command> cmds_{512};
   SpscQueue<Retired> retired_{64};

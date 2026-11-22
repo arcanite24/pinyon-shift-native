@@ -11,19 +11,19 @@ AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)) {
   mixer_.prepare(rate_);
   mixer_.snapshots().add_defaults();
   snap_title_ = mixer_.snapshots().find("Title");
-  car_eq_.prepare(rate_);
+  for (auto& eq : car_eqs_) eq.prepare(rate_);
   rms_stage_.prepare(rate_);
   matrix_bus_smooth_.fill(1.0f);
   // Pre-allocate stereo bus scratch buffers for up to 4096 frames so the
   // audio thread never allocates in steady state.
-  bus_engine_.resize(4096 * 2, 0.0f);
-  bus_music_.resize(4096 * 2, 0.0f);
+  for (auto& b : bus_bufs_) b.resize(4096 * 2, 0.0f);
   out_buf_.resize(4096 * 2, 0.0f);
 }
 
 AudioEngine::~AudioEngine() {
   stop();
   delete engine_;
+  delete sfx_;
   delete radio_player_;
   delete user_music_;
 }
@@ -52,6 +52,7 @@ void AudioEngine::reclaim() {
   while (retired_.pop(r)) {
     switch (r.kind) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(r.ptr); break;
+      case Retired::kSfx: delete static_cast<SfxEngine*>(r.ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(r.ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(r.ptr); break;
     }
@@ -77,6 +78,7 @@ void AudioEngine::enqueue(const Command& c) {
 }
 
 void AudioEngine::set_engine_input(const EnginePlayer::Update& u) { engine_in_.write(u); }
+void AudioEngine::set_vehicle_state(const VehicleAudioState& st) { veh_state_in_.write(st); }
 
 void AudioEngine::set_engine_player(std::unique_ptr<EnginePlayer> player) {
   Command c;
@@ -90,6 +92,39 @@ void AudioEngine::set_engine_player(std::unique_ptr<EnginePlayer> player) {
     }
     delete static_cast<EnginePlayer*>(c.ptr0);
   }
+}
+
+void AudioEngine::set_sfx_engine(std::unique_ptr<SfxEngine> sfx) {
+  Command c;
+  c.kind = Command::kSwapSfx;
+  c.ptr0 = sfx.release();
+  if (!cmds_.push(c)) {
+    if (!running_.load(std::memory_order_acquire)) {
+      drain_commands();
+      reclaim();
+      if (cmds_.push(c)) return;
+    }
+    delete static_cast<SfxEngine*>(c.ptr0);
+  }
+}
+
+void AudioEngine::trigger_collision(const CollisionHit& hit) {
+  Command c;
+  c.kind = Command::kTriggerCollision;
+  c.f0 = hit.rel_speed_mps;
+  c.f1 = hit.pos.x;
+  c.f2 = hit.pos.y;
+  c.f3 = hit.pos.z;
+  c.b0 = hit.is_car_on_car;
+  c.b1 = hit.is_break;
+  enqueue(c);
+}
+
+void AudioEngine::trigger_ui(UiCue cue) {
+  Command c;
+  c.kind = Command::kTriggerUi;
+  c.i0 = int(cue);
+  enqueue(c);
 }
 
 void AudioEngine::set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player) {
@@ -298,6 +333,7 @@ void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
     // Fallback only if main thread never reclaimed 64 swaps in a row.
     switch (kind) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(ptr); break;
+      case Retired::kSfx: delete static_cast<SfxEngine*>(ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(ptr); break;
     }
@@ -327,6 +363,8 @@ void AudioEngine::drain_commands() {
         if (use_matrix_) matrix_.restore_gameplay();
         break;
       case Command::kDynamicsSpeed:
+        last_veh_state_.speed_mph = c.f0;
+        last_veh_state_.top_speed_mph = c.f1;
         if (use_matrix_) matrix_.update_dynamics(0.0, c.f0, c.f1);
         break;
       case Command::kCarBusDspMode: {
@@ -338,7 +376,7 @@ void AudioEngine::drain_commands() {
           case CarDspMode::kOff:
           default: band.bypass = true; break;
         }
-        car_eq_.set_target(band);
+        for (auto& eq : car_eqs_) eq.set_target(band);
         break;
       }
       case Command::kRadioPress:
@@ -373,6 +411,10 @@ void AudioEngine::drain_commands() {
         engine_ = static_cast<EnginePlayer*>(c.ptr0);
         if (engine_ && have_engine_in_) engine_->set(last_engine_in_);
         break;
+      case Command::kSwapSfx:
+        retire_ptr(Retired::kSfx, sfx_);
+        sfx_ = static_cast<SfxEngine*>(c.ptr0);
+        break;
       case Command::kSwapRadio:
         retire_ptr(Retired::kRadio, radio_player_);
         radio_ = static_cast<Radio*>(c.ptr0);
@@ -382,6 +424,19 @@ void AudioEngine::drain_commands() {
         retire_ptr(Retired::kUserMusic, user_music_);
         user_music_ = static_cast<UserMusicPlayer*>(c.ptr0);
         break;
+      case Command::kTriggerCollision:
+        if (sfx_) {
+          CollisionHit hit{};
+          hit.rel_speed_mps = c.f0;
+          hit.pos = {c.f1, c.f2, c.f3};
+          hit.is_car_on_car = c.b0;
+          hit.is_break = c.b1;
+          sfx_->trigger_collision(hit, last_veh_state_);
+        }
+        break;
+      case Command::kTriggerUi:
+        if (sfx_) sfx_->trigger_ui(UiCue(c.i0));
+        break;
     }
   }
 }
@@ -389,11 +444,15 @@ void AudioEngine::drain_commands() {
 void AudioEngine::render_block(float* out, int frames) {
   if (frames <= 0) return;
   const auto t0 = std::chrono::steady_clock::now();
+
+  VehicleAudioState vst{};
+  if (veh_state_in_.read(vst)) last_veh_state_ = vst;
   drain_commands();
 
   const size_t samples = size_t(frames) * 2;
-  if (bus_engine_.size() < samples) bus_engine_.resize(samples, 0.0f);
-  if (bus_music_.size() < samples) bus_music_.resize(samples, 0.0f);
+  for (auto& b : bus_bufs_) {
+    if (b.size() < samples) b.resize(samples, 0.0f);
+  }
 
   EnginePlayer::Update u{};
   if (engine_in_.read(u)) {
@@ -403,23 +462,49 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   const float* buses[kBuses] = {};
+  float* sfx_buses[kBuses] = {};
+
   if (engine_) {
-    engine_->render(bus_engine_.data(), frames);
-    car_eq_.process(bus_engine_.data(), frames);
-    buses[int(Bus::kEngine)] = bus_engine_.data();
+    engine_->render(bus_bufs_[int(Bus::kEngine)].data(), frames);
+    buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
+  } else if (sfx_) {
+    std::fill(bus_bufs_[int(Bus::kEngine)].begin(), bus_bufs_[int(Bus::kEngine)].begin() + ptrdiff_t(samples), 0.0f);
+    buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
   }
 
   const bool on_title = snap_title_ >= 0 && mixer_.snapshots().active(snap_title_);
   const bool user_music_on = user_music_ && user_music_->active();
   if (!on_title && (user_music_on || radio_player_)) {
-    std::fill(bus_music_.begin(), bus_music_.begin() + ptrdiff_t(samples), 0.0f);
+    auto& mbuf = bus_bufs_[int(Bus::kMusic)];
+    std::fill(mbuf.begin(), mbuf.begin() + ptrdiff_t(samples), 0.0f);
     if (user_music_on) {
       // Your Music mutes the game's radio while keeping all other buses.
-      user_music_->render(bus_music_.data(), frames);
+      user_music_->render(mbuf.data(), frames);
     } else if (radio_player_) {
-      radio_player_->render(bus_music_.data(), frames);
+      radio_player_->render(mbuf.data(), frames);
     }
-    buses[int(Bus::kMusic)] = bus_music_.data();
+    buses[int(Bus::kMusic)] = mbuf.data();
+  }
+
+  if (sfx_) {
+    constexpr Bus kSfxBuses[] = {Bus::kOtherCars, Bus::kTyres, Bus::kWind, Bus::kAmbience, Bus::kUi};
+    for (Bus b : kSfxBuses) {
+      auto& buf = bus_bufs_[int(b)];
+      std::fill(buf.begin(), buf.begin() + ptrdiff_t(samples), 0.0f);
+      sfx_buses[int(b)] = buf.data();
+      buses[int(b)] = buf.data();
+    }
+    sfx_buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
+    last_veh_state_.music_active = buses[int(Bus::kMusic)] != nullptr;
+    sfx_->render(last_veh_state_, sfx_buses, frames, engine_);
+  }
+
+  // Apply GlobalDSPConfig.xml car-bus EQ to active car buses (independent filter state per bus).
+  constexpr Bus kCarBuses[4] = {Bus::kEngine, Bus::kOtherCars, Bus::kTyres, Bus::kWind};
+  for (int i = 0; i < 4; ++i) {
+    if (buses[int(kCarBuses[i])]) {
+      car_eqs_[size_t(i)].process(bus_bufs_[int(kCarBuses[i])].data(), frames);
+    }
   }
 
   if (use_matrix_) {
@@ -458,6 +543,7 @@ void AudioEngine::render_block(float* out, int frames) {
     }
     rms_stage_.process(out, frames, 2);
     const double dt = double(frames) / double(rate_);
+    matrix_.update_dynamics(dt, last_veh_state_.speed_mph, last_veh_state_.top_speed_mph);
     matrix_.advance(dt);
     mixer_.snapshots().advance(dt);
   } else {

@@ -204,6 +204,37 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
   return false;
 }
 
+std::string AudioHost::car_burble_bank() const {
+  return baked_sound_ ? baked_sound_->loaded.sound.burble.wavebank : std::string{};
+}
+
+bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                         const std::string& burble_bank) {
+  if (game_root.empty()) return false;
+  if (!mixer_configs_tried_) {
+    mixer_configs_tried_ = true;
+    const bool was_running = engine_.running();
+    if (was_running) stop_device();
+    std::string mnote;
+    if (engine_.load_mixer_configs(game_root, &mnote)) {
+      std::printf("%s\n", mnote.c_str());
+      engine_.activate_matrix_snapshot("FreeRoam");
+    }
+    if (was_running) start_device();
+  }
+  if (!sfx_tried_) {
+    sfx_tried_ = true;
+    auto sfx = std::make_unique<audio::SfxEngine>(kAudioRate);
+    std::string snote;
+    if (sfx->load(game_root, cache_dir, burble_bank, &snote)) {
+      std::printf("%s\n", snote.c_str());
+      engine_.set_sfx_engine(std::move(sfx));
+      has_sfx_ = true;
+    }
+  }
+  return has_sfx_;
+}
+
 void AudioHost::init_user_music(const std::filesystem::path& music_dir, bool non_blocking) {
   music_dir_ = music_dir;
   user_music_non_blocking_ = non_blocking;
@@ -257,7 +288,67 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
   engine_.set_snapshot(snap_menu_, menu_open);
   engine_.set_snapshot(snap_title_, on_title);
   engine_.set_snapshot(snap_loading_, loading);
+
+  if (engine_.has_snapshot_matrix()) {
+    if (loading != last_loading_) {
+      last_loading_ = loading;
+      if (loading) engine_.activate_matrix_snapshot("Loading");
+      else if (!paused && !menu_open && !last_rewinding_) engine_.restore_gameplay_snapshot();
+    }
+    if (paused != last_paused_) {
+      last_paused_ = paused;
+      if (paused && !last_rewinding_) engine_.activate_matrix_snapshot("Paused");
+      else if (!paused && !menu_open && !loading && !last_rewinding_) engine_.restore_gameplay_snapshot();
+    }
+    if (menu_open != last_menu_) {
+      last_menu_ = menu_open;
+      if (menu_open && !paused) engine_.activate_matrix_snapshot("UIExterior");
+      else if (!menu_open && !paused && !loading && !last_rewinding_) engine_.restore_gameplay_snapshot();
+    }
+  }
 }
+
+void AudioHost::update_vehicle(const audio::VehicleAudioState& st, bool in_race, bool rewinding,
+                               bool countdown_active, int countdown_digit) {
+  engine_.set_vehicle_state(st);
+  if (engine_.has_snapshot_matrix()) {
+    if (in_race != last_in_race_) {
+      last_in_race_ = in_race;
+      engine_.activate_matrix_snapshot(in_race ? "Race" : "FreeRoam");
+    }
+    if (rewinding != last_rewinding_) {
+      if (rewinding) {
+        engine_.activate_matrix_snapshot("Rewind");
+        engine_.trigger_ui(audio::UiCue::kRewindTapeStart);
+      } else if (!last_paused_ && !last_menu_ && !last_loading_) {
+        engine_.restore_gameplay_snapshot();
+      }
+    }
+  } else if (rewinding && !last_rewinding_) {
+    engine_.trigger_ui(audio::UiCue::kRewindTapeStart);
+  }
+  last_rewinding_ = rewinding;
+
+  const audio::CarDspMode dsp = rewinding          ? audio::CarDspMode::kRewind
+                                : countdown_active ? audio::CarDspMode::kCountdown
+                                : st.cockpit_view  ? audio::CarDspMode::kCockpit
+                                                   : audio::CarDspMode::kOff;
+  if (dsp != last_dsp_mode_) {
+    last_dsp_mode_ = dsp;
+    engine_.set_car_bus_dsp_mode(dsp);
+  }
+
+  if (countdown_active && countdown_digit != last_countdown_digit_) {
+    last_countdown_digit_ = countdown_digit;
+    engine_.trigger_ui(audio::UiCue::kCountdown321);
+  } else if (!countdown_active) {
+    last_countdown_digit_ = -1;
+  }
+}
+
+void AudioHost::trigger_collision(const audio::CollisionHit& hit) { engine_.trigger_collision(hit); }
+
+void AudioHost::trigger_ui(audio::UiCue cue) { engine_.trigger_ui(cue); }
 
 void AudioHost::radio_press(int dir) {
   if (!radio_) return;

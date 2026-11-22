@@ -905,9 +905,11 @@ void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
   for (size_t i = 0; i < cars_.size(); ++i) {
     if (!cars_[i].body) continue;
     const drive::Vec3 p = cars_[i].body->position();
+    const drive::Vec3 v = cars_[i].body->velocity();
     std::string nm = cars_[i].who.driver.empty() ? std::string() : names_.text(cars_[i].who.driver);
     if (nm.empty() || nm.rfind("_&", 0) == 0) nm = names_.short_name(cars_[i].who.car_media);
-    out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), std::move(nm), i == lead_idx});
+    out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), std::move(nm), i == lead_idx, v.x, v.y, v.z,
+                   cars_[i].body->rpm()});
   }
 }
 

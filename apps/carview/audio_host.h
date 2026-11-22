@@ -68,17 +68,27 @@ class AudioHost {
   const audio::RadioData& radio_data() const { return radio_data_; }
   bool has_radio() const { return radio_ != nullptr; }
 
+  // Loads AudioMixerSnapshots/GlobalDSP/AudioEngineConfig + FEV/FSB4 SfxEngine
+  // (async background FSB decode with disk cache).
+  bool init_sfx(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                const std::string& burble_bank = {});
+  std::string car_burble_bank() const;
+
   // Initializes Your Music from `music_dir` (<state>/music).
   void init_user_music(const std::filesystem::path& music_dir, bool non_blocking);
 
   // Opens SDL_AudioStream and starts the dedicated audio render thread.
   void start_device();
   void stop_device();
-  bool has_audio() const { return has_car_ || radio_ != nullptr || user_music_ready_; }
+  bool has_audio() const { return has_car_ || has_sfx_ || radio_ != nullptr || user_music_ready_; }
 
   // Per-frame lock-free updates (main thread).
   void update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
                     bool loading = false);
+  void update_vehicle(const audio::VehicleAudioState& st, bool in_race, bool rewinding, bool countdown_active,
+                      int countdown_digit);
+  void trigger_collision(const audio::CollisionHit& hit);
+  void trigger_ui(audio::UiCue cue);
   void radio_press(int dir);
   bool handle_key(SDL_Keycode key, SDL_Keymod mod, std::string& notice);
   audio::AudioTelemetry telemetry();
@@ -112,6 +122,17 @@ class AudioHost {
   std::filesystem::path music_dir_;
   bool user_music_ready_ = false;
   bool user_music_non_blocking_ = true;
+
+  bool mixer_configs_tried_ = false;
+  bool sfx_tried_ = false;
+  bool has_sfx_ = false;
+  bool last_paused_ = false;
+  bool last_menu_ = false;
+  bool last_loading_ = false;
+  bool last_in_race_ = false;
+  bool last_rewinding_ = false;
+  int last_countdown_digit_ = -1;
+  audio::CarDspMode last_dsp_mode_ = audio::CarDspMode::kOff;
 };
 
 }  // namespace carview

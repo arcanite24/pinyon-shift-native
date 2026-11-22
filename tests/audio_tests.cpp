@@ -979,6 +979,172 @@ void fev_and_event_config_checks() {
   CHECK(near(rg.chassis_exhaust_l.min_dist, 10.0, 1e-3));
 }
 
+void sfx_engine_checks() {
+  auto make_tone = [](double hz, int frames, int rate = 48000) {
+    audio::PcmSample s;
+    s.rate = rate;
+    s.data.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i)
+      s.data[size_t(i)] = float(0.6 * std::sin(2.0 * 3.14159265358979323846 * hz * double(i) / double(rate)));
+    return s;
+  };
+  auto bus_rms = [](const std::vector<float>& buf, int ch = -1) {
+    double acc = 0.0;
+    size_t n = 0;
+    for (size_t i = 0; i + 1 < buf.size(); i += 2) {
+      if (ch == 0) { acc += double(buf[i]) * buf[i]; ++n; }
+      else if (ch == 1) { acc += double(buf[i + 1]) * buf[i + 1]; ++n; }
+      else { acc += 0.5 * (double(buf[i]) * buf[i] + double(buf[i + 1]) * buf[i + 1]); ++n; }
+    }
+    return n > 0 ? std::sqrt(acc / double(n)) : 0.0;
+  };
+
+  audio::SfxEngine sfx(48000);
+  for (int i = 0; i < int(audio::SfxSoundId::kCount); ++i)
+    sfx.set_sample(audio::SfxSoundId(i), make_tone(220.0 + 30.0 * i, 9600));
+
+  // Configure deterministic backfire on overrun (silence_weighting = 0, fast timer).
+  audio::BackfireConfig bcfg;
+  bcfg.levels[3].min_norm_rpm = 0.2;
+  bcfg.levels[3].max_norm_rpm = 0.9;
+  bcfg.levels[3].min_time_ms = 50.0;
+  bcfg.levels[3].max_time_ms = 60.0;
+  bcfg.levels[3].silence_weighting = 0.0;
+  sfx.set_backfire_config(bcfg);
+
+  // Synthetic EnginePlayer to verify Backfire -> Expander coupling.
+  audio::EngineSound es;
+  es.audio_rpm_idle = 800.0;
+  es.audio_rpm_redline = 7000.0;
+  audio::Group grp;
+  grp.name = "ExhaustL";
+  grp.expander.present = true;
+  grp.expander.attack_ms = 5.0;
+  grp.expander.hold_ms = 50.0;
+  grp.expander.release_ms = 200.0;
+  grp.expander.max_gain.present = true;
+  grp.expander.max_gain.y = {2.0, 2.0, 2.0};
+  grp.loops = {loop(500, 3000, 9000)};
+  es.groups.push_back(grp);
+  audio::PcmSample eng_tone = make_tone(150.0, 4800);
+  audio::EnginePlayer ep(es, {{&eng_tone}}, 48000, 800.0, 7000.0);
+  ep.set({4500.0, 0.0, 0.0, 0.0});
+
+  constexpr int kFrames = 2400;  // 50 ms
+  std::array<std::vector<float>, audio::kBuses> bufs;
+  float* ptrs[audio::kBuses] = {};
+  auto clear_bufs = [&]() {
+    for (int b = 0; b < audio::kBuses; ++b) {
+      bufs[size_t(b)].assign(kFrames * 2, 0.0f);
+      ptrs[b] = bufs[size_t(b)].data();
+    }
+  };
+
+  audio::VehicleAudioState vs{};
+  vs.speed_mph = 110.0f;
+  vs.rpm = 4500.0f;
+  vs.idle_rpm = 800.0f;
+  vs.redline_rpm = 7000.0f;
+  vs.throttle = 0.0f;  // overrun for backfire
+  vs.forced_induction = 1;
+  vs.turbo_norm_rpm = 0.8f;
+  vs.turbo_psi = 16.0f;
+  vs.bov_open = true;
+  vs.shifting = true;
+  vs.trans_level = 2;
+  vs.backfire_level = 3;
+  for (auto& w : vs.wheels) {
+    w.surface_group = 0;
+    w.slip_combined = 0.7f;
+    w.load = 1.0f;
+  }
+  vs.listener_pos = {0, 0, 0};
+  vs.listener_right = {1, 0, 0};
+  // Opponent car 12 m to the right -> right channel must be louder than left.
+  vs.other_cars[0].active = true;
+  vs.other_cars[0].pos = {12.0f, 0.0f, 0.0f};
+  vs.other_cars[0].vel = {0.0f, 0.0f, 30.0f};
+  vs.other_cars[0].rpm = 5500.0f;
+
+  // Render enough blocks to cross backfire timer (~500 ms initial timer).
+  double max_wind = 0, max_tyres = 0, max_eng = 0, max_other_l = 0, max_other_r = 0;
+  double max_exp = 0.0;
+  for (int blk = 0; blk < 14; ++blk) {
+    clear_bufs();
+    if (blk == 2) vs.wheels[0].surface_group = 1;  // triggers DirtToHard one-shot
+    if (blk == 3) vs.shifting = false;             // triggers ShiftComplete one-shot
+    sfx.render(vs, ptrs, kFrames, &ep);
+    std::vector<float> tmp(kFrames * 2, 0.0f);
+    ep.render(tmp.data(), kFrames);
+    max_exp = std::max(max_exp, ep.expander_state(0));
+    max_wind = std::max(max_wind, bus_rms(bufs[int(audio::Bus::kWind)]));
+    max_tyres = std::max(max_tyres, bus_rms(bufs[int(audio::Bus::kTyres)]));
+    max_eng = std::max(max_eng, bus_rms(bufs[int(audio::Bus::kEngine)]));
+    max_other_l = std::max(max_other_l, bus_rms(bufs[int(audio::Bus::kOtherCars)], 0));
+    max_other_r = std::max(max_other_r, bus_rms(bufs[int(audio::Bus::kOtherCars)], 1));
+  }
+  CHECK(max_wind > 0.01);
+  CHECK(max_tyres > 0.05);
+  CHECK(max_eng > 0.05);
+  CHECK(max_other_r > max_other_l * 1.3);
+  CHECK(max_exp > 0.1);  // Backfire triggered EnginePlayer::Expander!
+
+  // Collision 75 ms rate limit check.
+  audio::SfxEngine csfx(48000);
+  csfx.set_sample(audio::SfxSoundId::kImpact3d, make_tone(180.0, 2400));
+  csfx.set_sample(audio::SfxSoundId::kImpactLfe, make_tone(60.0, 2400));
+  csfx.set_sample(audio::SfxSoundId::kUiAccept, make_tone(880.0, 2400));
+  audio::CollisionHit hit{};
+  hit.rel_speed_mps = 12.0f;
+  hit.pos = {2.0f, 0.0f, 0.0f};
+  csfx.trigger_collision(hit, vs);
+  const int after_first = csfx.active_one_shots();
+  CHECK(after_first == 2);  // Impact3d + ImpactLfe
+  // Immediate second collision (< 75 ms) must be rate-limited.
+  csfx.trigger_collision(hit, vs);
+  CHECK(csfx.active_one_shots() == 2);
+  // Advance 100 ms (> 75 ms) so previous shots finish and gate re-opens.
+  for (int i = 0; i < 2; ++i) {
+    clear_bufs();
+    csfx.render(vs, ptrs, kFrames);
+  }
+  CHECK(csfx.active_one_shots() == 0);
+  csfx.trigger_collision(hit, vs);
+  CHECK(csfx.active_one_shots() == 2);
+
+  // UI trigger renders into Bus::kUi.
+  csfx.trigger_ui(audio::UiCue::kAccept);
+  clear_bufs();
+  csfx.render(vs, ptrs, kFrames);
+  CHECK(bus_rms(bufs[int(audio::Bus::kUi)]) > 0.05);
+
+  // Full AudioEngine 8-bus + SfxEngine offline mix check.
+  audio::AudioEngine eng(48000);
+  auto sfx2 = std::make_unique<audio::SfxEngine>(48000);
+  sfx2->set_sample(audio::SfxSoundId::kWind, make_tone(300.0, 4800));
+  sfx2->set_sample(audio::SfxSoundId::kRewindTapeStart, make_tone(660.0, 4800));
+  eng.set_sfx_engine(std::move(sfx2));
+  eng.set_vehicle_state(vs);
+  eng.trigger_ui(audio::UiCue::kRewindTapeStart);
+  std::vector<float> mixed(kFrames * 2, 0.0f);
+  eng.render_offline(mixed.data(), kFrames);
+  CHECK(bus_rms(mixed) > 0.02);
+
+  // Optional disc smoke check when SHIFT_GAME_ROOT is set.
+  const char* game_env = std::getenv("SHIFT_GAME_ROOT");
+  if (game_env && *game_env) {
+    namespace fs = std::filesystem;
+    const fs::path game(game_env);
+    if (fs::is_directory(game / "media" / "audio")) {
+      audio::SfxEngine disc_sfx(48000);
+      std::string note;
+      CHECK(disc_sfx.load(game, {}, {}, &note));
+      std::printf("disc %s\n", note.c_str());
+      CHECK(note.find("queued ") != std::string::npos);
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -991,6 +1157,7 @@ int main() {
   mixer_checks();
   snapshot_and_master_dsp_checks();
   fev_and_event_config_checks();
+  sfx_engine_checks();
   user_music_checks();
   audio_thread_checks();
   r34_checks();
