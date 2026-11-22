@@ -107,6 +107,8 @@ struct MeshMaterial {
   uint8_t is_water = 0;                 // LAKE_* water effect
   uint8_t anim_flag = 0;                // ANIM_FLAG* waving cloth flag effect
   uint8_t is_grass = 0;                 // _0x00005007 grass quad / grass shell effect
+  uint8_t is_road = 0;                  // H_ROAD* road surface (RoadSpecular / RoadGlossiness)
+  std::array<float, 2> decal_noise_c4{3.5f, 8.0f};  // H_VBLND_DECAL* pixel constant 4 xy
   // The far ring (ours): 0 near scenery, 1 a MIDDIST object, 2 an UberLOD
   // one. The renderer pushes far levels back in depth so the near terrain
   // wins where both are drawn.
@@ -123,7 +125,7 @@ struct MeshMaterial {
   std::array<int32_t, 3> slot_types{-1, -1, -1};
   auto key() const {
     return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade, light_map, ao_map, normal_map, layer_c,
-                           spec_map, tiling_c, is_water, anim_flag, is_grass);
+                           spec_map, tiling_c, is_water, anim_flag, is_grass, is_road, decal_noise_c4);
   }
 };
 
@@ -147,11 +149,13 @@ struct Mesh {
   // vertex colour (R, G, B, A; white when none); per triangle its material.
   std::vector<std::array<float, 3>> normals;
   // uv1: the lightmap UV, or for kSplat materials TEXCOORD1 times the
-  // Splat tiling (pixel constant 1's zw). colours: as stored, except on
-  // H_VBLND effects, whose R is the layer weight (or the decal fade)
-  // saturate((COLOR - 0.5) x c4.x + 0.5), COLOR.x (the second stored byte,
-  // R here) for the layer weight, COLOR.w (the first, A here) for the fade.
-  std::vector<std::array<float, 2>> uv0, uv1;
+  // Splat tiling (pixel constant 1's zw). uv2: always the lightmap / AO UV
+  // (TEXCOORD2 on H_BLND2/3 so AO & Light_Map sample separately from Splat).
+  // colours: as stored, except on H_VBLND effects, whose R is the layer
+  // weight (or the decal fade) saturate((COLOR - 0.5) x c4.x + 0.5), COLOR.x
+  // (the second stored byte, R here) for the layer weight, COLOR.w (the
+  // first, A here) for the fade (kept intact in A for H_VBLND_DECAL noise).
+  std::vector<std::array<float, 2>> uv0, uv1, uv2;
   std::vector<std::array<uint8_t, 4>> colours;
   std::vector<uint32_t> material;  // per triangle: index into materials
   // Per triangle: its prop's placement origin (game frame), so the
@@ -193,7 +197,7 @@ struct GatherOptions {
   // and the gather point can sit a regather step from the eye.
   double far_radius = 0;
   double far_inner = 150;
-  double far_inner_uberlod = 600;
+  double far_inner_uberlod = 800;
   // Tree sprites (needs render_data): the kind-7 tiles' billboard records
   // whose base is within this of the point and within their far distance
   // of it. 0: none.

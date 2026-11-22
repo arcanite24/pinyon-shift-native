@@ -13,6 +13,7 @@ layout(location = 2) in vec2 in_uv0;     // surface UV, dequantised
 layout(location = 3) in vec2 in_uv1;     // lightmap UV
 layout(location = 4) in vec4 in_colour;  // vertex colour, unorm RGBA
 layout(location = 5) in ivec4 in_centre;  // a prop's origin less the corner, decimetres
+layout(location = 6) in vec2 in_uv2;     // TEXCOORD2 lightmap / AO UV (separate from Splat uv1)
 
 layout(set = 0, binding = 0) uniform Frame {
   mat4 view_projection;
@@ -100,6 +101,7 @@ layout(location = 4) out vec4 v_colour;
 // instance's distance; the fragment dithers only while one is between 0
 // and 1.
 layout(location = 5) flat out vec2 v_fade;
+layout(location = 7) out vec2 v_uv2;
 
 void main() {
 #ifdef GPU_DRIVEN
@@ -136,6 +138,7 @@ void main() {
       v_normal = vec3(0.0);
       v_uv0 = vec2(0.0);
       v_uv1 = vec2(0.0);
+      v_uv2 = vec2(0.0);
       v_colour = vec4(0.0);
       return;
     }
@@ -147,6 +150,7 @@ void main() {
     v_normal = vec3(0.0);
     v_uv0 = vec2(0.0);
     v_uv1 = vec2(0.0);
+    v_uv2 = vec2(0.0);
     v_colour = vec4(1.0);
     gl_Position = frame.view_projection * vec4(frame.eye.xyz + dir, 1.0);
     gl_Position.z = kReverseZ ? 0.0 : gl_Position.w * 0.9999999;
@@ -172,6 +176,7 @@ void main() {
     v_normal = u;
     v_uv0 = in_uv0;
     v_uv1 = in_uv1;
+    v_uv2 = vec2(0.0);
     v_colour = in_colour;
     gl_Position = frame.view_projection * world;
     return;
@@ -201,8 +206,14 @@ void main() {
   }
   v_uv0 = in_uv0;
   v_uv1 = in_uv1;
+  v_uv2 = in_uv2;
   v_colour = in_colour;
   vec4 placed = world;
-  if (draw.params.z > 0.5) placed.xyz = frame.eye.xyz + (world.xyz - frame.eye.xyz) * (1.0 + kFarPush * draw.params.z);
+  if (draw.params.z > 0.5) {
+    // Push MIDDIST (1) +3.5% and UberLOD (2) +16% along the eye ray so near and
+    // mid-distance hills always win depth cleanly without coarse UberLOD bleed-through.
+    float far_push = draw.params.z > 1.5 ? 0.16 : 0.035;
+    placed.xyz = frame.eye.xyz + (world.xyz - frame.eye.xyz) * (1.0 + far_push);
+  }
   gl_Position = frame.view_projection * placed;
 }

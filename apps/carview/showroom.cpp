@@ -90,6 +90,28 @@ bool ends_with(const std::string& s, const std::string& tail) {
   return s.size() >= tail.size() && s.compare(s.size() - tail.size(), tail.size(), tail) == 0;
 }
 
+uint16_t float_to_half(float f) {
+  uint32_t u = 0;
+  std::memcpy(&u, &f, 4);
+  const uint32_t sign = (u >> 16) & 0x8000u;
+  int32_t exp = int32_t((u >> 23) & 0xFFu) - 127 + 15;
+  uint32_t mant = u & 0x7FFFFFu;
+  if (exp <= 0) {
+    if (exp < -10) return uint16_t(sign);
+    mant = (mant | 0x800000u) >> (1 - exp);
+    return uint16_t(sign | ((mant + 0x1000u) >> 13));
+  }
+  if (exp >= 31) return uint16_t(sign | 0x7BFFu);  // clamp to max finite half
+  return uint16_t(sign | (uint32_t(exp) << 10) | ((mant + 0x1000u) >> 13));
+}
+
+float pack_half2x16_float(float a, float b) {
+  const uint32_t packed = uint32_t(float_to_half(a)) | (uint32_t(float_to_half(b)) << 16);
+  float out = 0.0f;
+  std::memcpy(&out, &packed, 4);
+  return out;
+}
+
 bool parse_env_u64(const char* name, uint64_t& out) {
   const char* val = std::getenv(name);
   if (!val || !*val) return false;
@@ -327,6 +349,7 @@ Showroom::~Showroom() {
   r_.destroy_buffer(env_sky_ubo_[1]);
   if (env_world_opaque_) vkDestroyPipeline(d, env_world_opaque_, nullptr);
   if (env_world_coverage_) vkDestroyPipeline(d, env_world_coverage_, nullptr);
+  if (env_car_opaque_) vkDestroyPipeline(d, env_car_opaque_, nullptr);
   if (env_sky_pipe_base_) vkDestroyPipeline(d, env_sky_pipe_base_, nullptr);
   if (env_sky_pipe_layers_) vkDestroyPipeline(d, env_sky_pipe_layers_, nullptr);
   if (env_prefilter_pipe_) vkDestroyPipeline(d, env_prefilter_pipe_, nullptr);
@@ -1203,9 +1226,9 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         if (stock_ && stock_->race_livery) flags |= kFlagRaceLivery;
       } else if (klass == MaterialClass::kCaliper) {
         const uint32_t rgb = info.caliper_rgb[size_t(axle)];
-        d.push.tint[0] = float((rgb >> 16) & 0xFF) / 255.0f;
-        d.push.tint[1] = float((rgb >> 8) & 0xFF) / 255.0f;
-        d.push.tint[2] = float(rgb & 0xFF) / 255.0f;
+        d.push.tint[0] = srgb_to_linear(float((rgb >> 16) & 0xFF) / 255.0f);
+        d.push.tint[1] = srgb_to_linear(float((rgb >> 8) & 0xFF) / 255.0f);
+        d.push.tint[2] = srgb_to_linear(float(rgb & 0xFF) / 255.0f);
       }
       // A grille shows its Shared tile (slot 1) on the tiled UV0; the
       // alpha-tested techniques (FORMAT-CARS: grille1_alpha) cut it out.
@@ -1219,9 +1242,26 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       }
       // The mirror glass (mirrorLeft, mirrorRight, mirrorMiddle): live rearview
       // mirror reflection in cockpit mode, dynamic environment fallback outside.
+      // Store the mirror quad's exact car-space XY bounds in push.uv1 so showroom.frag
+      // maps the full 342x256 dedicated mirror band 1:1 across the glass surface.
       if (technique.rfind("mirror", 0) == 0) {
         flags |= kFlagMirror;
         d.push.tint[0] = 0.05f, d.push.tint[1] = 0.055f, d.push.tint[2] = 0.06f;
+        float mmin_x = 1e9f, mmax_x = -1e9f, mmin_y = 1e9f, mmax_y = -1e9f;
+        for (uint32_t idx : s.indices) {
+          if (idx >= pool.size()) continue;
+          const auto p = transform_point(transform, pool[idx].position);
+          mmin_x = std::min(mmin_x, p[0]);
+          mmax_x = std::max(mmax_x, p[0]);
+          mmin_y = std::min(mmin_y, p[1]);
+          mmax_y = std::max(mmax_y, p[1]);
+        }
+        const float sx = std::max(mmax_x - mmin_x, 1e-3f);
+        const float sy = std::max(mmax_y - mmin_y, 1e-3f);
+        d.push.uv1[0] = mmin_x;
+        d.push.uv1[1] = 1.0f / sx;
+        d.push.uv1[2] = mmin_y;
+        d.push.uv1[3] = 1.0f / sy;
       }
       {
         const std::string pname = lower(part.name);
@@ -1302,10 +1342,14 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.push.tint[3] = 1;
       // Sub-material variant ID encoded in params[2] for showroom.frag:
       // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel), 3=rotor/brake/drum,
-      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines.
+      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 10=mirrorLeft, 11=mirrorMiddle, 12=mirrorRight.
       float submat_id = 0.0f;
       if (is_defrost) {
         submat_id = 6.0f;
+      } else if (technique.rfind("mirror", 0) == 0) {
+        if (technique == "mirrorleft") submat_id = 10.0f;
+        else if (technique == "mirrorright") submat_id = 12.0f;
+        else submat_id = 11.0f;
       } else if (klass == MaterialClass::kRim) {
         if (technique == "outer_rim") submat_id = 1.0f;
         else if (technique == "inner_rim" || technique == "wheel_black") submat_id = 2.0f;
@@ -1749,11 +1793,11 @@ bool Showroom::create_pipelines(std::string& error) {
   set.pBindings = material_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &material_layout_),
          "material set layout");
-  VkDescriptorSetLayoutBinding world_material_bindings[7];
-  for (uint32_t i = 0; i < 7; ++i)
+  VkDescriptorSetLayoutBinding world_material_bindings[8];
+  for (uint32_t i = 0; i < 8; ++i)
     world_material_bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
                                   nullptr};
-  set.bindingCount = 7;
+  set.bindingCount = 8;
   set.pBindings = world_material_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &world_material_layout_),
          "world material set layout");
@@ -1916,7 +1960,7 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pDepthStencilState = &depth;
     info.pColorBlendState = &blend;
     const bool use_vrs = r_.vrs_supported() && color_out && (blend_mode == 0) && samples == r_.samples_ &&
-                         (&out != &env_world_opaque_) && (&out != &env_world_coverage_);
+                         (&out != &env_world_opaque_) && (&out != &env_world_coverage_) && (&out != &env_car_opaque_);
     info.pDynamicState = vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
                                 : (use_vrs ? &dynamic_vrs : &dynamic);
     info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
@@ -1934,6 +1978,8 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 1, glass_);
   if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
   if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
+  if (result == VK_SUCCESS && !guest_)
+    result = build(frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
   if (result == VK_SUCCESS)
     result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
   // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).
@@ -2006,17 +2052,18 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS) result = make_module(kWorld_vert_spv, sizeof(kWorld_vert_spv), world_vert, "world.vert");
   if (result == VK_SUCCESS) result = make_module(kWorld_frag_spv, sizeof(kWorld_frag_spv), world_frag, "world.frag");
   VkVertexInputBindingDescription world_binding{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-  const VkVertexInputAttributeDescription world_attributes[6] = {
+  const VkVertexInputAttributeDescription world_attributes[7] = {
       {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
       {1, 0, VK_FORMAT_R8G8B8A8_SNORM, offsetof(WorldVertex, normal)},
       {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv0)},
       {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv1)},
       {4, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(WorldVertex, colour)},
-      {5, 0, VK_FORMAT_R16G16B16A16_SINT, offsetof(WorldVertex, centre)}};
+      {5, 0, VK_FORMAT_R16G16B16A16_SINT, offsetof(WorldVertex, centre)},
+      {6, 0, VK_FORMAT_R16G16_SFLOAT, offsetof(WorldVertex, uv2)}};
   VkPipelineVertexInputStateCreateInfo world_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   world_input.vertexBindingDescriptionCount = 1;
   world_input.pVertexBindingDescriptions = &world_binding;
-  world_input.vertexAttributeDescriptionCount = 6;
+  world_input.vertexAttributeDescriptionCount = 7;
   world_input.pVertexAttributeDescriptions = world_attributes;
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_, world_vert,
@@ -2714,10 +2761,8 @@ void Showroom::set_paint_spec(const cars::CarPaintSpec& paint) {
       const auto lin = to_lin(paint.rims.rgb);
       for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
     } else if (klass == MaterialClass::kCaliper && paint.calipers.active) {
-      // Calipers use unconverted sRGB per FORMAT-CARS.
-      d.push.tint[0] = float((paint.calipers.rgb >> 16) & 0xFF) / 255.0f;
-      d.push.tint[1] = float((paint.calipers.rgb >> 8) & 0xFF) / 255.0f;
-      d.push.tint[2] = float(paint.calipers.rgb & 0xFF) / 255.0f;
+      const auto lin = to_lin(paint.calipers.rgb);
+      for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
     }
   }
 }
@@ -3341,6 +3386,36 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
   }
 }
 
+void Showroom::record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
+                                         const float m[16], const drive::LampShaderVectors* lamps) {
+  if (draws_.empty() || material_sets_.empty() || !car_opaque || !view_frame_set) return;
+  const drive::LampShaderVectors& active_lamps = lamps ? *lamps : lamp_vectors_;
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, car_opaque);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &view_frame_set, 0, nullptr);
+  for (const auto& d : draws_) {
+    if (d.glass) continue;
+    ShowroomPush push = d.push;
+    multiply(m, d.push.model, push.model);
+    if (d.lamp_channel != drive::LampChannel::kNone) {
+      const auto rgb = drive::evaluate_lamp_emission(d.lamp_channel, active_lamps, lamp_colors_);
+      if (rgb[0] > 1e-4f || rgb[1] > 1e-4f || rgb[2] > 1e-4f) {
+        push.tint[0] = rgb[0];
+        push.tint[1] = rgb[1];
+        push.tint[2] = rgb[2];
+        push.params[1] = float(uint32_t(push.params[1] + 0.5f) | kFlagLampEmissive);
+      }
+    }
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                            &material_sets_[d.descriptor], 0, nullptr);
+    vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ShowroomPush), &push);
+    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+  }
+}
+
 namespace {
 
 int8_t snorm8(float v) { return int8_t(std::lround(std::clamp(v, -1.0f, 1.0f) * 127.0f)); }
@@ -3479,6 +3554,13 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
         for (int i = 0; i < 3; ++i) v.position[i] = world.positions[c][size_t(i)];
         for (int i = 0; i < 3; ++i) v.normal[i] = snorm8(world.normals[c][size_t(i)]);
         for (int i = 0; i < 2; ++i) v.uv0[i] = world.uv0[c][size_t(i)], v.uv1[i] = world.uv1[c][size_t(i)];
+        if (c < world.uv2.size()) {
+          v.uv2[0] = float_to_half(world.uv2[c][0]);
+          v.uv2[1] = float_to_half(world.uv2[c][1]);
+        } else {
+          v.uv2[0] = float_to_half(world.uv1[c][0]);
+          v.uv2[1] = float_to_half(world.uv1[c][1]);
+        }
         for (int i = 0; i < 4; ++i) v.colour[i] = world.vertex_colours[c][size_t(i)];
         if (fade_class && t < world.instance.size())
           for (int i = 0; i < 3; ++i)
@@ -3523,7 +3605,13 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
         d.splat = mat.splat;
       }
     }
-    if (flags && mat.layers == 3) flags |= 16;
+    if (flags && mat.layers == 3) {
+      flags |= 16;
+      if (mat.splat != kNoWorldTexture) {
+        d.splat = mat.splat;
+        flags |= 2097152u;  // world.frag kFlagDecalNoise (H_VBLND_DECAL Noise_Sampler)
+      }
+    }
     if (flags && mat.layers == 4) flags |= 32;  // tree sprite: turned to the camera in world.vert
     if (mat.light_map != kNoWorldTexture) {
       d.light_map = mat.light_map;
@@ -3550,17 +3638,29 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     if (mat.is_grass) {
       flags |= 262144u;  // world.vert kFlagGrass
     }
+    if (mat.spec_map != kNoWorldTexture) {
+      d.spec_map = mat.spec_map;
+      flags |= 524288u;  // world.frag kFlagSpecMap
+    }
+    if (mat.is_road) {
+      flags |= 1048576u;  // world.frag kFlagRoad
+    }
     if (flags & 1u) std::memcpy(d.push.tint, mat.tiling.data(), sizeof d.push.tint);
     // The distance cross-fade (world.frag): 128 a prop's LOD00, 256 its
     // LOD02, 512 a prop of one level.
     if (mat.fade >= 1 && mat.fade <= 3) flags |= 64u << mat.fade;
     d.push.params[1] = float(flags);
-    d.push.params[2] = float(mat.far);                                 // world.vert's depth push
-    // Light gain (world.frag): WORLD-MATERIALS has something brighten the
-    // vertex-blended hills that its shading does not show, and says to
-    // scale them to the reference; 2.5 brings their median near the
-    // frame's (ours).
-    d.push.params[3] = (flags & 4) ? 2.5f : 1.0f;
+    d.push.params[2] = float(mat.far);  // world.vert's depth push
+    // params[3] carries packed half2x16: tiling_c for H_BLND3 (kFlagLayerC),
+    // or decal_noise_c4 for H_VBLND_DECAL (kFlagDecalNoise); 1.0 otherwise
+    // (the obsolete 2.5x H_VBLND light gain hack is removed).
+    if (flags & 16384u) {
+      d.push.params[3] = pack_half2x16_float(mat.tiling_c[0], mat.tiling_c[1]);
+    } else if (flags & 2097152u) {
+      d.push.params[3] = pack_half2x16_float(mat.decal_noise_c4[0], mat.decal_noise_c4[1]);
+    } else {
+      d.push.params[3] = 1.0f;
+    }
     out.draws.push_back(d);
     }
   }
@@ -4207,7 +4307,7 @@ bool Showroom::allocate_world_set(VkDescriptorSet& out, std::string& error) {
   }
   if (world_pool_left_ == 0) {
     constexpr uint32_t kSets = 256;
-    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSets * 7};
+    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSets * 8};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool.maxSets = kSets;
@@ -4237,10 +4337,10 @@ bool Showroom::create_world_single_set(VkImageView view, VkDescriptorSet& out, s
   const VkImageView white = gpu_textures_[0].view;
   const VkImageView black = gpu_textures_[1].view;
   const VkImageView flat_n = flat_normal_tex_.view ? flat_normal_tex_.view : white;
-  const VkImageView views[7] = {view, white, white, black, flat_n, white, white};
-  VkDescriptorImageInfo images[7];
-  VkWriteDescriptorSet writes[7];
-  for (uint32_t b = 0; b < 7; ++b) {
+  const VkImageView views[8] = {view, white, white, black, flat_n, white, white, white};
+  VkDescriptorImageInfo images[8];
+  VkWriteDescriptorSet writes[8];
+  for (uint32_t b = 0; b < 8; ++b) {
     images[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[b].dstSet = out;
@@ -4249,7 +4349,7 @@ bool Showroom::create_world_single_set(VkImageView view, VkDescriptorSet& out, s
     writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[b].pImageInfo = &images[b];
   }
-  vkUpdateDescriptorSets(r_.device_, 7, writes, 0, nullptr);
+  vkUpdateDescriptorSets(r_.device_, 8, writes, 0, nullptr);
   return true;
 }
 
@@ -4320,7 +4420,7 @@ bool Showroom::replace_world_texture(uint32_t record, const bake::Texture& textu
     it->second = image;
     if (auto s = world_sets_.find(record); s != world_sets_.end()) bindings.emplace_back(s->second, 0);
     for (const auto& [key, set] : world_layer_sets_)
-      for (uint32_t b = 0; b < 7; ++b)
+      for (uint32_t b = 0; b < 8; ++b)
         if (key[b] == record) bindings.emplace_back(set, b);
     world_lru_.insert(record, image.bytes, world_frame_);
   }
@@ -4407,6 +4507,7 @@ void Showroom::evict_world_textures() {
       if (d.normal_map != kNoWorldTexture) world_lru_.pin(d.normal_map, epoch);
       if (d.ao_map != kNoWorldTexture) world_lru_.pin(d.ao_map, epoch);
       if (d.layer_c != kNoWorldTexture) world_lru_.pin(d.layer_c, epoch);
+      if (d.spec_map != kNoWorldTexture) world_lru_.pin(d.spec_map, epoch);
     };
     for (const auto& d : world_draws_) pin_draw(d);
     if (fading_on_)
@@ -4456,17 +4557,17 @@ void Showroom::evict_world_textures() {
   }
 }
 
-VkDescriptorSet Showroom::world_layer_set(const std::array<uint32_t, 7>& records) {
+VkDescriptorSet Showroom::world_layer_set(const std::array<uint32_t, 8>& records) {
   const auto it = world_layer_sets_.find(records);
   if (it != world_layer_sets_.end()) return it->second;
   if (gpu_textures_.size() < 2) return VK_NULL_HANDLE;
   const VkImageView white = gpu_textures_[0].view;
   const VkImageView black = gpu_textures_[1].view;
   const VkImageView flat_n = flat_normal_tex_.view ? flat_normal_tex_.view : white;
-  const VkImageView defaults[7] = {white, white, white, black, flat_n, white, white};
-  VkDescriptorImageInfo images[7];
-  VkWriteDescriptorSet writes[7];
-  for (uint32_t b = 0; b < 7; ++b) {
+  const VkImageView defaults[8] = {white, white, white, black, flat_n, white, white, white};
+  VkDescriptorImageInfo images[8];
+  VkWriteDescriptorSet writes[8];
+  for (uint32_t b = 0; b < 8; ++b) {
     VkImageView view = defaults[b];
     if (records[b] != kNoWorldTexture) {
       const auto t = world_textures_.find(records[b]);
@@ -4487,7 +4588,7 @@ VkDescriptorSet Showroom::world_layer_set(const std::array<uint32_t, 7>& records
   std::string error;
   if (!allocate_world_set(set, error)) return VK_NULL_HANDLE;
   for (auto& w : writes) w.dstSet = set;
-  vkUpdateDescriptorSets(r_.device_, 7, writes, 0, nullptr);
+  vkUpdateDescriptorSets(r_.device_, 8, writes, 0, nullptr);
   world_layer_sets_[records] = set;
   return set;
 }
@@ -4685,10 +4786,11 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       ShowroomPush push = d.push;
       const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
                              d.light_map != kNoWorldTexture || d.normal_map != kNoWorldTexture ||
-                             d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture;
+                             d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
+                             d.spec_map != kNoWorldTexture;
       if ((set || d.texture == kNoWorldTexture) && has_extra) {
-        VkDescriptorSet layered =
-            world_layer_set({d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c});
+        VkDescriptorSet layered = world_layer_set(
+            {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
         if (layered) {
           set = layered;
           std::lock_guard<std::mutex> lock(world_textures_mutex_);
@@ -4698,6 +4800,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
           if (d.normal_map != kNoWorldTexture) world_lru_.touch(d.normal_map, world_frame_);
           if (d.ao_map != kNoWorldTexture) world_lru_.touch(d.ao_map, world_frame_);
           if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
+          if (d.spec_map != kNoWorldTexture) world_lru_.touch(d.spec_map, world_frame_);
         } else if (d.texture_b != kNoWorldTexture) {
           push.params[1] = 1, ++world_stats_.layer_fallback;  // a layer did not upload: slot 0 alone
         }
@@ -5697,7 +5800,7 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     out.dir_power[0] = fwd[0];
     out.dir_power[1] = fwd[1];
     out.dir_power[2] = fwd[2];
-    out.dir_power[3] = (fullbeam ? 3.2f : 2.2f) * head_amt;
+    out.dir_power[3] = (fullbeam ? 7.5f : 5.8f) * head_amt;
     out.color[0] = spec.color[0];
     out.color[1] = spec.color[1];
     out.color[2] = spec.color[2];
@@ -5705,6 +5808,8 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     return true;
   };
 
+  // .carbin lamp points live in car model space (same vertical origin as body mesh,
+  // only Z-mirror/pitch rotation from body_to_model_ applies; no lift offset!).
   auto lamp_to_model = [](const float btm[16], float out[16]) {
     std::memcpy(out, btm, 16 * sizeof(float));
     out[12] = out[13] = out[14] = 0.0f;
@@ -5800,8 +5905,12 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       const auto d = transform_dir(render_from_body, pt.direction);
       const float inner_cos = std::cos(g.inner_cone_deg * (3.14159265f / 180.0f));
       const float outer_cos = std::cos(g.outer_cone_deg * (3.14159265f / 180.0f));
-      const float gain = (pt.channel_mask & 0x01u) ? 0.85f : (pt.channel_mask & 0x04u) ? 1.0f : 0.45f;
-      const float r_scale = (pt.channel_mask & 0x01u) ? 0.24f : 0.35f;
+      // Unclamped HDR glow luminance (> 4.0) drives authentic FH1 crimson taillight & headlamp bloom.
+      const float gain = (pt.channel_mask & 0x01u) ? 5.8f
+                       : (pt.channel_mask & 0x04u) ? 6.2f
+                       : (pt.channel_mask & 0x02u) ? 5.8f
+                                                   : 2.5f;
+      const float r_scale = (pt.channel_mask & 0x01u) ? 0.26f : 0.45f;
       GlowSpriteGpu s{};
       s.pos_radius[0] = p[0];
       s.pos_radius[1] = p[1];
@@ -5875,9 +5984,9 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       s.dir_inner[1] = 0.0f;
       s.dir_inner[2] = 0.0f;
       s.dir_inner[3] = -1.0f;  // omnidirectional
-      s.color_outer[0] = g.color[0];
-      s.color_outer[1] = g.color[1];
-      s.color_outer[2] = g.color[2];
+      s.color_outer[0] = g.color[0] * 2.8f;
+      s.color_outer[1] = g.color[1] * 2.8f;
+      s.color_outer[2] = g.color[2] * 2.8f;
       s.color_outer[3] = -1.0f;
       s.extra[0] = 0.0f;  // headlight_glow_1.xds soft radial glow
       s.extra[1] = 0.25f;
@@ -6135,7 +6244,10 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
 }
 
 void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
-                                     uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars) {
+                                     uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars,
+                                     uint32_t vx, uint32_t vy, uint32_t vw, uint32_t vh, bool clear_target) {
+  if (vw == 0) vw = w;
+  if (vh == 0) vh = h;
   // Upload view UBO and sky UBOs outside render pass.
   update_buffer(cmd, env_frame_buffer_.buffer, view_frame);
   if (sky_ready_ && env_sky_pipe_base_ && env_sky_sets_[0]) {
@@ -6162,24 +6274,24 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
   VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   color.imageView = color_view;
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  color.loadOp = clear_target ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
   color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color = {{0.05f, 0.08f, 0.12f, 1.0f}};
   VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   depth.imageView = depth_view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.loadOp = clear_target ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+  depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   depth.clearValue.depthStencil = {r_.reverse_z() ? 0.0f : 1.0f, 0};
   VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  rend.renderArea = {{0, 0}, {w, h}};
+  rend.renderArea = {{int32_t(vx), int32_t(vy)}, {vw, vh}};
   rend.layerCount = 1;
   rend.colorAttachmentCount = 1;
   rend.pColorAttachments = &color;
   rend.pDepthAttachment = &depth;
   vkCmdBeginRendering(cmd, &rend);
-  const VkViewport vp{0, 0, float(w), float(h), 0.0f, 1.0f};
-  const VkRect2D sc{{0, 0}, {w, h}};
+  const VkViewport vp{float(vx), float(vy), float(vw), float(vh), 0.0f, 1.0f};
+  const VkRect2D sc{{int32_t(vx), int32_t(vy)}, {vw, vh}};
   vkCmdSetViewport(cmd, 0, 1, &vp);
   vkCmdSetScissor(cmd, 0, 1, &sc);
 
@@ -6234,14 +6346,14 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       uint32_t out_fl = fl;
       const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
                              d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
-                             d.light_map != kNoWorldTexture;
+                             d.light_map != kNoWorldTexture || d.spec_map != kNoWorldTexture;
       if ((set || d.texture == kNoWorldTexture) && has_extra) {
-        VkDescriptorSet layered =
-            world_layer_set({d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c});
+        VkDescriptorSet layered = world_layer_set(
+            {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
         if (layered) {
           set = layered;
         } else {
-          out_fl &= ~(4u | 8u | 4096u | 8192u | 16384u);
+          out_fl &= ~(4u | 8u | 4096u | 8192u | 16384u | 524288u);
         }
       }
       if (!set) {
@@ -6264,7 +6376,18 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
     }
   }
-  (void)include_cars;
+  // 3. Trailing AI / traffic cars in cockpit mirrors (when include_cars is set).
+  if (include_cars && env_car_opaque_ && env_frame_set_) {
+    for (const auto& in : instances_) {
+      if (!in.car) continue;
+      const float dx = in.model[12] - view_frame.eye[0];
+      const float dy = in.model[13] - view_frame.eye[1];
+      const float dz = in.model[14] - view_frame.eye[2];
+      if (dx * dx + dy * dy + dz * dz > 220.0f * 220.0f) continue;
+      in.car->record_instance_offscreen(cmd, env_car_opaque_, env_frame_set_, in.model,
+                                        in.has_lamps ? &in.lamps : nullptr);
+    }
+  }
   vkCmdEndRendering(cmd);
 }
 
@@ -6406,7 +6529,8 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
   }
   dyn_env_initialized_ = true;
 
-  // Rearview & side mirror panoramic pass (512x128) when cockpit camera is active.
+  // Dedicated 3-band cockpit mirror pass (1024x256) when cockpit camera is active:
+  // Band 0 [0..341): mirrorLeft, Band 1 [341..683): mirrorMiddle, Band 2 [683..1024): mirrorRight.
   if (mirror_enabled_ && mirror_tex_.view && mirror_depth_.view) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -6423,21 +6547,33 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
     dep.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &dep);
 
-    ShowroomFrame mf = frame_;
-    mf.shadow[0] = 0.0f;
-    mf.shadow_far_bias[1] = mf.shadow_far_bias[2] = mf.shadow_far_bias[3] = 0.0f;
-    // Rear-facing panoramic camera mounted above interior mirror looking rearward (+Z in model space).
-    const std::array<float, 3> meye = {0.0f, 1.05f, 0.35f};
-    mf.eye[0] = meye[0];
-    mf.eye[1] = meye[1];
-    mf.eye[2] = meye[2];
-    mf.eye[3] = 1.0f;
-    // Matches showroom.frag mirror constants: tan_y = tan(19 deg) = 0.3443, tan_x = 4 * tan_y = 1.3773.
-    make_view_proj(meye, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f},
-                   1.3773f, 0.3443f, mf.view_projection);
-    std::memcpy(mf.transparent_view_projection, mf.view_projection, sizeof mf.view_projection);
-
-    record_offscreen_view(cmd, mirror_tex_.view, mirror_depth_.view, kMirrorWidth, kMirrorHeight, mf, true);
+    struct MirrorBand {
+      uint32_t x, w;
+      std::array<float, 3> eye, fwd;
+      float tx, ty;
+    };
+    const float sl = 1.0f / std::sqrt(0.20f * 0.20f + 0.04f * 0.04f + 0.98f * 0.98f);
+    const MirrorBand bands[3] = {
+        {0u, 341u, {-0.95f, 0.95f, 0.25f}, {-0.20f * sl, -0.04f * sl, 0.98f * sl}, 0.50f, 0.28f},
+        {341u, 342u, {0.0f, 1.18f, 0.25f}, {0.0f, -0.02f, 0.9998f}, 0.58f, 0.22f},
+        {683u, 341u, {0.95f, 0.95f, 0.25f}, {0.20f * sl, -0.04f * sl, 0.98f * sl}, 0.50f, 0.28f},
+    };
+    for (int bi = 0; bi < 3; ++bi) {
+      const auto& mb = bands[bi];
+      // right = cross(fwd, up=(0,1,0)) = (-fwd.z, 0, fwd.x)
+      const std::array<float, 3> mright = {-mb.fwd[2], 0.0f, mb.fwd[0]};
+      ShowroomFrame mf = frame_;
+      mf.shadow[0] = 0.0f;
+      mf.shadow_far_bias[1] = mf.shadow_far_bias[2] = mf.shadow_far_bias[3] = 0.0f;
+      mf.eye[0] = mb.eye[0];
+      mf.eye[1] = mb.eye[1];
+      mf.eye[2] = mb.eye[2];
+      mf.eye[3] = 1.0f;
+      make_view_proj(mb.eye, mright, {0.0f, 1.0f, 0.0f}, mb.fwd, mb.tx, mb.ty, mf.view_projection);
+      std::memcpy(mf.transparent_view_projection, mf.view_projection, sizeof mf.view_projection);
+      record_offscreen_view(cmd, mirror_tex_.view, mirror_depth_.view, kMirrorWidth, kMirrorHeight, mf, true,
+                            mb.x, 0u, mb.w, kMirrorHeight, true);
+    }
 
     b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -7477,6 +7613,7 @@ bool Showroom::build_gpu_table(std::string& error) {
       ++gpu_table_layer_fallback_;
       flags = 1;
     }
+    if (d.spec_map == kNoWorldTexture || !have(d.spec_map)) flags &= ~524288u;
     if (d.blend == 1 && single_sample) flags |= 64u;  // cut-outs without MSAA: world.frag's alpha test
     gpuworld::DrawGpu row{};
     for (int k = 0; k < 4; ++k) row.tint[k] = d.push.tint[k];
@@ -7491,7 +7628,7 @@ bool Showroom::build_gpu_table(std::string& error) {
     row.tex1[0] = slot(d.normal_map, WorldGpu::kDefaultFlatNormal);
     row.tex1[1] = slot(d.ao_map, WorldGpu::kDefaultWhite);
     row.tex1[2] = slot(d.layer_c, WorldGpu::kDefaultWhite);
-    row.tex1[3] = d.fade_in ? 1u : 0u;
+    row.tex1[3] = (slot(d.spec_map, WorldGpu::kDefaultWhite) << 1u) | (d.fade_in ? 1u : 0u);
     for (int k = 0; k < 3; ++k) row.box_min[k] = d.box_min[k], row.box_max[k] = d.box_max[k];
     row.draw[0] = d.index_count;
     row.draw[1] = d.first_index;
@@ -7524,6 +7661,7 @@ bool Showroom::build_gpu_table(std::string& error) {
         row.tex1[0] = WorldGpu::kDefaultFlatNormal;
         row.tex1[1] = WorldGpu::kDefaultWhite;
         row.tex1[2] = WorldGpu::kDefaultWhite;
+        row.tex1[3] = WorldGpu::kDefaultWhite << 1u;
         row.draw[0] = 0u;  // template-only row: skipped by world_cull.comp
         row.draw[3] = gpuworld::kCutout;
         rows.push_back(row);

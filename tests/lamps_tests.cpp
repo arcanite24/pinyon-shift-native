@@ -101,6 +101,22 @@ void test_technique_classification_and_emission() {
           "passive glass/reflector technique must be kNone");
   }
 
+  // Expanded 176-car lamp & emissive gauge techniques must classify to active channels (never kNone).
+  check(drive::classify_lamp_technique("fogred") == drive::LampChannel::kFogRed, "fogred -> kFogRed");
+  check(drive::classify_lamp_technique("fogwhite") == drive::LampChannel::kFogWhite, "fogwhite -> kFogWhite");
+  check(drive::classify_lamp_technique("slinlorange") == drive::LampChannel::kSideIndLeft, "slinlorange");
+  check(drive::classify_lamp_technique("slinrorange") == drive::LampChannel::kSideIndRight, "slinrorange");
+  check(drive::classify_lamp_technique("lindtailside") == drive::LampChannel::kTailBrakeIndLeft, "lindtailside");
+  check(drive::classify_lamp_technique("rindtailside") == drive::LampChannel::kTailBrakeIndRight, "rindtailside");
+  check(drive::classify_lamp_technique("drlred") == drive::LampChannel::kDrlRed, "drlred");
+  check(drive::classify_lamp_technique("linred") == drive::LampChannel::kIndicatorLeft, "linred");
+  check(drive::classify_lamp_technique("rinred") == drive::LampChannel::kIndicatorRight, "rinred");
+  check(drive::classify_lamp_technique("brkreverse") == drive::LampChannel::kBrakeReverse, "brkreverse");
+  check(drive::classify_lamp_technique("z_gauge_emissive_alpha") == drive::LampChannel::kGaugeBacklight,
+        "z_gauge_emissive_alpha -> kGaugeBacklight");
+  check(drive::classify_lamp_technique("gauge_emissive_alpha") == drive::LampChannel::kGaugeBacklight,
+        "gauge_emissive_alpha -> kGaugeBacklight");
+
   drive::LampColorTable cols;
   drive::CarLampState st;
   drive::LampInputs in{};

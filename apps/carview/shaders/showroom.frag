@@ -423,7 +423,8 @@ void main() {
     gloss = 0.85;
     metal = 0.5;
     if ((flags & kFlagLampEmissive) != 0u) {
-      emissive = draw_tint.rgb;
+      // Linear HDR lamp emission drives authentic FH1 night bloom through outer lens covers.
+      emissive = draw_tint.rgb * (kLinearOut ? 2.6 : 1.0);
     }
   } else if (klass == kInterior || klass == kGauge) {
     if ((flags & kFlagCutout) != 0u && (flags & kFlagSlot1) != 0u && t1.a < 0.5) discard;
@@ -497,8 +498,8 @@ void main() {
     } else {
       // Standard painted alloy rim (Tire/Normal.xml: PaintScale=0.65, CubeScale=0.20).
       gloss = mix(0.78, 0.88, clamp(draw.params.w, 0.0, 1.0));
-      metal = 0.52;
-      reflectivity = 0.16;
+      metal = 0.38;
+      reflectivity = 0.24;
     }
   } else if (klass == kChrome) {
     float wblur = clamp(draw.params.w, 0.0, 1.0);
@@ -653,16 +654,26 @@ void main() {
   }
 
   if ((flags & kFlagMirror) != 0u) {
-    if (frame.shadow_far_bias.w > 0.5) {
-      float rz = max(r.z, 0.2);
-      vec2 muv = vec2(0.5 - (r.x / rz) / (2.0 * 1.3773), 0.5 - (r.y / rz) / (2.0 * 0.3443));
-      if (muv.x >= 0.0 && muv.x <= 1.0 && muv.y >= 0.0 && muv.y <= 1.0) {
-        colour = texture(mirror_map, muv).rgb * 0.9;
-      } else {
-        colour = env(r, 0.0) * 0.85;
+    if (frame.shadow_far_bias.w > 0.5 && draw.uv1.y > 0.0 && draw.uv1.w > 0.0) {
+      // Dedicated 3-band cockpit mirror atlas (1024x256):
+      // submat 10 = mirrorLeft [0..1/3], 11 = mirrorMiddle [1/3..2/3], 12 = mirrorRight [2/3..1].
+      // Map each mirror glass quad 1:1 to its dedicated 342x256 rear-facing camera band
+      // using car-space XY bounds stored in draw.uv1 (rendering.toml:1167).
+      float u_lo = 0.338, u_hi = 0.662;
+      if (submat == 10u) {
+        u_lo = 0.004;
+        u_hi = 0.329;
+      } else if (submat == 12u) {
+        u_lo = 0.671;
+        u_hi = 0.996;
       }
+      float u_loc = clamp((v_position.x - draw.uv1.x) * draw.uv1.y, 0.0, 1.0);
+      float v_loc = clamp(1.0 - (v_position.y - draw.uv1.z) * draw.uv1.w, 0.0, 1.0);
+      // Rear camera right is -X (driver's left), so u_band = 1 - u_loc keeps left on the left.
+      vec2 muv = vec2(mix(u_lo, u_hi, 1.0 - u_loc), clamp(v_loc, 0.01, 0.99));
+      colour = texture(mirror_map, muv).rgb * 0.92;
     } else {
-      colour = env(r, 0.5) * 0.85;
+      colour = env(r, 0.25) * 0.85;
     }
     alpha = 1.0;
   } else if (klass == kGlass) {

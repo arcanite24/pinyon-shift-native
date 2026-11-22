@@ -458,9 +458,23 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             const bool has_spec = mm.effect.find("_SPEC") != std::string::npos;
             if (vblend) weight_gain = constant(4)[0];
             if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
+            if (road) mm.is_road = 1;
             if (decal) {
               mm.layers = Layers::kVertexFade;
               decal_fade = true;
+              // H_VBLND_DECAL*_NOISE* Noise_Sampler is slot 2, tiled by c1.zw, modulated by c4.xy
+              // (WORLD_MATERIALS.md:632-640). Only enable when the effect actually has _NOISE (not _MASK road lines!).
+              if (mm.effect.find("_NOISE") != std::string::npos) {
+                mm.splat = file_slot(2);
+                const auto c1 = constant(1);
+                const float nx = std::fabs(c1[2]) > 1e-4f ? c1[2] : 1.0f;
+                const float ny = std::fabs(c1[3]) > 1e-4f ? c1[3] : 1.0f;
+                mm.tiling = {1.0f, 1.0f, nx, ny};
+                if (m.pixel_constants.size() > 4) {
+                  const auto c4 = constant(4);
+                  mm.decal_noise_c4 = {c4[0], c4[1]};
+                }
+              }
             }
             if (vblend && !decal) {
               mm.layers = Layers::kVertexBlend;
@@ -483,7 +497,9 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               if (road && mm.effect.find("DIFF3") != std::string::npos &&
                   mm.effect.find("MODULATE") != std::string::npos) {
                 mm.ao_map = file_slot(4);
-              } else if (blnd3) {
+              } else if (blnd3 || (road && mm.effect.find("DIFF3") != std::string::npos)) {
+                // Both H_BLND3* and H_ROAD_DIFF3* (without MODULATE) put Blend_C in slot 5 and AO in slot 6
+                // (WORLD_MATERIALS.md:582). Binding slot 5 as AO crushes road verges with dark Blend_C texels!
                 mm.ao_map = file_slot(6);
               } else {
                 mm.ao_map = file_slot(5);
@@ -493,7 +509,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               mm.light_map = file_slot(7);
               if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
             }
-            if (has_spec && prop_diff) {
+            if (has_spec && (prop_diff || road)) {
               mm.spec_map = file_slot(has_norm ? 2 : 1);
             }
             auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
@@ -502,7 +518,6 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             layout = fh1::rmb_vertex_layout(mm.effect, o.stride);
             if (mm.effect.ends_with("_LM") || mm.effect.find("_AO") != std::string::npos)
               lightmap = layout.last_texcoord();
-            if (splat_uv >= 0) lightmap = -1;  // uv1 carries the Splat UV instead
             if (first_submesh + si < model.uv_offset_scale.size()) uv = model.uv_offset_scale[first_submesh + si];
           } else {
             ++st.no_material;
@@ -536,12 +551,14 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             return std::array<float, 2>{uv[0] + uv[2] * t[0], uv[1] + uv[3] * t[1]};
           };
           out.uv0.push_back(texcoord(0));
+          const auto lm_uv = texcoord(lightmap);
           if (splat_uv >= 0) {
             const auto s = texcoord(splat_uv);
             out.uv1.push_back({s[0] * splat_tiling[0], s[1] * splat_tiling[1]});
           } else {
-            out.uv1.push_back(texcoord(lightmap));
+            out.uv1.push_back(lm_uv);
           }
+          out.uv2.push_back(lm_uv);
           auto c = layout.colour >= 0 ? fh1::rmb_colour(v + layout.colour)
                                       : std::array<uint8_t, 4>{255, 255, 255, 255};
           if (weight_gain >= 0) {
@@ -690,6 +707,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         out.normals.push_back(up);
         out.uv0.push_back(uv[size_t(c)]);
         out.uv1.push_back(offset[size_t(c)]);
+        out.uv2.push_back({0.0f, 0.0f});
         out.colours.push_back(t.tint);
       }
       for (int k = 0; k < 2; ++k) {
@@ -810,6 +828,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           out.normals.push_back(up);
           out.uv0.push_back(uv[size_t(c)]);
           out.uv1.push_back(offset[size_t(c)]);
+          out.uv2.push_back({0.0f, 0.0f});
           out.colours.push_back(tint);
         }
         for (int k = 0; k < 2; ++k) {

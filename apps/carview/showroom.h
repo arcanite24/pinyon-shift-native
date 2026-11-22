@@ -146,16 +146,19 @@ struct WorldTriangles {
     uint32_t normal_map = kNoWorldTexture;  // NormalMap (DXN/BC5)
     uint32_t ao_map = kNoWorldTexture;      // AO / AOMap
     uint32_t layer_c = kNoWorldTexture;     // Blend_C
-    std::array<float, 4> tiling{1, 1, 1, 1};  // Blend_A's UV tiling in xy, Blend_B's in zw
+    uint32_t spec_map = kNoWorldTexture;    // SpecularMap
+    std::array<float, 4> tiling{1, 1, 1, 1};  // Blend_A's UV tiling in xy, Blend_B's (or decal noise's) in zw
     std::array<float, 2> tiling_c{1, 1};      // Blend_C's UV tiling
+    std::array<float, 2> decal_noise_c4{3.5f, 8.0f};  // H_VBLND_DECAL pixel constant 4 xy
     float emissive_force = 0.0f;
     uint8_t is_water = 0;
     uint8_t anim_flag = 0;               // world::MeshMaterial::anim_flag (ANIM_FLAG*)
     uint8_t is_grass = 0;                // world::MeshMaterial::is_grass (_0x00005007)
+    uint8_t is_road = 0;                 // world::MeshMaterial::is_road (H_ROAD*)
     uint8_t fade = 0;                    // world::MeshMaterial::fade: the distance cross-fade class
   };
   std::vector<std::array<float, 3>> normals;
-  std::vector<std::array<float, 2>> uv0, uv1;
+  std::vector<std::array<float, 2>> uv0, uv1, uv2;
   std::vector<std::array<uint8_t, 4>> vertex_colours;
   std::vector<uint32_t> material;  // per triangle: index into materials
   std::vector<std::array<float, 3>> instance;  // per triangle: its prop's origin (world::Mesh::instance)
@@ -173,9 +176,9 @@ struct WorldVertex {
   // A prop's origin less the corner, in decimetres (the level is picked
   // per instance in world.vert); zero elsewhere.
   int16_t centre[4];
-  // Pads the stride to 48 bytes: at 44 the UHD 620 ran about 3 ms slower
-  // per frame (p50, low preset), its vertex fetch off the 16-byte grid.
-  uint32_t pad = 0;
+  // TEXCOORD2 (lightmap / AO UV) stored as IEEE-754 float16 pair, keeping the
+  // stride at 48 bytes (16-byte aligned for vertex fetch).
+  uint16_t uv2[2] = {0, 0};
 };
 static_assert(sizeof(WorldVertex) == 48);
 
@@ -188,9 +191,10 @@ struct WorldGeometry {
     uint32_t first_index = 0, index_count = 0;
     ShowroomPush push{};
     uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
-    uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers
+    uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers / decal noise
     uint32_t light_map = kNoWorldTexture, normal_map = kNoWorldTexture;
     uint32_t ao_map = kNoWorldTexture, layer_c = kNoWorldTexture;
+    uint32_t spec_map = kNoWorldTexture;
     uint8_t blend = 0;
     uint8_t decal = 0;  // drawn with the decal depth bias
     // The draw's box in the scenery's frame (tree sprites padded by their
@@ -547,9 +551,9 @@ class Showroom {
   bool upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
                              std::string& error);
   VkDescriptorSet world_set(uint32_t record) const;
-  // The set binding seven uploaded world textures (albedo, layer_b, splat,
-  // light_map, normal_map, ao_map, layer_c; kNoWorldTexture uses fallbacks).
-  VkDescriptorSet world_layer_set(const std::array<uint32_t, 7>& records);
+  // The set binding eight uploaded world textures (albedo, layer_b, splat,
+  // light_map, normal_map, ao_map, layer_c, spec_map; kNoWorldTexture uses fallbacks).
+  VkDescriptorSet world_layer_set(const std::array<uint32_t, 8>& records);
   void update_frame(VkCommandBuffer cmd);
   void update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f);
   // The sun shadow (ours): place_shadow fits the map's box around the car
@@ -563,6 +567,8 @@ class Showroom {
   // The opaque and glass draws once more, each model matrix first taken by
   // `m` (a guest's instance; glass unsorted).
   void record_instance(VkCommandBuffer cmd, const float m[16], const drive::LampShaderVectors* lamps = nullptr);
+  void record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
+                                 const float m[16], const drive::LampShaderVectors* lamps = nullptr);
 
   bool guest_ = false;
   modern::TextureCap texture_cap_ = modern::TextureCap::kFull;
@@ -685,8 +691,8 @@ class Showroom {
   bool reap_stop_ = false;
   std::vector<std::pair<uint64_t, std::function<void()>>> retired_;  // main thread only
   std::map<uint32_t, VkDescriptorSet> world_sets_;   // by texture record
-  // Sets for multi-texture world draws: bindings 0..6.
-  std::map<std::array<uint32_t, 7>, VkDescriptorSet> world_layer_sets_;
+  // Sets for multi-texture world draws: bindings 0..7.
+  std::map<std::array<uint32_t, 8>, VkDescriptorSet> world_layer_sets_;
   VkDescriptorSet world_white_set_ = VK_NULL_HANDLE;  // untextured materials
   std::vector<VkDescriptorPool> world_pools_;
   uint32_t world_pool_left_ = 0;
@@ -786,12 +792,12 @@ class Showroom {
   void record_lights_before(VkCommandBuffer cmd);
   void record_glows_draw(VkCommandBuffer cmd);
   void update_frame_cookie_descriptor();
-  // Showroom XPR2 cubemap, live 256x256 dynamic drive reflection cubemap, and 512x128 mirror pass.
+  // Showroom XPR2 cubemap, live 256x256 dynamic drive reflection cubemap, and 1024x256 3-band mirror pass.
   std::filesystem::path env_xpr_path_;
   static constexpr uint32_t kDynEnvSize = 256;
   static constexpr uint32_t kDynEnvMips = 9;
-  static constexpr uint32_t kMirrorWidth = 512;
-  static constexpr uint32_t kMirrorHeight = 128;
+  static constexpr uint32_t kMirrorWidth = 1024;
+  static constexpr uint32_t kMirrorHeight = 256;
   GpuTexture dyn_env_;
   VkImageView dyn_env_faces_[6] = {};
   VkImageView dyn_env_mip0_cube_ = VK_NULL_HANDLE;
@@ -806,6 +812,7 @@ class Showroom {
   VkDescriptorSet env_sky_sets_[12] = {};
   VkPipeline env_world_opaque_ = VK_NULL_HANDLE;
   VkPipeline env_world_coverage_ = VK_NULL_HANDLE;
+  VkPipeline env_car_opaque_ = VK_NULL_HANDLE;
   VkPipeline env_sky_pipe_base_ = VK_NULL_HANDLE;
   VkPipeline env_sky_pipe_layers_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout env_prefilter_set_layout_ = VK_NULL_HANDLE;
@@ -820,7 +827,9 @@ class Showroom {
   bool init_dynamic_reflections(std::string& error);
   void record_env_and_mirror(VkCommandBuffer cmd);
   void record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
-                             uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars);
+                             uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars,
+                             uint32_t vx = 0, uint32_t vy = 0, uint32_t vw = 0, uint32_t vh = 0,
+                             bool clear_target = true);
   void fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u) const;
   // Batched soft particles + terrain-conforming skidmarks (SPEC-VFX-AND-PARTICLES).
   struct ParticleGpu {

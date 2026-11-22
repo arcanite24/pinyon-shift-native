@@ -93,6 +93,7 @@ uvec4 g_tex0, g_tex1;
 #define normal_map textures[nonuniformEXT(g_tex1.x)]
 #define ao_map textures[nonuniformEXT(g_tex1.y)]
 #define layer_c textures[nonuniformEXT(g_tex1.z)]
+#define spec_map textures[nonuniformEXT(g_tex1.w >> 1u)]
 layout(location = 6) flat in uint v_draw;
 #else
 layout(set = 1, binding = 0) uniform sampler2D albedo;
@@ -102,6 +103,7 @@ layout(set = 1, binding = 3) uniform sampler2D light_map;   // Light_Map (night 
 layout(set = 1, binding = 4) uniform sampler2D normal_map;  // NormalMap (DXN/BC5, Sub-Milestone 3)
 layout(set = 1, binding = 5) uniform sampler2D ao_map;      // AO / AOMap (Sub-Milestone 3)
 layout(set = 1, binding = 6) uniform sampler2D layer_c;     // Blend_C (Sub-Milestone 3)
+layout(set = 1, binding = 7) uniform sampler2D spec_map;    // SpecularMap
 
 layout(push_constant) uniform Draw {
   mat4 model;
@@ -118,6 +120,7 @@ layout(location = 2) in vec2 v_uv0;
 layout(location = 3) in vec2 v_uv1;
 layout(location = 4) in vec4 v_colour;
 layout(location = 5) flat in vec2 v_fade;  // the instance's fade weights (world.vert)
+layout(location = 7) in vec2 v_uv2;        // TEXCOORD2 lightmap / AO UV
 
 layout(location = 0) out vec4 out_color;
 
@@ -125,7 +128,8 @@ const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
            kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
            kFlagUnlitVertexColor = 1024u, kFlagLightMap = 2048u, kFlagNormalMap = 4096u, kFlagAoMap = 8192u,
-           kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u;
+           kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagSpecMap = 524288u,
+           kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u;
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -411,8 +415,13 @@ void main() {
         vec4 sp = texture(splat_map, v_uv1);
         t = mix(t, b, sp.r);
         if ((flags & kFlagLayerC) != 0u) {
-          vec4 c = texture(layer_c, v_uv0 * draw.tint.zw);
-          t = mix(t, c, sp.g);
+          vec2 tc = unpackHalf2x16(floatBitsToUint(draw.params.w));
+          if (abs(tc.x) < 1e-4) tc.x = draw.tint.z;
+          if (abs(tc.y) < 1e-4) tc.y = draw.tint.w;
+          vec4 c = texture(layer_c, v_uv0 * tc);
+          // FH1 H_BLND3 modulates Blend_C weight by Blend_C alpha (WORLD_MATERIALS.md:735).
+          float wc = clamp(sp.g * mix(0.45, 1.0, c.a), 0.0, 1.0);
+          t = mix(t, c, wc);
         }
       } else {
         t = mix(t, b, v_colour.r);
@@ -429,8 +438,8 @@ void main() {
     out_color = vec4(out_rgb(t.rgb * draw.up.w), 0.0);
     return;
   }
-  // Tree sprites: the atlas colour times the record's tint, 2 x RGB.
-  if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * v_colour.rgb;
+  // Tree sprites: linearize sRGB vertex tint before multiplying linear atlas albedo (2x RGB).
+  if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * pow(v_colour.rgb, vec3(2.2));
 
   vec3 n = n_geom;
   if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u && eye_dist < 140.0) {
@@ -441,25 +450,35 @@ void main() {
     n = normalize(mix(n_geom, np, fade_nm * 0.75));
   }
 
+  // FH1 terrain/world AO at TEXCOORD2 (v_uv2, separate from Splat uv1): 0.05 + 0.95 * AO.
   float ao = 1.0;
   if ((flags & kFlagAoMap) != 0u && (flags & kFlagBillboard) == 0u) {
-    vec3 ao_s = texture(ao_map, v_uv1).rgb;
-    ao = mix(0.42, 1.0, dot(ao_s, vec3(0.3333)));
+    vec3 ao_s = texture(ao_map, v_uv2).rgb;
+    ao = 0.05 + 0.95 * dot(ao_s, vec3(0.3333));
   }
 
   float ndl = max(dot(n, sun), 0.0);
   float raw_shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n_geom) : 1.0;
   float shade = mix(1.0, raw_shade, shadow_scale);
   vec3 light = (sun_col * ndl * shade + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up))) * ao;
-  vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
+  vec3 colour = t.rgb * light * draw.up.w;
 
-  // Subtle per-material Blinn-Phong sun specular for roads, rocks, and buildings.
-  if (ndl > 0.0 && (flags & kFlagBillboard) == 0u && (flags & kFlagNormalMap) != 0u) {
+  // Per-material Blinn-Phong sun specular: H_ROAD asphalt glossiness & SpecularMap modulation.
+  if (ndl > 0.0 && (flags & kFlagBillboard) == 0u) {
     vec3 h_v = normalize(view + sun);
     float nv_s = clamp(dot(n, view), 0.0, 1.0);
-    float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
-    float spec = pow(max(dot(n, h_v), 0.0), 32.0) * fres * ndl * shade * ao * 0.45;
-    colour += sun_col * spec * draw.up.w;
+    float spec_mask = (flags & kFlagSpecMap) != 0u ? dot(texture(spec_map, v_uv0 * draw.tint.xy).rgb, vec3(0.3333)) : 1.0;
+    if ((flags & kFlagRoad) != 0u) {
+      // FH1 H_ROAD asphalt specular (TrackSettings.xml RoadSpecular / RoadGlossiness).
+      float fres_r = 0.04 + 0.30 * pow(1.0 - nv_s, 4.0);
+      float spec_r = (pow(max(dot(n, h_v), 0.0), 42.0) * 0.62 + pow(max(dot(n, h_v), 0.0), 10.0) * 0.14) *
+                     fres_r * spec_mask * ndl * shade * ao;
+      colour += sun_col * spec_r * draw.up.w;
+    } else if ((flags & (kFlagNormalMap | kFlagSpecMap)) != 0u) {
+      float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
+      float spec = pow(max(dot(n, h_v), 0.0), 32.0) * fres * spec_mask * ndl * shade * ao * 0.45;
+      colour += sun_col * spec * draw.up.w;
+    }
   }
 
   // Projected vehicle road headlight cones (CAR_LAMPS.md §5): cookie spotlight
@@ -484,19 +503,19 @@ void main() {
       vec4 ck = texture(headlight_cookie, buv);
       float pattern = max(max(ck.r, ck.g), ck.b) * max(ck.a, 0.25);
       float dist = sqrt(d2);
-      float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.5);
+      float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.35);
       float edge = smoothstep(0.0, 0.08, buv.x) * smoothstep(1.0, 0.92, buv.x) *
                    smoothstep(0.0, 0.08, buv.y) * smoothstep(1.0, 0.92, buv.y);
-      float facing = max(dot(n, -to_p / dist), 0.22);
+      float facing = max(dot(n, -to_p / dist), 0.30);
       hl_sum += headlights.beams[i].color.rgb * pattern * att * edge * facing * headlights.beams[i].dir_power.w;
     }
     colour += t.rgb * hl_sum * hl_night * draw.up.w;
   }
 
-  // World night Light_Map emissive spill (SPEC-SKY-AND-TOD §6.1): added in linear HDR
+  // World night Light_Map emissive spill at TEXCOORD2 (SPEC-SKY-AND-TOD §6.1): added in linear HDR
   // before fog, driven by SwitchOnLights (frame.sky_color.w).
   if ((flags & kFlagLightMap) != 0u && frame.sky_color.w > 0.002) {
-    vec3 lm = texture(light_map, v_uv1).rgb;
+    vec3 lm = texture(light_map, v_uv2).rgb;
     colour += lm * frame.sky_color.w * 1.4 * draw.up.w;
   }
 
@@ -509,9 +528,16 @@ void main() {
     // Alpha to coverage, sharpened to the texel edge.
     alpha = clamp((t.a - 0.5) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
   } else if (blend == kAlpha) {
-    // H_VBLND_DECAL: the diffuse alpha times the vertex fade (baked into R);
-    // road decals: times the vertex colour's alpha (the likely source).
-    alpha = t.a * ((flags & kFlagVertexFade) != 0u ? v_colour.r : v_colour.a);
+    // H_VBLND_DECAL with Noise_Sampler (WORLD_MATERIALS.md:632-640):
+    // saturate(0.5 + c4.x * (COLOR.w - 0.5) - c4.y * (N - 0.5)).
+    if ((flags & kFlagDecalNoise) != 0u) {
+      vec2 c4 = unpackHalf2x16(floatBitsToUint(draw.params.w));
+      float n_a = texture(splat_map, v_uv0 * draw.tint.zw).a;
+      float fade = clamp(0.5 + c4.x * (v_colour.a - 0.5) - c4.y * (n_a - 0.5), 0.0, 1.0);
+      alpha = t.a * fade;
+    } else {
+      alpha = t.a * ((flags & kFlagVertexFade) != 0u ? v_colour.r : v_colour.a);
+    }
   }
   vec3 encoded = out_rgb(colour);
   // Blended draws are premultiplied (ONE, ONE_MINUS_SRC_ALPHA).

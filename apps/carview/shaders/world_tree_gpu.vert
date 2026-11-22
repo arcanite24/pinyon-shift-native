@@ -33,6 +33,7 @@ layout(location = 3) out vec2 v_uv1;
 layout(location = 4) out vec4 v_colour;
 layout(location = 5) flat out vec2 v_fade;
 layout(location = 6) flat out uint v_draw;
+layout(location = 7) out vec2 v_uv2;
 
 void main() {
   const uint tid = visible_indices[uint(gl_InstanceIndex)];
@@ -60,5 +61,6 @@ void main() {
   v_colour = unpackUnorm4x8(t.col_tex.x);
   v_fade = vec2(0.0);
   v_draw = t.col_tex.z;
+  v_uv2 = vec2(0.0);
   gl_Position = frame.view_projection * world;
 }

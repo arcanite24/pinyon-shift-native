@@ -17,6 +17,7 @@
 #include "drive/vehicle.h"
 #include "settings_page.h"
 #include "world/tod.h"
+#include "world/world.h"
 #include "world/world_anim.h"
 
 namespace {
@@ -210,6 +211,21 @@ int main() {
       if (t == "--no-dof") has_no_dof = true;
     }
     CHECK(has_no_mb && has_no_dof);
+  }
+
+  // 5b. World terrain/road material key & far-ring UberLOD invariants.
+  {
+    world::MeshMaterial a, b;
+    a.effect = b.effect = "H_ROAD_DIFF3_NORM1_AO_LM";
+    a.is_road = 0;
+    b.is_road = 1;
+    CHECK(a.key() != b.key());
+    world::MeshMaterial c = a, d = a;
+    c.decal_noise_c4 = {3.5f, 8.0f};
+    d.decal_noise_c4 = {2.0f, 6.0f};
+    CHECK(c.key() != d.key());
+    world::GatherOptions go;
+    CHECK(go.far_inner_uberlod >= 800.0);
   }
 
   // 6. Retail Colorado corpus checks (when SHIFT_GAME_ROOT is set).

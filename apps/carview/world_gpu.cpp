@@ -319,17 +319,18 @@ bool WorldGpu::create_pipelines(std::string& error) {
   const VkSpecializationInfo spec{2, spec_entries, sizeof spec_values, spec_values};
 
   VkVertexInputBindingDescription binding{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-  const VkVertexInputAttributeDescription attributes[6] = {
+  const VkVertexInputAttributeDescription attributes[7] = {
       {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
       {1, 0, VK_FORMAT_R8G8B8A8_SNORM, offsetof(WorldVertex, normal)},
       {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv0)},
       {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(WorldVertex, uv1)},
       {4, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(WorldVertex, colour)},
-      {5, 0, VK_FORMAT_R16G16B16A16_SINT, offsetof(WorldVertex, centre)}};
+      {5, 0, VK_FORMAT_R16G16B16A16_SINT, offsetof(WorldVertex, centre)},
+      {6, 0, VK_FORMAT_R16G16_SFLOAT, offsetof(WorldVertex, uv2)}};
   VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   input.vertexBindingDescriptionCount = 1;
   input.pVertexBindingDescriptions = &binding;
-  input.vertexAttributeDescriptionCount = 6;
+  input.vertexAttributeDescriptionCount = 7;
   input.pVertexAttributeDescriptions = attributes;
   VkPipelineVertexInputStateCreateInfo empty_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
 

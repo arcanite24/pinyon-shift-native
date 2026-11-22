@@ -1348,6 +1348,7 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     w.normals = mesh.normals;
     w.uv0 = mesh.uv0;
     w.uv1 = mesh.uv1;
+    w.uv2 = mesh.uv2;
     w.vertex_colours = mesh.colours;
     w.material = mesh.material;
     // Prop origins in the scenery's frame, like the positions.
@@ -1366,12 +1367,15 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
       wm.normal_map = m.normal_map;
       wm.ao_map = m.ao_map;
       wm.layer_c = m.layer_c;
+      wm.spec_map = m.spec_map;
       wm.tiling = m.tiling;
       wm.tiling_c = m.tiling_c;
+      wm.decal_noise_c4 = m.decal_noise_c4;
       wm.emissive_force = m.emissive_force;
       wm.is_water = m.is_water;
       wm.anim_flag = m.anim_flag;
       wm.is_grass = m.is_grass;
+      wm.is_road = m.is_road;
       wm.fade = m.fade;
       w.materials.push_back(wm);
     }
@@ -1392,7 +1396,8 @@ struct WorldTextureLoader {
             std::vector<uint32_t>& pin_records) {
     std::unordered_set<uint32_t> batch_seen;
     for (auto& m : w.materials)
-      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c})
+      for (uint32_t* slot :
+           {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c, &m.spec_map})
         load_one(colorado, w, showroom, batch_seen, pin_records, *slot);
   }
   void load_one(world::World& colorado, WorldTriangles& w, Showroom& showroom,
@@ -5243,8 +5248,10 @@ int run_drive(int argc, char** argv) {
               const float* evs = cockpit ? cfg.cockpit_ev : cfg.exterior_ev;
               for (int k = 0; k < 4; ++k) ps.exp_keys[k] = keys[k], ps.exp_ev[k] = evs[k];
               // Linear base exposure from TrackSettings.xml (filmicTone.exposure = 0.31),
-              // modulated by the 4-key adaptive EV curve in post.frag.
-              ps.exposure = std::max(cfg.filmic_exposure, 0.05f);
+              // calibrated with a 1.18x daytime match to FH1 freeroam.png while keeping
+              // midnight deep navy via the 4-key adaptive EV curve in post.frag.
+              const float day_lift = 1.0f + 0.18f * (1.0f - std::clamp(tod.day_night_post, 0.0f, 1.0f));
+              ps.exposure = std::max(cfg.filmic_exposure, 0.05f) * day_lift;
               const float tau = std::max(cfg.tonemap_delay * 10.0f, 0.05f);
               ps.adapt_alpha = (headless || tod_frame_dt <= 0.0)
                                    ? 1.0f

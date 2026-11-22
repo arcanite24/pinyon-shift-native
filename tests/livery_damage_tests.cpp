@@ -503,6 +503,87 @@ void maybe_capture_headless_screenshots() {
   }
 }
 
+void maybe_capture_gfx_parity_screenshots() {
+  const char* cap = std::getenv("SHIFT_CAPTURE_GFX_PARITY_DIR");
+  if (!cap || !*cap) return;
+  const fs::path out_dir(cap);
+  std::error_code ec;
+  fs::create_directories(out_dir, ec);
+
+  const fs::path game_root = find_game_root();
+  const fs::path bake_dir = find_bake_dir();
+  if (game_root.empty() || bake_dir.empty()) return;
+  const fs::path xpr_path = game_root / "media" / "tracks" / "uiautoshow" / "staticcarcubemap.xpr";
+  constexpr uint32_t kW = 1280, kH = 720;
+  std::string err;
+
+  auto render_studio = [&](const std::string& filename, const std::string& car_media,
+                           const carview::ShowroomOptions& opts, const carview::HubCamera& cam,
+                           const std::function<void(carview::Showroom&)>& after_upload) {
+    carview::Renderer renderer;
+    carview::Showroom showroom(renderer);
+    if (fs::exists(xpr_path)) showroom.set_environment_xpr(xpr_path);
+    CHECK(showroom.load(bake_dir, car_media, opts, err));
+    carview::Renderer::Options ro;
+    ro.window = nullptr;
+    ro.msaa = 4;
+    CHECK(renderer.init(ro, err));
+    CHECK(showroom.upload(err));
+
+    const auto bg = carview::hub_background_color(carview::HubRoom::kAutoshow);
+    showroom.set_background(bg[0], bg[1], bg[2]);
+    const float floor_y = showroom.bounds_min()[1];
+    const float hw = 0.5f * (showroom.bounds_max()[0] - showroom.bounds_min()[0]);
+    const float hl = 0.5f * (showroom.bounds_max()[2] - showroom.bounds_min()[2]);
+    CHECK(showroom.set_world(carview::build_hub_stage(carview::HubRoom::kAutoshow, hw, hl, floor_y), err));
+    if (after_upload) after_upload(showroom);
+
+    carview::ShowroomFrame frame;
+    carview::build_hub_frame(carview::HubRoom::kAutoshow, cam, kW, kH, frame, false);
+    showroom.set_frame(frame);
+
+    std::vector<uint8_t> rgba;
+    CHECK(renderer.render_offscreen(carview::FrameConstants{}, kW, kH, rgba, err));
+    const fs::path dst = out_dir / filename;
+    CHECK(stbi_write_png(dst.string().c_str(), int(kW), int(kH), 4, rgba.data(), int(kW * 4)) != 0);
+    std::printf("  captured %s\n", dst.string().c_str());
+  };
+
+  // 1. Autoshow Ferrari FXX (front 3/4 view, staticcarcubemap.xpr HDR studio light strips).
+  {
+    carview::ShowroomOptions opts;
+    opts.colour = 0;
+    opts.game_root = game_root;
+    carview::HubCamera cam;
+    cam.yaw = 0.62f;
+    cam.pitch = 0.16f;
+    cam.distance = 4.45f;
+    cam.target[0] = 0.0f;
+    cam.target[1] = 0.48f;
+    cam.target[2] = 0.0f;
+    render_studio("gfx_parity_autoshow_fxx.png", "fer_fxx_05", opts, cam, {});
+  }
+  // 2. Autoshow White R34 GT-R (non-clipped white midtones + crisp studio highlights & creases).
+  {
+    carview::ShowroomOptions opts;
+    opts.car_id = 445;
+    opts.game_root = game_root;
+    carview::HubCamera cam;
+    cam.yaw = 0.65f;
+    cam.pitch = 0.17f;
+    cam.distance = 4.55f;
+    cam.target[0] = 0.0f;
+    cam.target[1] = 0.52f;
+    cam.target[2] = 0.0f;
+    cars::CarPaintSpec white_spec;
+    white_spec.body.active = true;
+    white_spec.body.rgb = 0xF2F3F5u;  // FH1 OEM QM1 Cloud White
+    white_spec.body.finish = cars::PaintFinish::kNormal;
+    render_studio("gfx_parity_autoshow_white_r34.png", "nis_skylinegtrvspecii_02", opts, cam,
+                  [&](carview::Showroom& sr) { sr.set_paint_spec(white_spec); });
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -510,6 +591,7 @@ int main() {
   test_damage_and_settings();
   test_disc_livery_and_paint();
   maybe_capture_headless_screenshots();
+  maybe_capture_gfx_parity_screenshots();
   if (g_failed) {
     std::fprintf(stderr, "livery_damage_tests: %d FAILED\n", g_failed);
     return 1;
