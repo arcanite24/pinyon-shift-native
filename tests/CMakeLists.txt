@@ -227,6 +227,12 @@ if(SHIFT_BUILD_CARVIEW)
   add_test(NAME ui4_cjk_l10n_tests COMMAND ui4_cjk_l10n_tests)
 endif()
 
+add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.cpp ../apps/carview/ui.cpp
+               ../apps/carview/settings_page.cpp)
+target_include_directories(photo_mode_tests PRIVATE ../apps/carview)
+target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk)
+add_test(NAME photo_mode_tests COMMAND photo_mode_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)

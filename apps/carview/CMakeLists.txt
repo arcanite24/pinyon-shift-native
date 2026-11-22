@@ -82,6 +82,7 @@ set(carview_sources
   events_page.cpp
   settings.cpp
   settings_page.cpp
+  photo_mode.cpp
   audio_host.cpp
   fmv_player.cpp
   story_intro.cpp

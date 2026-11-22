@@ -118,6 +118,8 @@ struct DriveSave {
   // Driver XP (PlayerLevelDef) & Manufacturer Affinity XP (AffinityLevelDef: make_id -> xp).
   int driver_xp = 0;
   std::vector<std::pair<int64_t, int>> make_affinity;
+  // Horizon Promo spotted car IDs (Data_Car.Id).
+  std::vector<int> promo_cars;
   int num_races = 0, num_victories = 0, num_podiums = 0;
   double time_festival = 0, time_street = 0, time_exhibition = 0, top_speed = 0;
   std::vector<std::pair<int64_t, int>> race_results, event_results;

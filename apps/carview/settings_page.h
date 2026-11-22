@@ -27,6 +27,8 @@ struct LiveSettings {
   bool start_in_single_player = false;
   bool skip_vo_with_a = true;
   std::string language = "EN";
+  bool photo_through_walls = false;
+  bool photo_wider_limits = false;
   double day_length_scale = 1.0;  // 1.0 = 30.5m, 2.0 = 15m, 0.5 = 61m, 0.02116 = realtime, 0.0 = frozen
   double tod_preset_hour = -1.0;  // < 0: keep current clock, >= 0: jump clock to hour
   drive::ControlSettings controls;

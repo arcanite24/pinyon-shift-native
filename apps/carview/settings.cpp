@@ -81,6 +81,13 @@ constexpr Kept kKept[] = {
     {"your-music", false, "your-music"},
     {"your-music-shuffle", false, "your-music-shuffle"},
     {"your-music-volume", true, "your-music-volume"},
+    {"photo-through-walls", false, "photo-through-walls"},
+    {"photo-wider-limits", false, "photo-wider-limits"},
+    {"no-motion-blur", false, "motion-blur"},
+    {"no-dof", false, "dof"},
+    {"ai-mode", true, "ai-mode"},
+    {"treasure-map", false, "treasure-map"},
+    {"no-satnav", false, "satnav"},
 };
 
 const Kept* kept(const std::string& key) {
@@ -109,6 +116,21 @@ std::filesystem::path settings_path() {
 std::filesystem::path default_mods_root() {
   const auto u = user_folder();
   return u.empty() ? u : u / "mods";
+}
+
+std::filesystem::path default_photos_dir() {
+  const auto u = user_folder();
+  return u.empty() ? std::filesystem::path("photos") : u / "photos";
+}
+
+std::filesystem::path default_replays_dir() {
+  const auto u = user_folder();
+  return u.empty() ? std::filesystem::path("replays") : u / "replays";
+}
+
+std::filesystem::path default_achievements_path() {
+  const auto u = user_folder();
+  return u.empty() ? std::filesystem::path("achievements.txt") : u / "achievements.txt";
 }
 
 std::vector<std::string> read_settings(const std::filesystem::path& file, std::vector<std::string>* notes) {

@@ -18,6 +18,10 @@ namespace carview {
 std::filesystem::path settings_path();
 // The user folder's mods/ (the default mods root), or empty.
 std::filesystem::path default_mods_root();
+// The user folder's photos/, replays/, and achievements.txt paths, or empty.
+std::filesystem::path default_photos_dir();
+std::filesystem::path default_replays_dir();
+std::filesystem::path default_achievements_path();
 
 // The file's options as command-line tokens ("--preset", "low", ...).
 // Missing file: none.

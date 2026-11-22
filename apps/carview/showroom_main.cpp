@@ -49,6 +49,7 @@
 #include "ui_widgets.h"
 #include "hud_scene.h"
 #include "hud.h"
+#include "photo_mode.h"
 #include "process_time.h"
 #include "reference.h"
 #include "renderer.h"
@@ -1095,6 +1096,29 @@ ShowroomFrame camera_view_frame(const drive::CameraView& view, const cars::bake:
                     float(view.near_clip));
 }
 
+void apply_ndc_jitter(ShowroomFrame& f, float jx, float jy) {
+  for (int c = 0; c < 4; ++c) {
+    f.view_projection[c * 4 + 0] += jx * f.view_projection[c * 4 + 3];
+    f.view_projection[c * 4 + 1] += jy * f.view_projection[c * 4 + 3];
+    f.transparent_view_projection[c * 4 + 0] += jx * f.transparent_view_projection[c * 4 + 3];
+    f.transparent_view_projection[c * 4 + 1] += jy * f.transparent_view_projection[c * 4 + 3];
+  }
+}
+
+void compute_clip_from_world(const ShowroomFrame& f, const cars::bake::CarInfo& info, const drive::Vehicle& v,
+                             float out[16]) {
+  float model_to_world[16], world_to_model[16];
+  drive::model_to_world(info, v, model_to_world);
+  invert_affine(model_to_world, world_to_model);
+  for (int c = 0; c < 4; ++c) {
+    for (int r = 0; r < 4; ++r) {
+      float sum = 0.0f;
+      for (int k = 0; k < 4; ++k) sum += f.view_projection[k * 4 + r] * world_to_model[c * 4 + k];
+      out[c * 4 + r] = sum;
+    }
+  }
+}
+
 // The rig's frame: the car's pose and motion in, the view out (in the
 // car's model frame, where the showroom draws).
 ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info, const drive::Vehicle& v,
@@ -1613,6 +1637,9 @@ int run_drive(int argc, char** argv) {
     }
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
   }
+  bool photo_through_walls_cli = false;
+  bool photo_wider_limits_cli = false;
+  std::filesystem::path demo_photo_png;
   bool save_settings = false;
   bool no_title = false;
   bool skip_intro_movies = false;
@@ -1679,6 +1706,9 @@ int run_drive(int argc, char** argv) {
     else if (a == "--no-motion-blur") motion_blur_flag = 0;
     else if (a == "--dof") dof_flag = 1;
     else if (a == "--no-dof") dof_flag = 0;
+    else if (a == "--photo-through-walls") photo_through_walls_cli = true;
+    else if (a == "--photo-wider-limits") photo_wider_limits_cli = true;
+    else if (a == "--demo-photo-mode") demo_photo_png = next(), headless = true;
     else if (a == "--exposure") exposure_given = std::atof(next());
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
@@ -4383,6 +4413,35 @@ int run_drive(int argc, char** argv) {
       bool tod_cockpit_cam = false;
       bool live_motion_blur = motion_blur_flag >= 0 ? motion_blur_flag == 1 : !low_preset;
       bool live_dof = dof_flag >= 0 ? dof_flag == 1 : !low_preset;
+      bool live_photo_through_walls = photo_through_walls_cli;
+      bool live_photo_wider_limits = photo_wider_limits_cli;
+      carview::PhotoModeController photo_mode;
+      carview::HorizonPromoTracker promo_tracker;
+      promo_tracker.load(have_saved ? saved.promo_cars : std::vector<int>{}, std::max(240, int(baked_cars.size())));
+      const std::filesystem::path photos_dir = carview::default_photos_dir();
+      enum class PendingShot { kNone, kF8, kF12, kPhotoMode };
+      PendingShot pending_shot = PendingShot::kNone;
+      std::string pending_f12_pose_name;
+      auto gather_promo_candidates = [&]() {
+        std::vector<carview::PromoCarCandidate> cands;
+        const drive::Vec3 pat = vehicle.position();
+        cands.push_back({int(info.car_id), carview::car_name(car), {pat.x, pat.y, pat.z}, 2.2, true});
+        if (race) {
+          std::vector<carview::RaceView::OpponentTag> otags;
+          race->opponent_tags(otags);
+          int oid = 10000;
+          for (const auto& ot : otags) {
+            cands.push_back({oid++, ot.name, {ot.x, ot.y, ot.z}, 2.2, false});
+          }
+        }
+        if (traffic && traffic->cars()) {
+          for (const auto& tc : *traffic->cars()) {
+            cands.push_back({int(tc.model), "TRAFFIC #" + std::to_string(tc.model),
+                             {tc.position.x, tc.position.y, tc.position.z}, 2.2, false});
+          }
+        }
+        return cands;
+      };
       world::PostZoneBlender zone_blender;
       drive::CarLampState player_lamps;
       drive::CockpitAnimState cockpit_anim;
@@ -4565,6 +4624,9 @@ int run_drive(int argc, char** argv) {
                                    ? 1.0f
                                    : float(1.0 - std::exp(-tod_frame_dt / double(tau)));
             }
+            if (photo_mode.active()) {
+              ps = photo_mode.effects().apply_to_post(ps);
+            }
             renderer.set_post_settings(ps);
             if (zone_idx != last_lut_zone || std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
                 std::fabs(tod.night_color_grade - last_lut_night) > 0.005f) {
@@ -4682,6 +4744,7 @@ int run_drive(int argc, char** argv) {
         s.h2h_wins = h2h_wins;
         s.driver_xp = career.driver_xp;
         for (const auto& [mid, xp] : career.make_affinity_xp) s.make_affinity.emplace_back(mid, xp);
+        s.promo_cars = promo_tracker.save_ids();
         if (have_saved) s.carry_from(saved);
         if (career.driver_level > 0) s.level = career.driver_level;
         s.club = saved.club;
@@ -5692,6 +5755,10 @@ int run_drive(int argc, char** argv) {
           if (s % 2 != 0) continue;
           const auto p0 = std::chrono::steady_clock::now();
           wheel_poses(vehicle, poses);
+          if (photo_mode.active()) {
+            const float wb = photo_mode.effects().wheel_blur_omega_boost();
+            for (int wi = 0; wi < 4; ++wi) poses[wi].omega += wb;
+          }
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
@@ -5783,6 +5850,51 @@ int run_drive(int argc, char** argv) {
                     wts.resident_count, double(wts.resident_bytes) / (1024.0 * 1024.0),
                     (unsigned long long)wts.uploads, (unsigned long long)wts.evictions,
                     (unsigned long long)wts.reuploads, wts.descriptor_pools);
+      } else if (!demo_photo_png.empty()) {
+        // Headless Slice 10 verification capture: Photo Mode UI + DoF/vignette + Horizon Promo.
+        const drive::Vec3 pat = vehicle.position();
+        const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        const double phead = std::atan2(pf.x, pf.z);
+        photo_mode.enter({pat.x, pat.y, pat.z}, phead,
+                         carview::PhotoLimits::from_settings(live_photo_through_walls, true));
+        photo_mode.effects().apply_preset(carview::PhotoPreset::kHorizonSunset);
+        photo_mode.effects().aperture = 68.0f;
+        photo_mode.effects().vignette = 42.0f;
+        photo_mode.effects().shutter_speed = 45.0f;
+        photo_mode.autofocus({pat.x, pat.y + 0.65, pat.z});
+        wheel_poses(vehicle, poses);
+        const float wboost = photo_mode.effects().wheel_blur_omega_boost();
+        for (int wi = 0; wi < 4; ++wi) poses[wi].omega += wboost;
+        showroom.set_wheel_poses(poses);
+        showroom.set_braking(0.35f);
+        showroom.set_draw_car(true);
+        tod_cockpit_cam = false;
+        place_world();
+        const float aspect = float(width) / float(height);
+        const ShowroomFrame pframe =
+            camera_view_frame(photo_mode.camera().view(), info, vehicle, aspect, renderer.reverse_z());
+        showroom.set_frame(pframe);
+        float cfw[16];
+        compute_clip_from_world(pframe, info, vehicle, cfw);
+        const auto promo_res = promo_tracker.evaluate(cfw, photo_mode.camera().eye(), gather_promo_candidates(), true);
+        photo_mode.notify_photo_saved(demo_photo_png, promo_res);
+        photo_mode.step(0.4, {});  // let shutter flash settle while keeping the Horizon Promo banner visible
+        carview::ui::List plist;
+        photo_mode.build_hud(plist, float(width), float(height));
+        upload_ui_atlas(renderer, !ui_atlas_synced);
+        ui_atlas_synced = true;
+        renderer.set_ui(plist.items());
+        std::vector<uint8_t> rgba;
+        if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+          std::fprintf(stderr, "carview: %s\n", error.c_str());
+          status = 1;
+        } else {
+          for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+          if (!write_png(demo_photo_png.string(), width, height, 4, rgba.data())) status = 1;
+          else std::printf("demo photo mode -> %s (spotted %d/%d, +%lld Cr)\n", demo_photo_png.string().c_str(),
+                           promo_res.total_spotted, promo_res.total_cars, (long long)promo_res.credits_awarded);
+        }
+        photo_mode.exit();
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
@@ -5817,6 +5929,10 @@ int run_drive(int argc, char** argv) {
           }
           if (s % stride != 0) continue;
           wheel_poses(vehicle, poses);
+          if (photo_mode.active()) {
+            const float wb = photo_mode.effects().wheel_blur_omega_boost();
+            for (int wi = 0; wi < 4; ++wi) poses[wi].omega += wb;
+          }
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
@@ -6253,6 +6369,12 @@ int run_drive(int argc, char** argv) {
           if (act == PauseMenu::kClub) {
             club_open = true;
             club_pick = club_gate.empty() ? club_data.cars.at(club_car).size() : 0;
+          }
+          if (act == PauseMenu::kPhotoMode) {
+            const drive::Vec3 pat = vehicle.position();
+            const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
+                             carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
           }
           if (act == PauseMenu::kSettings) {
             settings_page.load(read_settings(settings_path(), nullptr));
@@ -7035,6 +7157,10 @@ int run_drive(int argc, char** argv) {
                   }
                   ui_atlas_synced = false;
                 }
+                live_photo_through_walls = ls.photo_through_walls;
+                live_photo_wider_limits = ls.photo_wider_limits;
+                photo_mode.set_limits(
+                    carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
                 audio_host.apply_config(carview::AudioConfig::from_tokens(settings_page.tokens()), user_music_dir);
                 apply_vehicle_assists(vehicle, live_controls.assists);
                 rewind_buf.set_enabled(live_controls.assists.rewind);
@@ -7148,6 +7274,59 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            if (photo_mode.active()) {
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE) photo_mode.exit();
+                else if (k == SDLK_TAB && !e.key.repeat) photo_mode.toggle_effects();
+                else if ((k == SDLK_H || k == SDLK_F2) && !e.key.repeat) photo_mode.toggle_ui_hidden();
+                else if (k == SDLK_UP) photo_mode.move_row(-1);
+                else if (k == SDLK_DOWN) photo_mode.move_row(+1);
+                else if (k == SDLK_LEFT) photo_mode.adjust_row(-1);
+                else if (k == SDLK_RIGHT) photo_mode.adjust_row(+1);
+                else if (k == SDLK_R && !e.key.repeat) photo_mode.effects().reset();
+                else if (k == SDLK_F && !e.key.repeat) {
+                  const drive::Vec3 pat = vehicle.position();
+                  photo_mode.autofocus({pat.x, pat.y + 0.65, pat.z});
+                } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                  int cw = 0, ch = 0;
+                  SDL_GetWindowSizeInPixels(window, &cw, &ch);
+                  if (cw > 0 && ch > 0) {
+                    photo_mode.begin_capture(uint32_t(cw), uint32_t(ch), 4);
+                    pending_shot = PendingShot::kPhotoMode;
+                    renderer.request_capture(false);
+                    if (!race && pr_stunt_session.active()) pr_stunt_photo_pressed = true;
+                  }
+                } else if (k == SDLK_F8 && !e.key.repeat) {
+                  pending_shot = PendingShot::kF8;
+                  renderer.request_capture(!photo_mode.ui_hidden());
+                }
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) photo_mode.exit();
+                else if (b == SDL_GAMEPAD_BUTTON_NORTH) photo_mode.toggle_effects();
+                else if (b == SDL_GAMEPAD_BUTTON_BACK) photo_mode.toggle_ui_hidden();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) photo_mode.move_row(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) photo_mode.move_row(+1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) photo_mode.adjust_row(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) photo_mode.adjust_row(+1);
+                else if (b == SDL_GAMEPAD_BUTTON_WEST) {
+                  const drive::Vec3 pat = vehicle.position();
+                  photo_mode.autofocus({pat.x, pat.y + 0.65, pat.z});
+                } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  int cw = 0, ch = 0;
+                  SDL_GetWindowSizeInPixels(window, &cw, &ch);
+                  if (cw > 0 && ch > 0) {
+                    photo_mode.begin_capture(uint32_t(cw), uint32_t(ch), 4);
+                    pending_shot = PendingShot::kPhotoMode;
+                    renderer.request_capture(false);
+                    if (!race && pr_stunt_session.active()) pr_stunt_photo_pressed = true;
+                  }
+                }
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             if (rewind_buf.active()) {
               auto restore_camera = [&](const drive::RewindCameraState& cs) {
                 if (have_rig && cs.rig.has_value()) rig = *cs.rig;
@@ -7222,6 +7401,11 @@ int run_drive(int argc, char** argv) {
               }
               if (!race && pr_stunt_session.active() && e.key.key == SDLK_P) {
                 pr_stunt_photo_pressed = true;
+              } else if (e.key.key == SDLK_P && !picking && !(race && race->player_finished())) {
+                const drive::Vec3 pat = vehicle.position();
+                const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
+                                 carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
               }
               if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
               else if (!on_banner && e.key.key == SDLK_BACKSPACE) try_trigger_rewind();
@@ -7276,8 +7460,12 @@ int run_drive(int argc, char** argv) {
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
-              // F12: the pose for a report (carview-pose-N.txt in the working
-              // folder): where, which way, when and in what.
+              // F8: real Vulkan swapchain PNG capture to <user-data>/photos/.
+              if (e.key.key == SDLK_F8) {
+                pending_shot = PendingShot::kF8;
+                renderer.request_capture(show_hud);
+              }
+              // F12: pose report (carview-pose-N.txt) + companion PNG in photos/.
               if (e.key.key == SDLK_F12) {
                 static int shot = 0;
                 const drive::Vec3 at = vehicle.position();
@@ -7292,15 +7480,19 @@ int run_drive(int argc, char** argv) {
                                have_rig ? drive::camera_mode_name(rig.mode()) : (front ? "front" : "chase"), at.x, at.y, at.z,
                                std::atan2(f.x, f.z));
                   std::fclose(pf);
-                  std::snprintf(line_buf, sizeof line_buf, "pose saved: %s", name);
+                  std::snprintf(line_buf, sizeof line_buf, "pose + png saved: %s", name);
+                  pending_f12_pose_name = name;
+                  pending_shot = PendingShot::kF12;
+                  renderer.request_capture(show_hud);
                 } else {
                   std::snprintf(line_buf, sizeof line_buf, "cannot write %s", name);
                 }
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
-              if (e.key.key == SDLK_H) {
-                const bool h2h_prompt = festival_mgr && !race && festival_mgr->hud(vehicle.time()).prompt_visible;
+              if (e.key.key == SDLK_H || e.key.key == SDLK_F2) {
+                const bool h2h_prompt =
+                    e.key.key == SDLK_H && festival_mgr && !race && festival_mgr->hud(vehicle.time()).prompt_visible;
                 if (h2h_prompt) {
                   const drive::Vec3 fp = vehicle.position();
                   const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -7505,13 +7697,48 @@ int run_drive(int argc, char** argv) {
           const bool menu_paused = show_title || fmv_player.active() || ceremony.active || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
-                                   settings_page.is_open() || paint_open || club_open;
+                                   settings_page.is_open() || paint_open || club_open || photo_mode.active();
           const bool sim_paused = menu_paused || rewind_buf.active();
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();
             was_sim_paused = sim_paused;
           }
           if (!menu_paused) rewind_buf.update(frame_dt);
+          if (photo_mode.active()) {
+            carview::PhotoCameraInput pcin{};
+            const bool* kb = SDL_GetKeyboardState(nullptr);
+            if (kb[SDL_SCANCODE_W]) pcin.move_forward += 1.0f;
+            if (kb[SDL_SCANCODE_S]) pcin.move_forward -= 1.0f;
+            if (kb[SDL_SCANCODE_D]) pcin.move_right += 1.0f;
+            if (kb[SDL_SCANCODE_A]) pcin.move_right -= 1.0f;
+            if (kb[SDL_SCANCODE_E]) pcin.move_up += 1.0f;
+            if (kb[SDL_SCANCODE_Q]) pcin.move_up -= 1.0f;
+            if (kb[SDL_SCANCODE_L]) pcin.look_yaw += 1.0f;
+            if (kb[SDL_SCANCODE_J]) pcin.look_yaw -= 1.0f;
+            if (kb[SDL_SCANCODE_I]) pcin.look_pitch += 1.0f;
+            if (kb[SDL_SCANCODE_K]) pcin.look_pitch -= 1.0f;
+            if (kb[SDL_SCANCODE_Z]) pcin.zoom += 1.0f;
+            if (kb[SDL_SCANCODE_X]) pcin.zoom -= 1.0f;
+            if (kb[SDL_SCANCODE_COMMA]) pcin.roll -= 1.0f;
+            if (kb[SDL_SCANCODE_PERIOD]) pcin.roll += 1.0f;
+            for (SDL_Gamepad* pad : pads) {
+              pcin.move_right += float(drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0, 0.16, 0.95));
+              pcin.move_forward -= float(drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0, 0.16, 0.95));
+              pcin.look_yaw += float(drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0, 0.16, 0.95));
+              pcin.look_pitch -= float(drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0, 0.16, 0.95));
+              pcin.move_up += float(std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0) -
+                                    std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0));
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) pcin.zoom += 1.0f;
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) pcin.zoom -= 1.0f;
+            }
+            auto gb = [&](double x, double y, double z, double& gy) {
+              drive::Hit hit;
+              if (!ground || !ground->raycast({x, y, z}, {0, -1, 0}, 80.0, hit)) return false;
+              gy = y - hit.distance;
+              return true;
+            };
+            photo_mode.step(frame_dt, pcin, gb);
+          }
           // Paused: the car holds still (no steps, no time to catch up).
           tod_frame_dt = frame_dt;
           if (!sim_paused) {
@@ -7781,6 +8008,10 @@ int run_drive(int argc, char** argv) {
           if (race) race->set_blend(accumulator / drive::Vehicle::kStep);
           if (traffic) traffic->set_blend(accumulator / drive::Vehicle::kStep);
           wheel_poses(vehicle, poses);
+          if (photo_mode.active()) {
+            const float wb = photo_mode.effects().wheel_blur_omega_boost();
+            for (int wi = 0; wi < 4; ++wi) poses[wi].omega += wb;
+          }
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
@@ -7813,19 +8044,26 @@ int run_drive(int argc, char** argv) {
           }
           const float aspect = h > 0 ? float(w) / float(h) : 1.0f;
           drive::CameraView rw_cam{};
-          const ShowroomFrame cam_frame =
-              show_title
-                  ? scenic_orbit_frame(info, vehicle, aspect, title_orbit_time * 0.22, 6.2f, 1.65f, renderer.reverse_z())
-                  : (race && grid_menu_open)
-                        ? scenic_orbit_frame(info, vehicle, aspect,
-                                             std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
-                                                        drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
-                                                 0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
-                                             5.6f, 1.35f, renderer.reverse_z())
-                        : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
-                              ? camera_view_frame(rw_cam, info, vehicle, aspect, renderer.reverse_z())
-                              : drive_frame(aspect, frame_dt);
-          if (show_title || (race && grid_menu_open) || ceremony.active || rewind_scrub_view)
+          ShowroomFrame cam_frame =
+              photo_mode.active()
+                  ? camera_view_frame(photo_mode.camera().view(), info, vehicle, aspect, renderer.reverse_z())
+                  : show_title
+                        ? scenic_orbit_frame(info, vehicle, aspect, title_orbit_time * 0.22, 6.2f, 1.65f, renderer.reverse_z())
+                        : (race && grid_menu_open)
+                              ? scenic_orbit_frame(info, vehicle, aspect,
+                                                   std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
+                                                              drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
+                                                       0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
+                                                   5.6f, 1.35f, renderer.reverse_z())
+                              : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
+                                    ? camera_view_frame(rw_cam, info, vehicle, aspect, renderer.reverse_z())
+                                    : drive_frame(aspect, frame_dt);
+          if (photo_mode.active() && photo_mode.accumulator().active()) {
+            float jx = 0.0f, jy = 0.0f;
+            photo_mode.accumulator().jitter_ndc(jx, jy);
+            apply_ndc_jitter(cam_frame, jx, jy);
+          }
+          if (photo_mode.active() || show_title || (race && grid_menu_open) || ceremony.active || rewind_scrub_view)
             showroom.set_draw_car(true);
           showroom.set_frame(cam_frame);
 
@@ -7945,7 +8183,18 @@ int run_drive(int argc, char** argv) {
             }
           }
 
-          if (map_open) {
+          if (photo_mode.active()) {
+            float cfw[16];
+            compute_clip_from_world(cam_frame, info, vehicle, cfw);
+            photo_mode.update_live_promo_preview(
+                promo_tracker.evaluate(cfw, photo_mode.camera().eye(), gather_promo_candidates(), false));
+            carview::ui::List plist;
+            photo_mode.build_hud(plist, float(w), float(h));
+            upload_ui_atlas(renderer, !ui_atlas_synced);
+            ui_atlas_synced = true;
+            renderer.set_ui(plist.items());
+            for (int layer : {0, 1, 2, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+          } else if (map_open) {
             // Smooth analog-stick panning and trigger zooming on the fullscreen map.
             for (SDL_Gamepad* pad : pads) {
               const double sx = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0, 0.18, 0.95);
@@ -7999,6 +8248,51 @@ int run_drive(int argc, char** argv) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
+          }
+          // Process real Vulkan swapchain / color-target PNG captures (F8, F12, Photo Mode 4x SSAA).
+          if (pending_shot != PendingShot::kNone) {
+            std::vector<uint8_t> cap_rgba;
+            uint32_t cap_w = 0, cap_h = 0;
+            if (renderer.take_captured_frame(cap_rgba, cap_w, cap_h)) {
+              if (pending_shot == PendingShot::kPhotoMode && photo_mode.accumulator().active()) {
+                photo_mode.accumulator().add_frame(cap_rgba, cap_w, cap_h);
+                if (photo_mode.accumulator().complete()) {
+                  std::vector<uint8_t> final_rgba;
+                  uint32_t fw = 0, fh = 0;
+                  if (photo_mode.accumulator().resolve(final_rgba, fw, fh)) {
+                    std::filesystem::path saved_png;
+                    std::string werr;
+                    if (carview::write_photo_png(photos_dir, final_rgba, fw, fh, "photo", saved_png, &werr)) {
+                      float cfw[16];
+                      compute_clip_from_world(cam_frame, info, vehicle, cfw);
+                      const auto promo =
+                          promo_tracker.evaluate(cfw, photo_mode.camera().eye(), gather_promo_candidates(), true);
+                      if (promo.credits_awarded > 0) {
+                        career.credits += promo.credits_awarded;
+                        career.total_winnings += promo.credits_awarded;
+                        save_now("horizon promo");
+                      }
+                      photo_mode.notify_photo_saved(saved_png, promo);
+                    }
+                  }
+                  pending_shot = PendingShot::kNone;
+                } else {
+                  renderer.request_capture(false);
+                }
+              } else {
+                const std::string pfx = pending_shot == PendingShot::kF12 ? "pose" : "shot";
+                std::filesystem::path saved_png;
+                std::string werr;
+                if (carview::write_photo_png(photos_dir, cap_rgba, cap_w, cap_h, pfx, saved_png, &werr)) {
+                  notice = "PHOTO SAVED: " + saved_png.filename().string();
+                  notice_until = vehicle.time() + 3.5;
+                } else {
+                  notice = "PHOTO FAILED: " + werr;
+                  notice_until = vehicle.time() + 3.5;
+                }
+                pending_shot = PendingShot::kNone;
+              }
+            }
           }
         }
         sync_picker = nullptr;

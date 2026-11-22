@@ -20,7 +20,7 @@ layout(set = 0, binding = 4) uniform sampler2D depth_tex;
 layout(set = 0, binding = 5) uniform Optical {
   vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig), y near, z contrast, w brightness
   vec4 mblur;         // xy center uv, z strength [0..1], w car_protect_dist_m
-  vec4 dof;           // x focal_distance_m, y focal_range_m, z max_blur [0..1], w unused
+  vec4 dof;           // x focal_distance_m, y focal_range_m, z max_blur [0..1], w sepia [0..1]
   vec4 sun;           // xy sun_screen_uv, z sun_visibility [0..1], w god_ray_strength
   vec4 sun_color;     // rgb sun_scatter_color, w lens_flare_strength
   vec4 vig_top_col;   // rgb color, w opacity
@@ -351,6 +351,13 @@ void main() {
 
   float l = dot(t, p.desat.rgb);
   t = mix(vec3(l), t, p.desat.w);
+  // Photo Mode sepia tone blend (opt.dof.w in [0..1]).
+  if (opt.dof.w > 0.001) {
+    vec3 sep = clamp(vec3(dot(t, vec3(0.393, 0.769, 0.189)),
+                          dot(t, vec3(0.349, 0.686, 0.168)),
+                          dot(t, vec3(0.272, 0.534, 0.131))), vec3(0.0), vec3(1.0));
+    t = mix(t, sep, clamp(opt.dof.w, 0.0, 1.0));
+  }
   t = clamp(t * p.balance.rgb, vec3(0.0), vec3(1.0));
   out_color = vec4(encode_srgb(t), 1.0);
 }

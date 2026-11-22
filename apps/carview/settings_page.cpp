@@ -157,6 +157,8 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"midnight (00:00)", {"--tod-preset", "0"}}}},
       {"motion blur", {{"on", {}}, {"off", {"--no-motion-blur"}}}},
       {"depth of field", {{"on", {}}, {"off", {"--no-dof"}}}},
+      {"photo camera through walls", {{"off", {}}, {"on", {"--photo-through-walls"}}}},
+      {"wider photo limits", {{"off", {}}, {"on", {"--photo-wider-limits"}}}},
       {"ai opponents",
        {{"stock", {}},
         {"no rubber-banding", {"--ai-mode", "fair"}},
@@ -343,6 +345,8 @@ LiveSettings SettingsPage::live_settings() const {
   if (dmg == "none") ls.damage_mode = 0;
   else if (dmg == "simulation") ls.damage_mode = 2;
   else ls.damage_mode = 1;
+  ls.photo_through_walls = pick_label("photo camera through walls") == "on";
+  ls.photo_wider_limits = pick_label("wider photo limits") == "on";
 
   const std::string dl = pick_val("day length");
   if (dl == "15m") ls.day_length_scale = 2.0;

@@ -86,6 +86,7 @@ struct PostSettings {
   float lens_flare_strength = 0.36f;
   float contrast = 1.0f;
   float brightness = 0.0f;
+  float sepia = 0.0f;            // 0..1 Photo Mode sepia tone blend
   float vig_top_color[3] = {0.0f, 0.0f, 0.0f};
   float vig_top_opacity = 0.0f;
   float vig_top_center[2] = {0.5f, 0.0f};
@@ -165,6 +166,12 @@ class Renderer {
   float sampler_anisotropy() const { return anisotropy_; }
   // Windowed: renders and presents one frame. Returns false on a fatal error.
   bool draw_frame(const FrameConstants& constants, std::string& error);
+  // Real swapchain / color-target PNG capture (F8, F12, Photo Mode): captures
+  // the next presented frame into RGBA8 (either with UI/overlays or clean
+  // scene-only before UI). Call take_captured_frame() after draw_frame().
+  void request_capture(bool include_ui = true);
+  bool capture_pending() const { return capture_requested_; }
+  bool take_captured_frame(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
 
   // With hooks set, frames record the hooked scene; upload() is not needed.
   void set_scene(SceneHooks hooks) { scene_ = std::move(hooks); }
@@ -257,7 +264,8 @@ class Renderer {
   uint64_t frames_submitted() const { return frames_submitted_; }
   uint64_t frames_done() const { return frames_done_; }
   void record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
-                    VkImageLayout final_layout, const FrameConstants& constants);
+                    VkImageLayout final_layout, const FrameConstants& constants,
+                    VkBuffer capture_dst = VK_NULL_HANDLE, bool capture_before_ui = false);
   // Copies the changed overlay layers into their buffer (none of the GPU's
   // frames may be using it); false when none is staged.
   bool stage_overlay();
@@ -356,6 +364,13 @@ class Renderer {
   OverlayLayer overlays_[kOverlayLayers];
   bool overlay_staged_ = false;     // this frame copies a layer
   bool overlay_supported_ = true;   // the swapchain allows transfers into it
+  bool capture_supported_ = false;  // the swapchain allows transfers out of it
+  bool capture_requested_ = false;
+  bool capture_include_ui_ = true;
+  bool capture_ready_ = false;
+  uint32_t capture_w_ = 0, capture_h_ = 0;
+  std::vector<uint8_t> capture_rgba_;
+  Buffer capture_buffer_;
   Buffer overlay_buffer_;
   // The UI layer (made on first use).
   bool create_ui(std::string& error);

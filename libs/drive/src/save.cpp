@@ -103,6 +103,11 @@ std::string save_to_text(const DriveSave& s) {
   if (s.driver_xp > 0) out += "driver_xp " + std::to_string(s.driver_xp) + "\n";
   for (const auto& [make_id, xp] : s.make_affinity)
     if (xp > 0) out += "affinity " + std::to_string(make_id) + " " + std::to_string(xp) + "\n";
+  if (!s.promo_cars.empty()) {
+    out += "promo_cars";
+    for (int id : s.promo_cars) out += " " + std::to_string(id);
+    out += "\n";
+  }
   if (s.num_races)
     out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
            std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
@@ -292,6 +297,8 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       int64_t make_id = 0;
       int xp = 0;
       if (l >> make_id >> xp && make_id > 0 && xp > 0) out.make_affinity.emplace_back(make_id, xp);
+    } else if (key == "promo_cars") {
+      for (int id; l >> id;) out.promo_cars.push_back(id);
     } else if (key == "stats") {
       l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
           out.time_exhibition >> out.top_speed;

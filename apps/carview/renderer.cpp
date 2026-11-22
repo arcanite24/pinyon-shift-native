@@ -94,6 +94,7 @@ Renderer::~Renderer() {
       overlay_mapped_ = nullptr;
     }
     destroy_buffer(overlay_buffer_);
+    destroy_buffer(capture_buffer_);
     destroy_buffer(ui_font_);
     if (ui_instances_mapped_) {
       vmaUnmapMemory(allocator_, ui_instances_.allocation);
@@ -1165,6 +1166,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
     u.dof[0] = s.dof_focal_distance;
     u.dof[1] = s.dof_focal_range;
     u.dof[2] = s.dof_max_blur;
+    u.dof[3] = s.sepia;
     u.sun[0] = s.sun_screen_uv[0];
     u.sun[1] = s.sun_screen_uv[1];
     u.sun[2] = s.sun_visibility;
@@ -1360,7 +1362,8 @@ void Renderer::destroy_targets() {
 }
 
 void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
-                            VkImageLayout final_layout, const FrameConstants& constants) {
+                            VkImageLayout final_layout, const FrameConstants& constants,
+                            VkBuffer capture_dst, bool capture_before_ui) {
   const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
   if (scene_.before) scene_.before(cmd);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1524,9 +1527,30 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   VkPipelineStageFlags2 last_stage = color_stage;
   VkAccessFlags2 last_access = color_write;
+  auto record_capture_copy = [&]() {
+    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  last_stage, last_access, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageExtent = {target_width_, target_height_, 1};
+    vkCmdCopyImageToBuffer(cmd, final_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, capture_dst, 1, &copy);
+    VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &host;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+    layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+    last_access = VK_ACCESS_2_TRANSFER_READ_BIT;
+  };
+  if (capture_dst != VK_NULL_HANDLE && capture_before_ui) record_capture_copy();
   if (overlay_staged_) {
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, color_stage, color_write,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, last_stage, last_access,
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy regions[kOverlayLayers]{};
     uint32_t count = 0;
@@ -1545,9 +1569,12 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     last_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   }
   record_ui(cmd, final_image, final_view, layout, last_stage, last_access);
+  if (capture_dst != VK_NULL_HANDLE && !capture_before_ui) record_capture_copy();
   if (final_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
-                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    if (layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+      image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    }
   } else {
     image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
                   VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE);
@@ -2041,9 +2068,13 @@ bool Renderer::create_swapchain(std::string& error) {
   info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
   info.imageExtent = extent;
   info.imageArrayLayers = 1;
-  // Transfers into the image carry the overlay panel (set_overlay).
+  // Transfers into the image carry the overlay panel (set_overlay); transfers
+  // out of the image enable F8/Photo Mode swapchain PNG capture.
   overlay_supported_ = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
-  info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (overlay_supported_ ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0);
+  capture_supported_ = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+  info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    (overlay_supported_ ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0) |
+                    (capture_supported_ ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
   info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   info.preTransform = caps.currentTransform;
   info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -2089,6 +2120,23 @@ void Renderer::destroy_swapchain(bool keep_handle) {
   }
 }
 
+void Renderer::request_capture(bool include_ui) {
+  capture_requested_ = true;
+  capture_include_ui_ = include_ui;
+  capture_ready_ = false;
+}
+
+bool Renderer::take_captured_frame(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height) {
+  if (!capture_ready_) return false;
+  rgba = std::move(capture_rgba_);
+  width = capture_w_;
+  height = capture_h_;
+  capture_ready_ = false;
+  capture_w_ = 0;
+  capture_h_ = 0;
+  return !rgba.empty() && width > 0 && height > 0;
+}
+
 bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
   frames_done_ = frames_submitted_;
@@ -2112,6 +2160,16 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
     error = "vkAcquireNextImageKHR failed (" + std::to_string(int(result)) + ")";
     return false;
   }
+  bool do_capture = false;
+  const VkDeviceSize cap_bytes = VkDeviceSize(swapchain_extent_.width) * swapchain_extent_.height * 4;
+  if (capture_requested_ && capture_supported_ && cap_bytes > 0) {
+    if (capture_buffer_.size < cap_bytes) {
+      destroy_buffer(capture_buffer_);
+      create_buffer(cap_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, capture_buffer_);
+    }
+    do_capture = capture_buffer_.buffer != VK_NULL_HANDLE;
+  }
   vkResetFences(device_, 1, &frame_fence_);
   vkResetCommandBuffer(frame_cmd_, 0);
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -2119,7 +2177,8 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   vkBeginCommandBuffer(frame_cmd_, &begin);
   stage_overlay();  // the fence above: the last frame is done with its buffer
   record_scene(frame_cmd_, swapchain_images_[index], swapchain_views_[index],
-               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, constants);
+               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, constants,
+               do_capture ? capture_buffer_.buffer : VK_NULL_HANDLE, !capture_include_ui_);
   vkEndCommandBuffer(frame_cmd_);
   const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -2139,6 +2198,47 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   present.pSwapchains = &swapchain_;
   present.pImageIndices = &index;
   result = vkQueuePresentKHR(queue_, &present);
+  if (do_capture) {
+    vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
+    frames_done_ = frames_submitted_;
+    void* mapped = nullptr;
+    if (vmaMapMemory(allocator_, capture_buffer_.allocation, &mapped) == VK_SUCCESS) {
+      capture_w_ = swapchain_extent_.width;
+      capture_h_ = swapchain_extent_.height;
+      capture_rgba_.resize(size_t(cap_bytes));
+      const auto* src = static_cast<const uint8_t*>(mapped);
+      const bool bgra = color_format_ == VK_FORMAT_B8G8R8A8_UNORM || color_format_ == VK_FORMAT_B8G8R8A8_SRGB;
+      for (size_t i = 0; i < size_t(cap_bytes); i += 4) {
+        capture_rgba_[i + 0] = src[i + (bgra ? 2 : 0)];
+        capture_rgba_[i + 1] = src[i + 1];
+        capture_rgba_[i + 2] = src[i + (bgra ? 0 : 2)];
+        capture_rgba_[i + 3] = 255;
+      }
+      vmaUnmapMemory(allocator_, capture_buffer_.allocation);
+      capture_ready_ = true;
+    }
+    capture_requested_ = false;
+  } else if (capture_requested_ && !capture_supported_) {
+    // Fallback when swapchain does not support TRANSFER_SRC_BIT: render offscreen.
+    vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
+    frames_done_ = frames_submitted_;
+    std::string cap_err;
+    std::vector<uint8_t> saved_ui_items_guard;
+    const auto saved_ui = ui_items_;
+    if (!capture_include_ui_) ui_items_.clear();
+    if (render_offscreen(constants, swapchain_extent_.width, swapchain_extent_.height, capture_rgba_, cap_err)) {
+      const bool bgra = color_format_ == VK_FORMAT_B8G8R8A8_UNORM || color_format_ == VK_FORMAT_B8G8R8A8_SRGB;
+      for (size_t i = 0; i < capture_rgba_.size(); i += 4) {
+        if (bgra) std::swap(capture_rgba_[i + 0], capture_rgba_[i + 2]);
+        capture_rgba_[i + 3] = 255;
+      }
+      capture_w_ = swapchain_extent_.width;
+      capture_h_ = swapchain_extent_.height;
+      capture_ready_ = true;
+    }
+    if (!capture_include_ui_) ui_items_ = saved_ui;
+    capture_requested_ = false;
+  }
   if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
     swapchain_dirty_ = true;
   } else if (result != VK_SUCCESS) {
