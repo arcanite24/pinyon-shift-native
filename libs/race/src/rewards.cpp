@@ -68,6 +68,22 @@ bool load_wristband_tables(const std::filesystem::path& root, const std::filesys
                  error);
 }
 
+double rewind_difficulty_bonus(bool rewind_on, int session_mode) {
+  if (session_mode == DifficultyAssists::kExcludedSessionMode) return 0.0;
+  return rewind_on ? 0.0 : 0.20;
+}
+
+double assist_difficulty_bonus(const DifficultyAssists& assists) {
+  // SPEC-REWIND section 7: Rewind OFF = +20%, ON = +0% (excluded in session mode 3).
+  // SPEC-EVENT-REWARDS Unknowns: remaining assists (ABS, TCS, STM, steering,
+  // shifting, driving line) are interim 0% until confirmed.
+  return rewind_difficulty_bonus(assists.rewind_on, assists.session_mode);
+}
+
+int assist_difficulty_bonus_percent(const DifficultyAssists& assists) {
+  return int(std::lround(assist_difficulty_bonus(assists) * 100.0));
+}
+
 int difficulty_bonus_percent(int difficulty_index) {
   switch (difficulty_index) {
     case 0: return 0;
@@ -76,6 +92,10 @@ int difficulty_bonus_percent(int difficulty_index) {
     case 3: return 45;
     default: return 0;
   }
+}
+
+int total_difficulty_bonus_percent(int difficulty_index, const DifficultyAssists& assists) {
+  return difficulty_bonus_percent(difficulty_index) + assist_difficulty_bonus_percent(assists);
 }
 
 int64_t mileage_bonus_credits(double distance_m) {

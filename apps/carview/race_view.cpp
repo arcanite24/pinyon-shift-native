@@ -793,7 +793,7 @@ RaceHud RaceView::hud_info() const {
     h.finish_time = me.finish;
     h.base_credits = award_ ? award_->base_credits : credits_for(me.place);
     h.mileage_bonus = award_ ? award_->mileage_bonus : 0;
-    h.difficulty_pct = award_ ? award_->difficulty_pct : race::difficulty_bonus_percent(int(o_.difficulty));
+    h.difficulty_pct = award_ ? award_->difficulty_pct : race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists);
     h.difficulty_bonus = award_ ? award_->difficulty_bonus : 0;
     h.credits = award_ ? award_->credits : credits_for(me.place);
     h.wristband = award_ ? award_->wristband_points : 0;
@@ -892,7 +892,8 @@ const race::RaceAward* RaceView::award(race::CareerRecord& career, const race::W
   const auto& c = session_->car(n);
   award_ = race::award_race(career, event_.event_id, event_.race_id, event_.career_type, event_.style, event_.level,
                             event_.cash_prize, int(session_->size()), c.place, true, c.finish, top_speed,
-                            event_.prize_car, tables, race::difficulty_bonus_percent(int(o_.difficulty)), c.distance);
+                            event_.prize_car, tables, race::total_difficulty_bonus_percent(int(o_.difficulty), o_.assists),
+                            c.distance);
   return &*award_;
 }
 

@@ -308,6 +308,43 @@ void test_rewards() {
   const int races = r.num_races;
   a = race::award_race(r, 23, 144, 2, 1, 2, 10000, 8, 2, false, 0, 0, 0, t);
   CHECK(a.credits == 0 && r.num_races == races && !r.event_places.count(23));
+
+  // SPEC-REWIND section 7 & SPEC-EVENT-REWARDS: per-assist difficulty bonus.
+  CHECK(race::rewind_difficulty_bonus(true) == 0.0);
+  CHECK(race::rewind_difficulty_bonus(false) == 0.20);
+  CHECK(race::rewind_difficulty_bonus(false, 0) == 0.20);
+  CHECK(race::rewind_difficulty_bonus(false, race::DifficultyAssists::kExcludedSessionMode) == 0.0);
+  CHECK(race::rewind_difficulty_bonus(true, race::DifficultyAssists::kExcludedSessionMode) == 0.0);
+
+  race::DifficultyAssists assists;
+  CHECK(assists.rewind_on);
+  CHECK(race::assist_difficulty_bonus(assists) == 0.0);
+  CHECK(race::assist_difficulty_bonus_percent(assists) == 0);
+  CHECK(race::total_difficulty_bonus_percent(1, assists) == 15);
+
+  assists.rewind_on = false;
+  CHECK(race::assist_difficulty_bonus(assists) == 0.20);
+  CHECK(race::assist_difficulty_bonus_percent(assists) == 20);
+  CHECK(race::total_difficulty_bonus_percent(0, assists) == 20);
+  CHECK(race::total_difficulty_bonus_percent(1, assists) == 35);
+  CHECK(race::total_difficulty_bonus_percent(2, assists) == 50);
+  CHECK(race::total_difficulty_bonus_percent(3, assists) == 65);
+
+  // Session mode 3 excludes the Rewind bonus.
+  assists.session_mode = race::DifficultyAssists::kExcludedSessionMode;
+  CHECK(race::assist_difficulty_bonus(assists) == 0.0);
+  CHECK(race::assist_difficulty_bonus_percent(assists) == 0);
+  CHECK(race::total_difficulty_bonus_percent(1, assists) == 15);
+
+  // End-to-end award_race with Rewind OFF (+20%) on Easy (0%).
+  assists.session_mode = 0;
+  race::CareerRecord r_bonus;
+  const int pct = race::total_difficulty_bonus_percent(0, assists);
+  const auto a_bonus = race::award_race(r_bonus, 24, 145, 2, 1, 2, 10000, 8, 1, true, 120, 60, 0, t, pct, 0);
+  CHECK(a_bonus.base_credits == 10000);
+  CHECK(a_bonus.difficulty_pct == 20);
+  CHECK(a_bonus.difficulty_bonus == 2000);
+  CHECK(a_bonus.credits == 12000);
 }
 
 void test_line_and_ground() {

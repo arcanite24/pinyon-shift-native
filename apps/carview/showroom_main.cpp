@@ -55,8 +55,10 @@
 #include "drive/cameras.h"
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
+#include "drive/driving_line.h"
 #include "drive/from_bake.h"
 #include "drive/from_physics.h"
+#include "drive/rewind.h"
 #include "drive/save.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
@@ -952,11 +954,26 @@ bool load_camera_rig(const std::filesystem::path& game_root, const std::filesyst
   return true;
 }
 
+ShowroomFrame camera_view_frame(const drive::CameraView& view, const cars::bake::CarInfo& info,
+                                const drive::Vehicle& v, float aspect, bool reverse_z) {
+  float model_to_world[16], world_to_model[16];
+  drive::model_to_world(info, v, model_to_world);
+  invert_affine(model_to_world, world_to_model);
+  const V3 eye{float(view.eye[0]), float(view.eye[1]), float(view.eye[2])};
+  const V3 at{float(view.eye[0] + view.forward[0]), float(view.eye[1] + view.forward[1]),
+              float(view.eye[2] + view.forward[2])};
+  const V3 up{float(view.up[0]), float(view.up[1]), float(view.up[2])};
+  return look_frame(transform(world_to_model, eye, 1), transform(world_to_model, at, 1),
+                    norm(transform(world_to_model, up, 0)), aspect, false, reverse_z, float(view.fov_degrees),
+                    float(view.near_clip));
+}
+
 // The rig's frame: the car's pose and motion in, the view out (in the
 // car's model frame, where the showroom draws).
 ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info, const drive::Vehicle& v,
                         const drive::Ground* ground, carview::RigAccelState& accel, double dt, float aspect,
-                        bool reverse_z, bool* interior, double* com_distance = nullptr) {
+                        bool reverse_z, bool* interior, double* com_distance = nullptr,
+                        drive::CameraView* out_view = nullptr) {
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(info, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
@@ -989,6 +1006,7 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
       return true;
     };
   const drive::CameraView view = rig.update(dt, in);
+  if (out_view) *out_view = view;
   if (interior) *interior = view.interior;
   if (com_distance) {
     const drive::Vec3 com = v.centre_of_mass();
@@ -3550,13 +3568,23 @@ int run_drive(int argc, char** argv) {
         return (have_rig && !front) ? carview::engine_audio_view(rig.mode())
                                     : (front ? audio::View::kFront : audio::View::kFollow);
       };
+      drive::RewindBuffer rewind_buf;
+      rewind_buf.start_session(vehicle.time());
+      drive::BrakingTable braking_table = drive::BrakingTable::build(vehicle.params());
+      drive::DrivingLineMode driving_line_mode = drive::DrivingLineMode::kBrakingOnly;
+      std::vector<drive::DrivingLineSample> dl_samples;
+      std::vector<drive::DrivingLineVertex> dl_verts;
+      std::vector<carview::WorldVertex> overlay_verts;
+      drive::CameraView last_cam_view{};
+      bool have_cam_view = false;
       // The frame for the drive's camera: the rig, else the old chase.
       auto drive_frame = [&](float aspect, double dt) {
         if (have_rig && !front) {
           bool interior = false;
           double d = 0;
-          ShowroomFrame f =
-              rig_frame(rig, info, vehicle, ground, rig_accel, dt, aspect, renderer.reverse_z(), &interior, &d);
+          ShowroomFrame f = rig_frame(rig, info, vehicle, ground, rig_accel, dt, aspect, renderer.reverse_z(), &interior,
+                                      &d, &last_cam_view);
+          have_cam_view = true;
           if (rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh) {
             rig_min_distance = std::min(rig_min_distance, d);
             rig_max_distance = std::max(rig_max_distance, d);
@@ -3832,6 +3860,32 @@ int run_drive(int argc, char** argv) {
             !career_page.is_open())
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
+        if (rewind_buf.active()) {
+          // 921_I_REWIND overlay (SPEC-REWIND section 4).
+          const float wf = float(width), hf = float(height);
+          const float bar_h = std::max(44.0f, hf * 0.065f);
+          const float bar_y = hf - bar_h - std::max(16.0f, hf * 0.03f);
+          const float bar_w = std::min(wf * 0.86f, 760.0f);
+          const float bar_x = 0.5f * (wf - bar_w);
+          list.rect(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, carview::ui::rgba(14, 16, 22, 215), 8.0f);
+          list.frame(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, carview::ui::rgba(235, 195, 65, 220), 2.0f, 8.0f);
+          carview::ui::TextStyle ts;
+          ts.size = std::max(14.0f, bar_h * 0.38f);
+          ts.align = carview::ui::Align::kCenter;
+          ts.color = carview::ui::rgba(245, 245, 248);
+          const char* label = "REWIND";
+          if (rewind_buf.is_rewinding()) {
+            label = rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind ? "<< REWINDING FURTHER...   [B/ESC] CANCEL"
+                                                                               : "<< REWINDING...   [B/ESC] CANCEL";
+          } else if (rewind_buf.is_paused_at_keyframe()) {
+            label = rewind_buf.at_oldest_slot()
+                        ? "[A/ENTER] RESUME   [B/ESC] CANCEL   (OLDEST KEYFRAME)"
+                        : "[A/ENTER] RESUME   [Y/BKSP] REWIND FURTHER   [B/ESC] CANCEL";
+          } else if (rewind_buf.is_settling()) {
+            label = "RESUMING...";
+          }
+          list.text(0.5f * wf, bar_y + 0.5f * (bar_h - ts.size), label, ts);
+        }
         upload_ui_atlas(renderer, !ui_atlas_synced);
         ui_atlas_synced = true;
         renderer.set_ui(list.items());
@@ -4419,6 +4473,7 @@ int run_drive(int argc, char** argv) {
           camera_pull = CameraPull{};
           rig.restart();
           rig_accel.reset();
+          rewind_buf.reset_history(vehicle.time());
         };
         // Helpers for career progression actions (wristband collection, events, shops, new career).
         auto open_paint = [&]() {
@@ -5251,6 +5306,62 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            if (rewind_buf.active()) {
+              auto restore_camera = [&](const drive::RewindCameraState& cs) {
+                if (have_rig && cs.rig.has_value()) rig = *cs.rig;
+                if (cs.has_view) last_cam_view = cs.view, have_cam_view = true;
+                front = cs.front_view;
+                rig_accel.reset();
+              };
+              auto do_resume = [&]() {
+                drive::RewindCameraState cs;
+                if (rewind_buf.resume(vehicle, &cs)) {
+                  restore_camera(cs);
+                  drawn_before = vehicle.pose();
+                  accumulator = 0.0;
+                }
+              };
+              auto do_cancel = [&]() {
+                drive::RewindCameraState cs;
+                if (rewind_buf.cancel(vehicle, &cs)) {
+                  restore_camera(cs);
+                  drawn_before = vehicle.pose();
+                  accumulator = 0.0;
+                }
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (rewind_buf.is_paused_at_keyframe() &&
+                    (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE))
+                  do_resume();
+                else if (rewind_buf.is_paused_at_keyframe() && (k == SDLK_BACKSPACE || k == SDLK_Y))
+                  rewind_buf.rewind_further();
+                else if (k == SDLK_ESCAPE || k == SDLK_B)
+                  do_cancel();
+              } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (rewind_buf.is_paused_at_keyframe() && b == SDL_GAMEPAD_BUTTON_SOUTH)
+                  do_resume();
+                else if (rewind_buf.is_paused_at_keyframe() &&
+                         (b == SDL_GAMEPAD_BUTTON_NORTH ||
+                          (rewind_buf.rewind_on_back() && b == SDL_GAMEPAD_BUTTON_BACK)))
+                  rewind_buf.rewind_further();
+                else if (b == SDL_GAMEPAD_BUTTON_EAST)
+                  do_cancel();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            auto try_trigger_rewind = [&]() {
+              drive::RewindCameraState cs;
+              if (have_rig) cs.rig = rig;
+              cs.view = last_cam_view;
+              cs.has_view = have_cam_view;
+              cs.front_view = front;
+              const double rc = race ? race->session().clock() : vehicle.time();
+              if (!rewind_buf.trigger(vehicle.time(), rc, vehicle, cs)) {
+                if (!rewind_buf.enabled()) notice = "rewind is off", notice_until = vehicle.time() + 2;
+              }
+            };
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
               const bool on_banner = race && race->player_finished() && !picking && results_page == 0;
               if (e.key.key == SDLK_ESCAPE) {
@@ -5259,9 +5370,17 @@ int run_drive(int argc, char** argv) {
                 else open_menu();
               }
               if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
+              else if (!on_banner && e.key.key == SDLK_BACKSPACE) try_trigger_rewind();
               if (on_banner && e.key.key == SDLK_X) results_table = true;  // X: RACE RESULTS
               if (!race && e.key.key == SDLK_E) activate_world_trigger();
               if (e.key.key == SDLK_R) put_back();
+              if (e.key.key == SDLK_L) {
+                driving_line_mode =
+                    static_cast<drive::DrivingLineMode>((static_cast<int>(driving_line_mode) + 1) % 3);
+                const char* names[3] = {"driving line: off", "driving line: braking only", "driving line: full"};
+                notice = names[static_cast<int>(driving_line_mode)];
+                notice_until = vehicle.time() + 2;
+              }
               if (e.key.key == SDLK_M) open_map();
               if (e.key.key == SDLK_COMMA) radio_press(-1);
               if (e.key.key == SDLK_PERIOD) radio_press(+1);
@@ -5279,6 +5398,7 @@ int run_drive(int argc, char** argv) {
                 else activate_world_trigger();
               }
               if (results && e.key.key == SDLK_Y) race_restart();
+              else if (!results && e.key.key == SDLK_Y) try_trigger_rewind();
               if (e.key.key == SDLK_T && traffic) {
                 const bool back = (e.key.mod & SDL_KMOD_SHIFT) != 0;
                 traffic->set_hour(std::fmod(traffic->hour() + (back ? 23 : 1), 24.0));
@@ -5323,7 +5443,13 @@ int run_drive(int argc, char** argv) {
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) open_map();
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
+                if (rewind_buf.rewind_on_back() && !(race && race->player_finished()) && !picking) try_trigger_rewind();
+                else open_map();
+              }
+              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH && !rewind_buf.rewind_on_back() &&
+                  !(race && race->player_finished()) && !picking)
+                try_trigger_rewind();
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT) radio_press(-1);
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) radio_press(+1);
               // The right shoulder is SwitchCamera (SPEC-CAMERAS: the default
@@ -5403,13 +5529,15 @@ int run_drive(int argc, char** argv) {
           const uint64_t now = SDL_GetTicksNS();
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           title_orbit_time += frame_dt;
-          const bool sim_paused = show_title || ceremony.active || grid_menu_open || menu.open || map_open ||
-                                  events_page.is_open() || garage_open || shop.is_open() || autoshow.is_open() ||
-                                  career_page.is_open() || settings_page.is_open() || paint_open || club_open;
+          const bool menu_paused = show_title || ceremony.active || grid_menu_open || menu.open || map_open ||
+                                   events_page.is_open() || garage_open || shop.is_open() || autoshow.is_open() ||
+                                   career_page.is_open() || settings_page.is_open() || paint_open || club_open;
+          const bool sim_paused = menu_paused || rewind_buf.active();
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();
             was_sim_paused = sim_paused;
           }
+          if (!menu_paused) rewind_buf.update(frame_dt);
           // Paused: the car holds still (no steps, no time to catch up).
           if (!sim_paused) accumulator += frame_dt;
           last = now;
@@ -5428,6 +5556,16 @@ int run_drive(int argc, char** argv) {
               status = 1;
               std::fprintf(stderr, "carview: %s\n", error.c_str());
               break;
+            }
+            {
+              drive::RewindCameraState cs;
+              if (have_rig) cs.rig = rig;
+              cs.view = last_cam_view;
+              cs.has_view = have_cam_view;
+              cs.front_view = front;
+              const double rc = race ? race->session().clock() : vehicle.time();
+              const bool cap_ok = !race || (race->session().clock() >= 0.0 && !race->player_finished());
+              rewind_buf.record_step(vehicle.time(), rc, vehicle, cs, cap_ok);
             }
             accumulator -= drive::Vehicle::kStep;
           }
@@ -5454,12 +5592,15 @@ int run_drive(int argc, char** argv) {
           }
           if (audio_stream) {
             if (engine_sound) {
-              engine_sound->master = sim_paused ? 0.0 : kEngineMaster;
+              const double rw_car = rewind_buf.audio().focus_car_gain();
+              engine_sound->master = menu_paused ? 0.0 : (kEngineMaster * rw_car);
               engine_sound->set(sound_inputs(audio_view()));
             }
             if (radio_player) {
               const bool radio_mute = show_title || menu.open || settings_page.is_open() || map_open;
-              radio_player->master = radio_mute ? 0.0 : (sim_paused ? 0.25 * kRadioMaster : kRadioMaster);
+              const double rw_music = rewind_buf.audio().game_music_gain();
+              radio_player->master =
+                  radio_mute ? 0.0 : (menu_paused ? 0.25 * kRadioMaster : kRadioMaster * rw_music);
             }
             const int queued = SDL_GetAudioStreamQueued(audio_stream) / int(2 * sizeof(float));
             const int frames = int(0.06 * kAudioRate) - queued;
@@ -5474,14 +5615,46 @@ int run_drive(int argc, char** argv) {
           SDL_GetWindowSizeInPixels(window, &w, &h);
           // Pose car & camera BEFORE building projected world HUD markers and opponent name tags!
           const drive::Vehicle::Pose stepped = vehicle.pose();
-          vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
+          const bool rewind_scrub_view = rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe();
+          if (rewind_scrub_view) {
+            vehicle.set_pose(rewind_buf.sampled_pose());
+          } else {
+            vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
+          }
           if (race) race->set_blend(accumulator / drive::Vehicle::kStep);
           if (traffic) traffic->set_blend(accumulator / drive::Vehicle::kStep);
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
           place_world();
+          // 3D Driving / Braking Line ribbon on the road (SPEC-CAR-PHYSICS).
+          if (race && !grid_menu_open && !race->player_finished() &&
+              driving_line_mode != drive::DrivingLineMode::kOff) {
+            drive::build_driving_line(race->racing_line(), braking_table, race->player_progress(),
+                                      std::max(0.0, vehicle.speed()), driving_line_mode, dl_samples);
+            drive::build_driving_line_mesh(dl_samples, 0.55, 0.08, dl_verts);
+            overlay_verts.clear();
+            overlay_verts.reserve(dl_verts.size());
+            const double ox = showroom.world_origin_x();
+            const double oz = showroom.world_origin_z();
+            for (const auto& dv : dl_verts) {
+              carview::WorldVertex wv{};
+              wv.position[0] = float(double(dv.x) - ox);
+              wv.position[1] = dv.y;
+              wv.position[2] = float(double(dv.z) - oz);
+              wv.normal[1] = 127;
+              wv.colour[0] = dv.r;
+              wv.colour[1] = dv.g;
+              wv.colour[2] = dv.b;
+              wv.colour[3] = dv.a;
+              overlay_verts.push_back(wv);
+            }
+            showroom.set_world_overlay(overlay_verts);
+          } else {
+            showroom.set_world_overlay({});
+          }
           const float aspect = h > 0 ? float(w) / float(h) : 1.0f;
+          drive::CameraView rw_cam{};
           const ShowroomFrame cam_frame =
               show_title
                   ? scenic_orbit_frame(info, vehicle, aspect, title_orbit_time * 0.22, 6.2f, 1.65f, renderer.reverse_z())
@@ -5491,8 +5664,11 @@ int run_drive(int argc, char** argv) {
                                                         drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
                                                  0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
                                              5.6f, 1.35f, renderer.reverse_z())
-                        : drive_frame(aspect, frame_dt);
-          if (show_title || (race && grid_menu_open) || ceremony.active) showroom.set_draw_car(true);
+                        : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
+                              ? camera_view_frame(rw_cam, info, vehicle, aspect, renderer.reverse_z())
+                              : drive_frame(aspect, frame_dt);
+          if (show_title || (race && grid_menu_open) || ceremony.active || rewind_scrub_view)
+            showroom.set_draw_car(true);
           showroom.set_frame(cam_frame);
 
           // Update projected Free-Roam World Event / Festival Marker.

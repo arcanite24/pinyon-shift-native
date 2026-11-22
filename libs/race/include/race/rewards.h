@@ -65,9 +65,36 @@ struct RaceAward {
   int64_t prize_car = 0;  // 0: none
 };
 
+// Per-assist settings for the difficulty credit bonus (SPEC-REWIND section 7,
+// SPEC-EVENT-REWARDS Credits / Unknowns).
+// Rewind OFF awards +20% (0.20) except in excluded session mode 3; Rewind ON
+// awards +0% with no extra per-use penalty. Remaining assists are interim 0%
+// until their exact percentages are confirmed.
+struct DifficultyAssists {
+  static constexpr int kExcludedSessionMode = 3;
+  bool rewind_on = true;  // Main/Rewind: 0 = ON (default), 1 = OFF
+  int session_mode = 0;   // mode 3 skips the Rewind difficulty bonus
+  int braking = 1;        // 0 = Assisted, 1 = ABS On, 2 = ABS Off
+  int steering = 1;       // 0 = Assisted, 1 = Normal, 2 = Simulation
+  bool tcs_on = false;    // TractionControl
+  bool stm_on = true;     // StabilityControl
+  int shifting = 0;       // 0 = Automatic, 1 = Manual, 2 = Manual + Clutch
+  int driving_line = 2;   // 0 = Off, 1 = Braking Only, 2 = Full
+};
+
+// Rewind difficulty bonus as an exact fraction: 0.20 when Rewind is OFF and
+// session_mode != 3, 0.0 otherwise (SPEC-REWIND section 7).
+double rewind_difficulty_bonus(bool rewind_on, int session_mode = 0);
+// Sum of per-assist difficulty bonus fractions across all assists.
+double assist_difficulty_bonus(const DifficultyAssists& assists);
+// Sum of per-assist difficulty bonuses in integer percent (e.g. 20 for +20%).
+int assist_difficulty_bonus_percent(const DifficultyAssists& assists);
+
 // Difficulty bonus percentage (ours: 0 Easy, 15 Med, 30 Hard, 45 Pro) and
 // mileage bonus from race distance driven (m).
 int difficulty_bonus_percent(int difficulty_index);
+// Combined AI difficulty + per-assist difficulty bonus percentage.
+int total_difficulty_bonus_percent(int difficulty_index, const DifficultyAssists& assists);
 int64_t mileage_bonus_credits(double distance_m);
 
 // One finished (or not-finished) race of an event with one race, applied

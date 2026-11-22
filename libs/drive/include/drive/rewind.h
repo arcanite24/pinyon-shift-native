@@ -1,0 +1,242 @@
+// In-gameplay time rewind (Mulligan): 8-slot rolling keyframe buffer,
+// 20 Hz pose stream for -1.0x reverse scrub, first-keyframe ignore rule,
+// rewind menu loop (Resume / Rewind Further / Cancel / View Replay),
+// post-resume settle delay, and audio mixer/DSP/SFX state hooks.
+//
+// Spec: SPEC-REWIND (docs/specs/REWIND.md, sections 1-7, Rates and timing).
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <vector>
+
+#include "drive/cameras.h"
+#include "drive/vehicle.h"
+
+namespace drive {
+
+// SPEC-REWIND, Rates and timing.
+struct RewindConfig {
+  static constexpr int kMaxKeyframes = 8;
+  static constexpr int kIdleSlot = 8;
+
+  double first_keyframe_delay_s = 10.0;   // TimeAfterRaceStartForFirstKeyframe
+  double keyframe_interval_s = 2.5;       // TimeBetweenMulliganKeyframes
+  double first_keyframe_ignore_s = 1.0;   // TimeDiffToIgnoreTheFirstKeyframe
+  double stream_record_hz = 20.0;         // ReplayRecordKeyframeFrequency (interim 20 Hz)
+  double reverse_playback_rate = -1.0;    // reverse scrub rate (-1.0x)
+  double resume_settle_s = 1.0;           // post-resume settle delay
+
+  // First-career tutorial hint pacing (GlobalRegistry.xml).
+  double hint_cooldown_s = 30.0;          // FirstTimeCareer/RewindCoolDown
+  double hint_timeout_s = 5.0;            // FirstTimeCareer/RewindMessageTimout
+  int hint_max_shows = 10;                // FirstTimeCareer/TimesToShowRewind
+  double tutorial_text_limit_s = 3.0;     // TutorialMessages/RewindTextTimerLimit
+};
+
+// SPEC-REWIND section 6: AudioMixerSnapshots.xml (<Rewind group="Gameplay">).
+struct RewindMixerTargets {
+  double focus_car = 0.175;
+  double opp_car = 0.175;
+  double game_music = 0.25;
+  double muted_channels = 0.0;  // Transmission, Turbo, Tire, Collision, Ambient*, etc.
+  double game_ui = 1.0;
+  double vo = 1.0;
+  double sat_nav = 1.0;
+  double dj_modifier = 1.0;
+  double fade_in_s = 0.2;
+  double return_fade_s = 0.1;
+};
+
+// SPEC-REWIND section 6: GlobalDSPConfig.xml (<RewindDSPConfig>).
+struct RewindDspConfig {
+  bool bypass = false;
+  double gain = 0.300000;
+  double bandwidth = 3.359995;
+  double center_hz = 3772.0;
+};
+
+// Pullable audio state driven by RewindBuffer for the mixer, DSP, and vehicle
+// audio components (SPEC-REWIND section 6).
+struct RewindAudioState {
+  RewindMixerTargets mixer{};
+  RewindDspConfig dsp{};
+  bool snapshot_active = false;
+  bool dsp_active = false;
+  double blend = 0.0;             // 0 = normal mix, 1 = full rewind ducking
+  double playback_speed = 1.0;    // -1.0 scrubbing, 0.0 paused, 1.0 normal
+  int vehicle_audio_state = 1;    // 104 enter, 10 scrubbing, 0 paused, 1 exit/normal
+  bool tape_start_cue = false;    // UIInGame/UI/Mulligan "TapeStart"
+
+  double focus_car_gain() const { return 1.0 + (mixer.focus_car - 1.0) * blend; }
+  double opp_car_gain() const { return 1.0 + (mixer.opp_car - 1.0) * blend; }
+  double game_music_gain() const { return 1.0 + (mixer.game_music - 1.0) * blend; }
+  double effects_gain() const { return 1.0 + (mixer.muted_channels - 1.0) * blend; }
+};
+
+// Camera state captured with each keyframe.
+struct RewindCameraState {
+  std::optional<DriveCamera> rig;
+  CameraView view{};
+  bool has_view = false;
+  double look_angle = 0.0;
+  bool front_view = false;
+};
+
+// One keyframe slot: whole drive::Vehicle copy (all physics state) plus camera
+// state, clocks, and optional skill-chain state.
+struct RewindKeyframe {
+  double replay_time = 0.0;
+  double race_clock = 0.0;
+  Vehicle vehicle;
+  RewindCameraState camera{};
+  uint64_t skill_chain_score = 0;
+  int skill_chain_mult = 1;
+
+  explicit RewindKeyframe(const Vehicle& v) : vehicle(v) {}
+};
+
+// High-frequency pose sample for smooth -1.0x linear interpolation during scrub.
+struct RewindStreamSample {
+  double replay_time = 0.0;
+  Vehicle::Pose pose{};
+  CameraView camera_view{};
+  bool has_camera_view = false;
+};
+
+enum class RewindState {
+  kIdle,
+  kRewinding,
+  kPausedAtKeyframe,
+  kSettling,
+};
+
+// 921_I_REWIND UI overlay states (SPEC-REWIND section 4).
+enum class RewindUiState {
+  kHidden,
+  kRewinding,
+  kLoopRewind,
+  kStopRewind,
+};
+
+class RewindBuffer {
+ public:
+  explicit RewindBuffer(const RewindConfig& config = {});
+
+  const RewindConfig& config() const { return cfg_; }
+
+  // Profile & flow-graph controls (SPEC-REWIND State & sections 1-2).
+  void set_enabled(bool on) { enabled_ = on; }
+  bool enabled() const { return enabled_; }
+  void set_disabled(bool lockout) { disabled_ = lockout; }
+  bool disabled() const { return disabled_; }
+  void set_rewind_on_back(bool on) { rewind_on_back_ = on; }
+  bool rewind_on_back() const { return rewind_on_back_; }
+  void set_hint_enabled(bool on) { hint_enabled_ = on; }
+  bool hint_enabled() const { return hint_enabled_; }
+
+  // Session start and CResetMulliganHistory (SPEC-REWIND section 1).
+  void start_session(double start_replay_time = 0.0);
+  void reset_history(double current_replay_time = 0.0);
+
+  // Called during active driving to record 20 Hz stream poses and periodic
+  // 2.5 s keyframes (skipped when capture_allowed is false).
+  void record_step(double replay_time, double race_clock, const Vehicle& vehicle,
+                   const RewindCameraState& camera, bool capture_allowed = true,
+                   uint64_t skill_chain_score = 0, int skill_chain_mult = 1);
+
+  // Trigger eligibility (SPEC-REWIND section 2).
+  bool can_trigger() const;
+
+  // Enter rewind from active driving (SPEC-REWIND section 3).
+  // Captures the trigger-point snapshot for Cancel, applies the first-keyframe
+  // ignore rule (< 1.0 s when count > 2), and starts -1.0x reverse playback.
+  bool trigger(double current_replay_time, double race_clock, const Vehicle& current_vehicle,
+               const RewindCameraState& current_camera, uint64_t skill_chain_score = 0,
+               int skill_chain_mult = 1);
+
+  // Advance reverse playback, post-resume settle timer, and audio ducking ramp.
+  void update(double dt);
+
+  // Rewind menu actions (SPEC-REWIND section 4).
+  bool rewind_further();
+  bool resume(Vehicle& out_vehicle, RewindCameraState* out_camera = nullptr,
+              double* out_replay_time = nullptr, double* out_race_clock = nullptr,
+              uint64_t* out_skill_score = nullptr, int* out_skill_mult = nullptr);
+  bool cancel(Vehicle& out_vehicle, RewindCameraState* out_camera = nullptr,
+              double* out_replay_time = nullptr, double* out_race_clock = nullptr,
+              uint64_t* out_skill_score = nullptr, int* out_skill_mult = nullptr);
+  bool request_view_replay();
+  bool consume_view_replay_request();
+
+  // State queries.
+  RewindState state() const { return state_; }
+  RewindUiState ui_state() const { return ui_state_; }
+  bool active() const { return state_ != RewindState::kIdle; }
+  bool is_rewinding() const { return state_ == RewindState::kRewinding; }
+  bool is_paused_at_keyframe() const { return state_ == RewindState::kPausedAtKeyframe; }
+  bool is_settling() const { return state_ == RewindState::kSettling; }
+
+  int keyframe_count() const { return int(keyframes_.size()); }
+  const RewindKeyframe& keyframe(int index) const { return keyframes_[size_t(index)]; }
+  int target_slot() const { return target_slot_; }
+  int selected_slot() const { return selected_slot_; }
+  bool at_oldest_slot() const { return selected_slot_ <= 0; }
+  double playback_time() const { return playback_time_; }
+  double next_capture_time() const { return next_capture_time_; }
+  double settle_timer() const { return settle_timer_; }
+  size_t stream_sample_count() const { return stream_.size(); }
+
+  // Clean-lap invalidation (SPEC-REWIND section 5).
+  bool lap_uncertified() const { return lap_uncertified_; }
+  void clear_lap_uncertified() { lap_uncertified_ = false; }
+
+  // Audio state & one-shot TapeStart cue.
+  const RewindAudioState& audio() const { return audio_; }
+  bool consume_tape_start_cue();
+
+  // Interpolated vehicle pose and camera view at current playback_time_.
+  Vehicle::Pose sampled_pose() const;
+  bool sampled_camera(CameraView& out) const;
+
+  // First-career tutorial hint cooldown (SPEC-REWIND State & section 2).
+  bool request_hint(double now_s);
+  bool hint_visible(double now_s) const;
+  int hints_remaining() const { return hints_remaining_; }
+
+ private:
+  void push_keyframe(RewindKeyframe&& kf);
+  void prune_stream();
+
+  RewindConfig cfg_{};
+  bool enabled_ = true;
+  bool disabled_ = false;
+  bool rewind_on_back_ = false;
+  bool hint_enabled_ = true;
+
+  std::vector<RewindKeyframe> keyframes_;
+  std::vector<RewindStreamSample> stream_;
+  std::optional<RewindKeyframe> cancel_snapshot_;
+
+  double next_capture_time_ = 10.0;
+  double next_stream_time_ = 0.0;
+  bool stream_started_ = false;
+
+  RewindState state_ = RewindState::kIdle;
+  RewindUiState ui_state_ = RewindUiState::kHidden;
+  int target_slot_ = RewindConfig::kIdleSlot;
+  int selected_slot_ = RewindConfig::kIdleSlot;
+  double playback_time_ = 0.0;
+  double settle_timer_ = 0.0;
+  bool lap_uncertified_ = false;
+  bool view_replay_requested_ = false;
+
+  RewindAudioState audio_{};
+
+  // Tutorial hint state.
+  int hints_remaining_ = 10;
+  double hint_cooldown_until_ = -1e9;
+  double hint_visible_until_ = -1e9;
+};
+
+}  // namespace drive
