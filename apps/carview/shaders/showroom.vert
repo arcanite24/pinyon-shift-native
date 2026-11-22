@@ -65,6 +65,8 @@ layout(location = 2) out vec2 v_uv0;
 layout(location = 3) out vec2 v_uv1;
 layout(location = 4) out float v_occlusion;
 layout(location = 5) flat out uint v_instance;
+layout(location = 6) out vec3 v_tangent;
+layout(location = 7) out vec3 v_bitangent;
 
 const uint kFlagInstanced = 8192u;
 
@@ -76,12 +78,16 @@ void main() {
   vec3 p = in_position;
   vec4 q = normalize(in_frame);
   vec3 n = rotate(q, vec3(1.0, 0.0, 0.0));
+  vec3 t = rotate(q, vec3(0.0, 1.0, 0.0));
+  vec3 b = rotate(q, vec3(0.0, 0.0, -1.0));
   uint flags = uint(draw.params.y + 0.5);
   v_instance = uint(gl_InstanceIndex);
   mat4 model_mat = (flags & kFlagInstanced) != 0u ? (car_instances[v_instance].model * draw.model) : draw.model;
   vec4 world = model_mat * vec4(p, 1.0);
   mat3 normal_matrix = transpose(inverse(mat3(model_mat)));
   vec3 wn = normalize(normal_matrix * n);
+  vec3 wt = normalize(normal_matrix * t);
+  vec3 wb = normalize(normal_matrix * b);
 
   // Cosmetic impact-zone mesh dent deformation on body/paint/chrome/carbon/glass
   // (model space: -Z is front, +Z is rear, -X is left, +X is right).
@@ -105,6 +111,8 @@ void main() {
 
   v_position = world.xyz;
   v_normal = wn;
+  v_tangent = wt;
+  v_bitangent = wb;
   v_uv0 = vec2(draw.uv0.x + draw.uv0.y * in_uv0.x, draw.uv0.z + draw.uv0.w * in_uv0.y);
   v_uv1 = vec2(draw.uv1.x + draw.uv1.y * in_uv1.x, draw.uv1.z + draw.uv1.w * in_uv1.y);
   // The first lighting byte behaves as occlusion: about 100 open to the sky.

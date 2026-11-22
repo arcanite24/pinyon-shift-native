@@ -429,8 +429,9 @@ class Showroom {
     drive::LampShaderVectors lamps{};
     bool has_lamps = false;
   };
-  void set_instances(std::vector<Instance> list) { instances_ = std::move(list); }
-  void add_instances(const std::vector<Instance>& more) { instances_.insert(instances_.end(), more.begin(), more.end()); }
+  void set_instances(std::vector<Instance> list);
+  void add_instances(const std::vector<Instance>& more);
+  void bind_dynamic_env(VkImageView cube_view, VkSampler sampler);
   size_t instance_count() const { return instances_.size(); }
   size_t world_texture_count() const;
   struct WorldTextureStats {
@@ -490,9 +491,10 @@ class Showroom {
     uint32_t first_index = 0, index_count = 0;
     int32_t vertex_offset = 0;
     ShowroomPush push{};
-    std::array<uint32_t, 3> textures{};  // slot 0, slot 1, livery (gpu_textures_ indices)
+    std::array<uint32_t, 5> textures{};  // slot 0, slot 1, livery, normal_map, damage_map (UINT32_MAX = fallback)
     uint32_t descriptor = 0;
     bool glass = false;
+    bool is_cover = false;    // two-pass multiply+additive detail_glass_* lamp cover
     bool brake_lamp = false;  // legacy brake lamp flag
     drive::LampChannel lamp_channel = drive::LampChannel::kNone;
     bool stripe_able = false;  // an exterior paint draw a striped colour row tints (FORMAT-CARS, Paint)
@@ -579,7 +581,7 @@ class Showroom {
   std::vector<Draw> draws_;
   std::vector<TextureRef> textures_;  // 0 white, 1 black, then by first use
   std::map<std::string, uint32_t> texture_by_key_;
-  std::map<std::array<uint32_t, 3>, uint32_t> descriptor_by_textures_;
+  std::map<std::array<uint32_t, 5>, uint32_t> descriptor_by_textures_;
   std::array<float, 3> bounds_min_{}, bounds_max_{};
   bool have_bounds_ = false;
   std::vector<std::string> notes_, drawn_parts_, skipped_parts_;
@@ -587,6 +589,8 @@ class Showroom {
   // GPU.
   std::vector<GpuTexture> gpu_textures_;
   GpuTexture environment_;
+  GpuTexture shared_dirt_pattern_, shared_dirt_mask_, shared_glass_crack_;
+  VkImageView bound_dyn_env_view_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
   Renderer::Buffer vertex_buffer_, index_buffer_, frame_buffer_;
   VkDescriptorSetLayout frame_layout_ = VK_NULL_HANDLE, material_layout_ = VK_NULL_HANDLE;
@@ -595,7 +599,11 @@ class Showroom {
   VkPipelineLayout world_pipeline_layout_ = VK_NULL_HANDLE;
   GpuTexture flat_normal_tex_;  // 1x1 (128, 128, 255, 255) fallback normal map
   VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, car_z_prepass_ = VK_NULL_HANDLE,
-             glass_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
+             glass_ = VK_NULL_HANDLE, glass_mul_ = VK_NULL_HANDLE, glass_add_ = VK_NULL_HANDLE,
+             mask_ = VK_NULL_HANDLE;
+  VkPipelineLayout contact_shadow_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipeline contact_shadow_pipe_ = VK_NULL_HANDLE;
+  void record_contact_shadows(VkCommandBuffer cmd);
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
   // The sun shadow pass: Near + Far cascades in a 2x1 atlas.
@@ -786,6 +794,8 @@ class Showroom {
   static constexpr uint32_t kMirrorHeight = 128;
   GpuTexture dyn_env_;
   VkImageView dyn_env_faces_[6] = {};
+  VkImageView dyn_env_mip0_cube_ = VK_NULL_HANDLE;
+  VkImageView dyn_env_mip_faces_[kDynEnvMips][6] = {};
   GpuTexture dyn_env_depth_;
   GpuTexture mirror_tex_;
   GpuTexture mirror_depth_;
@@ -795,8 +805,13 @@ class Showroom {
   VkDescriptorPool env_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet env_sky_sets_[12] = {};
   VkPipeline env_world_opaque_ = VK_NULL_HANDLE;
+  VkPipeline env_world_coverage_ = VK_NULL_HANDLE;
   VkPipeline env_sky_pipe_base_ = VK_NULL_HANDLE;
   VkPipeline env_sky_pipe_layers_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout env_prefilter_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout env_prefilter_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipeline env_prefilter_pipe_ = VK_NULL_HANDLE;
+  VkDescriptorSet env_prefilter_set_ = VK_NULL_HANDLE;
   bool dyn_env_ready_ = false;
   bool dyn_env_initialized_ = false;
   bool dyn_env_bound_ = false;

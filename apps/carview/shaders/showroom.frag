@@ -42,8 +42,6 @@ layout(set = 0, binding = 0) uniform Frame {
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 layout(set = 0, binding = 5) uniform sampler2D mirror_map;
-layout(set = 0, binding = 7) uniform samplerCube static_environment;
-
 struct CarInstanceGpu {
   mat4 model;
   vec4 stripe;
@@ -51,10 +49,16 @@ struct CarInstanceGpu {
   vec4 pad;
 };
 layout(std430, set = 0, binding = 6) readonly buffer CarInstances { CarInstanceGpu car_instances[]; };
+layout(set = 0, binding = 7) uniform samplerCube static_environment;
+layout(set = 0, binding = 8) uniform sampler2D shared_dirt_pattern;
+layout(set = 0, binding = 9) uniform sampler2D shared_dirt_mask;
+layout(set = 0, binding = 10) uniform sampler2D shared_glass_crack;
 
 layout(set = 1, binding = 0) uniform sampler2D slot0;
 layout(set = 1, binding = 1) uniform sampler2D slot1;
 layout(set = 1, binding = 2) uniform sampler2D livery;
+layout(set = 1, binding = 3) uniform sampler2D normal_map;
+layout(set = 1, binding = 4) uniform sampler2D damage_map;
 
 layout(push_constant) uniform Draw {
   mat4 model;
@@ -70,6 +74,8 @@ layout(location = 2) in vec2 v_uv0;
 layout(location = 3) in vec2 v_uv1;
 layout(location = 4) in float v_occlusion;
 layout(location = 5) flat in uint v_instance;
+layout(location = 6) in vec3 v_tangent;
+layout(location = 7) in vec3 v_bitangent;
 
 layout(location = 0) out vec4 out_color;
 
@@ -77,7 +83,8 @@ const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, k
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
 const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
            kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u, kFlagCover = 1024u,
-           kFlagLampEmissive = 2048u, kFlagMirror = 4096u, kFlagInstanced = 8192u;
+           kFlagLampEmissive = 2048u, kFlagMirror = 4096u, kFlagInstanced = 8192u,
+           kFlagNormalMap = 524288u, kFlagNormalUv1 = 1048576u, kFlagDamageMap = 2097152u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -211,11 +218,32 @@ void main() {
   }
   vec4 t0 = (flags & kFlagNoSlot0) != 0u ? vec4(1.0, 1.0, 1.0, 0.0) : texture(slot0, v_uv0);
   vec4 t1 = vec4(1.0);
-  if ((flags & kFlagSlot1) != 0u) t1 = texture(slot1, klass == kCarbon ? v_uv1 : v_uv0);
+  if ((flags & kFlagSlot1) != 0u) {
+    vec2 uv1_s = (klass == kCarbon) ? (v_uv1 * 1.5) : v_uv0;
+    t1 = texture(slot1, uv1_s);
+  }
 
   vec3 view = normalize(frame.eye.xyz - v_position);
-  vec3 n = normalize(v_normal);
-  if (dot(n, view) < 0.0) n = -n;
+  vec3 n_geom = normalize(v_normal);
+  float flip_n = dot(n_geom, view) < 0.0 ? -1.0 : 1.0;
+  vec3 n = n_geom * flip_n;
+  // Tangent-space normal map perturbation (carbonFiberNormal, sidewall/tread NRM, leather/plastic/stitches NRM).
+  if ((flags & kFlagNormalMap) != 0u) {
+    vec2 nm_uv = (klass == kCarbon) ? (v_uv1 * 1.5) : ((flags & kFlagNormalUv1) != 0u ? v_uv1 : v_uv0);
+    vec2 nm_xy = texture(normal_map, nm_uv).xy * 2.0 - 1.0;
+    float nm_strength = (klass == kInterior) ? 1.35 : (klass == kTyre ? 1.15 : 1.0);
+    nm_xy *= nm_strength;
+    float nz = sqrt(max(1.0 - dot(nm_xy, nm_xy), 0.04));
+    vec3 T = v_tangent;
+    vec3 B = v_bitangent;
+    float tlen = length(T);
+    float blen = length(B);
+    if (tlen > 1e-4 && blen > 1e-4) {
+      T = normalize(T - n * dot(T, n));
+      B = normalize(B - n * dot(B, n));
+      n = normalize(T * nm_xy.x + B * nm_xy.y + n * nz);
+    }
+  }
   vec3 r = reflect(-view, n);
   float nv = clamp(dot(n, view), 0.0, 1.0);
 
@@ -350,29 +378,43 @@ void main() {
       reflectivity = 0.02;
       gloss = 0.35;
       alpha = 0.24;
-    } else {
-      float wtint = clamp(frame.paint_finish.w, 0.0, 1.0);
-      base = mix(vec3(0.01, 0.012, 0.016), vec3(0.002, 0.003, 0.004), wtint);
-      reflectivity = 0.06;
-      gloss = 0.95;
-      alpha = mix(0.60, 0.94, wtint);
-      if ((flags & kFlagCover) != 0u) {
-        base = draw_tint.rgb;
-        alpha = draw_tint.r - draw_tint.g > 0.1 ? 0.72 : 0.16;
+    } else if ((flags & kFlagCover) != 0u) {
+      // FH1 two-pass detail_glass_red / amber / clear lamp covers (SHOWROOM_LIGHTING.md:187):
+      // submat 7 = Pass 1 Multiply (DST_COLOR, ZERO) tinted by LightsSampler + GlassColor;
+      // submat 8 = Pass 2 Additive (ONE, ONE) sharp Fresnel env reflection + sun specular.
+      bool is_red = draw_tint.r > 0.15 && draw_tint.g < 0.05;
+      bool is_amber = draw_tint.r > 0.35 && draw_tint.g > 0.10 && draw_tint.b < 0.05;
+      if (submat == 7u) {
+        vec3 lens_tex = (flags & kFlagSlot1) != 0u ? mix(vec3(1.0), t1.rgb, 0.45) : vec3(1.0);
+        vec3 trans = is_red ? vec3(0.76, 0.08, 0.06) :
+                     is_amber ? vec3(0.92, 0.50, 0.08) :
+                                vec3(0.86, 0.89, 0.92);
+        trans = clamp(trans * lens_tex, vec3(0.03), vec3(1.0));
+        out_color = vec4(trans, 1.0);
+        return;
       }
+      base = draw_tint.rgb;
+      reflectivity = is_red ? 0.06 : is_amber ? 0.05 : 0.08;
+      gloss = 0.98;
+      alpha = is_red ? 0.65 : is_amber ? 0.45 : 0.16;
+    } else {
+      // FH1 Normal.xml <window>: GlassColor=(0.0, 0.10, 0.08, 0.29), FresnelIndex=4.35, FresnelScalar=0.70.
+      float wtint = clamp(frame.paint_finish.w, 0.0, 1.0);
+      base = mix(vec3(0.0, 0.055, 0.045), vec3(0.002, 0.005, 0.004), wtint);
+      reflectivity = 0.047;
+      gloss = 0.97;
+      alpha = mix(0.29, 0.88, wtint);
       if ((flags & kFlagLampEmissive) != 0u) {
         emissive = draw_tint.rgb;
       }
-      // Cracked windshield / glass spiderweb fracture lines when damage_dirt.z > 0.
+      // Real FH1 Shared/glass_texture.xds fracture overlay when damage_dirt.z > 0.05.
       float crack = frame.damage_dirt.z;
-      if (crack > 0.05 && (flags & kFlagCover) == 0u) {
-        vec2 cp = v_position.xz * 12.0 + v_position.y * 8.0;
-        float radial = abs(sin(atan(cp.y, cp.x) * 9.0 + fbm(cp * 2.5) * 3.5));
-        float rings = abs(sin(length(cp) * 7.0 + fbm(cp * 3.0) * 2.0));
-        float line_mask = smoothstep(0.14, 0.02, min(radial, rings)) * smoothstep(0.05, 0.55, crack);
-        base = mix(base, vec3(0.75, 0.80, 0.86), line_mask * 0.75);
-        alpha = clamp(alpha + line_mask * 0.35, 0.0, 0.98);
-        gloss = mix(gloss, 0.25, line_mask);
+      if (crack > 0.05) {
+        vec4 gt = texture(shared_glass_crack, v_uv0 * 2.5);
+        float c_mask = clamp(max(gt.a, dot(gt.rgb, vec3(0.3333))) * smoothstep(0.05, 0.55, crack), 0.0, 1.0);
+        base = mix(base, vec3(0.72, 0.78, 0.84), c_mask * 0.75);
+        alpha = clamp(alpha + c_mask * 0.42, 0.0, 0.96);
+        gloss = mix(gloss, 0.25, c_mask);
       }
     }
   } else if (klass == kLamp) {
@@ -489,8 +531,7 @@ void main() {
     gloss = 0.88;
   }
 
-  // Cosmetic scratches, scuffs & exposed primer/metal on impacted body zones,
-  // plus dynamic lower-body & wheel-arch dirt/mud accumulation.
+  // Real FH1 damage_LOD0.xds impact scratches/scuffs & Shared/dirt_pattern + dirt_mask accumulation.
   if (klass == kPaint || klass == kOpaque || klass == kCarbon || klass == kRim) {
     float z_front = smoothstep(-0.65, -1.95, v_position.z) * frame.damage_zones.x;
     float z_rear = smoothstep(0.65, 1.95, v_position.z) * frame.damage_zones.y;
@@ -498,25 +539,29 @@ void main() {
     float x_right = smoothstep(0.50, 0.95, v_position.x) * frame.damage_zones.w;
     float local_dmg = clamp(max(max(z_front, z_rear), max(x_left, x_right)), 0.0, 1.0);
     if (local_dmg > 0.02 && frame.damage_dirt.w > 0.01) {
-      // Fine directional scratch streaks + scuffed grey primer/bare metal patches.
-      float streaks = fbm(vec2(v_position.z * 34.0, v_position.y * 95.0 + v_position.x * 22.0));
-      float blotch = fbm(v_position.xz * 7.5 + v_position.y * 9.0);
-      float scuff = smoothstep(0.42, 0.74, blotch * 0.55 + streaks * 0.65) * local_dmg * frame.damage_dirt.w;
-      vec3 bare_metal = mix(vec3(0.18, 0.19, 0.21), vec3(0.58, 0.60, 0.64), smoothstep(0.65, 0.90, streaks));
-      base = mix(base, bare_metal, clamp(scuff * 0.92, 0.0, 0.92));
-      gloss = mix(gloss, 0.14, clamp(scuff * 0.85, 0.0, 0.85));
-      metal = mix(metal, 0.35, clamp(scuff * 0.50, 0.0, 0.50));
-      coat_mask *= (1.0 - clamp(scuff * 0.90, 0.0, 0.90));
+      float dmg_amt = clamp(local_dmg * frame.damage_dirt.w, 0.0, 1.0);
+      if ((flags & kFlagDamageMap) != 0u) {
+        vec4 dm = texture(damage_map, v_uv0);
+        float dmask = clamp(max(dm.a, length(dm.rgb - t0.rgb) * 1.4) * dmg_amt, 0.0, 0.95);
+        base = mix(base, dm.rgb, dmask);
+        gloss = mix(gloss, 0.15, dmask * 0.85);
+        coat_mask *= (1.0 - dmask * 0.90);
+      } else {
+        vec3 dp = texture(shared_dirt_pattern, v_uv0 * 4.0).rgb;
+        float scuff = clamp(dmg_amt * 0.85, 0.0, 0.90);
+        base = mix(base, mix(vec3(0.22), dp, 0.35), scuff);
+        gloss = mix(gloss, 0.14, scuff * 0.85);
+        coat_mask *= (1.0 - scuff * 0.90);
+      }
     }
     if (frame.damage_dirt.x > 0.01) {
-      // Lower-body road grit & wheel-arch mud splatter (strongest near ground y < 0.55 m).
-      float low_mask = smoothstep(0.72, 0.02, v_position.y);
-      float splat = fbm(v_position.xz * 9.5 + v_position.y * 12.0);
-      float specks = vnoise(v_position.xz * 42.0 + v_position.y * 38.0);
-      float dirt = clamp(frame.damage_dirt.x * (low_mask * (0.65 + 0.55 * splat) + 0.22 * splat) *
-                             (0.65 + 0.55 * specks),
-                         0.0, 0.88);
-      vec3 mud_col = mix(vec3(0.18, 0.12, 0.075), vec3(0.28, 0.20, 0.13), splat);
+      float low_mask = smoothstep(0.76, 0.02, v_position.y);
+      vec2 dirt_uv = v_position.xz * 0.75 + vec2(v_position.y * 0.9, v_position.y * 0.6);
+      vec4 dpat = texture(shared_dirt_pattern, dirt_uv * 2.5);
+      vec4 dmsk = texture(shared_dirt_mask, dirt_uv * 1.2);
+      float m = clamp(max(dmsk.r, dmsk.a), 0.15, 1.0);
+      float dirt = clamp(frame.damage_dirt.x * (low_mask * 0.85 + 0.20) * m, 0.0, 0.88);
+      vec3 mud_col = mix(vec3(0.18, 0.12, 0.075), dpat.rgb * 0.45, 0.65);
       base = mix(base, mud_col, dirt);
       gloss = mix(gloss, 0.08, dirt * 0.92);
       metal = mix(metal, 0.0, dirt * 0.95);
@@ -621,8 +666,27 @@ void main() {
     }
     alpha = 1.0;
   } else if (klass == kGlass) {
-    colour = base * alpha + specular_colour * (reflection + highlight) + emissive;
-    alpha = clamp(alpha + fresnel * 0.5, 0.0, 1.0);
+    if ((flags & kFlagCover) != 0u && submat == 8u) {
+      // Pass 2 Additive reflection + sun glint on detail_glass_red/amber/clear covers.
+      bool is_red = draw.tint.r > 0.15 && draw.tint.g < 0.05;
+      bool is_amber = draw.tint.r > 0.35 && draw.tint.g > 0.10 && draw.tint.b < 0.05;
+      float f_idx = is_red ? 1.65 : is_amber ? 1.45 : 3.55;
+      float f_scl = (is_red || is_amber) ? 0.70 : 1.00;
+      float F_cov = clamp(0.05 + f_scl * pow(1.0 - nv, f_idx), 0.05, 0.95);
+      vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
+      vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit;
+      colour = F_cov * cov_refl + cov_spec;
+      alpha = 1.0;
+    } else if (submat == 6u) {
+      colour = base * alpha;
+    } else {
+      // FH1 window glass: strong grazing Fresnel (4.35 / 0.70), sharp mip-0 reflection, clear straight-through.
+      float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
+      vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
+      vec3 glass_spec = direct_col * pow(nh, 140.0) * 2.2 * ndl * lit;
+      colour = base * alpha + F_glass * glass_refl + glass_spec + emissive;
+      alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
+    }
   }
   colour *= frame.options.x;
   out_color = vec4(out_rgb(colour), alpha);

@@ -43,6 +43,10 @@
 #include "shadow_frag_spv.h"
 #include "showroom_frag_spv.h"
 #include "showroom_vert_spv.h"
+#include "contact_shadow_frag_spv.h"
+#include "contact_shadow_vert_spv.h"
+#include "env_prefilter_frag_spv.h"
+#include "post_vert_spv.h"
 #include "skid_frag_spv.h"
 #include "skid_vert_spv.h"
 #include "sky_frag_spv.h"
@@ -74,7 +78,9 @@ namespace {
 // Flags in ShowroomPush::params.y (showroom.vert / showroom.frag).
 constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagLivery = 8, kFlagStripe = 32, kFlagFlat = 64,
                    kFlagNoSlot0 = 16, kFlagRaceLivery = 128, kFlagGrille = 256, kFlagCutout = 512,
-                   kFlagCover = 1024, kFlagLampEmissive = 2048, kFlagMirror = 4096;
+                   kFlagCover = 1024, kFlagLampEmissive = 2048, kFlagMirror = 4096,
+                   kFlagInstanced = 8192,  // bits 14..18 carry instanced lamp channel
+                   kFlagNormalMap = 524288, kFlagNormalUv1 = 1048576, kFlagDamageMap = 2097152;
 
 std::string lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -133,9 +139,11 @@ float srgb_to_linear(float c) {
 }
 
 // The model's own name for a sheet, e.g. "tyre:sidewall" with tyre textures
-// "tirea" (or a car's own "tireatoy_fjcruiser_12") -> "sidewalla_clr.xds".
+// "tirea" (or a car's own "tireatoy_fjcruiser_12") -> "sidewalla_clr.xds",
+// and "tyre:sidewall_nrm" -> "sidewalla_nrm.xds".
 std::string tyre_texture_member(const std::string& sheet, const std::string& tyre_media) {
   const char letter = tyre_media.size() > 4 ? tyre_media[4] : 'a';
+  if (ends_with(sheet, "_nrm")) return sheet.substr(0, sheet.size() - 4) + letter + "_nrm.xds";
   return sheet + letter + "_clr.xds";
 }
 
@@ -306,6 +314,9 @@ Showroom::~Showroom() {
   for (auto& t : gpu_textures_) r_.destroy_image(t);
   r_.destroy_image(custom_livery_img_);
   r_.destroy_image(environment_);
+  r_.destroy_image(shared_dirt_pattern_);
+  r_.destroy_image(shared_dirt_mask_);
+  r_.destroy_image(shared_glass_crack_);
   r_.destroy_buffer(vertex_buffer_);
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
@@ -315,9 +326,17 @@ Showroom::~Showroom() {
   r_.destroy_buffer(env_sky_ubo_[0]);
   r_.destroy_buffer(env_sky_ubo_[1]);
   if (env_world_opaque_) vkDestroyPipeline(d, env_world_opaque_, nullptr);
+  if (env_world_coverage_) vkDestroyPipeline(d, env_world_coverage_, nullptr);
   if (env_sky_pipe_base_) vkDestroyPipeline(d, env_sky_pipe_base_, nullptr);
   if (env_sky_pipe_layers_) vkDestroyPipeline(d, env_sky_pipe_layers_, nullptr);
+  if (env_prefilter_pipe_) vkDestroyPipeline(d, env_prefilter_pipe_, nullptr);
+  if (env_prefilter_pipe_layout_) vkDestroyPipelineLayout(d, env_prefilter_pipe_layout_, nullptr);
+  if (env_prefilter_set_layout_) vkDestroyDescriptorSetLayout(d, env_prefilter_set_layout_, nullptr);
   if (env_pool_) vkDestroyDescriptorPool(d, env_pool_, nullptr);
+  if (dyn_env_mip0_cube_) vkDestroyImageView(d, dyn_env_mip0_cube_, nullptr);
+  for (uint32_t m = 0; m < kDynEnvMips; ++m)
+    for (int i = 0; i < 6; ++i)
+      if (dyn_env_mip_faces_[m][i]) vkDestroyImageView(d, dyn_env_mip_faces_[m][i], nullptr);
   for (int i = 0; i < 6; ++i)
     if (dyn_env_faces_[i]) vkDestroyImageView(d, dyn_env_faces_[i], nullptr);
   r_.destroy_image(dyn_env_);
@@ -331,10 +350,12 @@ Showroom::~Showroom() {
   for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
-  for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, mask_, world_opaque_, world_opaque_after_z_,
-                       world_z_prepass_, world_coverage_, world_alpha_, shadow_world_, shadow_cutout_, shadow_car_,
-                       sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
+  for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
+                       contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_z_prepass_, world_coverage_,
+                       world_alpha_, shadow_world_, shadow_cutout_, shadow_car_, sky_pipe_base_, sky_pipe_layers_,
+                       stars_pipe_})
     if (p) vkDestroyPipeline(d, p, nullptr);
+  if (contact_shadow_pipe_layout_) vkDestroyPipelineLayout(d, contact_shadow_pipe_layout_, nullptr);
   if (sky_pipe_layout_) vkDestroyPipelineLayout(d, sky_pipe_layout_, nullptr);
   if (stars_pipe_layout_) vkDestroyPipelineLayout(d, stars_pipe_layout_, nullptr);
   if (sky_set_layout_) vkDestroyDescriptorSetLayout(d, sky_set_layout_, nullptr);
@@ -1212,15 +1233,67 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         else if (pname == "power_min") d.cockpit_role = 5;
       }
       // Lamp covers (detail_glass_red, _amber, _clear): passive coloured glass
-      // (CAR_LAMPS.md §3.2 — covers NEVER emit).
+      // (CAR_LAMPS.md §3.2 — covers NEVER emit). Rendered in two FH1 passes (multiply + add).
       if (klass == MaterialClass::kGlass && technique.rfind("detail_glass_", 0) == 0) {
         const std::string hue = technique.substr(13);
         float c[3] = {0.55f, 0.58f, 0.6f};
         if (hue.rfind("red", 0) == 0) c[0] = 0.22f, c[1] = 0.006f, c[2] = 0.005f;
         else if (hue.rfind("amber", 0) == 0) c[0] = 0.6f, c[1] = 0.22f, c[2] = 0.01f;
         flags |= kFlagCover;
+        d.is_cover = true;
         std::memcpy(d.push.tint, c, sizeof c);
       }
+      // Resolve per-draw normal map (slot 3, linear srgb=false) and damage atlas (slot 4).
+      auto try_tex = [&](std::initializer_list<const char*> candidates) -> uint32_t {
+        for (const char* c : candidates) {
+          const uint32_t idx = texture_index(c, pack, s.lod == 0);
+          if (idx != UINT32_MAX) return idx;
+        }
+        return UINT32_MAX;
+      };
+      uint32_t t_nrm = UINT32_MAX;
+      bool nrm_uv1 = false;
+      if (klass == MaterialClass::kCarbon) {
+        t_nrm = try_tex({"shared:carbonfibernormal.xds"});
+        nrm_uv1 = true;
+      } else if (klass == MaterialClass::kTyre) {
+        if (technique == "sidewall") t_nrm = try_tex({"tyre:sidewall_nrm"});
+        else if (technique == "tread") t_nrm = try_tex({"tyre:tread_nrm"});
+      } else if (klass == MaterialClass::kInterior) {
+        nrm_uv1 = true;
+        if (technique == "bump_leather2" || technique == "leather2") {
+          t_nrm = try_tex({"car:leather2_nrm.xds", "shared:leather2_nrm.xds", "shared:leather_nrm.xds"});
+        } else if (technique == "bump_leather3" || technique == "leather3") {
+          t_nrm = try_tex({"car:leather3_nrm.xds", "shared:leather3_nrm.xds", "shared:leather_nrm.xds"});
+        } else if (technique == "bump_leather" || technique == "leather") {
+          t_nrm = try_tex({"car:leather_nrm.xds", "shared:leather_nrm.xds"});
+        } else if (technique == "bump_plastic2" || technique == "plastic2") {
+          t_nrm = try_tex({"car:plastic2_nrm.xds", "shared:plastic2_nrm.xds", "shared:plastic_nrm.xds"});
+        } else if (technique == "bump_plastic3" || technique == "plastic3") {
+          t_nrm = try_tex({"car:plastic3_nrm.xds", "shared:plastic3_nrm.xds", "shared:plastic_nrm.xds"});
+        } else if (technique == "bump_plastic" || technique == "plastic") {
+          t_nrm = try_tex({"car:plastic_nrm.xds", "shared:plastic_nrm.xds"});
+        } else if (technique == "stitching" || technique == "bump_stitching") {
+          t_nrm = try_tex({"car:stitches_nrm.xds", "shared:stitches_nrm.xds"});
+        } else if (technique == "cloth" || technique == "cloth2") {
+          t_nrm = try_tex({"shared:cloth_nrm_s_lod0.xds"});
+        } else if (technique == "headliner" || technique == "headliner2") {
+          t_nrm = try_tex({"shared:headliner_nrm_s_lod0.xds"});
+        } else if (technique == "mottled" || technique == "mottled2") {
+          t_nrm = try_tex({"shared:mottled_nrm_s_lod0.xds"});
+        }
+      }
+      if (t_nrm != UINT32_MAX) {
+        flags |= kFlagNormalMap;
+        if (nrm_uv1) flags |= kFlagNormalUv1;
+      }
+      uint32_t t_dmg = UINT32_MAX;
+      if ((klass == MaterialClass::kPaint || klass == MaterialClass::kOpaque) && s.slots[0] == "@atlas") {
+        t_dmg = try_tex({"car:damage_lod0.xds", "car:damage.xds"});
+      } else if (klass == MaterialClass::kLamp) {
+        t_dmg = try_tex({"car:damagelights_lod0.xds", "car:damagelights.xds"});
+      }
+      if (t_dmg != UINT32_MAX) flags |= kFlagDamageMap;
       // Alpha-tested emissive gauge overlays (z_gauge_emissive_alpha, gauge_emissive_alpha):
       // discard transparent surround so no solid white rectangle blocks the gauge dials.
       if (klass == MaterialClass::kGauge && ends_with(technique, "_alpha")) {
@@ -1253,7 +1326,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.push.params[1] = float(flags);
       d.push.params[2] = submat_id;
       d.textures = {t0 == UINT32_MAX ? 0u : t0, t1 == UINT32_MAX ? 0u : t1,
-                    livery == UINT32_MAX ? 1u : livery};
+                    livery == UINT32_MAX ? 1u : livery, t_nrm, t_dmg};
       d.glass = (klass == MaterialClass::kGlass);
       d.part_name = lower(part.name);
       draws_.push_back(d);
@@ -1649,8 +1722,9 @@ bool Showroom::upload_environment(std::string& error) {
 
 bool Showroom::create_pipelines(std::string& error) {
   // Set 0: frame UBO, dynamic/active environment cube, sun shadow map, headlight cookie,
-  // headlights UBO, mirror map, car instances SSBO (6), and static studio cube (7, staticcarcubemap.xpr).
-  const VkDescriptorSetLayoutBinding frame_bindings[8] = {
+  // headlights UBO, mirror map, car instances SSBO (6), static studio cube (7, staticcarcubemap.xpr),
+  // and shared dirt pattern (8), dirt mask (9) & cracked glass (10) atlases.
+  const VkDescriptorSetLayoutBinding frame_bindings[11] = {
       {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
        nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1659,16 +1733,19 @@ bool Showroom::create_pipelines(std::string& error) {
       {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 8;
+  set.bindingCount = 11;
   set.pBindings = frame_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &frame_layout_), "frame set layout");
-  VkDescriptorSetLayoutBinding material_bindings[3];
-  for (uint32_t i = 0; i < 3; ++i)
+  VkDescriptorSetLayoutBinding material_bindings[5];
+  for (uint32_t i = 0; i < 5; ++i)
     material_bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
                             nullptr};
-  set.bindingCount = 3;
+  set.bindingCount = 5;
   set.pBindings = material_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &material_layout_),
          "material set layout");
@@ -1769,7 +1846,7 @@ bool Showroom::create_pipelines(std::string& error) {
   dynamic_bias_vrs.dynamicStateCount = 4;
   dynamic_bias_vrs.pDynamicStates = vrs_bias_states;
   auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
-                   bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out,
+                   bool depth_attachment, bool depth_write, int blend_mode, VkPipeline& out,
                    VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
                    bool coverage = false, VkPipelineLayout pipe_layout = VK_NULL_HANDLE,
                    VkCullModeFlags cull_mode = VK_CULL_MODE_NONE, bool depth_equal = false, bool color_out = true) {
@@ -1792,11 +1869,29 @@ bool Showroom::create_pipelines(std::string& error) {
     VkPipelineColorBlendAttachmentState attachment{};
     attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    if (blend_on) {
+    if (blend_mode == 1) {
       // Premultiplied colour over what is behind.
       attachment.blendEnable = VK_TRUE;
       attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
       attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+      attachment.colorBlendOp = VK_BLEND_OP_ADD;
+      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    } else if (blend_mode == 2) {
+      // Multiply blend (dst = src * dst): FH1 detail_glass_* Pass 1 & under-car contact shadow.
+      attachment.blendEnable = VK_TRUE;
+      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
+      attachment.colorBlendOp = VK_BLEND_OP_ADD;
+      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    } else if (blend_mode == 3) {
+      // Additive blend (dst = src + dst): FH1 detail_glass_* Pass 2 reflection + sun glint.
+      attachment.blendEnable = VK_TRUE;
+      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
       attachment.colorBlendOp = VK_BLEND_OP_ADD;
       attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
       attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -1820,25 +1915,91 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pMultisampleState = &multisample;
     info.pDepthStencilState = &depth;
     info.pColorBlendState = &blend;
-    const bool use_vrs = r_.vrs_supported() && color_out && !blend_on && samples == r_.samples_ &&
-                         (&out != &env_world_opaque_);
+    const bool use_vrs = r_.vrs_supported() && color_out && (blend_mode == 0) && samples == r_.samples_ &&
+                         (&out != &env_world_opaque_) && (&out != &env_world_coverage_);
     info.pDynamicState = vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
                                 : (use_vrs ? &dynamic_vrs : &dynamic);
     info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
     return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
   };
   const VkCullModeFlags cull_back = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-  VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, false, opaque_,
+  VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, 0, opaque_,
                           VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back);
   if (result == VK_SUCCESS)
-    result = build(frag, r_.scene_format(), r_.samples_, true, false, false, opaque_after_z_,
+    result = build(frag, r_.scene_format(), r_.samples_, true, false, 0, opaque_after_z_,
                    VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, true);
   if (result == VK_SUCCESS)
-    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, false, car_z_prepass_,
+    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, car_z_prepass_,
                    VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, false, false);
-  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, true, glass_);
+  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 1, glass_);
+  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
+  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
   if (result == VK_SUCCESS)
-    result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, false, mask_);
+    result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
+  // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).
+  if (result == VK_SUCCESS && !guest_) {
+    VkPushConstantRange cs_push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80};
+    VkPipelineLayoutCreateInfo cs_pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    cs_pl.setLayoutCount = 1;
+    cs_pl.pSetLayouts = &frame_layout_;
+    cs_pl.pushConstantRangeCount = 1;
+    cs_pl.pPushConstantRanges = &cs_push;
+    result = vkCreatePipelineLayout(r_.device_, &cs_pl, nullptr, &contact_shadow_pipe_layout_);
+    if (result == VK_SUCCESS) {
+      VkShaderModule cs_v = VK_NULL_HANDLE, cs_f = VK_NULL_HANDLE;
+      result = make_module(kContact_shadow_vert_spv, sizeof(kContact_shadow_vert_spv), cs_v, "contact_shadow.vert");
+      if (result == VK_SUCCESS)
+        result = make_module(kContact_shadow_frag_spv, sizeof(kContact_shadow_frag_spv), cs_f, "contact_shadow.frag");
+      if (result == VK_SUCCESS) {
+        VkPipelineVertexInputStateCreateInfo empty_vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        const VkPipelineShaderStageCreateInfo stages[2] = {
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, cs_v, "main",
+             nullptr},
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, cs_f, "main",
+             nullptr}};
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = r_.samples_;
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        ds.depthTestEnable = VK_TRUE;
+        ds.depthWriteEnable = VK_FALSE;
+        ds.depthCompareOp = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
+        VkPipelineColorBlendAttachmentState att{};
+        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        att.blendEnable = VK_TRUE;
+        att.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        att.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
+        att.colorBlendOp = VK_BLEND_OP_ADD;
+        att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        att.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo bl{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        bl.attachmentCount = 1;
+        bl.pAttachments = &att;
+        const VkFormat sc_fmt = r_.scene_format();
+        VkPipelineRenderingCreateInfo rend{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        rend.colorAttachmentCount = 1;
+        rend.pColorAttachmentFormats = &sc_fmt;
+        rend.depthAttachmentFormat = r_.depth_format_;
+        VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pci.pNext = &rend;
+        pci.stageCount = 2;
+        pci.pStages = stages;
+        pci.pVertexInputState = &empty_vi;
+        pci.pInputAssemblyState = &assembly;
+        pci.pViewportState = &viewport;
+        pci.pRasterizationState = &raster_bias;
+        pci.pMultisampleState = &ms;
+        pci.pDepthStencilState = &ds;
+        pci.pColorBlendState = &bl;
+        pci.pDynamicState = &dynamic_bias;
+        pci.layout = contact_shadow_pipe_layout_;
+        result = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &pci, nullptr, &contact_shadow_pipe_);
+      }
+      if (cs_v) vkDestroyShaderModule(r_.device_, cs_v, nullptr);
+      if (cs_f) vkDestroyShaderModule(r_.device_, cs_f, nullptr);
+    }
+  }
   // The textured world (world.vert / world.frag): opaque, opaque with alpha
   // to coverage, and blended with depth writes off.
   VkShaderModule world_vert = VK_NULL_HANDLE, world_frag = VK_NULL_HANDLE;
@@ -1858,23 +2019,26 @@ bool Showroom::create_pipelines(std::string& error) {
   world_input.vertexAttributeDescriptionCount = 6;
   world_input.pVertexAttributeDescriptions = world_attributes;
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_opaque_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_, world_vert,
                    &world_input, false, world_pipeline_layout_, cull_back);
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, false, world_opaque_after_z_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 0, world_opaque_after_z_, world_vert,
                    &world_input, false, world_pipeline_layout_, cull_back, true);
   if (result == VK_SUCCESS)
-    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, false, world_z_prepass_, world_vert,
+    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, world_z_prepass_, world_vert,
                    &world_input, false, world_pipeline_layout_, cull_back, false, false);
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_coverage_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_coverage_, world_vert,
                    &world_input, true, world_pipeline_layout_);
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, true, world_alpha_, world_vert,
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 1, world_alpha_, world_vert,
                    &world_input, false, world_pipeline_layout_);
   if (result == VK_SUCCESS && !guest_)
-    result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, false,
+    result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
                    env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
+  if (result == VK_SUCCESS && !guest_)
+    result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
+                   env_world_coverage_, world_vert, &world_input, true, world_pipeline_layout_);
   // The sun shadow pass (ours): depth only into the shadow map, biased;
   // opaque casters with no fragment shader, cut-outs alpha-tested.
   VkShaderModule shadow_frag = VK_NULL_HANDLE;
@@ -1995,9 +2159,20 @@ bool Showroom::upload(std::string& error) {
   for (size_t i = 0; i < textures_.size(); ++i) {
     const auto* t = textures_[i].texture;
     bool srgb = true;
-    if (t && (t->format == bake::TextureFormat::kBc4 || t->format == bake::TextureFormat::kBc5 ||
-              t->format == bake::TextureFormat::kR8))
-      srgb = false;
+    if (t) {
+      if (t->format == bake::TextureFormat::kBc4 || t->format == bake::TextureFormat::kBc5 ||
+          t->format == bake::TextureFormat::kR8) {
+        srgb = false;
+      } else {
+        const std::string tn = lower(t->name);
+        if (tn.find("_nrm") != std::string::npos || tn.find("normal") != std::string::npos ||
+            tn.find("_bump") != std::string::npos || tn.find("dirt_mask") != std::string::npos ||
+            tn.find("sparkle") != std::string::npos || tn.find("_occ") != std::string::npos ||
+            tn == "livery_mask") {
+          srgb = false;
+        }
+      }
+    }
     if (i == 1) {
       // Built-in black (no livery).
       bake::Texture black;
@@ -2014,6 +2189,25 @@ bool Showroom::upload(std::string& error) {
       if (!upload_texture(nullptr, true, gpu_textures_[i], error)) return false;
     }
   }
+  // Upload FH1 Shared dirt_pattern, dirt_mask, and glass_texture atlases (fall back to neutral 1x1).
+  auto upload_shared_opt = [&](const char* name, bool srgb, uint8_t fb_r, uint8_t fb_g, uint8_t fb_b, uint8_t fb_a,
+                               GpuTexture& dst) -> bool {
+    const bake::Texture* found = nullptr;
+    for (const auto& st : shared_.textures)
+      if (st.name == name) { found = &st; break; }
+    if (found && upload_texture(found, srgb, dst, error)) return true;
+    error.clear();
+    r_.destroy_image(dst);
+    bake::Texture fb;
+    fb.format = bake::TextureFormat::kRgba8;
+    fb.levels.push_back({1, 1, {fb_r, fb_g, fb_b, fb_a}});
+    return upload_texture(&fb, false, dst, error);
+  };
+  if (!upload_shared_opt("dirt_pattern.xds", true, 96, 74, 52, 255, shared_dirt_pattern_) ||
+      !upload_shared_opt("dirt_mask.xds", false, 180, 180, 180, 255, shared_dirt_mask_) ||
+      !upload_shared_opt("glass_texture.xds", false, 0, 0, 0, 0, shared_glass_crack_)) {
+    return false;
+  }
   if (!upload_environment(error)) return false;
   if (!guest_ && !init_dynamic_reflections(error)) return false;
 
@@ -2029,17 +2223,17 @@ bool Showroom::upload(std::string& error) {
   }
   VK_TRY(vkCreateSampler(r_.device_, &sampler, nullptr, &sampler_), "vkCreateSampler");
 
-  // One material set per distinct (slot 0, slot 1, livery).
+  // One material set per distinct (slot 0, slot 1, livery, normal_map, damage_map).
   for (auto& d : draws_) {
     auto [it, inserted] = descriptor_by_textures_.emplace(d.textures, uint32_t(descriptor_by_textures_.size()));
     d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
   const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 24},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 5 + 64},
                                          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = sets + 4;
+  pool.maxSets = sets + 6;
   pool.poolSizeCount = 3;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
@@ -2054,6 +2248,21 @@ bool Showroom::upload(std::string& error) {
   }
   if (!guest_ && dyn_env_ready_) {
     VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &env_frame_set_), "env frame set");
+    if (env_prefilter_set_layout_ && dyn_env_mip0_cube_) {
+      VkDescriptorSetAllocateInfo palloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      palloc.descriptorPool = pool_;
+      palloc.descriptorSetCount = 1;
+      palloc.pSetLayouts = &env_prefilter_set_layout_;
+      VK_TRY(vkAllocateDescriptorSets(r_.device_, &palloc, &env_prefilter_set_), "env prefilter set");
+      VkDescriptorImageInfo pinfo{sampler_, dyn_env_mip0_cube_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkWriteDescriptorSet pw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      pw.dstSet = env_prefilter_set_;
+      pw.dstBinding = 0;
+      pw.descriptorCount = 1;
+      pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      pw.pImageInfo = &pinfo;
+      vkUpdateDescriptorSets(r_.device_, 1, &pw, 0, nullptr);
+    }
   }
   // Frame sets: main, shadow near, shadow far, and offscreen env/mirror.
   for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_far_, env_frame_set_}) {
@@ -2077,14 +2286,20 @@ bool Showroom::upload(std::string& error) {
     VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
     VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet writes[8] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+    VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo dirt_m{sampler_, shared_dirt_mask_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet writes[11] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
     writes[0].dstSet = target;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
@@ -2125,7 +2340,22 @@ bool Showroom::upload(std::string& error) {
     writes[7].descriptorCount = 1;
     writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[7].pImageInfo = &static_cube;
-    vkUpdateDescriptorSets(r_.device_, 8, writes, 0, nullptr);
+    writes[8].dstSet = target;
+    writes[8].dstBinding = 8;
+    writes[8].descriptorCount = 1;
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[8].pImageInfo = &dirt_p;
+    writes[9].dstSet = target;
+    writes[9].dstBinding = 9;
+    writes[9].descriptorCount = 1;
+    writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[9].pImageInfo = &dirt_m;
+    writes[10].dstSet = target;
+    writes[10].dstBinding = 10;
+    writes[10].descriptorCount = 1;
+    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[10].pImageInfo = &gcrack;
+    vkUpdateDescriptorSets(r_.device_, 11, writes, 0, nullptr);
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -2133,10 +2363,22 @@ bool Showroom::upload(std::string& error) {
   alloc.pSetLayouts = layouts.data();
   VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, material_sets_.data()), "material sets");
   for (const auto& [textures, index] : descriptor_by_textures_) {
-    VkDescriptorImageInfo images[3];
-    VkWriteDescriptorSet writes[3];
-    for (uint32_t b = 0; b < 3; ++b) {
-      images[b] = {sampler_, gpu_textures_[textures[b]].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo images[5];
+    VkWriteDescriptorSet writes[5];
+    for (uint32_t b = 0; b < 5; ++b) {
+      VkImageView view = VK_NULL_HANDLE;
+      if (b < 3) {
+        view = gpu_textures_[textures[b]].view;
+      } else if (b == 3) {
+        view = (textures[3] != UINT32_MAX && textures[3] < gpu_textures_.size())
+                   ? gpu_textures_[textures[3]].view
+                   : flat_normal_tex_.view;
+      } else {
+        view = (textures[4] != UINT32_MAX && textures[4] < gpu_textures_.size())
+                   ? gpu_textures_[textures[4]].view
+                   : gpu_textures_[textures[0]].view;
+      }
+      images[b] = {sampler_, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
       writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
       writes[b].dstSet = material_sets_[index];
       writes[b].dstBinding = b;
@@ -2144,7 +2386,7 @@ bool Showroom::upload(std::string& error) {
       writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       writes[b].pImageInfo = &images[b];
     }
-    vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
+    vkUpdateDescriptorSets(r_.device_, 5, writes, 0, nullptr);
   }
 
   if (!guest_ && r_.gpu_driven_supported() && !std::getenv("SHIFT_NO_ARENA")) {
@@ -2272,6 +2514,28 @@ bool Showroom::upload(std::string& error) {
       }
       ++car_inst_buf_.ver;
       dyn_sync(car_inst_buf_, VkDeviceSize(written) * sizeof(CarInstanceGpu));
+    } else if (!instances_.empty()) {
+      // Fallback per-guest frame upload when instanced SSBO is unavailable.
+      std::vector<Showroom*> seen;
+      for (const auto& in : instances_) {
+        if (!in.car || std::find(seen.begin(), seen.end(), in.car) != seen.end()) continue;
+        seen.push_back(in.car);
+        in.car->frame_ = frame_;
+        for (int i = 0; i < 4; ++i) in.car->frame_.stripe[i] = in.car->stripe_[i];
+        const bool guest_has_dyn =
+            dyn_env_bound_ && dyn_env_initialized_ && dyn_env_.view && in.car->bound_dyn_env_view_ == dyn_env_.view;
+        in.car->frame_.shadow_far_bias[2] = guest_has_dyn ? 1.0f : 0.0f;
+        in.car->frame_.shadow_far_bias[3] = 0.0f;
+        in.car->update_frame(cmd);
+        if (shadows && in.car->shadow_set_) {
+          in.car->shadow_frame_ = shadow_frame_;
+          in.car->update_buffer(cmd, in.car->shadow_frame_buffer_.buffer, in.car->shadow_frame_);
+          if (in.car->shadow_set_far_) {
+            in.car->shadow_frame_far_ = shadow_frame_far_;
+            in.car->update_buffer(cmd, in.car->shadow_frame_far_buffer_.buffer, in.car->shadow_frame_far_);
+          }
+        }
+      }
     }
     if (shadows) {
       update_buffer(cmd, shadow_frame_buffer_.buffer, shadow_frame_);
@@ -2300,6 +2564,7 @@ bool Showroom::upload(std::string& error) {
     r_.mark(cmd, "setup");
     record_world(cmd);
     record_skidmarks_draw(cmd);
+    record_contact_shadows(cmd);
     record_debris_draw(cmd);
     if (draw_car_ && !cockpit_camera_active_) record_driver_draw(cmd);
     const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
@@ -2555,8 +2820,112 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   };
   std::stable_sort(sorted.begin(), sorted.end(),
                    [&](const Draw* a, const Draw* b) { return distance(a) > distance(b); });
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glass);
-  for (const Draw* d : sorted) draw(*d);
+  VkPipeline bound_glass = VK_NULL_HANDLE;
+  for (const Draw* d : sorted) {
+    if (d->is_cover && glass_mul_ && glass_add_) {
+      // FH1 two-pass detail_glass_red/amber/clear lamp cover (SHOWROOM_LIGHTING.md:187):
+      // Pass 1 Multiply transmittance with LightsSampler + GlassColor,
+      // Pass 2 Additive Fresnel env reflection + sun specular.
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                              &material_sets_[d->descriptor], 0, nullptr);
+      ShowroomPush push = d->push;
+      if (bound_glass != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_glass = glass_mul_);
+      push.params[2] = 7.0f;
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d->index_count, 1, d->first_index, d->vertex_offset, 0);
+
+      if (bound_glass != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_glass = glass_add_);
+      push.params[2] = 8.0f;
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d->index_count, 1, d->first_index, d->vertex_offset, 0);
+    } else {
+      if (bound_glass != glass) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_glass = glass);
+      draw(*d);
+    }
+  }
+}
+
+void Showroom::bind_dynamic_env(VkImageView cube_view, VkSampler sampler) {
+  if (!r_.device_ || !frame_set_ || !cube_view || !sampler || bound_dyn_env_view_ == cube_view) return;
+  vkDeviceWaitIdle(r_.device_);
+  VkDescriptorImageInfo info{sampler, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  w.dstSet = frame_set_;
+  w.dstBinding = 1;
+  w.descriptorCount = 1;
+  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  w.pImageInfo = &info;
+  vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+  bound_dyn_env_view_ = cube_view;
+}
+
+void Showroom::set_instances(std::vector<Instance> list) {
+  instances_ = std::move(list);
+  if (dyn_env_ready_ && dyn_env_.view && sampler_) {
+    for (const auto& in : instances_) {
+      if (in.car && in.car->bound_dyn_env_view_ != dyn_env_.view) {
+        in.car->bind_dynamic_env(dyn_env_.view, sampler_);
+      }
+    }
+  }
+}
+
+void Showroom::add_instances(const std::vector<Instance>& more) {
+  instances_.insert(instances_.end(), more.begin(), more.end());
+  if (dyn_env_ready_ && dyn_env_.view && sampler_) {
+    for (const auto& in : more) {
+      if (in.car && in.car->bound_dyn_env_view_ != dyn_env_.view) {
+        in.car->bind_dynamic_env(dyn_env_.view, sampler_);
+      }
+    }
+  }
+}
+
+void Showroom::record_contact_shadows(VkCommandBuffer cmd) {
+  if (!world_lit_ || !contact_shadow_pipe_ || !contact_shadow_pipe_layout_ || !frame_set_) return;
+  struct ContactPush {
+    float model[16];
+    float params[4];
+  };
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, contact_shadow_pipe_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, contact_shadow_pipe_layout_, 0, 1, &frame_set_, 0,
+                          nullptr);
+  const float sign = r_.reverse_z() ? 1.0f : -1.0f;
+  vkCmdSetDepthBias(cmd, sign * 96.0f, 0.0f, sign * 1.5f);
+
+  auto draw_one = [&](const float* car_model, const std::array<float, 3>& bmin, const std::array<float, 3>& bmax,
+                      float strength) {
+    const float hx = std::max(0.75f, 0.5f * (bmax[0] - bmin[0])) * 1.18f;
+    const float hz = std::max(1.65f, 0.5f * (bmax[2] - bmin[2])) * 1.10f;
+    const float cx = 0.5f * (bmin[0] + bmax[0]);
+    const float cz = 0.5f * (bmin[2] + bmax[2]);
+    const float cy = bmin[1] + 0.025f;
+    float local[16] = {hx, 0, 0, 0,  0, 1, 0, 0,  0, 0, hz, 0,  cx, cy, cz, 1};
+    ContactPush push{};
+    if (car_model) {
+      multiply(car_model, local, push.model);
+    } else {
+      std::memcpy(push.model, local, sizeof push.model);
+    }
+    push.params[0] = strength;
+    push.params[1] = 0.14f;  // deep AO under chassis center
+    push.params[2] = 0.24f;  // rounded body footprint corner radius
+    push.params[3] = 0.0f;
+    vkCmdPushConstants(cmd, contact_shadow_pipe_layout_,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ContactPush), &push);
+    vkCmdDraw(cmd, 6, 1, 0, 0);
+  };
+
+  if (draw_car_ && !cockpit_camera_active_ && have_bounds_) {
+    draw_one(nullptr, bounds_min_, bounds_max_, 0.92f);
+  }
+  for (const auto& in : instances_) {
+    if (!in.car || !in.car->have_bounds_) continue;
+    draw_one(in.model, in.car->bounds_min_, in.car->bounds_max_, 0.88f);
+  }
+  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
 }
 
 void Showroom::record_z_prepass(VkCommandBuffer cmd) {
@@ -2624,19 +2993,36 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal) {
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
     for (int pass = 0; pass < 2; ++pass) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass ? g->glass_ : op_pipe);
-      if (!pass) r_.apply_vrs(cmd);
+      VkPipeline bound_p = VK_NULL_HANDLE;
       for (const auto& d : g->draws_) {
         if (d.glass != (pass == 1)) continue;
         ShowroomPush push = d.push;
-        uint32_t flags = uint32_t(push.params[1] + 0.5f) | 8192u;
+        uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
         flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
         push.params[1] = float(flags);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
                                 &g->material_sets_[d.descriptor], 0, nullptr);
-        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(ShowroomPush), &push);
-        vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+        if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
+          if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
+          push.params[2] = 7.0f;
+          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof(ShowroomPush), &push);
+          vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+          if (bound_p != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_add_);
+          push.params[2] = 8.0f;
+          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof(ShowroomPush), &push);
+          vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+        } else {
+          VkPipeline want = pass ? g->glass_ : op_pipe;
+          if (bound_p != want) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
+            if (!pass) r_.apply_vrs(cmd);
+          }
+          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof(ShowroomPush), &push);
+          vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+        }
       }
     }
     offset += count;
@@ -2913,8 +3299,7 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0,
                           nullptr);
   for (int pass = 0; pass < 2; ++pass) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass ? glass_ : opaque_);
-    if (!pass) r_.apply_vrs(cmd);
+    VkPipeline bound_p = VK_NULL_HANDLE;
     for (const auto& d : draws_) {
       if (d.glass != (pass == 1)) continue;
       ShowroomPush push = d.push;
@@ -2930,9 +3315,28 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
       }
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
                               &material_sets_[d.descriptor], 0, nullptr);
-      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                         sizeof(ShowroomPush), &push);
-      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+      if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
+        if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
+        push.params[2] = 7.0f;
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(ShowroomPush), &push);
+        vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+
+        if (bound_p != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_add_);
+        push.params[2] = 8.0f;
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(ShowroomPush), &push);
+        vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+      } else {
+        VkPipeline want = pass ? glass_ : opaque_;
+        if (bound_p != want) {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
+          if (!pass) r_.apply_vrs(cmd);
+        }
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(ShowroomPush), &push);
+        vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+      }
     }
   }
 }
@@ -5549,6 +5953,13 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
   cv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, 0, 6};
   VK_TRY(vkCreateImageView(r_.device_, &cv, nullptr, &dyn_env_.view), "dynamic env cube view");
 
+  VkImageViewCreateInfo cv0{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  cv0.image = dyn_env_.image;
+  cv0.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  cv0.format = hdr_fmt;
+  cv0.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+  VK_TRY(vkCreateImageView(r_.device_, &cv0, nullptr, &dyn_env_mip0_cube_), "dynamic env mip0 cube view");
+
   for (uint32_t f = 0; f < 6; ++f) {
     VkImageViewCreateInfo fv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     fv.image = dyn_env_.image;
@@ -5556,6 +5967,86 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     fv.format = hdr_fmt;
     fv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
     VK_TRY(vkCreateImageView(r_.device_, &fv, nullptr, &dyn_env_faces_[f]), "dynamic env face view");
+    for (uint32_t m = 1; m < kDynEnvMips; ++m) {
+      fv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, m, 1, f, 1};
+      VK_TRY(vkCreateImageView(r_.device_, &fv, nullptr, &dyn_env_mip_faces_[m][f]), "dynamic env mip face view");
+    }
+  }
+
+  // Cross-face GGX cubemap prefilter pipeline (post.vert + env_prefilter.frag).
+  {
+    VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   nullptr};
+    VkDescriptorSetLayoutCreateInfo dsl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dsl.bindingCount = 1;
+    dsl.pBindings = &b;
+    VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &dsl, nullptr, &env_prefilter_set_layout_), "prefilter dsl");
+    VkPushConstantRange pr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pl.setLayoutCount = 1;
+    pl.pSetLayouts = &env_prefilter_set_layout_;
+    pl.pushConstantRangeCount = 1;
+    pl.pPushConstantRanges = &pr;
+    VK_TRY(vkCreatePipelineLayout(r_.device_, &pl, nullptr, &env_prefilter_pipe_layout_), "prefilter pl");
+    VkShaderModule pv = VK_NULL_HANDLE, pf = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smi.codeSize = sizeof(kPost_vert_spv);
+    smi.pCode = kPost_vert_spv;
+    VK_TRY(vkCreateShaderModule(r_.device_, &smi, nullptr, &pv), "prefilter vert");
+    smi.codeSize = sizeof(kEnv_prefilter_frag_spv);
+    smi.pCode = kEnv_prefilter_frag_spv;
+    if (vkCreateShaderModule(r_.device_, &smi, nullptr, &pf) != VK_SUCCESS) {
+      vkDestroyShaderModule(r_.device_, pv, nullptr);
+      error = "prefilter frag";
+      return false;
+    }
+    const VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, pv, "main",
+         nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, pf, "main",
+         nullptr}};
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vp.viewportCount = vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState att{};
+    att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo bl{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    bl.attachmentCount = 1;
+    bl.pAttachments = &att;
+    const VkDynamicState dyn_s[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dyn_s;
+    VkPipelineRenderingCreateInfo rend{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rend.colorAttachmentCount = 1;
+    rend.pColorAttachmentFormats = &hdr_fmt;
+    VkGraphicsPipelineCreateInfo pci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pci.pNext = &rend;
+    pci.stageCount = 2;
+    pci.pStages = stages;
+    pci.pVertexInputState = &vi;
+    pci.pInputAssemblyState = &ia;
+    pci.pViewportState = &vp;
+    pci.pRasterizationState = &rs;
+    pci.pMultisampleState = &ms;
+    pci.pDepthStencilState = &ds;
+    pci.pColorBlendState = &bl;
+    pci.pDynamicState = &dyn;
+    pci.layout = env_prefilter_pipe_layout_;
+    VkResult pr_res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &pci, nullptr, &env_prefilter_pipe_);
+    vkDestroyShaderModule(r_.device_, pv, nullptr);
+    vkDestroyShaderModule(r_.device_, pf, nullptr);
+    VK_TRY(pr_res, "prefilter pipeline");
   }
 
   if (!r_.create_image(kDynEnvSize, kDynEnvSize, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
@@ -5705,7 +6196,8 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
     vkCmdDraw(cmd, 3, 1, 0, 0);
   }
 
-  // 2. Opaque world terrain, roads, mountains, and buildings (frustum culled).
+  // 2. Opaque AND alpha-tested (blend 0 + blend 1) world terrain, roads, mountains, trees,
+  //    buildings, signs, banners, and barriers (frustum culled, preserving multi-layer terrain).
   if (world_textured_ && !world_draws_.empty() && env_world_opaque_ && env_frame_set_) {
     float clip[16];
     multiply(view_frame.view_projection, world_transform_, clip);
@@ -5724,24 +6216,45 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       return false;
     };
     world_bind_buffers(cmd, false);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_world_opaque_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
                             nullptr);
     vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+    VkPipeline bound_pipe = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     for (const auto& d : world_draws_) {
-      // Only opaque non-sky non-water geometry for fast, clean reflections.
-      if (!d.cull || d.blend != 0 || outside(d)) continue;
+      // Include opaque (blend 0) AND H_DIFF*/TREE_* alpha-tested props/trees/banners (blend 1).
+      if (!d.cull || d.blend > 1 || outside(d)) continue;
       const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
       if ((fl & (2u | 32768u)) != 0u) continue;
-      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : world_white_set_;
-      if (!set) set = world_white_set_;
+      VkPipeline want_pipe = (d.blend == 1 && env_world_coverage_) ? env_world_coverage_ : env_world_opaque_;
+      if (want_pipe != bound_pipe)
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_pipe = want_pipe);
+
+      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+      uint32_t out_fl = fl;
+      const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
+                             d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
+                             d.light_map != kNoWorldTexture;
+      if ((set || d.texture == kNoWorldTexture) && has_extra) {
+        VkDescriptorSet layered =
+            world_layer_set({d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c});
+        if (layered) {
+          set = layered;
+        } else {
+          out_fl &= ~(4u | 8u | 4096u | 8192u | 16384u);
+        }
+      }
+      if (!set) {
+        set = world_white_set_;
+        out_fl &= ~1u;
+      }
       if (set != bound_set)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &(bound_set = set),
                                 0, nullptr);
       ShowroomPush push = d.push;
-      // Strip multi-texture flags since we bound single-albedo set for speed.
-      push.params[1] = float(fl & ~(4u | 8u | 4096u | 8192u | 16384u));
+      // 1x offscreen target has no MSAA alpha-to-coverage: enable alpha test (flag 64) for blend==1.
+      if (d.blend == 1) out_fl |= 64u;
+      push.params[1] = float(out_fl);
       world_draw_model(d, world_transform_, push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
       push.uv0[3] = 2.0f;
@@ -5794,6 +6307,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
   const uint32_t count_f = dyn_env_initialized_ ? 1u : 6u;
   // Probe center slightly above car roof in render space.
   const std::array<float, 3> cube_eye = {0.0f, 1.35f, 0.0f};
+  // Pass A: Render updated face(s) into mip 0 and transition mip 0 to SHADER_READ_ONLY_OPTIMAL.
   for (uint32_t i = 0; i < count_f; ++i) {
     const uint32_t f = (first_f + i) % 6;
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -5824,60 +6338,71 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
 
     record_offscreen_view(cmd, dyn_env_faces_[f], dyn_env_depth_.view, kDynEnvSize, kDynEnvSize, vf, false);
 
-    // Generate full mip chain (levels 1..8) for this cubemap face via linear blit.
     b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-    b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
-    vkCmdPipelineBarrier2(cmd, &dep);
-
-    int32_t mip_w = int32_t(kDynEnvSize);
-    for (uint32_t mip = 1; mip < kDynEnvMips; ++mip) {
-      const int32_t next_w = std::max(1, mip_w / 2);
-      VkImageMemoryBarrier2 mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-      mb.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-      mb.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-      mb.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-      mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      mb.image = dyn_env_.image;
-      mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, f, 1};
-      VkDependencyInfo mdep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-      mdep.imageMemoryBarrierCount = 1;
-      mdep.pImageMemoryBarriers = &mb;
-      vkCmdPipelineBarrier2(cmd, &mdep);
-
-      VkImageBlit blit{};
-      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, f, 1};
-      blit.srcOffsets[1] = {mip_w, mip_w, 1};
-      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, f, 1};
-      blit.dstOffsets[1] = {next_w, next_w, 1};
-      vkCmdBlitImage(cmd, dyn_env_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dyn_env_.image,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-
-      mb.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-      mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      mb.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-      mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-      mb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-      vkCmdPipelineBarrier2(cmd, &mdep);
-      mip_w = next_w;
-    }
-
-    b.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, f, 1};
     vkCmdPipelineBarrier2(cmd, &dep);
+  }
+
+  // Pass B: Cross-face GGX prefilter mips 1..kDynEnvMips-1 sampling mip 0 across all 6 faces
+  // seamlessly (eliminating cube seams on rough/metallic car paint).
+  if (env_prefilter_pipe_ && env_prefilter_set_) {
+    for (uint32_t i = 0; i < count_f; ++i) {
+      const uint32_t f = (first_f + i) % 6;
+      uint32_t mip_w = kDynEnvSize;
+      for (uint32_t mip = 1; mip < kDynEnvMips; ++mip) {
+        mip_w = std::max(1u, mip_w / 2u);
+        VkImageMemoryBarrier2 mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        mb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        mb.image = dyn_env_.image;
+        mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, f, 1};
+        VkDependencyInfo mdep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        mdep.imageMemoryBarrierCount = 1;
+        mdep.pImageMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &mdep);
+
+        VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        ca.imageView = dyn_env_mip_faces_[mip][f];
+        ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        ca.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        ri.renderArea = {{0, 0}, {mip_w, mip_w}};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &ca;
+        vkCmdBeginRendering(cmd, &ri);
+        const VkViewport vp{0, 0, float(mip_w), float(mip_w), 0.0f, 1.0f};
+        const VkRect2D sc{{0, 0}, {mip_w, mip_w}};
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_prefilter_pipe_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_prefilter_pipe_layout_, 0, 1,
+                                &env_prefilter_set_, 0, nullptr);
+        const float rough = float(mip) / float(kDynEnvMips - 1u);
+        const float pp[4] = {float(f), rough, float(mip), 1.0f / float(mip_w)};
+        vkCmdPushConstants(cmd, env_prefilter_pipe_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pp), pp);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        mb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        mb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier2(cmd, &mdep);
+      }
+    }
   }
   dyn_env_initialized_ = true;
 
