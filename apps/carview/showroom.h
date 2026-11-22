@@ -241,6 +241,9 @@ class Showroom {
   double world_origin_z() const { return world_origin_[1]; }
   // The scenery's positions to the car's model frame (column-major).
   void set_world_transform(const float transform[16]);
+  // Dynamic unlit alpha-blended triangles in the scenery's frame (relative to
+  // world_origin_x/z), e.g. the 3D driving/braking line ribbon. Empty clears it.
+  void set_world_overlay(std::span<const WorldVertex> triangles);
   size_t world_triangle_count() const { return world_triangles_; }
   // The world draws of the last recorded frame: recorded and culled, and
   // the indices drawn.
@@ -464,6 +467,12 @@ class Showroom {
   std::vector<VkDescriptorSet> material_sets_;
   // Scenery.
   Renderer::Buffer world_vertices_, world_indices_;
+  // Dynamic world-space overlay (3D driving/braking line ribbon).
+  static constexpr size_t kMaxOverlayVertices = 1365;  // <= 65536 B for vkCmdUpdateBuffer
+  Renderer::Buffer overlay_vertices_;
+  std::vector<WorldVertex> overlay_cpu_;
+  uint32_t overlay_count_ = 0;
+  bool overlay_dirty_ = false;
   // The scenery being swapped out, drawn dithered under the new one until
   // the swap fade ends (ours).
   struct FadingWorld {

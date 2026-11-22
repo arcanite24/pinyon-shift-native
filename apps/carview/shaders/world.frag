@@ -48,7 +48,8 @@ layout(location = 0) out vec4 out_color;
 
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
-           kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u;
+           kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
+           kFlagUnlitVertexColor = 1024u;
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -195,6 +196,14 @@ void main() {
   // tilings, Blend_A's in xy and Blend_B's in zw; the weight is the vertex
   // colour's R (H_VBLND, baked from c4) or Splat's R (H_BLND2/3, uv1
   // pre-tiled). Blend_C is not drawn (its weight is not settled).
+  // Unlit premultiplied-alpha vertex colour overlay (e.g. 3D driving/braking line ribbon).
+  if ((flags & kFlagUnlitVertexColor) != 0u) {
+    vec3 c = pow(v_colour.rgb, vec3(2.2));
+    vec3 encoded = out_rgb(c * draw.up.w);
+    float a = v_colour.a;
+    out_color = vec4(encoded * a, a);
+    return;
+  }
   vec4 t;
   if ((flags & kFlagTextured) != 0u) {
     t = texture(albedo, v_uv0 * draw.tint.xy);

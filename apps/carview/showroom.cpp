@@ -291,6 +291,7 @@ Showroom::~Showroom() {
   r_.destroy_buffer(shadow_frame_buffer_);
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
+  r_.destroy_buffer(overlay_vertices_);
   for (auto& [record, t] : world_textures_) r_.destroy_image(t);
   for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
@@ -1405,7 +1406,10 @@ bool Showroom::upload(std::string& error) {
                         index_buffer_) ||
       !r_.create_buffer(sizeof(ShowroomFrame),
                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, frame_buffer_)) {
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, frame_buffer_) ||
+      (!guest_ && !r_.create_buffer(kMaxOverlayVertices * sizeof(WorldVertex),
+                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, overlay_vertices_))) {
     error = "showroom buffers";
     return false;
   }
@@ -1581,7 +1585,41 @@ void Showroom::set_background(float r, float g, float b) {
   r_.scene_.clear[3] = 1.0f;
 }
 
-void Showroom::update_frame(VkCommandBuffer cmd) { update_buffer(cmd, frame_buffer_.buffer, frame_); }
+void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
+  const size_t n = std::min(triangles.size(), kMaxOverlayVertices);
+  const size_t tri_n = (n / 3) * 3;
+  overlay_cpu_.assign(triangles.begin(), triangles.begin() + ptrdiff_t(tri_n));
+  overlay_count_ = uint32_t(tri_n);
+  overlay_dirty_ = true;
+}
+
+void Showroom::update_frame(VkCommandBuffer cmd) {
+  update_buffer(cmd, frame_buffer_.buffer, frame_);
+  if (overlay_dirty_ && overlay_vertices_.buffer) {
+    overlay_dirty_ = false;
+    if (!overlay_cpu_.empty()) {
+      VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+      b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+      b.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+      b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+      b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.buffer = overlay_vertices_.buffer;
+      b.size = VK_WHOLE_SIZE;
+      VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dep.bufferMemoryBarrierCount = 1;
+      dep.pBufferMemoryBarriers = &b;
+      vkCmdPipelineBarrier2(cmd, &dep);
+      vkCmdUpdateBuffer(cmd, overlay_vertices_.buffer, 0, overlay_cpu_.size() * sizeof(WorldVertex),
+                        overlay_cpu_.data());
+      b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+      b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
+      b.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+      vkCmdPipelineBarrier2(cmd, &dep);
+    }
+  }
+}
 
 void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f) {
   VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
@@ -2786,6 +2824,28 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       vkCmdBindVertexBuffers(cmd, 0, 1, &fading_.vertices.buffer, &zero);
       vkCmdBindIndexBuffer(cmd, fading_.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
       record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true);
+    }
+    if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
+      VkDeviceSize off = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &overlay_vertices_.buffer, &off);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_alpha_);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &world_white_set_, 0,
+                              nullptr);
+      const float sign = r_.reverse_z() ? 1.0f : -1.0f;
+      vkCmdSetDepthBias(cmd, sign * kDecalBiasConstant, 0.0f, sign * kDecalBiasSlope);
+      ShowroomPush push{};
+      std::memcpy(push.model, world_transform_, sizeof push.model);
+      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+      push.tint[0] = push.tint[1] = push.tint[2] = push.tint[3] = 1.0f;
+      push.params[0] = 2.0f;     // kAlpha
+      push.params[1] = 1024.0f;  // kFlagUnlitVertexColor
+      push.params[2] = 2.0f;     // no swap dither
+      push.params[3] = 1.0f;
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDraw(cmd, overlay_count_, 1, 0, 0);
+      vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
     }
     return;
   }

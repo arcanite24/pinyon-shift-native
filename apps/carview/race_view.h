@@ -45,6 +45,7 @@ class RaceView {
  public:
   struct Options {
     race::Difficulty difficulty = race::Difficulty::kMed;
+    race::DifficultyAssists assists{};
     bool autopilot = false;   // the player's car under the AI (headless runs)
     bool rubberband = true;   // false: the "no rubber-banding" option
     uint64_t seed = 1;
@@ -126,6 +127,11 @@ class RaceView {
   // Allows updating difficulty on the pre-race grid menu before the race starts.
   void set_difficulty(race::Difficulty d) { o_.difficulty = d; }
   race::Difficulty difficulty() const { return o_.difficulty; }
+  void set_assists(const race::DifficultyAssists& a) { o_.assists = a; }
+  const race::DifficultyAssists& assists() const { return o_.assists; }
+  // The active racing line and player's progress along it (for the 3D driving/braking line).
+  const drive::RacingLine& racing_line() const { return line_.line; }
+  double player_progress() const { return field_ ? field_->progress(player_index()) : 0.0; }
   // The race's line (x, z) from 150 m behind the player to 600 m ahead,
   // up to the finish, for the minimap's route.
   void route_near(std::vector<std::array<double, 2>>& out) const;
