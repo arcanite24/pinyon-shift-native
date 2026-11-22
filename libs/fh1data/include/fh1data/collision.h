@@ -73,6 +73,25 @@ struct SurfaceType {
   float rear_grip = 1;         // RearGripMultiplier, on the rear wheels
   float off_roadness = 0;      // OffRoadness
   float off_road_peak_sa = 12; // OffRoadDryPeakSA, degrees
+  float handbrake_grip = 1;    // HandbrakeGripMultiplier
+  float tcs_speed_scale = 1;   // TCandStabilitySpeedMultiplier
+  // Friction/VelDepFriction (SPEC-CAR-PHYSICS, Surface drag).
+  float vel_peak0 = 0, vel_peak = 8;
+  float vel_long0 = 0, vel_long = 0.01f;
+  float vel_lat0 = 0, vel_lat = 0.03f;
+  // Bumpiness (COLLISION.md, Runtime SurfaceType evaluation).
+  int bump_noise_type = 0;
+  float bump_frequency = 0;
+  float bump_clamp_min = -1, bump_clamp_max = 1;
+  float bump_scale = 0, bump_offset = 0;
+  float bump_rumble = 0;
+  // Springiness (COLLISION.md, soft-ground contact).
+  bool is_springy = false;
+  float spring_k = 0, spring_comp_d = 0, spring_reb_d = 0;
+  float spring_norm_y_cutoff = 0.707f, spring_speed_cutoff = 4.0f;
+  // Flags (COLLISION.md).
+  bool is_penalty_surface = false;
+  bool is_hand_of_god = false;
   bool defined = false;
 };
 

@@ -28,7 +28,113 @@ double ramp(double x, double x0, double x1) {  // 0 at x0, 1 at x1, clamped
 }
 double sign(double x) { return x > 0 ? 1 : x < 0 ? -1 : 0; }
 
+// Deterministic 2D smooth value noise and analytical gradient for Bumpiness
+// NoiseType 1..8 (COLLISION.md, Runtime SurfaceType evaluation).
+double hash2d(int ix, int iz) {
+  uint32_t h = uint32_t(ix) * 374761393u + uint32_t(iz) * 668265263u;
+  h = (h ^ (h >> 13)) * 1274126177u;
+  h ^= h >> 16;
+  return double(h & 0xFFFFu) / 32767.5 - 1.0;  // [-1, 1]
+}
+void smooth_noise2d(double x, double z, double& val, double& dx, double& dz) {
+  const int ix = int(std::floor(x)), iz = int(std::floor(z));
+  const double fx = x - ix, fz = z - iz;
+  const double u = fx * fx * (3.0 - 2.0 * fx), du = 6.0 * fx * (1.0 - fx);
+  const double v = fz * fz * (3.0 - 2.0 * fz), dv = 6.0 * fz * (1.0 - fz);
+  const double a = hash2d(ix, iz), b = hash2d(ix + 1, iz);
+  const double c = hash2d(ix, iz + 1), d = hash2d(ix + 1, iz + 1);
+  const double ab = a + (b - a) * u, cd = c + (d - c) * u;
+  val = ab + (cd - ab) * v;
+  dx = ((b - a) * (1.0 - v) + (d - c) * v) * du;
+  dz = (cd - ab) * dv;
+}
+
 }  // namespace
+
+BumpSample eval_surface_bumpiness(const SurfaceTyre& s, double x, double z) {
+  BumpSample out;
+  if (s.bump_noise_type <= 0 || s.bump_frequency <= 0 || s.bump_scale == 0) return out;
+  const double f = s.bump_frequency;
+  const double xf = x * f, zf = z * f;
+  double h_raw = 0, dhx = 0, dhz = 0;
+  switch (s.bump_noise_type) {
+    case 9: {  // SinWave (COLLISION.md exact formula)
+      const double u = 2.0 * kPi * xf, v = 2.0 * kPi * zf;
+      h_raw = 0.5 * (std::sin(u) + std::sin(v));
+      dhx = 0.5 * f * 2.0 * kPi * std::cos(u);
+      dhz = 0.5 * f * 2.0 * kPi * std::cos(v);
+      break;
+    }
+    case 3: {  // Ridges (rational remapping, squares h^2, scales gradient by 2*h)
+      double n = 0, nx = 0, nz = 0;
+      smooth_noise2d(xf, zf, n, nx, nz);
+      const double r = 1.0 - std::fabs(n);
+      const double rs = n >= 0 ? -1.0 : 1.0;
+      h_raw = r * r;
+      dhx = 2.0 * r * rs * nx * f;
+      dhz = 2.0 * r * rs * nz * f;
+      break;
+    }
+    case 5:
+    case 6:
+    case 7: {  // Simplex4 / Simplex4Power / Simplex4Abs
+      double amp = 0.5, freq_m = 1.0;
+      for (int o = 0; o < 4; ++o) {
+        double n = 0, nx = 0, nz = 0;
+        smooth_noise2d(xf * freq_m, zf * freq_m, n, nx, nz);
+        if (s.bump_noise_type == 7) {
+          const double sg = n >= 0 ? 1.0 : -1.0;
+          h_raw += amp * std::fabs(n);
+          dhx += amp * sg * nx * f * freq_m;
+          dhz += amp * sg * nz * f * freq_m;
+        } else {
+          h_raw += amp * n;
+          dhx += amp * nx * f * freq_m;
+          dhz += amp * nz * f * freq_m;
+        }
+        amp *= 0.5;
+        freq_m *= 2.0;
+      }
+      if (s.bump_noise_type == 6) {
+        const double h0 = h_raw;
+        h_raw = h0 * h0;
+        dhx *= 2.0 * h0;
+        dhz *= 2.0 * h0;
+      }
+      break;
+    }
+    case 8: {  // Simplex3Multiplied
+      double n1 = 0, n1x = 0, n1z = 0, n2 = 0, n2x = 0, n2z = 0, n3 = 0, n3x = 0, n3z = 0;
+      smooth_noise2d(xf, zf, n1, n1x, n1z);
+      smooth_noise2d(xf * 2.0, zf * 2.0, n2, n2x, n2z);
+      smooth_noise2d(xf * 4.0, zf * 4.0, n3, n3x, n3z);
+      h_raw = n1 * n2 * n3;
+      dhx = f * (n1x * n2 * n3 + 2.0 * n1 * n2x * n3 + 4.0 * n1 * n2 * n3x);
+      dhz = f * (n1z * n2 * n3 + 2.0 * n1 * n2z * n3 + 4.0 * n1 * n2 * n3z);
+      break;
+    }
+    default: {  // HeightGrid (1), Simplex (2), RidgesAndBumps (4)
+      double n = 0, nx = 0, nz = 0;
+      smooth_noise2d(xf, zf, n, nx, nz);
+      h_raw = n;
+      dhx = nx * f;
+      dhz = nz * f;
+      break;
+    }
+  }
+  double h_clamped = h_raw;
+  if (h_raw < s.bump_clamp_min) {
+    h_clamped = s.bump_clamp_min;
+    dhx = dhz = 0;
+  } else if (h_raw > s.bump_clamp_max) {
+    h_clamped = s.bump_clamp_max;
+    dhx = dhz = 0;
+  }
+  out.height = s.bump_offset + h_clamped * s.bump_scale;
+  out.dh_dx = dhx * s.bump_scale;
+  out.dh_dz = dhz * s.bump_scale;
+  return out;
+}
 
 int substeps_for(double dt, double hz) {
   dt = std::min(dt, 0.1);
@@ -148,7 +254,116 @@ Vehicle::Vehicle(const CarParams& params) : p_(params) {
       case CarParams::Layout::kAll: weight_[i] = 0.5 * (front ? 1 - p_.rear_split : p_.rear_split); break;
     }
   }
+  // Compute peak boosted power RPM (w_peak_power) for closed-throttle curve
+  // (SPEC-CAR-PHYSICS, Engine item 1).
+  {
+    double best_p = -1.0, best_rpm = std::max(p_.idle_rpm + 500.0, 0.85 * p_.redline_rpm);
+    const double slots = p_.torque_curve_slots > 0
+                             ? p_.torque_curve_slots
+                             : (p_.torque_curve.size() > 1 ? double(p_.torque_curve.size() - 1) : 1.0);
+    for (int step = 10; step <= 200; ++step) {
+      const double r = p_.redline_rpm * double(step) / 200.0;
+      double base = 1.0;
+      if (p_.torque_curve.empty()) {
+        base = r < 2000 ? 0.6 + 0.4 * r / 2000 : r > 5500 ? 1.0 - 0.3 * ramp(r, 5500, p_.redline_rpm) : 1.0;
+      } else {
+        const double x = r / (p_.torque_curve_max_rpm / slots);
+        const size_t last = p_.torque_curve.size() - 1;
+        base = x >= double(last) ? p_.torque_curve[last]
+                                 : lerp(p_.torque_curve[size_t(x)], p_.torque_curve[size_t(x) + 1], x - double(size_t(x)));
+      }
+      double f_b = p_.has_turbo ? p_.boost_scale_max : 1.0;
+      if (f_b > 1.0 && p_.turbo_dropoff_rpm0 != p_.turbo_dropoff_rpm1) {
+        const double u = ramp(r, std::min(p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1),
+                              std::max(p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1));
+        f_b = lerp(p_.turbo_dropoff_scale0 * (f_b - 1.0) + 1.0, p_.turbo_dropoff_scale1 * (f_b - 1.0) + 1.0, u);
+      }
+      double f_s = p_.has_supercharger ? lerp(p_.sc_scale_zero, p_.sc_scale_redline, ramp(r, 0, p_.redline_rpm)) : 1.0;
+      if (f_s > 1.0 && p_.sc_dropoff_rpm0 != p_.sc_dropoff_rpm1) {
+        const double u = ramp(r, std::min(p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1),
+                              std::max(p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1));
+        f_s = lerp(p_.sc_dropoff_scale0 * (f_s - 1.0) + 1.0, p_.sc_dropoff_scale1 * (f_s - 1.0) + 1.0, u);
+      }
+      const double power = r * base * p_.torque_scale * (1.0 + (f_b - 1.0) + (f_s - 1.0));
+      if (power > best_p) {
+        best_p = power;
+        best_rpm = r;
+      }
+    }
+    peak_power_rpm_ = std::max(std::max(800.0, p_.idle_rpm) + 100.0, std::min(best_rpm, p_.redline_rpm));
+  }
+  init_brakes();
   reset({0, 0, 0});
+}
+
+void Vehicle::init_brakes() {
+  // SPEC-CAR-PHYSICS, Brakes: 6 fixed-point longitudinal load-transfer
+  // iterations at 80 mph, 200 mph, 50 mph, and 10 speed samples (0..200 mph).
+  const double z_front = 0.5 * (p_.wheel_centres[0].z + p_.wheel_centres[1].z);
+  const double z_rear = 0.5 * (p_.wheel_centres[2].z + p_.wheel_centres[3].z);
+  const double L = std::max(0.5, std::fabs(z_front - z_rear));
+  const double front_share = std::clamp((com_local_.z - z_rear) / L, 0.1, 0.9);
+  const double h_cg = std::max(0.1, com_local_.y);
+  const double df_f_c = p_.aero_df_front + p_.aero_part_df_front;
+  const double df_r_c = p_.aero_df_rear + p_.aero_part_df_rear;
+
+  auto solve_decel = [&](double v, double& ff_out, double& fr_out) {
+    const double nf0 = p_.mass * p_.gravity * front_share + df_f_c * v * v;
+    const double nr0 = p_.mass * p_.gravity * (1.0 - front_share) + df_r_c * v * v;
+    double a = 0.0, ff = 0.0, fr = 0.0;
+    for (int it = 0; it < 6; ++it) {
+      const double dn = p_.mass * a * h_cg / L;
+      const double nf = std::max(1.0, nf0 + dn);
+      const double nr = std::max(1.0, nr0 - dn);
+      const double mu_f = tyre_peak_mu(p_, 0, TyrePeak::kBraking, 0.5 * nf, v);
+      const double mu_r = tyre_peak_mu(p_, 1, TyrePeak::kBraking, 0.5 * nr, v);
+      ff = nf * mu_f;
+      fr = nr * mu_r;
+      a = (ff + fr) / std::max(1.0, p_.mass);
+    }
+    ff_out = ff;
+    fr_out = fr;
+    return std::max(0.0980665, a);
+  };
+
+  double ff80 = 0, fr80 = 0, ff200 = 0, fr200 = 0, ff50 = 0, fr50 = 0;
+  const double a80 = solve_decel(35.7632, ff80, fr80);
+  const double a200 = solve_decel(89.408, ff200, fr200);
+  const double a50 = solve_decel(22.352, ff50, fr50);
+  const double a_max = std::max(a80, a200);
+  brake_a_max_ = a_max;
+  const double g_max = a_max / kKgf;
+  const double p_min = std::min(p_.brake_pressure_min_share, 1.0 - p_.brake_pressure_min_share);
+  const double f_tot80 = std::max(1e-4, ff80) + std::max(1e-4, fr80);
+  const double bias_opt = std::clamp(std::max(1e-4, ff80) / f_tot80, p_min, 1.0 - p_min);
+  const double bias_eff = std::clamp(p_.brake_bias_slider - 0.5 * p_.brake_bias_offset_rear, 0.0, 1.0);
+  const double s = std::clamp(p_.brake_torque_slider, 0.0, 1.0);
+  const double pressure_mult =
+      s <= 0.5 ? lerp(0.0, 1.8181818, s / 0.5) : lerp(1.8181818, 4.3478260, (s - 0.5) / 0.5);
+  brake_const_[0] = 4.0 * bias_opt * bias_eff * g_max * pressure_mult;
+  brake_const_[1] = 4.0 * (1.0 - bias_opt) * (1.0 - bias_eff) * g_max * pressure_mult;
+  handbrake_const_ = std::clamp(p_.bias_handbrake, 0.0, 5.5) * (a50 / kKgf);
+
+  for (int i = 0; i < 10; ++i) {
+    const double v = std::max(0.01, double(i) / 0.1006621346);
+    double ff = 0, fr = 0;
+    decel_table_[size_t(i)] = solve_decel(v, ff, fr) / std::max(1e-4, a_max);
+  }
+}
+
+double Vehicle::decel_table_at(double speed_ms) const {
+  // Catmull-Rom interpolation of decel_table_[0..9] over 0..89.408 m/s.
+  const double u = std::clamp(std::fabs(speed_ms) * 0.1006621346, 0.0, 9.0);
+  const int i1 = std::min(8, int(std::floor(u)));
+  const double t = u - double(i1);
+  const int i0 = std::max(0, i1 - 1);
+  const int i2 = std::min(9, i1 + 1);
+  const int i3 = std::min(9, i1 + 2);
+  const double p0 = decel_table_[size_t(i0)], p1 = decel_table_[size_t(i1)];
+  const double p2 = decel_table_[size_t(i2)], p3 = decel_table_[size_t(i3)];
+  const double t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
 void Vehicle::place(const Vec3& position, double heading) {
@@ -178,10 +393,17 @@ void Vehicle::launch(const Vec3& position, double heading, double speed, double 
     if (rpm < p_.upshift_fraction * p_.redline_rpm && rpm >= floor) gear = g;
   }
   gear_ = target_gear_ = gear_before_ = gear;
+  state_ = GearState::kEngaged;
   clutch_ = 1;
   locked_ = true;
-  engine_omega_ = std::max(p_.idle_rpm / kRpm, speed / std::max(1e-3, p_.tyre_radius[2]) * ratio(gear));
+  engine_omega_ = std::max(p_.idle_rpm / kRpm + 0.1, speed / std::max(1e-3, p_.tyre_radius[2]) * ratio(gear));
   prev_rpm_ = engine_omega_ * kRpm;
+  turbo_power_ = 0;
+  boost_psi_ = p_.boost_min_psi;
+  sc_psi_ = p_.boost_min_psi;
+  bov_open_ = true;
+  boost_factor_ = 1.0;
+  engine_torque_prev_ = 0;
 }
 
 void Vehicle::apply_impulse(const Vec3& point, const Vec3& impulse, double angular_scale) {
@@ -206,16 +428,25 @@ void Vehicle::reset(const Vec3& position, double heading) {
   gear_ = target_gear_ = gear_before_ = 1;
   state_ = GearState::kOpen;
   state_time_ = 0;
+  reverse_hold_time_ = 0;
+  pedal_swap_ = false;
   clutch_ = 0;
   locked_ = rev_matching_ = false;
   launch_target_ = 0;
-  engine_omega_ = p_.idle_rpm / kRpm;
-  prev_rpm_ = p_.idle_rpm;
+  engine_omega_ = p_.idle_rpm / kRpm + 0.1;
+  prev_rpm_ = engine_omega_ * kRpm;
   spool_ = engine_throttle_ = driver_throttle_ = 0;
+  turbo_power_ = 0;
+  boost_psi_ = p_.boost_min_psi;
+  sc_psi_ = p_.boost_min_psi;
+  bov_open_ = true;
+  boost_factor_ = 1.0;
+  engine_torque_prev_ = 0;
   tc_prev_ = 0;
   slip_pos_ = 0;
   time_ = 0;
   steer_angle_ = 0;
+  handbrake_shaped_ = 0;
   abs_flag_ = false;
   raw_ = shaped_ = {};
   for (int i = 0; i < kWheels; ++i) {
@@ -224,8 +455,15 @@ void Vehicle::reset(const Vec3& position, double heading) {
     w_[i].contact = true;
     prev_compression_[i] = 0;
     abs_timer_[i] = 0;
+    vel_dep_long_[i] = 0;
+    vel_dep_lat_[i] = 0;
+    spring_defl_[i] = 0;
+    for (double& s : spring_ring_[i]) s = 0;
     for (double& h : slip_hist_[i]) h = 0;
   }
+  spring_ring_pos_ = 0;
+  surface_bump_rumble_ = 0;
+  hand_of_god_ = false;
 }
 
 Vec3 Vehicle::position() const { return pos_ - rotate(rot_, com_local_); }
@@ -273,23 +511,36 @@ double Vehicle::input_omega() const {
 }
 
 void Vehicle::shape_input(const Input& raw, double dt) {
-  // SPEC-CAR-PHYSICS, Throttle, brake and steering from the pad: the
-  // pedals move towards the input at their ControllerDelays rates; the
-  // road-wheel angle moves towards stick x lock at SteerMaxAngVelTurning.
+  // SPEC-CAR-PHYSICS, Throttle, brake and steering from the pad & Reverse
+  // selection and pedal swap: when in reverse with pedal_swap active, pedals
+  // swap upstream of control smoothing (AccelDelaySpeed = 5/s, BrakeDelaySpeed = 20/s).
+  double gas_in = std::clamp(raw.throttle, 0.0, 1.0);
+  double brake_in = std::clamp(raw.brake, 0.0, 1.0);
+  if (gear_ == -1 && pedal_swap_) {
+    if (brake_in > 0.0 && gas_in == 0.0) {
+      gas_in = brake_in;
+      brake_in = 0.0;
+    } else if (gas_in > 0.0) {
+      brake_in = gas_in;
+      gas_in = 0.0;
+    }
+  }
   if (ai_) {
     // The AI's controls skip the shaping: the road wheels at steer x
     // SteerMaxAngle at once.
-    shaped_.throttle = std::clamp(raw.throttle, 0.0, 1.0);
-    shaped_.brake = std::clamp(raw.brake, 0.0, 1.0);
+    shaped_.throttle = gas_in;
+    shaped_.brake = brake_in;
     shaped_.steer = std::clamp(raw.steer, -1.0, 1.0);
     shaped_.handbrake = raw.handbrake;
+    handbrake_shaped_ = raw.handbrake ? 1.0 : 0.0;
     steer_angle_ = shaped_.steer * p_.max_steer;
     return;
   }
-  shaped_.throttle = approach(shaped_.throttle, std::clamp(raw.throttle, 0.0, 1.0), p_.throttle_rate, dt);
-  shaped_.brake = approach(shaped_.brake, std::clamp(raw.brake, 0.0, 1.0), p_.brake_rate, dt);
+  shaped_.throttle = approach(shaped_.throttle, gas_in, p_.throttle_rate, dt);
+  shaped_.brake = approach(shaped_.brake, brake_in, p_.brake_rate, dt);
   shaped_.steer = std::clamp(raw.steer, -1.0, 1.0);  // the traced steer control steps to the stick
   shaped_.handbrake = raw.handbrake;
+  handbrake_shaped_ = approach(handbrake_shaped_, raw.handbrake ? 1.0 : 0.0, p_.handbrake_rate, dt);
   // The lock narrows with speed to hold steer_max_gees of kinematic lateral
   // acceleration (ours, after SteerSpeedSensitiveMaxGees), never below
   // steer_min_lock. At walking pace it is the full SteerMaxAngle.
@@ -311,9 +562,53 @@ double Vehicle::steer_lock() const {
                     std::min(p_.steer_min_lock, p_.max_steer), p_.max_steer);
 }
 
+void Vehicle::update_boost(double dt, double throttle, double rpm_now) {
+  auto apply_dropoff = [](double f, double rpm_val, double r0, double r1, double s0, double s1) {
+    if (f <= 1.0 || r0 == r1) return f;
+    const double lo = std::min(r0, r1), span = std::fabs(r1 - r0);
+    const double u = std::clamp((rpm_val - lo) / span, 0.0, 1.0);
+    const double excess = f - 1.0;
+    return lerp(s0 * excess + 1.0, s1 * excess + 1.0, u);
+  };
+  double f_boost = 1.0;
+  if (p_.has_turbo) {
+    if (throttle > 0.05) bov_open_ = false;
+    else if (throttle < 0.01) bov_open_ = true;
+    const double p_eng = engine_omega_ * engine_torque_prev_;
+    const double p_target = bov_open_ ? 0.0 : std::clamp(p_eng, 7457.0, 745700.0);
+    const double tau = std::max(1e-3, p_.turbo_tau);
+    turbo_power_ = std::clamp(turbo_power_ + ((p_target - turbo_power_) / tau) * dt, 0.0, p_.turbo_power_max);
+    double b_target = p_.boost_min_psi;
+    if (!bov_open_) {
+      const double u_p = ramp(turbo_power_, p_.turbo_power_min, p_.turbo_power_max);
+      b_target = lerp(p_.boost_min_psi, p_.boost_max_psi, u_p);
+    }
+    boost_psi_ += (b_target - boost_psi_) * std::min(1.0, 15.0 * dt);
+    const double b_lo = std::min(p_.boost_min_psi, p_.boost_max_psi);
+    const double b_hi = std::max(p_.boost_min_psi, p_.boost_max_psi);
+    const double u_b = b_hi > b_lo ? std::clamp((boost_psi_ - b_lo) / (b_hi - b_lo), 0.0, 1.0) : 0.0;
+    f_boost = lerp(p_.boost_scale_min, p_.boost_scale_max, u_b);
+    f_boost = apply_dropoff(f_boost, rpm_now, p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1, p_.turbo_dropoff_scale0,
+                            p_.turbo_dropoff_scale1);
+  }
+  double f_sc = 1.0;
+  if (p_.has_supercharger) {
+    const double u_rpm = std::clamp(rpm_now / std::max(1.0, p_.redline_rpm), 0.0, 1.0);
+    const double b_wot = lerp(p_.sc_zero_psi, p_.sc_redline_psi, u_rpm);
+    const double b_target = lerp(3.675, b_wot, std::clamp(throttle, 0.0, 1.0));
+    sc_psi_ += (b_target - sc_psi_) * std::min(1.0, 15.0 * dt);
+    const double b_lo = std::min(3.675, p_.sc_redline_psi);
+    const double b_hi = std::max(3.675, p_.sc_redline_psi);
+    const double u_sc = b_hi > b_lo ? std::clamp((sc_psi_ - b_lo) / (b_hi - b_lo), 0.0, 1.0) : 0.0;
+    f_sc = lerp(std::min(1.0, p_.sc_scale_zero), p_.sc_scale_redline, u_sc);
+    f_sc = apply_dropoff(f_sc, rpm_now, p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1, p_.sc_dropoff_scale0,
+                         p_.sc_dropoff_scale1);
+  }
+  boost_factor_ = 1.0 + (f_sc - 1.0) + (f_boost - 1.0);
+}
+
 double Vehicle::engine_torque(double rpm, double throttle) const {
-  // Below idle the engine opens its own throttle to hold idle (ours).
-  throttle = std::max(throttle, ramp(p_.idle_rpm - rpm, 0, 200));
+  throttle = std::clamp(throttle, 0.0, 1.0);
   double full;
   if (p_.torque_curve.empty()) {
     // The synthetic car's curve: rising from idle, flat 2,000-5,500 rpm,
@@ -331,26 +626,42 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
       full = lerp(p_.torque_curve[i], p_.torque_curve[i + 1], x - double(i));
     }
   }
-  full *= p_.torque_scale * torque_factor_;
-  const double closed = -p_.engine_braking * ramp(rpm, p_.idle_rpm, p_.redline_rpm);
-  double t = throttle * full + (1 - throttle) * closed;
-  if (rpm >= p_.redline_rpm) t = std::min(t, closed);  // the limiter cuts the fuel
-  return t;
+  const double k_limiter = rpm >= p_.redline_rpm ? 0.05 : 1.0;
+  const double wot = full * p_.torque_scale * boost_factor_ * k_limiter * torque_factor_;
+  // SPEC-CAR-PHYSICS, Engine item 1 (confirmed): for ICE, c_closed ramps
+  // linearly 0 -> -1.0 from 800 rpm to peak-power RPM, stays flat -1.0
+  // through RedlineRPM, and ramps -1.0 -> -2.63 above RedlineRPM toward
+  // TorqueCurveMaxRPM (below 800 rpm, small positive idle-assist 0.10 -> 0).
+  const double r_low = 800.0;
+  const double r_peak = std::min(peak_power_rpm_, p_.redline_rpm);
+  double c_closed = 0.0;
+  if (rpm < r_low) {
+    c_closed = 0.10 * (1.0 - std::max(0.0, rpm) / r_low);
+  } else if (rpm < r_peak) {
+    c_closed = -(rpm - r_low) / std::max(1.0, r_peak - r_low);
+  } else if (rpm <= p_.redline_rpm) {
+    c_closed = -1.0;
+  } else {
+    const double over_span = p_.torque_curve_max_rpm - p_.redline_rpm;
+    c_closed = over_span > 1.0 ? -1.0 - 1.63 * std::clamp((rpm - p_.redline_rpm) / over_span, 0.0, 1.0) : -2.63;
+  }
+  const double closed = c_closed * p_.engine_braking;
+  return throttle * (wot - closed) + closed;
 }
 
 void Vehicle::update_gearbox(double dt) {
   // SPEC-CAR-PHYSICS, Clutch and gearbox states. clutch_ is the engagement
-  // (the spec's c is 1 - clutch_). In reverse the pedals swap: the brake
-  // pedal is the throttle and the throttle pedal the brake.
+  // (the spec's c is 1 - clutch_). Reverse pedal swap already ran upstream
+  // of smoothing in shape_input when pedal_swap_ is active.
   const double v = speed();
-  const bool reverse = gear_ == -1;
-  const double drive_pedal = reverse ? shaped_.brake : shaped_.throttle;
-  const double brake_pedal = reverse ? shaped_.throttle : shaped_.brake;
-  // The effective throttle builds like boost (ours, see CarParams::boost_lag).
-  const double trigger = std::clamp(reverse ? raw_.brake : raw_.throttle, 0.0, 1.0);
+  const bool swapped = gear_ == -1 && pedal_swap_;
+  const double drive_pedal = (gear_ == -1 && !swapped) ? shaped_.brake : shaped_.throttle;
+  const double brake_pedal = (gear_ == -1 && !swapped) ? shaped_.throttle : shaped_.brake;
+  // Legacy synthetic throttle lag (off on real cars where boost_lag == 0).
+  const double trigger = std::clamp(gear_ == -1 ? raw_.brake : raw_.throttle, 0.0, 1.0);
   if (p_.boost_lag > 0 && trigger > spool_) spool_ += (trigger - spool_) * (1 - std::exp(-dt / p_.boost_lag));
   else spool_ = trigger;
-  const double driver = std::min(drive_pedal, spool_);
+  const double driver = p_.boost_lag > 0 ? std::min(drive_pedal, spool_) : drive_pedal;
   driver_throttle_ = driver;
   const double rpm_now = rpm();
   const double rpm_rate = (rpm_now - prev_rpm_) / dt;
@@ -377,21 +688,43 @@ void Vehicle::update_gearbox(double dt) {
   const bool in_shift = state_ == GearState::kClutchIn || state_ == GearState::kGearChange ||
                         state_ == GearState::kRevMatch || state_ == GearState::kClutchOut;
 
-  // Gear selection outside a shift: reverse with the brake held below
-  // MaxForwardVelShiftReverseMPH; forward again from reverse the same way.
+  // Reverse selection and pedal swap (SPEC-CAR-PHYSICS, Reverse selection):
+  // requires all four conditions simultaneously (forward speed < 15 mph,
+  // |v| < MaxForwardSpeedMphToAutoEnterReverse, brake > 0.5 && gas == 0,
+  // hold timer >= ShiftReversePause).
   if (!in_shift) {
-    if (gear_ >= 1 && shaped_.brake > 0.5 && shaped_.throttle < 0.1 && v < p_.reverse_select_speed) {
-      gear_before_ = gear_;
-      gear_ = target_gear_ = -1;
-      open();
-    } else if (gear_ == -1 && shaped_.throttle > 0.5 && shaped_.brake < 0.1 && v > -p_.reverse_select_speed) {
-      gear_before_ = gear_;
-      gear_ = target_gear_ = 1;
-      open();
-    } else if (gear_ == 0) {
-      gear_ = target_gear_ = 1;
-      open();
+    const bool want_rev = gear_ >= 1 && raw_.brake > 0.5 && raw_.throttle == 0.0 && v < p_.reverse_select_speed &&
+                          (std::fabs(v) < p_.reverse_auto_enter_speed || pedal_swap_);
+    if (want_rev) {
+      reverse_hold_time_ += dt;
+      if (reverse_hold_time_ >= p_.shift_reverse_pause) {
+        gear_before_ = gear_;
+        gear_ = target_gear_ = -1;
+        pedal_swap_ = true;
+        // Carry existing brake pedal magnitude into reverse gas_cmd on the
+        // swap (the player is already holding the trigger); clear brake.
+        shaped_.throttle = shaped_.brake;
+        shaped_.brake = 0;
+        reverse_hold_time_ = 0;
+        open();
+      }
+    } else {
+      reverse_hold_time_ = 0;
+      if (gear_ == -1 && raw_.throttle > 0.5 && raw_.brake < 0.1 && v > -p_.reverse_select_speed) {
+        gear_before_ = gear_;
+        gear_ = target_gear_ = 1;
+        pedal_swap_ = false;
+        shaped_.throttle = 0;
+        shaped_.brake = 0;
+        open();
+      } else if (gear_ == 0) {
+        gear_ = target_gear_ = 1;
+        pedal_swap_ = false;
+        open();
+      }
     }
+  } else {
+    reverse_hold_time_ = 0;
   }
 
   switch (state_) {
@@ -421,8 +754,8 @@ void Vehicle::update_gearbox(double dt) {
       const double low = lerp(idle + 0.2 * (start - idle), idle + 0.01 * (start - idle), tau);
       const double target = lerp(low, high, drive_pedal);
       launch_target_ = target;
-      // dc/dt = gain x (target - (rpm + lookahead x rpm rate)) / redline.
-      const double c_rate = p_.launch_gain * (target - (rpm_now + p_.launch_lookahead * rpm_rate)) / red;
+      // dc/dt = gain x (target - (rpm + lookahead x rpm rate)) / target.
+      const double c_rate = p_.launch_gain * (target - (rpm_now + p_.launch_lookahead * rpm_rate)) / std::max(1.0, target);
       clutch_ = std::clamp(clutch_ - c_rate * dt, 0.0, 1.0);
       double slip = 0, n = 0;
       for (int i = 0; i < kWheels; ++i)
@@ -465,6 +798,7 @@ void Vehicle::update_gearbox(double dt) {
     }
     case GearState::kClutchIn:
       engine_throttle_ = 0;  // the power cut
+      locked_ = false;       // SPEC-CAR-PHYSICS: kClutchIn unlocks driveline immediately
       clutch_ = std::max(0.0, clutch_ - dt / p_.clutch_in_time);
       if (clutch_ <= 0) enter(GearState::kGearChange);
       break;
@@ -532,6 +866,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
   double grip[kWheels]{}, rate[kWheels]{};
   SurfaceTyre surf[kWheels]{};
   int off = 0;
+  double max_bump_rumble = 0;
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
     const int a = axle_of(i);
@@ -565,11 +900,45 @@ void Vehicle::substep(double dt, const Ground& ground) {
       surf[i] = hit.tyre;
       if (hit.tyre.off_roadness > 0) any_dirt_ = true;
       contact[i] = probe + down * hit.distance;
+      // Bumpiness height & gradient perturbation + rumble (COLLISION.md).
+      // Keep the surface-entry jump out of damper differentiation so rolling
+      // onto dirt/kerb perturbs spring load and normal without launching the
+      // wheel via a 359 Hz derivative spike.
+      double bump_h = 0;
+      if (surf[i].bump_noise_type > 0 && surf[i].bump_scale != 0) {
+        const BumpSample bs = eval_surface_bumpiness(surf[i], contact[i].x, contact[i].z);
+        bump_h = std::clamp(bs.height, -0.05, 0.05);
+        const Vec3 n_pert = normalized(normal[i] - Vec3{bs.dh_dx, 0, bs.dh_dz});
+        if (dot(n_pert, normal[i]) > 0.1) normal[i] = n_pert;
+      }
+      max_bump_rumble = std::max(max_bump_rumble, 2.0 * surf[i].bump_rumble);
+      // Hand-of-God trigger on water / trigger surfaces or below world floor Y.
+      if (surf[i].is_hand_of_god || contact[i].y < p.water_floor_y) hand_of_god_ = true;
+      // Springiness soft-ground contact (COLLISION.md): slew-clamped deflection
+      // and 3-sample moving-average ring buffer.
+      if (surf[i].is_springy && surf[i].spring_k > 0) {
+        const double target_defl = std::max(0.0, compression) *
+                                   std::clamp(p.spring_rate[a] / (p.spring_rate[a] + surf[i].spring_k * p.mass), 0.0, 0.8);
+        const double slew = (target_defl > spring_defl_[i] ? std::max(0.5, surf[i].spring_comp_d)
+                                                           : std::max(0.5, surf[i].spring_reb_d)) *
+                            dt;
+        spring_defl_[i] = std::clamp(target_defl, spring_defl_[i] - slew, spring_defl_[i] + slew);
+        spring_ring_[i][spring_ring_pos_] = spring_defl_[i];
+        const double smooth_defl = (spring_ring_[i][0] + spring_ring_[i][1] + spring_ring_[i][2]) / 3.0;
+        compression -= smooth_defl;
+      } else {
+        spring_defl_[i] = 0;
+        spring_ring_[i][spring_ring_pos_] = 0;
+      }
+      // Suspension rate from geometric compression; add bump height to spring
+      // compression only (not the 359 Hz derivative on surface transition).
+      rate[i] = (compression - prev_compression_[i]) / dt;
+      prev_compression_[i] = compression;
+      compression += bump_h;
+    } else {
+      rate[i] = (compression - prev_compression_[i]) / dt;
+      prev_compression_[i] = compression;
     }
-    // The suspension's speed from the travel itself, so a car running down
-    // a grade does not read the fall as rebound.
-    rate[i] = (compression - prev_compression_[i]) / dt;
-    prev_compression_[i] = compression;
     w.compression = compression;
     off += !w.contact;
     double load = 0;
@@ -584,6 +953,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
     w.centre = {p.wheel_centres[i].x, p.wheel_centres[i].y + std::min(compression, p.bump_travel[a] + 0.05),
                 p.wheel_centres[i].z};
   }
+  spring_ring_pos_ = (spring_ring_pos_ + 1) % 3;
+  surface_bump_rumble_ = max_bump_rumble;
   // Anti-roll bars: equal and opposite on an axle's two wheels.
   for (int a = 0; a < 2; ++a) {
     const int l = 2 * a, r = 2 * a + 1;
@@ -598,26 +969,27 @@ void Vehicle::substep(double dt, const Ground& ground) {
   const double g_scale = off == kWheels ? p.airborne_gravity_scale : std::pow(p.per_tyre_off_gravity_scale, off);
   force.y -= p.mass * p.gravity * g_scale;
 
-  // 2. Brakes with the ABS (SPEC-CAR-PHYSICS, ABS). In reverse the pedals
-  // swap: the throttle pedal brakes. The engine's throttle is the gearbox's
-  // (update_gearbox).
+  // 2. Brakes with the ABS (SPEC-CAR-PHYSICS, Brakes & ABS).
   const double drive_in = engine_throttle_;
-  const double brake_in = gear_ == -1 ? shaped_.throttle : shaped_.brake;
-  // BrakeInputScale, normalised so a full press is the measured torque.
-  static constexpr double kBrakeIn[4] = {0, 0.001, 0.90, 1}, kBrakeOut[4] = {0, 0.12, 0.70, 0.81};
-  double brake_frac = 0;
-  for (int k = 0; k < 3; ++k)
-    if (brake_in <= kBrakeIn[k + 1] || k == 2) {
-      brake_frac = lerp(kBrakeOut[k], kBrakeOut[k + 1], ramp(brake_in, kBrakeIn[k], kBrakeIn[k + 1])) / kBrakeOut[3];
-      break;
+  const double brake_in = (gear_ == -1 && !pedal_swap_) ? shaped_.throttle : shaped_.brake;
+  // Direct BrakeInputScale curve with NO / 0.81 normalization when using
+  // per-car brake_const; synthetic fallback normalizes by kBrakeOut[3].
+  double brake_curve_raw = 0;
+  if (brake_in > 0) {
+    for (int k = 0; k < 3; ++k) {
+      if (brake_in <= p.brake_input_in[k + 1] || k == 2) {
+        brake_curve_raw = lerp(p.brake_input_out[k], p.brake_input_out[k + 1],
+                               ramp(brake_in, p.brake_input_in[k], p.brake_input_in[k + 1]));
+        break;
+      }
     }
-  if (brake_in <= 0) brake_frac = 0;
-  // The AI's brake is linear, ai_brake_scale x the full press per unit.
-  if (ai_) brake_frac = brake_in * p.ai_brake_scale;
+  }
+  const double decel_scale = p.use_per_car_brakes && !ai_ ? decel_table_at(speed()) : 1.0;
+  const double brake_frac = p.use_per_car_brakes
+                                ? (ai_ ? brake_in : brake_curve_raw * decel_scale)
+                                : (ai_ ? brake_in * p.ai_brake_scale
+                                       : brake_curve_raw / std::max(1e-6, p.brake_input_out[3]));
   const double stick = std::fabs(shaped_.steer);
-  // A wheel whose smoothed normalised slip ratio (the mean of its last
-  // abs_smoothing substeps) passes the release point, blended by the
-  // steering input, gets no brake for DurationABS, then the full brake.
   const double G = ratio(gear_);
   double brake[kWheels]{};
   bool slowing[kWheels]{};
@@ -643,12 +1015,14 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
     if (abs_timer_[i] > 0) abs_timer_[i] -= dt;
     w.brake = frac;
-    brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque);
-    if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
-    // The wheel's applied torque slows it: the brake pedal (held through
-    // an ABS release: the oracle's released front keeps F_x / load 1.76,
-    // SPEC-CAR-PHYSICS scenario B onset table), the handbrake, or the
-    // driveline's torque (last substep's) against its spin.
+    if (p.use_per_car_brakes) {
+      double t_trace = frac * brake_const_[a];
+      if (a == 1 && handbrake_shaped_ > 0) t_trace += handbrake_const_ * handbrake_shaped_;
+      brake[i] = p.mass * (kKgf / 4.0) * p.tyre_radius[i] * t_trace;
+    } else {
+      brake[i] = frac * (a == 0 ? p.front_brake_torque : p.rear_brake_torque);
+      if (a == 1 && shaped_.handbrake) brake[i] += p.handbrake_torque;
+    }
     slowing[i] = brake_frac > 0 || brake[i] > 0 || tc_prev_ * G * weight_[i] * w.omega < 0;
   }
 
@@ -722,56 +1096,100 @@ void Vehicle::substep(double dt, const Ground& ground) {
 
   // 4. Drivetrain: the engine, the clutch and the wheels. A locked clutch's
   // torque is solved so the engine and the diff-weighted wheel speed stay
-  // together; past its capacity it slips at the capacity.
+  // together; past its capacity it slips at the capacity. GameTorqueScale
+  // scales only the drive torque passed to the wheels (not T_engine or
+  // open-clutch engine acceleration).
+  update_boost(dt, drive_in, rpm());
   const double cap = G != 0 ? p.clutch_max_torque * p.clutch_torque_factor * clutch_ : 0;
   const double je = p.engine_inertia;
   const double te = engine_torque(rpm(), drive_in);
+  engine_torque_prev_ = te;
   const double reflected = G != 0 ? p.gearbox_inertia * G * G + p.driveline_inertia * p.final_drive * p.final_drive : 0;
   double j_eff[kWheels]{}, resist[kWheels]{};
-  double num = te / je, den = 1 / je;
+  // Locked clutch: (J_w + G^2 J_e) a_w = GameTorqueScale * G * T_e - R,
+  // preserving full reflected engine inertia G^2 J_e while scaling T_e by
+  // GameTorqueScale (SPEC-CAR-PHYSICS, Engine item 5).
+  double num = (p.game_torque_scale * te) / je, den = 1 / je;
   for (int i = 0; i < kWheels; ++i) {
     // The tyre's torque back on the wheel is F_x x r (SPEC-CAR-PHYSICS).
     j_eff[i] = p.wheel_inertia + reflected * weight_[i] + dt * p.tyre_radius[i] * slope[i];
     resist[i] = p.tyre_radius[i] * fx0[i] + (std::fabs(w_[i].omega) > 0.1 ? sign(w_[i].omega) * brake[i] : 0);
   }
-  // A limited-slip centre (AWD): it moves torque from the faster axle to
-  // the slower, up to its locking torque (drive side while the clutch
-  // passes engine torque forward, else the decel side), and no more than
-  // would bring the two axles' speeds together this substep (ours: a
-  // clutch-type lock; the columns' RelVelClamp is not decoded).
+  // Limited-slip differentials (SPEC-CAR-PHYSICS, AWD and LSDs, confirmed):
+  // RelVelClamp is in rpm (* pi/30 -> rad/s). Center LSD applies +-T_lock_center
+  // per wheel (-T_lock_center to FL/FR, +T_lock_center to RL/RR); Front/Rear
+  // LSDs apply +-T_lock per wheel (- left, + right).
   double lsd[kWheels]{};
-  if (p.layout == CarParams::Layout::kAll && G != 0 && clutch_ > 0) {
-    const double lock = (tc_prev_ >= 0 ? p.centre_lsd_accel : p.centre_lsd_decel) * p.final_drive;
-    if (lock > 0) {
-      const double d_omega = 0.5 * (w_[2].omega + w_[3].omega) - 0.5 * (w_[0].omega + w_[1].omega);
-      const double jf = j_eff[0] + j_eff[1], jr = j_eff[2] + j_eff[3];
-      const double t = std::clamp(d_omega / (dt * (1 / jf + 1 / jr)), -lock, lock);  // to the front axle
-      lsd[0] = lsd[1] = 0.5 * t;
-      lsd[2] = lsd[3] = -0.5 * t;
-    }
+  auto lsd_lock = [&](const CarParams::LsdParams& d, double t_in, double dw, double max_step_t) {
+    if (d.accel <= 0 && d.decel <= 0) return 0.0;
+    const double t_max = d.accel_def_in == 0.0
+                             ? d.accel
+                             : lerp(d.decel, d.accel, std::clamp(t_in / d.accel_def_in, 0.0, 1.0));
+    const double clamp_rad = std::max(1e-3, d.rel_vel_clamp / kRpm);
+    const double t = std::clamp(dw / clamp_rad, -1.0, 1.0) * t_max;
+    return std::clamp(t, -max_step_t, max_step_t);
+  };
+  const double t_in_total = G != 0 ? tc_prev_ * std::fabs(G) * p.game_torque_scale : 0.0;
+  if (p.layout == CarParams::Layout::kAll) {
+    const double r_ratio = p.tyre_radius[2] > 1e-6 ? p.tyre_radius[0] / p.tyre_radius[2] : 1.0;
+    const double dw_c = 0.5 * (w_[0].omega + w_[1].omega) * r_ratio - 0.5 * (w_[2].omega + w_[3].omega);
+    const double jf = j_eff[0] + j_eff[1], jr = j_eff[2] + j_eff[3];
+    // Per-wheel torque t_c transfers 2 * t_c axle-to-axle.
+    const double max_c = 0.5 * std::fabs(dw_c) / (dt * (1.0 / jf + 1.0 / jr));
+    const double t_c = lsd_lock(p.center_lsd, t_in_total, dw_c, max_c);
+    lsd[0] -= t_c;
+    lsd[1] -= t_c;
+    lsd[2] += t_c;
+    lsd[3] += t_c;
+    const double dw_f = w_[0].omega - w_[1].omega;
+    const double max_f = std::fabs(dw_f) / (dt * (1.0 / j_eff[0] + 1.0 / j_eff[1]));
+    const double t_f = lsd_lock(p.front_lsd, (1.0 - p.rear_split) * t_in_total, dw_f, max_f);
+    lsd[0] -= t_f;
+    lsd[1] += t_f;
+    const double dw_r = w_[2].omega - w_[3].omega;
+    const double max_r = std::fabs(dw_r) / (dt * (1.0 / j_eff[2] + 1.0 / j_eff[3]));
+    const double t_r = lsd_lock(p.rear_lsd, p.rear_split * t_in_total, dw_r, max_r);
+    lsd[2] -= t_r;
+    lsd[3] += t_r;
+  } else if (p.layout == CarParams::Layout::kFront) {
+    const double dw_f = w_[0].omega - w_[1].omega;
+    const double max_f = std::fabs(dw_f) / (dt * (1.0 / j_eff[0] + 1.0 / j_eff[1]));
+    const double t_f = lsd_lock(p.front_lsd, t_in_total, dw_f, max_f);
+    lsd[0] -= t_f;
+    lsd[1] += t_f;
+  } else {
+    const double dw_r = w_[2].omega - w_[3].omega;
+    const double max_r = std::fabs(dw_r) / (dt * (1.0 / j_eff[2] + 1.0 / j_eff[3]));
+    const double t_r = lsd_lock(p.rear_lsd, t_in_total, dw_r, max_r);
+    lsd[2] -= t_r;
+    lsd[3] += t_r;
   }
   for (int i = 0; i < kWheels; ++i) {
     resist[i] -= lsd[i];
     num += G * weight_[i] * resist[i] / j_eff[i];
     den += G * G * weight_[i] * weight_[i] / j_eff[i];
   }
-  const double t_lock = num / den;
+  const double t_lock_wheel_side = num / den;  // equivalent engine-side torque * GameTorqueScale
+  const double t_lock = t_lock_wheel_side / std::max(1e-6, p.game_torque_scale);
   const double slip = engine_omega_ - G * input_omega();
   double tc = 0;
+  double tc_wheel_side = 0;
   bool lock_now = false;
   if (cap > 0) {
     if ((locked_ || std::fabs(slip) < 0.5) && std::fabs(t_lock) <= cap) {
       tc = t_lock;
+      tc_wheel_side = t_lock_wheel_side;
       lock_now = true;
     } else {
       tc = (slip != 0 ? sign(slip) : sign(t_lock)) * cap;
+      tc_wheel_side = tc * p.game_torque_scale;
     }
   }
   double omega_e = engine_omega_ + dt * (te - tc) / je;
   double omega_new[kWheels];
   for (int i = 0; i < kWheels; ++i) {
     WheelState& w = w_[i];
-    double o = w.omega + dt * (tc * G * weight_[i] + lsd[i] - p.tyre_radius[i] * fx0[i]) / j_eff[i];
+    double o = w.omega + dt * (tc_wheel_side * G * weight_[i] + lsd[i] - p.tyre_radius[i] * fx0[i]) / j_eff[i];
     const double b = brake[i] * dt / j_eff[i];
     o = std::fabs(o) <= b ? 0 : o - sign(o) * b;
     if (!w.contact) o *= 1 - 0.5 * dt;  // bearing drag in the air
@@ -781,13 +1199,23 @@ void Vehicle::substep(double dt, const Ground& ground) {
   for (int i = 0; i < kWheels; ++i) in_new += weight_[i] * omega_new[i];
   if (cap > 0 && !lock_now && sign(omega_e - G * in_new) != sign(slip)) lock_now = true;  // synchronised
   if (lock_now) omega_e = G * in_new;
-  if (lock_now && omega_e < 0.3 * p.idle_rpm / kRpm) {
-    lock_now = false;  // the engine would stall: the clutch lets go of it (ours)
-    omega_e = std::max(omega_e, engine_omega_ + dt * te / je);
+  // SPEC-CAR-PHYSICS, StallRPM idle clamp: prevents T_closed < 0 at
+  // throttle = 0 from stalling below StallRPM.
+  const double w_stall = p.idle_rpm / kRpm;
+  if (omega_e <= w_stall) {
+    lock_now = false;
+    clutch_ = 0;
+    if (state_ == GearState::kEngaged) {
+      state_ = GearState::kOpen;
+      state_time_ = 0;
+    }
+    omega_e = w_stall;
   }
+  const double w_red = p.redline_rpm / kRpm;
+  if (!lock_now && omega_e > w_red) omega_e = w_red;
   locked_ = lock_now;
   tc_prev_ = tc;
-  engine_omega_ = std::max(0.0, omega_e);
+  engine_omega_ = omega_e;
 
   // 5. Forces on the body.
   for (int i = 0; i < kWheels; ++i) {
@@ -797,6 +1225,23 @@ void Vehicle::substep(double dt, const Ground& ground) {
       // the spin update; past the curve's linear part it would overshoot.
       double fx = 0, fy_new = 0;
       tyre(i, omega_new[i], &fx, &fy_new, nullptr, nullptr);
+      // Surface drag (SPEC-CAR-PHYSICS, VelDepFriction): slew-clamped
+      // velocity-opposing forces along wheel local axes.
+      if (p.aero_drag_long > 0) {
+        const double u_x = ramp(std::fabs(vx[i]), surf[i].vel_peak0, surf[i].vel_peak);
+        const double u_y = ramp(std::fabs(vy[i]), surf[i].vel_peak0, surf[i].vel_peak);
+        const double cross_u = std::clamp(0.25 * (std::fabs(vx[i]) - 4.0), 0.0, 1.0);
+        const double tgt_long = lerp(surf[i].vel_long0, surf[i].vel_long, u_x);
+        const double tgt_lat = lerp(surf[i].vel_lat0, surf[i].vel_lat, u_y) * cross_u;
+        const double slew = p.max_vel_dep_coeff_vel * dt;
+        vel_dep_long_[i] = approach(vel_dep_long_[i], tgt_long, p.max_vel_dep_coeff_vel, dt);
+        vel_dep_lat_[i] = approach(vel_dep_lat_[i], tgt_lat, p.max_vel_dep_coeff_vel, dt);
+        (void)slew;
+        const double fx_vd = -sign(vx[i]) * std::min(1.0, std::fabs(vx[i]) / 0.2) * vel_dep_long_[i] * w.load;
+        const double fy_vd = -sign(vy[i]) * std::min(1.0, std::fabs(vy[i]) / 0.2) * vel_dep_lat_[i] * w.load;
+        fx += fx_vd;
+        fy_new += fy_vd;
+      }
       const Vec3 f = normal[i] * w.load + fwd[i] * fx + lat[i] * fy_new;
       w.fx = fx;
       force = force + f;
@@ -858,12 +1303,42 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (fn > strongest_.force) strongest_ = {centre + dir * hit.distance, n, fn, hit.surface, hit.triangle};
   }
 
-  // Resistance (SPEC-CAR-PHYSICS, Aerodynamics: the measured fit, rolling
-  // resistance included).
-  const double v_abs = length(vel_);
-  if (v_abs > 1e-6) {
-    const double r = p.drag_quadratic * v_abs * v_abs + p.drag_constant * std::min(1.0, v_abs);
-    force = force - vel_ * (r / v_abs);
+  // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): 3D body drag, lateral drag
+  // at front/rear axles, vertical drag, front/rear downforce with pitch AoA
+  // falloff, high-speed drag ramp, and active drafting multipliers.
+  if (p.aero_drag_long > 0) {
+    const Vec3 vl = rotate_inverse(rot_, vel_);
+    const double hs = lerp(p.high_speed_drag_s0, p.high_speed_drag_s1,
+                           ramp(std::fabs(vl.z), p.high_speed_drag_v0, p.high_speed_drag_v1));
+    const double c_long = vl.z >= 0 ? p.aero_drag_long * hs * draft_.body_drag +
+                                          p.aero_part_drag_front * draft_.front_drag +
+                                          p.aero_part_drag_rear * draft_.rear_drag
+                                    : p.aero_drag_long * hs;
+    const double fz = -sign(vl.z) * c_long * vl.z * vl.z;
+    const double fy_drag = -sign(vl.y) * p.aero_drag_vert * vl.y * vl.y;
+    const double fx_f = -sign(vl.x) * p.aero_drag_lat_front * vl.x * vl.x;
+    const double fx_r = -sign(vl.x) * (p.aero_drag_lat_rear + p.aero_part_lat_drag) * vl.x * vl.x;
+    double df_f = 0, df_r = 0;
+    if (vl.z > 0.1) {
+      const double alpha_pitch = std::atan2(vl.y, vl.z);
+      const double aoa = std::max(0.0, 1.0 - std::fabs(alpha_pitch) / std::max(0.05, p.aero_zero_df_rad));
+      df_f = (p.aero_df_front + p.aero_part_df_front) * aoa * vl.z * vl.z * draft_.front_df;
+      df_r = (p.aero_df_rear + p.aero_part_df_rear) * aoa * vl.z * vl.z * draft_.rear_df;
+    }
+    const double z_f = 0.5 * (p.wheel_centres[0].z + p.wheel_centres[1].z) - com_local_.z;
+    const double z_r = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z) - com_local_.z;
+    const Vec3 f_body_local{fx_f + fx_r, fy_drag - df_f - df_r, fz};
+    force = force + rotate(rot_, f_body_local);
+    // Axle-applied downforce pitches the body; axle-applied lateral drag damps yaw.
+    const Vec3 t_aero_local{z_f * df_f + z_r * df_r, z_f * fx_f + z_r * fx_r, 0};
+    torque = torque + rotate(rot_, t_aero_local);
+  } else {
+    // Fallback resistance for synthetic test CarParams.
+    const double v_abs = length(vel_);
+    if (v_abs > 1e-6) {
+      const double r = p.drag_quadratic * v_abs * v_abs + p.drag_constant * std::min(1.0, v_abs);
+      force = force - vel_ * (r / v_abs);
+    }
   }
 
   // Integrate (semi-implicit Euler).
@@ -882,6 +1357,60 @@ void Vehicle::substep(double dt, const Ground& ground) {
          rot_.w + 0.5 * dt * (dq.w * rot_.w - dq.x * rot_.x - dq.y * rot_.y - dq.z * rot_.z)};
   const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
   rot_ = {q.x / n, q.y / n, q.z / n, q.w / n};
+}
+
+DraftState compute_follower_draft(const DraftCar& follower, const DraftCar* leaders, size_t leader_count) {
+  DraftState out;
+  constexpr double kDraftSpeed0 = 17.8816;  // 40 mph
+  constexpr double kDraftSpeed1 = 67.056;   // 150 mph
+  if (follower.speed <= kDraftSpeed0 || !leaders || leader_count == 0) return out;
+  const double u_v = std::clamp((follower.speed - kDraftSpeed0) / (kDraftSpeed1 - kDraftSpeed0), 0.0, 1.0);
+  const double start_z_box = 5.0;
+  const double start_z_fade = lerp(6.0, 9.0, u_v);
+  const double end_z_fade = lerp(30.0, 60.0, u_v);
+  const Vec3 fwd = normalized(follower.forward);
+  const Vec3 right = normalized(cross({0, 1, 0}, fwd));
+  double d = 0.0;
+  for (size_t i = 0; i < leader_count; ++i) {
+    const Vec3 rel = leaders[i].position - follower.position;
+    const double z = dot(rel, fwd);
+    if (z <= 0.0 || z >= end_z_fade) continue;
+    const double x = std::fabs(dot(rel, right));
+    const double narrow = z < start_z_box ? z / start_z_box : 1.0;
+    const double start_x = 1.0 * leaders[i].width * narrow;
+    const double end_x = 2.5 * leaders[i].width * narrow;
+    if (x >= end_x || end_x <= start_x) continue;
+    const double w_z = std::clamp((end_z_fade - z) / (end_z_fade - start_z_fade), 0.0, 1.0);
+    const double w_x = std::clamp((end_x - x) / (end_x - start_x), 0.0, 1.0);
+    d = std::max(d, w_z * w_x);
+  }
+  if (d <= 0.0) return out;
+  out.strength = d;
+  auto scale = [&](double s40, double s150) { return 1.0 + d * (lerp(s40, s150, u_v) - 1.0); };
+  out.body_drag = scale(0.93, 0.72);
+  out.front_drag = scale(0.93, 0.72);
+  out.rear_drag = scale(0.93, 0.72);
+  out.front_df = scale(0.93, 0.47);
+  out.rear_df = scale(0.97, 0.61);
+  const double v2 = follower.speed * follower.speed;
+  const double df_saved =
+      std::fabs(follower.front_df_coeff * v2 * (1.0 - out.front_df) + follower.rear_df_coeff * v2 * (1.0 - out.rear_df));
+  out.score = std::clamp(df_saved, 0.0, 1000.0);
+  return out;
+}
+
+DraftState compute_leader_draft(double strength, double speed) {
+  DraftState out;
+  constexpr double kDraftSpeed0 = 17.8816;  // 40 mph
+  if (speed <= kDraftSpeed0 || strength <= 0.0) return out;
+  const double d = std::clamp(strength, 0.0, 1.0);
+  out.strength = d;
+  out.body_drag = 1.0 + d * (0.96 - 1.0);
+  out.front_drag = 1.0 + d * (0.96 - 1.0);
+  out.rear_drag = 1.0 + d * (0.96 - 1.0);
+  out.front_df = 1.0 + d * (0.99 - 1.0);
+  out.rear_df = 1.0 + d * (0.95 - 1.0);
+  return out;
 }
 
 std::string trace_header() {

@@ -115,7 +115,36 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
   g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
   if (collision_) {
     std::vector<drive::SurfaceTyre> tyres;
-    for (const auto& s : collision_->surfaces()) tyres.push_back({s.rear_grip, s.off_roadness, s.off_road_peak_sa});
+    for (const auto& s : collision_->surfaces()) {
+      drive::SurfaceTyre t;
+      t.rear_grip = s.rear_grip;
+      t.off_roadness = s.off_roadness;
+      t.off_road_peak_sa = s.off_road_peak_sa;
+      t.handbrake_grip = s.handbrake_grip;
+      t.tcs_speed_scale = s.tcs_speed_scale;
+      t.vel_peak0 = s.vel_peak0;
+      t.vel_peak = s.vel_peak;
+      t.vel_long0 = s.vel_long0;
+      t.vel_long = s.vel_long;
+      t.vel_lat0 = s.vel_lat0;
+      t.vel_lat = s.vel_lat;
+      t.bump_noise_type = s.bump_noise_type;
+      t.bump_frequency = s.bump_frequency;
+      t.bump_clamp_min = s.bump_clamp_min;
+      t.bump_clamp_max = s.bump_clamp_max;
+      t.bump_scale = s.bump_scale;
+      t.bump_offset = s.bump_offset;
+      t.bump_rumble = s.bump_rumble;
+      t.is_springy = s.is_springy;
+      t.spring_k = s.spring_k;
+      t.spring_comp_d = s.spring_comp_d;
+      t.spring_reb_d = s.spring_reb_d;
+      t.spring_norm_y_cutoff = s.spring_norm_y_cutoff;
+      t.spring_speed_cutoff = s.spring_speed_cutoff;
+      t.is_penalty_surface = s.is_penalty_surface;
+      t.is_hand_of_god = s.is_hand_of_god;
+      tyres.push_back(t);
+    }
     g->ground->set_surface_tyres(std::move(tyres));
   }
   if (prepare_) g->prepared = prepare_(g->mesh, x, z);

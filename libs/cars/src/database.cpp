@@ -557,7 +557,7 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
     if (!part("List_UpgradeEngineCamshaft", "EngineID = ? AND IsStock = 1", engine))
       return fail("no stock camshaft");
     for (const char* t : {"List_UpgradeEngineFlywheel", "List_UpgradeEngineTurboSingle", "List_UpgradeEngineTurboTwin",
-                          "List_UpgradeEngineDSC", "List_UpgradeEngineCSC"})
+                          "List_UpgradeEngineTurboQuad", "List_UpgradeEngineDSC", "List_UpgradeEngineCSC"})
       part(t, "EngineID = ? AND IsStock = 1", engine);
     {
       Query q(db, "SELECT * FROM List_TorqueCurve WHERE TorqueCurveID = ?");
@@ -630,7 +630,7 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
                                         "List_UpgradeEnginePistonsCompression", "List_UpgradeEngineFuelSystem",
                                         "List_UpgradeEngineIgnition", "List_UpgradeEngineExhaust",
                                         "List_UpgradeEngineIntake",   "List_UpgradeEngineManifold",
-                                        "List_UpgradeEngineOilCooling"};
+                                        "List_UpgradeEngineOilCooling", "List_UpgradeEngineRestrictorPlate"};
         for (const char* k : kTorque)
           if (t == k) torque += car.get(t + ".TorqueScale", 1) - 1;  // additive: 1 + the sum of (s - 1) (SPEC-GARAGE-UPGRADES)
       }
@@ -648,6 +648,14 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
         if (fit.count("List_UpgradeRimSize" + a) && car.has(r)) v["Data_Car." + a + "WheelDiameterIN"] = car.get(r);
       }
     }
+    // Resolve List_AeroPhysics for the stock or fitted front bumper and rear wing
+    // (SPEC-CAR-PHYSICS, Aerodynamics).
+    const int64_t fb_aero = key("List_UpgradeCarBodyFrontBumper.AeroPhysicsID");
+    if (fb_aero > 0)
+      row_into(db, "SELECT * FROM List_AeroPhysics WHERE AeroPhysicsID = ?", fb_aero, "FrontBumperAero", v);
+    const int64_t rw_aero = key("List_UpgradeRearWing.AeroPhysicsID");
+    if (rw_aero > 0)
+      row_into(db, "SELECT * FROM List_AeroPhysics WHERE AeroPhysicsID = ?", rw_aero, "RearWingAero", v);
     out = std::move(car);
   }
   return true;

@@ -280,11 +280,9 @@ void scenario_b(const drive::CarParams& p) {
                 (v0 - v_rev) / t_rev, 100.0 * braked[0] / steps, 100.0 * braked[1] / steps,
                 (v_rev - v.speed()) / (t_stop - t_rev), t_stop - t_rev);
   CHECK(t_stop > 0);
-  // M3 gate (playable first): the mean at 8 %, the ABS phase at 12 %; the
-  // reverse launch and the ABS spin-up are polish (Q34). Known miss since
-  // the 1,200 N m brake unit: the mean is 7.69 (Q40, Q34).
-  REPORT(near_rel(decel, 8.57, 0.02));
-  GATE(near_rel(decel, 8.57, 0.08));
+  // Slice 1 gate (SPEC-CAR-PHYSICS, Tolerances): Scenario B mean deceleration
+  // within 2 % of oracle 8.57 m/s^2, and ABS phase within 12 %.
+  GATE(near_rel(decel, 8.57, 0.02));
   GATE(t_rev > 0 && near_rel((v0 - v_rev) / t_rev, 12.0, 0.12));
 }
 
@@ -407,15 +405,20 @@ int main() {
   // Experiments (not the gate): PHYSICS_FRONT_BRAKE and PHYSICS_REAR_BRAKE
   // set the brake torques (N m), PHYSICS_ABS 0 turns the ABS off,
   // PHYSICS_WHEEL_J sets the wheel inertia, PHYSICS_BOOST_LAG the boost lag.
-  if (const char* e = std::getenv("PHYSICS_FRONT_BRAKE")) p.front_brake_torque = std::atof(e);
-  if (const char* e = std::getenv("PHYSICS_REAR_BRAKE")) p.rear_brake_torque = std::atof(e);
+  if (const char* e = std::getenv("PHYSICS_FRONT_BRAKE")) { p.front_brake_torque = std::atof(e); p.use_per_car_brakes = false; }
+  if (const char* e = std::getenv("PHYSICS_REAR_BRAKE")) { p.rear_brake_torque = std::atof(e); p.use_per_car_brakes = false; }
   if (const char* e = std::getenv("PHYSICS_ABS")) p.abs = std::atoi(e) != 0;
   if (const char* e = std::getenv("PHYSICS_WHEEL_J")) p.wheel_inertia = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_BOOST_LAG")) p.boost_lag = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_ENGINE_J")) p.engine_inertia = std::atof(e);
   if (const char* e = std::getenv("PHYSICS_CM_HEIGHT")) p.centre_of_mass.y = std::atof(e);
-  std::printf("engine inertia %.4f kg m^2, brake torque front %.0f rear %.0f N m, braking friction scale %.4f\n", p.engine_inertia,
-              p.front_brake_torque, p.rear_brake_torque, p.brake_friction_scale);
+  drive::Vehicle probe_v(p);
+  const double unit_f = p.mass * (9.80665 / 4.0) * p.tyre_radius[0];
+  const double unit_r = p.mass * (9.80665 / 4.0) * p.tyre_radius[2];
+  std::printf("engine inertia %.4f kg m^2, brake const front %.2f (%.0f N m @0.81) rear %.2f (%.0f N m @0.81), "
+              "braking friction scale %.4f, aero drag %.4f N/(m/s)^2\n",
+              p.engine_inertia, probe_v.brake_const(0), probe_v.brake_const(0) * 0.81 * unit_f, probe_v.brake_const(1),
+              probe_v.brake_const(1) * 0.81 * unit_r, p.brake_friction_scale, p.aero_drag_long);
 
   unit_checks(r34, settings, p);
   scenario_a(p);

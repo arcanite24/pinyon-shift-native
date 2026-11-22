@@ -485,6 +485,166 @@ void test_contact_no_tunnelling() {
   run(3.14159265358979323846 / 2, 0, 30, 83.3, 0, "side-on");
 }
 
+// Per-car forced induction (NA vs Turbo vs Supercharger), GameTorqueScale split,
+// per-car brakes/downforce/drafting, LSDs, and surface VelDep/Bumpiness/water.
+void test_per_car_physics() {
+  const drive::FlatGround flat;
+
+  // 1. NA car has zero boost lag and boost_factor == 1.0 throughout.
+  {
+    auto p = test_car();
+    p.has_turbo = false;
+    p.has_supercharger = false;
+    drive::Vehicle v(p);
+    for (int i = 0; i < 60; ++i) v.step({0, 1, 0, false}, flat);
+    CHECK(std::fabs(v.boost_factor() - 1.0) < 1e-9);
+    CHECK(v.boost_psi() == 0.0);
+  }
+
+  // 2. Turbo car spools from MinScale_eff toward MaxScale_eff under WOT and
+  // dumps via BOV hysteresis when throttle closes (< 0.01).
+  {
+    auto p = test_car();
+    p.has_turbo = true;
+    p.turbo_tau = 0.19;
+    p.turbo_power_min = 7457;
+    p.turbo_power_max = 90975;
+    p.boost_min_psi = 3.675;
+    p.boost_max_psi = 27.93;
+    p.boost_scale_min = 0.87;
+    p.boost_scale_max = 1.48;
+    drive::Vehicle v(p);
+    v.launch({0, 0, 0}, 0, 20.0);
+    v.step({0, 1, 0, false}, flat);
+    const double early_boost = v.boost_factor();
+    for (int i = 0; i < 120; ++i) v.step({0, 1, 0, false}, flat);
+    const double spooled_boost = v.boost_factor();
+    CHECK(early_boost < 1.0);
+    CHECK(spooled_boost > 1.35);
+    for (int i = 0; i < 60; ++i) v.step({0, 0, 0, false}, flat);
+    CHECK(v.boost_factor() < spooled_boost - 0.3);
+  }
+
+  // 3. Supercharger builds boost smoothly via 15 Hz filter proportional to RPM.
+  {
+    auto p = test_car();
+    p.has_supercharger = true;
+    p.sc_zero_psi = 17.0;
+    p.sc_redline_psi = 25.0;
+    p.sc_scale_zero = 1.08;
+    p.sc_scale_redline = 1.35;
+    drive::Vehicle v(p);
+    v.launch({0, 0, 0}, 0, 30.0);
+    for (int i = 0; i < 60; ++i) v.step({0, 1, 0, false}, flat);
+    CHECK(v.boost_factor() > 1.10);
+    CHECK(v.boost_psi() > 15.0);
+  }
+
+  // 4. GameTorqueScale scales wheel drive torque without altering open-clutch free rev.
+  {
+    auto p1 = test_car(), p2 = test_car();
+    p1.game_torque_scale = 1.0;
+    p2.game_torque_scale = 0.7;
+    drive::Vehicle v1(p1), v2(p2);
+    // First 0.3 s clutch is open: identical free-rev RPM!
+    for (int i = 0; i < 36; ++i) {
+      v1.step({0, 1, 0, false}, flat);
+      v2.step({0, 1, 0, false}, flat);
+    }
+    CHECK(std::fabs(v1.rpm() - v2.rpm()) < 1.0);
+    // In gear at 30 m/s (3rd gear, no shift during 1 s): higher GameTorqueScale
+    // accelerates faster.
+    v1.launch({0, 0, 0}, 0, 30.0);
+    v2.launch({0, 0, 0}, 0, 30.0);
+    for (int i = 0; i < 120; ++i) {
+      v1.step({0, 1, 0, false}, flat);
+      v2.step({0, 1, 0, false}, flat);
+    }
+    CHECK(v1.speed() > v2.speed() + 0.5);
+  }
+
+  // 5. Per-car brakes & downforce: higher BrakeTorqueSlider yields higher
+  // brake_const, and aero downforce increases wheel loads at speed.
+  {
+    auto p_lo = test_car(), p_hi = test_car();
+    p_lo.use_per_car_brakes = p_hi.use_per_car_brakes = true;
+    p_lo.brake_torque_slider = 0.5;
+    p_hi.brake_torque_slider = 0.9;
+    p_hi.aero_drag_long = 0.40;
+    p_hi.aero_df_front = 0.35;
+    p_hi.aero_df_rear = 0.55;
+    drive::Vehicle vlo(p_lo), vhi(p_hi);
+    CHECK(vhi.brake_const(0) > vlo.brake_const(0) * 1.5);
+    CHECK(vhi.brake_const(0) > vhi.brake_const(1));
+    CHECK(vhi.decel_table_at(40.0) > 0.5 && vhi.decel_table_at(40.0) <= 1.05);
+    vhi.launch({0, 0, 0}, 0, 60.0);
+    for (int i = 0; i < 30; ++i) vhi.step({0, 0, 0, false}, flat);
+    double total_load = 0;
+    for (const auto& w : vhi.wheels()) total_load += w.load;
+    CHECK(total_load > p_hi.mass * p_hi.gravity + 1500.0);
+  }
+
+  // 6. Aerodynamic drafting (40-150 mph window): follower gets -28% drag at 150 mph.
+  {
+    drive::DraftCar follower{{0, 0, 0}, {0, 0, 1}, 67.056, 1.9, 0.3, 0.5};
+    drive::DraftCar leader{{0, 0, 8.0}, {0, 0, 1}, 67.056, 1.9, 0.3, 0.5};
+    const auto d = drive::compute_follower_draft(follower, &leader, 1);
+    CHECK(std::fabs(d.strength - 1.0) < 1e-6);
+    CHECK(std::fabs(d.body_drag - 0.72) < 1e-4);
+    CHECK(std::fabs(d.front_df - 0.47) < 1e-4);
+    CHECK(std::fabs(d.rear_df - 0.61) < 1e-4);
+    CHECK(d.score > 0);
+    // Below 40 mph: no drafting.
+    follower.speed = 10.0;
+    CHECK(drive::compute_follower_draft(follower, &leader, 1).strength == 0.0);
+    const auto dl = drive::compute_leader_draft(1.0, 50.0);
+    CHECK(std::fabs(dl.body_drag - 0.96) < 1e-4);
+  }
+
+  // 7. Surface Bumpiness (NoiseType 9 = SinWave) exact formula + clamp zero-gradient
+  // + 2*Rumble, and Hand-of-God trigger on water surface / floor Y.
+  {
+    drive::SurfaceTyre s;
+    s.bump_noise_type = 9;
+    s.bump_frequency = 0.5;
+    s.bump_clamp_min = -0.5;
+    s.bump_clamp_max = 0.5;
+    s.bump_scale = 0.02;
+    s.bump_offset = 0.005;
+    s.bump_rumble = 0.35;
+    // At x=0, z=0: sin(0)=0 -> unclamped, dh/dx = 0.5 * 0.5 * 2*pi * 0.02.
+    const auto b0 = drive::eval_surface_bumpiness(s, 0.0, 0.0);
+    CHECK(std::fabs(b0.height - 0.005) < 1e-9);
+    CHECK(std::fabs(b0.dh_dx - 0.5 * 0.5 * 2.0 * 3.14159265358979323846 * 0.02) < 1e-9);
+    // At x=0.5, z=0.5: sin(pi/2)=1 -> h_raw=1 > ClampMax(0.5), gradients zeroed!
+    const auto bc = drive::eval_surface_bumpiness(s, 0.5, 0.5);
+    CHECK(std::fabs(bc.height - (0.005 + 0.5 * 0.02)) < 1e-9);
+    CHECK(bc.dh_dx == 0.0 && bc.dh_dz == 0.0);
+
+    class WaterGround : public drive::Ground {
+     public:
+      bool raycast(const drive::Vec3& o, const drive::Vec3& d, double max_d, drive::Hit& hit) const override {
+        if (d.y > -1e-9) return false;
+        const double dist = -o.y / d.y;
+        if (dist < 0 || dist > max_d) return false;
+        hit.distance = dist;
+        hit.normal = {0, 1, 0};
+        hit.grip = 0.8;
+        hit.tyre.is_hand_of_god = true;
+        hit.tyre.bump_rumble = 0.4;
+        return true;
+      }
+    };
+    drive::Vehicle v(test_car());
+    WaterGround wg;
+    v.step({}, wg);
+    CHECK(v.hand_of_god_triggered());
+    CHECK(std::fabs(v.surface_bump_rumble() - 0.8) < 1e-9);
+    v.clear_hand_of_god();
+    CHECK(!v.hand_of_god_triggered());
+  }
+}
+
 int main() {
   test_save();
   test_rest_pose();
@@ -500,6 +660,7 @@ int main() {
   test_ai_slip_rule();
   test_speed_planner();
   test_contact_no_tunnelling();
+  test_per_car_physics();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

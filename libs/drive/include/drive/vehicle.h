@@ -40,12 +40,37 @@ Vec3 rotate_inverse(const Quat& q, const Vec3& v);
 // The ground the wheels stand on. raycast returns the distance along dir
 // (unit) from origin to the first hit within max_distance, with the
 // surface normal and a grip factor (the surface's FrictionScale).
-// A surface's tyre columns (SPEC-CAR-PHYSICS, Tyre model): the rear
-// wheels' multiplier, and how far it moves the lateral peak slip towards
-// its own (degrees).
+// A surface's tyre and contact columns (SPEC-CAR-PHYSICS, Tyre model &
+// Surface drag; COLLISION.md, Runtime SurfaceType evaluation).
 struct SurfaceTyre {
   double rear_grip = 1, off_roadness = 0, off_road_peak_sa = 12;
+  double handbrake_grip = 1, tcs_speed_scale = 1;
+  // Friction/VelDepFriction (default: Asphalt 0..8 m/s, 0.01 long, 0.03 lat).
+  double vel_peak0 = 0, vel_peak = 8;
+  double vel_long0 = 0, vel_long = 0.01;
+  double vel_lat0 = 0, vel_lat = 0.03;
+  // Bumpiness (COLLISION.md NoiseType 0..9).
+  int bump_noise_type = 0;
+  double bump_frequency = 0;
+  double bump_clamp_min = -1, bump_clamp_max = 1;
+  double bump_scale = 0, bump_offset = 0;
+  double bump_rumble = 0;
+  // Springiness (soft-ground contact).
+  bool is_springy = false;
+  double spring_k = 0, spring_comp_d = 0, spring_reb_d = 0;
+  double spring_norm_y_cutoff = 0.707, spring_speed_cutoff = 4.0;
+  bool is_penalty_surface = false;
+  bool is_hand_of_god = false;
 };
+
+// Evaluates procedural surface Bumpiness height and horizontal gradient at
+// world (x, z) (COLLISION.md, Runtime SurfaceType evaluation).
+struct BumpSample {
+  double height = 0;
+  double dh_dx = 0;
+  double dh_dz = 0;
+};
+BumpSample eval_surface_bumpiness(const SurfaceTyre& s, double x, double z);
 struct Hit {
   double distance = 0;
   Vec3 normal{0, 1, 0};
@@ -190,61 +215,96 @@ struct CarParams {
   // GameFrictionScaleBraking, in place of the accel blend.
   double brake_friction_scale = 1.8;
 
-  // Engine.
+  // Engine (SPEC-CAR-PHYSICS, Engine torque, forced induction and
+  // GameTorqueScale).
   std::vector<double> torque_curve;     // normalised samples, sentinel removed; empty = synthetic
   double torque_curve_max_rpm = 9000;   // rpm of the curve's last sample slot (n-1 spacing over the full row)
   double torque_curve_slots = 0;        // NumTorqueValues - 1 (the spacing's divisor); 0 = values.size() - 1
-  double torque_scale = 380;            // N m at the curve's 1.0
-  double engine_braking = 120;          // N m at the redline with the throttle shut (ours, shape)
+  double torque_scale = 380;            // N m at the curve's 1.0: TorqueScale x S_upg (T_wot_base)
+  // ZeroThrottleTorqueScale, N m: the closed-throttle torque is -1 x this up
+  // to max(800 rpm, idle), falling linearly to -2.63 x this at the redline.
+  double engine_braking = 50;
   double idle_rpm = 800, redline_rpm = 7000;
   double launch_rpm = 4000;             // StartRPM: the launch controller's starting engine speed
-  double engine_inertia = 0.2;          // kg m^2, engine + flywheel
+  double engine_inertia = 0.2;          // kg m^2, Data_Engine + flywheel MomentInertia
+  // Data_Car.GameTorqueScale (clamped to 0.5..1.5): on the drive torque the
+  // clutch passes to the wheels only, not on the engine's own speed.
+  double game_torque_scale = 1;
+  // Forced induction (SPEC-CAR-PHYSICS, Engine torque, forced induction and
+  // GameTorqueScale). Turbo: turbine power lag + 15 Hz boost pressure filter.
+  // Supercharger (DSC/CSC): RPM-linear boost through the same 15 Hz filter.
+  // Neither set (naturally aspirated): zero boost lag, f_total = 1.
+  bool has_turbo = false;
+  double turbo_tau = 0.19;                                  // s, 0.01 x MomentInertia
+  double turbo_power_min = 7457, turbo_power_max = 90975;   // W, 745.7 x PowerMin/MaxScale
+  double boost_min_psi = 3.675;                             // 0.25 atm (BOV dump pressure)
+  double boost_max_psi = 27.93;                             // 14.7 x (2 x (MaxScale - 1) + 1)
+  double boost_scale_min = 1, boost_scale_max = 1;          // MinScale_eff, MaxScale_eff
+  double turbo_dropoff_rpm0 = 0, turbo_dropoff_rpm1 = 0;    // TorqueDropOffRPM0/1 (equal: none)
+  double turbo_dropoff_scale0 = 1, turbo_dropoff_scale1 = 1;
+  bool has_supercharger = false;
+  double sc_zero_psi = 14.7, sc_redline_psi = 14.7;         // 14.7 x (2 x (Scale - 1) + 1)
+  double sc_scale_zero = 1, sc_scale_redline = 1;           // ZeroRPMScale_eff, RedlineRPMScale_eff
+  double sc_dropoff_rpm0 = 0, sc_dropoff_rpm1 = 0;
+  double sc_dropoff_scale0 = 1, sc_dropoff_scale1 = 1;
 
   // Drivetrain.
   enum class Layout { kRear, kFront, kAll } layout = Layout::kRear;
   double rear_split = 0.7;  // AWD torque share to the rear
-  // AWD centre differential's locking torque (N m at its input, x the
-  // final drive at the wheels) while the engine drives / while it brakes.
-  double centre_lsd_accel = 0, centre_lsd_decel = 0;
+  // Limited-slip differential (SPEC-CAR-PHYSICS, AWD and LSDs):
+  // T_lock = clamp(dw / rel_vel_clamp, -1, 1) * lerp(decel, accel, clamp(T_in / accel_def_in, 0, 1)).
+  struct LsdParams {
+    double accel = 0;           // N m, LimitedSlipTorqueAccel
+    double decel = 0;           // N m, LimitedSlipTorqueDecel
+    double rel_vel_clamp = 50;  // rad/s, LimitedSlipRelVelClamp
+    double accel_def_in = 50;   // N m, LimitedSlipAccelDefInputTorque
+  };
+  LsdParams front_lsd{}, rear_lsd{}, center_lsd{};
   std::vector<double> gears{3.30, 2.13, 1.55, 1.21, 1.00, 0.82};
   double reverse_gear = 3.4;  // magnitude
   double final_drive = 3.70;
   double gearbox_inertia = 0.014, driveline_inertia = 0.004;  // kg m^2
   double gear_shift_time = 0.16, clutch_in_time = 0.15, clutch_out_time = 0.3;  // s
   double clutch_max_torque = 900;  // N m
-  double clutch_torque_factor = 0.72;  // capacity = engagement x ClutchMaxTorque x this (measured fit)
+  double clutch_torque_factor = 1.0;  // capacity = engagement x ClutchMaxTorque x this
   double upshift_fraction = 0.945;  // of the redline (7,560 on the R34)
   // Braking: down when the lower gear would put the clutch output under
   // this x the redline (6,400 on the R34; SPEC-CAR-PHYSICS, Gearbox).
   double downshift_brake_fraction = 0.8;
-  double reverse_select_speed = 6.7056;  // m/s: MaxForwardVelShiftReverseMPH (15 mph)
+  double reverse_select_speed = 6.7056;      // m/s: MaxForwardVelShiftReverseMPH (15 mph)
+  double reverse_auto_enter_speed = 6.7056;  // m/s: MaxForwardSpeedMphToAutoEnterReverse
+  double shift_reverse_pause = 0.0;          // s: ShiftReversePause
   // The launch controller (SPEC-CAR-PHYSICS, Clutch and gearbox states).
   double launch_max_output_rpm = 700;  // the clutch output speed under which a start is a launch
   double launch_fall_time = 1.5;       // s for the target to fall from its start to its end
-  double launch_gain = 53;             // clutch rate per (rpm / redline)
+  double launch_gain = 53;             // clutch rate per (rpm / target_rpm)
   double launch_lookahead = 0.04;      // s of engine acceleration in the servo's error
   double launch_exit_slip = 0.7;       // the driven wheels' mean |normalised slip| under which it ends
   double rev_match_time = 0.05;        // s
-  // The engine's effective throttle builds like boost: a first-order lag of
-  // the drive trigger with this time constant, capped by the pedal (ours, a
-  // fit to the spec's 0.3 / 0.6 / 0.83 / 1.0 at 0.1 / 0.25 / 0.5 / 0.9 s).
-  // 0 = off.
-  double boost_lag = 0.28;
+  // Legacy synthetic throttle lag (0 = disabled; real cars use has_turbo/has_supercharger).
+  double boost_lag = 0.0;
 
-  // Brakes.
-  double front_brake_torque = 3500;  // N m per front wheel at full press
-  double rear_brake_torque = 3100;   // N m per rear wheel at full press
+  // Brakes (SPEC-CAR-PHYSICS, Brakes). When use_per_car_brakes is true (set by
+  // from_physics.cpp), Vehicle::init computes per-axle brake_const, rear
+  // handbrake_const, and the 10-point speed-vs-deceleration table from the
+  // car's actual tyres, mass, geometry, aero downforce, and brake sliders.
+  // When false (synthetic test car), uses front/rear/handbrake_torque directly.
+  bool use_per_car_brakes = false;
+  double brake_torque_slider = 0.5;   // List_UpgradeBrakes.BrakeTorqueSlider [0, 1]
+  double brake_bias_slider = 0.5;     // List_UpgradeBrakes.BrakeBiasSlider [0, 1]
+  double brake_bias_offset_rear = 0.03;  // PhysicsSettings BrakeBiasOffsetRear
+  double brake_pressure_min_share = 0.25;  // BrakePressureMaxPercentFrontOrRear
+  double bias_handbrake = 1.5;        // List_UpgradeBrakes.BiasHandbrake [0, 5.5]
+  double brake_input_in[4] = {0, 0.001, 0.90, 1.0};
+  double brake_input_out[4] = {0, 0.12, 0.70, 0.81};
+  double front_brake_torque = 3500;  // N m per front wheel (fallback / override when > 0 & !use_per_car_brakes)
+  double rear_brake_torque = 3100;   // N m per rear wheel
   double handbrake_torque = 2500;    // N m per rear wheel
   bool abs = true;
   double abs_front_no_steer = 3.0, abs_front_full_steer = 0.5;
   double abs_rear_no_steer = 2.5, abs_rear_full_steer = 2.0;
   double abs_duration = 0.05;  // s
   int abs_smoothing = 5;       // substeps in the slip mean the ABS tests
-  // The AI's brakes (SPEC-CAR-PHYSICS, "What the AI's controls mean"):
-  // linear torque, ai_brake_scale x the full-press torque per unit of brake
-  // (6,970 and 2,850 N m on the R34: 1.59 x 4,390 and 1,790), and one ABS
-  // release point for both axles (ReleasePointABS) with no steering blend,
-  // releasing for one step.
   double ai_brake_scale = 1.59;
   double abs_ai_release = 0.71;
 
@@ -264,12 +324,60 @@ struct CarParams {
   // 19 to 22 m/s, against 105 at walking pace; placeholder).
   double steer_rate_min_share = 0.25;
 
-  // Resistance: F = drag_quadratic v^2 + drag_constant, against the motion
-  // (the spec's fit; the constant fades in over the first 1 m/s, ours).
+  // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): all force coefficients in
+  // N/(m/s)^2 (DB kgf @ 150 mph x K_aero, K_aero = 9.80665 / 67.056^2).
+  // When aero_drag_long > 0 the 3D body + wing aero model runs; when 0
+  // (synthetic test car), falls back to drag_quadratic / drag_constant.
+  double aero_drag_long = 0;       // BodyAeroLongitudinalDrag x K_aero x GameDragScale x part drag scales
+  double aero_drag_lat_front = 0;  // BodyAeroLateralDragFront x K_aero
+  double aero_drag_lat_rear = 0;   // BodyAeroLateralDragRear x K_aero
+  double aero_drag_vert = 0;       // BodyAeroVerticalDrag x K_aero
+  double aero_df_front = 0;        // (BodyAeroForwardDownforceFront + RearBumper delta) x K_aero
+  double aero_df_rear = 0;         // (BodyAeroForwardDownforceRear + RearBumper delta) x K_aero
+  double aero_zero_df_rad = 0.7853981633974483;  // BodyAeroAngleZeroDownforce (rad, default 45 deg)
+  double aero_part_drag_front = 0, aero_part_df_front = 0;  // FrontBumper List_AeroPhysics
+  double aero_part_drag_rear = 0, aero_part_df_rear = 0;    // RearWing List_AeroPhysics
+  double aero_part_lat_drag = 0;                            // FrontBumper + RearWing LateralDrag x K_aero
+  double high_speed_drag_v0 = 119.3, high_speed_drag_v1 = 122.9;  // m/s
+  double high_speed_drag_s0 = 1.0, high_speed_drag_s1 = 1.5;
+
+  // Fallback resistance for synthetic CarParams (when aero_drag_long == 0);
+  // on real cars drag_quadratic holds the total forward drag coeff (for AI
+  // speed planner) and drag_constant is 0 (rolling resistance is VelDepFriction).
   double drag_quadratic = 0.21, drag_constant = 240;
+
+  // Surface drag slew rate (VelDepFriction MaxVelDepCoeffVel) and world
+  // floor/water Y threshold for Hand-of-God respawn (COLLISION.md).
+  double max_vel_dep_coeff_vel = 5.0;  // 1/s
+  double water_floor_y = -46.0;        // m (COLLISION.md, global floor/water Y)
 
   double physics_hz = 359;  // PhysicsSettings.ini CarPhysicsUpdateHz
 };
+
+// Aerodynamic drafting scales applied to a vehicle (SPEC-CAR-PHYSICS,
+// Aerodynamic drafting). All multipliers default to 1.0 (no drafting).
+struct DraftState {
+  double strength = 0;      // d in [0, 1], max over leading cars
+  double body_drag = 1;
+  double front_drag = 1;
+  double rear_drag = 1;
+  double front_df = 1;
+  double rear_df = 1;
+  double score = 0;         // [0, 1000] drafting score (|F_downforce_saved|)
+};
+
+// Evaluates drafting multipliers for a follower behind one or more leaders
+// (SPEC-CAR-PHYSICS, Aerodynamic drafting, 40-150 mph window).
+struct DraftCar {
+  Vec3 position{};
+  Vec3 forward{0, 0, 1};
+  double speed = 0;
+  double width = 1.9;
+  double front_df_coeff = 0;  // N/(m/s)^2 (for drafting score)
+  double rear_df_coeff = 0;
+};
+DraftState compute_follower_draft(const DraftCar& follower, const DraftCar* leaders, size_t leader_count);
+DraftState compute_leader_draft(double strength, double speed);
 
 // Raw input, as the player gives it: steer -1 (left) to +1 (right),
 // throttle and brake 0 to 1, handbrake on or off.
@@ -360,6 +468,9 @@ class Vehicle {
   // torque cut and the race-start boost); 1 by default.
   void set_torque_factor(double f) { torque_factor_ = f; }
   double torque_factor() const { return torque_factor_; }
+  // Aerodynamic drafting multipliers for the next step (SPEC-CAR-PHYSICS).
+  void set_draft(const DraftState& d) { draft_ = d; }
+  const DraftState& draft() const { return draft_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -380,8 +491,11 @@ class Vehicle {
            (target_gear_ != gear_before_ && (state_ == GearState::kRevMatch || state_ == GearState::kClutchOut));
   }
   double engine_throttle() const { return engine_throttle_; }  // what the engine sees, 0..1
-  // The engine's torque (N m) at an rpm and throttle, before the clutch.
+  // The engine's torque (N m) at an rpm and throttle, before the clutch (uses current boost).
   double engine_torque(double rpm, double throttle) const;
+  // Current boost pressure (psi) and combined boost multiplier (1.0 on NA cars).
+  double boost_psi() const { return p_.has_turbo ? boost_psi_ : (p_.has_supercharger ? sc_psi_ : 0.0); }
+  double boost_factor() const { return boost_factor_; }
   double launch_target() const { return launch_target_; }      // rpm, in the launch state
   // The clutch output's speed (driven-wheel speed x gear x final drive), rpm, signed.
   double clutch_output_rpm() const;
@@ -407,6 +521,21 @@ class Vehicle {
     int64_t triangle = -1;
   };
   const BodyContact& strongest_body_contact() const { return strongest_; }
+  // Surface bumpiness rumble: max across grounded wheels of 2 * Bumpiness.Rumble
+  // (COLLISION.md, Runtime SurfaceType evaluation; consumed by ControllerRumble).
+  double surface_bump_rumble() const { return surface_bump_rumble_; }
+  // True if a grounded wheel touched an IsHandOfGodTriggerSurface or fell
+  // below water_floor_y (COLLISION.md); caller clears after respawning.
+  bool hand_of_god_triggered() const { return hand_of_god_; }
+  void clear_hand_of_god() { hand_of_god_ = false; }
+  void set_water_floor_y(double y) { p_.water_floor_y = y; }
+  // Computed per-car brake constants (trace units) and 10-point normalized
+  // speed-vs-deceleration table (0..200 mph, SPEC-CAR-PHYSICS, Brakes).
+  double brake_const(int axle) const { return brake_const_[axle]; }
+  double handbrake_const() const { return handbrake_const_; }
+  double brake_max_decel() const { return brake_a_max_; }  // m/s^2
+  const std::array<double, 10>& decel_table() const { return decel_table_; }
+  double decel_table_at(double speed_ms) const;
   // The static load the springs are preloaded with, per wheel (N).
   double static_load(int wheel) const { return preload_[wheel]; }
 
@@ -414,6 +543,8 @@ class Vehicle {
   void substep(double dt, const Ground& ground);
   void shape_input(const Input& raw, double dt);
   void update_gearbox(double dt);
+  void update_boost(double dt, double throttle, double rpm_now);
+  void init_brakes();
   double ratio(int gear) const;  // gear x final drive, signed (reverse negative)
   double input_omega() const;    // the gearbox output side's speed in wheel rad/s (diff-weighted)
 
@@ -422,6 +553,12 @@ class Vehicle {
   Vec3 inertia_{};
   double preload_[kWheels]{}, droop_[kWheels]{};
   double weight_[kWheels]{};  // the differential's share of each wheel (sums to 1)
+  double peak_power_rpm_ = 6500;
+  double brake_const_[2]{0, 0};
+  double handbrake_const_ = 0;
+  double brake_a_max_ = 10.0;
+  std::array<double, 10> decel_table_{1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+  double handbrake_shaped_ = 0;
   int substeps_ = 3;
   Vec3 pos_{}, vel_{}, ang_{};  // centre of mass (world), its velocity, angular velocity (world)
   Quat rot_{};
@@ -433,9 +570,17 @@ class Vehicle {
   int gear_before_ = 1;        // the gear a shift started from
   GearState state_ = GearState::kOpen;
   double state_time_ = 0;      // s in the current state
+  double reverse_hold_time_ = 0;  // s brake held at low speed for reverse entry
+  bool pedal_swap_ = false;    // reverse pedal swap active (SPEC-CAR-PHYSICS)
   double clutch_ = 0;          // engagement
   double prev_rpm_ = 0;        // engine rpm at the last step (the launch servo's rate)
-  double spool_ = 0;           // the boost lag's state
+  double spool_ = 0;           // legacy boost lag state (used only if boost_lag > 0)
+  double turbo_power_ = 0;     // W, turbine power lag ODE state
+  double boost_psi_ = 3.675;   // psi, 15 Hz filtered turbo boost pressure
+  double sc_psi_ = 3.675;      // psi, 15 Hz filtered supercharger boost pressure
+  bool bov_open_ = true;       // blow-off valve hysteresis state
+  double boost_factor_ = 1.0;  // combined forced-induction multiplier f_total
+  double engine_torque_prev_ = 0;  // N m, previous substep T_engine for P_engine
   double engine_throttle_ = 0;
   double driver_throttle_ = 0;  // the driver's effective drive throttle this step
   double slip_hist_[kWheels][8]{};
@@ -446,6 +591,13 @@ class Vehicle {
   bool locked_ = false;        // the clutch is not slipping
   double engine_omega_ = 0;    // rad/s
   double abs_timer_[kWheels]{};
+  double vel_dep_long_[kWheels]{};
+  double vel_dep_lat_[kWheels]{};
+  double spring_defl_[kWheels]{};
+  double spring_ring_[kWheels][3]{};
+  int spring_ring_pos_ = 0;
+  double surface_bump_rumble_ = 0;
+  bool hand_of_god_ = false;
   bool abs_flag_ = false;
   bool ai_ = false;
   double torque_factor_ = 1;
@@ -453,6 +605,7 @@ class Vehicle {
   double dirt_k_ = 0, dirt_time_ = 0;
   std::array<double, 2> ai_grip_{1, 1};
   double time_ = 0;
+  DraftState draft_{};
   double body_force_ = 0;
   BodyContact strongest_;
 };
