@@ -95,6 +95,26 @@ struct CarbinPart {
   bool empty_box() const;  // bounds of +/-FLT_MAX: a part with no geometry
 };
 
+// Kind-5 exterior `.carbin` header lamp point (32 bytes each, at offset 340;
+// CAR_LAMPS.md §4.1). Position is in body frame (+Z forward).
+struct CarbinLampPoint {
+  std::array<float, 3> position{};     // metres, body frame (+X right, +Y up, +Z forward)
+  std::array<float, 3> direction{};    // unit emission axis
+  uint8_t sub_group = 0;
+  uint8_t lamp_kind = 0;               // headlamps: 1 halogen, 2 xenon, 3 HID, 4 alt
+  uint8_t side_flags = 0;              // 0x01 left, 0x02 right, 0x08 extra, 0x80 force-on
+  uint8_t channel_mask = 0;            // 0x01 head, 0x02 tail, 0x04 brake, 0x08 ind, 0x10 rev
+  std::array<uint8_t, 3> rgb{};        // 0,0,0 -> channel preset default
+  uint8_t size_raw = 0;                // radius = size_raw / 128.0 m (0 -> preset)
+  uint8_t texture_index = 0;           // 1..7 -> headlight_glow_<N>.xds (0 -> preset)
+  std::array<int8_t, 3> crush_offset{};
+  uint8_t inner_cone_deg = 255;        // 255 -> preset (30 deg)
+  uint8_t outer_cone_deg = 255;        // 255 -> preset (65 deg)
+};
+
+// Parses the kind-5 header lamp-point array (fast header-only scan, no full mesh decode).
+std::vector<CarbinLampPoint> parse_carbin_lamp_points(std::span<const uint8_t> data);
+
 struct Carbin {
   uint32_t kind = 0;          // first word: 5 exterior, LOD0, cockpit; 1 calipers, rotors, brakes
   std::vector<uint8_t> head;  // every byte before the part count (draw-list block included)

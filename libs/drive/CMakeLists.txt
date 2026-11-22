@@ -12,7 +12,8 @@ add_library(shift_drive STATIC
   src/ai_driver.cpp
   src/contact.cpp
   src/rewind.cpp
-  src/driving_line.cpp)
+  src/driving_line.cpp
+  src/lamps.cpp)
 target_include_directories(shift_drive PUBLIC include)
 target_link_libraries(shift_drive PUBLIC shift_cars)
 if(MSVC)

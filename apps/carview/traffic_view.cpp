@@ -63,6 +63,7 @@ TrafficView::~TrafficView() {
 
 bool TrafficView::open(const std::filesystem::path& game_root, const drive::Ground* const* ground, double hour,
                        uint64_t seed, std::string& error) {
+  game_root_ = game_root;
   if (!traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", map_, &error) ||
       !traffic::read_traffic_config(game_root, config_, &error))
     return false;
@@ -146,15 +147,18 @@ void TrafficView::update_guests() {
     if (g.showroom || g.failed) continue;
     if (!g.loading.valid()) {
       const std::filesystem::path bake = bake_dir_;
+      const std::filesystem::path root = game_root_;
       const std::string media = media_[id];
       Renderer* r = &r_;
-      g.loading = std::async(std::launch::async, [r, bake, media]() {
+      g.loading = std::async(std::launch::async, [r, bake, root, media]() {
         auto s = std::make_unique<Showroom>(*r);
         s->set_guest();
         std::string e;
         if (!s->load(bake, media, ShowroomOptions{}, e)) {
           std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
           s.reset();
+        } else {
+          s->load_car_lamps(root, media);
         }
         return s;
       });
@@ -228,6 +232,11 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     Showroom::Instance in;
     in.car = it->second.showroom.get();
     multiply(world_to_player, gmd, in.model);
+    drive::CarLampState lstate;
+    lstate.headlamps_on = drive::CarLampState::tod_requests_headlamps(population_->hour() * 3600.0);
+    lstate.brake_on = (c.speed > c.target + 1.0 || (body && body->speed() < 0.2));
+    in.lamps = lstate.vectors();
+    in.has_lamps = true;
     list.push_back(in);
   }
   drawn_ = list.size();

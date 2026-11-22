@@ -273,6 +273,44 @@ std::vector<size_t> carbin_scan_part_count(std::span<const uint8_t> data) {
   return found;
 }
 
+std::vector<CarbinLampPoint> parse_carbin_lamp_points(std::span<const uint8_t> data) {
+  std::vector<CarbinLampPoint> out;
+  if (data.size() < 344) return out;
+  const uint32_t kind = load_be32(data.data());
+  if (kind != 5) return out;
+  const uint32_t count = load_be32(&data[340]);
+  if (count == 0 || count > 128 || 344 + size_t(count) * 32 > data.size()) return out;
+  out.reserve(count);
+  auto be_f32 = [](const uint8_t* p) -> float {
+    const uint32_t bits = load_be32(p);
+    float f = 0.0f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+  };
+  auto be_i16 = [](const uint8_t* p) -> int16_t {
+    return static_cast<int16_t>((uint16_t(p[0]) << 8) | uint16_t(p[1]));
+  };
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* p = &data[344 + size_t(i) * 32];
+    CarbinLampPoint lp;
+    lp.position = {be_f32(p + 0), be_f32(p + 4), be_f32(p + 8)};
+    lp.direction = {float(be_i16(p + 12)) / 32767.0f, float(be_i16(p + 14)) / 32767.0f,
+                    float(be_i16(p + 16)) / 32767.0f};
+    lp.sub_group = p[18];
+    lp.lamp_kind = p[19];
+    lp.side_flags = p[20];
+    lp.channel_mask = p[21];
+    lp.rgb = {p[22], p[23], p[24]};
+    lp.size_raw = p[25];
+    lp.texture_index = p[26];
+    lp.crush_offset = {static_cast<int8_t>(p[27]), static_cast<int8_t>(p[28]), static_cast<int8_t>(p[29])};
+    lp.inner_cone_deg = p[30];
+    lp.outer_cone_deg = p[31];
+    out.push_back(lp);
+  }
+  return out;
+}
+
 bool parse_carbin(std::span<const uint8_t> data, Carbin& out, std::string* error) {
   out = Carbin{};
   auto fail = [&](const std::string& why) {

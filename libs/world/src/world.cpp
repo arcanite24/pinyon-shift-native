@@ -396,16 +396,34 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
                   (*texture_list)[size_t(v)] < impl_->table.textures.size())
                 mm.slot_types[k] = int32_t(impl_->table.textures[(*texture_list)[size_t(v)]].type);
             }
-            if (mm.effect.rfind("LAKE", 0) == 0) mm.albedo = kNoTexture;  // slot 0 is a cube map there
+            if (mm.effect.rfind("LAKE", 0) == 0) {
+              mm.albedo = kNoTexture;  // slot 0 is a cube map there
+              mm.is_water = 1;
+              mm.normal_map = slot_record(1);
+            }
+            // Helper: file-backed texture record only (skips all-black Light_Map / all-white AO type-1 stubs).
+            auto file_slot = [&](size_t slot) -> uint32_t {
+              const uint32_t rec = slot_record(slot);
+              if (rec == kNoTexture) return kNoTexture;
+              const uint8_t ty = impl_->table.textures[rec].type;
+              return (ty == fh1::kPvsTextureBix || ty == fh1::kPvsTextureCaff) ? rec : kNoTexture;
+            };
             // Terrain layers (WORLD-MATERIALS, Terrain shading): pixel
             // constants 0 and 1 are the tilings, 4's x the vertex weight's
-            // gain; Blend_B in slot 1, Splat in slot 2.
+            // gain; Blend_B in slot 1, Splat in slot 2, Blend_C in slot 5 (H_BLND3).
             auto constant = [&](size_t i) {
               return i < m.pixel_constants.size() ? m.pixel_constants[i] : std::array<float, 4>{1, 1, 1, 1};
             };
             const bool vblend = mm.effect.rfind("H_VBLND", 0) == 0;
             const bool decal = mm.effect.rfind("H_VBLND_DECAL", 0) == 0;
-            const bool splat = mm.effect.rfind("H_BLND2", 0) == 0 || mm.effect.rfind("H_BLND3", 0) == 0;
+            const bool blnd3 = mm.effect.rfind("H_BLND3", 0) == 0;
+            const bool splat = mm.effect.rfind("H_BLND2", 0) == 0 || blnd3;
+            const bool road = mm.effect.rfind("H_ROAD", 0) == 0;
+            const bool prop_diff = mm.effect.rfind("H_DIFF", 0) == 0;
+            const bool has_norm = mm.effect.find("_NORM") != std::string::npos;
+            const bool has_ao = mm.effect.find("_AO") != std::string::npos;
+            const bool has_lm = mm.effect.ends_with("_LM");
+            const bool has_spec = mm.effect.find("_SPEC") != std::string::npos;
             if (vblend) weight_gain = constant(4)[0];
             if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
             if (decal) {
@@ -421,6 +439,30 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               mm.splat = slot_record(2);
               splat_uv = 1;
               splat_tiling = {constant(1)[2], constant(1)[3]};
+              if (blnd3) {
+                mm.layer_c = file_slot(5);
+                mm.tiling_c = {constant(1)[0], constant(1)[1]};
+              }
+            }
+            if (has_norm && !mm.is_water) {
+              mm.normal_map = prop_diff ? file_slot(1) : file_slot(3);
+            }
+            if (has_ao) {
+              if (road && mm.effect.find("DIFF3") != std::string::npos &&
+                  mm.effect.find("MODULATE") != std::string::npos) {
+                mm.ao_map = file_slot(4);
+              } else if (blnd3) {
+                mm.ao_map = file_slot(6);
+              } else {
+                mm.ao_map = file_slot(5);
+              }
+            }
+            if (has_lm) {
+              mm.light_map = file_slot(7);
+              if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
+            }
+            if (has_spec && prop_diff) {
+              mm.spec_map = file_slot(has_norm ? 2 : 1);
             }
             auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
             if (fresh) out.materials.push_back(mm);
@@ -654,11 +696,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       const uint32_t m = impl_->table.objects[p.object_id].member;
       // The placeholder marker of activity nodes is never drawn (WORLD-
       // GEOMETRY: a guess from the one marker in view).
+      std::string prop_family_low;
       {
         std::string family;
         int lod = -1;
         if (impl_->prop_models->first_name(m, family, lod)) {
           for (char& ch : family) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+          prop_family_low = family;
           if (family.rfind("temp_arrow_pointer", 0) == 0) {
             ++st.props_markers;
             continue;
@@ -706,6 +750,39 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         }
         const auto it = index_of.find(impl_->prop_models->name_of(uint32_t(member)));
         add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr, false, fade);
+        // Emit night streetlamp / festival / outpost glow sprites once per prop instance.
+        if (options.render_data && fade != 1 && !prop_family_low.empty()) {
+          const bool is_lamp = prop_family_low.find("lamp") != std::string::npos ||
+                               prop_family_low.find("street") != std::string::npos ||
+                               prop_family_low.find("light") != std::string::npos ||
+                               prop_family_low.find("lantern") != std::string::npos;
+          const bool is_fest = prop_family_low.find("festival") != std::string::npos ||
+                               prop_family_low.find("stage") != std::string::npos ||
+                               prop_family_low.find("tower") != std::string::npos ||
+                               prop_family_low.find("outpost") != std::string::npos ||
+                               prop_family_low.find("gantry") != std::string::npos ||
+                               prop_family_low.find("booth") != std::string::npos;
+          if (is_lamp || is_fest) {
+            const float local_top = std::max(model->box_max[1] * 0.92f, 2.5f);
+            const auto gp = p.placement.apply({0.0f, local_top, 0.0f});
+            WorldGlow wg;
+            wg.position = {float(gp[0]), float(gp[1]), float(-gp[2])};
+            if (is_fest && !is_lamp) {
+              // Festival / outpost warm-magenta / gold stage glow.
+              wg.color = {1.0f, 0.58f, 0.82f};
+              wg.radius = 2.6f;
+            } else {
+              // Streetlamp warm sodium-amber glow.
+              wg.color = {1.0f, 0.78f, 0.42f};
+              wg.radius = 1.8f;
+            }
+            // Deterministic per-instance threshold in [0.05, 0.90] for staggered dusk switch-on.
+            const uint32_t h = uint32_t(std::llround(t[0] * 7.0)) * 2654435761u ^
+                               uint32_t(std::llround(t[2] * 7.0)) * 2246822519u;
+            wg.threshold = 0.05f + 0.85f * float(h & 0xFFFFu) / 65535.0f;
+            out.world_glows.push_back(wg);
+          }
+        }
         drawn = true;
         if (fade != 1) ++st.props;
         else ++st.props_near_lod;

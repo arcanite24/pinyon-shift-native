@@ -79,6 +79,7 @@ class RaceView {
   // Loads the opponents' cars (models and physics) and stands them on their
   // slots on `ground`.
   bool load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error);
+  void set_tod_sec(float tod_sec) { tod_sec_ = tod_sec; }
   // Frees the models (before their renderer goes).
   void release_models();
   // Ours (SPEC-RACE-AI leaves the room to the line): trims the line's room
@@ -164,6 +165,8 @@ class RaceView {
   std::string name_of(size_t i) const;
 
   std::filesystem::path bake_dir_;
+  std::filesystem::path game_root_;
+  float tod_sec_ = 12.0f * 3600.0f;
   Options o_;
   race::EventData event_;
   race::CarNames names_;

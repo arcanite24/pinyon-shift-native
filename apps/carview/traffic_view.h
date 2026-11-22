@@ -66,6 +66,7 @@ class TrafficView {
   Renderer& r_;
   Showroom& host_;
   std::filesystem::path bake_dir_;
+  std::filesystem::path game_root_;
   bool sync_;
   traffic::NavMap map_;
   traffic::Roads roads_;

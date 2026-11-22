@@ -91,6 +91,20 @@ struct MeshMaterial {
   // Pixel constant 0: Blend_A's UV tiling in xy, Blend_B's in zw (terrain
   // effects; 1 elsewhere).
   std::array<float, 4> tiling{1, 1, 1, 1};
+  // Additional material slots (WORLD-MATERIALS, Slot roles):
+  //   light_map: slot 7 on _LM effects (additive night spill, never multiplied!)
+  //   ao_map: AO / AOMap (slots 4, 5, or 6)
+  //   normal_map: NormalMap (slot 1 on H_DIFF_*NORM*, slot 3 on roads/terrain, slot 1 on LAKE)
+  //   layer_c: Blend_C (slot 5 on H_BLND3 / H_ROAD_DIFF3)
+  //   spec_map: SpecularMap (when present)
+  uint32_t light_map = kNoTexture;
+  uint32_t ao_map = kNoTexture;
+  uint32_t normal_map = kNoTexture;
+  uint32_t layer_c = kNoTexture;
+  uint32_t spec_map = kNoTexture;
+  std::array<float, 2> tiling_c{1, 1};  // pixel constant 1 xy (Blend_C tiling)
+  float emissive_force = 0.0f;          // pixel constant 3 w on _LM effects
+  uint8_t is_water = 0;                 // LAKE_* water effect
   // The far ring (ours): 0 near scenery, 1 a MIDDIST object, 2 an UberLOD
   // one. The renderer pushes far levels back in depth so the near terrain
   // wins where both are drawn.
@@ -105,7 +119,18 @@ struct MeshMaterial {
   // (-1: no record).
   std::array<int32_t, 3> slot_values{-2, -2, -2};
   std::array<int32_t, 3> slot_types{-1, -1, -1};
-  auto key() const { return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade); }
+  auto key() const {
+    return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade, light_map, ao_map, normal_map, layer_c,
+                           spec_map, tiling_c, is_water);
+  }
+};
+
+// Staggered night streetlamp / festival / outpost glow sprite (SPEC-SKY-AND-TOD §6.3).
+struct WorldGlow {
+  std::array<float, 3> position{};  // game frame
+  std::array<float, 3> color{1.0f, 0.78f, 0.42f};
+  float radius = 1.6f;
+  float threshold = 0.35f;          // switches on when SwitchOnLights >= threshold
 };
 
 struct Mesh {
@@ -131,6 +156,7 @@ struct Mesh {
   // renderer can pick a level per instance; zero for scenery.
   std::vector<std::array<float, 3>> instance;
   std::vector<MeshMaterial> materials;
+  std::vector<WorldGlow> world_glows;
   bool has_render_data() const { return !material.empty(); }
 };
 

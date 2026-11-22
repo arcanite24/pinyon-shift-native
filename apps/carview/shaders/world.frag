@@ -33,10 +33,26 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 car_light_bot;  // rgb CarHLColourBottom, w eye_game_y
 } frame;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
+layout(set = 0, binding = 3) uniform sampler2D headlight_cookie;
+
+struct HeadlightBeam {
+  mat4 proj;          // render-space pos -> headlight clip space
+  vec4 origin_range;  // xyz origin in render space, w range (m)
+  vec4 dir_power;     // xyz forward unit dir, w intensity
+  vec4 color;         // rgb tint (xenon/halogen/HID), w unused
+};
+layout(set = 0, binding = 4) uniform Headlights {
+  vec4 count_night;   // x active beam count (0..16), y night_scale (0..1), z time_sec, w unused
+  HeadlightBeam beams[16];
+} headlights;
 
 layout(set = 1, binding = 0) uniform sampler2D albedo;
-layout(set = 1, binding = 1) uniform sampler2D layer_b;    // Blend_B
-layout(set = 1, binding = 2) uniform sampler2D splat_map;  // Splat
+layout(set = 1, binding = 1) uniform sampler2D layer_b;     // Blend_B
+layout(set = 1, binding = 2) uniform sampler2D splat_map;   // Splat
+layout(set = 1, binding = 3) uniform sampler2D light_map;   // Light_Map (night emissive spill)
+layout(set = 1, binding = 4) uniform sampler2D normal_map;  // NormalMap (DXN/BC5, Sub-Milestone 3)
+layout(set = 1, binding = 5) uniform sampler2D ao_map;      // AO / AOMap (Sub-Milestone 3)
+layout(set = 1, binding = 6) uniform sampler2D layer_c;     // Blend_C (Sub-Milestone 3)
 
 layout(push_constant) uniform Draw {
   mat4 model;
@@ -58,7 +74,8 @@ layout(location = 0) out vec4 out_color;
 const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
            kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
-           kFlagUnlitVertexColor = 1024u;
+           kFlagUnlitVertexColor = 1024u, kFlagLightMap = 2048u, kFlagNormalMap = 4096u, kFlagAoMap = 8192u,
+           kFlagLayerC = 16384u, kFlagWater = 32768u;
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -265,6 +282,45 @@ void main() {
   float shade = mix(1.0, raw_shade, shadow_scale);
   vec3 light = sun_col * ndl * shade + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up));
   vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
+
+  // Projected vehicle road headlight cones (CAR_LAMPS.md §5): cookie spotlight
+  // evaluated in world space, scaled by SwitchOnLights night factor.
+  int hl_count = int(headlights.count_night.x + 0.5);
+  float hl_night = headlights.count_night.y;
+  if (hl_count > 0 && hl_night > 0.004) {
+    vec3 hl_sum = vec3(0.0);
+    for (int i = 0; i < hl_count && i < 16; ++i) {
+      vec3 origin = headlights.beams[i].origin_range.xyz;
+      float range = headlights.beams[i].origin_range.w;
+      vec3 to_p = v_position - origin;
+      float d2 = dot(to_p, to_p);
+      if (d2 >= range * range || d2 < 0.04) continue;
+      vec3 bdir = headlights.beams[i].dir_power.xyz;
+      float fwd_dot = dot(to_p, bdir);
+      if (fwd_dot <= 0.15) continue;
+      vec4 c = headlights.beams[i].proj * vec4(v_position, 1.0);
+      if (c.w <= 0.05) continue;
+      vec2 buv = c.xy / c.w * 0.5 + 0.5;
+      if (buv.x <= 0.0 || buv.x >= 1.0 || buv.y <= 0.0 || buv.y >= 1.0) continue;
+      vec4 ck = texture(headlight_cookie, buv);
+      float pattern = max(max(ck.r, ck.g), ck.b) * max(ck.a, 0.25);
+      float dist = sqrt(d2);
+      float att = pow(clamp(1.0 - dist / range, 0.0, 1.0), 1.5);
+      float edge = smoothstep(0.0, 0.08, buv.x) * smoothstep(1.0, 0.92, buv.x) *
+                   smoothstep(0.0, 0.08, buv.y) * smoothstep(1.0, 0.92, buv.y);
+      float facing = max(dot(n, -to_p / dist), 0.22);
+      hl_sum += headlights.beams[i].color.rgb * pattern * att * edge * facing * headlights.beams[i].dir_power.w;
+    }
+    colour += t.rgb * hl_sum * hl_night * draw.up.w;
+  }
+
+  // World night Light_Map emissive spill (SPEC-SKY-AND-TOD §6.1): added in linear HDR
+  // before fog, driven by SwitchOnLights (frame.sky_color.w).
+  if ((flags & kFlagLightMap) != 0u && frame.sky_color.w > 0.002) {
+    vec3 lm = texture(light_map, v_uv1).rgb;
+    colour += lm * frame.sky_color.w * 1.4 * draw.up.w;
+  }
+
   colour = apply_haze(colour, v_position, up, sun);
 
   float alpha = 1.0;

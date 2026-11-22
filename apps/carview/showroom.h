@@ -26,8 +26,10 @@
 #include <volk.h>
 
 #include "cars/bake_format.h"
+#include "drive/lamps.h"
 #include "renderer.h"
 #include "world/tod.h"
+#include "world/world.h"
 #include "world_texture_lru.h"
 
 namespace carview {
@@ -120,7 +122,14 @@ struct WorldTriangles {
     uint8_t layers = 0;                  // world::Layers: one, vertex blend, splat
     uint32_t layer_b = kNoWorldTexture;  // Blend_B
     uint32_t splat = kNoWorldTexture;    // Splat
+    uint32_t light_map = kNoWorldTexture;   // Light_Map (night emissive spill)
+    uint32_t normal_map = kNoWorldTexture;  // NormalMap (DXN/BC5)
+    uint32_t ao_map = kNoWorldTexture;      // AO / AOMap
+    uint32_t layer_c = kNoWorldTexture;     // Blend_C
     std::array<float, 4> tiling{1, 1, 1, 1};  // Blend_A's UV tiling in xy, Blend_B's in zw
+    std::array<float, 2> tiling_c{1, 1};      // Blend_C's UV tiling
+    float emissive_force = 0.0f;
+    uint8_t is_water = 0;
     uint8_t fade = 0;                    // world::MeshMaterial::fade: the distance cross-fade class
   };
   std::vector<std::array<float, 3>> normals;
@@ -158,6 +167,8 @@ struct WorldGeometry {
     ShowroomPush push{};
     uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
     uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers
+    uint32_t light_map = kNoWorldTexture, normal_map = kNoWorldTexture;
+    uint32_t ao_map = kNoWorldTexture, layer_c = kNoWorldTexture;
     uint8_t blend = 0;
     uint8_t decal = 0;  // drawn with the decal depth bias
     // The draw's box in the scenery's frame (tree sprites padded by their
@@ -305,10 +316,17 @@ class Showroom {
   // A prop's reach from its origin (m): the box test of LOD00 cells allows
   // an instance whose origin is inside the band but whose corners are not.
   static constexpr float kPropReach = 40;
-  // The brake lamps: 0 off, 1 full (the tail-lamp parts' lamp and red
-  // cover draws glow; an interim, FORMAT-CARS leaves the lit state to the
-  // effect).
+  // Full vehicle lamp state (CAR_LAMPS.md): headlights, DRLs, tail, brake,
+  // reverse, indicators, side lights, numplate, and cockpit gauge backlights.
   void set_braking(float glow);
+  void set_lamp_state(const drive::CarLampState& state);
+  void set_lamp_vectors(const drive::LampShaderVectors& vectors);
+  // Loads kind-5 .carbin lamp points and per-car ShaderSettings.xml from disc.
+  void load_car_lamps(const std::filesystem::path& game_root, const std::string& car);
+  // Loads media/carlights/headlight_glow_1..7.xds + headlight_beam_dip.xds.
+  bool upload_carlights(const std::filesystem::path& media_dir, std::string& error);
+  // Updates world streetlamp / festival / outpost glow sprites for the active scenery.
+  void set_world_glows(std::vector<world::WorldGlow> glows) { world_glows_ = std::move(glows); }
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no
@@ -319,6 +337,8 @@ class Showroom {
   struct Instance {
     Showroom* car = nullptr;
     float model[16];
+    drive::LampShaderVectors lamps{};
+    bool has_lamps = false;
   };
   void set_instances(std::vector<Instance> list) { instances_ = std::move(list); }
   void add_instances(const std::vector<Instance>& more) { instances_.insert(instances_.end(), more.begin(), more.end()); }
@@ -377,7 +397,8 @@ class Showroom {
     std::array<uint32_t, 3> textures{};  // slot 0, slot 1, livery (gpu_textures_ indices)
     uint32_t descriptor = 0;
     bool glass = false;
-    bool brake_lamp = false;  // a tail-lamp part's lamp or red cover
+    bool brake_lamp = false;  // legacy brake lamp flag
+    drive::LampChannel lamp_channel = drive::LampChannel::kNone;
     bool stripe_able = false;  // an exterior paint draw a striped colour row tints (FORMAT-CARS, Paint)
     std::array<float, 3> centre{};  // car space, for sorting glass
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
@@ -424,9 +445,9 @@ class Showroom {
   bool upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
                              std::string& error);
   VkDescriptorSet world_set(uint32_t record) const;
-  // The set binding three uploaded textures (kNoWorldTexture: white), made
-  // on first use; null when one of them did not upload.
-  VkDescriptorSet world_layer_set(const std::array<uint32_t, 3>& records);
+  // The set binding seven uploaded world textures (albedo, layer_b, splat,
+  // light_map, normal_map, ao_map, layer_c; kNoWorldTexture uses fallbacks).
+  VkDescriptorSet world_layer_set(const std::array<uint32_t, 7>& records);
   void update_frame(VkCommandBuffer cmd);
   void update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f);
   // The sun shadow (ours): place_shadow fits the map's box around the car
@@ -439,7 +460,7 @@ class Showroom {
   void record_shadow_car(VkCommandBuffer cmd, const float* m);
   // The opaque and glass draws once more, each model matrix first taken by
   // `m` (a guest's instance; glass unsorted).
-  void record_instance(VkCommandBuffer cmd, const float m[16]);
+  void record_instance(VkCommandBuffer cmd, const float m[16], const drive::LampShaderVectors* lamps = nullptr);
 
   bool guest_ = false;
   std::vector<Instance> instances_;
@@ -468,7 +489,10 @@ class Showroom {
   VkSampler sampler_ = VK_NULL_HANDLE;
   Renderer::Buffer vertex_buffer_, index_buffer_, frame_buffer_;
   VkDescriptorSetLayout frame_layout_ = VK_NULL_HANDLE, material_layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout world_material_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout world_pipeline_layout_ = VK_NULL_HANDLE;
+  GpuTexture flat_normal_tex_;  // 1x1 (128, 128, 255, 255) fallback normal map
   VkPipeline opaque_ = VK_NULL_HANDLE, glass_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
@@ -529,8 +553,8 @@ class Showroom {
   bool reap_stop_ = false;
   std::vector<std::pair<uint64_t, std::function<void()>>> retired_;  // main thread only
   std::map<uint32_t, VkDescriptorSet> world_sets_;   // by texture record
-  // Sets for terrain draws: slot 0, Blend_B and Splat (bindings 0 to 2).
-  std::map<std::array<uint32_t, 3>, VkDescriptorSet> world_layer_sets_;
+  // Sets for multi-texture world draws: bindings 0..6.
+  std::map<std::array<uint32_t, 7>, VkDescriptorSet> world_layer_sets_;
   VkDescriptorSet world_white_set_ = VK_NULL_HANDLE;  // untextured materials
   std::vector<VkDescriptorPool> world_pools_;
   uint32_t world_pool_left_ = 0;
@@ -591,6 +615,45 @@ class Showroom {
   void record_sky_before(VkCommandBuffer cmd);
   void record_sky_draw(VkCommandBuffer cmd);
   void apply_tod_to_frame();
+  // Car lamps, headlight road projection & additive glow sprites (CAR_LAMPS.md).
+  struct HeadlightBeamGpu {
+    float proj[16];
+    float origin_range[4];
+    float dir_power[4];
+    float color[4];
+  };
+  struct HeadlightUbo {
+    float count_night[4];
+    HeadlightBeamGpu beams[16];
+  };
+  static_assert(sizeof(HeadlightUbo) == 16 + 16 * 112);
+  struct GlowSpriteGpu {
+    float pos_radius[4];
+    float dir_inner[4];
+    float color_outer[4];
+    float extra[4];
+  };
+  static_assert(sizeof(GlowSpriteGpu) == 64);
+  static constexpr uint32_t kMaxGlowSprites = 1024;
+  std::vector<fh1::CarbinLampPoint> lamp_points_;
+  drive::LampColorTable lamp_colors_;
+  drive::LampShaderVectors lamp_vectors_{};
+  bool lamp_state_active_ = false;
+  std::vector<world::WorldGlow> world_glows_;
+  GpuTexture headlight_cookie_;
+  Renderer::Buffer headlights_ubo_;
+  GpuTexture glow_tex_[7];
+  VkDescriptorSetLayout glow_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout glow_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipeline glow_pipe_ = VK_NULL_HANDLE;
+  VkDescriptorPool glow_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet glow_set_ = VK_NULL_HANDLE;
+  Renderer::Buffer glow_buffer_;
+  uint32_t glow_count_ = 0;
+  bool carlights_ready_ = false;
+  void record_lights_before(VkCommandBuffer cmd);
+  void record_glows_draw(VkCommandBuffer cmd);
+  void update_frame_cookie_descriptor();
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
   bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
   void evict_world_textures();

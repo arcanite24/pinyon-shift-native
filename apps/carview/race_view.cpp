@@ -85,6 +85,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     }
   }
   std::filesystem::path state_root = o.state_root;
+  game_root_ = root;
   if (state_root.empty()) {
     if (const char* env_state = std::getenv("SHIFT_STATE_ROOT")) state_root = env_state;
   }
@@ -358,7 +359,12 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       ShowroomOptions options;
       if (c.who.color_sequence > 0) options.match_sequence = c.who.color_sequence;
       std::string e;
-      if (!m->load(bake_dir_, c.who.car_media, options, e) || !m->upload(e)) {
+      if (!m->load(bake_dir_, c.who.car_media, options, e)) {
+        error = c.who.car_media + ": " + e;
+        return false;
+      }
+      m->load_car_lamps(game_root_, c.who.car_media);
+      if (!m->upload(e)) {
         error = c.who.car_media + ": " + e;
         return false;
       }
@@ -739,17 +745,27 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
 
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                          std::vector<Showroom::Instance>& out) const {
-  for (const auto& c : cars_)
-    if (c.model && c.body) {
-      if (blend_ >= 1) {
-        out.push_back(guest_instance(player_info, player, *c.model, *c.body));
-        continue;
-      }
+  const bool night_lights = drive::CarLampState::tod_requests_headlamps(tod_sec_);
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    const auto& c = cars_[k];
+    if (!c.model || !c.body) continue;
+    Showroom::Instance in;
+    if (blend_ >= 1) {
+      in = guest_instance(player_info, player, *c.model, *c.body);
+    } else {
       const drive::Vehicle::Pose now = c.body->pose();
       c.body->set_pose(drive::Vehicle::blend(c.before, now, blend_));
-      out.push_back(guest_instance(player_info, player, *c.model, *c.body));
+      in = guest_instance(player_info, player, *c.model, *c.body);
       c.body->set_pose(now);
     }
+    drive::CarLampState lstate;
+    lstate.headlamps_on = night_lights;
+    lstate.brake_on = (k < inputs_.size() && inputs_[k].brake > 0.1f);
+    lstate.reverse_on = (c.body->gear() == 0);
+    in.lamps = lstate.vectors();
+    in.has_lamps = true;
+    out.push_back(in);
+  }
 }
 
 std::string RaceView::name_of(size_t i) const {

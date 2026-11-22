@@ -61,7 +61,8 @@ layout(location = 0) out vec4 out_color;
 const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, kGauge = 5u,
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
 const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
-           kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u, kFlagCover = 1024u;
+           kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u, kFlagCover = 1024u,
+           kFlagLampEmissive = 2048u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -167,25 +168,33 @@ void main() {
     reflectivity = 0.06;
     gloss = 0.95;
     alpha = 0.6;
-    // A lamp cover: coloured glass (the draw's tint), lit when braking.
+    // A lamp cover: passive tinted glass (detail_glass_* NEVER emits, CAR_LAMPS.md §3.2).
+    // Glass-integrated emitters (lights_gls_*) set kFlagLampEmissive separately.
     if ((flags & kFlagCover) != 0u) {
       base = draw.tint.rgb;
-      alpha = draw.tint.r - draw.tint.g > 0.1 ? 0.75 : 0.15;  // red, amber: coloured; clear: see-through
-      emissive = vec3(2.4, 0.05, 0.03) * draw.params.z * step(0.1, draw.tint.r - 4.0 * draw.tint.g);
+      alpha = draw.tint.r - draw.tint.g > 0.1 ? 0.72 : 0.16;
+    }
+    if ((flags & kFlagLampEmissive) != 0u) {
+      emissive = draw.tint.rgb;
     }
   } else if (klass == kLamp) {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
     reflectivity = 0.3;
     gloss = 0.85;
     metal = 0.5;
-    // A brake lamp, lit: the lamp's red, bright (the tail lamps' texel).
-    emissive = vec3(max(base.r, 0.3) * 3.0, 0.06, 0.04) * draw.params.z;
+    if ((flags & kFlagLampEmissive) != 0u) {
+      emissive = draw.tint.rgb;
+    }
   } else if (klass == kInterior || klass == kGauge) {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
     // The cabin techniques have no slot-0 sampler (the body atlas bound
     // there is a leftover): interior_LOD0 at the sub-section's UV0, times
     // the technique's scale (CARS, Cockpit interior and mirrors).
     if (klass == kInterior) base = ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.01)) * draw.tint.rgb;
+    if (klass == kGauge && (flags & kFlagLampEmissive) != 0u) {
+      // Backlit night gauges & digital displays (CAR_LAMPS.md §7.3).
+      emissive = base * draw.tint.rgb;
+    }
     gloss = 0.2;
   } else if (klass == kTyre) {
     // The sidewall and tread sheets are single-channel (BC4, no sRGB form).

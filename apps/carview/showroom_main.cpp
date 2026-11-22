@@ -1194,9 +1194,26 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
     // Prop origins in the scenery's frame, like the positions.
     w.instance.reserve(mesh.instance.size());
     for (const auto& p : mesh.instance) w.instance.push_back({float(p[0] - origin_x), p[1], float(p[2] - origin_z)});
-    for (const auto& m : mesh.materials)
-      w.materials.push_back({m.albedo, uint8_t(m.blend), m.far, uint8_t(world::decal_effect(m.effect) ? 1 : 0),
-                             uint8_t(m.layers), m.layer_b, m.splat, m.tiling, m.fade});
+    for (const auto& m : mesh.materials) {
+      WorldTriangles::Material wm;
+      wm.texture = m.albedo;
+      wm.blend = uint8_t(m.blend);
+      wm.far = m.far;
+      wm.decal = uint8_t(world::decal_effect(m.effect) ? 1 : 0);
+      wm.layers = uint8_t(m.layers);
+      wm.layer_b = m.layer_b;
+      wm.splat = m.splat;
+      wm.light_map = m.light_map;
+      wm.normal_map = m.normal_map;
+      wm.ao_map = m.ao_map;
+      wm.layer_c = m.layer_c;
+      wm.tiling = m.tiling;
+      wm.tiling_c = m.tiling_c;
+      wm.emissive_force = m.emissive_force;
+      wm.is_water = m.is_water;
+      wm.fade = m.fade;
+      w.materials.push_back(wm);
+    }
   }
   return w;
 }
@@ -1214,7 +1231,7 @@ struct WorldTextureLoader {
             std::vector<uint32_t>& pin_records) {
     std::unordered_set<uint32_t> batch_seen;
     for (auto& m : w.materials)
-      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat})
+      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat, &m.light_map})
         load_one(colorado, w, showroom, batch_seen, pin_records, *slot);
   }
   void load_one(world::World& colorado, WorldTriangles& w, Showroom& showroom,
@@ -2613,6 +2630,15 @@ int run_drive(int argc, char** argv) {
         if (!showroom.upload_sky(tod_system.sky_assets, sky_err))
           std::fprintf(stderr, "carview: sky upload note: %s\n", sky_err.c_str());
       }
+      {
+        const auto groot = game_root_of();
+        if (!groot.empty()) {
+          showroom.load_car_lamps(groot, car);
+          std::string cl_err;
+          if (!showroom.upload_carlights(groot / "media", cl_err))
+            std::fprintf(stderr, "carview: carlights upload note: %s\n", cl_err.c_str());
+        }
+      }
       // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of
       // colour row i, as left and right show it.
       if (const char* pp = std::getenv("SHIFT_PAINT_PREVIEW")) showroom.preview_colour(size_t(std::atoi(pp)));
@@ -2691,6 +2717,7 @@ int run_drive(int argc, char** argv) {
       struct Prepared {
         std::shared_ptr<Showroom::StagedWorld> staged;
         world::RoadFollower::Points road;
+        std::vector<world::WorldGlow> glows;
       };
       // The streamer's prepared gather, swapped in.
       auto set_staged_world = [&]() {
@@ -2701,6 +2728,7 @@ int run_drive(int argc, char** argv) {
           return false;
         }
         follower.set_points(std::move(prepared->road));
+        showroom.set_world_glows(std::move(prepared->glows));
         auto staged = std::move(prepared->staged);
         if (!staged) {
           error = "world staging buffers";
@@ -2875,6 +2903,13 @@ int run_drive(int argc, char** argv) {
             auto prepared = std::make_shared<Prepared>();
             prepared->staged = std::move(staged);
             prepared->road = world::RoadFollower::road_points(mesh);
+            prepared->glows.reserve(mesh.world_glows.size());
+            for (const auto& g : mesh.world_glows) {
+              world::WorldGlow sg = g;
+              sg.position[0] = float(double(g.position[0]) - cx);
+              sg.position[2] = float(double(g.position[2]) - cz);
+              prepared->glows.push_back(sg);
+            }
             return std::any(prepared);
           });
           const double sx = have_spawn ? spawn[0] : near_given || render_ground ? near_x : world::kSpawnX;
@@ -3628,6 +3663,8 @@ int run_drive(int argc, char** argv) {
       float last_lut_day = -1.0f, last_lut_night = -1.0f;
       double tod_frame_dt = 0.0;
       bool tod_cockpit_cam = false;
+      drive::CarLampState player_lamps;
+      int light_override = 0;  // 0 auto, 1 low beam, 2 full beam, 3 fog
       auto place_world = [&]() {
         if (!streamer) return;
         float m[16];
@@ -3636,9 +3673,23 @@ int run_drive(int argc, char** argv) {
         if (traffic) traffic->place(info, vehicle);
         else showroom.set_instances({});
         if (race) {
+          race->set_tod_sec(float(tod_clock.tod_sec));
           std::vector<Showroom::Instance> more;
           race->instances(info, vehicle, more);
           showroom.add_instances(more);
+        }
+        {
+          drive::LampInputs lin{};
+          const float bg = brake_glow(vehicle);
+          lin.brake_cmd = bg;
+          lin.brake_pedal = bg;
+          lin.gear = vehicle.gear();
+          lin.tod_sec = tod_clock.tod_sec;
+          lin.dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : 1.0 / 60.0);
+          lin.light_override = light_override;
+          lin.snap_headlamps = headless;
+          player_lamps.update(lin);
+          showroom.set_lamp_state(player_lamps);
         }
         const float up_game[3] = {0, 1, 0};
         float sun[3], up[3];
@@ -5695,12 +5746,19 @@ int run_drive(int argc, char** argv) {
               if (live_controls.keys.matches(drive::ControlAction::kShiftUp, kn)) pending_shift = +1;
               if (live_controls.keys.matches(drive::ControlAction::kShiftDown, kn)) pending_shift = -1;
               if (e.key.key == SDLK_L) {
-                driving_line_mode =
-                    static_cast<drive::DrivingLineMode>((static_cast<int>(driving_line_mode) + 1) % 3);
-                live_controls.assists.driving_line = static_cast<int>(driving_line_mode);
-                const char* names[3] = {"driving line: off", "driving line: braking only", "driving line: full"};
-                notice = names[static_cast<int>(driving_line_mode)];
-                notice_until = vehicle.time() + 2;
+                if (e.key.mod & SDL_KMOD_SHIFT) {
+                  light_override = (light_override + 1) % 4;
+                  const char* lnames[4] = {"lights: auto", "lights: low beam", "lights: full beam", "lights: fog"};
+                  notice = lnames[light_override];
+                  notice_until = vehicle.time() + 2;
+                } else {
+                  driving_line_mode =
+                      static_cast<drive::DrivingLineMode>((static_cast<int>(driving_line_mode) + 1) % 3);
+                  live_controls.assists.driving_line = static_cast<int>(driving_line_mode);
+                  const char* names[3] = {"driving line: off", "driving line: braking only", "driving line: full"};
+                  notice = names[static_cast<int>(driving_line_mode)];
+                  notice_until = vehicle.time() + 2;
+                }
               }
               if (live_controls.keys.matches(drive::ControlAction::kMap, kn)) open_map();
               if (live_controls.keys.matches(drive::ControlAction::kRadioPrev, kn)) radio_press(-1);

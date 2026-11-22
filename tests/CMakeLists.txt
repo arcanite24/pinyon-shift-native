@@ -141,6 +141,10 @@ add_executable(tod_tests tod_tests.cpp)
 target_link_libraries(tod_tests PRIVATE shift_world)
 add_test(NAME tod_tests COMMAND tod_tests)
 
+add_executable(lamps_tests lamps_tests.cpp)
+target_link_libraries(lamps_tests PRIVATE shift_drive fh1data)
+add_test(NAME lamps_tests COMMAND lamps_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)
