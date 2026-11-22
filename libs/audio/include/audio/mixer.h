@@ -101,7 +101,9 @@ class Mixer {
   void set_mute(bool m) { mute_ = m; }
   bool muted() const { return mute_; }
   SnapshotMixer& snapshots() { return snaps_; }
+  const SnapshotMixer& snapshots() const { return snaps_; }
   MasterStage& stage() { return stage_; }
+  const MasterStage& stage() const { return stage_; }
   // Mixes the buses' blocks (`bus[b]`: interleaved stereo, `frames` long,
   // may be null: silent) into `out` (overwritten) and advances the
   // snapshots by the block's time.

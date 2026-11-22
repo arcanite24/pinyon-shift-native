@@ -1,18 +1,23 @@
 // SPEC-ENGINE-SOUND: the synthetic rule checks (no game data), the reader
 // and the player, then the R34's loops at 4,000 and 7,000 rpm over the
 // player's files when SHIFT_GAME_ROOT names the disc.
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "audio/audio_engine.h"
 #include "audio/engine_player.h"
 #include "audio/fsb4.h"
 #include "audio/mixer.h"
 #include "audio/rt.h"
 #include "audio/sources.h"
+#include "audio/user_music.h"
 #include "audio/xml.h"
 
 namespace {
@@ -369,6 +374,168 @@ void mixer_checks() {
   CHECK(audio::soft_limit(-3.0f) < -0.99f);
 }
 
+void write_tone_wav(const std::filesystem::path& path, int rate, int frames, double freq_hz, double amp = 0.5) {
+  std::vector<int16_t> pcm(size_t(frames) * 2);
+  for (int i = 0; i < frames; ++i) {
+    const double s = std::sin(2.0 * 3.14159265358979 * freq_hz * i / rate) * amp;
+    const int16_t v = int16_t(std::lround(s * 32767.0));
+    pcm[size_t(i) * 2] = v;
+    pcm[size_t(i) * 2 + 1] = v;
+  }
+  const uint32_t data_bytes = uint32_t(pcm.size() * 2);
+  const uint32_t riff_bytes = 36 + data_bytes;
+  uint8_t h[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ',
+                   16,  0,   0,   0,   1, 0, 2, 0, 0,   0,   0,   0,   0,   0,   0,   0,
+                   4,   0,   16,  0,   'd', 'a', 't', 'a', 0, 0, 0, 0};
+  auto u32 = [](uint8_t* p, uint32_t v) {
+    p[0] = uint8_t(v), p[1] = uint8_t(v >> 8), p[2] = uint8_t(v >> 16), p[3] = uint8_t(v >> 24);
+  };
+  u32(h + 4, riff_bytes);
+  u32(h + 24, uint32_t(rate));
+  u32(h + 28, uint32_t(rate * 4));
+  u32(h + 40, data_bytes);
+  std::ofstream f(path, std::ios::binary);
+  f.write(reinterpret_cast<const char*>(h), sizeof h);
+  f.write(reinterpret_cast<const char*>(pcm.data()), std::streamsize(data_bytes));
+}
+
+// Your Music folder player: recursive scan, name order, shuffle, next/prev,
+// and streaming WAV output.
+void user_music_checks() {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "shift-user-music-test";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir / "sub", ec);
+  write_tone_wav(dir / "01_first.wav", 48000, 12000, 220.0, 0.4);
+  write_tone_wav(dir / "sub" / "02_second.wav", 48000, 12000, 880.0, 0.4);
+  {
+    std::ofstream f(dir / "readme.txt");
+    f << "ignore me";
+  }
+
+  audio::UserMusicPlayer um(dir, 48000, 123, false);
+  CHECK(um.track_count() == 2 && !um.active());
+  CHECK(um.current_title() == "01_first");
+  um.set_enabled(true);
+  CHECK(um.active());
+
+  std::vector<float> buf(2 * 6000, 0.0f);
+  um.render(buf.data(), 6000);
+  double sq = 0;
+  for (float x : buf) sq += double(x) * x;
+  CHECK(std::sqrt(sq / double(buf.size())) > 0.1);
+
+  um.next();
+  CHECK(um.current_title() == "02_second");
+  um.prev();
+  CHECK(um.current_title() == "01_first");
+
+  // Advancing past the end of track 1 moves to track 2 automatically.
+  std::fill(buf.begin(), buf.end(), 0.0f);
+  um.render(buf.data(), 6000);
+  um.render(buf.data(), 6000);
+  um.render(buf.data(), 6000);
+  CHECK(um.current_title() == "02_second");
+
+  um.set_shuffle(true);
+  CHECK(um.shuffle() && um.current_title() == "02_second");
+  um.set_enabled(false);
+  CHECK(!um.active());
+  fs::remove_all(dir, ec);
+}
+
+// Dedicated audio render thread: real-time sink, lock-free updates from the
+// main thread, Your Music muting radio, and a no-stall budget check.
+void audio_thread_checks() {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "shift-audio-thread-test";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  write_tone_wav(dir / "track.wav", 48000, 48000, 440.0, 0.35);
+
+  audio::EngineSound s;
+  audio::Group g;
+  g.name = "EngineAmbient";
+  g.loops.push_back(loop(800, 2000, 8000));
+  s.groups.push_back(g);
+  audio::PcmSample tone;
+  tone.rate = 48000;
+  tone.data.resize(4800);
+  for (size_t i = 0; i < tone.data.size(); ++i)
+    tone.data[i] = float(0.4 * std::sin(2.0 * 3.14159265358979 * 100.0 * double(i) / 48000.0));
+
+  audio::AudioEngine engine(48000);
+  auto ep = std::make_unique<audio::EnginePlayer>(s, std::vector<std::vector<const audio::PcmSample*>>{{&tone}}, 48000,
+                                                  800, 7000);
+  ep->master = 0.6;
+  engine.set_engine_player(std::move(ep));
+  auto um = std::make_unique<audio::UserMusicPlayer>(dir, 48000, 7, true);
+  um->set_enabled(true);
+  engine.set_user_music(std::move(um));
+
+  // Simulated 48 kHz playback sink draining at real-time pace.
+  const auto start_tp = std::chrono::steady_clock::now();
+  std::atomic<int64_t> written_frames{0};
+  std::atomic<double> energy{0.0};
+  std::atomic<bool> all_finite{true};
+
+  audio::AudioEngine::Sink sink;
+  sink.target_buffer_frames = 2400;  // 50 ms
+  sink.block_frames = 480;           // 10 ms
+  sink.queued_frames = [&]() -> int {
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_tp).count();
+    const int64_t consumed = int64_t(elapsed * 48000.0);
+    return int(std::max<int64_t>(0, written_frames.load(std::memory_order_relaxed) - consumed));
+  };
+  sink.write = [&](const float* stereo, int frames) {
+    double sq = 0;
+    bool fin = true;
+    for (int i = 0; i < frames * 2; ++i) {
+      fin &= std::isfinite(stereo[i]);
+      sq += double(stereo[i]) * stereo[i];
+    }
+    if (!fin) all_finite.store(false, std::memory_order_relaxed);
+    energy.store(energy.load(std::memory_order_relaxed) + sq, std::memory_order_relaxed);
+    written_frames.fetch_add(frames, std::memory_order_relaxed);
+  };
+
+  engine.start(std::move(sink));
+
+  // Pump per-frame engine inputs and mixer commands from the main thread for
+  // ~220 ms and verify neither thread stalls.
+  double worst_main_ms = 0;
+  for (int i = 0; i < 44; ++i) {
+    const auto t0 = std::chrono::steady_clock::now();
+    audio::EnginePlayer::Update u;
+    u.rpm = 1200.0 + double(i) * 100.0;
+    u.throttle = 0.5;
+    u.pos_torque = 0.4;
+    u.view = (i % 2 == 0) ? audio::View::kFollow : audio::View::kCockpit;
+    engine.set_engine_input(u);
+    engine.set_bus_level(audio::Bus::kEngine, 1.0f);
+    if (i == 20) engine.set_full_dynamic_range(true);
+    if (i == 30) engine.set_full_dynamic_range(false);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    worst_main_ms = std::max(worst_main_ms, ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  const audio::AudioTelemetry tel = engine.telemetry();
+  engine.stop();
+  std::printf("audio thread: %llu blocks, worst block %.3f ms, stalls %llu, worst main push %.3f ms\n",
+              (unsigned long long)tel.blocks_rendered, tel.worst_block_ms, (unsigned long long)tel.stalls,
+              worst_main_ms);
+  CHECK(all_finite.load());
+  CHECK(energy.load() > 1.0);
+  CHECK(tel.blocks_rendered >= 15);
+  CHECK(tel.stalls == 0 && tel.worst_block_ms < 8.0);
+  CHECK(worst_main_ms < 2.0);
+  CHECK(tel.user_music_active && std::string(tel.user_music_title.data()) == "track");
+  fs::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -378,6 +545,8 @@ int main() {
   player_checks();
   rt_checks();
   mixer_checks();
+  user_music_checks();
+  audio_thread_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;

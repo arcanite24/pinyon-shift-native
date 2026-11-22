@@ -14,6 +14,11 @@
 
 namespace audio {
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4324)  // intentional cache-line alignment padding
+#endif
+
 template <class T>
 class SpscQueue {
  public:
@@ -49,6 +54,10 @@ class SpscQueue {
   alignas(64) std::atomic<size_t> write_{0};
   alignas(64) std::atomic<size_t> read_{0};
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // The classic three-slot exchange: the writer fills its private slot and
 // swaps it with the middle one; the reader swaps the middle one for its own
