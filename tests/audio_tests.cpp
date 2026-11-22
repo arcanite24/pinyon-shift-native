@@ -5,10 +5,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "audio/engine_player.h"
 #include "audio/fsb4.h"
+#include "audio/mixer.h"
+#include "audio/rt.h"
 #include "audio/sources.h"
 #include "audio/xml.h"
 
@@ -218,6 +221,154 @@ void r34_checks() {
     if (g.name == "ExhaustR") CHECK(!g.loops.empty() && g.loops[0].channel == 1 && g.loops[0].sample == 0);
 }
 
+// The real-time hand-off primitives: order, capacity, latest-wins, and a
+// producer/consumer pair across two threads.
+void rt_checks() {
+  audio::SpscQueue<int> q(4);
+  CHECK(q.capacity() == 4);
+  for (int i = 0; i < 4; ++i) CHECK(q.push(i));
+  CHECK(!q.push(9));  // full: nothing lost silently
+  int v = -1;
+  for (int i = 0; i < 4; ++i) CHECK(q.pop(v) && v == i);
+  CHECK(!q.pop(v));
+
+  audio::TripleBuffer<int> t(7);
+  CHECK(!t.read(v) && v == 7);
+  t.write(1);
+  t.write(2);
+  t.write(3);
+  CHECK(t.read(v) && v == 3);  // the latest only
+  CHECK(!t.read(v) && v == 3);
+
+  // Across threads: every value arrives in order; the latest-wins buffer
+  // never shows a torn or older value.
+  audio::SpscQueue<uint64_t> big(1024);
+  std::atomic<bool> bad{false};
+  std::thread consumer([&] {
+    uint64_t expect = 0, got = 0;
+    while (expect < 20000) {
+      if (big.pop(got)) {
+        if (got != expect) bad = true;
+        ++expect;
+      }
+    }
+  });
+  for (uint64_t i = 0; i < 20000;) i += big.push(i) ? 1 : 0;
+  consumer.join();
+  CHECK(!bad);
+
+  struct Pair {
+    uint64_t a, b;
+  };
+  audio::TripleBuffer<Pair> tb;
+  std::atomic<bool> stop{false};
+  std::thread writer([&] {
+    for (uint64_t i = 1; !stop; ++i) tb.write({i, i * 3});
+  });
+  uint64_t last = 0;
+  bool torn = false, backwards = false;
+  for (int i = 0; i < 200000; ++i) {
+    Pair p{};
+    tb.read(p);
+    if (p.b != p.a * 3) torn = true;
+    if (p.a < last) backwards = true;
+    last = p.a;
+  }
+  stop = true;
+  writer.join();
+  CHECK(!torn && !backwards);
+}
+
+// Buses, the snapshots' product and fades, master volume and mute, and the
+// compressor against Full Dynamic Range.
+void mixer_checks() {
+  using audio::Bus;
+  Bus b{};
+  CHECK(audio::bus_from_name("vo", b) && b == Bus::kVo);
+  CHECK(audio::bus_from_name("OtherCars", b) && b == Bus::kOtherCars);
+  CHECK(!audio::bus_from_name("Nope", b));
+
+  const int rate = 48000, n = rate / 2;  // half a second blocks
+  std::vector<float> engine(2 * size_t(n), 0.1f), music(2 * size_t(n), 0.2f), out(2 * size_t(n));
+  const float* buses[audio::kBuses] = {};
+  buses[int(Bus::kEngine)] = engine.data();
+  buses[int(Bus::kMusic)] = music.data();
+
+  audio::Mixer m;
+  m.prepare(rate);
+  m.snapshots().add_defaults();
+  m.stage().set_full_dynamic_range(true);
+  m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.3, 1e-3));  // the buses add
+
+  // A bus's Sound Mix level scales it (0..2), alone.
+  m.set_bus_level(Bus::kMusic, 2.0f);
+  m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.5, 1e-3));
+  m.set_bus_level(Bus::kMusic, 0.0f);
+  m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.1, 1e-3));
+  m.set_bus_level(Bus::kMusic, 1.0f);
+
+  // Pause: the world drops out over its fade, the music dips to 0.25.
+  const int paused = m.snapshots().find("Paused");
+  CHECK(paused >= 0);
+  m.snapshots().set_active(paused, true);
+  m.mix(buses, n, out.data());  // 0.5 s covers the 0.15 s fade
+  m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.05, 2e-3));
+  m.snapshots().set_active(paused, false);
+  m.mix(buses, n, out.data());
+  m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.3, 2e-3));
+
+  // Snapshots multiply: Paused (music 0.25) and Menu (music 0) -> 0.
+  m.snapshots().set_active(paused, true);
+  m.snapshots().set_active(m.snapshots().find("Menu"), true);
+  for (int i = 0; i < 3; ++i) m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0, 1e-3));
+  m.snapshots().set_active(paused, false);
+  m.snapshots().set_active(m.snapshots().find("Menu"), false);
+  for (int i = 0; i < 3; ++i) m.mix(buses, n, out.data());
+
+  // Master volume and mute (smoothed: silent by the block's end).
+  m.set_master(0.5f);
+  m.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.15, 1e-3));
+  m.set_mute(true);
+  m.mix(buses, n, out.data());
+  CHECK(std::fabs(out[2 * n - 1]) < 1e-4);
+  m.set_mute(false);
+  m.set_master(1.0f);
+  for (int i = 0; i < 2; ++i) m.mix(buses, n, out.data());
+
+  // Compressor: a loud steady signal is reduced; Full Dynamic Range leaves
+  // it; a quiet one is untouched either way.
+  std::vector<float> loud(2 * size_t(n), 0.8f), quiet(2 * size_t(n), 0.05f);
+  buses[int(Bus::kEngine)] = loud.data();
+  buses[int(Bus::kMusic)] = nullptr;
+  audio::Mixer c;
+  c.prepare(rate);
+  c.mix(buses, n, out.data());
+  c.mix(buses, n, out.data());
+  const float compressed = out[2 * n - 1];
+  CHECK(compressed < 0.7f && compressed > 0.3f);
+  CHECK(c.stage().gain_reduction_db() > 1.0f);
+  c.stage().set_full_dynamic_range(true);
+  for (int i = 0; i < 3; ++i) c.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.8, 1e-3));
+  CHECK(c.stage().gain_reduction_db() < 0.05f);
+  c.stage().set_full_dynamic_range(false);
+  buses[int(Bus::kEngine)] = quiet.data();
+  for (int i = 0; i < 3; ++i) c.mix(buses, n, out.data());
+  CHECK(near(out[2 * n - 1], 0.05, 1e-3));
+
+  // The limiter holds full-scale sums under 1 without hard clipping.
+  CHECK(near(audio::soft_limit(0.5f), 0.5, 1e-6));
+  CHECK(audio::soft_limit(3.0f) <= 1.0f && audio::soft_limit(3.0f) > 0.99f);
+  CHECK(audio::soft_limit(-3.0f) < -0.99f);
+}
+
 }  // namespace
 
 int main() {
@@ -225,7 +376,10 @@ int main() {
   xml_checks();
   fsb_checks();
   player_checks();
+  rt_checks();
+  mixer_checks();
   r34_checks();
   std::printf("audio_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }
+
