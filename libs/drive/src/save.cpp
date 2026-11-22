@@ -59,6 +59,9 @@ std::string save_to_text(const DriveSave& s) {
     out += "max_skills " + std::to_string(s.max_skills_score) + " " + std::to_string(s.max_skills_car) + "\n";
   if (s.fame_rewards_claimed > 0) out += "fame_claimed " + std::to_string(s.fame_rewards_claimed) + "\n";
   if (s.difficulty != 1) out += "difficulty " + std::to_string(s.difficulty) + "\n";
+  if (!s.radio_station.empty() || !s.radio_dj || std::fabs(s.radio_volume - 1.0) > 1e-4)
+    out += "radio " + (s.radio_station.empty() ? std::string("-") : s.radio_station) + " " +
+           (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
   if (s.num_races)
     out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
            std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
@@ -172,6 +175,15 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "difficulty") {
       int d = 1;
       if (l >> d && d >= 0 && d <= 3) out.difficulty = d;
+    } else if (key == "radio") {
+      std::string st;
+      int dj = 1;
+      double vol = 1.0;
+      if (l >> st) {
+        out.radio_station = (st == "-") ? std::string{} : st;
+        if (l >> dj) out.radio_dj = (dj != 0);
+        if (l >> vol && std::isfinite(vol) && vol >= 0.0 && vol <= 2.0) out.radio_volume = vol;
+      }
     } else if (key == "stats") {
       l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
           out.time_exhibition >> out.top_speed;

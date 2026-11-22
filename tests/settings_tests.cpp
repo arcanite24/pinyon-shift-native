@@ -117,6 +117,29 @@ int main() {
   page.fill(title, lines, selected);
   CHECK(selected == 0 && lines[0] == "preset  < high >" && lines.back() == "save & apply");
 
+  // Audio Sound Mix (0-200%), master volume/mute, Full Dynamic Range, radio
+  // DJ/volume, and Your Music rows round-trip through tokens().
+  carview::SettingsPage audio_page;
+  audio_page.load({"--master-volume", "75", "--mute", "--full-dynamic-range", "--no-radio-dj", "--radio-volume", "50",
+                   "--mix-engine", "175", "--mix-music", "25", "--mix-vo", "200", "--your-music",
+                   "--your-music-shuffle", "--your-music-volume", "75"});
+  CHECK(audio_page.value("master volume") == "75%");
+  CHECK(audio_page.value("mute") == "on");
+  CHECK(audio_page.value("full dynamic range") == "on");
+  CHECK(audio_page.value("radio dj") == "off");
+  CHECK(audio_page.value("radio volume") == "50%");
+  CHECK(audio_page.value("mix engine") == "175%");
+  CHECK(audio_page.value("mix music") == "25%");
+  CHECK(audio_page.value("mix vo") == "200%");
+  CHECK(audio_page.value("your music") == "on");
+  CHECK(audio_page.value("your music shuffle") == "on");
+  CHECK(audio_page.value("your music volume") == "75%");
+  auto at = audio_page.tokens();
+  CHECK(has(at, {"--master-volume", "75"}) && has(at, {"--mute"}) && has(at, {"--full-dynamic-range"}));
+  CHECK(has(at, {"--no-radio-dj"}) && has(at, {"--radio-volume", "50"}));
+  CHECK(has(at, {"--mix-engine", "175"}) && has(at, {"--mix-music", "25"}) && has(at, {"--mix-vo", "200"}));
+  CHECK(has(at, {"--your-music"}) && has(at, {"--your-music-shuffle"}) && has(at, {"--your-music-volume", "75"}));
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

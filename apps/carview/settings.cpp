@@ -56,6 +56,22 @@ constexpr Kept kKept[] = {
     {"no-mods", false, "mods"},
     {"mods", true, "mods"},
     {"language", true, "language"},
+    {"master-volume", true, "master-volume"},
+    {"mute", false, "mute"},
+    {"full-dynamic-range", false, "full-dynamic-range"},
+    {"no-radio-dj", false, "radio-dj"},
+    {"radio-volume", true, "radio-volume"},
+    {"mix-engine", true, "mix-engine"},
+    {"mix-other-cars", true, "mix-other-cars"},
+    {"mix-tyres", true, "mix-tyres"},
+    {"mix-wind", true, "mix-wind"},
+    {"mix-ambience", true, "mix-ambience"},
+    {"mix-music", true, "mix-music"},
+    {"mix-ui", true, "mix-ui"},
+    {"mix-vo", true, "mix-vo"},
+    {"your-music", false, "your-music"},
+    {"your-music-shuffle", false, "your-music-shuffle"},
+    {"your-music-volume", true, "your-music-volume"},
 };
 
 const Kept* kept(const std::string& key) {

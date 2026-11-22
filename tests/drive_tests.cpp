@@ -269,10 +269,14 @@ void test_save() {
   s.signs_found = {"flyer_001", "flyer_017"};
   s.barns = {{"barnfind_01", 2, 50000, 51200.25}, {"barnfind_02", 5, 51000, 0}};
   s.garage = {1219};
+  s.radio_station = "Radio2";
+  s.radio_dj = false;
+  s.radio_volume = 0.75;
   drive::DriveSave back;
   std::string error;
   CHECK(drive::save_from_text(drive::save_to_text(s), back, &error));
   CHECK(back.car == s.car && back.has_spawn);
+  CHECK(back.radio_station == "Radio2" && !back.radio_dj && std::fabs(back.radio_volume - 0.75) < 1e-4);
   // The free-roam progress (SPEC-FREEROAM-COLLECTIBLES).
   CHECK(std::fabs(back.total_distance - 51234.5) < 1e-6 && back.signs_found == s.signs_found);
   CHECK(back.barns.size() == 2 && back.barns[0].name == "barnfind_01" && back.barns[0].status == 2 &&

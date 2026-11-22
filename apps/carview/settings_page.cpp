@@ -6,6 +6,26 @@
 namespace carview {
 
 std::vector<SettingsPage::Row> SettingsPage::build() {
+  auto mix_row = [](const char* name, const char* flag) -> Row {
+    return {name,
+            {{"100%", {}},
+             {"125%", {flag, "125"}},
+             {"150%", {flag, "150"}},
+             {"175%", {flag, "175"}},
+             {"200%", {flag, "200"}},
+             {"0%", {flag, "0"}},
+             {"25%", {flag, "25"}},
+             {"50%", {flag, "50"}},
+             {"75%", {flag, "75"}}}};
+  };
+  auto vol_row = [](const char* name, const char* flag) -> Row {
+    return {name,
+            {{"100%", {}},
+             {"0%", {flag, "0"}},
+             {"25%", {flag, "25"}},
+             {"50%", {flag, "50"}},
+             {"75%", {flag, "75"}}}};
+  };
   return {
       {"preset", {{"default", {}}, {"low", {"--preset", "low"}}, {"high", {"--preset", "high"}}}},
       {"shadows",
@@ -100,6 +120,22 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"driving line",
        {{"off", {}}, {"braking", {"--assist-line", "1"}}, {"full", {"--assist-line", "2"}}}},
       {"rewind", {{"on", {}}, {"off", {"--assist-rewind", "0"}}}},
+      vol_row("master volume", "--master-volume"),
+      {"mute", {{"off", {}}, {"on", {"--mute"}}}},
+      {"full dynamic range", {{"off", {}}, {"on", {"--full-dynamic-range"}}}},
+      {"radio dj", {{"on", {}}, {"off", {"--no-radio-dj"}}}},
+      vol_row("radio volume", "--radio-volume"),
+      mix_row("mix engine", "--mix-engine"),
+      mix_row("mix other cars", "--mix-other-cars"),
+      mix_row("mix tyres", "--mix-tyres"),
+      mix_row("mix wind", "--mix-wind"),
+      mix_row("mix ambience", "--mix-ambience"),
+      mix_row("mix music", "--mix-music"),
+      mix_row("mix ui", "--mix-ui"),
+      mix_row("mix vo", "--mix-vo"),
+      {"your music", {{"off", {}}, {"on", {"--your-music"}}}},
+      {"your music shuffle", {{"off", {}}, {"on", {"--your-music-shuffle"}}}},
+      vol_row("your music volume", "--your-music-volume"),
   };
 }
 
@@ -149,7 +185,10 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--throttle-dz-out" || t == "--brake-dz-in" || t == "--brake-dz-out" ||
                       t == "--assist-braking" || t == "--assist-steering" || t == "--assist-tcs" ||
                       t == "--assist-stm" || t == "--assist-shifting" || t == "--assist-line" ||
-                      t == "--assist-rewind");
+                      t == "--assist-rewind" || t == "--master-volume" || t == "--radio-volume" ||
+                      t == "--mix-engine" || t == "--mix-other-cars" || t == "--mix-tyres" || t == "--mix-wind" ||
+                      t == "--mix-ambience" || t == "--mix-music" || t == "--mix-ui" || t == "--mix-vo" ||
+                      t == "--your-music-volume");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
