@@ -18,10 +18,73 @@ std::function<const fh1::UiScene*(const std::string&)>& scene_fn() {
   return f;
 }
 
+GlyphSet& active_glyph_set() {
+  static GlyphSet g = GlyphSet::kXbox;
+  return g;
+}
+
 std::string upper_copy(std::string_view sv) {
   std::string out(sv);
   for (char& c : out) c = char(std::toupper(static_cast<unsigned char>(c)));
   return out;
+}
+
+bool draw_playstation_glyph(ui::List& l, float cx, float cy, float r, const std::string& b, float alpha) {
+  const std::string u = upper_copy(b);
+  const float stroke = std::max(1.5f, r * 0.20f);
+  const uint32_t disc = ui::fade(ui::rgba(28, 30, 36, 245), alpha);
+  const uint32_t ring = ui::fade(ui::rgba(210, 214, 224, 210), alpha);
+  if (u == "A") {  // Cross (blue-tinted X)
+    l.circle(cx, cy, r, disc);
+    const uint32_t col = ui::fade(ui::rgba(116, 178, 255, 255), alpha);
+    const float d = r * 0.44f;
+    l.line(cx - d, cy - d, cx + d, cy + d, stroke, col);
+    l.line(cx + d, cy - d, cx - d, cy + d, stroke, col);
+    return true;
+  }
+  if (u == "B") {  // Circle (coral-red O)
+    l.circle(cx, cy, r, disc);
+    const uint32_t col = ui::fade(ui::rgba(255, 108, 108, 255), alpha);
+    l.arc(cx, cy, r * 0.48f, stroke, 0.0f, 6.2831853f, col, false);
+    return true;
+  }
+  if (u == "X") {  // Square (pink-violet box)
+    l.circle(cx, cy, r, disc);
+    const uint32_t col = ui::fade(ui::rgba(232, 134, 214, 255), alpha);
+    const float d = r * 0.44f;
+    l.frame(cx - d, cy - d, cx + d, cy + d, col, stroke, 0.0f);
+    return true;
+  }
+  if (u == "Y") {  // Triangle (mint-green triangle)
+    l.circle(cx, cy, r, disc);
+    const uint32_t col = ui::fade(ui::rgba(82, 226, 174, 255), alpha);
+    const float top_y = cy - r * 0.50f;
+    const float bot_y = cy + r * 0.42f;
+    const float half_w = r * 0.50f;
+    l.line(cx, top_y, cx + half_w, bot_y, stroke, col);
+    l.line(cx + half_w, bot_y, cx - half_w, bot_y, stroke, col);
+    l.line(cx - half_w, bot_y, cx, top_y, stroke, col);
+    return true;
+  }
+  const char* ps_label = nullptr;
+  if (u == "LB") ps_label = "L1";
+  else if (u == "RB") ps_label = "R1";
+  else if (u == "LT") ps_label = "L2";
+  else if (u == "RT") ps_label = "R2";
+  else if (u == "LS") ps_label = "L3";
+  else if (u == "RS") ps_label = "R3";
+  else if (u == "START") ps_label = "OPT";
+  else if (u == "BACK") ps_label = "SHARE";
+  if (ps_label) {
+    const std::string lbl(ps_label);
+    const float hw = std::max(r * 1.35f, float(lbl.size()) * r * 0.42f + 4.0f);
+    l.rect(cx - hw, cy - r * 0.85f, cx + hw, cy + r * 0.85f, disc, r * 0.35f);
+    l.frame(cx - hw, cy - r * 0.85f, cx + hw, cy + r * 0.85f, ring, std::max(1.0f, r * 0.12f), r * 0.35f);
+    ui::TextStyle ts = style(ui::Font::kB, r * 0.90f, ui::fade(kWhite, alpha), ui::Align::kCenter);
+    l.text(cx, cy - 0.5f * ts.size, lbl, ts);
+    return true;
+  }
+  return false;
 }
 
 std::string lower_copy(std::string_view sv) {
@@ -314,8 +377,14 @@ void title_banner(ui::List& l, float s, float x, float y, std::string_view title
   l.text(x + 14.0f * s, title_y + 0.5f * (bh - ts.size), title, ts);
 }
 
+void set_glyph_set(GlyphSet set) { active_glyph_set() = set; }
+GlyphSet glyph_set() { return active_glyph_set(); }
+
 void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, float alpha) {
   const std::string b = button ? std::string(button) : std::string("A");
+  if (active_glyph_set() == GlyphSet::kPlayStation && draw_playstation_glyph(l, cx, cy, r, b, alpha)) {
+    return;
+  }
   const std::string tex = controller_texture_name(b);
   std::array<float, 4> uv{};
   if (!tex.empty() && texture(tex, uv)) {

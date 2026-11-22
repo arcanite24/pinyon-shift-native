@@ -111,6 +111,12 @@ void title_banner(ui::List& l, float s, float x, float y, std::string_view title
 void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std::vector<std::string>& tabs,
                int active_idx, bool show_bumpers = true, uint32_t active_colour = kPink);
 
+// Controller glyph family shown in BUTTON_BAR_SCENE & menus (automatically switched
+// when a DualSense / DualShock 4 is active, defaulting to Xbox CONTROLLER/* textures).
+enum class GlyphSet : uint8_t { kXbox = 0, kPlayStation = 1 };
+void set_glyph_set(GlyphSet set);
+GlyphSet glyph_set();
+
 // Bottom BUTTON_BAR_SCENE prompt strip with authentic CONTROLLER/* glyphs.
 struct Prompt {
   const char* button = "A";  // A, B, X, Y, LB, RB, LT, RT, START, BACK, DPAD, LS, RS, or key label
