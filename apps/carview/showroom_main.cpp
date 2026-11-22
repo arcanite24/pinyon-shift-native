@@ -2729,11 +2729,24 @@ int run_drive(int argc, char** argv) {
     // SHIFT_NO_CULL=1: every world draw, for comparison with the culled frame.
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options;
-    // The garage car's paint: its stored colour Sequence (SPEC-AUTOSHOW-PAINT).
+    options.game_root = game_root_of();
+    // The garage car's paint & fitted visual upgrades (body kits, wing, rims, brakes, stance).
     if (have_garage)
       if (const garage::Car* gc = career_garage.selected_car())
-        if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car))
+        if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car)) {
           options.match_sequence = gc->colour;
+          options.car_id = gc->car_id;
+          if (parts_db.valid()) {
+            if (const auto db = parts_db.get()) {
+              const float rh_f = float(gc->tune.front_ride_height);
+              const float rh_r = float(gc->tune.rear_ride_height);
+              const float cam_f = float(gc->tune.front_camber_deg);
+              const float cam_r = float(gc->tune.rear_camber_deg);
+              cars::resolve_visual_setup(*db, gc->car_id, garage::fitted(*gc), options.visual, nullptr, rh_f, rh_r,
+                                         cam_f, cam_r);
+            }
+          }
+        }
     // A colour picked in the pause menu's paint page for this car.
     if (paint_sequence >= 0 && lower_ascii(paint_car) == lower_ascii(car)) options.match_sequence = paint_sequence;
     Renderer::Options render_options{window, validation, msaa};

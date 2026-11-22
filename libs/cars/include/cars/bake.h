@@ -31,6 +31,17 @@ bool bake_wheel(const FolderRef& folder, bool tyre, bake::Bake& out, std::string
 // Shared.zip: its textures only.
 bool bake_shared(const FolderRef& folder, bake::Bake& out, std::string* error);
 
+// Loads an aftermarket rim or per-car tyre archive on demand from
+// <game_root>/media/wheels/<wheel_media>.zip (case-insensitive stem match).
+bool load_wheel_from_disc(const std::filesystem::path& game_root, const std::string& wheel_media, bool tyre,
+                          bake::Bake& out, std::string* error);
+
+// Loads an upgraded brake rotor or caliper .rmb.carbin from
+// <game_root>/media/brakes/ for the given inch size, List_BrakeType ID (1..5),
+// and piston count (2/4/6/8).
+bool load_brake_model(const std::filesystem::path& game_root, int size_in, int type_id, int pistons, bool is_rotor,
+                      bake::Model& out, std::string* error);
+
 // Decodes a 24- or 32-bit TGA (raw or RLE) to RGBA8, top row first.
 bool decode_tga(const std::vector<uint8_t>& data, uint32_t& width, uint32_t& height,
                 std::vector<uint8_t>& rgba, std::string* error);

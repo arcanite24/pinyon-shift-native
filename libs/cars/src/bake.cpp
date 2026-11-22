@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <set>
 
+#include "cars/util.h"
+#include "cars/visual_setup.h"
 #include "fh1data/carbin.h"
 #include "fh1data/xds.h"
 
@@ -408,8 +411,9 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
   c.origin = ref.origin;
   c.car_id = row.id;
   c.wheel_media = lower(row.wheel_media);
-  c.tyre_media = kTyreModel;
-  c.tyre_texture_media = kTyreTextures;
+  const std::string own_tyre = per_car_tyre_media(row.media_name);
+  c.tyre_media = own_tyre.empty() ? kTyreModel : own_tyre;
+  c.tyre_texture_media = own_tyre.empty() ? kTyreTextures : own_tyre;
   c.tyre_width_mm = row.tyre_width_mm;
   c.tyre_aspect = row.tyre_aspect;
   c.rim_inches = row.rim_inches;
@@ -421,12 +425,12 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
   for (size_t i = 0; i < 10; ++i)
     for (size_t a = 0; a < 3; ++a) c.part_positions[i][a] = float(row.part_positions[i][a]);
   c.has_body = row.has_body;
-  c.track_outer = {float(row.track_outer[0]), float(row.track_outer[1])};
+  c.track_outer = {float(row.track_outer[0] + 2.0 * row.track_offset[0]),
+                   float(row.track_outer[1] + 2.0 * row.track_offset[1])};
   c.wheelbase = float(row.wheelbase);
   c.body_bottom_y = float(row.body_bottom_y);
   c.has_track_offsets = row.has_track_offsets;
   if (!row.has_body) notes.push_back("no Data_CarBody row " + std::to_string(row.id * 1000));
-  if (row.has_track_offsets) notes.push_back("CarTrackOffsets rows not applied (FORMAT-CARS: meaning not known)");
   // The model-to-body pose (FORMAT-CARS, Wheels): z mirrored, lifted by the
   // mean stock ride height less the body's bottom, pitched by the ride
   // height difference over the wheelbase.
@@ -436,7 +440,7 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
   c.pitch = float(pitch);
   // LF, RF, LR, RR from CarPartPositions PartId 5 LF, 6 RF, 8 LR, 7 RR
   // (body frame, +Z forward). Only z is taken from the rows; x is half the
-  // outer track less the tyre width, y the tyre's outer radius.
+  // outer track less the tyre width (plus CarTrackOffsets), y the tyre's outer radius.
   const size_t wheel_rows[4] = {5, 6, 8, 7};
   for (size_t w = 0; w < 4; ++w) {
     const size_t axle = w < 2 ? 0 : 1;
@@ -444,7 +448,8 @@ bool bake_car(const FolderRef& ref, const CarRow& row, bake::Bake& out, std::str
     const double width = double(row.tyre_width_mm[axle]) / 1000;
     const double outer = rim_radius + width * double(row.tyre_aspect[axle]) / 100;
     const double side = (w % 2 == 0) ? -1 : 1;  // left at -x
-    const double body[3] = {side * (row.track_outer[axle] - width) / 2, outer, row.part_positions[wheel_rows[w]][2]};
+    const double track_x = (row.track_outer[axle] - width) / 2 + row.track_offset[axle];
+    const double body[3] = {side * track_x, outer, row.part_positions[wheel_rows[w]][2]};
     const double cs = std::cos(pitch), sn = std::sin(pitch);
     const double y = body[1] - lift, z = body[2];
     c.wheel_centres_body[w] = {float(body[0]), float(body[1]), float(body[2])};
@@ -529,6 +534,138 @@ bool bake_shared(const FolderRef& ref, bake::Bake& out, std::string* error) {
   if (!folder.open(ref, error)) return false;
   bake_textures(folder, out, nullptr);
   return true;
+}
+
+bool load_wheel_from_disc(const std::filesystem::path& game_root, const std::string& wheel_media, bool tyre,
+                          bake::Bake& out, std::string* error) {
+  namespace fs = std::filesystem;
+  if (game_root.empty() || wheel_media.empty()) {
+    if (error) *error = "load_wheel_from_disc: empty game_root or wheel_media";
+    return false;
+  }
+  const std::string target = lower(wheel_media) + ".zip";
+  const fs::path wheels_dir = game_root / "media" / "wheels";
+  std::error_code ec;
+  if (!fs::is_directory(wheels_dir, ec)) {
+    if (error) *error = "wheels dir not found: " + wheels_dir.string();
+    return false;
+  }
+  fs::path found;
+  for (const auto& entry : fs::directory_iterator(wheels_dir, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    if (lower(entry.path().filename().string()) == target) {
+      found = entry.path();
+      break;
+    }
+  }
+  if (found.empty()) {
+    if (error) *error = "wheel archive not found: " + target;
+    return false;
+  }
+  FolderRef ref;
+  ref.kind = FolderRef::Kind::kArchive;
+  ref.name = lower(wheel_media);
+  ref.path = found;
+  ref.origin = "disc";
+  return bake_wheel(ref, tyre, out, error);
+}
+
+bool load_brake_model(const std::filesystem::path& game_root, int size_in, int type_id, int pistons, bool is_rotor,
+                      bake::Model& out, std::string* error) {
+  namespace fs = std::filesystem;
+  out = bake::Model{};
+  if (game_root.empty() || size_in <= 0) {
+    if (error) *error = "load_brake_model: invalid game_root or size";
+    return false;
+  }
+  const fs::path brakes_dir = game_root / "media" / "brakes";
+  std::error_code ec;
+  if (!fs::is_directory(brakes_dir, ec)) {
+    if (error) *error = "brakes dir not found: " + brakes_dir.string();
+    return false;
+  }
+
+  // Clamp size to available range (7..16) and pistons to {2,4,6,8}.
+  const int sz = std::clamp(size_in, 7, 16);
+  std::vector<std::string> candidates;
+  if (is_rotor) {
+    const std::string stem = brake_type_stem(type_id);
+    candidates.push_back(std::to_string(sz) + "_" + stem + "_lod0.rmb.carbin");
+    candidates.push_back(std::to_string(sz) + "_" + stem + ".rmb.carbin");
+    candidates.push_back(std::to_string(sz) + "_rotor_steel_lod0.rmb.carbin");
+    candidates.push_back(std::to_string(sz) + "_rotor_steel.rmb.carbin");
+  } else {
+    const int p = pistons >= 8 ? 8 : pistons >= 6 ? 6 : pistons >= 4 ? 4 : 2;
+    candidates.push_back(std::to_string(sz) + "_caliper_" + std::to_string(p) + "_lod0.rmb.carbin");
+    candidates.push_back(std::to_string(sz) + "_caliper_" + std::to_string(p) + ".rmb.carbin");
+    candidates.push_back(std::to_string(sz) + "_caliper_4_lod0.rmb.carbin");
+    candidates.push_back(std::to_string(sz) + "_caliper_2.rmb.carbin");
+  }
+
+  // Case-insensitive lookup in media/brakes/.
+  std::map<std::string, fs::path> files;
+  for (const auto& entry : fs::directory_iterator(brakes_dir, ec)) {
+    if (entry.is_regular_file(ec)) files[lower(entry.path().filename().string())] = entry.path();
+  }
+  fs::path chosen;
+  std::string chosen_name;
+  for (const auto& cand : candidates) {
+    if (auto it = files.find(cand); it != files.end()) {
+      chosen = it->second;
+      chosen_name = cand;
+      break;
+    }
+  }
+  if (chosen.empty()) {
+    if (error) *error = "brake model not found for size " + std::to_string(sz);
+    return false;
+  }
+
+  std::ifstream in(chosen, std::ios::binary | std::ios::ate);
+  if (!in) {
+    if (error) *error = "cannot open " + chosen.string();
+    return false;
+  }
+  const std::streamoff len = in.tellg();
+  in.seekg(0);
+  std::vector<uint8_t> data(len > 0 ? size_t(len) : 0u);
+  if (!data.empty() && !in.read(reinterpret_cast<char*>(data.data()), len)) {
+    if (error) *error = "cannot read " + chosen.string();
+    return false;
+  }
+
+  fh1::Carbin carbin;
+  if (!fh1::parse_carbin(data, carbin, error)) return false;
+  const auto transparent = fh1::carbin_transparent_flags(carbin);
+  const Role role = is_rotor ? Role::kRotor : Role::kCaliper;
+  out.name = chosen_name;
+  out.role = role;
+  out.corner = bake::Corner::kNone;
+  out.header_kind = carbin.kind;
+  std::vector<std::string> notes;
+  for (size_t p = 0; p < carbin.parts.size(); ++p) {
+    const fh1::CarbinPart& part = carbin.parts[p];
+    if (part.empty_box()) continue;
+    bake::Part bp;
+    bp.name = part.name;
+    bp.bounds = part.bounds;
+    for (const auto& v : part.lod_pool.vertices) bp.lod_vertices.push_back(bake_vertex(part, v));
+    for (const auto& v : part.lod0_pool.vertices) bp.lod0_vertices.push_back(bake_vertex(part, v));
+    for (size_t i = 0; i < part.subsections.size(); ++i) {
+      const fh1::CarbinSubsection& s = part.subsections[i];
+      bake::Subsection bs;
+      bs.technique = s.material;
+      bs.transparent = transparent[p][i];
+      bs.lod = s.lod;
+      bs.uv_transform = s.uv_transform;
+      bs.material = classify(s.material, bs.transparent, role);
+      bs.indices = fh1::carbin_triangle_list(s);
+      assign_slots(bs, role, {}, {}, notes);
+      bp.subsections.push_back(std::move(bs));
+    }
+    out.parts.push_back(std::move(bp));
+  }
+  return !out.parts.empty();
 }
 
 }  // namespace cars

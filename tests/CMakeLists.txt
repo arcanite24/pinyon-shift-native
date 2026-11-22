@@ -176,6 +176,10 @@ add_executable(pi_tuning_tests pi_tuning_tests.cpp)
 target_link_libraries(pi_tuning_tests PRIVATE shift_garage shift_drive shift_cars shift_sqlite3)
 add_test(NAME pi_tuning_tests COMMAND pi_tuning_tests)
 
+add_executable(visual_upgrades_tests visual_upgrades_tests.cpp)
+target_link_libraries(visual_upgrades_tests PRIVATE shift_cars)
+add_test(NAME visual_upgrades_tests COMMAND visual_upgrades_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)

@@ -1,3 +1,4 @@
+#include "cars/bake.h"
 #include "cars/mods.h"
 #include "showroom.h"
 
@@ -395,7 +396,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     error = car_name + ": " + err;
     return false;
   }
-  const bake::CarInfo& info = car_.car;
+  bake::CarInfo& info = car_.car;
   if (options_.match_rgb >= 0) {
     bool found = false;
     for (size_t i = 0; i < info.colours.size() && !found; ++i)
@@ -418,14 +419,89 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       notes_.push_back("no colour with Sequence " + std::to_string(options_.match_sequence) + ": the lowest");
     }
   }
-  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.wheel_media + ".shiftbake")), wheel_, &err)) {
-    error = "wheel " + info.wheel_media + ": " + err;
-    return false;
+
+  // Apply fitted visual overrides (tyre widths, rim diameters, ride height,
+  // CarTrackOffsets, caliper angles, aftermarket rim, per-car tyre).
+  const cars::VisualSetup& vis = options_.visual;
+  if (vis.active) {
+    for (size_t a = 0; a < 2; ++a) {
+      if (vis.tyre_width_mm[a] > 0) info.tyre_width_mm[a] = vis.tyre_width_mm[a];
+      if (vis.rim_inches[a] > 0) info.rim_inches[a] = vis.rim_inches[a];
+      if (vis.ride_height_m[a] >= 0.0f) info.ride_height[a] = vis.ride_height_m[a];
+      if (vis.has_caliper_angle_override) info.caliper_angle[a] = vis.caliper_angle_deg[a];
+    }
+    if (!vis.wheel_media.empty()) info.wheel_media = lower(vis.wheel_media);
+    // Recompute lift, pitch, and wheel centres for upgraded stance / track offsets.
+    if (info.has_body && info.wheelbase > 0.0f) {
+      info.lift = (info.ride_height[0] + info.ride_height[1]) * 0.5f - info.body_bottom_y;
+      info.pitch = std::atan((info.ride_height[1] - info.ride_height[0]) / info.wheelbase);
+      const float cs = std::cos(info.pitch), sn = std::sin(info.pitch);
+      const size_t wheel_rows[4] = {5, 6, 8, 7};
+      for (size_t w = 0; w < 4; ++w) {
+        const size_t axle = w < 2 ? 0 : 1;
+        const float rim_r = float(info.rim_inches[axle]) * 0.0254f * 0.5f;
+        const float width = float(info.tyre_width_mm[axle]) / 1000.0f;
+        const float outer = rim_r + width * float(info.tyre_aspect[axle]) / 100.0f;
+        const float side = (w % 2 == 0) ? -1.0f : 1.0f;
+        const float track_x = (info.track_outer[axle] - width) * 0.5f + vis.track_offset_m[axle];
+        const float bx = side * track_x;
+        const float by = outer;
+        const float bz = info.part_positions[wheel_rows[w]][2];
+        info.wheel_centres_body[w] = {bx, by, bz};
+        const float y = by - info.lift;
+        info.wheel_centres[w] = {bx, cs * y + sn * bz, sn * y - cs * bz};
+      }
+    }
   }
-  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_media + ".shiftbake")), tyre_, &err) ||
-      !bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_texture_media + ".shiftbake")), tyre_textures_,
-                       &err) ||
-      !bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
+
+  // Per-car tyre check (FJ Cruiser TOY_FJCruiser_12, Raptor, Wrangler, H1):
+  // prefer the car's own TireA<MediaName> archive if available in bake or disc.
+  std::string want_tyre = vis.active && !vis.tyre_media_override.empty()
+                              ? lower(vis.tyre_media_override)
+                              : cars::per_car_tyre_media(info.media_name);
+  if (!want_tyre.empty() && info.tyre_media == cars::kTyreModel) {
+    if (std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (want_tyre + ".shiftbake")))) {
+      info.tyre_media = want_tyre;
+      info.tyre_texture_media = want_tyre;
+    } else if (!options_.game_root.empty() &&
+               cars::load_wheel_from_disc(options_.game_root, want_tyre, true, tyre_, nullptr)) {
+      info.tyre_media = want_tyre;
+      info.tyre_texture_media = want_tyre;
+      tyre_textures_ = tyre_;
+    }
+  }
+
+  // Load rim: pre-baked .shiftbake first, then on-demand from media/wheels/<MediaName>.zip
+  // (covers all 285+ aftermarket rims in List_Wheels without requiring pre-baking).
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.wheel_media + ".shiftbake")), wheel_, &err)) {
+    std::string disc_err;
+    if (options_.game_root.empty() ||
+        !cars::load_wheel_from_disc(options_.game_root, info.wheel_media, false, wheel_, &disc_err)) {
+      error = "wheel " + info.wheel_media + ": " + err + (disc_err.empty() ? "" : " (" + disc_err + ")");
+      return false;
+    }
+  }
+  if (tyre_.models.empty()) {
+    if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_media + ".shiftbake")), tyre_, &err)) {
+      std::string disc_err;
+      if (options_.game_root.empty() ||
+          !cars::load_wheel_from_disc(options_.game_root, info.tyre_media, true, tyre_, &disc_err)) {
+        error = err;
+        return false;
+      }
+    }
+  }
+  if (tyre_textures_.textures.empty()) {
+    if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_texture_media + ".shiftbake")),
+                         tyre_textures_, &err)) {
+      if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (std::string(cars::kTyreTextures) + ".shiftbake")),
+                           tyre_textures_, &err)) {
+        error = err;
+        return false;
+      }
+    }
+  }
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
     error = err;
     return false;
   }
@@ -439,13 +515,29 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     if (s.known && (options_.car_id == 0 ? s.car_id == info.car_id : s.car_id == options_.car_id)) stock_ = &s;
   if (options_.car_id != 0 && !stock_)
     notes_.push_back("no stock row for car " + std::to_string(options_.car_id) + " in the bake");
-  if (!stock_) notes_.push_back("no stock parts baked: hiding variants by letter (first real letter)");
-  // FORMAT-CARS, Stock parts: family members by the stock rows, seats a
-  // stock weight row removes, and other lettered names by the first real
-  // letter.
+  if (!stock_ && !vis.active) notes_.push_back("no stock parts baked: hiding variants by letter (first real letter)");
+  // FORMAT-CARS, Stock & fitted parts: family members by fitted VisualSetup
+  // (when active) else the stock rows, seats a weight row removes, and
+  // other lettered names by the first real letter.
   auto hidden = [&](const std::string& name, const std::set<std::string>& real) {
     if (options_.all_variants) return false;
     const std::string n = lower(name);
+    if (vis.active) {
+      const std::string member = family_member(n);
+      if (!member.empty()) {
+        static const std::regex kExhaust("exhaust[lr]?([a-z])");
+        std::smatch m;
+        if (std::regex_match(member, m, kExhaust)) {
+          if (vis.has_exhaust_override) {
+            return !std::binary_search(vis.shown_parts.begin(), vis.shown_parts.end(), member);
+          }
+          return m[1].str() != "a";
+        }
+        return !std::binary_search(vis.shown_parts.begin(), vis.shown_parts.end(), member);
+      }
+      if (std::binary_search(vis.removed_parts.begin(), vis.removed_parts.end(), n)) return true;
+      return hidden_variant(n, real);
+    }
     if (stock_) {
       const std::string member = family_member(n);
       if (!member.empty()) return stock_hidden(member, *stock_);
@@ -642,12 +734,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     std::vector<std::string> fill;
     for (const auto& n : stand_ins) {  // sorted: "bumperfa" before "bumperfb"
       if (n == "wheel" || ends_with(n, "_mid") || ends_with(n, "_max")) continue;
-      // A stock family member is filled from its LOD1-5 twin; another
+      // A stock/fitted family member is filled from its LOD1-5 twin; another
       // member never stands in for it (no promotion).
-      const bool by_stock = stock_ && !family_member(n).empty();
+      const bool by_stock = (stock_ || vis.active) && !family_member(n).empty();
       if (by_stock && hidden(n, real)) continue;
       if (!by_stock && ends_with(n, "race")) continue;
-      if (!by_stock && stock_ && hidden(n, real)) continue;  // a removed seat
+      if (!by_stock && (stock_ || vis.active) && hidden(n, real)) continue;  // a removed seat
       const std::string stem = by_stock ? std::string() : stem_of(n);
       if (!options_.all_variants && !stem.empty() && stems_drawn.count(stem)) continue;
       for (const auto& e : exterior->parts)
@@ -668,9 +760,76 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   std::memcpy(body_to_model_, pose, sizeof pose);
   const float* body_to_model = body_to_model_;
 
-  // Brakes: each corner's rotor and calliper, centred on the hub.
+  // Brakes: each corner's rotor and calliper, centred on the hub, rotated by
+  // CaliperAngleFront/Rear and laterally offset by List_Wheels.BrakeDrawOffset.
+  // When upgraded brakes (Level >= 1) are fitted and game_root is set, load
+  // the upgraded rotor & caliper models from media/brakes/.
   static constexpr bake::Corner kCorners[4] = {bake::Corner::kLF, bake::Corner::kRF, bake::Corner::kLR,
                                                bake::Corner::kRR};
+  constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+  std::array<bake::Model, 2> upg_rotor, upg_caliper;
+  std::array<bool, 2> has_upg_rotor{false, false}, has_upg_caliper{false, false};
+  if (vis.active && !options_.game_root.empty()) {
+    for (int a = 0; a < 2; ++a) {
+      if (vis.brakes[size_t(a)].level >= 1 && vis.brakes[size_t(a)].size_in > 0) {
+        has_upg_rotor[size_t(a)] =
+            cars::load_brake_model(options_.game_root, vis.brakes[size_t(a)].size_in, vis.brakes[size_t(a)].type_id,
+                                   vis.brakes[size_t(a)].pistons, true, upg_rotor[size_t(a)], nullptr);
+        has_upg_caliper[size_t(a)] =
+            cars::load_brake_model(options_.game_root, vis.brakes[size_t(a)].size_in, vis.brakes[size_t(a)].type_id,
+                                   vis.brakes[size_t(a)].pistons, false, upg_caliper[size_t(a)], nullptr);
+      }
+    }
+  }
+  auto add_brake_at = [&](const bake::Model& m, int corner, bool is_rotor, bool mirror_right,
+                          const bake::Bake& tex_pack) {
+    const int axle = corner < 2 ? 0 : 1;
+    const bool right = (corner % 2) == 1;
+    const float side = right ? 1.0f : -1.0f;
+    const float brake_dx = vis.active ? (side * vis.brake_draw_offset) : 0.0f;
+    const float cal_rad = is_rotor ? 0.0f : (info.caliper_angle[size_t(axle)] * kDegToRad);
+    const float ca = std::cos(cal_rad), sa = std::sin(cal_rad);
+    // Local transform about hub in body frame: optional half-turn for loose
+    // right-side models, caliper angle rotation around axle X, lateral offset.
+    float rot_x[16];
+    identity(rot_x);
+    rot_x[5] = ca;
+    rot_x[6] = sa;
+    rot_x[9] = -sa;
+    rot_x[10] = ca;
+    float local_body[16];
+    if (mirror_right) {
+      float flip[16];
+      identity(flip);
+      flip[0] = right ? -1.0f : 1.0f;
+      flip[10] = right ? -1.0f : 1.0f;
+      multiply(rot_x, flip, local_body);
+    } else {
+      // Stock brake models are authored in model frame: convert linear part via pose.
+      float lin_pose[16];
+      std::memcpy(lin_pose, pose, sizeof lin_pose);
+      lin_pose[13] = lin_pose[14] = 0;
+      multiply(rot_x, lin_pose, local_body);
+    }
+    local_body[12] += brake_dx;
+    std::memcpy(pending_local_, local_body, sizeof local_body);
+    pending_wheel_ = corner;
+    pending_spins_ = is_rotor;
+    const auto& cb = info.wheel_centres_body[size_t(corner)];
+    local_body[12] += cb[0];
+    local_body[13] = cb[1];
+    local_body[14] = cb[2];
+    float m4[16];
+    multiply(body_to_model, local_body, m4);
+    std::vector<std::string> parts;
+    for (const auto& p : m.parts) parts.push_back(p.name);
+    add_model(m, parts, m4, tex_pack, axle);
+  };
+  for (int c = 0; c < 4; ++c) {
+    const size_t axle = c < 2 ? 0 : 1;
+    if (has_upg_rotor[axle]) add_brake_at(upg_rotor[axle], c, true, true, car_);
+    if (has_upg_caliper[axle]) add_brake_at(upg_caliper[axle], c, false, true, car_);
+  }
   for (const auto& m : car_.models) {
     if (m.role != Role::kCaliper && m.role != Role::kRotor) continue;
     int corner = -1;
@@ -680,21 +839,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       notes_.push_back(m.name + ": no corner");
       continue;
     }
-    float m4[16];
-    translate_scale(info.wheel_centres[size_t(corner)], {1, 1, 1}, m4);
-    std::vector<std::string> parts;
-    for (const auto& p : m.parts) parts.push_back(p.name);
-    // For set_wheel_poses: the brake model about its hub in the body frame
-    // is the pose's linear part (the models are authored in the model frame).
-    pending_wheel_ = corner;
-    pending_spins_ = m.role == Role::kRotor;
-    std::memcpy(pending_local_, pose, sizeof pose);
-    pending_local_[13] = pending_local_[14] = 0;
-    add_model(m, parts, m4, car_, corner < 2 ? 0 : 1);
+    const size_t axle = corner < 2 ? 0 : 1;
+    if (m.role == Role::kRotor && has_upg_rotor[axle]) continue;
+    if (m.role == Role::kCaliper && has_upg_caliper[axle]) continue;
+    add_brake_at(m, corner, m.role == Role::kRotor, false, car_);
   }
   pending_wheel_ = -1;
-  if (info.caliper_angle[0] != 0 || info.caliper_angle[1] != 0)
-    notes_.push_back("calliper angles not applied (spec question)");
 
   // Wheels (FORMAT-CARS, Wheels): built in the body frame at each centre and
   // mapped to the model frame by the inverse of the model-to-body pose.
@@ -765,22 +915,37 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     const float outer = rim_radius + width_m * aspect;
     const float w_rim = (inches - 14.0f) / 10.0f;
     const float rim_scale = rim && header_ok ? width_m / (rim->header_bounds[1] - rim->header_bounds[3]) : 1.0f;
-    // Body-frame wheel matrix: centre, the half turn for right wheels, then
-    // the lateral scale (and the tyre's lateral offset in the rim's x).
+    // Body-frame wheel matrix: centre, static alignment camber about Z, the
+    // half turn for right wheels, then the lateral scale (and the tyre's
+    // lateral offset in the rim's x).
+    const float cam = vis.active ? (right ? -vis.camber_rad[size_t(axle)] : vis.camber_rad[size_t(axle)]) : 0.0f;
+    const float cc = std::cos(cam), sc = std::sin(cam);
     auto wheel_matrix = [&](float sx, float dx, float* m4) {
-      float local[16];
-      identity(local);
+      float base_m[16];
+      identity(base_m);
       const float turn = right ? -1.0f : 1.0f;
-      local[0] = turn * sx;
-      local[10] = turn;
+      base_m[0] = turn * sx;
+      base_m[10] = turn;
+      base_m[12] = turn * dx;
+      float local[16];
+      if (cam != 0.0f) {
+        float rz[16];
+        identity(rz);
+        rz[0] = cc;
+        rz[1] = sc;
+        rz[4] = -sc;
+        rz[5] = cc;
+        multiply(rz, base_m, local);
+      } else {
+        std::memcpy(local, base_m, sizeof local);
+      }
       const auto& cb = info.wheel_centres_body[size_t(c)];
-      local[12] = turn * dx;
       std::memcpy(pending_local_, local, sizeof local);  // about the centre (set_wheel_poses)
       pending_wheel_ = c;
       pending_spins_ = true;
       local[12] += cb[0];
-      local[13] = cb[1];
-      local[14] = cb[2];
+      local[13] += cb[1];
+      local[14] += cb[2];
       multiply(body_to_model, local, m4);
     };
     if (rim) {

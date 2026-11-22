@@ -41,6 +41,7 @@ struct CarRow {
   std::array<double, 2> track_outer{};
   double wheelbase = 0, body_bottom_y = 0;
   bool has_track_offsets = false;  // a CarTrackOffsets row (Id = car id)
+  std::array<double, 2> track_offset{}, upgrade_track_offset{};  // Front/RearOffset, UpgradeFront/RearOffset
   uint32_t caliper_rgb_front = 0, caliper_rgb_rear = 0;
   double caliper_angle_front = 0, caliper_angle_rear = 0;
   bool selectable = false, drivable = false, unicorn = false;

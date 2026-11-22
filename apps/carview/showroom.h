@@ -26,6 +26,7 @@
 #include <volk.h>
 
 #include "cars/bake_format.h"
+#include "cars/visual_setup.h"
 #include "drive/lamps.h"
 #include "renderer.h"
 #include "world/smashables.h"
@@ -209,6 +210,13 @@ struct ShowroomOptions {
   // The Data_Car row shown (0: the baked row). Rows sharing a model can
   // differ in stock parts and factory livery (FORMAT-CARS, Stock parts).
   int64_t car_id = 0;
+  // Optional game media root (for on-demand aftermarket rims, per-car tyres,
+  // and upgraded brake rotors/calipers from media/brakes/).
+  std::filesystem::path game_root;
+  // Optional fitted visual upgrades (body kits, wing, hood, skirts, cage,
+  // exhaust, aftermarket rim, upgraded brakes, ride height, track offsets,
+  // tyre widths/rim sizes, camber).
+  cars::VisualSetup visual;
 };
 
 class Showroom {

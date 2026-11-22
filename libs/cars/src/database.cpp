@@ -375,9 +375,14 @@ bool load_database(const Install& install, Database& out, std::string* error) {
     }
   }
   {
-    Query c(db, "SELECT Id FROM CarTrackOffsets");
+    Query c(db, "SELECT Id, FrontOffset, RearOffset, UpgradeFrontOffset, UpgradeRearOffset FROM CarTrackOffsets");
     while (c.step())
-      if (auto it = by_id.find(c.i(0)); it != by_id.end()) out.cars[it->second].has_track_offsets = true;
+      if (auto it = by_id.find(c.i(0)); it != by_id.end()) {
+        CarRow& r = out.cars[it->second];
+        r.has_track_offsets = true;
+        r.track_offset = {c.d(1), c.d(2)};
+        r.upgrade_track_offset = {c.d(3), c.d(4)};
+      }
   }
   {
     // No unique key: the merge can leave identical duplicate rows. The
