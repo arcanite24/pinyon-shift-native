@@ -58,7 +58,8 @@ struct RadioData {
   std::vector<RadioStation> stations;
   std::vector<RadioClip> music, vo;
   std::filesystem::path music_bank, vo_bank;
-  int unresolved = 0;  // names no info entry gives
+  std::string language = "EN";  // resolved VO language code
+  int unresolved = 0;           // names no info entry gives
   // The D-pad cycle: the player stations (not off, not the 3D location
   // stations) in file order, then the off station.
   std::vector<int> cycle;
@@ -68,8 +69,8 @@ struct RadioData {
 // `vo_info` resolve track and VO names.
 bool parse_radio(std::string_view system_xml, std::string_view music_info, std::string_view vo_info, RadioData& out,
                  std::string* error);
-// Reads media/audio/radio under `game_root` (the VO bank of `language`
-// when it exists, else EN).
+// Reads media/audio/radio under `game_root` (honouring cars::mods::resolve;
+// uses `language`'s VO bank when it exists, else falls back to EN).
 bool load_radio(const std::filesystem::path& game_root, RadioData& out, std::string* error,
                 std::string_view language = "EN");
 
@@ -110,6 +111,8 @@ class StationSchedule {
   void audible(double t0, double t1, std::vector<RadioEvent>& out);
   // The track playing at t (the latest started) and how far into it.
   const RadioEvent* track_at(double t, double* offset = nullptr);
+  void set_dj_enabled(bool on) { use_dj_ = on; }
+  bool dj_enabled() const { return use_dj_; }
 
  private:
   void extend();  // schedules the ident, the next track and a DJ line
@@ -135,6 +138,10 @@ class Radio {
   void press(int dir);
   // Starts on this station (an index into data().stations), no popup.
   void select(int station);
+  int find_station(std::string_view name) const;  // -1 if not found
+  std::string selected_name() const;
+  void set_dj_enabled(bool on);
+  bool dj_enabled() const { return dj_enabled_; }
   // Advances the clock (while on, or with `run`: a station still fading
   // out) and the popup by `dt` seconds of output.
   void advance(double dt, bool run = false);
@@ -153,6 +160,7 @@ class Radio {
   const RadioData& data_;
   std::vector<std::unique_ptr<StationSchedule>> schedules_;
   int pos_ = 0;
+  bool dj_enabled_ = true;
   double clock_ = 0;
   // The popup's timer: it shows from `popup_from` for kPopupShow seconds
   // (on the popup clock, which runs whether the radio is on or not).
@@ -161,27 +169,34 @@ class Radio {
   uint64_t seen_track_ = ~0ull;  // the selected station's track last seen
 };
 
-// Plays a Radio: decodes the selected station's clips from the banks (MPEG
-// frames, padding dropped, dr_mp3), resampled to the output rate, with the
-// levels, the DJ duck and the station-change fades.
+// Plays a Radio: decodes the selected station's clips on a background
+// StreamPool worker (MPEG frames, padding dropped, dr_mp3), resampled to the
+// output rate, with prefetching, the levels, the DJ duck and station fades.
 class RadioPlayer {
  public:
-  RadioPlayer(Radio& radio, int out_rate);
+  RadioPlayer(Radio& radio, int out_rate, bool non_blocking = false);
   ~RadioPlayer();
   // Adds `frames` stereo frames into `out` (interleaved; adds, so mix the
   // engine first) and advances the radio.
   void render(float* out, int frames);
+  void set_non_blocking(bool on) { non_blocking_ = on; }
+  bool non_blocking() const { return non_blocking_; }
+  void set_prefetch_seconds(double s) { prefetch_s_ = std::max(0.0, s); }
   double master = 1;  // ours: the radio against the engine
+  double volume = 1;  // SPEC-RADIO: RADIO VOLUME option (0..1)
   int decoders() const;
 
  private:
-  struct Decoder;
+  struct Voice;
   struct Banks;
-  Decoder* decoder(const RadioEvent& e);
+  Voice* voice_for(const RadioEvent& e, int64_t initial_frame);
+  void release_voice(Voice& v);
   std::unique_ptr<Banks> banks_;
   Radio& radio_;
   int rate_;
-  std::vector<std::unique_ptr<Decoder>> decoders_;
+  bool non_blocking_ = false;
+  double prefetch_s_ = 6.0;
+  std::vector<Voice> voices_;
   std::vector<double> station_gain_;
   double duck_ = 1;
   std::vector<RadioEvent> scratch_;

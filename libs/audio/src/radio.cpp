@@ -1,30 +1,18 @@
 #include "audio/radio.h"
 
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <thread>
 
 #include "audio/fsb4.h"
+#include "audio/stream.h"
 #include "audio/xml.h"
-
-#if defined(_MSC_VER)
-#pragma warning(push, 0)
-#elif defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wall"
-#pragma GCC diagnostic ignored "-Wextra"
-#endif
-#define DR_MP3_IMPLEMENTATION
-#define DR_MP3_NO_STDIO
-#include "dr_mp3.h"
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#elif defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
+#include "cars/mods.h"
 
 namespace audio {
 namespace {
@@ -192,17 +180,25 @@ bool parse_radio(std::string_view system_xml, std::string_view music_info, std::
 bool load_radio(const std::filesystem::path& game_root, RadioData& out, std::string* error,
                 std::string_view language) {
   const auto dir = game_root / "media" / "audio" / "radio";
+  auto resolve_radio = [&](const std::string& file) { return cars::mods::resolve(dir / file); };
   std::string lang;
   lang.reserve(language.size());
   for (char c : language) lang.push_back(char(std::toupper(static_cast<unsigned char>(c))));
-  if (lang.empty() || !std::filesystem::exists(dir / ("Radio_VO_" + lang + ".fsb"))) lang = "EN";
-  const auto system = dir / "RadioSystem.xml", music_info = dir / "RadioSoundbankInfo_Music.xml",
-             vo_info = dir / ("RadioSoundbankInfo_VO_" + lang + ".xml");
-  for (const auto& p : {system, music_info, vo_info, dir / "Radio_Music.fsb", dir / ("Radio_VO_" + lang + ".fsb")})
-    if (!std::filesystem::exists(p)) return fail(error, "no " + p.string());
+  std::error_code ec;
+  if (lang.empty() || !std::filesystem::exists(resolve_radio("Radio_VO_" + lang + ".fsb"), ec) ||
+      !std::filesystem::exists(resolve_radio("RadioSoundbankInfo_VO_" + lang + ".xml"), ec))
+    lang = "EN";
+  const auto system = resolve_radio("RadioSystem.xml");
+  const auto music_info = resolve_radio("RadioSoundbankInfo_Music.xml");
+  const auto vo_info = resolve_radio("RadioSoundbankInfo_VO_" + lang + ".xml");
+  const auto music_bank = resolve_radio("Radio_Music.fsb");
+  const auto vo_bank = resolve_radio("Radio_VO_" + lang + ".fsb");
+  for (const auto& p : {system, music_info, vo_info, music_bank, vo_bank})
+    if (!std::filesystem::exists(p, ec)) return fail(error, "no " + p.string());
   if (!parse_radio(read_text(system), read_text(music_info), read_text(vo_info), out, error)) return false;
-  out.music_bank = dir / "Radio_Music.fsb";
-  out.vo_bank = dir / ("Radio_VO_" + lang + ".fsb");
+  out.music_bank = music_bank;
+  out.vo_bank = vo_bank;
+  out.language = lang;
   return true;
 }
 
@@ -282,7 +278,7 @@ const RadioEvent* StationSchedule::track_at(double t, double* offset) {
 
 // ------------------------------------------------------------------- radio
 
-Radio::Radio(const RadioData& data, uint64_t seed, bool dj) : data_(data) {
+Radio::Radio(const RadioData& data, uint64_t seed, bool dj) : data_(data), dj_enabled_(dj) {
   schedules_.resize(data.stations.size());
   for (size_t i = 0; i < data.cycle.size(); ++i) {
     const int s = data.cycle[i];
@@ -306,6 +302,23 @@ void Radio::select(int station) {
   seen_track_ = ~0ull;
   if (auto* s = schedule(selected()))
     if (const RadioEvent* t = s->track_at(clock_)) seen_track_ = t->id;
+}
+
+int Radio::find_station(std::string_view name) const {
+  for (size_t i = 0; i < data_.stations.size(); ++i)
+    if (iequals(data_.stations[i].name, name)) return int(i);
+  return -1;
+}
+
+std::string Radio::selected_name() const {
+  const int s = selected();
+  return s >= 0 && size_t(s) < data_.stations.size() ? data_.stations[size_t(s)].name : std::string{};
+}
+
+void Radio::set_dj_enabled(bool on) {
+  dj_enabled_ = on;
+  for (auto& s : schedules_)
+    if (s) s->set_dj_enabled(on);
 }
 
 void Radio::press(int dir) {
@@ -349,79 +362,18 @@ Radio::Popup Radio::popup() const {
 
 // ------------------------------------------------------------------ player
 
-struct RadioPlayer::Decoder {
+struct RadioPlayer::Voice {
   uint64_t id = 0;
+  int slot = -1;
   bool used = false;
-  std::vector<uint8_t> mp3;
-  std::vector<uint32_t> frame_at;
-  int rate = 48000, spf = 1152, channels = 1;
-  drmp3 dec{};
-  bool open = false;
-  std::vector<float> buf;  // stereo source frames from buf_start
-  int64_t buf_start = 0;
   double pos = 0;  // source frame of the next output frame
-  bool done = false;
-
-  ~Decoder() {
-    if (open) drmp3_uninit(&dec);
-  }
-  void seek(double frame) {
-    if (open) drmp3_uninit(&dec);
-    open = false;
-    done = frame_at.empty();
-    buf.clear();
-    pos = std::max(0.0, frame);
-    if (done) return;
-    // Two frames early, for the bit reservoir; their output is dropped.
-    const int64_t k = std::clamp<int64_t>(int64_t(pos / spf) - 2, 0, int64_t(frame_at.size()) - 1);
-    buf_start = k * spf;
-    open = drmp3_init_memory(&dec, mp3.data() + frame_at[size_t(k)], mp3.size() - frame_at[size_t(k)], nullptr) != 0;
-    done = !open;
-  }
-  // Decodes until source frame `last` is buffered (or the data ends).
-  void fill(int64_t last) {
-    float tmp[4096 * 2];
-    while (!done && buf_start + int64_t(buf.size() / 2) <= last) {
-      const drmp3_uint64 got = drmp3_read_pcm_frames_f32(&dec, 4096, tmp);
-      if (got == 0) {
-        done = true;
-        break;
-      }
-      const int ch = int(dec.channels);
-      for (drmp3_uint64 f = 0; f < got; ++f) {
-        buf.push_back(tmp[f * ch]);
-        buf.push_back(tmp[f * ch + (ch > 1 ? 1 : 0)]);
-      }
-    }
-  }
-  // Adds `n` output frames at `gain` into `out`, a source step of `step`.
-  void render(float* out, int n, double gain, double step) {
-    const int64_t last = int64_t(pos + step * n) + 2;
-    fill(last);
-    for (int i = 0; i < n; ++i, pos += step) {
-      const double rel = pos - double(buf_start);
-      const int64_t a = int64_t(std::floor(rel));
-      if (a < 0) continue;
-      const double f = rel - double(a);
-      const size_t ia = size_t(a) * 2;
-      if (ia + 1 >= buf.size()) break;
-      const bool has_b = ia + 3 < buf.size();
-      const float l = float(buf[ia] + (has_b ? (buf[ia + 2] - buf[ia]) * f : 0));
-      const float r = float(buf[ia + 1] + (has_b ? (buf[ia + 3] - buf[ia + 1]) * f : 0));
-      out[2 * i] += float(gain) * l;
-      out[2 * i + 1] += float(gain) * r;
-    }
-    // Keep a little behind the position.
-    const int64_t drop = int64_t(pos - double(buf_start)) - 4;
-    if (drop > 8192) {
-      buf.erase(buf.begin(), buf.begin() + drop * 2);
-      buf_start += drop;
-    }
-  }
 };
 
 struct RadioPlayer::Banks {
   std::vector<FsbSample> music, vo;
+  std::filesystem::path music_bank, vo_bank;
+  std::unique_ptr<StreamPool> pool;
+  ~Banks() { pool.reset(); }  // stop worker before vectors/paths destroy
 };
 
 namespace {
@@ -441,41 +393,50 @@ bool read_bank_headers(const std::filesystem::path& p, std::vector<FsbSample>& o
 }
 }  // namespace
 
-RadioPlayer::RadioPlayer(Radio& radio, int out_rate)
-    : banks_(std::make_unique<Banks>()), radio_(radio), rate_(out_rate) {
-  read_bank_headers(radio.data().music_bank, banks_->music);
-  read_bank_headers(radio.data().vo_bank, banks_->vo);
+RadioPlayer::RadioPlayer(Radio& radio, int out_rate, bool non_blocking)
+    : banks_(std::make_unique<Banks>()), radio_(radio), rate_(std::max(1, out_rate)), non_blocking_(non_blocking) {
+  banks_->music_bank = radio.data().music_bank;
+  banks_->vo_bank = radio.data().vo_bank;
+  read_bank_headers(banks_->music_bank, banks_->music);
+  read_bank_headers(banks_->vo_bank, banks_->vo);
+  Banks* b = banks_.get();
+  banks_->pool = std::make_unique<StreamPool>(16, 98304, [b](uint64_t key) -> std::unique_ptr<PcmSource> {
+    const bool is_music = (key >> 32) != 0;
+    const uint32_t index = uint32_t(key & 0xFFFFFFFFu);
+    const auto& samples = is_music ? b->music : b->vo;
+    if (index >= samples.size()) return nullptr;
+    const FsbSample& s = samples[index];
+    return make_fsb_mpeg_source(is_music ? b->music_bank : b->vo_bank, s.offset, s.bytes,
+                                s.rate > 0 ? s.rate : 48000);
+  });
   station_gain_.assign(radio.data().stations.size(), 0.0);
   if (radio.on()) station_gain_[size_t(radio.selected())] = 1;
 }
 
-RadioPlayer::~RadioPlayer() = default;
+RadioPlayer::~RadioPlayer() {
+  for (auto& v : voices_) release_voice(v);
+}
 
-int RadioPlayer::decoders() const { return int(decoders_.size()); }
+int RadioPlayer::decoders() const { return int(voices_.size()); }
 
-RadioPlayer::Decoder* RadioPlayer::decoder(const RadioEvent& e) {
-  for (auto& d : decoders_)
-    if (d->id == e.id) return d.get();
-  const Banks& b = *banks_;
+void RadioPlayer::release_voice(Voice& v) {
+  if (v.slot >= 0 && banks_ && banks_->pool) banks_->pool->release(v.slot);
+  v.slot = -1;
+}
+
+RadioPlayer::Voice* RadioPlayer::voice_for(const RadioEvent& e, int64_t initial_frame) {
+  for (auto& v : voices_)
+    if (v.id == e.id) return &v;
   const bool music = e.kind == RadioKind::kTrack;
   const auto& clips = music ? radio_.data().music : radio_.data().vo;
-  const auto& samples = music ? b.music : b.vo;
-  auto d = std::make_unique<Decoder>();
-  d->id = e.id;
-  const uint32_t index = clips[size_t(e.clip)].sample;
-  if (index < samples.size()) {
-    const FsbSample& s = samples[index];
-    std::vector<uint8_t> raw(s.bytes);
-    std::ifstream f(music ? radio_.data().music_bank : radio_.data().vo_bank, std::ios::binary);
-    f.seekg(std::streamoff(s.offset));
-    if (f.read(reinterpret_cast<char*>(raw.data()), std::streamsize(raw.size()))) {
-      d->mp3 = mpeg_frames(raw.data(), raw.size(), &d->frame_at, &d->rate, &d->spf);
-      d->channels = s.channels ? s.channels : 1;
-    }
+  int slot = -1;
+  if (e.clip >= 0 && size_t(e.clip) < clips.size()) {
+    const uint32_t sample = clips[size_t(e.clip)].sample;
+    const uint64_t key = (music ? (1ull << 32) : 0ull) | uint64_t(sample);
+    slot = banks_->pool->acquire(key, std::max<int64_t>(0, initial_frame));
   }
-  d->seek(0);
-  decoders_.push_back(std::move(d));
-  return decoders_.back().get();
+  voices_.push_back({e.id, slot, true, double(std::max<int64_t>(0, initial_frame))});
+  return &voices_.back();
 }
 
 void RadioPlayer::render(float* out, int frames) {
@@ -489,11 +450,12 @@ void RadioPlayer::render(float* out, int frames) {
   const double t0 = radio_.clock();
   // The clock runs while on, and while the last station fades to off.
   const double t1 = t0 + (sel >= 0 || fading ? dt : 0);
-  for (auto& d : decoders_) d->used = false;
+  for (auto& v : voices_) v.used = false;
   mix_.resize(4 * size_t(frames));
   float* music = mix_.data();
   float* voice = mix_.data() + 2 * size_t(frames);
   const double fade_step = 1.0 / (std::max(0.01, lv.change_fade) * rate_);
+  const double vol = std::clamp(volume, 0.0, 2.0);
   for (size_t s = 0; s < station_gain_.size(); ++s) {
     const double target = int(s) == sel ? 1.0 : 0.0;
     if (station_gain_[s] <= 0 && target <= 0) continue;
@@ -503,22 +465,71 @@ void RadioPlayer::render(float* out, int frames) {
       continue;
     }
     std::fill(mix_.begin(), mix_.end(), 0.0f);
-    sched->audible(t0, t1, scratch_);
+    // Ask ahead by prefetch_s_ so upcoming idents, tracks and DJ lines are
+    // already decoded on the worker thread before they start.
+    sched->audible(t0, t1 + (int(s) == sel ? prefetch_s_ : 0.0), scratch_);
     bool dj = false;
     for (const auto& e : scratch_) {
+      const bool now_audible = e.start < t1 && e.end > t0;
+      const int first = now_audible ? std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames) : 0;
+      const int last = now_audible ? std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames) : 0;
+      const double approx_start = now_audible ? std::max(0.0, (t0 + double(first) / rate_ - e.start) * 48000.0) : 0.0;
+      Voice* v = voice_for(e, int64_t(approx_start));
+      v->used = true;
+      if (!now_audible || last <= first || v->slot < 0) continue;
       dj |= e.kind == RadioKind::kDj;
-      Decoder* d = decoder(e);
-      d->used = true;
-      const int first = std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames);
-      const int last = std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames);
-      if (last <= first) continue;
-      const double step = double(d->rate) / rate_;
-      const double expect = (t0 + double(first) / rate_ - e.start) * d->rate;
-      if (std::fabs(expect - d->pos) > 0.05 * d->rate) d->seek(expect);
+      PcmStream* st = banks_->pool->stream(v->slot);
+      if (!st) continue;
+      if (!non_blocking_ && (st->state() == PcmStream::kLoading || !st->positioned()))
+        banks_->pool->wait_ready(v->slot);
+      if (st->state() != PcmStream::kReady || !st->positioned()) continue;
+      const int src_rate = st->rate();
+      const double step = double(src_rate) / rate_;
+      const double expect = std::max(0.0, (t0 + double(first) / rate_ - e.start) * src_rate);
+      if (std::fabs(expect - v->pos) > 0.05 * src_rate) {
+        v->pos = expect;
+        const int64_t need = int64_t(std::floor(v->pos));
+        if (need < st->from() || need > st->end() + 4096) {
+          st->request(need);
+          if (!non_blocking_) banks_->pool->wait_ready(v->slot);
+          if (!st->positioned()) continue;
+        }
+      }
+      const int n = last - first;
+      if (!non_blocking_) {
+        const int64_t want_end = int64_t(v->pos + step * n) + 2;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!st->source_done() && st->end() < want_end && std::chrono::steady_clock::now() < deadline) {
+          st->hint(std::max<int64_t>(st->from(), int64_t(std::floor(v->pos)) - 4));
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
       const double gain = lv.master * (e.kind == RadioKind::kTrack   ? lv.music
                                        : e.kind == RadioKind::kIdent ? lv.ident
                                                                      : lv.dialogue);
-      d->render((e.kind == RadioKind::kTrack ? music : voice) + 2 * size_t(first), last - first, gain, step);
+      float* dst = (e.kind == RadioKind::kTrack ? music : voice) + 2 * size_t(first);
+      const int64_t rfrom = st->from(), rend = st->end();
+      bool missed = false;
+      for (int i = 0; i < n; ++i, v->pos += step) {
+        const int64_t a = int64_t(std::floor(v->pos));
+        if (a < rfrom || a >= rend) {
+          missed = true;
+          continue;
+        }
+        const double frac = v->pos - double(a);
+        float al = 0, ar = 0, bl = 0, br = 0;
+        st->sample(a, al, ar);
+        if (a + 1 < rend) {
+          st->sample(a + 1, bl, br);
+          al = float(al + (bl - al) * frac);
+          ar = float(ar + (br - ar) * frac);
+        }
+        dst[2 * i] += float(gain) * al;
+        dst[2 * i + 1] += float(gain) * ar;
+      }
+      const int64_t cur = int64_t(std::floor(v->pos));
+      if (missed && cur < rfrom) st->request(cur);
+      else st->hint(std::max<int64_t>(rfrom, cur - 4));
     }
     const double duck_target = dj ? lv.duck : 1.0;
     const double duck_step = (1 - lv.duck) / (std::max(0.01, duck_target < duck_ ? lv.duck_down : lv.duck_up) * rate_);
@@ -528,13 +539,20 @@ void RadioPlayer::render(float* out, int frames) {
       if (int(s) == sel) duck_ = duck_target < duck_ ? std::max(duck_target, duck_ - duck_step)
                                                      : std::min(duck_target, duck_ + duck_step);
       const double duck = int(s) == sel ? duck_ : 1.0;
-      const float k = float(g * master);
+      const float k = float(g * master * vol);
       out[2 * i] += k * float(music[2 * i] * duck + voice[2 * i]);
       out[2 * i + 1] += k * float(music[2 * i + 1] * duck + voice[2 * i + 1]);
     }
     station_gain_[s] = g;
   }
-  std::erase_if(decoders_, [](const std::unique_ptr<Decoder>& d) { return !d->used; });
+  for (auto it = voices_.begin(); it != voices_.end();) {
+    if (!it->used) {
+      release_voice(*it);
+      it = voices_.erase(it);
+    } else {
+      ++it;
+    }
+  }
   // The clock runs while on, and while the last station fades to off.
   radio_.advance(dt, fading);
 }

@@ -44,7 +44,7 @@ std::vector<Mod> list(const std::filesystem::path& root) {
       else if (line.rfind("enabled ", 0) == 0) m.enabled = line.substr(8) != "0";
       else if (line.rfind("priority ", 0) == 0) m.priority = std::atoi(line.c_str() + 9);
     }
-    for (const char* sub : {"bake", "sound"}) {
+    for (const char* sub : {"bake", "sound", "media", "radio"}) {
       const auto d = m.dir / sub;
       if (!std::filesystem::is_directory(d, ec)) continue;
       for (const auto& f : std::filesystem::recursive_directory_iterator(d, ec))
@@ -59,20 +59,29 @@ std::vector<Mod> list(const std::filesystem::path& root) {
 }
 
 void activate(const std::vector<Mod>& mods, const std::filesystem::path& bake_dir,
-              const std::filesystem::path& sound_dir) {
+              const std::filesystem::path& sound_dir, const std::filesystem::path& game_root) {
   g_layers.clear();
   g_active.clear();
   Layer bake{bake_dir, {}}, sound{sound_dir, {}};
+  Layer media{game_root.empty() ? std::filesystem::path{} : game_root / "media", {}};
+  Layer radio{game_root.empty() ? std::filesystem::path{} : game_root / "media" / "audio" / "radio", {}};
   std::error_code ec;
   for (const Mod& m : mods) {
     if (!m.enabled) continue;
     bool any = false;
     if (std::filesystem::is_directory(m.dir / "bake", ec)) bake.over.push_back(m.dir / "bake"), any = true;
     if (std::filesystem::is_directory(m.dir / "sound", ec)) sound.over.push_back(m.dir / "sound"), any = true;
+    if (!media.base.empty() && std::filesystem::is_directory(m.dir / "media", ec))
+      media.over.push_back(m.dir / "media"), any = true;
+    if (!radio.base.empty() && std::filesystem::is_directory(m.dir / "radio", ec))
+      radio.over.push_back(m.dir / "radio"), any = true;
     if (any) g_active.push_back(m.name);
   }
   if (!bake.over.empty()) g_layers.push_back(std::move(bake));
   if (!sound.over.empty()) g_layers.push_back(std::move(sound));
+  // Check more specific radio/ before media/ so either mod layout works.
+  if (!radio.over.empty()) g_layers.push_back(std::move(radio));
+  if (!media.over.empty()) g_layers.push_back(std::move(media));
 }
 
 std::filesystem::path resolve(const std::filesystem::path& p) {

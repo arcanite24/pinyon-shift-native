@@ -3,10 +3,13 @@
 // popup's timing on made-up data; with SHIFT_GAME_ROOT, the counts read
 // from the player's disc and a short decode of the selected station.
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <filesystem>
@@ -14,6 +17,8 @@
 
 #include "audio/fsb4.h"
 #include "audio/radio.h"
+#include "audio/stream.h"
+#include "cars/mods.h"
 
 namespace {
 
@@ -329,6 +334,147 @@ void disc(const char* root) {
   std::printf("disc: across a change, up to %d clips at once, %d quiet quarter seconds, loudest %.3f RMS\n", most,
               quiet, loudest);
   CHECK(finite && most >= 2 && quiet <= 2 && loudest < 0.8);
+
+  // Non-blocking mode: render() must never block on disk/MP3 decode on the
+  // calling thread, and once the worker catches up it produces audio.
+  audio::Radio nb_radio(d, 7);
+  nb_radio.select(d.cycle[0]);
+  audio::RadioPlayer nb(nb_radio, 48000, true);
+  std::vector<float> chunk(2 * 480, 0.0f);  // 10 ms blocks
+  double worst_ms = 0;
+  double max_rms = 0;
+  for (int i = 0; i < 60; ++i) {
+    if (i == 30) nb_radio.press(+1);  // switch stations mid-stream
+    std::fill(chunk.begin(), chunk.end(), 0.0f);
+    const auto t0 = std::chrono::steady_clock::now();
+    nb.render(chunk.data(), 480);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    worst_ms = std::max(worst_ms, ms);
+    double s2 = 0;
+    for (float x : chunk) s2 += double(x) * x;
+    max_rms = std::max(max_rms, std::sqrt(s2 / double(chunk.size())));
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  std::printf("disc: non-blocking worst 10 ms render %.3f ms, peak block RMS %.4f\n", worst_ms, max_rms);
+  CHECK(worst_ms < 5.0 && max_rms > 0.01);
+}
+
+void dj_and_station_lookup(const audio::RadioData& d) {
+  audio::Radio r(d, 42, true);
+  CHECK(r.dj_enabled());
+  const int beta = r.find_station("beta");
+  CHECK(beta >= 0 && r.find_station("NoSuchStation") == -1);
+  r.select(beta);
+  CHECK(r.selected() == beta && r.selected_name() == "Beta");
+
+  // Turning DJ off stops future scheduled breaks from emitting DJ events.
+  r.set_dj_enabled(false);
+  CHECK(!r.dj_enabled());
+  std::vector<audio::RadioEvent> ev;
+  r.schedule(beta)->audible(500.0, 2000.0, ev);
+  int dj_count = 0;
+  for (const auto& e : ev)
+    if (e.kind == audio::RadioKind::kDj && e.start > 600.0) ++dj_count;
+  CHECK(dj_count == 0);
+}
+
+void mods_and_language() {
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "shift-radio-mods-test";
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  const fs::path game = root / "game";
+  const fs::path radio_dir = game / "media" / "audio" / "radio";
+  const fs::path mod_root = root / "mods";
+  const fs::path mod_dir = mod_root / "custom_radio";
+  fs::create_directories(radio_dir, ec);
+  fs::create_directories(mod_dir / "radio", ec);
+  auto write = [](const fs::path& p, std::string_view s) {
+    std::ofstream f(p, std::ios::binary);
+    f.write(s.data(), std::streamsize(s.size()));
+  };
+  write(radio_dir / "RadioSystem.xml", kSystem);
+  write(radio_dir / "RadioSoundbankInfo_Music.xml", kMusicInfo);
+  write(radio_dir / "RadioSoundbankInfo_VO_EN.xml", kVoInfo);
+  write(radio_dir / "RadioSoundbankInfo_VO_FR.xml", kVoInfo);
+  write(radio_dir / "Radio_Music.fsb", "FSB4");
+  write(radio_dir / "Radio_VO_EN.fsb", "FSB4");
+  write(radio_dir / "Radio_VO_FR.fsb", "FSB4");
+
+  // Without mods: language FR resolves to FR, unknown ZZ falls back to EN.
+  cars::mods::activate({}, {}, {}, {});
+  audio::RadioData d;
+  std::string err;
+  CHECK(audio::load_radio(game, d, &err, "fr") && d.language == "FR");
+  CHECK(d.vo_bank.filename() == "Radio_VO_FR.fsb");
+  CHECK(audio::load_radio(game, d, &err, "ZZ") && d.language == "EN");
+  CHECK(d.vo_bank.filename() == "Radio_VO_EN.fsb");
+
+  // With a mod overriding RadioSystem.xml (renaming Alpha -> ModStation).
+  std::string mod_xml(kSystem);
+  const auto pos = mod_xml.find("Alpha");
+  mod_xml.replace(pos, 5, "ModStation");
+  write(mod_dir / "mod.txt", "title Custom\nenabled 1\npriority 5\n");
+  write(mod_dir / "radio" / "RadioSystem.xml", mod_xml);
+  auto mods = cars::mods::list(mod_root);
+  CHECK(mods.size() == 1 && mods[0].files == 1);
+  cars::mods::activate(mods, {}, {}, game);
+  CHECK(audio::load_radio(game, d, &err, "FR"));
+  CHECK(!d.stations.empty() && d.stations[0].name == "ModStation");
+  cars::mods::activate({}, {}, {}, {});
+  fs::remove_all(root, ec);
+}
+
+void write_test_wav(const std::filesystem::path& path, int rate, int frames) {
+  std::vector<int16_t> pcm(size_t(frames) * 2);
+  for (int i = 0; i < frames; ++i) {
+    const double s = std::sin(2.0 * 3.14159265358979 * 440.0 * i / rate);
+    pcm[size_t(i) * 2] = int16_t(std::lround(s * 16000.0));
+    pcm[size_t(i) * 2 + 1] = int16_t(std::lround(-s * 16000.0));
+  }
+  const uint32_t data_bytes = uint32_t(pcm.size() * 2);
+  const uint32_t riff_bytes = 36 + data_bytes;
+  uint8_t h[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ',
+                   16,  0,   0,   0,   1, 0, 2, 0, 0,   0,   0,   0,   0,   0,   0,   0,
+                   4,   0,   16,  0,   'd', 'a', 't', 'a', 0, 0, 0, 0};
+  auto u32 = [](uint8_t* p, uint32_t v) {
+    p[0] = uint8_t(v), p[1] = uint8_t(v >> 8), p[2] = uint8_t(v >> 16), p[3] = uint8_t(v >> 24);
+  };
+  u32(h + 4, riff_bytes);
+  u32(h + 24, uint32_t(rate));
+  u32(h + 28, uint32_t(rate * 4));
+  u32(h + 40, data_bytes);
+  std::ofstream f(path, std::ios::binary);
+  f.write(reinterpret_cast<const char*>(h), sizeof h);
+  f.write(reinterpret_cast<const char*>(pcm.data()), std::streamsize(data_bytes));
+}
+
+void stream_pool_wav() {
+  namespace fs = std::filesystem;
+  const fs::path wav = fs::temp_directory_path() / "shift-stream-test.wav";
+  write_test_wav(wav, 48000, 24000);
+  CHECK(audio::is_music_file(wav) && audio::is_music_file("foo.MP3") && !audio::is_music_file("foo.txt"));
+  audio::StreamPool pool(4, 16384, [&](uint64_t) { return audio::make_file_source(wav); });
+  const int slot = pool.acquire(1, 0);
+  CHECK(slot >= 0 && pool.wait_ready(slot));
+  audio::PcmStream* st = pool.stream(slot);
+  CHECK(st && st->rate() == 48000 && st->length() == 24000 && st->end() > 1000);
+  float l = 0, r = 0;
+  st->sample(100, l, r);
+  const float expect = float(int16_t(std::lround(std::sin(2.0 * 3.14159265358979 * 440.0 * 100 / 48000) * 16000.0))) /
+                       32768.0f;
+  CHECK(near(l, expect, 1e-4) && near(r, -expect, 1e-4));
+
+  // Seeking moves the ring window to the exact requested frame.
+  st->request(12000);
+  CHECK(pool.wait_ready(slot) && st->from() == 12000 && st->end() > 12000);
+  st->sample(12005, l, r);
+  const float expect2 =
+      float(int16_t(std::lround(std::sin(2.0 * 3.14159265358979 * 440.0 * 12005 / 48000) * 16000.0))) / 32768.0f;
+  CHECK(near(l, expect2, 1e-4) && near(r, -expect2, 1e-4));
+  pool.release(slot);
+  std::error_code ec;
+  fs::remove(wav, ec);
 }
 
 }  // namespace
@@ -346,6 +492,9 @@ int main() {
   cycle_and_popup(d);
   picker();
   frames();
+  dj_and_station_lookup(d);
+  mods_and_language();
+  stream_pool_wav();
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");
   if (failures) std::printf("%d failure(s)\n", failures);

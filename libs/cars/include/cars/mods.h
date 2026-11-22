@@ -31,10 +31,11 @@ struct Mod {
 // root: none.
 std::vector<Mod> list(const std::filesystem::path& root);
 
-// Lays the enabled mods over `bake_dir` and `sound_dir` for resolve(). Not
+// Lays the enabled mods over `bake_dir`, `sound_dir`, and (when given)
+// `game_root`'s `media/` and `media/audio/radio/` for resolve(). Not
 // thread-safe against resolve(): call once at start-up.
 void activate(const std::vector<Mod>& mods, const std::filesystem::path& bake_dir,
-              const std::filesystem::path& sound_dir);
+              const std::filesystem::path& sound_dir, const std::filesystem::path& game_root = {});
 
 // `p` itself, or the first enabled mod's file (or folder) at the same path
 // relative to the bake or sound folder.
