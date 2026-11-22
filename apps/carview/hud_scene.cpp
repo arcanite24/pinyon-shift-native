@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "game_hud.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 namespace {
@@ -31,7 +32,10 @@ uint32_t colour_of(const std::array<float, 4>& c, float alpha) {
 
 }  // namespace
 
-void set_ui_scenes(std::function<const fh1::UiScene*(const std::string&)> load) { scenes() = std::move(load); }
+void set_ui_scenes(std::function<const fh1::UiScene*(const std::string&)> load) {
+  scenes() = load;
+  ui4::set_scene_loader(std::move(load));
+}
 
 const fh1::UiScene* ui_scene(const std::string& name) { return scenes() ? scenes()(name) : nullptr; }
 

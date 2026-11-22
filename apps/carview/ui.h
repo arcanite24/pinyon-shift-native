@@ -79,7 +79,7 @@ bool cjk_font_loaded();
 // in alpha), owned here; the renderer uploads the rectangles that changed.
 // The glyphs use the rows above kGlyphRows; the images (the game's UI
 // textures) the rows below, kept for the run.
-inline constexpr uint32_t kAtlasSize = 2048, kGlyphRows = 1024;
+inline constexpr uint32_t kAtlasSize = 4096, kGlyphRows = 1024;
 const std::vector<uint8_t>& atlas_pixels();
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty();  // x, y, w, h
 // An image (straight-alpha RGBA, sRGB) in the atlas under `key`, once; its

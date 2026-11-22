@@ -6,37 +6,18 @@
 #include <cstdio>
 
 #include "game_hud.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 namespace {
 
-constexpr uint32_t kPink = ui::rgba(0xF5, 0x04, 0x5C);
-constexpr uint32_t kBlack = ui::rgba(14, 16, 22, 220);
-constexpr uint32_t kPillGrey = ui::rgba(33, 33, 33);
-constexpr uint32_t kWhite = ui::rgba(246, 247, 250);
-constexpr uint32_t kDim = ui::rgba(176, 182, 194);
-constexpr uint32_t kInk = ui::rgba(18, 20, 24);
+constexpr uint32_t kPink = ui4::kPink;
+constexpr uint32_t kBlack = ui4::kBrushBlack;
+constexpr uint32_t kWhite = ui4::kWhite;
+constexpr uint32_t kDim = ui4::kDim;
 
 void draw_brush_strip(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour) {
-  std::array<float, 4> smudge{}, crisp{};
-  if (ui::atlas_find("tape.smudge", smudge) && ui::atlas_find("tape.crisp", crisp)) {
-    const float px = 0.03f * (y1 - y0), py = 0.1f * (y1 - y0);
-    l.image(x0 - px, y0 - py, x1 + px, y1 + py, smudge, colour);
-    l.image(x0 - px, y0 - py, x1 + px, y1 + py, crisp, colour);
-  } else {
-    l.rect(x0, y0, x1, y1, colour, 3.0f);
-  }
-}
-
-uint32_t button_colour(const char* face) {
-  if (!face) return ui::rgba(70, 220, 110);
-  switch (face[0]) {
-    case 'A': return ui::rgba(70, 220, 110);
-    case 'B': return ui::rgba(236, 52, 44);
-    case 'X': return ui::rgba(44, 140, 232);
-    case 'Y': return ui::rgba(255, 196, 36);
-    default: return ui::rgba(220, 224, 232);
-  }
+  ui4::brush(l, x0, y0, x1, y1, colour);
 }
 
 std::string radio_logo_texture_path(const std::string& station_name, bool off) {
@@ -55,196 +36,117 @@ void draw_radio_popup_gpu(ui::List& l, const RadioPopupGpuState& st, float scree
   const float a = std::clamp(st.alpha, 0.0f, 1.0f);
   if (a <= 0.005f) return;
   const float s = screen_h / 720.0f;
-  // Positioned right-aligned above the tachometer (SPEC-RADIO HUD section: x 1075..1210, y 368..470).
-  const float right_x = screen_w - (1280.0f - 1210.0f) * s;
-  const float top_y = screen_h - (720.0f - 368.0f) * s;
+  // Retail FH1 SPEC-RADIO / hud-freeroam.png: right-aligned above the tachometer,
+  // NO opaque dark rounded box — crisp station logo, drop-shadowed white track
+  // title, and a vibrant Horizon pink distressed brush strip behind the artist!
+  const float right_x = screen_w - (1280.0f - 1212.0f) * s;
+  const float top_y = screen_h - (720.0f - 372.0f) * s;
 
   std::array<float, 4> logo_uv{};
   const std::string tex = radio_logo_texture_path(st.station_name, st.off);
   const bool have_logo = ui_texture(tex, logo_uv);
   const float logo_h = 44.0f * s;
-  const float logo_w = 135.0f * s;
+  const float logo_w = 136.0f * s;
 
   const std::string title = st.off ? (st.station_label.empty() ? std::string("RADIO OFF") : st.station_label)
                                    : st.title;
   const std::string artist = st.off ? std::string{} : st.artist;
 
-  ui::TextStyle title_ts;
-  title_ts.font = ui::Font::kE;
-  title_ts.size = 18.0f * s;
-  title_ts.color = ui::fade(kWhite, a);
-  title_ts.align = ui::Align::kRight;
-  title_ts.keep_case = true;
+  ui::TextStyle title_ts = ui4::style(ui::Font::kE, 19.0f * s, ui::fade(kWhite, a), ui::Align::kRight, true);
+  ui::TextStyle artist_ts = ui4::style(ui::Font::kB, 14.0f * s, ui::fade(kWhite, a), ui::Align::kRight, true);
 
-  ui::TextStyle artist_ts;
-  artist_ts.font = ui::Font::kB;
-  artist_ts.size = 14.0f * s;
-  artist_ts.color = ui::fade(kWhite, a);
-  artist_ts.align = ui::Align::kRight;
-  artist_ts.keep_case = true;
-
-  const float tw = ui::List::measure(title, title_ts);
   const float aw = artist.empty() ? 0.0f : ui::List::measure(artist, artist_ts);
-  const float panel_w = std::max({logo_w + 24.0f * s, tw + 28.0f * s, aw + 32.0f * s, 210.0f * s});
-  const float panel_h = (artist.empty() ? 86.0f : 114.0f) * s;
-  const float x0 = right_x - panel_w;
-
-  // Translucent Horizon backing card with pink right edge accent.
-  l.rect(x0, top_y - 6.0f * s, right_x + 6.0f * s, top_y + panel_h, ui::fade(ui::rgba(10, 12, 18, 195), a), 4.0f * s);
-  l.rect(right_x + 2.0f * s, top_y - 6.0f * s, right_x + 6.0f * s, top_y + panel_h, ui::fade(kPink, a));
 
   if (have_logo) {
-    l.image(right_x - logo_w, top_y, right_x, top_y + logo_h, logo_uv, ui::fade(ui::rgba(255, 255, 255), a));
+    l.image(right_x - logo_w, top_y, right_x, top_y + logo_h, logo_uv, ui::fade(kWhite, a));
   } else {
-    ui::TextStyle st_ts;
-    st_ts.font = ui::Font::kE;
-    st_ts.size = 15.0f * s;
-    st_ts.color = ui::fade(kPink, a);
-    st_ts.align = ui::Align::kRight;
+    ui::TextStyle st_ts = ui4::style(ui::Font::kE, 16.0f * s, ui::fade(kPink, a), ui::Align::kRight);
     const std::string sl = !st.station_label.empty() ? st.station_label : st.station_name;
-    l.text(right_x - 8.0f * s, top_y + 12.0f * s, sl, st_ts);
+    ui4::shadowed_text(l, right_x, top_y + 12.0f * s, sl, st_ts, s);
   }
 
-  // Title line (white, right-aligned).
+  // Title line (crisp drop-shadowed white, right-aligned).
   const float title_y = top_y + logo_h + 6.0f * s;
-  l.text(right_x - 8.0f * s, title_y, title, title_ts);
+  ui4::shadowed_text(l, right_x, title_y, title, title_ts, s);
 
-  // Artist line on a Horizon pink brush strip.
+  // Artist line on an iconic tilted FH1 pink brush strip.
   if (!artist.empty()) {
     const float ay = title_y + 26.0f * s;
-    const float strip_w = aw + 20.0f * s;
-    draw_brush_strip(l, right_x - strip_w - 2.0f * s, ay - 4.0f * s, right_x, ay + 20.0f * s, ui::fade(kPink, a));
-    l.text(right_x - 8.0f * s, ay + 1.0f * s, artist, artist_ts);
+    const float strip_w = aw + 28.0f * s;
+    ui4::TiltScope tilt(l, right_x - 0.5f * strip_w, ay + 9.0f * s, ui4::kTiltRad * 0.5f);
+    ui4::brush(l, right_x - strip_w, ay - 3.0f * s, right_x + 4.0f * s, ay + 21.0f * s, ui::fade(kPink, a));
+    l.text(right_x - 10.0f * s, ay + 2.0f * s, artist, artist_ts);
   }
 }
 
 // ------------------------------------------------ UI4 Scene Parity Renderers
 
 void draw_button_bar_ui4(ui::List& l, const std::vector<ButtonBarItem>& items, float screen_w, float screen_h) {
-  if (items.empty()) return;
-  const float s = screen_h / 720.0f;
-  // Query BUTTON_BAR_SCENE if present on disc for authentic vertical anchor.
-  float base_y = screen_h - 66.0f * s;
-  if (const fh1::UiScene* bar = ui_scene("BUTTON_BAR_SCENE")) {
-    SceneDraw sc(bar);
-    if (const int root = sc.find("BUTTON_BAR"); root >= 0) {
-      const auto pos = sc.at(root);
-      if (pos[1] > 400.0f && pos[1] < 705.0f) base_y = screen_h - (720.0f - pos[1]) * s;
-    }
-  }
-  float cursor_x = 70.0f * s;
-  const float h = 32.0f * s;
-  (void)screen_w;
-  for (const auto& item : items) {
-    ui::TextStyle ts;
-    ts.font = ui::Font::kB;
-    ts.size = 14.0f * s;
-    ts.color = kWhite;
-    ts.keep_case = true;
-    const float tw = ui::List::measure(item.label, ts);
-    const float pw = tw + 48.0f * s;
-    std::array<float, 4> uv{};
-    if (ui_texture("DIRTMASKS/PILL01", uv)) {
-      l.image(cursor_x, base_y, cursor_x + pw, base_y + h, uv, kPillGrey);
-    } else {
-      l.rect(cursor_x, base_y, cursor_x + pw, base_y + h, ui::rgba(16, 18, 24, 210), 4.0f * s);
-    }
-    const float cx = cursor_x + 18.0f * s;
-    const float cy = base_y + 0.5f * h;
-    if (ui_texture(std::string("CONTROLLER/") + item.button + "_BUTTON", uv)) {
-      l.image(cx - 11.0f * s, cy - 11.0f * s, cx + 11.0f * s, cy + 11.0f * s, uv);
-    } else {
-      l.circle(cx, cy, 10.0f * s, button_colour(item.button));
-      ui::TextStyle bt;
-      bt.font = ui::Font::kB;
-      bt.size = 11.0f * s;
-      bt.color = kInk;
-      bt.align = ui::Align::kCenter;
-      l.text(cx, cy - 5.5f * s, item.button, bt);
-    }
-    l.text(cx + 18.0f * s, cy - 7.0f * s, item.label, ts);
-    cursor_x += pw + 10.0f * s;
-  }
+  std::vector<ui4::Prompt> prompts;
+  prompts.reserve(items.size());
+  for (const auto& it : items) prompts.push_back({it.button, it.label});
+  ui4::button_bar(l, prompts, screen_w, screen_h);
 }
 
 void draw_pause_menu_ui4(ui::List& l, const PauseMenuUi4State& st, float screen_w, float screen_h) {
   const float s = screen_h / 720.0f;
-  // Subtle full-screen dark scrim so menu brushes pop against Colorado.
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(6, 8, 14, 110));
+  // Retail 925_PAUSE_MENU keeps Colorado bright & clear behind the tilted brushes.
+  ui4::subtle_vignette(l, screen_w, screen_h, 0.22f);
 
-  // Query 925_PAUSE_MENU scene + SUPER_STACKER reflow (50 px pitch per SPEC-UI-SCREENS).
   float list_x = 147.0f * s;
   float list_y0 = 128.0f * s;
   float pitch = 50.0f * s;
-  float slant_rad = 0.0f;
+  float slant_rad = ui4::kTiltRad;
   if (const fh1::UiScene* sc_raw = ui_scene("925_PAUSE_MENU")) {
     SceneDraw sc(sc_raw, true);
     if (const int b0 = sc.find("Button0"); b0 >= 0) {
       const auto p = sc.at(b0);
       if (p[0] > 40.0f && p[0] < 400.0f) list_x = (p[0] - 40.0f) * s;
       if (p[1] > 60.0f && p[1] < 240.0f) list_y0 = (p[1] - 24.0f) * s;
-      slant_rad = -sc.angle(b0);
+      const float a = -sc.angle(b0);
+      if (std::fabs(a) > 1e-3f) slant_rad = a;
     }
   }
   const int visible_count = int(st.items.size());
-  // Clamp pitch if menu has many rows so it never overlaps the bottom help bar.
   const float max_h = screen_h - list_y0 - 95.0f * s;
   if (visible_count > 1 && pitch * float(visible_count) > max_h) {
-    pitch = std::max(32.0f * s, max_h / float(visible_count));
+    pitch = std::max(36.0f * s, max_h / float(visible_count));
   }
   const auto ys = fh1::reflow_stacker(list_y0, pitch, visible_count);
 
-  if (std::fabs(slant_rad) > 1e-4f) l.turn(list_x + 150.0f * s, list_y0 + 180.0f * s, slant_rad);
-  for (int i = 0; i < visible_count; ++i) {
-    const bool sel = (i == st.selected);
-    ui::TextStyle ts;
-    ts.font = ui::Font::kE;
-    ts.size = (sel ? 34.0f : 28.0f) * s * (pitch / (50.0f * s));
-    ts.color = kWhite;
-    ts.keep_case = true;
-    const float tw = ui::List::measure(st.items[size_t(i)], ts);
-    const float bw = std::max(240.0f * s, tw + 74.0f * s);
-    const float bh = pitch * (sel ? 0.96f : 0.84f);
-    const float ry = ys[size_t(i)];
-    const uint32_t bg = sel ? ui::fade(kPink, 0.85f + 0.15f * st.selection_anim) : ui::rgba(12, 14, 18, 225);
-    draw_brush_strip(l, list_x, ry, list_x + bw, ry + bh, bg);
-    l.text(list_x + 36.0f * s, ry + 0.5f * (bh - ts.size), st.items[size_t(i)], ts);
-  }
-  if (std::fabs(slant_rad) > 1e-4f) l.unturn();
-
-  // Top-right wristband / car / credits strip (SPEC-UI-LAYOUTS d).
-  const float rx = screen_w - 64.0f * s;
-  const float ry0 = 36.0f * s;
-  if (!st.wristband_label.empty()) {
-    l.rect(rx - 385.0f * s, ry0, rx - 165.0f * s, ry0 + 26.0f * s, ui::rgba(14, 16, 22, 200));
-    ui::TextStyle gts{.size = 13.0f * s, .color = st.wristband_colour, .align = ui::Align::kRight, .font = ui::Font::kB, .keep_case = true};
-    l.text(rx - 174.0f * s, ry0 + 6.0f * s, st.wristband_goal, gts);
-
-    l.rect(rx - 160.0f * s, ry0, rx, ry0 + 26.0f * s, st.wristband_colour);
-    ui::TextStyle wts{.size = 14.0f * s, .color = kWhite, .align = ui::Align::kCenter, .font = ui::Font::kE, .keep_case = true};
-    l.text(rx - 80.0f * s, ry0 + 6.0f * s, st.wristband_label, wts);
-  }
-  if (!st.car_name.empty()) {
-    const float cy = ry0 + 30.0f * s;
-    l.rect(rx - 300.0f * s, cy, rx, cy + 26.0f * s, ui::rgba(14, 16, 22, 205));
-    ui::TextStyle cts{.size = 15.0f * s, .color = kWhite, .align = ui::Align::kRight, .font = ui::Font::kB, .keep_case = true};
-    l.text(rx - 68.0f * s, cy + 5.0f * s, st.car_name, cts);
-    if (!st.car_class.empty()) {
-      l.rect(rx - 60.0f * s, cy + 3.0f * s, rx - 40.0f * s, cy + 23.0f * s, ui::rgba(255, 146, 3));
-      ui::TextStyle cl{.size = 13.0f * s, .color = kWhite, .align = ui::Align::kCenter, .font = ui::Font::kE};
-      l.text(rx - 50.0f * s, cy + 6.0f * s, st.car_class, cl);
-      l.rect(rx - 40.0f * s, cy + 3.0f * s, rx - 4.0f * s, cy + 23.0f * s, ui::rgba(240, 240, 244));
-      char pib[16];
-      std::snprintf(pib, sizeof pib, "%d", st.car_pi);
-      ui::TextStyle pi{.size = 13.0f * s, .color = kInk, .align = ui::Align::kCenter, .font = ui::Font::kB};
-      l.text(rx - 22.0f * s, cy + 6.0f * s, pib, pi);
+  {
+    ui4::TiltScope tilt(l, list_x + 150.0f * s, list_y0 + 180.0f * s, slant_rad);
+    for (int i = 0; i < visible_count; ++i) {
+      const bool sel = (i == st.selected);
+      ui::TextStyle ts = ui4::style(ui::Font::kE, (sel ? 38.0f : 33.0f) * s * (pitch / (50.0f * s)), kWhite,
+                                    ui::Align::kLeft, true);
+      const float tw = ui::List::measure(st.items[size_t(i)], ts);
+      const float bw = std::max(sel ? 260.0f * s : 210.0f * s, tw + 74.0f * s);
+      const float bh = pitch * (sel ? 1.02f : 0.86f);
+      const float ry = ys[size_t(i)];
+      const uint32_t bg = sel ? ui::fade(kPink, 0.88f + 0.12f * st.selection_anim) : kBlack;
+      ui4::brush(l, list_x, ry, list_x + bw, ry + bh, bg, sel, sel ? (0.4f + 0.6f * st.selection_anim) : 1.0f);
+      l.text(list_x + 36.0f * s, ry + 0.5f * (bh - ts.size), st.items[size_t(i)], ts);
     }
   }
+
+  // Pixel-matched top-right Career Strip (out/oracle/ui/pause-freeroam.png).
+  ui4::CareerStripData cs;
+  cs.band_name = st.wristband_label;
+  cs.band_next = st.wristband_goal;
+  cs.band_collect_ready = !st.wristband_goal.empty();
+  cs.car_name = st.car_name;
+  cs.car_class = st.car_class;
+  cs.car_pi = st.car_pi;
+  // Parse credits string if numeric, else draw right-aligned off-white strip below.
+  cs.credits = -1;
+  ui4::career_strip(l, cs, screen_w, screen_h);
   if (!st.credits_text.empty()) {
-    const float cry = ry0 + 60.0f * s;
-    l.rect(rx - 140.0f * s, cry, rx, cry + 24.0f * s, ui::rgba(220, 222, 226, 235));
-    ui::TextStyle crs{.size = 14.0f * s, .color = kInk, .align = ui::Align::kRight, .font = ui::Font::kB, .keep_case = true};
-    l.text(rx - 10.0f * s, cry + 5.0f * s, st.credits_text, crs);
+    const float rx = screen_w - 70.0f * s;
+    const float cry = 92.0f * s;
+    ui4::offwhite_strip(l, rx - 130.0f * s, cry, rx, cry + 24.0f * s, s, true);
+    ui::TextStyle crs = ui4::style(ui::Font::kB, 15.5f * s, ui4::kInk, ui::Align::kRight, true);
+    l.text(rx - 10.0f * s, cry + 4.5f * s, st.credits_text, crs);
   }
 
   draw_button_bar_ui4(l, st.help_bar, screen_w, screen_h);
@@ -252,28 +154,24 @@ void draw_pause_menu_ui4(ui::List& l, const PauseMenuUi4State& st, float screen_
 
 void draw_map_chrome_ui4(ui::List& l, const MapChromeUi4State& st, float screen_w, float screen_h) {
   const float s = screen_h / 720.0f;
-  // Query H_MAP scene presence for authentic Horizon header brush & roads pill.
   (void)ui_scene("H_MAP");
-  draw_brush_strip(l, 54.0f * s, 28.0f * s, 390.0f * s, 72.0f * s, kBlack);
-  ui::TextStyle fts{.size = 24.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-  l.text(74.0f * s, 38.0f * s, st.filter_label.empty() ? "COLORADO MAP" : st.filter_label, fts);
+  ui4::title_banner(l, s, 60.0f * s, 26.0f * s, st.filter_label.empty() ? "COLORADO MAP" : st.filter_label,
+                    "HORIZON MAP", false, 400.0f);
 
   if (!st.roads_label.empty()) {
     const float rx = screen_w - 64.0f * s;
-    l.rect(rx - 290.0f * s, 32.0f * s, rx, 66.0f * s, ui::rgba(14, 16, 22, 215), 4.0f * s);
-    l.rect(rx - 290.0f * s, 32.0f * s, rx - 284.0f * s, 66.0f * s, kPink);
-    ui::TextStyle rts{.size = 14.0f * s, .color = kWhite, .align = ui::Align::kRight, .font = ui::Font::kB, .keep_case = true};
-    l.text(rx - 14.0f * s, 42.0f * s, st.roads_label, rts);
+    ui4::panel(l, rx - 300.0f * s, 34.0f * s, rx, 68.0f * s, s, ui4::kCharcoalDark, 0, ui4::kGreen, true);
+    ui::TextStyle rts = ui4::style(ui::Font::kB, 14.0f * s, kWhite, ui::Align::kRight, true);
+    l.text(rx - 14.0f * s, 44.0f * s, st.roads_label, rts);
   }
   if (!st.hovered_title.empty()) {
     const float rx = screen_w - 64.0f * s;
-    const float cy = screen_h - 150.0f * s;
-    l.rect(rx - 340.0f * s, cy, rx, cy + 72.0f * s, ui::rgba(12, 14, 20, 220), 4.0f * s);
-    l.rect(rx - 340.0f * s, cy, rx - 334.0f * s, cy + 72.0f * s, kPink);
-    ui::TextStyle ht{.size = 18.0f * s, .color = kWhite, .font = ui::Font::kE, .keep_case = true};
-    ui::TextStyle hs{.size = 13.0f * s, .color = kDim, .font = ui::Font::kB, .keep_case = true};
-    l.text(rx - 324.0f * s, cy + 12.0f * s, st.hovered_title, ht);
-    l.text(rx - 324.0f * s, cy + 40.0f * s, st.hovered_subtitle, hs);
+    const float cy = screen_h - 156.0f * s;
+    ui4::panel(l, rx - 350.0f * s, cy, rx, cy + 76.0f * s, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+    ui::TextStyle ht = ui4::style(ui::Font::kE, 19.0f * s, kWhite, ui::Align::kLeft, true);
+    ui::TextStyle hs = ui4::style(ui::Font::kB, 13.0f * s, kDim, ui::Align::kLeft, true);
+    l.text(rx - 332.0f * s, cy + 14.0f * s, st.hovered_title, ht);
+    l.text(rx - 332.0f * s, cy + 44.0f * s, st.hovered_subtitle, hs);
   }
   draw_button_bar_ui4(l, st.help_bar, screen_w, screen_h);
 }

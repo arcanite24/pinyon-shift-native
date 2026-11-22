@@ -118,7 +118,8 @@ target_include_directories(settings_tests PRIVATE ../apps/carview)
 target_link_libraries(settings_tests PRIVATE shift_drive)
 add_test(NAME settings_tests COMMAND settings_tests)
 
-add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp
+add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/ui4_chrome.cpp
+               ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp
                ../apps/carview/events_page.cpp ../apps/carview/hud.cpp)
 target_include_directories(ui_tests PRIVATE ../apps/carview)
 target_link_libraries(ui_tests PRIVATE shift_stb fh1data shift_race shift_garage shift_freeroam)
@@ -225,21 +226,41 @@ if(SHIFT_BUILD_CARVIEW)
   target_include_directories(ui4_cjk_l10n_tests PRIVATE ../apps/carview)
   target_link_libraries(ui4_cjk_l10n_tests PRIVATE carview_render shift_freeroam shift_cars shift_audio shift_stb)
   add_test(NAME ui4_cjk_l10n_tests COMMAND ui4_cjk_l10n_tests)
+
+  add_executable(ui4_parity_tests ui4_parity_tests.cpp
+    ../apps/carview/ui_widgets.cpp
+    ../apps/carview/hud_scene.cpp
+    ../apps/carview/game_hud.cpp
+    ../apps/carview/map_view.cpp
+    ../apps/carview/events_page.cpp
+    ../apps/carview/autoshow.cpp
+    ../apps/carview/upgrade_shop.cpp
+    ../apps/carview/hub_scene.cpp
+    ../apps/carview/livery_editor.cpp
+    ../apps/carview/photo_mode.cpp
+    ../apps/carview/replay_view.cpp
+    ../apps/carview/achievements.cpp
+    ../apps/carview/settings_page.cpp)
+  target_include_directories(ui4_parity_tests PRIVATE ../apps/carview)
+  target_link_libraries(ui4_parity_tests PRIVATE carview_render shift_freeroam shift_traffic shift_race shift_garage
+                        shift_drive shift_cars shift_audio shift_profile shift_stb shift_sqlite3)
+  add_test(NAME ui4_parity_tests COMMAND ui4_parity_tests)
 endif()
 
 add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.cpp ../apps/carview/ui.cpp
-               ../apps/carview/settings_page.cpp)
+               ../apps/carview/ui4_chrome.cpp ../apps/carview/settings_page.cpp)
 target_include_directories(photo_mode_tests PRIVATE ../apps/carview)
 target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk)
 add_test(NAME photo_mode_tests COMMAND photo_mode_tests)
 
-add_executable(replay_tests replay_tests.cpp ../apps/carview/replay_view.cpp ../apps/carview/ui.cpp)
+add_executable(replay_tests replay_tests.cpp ../apps/carview/replay_view.cpp ../apps/carview/ui.cpp
+               ../apps/carview/ui4_chrome.cpp)
 target_include_directories(replay_tests PRIVATE ../apps/carview)
 target_link_libraries(replay_tests PRIVATE shift_drive fh1data)
 add_test(NAME replay_tests COMMAND replay_tests)
 
 add_executable(achievements_tests achievements_tests.cpp ../apps/carview/achievements.cpp ../apps/carview/ui.cpp
-               ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp)
+               ../apps/carview/ui4_chrome.cpp ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp)
 target_include_directories(achievements_tests PRIVATE ../apps/carview)
 target_link_libraries(achievements_tests PRIVATE fh1data shift_drive shift_freeroam shift_stb shift_race shift_garage)
 add_test(NAME achievements_tests COMMAND achievements_tests)

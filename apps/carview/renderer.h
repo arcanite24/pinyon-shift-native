@@ -201,7 +201,7 @@ class Renderer {
   void set_ui(std::span<const ui::Instance> items);
   // Copies `rgba` (w x h, sRGB-encoded RGBA8) into the UI atlas (kUiAtlas
   // square) at (x, y), for kImage shapes; applied with the next frame.
-  static constexpr uint32_t kUiAtlas = 2048;
+  static constexpr uint32_t kUiAtlas = 4096;
   void ui_atlas_put(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::span<const uint8_t> rgba);
 
   const std::string& device_name() const { return device_name_; }

@@ -62,10 +62,10 @@ std::string clean_spa_text(std::string_view text) {
 }
 
 bool parse_xstr(std::span<const uint8_t> block, std::map<uint16_t, std::string>& strings) {
-  strings.clear();
   if (block.size() < 14 || u32_be(block, 0) != kXstrMagic) return false;
   const uint16_t count = u16_be(block, 12);
   size_t pos = 14;
+  bool any = false;
   for (uint16_t i = 0; i < count; ++i) {
     if (pos + 4 > block.size()) break;
     const uint16_t sid = u16_be(block, pos);
@@ -74,9 +74,10 @@ bool parse_xstr(std::span<const uint8_t> block, std::map<uint16_t, std::string>&
     if (pos + slen > block.size()) break;
     const std::string_view raw(reinterpret_cast<const char*>(block.data() + pos), slen);
     strings[sid] = clean_spa_text(raw);
+    any = true;
     pos += slen;
   }
-  return !strings.empty();
+  return any;
 }
 
 }  // namespace
@@ -195,13 +196,20 @@ bool parse_spa_xdbf(std::span<const uint8_t> bytes, SpaDatabase& out, uint16_t l
     out.default_language = uint16_t(u32_be(xstc, 12));
   }
 
-  // Resolve localized string table with fallback to default language -> English -> first available.
+  // Resolve localized string table: seed with English / default language as per-key
+  // fallback, then overlay the requested language so partial translations fall back cleanly.
   std::map<uint16_t, std::string> strings;
-  auto try_lang = [&](uint16_t lid) {
+  auto load_lang = [&](uint16_t lid) {
     if (const auto blk = find_block(kSectionStringTable, lid); !blk.empty()) return parse_xstr(blk, strings);
     return false;
   };
-  if (!try_lang(language_id) && !try_lang(out.default_language) && !try_lang(uint16_t(SpaLanguage::kEnglish))) {
+  bool any_strings = false;
+  any_strings |= load_lang(uint16_t(SpaLanguage::kEnglish));
+  if (out.default_language != uint16_t(SpaLanguage::kEnglish)) any_strings |= load_lang(out.default_language);
+  if (language_id != uint16_t(SpaLanguage::kEnglish) && language_id != out.default_language) {
+    any_strings |= load_lang(language_id);
+  }
+  if (!any_strings) {
     for (const auto& e : entries) {
       if (e.section == kSectionStringTable && parse_xstr(bytes.subspan(data_offset + e.offset, e.size), strings)) break;
     }

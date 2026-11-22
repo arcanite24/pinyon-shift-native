@@ -834,14 +834,40 @@ float coverage(const Instance& it, float px, float py, float& mix) {
 
 float to_linear_unit(uint32_t c, int shift) { return float((c >> shift) & 0xFF) / 255.0f; }
 
-// An image quad's texel colour (nearest), times the tint in `c`.
+// An image quad's texel colour (bilinear, clamped to the image's atlas rect), times the tint in `c`.
 void image_rgb(const Instance& it, float px, float py, float c[4]) {
   float tx, ty, edge;
   image_t(it, px, py, tx, ty, edge);
-  const int x = std::clamp(int((it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize), 0, int(kAtlasSize) - 1);
-  const int y = std::clamp(int((it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize), 0, int(kAtlasSize) - 1);
-  const uint8_t* t = &atlas_pixels()[(size_t(y) * kAtlasSize + size_t(x)) * 4];
-  for (int ch = 0; ch < 3; ++ch) c[ch] *= float(t[ch]) / 255.0f;
+  const float u_lo = std::min(it.q[0], it.q[2]) * kAtlasSize;
+  const float u_hi = std::max(it.q[0], it.q[2]) * kAtlasSize;
+  const float v_lo = std::min(it.q[1], it.q[3]) * kAtlasSize;
+  const float v_hi = std::max(it.q[1], it.q[3]) * kAtlasSize;
+  const int min_x = std::clamp(int(std::floor(u_lo)), 0, int(kAtlasSize) - 1);
+  const int max_x = std::clamp(int(std::ceil(u_hi)) - 1, min_x, int(kAtlasSize) - 1);
+  const int min_y = std::clamp(int(std::floor(v_lo)), 0, int(kAtlasSize) - 1);
+  const int max_y = std::clamp(int(std::ceil(v_hi)) - 1, min_y, int(kAtlasSize) - 1);
+  const float u = (it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize - 0.5f;
+  const float v = (it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize - 0.5f;
+  const int x0 = int(std::floor(u)), y0 = int(std::floor(v));
+  const float fx = u - float(x0), fy = v - float(y0);
+  const auto& a = atlas_pixels();
+  auto sample = [&](int x, int y) {
+    x = std::clamp(x, min_x, max_x);
+    y = std::clamp(y, min_y, max_y);
+    return &a[(size_t(y) * kAtlasSize + size_t(x)) * 4];
+  };
+  const uint8_t* p00 = sample(x0, y0);
+  const uint8_t* p10 = sample(x0 + 1, y0);
+  const uint8_t* p01 = sample(x0, y0 + 1);
+  const uint8_t* p11 = sample(x0 + 1, y0 + 1);
+  const float w00 = (1.0f - fx) * (1.0f - fy);
+  const float w10 = fx * (1.0f - fy);
+  const float w01 = (1.0f - fx) * fy;
+  const float w11 = fx * fy;
+  for (int ch = 0; ch < 3; ++ch) {
+    const float vch = (p00[ch] * w00 + p10[ch] * w10 + p01[ch] * w01 + p11[ch] * w11) / 255.0f;
+    c[ch] *= vch;
+  }
 }
 
 }  // namespace

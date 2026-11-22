@@ -105,6 +105,7 @@
 #include "audio_host.h"
 #include "settings.h"
 #include "settings_page.h"
+#include "ui4_chrome.h"
 #include "traffic/gps.h"
 #include "traffic/nav.h"
 
@@ -5382,30 +5383,23 @@ int run_drive(int argc, char** argv) {
           fmv_player.draw(list, float(width), float(height));
         }
         if (rewind_buf.active()) {
-          // 921_I_REWIND overlay (SPEC-REWIND section 4).
-          const float wf = float(width), hf = float(height);
-          const float bar_h = std::max(44.0f, hf * 0.065f);
-          const float bar_y = hf - bar_h - std::max(16.0f, hf * 0.03f);
-          const float bar_w = std::min(wf * 0.86f, 760.0f);
-          const float bar_x = 0.5f * (wf - bar_w);
-          list.rect(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, carview::ui::rgba(14, 16, 22, 215), 8.0f);
-          list.frame(bar_x, bar_y, bar_x + bar_w, bar_y + bar_h, carview::ui::rgba(235, 195, 65, 220), 2.0f, 8.0f);
-          carview::ui::TextStyle ts;
-          ts.size = std::max(14.0f, bar_h * 0.38f);
-          ts.align = carview::ui::Align::kCenter;
-          ts.color = carview::ui::rgba(245, 245, 248);
-          const char* label = "REWIND";
+          // 921_I_REWIND overlay (authentic FH1 tilted brush badge + BUTTON_BAR_SCENE).
+          const float wf = float(width), hf = float(height), sf = hf / 720.0f;
+          carview::ui4::subtle_vignette(list, wf, hf, 0.35f);
+          const char* rw_title = "REWIND";
+          std::vector<carview::ui4::Prompt> rw_prompts;
           if (rewind_buf.is_rewinding()) {
-            label = rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind ? "<< REWINDING FURTHER...   [B/ESC] CANCEL"
-                                                                               : "<< REWINDING...   [B/ESC] CANCEL";
+            rw_title = rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind ? "<< REWINDING FURTHER" : "<< REWINDING";
+            rw_prompts = {{"B", "CANCEL"}};
           } else if (rewind_buf.is_paused_at_keyframe()) {
-            label = rewind_buf.at_oldest_slot()
-                        ? "[A/ENTER] RESUME   [B/ESC] CANCEL   (OLDEST KEYFRAME)"
-                        : "[A/ENTER] RESUME   [Y/BKSP] REWIND FURTHER   [B/ESC] CANCEL";
+            rw_title = "REWIND PAUSED";
+            if (rewind_buf.at_oldest_slot()) rw_prompts = {{"A", "RESUME"}, {"B", "CANCEL"}};
+            else rw_prompts = {{"A", "RESUME"}, {"Y", "REWIND FURTHER"}, {"B", "CANCEL"}};
           } else if (rewind_buf.is_settling()) {
-            label = "RESUMING...";
+            rw_title = "RESUMING";
           }
-          list.text(0.5f * wf, bar_y + 0.5f * (bar_h - ts.size), label, ts);
+          carview::ui4::title_banner(list, sf, 70.0f * sf, hf - 154.0f * sf, rw_title, "HORIZON REWIND", true, 480.0f);
+          carview::ui4::button_bar(list, rw_prompts, wf, hf);
         }
         if (autoshow.is_open()) {
           list.clear();

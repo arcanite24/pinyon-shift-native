@@ -50,6 +50,7 @@ add_library(carview_render STATIC
   renderer.cpp
   showroom.cpp
   ui.cpp
+  ui4_chrome.cpp
   ${shader_headers})
 set_target_properties(carview_render PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${generated}")
