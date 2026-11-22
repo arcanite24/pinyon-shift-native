@@ -8,6 +8,10 @@ add_executable(drive_tests drive_tests.cpp)
 target_link_libraries(drive_tests PRIVATE shift_drive)
 add_test(NAME drive_tests COMMAND drive_tests)
 
+add_executable(rewind_tests rewind_tests.cpp)
+target_link_libraries(rewind_tests PRIVATE shift_drive)
+add_test(NAME rewind_tests COMMAND rewind_tests)
+
 # SPEC-ENGINE-SOUND: the rule checks, the reader and the player; with
 # SHIFT_GAME_ROOT also the R34's loops over the player's files.
 add_executable(audio_tests audio_tests.cpp)
