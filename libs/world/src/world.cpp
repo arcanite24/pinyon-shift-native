@@ -447,7 +447,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             if (has_norm && !mm.is_water) {
               mm.normal_map = prop_diff ? file_slot(1) : file_slot(3);
             }
-            if (has_ao) {
+            if (has_ao && mm.layers != Layers::kVertexBlend) {
               if (road && mm.effect.find("DIFF3") != std::string::npos &&
                   mm.effect.find("MODULATE") != std::string::npos) {
                 mm.ao_map = file_slot(4);

@@ -64,7 +64,7 @@ namespace {
 // Flags in ShowroomPush::params.y (showroom.vert / showroom.frag).
 constexpr uint32_t kFlagSlot1 = 1, kFlagMetallic = 2, kFlagLivery = 8, kFlagStripe = 32, kFlagFlat = 64,
                    kFlagNoSlot0 = 16, kFlagRaceLivery = 128, kFlagGrille = 256, kFlagCutout = 512,
-                   kFlagCover = 1024, kFlagLampEmissive = 2048;
+                   kFlagCover = 1024, kFlagLampEmissive = 2048, kFlagMirror = 4096;
 
 std::string lower(std::string s) {
   for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -298,6 +298,20 @@ Showroom::~Showroom() {
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
   r_.destroy_buffer(shadow_frame_buffer_);
+  r_.destroy_buffer(shadow_frame_far_buffer_);
+  r_.destroy_buffer(env_frame_buffer_);
+  r_.destroy_buffer(env_sky_ubo_[0]);
+  r_.destroy_buffer(env_sky_ubo_[1]);
+  if (env_world_opaque_) vkDestroyPipeline(d, env_world_opaque_, nullptr);
+  if (env_sky_pipe_base_) vkDestroyPipeline(d, env_sky_pipe_base_, nullptr);
+  if (env_sky_pipe_layers_) vkDestroyPipeline(d, env_sky_pipe_layers_, nullptr);
+  if (env_pool_) vkDestroyDescriptorPool(d, env_pool_, nullptr);
+  for (int i = 0; i < 6; ++i)
+    if (dyn_env_faces_[i]) vkDestroyImageView(d, dyn_env_faces_[i], nullptr);
+  r_.destroy_image(dyn_env_);
+  r_.destroy_image(dyn_env_depth_);
+  r_.destroy_image(mirror_tex_);
+  r_.destroy_image(mirror_depth_);
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
   r_.destroy_buffer(overlay_vertices_);
@@ -457,6 +471,113 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     for (const auto& p : cockpit->parts)
       if (!placeholder(p)) cockpit_real.insert(lower(p.name));
   if (!cockpit_real.empty()) {
+    // Extract living-cockpit rotation rigs for steering_wheel and analog gauge needles (_min/_mid/_max).
+    auto pool_of = [&](const bake::Part& p) -> const std::vector<bake::Vertex>* {
+      const int32_t b = best_lod(p);
+      if (b < 0) return nullptr;
+      return b == 0 ? &p.lod0_vertices : &p.lod_vertices;
+    };
+    auto find_part = [&](const std::string& lname) -> const bake::Part* {
+      for (const auto& p : cockpit->parts)
+        if (lower(p.name) == lname && !placeholder(p)) return &p;
+      return nullptr;
+    };
+    auto vsub = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+      return std::array<float, 3>{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    };
+    auto vdot = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+      return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    };
+    auto vcross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+      return std::array<float, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    };
+    auto vnorm = [&](const std::array<float, 3>& a) -> std::array<float, 3> {
+      const float l = std::sqrt(vdot(a, a));
+      return l > 1e-6f ? std::array<float, 3>{a[0] / l, a[1] / l, a[2] / l} : std::array<float, 3>{0, 0, -1};
+    };
+    if (const bake::Part* sw = find_part("steering_wheel")) {
+      if (const auto* pool = pool_of(*sw); pool && pool->size() >= 3) {
+        std::array<double, 3> mean{0, 0, 0};
+        for (const auto& v : *pool)
+          for (int k = 0; k < 3; ++k) mean[k] += v.position[k];
+        for (int k = 0; k < 3; ++k) mean[k] /= double(pool->size());
+        // Steering column axis: normal to wheel rim plane (smallest-variance axis in YZ plane).
+        double syy = 0, syz = 0, szz = 0;
+        for (const auto& v : *pool) {
+          const double dy = v.position[1] - mean[1], dz = v.position[2] - mean[2];
+          syy += dy * dy, syz += dy * dz, szz += dz * dz;
+        }
+        const double theta = 0.5 * std::atan2(2.0 * syz, syy - szz);
+        // Eigenvector with smaller variance in YZ plane.
+        const double ay1 = std::cos(theta), az1 = std::sin(theta);
+        const double ay2 = -az1, az2 = ay1;
+        const double v1 = ay1 * ay1 * syy + 2.0 * ay1 * az1 * syz + az1 * az1 * szz;
+        const double v2 = ay2 * ay2 * syy + 2.0 * ay2 * az2 * syz + az2 * az2 * szz;
+        float ay = float(v1 < v2 ? ay1 : ay2), az = float(v1 < v2 ? az1 : az2);
+        // Orient forward (-Z in model space) so +wheel_rad rotates top of wheel toward +X (right).
+        if (az > 0.0f) ay = -ay, az = -az;
+        cockpit_rigs_[0].valid = true;
+        cockpit_rigs_[0].pivot = {float(mean[0]), float(mean[1]), float(mean[2])};
+        cockpit_rigs_[0].axis = vnorm({0.0f, ay, az});
+      }
+    }
+    static const char* const kGauges[5] = {"speed", "tach", "fuel", "boost", "power"};
+    for (int g = 0; g < 5; ++g) {
+      const bake::Part* pmin = find_part(std::string(kGauges[g]) + "_min");
+      const bake::Part* pmid = find_part(std::string(kGauges[g]) + "_mid");
+      const bake::Part* pmax = find_part(std::string(kGauges[g]) + "_max");
+      if (!pmin || !pmax) continue;
+      const auto* v0 = pool_of(*pmin);
+      const auto* v1 = pmid ? pool_of(*pmid) : nullptr;
+      const auto* v2 = pool_of(*pmax);
+      if (!v0 || !v2 || v0->empty() || v2->empty()) continue;
+      auto& rig = cockpit_rigs_[g + 1];
+      if (v0->size() == v2->size()) {
+        size_t i_piv = 0, i_tip = 0;
+        float d_min = 1e30f, d_max = -1.0f;
+        for (size_t i = 0; i < v0->size(); ++i) {
+          const auto diff = vsub((*v2)[i].position, (*v0)[i].position);
+          const float d2 = vdot(diff, diff);
+          if (d2 < d_min) d_min = d2, i_piv = i;
+          if (d2 > d_max) d_max = d2, i_tip = i;
+        }
+        if (d_max > 1e-6f) {
+          const auto piv = (*v0)[i_piv].position;
+          const auto u0 = vnorm(vsub((*v0)[i_tip].position, piv));
+          const auto u2 = vnorm(vsub((*v2)[i_tip].position, piv));
+          if (v1 && v1->size() == v0->size()) {
+            const auto u1 = vnorm(vsub((*v1)[i_tip].position, piv));
+            auto ax = vcross(u0, u1);
+            if (vdot(ax, ax) < 1e-6f) ax = vcross(u0, u2);
+            if (vdot(ax, ax) > 1e-6f) {
+              ax = vnorm(ax);
+              float a1 = std::atan2(vdot(vcross(u0, u1), ax), vdot(u0, u1));
+              if (a1 < 0.0f) a1 += 6.2831853f;
+              float a2 = std::atan2(vdot(vcross(u1, u2), ax), vdot(u1, u2));
+              if (a2 < 0.0f) a2 += 6.2831853f;
+              rig.valid = true;
+              rig.pivot = piv;
+              rig.axis = ax;
+              rig.ang_mid = a1;
+              rig.ang_max = a1 + a2;
+            }
+          } else {
+            auto ax = vcross(u0, u2);
+            if (vdot(ax, ax) > 1e-6f) {
+              ax = vnorm(ax);
+              float am = std::atan2(vdot(vcross(u0, u2), ax), vdot(u0, u2));
+              if (am < 0.0f) am += 6.2831853f;
+              rig.valid = true;
+              rig.pivot = piv;
+              rig.axis = ax;
+              rig.ang_mid = am * 0.5f;
+              rig.ang_max = am;
+            }
+          }
+        }
+      }
+    }
+
     std::vector<std::string> cockpit_parts;
     for (const auto& p : cockpit->parts) {
       const std::string n = lower(p.name);
@@ -847,12 +968,20 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         flags |= kFlagFlat;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = 0.02f;
       }
-      // The mirror glass (mirrorLeft, mirrorRight, mirrorMiddle): no
-      // reflection yet, a flat dark grey (interim, ours) rather than the
-      // atlas corner it maps to.
+      // The mirror glass (mirrorLeft, mirrorRight, mirrorMiddle): live rearview
+      // mirror reflection in cockpit mode, dynamic environment fallback outside.
       if (technique.rfind("mirror", 0) == 0) {
-        flags |= kFlagFlat;
+        flags |= kFlagMirror;
         d.push.tint[0] = 0.05f, d.push.tint[1] = 0.055f, d.push.tint[2] = 0.06f;
+      }
+      {
+        const std::string pname = lower(part.name);
+        if (pname == "steering_wheel") d.cockpit_role = 0;
+        else if (pname == "speed_min") d.cockpit_role = 1;
+        else if (pname == "tach_min") d.cockpit_role = 2;
+        else if (pname == "fuel_min") d.cockpit_role = 3;
+        else if (pname == "boost_min") d.cockpit_role = 4;
+        else if (pname == "power_min") d.cockpit_role = 5;
       }
       // Lamp covers (detail_glass_red, _amber, _clear): passive coloured glass
       // (CAR_LAMPS.md §3.2 — covers NEVER emit).
@@ -928,6 +1057,36 @@ void Showroom::set_lamp_state(const drive::CarLampState& state) {
 void Showroom::set_lamp_vectors(const drive::LampShaderVectors& vectors) {
   lamp_vectors_ = vectors;
   lamp_state_active_ = true;
+}
+
+void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera) {
+  mirror_enabled_ = cockpit_camera;
+  auto make_rot = [](const std::array<float, 3>& pivot, const std::array<float, 3>& axis, float angle, float out[16]) {
+    const float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
+    const float x = axis[0], y = axis[1], z = axis[2];
+    const float r00 = t * x * x + c,     r01 = t * x * y - s * z, r02 = t * x * z + s * y;
+    const float r10 = t * x * y + s * z, r11 = t * y * y + c,     r12 = t * y * z - s * x;
+    const float r20 = t * x * z - s * y, r21 = t * y * z + s * x, r22 = t * z * z + c;
+    const float px = pivot[0], py = pivot[1], pz = pivot[2];
+    out[0] = r00; out[4] = r01; out[8]  = r02; out[12] = px - (r00 * px + r01 * py + r02 * pz);
+    out[1] = r10; out[5] = r11; out[9]  = r12; out[13] = py - (r10 * px + r11 * py + r12 * pz);
+    out[2] = r20; out[6] = r21; out[10] = r22; out[14] = pz - (r20 * px + r21 * py + r22 * pz);
+    out[3] = 0;   out[7] = 0;   out[11] = 0;   out[15] = 1;
+  };
+  const float norms[5] = {anim.speed_norm, anim.tach_norm, anim.fuel_norm, anim.boost_norm, anim.power_norm};
+  for (Draw& d : draws_) {
+    if (d.cockpit_role < 0 || d.cockpit_role >= 6) continue;
+    const auto& rig = cockpit_rigs_[d.cockpit_role];
+    if (!rig.valid) continue;
+    float angle = 0.0f;
+    if (d.cockpit_role == 0) {
+      angle = anim.wheel_rad;
+    } else {
+      const float n = std::clamp(norms[d.cockpit_role - 1], 0.0f, 1.0f);
+      angle = n <= 0.5f ? (n * 2.0f) * rig.ang_mid : rig.ang_mid + ((n - 0.5f) * 2.0f) * (rig.ang_max - rig.ang_mid);
+    }
+    make_rot(rig.pivot, rig.axis, angle, d.push.model);
+  }
 }
 
 void Showroom::set_wheel_poses(const WheelPose poses[4]) {
@@ -1090,37 +1249,65 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
 }
 
 bool Showroom::upload_environment(std::string& error) {
-  constexpr uint32_t kSize = 64, kLevels = 7;
-  // Level 0 from the studio function, then 2x2 box filters per face.
-  std::vector<std::vector<std::array<float, 3>>> faces[kLevels];
-  for (uint32_t face = 0; face < 6; ++face) {
-    std::vector<std::array<float, 3>> texels(kSize * kSize);
-    for (uint32_t y = 0; y < kSize; ++y)
-      for (uint32_t x = 0; x < kSize; ++x) {
-        const float u = (float(x) + 0.5f) / kSize * 2 - 1, v = (float(y) + 0.5f) / kSize * 2 - 1;
-        // Vulkan cube face orientation (+X, -X, +Y, -Y, +Z, -Z).
-        float d[3];
-        switch (face) {
-          case 0: d[0] = 1; d[1] = -v; d[2] = -u; break;
-          case 1: d[0] = -1; d[1] = -v; d[2] = u; break;
-          case 2: d[0] = u; d[1] = 1; d[2] = v; break;
-          case 3: d[0] = u; d[1] = -1; d[2] = -v; break;
-          case 4: d[0] = u; d[1] = -v; d[2] = 1; break;
-          default: d[0] = -u; d[1] = -v; d[2] = -1; break;
+  uint32_t kSize = 64, kLevels = 7;
+  std::vector<std::vector<std::vector<std::array<float, 3>>>> faces;
+  bool loaded_xpr = false;
+  if (!guest_ && !env_xpr_path_.empty() && std::filesystem::exists(env_xpr_path_)) {
+    if (FILE* f = std::fopen(env_xpr_path_.string().c_str(), "rb")) {
+      std::fseek(f, 0, SEEK_END);
+      const long sz = std::ftell(f);
+      if (sz > 0) {
+        std::vector<uint8_t> raw(static_cast<size_t>(sz));
+        std::fseek(f, 0, SEEK_SET);
+        if (std::fread(raw.data(), 1, raw.size(), f) == raw.size()) {
+          fh1::XprCubemap xpr;
+          std::string xerr;
+          if (fh1::decode_xpr_cubemap(raw, xpr, &xerr) && xpr.size > 0 && (xpr.size & (xpr.size - 1)) == 0) {
+            kSize = xpr.size;
+            kLevels = 1;
+            for (uint32_t s = kSize; s > 1; s >>= 1) ++kLevels;
+            faces.resize(kLevels);
+            faces[0].resize(6);
+            for (uint32_t face = 0; face < 6; ++face) faces[0][face] = std::move(xpr.faces[face]);
+            loaded_xpr = true;
+          }
         }
-        texels[y * kSize + x] = studio(d[0], d[1], d[2]);
       }
-    faces[0].push_back(std::move(texels));
+      std::fclose(f);
+    }
+  }
+  if (!loaded_xpr) {
+    faces.resize(kLevels);
+    // Level 0 from the studio function, then 2x2 box filters per face.
+    for (uint32_t face = 0; face < 6; ++face) {
+      std::vector<std::array<float, 3>> texels(size_t(kSize) * kSize);
+      for (uint32_t y = 0; y < kSize; ++y)
+        for (uint32_t x = 0; x < kSize; ++x) {
+          const float u = (float(x) + 0.5f) / kSize * 2 - 1, v = (float(y) + 0.5f) / kSize * 2 - 1;
+          // Vulkan cube face orientation (+X, -X, +Y, -Y, +Z, -Z).
+          float d[3];
+          switch (face) {
+            case 0: d[0] = 1; d[1] = -v; d[2] = -u; break;
+            case 1: d[0] = -1; d[1] = -v; d[2] = u; break;
+            case 2: d[0] = u; d[1] = 1; d[2] = v; break;
+            case 3: d[0] = u; d[1] = -1; d[2] = -v; break;
+            case 4: d[0] = u; d[1] = -v; d[2] = 1; break;
+            default: d[0] = -u; d[1] = -v; d[2] = -1; break;
+          }
+          texels[size_t(y) * kSize + x] = studio(d[0], d[1], d[2]);
+        }
+      faces[0].push_back(std::move(texels));
+    }
   }
   for (uint32_t level = 1; level < kLevels; ++level) {
     const uint32_t s = kSize >> level, p = s * 2;
     for (uint32_t face = 0; face < 6; ++face) {
       const auto& prev = faces[level - 1][face];
-      std::vector<std::array<float, 3>> texels(s * s);
+      std::vector<std::array<float, 3>> texels(size_t(s) * s);
       for (uint32_t y = 0; y < s; ++y)
         for (uint32_t x = 0; x < s; ++x)
           for (int c = 0; c < 3; ++c)
-            texels[y * s + x][size_t(c)] =
+            texels[size_t(y) * s + x][size_t(c)] =
                 0.25f * (prev[(2 * y) * p + 2 * x][size_t(c)] + prev[(2 * y) * p + 2 * x + 1][size_t(c)] +
                          prev[(2 * y + 1) * p + 2 * x][size_t(c)] +
                          prev[(2 * y + 1) * p + 2 * x + 1][size_t(c)]);
@@ -1215,16 +1402,17 @@ bool Showroom::upload_environment(std::string& error) {
 }
 
 bool Showroom::create_pipelines(std::string& error) {
-  // Set 0: the frame block, environment cube, sun shadow map, headlight cookie, headlights UBO.
-  const VkDescriptorSetLayoutBinding frame_bindings[5] = {
+  // Set 0: frame UBO, environment cube, sun shadow map, headlight cookie, headlights UBO, mirror map.
+  const VkDescriptorSetLayoutBinding frame_bindings[6] = {
       {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
        nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 5;
+  set.bindingCount = 6;
   set.pBindings = frame_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &frame_layout_), "frame set layout");
   VkDescriptorSetLayoutBinding material_bindings[3];
@@ -1394,6 +1582,9 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, false, true, world_alpha_, world_vert,
                    &world_input, false, world_pipeline_layout_);
+  if (result == VK_SUCCESS && !guest_)
+    result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, false,
+                   env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_);
   // The sun shadow pass (ours): depth only into the shadow map, biased;
   // opaque casters with no fragment shader, cut-outs alpha-tested.
   VkShaderModule shadow_frag = VK_NULL_HANDLE;
@@ -1469,9 +1660,12 @@ bool Showroom::upload(std::string& error) {
   }
   if (!r_.ensure_shadow_map(error) || !create_pipelines(error)) return false;
   const bool shadows = r_.options_.shadow.size > 0;
-  if (shadows && !r_.create_buffer(sizeof(ShowroomFrame),
-                                   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_buffer_)) {
+  if (shadows && (!r_.create_buffer(sizeof(ShowroomFrame),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_buffer_) ||
+                  !r_.create_buffer(sizeof(ShowroomFrame),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_far_buffer_))) {
     error = "shadow frame buffer";
     return false;
   }
@@ -1525,6 +1719,7 @@ bool Showroom::upload(std::string& error) {
     }
   }
   if (!upload_environment(error)) return false;
+  if (!guest_ && !init_dynamic_reflections(error)) return false;
 
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter = VK_FILTER_LINEAR;
@@ -1544,10 +1739,10 @@ bool Showroom::upload(std::string& error) {
     d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
-  const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 6}};
+  const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 16}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = sets + 2;
+  pool.maxSets = sets + 4;
   pool.poolSizeCount = 2;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
@@ -1556,19 +1751,35 @@ bool Showroom::upload(std::string& error) {
   alloc.descriptorSetCount = 1;
   alloc.pSetLayouts = &frame_layout_;
   VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &frame_set_), "frame set");
-  if (shadows) VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_), "shadow frame set");
-  // The frame set, and the shadow pass's (its own frame block; the map at
-  // binding 2 is never read by the pass's shaders).
-  for (VkDescriptorSet target : {frame_set_, shadow_set_}) {
+  if (shadows) {
+    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_), "shadow frame set");
+    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_far_), "shadow far frame set");
+  }
+  if (!guest_ && dyn_env_ready_) {
+    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &env_frame_set_), "env frame set");
+  }
+  // Frame sets: main, shadow near, shadow far, and offscreen env/mirror.
+  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_far_, env_frame_set_}) {
     if (!target) continue;
-    VkDescriptorBufferInfo buffer{target == frame_set_ ? frame_buffer_.buffer : shadow_frame_buffer_.buffer, 0,
-                                  sizeof(ShowroomFrame)};
-    VkDescriptorImageInfo cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkBuffer ubo = frame_buffer_.buffer;
+    if (target == shadow_set_) ubo = shadow_frame_buffer_.buffer;
+    else if (target == shadow_set_far_) ubo = shadow_frame_far_buffer_.buffer;
+    else if (target == env_frame_set_) ubo = env_frame_buffer_.buffer;
+    VkDescriptorBufferInfo buffer{ubo, 0, sizeof(ShowroomFrame)};
+    // Main frame binds live dyn_env_ & mirror_tex_ once active; env/mirror passes use static fallbacks to avoid hazards.
+    const VkImageView cube_view =
+        (target == frame_set_ && dyn_env_ready_ && r_.post()) ? dyn_env_.view : environment_.view;
+    const VkImageView mirror_view =
+        (target == frame_set_ && dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
+    if (target == frame_set_ && cube_view == dyn_env_.view) dyn_env_bound_ = true;
+    VkDescriptorImageInfo cube{sampler_, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
                               VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
-    VkWriteDescriptorSet writes[5] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+    VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet writes[6] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
@@ -1598,7 +1809,12 @@ bool Showroom::upload(std::string& error) {
     writes[4].descriptorCount = 1;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[4].pBufferInfo = &hl_buf;
-    vkUpdateDescriptorSets(r_.device_, 5, writes, 0, nullptr);
+    writes[5].dstSet = target;
+    writes[5].dstBinding = 5;
+    writes[5].descriptorCount = 1;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].pImageInfo = &mir;
+    vkUpdateDescriptorSets(r_.device_, 6, writes, 0, nullptr);
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -1637,6 +1853,14 @@ bool Showroom::upload(std::string& error) {
       frame_.drive[3] = 0.0f;
     }
     apply_tod_to_frame();
+    // Game-space basis in render space (columns 0..2 of world_transform_) + real time for water ripples.
+    for (int k = 0; k < 3; ++k) {
+      frame_.env_basis_x[k] = world_transform_[0 + k];
+      frame_.env_basis_y[k] = world_transform_[4 + k];
+      frame_.env_basis_z[k] = world_transform_[8 + k];
+    }
+    frame_.env_basis_x[3] = tod_real_time_;
+    frame_.env_basis_y[3] = frame_.env_basis_z[3] = 0.0f;
     if (sky_ready_) record_sky_before(cmd);
     record_lights_before(cmd);
     const bool shadows = shadows_on();
@@ -1644,10 +1868,17 @@ bool Showroom::upload(std::string& error) {
       place_shadow();
     } else {
       std::memset(frame_.shadow_matrix, 0, sizeof frame_.shadow_matrix);
+      std::memset(frame_.shadow_matrix_far, 0, sizeof frame_.shadow_matrix_far);
       std::memset(frame_.shadow, 0, sizeof frame_.shadow);
       std::memset(frame_.shadow_bias, 0, sizeof frame_.shadow_bias);
+      frame_.shadow_far_bias[0] = frame_.shadow_far_bias[1] = 0.0f;
       shadow_drawn_ = shadow_cars_ = 0;
     }
+    if (world_lit_ && dyn_env_ready_) {
+      record_env_and_mirror(cmd);
+    }
+    frame_.shadow_far_bias[2] = (dyn_env_bound_ && dyn_env_initialized_) ? 1.0f : 0.0f;
+    frame_.shadow_far_bias[3] = mirror_valid_ ? 1.0f : 0.0f;
     update_frame(cmd);
     // Each guest's frame block: this car's camera and light, its own stripe.
     std::vector<Showroom*> seen;
@@ -1656,14 +1887,23 @@ bool Showroom::upload(std::string& error) {
       seen.push_back(in.car);
       in.car->frame_ = frame_;
       for (int i = 0; i < 4; ++i) in.car->frame_.stripe[i] = in.car->stripe_[i];
+      // Guests use their own static environment if they don't bind host dyn_env_.
+      in.car->frame_.shadow_far_bias[2] = 0.0f;
+      in.car->frame_.shadow_far_bias[3] = 0.0f;
       in.car->update_frame(cmd);
       if (shadows && in.car->shadow_set_) {
         in.car->shadow_frame_ = shadow_frame_;
         in.car->update_buffer(cmd, in.car->shadow_frame_buffer_.buffer, in.car->shadow_frame_);
+        if (in.car->shadow_set_far_) {
+          in.car->shadow_frame_far_ = shadow_frame_far_;
+          in.car->update_buffer(cmd, in.car->shadow_frame_far_buffer_.buffer, in.car->shadow_frame_far_);
+        }
       }
     }
     if (shadows) {
       update_buffer(cmd, shadow_frame_buffer_.buffer, shadow_frame_);
+      if (shadow_frame_far_buffer_.buffer)
+        update_buffer(cmd, shadow_frame_far_buffer_.buffer, shadow_frame_far_);
       record_shadow(cmd);
       r_.mark(cmd, "shadows");
     }
@@ -1821,9 +2061,11 @@ bool Showroom::shadows_on() const {
 
 void Showroom::place_shadow() {
   const ShadowSettings& s = r_.options_.shadow;
-  const float radius = s.radius;
-  // Depth: 400 m either side of the box's centre along the sun (ours).
-  constexpr float kDepth = 400.0f;
+  // Multi-cascade sun shadow radii matching Colorado TrackSettings.xml ShadowEnds:
+  // Near cascade (~28 m) keeps car & road shadows razor sharp; Far cascade (~185 m) covers hills/buildings/trees.
+  const float near_radius = std::min(s.radius, 30.0f);
+  const float far_radius = std::max(s.radius * 3.0f, 185.0f);
+  constexpr float kDepth = 450.0f;
   auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
   auto normalise = [&](float* v) {
     const float l = std::sqrt(dot3(v, v));
@@ -1841,16 +2083,11 @@ void Showroom::place_shadow() {
   float up[3] = {world_up_[0], world_up_[1], world_up_[2]};
   if (!normalise(sun)) sun[0] = 0, sun[1] = 1, sun[2] = 0;
   if (!normalise(up)) up[0] = 0, up[1] = 1, up[2] = 0;
-  // The box's centre: half its radius ahead of the eye along the view (the
-  // projection's w row), flattened onto the ground plane.
   const float* vp = frame_.view_projection;
   float ahead[3] = {vp[3], vp[7], vp[11]};
   const float along_up = dot3(ahead, up);
   for (int k = 0; k < 3; ++k) ahead[k] -= along_up * up[k];
   if (!normalise(ahead)) ahead[0] = 0, ahead[1] = 0, ahead[2] = 1;
-  float centre[3];
-  for (int k = 0; k < 3; ++k) centre[k] = frame_.eye[k] + ahead[k] * radius * 0.5f;
-  // The sun's view: x and y across it, depth along it.
   const float forward[3] = {-sun[0], -sun[1], -sun[2]};
   float right[3], across[3];
   cross(forward, up, right);
@@ -1860,45 +2097,63 @@ void Showroom::place_shadow() {
     normalise(right);
   }
   cross(right, forward, across);
-  // Snapped to whole texels measured from the scenery's origin, so the map
-  // does not crawl as the car moves.
-  const float texel = 2.0f * radius / float(r_.shadow_size_);
   const float origin[3] = {world_transform_[12], world_transform_[13], world_transform_[14]};
-  float cx = dot3(centre, right), cy = dot3(centre, across);
   const float ox = dot3(origin, right), oy = dot3(origin, across);
-  cx = ox + std::round((cx - ox) / texel) * texel;
-  cy = oy + std::round((cy - oy) / texel) * texel;
-  const float cz = dot3(centre, sun);
-  float m[16] = {};
-  for (int k = 0; k < 3; ++k) {
-    m[k * 4 + 0] = right[k] / radius;
-    m[k * 4 + 1] = across[k] / radius;
-    m[k * 4 + 2] = -sun[k] / (2.0f * kDepth);
-  }
-  m[12] = -cx / radius;
-  m[13] = -cy / radius;
-  m[14] = 0.5f + cz / (2.0f * kDepth);
-  m[15] = 1.0f;
-  std::memcpy(frame_.shadow_matrix, m, sizeof m);
+
+  auto build_cascade = [&](float radius, float m[16], float& texel_out, float centre_out[3]) {
+    for (int k = 0; k < 3; ++k) centre_out[k] = frame_.eye[k] + ahead[k] * radius * 0.45f;
+    const float texel = 2.0f * radius / float(r_.shadow_size_);
+    texel_out = texel;
+    float cx = dot3(centre_out, right), cy = dot3(centre_out, across);
+    cx = ox + std::round((cx - ox) / texel) * texel;
+    cy = oy + std::round((cy - oy) / texel) * texel;
+    const float cz = dot3(centre_out, sun);
+    std::memset(m, 0, 16 * sizeof(float));
+    for (int k = 0; k < 3; ++k) {
+      m[k * 4 + 0] = right[k] / radius;
+      m[k * 4 + 1] = across[k] / radius;
+      m[k * 4 + 2] = -sun[k] / (2.0f * kDepth);
+    }
+    m[12] = -cx / radius;
+    m[13] = -cy / radius;
+    m[14] = 0.5f + cz / (2.0f * kDepth);
+    m[15] = 1.0f;
+  };
+
+  float m_near[16], m_far[16], texel_near = 0.0f, texel_far = 0.0f;
+  float centre_near[3], centre_far[3];
+  build_cascade(near_radius, m_near, texel_near, centre_near);
+  build_cascade(far_radius, m_far, texel_far, centre_far);
+
+  std::memcpy(frame_.shadow_matrix, m_near, sizeof m_near);
+  std::memcpy(frame_.shadow_matrix_far, m_far, sizeof m_far);
   frame_.shadow[0] = 1.0f;
   frame_.shadow[1] = 1.0f / float(r_.shadow_size_);
   frame_.shadow[2] = s.strength;
   frame_.shadow[3] = float(s.taps);
-  frame_.shadow_bias[0] = 1.5f * texel;
+  frame_.shadow_bias[0] = 1.5f * texel_near;
   frame_.shadow_bias[1] = frame_.shadow_bias[2] = frame_.shadow_bias[3] = 0.0f;
+  frame_.shadow_far_bias[0] = 1.6f * texel_far;
+  frame_.shadow_far_bias[1] = shadow_set_far_ ? 1.0f : 0.0f;
+
   shadow_frame_ = frame_;
-  std::memcpy(shadow_frame_.view_projection, m, sizeof m);
-  std::memcpy(shadow_frame_.transparent_view_projection, m, sizeof m);
-  // Tree sprites turn to the eye: here to the sun, far up its ray.
-  for (int k = 0; k < 3; ++k) shadow_frame_.eye[k] = centre[k] + sun[k] * 1000.0f;
+  std::memcpy(shadow_frame_.view_projection, m_near, sizeof m_near);
+  std::memcpy(shadow_frame_.transparent_view_projection, m_near, sizeof m_near);
+  for (int k = 0; k < 3; ++k) shadow_frame_.eye[k] = centre_near[k] + sun[k] * 1000.0f;
   shadow_frame_.eye[3] = 1.0f;
-  // No per-instance level pick from the sun's eye (world.vert): every level
-  // casts, as before the pick.
   shadow_frame_.world_fade[1] = 0.0f;
+
+  shadow_frame_far_ = frame_;
+  std::memcpy(shadow_frame_far_.view_projection, m_far, sizeof m_far);
+  std::memcpy(shadow_frame_far_.transparent_view_projection, m_far, sizeof m_far);
+  for (int k = 0; k < 3; ++k) shadow_frame_far_.eye[k] = centre_far[k] + sun[k] * 1000.0f;
+  shadow_frame_far_.eye[3] = 1.0f;
+  shadow_frame_far_.world_fade[1] = 0.0f;
 }
 
 void Showroom::record_shadow(VkCommandBuffer cmd) {
   const uint32_t size = r_.shadow_size_;
+  const uint32_t atlas_w = size > 1 ? size * 2 : size;
   VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
   b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
@@ -1921,88 +2176,99 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   depth.clearValue.depthStencil = {1.0f, 0};
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  rendering.renderArea = {{0, 0}, {size, size}};
+  rendering.renderArea = {{0, 0}, {atlas_w, size}};
   rendering.layerCount = 1;
   rendering.pDepthAttachment = &depth;
   vkCmdBeginRendering(cmd, &rendering);
-  const VkViewport viewport{0, 0, float(size), float(size), 0, 1};
-  const VkRect2D scissor{{0, 0}, {size, size}};
-  vkCmdSetViewport(cmd, 0, 1, &viewport);
-  vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-  // The scenery's casters, culled against the map's box (its six planes in
-  // the scenery's frame, as record_world culls against the view).
-  const float* vp = shadow_frame_.view_projection;
-  float clip[16];
-  for (int c = 0; c < 4; ++c)
-    for (int r = 0; r < 4; ++r) {
-      float s = 0;
-      for (int k = 0; k < 4; ++k) s += vp[k * 4 + r] * world_transform_[c * 4 + k];
-      clip[c * 4 + r] = s;
-    }
-  float planes[6][4];
-  for (int c = 0; c < 4; ++c) {
-    const float x = clip[c * 4 + 0], y = clip[c * 4 + 1], z = clip[c * 4 + 2], w = clip[c * 4 + 3];
-    planes[0][c] = w + x, planes[1][c] = w - x, planes[2][c] = w + y, planes[3][c] = w - y;
-    planes[4][c] = z, planes[5][c] = w - z;
-  }
-  auto outside = [&](const WorldGeometry::Draw& d) {
-    for (const auto& p : planes) {
-      const float x = p[0] >= 0 ? d.box_max[0] : d.box_min[0];
-      const float y = p[1] >= 0 ? d.box_max[1] : d.box_min[1];
-      const float z = p[2] >= 0 ? d.box_max[2] : d.box_min[2];
-      if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
-    }
-    return false;
-  };
   shadow_drawn_ = shadow_cars_ = 0;
-  VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
-  vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
-  VkPipeline bound = VK_NULL_HANDLE;
-  VkDescriptorSet bound_set = VK_NULL_HANDLE;
   const auto eye = eye_in_scenery(world_transform_);
-  for (const auto& d : world_draws_) {
-    // Blended draws (decals, the lake) and the uncullable sky cast none.
-    if (!d.cull || d.blend >= 2 || outside(d) || near_lod_beyond(d, eye)) continue;  // blended and additive draws cast nothing
-    ++shadow_drawn_;
-    const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
-    if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
-    ShowroomPush push = d.push;
-    if (d.blend == 1) {
-      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
-      if (set) {
-        std::lock_guard<std::mutex> lock(world_textures_mutex_);
-        world_lru_.touch(d.texture, world_frame_);
+
+  auto draw_cascade = [&](uint32_t x_offset, VkDescriptorSet cascade_set, const ShowroomFrame& sf, bool is_far) {
+    const VkViewport viewport{float(x_offset), 0, float(size), float(size), 0, 1};
+    const VkRect2D scissor{{int32_t(x_offset), 0}, {size, size}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    const float* vp = sf.view_projection;
+    float clip[16];
+    for (int c = 0; c < 4; ++c)
+      for (int r = 0; r < 4; ++r) {
+        float s = 0;
+        for (int k = 0; k < 4; ++k) s += vp[k * 4 + r] * world_transform_[c * 4 + k];
+        clip[c * 4 + r] = s;
       }
-      if (!set) {
-        set = world_white_set_;
-        push.params[1] = 0;
-      }
-      if (set != bound_set)
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &(bound_set = set),
-                                0, nullptr);
+    float planes[6][4];
+    for (int c = 0; c < 4; ++c) {
+      const float x = clip[c * 4 + 0], y = clip[c * 4 + 1], z = clip[c * 4 + 2], w = clip[c * 4 + 3];
+      planes[0][c] = w + x, planes[1][c] = w - x, planes[2][c] = w + y, planes[3][c] = w - y;
+      planes[4][c] = z, planes[5][c] = w - z;
     }
-    std::memcpy(push.model, world_transform_, sizeof push.model);
-    std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
-    std::memcpy(push.uv1, world_up_, sizeof push.uv1);
-    push.params[2] = 0;  // no far-ring depth push from the sun's eye
-    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(ShowroomPush), &push);
-    vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
-  }
-  // The car, and the traffic whose origin is within the box (5 m spare).
-  if (draw_car_) record_shadow_car(cmd, nullptr);
-  const float reach = 1.0f + 5.0f / r_.options_.shadow.radius;
-  for (const auto& in : instances_) {
-    if (!in.car) continue;
-    const float* t = in.model + 12;
-    const float x = vp[0] * t[0] + vp[4] * t[1] + vp[8] * t[2] + vp[12];
-    const float y = vp[1] * t[0] + vp[5] * t[1] + vp[9] * t[2] + vp[13];
-    if (std::fabs(x) > reach || std::fabs(y) > reach) continue;
-    in.car->record_shadow_car(cmd, in.model);
-    ++shadow_cars_;
+    auto outside = [&](const WorldGeometry::Draw& d) {
+      for (const auto& p : planes) {
+        const float x = p[0] >= 0 ? d.box_max[0] : d.box_min[0];
+        const float y = p[1] >= 0 ? d.box_max[1] : d.box_min[1];
+        const float z = p[2] >= 0 ? d.box_max[2] : d.box_min[2];
+        if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
+      }
+      return false;
+    };
+    VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &cascade_set, 0,
+                            nullptr);
+    VkPipeline bound = VK_NULL_HANDLE;
+    VkDescriptorSet bound_set = VK_NULL_HANDLE;
+    for (const auto& d : world_draws_) {
+      if (!d.cull || d.blend >= 2 || outside(d) || near_lod_beyond(d, eye)) continue;
+      // Far cascade skips tiny billboard/cutout draws on low preset for speed.
+      if (is_far && d.blend == 1 && r_.options_.shadow.taps <= 1) continue;
+      ++shadow_drawn_;
+      const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
+      if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+      ShowroomPush push = d.push;
+      if (d.blend == 1) {
+        VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+        if (set) {
+          std::lock_guard<std::mutex> lock(world_textures_mutex_);
+          world_lru_.touch(d.texture, world_frame_);
+        }
+        if (!set) {
+          set = world_white_set_;
+          push.params[1] = 0;
+        }
+        if (set != bound_set)
+          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1,
+                                  &(bound_set = set), 0, nullptr);
+      }
+      std::memcpy(push.model, world_transform_, sizeof push.model);
+      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+      push.params[2] = 0;
+      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+    }
+    // Player & traffic cars cast crisp shadows in Near cascade (and Far if close).
+    if (!is_far) {
+      if (draw_car_) record_shadow_car(cmd, nullptr);
+      const float reach = 1.0f + 5.0f / std::max(r_.options_.shadow.radius, 10.0f);
+      for (const auto& in : instances_) {
+        if (!in.car) continue;
+        const float* t = in.model + 12;
+        const float x = vp[0] * t[0] + vp[4] * t[1] + vp[8] * t[2] + vp[12];
+        const float y = vp[1] * t[0] + vp[5] * t[1] + vp[9] * t[2] + vp[13];
+        if (std::fabs(x) > reach || std::fabs(y) > reach) continue;
+        in.car->record_shadow_car(cmd, in.model);
+        ++shadow_cars_;
+      }
+    }
+  };
+
+  draw_cascade(0, shadow_set_, shadow_frame_, false);
+  if (shadow_set_far_ && atlas_w >= size * 2) {
+    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true);
   }
   vkCmdEndRendering(cmd);
 
@@ -3556,6 +3822,82 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   if (res == VK_SUCCESS)
     res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &sky_pipe_layers_);
 
+  // 1-sample HDR sky pipelines & descriptor sets for dynamic cubemap and rearview mirror passes.
+  if (res == VK_SUCCESS && dyn_env_ready_) {
+    const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkPipelineRenderingCreateInfo env_rend = rend;
+    env_rend.pColorAttachmentFormats = &hdr_fmt;
+    VkPipelineMultisampleStateCreateInfo ms1{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms1.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkGraphicsPipelineCreateInfo egp = gp;
+    egp.pNext = &env_rend;
+    egp.pMultisampleState = &ms1;
+    VkPipelineColorBlendAttachmentState eatt{};
+    eatt.colorWriteMask = att.colorWriteMask;
+    VkPipelineColorBlendStateCreateInfo ecb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    ecb.attachmentCount = 1;
+    ecb.pAttachments = &eatt;
+    egp.pColorBlendState = &ecb;
+    res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &egp, nullptr, &env_sky_pipe_base_);
+    if (res == VK_SUCCESS) {
+      eatt = att;
+      res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &egp, nullptr, &env_sky_pipe_layers_);
+    }
+    if (res == VK_SUCCESS) {
+      const VkDescriptorPoolSize eps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 12},
+                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12 * 11}};
+      VkDescriptorPoolCreateInfo epci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+      epci.maxSets = 12;
+      epci.poolSizeCount = 2;
+      epci.pPoolSizes = eps;
+      if (vkCreateDescriptorPool(r_.device_, &epci, nullptr, &env_pool_) == VK_SUCCESS) {
+        VkDescriptorSetAllocateInfo ealloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ealloc.descriptorPool = env_pool_;
+        ealloc.descriptorSetCount = 12;
+        ealloc.pSetLayouts = set_layouts;
+        if (vkAllocateDescriptorSets(r_.device_, &ealloc, env_sky_sets_) == VK_SUCCESS) {
+          for (int mode = 0; mode < 2; ++mode) {
+            for (int disc = 0; disc < 6; ++disc) {
+              const int idx = mode * 6 + disc;
+              VkDescriptorBufferInfo buf{env_sky_ubo_[mode].buffer, 0, sizeof(SkyUniforms)};
+              const VkImageView views[11] = {
+                  disc == 0 ? sky_sun_.view : sky_moons_[disc - 1].view,
+                  sky_dither_.view,
+                  sky_far_f_.view,
+                  sky_far_b_.view,
+                  sky_far_mask_.view,
+                  sky_close_ad_f_.view,
+                  sky_close_ad_b_.view,
+                  sky_close_am_f_.view,
+                  sky_close_am_b_.view,
+                  sky_close_tb_f_.view,
+                  sky_close_tb_b_.view,
+              };
+              VkDescriptorImageInfo imgs[11];
+              VkWriteDescriptorSet writes[12]{};
+              writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+              writes[0].dstSet = env_sky_sets_[idx];
+              writes[0].dstBinding = 0;
+              writes[0].descriptorCount = 1;
+              writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+              writes[0].pBufferInfo = &buf;
+              for (uint32_t b = 0; b < 11; ++b) {
+                imgs[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                writes[b + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[b + 1].dstSet = env_sky_sets_[idx];
+                writes[b + 1].dstBinding = b + 1;
+                writes[b + 1].descriptorCount = 1;
+                writes[b + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[b + 1].pImageInfo = &imgs[b];
+              }
+              vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Starfield pipeline (point list, premultiplied alpha over sky atmosphere).
   VkVertexInputBindingDescription star_bind{0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
   VkVertexInputAttributeDescription star_attr{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
@@ -3588,10 +3930,10 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   return true;
 }
 
-void Showroom::record_sky_before(VkCommandBuffer cmd) {
-  // Compute clip_from_game = frame_.view_projection * world_transform_ (column-major).
+void Showroom::fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u) const {
+  // Compute clip_from_game = view_frame.view_projection * world_transform_ (column-major).
   float clip[16];
-  multiply(frame_.view_projection, world_transform_, clip);
+  multiply(view_frame.view_projection, world_transform_, clip);
   // Invert 3x3 matrix A = [row0(x); row1(y); row3(w)] (columns 0..2) so
   // V_game = inv(A) * [ndc.x, ndc.y, 1]^T maps screen NDC to exact game-frame ray direction.
   const double a00 = clip[0], a01 = clip[4], a02 = clip[8];
@@ -3616,7 +3958,7 @@ void Showroom::record_sky_before(VkCommandBuffer cmd) {
   }
 
   const auto& t = tod_state_;
-  SkyUniforms u{};
+  u = {};
   // V = cam_fwd + ndc.x * cam_right - ndc.y * cam_up = C2 + ndc.x * C0 + ndc.y * C1.
   u.cam_fwd[0] = float(inv[0][2]);
   u.cam_fwd[1] = float(inv[1][2]);
@@ -3632,7 +3974,6 @@ void Showroom::record_sky_before(VkCommandBuffer cmd) {
   u.cam_up[3] = tod_real_time_;
 
   u.sun_dir[0] = t.sun_dir[0]; u.sun_dir[1] = t.sun_dir[1]; u.sun_dir[2] = t.sun_dir[2]; u.sun_dir[3] = t.sky_gain;
-  // Angular disc half-radius in radians from SunObjectSize (~10..27 -> ~0.03..0.09 rad).
   const float disc_rad = std::clamp(t.sun_object_size * 0.0032f, 0.025f, 0.11f);
   u.sun_obj_dir[0] = t.sun_object_dir[0]; u.sun_obj_dir[1] = t.sun_object_dir[1];
   u.sun_obj_dir[2] = t.sun_object_dir[2]; u.sun_obj_dir[3] = disc_rad;
@@ -3688,6 +4029,11 @@ void Showroom::record_sky_before(VkCommandBuffer cmd) {
   u.fog_sky[1] = std::clamp(t.fog_density * 14.0f, 0.15f, 0.85f);
   u.fog_sky[2] = sky_has_textures_ ? 1.0f : 0.0f;
   u.fog_sky[3] = t.star_fade;
+}
+
+void Showroom::record_sky_before(VkCommandBuffer cmd) {
+  SkyUniforms u{};
+  fill_sky_uniforms(frame_, u);
 
   // Update mode 0 (atmosphere) and mode 1 (disc + clouds + horizon fog) UBOs.
   for (int m = 0; m < 2; ++m) {
@@ -4279,6 +4625,401 @@ void Showroom::record_glows_draw(VkCommandBuffer cmd) {
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &glow_buffer_.buffer, &zero);
   vkCmdDraw(cmd, 6, glow_count_, 0, 0);
+}
+
+bool Showroom::init_dynamic_reflections(std::string& error) {
+  if (guest_ || !r_.device_) return true;
+  if (dyn_env_ready_) return true;
+
+  // 256x256x6 RGBA16F cubemap with 9 mip levels for live drive reflections (car + LAKE water).
+  const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+  VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  ci.imageType = VK_IMAGE_TYPE_2D;
+  ci.format = hdr_fmt;
+  ci.extent = {kDynEnvSize, kDynEnvSize, 1};
+  ci.mipLevels = kDynEnvMips;
+  ci.arrayLayers = 6;
+  ci.samples = VK_SAMPLE_COUNT_1_BIT;
+  ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VmaAllocationInfo ainfo{};
+  VK_TRY(vmaCreateImage(r_.allocator_, &ci, &alloc, &dyn_env_.image, &dyn_env_.allocation, &ainfo),
+         "dynamic env cubemap");
+  dyn_env_.bytes = ainfo.size;
+
+  VkImageViewCreateInfo cv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  cv.image = dyn_env_.image;
+  cv.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+  cv.format = hdr_fmt;
+  cv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, 0, 6};
+  VK_TRY(vkCreateImageView(r_.device_, &cv, nullptr, &dyn_env_.view), "dynamic env cube view");
+
+  for (uint32_t f = 0; f < 6; ++f) {
+    VkImageViewCreateInfo fv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    fv.image = dyn_env_.image;
+    fv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    fv.format = hdr_fmt;
+    fv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
+    VK_TRY(vkCreateImageView(r_.device_, &fv, nullptr, &dyn_env_faces_[f]), "dynamic env face view");
+  }
+
+  if (!r_.create_image(kDynEnvSize, kDynEnvSize, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, dyn_env_depth_)) {
+    error = "dynamic env depth";
+    return false;
+  }
+
+  // 512x128 RGBA16F rearview/side mirror render target + depth.
+  if (!r_.create_image(kMirrorWidth, kMirrorHeight, 1, hdr_fmt, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT, mirror_tex_) ||
+      !r_.create_image(kMirrorWidth, kMirrorHeight, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, mirror_depth_)) {
+    error = "mirror render targets";
+    return false;
+  }
+
+  if (!r_.create_buffer(sizeof(ShowroomFrame),
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, env_frame_buffer_) ||
+      !r_.create_buffer(sizeof(SkyUniforms),
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, env_sky_ubo_[0]) ||
+      !r_.create_buffer(sizeof(SkyUniforms),
+                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, env_sky_ubo_[1])) {
+    error = "dynamic env buffers";
+    return false;
+  }
+
+  // Clear both images to SHADER_READ_ONLY_OPTIMAL so descriptors are valid before first draw.
+  const bool ok = r_.submit_once([&](VkCommandBuffer cmd) {
+    VkImageMemoryBarrier2 bs[2]{};
+    bs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    bs[0].dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    bs[0].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    bs[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    bs[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    bs[0].srcQueueFamilyIndex = bs[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bs[0].image = dyn_env_.image;
+    bs[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, 0, 6};
+    bs[1] = bs[0];
+    bs[1].image = mirror_tex_.image;
+    bs[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 2;
+    dep.pImageMemoryBarriers = bs;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    const VkClearColorValue clr{{0.08f, 0.10f, 0.14f, 1.0f}};
+    vkCmdClearColorImage(cmd, dyn_env_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &bs[0].subresourceRange);
+    vkCmdClearColorImage(cmd, mirror_tex_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &bs[1].subresourceRange);
+    for (int i = 0; i < 2; ++i) {
+      bs[i].srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+      bs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      bs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      bs[i].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+      bs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      bs[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    vkCmdPipelineBarrier2(cmd, &dep);
+  });
+  if (!ok) {
+    error = "dynamic env clear";
+    return false;
+  }
+  dyn_env_ready_ = true;
+  return true;
+}
+
+void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
+                                     uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars) {
+  // Upload view UBO and sky UBOs outside render pass.
+  update_buffer(cmd, env_frame_buffer_.buffer, view_frame);
+  if (sky_ready_ && env_sky_pipe_base_ && env_sky_sets_[0]) {
+    SkyUniforms u{};
+    fill_sky_uniforms(view_frame, u);
+    for (int m = 0; m < 2; ++m) {
+      u.cam_fwd[3] = float(m);
+      vkCmdUpdateBuffer(cmd, env_sky_ubo_[m].buffer, 0, sizeof(SkyUniforms), &u);
+      VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+      b.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+      b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+      b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.buffer = env_sky_ubo_[m].buffer;
+      b.size = sizeof(SkyUniforms);
+      VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dep.bufferMemoryBarrierCount = 1;
+      dep.pBufferMemoryBarriers = &b;
+      vkCmdPipelineBarrier2(cmd, &dep);
+    }
+  }
+
+  VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  color.imageView = color_view;
+  color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  color.clearValue.color = {{0.05f, 0.08f, 0.12f, 1.0f}};
+  VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  depth.imageView = depth_view;
+  depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.clearValue.depthStencil = {r_.reverse_z() ? 0.0f : 1.0f, 0};
+  VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  rend.renderArea = {{0, 0}, {w, h}};
+  rend.layerCount = 1;
+  rend.colorAttachmentCount = 1;
+  rend.pColorAttachments = &color;
+  rend.pDepthAttachment = &depth;
+  vkCmdBeginRendering(cmd, &rend);
+  const VkViewport vp{0, 0, float(w), float(h), 0.0f, 1.0f};
+  const VkRect2D sc{{0, 0}, {w, h}};
+  vkCmdSetViewport(cmd, 0, 1, &vp);
+  vkCmdSetScissor(cmd, 0, 1, &sc);
+
+  // 1. Real-time sky (atmosphere + clouds + sun/moon + horizon fog).
+  if (sky_ready_ && env_sky_pipe_base_ && env_sky_pipe_layers_ && env_sky_sets_[0]) {
+    const int disc = tod_state_.is_moon ? (1 + tod_moon_phase_) : 0;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_sky_pipe_base_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[disc], 0,
+                            nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_sky_pipe_layers_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[6 + disc], 0,
+                            nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+  }
+
+  // 2. Opaque world terrain, roads, mountains, and buildings (frustum culled).
+  if (world_textured_ && !world_draws_.empty() && env_world_opaque_ && env_frame_set_) {
+    float clip[16];
+    multiply(view_frame.view_projection, world_transform_, clip);
+    float planes[4][4];
+    for (int c = 0; c < 4; ++c) {
+      const float x = clip[c * 4 + 0], y = clip[c * 4 + 1], wv = clip[c * 4 + 3];
+      planes[0][c] = wv + x, planes[1][c] = wv - x, planes[2][c] = wv + y, planes[3][c] = wv - y;
+    }
+    auto outside = [&](const WorldGeometry::Draw& d) {
+      for (const auto& p : planes) {
+        const float x = p[0] >= 0 ? d.box_max[0] : d.box_min[0];
+        const float y = p[1] >= 0 ? d.box_max[1] : d.box_min[1];
+        const float z = p[2] >= 0 ? d.box_max[2] : d.box_min[2];
+        if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0) return true;
+      }
+      return false;
+    };
+    VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_world_opaque_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
+                            nullptr);
+    vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+    VkDescriptorSet bound_set = VK_NULL_HANDLE;
+    for (const auto& d : world_draws_) {
+      // Only opaque non-sky non-water geometry for fast, clean reflections.
+      if (!d.cull || d.blend != 0 || outside(d)) continue;
+      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      if ((fl & (2u | 32768u)) != 0u) continue;
+      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : world_white_set_;
+      if (!set) set = world_white_set_;
+      if (set != bound_set)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &(bound_set = set),
+                                0, nullptr);
+      ShowroomPush push = d.push;
+      // Strip multi-texture flags since we bound single-albedo set for speed.
+      push.params[1] = float(fl & ~(4u | 8u | 4096u | 8192u | 16384u));
+      std::memcpy(push.model, world_transform_, sizeof push.model);
+      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+      push.uv0[3] = 2.0f;
+      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+    }
+  }
+  (void)include_cars;
+  vkCmdEndRendering(cmd);
+}
+
+void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
+  if (!dyn_env_ready_ || !env_frame_set_) return;
+  auto make_view_proj = [&](const std::array<float, 3>& eye, const std::array<float, 3>& right,
+                            const std::array<float, 3>& up, const std::array<float, 3>& fwd,
+                            float tan_x, float tan_y, float out[16]) {
+    const float dx = -(right[0] * eye[0] + right[1] * eye[1] + right[2] * eye[2]);
+    const float dy = -(up[0] * eye[0] + up[1] * eye[1] + up[2] * eye[2]);
+    const float dz = -(fwd[0] * eye[0] + fwd[1] * eye[1] + fwd[2] * eye[2]);
+    const float near_p = 0.5f, far_p = 8000.0f;
+    out[0] = right[0] / tan_x; out[4] = right[1] / tan_x; out[8]  = right[2] / tan_x; out[12] = dx / tan_x;
+    out[1] = -up[0] / tan_y;   out[5] = -up[1] / tan_y;   out[9]  = -up[2] / tan_y;   out[13] = -dy / tan_y;
+    if (r_.reverse_z()) {
+      out[2] = 0.0f; out[6] = 0.0f; out[10] = 0.0f; out[14] = near_p;
+    } else {
+      const float k = far_p / (far_p - near_p);
+      out[2] = fwd[0] * k; out[6] = fwd[1] * k; out[10] = fwd[2] * k; out[14] = dz * k - near_p * k;
+    }
+    out[3] = fwd[0]; out[7] = fwd[1]; out[11] = fwd[2]; out[15] = dz;
+  };
+  auto game_to_render = [&](const std::array<float, 3>& g) -> std::array<float, 3> {
+    return {world_transform_[0] * g[0] + world_transform_[4] * g[1] + world_transform_[8] * g[2],
+            world_transform_[1] * g[0] + world_transform_[5] * g[1] + world_transform_[9] * g[2],
+            world_transform_[2] * g[0] + world_transform_[6] * g[1] + world_transform_[10] * g[2]};
+  };
+
+  // Vulkan cubemap face basis in game space (+X, -X, +Y, -Y, +Z, -Z).
+  static constexpr std::array<float, 3> kFwd[6] = {
+      {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+  static constexpr std::array<float, 3> kRight[6] = {
+      {0, 0, -1}, {0, 0, 1}, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}, {-1, 0, 0}};
+  static constexpr std::array<float, 3> kUp[6] = {
+      {0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0}};
+
+  // First frame populates all 6 faces (also guarantees complete headless renders);
+  // subsequent live frames amortize 1 face per frame for minimal GPU cost.
+  const uint32_t first_f = dyn_env_initialized_ ? uint32_t((world_frame_ - 1) % 6) : 0u;
+  const uint32_t count_f = dyn_env_initialized_ ? 1u : 6u;
+  // Probe center slightly above car roof in render space.
+  const std::array<float, 3> cube_eye = {0.0f, 1.35f, 0.0f};
+  for (uint32_t i = 0; i < count_f; ++i) {
+    const uint32_t f = (first_f + i) % 6;
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = dyn_env_.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    ShowroomFrame vf = frame_;
+    vf.shadow[0] = 0.0f;
+    vf.shadow_far_bias[1] = vf.shadow_far_bias[2] = vf.shadow_far_bias[3] = 0.0f;
+    vf.eye[0] = cube_eye[0];
+    vf.eye[1] = cube_eye[1];
+    vf.eye[2] = cube_eye[2];
+    vf.eye[3] = 1.0f;
+    make_view_proj(cube_eye, game_to_render(kRight[f]), game_to_render(kUp[f]), game_to_render(kFwd[f]),
+                   1.0f, 1.0f, vf.view_projection);
+    std::memcpy(vf.transparent_view_projection, vf.view_projection, sizeof vf.view_projection);
+
+    record_offscreen_view(cmd, dyn_env_faces_[f], dyn_env_depth_.view, kDynEnvSize, kDynEnvSize, vf, false);
+
+    // Generate full mip chain (levels 1..8) for this cubemap face via linear blit.
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    int32_t mip_w = int32_t(kDynEnvSize);
+    for (uint32_t mip = 1; mip < kDynEnvMips; ++mip) {
+      const int32_t next_w = std::max(1, mip_w / 2);
+      VkImageMemoryBarrier2 mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+      mb.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      mb.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+      mb.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+      mb.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      mb.image = dyn_env_.image;
+      mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, f, 1};
+      VkDependencyInfo mdep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      mdep.imageMemoryBarrierCount = 1;
+      mdep.pImageMemoryBarriers = &mb;
+      vkCmdPipelineBarrier2(cmd, &mdep);
+
+      VkImageBlit blit{};
+      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, f, 1};
+      blit.srcOffsets[1] = {mip_w, mip_w, 1};
+      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, f, 1};
+      blit.dstOffsets[1] = {next_w, next_w, 1};
+      vkCmdBlitImage(cmd, dyn_env_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dyn_env_.image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+      mb.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+      mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      mb.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+      mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+      mb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      mb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      vkCmdPipelineBarrier2(cmd, &mdep);
+      mip_w = next_w;
+    }
+
+    b.srcStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, f, 1};
+    vkCmdPipelineBarrier2(cmd, &dep);
+  }
+  dyn_env_initialized_ = true;
+
+  // Rearview & side mirror panoramic pass (512x128) when cockpit camera is active.
+  if (mirror_enabled_ && mirror_tex_.view && mirror_depth_.view) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = mirror_tex_.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    ShowroomFrame mf = frame_;
+    mf.shadow[0] = 0.0f;
+    mf.shadow_far_bias[1] = mf.shadow_far_bias[2] = mf.shadow_far_bias[3] = 0.0f;
+    // Rear-facing panoramic camera mounted above interior mirror looking rearward (+Z in model space).
+    const std::array<float, 3> meye = {0.0f, 1.05f, 0.35f};
+    mf.eye[0] = meye[0];
+    mf.eye[1] = meye[1];
+    mf.eye[2] = meye[2];
+    mf.eye[3] = 1.0f;
+    // Matches showroom.frag mirror constants: tan_y = tan(19 deg) = 0.3443, tan_x = 4 * tan_y = 1.3773.
+    make_view_proj(meye, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f},
+                   1.3773f, 0.3443f, mf.view_projection);
+    std::memcpy(mf.transparent_view_projection, mf.view_projection, sizeof mf.view_projection);
+
+    record_offscreen_view(cmd, mirror_tex_.view, mirror_depth_.view, kMirrorWidth, kMirrorHeight, mf, true);
+
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    mirror_valid_ = true;
+  } else {
+    mirror_valid_ = false;
+  }
 }
 
 }  // namespace carview

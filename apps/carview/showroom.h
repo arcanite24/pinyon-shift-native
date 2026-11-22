@@ -78,8 +78,14 @@ struct ShowroomFrame {
   float fog_params[4] = {0.00045f, 200.0f, 4000.0f, 0.9f};
   float car_light_top[4] = {0.1687f, 0.2229f, 0.2746f, 1.0f};
   float car_light_bot[4] = {0.1788f, 0.1729f, 0.1024f, 150.0f};
+  // Multi-cascade sun shadow far cascade, dynamic cubemap basis, and mirror flags.
+  float shadow_matrix_far[16] = {};
+  float shadow_far_bias[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float env_basis_x[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+  float env_basis_y[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+  float env_basis_z[4] = {0.0f, 0.0f, 1.0f, 0.0f};
 };
-static_assert(sizeof(ShowroomFrame) == 496);
+static_assert(sizeof(ShowroomFrame) == 624);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -327,6 +333,12 @@ class Showroom {
   bool upload_carlights(const std::filesystem::path& media_dir, std::string& error);
   // Updates world streetlamp / festival / outpost glow sprites for the active scenery.
   void set_world_glows(std::vector<world::WorldGlow> glows) { world_glows_ = std::move(glows); }
+  // Optional showroom static cubemap (media/tracks/uiautoshow/staticcarcubemap.xpr).
+  // Call before upload() to replace the procedural studio cubemap.
+  void set_environment_xpr(std::filesystem::path xpr_path) { env_xpr_path_ = std::move(xpr_path); }
+  // Living cockpit animation (steering wheel rotation, RPM/speed/fuel/boost/power
+  // gauge needles, and cockpit mirror render pass enable).
+  void set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera);
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no
@@ -403,6 +415,7 @@ class Showroom {
     std::array<float, 3> centre{};  // car space, for sorting glass
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
     bool spins = false;  // rims, tyres and rotors roll; callipers do not
+    int8_t cockpit_role = -1;  // -1 none, 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
     float local[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // about the hub, body frame
   };
   using GpuTexture = Renderer::Image;
@@ -496,10 +509,13 @@ class Showroom {
   VkPipeline opaque_ = VK_NULL_HANDLE, glass_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
-  // The sun shadow pass: its frame block and set, and depth-only pipelines.
+  // The sun shadow pass: Near + Far cascades in a 2x1 atlas.
   Renderer::Buffer shadow_frame_buffer_;
+  Renderer::Buffer shadow_frame_far_buffer_;
   VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
+  VkDescriptorSet shadow_set_far_ = VK_NULL_HANDLE;
   ShowroomFrame shadow_frame_{};
+  ShowroomFrame shadow_frame_far_{};
   VkPipeline shadow_world_ = VK_NULL_HANDLE, shadow_cutout_ = VK_NULL_HANDLE, shadow_car_ = VK_NULL_HANDLE;
   size_t shadow_drawn_ = 0, shadow_cars_ = 0;
   float shadow_direction_[3] = {0, 1, 0};
@@ -654,6 +670,44 @@ class Showroom {
   void record_lights_before(VkCommandBuffer cmd);
   void record_glows_draw(VkCommandBuffer cmd);
   void update_frame_cookie_descriptor();
+  // Showroom XPR2 cubemap, live 256x256 dynamic drive reflection cubemap, and 512x128 mirror pass.
+  std::filesystem::path env_xpr_path_;
+  static constexpr uint32_t kDynEnvSize = 256;
+  static constexpr uint32_t kDynEnvMips = 9;
+  static constexpr uint32_t kMirrorWidth = 512;
+  static constexpr uint32_t kMirrorHeight = 128;
+  GpuTexture dyn_env_;
+  VkImageView dyn_env_faces_[6] = {};
+  GpuTexture dyn_env_depth_;
+  GpuTexture mirror_tex_;
+  GpuTexture mirror_depth_;
+  Renderer::Buffer env_frame_buffer_;
+  VkDescriptorSet env_frame_set_ = VK_NULL_HANDLE;
+  Renderer::Buffer env_sky_ubo_[2];
+  VkDescriptorPool env_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet env_sky_sets_[12] = {};
+  VkPipeline env_world_opaque_ = VK_NULL_HANDLE;
+  VkPipeline env_sky_pipe_base_ = VK_NULL_HANDLE;
+  VkPipeline env_sky_pipe_layers_ = VK_NULL_HANDLE;
+  bool dyn_env_ready_ = false;
+  bool dyn_env_initialized_ = false;
+  bool dyn_env_bound_ = false;
+  bool mirror_enabled_ = false;
+  bool mirror_valid_ = false;
+  bool init_dynamic_reflections(std::string& error);
+  void record_env_and_mirror(VkCommandBuffer cmd);
+  void record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
+                             uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars);
+  void fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u) const;
+  // Living cockpit animation rigs (steering wheel + 5 analog gauge needles).
+  struct CockpitRig {
+    bool valid = false;
+    std::array<float, 3> pivot{0, 0, 0};
+    std::array<float, 3> axis{0, 0, 1};
+    float ang_mid = 0.0f;
+    float ang_max = 0.0f;
+  };
+  CockpitRig cockpit_rigs_[6]{};  // 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
   bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
   void evict_world_textures();

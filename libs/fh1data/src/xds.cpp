@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
+#include <cstring>
 
 #include "fh1data/bytes.h"
 
@@ -352,7 +354,7 @@ bool parse_xds_header(std::span<const uint8_t> data, XdsHeader& h, std::string* 
   h.swizzle = (f[3] >> 1) & 0xFFF;
   h.levels = ((f[4] >> 6) & 0xF) + 1;
   h.packed_mips = ((f[5] >> 11) & 1) != 0;
-  if (h.dimension == XdsDimension::k2D) {
+  if (h.dimension == XdsDimension::k2D || h.dimension == XdsDimension::kCube) {
     h.width = (f[2] & 0x1FFF) + 1;
     h.height = ((f[2] >> 13) & 0x1FFF) + 1;
   } else if (h.dimension == XdsDimension::k1D) {
@@ -507,6 +509,99 @@ bool extract_region_blocks(const XdsHeader& h, std::span<const std::span<const u
     out.levels.push_back(std::move(level));
   }
   if (out.levels.empty()) return fail("no level");
+  return true;
+}
+
+bool decode_xpr_cubemap(std::span<const uint8_t> data, XprCubemap& out, std::string* error) {
+  out = XprCubemap{};
+  auto fail = [&](const std::string& why) {
+    if (error) *error = why;
+    return false;
+  };
+  if (data.size() < 32 || std::memcmp(data.data(), "XPR2", 4) != 0) return fail("not an XPR2 file");
+  const uint32_t header_size = load_be32(data.data() + 4);
+  const uint32_t res_count = load_be32(data.data() + 12);
+  if (res_count == 0 || 12 + size_t(header_size) > data.size()) return fail("truncated XPR2 header");
+
+  size_t xds_off = 0;
+  bool found = false;
+  for (uint32_t i = 0; i < res_count; ++i) {
+    const size_t entry = 16 + size_t(i) * 16;
+    if (entry + 16 > data.size()) break;
+    if (std::memcmp(data.data() + entry, "TXCM", 4) == 0) {
+      xds_off = 12 + size_t(load_be32(data.data() + entry + 4));
+      found = true;
+      break;
+    }
+  }
+  if (!found || xds_off + kHeaderSize > data.size()) return fail("no TXCM cube resource in XPR2");
+
+  XdsHeader hdr;
+  if (!parse_xds_header(data.subspan(xds_off, kHeaderSize), hdr, error)) return false;
+  if (hdr.dimension != XdsDimension::kCube || hdr.width == 0 || hdr.width != hdr.height)
+    return fail("XPR2 TXCM is not a square cubemap");
+  if (hdr.format != 6 && hdr.format != 50) return fail("unsupported XPR2 cubemap format");
+
+  const uint32_t size = hdr.width;
+  const uint32_t pitch = align_up(size, 32);
+  const uint32_t h_aligned = align_up(size, 32);
+  const size_t face_bytes = size_t(pitch) * h_aligned * 4;
+  const size_t data_start = 12 + size_t(header_size);
+  if (data_start + face_bytes * 6 > data.size()) return fail("XPR2 cubemap face data truncated");
+
+  // Compute exact inverse of LogLuv forward matrix M (SHOWROOM_LIGHTING.md):
+  //   X' = 0.2209 R + 0.1138 G + 0.0102 B
+  //   Y  = 0.3390 R + 0.6780 G + 0.1130 B
+  //   Z' = 0.4184 R + 0.7319 G + 0.2969 B
+  const double M[3][3] = {
+      {0.2209, 0.1138, 0.0102},
+      {0.3390, 0.6780, 0.1130},
+      {0.4184, 0.7319, 0.2969},
+  };
+  double inv[3][3]{};
+  {
+    const double c00 = M[1][1] * M[2][2] - M[1][2] * M[2][1];
+    const double c01 = -(M[1][0] * M[2][2] - M[1][2] * M[2][0]);
+    const double c02 = M[1][0] * M[2][1] - M[1][1] * M[2][0];
+    const double det = M[0][0] * c00 + M[0][1] * c01 + M[0][2] * c02;
+    const double id = 1.0 / det;
+    inv[0][0] = c00 * id;
+    inv[1][0] = c01 * id;
+    inv[2][0] = c02 * id;
+    inv[0][1] = -(M[0][1] * M[2][2] - M[0][2] * M[2][1]) * id;
+    inv[1][1] = (M[0][0] * M[2][2] - M[0][2] * M[2][0]) * id;
+    inv[2][1] = -(M[0][0] * M[2][1] - M[0][1] * M[2][0]) * id;
+    inv[0][2] = (M[0][1] * M[1][2] - M[0][2] * M[1][1]) * id;
+    inv[1][2] = -(M[0][0] * M[1][2] - M[0][2] * M[1][0]) * id;
+    inv[2][2] = (M[0][0] * M[1][1] - M[0][1] * M[1][0]) * id;
+  }
+
+  out.size = size;
+  for (uint32_t face = 0; face < 6; ++face) {
+    const uint8_t* src = data.data() + data_start + size_t(face) * face_bytes;
+    auto& dst = out.faces[face];
+    dst.resize(size_t(size) * size);
+    for (uint32_t y = 0; y < size; ++y) {
+      for (uint32_t x = 0; x < size; ++x) {
+        const size_t off = hdr.tiled ? size_t(xenos_tiled_offset_2d(int32_t(x), int32_t(y), pitch, 2))
+                                     : (size_t(y) * size + x) * 4;
+        const uint8_t* b = src + off;
+        // XPR2 ARGB8888 big-endian bytes [A, R, G, B] -> shader (r, g, b, a) = bytes (1, 2, 3, 0).
+        const double r = double(b[1]) / 255.0;
+        const double g = std::max(double(b[2]) / 255.0, 1e-6);
+        const double bl = double(b[3]) / 255.0;
+        const double a = double(b[0]) / 255.0;
+        const double Le = 255.0 * bl + a;
+        const double Y = std::exp2((Le - 127.0) * 0.5);
+        const double Zp = Y / g;
+        const double Xp = r * Zp;
+        const float R = float(std::max(0.0, inv[0][0] * Xp + inv[0][1] * Y + inv[0][2] * Zp));
+        const float G = float(std::max(0.0, inv[1][0] * Xp + inv[1][1] * Y + inv[1][2] * Zp));
+        const float B = float(std::max(0.0, inv[2][0] * Xp + inv[2][1] * Y + inv[2][2] * Zp));
+        dst[size_t(y) * size + x] = {R, G, B};
+      }
+    }
+  }
   return true;
 }
 

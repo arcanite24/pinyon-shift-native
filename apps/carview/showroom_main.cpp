@@ -502,6 +502,10 @@ int run_showroom(int argc, char** argv) {
   {
     Renderer renderer;
     Showroom showroom(renderer);
+    if (const char* env_root = std::getenv("SHIFT_GAME_ROOT"); env_root && *env_root) {
+      const auto xpr = std::filesystem::path(env_root) / "media" / "tracks" / "uiautoshow" / "staticcarcubemap.xpr";
+      if (std::filesystem::exists(xpr)) showroom.set_environment_xpr(xpr);
+    }
     if (!showroom.load(bake_dir, car, options, error) || !renderer.init({window, validation, msaa}, error) ||
         !showroom.upload(error)) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -1231,7 +1235,7 @@ struct WorldTextureLoader {
             std::vector<uint32_t>& pin_records) {
     std::unordered_set<uint32_t> batch_seen;
     for (auto& m : w.materials)
-      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat, &m.light_map})
+      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c})
         load_one(colorado, w, showroom, batch_seen, pin_records, *slot);
   }
   void load_one(world::World& colorado, WorldTriangles& w, Showroom& showroom,
@@ -2381,11 +2385,12 @@ int run_drive(int argc, char** argv) {
     drive_usage();
     return 2;
   }
-  if (view != "chase" && view != "front") {
-    std::fprintf(stderr, "carview --drive: --view is chase or front\n");
+  if (view != "chase" && view != "front" && view != "cockpit") {
+    std::fprintf(stderr, "carview --drive: --view is chase, front, or cockpit\n");
     return 2;
   }
   bool front = view == "front";
+  if (view == "cockpit") camera_mode = int(drive::CameraMode::kCockpit);
   const bool cruise = run == "cruise" && script_path.empty();
   if (cruise && world_dir.empty()) {
     std::fprintf(stderr, "carview --drive: --run cruise needs --world\n");
@@ -2619,6 +2624,10 @@ int run_drive(int argc, char** argv) {
     if (!world_dir.empty() && read_shadow_direction(world_dir, shadow_light_game)) {
       have_shadow_light = true;
       for (float& c : shadow_light_game) c = -c;
+    }
+    if (const auto groot = game_root_of(); !groot.empty()) {
+      const auto xpr = groot / "media" / "tracks" / "uiautoshow" / "staticcarcubemap.xpr";
+      if (std::filesystem::exists(xpr)) showroom.set_environment_xpr(xpr);
     }
     if (!showroom.load(bake_dir, car, options, error) || !renderer.init(render_options, error) ||
         !showroom.upload(error)) {
@@ -3664,6 +3673,7 @@ int run_drive(int argc, char** argv) {
       double tod_frame_dt = 0.0;
       bool tod_cockpit_cam = false;
       drive::CarLampState player_lamps;
+      drive::CockpitAnimState cockpit_anim;
       int light_override = 0;  // 0 auto, 1 low beam, 2 full beam, 3 fog
       auto place_world = [&]() {
         if (!streamer) return;
@@ -3690,6 +3700,12 @@ int run_drive(int argc, char** argv) {
           lin.snap_headlamps = headless;
           player_lamps.update(lin);
           showroom.set_lamp_state(player_lamps);
+          const float road_steer = float(vehicle.wheels()[0].steer);
+          const float spd = float(std::max(0.0, vehicle.speed()));
+          cockpit_anim.update_steering(road_steer, spd, lin.dt);
+          const float redline = float(std::max(vehicle.params().redline_rpm, 6000.0));
+          cockpit_anim.update_gauges(spd, 95.0f, float(vehicle.rpm()), redline, 0.0f, 20.0f, 0.85f);
+          showroom.set_cockpit_anim(cockpit_anim, tod_cockpit_cam);
         }
         const float up_game[3] = {0, 1, 0};
         float sun[3], up[3];

@@ -31,7 +31,13 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 fog_params;     // x fog_density_scale, y height_start, z height_end, w height_fade_amount
   vec4 car_light_top;  // rgb CarHLColourTop, w ibl_ambient_scale
   vec4 car_light_bot;  // rgb CarHLColourBottom, w eye_game_y
+  mat4 shadow_matrix_far;  // Far cascade orthographic sun shadow matrix
+  vec4 shadow_far_bias;    // x far normal bias, y far on (>0.5), z dyn env cube on (>0.5), w mirror on (>0.5)
+  vec4 env_basis_x;        // xyz game X in render space, w real_time_sec
+  vec4 env_basis_y;        // xyz game Y in render space
+  vec4 env_basis_z;        // xyz game Z in render space
 } frame;
+layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 layout(set = 0, binding = 3) uniform sampler2D headlight_cookie;
 
@@ -195,27 +201,62 @@ vec3 encode_srgb(vec3 c) {
 
 vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
 
-// The drive's sun shadow (ours): one orthographic map around the car.
-// shadow: x on, y one texel in the map's UV, z the sun's share left in
-// shadow, w taps (1 or 4); shadow_bias.x the normal offset in metres.
-// 1 where lit; off (the showroom) always 1.
+// Multi-cascade sun shadow (2x1 atlas: left half Near ~28 m, right half Far ~185 m).
+float sample_cascade(vec4 s, float x_off) {
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * 0.5 + x_off, s.y * 0.5 + 0.5);
+  if (frame.shadow.w > 1.5) {
+    float tx = frame.shadow.y * 0.25;
+    float ty = frame.shadow.y * 0.5;
+    return 0.25 * (texture(shadow_map, vec3(uv + vec2(-tx, -ty), s.z)) +
+                   texture(shadow_map, vec3(uv + vec2(tx, -ty), s.z)) +
+                   texture(shadow_map, vec3(uv + vec2(-tx, ty), s.z)) +
+                   texture(shadow_map, vec3(uv + vec2(tx, ty), s.z)));
+  }
+  return texture(shadow_map, vec3(uv, s.z));
+}
+
 float sun_shadow(vec3 p, vec3 n) {
   if (frame.shadow.x < 0.5) return 1.0;
-  vec4 s = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x, 1.0);
-  float edge = max(abs(s.x), abs(s.y));
-  if (edge >= 1.0 || s.z <= 0.0 || s.z >= 1.0) return 1.0;
-  vec2 uv = s.xy * 0.5 + 0.5;
-  float lit;
-  if (frame.shadow.w > 1.5) {
-    float t = frame.shadow.y * 0.5;
-    lit = 0.25 * (texture(shadow_map, vec3(uv + vec2(-t, -t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, -t), s.z)) +
-                  texture(shadow_map, vec3(uv + vec2(-t, t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, t), s.z)));
-  } else {
-    lit = texture(shadow_map, vec3(uv, s.z));
+  vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x, 1.0);
+  float edge_n = max(abs(sn.x), abs(sn.y));
+  bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
+  float lit_n = near_ok ? sample_cascade(sn, 0.0) : 1.0;
+
+  if (frame.shadow_far_bias.y > 0.5) {
+    if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
+    vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
+    float edge_f = max(abs(sf.x), abs(sf.y));
+    float lit_f = 1.0;
+    if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
+      lit_f = mix(sample_cascade(sf, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+    }
+    float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
+    return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
   }
-  // Faded out towards the box's edge.
-  lit = mix(lit, 1.0, smoothstep(0.8, 1.0, edge));
-  return mix(frame.shadow.z, 1.0, lit);
+  if (!near_ok) return 1.0;
+  lit_n = mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n));
+  return mix(frame.shadow.z, 1.0, lit_n);
+}
+
+// Cotangent-frame tangent-space normal perturbation from DXN/BC5 normal map.
+vec3 perturb_normal(vec3 n, vec3 pos, vec2 uv, vec2 nm_xy) {
+  vec2 dxy = nm_xy * 2.0 - 1.0;
+  float nz = sqrt(max(1.0 - dot(dxy, dxy), 0.01));
+  vec3 dp1 = dFdx(pos);
+  vec3 dp2 = dFdy(pos);
+  vec2 duv1 = dFdx(uv);
+  vec2 duv2 = dFdy(uv);
+  vec3 dp2perp = cross(dp2, n);
+  vec3 dp1perp = cross(n, dp1);
+  vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+  vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+  float invmax = inversesqrt(max(dot(T, T), dot(B, B)) + 1e-8);
+  if (invmax > 1e3) return n;
+  return normalize(T * (dxy.x * invmax) + B * (dxy.y * invmax) + n * nz);
+}
+
+vec3 render_to_game_dir(vec3 d) {
+  return normalize(vec3(dot(d, frame.env_basis_x.xyz), dot(d, frame.env_basis_y.xyz), dot(d, frame.env_basis_z.xyz)));
 }
 
 void main() {
@@ -248,13 +289,79 @@ void main() {
     out_color = vec4(encoded * a, a);
     return;
   }
+  vec3 up = normalize(draw.up.xyz);
+  vec3 n_geom = dot(v_normal, v_normal) > 1e-6 ? normalize(v_normal) : up;
+  vec3 sun = normalize(draw.sun.xyz);
+  vec3 view = normalize(frame.eye.xyz - v_position);
+  float eye_dist = length(frame.eye.xyz - v_position);
+  vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
+  vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : kSkyColour;
+  vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
+  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
+
+  // LAKE water shader (kFlagWater): animated dual-scroll ripples, Fresnel cubemap reflection,
+  // crisp sun specular sparkle, and Colorado mountain-lake depth absorption.
+  if ((flags & kFlagWater) != 0u) {
+    float t_sec = frame.env_basis_x.w;
+    vec2 wuv = v_uv0 * 0.25;
+    vec2 uv_a = wuv + vec2(t_sec * 0.018, t_sec * 0.011);
+    vec2 uv_b = wuv * 1.45 - vec2(t_sec * 0.014, -t_sec * 0.019);
+    vec3 nw = n_geom;
+    if ((flags & kFlagNormalMap) != 0u) {
+      vec2 na = texture(normal_map, uv_a).xy;
+      vec2 nb = texture(normal_map, uv_b).xy;
+      nw = perturb_normal(n_geom, v_position, wuv, 0.5 * (na + nb));
+    } else {
+      // Procedural dual-layer wave ripples when no normal map is bound.
+      float h1 = sky_noise(v_position.xz * 0.35 + vec2(t_sec * 0.65, t_sec * 0.35));
+      float h2 = sky_noise(v_position.xz * 0.85 - vec2(t_sec * 0.45, -t_sec * 0.55));
+      float dx = (sky_noise(v_position.xz * 0.35 + vec2(0.08 + t_sec * 0.65, t_sec * 0.35)) - h1) +
+                 0.5 * (sky_noise(v_position.xz * 0.85 + vec2(0.08 - t_sec * 0.45, t_sec * 0.55)) - h2);
+      float dz = (sky_noise(v_position.xz * 0.35 + vec2(t_sec * 0.65, 0.08 + t_sec * 0.35)) - h1) +
+                 0.5 * (sky_noise(v_position.xz * 0.85 + vec2(-t_sec * 0.45, 0.08 + t_sec * 0.55)) - h2);
+      vec3 t_x = normalize(cross(up, abs(up.z) < 0.9 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
+      vec3 t_z = cross(t_x, up);
+      nw = normalize(n_geom + (t_x * dx + t_z * dz) * 0.28);
+    }
+    vec3 r_dir = reflect(-view, nw);
+    if (dot(r_dir, up) < 0.02) r_dir = normalize(r_dir + up * (0.04 - dot(r_dir, up)));
+    vec3 refl;
+    if (frame.shadow_far_bias.z > 0.5) {
+      refl = textureLod(environment, render_to_game_dir(r_dir), 1.0).rgb;
+    } else {
+      refl = mix(sky_col * 1.4, sun_col * 0.5 + sky_col, clamp(dot(r_dir, up), 0.0, 1.0));
+    }
+    float nv = clamp(dot(nw, view), 0.0, 1.0);
+    float fresnel = 0.04 + 0.96 * pow(1.0 - nv, 4.5);
+    float day_amt = clamp(dot(up, sun) * 2.5 + 0.25, 0.05, 1.0);
+    vec3 deep_water = vec3(0.010, 0.036, 0.052) * (0.35 + 0.65 * day_amt) + gnd_col * 0.08;
+    vec3 h_w = normalize(view + sun);
+    float spec_w = pow(max(dot(nw, h_w), 0.0), 240.0) * 2.2 + pow(max(dot(nw, h_w), 0.0), 36.0) * 0.25;
+    float shade_w = mix(1.0, sun_shadow(v_position, n_geom), shadow_scale);
+    vec3 w_col = mix(deep_water, refl, clamp(fresnel * 1.15, 0.05, 0.96)) + sun_col * spec_w * shade_w;
+    w_col *= draw.up.w;
+    w_col = apply_haze(w_col, v_position, up, sun);
+    vec3 w_enc = out_rgb(w_col);
+    float wa = clamp(0.76 + fresnel * 0.24, 0.76, 0.98);
+    out_color = blend == kAlpha ? vec4(w_enc * wa, wa) : vec4(w_enc, 1.0);
+    return;
+  }
+
   vec4 t;
   if ((flags & kFlagTextured) != 0u) {
     t = texture(albedo, v_uv0 * draw.tint.xy);
     if ((flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
       vec4 b = texture(layer_b, v_uv0 * draw.tint.zw);
-      float w = (flags & kFlagSplat) != 0u ? texture(splat_map, v_uv1).r : v_colour.r;
-      t = mix(t, b, w);
+      if ((flags & kFlagSplat) != 0u) {
+        vec4 sp = texture(splat_map, v_uv1);
+        t = mix(t, b, sp.r);
+        if ((flags & kFlagLayerC) != 0u) {
+          vec4 c = texture(layer_c, v_uv0 * draw.tint.zw);
+          t = mix(t, c, sp.g);
+        }
+      } else {
+        t = mix(t, b, v_colour.r);
+      }
     }
   } else {
     t = vec4(draw.tint.rgb, 1.0);
@@ -268,20 +375,35 @@ void main() {
   // Tree sprites: the atlas colour times the record's tint, 2 x RGB.
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * v_colour.rgb;
 
-  vec3 up = normalize(draw.up.xyz);
-  // The authored normal (not turned to the eye: terrain and leaf cards above
-  // the eye would go dark); leaf cards without one take the up axis.
-  vec3 n = dot(v_normal, v_normal) > 1e-6 ? normalize(v_normal) : up;
-  vec3 sun = normalize(draw.sun.xyz);
+  vec3 n = n_geom;
+  if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u && eye_dist < 140.0) {
+    vec2 nm_uv = v_uv0 * draw.tint.xy;
+    vec2 nm = texture(normal_map, nm_uv).xy;
+    vec3 np = perturb_normal(n_geom, v_position, nm_uv, nm);
+    float fade_nm = 1.0 - smoothstep(85.0, 140.0, eye_dist);
+    n = normalize(mix(n_geom, np, fade_nm * 0.75));
+  }
+
+  float ao = 1.0;
+  if ((flags & kFlagAoMap) != 0u && (flags & kFlagBillboard) == 0u) {
+    vec3 ao_s = texture(ao_map, v_uv1).rgb;
+    ao = mix(0.42, 1.0, dot(ao_s, vec3(0.3333)));
+  }
+
   float ndl = max(dot(n, sun), 0.0);
-  vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
-  vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : kSkyColour;
-  vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
-  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
-  float raw_shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n) : 1.0;
+  float raw_shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n_geom) : 1.0;
   float shade = mix(1.0, raw_shade, shadow_scale);
-  vec3 light = sun_col * ndl * shade + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up));
+  vec3 light = (sun_col * ndl * shade + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up))) * ao;
   vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
+
+  // Subtle per-material Blinn-Phong sun specular for roads, rocks, and buildings.
+  if (ndl > 0.0 && (flags & kFlagBillboard) == 0u && (flags & kFlagNormalMap) != 0u) {
+    vec3 h_v = normalize(view + sun);
+    float nv_s = clamp(dot(n, view), 0.0, 1.0);
+    float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
+    float spec = pow(max(dot(n, h_v), 0.0), 32.0) * fres * ndl * shade * ao * 0.45;
+    colour += sun_col * spec * draw.up.w;
+  }
 
   // Projected vehicle road headlight cones (CAR_LAMPS.md §5): cookie spotlight
   // evaluated in world space, scaled by SwitchOnLights night factor.

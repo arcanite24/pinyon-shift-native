@@ -34,9 +34,15 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 fog_params;     // x fog_density_scale, y height_start, z height_end, w height_fade_amount
   vec4 car_light_top;  // rgb CarHLColourTop, w ibl_ambient_scale
   vec4 car_light_bot;  // rgb CarHLColourBottom, w eye_game_y
+  mat4 shadow_matrix_far;  // Far cascade orthographic sun shadow matrix
+  vec4 shadow_far_bias;    // x far normal bias, y far on (>0.5), z dyn env cube on (>0.5), w mirror on (>0.5)
+  vec4 env_basis_x;        // xyz game X in render space, w real_time_sec
+  vec4 env_basis_y;        // xyz game Y in render space
+  vec4 env_basis_z;        // xyz game Z in render space
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
+layout(set = 0, binding = 5) uniform sampler2D mirror_map;
 
 layout(set = 1, binding = 0) uniform sampler2D slot0;
 layout(set = 1, binding = 1) uniform sampler2D slot1;
@@ -62,7 +68,7 @@ const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, k
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
 const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
            kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u, kFlagCover = 1024u,
-           kFlagLampEmissive = 2048u;
+           kFlagLampEmissive = 2048u, kFlagMirror = 4096u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -102,22 +108,48 @@ vec3 drive_env(vec3 dir, float lod) {
   return mix(gnd_col * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
 }
 
-// The sun's shadow on the car (ours, world.frag's map): 1 where lit.
+// Multi-cascade sun shadow on the car (2x1 atlas: left half Near, right half Far).
+float sample_cascade(vec4 s, float x_off) {
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * 0.5 + x_off, s.y * 0.5 + 0.5);
+  float tx = frame.shadow.y * 0.25;
+  float ty = frame.shadow.y * 0.5;
+  return 0.25 * (texture(shadow_map, vec3(uv + vec2(-tx, -ty), s.z)) +
+                 texture(shadow_map, vec3(uv + vec2(tx, -ty), s.z)) +
+                 texture(shadow_map, vec3(uv + vec2(-tx, ty), s.z)) +
+                 texture(shadow_map, vec3(uv + vec2(tx, ty), s.z)));
+}
+
 float drive_shadow(vec3 p, vec3 n) {
   if (frame.shadow.x < 0.5) return 1.0;
-  vec4 s = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x * 2.0, 1.0);
-  float edge = max(abs(s.x), abs(s.y));
-  if (edge >= 1.0 || s.z <= 0.0 || s.z >= 1.0) return 1.0;
-  vec2 uv = s.xy * 0.5 + 0.5;
-  float t = frame.shadow.y * 0.5;
-  float lit = 0.25 * (texture(shadow_map, vec3(uv + vec2(-t, -t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, -t), s.z)) +
-                      texture(shadow_map, vec3(uv + vec2(-t, t), s.z)) + texture(shadow_map, vec3(uv + vec2(t, t), s.z)));
-  lit = mix(lit, 1.0, smoothstep(0.8, 1.0, edge));
-  return mix(frame.shadow.z, 1.0, lit);
+  vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x * 2.0, 1.0);
+  float edge_n = max(abs(sn.x), abs(sn.y));
+  bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
+  float lit_n = near_ok ? sample_cascade(sn, 0.0) : 1.0;
+  if (frame.shadow_far_bias.y > 0.5) {
+    if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
+    vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x * 2.0, 1.0);
+    float edge_f = max(abs(sf.x), abs(sf.y));
+    float lit_f = 1.0;
+    if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
+      lit_f = mix(sample_cascade(sf, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+    }
+    float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
+    return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
+  }
+  if (!near_ok) return 1.0;
+  lit_n = mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n));
+  return mix(frame.shadow.z, 1.0, lit_n);
 }
 
 vec3 env(vec3 dir, float lod) {
-  if (frame.drive.w > 0.5) return drive_env(dir, lod);
+  if (frame.drive.w > 0.5) {
+    if (frame.shadow_far_bias.z > 0.5) {
+      vec3 gdir = normalize(vec3(dot(dir, frame.env_basis_x.xyz), dot(dir, frame.env_basis_y.xyz),
+                                 dot(dir, frame.env_basis_z.xyz)));
+      return textureLod(environment, gdir, lod).rgb;
+    }
+    return drive_env(dir, lod);
+  }
   return textureLod(environment, dir, lod).rgb * frame.options.y;
 }
 
@@ -250,7 +282,20 @@ void main() {
     highlight = sun_col * pow(max(dot(n, h), 0.0), power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
   }
   vec3 colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
-  if (klass == kGlass) {
+  if ((flags & kFlagMirror) != 0u) {
+    if (frame.shadow_far_bias.w > 0.5) {
+      float rz = max(r.z, 0.2);
+      vec2 muv = vec2(0.5 - (r.x / rz) / (2.0 * 1.3773), 0.5 - (r.y / rz) / (2.0 * 0.3443));
+      if (muv.x >= 0.0 && muv.x <= 1.0 && muv.y >= 0.0 && muv.y <= 1.0) {
+        colour = texture(mirror_map, muv).rgb * 0.9;
+      } else {
+        colour = env(r, 0.0) * 0.85;
+      }
+    } else {
+      colour = env(r, 0.5) * 0.85;
+    }
+    alpha = 1.0;
+  } else if (klass == kGlass) {
     // Premultiplied: the tint over what is behind, plus the reflection.
     colour = base * alpha + specular_colour * (reflection + highlight) + emissive;
     alpha = clamp(alpha + fresnel * 0.5, 0.0, 1.0);

@@ -109,4 +109,12 @@ const char* xenos_format_name(uint32_t format);
 // Byte offset of block (x, y) in a Xenos 2D tiled surface `pitch` blocks wide.
 int32_t xenos_tiled_offset_2d(int32_t x, int32_t y, uint32_t pitch, uint32_t log2_block_bytes);
 
+// Decoded linear HDR cubemap from an XPR2 staticcarcubemap.xpr (SHOWROOM_LIGHTING.md).
+// Six faces (+X, -X, +Y, -Y, +Z, -Z), each size x size linear RGB floats.
+struct XprCubemap {
+  uint32_t size = 0;
+  std::array<std::vector<std::array<float, 3>>, 6> faces;
+};
+bool decode_xpr_cubemap(std::span<const uint8_t> data, XprCubemap& out, std::string* error);
+
 }  // namespace fh1

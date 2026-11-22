@@ -9,6 +9,7 @@
 #include "drive/lamps.h"
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
+#include "fh1data/xds.h"
 
 namespace {
 
@@ -174,6 +175,48 @@ void test_disc_lamp_points_if_available() {
   const auto beam = drive::resolve_headlight_beam(pts, false);
   check(beam.valid && beam.origin_body[2] > 1.0f && beam.origin_body[1] > 0.3f,
         "R34 projected headlight beam origin sits at front nose (+Z, +Y)");
+
+  // Verify showroom staticcarcubemap.xpr XPR2 untiling + LogLuv HDR decode (SHOWROOM_LIGHTING.md).
+  const auto xpr_path = game_root / "media/tracks/uiautoshow/staticcarcubemap.xpr";
+  if (std::filesystem::exists(xpr_path)) {
+    std::vector<uint8_t> raw;
+    if (FILE* f = std::fopen(xpr_path.string().c_str(), "rb")) {
+      std::fseek(f, 0, SEEK_END);
+      const long sz = std::ftell(f);
+      if (sz > 0) {
+        raw.resize(size_t(sz));
+        std::fseek(f, 0, SEEK_SET);
+        std::fread(raw.data(), 1, raw.size(), f);
+      }
+      std::fclose(f);
+    }
+    fh1::XprCubemap cube;
+    std::string xerr;
+    const bool ok = fh1::decode_xpr_cubemap(raw, cube, &xerr);
+    check(ok && cube.size == 512, "decode staticcarcubemap.xpr 512x512x6");
+    if (ok && cube.size == 512) {
+      double sum[3] = {0, 0, 0}, wsum = 0;
+      for (int face = 0; face < 6; ++face) {
+        for (uint32_t y = 0; y < cube.size; y += 4) {
+          const double v = (double(y) + 0.5) / cube.size * 2.0 - 1.0;
+          for (uint32_t x = 0; x < cube.size; x += 4) {
+            const double u = (double(x) + 0.5) / cube.size * 2.0 - 1.0;
+            const double d2 = 1.0 + u * u + v * v;
+            const double w = 1.0 / (d2 * std::sqrt(d2));
+            const auto& px = cube.faces[size_t(face)][size_t(y) * cube.size + x];
+            sum[0] += px[0] * w;
+            sum[1] += px[1] * w;
+            sum[2] += px[2] * w;
+            wsum += w;
+          }
+        }
+      }
+      const double mr = sum[0] / wsum, mg = sum[1] / wsum, mb = sum[2] / wsum;
+      // SHOWROOM_LIGHTING.md: solid-angle mean radiance ~(0.180, 0.166, 0.239).
+      check(std::fabs(mr - 0.180) < 0.025 && std::fabs(mg - 0.166) < 0.025 && std::fabs(mb - 0.239) < 0.025,
+            "staticcarcubemap.xpr solid-angle mean radiance matches SHOWROOM_LIGHTING.md");
+    }
+  }
 }
 
 }  // namespace

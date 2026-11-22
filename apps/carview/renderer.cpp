@@ -830,7 +830,8 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
 bool Renderer::ensure_shadow_map(std::string& error) {
   if (shadow_map_.view) return true;
   const uint32_t size = options_.shadow.size ? options_.shadow.size : 1;
-  if (!create_image(size, size, 1, kShadowFormat, VK_SAMPLE_COUNT_1_BIT,
+  const uint32_t width = size > 1 ? size * 2 : 1;
+  if (!create_image(width, size, 1, kShadowFormat, VK_SAMPLE_COUNT_1_BIT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
                     shadow_map_)) {
