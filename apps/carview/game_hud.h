@@ -164,6 +164,19 @@ struct CareerBoard {
   int packs_owned = 0, packs_total = 0;
 };
 
+// Active Outpost PR Stunt HUD (Speed Trap, Skill/Drift, or Photo Op).
+struct PrStuntHud {
+  bool active = false;
+  std::string kind_badge;   // e.g. "SPEED STUNT", "SKILL STUNT", "PHOTO OP"
+  std::string title;
+  std::string instruction;
+  std::string status_line;
+  double time_remaining_s = 0.0;
+  double progress = 0.0;    // 0..1
+  bool in_zone = false;
+  bool is_photo = false;
+};
+
 struct DriveHud {
   const CareerBoard* career = nullptr;
   const TitleScreenHud* title_screen = nullptr;
@@ -172,6 +185,7 @@ struct DriveHud {
   const CeremonyHud* ceremony = nullptr;
   const MapOverlayHud* map_overlay = nullptr;
   const GpsHud* gps = nullptr;
+  const PrStuntHud* pr_stunt = nullptr;
   std::vector<NameTagHud> name_tags;
   double kmh = 0, rpm = 0, redline_rpm = 7000;
   int gear = 1;

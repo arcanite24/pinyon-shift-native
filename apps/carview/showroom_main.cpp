@@ -79,6 +79,7 @@
 #include "fh1data/xds.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/outposts.h"
 #include "freeroam/road_discovery.h"
 #include "freeroam/skills.h"
 #include "race/career.h"
@@ -1569,6 +1570,9 @@ int run_drive(int argc, char** argv) {
   bool collectibles_on = true, reveal = false, treasure_map_setting = false;
   bool has_cli_gps = false;
   double cli_gps_x = 0.0, cli_gps_z = 0.0;
+  std::string cli_pr_stunt, cli_outpost_hub;
+  std::filesystem::path pause_map_png;
+  double cli_map_zoom = 4.5;
   double seed_distance = 0;
   std::filesystem::path map_png, career_png;  // --career-png: the career page's windows, then exit
   int gather_route = 0;  // --route: the placements' route (-1: every one)
@@ -1725,6 +1729,14 @@ int run_drive(int argc, char** argv) {
       cli_gps_x = std::atof(args[++i].c_str());
       cli_gps_z = std::atof(args[++i].c_str());
       has_cli_gps = true;
+    } else if (a == "--pr-stunt") {
+      cli_pr_stunt = next();
+    } else if (a == "--outpost-hub") {
+      cli_outpost_hub = next();
+    } else if (a == "--pause-map-png") {
+      pause_map_png = next();
+    } else if (a == "--map-zoom") {
+      cli_map_zoom = std::clamp(std::atof(next()), 1.0, 24.0);
     } else if (a == "--distance") {
       seed_distance = std::atof(next());
     } else if (a == "--map-png") {
@@ -2569,7 +2581,13 @@ int run_drive(int argc, char** argv) {
   traffic::GpsSolver gps_solver;
   traffic::GpsNavigator gps_nav(&gps_solver);
   freeroam::RoadDiscovery road_discovery;
+  freeroam::OutpostCatalog outposts;
+  freeroam::OutpostProgress outpost_progress;
+  freeroam::PrStuntSession pr_stunt_session;
+  bool have_outposts = false;
+  bool outposts_tried = false;
   bool cli_gps_applied = false;
+  bool cli_pr_stunt_applied = false;
   // The audio host (dedicated render thread, mixer, radio, Your Music)
   // outlives car changes so the radio stations keep playing.
   carview::AudioHost audio_host;
@@ -2580,6 +2598,8 @@ int run_drive(int argc, char** argv) {
       audio_cfg.radio_volume = float(saved.radio_volume);
     if (audio_cfg.satnav_on && !saved.satnav_enabled) audio_cfg.satnav_on = false;
     if (saved.treasure_map) treasure_map_setting = true;
+    outpost_progress.discovered_outposts.insert(saved.discovered_outposts.begin(), saved.discovered_outposts.end());
+    outpost_progress.completed_pr_stunts.insert(saved.completed_pr_stunts.begin(), saved.completed_pr_stunts.end());
   }
   const std::filesystem::path user_music_dir =
       !state_root.empty() ? (state_root / "music")
@@ -2954,11 +2974,36 @@ int run_drive(int argc, char** argv) {
                 }
               }
             }
+            if (!outposts_tried) {
+              outposts_tried = true;
+              std::string owhy;
+              if (freeroam::load_outposts(game_root, outposts, &owhy)) {
+                have_outposts = true;
+                std::printf("outposts: %zu outposts (%d discovered), %zu PR stunts (%d completed)\n",
+                            outposts.outposts.size(), outpost_progress.discovered_count(outposts),
+                            outposts.stunts.size(), outpost_progress.completed_stunt_count(outposts));
+              } else {
+                std::fprintf(stderr, "carview: note: no outposts: %s\n", owhy.c_str());
+              }
+            }
             if (has_cli_gps && !cli_gps_applied && gps_solver.ready()) {
               cli_gps_applied = true;
               const double sx0 = have_spawn ? spawn[0] : (near_given || render_ground ? near_x : world::kSpawnX);
               const double sz0 = have_spawn ? spawn[2] : (near_given || render_ground ? near_z : world::kSpawnZ);
               gps_nav.set_destination(cli_gps_x, cli_gps_z, traffic::GpsDestKind::kGeneric, "GPS WAYPOINT", sx0, sz0);
+            }
+            if (!cli_pr_stunt.empty() && !cli_pr_stunt_applied && have_outposts) {
+              cli_pr_stunt_applied = true;
+              if (const auto* st = outposts.find_stunt(cli_pr_stunt)) {
+                const int64_t base_pts = skill_tracker ? int64_t(std::llround(skill_tracker->popularity_points())) : 0;
+                pr_stunt_session.start(*st, base_pts);
+                if (gps_solver.ready()) {
+                  const double sx0 = have_spawn ? spawn[0] : (near_given || render_ground ? near_x : world::kSpawnX);
+                  const double sz0 = have_spawn ? spawn[2] : (near_given || render_ground ? near_z : world::kSpawnZ);
+                  gps_nav.set_destination(st->target_pos.x, st->target_pos.z, traffic::GpsDestKind::kGeneric,
+                                          st->title, sx0, sz0);
+                }
+              }
             }
           }
           // The radio and Your Music: initialized once, streamed off-thread.
@@ -3579,6 +3624,29 @@ int run_drive(int argc, char** argv) {
         if (play) audio_host.trigger_satnav(cue);
       };
 
+      // Helper to launch an Outpost PR Stunt and route GPS to its target.
+      bool pr_stunt_photo_pressed = false;
+      bool pr_stunt_has_prev = false;
+      double pr_stunt_prev_x = 0.0, pr_stunt_prev_z = 0.0;
+      auto start_pr_stunt = [&](const freeroam::PrStunt& st) {
+        int64_t base_pts = 0;
+        if (skill_tracker) {
+          const auto sh = skill_tracker->hud();
+          base_pts = int64_t(std::llround(sh.popularity_points)) + int64_t(sh.chain_points) * int64_t(sh.multiplier);
+        }
+        pr_stunt_session.start(st, base_pts);
+        pr_stunt_has_prev = false;
+        pr_stunt_photo_pressed = false;
+        const drive::Vec3 at = vehicle.position();
+        if (gps_solver.ready()) {
+          fire_satnav_event(gps_nav.set_destination(st.target_pos.x, st.target_pos.z, traffic::GpsDestKind::kGeneric,
+                                                    st.title, at.x, at.z));
+        }
+        popup = {freeroam::pr_stunt_kind_name(st.kind), st.title, vehicle.time(), -1,
+                 carview::ui::rgba(255, 146, 3)};
+        audio_host.trigger_ui(audio::UiCue::kSkillAward);
+      };
+
       // One free-roam step: the rules, then their notices and the props
       // they hide.
       auto free_roam_step = [&]() -> bool {
@@ -3599,6 +3667,63 @@ int run_drive(int argc, char** argv) {
                        carview::ui::rgba(74, 238, 97)};
               audio_host.trigger_ui(audio::UiCue::kSkillAward);
               save_due = true;
+            }
+          }
+          if (have_outposts) {
+            const int disc_idx = outpost_progress.check_discovery(outposts, at.x, at.z);
+            if (disc_idx >= 0 && size_t(disc_idx) < outposts.outposts.size()) {
+              const auto& op = outposts.outposts[size_t(disc_idx)];
+              if (skill_tracker) skill_tracker->add_popularity(500.0);
+              const int dc = outpost_progress.discovered_count(outposts);
+              popup = {"HORIZON OUTPOST DISCOVERED",
+                       op.display_name + "  •  FAST TRAVEL UNLOCKED (" + std::to_string(dc) + "/" +
+                           std::to_string(outposts.outposts.size()) + ")",
+                       vehicle.time(), double(dc) / double(std::max<size_t>(1, outposts.outposts.size())),
+                       carview::ui::rgba(255, 146, 3)};
+              audio_host.trigger_ui(audio::UiCue::kSkillAward);
+              save_due = true;
+            }
+            if (pr_stunt_session.active()) {
+              freeroam::PrStuntUpdate psu;
+              psu.car_x = at.x;
+              psu.car_z = at.z;
+              psu.prev_x = pr_stunt_has_prev ? pr_stunt_prev_x : at.x;
+              psu.prev_z = pr_stunt_has_prev ? pr_stunt_prev_z : at.z;
+              psu.speed_mph = std::fabs(vehicle.speed()) * 2.2369363;
+              if (skill_tracker) {
+                const auto sh = skill_tracker->hud();
+                psu.total_skill_points =
+                    int64_t(std::llround(sh.popularity_points)) + int64_t(sh.chain_points) * int64_t(sh.multiplier);
+              }
+              psu.photo_pressed = pr_stunt_photo_pressed;
+              psu.dt = drive::Vehicle::kStep;
+              pr_stunt_photo_pressed = false;
+              pr_stunt_prev_x = at.x;
+              pr_stunt_prev_z = at.z;
+              pr_stunt_has_prev = true;
+              const auto st_state = pr_stunt_session.update(psu);
+              if (st_state == freeroam::PrStuntState::kSucceeded) {
+                const auto& st = pr_stunt_session.stunt();
+                const bool first_time = outpost_progress.complete_stunt(st.id);
+                const int64_t cr = first_time ? st.reward_credits : st.reward_credits / 4;
+                const int64_t pop = first_time ? st.reward_popularity : st.reward_popularity / 4;
+                career.credits += cr;
+                career.total_winnings += cr;
+                if (skill_tracker) skill_tracker->add_popularity(double(pop));
+                popup = {"PR STUNT COMPLETE!",
+                         st.title + "   +" + carview::thousands(cr) + " Cr   +" + carview::thousands(pop) + " POP",
+                         vehicle.time(),
+                         double(outpost_progress.completed_stunt_count(outposts)) /
+                             double(std::max<size_t>(1, outposts.stunts.size())),
+                         carview::ui::rgba(74, 238, 97)};
+                audio_host.trigger_ui(audio::UiCue::kSkillAward);
+                gps_nav.clear();
+                save_due = true;
+              } else if (st_state == freeroam::PrStuntState::kFailed) {
+                popup = {"PR STUNT FAILED", "TIME EXPIRED  •  RETRY AT THE HORIZON OUTPOST", vehicle.time(), -1,
+                         carview::ui::rgba(255, 72, 72)};
+                gps_nav.clear();
+              }
             }
           }
         }
@@ -4207,6 +4332,10 @@ int run_drive(int argc, char** argv) {
           s.road_discovery_nodes = saved.road_discovery_nodes;
           s.road_discovery_words = saved.road_discovery_words;
         }
+        s.discovered_outposts.assign(outpost_progress.discovered_outposts.begin(),
+                                     outpost_progress.discovered_outposts.end());
+        s.completed_pr_stunts.assign(outpost_progress.completed_pr_stunts.begin(),
+                                     outpost_progress.completed_pr_stunts.end());
         if (have_saved) s.carry_from(saved);
         s.club = saved.club;
         s.has_controls = true;
@@ -4368,6 +4497,107 @@ int run_drive(int argc, char** argv) {
       std::array<float, 4> mm_uv{};
       float mm_x = 0, mm_y = 0, mm_size = 0;
       double points_at = -1;        // the points page's start (the drive clock)
+      // Regional Horizon Outpost Hub menu (PR Stunts, Fast Travel, Change Car, Nearby Events).
+      struct OutpostHubItem {
+        enum Kind { kPrStunt, kGarage, kNearbyEvents, kFastTravelFestival, kFastTravelOutpost } kind = kPrStunt;
+        std::string label;
+        std::string ref_id;
+        std::string detail_title;
+        std::vector<std::string> detail_lines;
+        double dest_x = 0.0, dest_z = 0.0;
+      };
+      bool outpost_hub_open = false;
+      std::string outpost_hub_id;
+      size_t outpost_hub_pick = 0;
+      std::vector<OutpostHubItem> outpost_hub_items;
+      auto rebuild_outpost_hub = [&]() {
+        outpost_hub_items.clear();
+        const freeroam::Outpost* op = have_outposts ? outposts.find_outpost(outpost_hub_id) : nullptr;
+        if (!op) return;
+        const drive::Vec3 at = vehicle.position();
+        for (const freeroam::PrStunt* st : outposts.stunts_for_outpost(op->id)) {
+          const bool done = outpost_progress.is_stunt_completed(st->id);
+          OutpostHubItem item;
+          item.kind = OutpostHubItem::kPrStunt;
+          item.ref_id = st->id;
+          item.label = std::string(freeroam::pr_stunt_kind_name(st->kind)) + ": " + st->title + (done ? "  [DONE]" : "");
+          item.detail_title = st->title;
+          item.detail_lines.push_back(std::string("TYPE: ") + freeroam::pr_stunt_kind_name(st->kind));
+          item.detail_lines.push_back(st->instruction);
+          if (st->kind == freeroam::PrStuntKind::kSpeed) {
+            item.detail_lines.push_back("TARGET SPEED: " + std::to_string(int(std::lround(st->target_mph))) + " MPH");
+          } else if (st->kind == freeroam::PrStuntKind::kSkill) {
+            item.detail_lines.push_back("TARGET SCORE: " + carview::thousands(st->target_points) + " SKILL PTS");
+          } else {
+            item.detail_lines.push_back("OBJECTIVE: REACH LANDMARK & SNAP PHOTO [P]");
+          }
+          if (st->time_limit_s > 0.0) {
+            item.detail_lines.push_back("TIME LIMIT: " + std::to_string(int(std::lround(st->time_limit_s))) + " SEC");
+          }
+          item.detail_lines.push_back("REWARD: " + carview::thousands(st->reward_credits) + " Cr   +   " +
+                                      carview::thousands(st->reward_popularity) + " POPULARITY");
+          item.detail_lines.push_back(done ? "STATUS: COMPLETED (REPLAYABLE)" : "STATUS: NEW PR STUNT");
+          outpost_hub_items.push_back(std::move(item));
+        }
+        {
+          OutpostHubItem item;
+          item.kind = OutpostHubItem::kGarage;
+          item.label = "CHANGE CAR / GARAGE";
+          item.detail_title = "HORIZON GARAGE";
+          item.detail_lines = {"SWAP TO ANY OWNED CAR AT THIS OUTPOST",
+                               "CARS AVAILABLE: " + std::to_string(baked_cars.size())};
+          outpost_hub_items.push_back(std::move(item));
+        }
+        {
+          OutpostHubItem item;
+          item.kind = OutpostHubItem::kNearbyEvents;
+          item.label = "NEARBY FESTIVAL EVENTS";
+          item.detail_title = "EVENTS & RACE CENTRAL";
+          item.detail_lines = {"BROWSE UNLOCKED COLORADO EVENTS AND", "STREET RACES FROM THIS REGIONAL OUTPOST"};
+          outpost_hub_items.push_back(std::move(item));
+        }
+        {
+          OutpostHubItem item;
+          item.kind = OutpostHubItem::kFastTravelFestival;
+          item.label = "FAST TRAVEL: HORIZON FESTIVAL";
+          item.dest_x = world::kSpawnX;
+          item.dest_z = world::kSpawnZ;
+          const double dist_km = std::hypot(item.dest_x - at.x, item.dest_z - at.z) / 1000.0;
+          char db[64];
+          std::snprintf(db, sizeof db, "DISTANCE: %.1f KM   •   FREE FAST TRAVEL", dist_km);
+          item.detail_title = "HORIZON FESTIVAL";
+          item.detail_lines = {"RETURN TO RACE CENTRAL, AUTOSHOW,", "DAK'S GARAGE AND THE PAINT SHOP", db};
+          outpost_hub_items.push_back(std::move(item));
+        }
+        for (const auto& other : outposts.outposts) {
+          if (other.id == op->id) continue;
+          if (!outpost_progress.is_outpost_discovered(other.id)) continue;
+          OutpostHubItem item;
+          item.kind = OutpostHubItem::kFastTravelOutpost;
+          item.ref_id = other.id;
+          item.label = "FAST TRAVEL: " + other.display_name;
+          item.dest_x = other.spawn.x;
+          item.dest_z = other.spawn.z;
+          const double dist_km = std::hypot(item.dest_x - at.x, item.dest_z - at.z) / 1000.0;
+          char db[64];
+          std::snprintf(db, sizeof db, "DISTANCE: %.1f KM   •   UNLOCKED", dist_km);
+          item.detail_title = other.display_name;
+          item.detail_lines = {"FAST TRAVEL DIRECTLY TO THIS REGIONAL", "HORIZON OUTPOST", db};
+          outpost_hub_items.push_back(std::move(item));
+        }
+        if (outpost_hub_pick >= outpost_hub_items.size()) outpost_hub_pick = 0;
+      };
+      auto open_outpost_hub = [&](const std::string& id) {
+        if (!have_outposts) return;
+        const freeroam::Outpost* op = outposts.find_outpost(id);
+        if (!op) return;
+        outpost_progress.discover_outpost(op->id);
+        outpost_hub_id = op->id;
+        outpost_hub_pick = 0;
+        rebuild_outpost_hub();
+        outpost_hub_open = true;
+      };
+      if (!cli_outpost_hub.empty() && have_outposts) open_outpost_hub(cli_outpost_hub);
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
@@ -4375,6 +4605,17 @@ int run_drive(int argc, char** argv) {
         std::vector<std::string> detail_lines;
         if (menu) menu->fill(st);
         if (events_page.is_open()) events_page.fill(st.menu_title, st.menu, st.menu_selected, detail_title, detail_lines);
+        if (outpost_hub_open) {
+          const freeroam::Outpost* op = have_outposts ? outposts.find_outpost(outpost_hub_id) : nullptr;
+          st.menu_title = (op ? op->display_name : std::string("HORIZON OUTPOST")) + ": ENTER SELECT   ESC BACK";
+          st.menu.clear();
+          for (const auto& item : outpost_hub_items) st.menu.push_back(item.label);
+          st.menu_selected = outpost_hub_items.empty() ? 0 : int(std::min(outpost_hub_pick, outpost_hub_items.size() - 1));
+          if (!outpost_hub_items.empty()) {
+            detail_title = outpost_hub_items[size_t(st.menu_selected)].detail_title;
+            detail_lines = outpost_hub_items[size_t(st.menu_selected)].detail_lines;
+          }
+        }
         if (garage_open) {
           st.menu_title = "GARAGE (" + std::to_string(baked_cars.size()) + " CARS): ENTER DRIVE   ESC BACK";
           st.menu.clear();
@@ -4489,6 +4730,20 @@ int run_drive(int argc, char** argv) {
           gps_hud.dist_to_dest_m = gg.dist_to_dest_m;
           d.gps = &gps_hud;
         }
+        carview::PrStuntHud pr_hud;
+        if (!race && pr_stunt_session.active()) {
+          const auto& pst = pr_stunt_session.stunt();
+          pr_hud.active = true;
+          pr_hud.kind_badge = freeroam::pr_stunt_kind_name(pst.kind);
+          pr_hud.title = pst.title;
+          pr_hud.instruction = pst.instruction;
+          pr_hud.status_line = pr_stunt_session.status_line();
+          pr_hud.time_remaining_s = pr_stunt_session.time_remaining_s();
+          pr_hud.progress = pr_stunt_session.progress_fraction();
+          pr_hud.in_zone = pr_stunt_session.in_target_zone();
+          pr_hud.is_photo = pst.kind == freeroam::PrStuntKind::kPhoto;
+          d.pr_stunt = &pr_hud;
+        }
         d.name_tags = name_tags;
         carview::RaceHud race_hud;
         const bool race_line = race && banner == race_banner();
@@ -4577,6 +4832,12 @@ int run_drive(int argc, char** argv) {
           if (road_discovery.ready()) {
             board.roads = road_discovery.discovered_count();
             board.roads_total = road_discovery.total_roads();
+          }
+          if (have_outposts) {
+            board.outposts = outpost_progress.discovered_count(outposts);
+            board.outposts_total = int(outposts.outposts.size());
+            board.pr_stunts = outpost_progress.completed_stunt_count(outposts);
+            board.pr_stunts_total = int(outposts.stunts.size());
           }
           d.career = &board;
         }
@@ -4725,8 +4986,44 @@ int run_drive(int argc, char** argv) {
             mm.x = ev.trigger_pos[0], mm.z = ev.trigger_pos[2];
             sc.markers.push_back(std::move(mm));
           }
-          sc.selected_marker = map_selected_marker;
           }
+          if (have_outposts) {
+            for (const auto& op : outposts.outposts) {
+              MapMarker mm;
+              mm.kind = MapMarker::kOutpost;
+              mm.icon_tag = "gas_station";
+              mm.id = op.id;
+              mm.title = op.display_name;
+              mm.discovered = outpost_progress.is_outpost_discovered(op.id);
+              int done_st = 0;
+              for (const auto& mid : op.mission_ids) done_st += outpost_progress.is_stunt_completed(mid);
+              mm.completed = !op.mission_ids.empty() && done_st == int(op.mission_ids.size());
+              mm.is_new = !mm.discovered;
+              mm.subtitle = mm.discovered
+                                ? ("HORIZON OUTPOST  •  PR STUNTS " + std::to_string(done_st) + "/" +
+                                   std::to_string(op.mission_ids.size()) + "  •  FAST TRAVEL")
+                                : "HORIZON OUTPOST  •  DRIVE HERE TO UNLOCK FAST TRAVEL";
+              mm.x = op.trigger.x;
+              mm.z = op.trigger.z;
+              mm.site_or_hub = op.index;
+              sc.markers.push_back(std::move(mm));
+            }
+            for (const auto& st : outposts.stunts) {
+              MapMarker mm;
+              mm.kind = MapMarker::kPrStunt;
+              mm.icon_tag = st.kind == freeroam::PrStuntKind::kSpeed ? "speedtrap" : "exhibition";
+              mm.id = st.id;
+              mm.title = st.title;
+              mm.completed = outpost_progress.is_stunt_completed(st.id);
+              mm.is_new = !mm.completed;
+              mm.subtitle = std::string(freeroam::pr_stunt_kind_name(st.kind)) + "  •  " +
+                            carview::thousands(st.reward_credits) + " Cr";
+              mm.x = st.target_pos.x;
+              mm.z = st.target_pos.z;
+              sc.markers.push_back(std::move(mm));
+            }
+          }
+          sc.selected_marker = map_selected_marker;
         }
         return sc;
       };
@@ -5401,7 +5698,11 @@ int run_drive(int argc, char** argv) {
             map_overlay.title = m.title;
             map_overlay.subtitle = m.subtitle;
             map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
-            map_overlay.action_hint = m.kind == MapMarker::kEvent ? "ENTER EVENT" : "ENTER";
+            if (m.kind == MapMarker::kEvent) map_overlay.action_hint = "ENTER EVENT";
+            else if (m.kind == MapMarker::kOutpost)
+              map_overlay.action_hint = m.discovered ? "FAST TRAVEL / HUB" : "SET GPS ROUTE";
+            else if (m.kind == MapMarker::kPrStunt) map_overlay.action_hint = "START PR STUNT";
+            else map_overlay.action_hint = "ENTER";
           } else {
             map_overlay.title = "COLORADO MAP";
             map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
@@ -5556,6 +5857,9 @@ int run_drive(int argc, char** argv) {
             return true;
           } else if (active_trigger.kind == carview::WorldTrigger::kEvent && active_trigger.event) {
             try_enter_event(*active_trigger.event);
+            return true;
+          } else if (active_trigger.kind == carview::WorldTrigger::kOutpost && active_trigger.outpost) {
+            open_outpost_hub(active_trigger.outpost->id);
             return true;
           }
           return false;
@@ -5715,6 +6019,37 @@ int run_drive(int argc, char** argv) {
                     else if (kind == race::FestivalSite::kPaintShop) open_paint();
                   } else if (m.kind == MapMarker::kStreetHub) {
                     open_events_browser(m.site_or_hub);
+                  } else if (m.kind == MapMarker::kOutpost && have_outposts) {
+                    if (const auto* op = outposts.find_outpost(m.id)) {
+                      const drive::Vec3 at = vehicle.position();
+                      if (std::hypot(op->trigger.x - at.x, op->trigger.z - at.z) <= std::max(180.0, op->discovery_radius)) {
+                        open_outpost_hub(op->id);
+                      } else if (outpost_progress.is_outpost_discovered(op->id)) {
+                        if (race != nullptr) {
+                          notice = "QUIT RACE TO FAST TRAVEL";
+                          notice_until = vehicle.time() + 3.0;
+                        } else {
+                          spawn[0] = op->spawn.x;
+                          spawn[1] = 0.0;
+                          spawn[2] = op->spawn.z;
+                          spawn[3] = std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]) * 57.2957795;
+                          have_spawn = true;
+                          fast_travel = true;
+                          next_car = car;
+                          running = false;
+                        }
+                      } else if (gps_solver.ready()) {
+                        fire_satnav_event(gps_nav.set_destination(op->trigger.x, op->trigger.z,
+                                                                  traffic::GpsDestKind::kOutpost, op->display_name,
+                                                                  at.x, at.z));
+                        notice = "DRIVE TO OUTPOST TO UNLOCK FAST TRAVEL";
+                        notice_until = vehicle.time() + 3.5;
+                      }
+                    }
+                  } else if (m.kind == MapMarker::kPrStunt && have_outposts) {
+                    if (const auto* st = outposts.find_stunt(m.id)) {
+                      if (race == nullptr) start_pr_stunt(*st);
+                    }
                   }
                   return;
                 }
@@ -5747,6 +6082,8 @@ int run_drive(int argc, char** argv) {
                                                     : traffic::GpsDestKind::kFestivalRace;
                   } else if (m.kind == MapMarker::kStreetHub) {
                     dk = traffic::GpsDestKind::kStreetRace;
+                  } else if (m.kind == MapMarker::kOutpost) {
+                    dk = traffic::GpsDestKind::kOutpost;
                   } else if (m.kind == MapMarker::kFestivalSite) {
                     const auto sk = race::FestivalSite::Kind(m.site_or_hub);
                     if (sk == race::FestivalSite::kRaceCentral) dk = traffic::GpsDestKind::kRaceCentral;
@@ -5876,6 +6213,58 @@ int run_drive(int argc, char** argv) {
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)
                   events_page.switch_tab(1);
                 else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_event();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // 5b. Regional Horizon Outpost Hub menu.
+            if (outpost_hub_open) {
+              const size_t n = outpost_hub_items.size();
+              auto confirm_outpost_item = [&]() {
+                if (!n || outpost_hub_pick >= n) return;
+                const auto item = outpost_hub_items[outpost_hub_pick];
+                outpost_hub_open = false;
+                switch (item.kind) {
+                  case OutpostHubItem::kPrStunt:
+                    if (const auto* st = outposts.find_stunt(item.ref_id)) start_pr_stunt(*st);
+                    break;
+                  case OutpostHubItem::kGarage:
+                    garage_open = true;
+                    break;
+                  case OutpostHubItem::kNearbyEvents:
+                    open_events_browser(0);
+                    break;
+                  case OutpostHubItem::kFastTravelFestival:
+                  case OutpostHubItem::kFastTravelOutpost:
+                    if (race != nullptr) {
+                      notice = "QUIT RACE TO FAST TRAVEL";
+                      notice_until = vehicle.time() + 3.0;
+                    } else {
+                      spawn[0] = item.dest_x;
+                      spawn[1] = 0.0;
+                      spawn[2] = item.dest_z;
+                      spawn[3] = 0.0;
+                      have_spawn = true;
+                      fast_travel = true;
+                      next_car = car;
+                      running = false;
+                    }
+                    break;
+                }
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) outpost_hub_open = false;
+                else if (n && (k == SDLK_UP || k == SDLK_W)) outpost_hub_pick = (outpost_hub_pick + n - 1) % n;
+                else if (n && (k == SDLK_DOWN || k == SDLK_S)) outpost_hub_pick = (outpost_hub_pick + 1) % n;
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat)
+                  confirm_outpost_item();
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) outpost_hub_open = false;
+                else if (n && b == SDL_GAMEPAD_BUTTON_DPAD_UP) outpost_hub_pick = (outpost_hub_pick + n - 1) % n;
+                else if (n && b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) outpost_hub_pick = (outpost_hub_pick + 1) % n;
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_outpost_item();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -6276,7 +6665,15 @@ int run_drive(int argc, char** argv) {
               if (e.key.key == SDLK_ESCAPE) {
                 if (on_banner && results_table) results_table = false;  // B: back to the banner
                 else if (picking) picking = false;
-                else open_menu();
+                else if (!race && pr_stunt_session.active()) {
+                  pr_stunt_session.cancel();
+                  gps_nav.clear();
+                  notice = "PR STUNT CANCELLED";
+                  notice_until = vehicle.time() + 2.5;
+                } else open_menu();
+              }
+              if (!race && pr_stunt_session.active() && e.key.key == SDLK_P) {
+                pr_stunt_photo_pressed = true;
               }
               if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
               else if (!on_banner && e.key.key == SDLK_BACKSPACE) try_trigger_rewind();
@@ -6481,8 +6878,9 @@ int run_drive(int argc, char** argv) {
           const double frame_dt = std::min(0.25, double(now - last) * 1e-9);
           title_orbit_time += frame_dt;
           const bool menu_paused = show_title || ceremony.active || grid_menu_open || menu.open || map_open ||
-                                   events_page.is_open() || garage_open || shop.is_open() || autoshow.is_open() ||
-                                   career_page.is_open() || settings_page.is_open() || paint_open || club_open;
+                                   events_page.is_open() || outpost_hub_open || garage_open || shop.is_open() ||
+                                   autoshow.is_open() || career_page.is_open() || settings_page.is_open() ||
+                                   paint_open || club_open;
           const bool sim_paused = menu_paused || rewind_buf.active();
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();
@@ -6797,13 +7195,44 @@ int run_drive(int argc, char** argv) {
           // Update projected Free-Roam World Event / Festival Marker.
           active_trigger = carview::WorldTrigger{};
           world_marker = carview::WorldMarkerHud{};
-          if (!race && !show_title && have_career_catalog && w > 0 && h > 0) {
+          if (!race && !show_title && (have_career_catalog || have_outposts) && w > 0 && h > 0) {
             const drive::Vec3 at = vehicle.position();
-            active_trigger = carview::select_world_trigger(career_catalog, career, collected_wristband,
-                                                           current_pop_rank(), at.x, at.z);
+            if (have_career_catalog) {
+              active_trigger = carview::select_world_trigger(career_catalog, career, collected_wristband,
+                                                             current_pop_rank(), at.x, at.z);
+            }
+            if (have_outposts) {
+              for (const auto& op : outposts.outposts) {
+                const double d = std::hypot(op.trigger.x - at.x, op.trigger.z - at.z);
+                const double max_d = std::max(160.0, op.discovery_radius);
+                if (d > max_d) continue;
+                const bool in_r = d <= op.trigger_radius;
+                const bool better = active_trigger.kind == carview::WorldTrigger::kNone ||
+                                    (in_r && !active_trigger.in_range) ||
+                                    (in_r == active_trigger.in_range && d < active_trigger.dist);
+                if (better) {
+                  active_trigger = carview::WorldTrigger{};
+                  active_trigger.kind = carview::WorldTrigger::kOutpost;
+                  active_trigger.outpost = &op;
+                  active_trigger.in_range = in_r;
+                  active_trigger.dist = d;
+                }
+              }
+            }
             if (active_trigger.kind != carview::WorldTrigger::kNone) {
               std::array<double, 3> p{};
-              if (active_trigger.site) {
+              if (active_trigger.kind == carview::WorldTrigger::kOutpost && active_trigger.outpost) {
+                const auto& op = *active_trigger.outpost;
+                p = {op.trigger.x, op.trigger.y, op.trigger.z};
+                world_marker.is_festival = true;
+                world_marker.title = op.display_name;
+                int done_st = 0;
+                for (const auto& mid : op.mission_ids) done_st += outpost_progress.is_stunt_completed(mid);
+                world_marker.subtitle = "HORIZON OUTPOST  •  PR STUNTS " + std::to_string(done_st) + "/" +
+                                        std::to_string(op.mission_ids.size());
+                world_marker.prompt = "ENTER OUTPOST HUB";
+                world_marker.badge = outpost_progress.is_outpost_discovered(op.id) ? "HUB" : "NEW";
+              } else if (active_trigger.site) {
                 p = active_trigger.site->pos;
                 world_marker.is_festival = true;
                 world_marker.title = active_trigger.site->name;
@@ -6944,6 +7373,63 @@ int run_drive(int argc, char** argv) {
           if (!ok) status = 1;
           std::printf("maps: %s, %s, %s\n", name("_map.png").c_str(), name("_map_near.png").c_str(),
                       name("_minimap.png").c_str());
+        }
+      }
+      if (!pause_map_png.empty() && status == 0) {
+        if (!map_view.ready()) {
+          std::fprintf(stderr, "carview: no map to write\n");
+        } else {
+          const int m = std::max(16, int(height) / 30);
+          MapScene sc = map_scene();
+          // Select an Outpost marker near the viewport centre if available so the card shows real Outpost metadata.
+          int best_idx = -1;
+          double best_d = 1e18;
+          for (size_t mi = 0; mi < sc.markers.size(); ++mi) {
+            if (sc.markers[mi].kind == MapMarker::kOutpost) {
+              const double d = std::hypot(sc.markers[mi].x - sc.x, sc.markers[mi].z - sc.z);
+              if (d < best_d) best_d = d, best_idx = int(mi);
+            }
+          }
+          const double cx = best_idx >= 0 ? 0.5 * (sc.x + sc.markers[size_t(best_idx)].x) : sc.x;
+          const double cz = best_idx >= 0 ? 0.5 * (sc.z + sc.markers[size_t(best_idx)].z) : sc.z;
+          sc.selected_marker = best_idx;
+          HudImage img = map_view.pause_map(sc, int(width) - 2 * m, int(height) - 2 * m, cli_map_zoom, cx, cz);
+          for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
+          mm_size = 0;
+          renderer.set_overlay(std::move(img.rgba), img.width, img.height, m, m, 2);
+          map_overlay = carview::MapOverlayHud{};
+          map_overlay.active = true;
+          map_overlay.active_filter = 0;
+          for (int fi = 0; fi < int(MapFilter::kCount); ++fi)
+            map_overlay.filter_tabs.push_back(map_filter_name(MapFilter(fi)));
+          map_overlay.roads_discovered = road_discovery.ready() ? road_discovery.discovered_count() : 0;
+          map_overlay.roads_total = road_discovery.ready() ? road_discovery.total_roads() : 216;
+          map_overlay.zoom = cli_map_zoom;
+          map_overlay.treasure_map = reveal || treasure_map_setting;
+          map_overlay.gps_active = gps_nav.active();
+          map_overlay.gps_hint = gps_nav.active() ? "SET / CLEAR GPS (G)" : "SET GPS ROUTE (G)";
+          if (best_idx >= 0) {
+            const auto& mk = sc.markers[size_t(best_idx)];
+            map_overlay.title = mk.title;
+            map_overlay.subtitle = mk.subtitle;
+            map_overlay.distance_m = std::hypot(mk.x - sc.x, mk.z - sc.z);
+            map_overlay.action_hint = mk.discovered ? "FAST TRAVEL / HUB" : "SET GPS ROUTE";
+          } else {
+            map_overlay.title = "COLORADO MAP";
+            map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR OUTPOST";
+            map_overlay.action_hint = "FAST TRAVEL HERE";
+          }
+          set_hud(int(width), int(height), "");
+          std::vector<uint8_t> rgba;
+          if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+            std::fprintf(stderr, "carview: pause-map-png: %s\n", error.c_str());
+            status = 1;
+          } else {
+            for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+            if (!write_png(pause_map_png.string(), width, height, 4, rgba.data())) status = 1;
+            else std::printf("pause map png: %s\n", pause_map_png.string().c_str());
+          }
+          map_overlay.active = false;
         }
       }
       if (free_roam)

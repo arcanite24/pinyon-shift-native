@@ -168,6 +168,10 @@ target_include_directories(road_discovery_tests PRIVATE ../apps/carview)
 target_link_libraries(road_discovery_tests PRIVATE shift_freeroam shift_traffic shift_profile shift_drive fh1data shift_audio)
 add_test(NAME road_discovery_tests COMMAND road_discovery_tests)
 
+add_executable(outpost_tests outpost_tests.cpp)
+target_link_libraries(outpost_tests PRIVATE shift_freeroam shift_drive fh1data shift_audio)
+add_test(NAME outpost_tests COMMAND outpost_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)

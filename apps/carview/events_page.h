@@ -9,6 +9,10 @@
 #include "race/career.h"
 #include "race/rewards.h"
 
+namespace freeroam {
+struct Outpost;
+}
+
 namespace carview {
 
 class EventsPage {
@@ -61,12 +65,13 @@ class EventsPage {
 };
 
 struct WorldTrigger {
-  enum Kind { kNone, kEvent, kStreetHub, kFestivalSite } kind = kNone;
+  enum Kind { kNone, kEvent, kStreetHub, kFestivalSite, kOutpost } kind = kNone;
   const race::CareerEvent* event = nullptr;
   const race::StreetHub* hub = nullptr;
   const race::FestivalSite* site = nullptr;
   bool in_range = false;
   double dist = 1e9;
+  const freeroam::Outpost* outpost = nullptr;
 };
 
 // Selects the nearest unlocked world trigger within `max_dist` metres,

@@ -119,6 +119,7 @@ class SkillTracker {
 
   SkillHudState hud() const;
   double popularity_points() const { return popularity_; }
+  void add_popularity(double pts) { if (pts > 0.0) popularity_ += pts; }
   int popularity_rank() const { return data_.rank_for_points(popularity_); }
   int fame_rewards_claimed() const { return fame_claimed_; }
   int64_t max_skills_score() const { return max_score_; }

@@ -1,6 +1,7 @@
 add_library(shift_freeroam STATIC
   src/club.cpp
   src/collectibles.cpp
+  src/outposts.cpp
   src/road_discovery.cpp
   src/skills.cpp)
 target_include_directories(shift_freeroam PUBLIC include)

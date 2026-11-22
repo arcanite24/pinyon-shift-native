@@ -1530,6 +1530,62 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g) {
   }
 }
 
+// (j3) Active Outpost PR Stunt HUD (top-center objective card + timer + progress bar).
+void pr_stunt_hud(ui::List& l, const PrStuntHud& ps, const Layout& g) {
+  if (!ps.active) return;
+  const float s = g.s;
+  const float cw = 460 * s;
+  const float x0 = 0.5f * (g.w - cw), x1 = x0 + cw;
+  const float y0 = g.T(26), y1 = y0 + 98 * s;
+  const uint32_t kStuntAccent = ps.in_zone ? rgba(74, 238, 97) : rgba(255, 146, 3);
+  panel(l, x0, y0, x1, y1, s, rgba(10, 13, 18, 226));
+  l.rect(x0, y0, x1, y0 + 4 * s, kStuntAccent, 2 * s);
+
+  // Kind badge (top-left) + countdown clock (top-right).
+  const std::string badge = ps.kind_badge.empty() ? std::string("PR STUNT") : ps.kind_badge;
+  TextStyle bs = font(ui::Font::kB, 11 * s, kDark);
+  const float bw = ui::List::measure(badge, bs) + 16 * s;
+  l.rect(x0 + 14 * s, y0 + 11 * s, x0 + 14 * s + bw, y0 + 29 * s, kStuntAccent, 3 * s);
+  l.text(x0 + 22 * s, y0 + 14 * s, badge, bs);
+
+  const float title_x = x0 + 24 * s + bw;
+  const float timer_w = 88 * s;
+  TextStyle ts = font(ui::Font::kE, 17 * s, kText);
+  fit(ps.title, ts, x1 - title_x - timer_w - 16 * s, 10 * s);
+  l.text(title_x, y0 + 10 * s, ps.title, ts);
+
+  if (ps.time_remaining_s > 0.0) {
+    const bool urgent = ps.time_remaining_s < 15.0;
+    const uint32_t tc = urgent ? rgba(255, 72, 72) : kText;
+    l.text(x1 - 14 * s, y0 + 9 * s, race_clock(ps.time_remaining_s),
+           font(ui::Font::kE, 21 * s, tc, Align::kRight));
+  }
+
+  // Objective instruction + live status line.
+  if (!ps.instruction.empty()) {
+    TextStyle is = font(ui::Font::kB, 11 * s, kDim);
+    fit(ps.instruction, is, cw - 28 * s, 8.5f * s);
+    l.text(x0 + 14 * s, y0 + 36 * s, ps.instruction, is);
+  }
+  if (!ps.status_line.empty()) {
+    TextStyle ss = font(ui::Font::kB, 12.5f * s, kStuntAccent);
+    fit(ps.status_line, ss, cw - 28 * s, 9 * s);
+    l.text(x0 + 14 * s, y0 + 54 * s, ps.status_line, ss);
+  }
+
+  // Progress bar.
+  const float bx0 = x0 + 14 * s, bx1 = x1 - 14 * s, by0 = y0 + 74 * s, by1 = by0 + 8 * s;
+  l.rect(bx0, by0, bx1, by1, rgba(255, 255, 255, 34), 4 * s);
+  const float p = float(std::clamp(ps.progress, 0.0, 1.0));
+  if (p > 0.0f) {
+    l.rect(bx0, by0, std::max(bx0 + 8 * s, bx0 + (bx1 - bx0) * p), by1, kStuntAccent, 4 * s);
+  }
+
+  // Subtle key hint below bar.
+  const char* hint = ps.is_photo ? "[P] SNAP PHOTO (IN ZONE)   •   [ESC] CANCEL STUNT" : "[ESC] CANCEL STUNT";
+  l.text(x1 - 14 * s, y0 + 84 * s, hint, font(ui::Font::kB, 9 * s, kDim, Align::kRight));
+}
+
 // A tile: a big number and its label.
 void stat_tile(ui::List& l, float x0, float y0, float x1, float y1, const std::string& value, const char* name,
                float s, uint32_t colour = kText) {
@@ -1612,13 +1668,19 @@ void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) 
             "GARAGE", s);
   y += th + 16 * s;
   // Collections.
-  const float rows = c.rally ? 6.f : 5.f;
-  const float rh = 38 * s, ph = 24 * s + rows * rh;
-  if (y + ph > h - 24 * s) return;
+  const bool has_outposts = c.outposts_total > 0;
+  const float rows = (c.rally ? 6.f : 5.f) + (has_outposts ? 2.f : 0.f);
+  const float rh = has_outposts ? 32 * s : 38 * s;
+  const float ph = 20 * s + rows * rh;
+  if (y + ph > h - 18 * s) return;
   panel(l, x0, y, x1, y + ph, s, rgba(10, 12, 17, 190));
   const float rx0 = x0 + 24 * s, rx1 = x1 - 24 * s;
-  float ry = y + 16 * s;
+  float ry = y + 14 * s;
   collection_row(l, rx0, rx1, ry, "ROADS DISCOVERED", c.roads, c.roads_total, s, rgba(74, 238, 97)), ry += rh;
+  if (has_outposts) {
+    collection_row(l, rx0, rx1, ry, "HORIZON OUTPOSTS", c.outposts, c.outposts_total, s, rgba(255, 146, 3)), ry += rh;
+    collection_row(l, rx0, rx1, ry, "OUTPOST PR STUNTS", c.pr_stunts, c.pr_stunts_total, s, rgba(255, 196, 32)), ry += rh;
+  }
   collection_row(l, rx0, rx1, ry, "DISCOUNT SIGNS", c.signs, c.signs_total, s), ry += rh;
   collection_row(l, rx0, rx1, ry, "BARN FINDS", c.barns, c.barns_total, s), ry += rh;
   collection_row(l, rx0, rx1, ry, "1000 CLUB CHALLENGES", c.club_done, c.club_total, s), ry += rh;
@@ -1710,6 +1772,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       opponent_name_tags(l, st.name_tags, g);
     if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g);
     if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g);
+    if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
     if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
       skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
