@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "ui4_chrome.h"
+
 namespace carview {
 
 const char* paint_region_name(PaintRegion r) {
@@ -243,139 +245,219 @@ bool LiveryEditor::composite_1024(const std::vector<cars::bake::LiveryPlane>* pl
 
 void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor& editor,
                             const std::string& car_title, const std::string& notice) {
-  // Header + 3 tabs.
-  list.rect(0, 0, w, 90.0f, ui::rgba(12, 15, 22, 232));
-  list.rect(0, 88.0f, w, 91.0f, ui::rgba(36, 178, 240, 240));
+  const float s = h / 720.0f;
+  ui4::subtle_vignette(list, w, h, 0.28f);
 
-  ui::TextStyle ts;
-  ts.size = 23.0f;
-  ts.color = ui::rgba(255, 255, 255);
-  ts.font = ui::Font::kE;
-  ts.slant = 0.14f;
-  list.text(28.0f, 14.0f, "PAINT SHOP & VINYL EDITOR  //  " + car_title, ts);
+  // Top-left iconic tilted FH1 Paint Shop header.
+  ui4::title_banner(list, s, 56.0f * s, 24.0f * s,
+                    editor.tab() == EditorTab::kVinylLayers ? "VINYL EDITOR" : "PAINT SHOP",
+                    car_title.empty() ? "HORIZON PAINT BOOTH" : car_title, true, 460.0f);
 
-  const char* tabs[3] = {"PAINT & FINISHES", "SPECIAL (102)", "VINYL LAYERS"};
-  float tx = 28.0f;
-  for (int i = 0; i < 3; ++i) {
-    const bool act = (EditorTab(i) == editor.tab());
-    const float tw = 224.0f;
-    list.rect(tx, 50.0f, tx + tw, 80.0f, act ? ui::rgba(36, 178, 240, 245) : ui::rgba(28, 34, 46, 210), 4.0f);
-    ui::TextStyle cs;
-    cs.size = 11.5f;
-    cs.color = act ? ui::rgba(12, 16, 22) : ui::rgba(202, 210, 224);
-    cs.align = ui::Align::kCenter;
-    cs.font = ui::Font::kB;
-    list.text(tx + tw * 0.5f, 59.0f, tabs[i], cs);
-    tx += tw + 8.0f;
-  }
+  // Top-right 3-tab strip with LB / RB controller bumpers.
+  static const std::vector<std::string> kTabs = {"PAINT & FINISHES", "SPECIAL (102)", "VINYL LAYERS"};
+  ui4::tab_strip(list, s, w - 620.0f * s, 38.0f * s, w - 56.0f * s, kTabs, int(editor.tab()), true, ui4::kPink);
 
-  // Left control card.
-  const float lx = 28.0f, ly = 108.0f, lw = 420.0f, lh = h - 164.0f;
-  list.rect(lx, ly, lx + lw, ly + lh, ui::rgba(14, 18, 26, 226), 8.0f);
-  list.frame(lx, ly, lx + lw, ly + lh, ui::rgba(255, 255, 255, 36), 1.0f, 8.0f);
-
-  ui::TextStyle lbl;
-  lbl.size = 13.5f;
-  lbl.color = ui::rgba(232, 238, 248);
-  lbl.font = ui::Font::kB;
+  // Left authentic FH1 sharp distressed control panel (unobstructed 3D car on right!).
+  const float lx = 56.0f * s, ly = 114.0f * s, lw = 432.0f * s, lh = h - 196.0f * s;
+  ui4::panel(list, lx, ly, lx + lw, ly + lh, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
 
   if (editor.tab() == EditorTab::kPaint) {
-    // Region list + HSV colour swatch grid.
-    list.text(lx + 16.0f, ly + 14.0f, "PAINT REGION", lbl);
-    float ry = ly + 38.0f;
+    // Region selector pills with authentic Textures.zip C_LIV_PaintCar_* icons!
+    ui4::offwhite_strip(list, lx + 12.0f * s, ly + 10.0f * s, lx + lw - 12.0f * s, ly + 34.0f * s, s, false);
+    list.text(lx + 22.0f * s, ly + 15.0f * s, "PAINT REGION", ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk));
+
+    static const char* kRegionIcons[7] = {
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",    "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Hood",
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Wing",    "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Mirror",
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Rim",     "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Caliper",
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",
+    };
+
+    // 2-column compact region selector grid so HSV swatch grid has spacious room below.
+    const float col_w = (lw - 32.0f * s) * 0.5f;
     for (int i = 0; i < int(PaintRegion::kCount); ++i) {
       const bool act = (PaintRegion(i) == editor.region());
-      list.rect(lx + 12.0f, ry, lx + lw - 12.0f, ry + 32.0f,
-                act ? ui::rgba(36, 178, 240, 232) : ui::rgba(26, 32, 44, 195), 4.0f);
-      ui::TextStyle rs = lbl;
-      rs.size = 12.5f;
-      rs.color = act ? ui::rgba(12, 16, 22) : ui::rgba(220, 226, 236);
-      list.text(lx + 22.0f, ry + 9.0f, paint_region_name(PaintRegion(i)), rs);
-      ry += 36.0f;
+      const int col = i % 2;
+      const int row = i / 2;
+      const float rx0 = lx + 12.0f * s + float(col) * (col_w + 8.0f * s);
+      const float ry0 = ly + 42.0f * s + float(row) * 38.0f * s;
+      if (act) {
+        ui4::brush(list, rx0 - 2.0f * s, ry0, rx0 + col_w + 2.0f * s, ry0 + 34.0f * s, ui4::kPink);
+      } else {
+        ui4::pill(list, rx0, ry0 + 1.0f * s, rx0 + col_w, ry0 + 33.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu);
+      }
+      std::array<float, 4> ruv{};
+      float tx = rx0 + 14.0f * s;
+      if (ui4::texture(kRegionIcons[i], ruv)) {
+        list.image(rx0 + 8.0f * s, ry0 + 5.0f * s, rx0 + 32.0f * s, ry0 + 29.0f * s, ruv,
+                   act ? ui4::kWhite : ui4::kDim);
+        tx = rx0 + 38.0f * s;
+      }
+      ui::TextStyle rs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, act ? ui4::kWhite : ui4::kDim);
+      ui4::fit_text(paint_region_name(PaintRegion(i)), rs, rx0 + col_w - tx - 8.0f * s, 8.5f * s);
+      list.text(tx, ry0 + 10.0f * s, paint_region_name(PaintRegion(i)), rs);
     }
 
-    // Active finish + HSV palette grid preview.
+    // Active finish selector bar + live current swatch preview!
+    const float fin_y = ly + 206.0f * s;
     const auto& body = editor.document().paint.body;
-    list.text(lx + 16.0f, ry + 12.0f,
-              std::string("FINISH: ") + cars::paint_finish_name(body.finish), lbl);
-    const float gx = lx + 16.0f, gy = ry + 38.0f;
-    constexpr int kCols = 12, kRows = 5;
-    const float cw = (lw - 32.0f) / float(kCols);
-    const float ch = 22.0f;
+    const uint32_t cur_rgb = body.rgb;
+    const uint32_t cur_col =
+        ui::rgba(uint8_t((cur_rgb >> 16) & 0xFF), uint8_t((cur_rgb >> 8) & 0xFF), uint8_t(cur_rgb & 0xFF), 255);
+    list.rect(lx + 12.0f * s, fin_y, lx + lw - 12.0f * s, fin_y + 44.0f * s, ui::rgba(32, 34, 42, 224));
+    list.rect(lx + 12.0f * s, fin_y, lx + 16.0f * s, fin_y + 44.0f * s, ui4::kPink);
+    list.text(lx + 26.0f * s, fin_y + 7.0f * s, "FINISH TYPE", ui4::style(ui::Font::kB, 10.0f * s, ui4::kDim));
+    list.text(lx + 26.0f * s, fin_y + 21.0f * s,
+              std::string("<  ") + cars::paint_finish_name(body.finish) + "  >",
+              ui4::style(ui::Font::kE, 15.5f * s, ui4::kWhite));
+    // Live colour chip frame on right of finish bar.
+    const float cf_x0 = lx + lw - 74.0f * s, cf_y0 = fin_y + 6.0f * s;
+    list.rect(cf_x0, cf_y0, cf_x0 + 54.0f * s, cf_y0 + 32.0f * s, cur_col);
+    std::array<float, 4> cfr_uv{};
+    if (ui4::texture("LIVERY/CAR_PAINT_CURRENT_FRAME", cfr_uv)) {
+      list.image(cf_x0 - 2.0f * s, cf_y0 - 2.0f * s, cf_x0 + 56.0f * s, cf_y0 + 34.0f * s, cfr_uv);
+    } else {
+      list.frame(cf_x0, cf_y0, cf_x0 + 54.0f * s, cf_y0 + 32.0f * s, ui4::kWhite, 1.5f * s);
+    }
+
+    // Authentic FH1 12x7 HSV Colour Swatch Grid with Livery/CAR_PAINT_GRID_* finish shading!
+    const float gy_hdr = fin_y + 56.0f * s;
+    list.text(lx + 14.0f * s, gy_hdr, "COLOR SWATCHES (HSV / FINISH)",
+              ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+    const float gx = lx + 14.0f * s, gy = gy_hdr + 20.0f * s;
+    constexpr int kCols = 12, kRows = 7;
+    const float cw = (lw - 28.0f * s) / float(kCols);
+    const float ch = std::min(28.0f * s, (ly + lh - gy - 14.0f * s) / float(kRows));
+    std::array<float, 4> chip_uv{}, met_uv{}, mat_uv{}, foc_uv{};
+    const bool has_chip = ui4::texture("LIVERY/CAR_PAINT_GRID_CHIP", chip_uv);
+    const bool has_met = ui4::texture("LIVERY/CAR_PAINT_GRID_METALLIC", met_uv);
+    const bool has_mat = ui4::texture("LIVERY/CAR_PAINT_GRID_MATTE", mat_uv);
+    const bool has_foc = ui4::texture("LIVERY/CAR_PAINT_GRID_FOCUS", foc_uv);
+    const bool use_met = (body.finish == cars::PaintFinish::kMetallic || body.finish == cars::PaintFinish::kTwoTone);
+    const bool use_mat = (body.finish == cars::PaintFinish::kMatte);
+
+    float cur_h = 0, cur_s = 0, cur_v = 0;
+    cars::rgb_to_hsv(cur_rgb, cur_h, cur_s, cur_v);
+    int best_r = 0, best_c = 0;
+    float best_d = 1e9f;
+
     for (int r = 0; r < kRows; ++r) {
       for (int c = 0; c < kCols; ++c) {
-        const uint32_t col = cars::hsv_to_rgb(float(c) / float(kCols), 0.35f + 0.16f * float(r),
-                                              1.0f - 0.14f * float(r));
-        list.rect(gx + float(c) * cw, gy + float(r) * ch, gx + float(c + 1) * cw - 2.0f,
-                  gy + float(r + 1) * ch - 2.0f,
-                  ui::rgba(uint8_t((col >> 16) & 0xFF), uint8_t((col >> 8) & 0xFF), uint8_t(col & 0xFF), 255), 2.0f);
+        const float sh = float(c) / float(kCols);
+        const float ss = (r == 0) ? 0.0f : (0.28f + 0.12f * float(r));
+        const float sv = (r == 0) ? (float(c) / float(kCols - 1)) : (1.0f - 0.105f * float(r - 1));
+        const uint32_t col = cars::hsv_to_rgb(sh, ss, sv);
+        const uint32_t rgba_col =
+            ui::rgba(uint8_t((col >> 16) & 0xFF), uint8_t((col >> 8) & 0xFF), uint8_t(col & 0xFF), 255);
+        const float x0 = gx + float(c) * cw;
+        const float y0 = gy + float(r) * ch;
+        const float x1 = x0 + cw - 2.0f * s;
+        const float y1 = y0 + ch - 2.0f * s;
+        // Solid full-chroma swatch base, then subtle finish sheen overlay so all 84 HSV colours read vividly.
+        list.rect(x0, y0, x1, y1, rgba_col);
+        if (use_met && has_met) {
+          list.image(x0, y0, x1, y1, met_uv, ui::rgba(255, 255, 255, 92));
+        } else if (use_mat && has_mat) {
+          list.image(x0, y0, x1, y1, mat_uv, ui::rgba(255, 255, 255, 72));
+        } else if (has_chip) {
+          list.image(x0, y0, x1, y1, chip_uv, ui::rgba(255, 255, 255, 64));
+        }
+        list.frame(x0, y0, x1, y1, ui::rgba(0, 0, 0, 120), 1.0f * s);
+
+        const float dh = std::min(std::fabs(sh - cur_h), 1.0f - std::fabs(sh - cur_h));
+        const float d = dh * 2.0f + std::fabs(ss - cur_s) + std::fabs(sv - cur_v);
+        if (d < best_d) best_d = d, best_r = r, best_c = c;
       }
     }
+    const float fx0 = gx + float(best_c) * cw;
+    const float fy0 = gy + float(best_r) * ch;
+    list.frame(fx0 - 2.0f * s, fy0 - 2.0f * s, fx0 + cw, fy0 + ch, ui4::kWhite, 2.5f * s);
+    list.frame(fx0 - 4.0f * s, fy0 - 4.0f * s, fx0 + cw + 2.0f * s, fy0 + ch + 2.0f * s, ui4::kPink, 1.5f * s);
   } else if (editor.tab() == EditorTab::kSpecialColors) {
-    list.text(lx + 16.0f, ly + 14.0f,
-              "LIST_SPECIALCOLORS (" + std::to_string(editor.special_colors().size()) + " TWO-TONE PAINTS)", lbl);
+    ui4::offwhite_strip(list, lx + 12.0f * s, ly + 10.0f * s, lx + lw - 12.0f * s, ly + 34.0f * s, s, false);
+    list.text(lx + 22.0f * s, ly + 15.0f * s,
+              "SPECIAL TWO-TONE PAINTS (" + std::to_string(editor.special_colors().size()) + ")",
+              ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk));
     const auto& sp = editor.special_colors();
     const int n = int(sp.size());
     const int sel = int(editor.selected_special());
-    const int first = std::clamp(sel - 4, 0, std::max(0, n - 10));
-    float ry = ly + 42.0f;
-    for (int i = first; i < std::min(n, first + 10); ++i) {
+    const int max_vis = std::max(1, int((lh - 48.0f * s) / (44.0f * s)));
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+    float ry = ly + 44.0f * s;
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
       const auto& sc = sp[size_t(i)];
       const bool act = (i == sel);
-      list.rect(lx + 12.0f, ry, lx + lw - 12.0f, ry + 38.0f,
-                act ? ui::rgba(36, 178, 240, 232) : ui::rgba(26, 32, 44, 195), 4.0f);
+      if (act) ui4::brush(list, lx + 6.0f * s, ry, lx + lw - 6.0f * s, ry + 40.0f * s, ui4::kPink);
+      else list.rect(lx + 12.0f * s, ry, lx + lw - 12.0f * s, ry + 38.0f * s,
+                     (i % 2 == 0) ? ui::rgba(32, 34, 40, 215) : ui::rgba(24, 26, 32, 215));
       const uint32_t c1 = sc.pri_rgb, c2 = sc.sec_valid ? sc.sec_rgb : sc.pri_rgb;
-      list.rect(lx + 20.0f, ry + 6.0f, lx + 46.0f, ry + 32.0f,
-                ui::rgba(uint8_t((c1 >> 16) & 0xFF), uint8_t((c1 >> 8) & 0xFF), uint8_t(c1 & 0xFF), 255), 3.0f);
-      list.rect(lx + 48.0f, ry + 6.0f, lx + 74.0f, ry + 32.0f,
-                ui::rgba(uint8_t((c2 >> 16) & 0xFF), uint8_t((c2 >> 8) & 0xFF), uint8_t(c2 & 0xFF), 255), 3.0f);
+      list.rect(lx + 20.0f * s, ry + 6.0f * s, lx + 48.0f * s, ry + 32.0f * s,
+                ui::rgba(uint8_t((c1 >> 16) & 0xFF), uint8_t((c1 >> 8) & 0xFF), uint8_t(c1 & 0xFF), 255));
+      list.rect(lx + 50.0f * s, ry + 6.0f * s, lx + 78.0f * s, ry + 32.0f * s,
+                ui::rgba(uint8_t((c2 >> 16) & 0xFF), uint8_t((c2 >> 8) & 0xFF), uint8_t(c2 & 0xFF), 255));
       char buf[64];
-      std::snprintf(buf, sizeof buf, "SPECIAL #%lld  (PWR %.1f)", (long long)sc.id, sc.two_tone_power);
-      ui::TextStyle st = lbl;
-      st.size = 12.5f;
-      st.color = act ? ui::rgba(12, 16, 22) : ui::rgba(232, 238, 248);
-      list.text(lx + 86.0f, ry + 12.0f, buf, st);
-      ry += 42.0f;
+      std::snprintf(buf, sizeof buf, "SPECIAL #%lld   •   TWO-TONE PWR %.1f", (long long)sc.id, sc.two_tone_power);
+      list.text(lx + 88.0f * s, ry + 13.0f * s, buf,
+                ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite));
+      ry += 44.0f * s;
     }
   } else {
+    // Authentic FH1 Vinyl Layer Stack chrome!
     const auto& layers = editor.document().layers;
-    list.text(lx + 16.0f, ly + 14.0f,
-              "VINYL LAYERS (" + std::to_string(layers.size()) + ")   |   LIB: " +
-                  std::to_string(editor.library_shape_count()),
-              lbl);
-    float ry = ly + 42.0f;
-    for (size_t i = 0; i < std::min<size_t>(layers.size(), 10); ++i) {
-      const auto& l = layers[i];
-      const bool act = (i == editor.selected_layer());
-      list.rect(lx + 12.0f, ry, lx + lw - 12.0f, ry + 38.0f,
-                act ? ui::rgba(36, 178, 240, 232) : ui::rgba(26, 32, 44, 195), 4.0f);
-      list.rect(lx + 18.0f, ry + 7.0f, lx + 42.0f, ry + 31.0f,
-                ui::rgba(uint8_t((l.rgb >> 16) & 0xFF), uint8_t((l.rgb >> 8) & 0xFF), uint8_t(l.rgb & 0xFF), 255),
-                3.0f);
-      ui::TextStyle st = lbl;
-      st.size = 12.0f;
-      st.color = act ? ui::rgba(12, 16, 22) : ui::rgba(236, 242, 250);
-      list.text(lx + 52.0f, ry + 6.0f, l.shape_path, st);
+    ui4::offwhite_strip(list, lx + 12.0f * s, ly + 10.0f * s, lx + lw - 12.0f * s, ly + 34.0f * s, s, false);
+    list.text(lx + 22.0f * s, ly + 15.0f * s,
+              "VINYL LAYER STACK (" + std::to_string(layers.size()) + ")  •  " +
+                  std::to_string(editor.library_shape_count()) + " SHAPES",
+              ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+    const int n = int(layers.size());
+    const int sel = n > 0 ? int(std::min(editor.selected_layer(), layers.size() - 1)) : 0;
+    const int max_vis = std::max(1, int((lh - 48.0f * s) / (46.0f * s)));
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+    float ry = ly + 44.0f * s;
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
+      const auto& l = layers[size_t(i)];
+      const bool act = (i == sel);
+      if (act) ui4::brush(list, lx + 6.0f * s, ry, lx + lw - 6.0f * s, ry + 42.0f * s, ui4::kPink);
+      else list.rect(lx + 12.0f * s, ry, lx + lw - 12.0f * s, ry + 40.0f * s,
+                     (i % 2 == 0) ? ui::rgba(32, 34, 40, 215) : ui::rgba(24, 26, 32, 215));
+      char idx_b[12];
+      std::snprintf(idx_b, sizeof idx_b, "%02d", i + 1);
+      list.text(lx + 20.0f * s, ry + 13.0f * s, idx_b, ui4::style(ui::Font::kE, 13.0f * s, ui4::kYellow));
+      list.rect(lx + 46.0f * s, ry + 7.0f * s, lx + 72.0f * s, ry + 33.0f * s,
+                ui::rgba(uint8_t((l.rgb >> 16) & 0xFF), uint8_t((l.rgb >> 8) & 0xFF), uint8_t(l.rgb & 0xFF), 255));
+      list.frame(lx + 46.0f * s, ry + 7.0f * s, lx + 72.0f * s, ry + 33.0f * s, ui4::kWhite, 1.0f * s);
+
+      ui::TextStyle st = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(l.shape_path, st, lw - 102.0f * s, 9.0f * s);
+      list.text(lx + 82.0f * s, ry + 6.0f * s, l.shape_path, st);
       char sub[96];
-      std::snprintf(sub, sizeof sub, "%s XY(%.2f,%.2f) S(%.2f,%.2f) R%.0f", cars::livery_plane_name(l.plane), l.x,
-                    l.y, l.scale_x, l.scale_y, l.rot_deg);
-      st.size = 9.0f;
-      st.color = act ? ui::rgba(24, 30, 38) : ui::rgba(176, 186, 202);
-      list.text(lx + 52.0f, ry + 23.0f, sub, st);
-      ry += 42.0f;
+      std::snprintf(sub, sizeof sub, "%s  •  POS(%.2f,%.2f)  SCALE(%.2f,%.2f)  ROT %.0f",
+                    cars::livery_plane_name(l.plane), l.x, l.y, l.scale_x, l.scale_y, l.rot_deg);
+      list.text(lx + 82.0f * s, ry + 24.0f * s, sub,
+                ui4::style(ui::Font::kB, 9.5f * s, act ? ui4::kWhite : ui4::kDim));
+      ry += 46.0f * s;
+    }
+    if (layers.empty()) {
+      list.text(lx + 0.5f * lw, ly + 120.0f * s, "NO VINYL LAYERS YET — PRESS [Y] TO ADD",
+                ui4::style(ui::Font::kB, 13.0f * s, ui4::kDim, ui::Align::kCenter));
     }
   }
 
-  // Footer.
-  list.rect(0, h - 38.0f, w, h, ui::rgba(10, 12, 18, 228));
-  ui::TextStyle ft;
-  ft.size = 12.0f;
-  ft.color = ui::rgba(196, 204, 218);
-  list.text(28.0f, h - 25.0f,
-            notice.empty()
-                ? "[Q/E] TAB  [UP/DOWN] SELECT  [LEFT/RIGHT] FINISH/COLOR  [N] ADD VINYL  [DEL] REMOVE  [ENTER] SAVE .LIV"
-                : notice,
-            ft);
+  if (!notice.empty()) {
+    ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+    ui4::fit_text(notice, ns, 340.0f * s, 9.0f * s);
+    list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
+  }
+
+  ui4::button_bar(list,
+                  {{"A", "SAVE LIVERY"},
+                   {"LB", "TAB"},
+                   {"DPAD_LR", editor.tab() == EditorTab::kVinylLayers ? "TRANSFORM" : "FINISH / COLOR"},
+                   {"Y", "ADD VINYL"},
+                   {"X", "DELETE"},
+                   {"B", "BACK"}},
+                  w, h, 56.0f);
 }
 
 }  // namespace carview

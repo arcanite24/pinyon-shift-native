@@ -423,12 +423,12 @@ void class_badge(ui::List& l, float x, float y, float h, std::string_view class_
 
   std::array<float, 4> uv{};
   if (cname != "?" && texture("PICLASS/CLASS_" + cname, uv)) {
-    // PICLASS/CLASS_* artwork has ~3.8:1 aspect ratio (letter square + white PI box).
+    // PICLASS/CLASS_* texture places the class square on the left and white PI box centered around ~0.58*w.
     const float w = h * 3.45f;
     l.image(x, y, x + w, y + h, uv);
-    ui::TextStyle ps = style(ui::Font::kB, h * 0.62f, kInk, ui::Align::kCenter);
-    fit_text(pibuf, ps, w * 0.42f, h * 0.36f);
-    l.text(x + w * 0.66f, y + 0.5f * (h - ps.size), pibuf, ps);
+    ui::TextStyle ps = style(ui::Font::kB, h * 0.50f, kInk, ui::Align::kCenter);
+    fit_text(pibuf, ps, w * 0.27f, h * 0.30f);
+    l.text(x + w * 0.575f, y + 0.5f * (h - ps.size), pibuf, ps);
     return;
   }
 
@@ -595,7 +595,7 @@ bool manufacturer_logo(ui::List& l, float x0, float y0, float x1, float y1, std:
       {"koenigsegg", "Koenigsegg"}, {"lamborghini", "Lamborghini"}, {"lancia", "Lancia"},
       {"landrover", "LandRover"},   {"lexus", "Lexus"},           {"lotus", "Lotus"},
       {"maserati", "Maserati"},     {"mazda", "Mazda"},           {"mclaren", "McLaren"},
-      {"mercedes", "MercedesBenz"}, {"mercedesbenz", "MercedesBenz"}, {"mini", "MINI"},
+      {"mercedes", "Mercedes"},     {"mercedesbenz", "Mercedes"}, {"mini", "MINI"},
       {"mitsubishi", "Mitsubishi"}, {"nissan", "Nissan"},         {"noble", "Noble"},
       {"oldsmobile", "Oldsmobile"}, {"pagani", "Pagani"},         {"peugeot", "Peugeot"},
       {"plymouth", "Plymouth"},     {"pontiac", "Pontiac"},       {"radical", "Radical"},
@@ -629,7 +629,12 @@ bool car_thumbnail(ui::List& l, float x0, float y0, float x1, float y1, int64_t 
   if (car_id <= 0) return false;
   std::array<float, 4> uv{};
   if (texture("T:Thumbnails/Thumbnail_" + std::to_string(car_id), uv)) {
-    l.image(x0, y0, x1, y1, uv, tint);
+    // FH1 Thumbnail_<id>.xds packs the 3/4 showroom render in u=[0.04..0.66], v=[0.18..0.88]
+    // and a vertical top-down minimap/body silhouette in the right 30%. Crop cleanly to the 3/4 view.
+    const float du = uv[2] - uv[0];
+    const float dv = uv[3] - uv[1];
+    const std::array<float, 4> crop = {uv[0] + du * 0.04f, uv[1] + dv * 0.18f, uv[0] + du * 0.66f, uv[1] + dv * 0.88f};
+    l.image(x0, y0, x1, y1, crop, tint);
     return true;
   }
   return false;

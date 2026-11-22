@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include <sqlite3.h>
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -41,6 +43,7 @@
 #include "hud_scene.h"
 #include "livery_editor.h"
 #include "map_view.h"
+#include "race/event.h"
 #include "photo_mode.h"
 #include "replay_view.h"
 #include "settings_page.h"
@@ -428,7 +431,130 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     save_frame("ui4_hud_minimap.png", l, std::move(bg));
   }
 
-  (void)studio_bg_path;
+  // ---------------- GROUP 2 SCREENSHOTS ----------------
+
+  // Load real disc PartsDb + ClassBands + PhysicsSettings + PiConfig for authentic shop screens!
+  cars::Install install;
+  cars::PartsDb db;
+  std::vector<garage::ClassBand> bands;
+  cars::PhysicsSettings phys_settings;
+  garage::PiConfig pi_cfg;
+  std::string db_err;
+  const bool have_db = cars::discover_install(game_root, {}, {}, install, &db_err) && db.open(install, &db_err);
+  if (have_db) {
+    garage::load_class_bands(game_root, bands, &db_err);
+    cars::load_physics_settings(install.media / "physics.zip", phys_settings, &db_err);
+    garage::load_pi_config(install.media / "physics.zip", pi_cfg, &db_err);
+    // Register real localized display names via race::CarNames (StringTables + Data_Car).
+    auto car_names = std::make_shared<race::CarNames>();
+    std::string cn_err;
+    car_names->load(game_root, {}, &cn_err, "en", &db);
+    carview::set_car_names([car_names](const std::string& media) -> std::string {
+      return car_names->short_name(media);
+    });
+  }
+
+  // Helper to buy a real base-game car from dealer catalog into a garage.
+  std::vector<cars::DealerCar> dealer_cars;
+  if (have_db) db.dealer(dealer_cars, nullptr);
+  auto add_dealer_car = [&](garage::Garage& g, int64_t car_id, int64_t& credits) -> int64_t {
+    const cars::DealerCar* found = nullptr;
+    for (const auto& dc : dealer_cars) {
+      if (dc.id == car_id) {
+        found = &dc;
+        break;
+      }
+    }
+    if (!found) return 0;
+    std::map<std::string, int64_t> slots;
+    if (!db.stock_slots(found->id, slots, nullptr)) return 0;
+    int64_t gid = 0;
+    if (!garage::buy_car(g, found->id, found->base_cost, found->performance_index, found->class_id,
+                         int(found->first_colour), slots, credits, &gid)) {
+      return 0;
+    }
+    return gid;
+  };
+
+  // 5. ui4_autoshow.png — Authentic FH1 Autoshow Make Carousel + Car Tiles + 5-Stat & Swatch Card
+  if (have_db) {
+    carview::Autoshow as;
+    std::string why;
+    if (as.open(db, {}, why, 500000, false)) {
+      // Pick Nissan (or first make with multiple cars & logos).
+      for (size_t mi = 0; mi < as.makes().size(); ++mi) {
+        if (as.makes()[mi].name == "Nissan" || as.makes()[mi].name == "NIS") {
+          as.select_make(mi, 500000);
+          break;
+        }
+      }
+      if (as.visible_cars().size() > 2) as.move(1);
+      carview::ui::List l;
+      carview::draw_autoshow_hud(l, float(W), float(H), as, bands, 500000);
+      save_frame("ui4_autoshow.png", l, load_or_build_backdrop(studio_bg_path, true));
+    }
+  }
+
+  // 6. ui4_garage.png — Authentic FH1 My Garage Horizontal Car-Card Carousel
+  if (have_db) {
+    garage::Garage g;
+    int64_t gcred = 5000000;
+    // Populate a rich realistic 6-car Horizon garage (Corrado 309, R34 445, plus 4 varied makes from catalog).
+    static constexpr int64_t kPreferredCars[] = {309, 445, 1323, 1009, 1006, 1293};
+    for (int64_t cid : kPreferredCars) add_dealer_car(g, cid, gcred);
+    for (size_t i = 0; i < dealer_cars.size() && g.cars.size() < 6; i += 17) {
+      add_dealer_car(g, dealer_cars[i].id, gcred);
+    }
+    if (g.cars.size() >= 2) g.selected = g.cars[1].id;
+    carview::GarageBrowser gb;
+    gb.refresh(g, &db, bands);
+    if (gb.visible().size() > 1) gb.move(1);
+    carview::ui::List l;
+    carview::draw_garage_hud(l, float(W), float(H), gb, bands, 248500);
+    save_frame("ui4_garage.png", l, load_or_build_backdrop(studio_bg_path, true));
+  }
+
+  // 7. ui4_upgrades_tuning.png — Authentic FH1 Dak's Garage Upgrade Shop + Live PI & 5-Stat Diff
+  if (have_db) {
+    garage::Garage g;
+    int64_t gcred = 5000000;
+    const int64_t gid = add_dealer_car(g, 445, gcred);  // Nissan Skyline GT-R V-spec II
+    carview::UpgradeShop shop;
+    std::string why;
+    if (gid > 0 && shop.open(db, g, gid, why, &phys_settings, &pi_cfg, &bands)) {
+      shop.move_part(+2);  // hover Sport/Race upgrade so green live PI & 5-stat gain diff shows!
+      carview::ui::List l;
+      carview::draw_upgrade_shop_hud(l, float(W), float(H), shop, bands, 25, 248500, "Nissan Skyline GT-R V-spec II");
+      save_frame("ui4_upgrades_tuning.png", l, load_or_build_backdrop(studio_bg_path, true));
+
+      // Also verify Tuning tab renders cleanly without crashing.
+      shop.set_category(carview::ShopCategory::kTuning);
+      carview::ui::List lt;
+      carview::draw_upgrade_shop_hud(lt, float(W), float(H), shop, bands, 25, 248500, "Nissan Skyline GT-R V-spec II");
+      check(lt.items().size() > 25, "UpgradeShop Tuning tab emits FH1 slider instances");
+    }
+  }
+
+  // 8. ui4_paint_vinyl.png — Authentic FH1 Paint Shop Region Icons + 12x7 HSV Swatch Grid
+  if (have_db) {
+    carview::LiveryEditor ed;
+    std::string msg;
+    if (ed.open(&db, game_root, 445, {}, msg)) {
+      ed.move_finish(+1);  // Metallic
+      ed.step_hsv(0.58f, 0.10f, 0.0f);  // Bayside Blue
+      carview::ui::List l;
+      carview::draw_livery_editor_hud(l, float(W), float(H), ed, "Nissan Skyline GT-R V-spec II");
+      save_frame("ui4_paint_vinyl.png", l, load_or_build_backdrop(studio_bg_path, true));
+
+      // Also verify Special Colors & Vinyl Layer Stack tabs render cleanly.
+      ed.add_vinyl_layer("", 0xF5045Cu);
+      ed.add_vinyl_layer("", 0xFFFFFFu);
+      ed.set_tab(carview::EditorTab::kVinylLayers);
+      carview::ui::List lv;
+      carview::draw_livery_editor_hud(lv, float(W), float(H), ed, "Nissan Skyline GT-R V-spec II");
+      check(lv.items().size() > 20, "LiveryEditor Vinyl Layers tab emits FH1 stack instances");
+    }
+  }
 }
 
 }  // namespace

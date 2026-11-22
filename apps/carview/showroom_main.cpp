@@ -5410,6 +5410,20 @@ int run_drive(int argc, char** argv) {
           carview::draw_upgrade_shop_hud(list, float(width), float(height), shop, class_bands, discount(),
                                          career.credits, carview::car_name(car),
                                          vehicle.time() < notice_until ? notice : std::string());
+        } else if (garage_open && have_garage && !career_garage.cars.empty()) {
+          const cars::PartsDb* gdb =
+              (parts_db.valid() && parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                  ? parts_db.get().get()
+                  : nullptr;
+          carview::GarageBrowser gb;
+          gb.refresh(career_garage, gdb, class_bands);
+          if (!gb.visible().empty()) {
+            const size_t gp = std::min(garage_pick, gb.visible().size() - 1);
+            gb.move(int(gp));
+            list.clear();
+            carview::draw_garage_hud(list, float(width), float(height), gb, class_bands, career.credits,
+                                     vehicle.time() < notice_until ? notice : std::string());
+          }
         }
         if (barn_card.visible) {
           carview::draw_barn_find_hud(list, float(width), float(height), barn_card);

@@ -8,6 +8,7 @@
 #include <map>
 
 #include "game_hud.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 namespace {
@@ -618,69 +619,88 @@ bool GarageBrowser::sell_selected(garage::Garage& g, const cars::PartsDb* db,
   return true;
 }
 
-// --- UI Overlays ---
+// --- Authentic FH1 UI4 3D Festival Hub Overlays ---
 
 void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autoshow,
                        const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice) {
-  // Top header bar + Make Carousel.
-  list.rect(0, 0, w, 92.0f, ui::rgba(10, 12, 18, 224), 0.0f, ui::rgba(14, 16, 24, 195));
-  list.rect(0, 90.0f, w, 93.0f, ui::rgba(240, 88, 24, 240));
+  const float s = h / 720.0f;
+  ui4::subtle_vignette(list, w, h, 0.30f);
 
-  ui::TextStyle title_st;
-  title_st.size = 24.0f;
-  title_st.color = ui::rgba(255, 255, 255);
-  title_st.font = ui::Font::kE;
-  title_st.slant = 0.14f;
-  list.text(32.0f, 14.0f, autoshow.tutorial_mode() ? "HORIZON AUTOSHOW  //  CHOOSE YOUR FIRST CAR" : "HORIZON AUTOSHOW",
-            title_st);
+  // Top-left iconic tilted FH1 title banner.
+  ui4::title_banner(list, s, 56.0f * s, 26.0f * s,
+                    autoshow.tutorial_mode() ? "CHOOSE YOUR FIRST CAR" : "AUTOSHOW", "HORIZON FESTIVAL", true,
+                    500.0f);
 
-  ui::TextStyle cr_st;
-  cr_st.size = 20.0f;
-  cr_st.color = ui::rgba(255, 206, 56);
-  cr_st.align = ui::Align::kRight;
-  cr_st.font = ui::Font::kB;
-  list.text(w - 32.0f, 16.0f, credits_text(credits), cr_st);
+  // Top-right distressed off-white FH1 credits strip.
+  {
+    const float rx = w - 56.0f * s;
+    ui4::offwhite_strip(list, rx - 186.0f * s, 32.0f * s, rx, 62.0f * s, s, true);
+    ui::TextStyle crs = ui4::style(ui::Font::kB, 18.0f * s, ui4::kInk, ui::Align::kRight, true);
+    const std::string cstr = ui4::format_credits(credits);
+    ui4::fit_text(cstr, crs, 166.0f * s, 10.0f * s);
+    list.text(rx - 14.0f * s, 38.0f * s, cstr, crs);
+  }
 
-  // Make Carousel strip.
+  // Horizontal Make Carousel with REAL manufacturer logos (L_MAN_*_Logo) flanked by LB / RB.
   const auto& makes = autoshow.makes();
   if (!makes.empty()) {
+    const float car_y = 104.0f * s;
+    const float car_h = 58.0f * s;
     const int n = int(makes.size());
     const int sel = int(autoshow.selected_make_index());
     const int vis_n = std::min(n, 7);
-    const float chip_w = std::min(168.0f, (w - 80.0f) / float(vis_n) - 8.0f);
+    const float left_x = 56.0f * s;
+    const float right_x = w - 56.0f * s;
+    ui4::button_glyph(list, left_x + 18.0f * s, car_y + 0.5f * car_h, 11.5f * s, "LB");
+    ui4::button_glyph(list, right_x - 18.0f * s, car_y + 0.5f * car_h, 11.5f * s, "RB");
+    const float strip_x0 = left_x + 42.0f * s;
+    const float strip_w = (right_x - 42.0f * s) - strip_x0;
+    const float gap = 8.0f * s;
+    const float tile_w = (strip_w - gap * float(std::max(0, vis_n - 1))) / float(std::max(1, vis_n));
     const int first = std::clamp(sel - vis_n / 2, 0, std::max(0, n - vis_n));
-    float cx = 32.0f;
+
     for (int i = first; i < first + vis_n; ++i) {
+      const auto& mk = makes[size_t(i)];
       const bool active = (i == sel);
-      list.rect(cx, 50.0f, cx + chip_w, 82.0f, active ? ui::rgba(240, 88, 24, 245) : ui::rgba(28, 34, 46, 210), 4.0f);
-      ui::TextStyle ms;
-      ms.size = 13.0f;
-      ms.color = active ? ui::rgba(255, 255, 255) : ui::rgba(195, 204, 218);
-      ms.align = ui::Align::kCenter;
-      ms.font = ui::Font::kB;
-      std::string lbl = makes[size_t(i)].name;
-      if (lbl.size() > 16) lbl = lbl.substr(0, 15) + ".";
-      list.text(cx + chip_w * 0.5f, 59.0f, lbl, ms);
-      cx += chip_w + 8.0f;
+      const float tx = strip_x0 + float(i - first) * (tile_w + gap);
+      const float lift = active ? 3.0f * s : 0.0f;
+      ui4::panel(list, tx, car_y - lift, tx + tile_w, car_y + car_h + lift, s,
+                 active ? ui::rgba(36, 18, 30, 240) : ui4::kCharcoalDark,
+                 active ? ui4::kPink : ui::rgba(255, 255, 255, 24), 0, true);
+      if (active) {
+        list.frame(tx, car_y - lift, tx + tile_w, car_y + car_h + lift, ui4::kPink, 2.0f * s);
+      }
+
+      const float logo_h = 32.0f * s;
+      const float logo_w = std::min(tile_w - 20.0f * s, logo_h * 1.45f);
+      const float lx0 = tx + 0.5f * (tile_w - logo_w);
+      const float ly0 = car_y + 6.0f * s - lift;
+      const bool drew_logo = ui4::manufacturer_logo(list, lx0, ly0, lx0 + logo_w, ly0 + logo_h, mk.name,
+                                                    active ? ui4::kWhite : ui::rgba(220, 224, 232, 225));
+      if (drew_logo) {
+        ui::TextStyle ms = ui4::style(ui::Font::kB, 10.5f * s, active ? ui4::kWhite : ui4::kDim, ui::Align::kCenter);
+        ui4::fit_text(mk.name, ms, tile_w - 10.0f * s, 7.5f * s);
+        list.text(tx + 0.5f * tile_w, car_y + car_h - 15.0f * s + lift, mk.name, ms);
+      } else {
+        ui::TextStyle ms = ui4::style(active ? ui::Font::kE : ui::Font::kB, (active ? 14.0f : 12.5f) * s,
+                                      active ? ui4::kWhite : ui4::kDim, ui::Align::kCenter);
+        ui4::fit_text(mk.name, ms, tile_w - 14.0f * s, 8.5f * s);
+        list.text(tx + 0.5f * tile_w, car_y + 0.5f * (car_h - ms.size), mk.name, ms);
+      }
     }
   }
 
-  // Right spec & 5-stat card.
-  const float card_w = 376.0f;
-  const float card_x = w - card_w - 24.0f;
-  const float card_y = 108.0f;
-  const float card_h = 372.0f;
-  list.shadow(card_x, card_y, card_x + card_w, card_y + card_h, ui::rgba(0, 0, 0, 130), 8.0f, 14.0f);
-  list.rect(card_x, card_y, card_x + card_w, card_y + card_h, ui::rgba(14, 17, 24, 224), 8.0f);
-  list.frame(card_x, card_y, card_x + card_w, card_y + card_h, ui::rgba(255, 255, 255, 36), 1.0f, 8.0f);
+  // Right-hand FH1 Spec, 5-Stat Comparison & Factory Swatch Card (unobstructed 3D car in centre!).
+  const float card_w = 374.0f * s;
+  const float card_x = w - card_w - 56.0f * s;
+  const float card_y = 176.0f * s;
+  const float card_h = 338.0f * s;
+  ui4::panel(list, card_x, card_y, card_x + card_w, card_y + card_h, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
 
   const AutoshowCar* sel_car = autoshow.selected_car();
   if (!sel_car) {
-    ui::TextStyle es;
-    es.size = 18.0f;
-    es.color = ui::rgba(255, 160, 80);
-    es.align = ui::Align::kCenter;
-    list.text(card_x + card_w * 0.5f, card_y + 160.0f,
+    ui::TextStyle es = ui4::style(ui::Font::kE, 18.0f * s, ui4::kAmber, ui::Align::kCenter);
+    list.text(card_x + card_w * 0.5f, card_y + 150.0f * s,
               autoshow.empty_reason().empty() ? "NO CARS AVAILABLE" : autoshow.empty_reason(), es);
   } else {
     const int cls = bands.empty() ? int(sel_car->dealer.class_id)
@@ -689,195 +709,306 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     const int shown_pi = bands.empty() ? int(std::ceil(sel_car->dealer.performance_index * 999.0))
                                        : garage::shown_index(sel_car->dealer.performance_index, bands);
 
-    ui::TextStyle mk_st;
-    mk_st.size = 14.0f;
-    mk_st.color = ui::rgba(240, 108, 42);
-    mk_st.font = ui::Font::kB;
-    list.text(card_x + 18.0f, card_y + 16.0f, std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name, mk_st);
+    // Tilted FH1 pink brush header with car model name.
+    {
+      ui4::TiltScope tilt(list, card_x + 0.5f * card_w, card_y + 24.0f * s, ui4::kTiltRad * 0.5f);
+      std::string cname = car_name(sel_car->dealer.media_name);
+      if (cname.empty()) cname = sel_car->display_name;
+      ui::TextStyle nm = ui4::style(ui::Font::kE, 21.0f * s, ui4::kWhite);
+      ui4::fit_text(cname, nm, card_w - 34.0f * s, 11.5f * s);
+      ui4::brush(list, card_x - 8.0f * s, card_y + 8.0f * s, card_x + card_w + 6.0f * s, card_y + 44.0f * s,
+                 ui4::kPink);
+      list.text(card_x + 16.0f * s, card_y + 15.0f * s + 0.5f * (21.0f * s - nm.size), cname, nm);
+    }
 
-    ui::TextStyle nm_st;
-    nm_st.size = 16.5f;
-    nm_st.color = ui::rgba(255, 255, 255);
-    nm_st.font = ui::Font::kE;
-    std::string cname = car_name(sel_car->dealer.media_name);
-    if (cname.size() > 21) cname = cname.substr(0, 21);
-    list.text(card_x + 18.0f, card_y + 40.0f, cname, nm_st);
+    // Year + Make + Class/PI badge + Price tag.
+    ui::TextStyle mk_st = ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim);
+    list.text(card_x + 16.0f * s, card_y + 52.0f * s,
+              std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name + "  •  " +
+                  drive_label(sel_car->drive_type_id),
+              mk_st);
 
-    draw_class_badge(list, card_x + 18.0f, card_y + 72.0f, 28.0f, cls, cls_name, shown_pi);
+    ui4::class_badge(list, card_x + 16.0f * s, card_y + 74.0f * s, 25.0f * s, cls_name, shown_pi, cls);
 
-    ui::TextStyle pr_st;
-    pr_st.size = 20.0f;
-    pr_st.color = credits >= sel_car->dealer.base_cost ? ui::rgba(110, 238, 138) : ui::rgba(245, 92, 82);
-    pr_st.align = ui::Align::kRight;
-    pr_st.font = ui::Font::kB;
-    list.text(card_x + card_w - 18.0f, card_y + 76.0f, credits_text(sel_car->dealer.base_cost), pr_st);
+    const bool affordable = credits >= sel_car->dealer.base_cost;
+    const float px0 = card_x + card_w - 148.0f * s;
+    const float px1 = card_x + card_w - 14.0f * s;
+    ui4::offwhite_strip(list, px0, card_y + 74.0f * s, px1, card_y + 99.0f * s, s, true);
+    ui::TextStyle pr_st =
+        ui4::style(ui::Font::kB, 15.5f * s, affordable ? ui4::kInk : ui4::kRed, ui::Align::kRight, true);
+    const std::string pstr = ui4::format_credits(sel_car->dealer.base_cost);
+    ui4::fit_text(pstr, pr_st, 122.0f * s, 9.0f * s);
+    list.text(px1 - 8.0f * s, card_y + 79.0f * s, pstr, pr_st);
 
-    // 5-Stat bars.
-    float sy = card_y + 118.0f;
-    draw_stat_bar(list, card_x + 18.0f, sy, card_w - 36.0f, 20.0f, "SPEED", sel_car->speed_rating, sel_car->speed_rating, false);
-    sy += 26.0f;
-    draw_stat_bar(list, card_x + 18.0f, sy, card_w - 36.0f, 20.0f, "HANDLING", sel_car->handling_rating, sel_car->handling_rating, false);
-    sy += 26.0f;
-    draw_stat_bar(list, card_x + 18.0f, sy, card_w - 36.0f, 20.0f, "ACCEL", sel_car->accel_rating, sel_car->accel_rating, false);
-    sy += 26.0f;
-    draw_stat_bar(list, card_x + 18.0f, sy, card_w - 36.0f, 20.0f, "LAUNCH", sel_car->launch_rating, sel_car->launch_rating, false);
-    sy += 26.0f;
-    draw_stat_bar(list, card_x + 18.0f, sy, card_w - 36.0f, 20.0f, "BRAKING", sel_car->braking_rating, sel_car->braking_rating, false);
+    // Authentic FH1 5-stat bars.
+    float sy = card_y + 112.0f * s;
+    ui4::stat_bar(list, card_x + 16.0f * s, sy, card_w - 32.0f * s, 20.0f * s, "SPEED", sel_car->speed_rating,
+                  sel_car->speed_rating, false, s);
+    sy += 23.0f * s;
+    ui4::stat_bar(list, card_x + 16.0f * s, sy, card_w - 32.0f * s, 20.0f * s, "HANDLING", sel_car->handling_rating,
+                  sel_car->handling_rating, false, s);
+    sy += 23.0f * s;
+    ui4::stat_bar(list, card_x + 16.0f * s, sy, card_w - 32.0f * s, 20.0f * s, "ACCEL", sel_car->accel_rating,
+                  sel_car->accel_rating, false, s);
+    sy += 23.0f * s;
+    ui4::stat_bar(list, card_x + 16.0f * s, sy, card_w - 32.0f * s, 20.0f * s, "LAUNCH", sel_car->launch_rating,
+                  sel_car->launch_rating, false, s);
+    sy += 23.0f * s;
+    ui4::stat_bar(list, card_x + 16.0f * s, sy, card_w - 32.0f * s, 20.0f * s, "BRAKING", sel_car->braking_rating,
+                  sel_car->braking_rating, false, s);
 
-    // Technical specs row.
+    // Power / Torque / Weight telemetry strip.
     char spec[128];
     const int hp = int(std::lround(sel_car->peak_power_kw * 1.34102));
-    std::snprintf(spec, sizeof spec, "%d HP  %.0f NM  %.0f KG  %s", hp, sel_car->peak_torque_nm,
-                  sel_car->curb_weight_kg, drive_label(sel_car->drive_type_id));
-    ui::TextStyle sp_st;
-    sp_st.size = 10.5f;
-    sp_st.color = ui::rgba(186, 194, 208);
-    sp_st.align = ui::Align::kCenter;
-    list.text(card_x + card_w * 0.5f, card_y + 262.0f, spec, sp_st);
+    std::snprintf(spec, sizeof spec, "%d HP   •   %.0f NM   •   %.0f KG", hp, sel_car->peak_torque_nm,
+                  sel_car->curb_weight_kg);
+    list.rect(card_x + 16.0f * s, card_y + 234.0f * s, card_x + card_w - 16.0f * s, card_y + 258.0f * s,
+              ui::rgba(255, 255, 255, 16));
+    list.text(card_x + card_w * 0.5f, card_y + 240.0f * s, spec,
+              ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kCenter));
 
-    // Factory Colour Bar Picker inside card bottom.
-    ui::TextStyle cl_st;
-    cl_st.size = 13.0f;
-    cl_st.color = ui::rgba(220, 226, 236);
-    cl_st.font = ui::Font::kB;
-    list.text(card_x + 18.0f, card_y + 292.0f,
-              "MANUFACTURER COLOR  (" + std::to_string(autoshow.selected_colour_index() + 1) + "/" +
+    // Factory Colour Swatch Strip (with authentic Livery/CAR_PAINT_GRID_* chips).
+    list.text(card_x + 16.0f * s, card_y + 270.0f * s,
+              "FACTORY COLOR  (" + std::to_string(autoshow.selected_colour_index() + 1) + "/" +
                   std::to_string(std::max<size_t>(1, sel_car->swatches.size())) + ")",
-              cl_st);
+              ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
     const size_t nsw = std::min<size_t>(sel_car->swatches.size(), 10);
-    const float sw_w = 26.0f, sw_gap = 5.0f;
-    float sx = card_x + 18.0f;
+    const float sw_w = 29.0f * s, sw_h = 26.0f * s, sw_gap = 5.0f * s;
+    float sx = card_x + 16.0f * s;
+    std::array<float, 4> chip_uv{}, met_uv{}, focus_uv{};
+    const bool has_chip = ui4::texture("LIVERY/CAR_PAINT_GRID_CHIP", chip_uv);
+    const bool has_met = ui4::texture("LIVERY/CAR_PAINT_GRID_METALLIC", met_uv);
+    const bool has_focus = ui4::texture("LIVERY/CAR_PAINT_GRID_FOCUS", focus_uv);
     for (size_t i = 0; i < nsw; ++i) {
       const auto& sw = sel_car->swatches[i];
-      const uint8_t r = uint8_t((sw.rgb >> 16) & 0xFF);
-      const uint8_t g = uint8_t((sw.rgb >> 8) & 0xFF);
-      const uint8_t b = uint8_t(sw.rgb & 0xFF);
+      const uint32_t sw_col =
+          ui::rgba(uint8_t((sw.rgb >> 16) & 0xFF), uint8_t((sw.rgb >> 8) & 0xFF), uint8_t(sw.rgb & 0xFF), 255);
       const bool active = (i == autoshow.selected_colour_index());
-      list.rect(sx, card_y + 318.0f, sx + sw_w, card_y + 346.0f, ui::rgba(r, g, b, 255), 3.0f);
-      if (sw.metallic) {
-        list.rect(sx + 2.0f, card_y + 320.0f, sx + sw_w - 2.0f, card_y + 327.0f, ui::rgba(255, 255, 255, 64), 2.0f);
-      }
+      const float sy0 = card_y + 292.0f * s;
+      list.rect(sx, sy0, sx + sw_w, sy0 + sw_h, sw_col);
+      if (sw.metallic && has_met) list.image(sx, sy0, sx + sw_w, sy0 + sw_h, met_uv, ui::rgba(255, 255, 255, 92));
+      else if (has_chip) list.image(sx, sy0, sx + sw_w, sy0 + sw_h, chip_uv, ui::rgba(255, 255, 255, 64));
+      list.frame(sx, sy0, sx + sw_w, sy0 + sw_h, ui::rgba(255, 255, 255, 70), 1.0f * s);
       if (active) {
-        list.frame(sx - 2.0f, card_y + 316.0f, sx + sw_w + 2.0f, card_y + 348.0f, ui::rgba(255, 255, 255, 255), 2.0f, 4.0f);
+        list.frame(sx - 2.0f * s, sy0 - 2.0f * s, sx + sw_w + 2.0f * s, sy0 + sw_h + 2.0f * s, ui4::kWhite, 2.0f * s);
+        list.frame(sx - 4.0f * s, sy0 - 4.0f * s, sx + sw_w + 4.0f * s, sy0 + sw_h + 4.0f * s, ui4::kPink, 1.5f * s);
       }
       sx += sw_w + sw_gap;
     }
   }
 
-  // Bottom car strip + controls footer.
-  const float bot_y = h - 98.0f;
-  list.rect(0, bot_y, w, h, ui::rgba(10, 12, 18, 224));
+  // Bottom Horizontal Car Tile Strip (REAL car thumbnails + class/PI + price!).
   const auto& vis = autoshow.visible_cars();
   if (!vis.empty()) {
+    const float bot_y = h - 186.0f * s;
+    const float card_ch = 104.0f * s;
     const int n = int(vis.size());
     const int sel = int(autoshow.selected_index());
     const int count = std::min(n, 5);
     const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
-    const float cw = (w - 64.0f) / float(count) - 10.0f;
-    float bx = 32.0f;
+    const float gap = 12.0f * s;
+    const float cw = (w - 112.0f * s - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+    float bx = 56.0f * s;
     for (int i = first; i < first + count; ++i) {
       const auto& c = vis[size_t(i)];
       const bool act = (i == sel);
-      list.rect(bx, bot_y + 10.0f, bx + cw, bot_y + 62.0f, act ? ui::rgba(240, 88, 24, 235) : ui::rgba(26, 31, 42, 210),
-                5.0f);
-      ui::TextStyle cs;
-      cs.size = 11.0f;
-      cs.color = ui::rgba(255, 255, 255);
-      cs.font = ui::Font::kB;
+      const float lift = act ? 6.0f * s : 0.0f;
+      ui4::panel(list, bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, s,
+                 act ? ui::rgba(32, 16, 28, 242) : ui4::kCharcoalDark, act ? ui4::kPink : ui::rgba(255, 255, 255, 24),
+                 0, true);
+      if (act) list.frame(bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, ui4::kPink, 2.0f * s);
+
+      // Car thumbnail artwork from Textures.zip.
+      const float th_h = 56.0f * s;
+      const float th_w = th_h * 1.95f;
+      const float th_x0 = bx + 0.5f * (cw - th_w);
+      const float th_y0 = bot_y + 8.0f * s - lift;
+      if (!ui4::car_thumbnail(list, th_x0, th_y0, th_x0 + th_w, th_y0 + th_h, c.dealer.id)) {
+        list.rect(bx + 10.0f * s, th_y0 + 4.0f * s, bx + cw - 10.0f * s, th_y0 + th_h - 4.0f * s,
+                  ui::rgba(255, 255, 255, 12));
+        ui4::manufacturer_logo(list, bx + cw * 0.5f - 22.0f * s, th_y0 + 10.0f * s, bx + cw * 0.5f + 22.0f * s,
+                               th_y0 + 46.0f * s, c.make_name, ui::rgba(255, 255, 255, 140));
+      }
+
+      const int cls =
+          bands.empty() ? int(c.dealer.class_id) : garage::class_of(c.dealer.performance_index, bands);
+      const std::string cname_cls = (bands.empty() || cls >= int(bands.size())) ? "?" : bands[size_t(cls)].name;
+      const int cpi = bands.empty() ? int(std::ceil(c.dealer.performance_index * 999.0))
+                                    : garage::shown_index(c.dealer.performance_index, bands);
+      ui4::class_badge(list, bx + 8.0f * s, bot_y + 8.0f * s - lift, 17.0f * s, cname_cls, cpi, cls);
+
       std::string bname = car_name(c.dealer.media_name);
-      if (bname.size() > 17) bname = bname.substr(0, 17);
-      list.text(bx + 10.0f, bot_y + 18.0f, bname, cs);
-      cs.size = 12.0f;
-      cs.color = act ? ui::rgba(255, 244, 210) : ui::rgba(176, 184, 198);
-      list.text(bx + 10.0f, bot_y + 38.0f, credits_text(c.dealer.base_cost), cs);
-      bx += cw + 10.0f;
+      if (bname.empty()) bname = c.display_name;
+      ui::TextStyle cs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(bname, cs, cw - 16.0f * s, 8.5f * s);
+      list.text(bx + 8.0f * s, bot_y + 66.0f * s - lift, bname, cs);
+
+      ui::TextStyle ps = ui4::style(ui::Font::kB, 11.5f * s, act ? ui4::kYellow : ui4::kDim, ui::Align::kLeft, true);
+      list.text(bx + 8.0f * s, bot_y + 84.0f * s - lift, ui4::format_credits(c.dealer.base_cost), ps);
+      bx += cw + gap;
     }
   }
-  ui::TextStyle hint;
-  hint.size = 12.0f;
-  hint.color = ui::rgba(182, 190, 204);
-  list.text(32.0f, h - 24.0f,
-            notice.empty() ? "[Q/E] MAKE  [UP/DOWN] CAR  [C] COLOR  [ENTER] BUY  [ESC] BACK" : notice, hint);
+
+  if (!notice.empty()) {
+    ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+    ui4::fit_text(notice, ns, 340.0f * s, 9.0f * s);
+    list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
+  }
+
+  ui4::button_bar(list,
+                  {{"A", "BUY CAR"}, {"LB", "MAKE"}, {"Y", "FACTORY COLOR"}, {"B", "BACK"}},
+                  w, h, 56.0f);
 }
 
 void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& shop,
                            const std::vector<garage::ClassBand>& bands, int discount_percent, int64_t credits,
                            const std::string& car_title, const std::string& notice) {
-  // Top bar + 8 Category tabs.
-  list.rect(0, 0, w, 92.0f, ui::rgba(12, 14, 19, 230));
-  list.rect(0, 90.0f, w, 93.0f, ui::rgba(246, 152, 24, 240));
+  const float s = h / 720.0f;
+  ui4::subtle_vignette(list, w, h, 0.30f);
 
-  ui::TextStyle tst;
-  tst.size = 23.0f;
-  tst.color = ui::rgba(255, 255, 255);
-  tst.font = ui::Font::kE;
-  tst.slant = 0.14f;
-  list.text(28.0f, 14.0f, "DAK'S GARAGE  //  " + car_title, tst);
+  // Top-left tilted FH1 header banner.
+  ui4::title_banner(list, s, 56.0f * s, 24.0f * s, car_title.empty() ? "UPGRADE SHOP" : car_title,
+                    "DAK'S GARAGE  //  UPGRADES & TUNING", true, 540.0f);
 
-  ui::TextStyle cr;
-  cr.size = 18.0f;
-  cr.color = ui::rgba(255, 206, 56);
-  cr.align = ui::Align::kRight;
-  cr.font = ui::Font::kB;
-  list.text(w - 28.0f, 16.0f,
-            credits_text(credits) + (discount_percent > 0 ? ("  (" + std::to_string(discount_percent) + "% OFF)") : ""),
-            cr);
-
-  static const char* kShortCat[8] = {"ENGINE", "PLATFORM", "DRIVETRAIN", "TIRES/RIMS",
-                                     "AERO/BODY", "CONVERSIONS", "AUTO UPG", "TUNING"};
-  const int ncat = int(ShopCategory::kCount);
-  const float tw = (w - 56.0f) / float(ncat) - 5.0f;
-  float tx = 28.0f;
-  for (int i = 0; i < ncat; ++i) {
-    const bool act = (ShopCategory(i) == shop.category());
-    list.rect(tx, 50.0f, tx + tw, 82.0f, act ? ui::rgba(246, 142, 24, 245) : ui::rgba(28, 32, 42, 210), 4.0f);
-    ui::TextStyle cs;
-    cs.size = 10.5f;
-    cs.color = act ? ui::rgba(14, 16, 20) : ui::rgba(204, 210, 222);
-    cs.align = ui::Align::kCenter;
-    cs.font = ui::Font::kB;
-    list.text(tx + tw * 0.5f, 61.0f, kShortCat[i], cs);
-    tx += tw + 5.0f;
+  // Top-right Credits + Discount strip.
+  {
+    const float rx = w - 56.0f * s;
+    if (discount_percent > 0) {
+      char db[32];
+      std::snprintf(db, sizeof db, "%d%% DISCOUNT", discount_percent);
+      ui4::brush(list, rx - 352.0f * s, 32.0f * s, rx - 204.0f * s, 60.0f * s, ui4::kPink);
+      list.text(rx - 278.0f * s, 39.0f * s, db, ui4::style(ui::Font::kE, 13.0f * s, ui4::kWhite, ui::Align::kCenter));
+    }
+    ui4::offwhite_strip(list, rx - 186.0f * s, 32.0f * s, rx, 60.0f * s, s, true);
+    ui::TextStyle crs = ui4::style(ui::Font::kB, 17.5f * s, ui4::kInk, ui::Align::kRight, true);
+    list.text(rx - 12.0f * s, 38.0f * s, ui4::format_credits(credits), crs);
   }
 
-  // Left slots/parts/sliders panel.
-  const float lx = 24.0f, ly = 108.0f, lw = 356.0f, lh = h - 160.0f;
-  list.rect(lx, ly, lx + lw, ly + lh, ui::rgba(14, 17, 24, 224), 8.0f);
-  list.frame(lx, ly, lx + lw, ly + lh, ui::rgba(255, 255, 255, 34), 1.0f, 8.0f);
+  // Authentic FH1 8-category horizontal tab strip flanked by LB / RB.
+  static const std::vector<std::string> kCatTabs = {"ENGINE",     "PLATFORM",    "DRIVETRAIN", "TIRES/RIMS",
+                                                    "AERO/BODY",  "CONVERSIONS", "AUTO UPG",   "TUNING"};
+  ui4::tab_strip(list, s, 56.0f * s, 102.0f * s, w - 56.0f * s, kCatTabs, int(shop.category()), true, ui4::kPink);
 
-  const auto rows = shop.visible_rows(discount_percent);
-  const int n = int(rows.size());
-  const int sel = n > 0 ? int(std::min(shop.selected_row(), rows.size() - 1)) : 0;
-  const int max_vis = std::max(1, int((lh - 24.0f) / 48.0f));
-  const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
-  float ry = ly + 14.0f;
-  for (int i = first; i < std::min(n, first + max_vis); ++i) {
-    const auto& r = rows[size_t(i)];
-    const bool active = (i == sel);
-    list.rect(lx + 10.0f, ry, lx + lw - 10.0f, ry + 42.0f,
-              active ? ui::rgba(246, 142, 24, 232) : ui::rgba(26, 31, 42, 195), 5.0f);
-    ui::TextStyle ls;
-    ls.size = 13.5f;
-    ls.color = active ? ui::rgba(16, 18, 22) : ui::rgba(240, 244, 250);
-    ls.font = ui::Font::kB;
-    list.text(lx + 20.0f, ry + 6.0f, r.label, ls);
+  // Left Part Cards or Tuning Sliders panel (sharp gritty FH1 card).
+  const float lx = 56.0f * s, ly = 148.0f * s, lw = 412.0f * s, lh = h - 228.0f * s;
+  ui4::panel(list, lx, ly, lx + lw, ly + lh, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
 
-    ls.size = 12.0f;
-    ls.color = active ? ui::rgba(32, 26, 18) : ui::rgba(172, 182, 198);
-    list.text(lx + 20.0f, ry + 23.0f, r.part_label, ls);
+  if (shop.category() == ShopCategory::kTuning && !shop.tuning_sliders().empty()) {
+    const auto& sliders = shop.tuning_sliders();
+    const int n = int(sliders.size());
+    const int sel = int(std::min(shop.selected_slider(), sliders.size() - 1));
+    const int max_vis = std::max(1, int((lh - 44.0f * s) / (56.0f * s)));
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
 
-    ls.align = ui::Align::kRight;
-    ls.color = active ? ui::rgba(14, 16, 20)
-                      : (r.fitted ? ui::rgba(80, 232, 130) : ui::rgba(255, 208, 72));
-    list.text(lx + lw - 20.0f, ry + 13.0f, r.state, ls);
-    ry += 48.0f;
+    // Active Tuning sub-category header strip.
+    const char* subcat = garage::tune_category_name(sliders[size_t(sel)].category);
+    ui4::offwhite_strip(list, lx + 12.0f * s, ly + 10.0f * s, lx + lw - 12.0f * s, ly + 34.0f * s, s, false);
+    list.text(lx + 22.0f * s, ly + 15.0f * s, std::string("TUNING SETUP  //  ") + subcat,
+              ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk));
+
+    float ry = ly + 44.0f * s;
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
+      const auto& sl = sliders[size_t(i)];
+      const bool active = (i == sel);
+      if (active) {
+        ui4::brush(list, lx + 6.0f * s, ry, lx + lw - 6.0f * s, ry + 50.0f * s, ui4::kPink);
+      } else {
+        list.rect(lx + 12.0f * s, ry, lx + lw - 12.0f * s, ry + 48.0f * s,
+                  (i % 2 == 0) ? ui::rgba(32, 34, 40, 215) : ui::rgba(24, 26, 32, 215));
+      }
+
+      ui::TextStyle lt = ui4::style(active ? ui::Font::kE : ui::Font::kB, 13.0f * s,
+                                    sl.unlocked ? ui4::kWhite : ui4::kDim);
+      ui4::fit_text(sl.label, lt, lw - 140.0f * s, 9.0f * s);
+      list.text(lx + 22.0f * s, ry + 7.0f * s, sl.label, lt);
+
+      char valbuf[48];
+      if (!sl.unlocked) {
+        std::snprintf(valbuf, sizeof valbuf, "LOCKED");
+      } else if (sl.unit.empty()) {
+        std::snprintf(valbuf, sizeof valbuf, "%.2f", sl.value);
+      } else {
+        std::snprintf(valbuf, sizeof valbuf, "%.1f %s", sl.value, sl.unit.c_str());
+      }
+      ui::TextStyle vt = ui4::style(ui::Font::kE, 13.0f * s,
+                                    !sl.unlocked ? ui4::kDim : (sl.tuned ? ui4::kYellow : ui4::kWhite),
+                                    ui::Align::kRight, true);
+      list.text(lx + lw - 22.0f * s, ry + 7.0f * s, valbuf, vt);
+
+      // Authentic FH1 tuning rail with default notch + live thumb.
+      const float rx0 = lx + 22.0f * s, rx1 = lx + lw - 22.0f * s, rby = ry + 32.0f * s, rbh = 7.0f * s;
+      list.rect(rx0, rby, rx1, rby + rbh, active ? ui::rgba(0, 0, 0, 120) : ui::rgba(255, 255, 255, 30));
+      const double span = std::max(1e-6, sl.max_val - sl.min_val);
+      const float frac = float(std::clamp((sl.value - sl.min_val) / span, 0.0, 1.0));
+      const float def_f = float(std::clamp((sl.def_val - sl.min_val) / span, 0.0, 1.0));
+      const float rw_bar = rx1 - rx0;
+      list.rect(rx0, rby, rx0 + rw_bar * frac, rby + rbh,
+                !sl.unlocked ? ui::rgba(120, 124, 132, 160) : (active ? ui4::kWhite : ui4::kPink));
+      // Stock default tick mark.
+      const float dx = rx0 + rw_bar * def_f;
+      list.rect(dx - 1.0f * s, rby - 3.0f * s, dx + 1.0f * s, rby + rbh + 3.0f * s, ui4::kYellow);
+      // Slider thumb knob.
+      const float kx = rx0 + rw_bar * frac;
+      list.rect(kx - 4.0f * s, rby - 3.0f * s, kx + 4.0f * s, rby + rbh + 3.0f * s, ui4::kWhite);
+
+      ry += 56.0f * s;
+    }
+  } else {
+    const auto rows = shop.visible_rows(discount_percent);
+    const int n = int(rows.size());
+    const int sel = n > 0 ? int(std::min(shop.selected_row(), rows.size() - 1)) : 0;
+    const int max_vis = std::max(1, int((lh - 24.0f * s) / (52.0f * s)));
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+    std::array<float, 4> inst_uv{}, owned_uv{};
+    const bool has_inst =
+        ui4::texture("T:C_Map/C_UPG_Map/C_UPG_Icon_Installed", inst_uv) || ui4::texture("COMMON/TICK", inst_uv);
+    const bool has_owned = ui4::texture("T:C_Map/C_UPG_Map/C_UPG_Icon_Owned", owned_uv);
+
+    float ry = ly + 14.0f * s;
+    for (int i = first; i < std::min(n, first + max_vis); ++i) {
+      const auto& r = rows[size_t(i)];
+      const bool active = (i == sel);
+      if (active) {
+        ui4::brush(list, lx + 6.0f * s, ry, lx + lw - 6.0f * s, ry + 46.0f * s, ui4::kPink);
+      } else {
+        list.rect(lx + 12.0f * s, ry, lx + lw - 12.0f * s, ry + 44.0f * s,
+                  (i % 2 == 0) ? ui::rgba(32, 34, 40, 215) : ui::rgba(24, 26, 32, 215));
+      }
+
+      // Authentic installed / owned badge icon on left.
+      float text_x = lx + 22.0f * s;
+      if (r.fitted && has_inst) {
+        list.image(lx + 16.0f * s, ry + 12.0f * s, lx + 36.0f * s, ry + 32.0f * s, inst_uv,
+                   active ? ui4::kWhite : ui4::kGreen);
+        text_x = lx + 42.0f * s;
+      } else if (r.owned && has_owned) {
+        list.image(lx + 16.0f * s, ry + 12.0f * s, lx + 36.0f * s, ry + 32.0f * s, owned_uv,
+                   active ? ui4::kWhite : ui4::kAmber);
+        text_x = lx + 42.0f * s;
+      }
+
+      ui::TextStyle ls = ui4::style(active ? ui::Font::kE : ui::Font::kB, 14.0f * s, ui4::kWhite);
+      ui4::fit_text(r.label, ls, lw - 156.0f * s, 9.5f * s);
+      list.text(text_x, ry + 7.0f * s, r.label, ls);
+
+      ui::TextStyle ps = ui4::style(ui::Font::kB, 12.0f * s, active ? ui4::kWhite : ui4::kDim, ui::Align::kLeft, true);
+      ui4::fit_text(r.part_label, ps, lw - 156.0f * s, 8.5f * s);
+      list.text(text_x, ry + 25.0f * s, r.part_label, ps);
+
+      // Right state tag (FITTED / OWNED / Price).
+      ui::TextStyle st_s = ui4::style(ui::Font::kE, 12.5f * s,
+                                      active ? ui4::kWhite : (r.fitted ? ui4::kGreen : (r.owned ? ui4::kAmber : ui4::kYellow)),
+                                      ui::Align::kRight, true);
+      list.text(lx + lw - 20.0f * s, ry + 15.0f * s, r.state, st_s);
+      ry += 52.0f * s;
+    }
   }
 
-  // Right PI & 5-Stat Diff Preview card.
-  const float rw = 368.0f, rh = 312.0f;
-  const float rx = w - rw - 24.0f, rtop = 108.0f;
-  list.rect(rx, rtop, rx + rw, rtop + rh, ui::rgba(14, 17, 24, 226), 8.0f);
-  list.frame(rx, rtop, rx + rw, rtop + rh, ui::rgba(255, 255, 255, 36), 1.0f, 8.0f);
+  // Right Live PI Delta & 5-Stat Comparison Card.
+  const float rw = 372.0f * s, rh = 342.0f * s;
+  const float rx = w - rw - 56.0f * s, rtop = 148.0f * s;
+  ui4::panel(list, rx, rtop, rx + rw, rtop + rh, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
 
   const auto& cur = shop.current_pi();
   const auto& prv = shop.preview_pi();
@@ -887,174 +1018,232 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
   const std::string p_name =
       (bands.empty() || prv.class_id >= int(bands.size())) ? "?" : bands[size_t(prv.class_id)].name;
 
-  ui::TextStyle ph;
-  ph.size = 13.0f;
-  ph.color = ui::rgba(186, 194, 210);
-  ph.font = ui::Font::kB;
-  list.text(rx + 18.0f, rtop + 14.0f, "PERFORMANCE INDEX PREVIEW", ph);
-  draw_class_badge(list, rx + 18.0f, rtop + 38.0f, 30.0f, cur.class_id, c_name, cur.shown_pi);
+  ui4::offwhite_strip(list, rx + 12.0f * s, rtop + 10.0f * s, rx + rw - 12.0f * s, rtop + 34.0f * s, s, false);
+  list.text(rx + 22.0f * s, rtop + 15.0f * s, "PERFORMANCE INDEX", ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk));
 
+  ui4::class_badge(list, rx + 16.0f * s, rtop + 46.0f * s, 28.0f * s, c_name, cur.shown_pi, cur.class_id);
   if (diff && prv.shown_pi != cur.shown_pi) {
-    ui::TextStyle arr = ph;
-    arr.size = 18.0f;
-    arr.color = prv.shown_pi > cur.shown_pi ? ui::rgba(72, 236, 126) : ui::rgba(245, 86, 76);
-    list.text(rx + 136.0f, rtop + 42.0f, "->", arr);
-    draw_class_badge(list, rx + 168.0f, rtop + 38.0f, 30.0f, prv.class_id, p_name, prv.shown_pi);
+    const int dpi = prv.shown_pi - cur.shown_pi;
+    const uint32_t dcol = dpi > 0 ? ui4::kGreen : ui4::kRed;
+    list.text(rx + 122.0f * s, rtop + 50.0f * s, ">>", ui4::style(ui::Font::kE, 16.0f * s, dcol));
+    ui4::class_badge(list, rx + 156.0f * s, rtop + 46.0f * s, 28.0f * s, p_name, prv.shown_pi, prv.class_id);
+    char db[24];
+    std::snprintf(db, sizeof db, "%+d PI", dpi);
+    ui4::brush(list, rx + rw - 88.0f * s, rtop + 46.0f * s, rx + rw - 12.0f * s, rtop + 74.0f * s, dcol);
+    list.text(rx + rw - 50.0f * s, rtop + 53.0f * s, db, ui4::style(ui::Font::kE, 14.0f * s, ui4::kInk, ui::Align::kCenter));
   }
 
-  float sy = rtop + 88.0f;
-  draw_stat_bar(list, rx + 18.0f, sy, rw - 36.0f, 20.0f, "SPEED", cur.stats.speed_rating, prv.stats.speed_rating, diff);
-  sy += 26.0f;
-  draw_stat_bar(list, rx + 18.0f, sy, rw - 36.0f, 20.0f, "HANDLING", cur.stats.handling_rating, prv.stats.handling_rating, diff);
-  sy += 26.0f;
-  draw_stat_bar(list, rx + 18.0f, sy, rw - 36.0f, 20.0f, "ACCEL", cur.stats.accel_rating, prv.stats.accel_rating, diff);
-  sy += 26.0f;
-  draw_stat_bar(list, rx + 18.0f, sy, rw - 36.0f, 20.0f, "LAUNCH", cur.stats.launch_rating, prv.stats.launch_rating, diff);
-  sy += 26.0f;
-  draw_stat_bar(list, rx + 18.0f, sy, rw - 36.0f, 20.0f, "BRAKING", cur.stats.braking_rating, prv.stats.braking_rating, diff);
+  float sy = rtop + 92.0f * s;
+  ui4::stat_bar(list, rx + 16.0f * s, sy, rw - 32.0f * s, 22.0f * s, "SPEED", cur.stats.speed_rating,
+                prv.stats.speed_rating, diff, s);
+  sy += 26.0f * s;
+  ui4::stat_bar(list, rx + 16.0f * s, sy, rw - 32.0f * s, 22.0f * s, "HANDLING", cur.stats.handling_rating,
+                prv.stats.handling_rating, diff, s);
+  sy += 26.0f * s;
+  ui4::stat_bar(list, rx + 16.0f * s, sy, rw - 32.0f * s, 22.0f * s, "ACCEL", cur.stats.accel_rating,
+                prv.stats.accel_rating, diff, s);
+  sy += 26.0f * s;
+  ui4::stat_bar(list, rx + 16.0f * s, sy, rw - 32.0f * s, 22.0f * s, "LAUNCH", cur.stats.launch_rating,
+                prv.stats.launch_rating, diff, s);
+  sy += 26.0f * s;
+  ui4::stat_bar(list, rx + 16.0f * s, sy, rw - 32.0f * s, 22.0f * s, "BRAKING", cur.stats.braking_rating,
+                prv.stats.braking_rating, diff, s);
 
-  char specs[140];
+  // Crisp telemetry summary block.
+  const float ty0 = rtop + 232.0f * s;
+  list.rect(rx + 16.0f * s, ty0, rx + rw - 16.0f * s, ty0 + 88.0f * s, ui::rgba(255, 255, 255, 14));
   const int hp0 = int(std::lround(cur.stats.peak_power_kw * 1.34102));
   const int hp1 = int(std::lround(prv.stats.peak_power_kw * 1.34102));
-  std::snprintf(specs, sizeof specs, "POWER %d->%d HP   WT %.0f->%.0f KG", hp0, hp1,
-                cur.stats.curb_weight_kg, prv.stats.curb_weight_kg);
-  ui::TextStyle sp;
-  sp.size = 10.0f;
-  sp.color = ui::rgba(202, 210, 224);
-  sp.align = ui::Align::kCenter;
-  list.text(rx + rw * 0.5f, rtop + 236.0f, specs, sp);
+  char line1[96], line2[96], line3[96];
+  std::snprintf(line1, sizeof line1, "POWER   %d HP  ->  %d HP", hp0, hp1);
+  std::snprintf(line2, sizeof line2, "WEIGHT  %.0f KG  ->  %.0f KG", cur.stats.curb_weight_kg,
+                prv.stats.curb_weight_kg);
+  std::snprintf(line3, sizeof line3, "0-60: %.2fs   •   60-0: %.1fm   •   LAT: %.2fG", prv.stats.time_0_60_s,
+                prv.stats.brake_60_0_m, prv.stats.lat_g_60);
+  list.text(rx + 26.0f * s, ty0 + 12.0f * s, line1,
+            ui4::style(ui::Font::kB, 13.0f * s, hp1 > hp0 ? ui4::kGreen : ui4::kWhite));
+  list.text(rx + 26.0f * s, ty0 + 36.0f * s, line2,
+            ui4::style(ui::Font::kB, 13.0f * s, prv.stats.curb_weight_kg < cur.stats.curb_weight_kg ? ui4::kGreen : ui4::kWhite));
+  list.text(rx + 26.0f * s, ty0 + 60.0f * s, line3, ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
 
-  char accel_str[140];
-  std::snprintf(accel_str, sizeof accel_str, "0-60: %.2fS  60-0: %.1fM  LAT: %.2fG",
-                prv.stats.time_0_60_s, prv.stats.brake_60_0_m, prv.stats.lat_g_60);
-  list.text(rx + rw * 0.5f, rtop + 260.0f, accel_str, sp);
+  if (!notice.empty()) {
+    ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+    ui4::fit_text(notice, ns, 340.0f * s, 9.0f * s);
+    list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
+  }
 
-  // Footer.
-  list.rect(0, h - 38.0f, w, h, ui::rgba(10, 12, 18, 226));
-  ui::TextStyle ft;
-  ft.size = 12.5f;
-  ft.color = ui::rgba(196, 204, 218);
-  list.text(28.0f, h - 26.0f,
-            notice.empty()
-                ? "[Q/E] CATEGORY  [UP/DOWN] SLOT  [LEFT/RIGHT] PART/SLIDER  [ENTER] FIT  [X] SELL PART  [ESC] EXIT"
-                : notice,
-            ft);
+  ui4::button_bar(list,
+                  {{"A", shop.category() == ShopCategory::kTuning ? "APPLY TUNE" : "FIT PART"},
+                   {"LB", "CATEGORY"},
+                   {"DPAD_LR", shop.category() == ShopCategory::kTuning ? "ADJUST" : "TIER"},
+                   {"X", shop.category() == ShopCategory::kTuning ? "RESET" : "SELL PART"},
+                   {"B", "EXIT"}},
+                  w, h, 56.0f);
 }
 
 void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& browser,
                      const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice) {
-  list.rect(0, 0, w, 78.0f, ui::rgba(10, 13, 20, 228));
-  list.rect(0, 76.0f, w, 79.0f, ui::rgba(52, 168, 238, 240));
+  const float s = h / 720.0f;
+  ui4::subtle_vignette(list, w, h, 0.28f);
 
-  ui::TextStyle ts;
-  ts.size = 24.0f;
-  ts.color = ui::rgba(255, 255, 255);
-  ts.font = ui::Font::kE;
-  ts.slant = 0.14f;
-  list.text(28.0f, 16.0f, "MY GARAGE", ts);
+  // Top-left tilted FH1 header + Sort/Filter pills.
+  ui4::title_banner(list, s, 56.0f * s, 26.0f * s, "MY GARAGE", "HORIZON FESTIVAL", true, 420.0f);
 
   const std::string filt = browser.class_filter() < 0
                                ? "ALL CLASSES"
                                : (browser.class_filter() < int(bands.size())
                                       ? ("CLASS " + bands[size_t(browser.class_filter())].name)
                                       : "FILTERED");
-  ui::TextStyle st;
-  st.size = 14.0f;
-  st.color = ui::rgba(196, 208, 226);
-  st.font = ui::Font::kB;
-  list.text(28.0f, 48.0f,
-            "SORT: " + std::string(garage_sort_name(browser.sort_mode())) + "   |   FILTER: " + filt + "   |   " +
-                std::to_string(browser.visible().size()) + " CARS",
-            st);
+  const float pill_y = 104.0f * s;
+  ui4::pill(list, 56.0f * s, pill_y, 240.0f * s, pill_y + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu);
+  list.text(70.0f * s, pill_y + 7.0f * s, "SORT: " + std::string(garage_sort_name(browser.sort_mode())),
+            ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite));
+  ui4::pill(list, 248.0f * s, pill_y, 444.0f * s, pill_y + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu);
+  list.text(262.0f * s, pill_y + 7.0f * s, "FILTER: " + filt, ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite));
+  ui4::brush(list, 452.0f * s, pill_y - 1.0f * s, 558.0f * s, pill_y + 29.0f * s, ui4::kBrushBlack);
+  list.text(505.0f * s, pill_y + 7.0f * s, std::to_string(browser.visible().size()) + " CARS",
+            ui4::style(ui::Font::kE, 13.5f * s, ui4::kYellow, ui::Align::kCenter));
 
-  ui::TextStyle cr = st;
-  cr.size = 19.0f;
-  cr.color = ui::rgba(255, 206, 56);
-  cr.align = ui::Align::kRight;
-  list.text(w - 28.0f, 22.0f, credits_text(credits), cr);
+  // Top-right Credits + Selected Car Card (leaving centre 3D turntable completely open!).
+  const float rx = w - 56.0f * s;
+  ui4::offwhite_strip(list, rx - 186.0f * s, 32.0f * s, rx, 60.0f * s, s, true);
+  list.text(rx - 12.0f * s, 38.0f * s, ui4::format_credits(credits),
+            ui4::style(ui::Font::kB, 17.5f * s, ui4::kInk, ui::Align::kRight, true));
 
-  // Left car list.
-  const float lx = 28.0f, ly = 96.0f, lw = 410.0f, lh = h - 150.0f;
-  list.rect(lx, ly, lx + lw, ly + lh, ui::rgba(12, 16, 24, 222), 8.0f);
-  const auto& vis = browser.visible();
-  const int n = int(vis.size());
-  const int sel = int(browser.selected_index());
-  const int max_vis = std::max(1, int((lh - 24.0f) / 48.0f));
-  const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
-  float ry = ly + 12.0f;
-  for (int i = first; i < std::min(n, first + max_vis); ++i) {
-    const auto& e = vis[size_t(i)];
-    const bool act = (i == sel);
-    list.rect(lx + 10.0f, ry, lx + lw - 10.0f, ry + 42.0f,
-              act ? ui::rgba(52, 158, 232, 232) : ui::rgba(24, 30, 42, 195), 5.0f);
+  if (const GarageEntry* sel_e = browser.selected_entry()) {
+    const float cw = 356.0f * s, cx0 = rx - cw, cy0 = 76.0f * s, ch = 212.0f * s;
+    ui4::panel(list, cx0, cy0, rx, cy0 + ch, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
     const std::string cname =
-        (bands.empty() || e.class_id >= int(bands.size())) ? "?" : bands[size_t(e.class_id)].name;
-    draw_class_badge(list, lx + 16.0f, ry + 8.0f, 24.0f, e.class_id, cname, e.shown_pi);
+        (bands.empty() || sel_e->class_id >= int(bands.size())) ? "?" : bands[size_t(sel_e->class_id)].name;
 
-    ui::TextStyle ns;
-    ns.size = 13.5f;
-    ns.color = ui::rgba(255, 255, 255);
-    ns.font = ui::Font::kB;
-    list.text(lx + 112.0f, ry + 6.0f, e.display_name, ns);
-    ns.size = 11.5f;
-    ns.color = act ? ui::rgba(232, 246, 255) : ui::rgba(170, 180, 196);
-    list.text(lx + 112.0f, ry + 24.0f,
-              std::string(drive_label(e.drive_type_id)) + "   |   SELL " + credits_text(e.sell_cr) +
-                  (e.is_current ? "   [ACTIVE]" : ""),
-              ns);
-    ry += 48.0f;
+    // Make logo top-right inside card.
+    ui4::manufacturer_logo(list, rx - 82.0f * s, cy0 + 14.0f * s, rx - 16.0f * s, cy0 + 62.0f * s, sel_e->make_name);
+
+    ui::TextStyle yr = ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim);
+    list.text(cx0 + 18.0f * s, cy0 + 16.0f * s,
+              std::to_string(sel_e->year) + "  " + sel_e->make_name, yr);
+    std::string sel_label = car_name(sel_e->media_name);
+    if (sel_label.empty() || sel_label.rfind("_&", 0) == 0) sel_label = sel_e->display_name;
+    ui::TextStyle nm = ui4::style(ui::Font::kE, 21.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+    ui4::fit_text(sel_label, nm, cw - 110.0f * s, 12.0f * s);
+    list.text(cx0 + 18.0f * s, cy0 + 36.0f * s, sel_label, nm);
+
+    ui4::class_badge(list, cx0 + 18.0f * s, cy0 + 74.0f * s, 26.0f * s, cname, sel_e->shown_pi, sel_e->class_id);
+    if (sel_e->is_current) {
+      ui4::brush(list, cx0 + 128.0f * s, cy0 + 74.0f * s, rx - 16.0f * s, cy0 + 100.0f * s, ui4::kPink);
+      list.text(0.5f * (cx0 + 128.0f * s + rx - 16.0f * s), cy0 + 81.0f * s, "CURRENT CAR",
+                ui4::style(ui::Font::kE, 13.0f * s, ui4::kWhite, ui::Align::kCenter));
+    }
+
+    list.rect(cx0 + 18.0f * s, cy0 + 114.0f * s, rx - 18.0f * s, cy0 + 115.0f * s, ui::rgba(255, 255, 255, 28));
+    list.text(cx0 + 18.0f * s, cy0 + 126.0f * s, "DRIVETRAIN", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+    list.text(rx - 18.0f * s, cy0 + 126.0f * s, drive_label(sel_e->drive_type_id),
+              ui4::style(ui::Font::kE, 13.5f * s, ui4::kWhite, ui::Align::kRight));
+    list.text(cx0 + 18.0f * s, cy0 + 152.0f * s, "CAR VALUE", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+    list.text(rx - 18.0f * s, cy0 + 152.0f * s, ui4::format_credits(sel_e->value_cr),
+              ui4::style(ui::Font::kB, 13.5f * s, ui4::kWhite, ui::Align::kRight, true));
+    list.text(cx0 + 18.0f * s, cy0 + 178.0f * s, "SELL VALUE (50%)", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+    list.text(rx - 18.0f * s, cy0 + 178.0f * s, ui4::format_credits(sel_e->sell_cr),
+              ui4::style(ui::Font::kB, 13.5f * s, ui4::kYellow, ui::Align::kRight, true));
   }
 
-  list.rect(0, h - 38.0f, w, h, ui::rgba(10, 12, 18, 226));
-  ui::TextStyle ft;
-  ft.size = 12.5f;
-  ft.color = ui::rgba(196, 204, 218);
-  list.text(28.0f, h - 26.0f,
-            notice.empty() ? "[UP/DOWN] SELECT  [ENTER] GET IN CAR  [S] SORT  [F] FILTER  [X] SELL CAR (50%)  [ESC] BACK"
-                           : notice,
-            ft);
+  // Bottom Horizontal FH1 Car-Card Carousel with REAL car thumbnails!
+  const auto& vis = browser.visible();
+  if (!vis.empty()) {
+    const float bot_y = h - 200.0f * s;
+    const float card_h = 118.0f * s;
+    const int n = int(vis.size());
+    const int sel = int(browser.selected_index());
+    const int count = std::min(n, 5);
+    const int first = std::clamp(sel - count / 2, 0, std::max(0, n - count));
+    const float gap = 12.0f * s;
+    const float cw = (w - 112.0f * s - gap * float(std::max(0, count - 1))) / float(std::max(1, count));
+    float bx = 56.0f * s;
+    for (int i = first; i < first + count; ++i) {
+      const auto& e = vis[size_t(i)];
+      const bool act = (i == sel);
+      const float lift = act ? 8.0f * s : 0.0f;
+      ui4::panel(list, bx, bot_y - lift, bx + cw, bot_y + card_h - lift, s,
+                 act ? ui::rgba(34, 16, 28, 244) : ui4::kCharcoalDark, act ? ui4::kPink : ui::rgba(255, 255, 255, 24),
+                 0, true);
+      if (act) list.frame(bx, bot_y - lift, bx + cw, bot_y + card_h - lift, ui4::kPink, 2.0f * s);
+
+      const float th_h = 62.0f * s;
+      const float th_w = th_h * 1.95f;
+      const float th_x0 = bx + 0.5f * (cw - th_w);
+      const float th_y0 = bot_y + 10.0f * s - lift;
+      if (!ui4::car_thumbnail(list, th_x0, th_y0, th_x0 + th_w, th_y0 + th_h, e.car_id)) {
+        list.rect(bx + 10.0f * s, th_y0 + 4.0f * s, bx + cw - 10.0f * s, th_y0 + th_h - 4.0f * s,
+                  ui::rgba(255, 255, 255, 12));
+        ui4::manufacturer_logo(list, bx + cw * 0.5f - 24.0f * s, th_y0 + 12.0f * s, bx + cw * 0.5f + 24.0f * s,
+                               th_y0 + 50.0f * s, e.make_name, ui::rgba(255, 255, 255, 145));
+      }
+
+      const std::string cname =
+          (bands.empty() || e.class_id >= int(bands.size())) ? "?" : bands[size_t(e.class_id)].name;
+      ui4::class_badge(list, bx + 8.0f * s, bot_y + 8.0f * s - lift, 18.0f * s, cname, e.shown_pi, e.class_id);
+      if (e.is_current) {
+        ui4::brush(list, bx + cw - 74.0f * s, bot_y + 7.0f * s - lift, bx + cw - 6.0f * s, bot_y + 25.0f * s - lift,
+                   ui4::kPink);
+        list.text(bx + cw - 40.0f * s, bot_y + 11.0f * s - lift, "ACTIVE",
+                  ui4::style(ui::Font::kE, 10.0f * s, ui4::kWhite, ui::Align::kCenter));
+      }
+
+      std::string card_label = car_name(e.media_name);
+      if (card_label.empty() || card_label.rfind("_&", 0) == 0) card_label = e.display_name;
+      ui::TextStyle ns = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(card_label, ns, cw - 16.0f * s, 8.5f * s);
+      list.text(bx + 8.0f * s, bot_y + 76.0f * s - lift, card_label, ns);
+
+      ui::TextStyle sub = ui4::style(ui::Font::kB, 11.0f * s, act ? ui4::kYellow : ui4::kDim, ui::Align::kLeft, true);
+      list.text(bx + 8.0f * s, bot_y + 96.0f * s - lift,
+                std::string(drive_label(e.drive_type_id)) + "  •  " + ui4::format_credits(e.value_cr), sub);
+      bx += cw + gap;
+    }
+  }
+
+  if (!notice.empty()) {
+    ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+    ui4::fit_text(notice, ns, 340.0f * s, 9.0f * s);
+    list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
+  }
+
+  ui4::button_bar(list,
+                  {{"A", "GET IN CAR"}, {"Y", "SORT"}, {"X", "FILTER"}, {"LB", "SELL CAR"}, {"B", "BACK"}},
+                  w, h, 56.0f);
 }
 
 void draw_barn_find_hud(ui::List& list, float w, float h, const BarnFindCard& card) {
   if (!card.visible) return;
-  const float cw = 520.0f, ch = 220.0f;
-  const float cx = (w - cw) * 0.5f, cy = h - ch - 48.0f;
-  list.shadow(cx, cy, cx + cw, cy + ch, ui::rgba(0, 0, 0, 160), 10.0f, 18.0f);
-  list.rect(cx, cy, cx + cw, cy + ch, ui::rgba(22, 17, 13, 238), 10.0f);
-  list.frame(cx, cy, cx + cw, cy + ch, ui::rgba(232, 164, 52, 220), 2.0f, 10.0f);
-  list.rect(cx, cy, cx + cw, cy + 44.0f, ui::rgba(196, 122, 26, 235), 10.0f);
+  const float s = h / 720.0f;
+  const float cw = 540.0f * s, ch = 220.0f * s;
+  const float cx = 0.5f * (w - cw), cy = h - ch - 84.0f * s;
+  ui4::panel(list, cx, cy, cx + cw, cy + ch, s, ui4::kCharcoalDark, ui4::kAmber, 0, true);
 
-  ui::TextStyle hdr;
-  hdr.size = 19.0f;
-  hdr.color = ui::rgba(255, 250, 238);
-  hdr.font = ui::Font::kE;
-  hdr.align = ui::Align::kCenter;
-  list.text(cx + cw * 0.5f, cy + 12.0f, "BARN FIND RESTORATION  //  " + card.barn_name, hdr);
+  {
+    ui4::TiltScope tilt(list, cx + 0.5f * cw, cy + 16.0f * s, ui4::kTiltRad * 0.6f);
+    ui4::brush(list, cx - 12.0f * s, cy - 8.0f * s, cx + cw + 12.0f * s, cy + 36.0f * s, ui4::kAmber, true);
+    list.text(cx + 0.5f * cw, cy + 4.0f * s, "BARN FIND RESTORED  //  " + card.barn_name,
+              ui4::style(ui::Font::kE, 21.0f * s, ui4::kInk, ui::Align::kCenter));
+  }
 
-  ui::TextStyle nm;
-  nm.size = 26.0f;
-  nm.color = ui::rgba(255, 255, 255);
-  nm.font = ui::Font::kE;
-  nm.align = ui::Align::kCenter;
-  list.text(cx + cw * 0.5f, cy + 64.0f,
-            (card.year > 0 ? (std::to_string(card.year) + " ") : "") + card.car_name, nm);
+  const std::string title = (card.year > 0 ? (std::to_string(card.year) + " ") : "") + card.car_name;
+  ui::TextStyle nm = ui4::style(ui::Font::kE, 26.0f * s, ui4::kWhite, ui::Align::kCenter, true);
+  ui4::fit_text(title, nm, cw - 40.0f * s, 14.0f * s);
+  list.text(cx + 0.5f * cw, cy + 56.0f * s, title, nm);
 
-  // Restoration progress bar.
-  const float bx = cx + 48.0f, bw = cw - 96.0f, by = cy + 118.0f;
-  list.rect(bx, by, bx + bw, by + 16.0f, ui::rgba(46, 36, 26, 220), 4.0f);
-  list.rect(bx, by, bx + bw * std::clamp(card.restore_progress, 0.0f, 1.0f), by + 16.0f,
-            ui::rgba(76, 218, 108, 245), 4.0f);
+  ui4::class_badge(list, cx + 0.5f * cw - 46.0f * s, cy + 92.0f * s, 24.0f * s, card.class_name, card.shown_pi);
 
-  ui::TextStyle sub;
-  sub.size = 13.5f;
-  sub.color = ui::rgba(236, 222, 198);
-  sub.align = ui::Align::kCenter;
-  sub.font = ui::Font::kB;
-  list.text(cx + cw * 0.5f, cy + 152.0f, card.subtitle, sub);
+  const float bx = cx + 44.0f * s, bw = cw - 88.0f * s, by = cy + 132.0f * s;
+  list.rect(bx, by, bx + bw, by + 10.0f * s, ui::rgba(255, 255, 255, 32));
+  list.rect(bx, by, bx + bw * std::clamp(card.restore_progress, 0.0f, 1.0f), by + 10.0f * s, ui4::kGreen);
 
-  sub.size = 12.0f;
-  sub.color = ui::rgba(196, 182, 160);
-  list.text(cx + cw * 0.5f, cy + 184.0f, "[ENTER] CONTINUE TO GARAGE", sub);
+  list.text(cx + 0.5f * cw, cy + 160.0f * s, card.subtitle,
+            ui4::style(ui::Font::kB, 13.5f * s, ui4::kDim, ui::Align::kCenter));
+
+  ui4::button_bar(list, {{"A", "CONTINUE TO GARAGE"}}, w, h, 56.0f);
 }
 
 }  // namespace carview
