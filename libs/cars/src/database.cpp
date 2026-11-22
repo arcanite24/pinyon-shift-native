@@ -522,10 +522,16 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
     auto& v = car.values;
     // The row of table `t`: the fitted one by Id, else the stock one by
     // `where` (SQL with one ? for `key`).
-    auto part = [&](const std::string& t, const std::string& where, int64_t key, int* rows = nullptr) {
+    auto part = [&](const std::string& t, const std::string& where, int64_t key, int* rows = nullptr,
+                    bool allow_absent = false) {
       const auto f = fit.find(t);
-      if (f != fit.end() && f->second >= 0)
-        return row_into(db, "SELECT * FROM " + t + " WHERE Id = ?", f->second, t, v, rows);
+      if (f != fit.end()) {
+        if (f->second >= 0) return row_into(db, "SELECT * FROM " + t + " WHERE Id = ?", f->second, t, v, rows);
+        if (allow_absent) {
+          if (rows) *rows = 0;
+          return false;
+        }
+      }
       return row_into(db, "SELECT * FROM " + t + " WHERE " + where, key, t, v, rows);
     };
     auto fail = [&](const std::string& what) {
@@ -565,9 +571,12 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
     row_into(db, "SELECT * FROM Data_Engine WHERE EngineID = ?", engine, "Data_Engine", v);
     if (!part("List_UpgradeEngineCamshaft", "EngineID = ? AND IsStock = 1", engine))
       return fail("no stock camshaft");
-    for (const char* t : {"List_UpgradeEngineFlywheel", "List_UpgradeEngineTurboSingle", "List_UpgradeEngineTurboTwin",
-                          "List_UpgradeEngineTurboQuad", "List_UpgradeEngineDSC", "List_UpgradeEngineCSC"})
-      part(t, "EngineID = ? AND IsStock = 1", engine);
+    part("List_UpgradeEngineFlywheel", "EngineID = ? AND IsStock = 1", engine);
+    // Aspiration tables may be explicitly absent (-1) when converted to another induction type.
+    for (const char* t : {"List_UpgradeEngineTurboSingle", "List_UpgradeEngineTurboTwin",
+                          "List_UpgradeEngineTurboQuad", "List_UpgradeEngineDSC", "List_UpgradeEngineCSC",
+                          "List_UpgradeEngineIntercooler"})
+      part(t, "EngineID = ? AND IsStock = 1", engine, nullptr, true);
     {
       Query q(db, "SELECT * FROM List_TorqueCurve WHERE TorqueCurveID = ?");
       q.bind(1, key("List_UpgradeEngineCamshaft.TorqueCurveFullThrottleID"));
@@ -642,6 +651,25 @@ bool car_physics_from(sqlite3* db, int64_t id, const FittedParts& fit, CarPhysic
                                         "List_UpgradeEngineOilCooling", "List_UpgradeEngineRestrictorPlate"};
         for (const char* k : kTorque)
           if (t == k) torque += car.get(t + ".TorqueScale", 1) - 1;  // additive: 1 + the sum of (s - 1) (SPEC-GARAGE-UPGRADES)
+      }
+      // Aftermarket wheels (List_Wheels.Mass vs stock wheel Mass).
+      if (auto wit = eff.find("List_Wheels"); wit != eff.end() && wit->second > 0) {
+        const int64_t stock_wid = key("Data_Car.StockWheelID");
+        if (stock_wid > 0 && wit->second != stock_wid) {
+          double stock_w_mass = 0.0, fit_w_mass = 0.0;
+          bool have_stock_w = false, have_fit_w = false;
+          {
+            Query q(db, "SELECT Mass FROM List_Wheels WHERE ID = ?");
+            q.bind(1, stock_wid);
+            if (q.step()) { stock_w_mass = q.d(0); have_stock_w = true; }
+          }
+          {
+            Query q(db, "SELECT Mass FROM List_Wheels WHERE ID = ?");
+            q.bind(1, wit->second);
+            if (q.step()) { fit_w_mass = q.d(0); have_fit_w = true; }
+          }
+          if (have_stock_w && have_fit_w) mass_diff += (fit_w_mass - stock_w_mass);
+        }
       }
       v["List_UpgradeCarBodyWeight.Mass"] = car.get("List_UpgradeCarBodyWeight.Mass", 0) + mass_diff;
       v["List_TorqueCurve.TorqueScale"] = car.get("List_TorqueCurve.TorqueScale", 1) * torque;

@@ -2823,7 +2823,7 @@ int run_drive(int argc, char** argv) {
                 std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
                             it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
                             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-                return drive::params_for_fitted_car(info, bake_dir, rows, &physics_notes);
+                return drive::params_for_fitted_car(info, bake_dir, rows, &physics_notes, &gc->tune);
               }
               physics_notes.push_back("garage parts not applied: " + e);
             }

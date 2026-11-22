@@ -7,7 +7,21 @@
 #include <fstream>
 #include <sstream>
 
+#include "garage/tuning.h"
+
 namespace garage {
+namespace {
+
+bool is_aspiration_enum(int e) { return e == 24 || e == 25 || e == 27 || e == 28; }
+
+const char* column_for_enum(int part_enum) {
+  for (const auto& s : cars::upgrade_slots())
+    if (s.part_enum == part_enum) return s.column;
+  if (part_enum == 43) return "WheelStyle";
+  return nullptr;
+}
+
+}  // namespace
 
 Car* Garage::find(int64_t id) {
   for (auto& c : cars)
@@ -30,16 +44,26 @@ const Car* Garage::selected_car() const {
 }
 
 bool Garage::owns_part(int64_t garage_id, int part_enum, int64_t part_id) const {
+  return find_bought(garage_id, part_enum, part_id) != nullptr;
+}
+
+const Bought* Garage::find_bought(int64_t garage_id, int part_enum, int64_t part_id) const {
   for (const auto& b : bought)
-    if (b.garage_id == garage_id && b.part_enum == part_enum && b.part_id == part_id) return true;
-  return false;
+    if (b.garage_id == garage_id && b.part_enum == part_enum && b.part_id == part_id) return &b;
+  return nullptr;
 }
 
 cars::FittedParts fitted(const Car& car) {
   cars::FittedParts f;
   for (const auto& s : cars::upgrade_slots()) {
     const auto it = car.slots.find(s.column);
-    if (it != car.slots.end() && it->second >= 0) f[s.table] = it->second;
+    if (it == car.slots.end()) continue;
+    if (it->second >= 0) {
+      f[s.table] = it->second;
+    } else if (is_aspiration_enum(s.part_enum) || s.part_enum == 29) {
+      // Preserve explicit -1 for induction tables so aspiration swaps override stock induction.
+      f[s.table] = -1;
+    }
   }
   return f;
 }
@@ -70,6 +94,75 @@ FitResult fit_part(Garage& g, int64_t garage_id, const cars::PartRow& part, cons
   return r;
 }
 
+FitResult fit_part_full(Garage& g, const cars::PartsDb& db, int64_t garage_id, const cars::PartRow& part,
+                        const char* column, int discount_percent, int64_t& credits,
+                        const cars::PhysicsSettings* phys_settings, const PiConfig* pi_cfg,
+                        const std::vector<ClassBand>* bands, PiResult* pi_out) {
+  FitResult r;
+  Car* car = g.find(garage_id);
+  if (!car) return r;
+
+  const int64_t prev_slot = car->slots.count(column) ? car->slots[column] : -1;
+  r = fit_part(g, garage_id, part, column, discount_percent, credits);
+  if (!r.ok) return r;
+
+  // Handle conversions that re-key dependent sub-part slots (SPEC-GARAGE-UPGRADES):
+  //   0 = Engine swap -> re-keys engine sub-parts (key == 1, enums 12..29)
+  //   1 = Drivetrain swap -> re-keys drivetrain sub-parts (key == 2, enums 30..33)
+  //   2 = CarBody swap -> re-keys body sub-parts (key == 3, enums 34..41)
+  //   24, 25, 27, 28 = Aspiration conversion -> clears conflicting induction slots to -1
+  if (part.part_enum <= 2 && part.id != prev_slot && db.is_open()) {
+    const int target_key = part.part_enum == 0 ? 1 : part.part_enum == 1 ? 2 : 3;
+    // Clear existing sub-part slots of that family before querying new stock rows.
+    for (const auto& s : cars::upgrade_slots()) {
+      if (s.key == target_key) car->slots.erase(s.column);
+    }
+    std::vector<cars::PartRow> new_opts;
+    if (db.options(car->car_id, fitted(*car), new_opts, nullptr)) {
+      for (const auto& s : cars::upgrade_slots()) {
+        if (s.key != target_key) continue;
+        int64_t best_stock = -1;
+        for (const auto& o : new_opts) {
+          if (o.part_enum == s.part_enum && o.is_stock && (best_stock < 0 || o.id < best_stock)) {
+            best_stock = o.id;
+          }
+        }
+        if (best_stock >= 0) {
+          car->slots[s.column] = best_stock;
+        } else if (is_aspiration_enum(s.part_enum) || s.part_enum == 29) {
+          car->slots[s.column] = -1;
+        }
+      }
+      r.rekeyed = true;
+    }
+  } else if (is_aspiration_enum(part.part_enum)) {
+    // Fitting one forced-induction type removes any other forced-induction type.
+    for (int e : {24, 25, 27, 28}) {
+      if (e == part.part_enum) continue;
+      if (const char* c = column_for_enum(e)) car->slots[c] = -1;
+    }
+    // If removing induction (part.id < 0), also clear intercooler.
+    if (part.id < 0) car->slots["Intercooler"] = -1;
+    r.rekeyed = true;
+  }
+
+  if (phys_settings && pi_cfg && bands && db.is_open()) {
+    refresh_car_pi(*car, db, *phys_settings, *pi_cfg, *bands, pi_out);
+  }
+  return r;
+}
+
+bool refresh_car_pi(Car& car, const cars::PartsDb& db, const cars::PhysicsSettings& phys_settings,
+                    const PiConfig& pi_cfg, const std::vector<ClassBand>& bands, PiResult* out, std::string* error) {
+  PiResult res;
+  if (!compute_pi_for_car(db, car.car_id, fitted(car), phys_settings, pi_cfg, bands, res, error)) return false;
+  car.performance_index = res.raw_pi;
+  car.class_id = res.class_id;
+  car.cached_stats = res.stats;
+  if (out) *out = res;
+  return true;
+}
+
 bool buy_car(Garage& g, int64_t car_id, int64_t price, double performance_index, int class_id, int colour,
              const std::map<std::string, int64_t>& stock, int64_t& credits, int64_t* new_id) {
   if (credits < price) return false;
@@ -84,6 +177,77 @@ bool buy_car(Garage& g, int64_t car_id, int64_t price, double performance_index,
   g.selected = last + 1;
   if (new_id) *new_id = last + 1;
   return true;
+}
+
+int64_t sell_car_value(int64_t base_cost, int64_t parts_value) {
+  // SPEC-GARAGE-UPGRADES: floor(SellValueScale * (BaseCost + PartsValue)), SellValueScale = 0.5.
+  return int64_t(std::floor(0.5 * double(std::max<int64_t>(0, base_cost) + std::max<int64_t>(0, parts_value))));
+}
+
+SellCarResult sell_car(Garage& g, int64_t garage_id, int64_t base_cost, int64_t& credits) {
+  SellCarResult res;
+  if (g.cars.size() <= 1) {
+    res.reason = "cannot sell your last car";
+    return res;
+  }
+  if (g.selected == garage_id) {
+    res.reason = "cannot sell your current car";
+    return res;
+  }
+  auto it = std::find_if(g.cars.begin(), g.cars.end(), [&](const Car& c) { return c.id == garage_id; });
+  if (it == g.cars.end()) {
+    res.reason = "car not found in garage";
+    return res;
+  }
+  res.payout = sell_car_value(base_cost, it->parts_value);
+  credits += res.payout;
+  g.cars.erase(it);
+  g.bought.erase(
+      std::remove_if(g.bought.begin(), g.bought.end(), [&](const Bought& b) { return b.garage_id == garage_id; }),
+      g.bought.end());
+  res.ok = true;
+  return res;
+}
+
+int64_t sell_part_value(int64_t price_paid) {
+  // GameTunableSettings.ini: CarValueScales\RestockingValueScale = 0.5.
+  return int64_t(std::floor(0.5 * double(std::max<int64_t>(0, price_paid))));
+}
+
+SellPartResult sell_part(Garage& g, int64_t garage_id, int part_enum, int64_t part_id, int64_t stock_part_id,
+                         const char* column, int64_t& credits) {
+  SellPartResult res;
+  Car* car = g.find(garage_id);
+  if (!car) {
+    res.reason = "car not found in garage";
+    return res;
+  }
+  if (part_id == stock_part_id) {
+    res.reason = "cannot sell stock part";
+    return res;
+  }
+  auto it = std::find_if(g.bought.begin(), g.bought.end(), [&](const Bought& b) {
+    return b.garage_id == garage_id && b.part_enum == part_enum && b.part_id == part_id;
+  });
+  if (it == g.bought.end()) {
+    res.reason = "part is not owned";
+    return res;
+  }
+  res.payout = sell_part_value(it->price_paid);
+  credits += res.payout;
+  car->parts_value = std::max<int64_t>(0, car->parts_value - it->price_paid);
+  g.bought.erase(it);
+  if (column) {
+    const auto sit = car->slots.find(column);
+    if (sit != car->slots.end() && sit->second == part_id) {
+      if (stock_part_id >= 0)
+        car->slots[column] = stock_part_id;
+      else
+        car->slots[column] = -1;
+    }
+  }
+  res.ok = true;
+  return res;
 }
 
 int class_of(double raw, const std::vector<ClassBand>& bands) {
@@ -131,15 +295,28 @@ bool load_class_bands(const std::filesystem::path& game_root, std::vector<ClassB
 std::string to_text(const Garage& g) {
   std::ostringstream o;
   o.precision(9);
-  o << "shift-garage 1\n";
+  o << "shift-garage 2\n";
   o << "last " << g.last_id << "\n";
   o << "selected " << g.selected << "\n";
   for (const auto& c : g.cars) {
     o << "car " << c.id << " " << c.car_id << " " << c.performance_index << " " << c.class_id << " " << c.parts_value
       << " " << c.colour;
-    for (const auto& [k, v] : c.slots)
-      if (v >= 0) o << " " << k << "=" << v;
+    for (const auto& [k, v] : c.slots) {
+      if (v >= 0) {
+        o << " " << k << "=" << v;
+      } else if (k == "SingleTurbo" || k == "TwinTurbo" || k == "SuperchargerCSC" || k == "SuperchargerDSC" ||
+                 k == "Intercooler") {
+        o << " " << k << "=-1";
+      }
+    }
     o << "\n";
+    if (!c.tune.is_default()) {
+      const std::string tt = tune_to_tokens(c.tune);
+      if (!tt.empty()) o << "tune " << c.id << " " << tt << "\n";
+    }
+    if (!c.livery_file.empty()) {
+      o << "livery " << c.id << " " << c.livery_file << "\n";
+    }
   }
   for (const auto& b : g.bought)
     o << "bought " << b.garage_id << " " << b.part_enum << " " << b.part_id << " " << b.manufacturer << " "
@@ -155,7 +332,7 @@ bool from_text(const std::string& text, Garage& out, std::string* error) {
     if (error) *error = "not a garage file";
     return false;
   }
-  if (std::atoi(line.c_str() + 13) > 1) {
+  if (std::atoi(line.c_str() + 13) > 2) {
     if (error) *error = "garage file from a newer version";
     return false;
   }
@@ -175,6 +352,19 @@ bool from_text(const std::string& text, Garage& out, std::string* error) {
         if (eq != std::string::npos) c.slots[kv.substr(0, eq)] = std::atoll(kv.c_str() + eq + 1);
       }
       out.cars.push_back(std::move(c));
+    } else if (key == "tune") {
+      int64_t gid = 0;
+      if (l >> gid) {
+        if (Car* c = out.find(gid)) {
+          for (std::string kv; l >> kv;) parse_tune_token(kv, c->tune);
+        }
+      }
+    } else if (key == "livery") {
+      int64_t gid = 0;
+      std::string path;
+      if (l >> gid >> path) {
+        if (Car* c = out.find(gid)) c->livery_file = path;
+      }
     } else if (key == "bought") {
       Bought b;
       if (l >> b.garage_id >> b.part_enum >> b.part_id >> b.manufacturer >> b.price_paid) out.bought.push_back(b);

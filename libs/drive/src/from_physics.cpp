@@ -401,8 +401,174 @@ CarParams params_for_baked_car(const cars::bake::CarInfo& car, const std::filesy
   return params_for_car_text(car, ss.str(), notes);
 }
 
+bool CarTune::is_default() const {
+  if (front_tire_pressure_psi >= 0 || rear_tire_pressure_psi >= 0 || final_drive >= 0) return false;
+  for (double g : gears)
+    if (g > 0) return false;
+  if (front_camber_deg > -90 || rear_camber_deg > -90 || front_toe_deg > -90 || rear_toe_deg > -90 ||
+      front_caster_deg > -90)
+    return false;
+  if (front_arb >= 0 || rear_arb >= 0 || front_spring >= 0 || rear_spring >= 0 || front_ride_height >= 0 ||
+      rear_ride_height >= 0 || front_rebound >= 0 || rear_rebound >= 0 || front_bump >= 0 || rear_bump >= 0 ||
+      front_downforce >= 0 || rear_downforce >= 0 || brake_balance >= 0 || brake_pressure >= 0 ||
+      front_diff_accel >= 0 || front_diff_decel >= 0 || rear_diff_accel >= 0 || rear_diff_decel >= 0 ||
+      center_diff_split >= 0)
+    return false;
+  return true;
+}
+
+void apply_tune(const CarTune& tune, const cars::CarPhysics& car, CarParams& p) {
+  if (tune.is_default()) return;
+  const double m = std::max(1.0, p.mass);
+  auto lerp = [](double a, double b, double u) { return a + (b - a) * std::clamp(u, 0.0, 1.0); };
+
+  // 1. Tyre pressures (15..55 PSI, optimal nominal ~30 PSI).
+  // Lower pressure softens sidewall (more longitudinal launch compliance, slightly wider slip peak),
+  // excessive low/high pressure rolls off peak grip smoothly (~3-5%).
+  const double pressures[2] = {tune.front_tire_pressure_psi, tune.rear_tire_pressure_psi};
+  for (int a = 0; a < 2; ++a) {
+    if (pressures[a] < 0) continue;
+    const double psi = std::clamp(pressures[a], 15.0, 55.0);
+    const double delta = (psi - 30.0) / 25.0;  // [-0.6, +1.0]
+    const double grip_factor = 1.0 - 0.045 * delta * delta;
+    const double lat_bias = 1.0 + 0.015 * std::clamp(delta, -0.5, 0.5);
+    const double long_bias = 1.0 - 0.02 * std::clamp(delta, -0.5, 0.5);
+    p.lat_scale[a] *= grip_factor * lat_bias;
+    p.long_scale[a] *= grip_factor * long_bias;
+    p.sidewall_stretch[a] *= std::clamp(1.0 - 0.12 * delta, 0.80, 1.25);
+  }
+
+  // 2. Gearing.
+  if (tune.final_drive > 0.1) p.final_drive = std::clamp(tune.final_drive, 1.5, 6.5);
+  for (size_t i = 0; i < p.gears.size() && i < tune.gears.size(); ++i) {
+    if (tune.gears[i] > 0.1) p.gears[i] = std::clamp(tune.gears[i], 0.4, 6.0);
+  }
+
+  // 3. Alignment (camber, toe, caster).
+  // Optimal negative camber (~ -1.0..-2.2 deg) improves cornering peak grip while slightly reducing straight-line grip;
+  // toe adjusts turn-in / stability; caster adds dynamic camber gain under steer.
+  const double cambers[2] = {tune.front_camber_deg, tune.rear_camber_deg};
+  const double toes[2] = {tune.front_toe_deg, tune.rear_toe_deg};
+  for (int a = 0; a < 2; ++a) {
+    if (cambers[a] > -90.0) {
+      const double c = std::clamp(cambers[a], -5.0, 5.0);
+      const double opt = a == 0 ? -1.5 : -1.0;
+      const double lat_gain = 1.02 - 0.008 * (c - opt) * (c - opt);
+      const double long_pen = 1.0 - 0.005 * std::fabs(c);
+      p.lat_scale[a] *= std::clamp(lat_gain, 0.85, 1.04);
+      p.long_scale[a] *= std::clamp(long_pen, 0.90, 1.01);
+    }
+    if (toes[a] > -90.0) {
+      const double t = std::clamp(toes[a], -5.0, 5.0);
+      // Excessive toe increases scrubbing drag / lowers straight-line speed slightly.
+      p.long_scale[a] *= std::clamp(1.0 - 0.004 * std::fabs(t), 0.94, 1.0);
+      if (a == 1 && t < 0) p.lat_scale[1] *= std::clamp(1.0 + 0.008 * std::min(1.5, -t), 1.0, 1.02);
+    }
+  }
+  if (tune.front_caster_deg > -90.0) {
+    const double caster = std::clamp(tune.front_caster_deg, 1.0, 7.0);
+    p.lat_scale[0] *= std::clamp(1.0 + 0.004 * (caster - 5.0), 0.97, 1.02);
+  }
+
+  // 4. Anti-roll bars, springs, ride height, damping.
+  const double arbs[2] = {tune.front_arb, tune.rear_arb};
+  const double springs[2] = {tune.front_spring, tune.rear_spring};
+  const double heights[2] = {tune.front_ride_height, tune.rear_ride_height};
+  const double rebounds[2] = {tune.front_rebound, tune.rear_rebound};
+  const double bumps[2] = {tune.front_bump, tune.rear_bump};
+  double rh_delta_sum = 0.0;
+  int rh_count = 0;
+  for (int a = 0; a < 2; ++a) {
+    const std::string sd = a == 0 ? "FrontSpringDamper." : "RearSpringDamper.";
+    const std::string ar = a == 0 ? "FrontAntiSway." : "RearAntiSway.";
+    if (arbs[a] >= 0) {
+      const double lo = car.get(ar + "MinSwaybarStiffness", p.antiroll_rate[a] / m * 0.4);
+      const double hi = car.get(ar + "MaxSwaybarStiffness", p.antiroll_rate[a] / m * 2.2);
+      p.antiroll_rate[a] = lerp(lo, hi, arbs[a]) * m;
+    }
+    if (springs[a] >= 0) {
+      const double lo = car.get(sd + "MinSpringRate", p.spring_rate[a] / m * 0.5);
+      const double hi = car.get(sd + "MaxSpringRate", p.spring_rate[a] / m * 2.0);
+      p.spring_rate[a] = lerp(lo, hi, springs[a]) * m;
+    }
+    if (heights[a] >= 0) {
+      const double def_rh = car.get(sd + "DefRideHeight", 0.16);
+      const double lo = car.get(sd + "MinRideHeight", std::max(0.05, def_rh - 0.04));
+      const double hi = car.get(sd + "MaxRideHeight", def_rh + 0.04);
+      const double rh = lerp(lo, hi, heights[a]);
+      const double compress = car.get(sd + "MaxCompressHeight", lo * 0.75);
+      p.bump_travel[a] = std::max(0.025, rh - compress);
+      rh_delta_sum += (rh - def_rh);
+      ++rh_count;
+    }
+    if (rebounds[a] >= 0) {
+      const double lo = car.get(sd + "MinDampenReboundRate", p.rebound_rate[a] / m * 0.4);
+      const double hi = car.get(sd + "MaxDampenReboundRate", p.rebound_rate[a] / m * 2.0);
+      p.rebound_rate[a] = lerp(lo, hi, rebounds[a]) * m;
+    }
+    if (bumps[a] >= 0) {
+      const double lo = car.get(sd + "MinDampenBumpRate", p.bump_rate[a] / m * 0.4);
+      const double hi = car.get(sd + "MaxDampenBumpRate", p.bump_rate[a] / m * 2.0);
+      p.bump_rate[a] = lerp(lo, hi, bumps[a]) * m;
+    }
+  }
+  if (rh_count > 0) {
+    const double mean_dh = rh_delta_sum / double(rh_count);
+    p.centre_of_mass.y = std::max(0.20, p.centre_of_mass.y + mean_dh);
+    p.lateral_roll_arm = std::max(0.12, p.lateral_roll_arm + mean_dh * 0.5);
+    p.longitudinal_pitch_arm = std::max(0.12, p.longitudinal_pitch_arm + mean_dh * 0.5);
+  }
+
+  // 5. Aerodynamics (front bumper & rear wing downforce sliders).
+  constexpr double kAero = 9.80665 / (67.056 * 67.056);
+  if (tune.front_downforce >= 0 && car.has("FrontBumperAero.Drag0")) {
+    const double u = std::clamp(tune.front_downforce, 0.0, 1.0);
+    p.aero_part_drag_front = lerp(car.get("FrontBumperAero.Drag0", 0), car.get("FrontBumperAero.Drag1", 0), u) * kAero;
+    p.aero_part_df_front =
+        lerp(car.get("FrontBumperAero.Downforce0", 0), car.get("FrontBumperAero.Downforce1", 0), u) * kAero;
+  }
+  if (tune.rear_downforce >= 0 && car.has("RearWingAero.Drag0")) {
+    const double u = std::clamp(tune.rear_downforce, 0.0, 1.0);
+    p.aero_part_drag_rear = lerp(car.get("RearWingAero.Drag0", 0), car.get("RearWingAero.Drag1", 0), u) * kAero;
+    p.aero_part_df_rear =
+        lerp(car.get("RearWingAero.Downforce0", 0), car.get("RearWingAero.Downforce1", 0), u) * kAero;
+  }
+  if (p.aero_drag_long > 0) {
+    p.drag_quadratic = p.aero_drag_long + p.aero_part_drag_front + p.aero_part_drag_rear;
+  }
+
+  // 6. Brakes (balance 0..1 front share, pressure 0..2).
+  if (tune.brake_balance >= 0) p.brake_bias_slider = std::clamp(tune.brake_balance, 0.0, 1.0);
+  if (tune.brake_pressure >= 0) {
+    // 1.0 = default (slider 0.5), 2.0 = max (slider 1.0), 0.0 = min (slider 0.0).
+    p.brake_torque_slider = std::clamp(tune.brake_pressure * 0.5, 0.0, 1.0);
+  }
+
+  // 7. Differential (accel/decel lock 0..1 scaling LSD lock torque, center split 0..1 rear).
+  if (tune.front_diff_accel >= 0) {
+    const double base_t = std::max(400.0, car.get("List_UpgradeDrivetrainDifferential.FrontLimitedSlipTorqueAccel", 600.0));
+    p.front_lsd.accel = base_t * std::clamp(tune.front_diff_accel, 0.0, 1.0) * 1.5;
+  }
+  if (tune.front_diff_decel >= 0) {
+    const double base_t = std::max(300.0, car.get("List_UpgradeDrivetrainDifferential.FrontLimitedSlipTorqueDecel", 400.0));
+    p.front_lsd.decel = base_t * std::clamp(tune.front_diff_decel, 0.0, 1.0) * 1.5;
+  }
+  if (tune.rear_diff_accel >= 0) {
+    const double base_t = std::max(600.0, car.get("List_UpgradeDrivetrainDifferential.RearLimitedSlipTorqueAccel", 1000.0));
+    p.rear_lsd.accel = base_t * std::clamp(tune.rear_diff_accel, 0.0, 1.0) * 1.5;
+  }
+  if (tune.rear_diff_decel >= 0) {
+    const double base_t = std::max(400.0, car.get("List_UpgradeDrivetrainDifferential.RearLimitedSlipTorqueDecel", 600.0));
+    p.rear_lsd.decel = base_t * std::clamp(tune.rear_diff_decel, 0.0, 1.0) * 1.5;
+  }
+  if (tune.center_diff_split >= 0 && p.layout == CarParams::Layout::kAll) {
+    p.rear_split = std::clamp(tune.center_diff_split, 0.0, 1.0);
+  }
+}
+
 CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::filesystem::path& bake_dir,
-                                const cars::CarPhysics& rows, std::vector<std::string>* notes) {
+                                const cars::CarPhysics& rows, std::vector<std::string>* notes,
+                                const CarTune* tune) {
   std::string name = car.media_name;
   for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
   std::ifstream in(cars::mods::resolve(bake_dir / "cars" / (name + ".physics.txt")), std::ios::binary);
@@ -417,6 +583,7 @@ CarParams params_for_fitted_car(const cars::bake::CarInfo& car, const std::files
     return p;
   }
   apply_physics(rows, settings, p, notes);
+  if (tune) apply_tune(*tune, rows, p);
   return p;
 }
 
