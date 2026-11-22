@@ -110,3 +110,8 @@ add_test(NAME ui_tests COMMAND ui_tests)
 add_executable(career_tests career_tests.cpp)
 target_link_libraries(career_tests PRIVATE shift_race shift_freeroam shift_drive shift_data)
 add_test(NAME career_tests COMMAND career_tests)
+
+add_executable(carview_drive_tests carview_drive_tests.cpp)
+target_include_directories(carview_drive_tests PRIVATE ../apps/carview)
+target_link_libraries(carview_drive_tests PRIVATE shift_world shift_drive shift_audio)
+add_test(NAME carview_drive_tests COMMAND carview_drive_tests)

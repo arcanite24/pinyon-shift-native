@@ -27,7 +27,8 @@ static bool has(const std::vector<std::string>& v, const std::vector<std::string
 
 int main() {
   carview::SettingsPage page;
-  page.load({"--size", "1280x720", "--preset", "low", "--no-traffic", "--difficulty", "hard", "--hour", "18"});
+  page.load(
+      {"--size", "1280x720", "--preset", "low", "--no-traffic", "--difficulty", "hard", "--hour", "18", "--language", "FR"});
   CHECK(page.value("preset") == "low");
   CHECK(page.value("traffic") == "off");
   CHECK(page.value("difficulty") == "hard");
@@ -36,7 +37,7 @@ int main() {
 
   // Unchanged: the same options come back.
   auto t = page.tokens();
-  CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}));
+  CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}) && has(t, {"--language", "FR"}));
   CHECK(has(t, {"--preset", "low"}) && has(t, {"--no-traffic"}) && has(t, {"--difficulty", "hard"}));
 
   // Rows: preset, shadows, bloom, difficulty, rubber-banding, traffic, ...
@@ -51,7 +52,7 @@ int main() {
   CHECK(page.value("difficulty") == "pro");
   t = page.tokens();
   CHECK(has(t, {"--preset", "high"}) && !has(t, {"--no-traffic"}) && has(t, {"--difficulty", "pro"}));
-  CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}));
+  CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}) && has(t, {"--language", "FR"}));
 
   // The save line follows the last row and wraps.
   page.open();

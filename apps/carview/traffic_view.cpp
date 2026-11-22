@@ -115,6 +115,15 @@ bool TrafficView::open(const std::filesystem::path& game_root, const drive::Grou
 
 void TrafficView::step(drive::Vehicle& player) {
   if (!population_) return;
+  std::map<uint32_t, TrafficPose> snap;
+  for (const auto& c : population_->cars()) {
+    const drive::Vehicle* body = bodies_ ? bodies_->body(c.id) : nullptr;
+    snap[c.id] = {
+        body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
+        body ? body->orientation() : lane_orientation(c.heading, c.pitch),
+    };
+  }
+  before_ = std::move(snap);
   const drive::Vec3 p = player.position(), v = player.velocity();
   population_->step(drive::Vehicle::kStep, {p.x, p.y, p.z}, {v.x, v.y, v.z});
   // The bodies' parameters come with the models: refresh them on the sim's
@@ -198,8 +207,17 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     const auto it = guests_.find(c.model);
     if (it == guests_.end() || !it->second.showroom) continue;
     const drive::Vehicle* body = bodies_->body(c.id);
-    const drive::Quat q = body ? body->orientation() : lane_orientation(c.heading, c.pitch);
-    const drive::Vec3 at = body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z};
+    TrafficPose pose{
+        body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
+        body ? body->orientation() : lane_orientation(c.heading, c.pitch),
+    };
+    if (blend_ < 1.0) {
+      if (const auto bit = before_.find(c.id); bit != before_.end()) {
+        pose = blend_traffic_pose(bit->second, pose, blend_);
+      }
+    }
+    const drive::Quat q = pose.rot;
+    const drive::Vec3 at = pose.pos;
     // The guest's model frame to the world, relative to the player (the
     // translation in double).
     float gm[16];

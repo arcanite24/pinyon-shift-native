@@ -390,6 +390,16 @@ void test_real_disc_catalog() {
   CHECK(sk.fame_tiers.size() == 10);
   std::printf("career_tests: real disc catalog verified (%zu events, %zu sites, %zu fame levels)\n",
               cat.events.size(), cat.sites.size(), sk.fame_levels.size());
+
+  if (const char* state = std::getenv("SHIFT_STATE_ROOT");
+      state && *state && std::filesystem::exists(std::filesystem::path(state) / "title-update-v4" / "media.zip")) {
+    race::CareerCatalog merged_cat;
+    CHECK(race::load_career_catalog(root, state, nullptr, merged_cat, &err));
+    CHECK(merged_cat.cars.size() >= 250);
+    for (const auto& ev : merged_cat.events) CHECK(ev.career_type != 9);
+    std::printf("career_tests: merged catalog verified (%zu cars, %zu Colorado events)\n", merged_cat.cars.size(),
+                merged_cat.events.size());
+  }
 }
 
 }  // namespace

@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+namespace cars {
+class PartsDb;
+}
+
 namespace race {
 
 enum class Winnings { kDefault, kWinnerTakesAll, kTopThree };
@@ -35,6 +39,8 @@ struct WristbandTables {
   int level_index(int total) const;
 };
 bool load_wristband_tables(const std::filesystem::path& game_root, WristbandTables& out, std::string* error);
+bool load_wristband_tables(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                           const cars::PartsDb* db, WristbandTables& out, std::string* error);
 
 // The career's records (Career_RaceResults, Career_EventResults, Main/*).
 struct CareerRecord {

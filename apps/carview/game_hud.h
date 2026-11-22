@@ -153,6 +153,7 @@ struct DriveHud {
   double kmh = 0, rpm = 0, redline_rpm = 7000;
   int gear = 1;
   bool abs = false;
+  bool tcs = false;
   bool driving = true;
   const RaceHud* race = nullptr;
   std::string toast;

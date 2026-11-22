@@ -1,5 +1,6 @@
 #include "audio/radio.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -191,8 +192,10 @@ bool parse_radio(std::string_view system_xml, std::string_view music_info, std::
 bool load_radio(const std::filesystem::path& game_root, RadioData& out, std::string* error,
                 std::string_view language) {
   const auto dir = game_root / "media" / "audio" / "radio";
-  std::string lang(language);
-  if (!std::filesystem::exists(dir / ("Radio_VO_" + lang + ".fsb"))) lang = "EN";
+  std::string lang;
+  lang.reserve(language.size());
+  for (char c : language) lang.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+  if (lang.empty() || !std::filesystem::exists(dir / ("Radio_VO_" + lang + ".fsb"))) lang = "EN";
   const auto system = dir / "RadioSystem.xml", music_info = dir / "RadioSoundbankInfo_Music.xml",
              vo_info = dir / ("RadioSoundbankInfo_VO_" + lang + ".xml");
   for (const auto& p : {system, music_info, vo_info, dir / "Radio_Music.fsb", dir / ("Radio_VO_" + lang + ".fsb")})

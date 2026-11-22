@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -16,6 +17,8 @@
 #include <vector>
 
 #include "cars/sources.h"
+
+struct sqlite3_stmt;
 
 namespace cars {
 
@@ -128,6 +131,10 @@ class PartsDb {
   // A new car's slots: each slot's stock row (the first by Id when a table
   // has several), by Career_Garage column.
   bool stock_slots(int64_t car_id, std::map<std::string, int64_t>& out, std::string* error) const;
+  // Runs `sql` with text parameters over the merged database, calling `row`
+  // per result row under the database lock.
+  bool each(const std::string& sql, const std::vector<std::string>& params,
+            const std::function<void(sqlite3_stmt*)>& row, std::string* error) const;
 
  private:
   struct Impl;

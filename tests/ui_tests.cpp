@@ -10,8 +10,10 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #include "events_page.h"
+#include "fh1data/ui_scene.h"
 #include "game_hud.h"
 #include "hud.h"
+#include "hud_scene.h"
 #include "ui.h"
 
 static int failures = 0;
@@ -224,9 +226,17 @@ void test_pause_menu() {
   // Free roam items & wrap-around.
   pm.show(false);
   const auto fr_items = pm.items();
-  CHECK(fr_items.size() == 10);
+  CHECK(fr_items.size() == 11);
   CHECK(fr_items.front() == carview::PauseMenu::kResume);
   CHECK(fr_items.back() == carview::PauseMenu::kQuitToTitle);
+  {
+    bool found_club = false;
+    for (size_t i = 0; i + 1 < fr_items.size(); ++i) {
+      if (fr_items[i] == carview::PauseMenu::kCareer && fr_items[i + 1] == carview::PauseMenu::kClub) found_club = true;
+    }
+    CHECK(found_club);
+    CHECK(pm.label(carview::PauseMenu::kClub) == "1000 CLUB");
+  }
   CHECK(pm.selected_action() == carview::PauseMenu::kResume);
   pm.move(-1);
   CHECK(pm.selected_action() == carview::PauseMenu::kQuitToTitle);
@@ -354,6 +364,127 @@ void test_world_trigger() {
         unlocked_hub.in_range);
 }
 
+void test_hud_abs_tcs_lamps() {
+  static fh1::UiScene scene = [] {
+    fh1::UiScene s;
+    auto add_obj = [&](fh1::UiObjectKind k, uint32_t id, const char* name) {
+      fh1::UiObject o;
+      o.kind = k, o.id = id, o.name = name;
+      if (k == fh1::UiObjectKind::kText) o.font = "b", o.text_size = 14, o.text_width = 40;
+      s.objects.push_back(std::move(o));
+      return int(s.objects.size()) - 1;
+    };
+    auto add_node = [&](int parent, uint32_t oid, float alpha = 1.0f) {
+      fh1::UiNode n;
+      n.parent = parent, n.object = oid, n.opacity = alpha, n.alpha = alpha;
+      n.sx = 1, n.sy = 1, n.x = 500, n.y = -250;
+      n.bounds_min = {-10, -10, 0}, n.bounds_max = {10, 10, 0};
+      s.nodes.push_back(n);
+      return int(s.nodes.size()) - 1;
+    };
+    auto add_mat_tex = [&](uint32_t mid, uint32_t tid, const char* path) {
+      fh1::UiObject m;
+      m.kind = fh1::UiObjectKind::kMaterial, m.id = mid, m.name = "Mat";
+      m.colour = {1, 1, 1, 1};
+      s.objects.push_back(m);
+      fh1::UiObject t;
+      t.kind = fh1::UiObjectKind::kTexture, t.id = tid, t.name = "Tex", t.owner = mid, t.path = path;
+      t.matrix[0] = 1.0f, t.matrix[5] = 1.0f;
+      s.objects.push_back(t);
+    };
+    add_obj(fh1::UiObjectKind::kGroup, 1, "GAUGE_ANALOG");
+    add_obj(fh1::UiObjectKind::kModel, 2, "MainBackRing");
+    add_obj(fh1::UiObjectKind::kMaterial, 3, "RingMat");
+    add_obj(fh1::UiObjectKind::kGroup, 4, "_P_Tach_Needle");
+    add_obj(fh1::UiObjectKind::kModel, 5, "Rectangle");
+    add_obj(fh1::UiObjectKind::kMaterial, 6, "NeedleMat");
+    add_obj(fh1::UiObjectKind::kGroup, 7, "ASSIST_ICONS");
+    add_obj(fh1::UiObjectKind::kGroup, 8, "HUD_ABS");
+    add_obj(fh1::UiObjectKind::kModel, 9, "Rectangle_ON");
+    add_mat_tex(10, 11, "GAME:\\MEDIA\\UI\\TEXTURES\\HORIZON\\HUD\\DIALS\\ABSON.TGA");
+    add_obj(fh1::UiObjectKind::kGroup, 12, "HUD_TCS");
+    add_obj(fh1::UiObjectKind::kModel, 13, "Rectangle_ON");
+    add_mat_tex(14, 15, "GAME:\\MEDIA\\UI\\TEXTURES\\HORIZON\\HUD\\DIALS\\TCS ON.TGA");
+    add_obj(fh1::UiObjectKind::kGroup, 16, "Speedo");
+    add_obj(fh1::UiObjectKind::kText, 17, "digit0");
+    add_obj(fh1::UiObjectKind::kText, 18, "digit1");
+    add_obj(fh1::UiObjectKind::kText, 19, "digit2");
+    add_obj(fh1::UiObjectKind::kText, 20, "TEXT_SPEED_UNIT_ANALOG");
+    add_obj(fh1::UiObjectKind::kText, 21, "TEXT_GEAR_ANALOG");
+
+    const int g = add_node(-1, 1);
+    add_node(g, 2);
+    const int tn = add_node(g, 4);
+    add_node(tn, 5);
+    const int ai = add_node(g, 7);
+    const int abs_g = add_node(ai, 8);
+    add_node(abs_g, 9, 0.5f);
+    const int tcs_g = add_node(ai, 12);
+    add_node(tcs_g, 13, 0.5f);
+    const int sp = add_node(g, 16);
+    add_node(sp, 17);
+    add_node(sp, 18);
+    add_node(sp, 19);
+    add_node(g, 20);
+    add_node(g, 21);
+
+    for (auto& n : s.nodes)
+      for (size_t i = 0; i < s.objects.size(); ++i)
+        if (s.objects[i].id == n.object) n.object_index = int(i);
+    return s;
+  }();
+
+  carview::set_ui_scenes([&](const std::string& name) -> const fh1::UiScene* {
+    return name == "947_HUD" ? &scene : nullptr;
+  });
+  carview::set_ui_textures([](const std::string& path, std::array<float, 4>& uv) {
+    if (path == "HUD/DIALS/ABSON") {
+      uv = {0.1f, 0.1f, 0.2f, 0.2f};
+      return true;
+    }
+    if (path == "HUD/DIALS/TCS ON") {
+      uv = {0.3f, 0.3f, 0.4f, 0.4f};
+      return true;
+    }
+    uv = {0.5f, 0.5f, 0.6f, 0.6f};
+    return path.rfind("HUD/DIALS/", 0) == 0;
+  });
+
+  auto find_colour = [](const List& l, float u0) -> uint32_t {
+    for (const auto& it : l.items()) {
+      if (it.kind == kImage && std::fabs(it.q[0] - u0) < 1e-4f) return it.color;
+    }
+    return 0;
+  };
+  const uint32_t off_col = fade(rgba(33, 33, 33), 0.5f);
+  const uint32_t on_col = rgba(255, 196, 40);
+
+  {
+    List l;
+    carview::DriveHud d;
+    d.abs = false, d.tcs = false;
+    carview::build_drive_hud(l, d, 1280, 720);
+    CHECK(find_colour(l, 0.1f) == off_col);
+    CHECK(find_colour(l, 0.3f) == off_col);
+  }
+  {
+    List l;
+    carview::DriveHud d;
+    d.abs = true, d.tcs = false;
+    carview::build_drive_hud(l, d, 1280, 720);
+    CHECK(find_colour(l, 0.1f) == on_col);
+    CHECK(find_colour(l, 0.3f) == off_col);
+  }
+  {
+    List l;
+    carview::DriveHud d;
+    d.abs = false, d.tcs = true;
+    carview::build_drive_hud(l, d, 1280, 720);
+    CHECK(find_colour(l, 0.1f) == off_col);
+    CHECK(find_colour(l, 0.3f) == on_col);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -380,6 +511,7 @@ int main() {
   CHECK(inside > 200);
   CHECK(outside == 0);
 
+  test_hud_abs_tcs_lamps();
   // Verify all new Career & Horizon HUD screens build and rasterize cleanly at 1280x720.
   auto check_screen = [&](const carview::DriveHud& d) {
     List l;

@@ -13,6 +13,7 @@
 
 #include "drive/contact.h"
 #include "drive/vehicle.h"
+#include "drive_helpers.h"
 #include "showroom.h"
 #include "traffic/bodies.h"
 #include "traffic/config.h"
@@ -38,6 +39,8 @@ class TrafficView {
   double hour() const { return population_->hour(); }
   // One fixed step (drive::Vehicle::kStep), after the player's car's.
   void step(drive::Vehicle& player);
+  // Fraction of a step past the last one (1.0: as stepped).
+  void set_blend(double alpha) { blend_ = alpha; }
   // The guests' loads and the host's instances for this frame (player's
   // car model frame).
   void place(const cars::bake::CarInfo& player_info, const drive::Vehicle& player);
@@ -77,6 +80,8 @@ class TrafficView {
   double upload_ms_max_ = 0;
   int uploads_ = 0;
   double guests_at_ = -1;  // the population time guests were last refreshed from step()
+  double blend_ = 1.0;
+  std::map<uint32_t, TrafficPose> before_;
 };
 
 // Another car drawn with the host's camera: `guest`'s model where `body`

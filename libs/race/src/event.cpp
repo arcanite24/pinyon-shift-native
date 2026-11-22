@@ -10,39 +10,13 @@
 
 #include "cars/sources.h"
 #include "cars/strings.h"
+#include "db_util.h"
 #include "race/route.h"
 
 namespace race {
 namespace {
 
-struct Db {
-  sqlite3* db = nullptr;
-  ~Db() {
-    if (db) sqlite3_close(db);
-  }
-  bool open(const std::filesystem::path& game_root, std::string* error) {
-    const auto p = (game_root / "media" / "db" / "gamedb.slt").string();
-    if (sqlite3_open_v2(p.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-      if (error) *error = "cannot open " + p;
-      return false;
-    }
-    return true;
-  }
-  // Runs `sql` with text parameters, calling `row` per result row.
-  bool each(const std::string& sql, const std::vector<std::string>& params, const std::function<void(sqlite3_stmt*)>& row,
-            std::string* error) {
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) {
-      if (error) *error = std::string("gamedb: ") + sqlite3_errmsg(db);
-      return false;
-    }
-    for (size_t i = 0; i < params.size(); ++i)
-      sqlite3_bind_text(st, int(i + 1), params[i].c_str(), -1, SQLITE_TRANSIENT);
-    while (sqlite3_step(st) == SQLITE_ROW) row(st);
-    sqlite3_finalize(st);
-    return true;
-  }
-};
+using Db = detail::RaceDb;
 
 double d(sqlite3_stmt* s, int c) { return sqlite3_column_double(s, c); }
 int64_t i64(sqlite3_stmt* s, int c) { return sqlite3_column_int64(s, c); }
@@ -80,9 +54,10 @@ const TemperamentRow* EventData::temperament(int id) const {
   return nullptr;
 }
 
-double stock_performance_index(const std::filesystem::path& game_root, const std::string& media) {
+double stock_performance_index(const std::filesystem::path& game_root, const std::string& media,
+                               const std::filesystem::path& state_root, const cars::PartsDb* shared_db) {
   Db db;
-  if (!db.open(game_root, nullptr)) return -1;
+  if (!db.open(game_root, state_root, shared_db, nullptr)) return -1;
   double pi = -1;
   db.each("select PerformanceIndex from Data_Car where lower(MediaName) = lower(?) limit 1", {media},
           [&](sqlite3_stmt* s) { pi = d(s, 0); }, nullptr);
@@ -90,9 +65,10 @@ double stock_performance_index(const std::filesystem::path& game_root, const std
 }
 
 bool load_event(const std::filesystem::path& game_root, const std::string& horizon_id, Difficulty difficulty,
-                EventData& out, std::string* error) {
+                EventData& out, std::string* error, const std::filesystem::path& state_root,
+                const cars::PartsDb* shared_db) {
   Db db;
-  if (!db.open(game_root, error)) return false;
+  if (!db.open(game_root, state_root, shared_db, error)) return false;
   out = EventData{};
   out.horizon_id = horizon_id;
   static const char* kSuffix[] = {"Easy", "Med", "Hard", "Pro"};
@@ -220,9 +196,10 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                  [&](sqlite3_stmt* s) { out.scoring.push_back(d(s, 0)); }, error);
 }
 
-bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error) {
+bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error,
+                  const std::filesystem::path& state_root, const cars::PartsDb* shared_db) {
   Db db;
-  if (!db.open(game_root, error)) return false;
+  if (!db.open(game_root, state_root, shared_db, error)) return false;
   out = EventCensus{};
   auto count = [&](const char* t, int& n) {
     return db.each(std::string("select count(*) from ") + t, {}, [&](sqlite3_stmt* s) { n = int(i64(s, 0)); }, error);
@@ -237,13 +214,15 @@ bool event_census(const std::filesystem::path& game_root, EventCensus& out, std:
   return true;
 }
 
-bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error) {
+bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error,
+                 const std::filesystem::path& state_root, const cars::PartsDb* shared_db) {
   Db db;
-  if (!db.open(game_root, error)) return false;
+  if (!db.open(game_root, state_root, shared_db, error)) return false;
   out.clear();
   return db.each(
       "select e.HorizonEventID, e.CareerTypeId, t.RibbonConfiguration, t.RouteId, r.NumLaps, "
-      "(select count(*) from EventParticipants p where p.EventID = e.Id), coalesce(e.Name, '') "
+      "(select count(*) from EventParticipants p where p.EventID = e.Id), coalesce(e.Name, ''), "
+      "coalesce(t.EnvironmentId, 0) "
       "from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId order by e.HorizonEventID",
       {},
       [&](sqlite3_stmt* s) {
@@ -255,6 +234,7 @@ bool list_events(const std::filesystem::path& game_root, std::vector<EventSummar
         e.laps = std::max(1, int(i64(s, 4)));
         e.opponents = int(i64(s, 5));
         e.name = txt(s, 6);
+        e.environment_id = int(i64(s, 7));
         out.push_back(std::move(e));
       },
       error);
@@ -275,7 +255,7 @@ std::string CarNames::split_words(const std::string& s) {
 }
 
 bool CarNames::load(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
-                    std::string* error) {
+                    std::string* error, const std::string& language, const cars::PartsDb* shared_db) {
   static std::mutex lock;
   struct Cached {
     std::map<std::string, Row> rows;
@@ -283,7 +263,12 @@ bool CarNames::load(const std::filesystem::path& game_root, const std::filesyste
     std::shared_ptr<const fh1::StringTables> strings;
   };
   static std::map<std::string, Cached> cache;
-  const std::string key = game_root.string() + "|" + state_root.string();
+  std::string lang;
+  lang.reserve(language.size());
+  for (char c : language) lang.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+  if (lang.empty()) lang = "EN";
+  const bool merged = (shared_db && shared_db->is_open()) || !state_root.empty();
+  const std::string key = game_root.string() + "|" + state_root.string() + "|" + lang + (merged ? "|1" : "|0");
   {
     std::lock_guard<std::mutex> g(lock);
     if (auto it = cache.find(key); it != cache.end()) {
@@ -296,12 +281,17 @@ bool CarNames::load(const std::filesystem::path& game_root, const std::filesyste
   {
     cars::Install install;
     std::string why;
-    if (!cars::discover_install(game_root, state_root, "", install, &why) ||
-        !cars::load_string_tables(install, strings, &why))
+    if (cars::discover_install(game_root, state_root, "", install, &why)) {
+      if (!cars::load_string_tables(install, strings, &why, lang)) {
+        if (lang == "EN" || !cars::load_string_tables(install, strings, &why, "EN"))
+          strings = {};  // the media names stand in
+      }
+    } else {
       strings = {};  // the media names stand in
+    }
   }
   Db db;
-  if (!db.open(game_root, error)) return false;
+  if (!db.open(game_root, state_root, shared_db, error)) return false;
   rows_.clear();
   resolved_ = 0;
   const bool ok = db.each(

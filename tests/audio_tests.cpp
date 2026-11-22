@@ -130,6 +130,32 @@ void player_checks() {
   CHECK(player.voices() == 2);
   player.render(out.data(), 4800);
   CHECK(player.voices() == 1);
+
+  // Setting master = 0.0 ramps output smoothly to silence (< 1e-3 RMS after 40 ms
+  // with the 5 ms smoother), without NaNs, and recovers when master is restored.
+  player.master = 0.0;
+  player.set({2500, 0, 0, 0});
+  std::vector<float> mute_buf(2 * 2400);
+  player.render(mute_buf.data(), 2400);  // 50 ms
+  double tail_sq = 0.0;
+  for (int f = 1920; f < 2400; ++f) {
+    const float l = mute_buf[2 * size_t(f)];
+    const float r = mute_buf[2 * size_t(f) + 1];
+    CHECK(std::isfinite(l) && std::isfinite(r));
+    tail_sq += double(l) * l + double(r) * r;
+  }
+  const double tail_rms = std::sqrt(tail_sq / (2 * 480));
+  CHECK(tail_rms < 1e-3);
+
+  player.master = 0.6;
+  player.set({2500, 0, 0, 0});
+  player.render(mute_buf.data(), 2400);
+  double rec_sq = 0.0;
+  for (int f = 1920; f < 2400; ++f) {
+    const float l = mute_buf[2 * size_t(f)];
+    rec_sq += double(l) * l;
+  }
+  CHECK(std::sqrt(rec_sq / 480) > 1e-2);
 }
 
 void r34_checks() {

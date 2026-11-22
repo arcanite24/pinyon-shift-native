@@ -29,6 +29,10 @@
 #include "game_hud.h"
 #include "showroom.h"
 
+namespace cars {
+class PartsDb;
+}
+
 namespace world {
 class Collision;
 }
@@ -57,6 +61,9 @@ class RaceView {
     // "stage:<route>" in this world folder (ColoradoDirt): its own route
     // file and loose AI line, the player alone on slot 00, one lap.
     std::filesystem::path stage_world;
+    std::filesystem::path state_root;
+    const cars::PartsDb* parts_db = nullptr;
+    std::string language = "EN";
   };
   explicit RaceView(std::filesystem::path bake_dir);
   ~RaceView();

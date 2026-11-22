@@ -51,7 +51,17 @@ bool load_string_tables(const Install& install, fh1::StringTables& out, std::str
   StringTableLoad c;
   const std::string lang = lower(language);
   {
-    auto disc = fh1::Archive::open(install.media / "stringtables" / (language + ".zip"), error);
+    const fs::path st_dir = install.media / "stringtables";
+    const std::string want = lang + ".zip";
+    fs::path archive_path = st_dir / (language + ".zip");
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(st_dir, ec)) {
+      if (e.is_regular_file() && lower(e.path().filename().string()) == want) {
+        archive_path = e.path();
+        break;
+      }
+    }
+    auto disc = fh1::Archive::open(archive_path, error);
     if (!disc) return false;
     c.disc = put_members(*disc, "", out, c.rejected);
   }

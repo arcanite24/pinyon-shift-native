@@ -14,6 +14,10 @@
 #include "data/event_restrictions.h"
 #include "race/rewards.h"
 
+namespace cars {
+class PartsDb;
+}
+
 namespace race {
 
 // Starter career car (SPEC-GARAGE-UPGRADES: 1995 VW Corrado VR6, red).
@@ -126,8 +130,11 @@ struct CareerCatalog {
   static const char* event_style_label(const CareerEvent& ev);
 };
 
-// Loads the full career catalog from `<game_root>/media/db/gamedb.slt`,
+// Loads the full career catalog from the merged v4+DLC database when
+// `db` or `state_root` is provided (falling back to `<game_root>/media/db/gamedb.slt`),
 // `gamemodes.zip`, and `tracks/colorado/Ribbon_00/GameObjs.xml`.
 bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& out, std::string* error);
+bool load_career_catalog(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                         const cars::PartsDb* db, CareerCatalog& out, std::string* error);
 
 }  // namespace race

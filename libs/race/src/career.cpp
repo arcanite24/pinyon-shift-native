@@ -10,6 +10,7 @@
 #include <sstream>
 
 #include "audio/xml.h"
+#include "db_util.h"
 #include "fh1data/archive.h"
 
 namespace race {
@@ -20,25 +21,11 @@ std::string lower_str(std::string s) {
   return s;
 }
 
-bool fail(std::string* error, const std::string& what) {
-  if (error) *error = what;
-  return false;
-}
-
 double col_d(sqlite3_stmt* s, int c) { return sqlite3_column_double(s, c); }
 int64_t col_i64(sqlite3_stmt* s, int c) { return sqlite3_column_int64(s, c); }
 std::string col_txt(sqlite3_stmt* s, int c) {
   const auto* t = sqlite3_column_text(s, c);
   return t ? reinterpret_cast<const char*>(t) : "";
-}
-
-bool run_sql(sqlite3* db, const char* sql, const std::function<void(sqlite3_stmt*)>& row, std::string* error) {
-  sqlite3_stmt* st = nullptr;
-  if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
-    return fail(error, std::string("gamedb: ") + sqlite3_errmsg(db));
-  while (sqlite3_step(st) == SQLITE_ROW) row(st);
-  sqlite3_finalize(st);
-  return true;
 }
 
 bool read_zip_xml(fh1::Archive& zip, const std::string& member, audio::XmlNode& out) {
@@ -210,29 +197,24 @@ const char* CareerCatalog::event_style_label(const CareerEvent& ev) {
 }
 
 bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& out, std::string* error) {
+  return load_career_catalog(game_root, {}, nullptr, out, error);
+}
+
+bool load_career_catalog(const std::filesystem::path& game_root, const std::filesystem::path& state_root,
+                         const cars::PartsDb* shared_db, CareerCatalog& out, std::string* error) {
   out = CareerCatalog{};
-  const auto db_path = (game_root / "media" / "db" / "gamedb.slt").string();
-  sqlite3* db = nullptr;
-  if (sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-    if (db) sqlite3_close(db);
-    return fail(error, "cannot open " + db_path);
-  }
-  struct DbGuard {
-    sqlite3* p;
-    ~DbGuard() {
-      if (p) sqlite3_close(p);
-    }
-  } guard{db};
+  detail::RaceDb db;
+  if (!db.open(game_root, state_root, shared_db, error)) return false;
 
   // 1. Wristband levels + wristband car rewards.
   std::map<int, int64_t> wb_cars;
-  if (!run_sql(db, "select WristbandLevel, RewardCarId from Rewards_Wristband",
+  if (!db.each("select WristbandLevel, RewardCarId from Rewards_Wristband", {},
                [&](sqlite3_stmt* s) { wb_cars[int(col_i64(s, 0))] = col_i64(s, 1); }, error))
     return false;
 
-  if (!run_sql(db,
-               "select Id, XP, coalesce(Name, ''), coalesce(Thumbnail, ''), coalesce(Color, 0) "
+  if (!db.each("select Id, XP, coalesce(Name, ''), coalesce(Thumbnail, ''), coalesce(Color, 0) "
                "from CareerWristbandLevels order by XP",
+               {},
                [&](sqlite3_stmt* s) {
                  WristbandTier w;
                  w.id = int(col_i64(s, 0));
@@ -248,9 +230,9 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
 
   // 2. Prize cars and event-unlock prerequisites.
   std::map<int64_t, std::pair<int64_t, int>> prize_cars;
-  if (!run_sql(db,
-               "select EventId, RewardCarId, coalesce(RewardCarColorSequence, 0) "
+  if (!db.each("select EventId, RewardCarId, coalesce(RewardCarColorSequence, 0) "
                "from Rewards_EventPrizes order by Id",
+               {},
                [&](sqlite3_stmt* s) {
                  const int64_t eid = col_i64(s, 0);
                  if (!prize_cars.count(eid)) prize_cars[eid] = {col_i64(s, 1), int(col_i64(s, 2))};
@@ -259,13 +241,13 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
     return false;
 
   std::map<int64_t, int64_t> prereqs;  // unlocked_event_id -> prerequisite_event_id
-  if (!run_sql(db, "select EventId, UnlockEventId from Rewards_EventUnlock",
+  if (!db.each("select EventId, UnlockEventId from Rewards_EventUnlock", {},
                [&](sqlite3_stmt* s) { prereqs[col_i64(s, 1)] = col_i64(s, 0); }, error))
     return false;
 
   // 3. Event restrictions.
   std::map<int64_t, shift::data::EventRestrictions> restrictions;
-  if (!run_sql(db, "select EventID, BucketId, coalesce(Value, '') from EventRestrictions",
+  if (!db.each("select EventID, BucketId, coalesce(Value, '') from EventRestrictions", {},
                [&](sqlite3_stmt* s) {
                  const std::string val = col_txt(s, 2);
                  if (val.empty()) return;
@@ -275,7 +257,7 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
     return false;
 
   // 4. Street race hubs.
-  if (!run_sql(db, "select Id, coalesce(Name, ''), coalesce(UnlockPointsReq, 0) from EventHubs order by Id",
+  if (!db.each("select Id, coalesce(Name, ''), coalesce(UnlockPointsReq, 0) from EventHubs order by Id", {},
                [&](sqlite3_stmt* s) {
                  StreetHub h;
                  h.id = int(col_i64(s, 0));
@@ -285,7 +267,7 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
                },
                error))
     return false;
-  if (!run_sql(db, "select HubId, EventId from EventHubInitialEvents",
+  if (!db.each("select HubId, EventId from EventHubInitialEvents", {},
                [&](sqlite3_stmt* s) {
                  const int hid = int(col_i64(s, 0));
                  const int64_t eid = col_i64(s, 1);
@@ -296,8 +278,7 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
     return false;
 
   // 5. Playable career events (joined with Races & Tracks).
-  if (!run_sql(db,
-               "select e.Id, coalesce(e.HorizonEventID, ''), coalesce(e.Name, ''), "
+  if (!db.each("select e.Id, coalesce(e.HorizonEventID, ''), coalesce(e.Name, ''), "
                "coalesce(e.RestrictionDescription, ''), coalesce(e.Level, 0), coalesce(e.CareerEventStyle, 0), "
                "coalesce(e.CareerTypeId, 0), coalesce(e.UnlockPointsReq, 0), coalesce(e.PopularityPointsReq, 0), "
                "coalesce(e.HubId, 0), coalesce(e.TargetClass, 0), coalesce(e.CashPrize, 0), "
@@ -305,7 +286,9 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
                "(select count(*) from EventParticipants p where p.EventID = e.Id) "
                "from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId "
                "where t.RibbonConfiguration >= 0 and e.CareerEventStyle > 0 "
+               "and t.EnvironmentId != 111 and e.CareerTypeId != 9 "
                "order by e.Level, e.UnlockPointsReq, e.PopularityPointsReq desc, e.HorizonEventID",
+               {},
                [&](sqlite3_stmt* s) {
                  CareerEvent ev;
                  ev.event_id = col_i64(s, 0);
@@ -337,11 +320,11 @@ bool load_career_catalog(const std::filesystem::path& game_root, CareerCatalog& 
     return false;
 
   // 6. Car specs for restriction checks.
-  if (!run_sql(db,
-               "select Id, coalesce(MediaName, ''), coalesce(Year, 0), coalesce(BaseCost, 0), "
+  if (!db.each("select Id, coalesce(MediaName, ''), coalesce(Year, 0), coalesce(BaseCost, 0), "
                "coalesce(PerformanceIndex, 0), coalesce(ClassID, 0), coalesce(MakeID, 0), "
                "coalesce(DriveTypeID, 0), coalesce(FamilyBodyId, 0), coalesce(FamilyModelId, 0), "
                "coalesce(RegionId, 0), coalesce(CountryId, 0) from Data_Car",
+               {},
                [&](sqlite3_stmt* s) {
                  CarSpec cs;
                  cs.car_id = col_i64(s, 0);

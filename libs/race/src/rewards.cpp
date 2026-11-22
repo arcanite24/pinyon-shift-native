@@ -1,9 +1,9 @@
 #include "race/rewards.h"
 
-#include <sqlite3.h>
-
 #include <algorithm>
 #include <cmath>
+
+#include "db_util.h"
 
 namespace race {
 
@@ -46,35 +46,26 @@ int WristbandTables::level_index(int total) const {
 }
 
 bool load_wristband_tables(const std::filesystem::path& root, WristbandTables& out, std::string* error) {
-  sqlite3* db = nullptr;
-  const auto p = (root / "media" / "db" / "gamedb.slt").string();
-  if (sqlite3_open_v2(p.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
-    if (error) *error = "cannot open " + p;
-    if (db) sqlite3_close(db);
-    return false;
-  }
+  return load_wristband_tables(root, {}, nullptr, out, error);
+}
+
+bool load_wristband_tables(const std::filesystem::path& root, const std::filesystem::path& state_root,
+                           const cars::PartsDb* shared_db, WristbandTables& out, std::string* error) {
+  detail::RaceDb db;
+  if (!db.open(root, state_root, shared_db, error)) return false;
   out = WristbandTables{};
-  bool ok = true;
-  auto each = [&](const char* sql, auto row) {
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
-      if (error) *error = std::string("gamedb: ") + sqlite3_errmsg(db);
-      ok = false;
-      return;
-    }
-    while (sqlite3_step(st) == SQLITE_ROW) row(st);
-    sqlite3_finalize(st);
-  };
-  each("select WristbandLevel, Place, Points from WristbandScoring", [&](sqlite3_stmt* s) {
-    out.points[sqlite3_column_int(s, 0)][sqlite3_column_int(s, 1)] = sqlite3_column_int(s, 2);
-  });
-  if (ok)
-    each("select XP, coalesce(Name, '') from CareerWristbandLevels order by XP", [&](sqlite3_stmt* s) {
-      const auto* t = sqlite3_column_text(s, 1);
-      out.levels.emplace_back(sqlite3_column_int(s, 0), t ? reinterpret_cast<const char*>(t) : "");
-    });
-  sqlite3_close(db);
-  return ok;
+  if (!db.each("select WristbandLevel, Place, Points from WristbandScoring", {},
+               [&](sqlite3_stmt* s) {
+                 out.points[sqlite3_column_int(s, 0)][sqlite3_column_int(s, 1)] = sqlite3_column_int(s, 2);
+               },
+               error))
+    return false;
+  return db.each("select XP, coalesce(Name, '') from CareerWristbandLevels order by XP", {},
+                 [&](sqlite3_stmt* s) {
+                   const auto* t = sqlite3_column_text(s, 1);
+                   out.levels.emplace_back(sqlite3_column_int(s, 0), t ? reinterpret_cast<const char*>(t) : "");
+                 },
+                 error);
 }
 
 int difficulty_bonus_percent(int difficulty_index) {

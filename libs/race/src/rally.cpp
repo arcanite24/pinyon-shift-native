@@ -5,6 +5,7 @@
 #include <random>
 
 #include "audio/xml.h"
+#include "cars/physics.h"
 #include "fh1data/archive.h"
 #include "sqlite3.h"
 
@@ -40,40 +41,64 @@ double StageTrack::best_total() const {
   return s;
 }
 
-bool load_stage_track(const std::filesystem::path& state_root, int route_id, StageTrack& out, std::string* error) {
+bool load_stage_track(const std::filesystem::path& state_root, int route_id, StageTrack& out, std::string* error,
+                      const cars::PartsDb* shared_db) {
   out = {};
-  std::vector<uint8_t> db_bytes;
-  if (!read_v4(state_root, "db/gamedb.slt", db_bytes, error)) return false;
-  sqlite3* db = nullptr;
-  if (sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) return fail(error, "sqlite");
-  auto* copy = static_cast<unsigned char*>(sqlite3_malloc64(db_bytes.size()));
-  std::memcpy(copy, db_bytes.data(), db_bytes.size());
-  bool ok = sqlite3_deserialize(db, "main", copy, sqlite3_int64(db_bytes.size()), sqlite3_int64(db_bytes.size()),
-                                SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE) == SQLITE_OK;
-  sqlite3_stmt* st = nullptr;
-  if (ok && sqlite3_prepare_v2(db,
-                               "select id, Length, StartLine, FinishLine from Tracks where EnvironmentId = 111 and "
-                               "RouteId = ? order by id limit 1",
-                               -1, &st, nullptr) == SQLITE_OK) {
-    sqlite3_bind_int(st, 1, route_id);
-    ok = sqlite3_step(st) == SQLITE_ROW;
+  bool ok = false;
+  if (shared_db && shared_db->is_open()) {
+    const std::string r_str = std::to_string(route_id);
+    if (!shared_db->each("select id, Length, StartLine, FinishLine from Tracks where EnvironmentId = 111 and "
+                         "RouteId = ? order by id limit 1",
+                         {r_str},
+                         [&](sqlite3_stmt* st) {
+                           ok = true;
+                           out.track_id = sqlite3_column_int64(st, 0);
+                           out.length = sqlite3_column_double(st, 1);
+                           out.start_line = sqlite3_column_double(st, 2);
+                           out.finish_line = sqlite3_column_double(st, 3);
+                         },
+                         error))
+      return false;
     if (ok) {
-      out.track_id = sqlite3_column_int64(st, 0);
-      out.length = sqlite3_column_double(st, 1);
-      out.start_line = sqlite3_column_double(st, 2);
-      out.finish_line = sqlite3_column_double(st, 3);
+      if (!shared_db->each("select Split from SplitPoints where TrackId = ? order by Split",
+                           {std::to_string(out.track_id)},
+                           [&](sqlite3_stmt* st) { out.splits.push_back(sqlite3_column_double(st, 0)); }, error))
+        return false;
     }
-    sqlite3_finalize(st);
   } else {
-    ok = false;
+    std::vector<uint8_t> db_bytes;
+    if (!read_v4(state_root, "db/gamedb.slt", db_bytes, error)) return false;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) return fail(error, "sqlite");
+    auto* copy = static_cast<unsigned char*>(sqlite3_malloc64(db_bytes.size()));
+    std::memcpy(copy, db_bytes.data(), db_bytes.size());
+    ok = sqlite3_deserialize(db, "main", copy, sqlite3_int64(db_bytes.size()), sqlite3_int64(db_bytes.size()),
+                             SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE) == SQLITE_OK;
+    sqlite3_stmt* st = nullptr;
+    if (ok && sqlite3_prepare_v2(db,
+                                 "select id, Length, StartLine, FinishLine from Tracks where EnvironmentId = 111 and "
+                                 "RouteId = ? order by id limit 1",
+                                 -1, &st, nullptr) == SQLITE_OK) {
+      sqlite3_bind_int(st, 1, route_id);
+      ok = sqlite3_step(st) == SQLITE_ROW;
+      if (ok) {
+        out.track_id = sqlite3_column_int64(st, 0);
+        out.length = sqlite3_column_double(st, 1);
+        out.start_line = sqlite3_column_double(st, 2);
+        out.finish_line = sqlite3_column_double(st, 3);
+      }
+      sqlite3_finalize(st);
+    } else {
+      ok = false;
+    }
+    if (ok && sqlite3_prepare_v2(db, "select Split from SplitPoints where TrackId = ? order by Split", -1, &st,
+                                 nullptr) == SQLITE_OK) {
+      sqlite3_bind_int64(st, 1, out.track_id);
+      while (sqlite3_step(st) == SQLITE_ROW) out.splits.push_back(sqlite3_column_double(st, 0));
+      sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
   }
-  if (ok && sqlite3_prepare_v2(db, "select Split from SplitPoints where TrackId = ? order by Split", -1, &st,
-                               nullptr) == SQLITE_OK) {
-    sqlite3_bind_int64(st, 1, out.track_id);
-    while (sqlite3_step(st) == SQLITE_ROW) out.splits.push_back(sqlite3_column_double(st, 0));
-    sqlite3_finalize(st);
-  }
-  sqlite3_close(db);
   if (!ok) return fail(error, "v4 gamedb: no ColoradoDirt track on route " + std::to_string(route_id));
   out.route_id = route_id;
 

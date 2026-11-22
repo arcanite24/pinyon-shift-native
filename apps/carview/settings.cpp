@@ -21,7 +21,7 @@ constexpr Kept kKept[] = {
     {"no-radio", false, "radio"},   {"traffic", false, "traffic"},   {"no-traffic", false, "traffic"},
     {"difficulty", true, "difficulty"}, {"no-rubberband", false, "rubberband"}, {"camera", true, "camera"},
     {"hour", true, "hour"},         {"no-collectibles", false, "collectibles"}, {"play", true, "play"},
-    {"no-mods", false, "mods"},     {"mods", true, "mods"},
+    {"no-mods", false, "mods"},     {"mods", true, "mods"},     {"language", true, "language"},
 };
 
 const Kept* kept(const std::string& key) {

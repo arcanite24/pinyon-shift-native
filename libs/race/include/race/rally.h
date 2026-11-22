@@ -10,6 +10,10 @@
 #include <utility>
 #include <vector>
 
+namespace cars {
+class PartsDb;
+}
+
 namespace race {
 
 struct StageTrack {
@@ -30,9 +34,11 @@ struct RallyField {
   std::pair<double, double> range(int64_t track_id, int difficulty) const;
 };
 
-// The route's track (environment 111) from <state_root>/title-update-v4/
-// media.zip: db/gamedb.slt and gametunablesettings/rallytracktimings.xml.
-bool load_stage_track(const std::filesystem::path& state_root, int route_id, StageTrack& out, std::string* error);
+// The route's track (environment 111) from `db` when open, else
+// <state_root>/title-update-v4/media.zip: db/gamedb.slt, and
+// gametunablesettings/rallytracktimings.xml.
+bool load_stage_track(const std::filesystem::path& state_root, int route_id, StageTrack& out, std::string* error,
+                      const cars::PartsDb* db = nullptr);
 // gametunablesettings/rallyaidifficulty.xml from the same archive.
 bool load_rally_field(const std::filesystem::path& state_root, RallyField& out, std::string* error);
 bool parse_rally_field(std::string_view xml, RallyField& out, std::string* error);

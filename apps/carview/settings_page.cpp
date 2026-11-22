@@ -50,7 +50,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
     if (!owned && t == "--traffic") owned = true;
     const bool takes_value = has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" ||
                                            t == "--camera" || t == "--size" || t == "--msaa" || t == "--exposure" ||
-                                           t == "--hour" || t == "--play" || t == "--mods");
+                                           t == "--hour" || t == "--play" || t == "--mods" || t == "--language");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);

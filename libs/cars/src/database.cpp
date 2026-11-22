@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <set>
 
 #include <sqlite3.h>
@@ -671,6 +672,7 @@ bool load_car_physics(const Install& install, const std::vector<int64_t>& ids, s
 }
 
 struct PartsDb::Impl {
+  mutable std::mutex mutex;
   Merged merged;
   std::map<int64_t, uint32_t> offers;  // the enabled packages' offer numbers -> licence masks
 };
@@ -692,6 +694,7 @@ bool PartsDb::physics(int64_t car_id, const FittedParts& fit, CarPhysics& out, s
     if (error) *error = "parts database not open";
     return false;
   }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
   return car_physics_from(impl_->merged.db, car_id, fit, out, error);
 }
 
@@ -701,6 +704,7 @@ bool PartsDb::options(int64_t car_id, const FittedParts& fit, std::vector<PartRo
     if (error) *error = "parts database not open";
     return false;
   }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
   sqlite3* db = impl_->merged.db;
   // The car's keys through its fitted (or stock) engine, drivetrain and
   // body rows.
@@ -745,6 +749,7 @@ bool PartsDb::dealer(std::vector<DealerCar>& out, std::string* error) const {
     if (error) *error = "parts database not open";
     return false;
   }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
   Query q(impl_->merged.db,
           "SELECT Id, BaseCost, Year, ClassID, PerformanceIndex, MediaName, (SELECT MIN(Sequence) FROM Combo_Colors k "
           "WHERE k.Ordinal = d.Id) FROM Data_Car d WHERE IsDrivable = 1 AND "
@@ -793,6 +798,29 @@ bool PartsDb::stock_slots(int64_t car_id, std::map<std::string, int64_t>& out, s
         if (it == out.end() || r.id < it->second) out[s.column] = r.id;
       }
   return true;
+}
+
+bool PartsDb::each(const std::string& sql, const std::vector<std::string>& params,
+                   const std::function<void(sqlite3_stmt*)>& row, std::string* error) const {
+  if (!impl_) {
+    if (error) *error = "parts database not open";
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  sqlite3* db = impl_->merged.db;
+  sqlite3_stmt* st = nullptr;
+  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) {
+    if (error) *error = std::string("gamedb: ") + sqlite3_errmsg(db);
+    return false;
+  }
+  for (size_t i = 0; i < params.size(); ++i)
+    sqlite3_bind_text(st, int(i + 1), params[i].c_str(), -1, SQLITE_TRANSIENT);
+  int rc = SQLITE_OK;
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) row(st);
+  const bool ok = rc == SQLITE_DONE;
+  if (!ok && error) *error = std::string("gamedb: ") + sqlite3_errmsg(db);
+  sqlite3_finalize(st);
+  return ok;
 }
 
 const std::vector<UpgradeSlot>& upgrade_slots() {

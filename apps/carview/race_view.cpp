@@ -84,14 +84,17 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       return false;
     }
   }
+  std::filesystem::path state_root = o.state_root;
+  if (state_root.empty()) {
+    if (const char* env_state = std::getenv("SHIFT_STATE_ROOT")) state_root = env_state;
+  }
   {
     std::string ne;  // the names are optional: the media names stand in
-    const char* state = std::getenv("SHIFT_STATE_ROOT");
-    names_.load(root, state ? state : "", &ne);
+    names_.load(root, state_root, &ne, o.language, o.parts_db);
     bands_.clear();
     std::string be;
     if (!garage::load_class_bands(root, bands_, &be)) bands_.clear();
-    player_pi_ = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car);
+    player_pi_ = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car, state_root, o.parts_db);
   }
   stage_ = event.rfind("stage:", 0) == 0;
   if (stage_) {
@@ -113,7 +116,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       error = e;
       return false;
     }
-  } else if (!race::load_event(root, event, o.difficulty, event_, &e) ||
+  } else if (!race::load_event(root, event, o.difficulty, event_, &e, state_root, o.parts_db) ||
              !race::load_route(root, event_.route_id, route_, &e)) {
     error = e;
     return false;
@@ -149,12 +152,12 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   stage_field_.clear(), split_times_.clear();
   stage_place_ = 0;
   if (stage_) {
-    const char* state = std::getenv("SHIFT_STATE_ROOT");
     std::string se;
-    have_stage_track_ = state && race::load_stage_track(state, event_.route_id, stage_track_, &se);
+    have_stage_track_ =
+        !state_root.empty() && race::load_stage_track(state_root, event_.route_id, stage_track_, &se, o.parts_db);
     if (!have_stage_track_) {
       std::fprintf(stderr, "race: note: no stage row (%s): the finish at the last waypoint\n",
-                   state ? se.c_str() : "SHIFT_STATE_ROOT not set");
+                   !state_root.empty() ? se.c_str() : "SHIFT_STATE_ROOT not set");
     } else {
       // The whole line: route 18's start is 3.5 km along it (a 2 km
       // window put its finish 1.5 km early).
@@ -169,7 +172,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       finish = race::Gate{x, z, std::sin(h), std::cos(h), 40};
       stage_finish_progress_ = p;
       race::RallyField field;
-      if (race::load_rally_field(state, field, &se))
+      if (race::load_rally_field(state_root, field, &se))
         stage_field_ = race::field_times(field, stage_track_, int(o.difficulty), o.seed);
       std::printf("race: stage track %lld, %.0f m, finish at %.4f, %zu splits, best %.2f s, field of %zu\n",
                   (long long)stage_track_.track_id, stage_track_.length, stage_track_.finish_line,
@@ -228,7 +231,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   if (event_.upgrade_ai) {
     std::vector<garage::ClassBand> bands;
     std::string be;
-    const double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car);
+    const double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car, state_root, o.parts_db);
     const int k = event_.target_class;
     if (ppi > 0 && garage::load_class_bands(root, bands, &be) && k >= 1 && size_t(k) < bands.size()) {
       const int lo = int(bands[size_t(k - 1)].shown_max) + 1, hi = int(bands[size_t(k)].shown_max);
@@ -275,7 +278,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   if (event_.upgrade_ai) {
     std::vector<garage::ClassBand> bands;
     std::string be;
-    double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car);
+    double ppi = o.player_pi >= 0 ? o.player_pi : race::stock_performance_index(root, o.player_car, state_root, o.parts_db);
     const int k = event_.target_class;
     if (ppi > 0 && garage::load_class_bands(root, bands, &be) && k >= 1 && size_t(k) < bands.size()) {
       const int lo = int(bands[size_t(k - 1)].shown_max) + 1, hi = int(bands[size_t(k)].shown_max);

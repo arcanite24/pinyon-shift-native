@@ -15,6 +15,10 @@
 
 #include "fh1data/stringtables.h"
 
+namespace cars {
+class PartsDb;
+}
+
 namespace race {
 
 enum class Difficulty { kEasy, kMed, kHard, kPro };
@@ -88,40 +92,49 @@ struct EventData {
   const TemperamentRow* temperament(int id) const;
 };
 
-// The database is <game_root>/media/db/gamedb.slt.
+// The database is <game_root>/media/db/gamedb.slt, or the merged v4+DLC
+// database when `db` or `state_root` is provided.
 // Data_Car.PerformanceIndex (raw) of the car with `media` (case-insensitive);
-// -1 when the disc has no such car.
-double stock_performance_index(const std::filesystem::path& game_root, const std::string& media);
+// -1 when the database has no such car.
+double stock_performance_index(const std::filesystem::path& game_root, const std::string& media,
+                               const std::filesystem::path& state_root = {},
+                               const cars::PartsDb* db = nullptr);
 
 bool load_event(const std::filesystem::path& game_root, const std::string& horizon_id, Difficulty difficulty,
-                EventData& out, std::string* error);
+                EventData& out, std::string* error,
+                const std::filesystem::path& state_root = {},
+                const cars::PartsDb* db = nullptr);
 
 // The census (SPEC-EVENTS, Tests): row counts and how many races resolve
 // to a route file and an AI line name.
 struct EventCensus {
   int events = 0, races = 0, tracks = 0, resolved = 0;
 };
-bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error);
+bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error,
+                  const std::filesystem::path& state_root = {},
+                  const cars::PartsDb* db = nullptr);
 
 // One line a race for the all-events census (SPEC-EVENTS, Race type):
 // Events.CareerTypeId and Tracks.RibbonConfiguration name the race type.
 struct EventSummary {
   std::string horizon_id;
-  int career_type = 0, ribbon = 0, route_id = 0, laps = 1, opponents = 0;
+  int career_type = 0, ribbon = 0, route_id = 0, laps = 1, opponents = 0, environment_id = 0;
   std::string name;  // Events.Name (a `_&N` reference)
 };
-bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error);
+bool list_events(const std::filesystem::path& game_root, std::vector<EventSummary>& out, std::string* error,
+                 const std::filesystem::path& state_root = {},
+                 const cars::PartsDb* db = nullptr);
 
 // Car names (and any other `_&N` text) for the HUD and menus.
 class CarNames {
  public:
   // The names from the string tables (FORMAT-STRINGTABLES: Data_Car
-  // DisplayName (ModelShort without one) and Year, List_CarMake DisplayName,
-  // English), merged from
-  // the disc, v4 and the packages under `state_root` (may be empty). A car
-  // whose reference does not resolve keeps the words of its media name.
-  // Cached per root pair.
-  bool load(const std::filesystem::path& game_root, const std::filesystem::path& state_root, std::string* error);
+  // DisplayName (ModelShort without one) and Year, List_CarMake DisplayName),
+  // merged from the disc, v4 and the packages under `state_root` (may be
+  // empty). A car whose reference does not resolve keeps the words of its
+  // media name. Cached per (game_root, state_root, language, merged).
+  bool load(const std::filesystem::path& game_root, const std::filesystem::path& state_root, std::string* error,
+            const std::string& language = "EN", const cars::PartsDb* db = nullptr);
   size_t resolved() const { return resolved_; }
   // A database text column's value: the string table's text for a `_&N`
   // reference, the value itself otherwise (or when it does not resolve).

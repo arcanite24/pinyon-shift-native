@@ -14,8 +14,11 @@
 #include <string>
 #include <vector>
 
+#include "cars/physics.h"
+#include "cars/sources.h"
 #include "drive/oracle_lap.h"
 #include "fh1data/archive.h"
+#include "fh1data/stringtables.h"
 #include "race/difficulty.h"
 #include "race/event.h"
 #include "race/owt.h"
@@ -390,6 +393,41 @@ void disc(const std::filesystem::path& root) {
   std::printf("census: %d events, %d races, %d tracks, %d resolve to a route file\n", c.events, c.races, c.tracks,
               c.resolved);
   CHECK(c.events == 119 && c.races == 119 && c.tracks == 150 && c.resolved == 119);
+  if (const char* state = std::getenv("SHIFT_STATE_ROOT");
+      state && *state && std::filesystem::exists(std::filesystem::path(state) / "title-update-v4" / "media.zip")) {
+    cars::Install inst;
+    cars::PartsDb pdb;
+    CHECK(cars::discover_install(root, state, "", inst, &e) && pdb.open(inst, &e));
+    race::EventCensus mc;
+    CHECK(race::event_census(root, mc, &e, state, &pdb));
+    std::printf("merged census: %d events, %d races, %d tracks, %d resolve\n", mc.events, mc.races, mc.tracks,
+                mc.resolved);
+    CHECK(mc.events == 155 && mc.races == 155 && mc.tracks == 184);
+    std::vector<race::EventSummary> evs;
+    CHECK(race::list_events(root, evs, &e, state, &pdb));
+    int rally_count = 0;
+    int rally_stage_route = 0;
+    for (const auto& ev : evs) {
+      if (ev.career_type == 9 && ev.environment_id == 111) {
+        ++rally_count;
+        if (rally_stage_route == 0 && ev.ribbon == 8 && ev.route_id > 0 && ev.horizon_id != "RALLY_HEATS")
+          rally_stage_route = ev.route_id;
+      }
+    }
+    CHECK(rally_count == 36);
+    CHECK(rally_stage_route > 0);
+    if (rally_stage_route > 0) {
+      race::StageTrack st_db, st_v4;
+      CHECK(race::load_stage_track(state, rally_stage_route, st_db, &e, &pdb));
+      CHECK(race::load_stage_track(state, rally_stage_route, st_v4, &e, nullptr));
+      CHECK(st_db.track_id > 0 && st_db.track_id == st_v4.track_id && st_db.route_id == rally_stage_route);
+      CHECK(st_db.splits == st_v4.splits && !st_db.best.empty());
+      race::StageTrack st_missing;
+      std::string err_missing;
+      CHECK(!race::load_stage_track(state, -999, st_missing, &err_missing, &pdb));
+      CHECK(err_missing.find("no ColoradoDirt track") != std::string::npos);
+    }
+  }
 
   // Route 158's line.
   race::AiLineFile l158;
@@ -532,11 +570,26 @@ int main() {
     const char* state = std::getenv("SHIFT_STATE_ROOT");
     race::CarNames names;
     std::string e;
-    CHECK(names.load(root, state ? state : "", &e));
+    CHECK(names.load(root, state ? state : "", &e, "EN"));
     std::printf("car names: %zu resolved; %s, %s\n", names.resolved(), names.full_name("FER_California_09").c_str(),
                 names.short_name("NIS_SkylineGTRVSpecII_02").c_str());
     CHECK(names.short_name("NIS_SkylineGTRVSpecII_02") == "Nissan Skyline GT-R V-spec II");
     CHECK(names.resolved() >= 176);
+    if (state && *state && std::filesystem::exists(std::filesystem::path(state) / "title-update-v4" / "media.zip")) {
+      CHECK(names.resolved() >= 250);
+    }
+    // Language selection & cache-key isolation ("EN" vs "FR"/"fr" vs "br"/"BR").
+    const uint32_t back_id = uint32_t(fh1::string_hash("HelpButtons")) << 16 | fh1::string_hash("IDS_Back");
+    const std::string back_ref = "_&" + std::to_string(back_id);
+    const std::string back_en = names.text(back_ref);
+    race::CarNames names_fr, names_fr_low, names_br;
+    CHECK(names_fr.load(root, "", &e, "FR"));
+    CHECK(names_fr_low.load(root, "", &e, "fr"));
+    CHECK(names_br.load(root, "", &e, "br"));
+    const std::string back_fr = names_fr.text(back_ref);
+    const std::string back_br = names_br.text(back_ref);
+    CHECK(back_fr != back_en && back_fr == names_fr_low.text(back_ref));
+    CHECK(back_br != back_en && back_br.rfind("_&", 0) != 0);
   }
   // SPEC-RACE-AI faked PI offset: California 1062 -> +1 (x 0x0DB2AA51).
   CHECK(race::faked_pi_offset(1062) == 1);

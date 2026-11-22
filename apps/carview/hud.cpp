@@ -178,7 +178,7 @@ std::vector<PauseMenu::Action> PauseMenu::items() const {
   if (in_race) {
     return {kResume, kRestartRace, kMap, kDifficulty, kSettings, kQuitRace};
   }
-  return {kResume, kMap, kEvents, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kSettings, kQuitToTitle};
+  return {kResume, kMap, kEvents, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub, kSettings, kQuitToTitle};
 }
 
 PauseMenu::Action PauseMenu::selected_action() const {

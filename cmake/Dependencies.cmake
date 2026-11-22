@@ -32,7 +32,7 @@ FetchContent_Declare(sqlite3
 FetchContent_MakeAvailable(sqlite3)
 add_library(shift_sqlite3 STATIC "${sqlite3_SOURCE_DIR}/sqlite3.c")
 target_include_directories(shift_sqlite3 PUBLIC "${sqlite3_SOURCE_DIR}")
-target_compile_definitions(shift_sqlite3 PRIVATE SQLITE_THREADSAFE=0 SQLITE_OMIT_LOAD_EXTENSION
+target_compile_definitions(shift_sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION
   SQLITE_DEFAULT_MEMSTATUS=0 SQLITE_DQS=0)
 if(MSVC)
   target_compile_options(shift_sqlite3 PRIVATE /w)

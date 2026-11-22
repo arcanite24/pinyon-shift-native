@@ -363,11 +363,12 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
   // The needle's bar runs from radius 60 to 86 in the original's frames:
   // the quad's centre 65 out (the scene's static 50 is moved by code).
   l.image_rotated(cx + 65 * s * sa, cy - 65 * s * ca, 16 * s, 64 * s, a, nuv, kNeedle);
-  // The assists' labels (ASSIST_ICONS: ABSON and TCS ON at half opacity).
+  // The assists' labels (ASSIST_ICONS: ABSON and TCS ON; 947_HUD Material17
+  // is white/neutral grey, so active uses amber and off uses dim kPillGrey).
   const int assists = sc.find("ASSIST_ICONS", gauge);
-  for (const char* name : {"HUD_ABS", "HUD_TCS"}) {
+  for (const auto& [name, active] : {std::pair{"HUD_ABS", st.abs}, std::pair{"HUD_TCS", st.tcs}}) {
     const int on = sc.find("Rectangle_ON", sc.find(name, assists));
-    sc.model(l, f, on, sc.alpha(on), 0, 0, 0, kPillGrey);  // grey: off, as the frames show
+    sc.model(l, f, on, active ? 1.0f : sc.alpha(on), 0, 0, 0, active ? rgba(255, 196, 40) : kPillGrey);
   }
   // The speed: three digit slots, the leading zeros at half white (ours).
   const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));

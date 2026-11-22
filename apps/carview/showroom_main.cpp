@@ -23,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <map>
 #include <random>
@@ -39,6 +40,7 @@
 #include "audio/bake.h"
 #include "audio/radio.h"
 #include "audio/xml.h"
+#include "drive_helpers.h"
 #include "game_hud.h"
 #include "hud_scene.h"
 #include "hud.h"
@@ -952,8 +954,8 @@ bool load_camera_rig(const std::filesystem::path& game_root, const std::filesyst
 // The rig's frame: the car's pose and motion in, the view out (in the
 // car's model frame, where the showroom draws).
 ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info, const drive::Vehicle& v,
-                        const drive::Ground* ground, double dt, float aspect, bool reverse_z, bool* interior,
-                        double* com_distance = nullptr) {
+                        const drive::Ground* ground, carview::RigAccelState& accel, double dt, float aspect,
+                        bool reverse_z, bool* interior, double* com_distance = nullptr) {
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(info, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
@@ -968,18 +970,7 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   in.pitch_degrees = std::asin(std::clamp(fwd.y, -1.0, 1.0)) * 180 / 3.14159265358979323846;
   // The g layers' inputs: the body's acceleration over the frame along its
   // forward and right axes, gravity left out (SPEC-CAMERAS, Inputs).
-  {
-    static drive::Vec3 last_vel{};
-    static bool have_last = false;
-    if (have_last && dt > 1e-4 && dt < 0.25) {
-      const drive::Vec3 a{(vel.x - last_vel.x) / dt, (vel.y - last_vel.y) / dt, (vel.z - last_vel.z) / dt};
-      const drive::Vec3 right = drive::rotate(v.orientation(), {1, 0, 0});
-      in.g_longitudinal = (a.x * fwd.x + a.y * fwd.y + a.z * fwd.z) / 9.81;
-      in.g_lateral = (a.x * right.x + a.y * right.y + a.z * right.z) / 9.81;
-    }
-    last_vel = vel;
-    have_last = true;
-  }
+  accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
   int down = 0;
   const double c = std::cos(info.pitch), s = std::sin(info.pitch);
   for (int i = 0; i < 4; ++i) {
@@ -1304,7 +1295,7 @@ void drive_usage() {
                "           user folder's settings.txt; the window reads it first) --no-settings\n"
                "  mods:    --mods <dir> (default: the user folder's mods/, the window only) --no-mods\n"
                "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
-               "           --shadows off|low|high --view chase|front --hud --no-reverse-z\n"
+               "           --shadows off|low|high --view chase|front --hud --no-reverse-z --language code\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
                "  sound:   --sound <dir> | --no-sound --no-radio --radio-press s (headless: D-pad right every\n"
@@ -1343,8 +1334,8 @@ int run_drive(int argc, char** argv) {
   // from --world (media/tracks/<world>). A world staged elsewhere (the
   // Rally package's ColoradoDirt) needs --game.
   std::filesystem::path game_root_given;
-  bool near_given = false, have_spawn = false, render_ground = false, async_stream = false, flat_world = false, no_props = false,
-       no_far = false, no_trees = false;
+  bool near_given = false, have_spawn = false, fast_travel = false, render_ground = false, async_stream = false,
+       flat_world = false, no_props = false, no_far = false, no_trees = false;
   bool bench = false;     // headless: render every frame, timed, no images
   uint32_t msaa = 4;
   std::filesystem::path world_reference_path;
@@ -1395,7 +1386,9 @@ int run_drive(int argc, char** argv) {
   double seed_distance = 0;
   std::filesystem::path map_png, career_png;  // --career-png: the career page's windows, then exit
   int gather_route = 0;  // --route: the placements' route (-1: every one)
+  bool gather_route_given = false;
   int camera_mode = 0;   // --camera: the drive camera to start in (0-4, SPEC-CAMERAS' cycle order)
+  std::string language = "EN";
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
   // 0.25 m to 16 km projection).
   bool reverse_z = true;
@@ -1493,8 +1486,9 @@ int run_drive(int argc, char** argv) {
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--contacts-log") contacts_log_path = next();
     else if (a == "--texture-census") texture_census = true;
-    else if (a == "--route") gather_route = std::atoi(next());
+    else if (a == "--route") gather_route = std::atoi(next()), gather_route_given = true;
     else if (a == "--camera") camera_mode = std::atoi(next());
+    else if (a == "--language") language = next();
     else if (a == "--no-reverse-z") reverse_z = false;
     else if (a == "--near") {
       near_x = std::atof(next());
@@ -1849,6 +1843,28 @@ int run_drive(int argc, char** argv) {
   auto game_root_of = [&]() -> std::filesystem::path {
     return !game_root_given.empty() ? game_root_given : world_dir.parent_path().parent_path().parent_path();
   };
+  const std::filesystem::path state_root = [] {
+    const char* s = std::getenv("SHIFT_STATE_ROOT");
+    return s ? std::filesystem::path(s) : std::filesystem::path{};
+  }();
+  // The parts database (the merged one: SHIFT_STATE_ROOT's packages when
+  // set), opened in the background; opened early so load_ui_fonts and garage
+  // setup overlap with the SQLite merge.
+  std::shared_future<std::shared_ptr<cars::PartsDb>> parts_db;
+  if (!world_dir.empty()) {
+    const auto game_root = game_root_of();
+    const std::string sr = state_root.string();
+    parts_db = std::async(std::launch::async, [game_root, sr]() -> std::shared_ptr<cars::PartsDb> {
+                 cars::Install install;
+                 auto db = std::make_shared<cars::PartsDb>();
+                 std::string why;
+                 if (!cars::discover_install(game_root, sr, "", install, &why) || !db->open(install, &why)) {
+                   std::fprintf(stderr, "carview: note: no parts database: %s\n", why.c_str());
+                   return nullptr;
+                 }
+                 return db;
+               }).share();
+  }
   // The career page's PNGs and the HUD: the game's fonts.
   if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of());
   // The screen's car names (FORMAT-STRINGTABLES), loaded on first use.
@@ -1857,9 +1873,9 @@ int run_drive(int argc, char** argv) {
   carview::set_car_names([=](const std::string& media) {
     if (!*car_names_loaded) {
       *car_names_loaded = true;
-      const char* state = std::getenv("SHIFT_STATE_ROOT");
+      const cars::PartsDb* db = parts_db.valid() ? parts_db.get().get() : nullptr;
       std::string e;
-      car_names->load(game_root_of(), state ? state : "", &e);
+      car_names->load(game_root_of(), state_root, &e, language, db);
     }
     return car_names->short_name(media);
   });
@@ -1930,27 +1946,14 @@ int run_drive(int argc, char** argv) {
   if (have_garage && !car_given)
     if (const garage::Car* gc = career_garage.selected_car())
       if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end()) car = it->second;
-  // The parts database (the merged one: SHIFT_STATE_ROOT's packages when
-  // set), opened in the background; the class bands from the disc.
-  // Opened whenever we have a world so New Career, Autoshow and Upgrades work out of the box.
-  std::shared_future<std::shared_ptr<cars::PartsDb>> parts_db;
+  // Class bands from the disc, and shared merged DB handle for career/race queries.
   std::vector<garage::ClassBand> class_bands;
+  const cars::PartsDb* shared_db = nullptr;
   if (!world_dir.empty()) {
     const auto game_root = game_root_of();
     std::string e;
     if (!garage::load_class_bands(game_root, class_bands, &e)) std::fprintf(stderr, "carview: note: %s\n", e.c_str());
-    const char* state = std::getenv("SHIFT_STATE_ROOT");
-    const std::string state_root = state ? state : "";
-    parts_db = std::async(std::launch::async, [game_root, state_root]() -> std::shared_ptr<cars::PartsDb> {
-                 cars::Install install;
-                 auto db = std::make_shared<cars::PartsDb>();
-                 std::string why;
-                 if (!cars::discover_install(game_root, state_root, "", install, &why) || !db->open(install, &why)) {
-                   std::fprintf(stderr, "carview: note: no parts database: %s\n", why.c_str());
-                   return nullptr;
-                 }
-                 return db;
-               }).share();
+    if (parts_db.valid()) shared_db = parts_db.get().get();
   }
   // Career progression catalog (events, wristbands, restrictions, world triggers) & Skills/Popularity tables.
   race::CareerCatalog career_catalog;
@@ -1959,7 +1962,7 @@ int run_drive(int argc, char** argv) {
   bool have_skills_data = false;
   if (!world_dir.empty() && colorado_world()) {
     std::string e;
-    have_career_catalog = race::load_career_catalog(game_root_of(), career_catalog, &e);
+    have_career_catalog = race::load_career_catalog(game_root_of(), state_root, shared_db, career_catalog, &e);
     if (!have_career_catalog && !e.empty()) std::fprintf(stderr, "carview: note: no career catalog: %s\n", e.c_str());
     e.clear();
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
@@ -1985,6 +1988,9 @@ int run_drive(int argc, char** argv) {
     race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
     race_options.player_car = car;  // its stock PI for the AI upgrades (interim: not the garage row)
     race_options.stage_world = world_dir;  // a Rally stage's route and line (--event stage:<route>)
+    race_options.state_root = state_root;
+    race_options.parts_db = shared_db;
+    race_options.language = language;
     auto r = std::make_unique<carview::RaceView>(bake_dir);
     if (!r->open(game_root_of(), id, race_options, why)) return false;
     race = std::move(r);
@@ -1993,7 +1999,7 @@ int run_drive(int argc, char** argv) {
     race_top_speed = 0;
     if (wristbands.levels.empty()) {
       std::string e;
-      if (!race::load_wristband_tables(game_root_of(), wristbands, &e))
+      if (!race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e))
         std::fprintf(stderr, "carview: note: no wristband tables: %s\n", e.c_str());
     }
     return true;
@@ -2023,7 +2029,7 @@ int run_drive(int argc, char** argv) {
   }
   if (wristbands.levels.empty() && !world_dir.empty()) {
     std::string e;
-    race::load_wristband_tables(game_root_of(), wristbands, &e);
+    race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
   }
   int collected_wristband = 0;
   if (have_saved && saved.collected_wristband >= 0) {
@@ -2089,7 +2095,7 @@ int run_drive(int argc, char** argv) {
     carview::CareerSummary cs;
     if (wristbands.levels.empty() && !world_dir.empty()) {
       std::string e;
-      race::load_wristband_tables(game_root_of(), wristbands, &e);
+      race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
     }
     const int li = wristbands.level_index(career.wristband_points);
     if (li >= 0) cs.level_name = carview::game_text(wristbands.levels[size_t(li)].second);
@@ -2262,6 +2268,7 @@ int run_drive(int argc, char** argv) {
   std::vector<std::string> baked_cars;
   std::vector<int64_t> pick_ids;  // the garage Id of each, with a garage
   std::set<std::string> all_baked;  // every baked car (the Autoshow's)
+  std::function<void()> sync_picker;
   // The garage's cars the bake has, by class then index (SPEC-GARAGE-
   // UPGRADES, The active car and switching); again after a purchase.
   auto garage_picker = [&]() {
@@ -2275,6 +2282,7 @@ int run_drive(int argc, char** argv) {
     std::vector<int64_t> ids;
     for (const auto* c : rows) keep.push_back(lower_ascii(baked_ids.at(c->car_id))), ids.push_back(c->id);
     if (!keep.empty()) baked_cars = std::move(keep), pick_ids = std::move(ids);
+    if (sync_picker) sync_picker();
     return rows.size();
   };
   {
@@ -2310,9 +2318,10 @@ int run_drive(int argc, char** argv) {
   if (!world_dir.empty() && colorado_world()) {
     std::vector<race::EventSummary> all;
     std::string e;
-    if (race::list_events(game_root_of(), all, &e))
+    if (race::list_events(game_root_of(), all, &e, state_root, shared_db))
       for (const auto& ev : all)
-        if (ev.ribbon >= 0) event_ids.push_back(ev.horizon_id), event_names[ev.horizon_id] = ev.name;
+        if (ev.ribbon >= 0 && ev.career_type != 9 && ev.environment_id != 111)
+          event_ids.push_back(ev.horizon_id), event_names[ev.horizon_id] = ev.name;
   } else if (!world_dir.empty()) {
     // Another world (ColoradoDirt): its stages, one per route file with a
     // loose AI line (SPEC-V4-CONTENT; the heats are route 24).
@@ -2440,6 +2449,7 @@ int run_drive(int argc, char** argv) {
       // over the idling engine; the game measured 0.08 to 0.10 RMS), from
       // headless idle and cruise captures.
       constexpr double kRadioMaster = 1.0;  // radio 0.12 RMS, idle engine 0.022 (1.8 clipped under throttle)
+      constexpr double kEngineMaster = 0.6;
       audio::BakedSound baked_sound;
       std::unique_ptr<audio::EnginePlayer> engine_sound;
       std::unique_ptr<audio::RadioPlayer> radio_player;
@@ -2450,7 +2460,7 @@ int run_drive(int argc, char** argv) {
           engine_sound = std::make_unique<audio::EnginePlayer>(baked_sound.loaded.sound, baked_sound.table(),
                                                                kAudioRate, vehicle.params().idle_rpm,
                                                                vehicle.params().redline_rpm);
-          engine_sound->master = 0.6;  // ours, by the mix's peaks
+          engine_sound->master = kEngineMaster;  // ours, by the mix's peaks
           std::printf("engine sound: %zu groups from %s\n", baked_sound.loaded.sound.groups.size(),
                       cars::mods::resolve(sound_dir / car).string().c_str());
         } else {
@@ -2460,7 +2470,7 @@ int run_drive(int argc, char** argv) {
       }
       // The sound's inputs from the engine: its throttle, and its torque as
       // a fraction of full throttle (driving) or of closed throttle (braking).
-      auto sound_inputs = [&](bool bumper) {
+      auto sound_inputs = [&](audio::View audio_view) {
         audio::EnginePlayer::Update u;
         const double rpm = vehicle.rpm(), thr = vehicle.engine_throttle();
         const double torque = vehicle.engine_torque(rpm, thr);
@@ -2469,7 +2479,7 @@ int run_drive(int argc, char** argv) {
         u.throttle = thr;
         u.pos_torque = torque > 0 && full > 0 ? torque / full : 0;
         u.neg_torque = torque < 0 && closed < 0 ? torque / closed : 0;
-        u.view = bumper ? audio::View::kFront : audio::View::kFollow;
+        u.view = audio_view;
         return u;
       };
       std::vector<float> audio_track;  // headless --audio-out
@@ -2530,10 +2540,12 @@ int run_drive(int argc, char** argv) {
             for (size_t i = 0; i < collision.surfaces().size(); ++i)
               std::printf("surface %zu %s grip %.2f\n", i, collision.surfaces()[i].name.c_str(),
                           collision.grip(int(i)));
+          const int active_route = gather_route_given ? gather_route : (race ? race->event().route_id : 0);
+          if (!render_ground) collision.set_active_route(active_route);
           world::GatherOptions gather_options;
           gather_options.render_data = !flat_world;
           gather_options.props = !no_props;
-          gather_options.route = gather_route;
+          gather_options.route = active_route;
           if (!flat_world && !no_far) gather_options.far_radius = 3000;
           if (const char* fi = std::getenv("SHIFT_FAR_INNER")) gather_options.far_inner = std::atof(fi);
           if (!flat_world && !no_trees) gather_options.tree_radius = kTreeRadius;
@@ -2625,7 +2637,7 @@ int run_drive(int argc, char** argv) {
             if (!radio_tried) {
               radio_tried = true;
               std::string why;
-              if (audio::load_radio(game_root, radio_data, &why)) {
+              if (audio::load_radio(game_root, radio_data, &why, language)) {
                 radio = std::make_unique<audio::Radio>(radio_data, std::random_device{}());
                 radio->select(radio_data.cycle[0]);  // Bass Arena (the spec's interim)
                 std::printf("radio: %zu stations in the cycle, %zu tracks, %zu voice clips\n", radio_data.cycle.size(),
@@ -2681,10 +2693,22 @@ int run_drive(int argc, char** argv) {
           const double near[2] = {near_x, near_z};
           if (!streamer->update(sx, sz, nullptr, &error)) {
             status = 1;
-          } else if (!world::choose_spawn(*streamer, have_spawn ? spawn : nullptr, near_given ? near : nullptr,
-                                          near_given ? nullptr : &near_heading, sp, &how)) {
-            error = "no road triangle near the search point";
-            status = 1;
+          } else {
+            if (fast_travel) {
+              fast_travel = false;
+              drive::Hit h;
+              if (streamer->ground().raycast({spawn[0], 2000.0, spawn[2]}, {0, -1, 0}, 4000.0, h)) {
+                spawn[1] = 2000.0 - h.distance;
+              } else {
+                world::Spawn fsp;
+                if (world::find_spawn(streamer->mesh(), spawn[0], spawn[2], fsp)) spawn[1] = fsp.position[1];
+              }
+            }
+            if (!world::choose_spawn(*streamer, have_spawn ? spawn : nullptr, near_given ? near : nullptr,
+                                     near_given ? nullptr : &near_heading, sp, &how)) {
+              error = "no road triangle near the search point";
+              status = 1;
+            }
           }
         }
         if (status == 0) {
@@ -3030,7 +3054,7 @@ int run_drive(int argc, char** argv) {
         if (!owned) return club_gate = "the 1000 Club package is not enabled", void();
         if (wristbands.levels.empty() && !world_dir.empty()) {
           std::string e;
-          race::load_wristband_tables(game_root_of(), wristbands, &e);
+          race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
         }
         if (wristbands.level_index(career.wristband_points) < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND"))
           return club_gate = "needs the green wristband", void();
@@ -3177,7 +3201,12 @@ int run_drive(int argc, char** argv) {
                         collectibles.barns[size_t(ev.index)].name.c_str(), progress.total_distance / 1000);
           } else {
             const auto& b = collectibles.barns[size_t(ev.index)];
-            std::snprintf(line, sizeof line, "barn find! %s is in the garage", barn_car_label(b).c_str());
+            if (!have_garage && have_career_catalog) {
+              if (const auto* spec = career_catalog.find_car_by_media(car))
+                award_garage_car(spec->car_id, 0, true);
+            }
+            const std::string awarded = award_garage_car(b.car_id, 0, false);
+            garage_picker();
             // The car's name: the Barnfind table's IDS_ key, by the id rule.
             std::string named = barn_car_label(b);
             if (!b.car_name_key.empty()) {
@@ -3185,9 +3214,11 @@ int run_drive(int argc, char** argv) {
               const std::string t = carview::game_text("_&" + std::to_string(ref));
               if (!t.empty() && t[0] != '_') named = t;
             }
+            if (named == barn_car_label(b) && !awarded.empty()) named = awarded;
+            std::snprintf(line, sizeof line, "barn find! %s is in the garage", named.c_str());
             popup = {"BARN FIND!", named + " IS IN YOUR GARAGE", vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
             std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
-                        barn_car_label(b).c_str(), b.car_id);
+                        named.c_str(), b.car_id);
           }
           save_due = true;
         }
@@ -3198,6 +3229,7 @@ int run_drive(int argc, char** argv) {
       std::string won_car_name;
       bool have_touch = false;
       double last_touch_y = 0;  // where the wheels last touched, for the fall check
+      carview::RigAccelState rig_accel;
       auto step = [&](const drive::Input& user_in) {
         const drive::Input in = race ? race->player_input(vehicle, user_in) : user_in;
         vehicle.step(in, *ground);
@@ -3255,9 +3287,12 @@ int run_drive(int argc, char** argv) {
           si.handbrake = in.handbrake;
           int on_ground = 0;
           double max_spin = 0;
-          for (const auto& w : vehicle.wheels()) {
-            if (w.contact) ++on_ground;
-            max_spin = std::max(max_spin, std::fabs(w.spin * 0.33 - si.forward_speed_ms));
+          for (int wi = 0; wi < drive::kWheels; ++wi) {
+            const auto& w = vehicle.wheels()[size_t(wi)];
+            if (!w.contact) continue;
+            ++on_ground;
+            const double r = vehicle.params().tyre_radius[size_t(wi)] > 0 ? vehicle.params().tyre_radius[size_t(wi)] : 0.33;
+            max_spin = std::max(max_spin, std::fabs(w.omega * r - si.forward_speed_ms));
           }
           si.wheels_on_ground = on_ground;
           si.wheel_spin = max_spin;
@@ -3328,12 +3363,15 @@ int run_drive(int argc, char** argv) {
         if (headless && !race && follower.stuck(vehicle, in)) {
           const drive::Vec3 at = vehicle.position();
           double away = 0;
-          if (safe_reset_ok && safe_reset.place(*streamer, vehicle, &away))
+          if (safe_reset_ok && safe_reset.place(*streamer, vehicle, &away)) {
+            rig_accel.reset();
             std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away\n", vehicle.time(), at.x,
                         at.y, at.z, away);
-          else if (world::Spawn sp; world::recover(*streamer, vehicle, &sp))
+          } else if (world::Spawn sp; world::recover(*streamer, vehicle, &sp)) {
+            rig_accel.reset();
             std::printf("t %.2f s: stuck at %.1f %.1f %.1f, put back on the road %.1f m away (nearest road "
                         "triangle)\n", vehicle.time(), at.x, at.y, at.z, sp.distance);
+          }
         }
         // Off the collision (the .fiz has holes outside the drivable strips):
         // a car 20 m below where its wheels last touched goes back on the
@@ -3351,6 +3389,7 @@ int run_drive(int argc, char** argv) {
             std::printf("t %.2f s: fell through the ground at %.1f %.1f %.1f (no collision there)%s\n", vehicle.time(),
                         p.x, p.y, p.z, placed ? ", put back on the road" : "");
             if (placed) {
+              rig_accel.reset();
               notice = "off the world: put back on the road";
               notice_until = vehicle.time() + 3;
             }
@@ -3486,19 +3525,23 @@ int run_drive(int argc, char** argv) {
         else if (!note.empty()) std::fprintf(stderr, "carview: note: camera: %s\n", note.c_str());
         rig.set_mode(drive::CameraMode(std::clamp(camera_mode, 0, drive::kCameraModes - 1)));
       }
+      auto audio_view = [&]() {
+        return (have_rig && !front) ? carview::engine_audio_view(rig.mode())
+                                    : (front ? audio::View::kFront : audio::View::kFollow);
+      };
       // The frame for the drive's camera: the rig, else the old chase.
       auto drive_frame = [&](float aspect, double dt) {
         if (have_rig && !front) {
           bool interior = false;
           double d = 0;
-          ShowroomFrame f = rig_frame(rig, info, vehicle, ground, dt, aspect, renderer.reverse_z(), &interior, &d);
+          ShowroomFrame f =
+              rig_frame(rig, info, vehicle, ground, rig_accel, dt, aspect, renderer.reverse_z(), &interior, &d);
           if (rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh) {
             rig_min_distance = std::min(rig_min_distance, d);
             rig_max_distance = std::max(rig_max_distance, d);
           }
-          // The cockpit view draws the car from inside (the _cockpit model's
-          // cabin).
-          showroom.set_draw_car(true);
+          // BumperHigh hides the car; Cockpit/Hood/Follow draw it.
+          showroom.set_draw_car(rig.mode() != drive::CameraMode::kBumper);
           return f;
         }
         showroom.set_draw_car(true);
@@ -3580,7 +3623,8 @@ int run_drive(int argc, char** argv) {
           st.menu_title = "GARAGE (" + std::to_string(baked_cars.size()) + " CARS): ENTER DRIVE   ESC BACK";
           st.menu.clear();
           const int n = int(baked_cars.size());
-          const int first = std::clamp(int(garage_pick) - 3, 0, std::max(0, n - 7));
+          const size_t gp = n > 0 ? std::min(garage_pick, size_t(n - 1)) : 0;
+          const int first = std::clamp(int(gp) - 3, 0, std::max(0, n - 7));
           for (int i = first; i < std::min(n, first + 7); ++i) {
             std::string label = carview::car_name(baked_cars[size_t(i)]);
             if (have_garage && size_t(i) < pick_ids.size()) {
@@ -3592,7 +3636,7 @@ int run_drive(int argc, char** argv) {
             }
             st.menu.push_back(label);
           }
-          st.menu_selected = int(garage_pick) - first;
+          st.menu_selected = n > 0 ? int(gp) - first : 0;
         }
         if (shop.is_open()) shop.fill(class_bands, discount(), career.credits, st.menu_title, st.menu, st.menu_selected);
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
@@ -3623,7 +3667,7 @@ int run_drive(int argc, char** argv) {
         st.redline_rpm = vehicle.params().redline_rpm;
         st.abs = vehicle.abs_active();
         carview::DriveHud d;
-        d.kmh = st.kmh, d.rpm = st.rpm, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs;
+        d.kmh = st.kmh, d.rpm = st.rpm, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs, d.tcs = false;
         d.time = show_title ? title_orbit_time : vehicle.time();
         d.detail_title = std::move(detail_title);
         d.detail_lines = std::move(detail_lines);
@@ -4183,7 +4227,7 @@ int run_drive(int argc, char** argv) {
             const size_t at = audio_track.size();
             audio_track.resize(at + 2 * size_t(frames), 0.0f);
             if (engine_sound) {
-              engine_sound->set(sound_inputs(front));
+              engine_sound->set(sound_inputs(audio_view()));
               engine_sound->render(audio_track.data() + at, frames);
             }
             if (radio_player) radio_player->render(audio_track.data() + at, frames);
@@ -4263,6 +4307,7 @@ int run_drive(int argc, char** argv) {
         std::vector<SDL_Gamepad*> pads;
         uint64_t last = SDL_GetTicksNS(), title_at = 0;
         double accumulator = 0;
+        bool was_sim_paused = false;
         drive::Vehicle::Pose drawn_before = vehicle.pose();  // the pose before the last step
         bool running = true;
         std::printf("controls: W/Up throttle, S/Down brake (held at a stop: reverse), A/D or Left/Right steer, "
@@ -4275,16 +4320,25 @@ int run_drive(int argc, char** argv) {
         // The picker's choice, shown in the title until it is taken.
         size_t pick = 0;
         bool picking = false;
-        for (size_t k = 0; k < baked_cars.size(); ++k)
-          if (pick_ids.empty() ? baked_cars[k] == lower_ascii(car) : pick_ids[k] == career_garage.selected) pick = k;
+        auto sync_pick = [&]() {
+          const size_t synced = carview::sync_picker_index(baked_cars, pick_ids, career_garage.selected, lower_ascii(car));
+          pick = synced;
+          garage_pick = synced;
+          if (baked_cars.empty()) picking = false;
+        };
+        sync_pick();
+        sync_picker = sync_pick;
         auto browse = [&](int by) {
           if (baked_cars.empty()) return;
+          if (pick >= baked_cars.size()) sync_pick();
           pick = (pick + baked_cars.size() + size_t(by + int(baked_cars.size()))) % baked_cars.size();
           picking = true;
           title_at = 0;  // show it now
         };
         auto take_pick = [&]() {
           if (!picking || baked_cars.empty()) return;
+          if (pick >= baked_cars.size()) sync_pick();
+          if (pick >= baked_cars.size()) return;
           // Restart with that car where this one stands.
           const drive::Vec3 at = vehicle.position();
           const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -4294,7 +4348,7 @@ int run_drive(int argc, char** argv) {
           spawn[3] = std::atan2(fwd.x, fwd.z);
           have_spawn = true;
           next_car = baked_cars[pick];
-          if (!pick_ids.empty()) {
+          if (pick < pick_ids.size()) {
             career_garage.selected = pick_ids[pick];
             write_career_garage();
           }
@@ -4325,6 +4379,7 @@ int run_drive(int argc, char** argv) {
             vehicle.reset(start, start_heading);
           camera_pull = CameraPull{};
           rig.restart();
+          rig_accel.reset();
         };
         // Helpers for career progression actions (wristband collection, events, shops, new career).
         auto open_paint = [&]() {
@@ -4499,7 +4554,7 @@ int run_drive(int argc, char** argv) {
             map_overlay.title = m.title;
             map_overlay.subtitle = m.subtitle;
             map_overlay.distance_m = std::hypot(m.x - at.x, m.z - at.z);
-            map_overlay.action_hint = m.kind == MapMarker::kEvent ? "ENTER EVENT" : "FAST TRAVEL & ENTER";
+            map_overlay.action_hint = m.kind == MapMarker::kEvent ? "ENTER EVENT" : "ENTER";
           } else {
             map_overlay.title = "COLORADO MAP";
             map_overlay.subtitle = "PAN TO ANY EVENT OR FESTIVAL SITE";
@@ -4559,8 +4614,8 @@ int run_drive(int argc, char** argv) {
           if (act == PauseMenu::kMap) open_map();
           if (act == PauseMenu::kEvents) open_events_browser(0);
           if (act == PauseMenu::kGarage) {
+            sync_pick();
             garage_open = true;
-            garage_pick = pick;
           }
           if (act == PauseMenu::kUpgrades) open_shop_or_autoshow(false);
           if (act == PauseMenu::kAutoshow) open_shop_or_autoshow(true);
@@ -4822,8 +4877,9 @@ int run_drive(int argc, char** argv) {
                 }
                 // Fast travel to map cursor location on Colorado.
                 close_map();
-                spawn[0] = map_cx, spawn[1] = vehicle.position().y + 20.0, spawn[2] = map_cz, spawn[3] = 0.0;
+                spawn[0] = map_cx, spawn[1] = 0.0, spawn[2] = map_cz, spawn[3] = 0.0;
                 have_spawn = true;
+                fast_travel = true;
                 next_car = car;
                 running = false;
               };
@@ -4895,7 +4951,7 @@ int run_drive(int argc, char** argv) {
             if (garage_open) {
               const size_t n = baked_cars.size();
               auto drive_selected = [&]() {
-                if (!n) return;
+                if (!n || garage_pick >= baked_cars.size()) return;
                 garage_open = false;
                 pick = garage_pick;
                 picking = true;
@@ -5283,8 +5339,12 @@ int run_drive(int argc, char** argv) {
             const double throttle = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), 0.03, 0.97);
             const double brake = deadzone(axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), 0.03, 0.97);
             const double look = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
-            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) camera_pull.look_target = 3.14159265358979;
-            else if (look != 0) camera_pull.look_target = -look * 3.14159265358979;
+            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) {
+              camera_pull.look_target = 3.14159265358979;
+              rig_look = 3.14159265358979;
+            } else if (look != 0) {
+              camera_pull.look_target = -look * 3.14159265358979;
+            }
             // The rig's look (SPEC-CAMERAS, Button): the right stick down
             // looks back, left and right to the sides, its click straight back.
             const double lx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ly = axis(SDL_GAMEPAD_AXIS_RIGHTY);
@@ -5307,6 +5367,10 @@ int run_drive(int argc, char** argv) {
           const bool sim_paused = show_title || ceremony.active || grid_menu_open || menu.open || map_open ||
                                   events_page.is_open() || garage_open || shop.is_open() || autoshow.is_open() ||
                                   career_page.is_open() || settings_page.is_open() || paint_open || club_open;
+          if (sim_paused != was_sim_paused) {
+            rig_accel.reset();
+            was_sim_paused = sim_paused;
+          }
           // Paused: the car holds still (no steps, no time to catch up).
           if (!sim_paused) accumulator += frame_dt;
           last = now;
@@ -5342,7 +5406,7 @@ int run_drive(int argc, char** argv) {
                             car.c_str(), std::fabs(vehicle.speed()) * 3.6, gear, vehicle.rpm(),
                             vehicle.abs_active() ? "  ABS" : "", at.x, at.y, at.z, std::atan2(f.x, f.z) * 57.29578);
             }
-            if (picking) {
+            if (picking && pick < baked_cars.size()) {
               const size_t n = std::strlen(title);
               std::snprintf(title + n, sizeof title - n, "   |   pick %zu/%zu: %s (Enter or X to drive it)", pick + 1,
                             baked_cars.size(), baked_cars[pick].c_str());
@@ -5350,13 +5414,20 @@ int run_drive(int argc, char** argv) {
             SDL_SetWindowTitle(window, title);
           }
           if (audio_stream) {
-            if (engine_sound) engine_sound->set(sound_inputs(front));
+            if (engine_sound) {
+              engine_sound->master = sim_paused ? 0.0 : kEngineMaster;
+              engine_sound->set(sound_inputs(audio_view()));
+            }
+            if (radio_player) {
+              const bool radio_mute = show_title || menu.open || settings_page.is_open() || map_open;
+              radio_player->master = radio_mute ? 0.0 : (sim_paused ? 0.25 * kRadioMaster : kRadioMaster);
+            }
             const int queued = SDL_GetAudioStreamQueued(audio_stream) / int(2 * sizeof(float));
             const int frames = int(0.06 * kAudioRate) - queued;
             if (frames > 0) {
               audio_block.assign(2 * size_t(frames), 0.0f);
               if (engine_sound) engine_sound->render(audio_block.data(), frames);
-              if (radio_player) radio_player->render(audio_block.data(), frames);
+              if (radio_player && !show_title) radio_player->render(audio_block.data(), frames);
               SDL_PutAudioStreamData(audio_stream, audio_block.data(), int(audio_block.size() * sizeof(float)));
             }
           }
@@ -5366,6 +5437,7 @@ int run_drive(int argc, char** argv) {
           const drive::Vehicle::Pose stepped = vehicle.pose();
           vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
           if (race) race->set_blend(accumulator / drive::Vehicle::kStep);
+          if (traffic) traffic->set_blend(accumulator / drive::Vehicle::kStep);
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
@@ -5381,6 +5453,7 @@ int run_drive(int argc, char** argv) {
                                                  0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
                                              5.6f, 1.35f, renderer.reverse_z())
                         : drive_frame(aspect, frame_dt);
+          if (show_title || (race && grid_menu_open) || ceremony.active) showroom.set_draw_car(true);
           showroom.set_frame(cam_frame);
 
           // Update projected Free-Roam World Event / Festival Marker.
@@ -5468,11 +5541,12 @@ int run_drive(int argc, char** argv) {
           } else if (show_hud || show_title || ceremony.active) {
             set_minimap(h, false);
             char line[160] = "";
-            if (picking)
+            const bool show_pick_banner = picking && pick < baked_cars.size();
+            if (show_pick_banner)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
                             carview::car_name(baked_cars[pick]).c_str());
             set_hud(w, h,
-                    picking                          ? std::string(line)
+                    show_pick_banner                 ? std::string(line)
                     : vehicle.time() < notice_until  ? notice
                     : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
@@ -5487,6 +5561,7 @@ int run_drive(int argc, char** argv) {
             break;
           }
         }
+        sync_picker = nullptr;
         for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
         if (audio_stream) SDL_DestroyAudioStream(audio_stream);
       }
@@ -5547,6 +5622,13 @@ int run_drive(int argc, char** argv) {
       std::printf("race: %s from the pause menu\n", id.c_str());
     } else {
       std::fprintf(stderr, "carview: event %s: %s\n", id.c_str(), why.c_str());
+      race_event.clear();
+      if (!pre_loaner_car.empty()) {
+        car = pre_loaner_car;
+        if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
+        pre_loaner_car.clear();
+        pre_loaner_garage_id = 0;
+      }
     }
     again = true;
     SDL_SetWindowTitle(window, ("carview drive - loading " + id).c_str());
@@ -5555,6 +5637,9 @@ int run_drive(int argc, char** argv) {
     if (race) {
       std::printf("race: left for a car change\n");
       race.reset();
+      race_event.clear();
+      pre_loaner_car.clear();
+      pre_loaner_garage_id = 0;
     }
     car = next_car;
     next_car.clear();
