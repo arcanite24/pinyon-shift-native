@@ -5,6 +5,7 @@
 #include <cstdio>
 
 #include "game_hud.h"
+#include "ui4_chrome.h"
 
 namespace carview {
 namespace {
@@ -210,17 +211,14 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
     }
   }
 
-  // 2. Top-right Rally Stage Split Timer & Stage Progress.
+  // 2. Top-right Rally Stage Split Timer & Stage Progress (UI4 gritty charcoal panel).
   const float rw = 336.0f * u;
   const float rx1 = w - 24.0f * u;
   const float rx0 = rx1 - rw;
   const float ry0 = 24.0f * u;
   const float rh = (st.last_split_age < 4.5 && st.splits_passed > 0) ? 124.0f * u : 92.0f * u;
 
-  out.shadow(rx0, ry0, rx1, ry0 + rh, ui::rgba(0, 0, 0, 140), 8.0f * u, 8.0f * u);
-  out.rect(rx0, ry0, rx1, ry0 + rh, kDarkBg, 8.0f * u);
-  out.rect(rx0, ry0, rx1, ry0 + 4.0f * u, kRallyGold, 2.0f * u);
-  out.frame(rx0, ry0, rx1, ry0 + rh, kBorder, 1.0f * u, 8.0f * u);
+  ui4::panel(out, rx0, ry0, rx1, ry0 + rh, u, ui4::kCharcoalDark, kRallyGold, 0, true);
 
   {
     ui::TextStyle hs;
@@ -289,27 +287,19 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
 void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
-  out.rect(0, 0, w, h, ui::rgba(8, 10, 14, 195));
+  ui4::subtle_vignette(out, w, h, 0.36f);
 
   const float mx = 46.0f * u;
   const float my = 32.0f * u;
   const float pw = w - 2.0f * mx;
   const float ph = h - 2.0f * my;
 
-  out.shadow(mx, my, mx + pw, my + ph, ui::rgba(0, 0, 0, 170), 12.0f * u, 14.0f * u);
-  out.rect(mx, my, mx + pw, my + ph, kPanelBg, 12.0f * u);
-  out.rect(mx, my, mx + pw, my + 6.0f * u, kRallyGold, 3.0f * u);
-  out.frame(mx, my, mx + pw, my + ph, kBorder, 1.2f * u, 12.0f * u);
+  ui4::panel(out, mx, my, mx + pw, my + ph, u, ui4::kCharcoalDark, kRallyGold, 0, true);
 
-  // Header strip.
+  // Authentic tilted FH1 UI4 banner header.
+  ui4::title_banner(out, u, mx + 22.0f * u, my + 28.0f * u, "HORIZON RALLY HUB", "COLORADO DIRT EXPANSION", true,
+                    540.0f);
   {
-    ui::TextStyle ts;
-    ts.size = 30.0f * u;
-    ts.color = kRallyGold;
-    ts.font = ui::Font::kE;
-    ts.slant = 0.12f;
-    out.text(mx + 26.0f * u, my + 20.0f * u, "HORIZON RALLY HUB", ts);
-
     ui::TextStyle sub;
     sub.size = 13.0f * u;
     sub.color = kMuted;
@@ -506,56 +496,42 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
 void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
-  out.rect(0, 0, w, h, ui::rgba(8, 10, 14, 200));
+  ui4::subtle_vignette(out, w, h, 0.38f);
 
   const float mx = 46.0f * u;
-  const float my = 32.0f * u;
+  const float my = 30.0f * u;
   const float pw = w - 2.0f * mx;
-  const float ph = h - 2.0f * my;
+  const float ph = h - 76.0f * u;
 
-  out.shadow(mx, my, mx + pw, my + ph, ui::rgba(0, 0, 0, 170), 12.0f * u, 14.0f * u);
-  out.rect(mx, my, mx + pw, my + ph, kPanelBg, 12.0f * u);
-  out.rect(mx, my, mx + pw, my + 6.0f * u, kRallyOrange, 3.0f * u);
-  out.frame(mx, my, mx + pw, my + ph, kBorder, 1.2f * u, 12.0f * u);
+  ui4::panel(out, mx, my, mx + pw, my + ph, u, ui4::kCharcoalDark, kRallyOrange, 0, true);
 
-  // Header.
+  // Iconic tilted FH1 UI4 screen banner.
   {
-    ui::TextStyle ts;
-    ts.size = 28.0f * u;
-    ts.color = kRallyGold;
-    ts.font = ui::Font::kE;
-    ts.slant = 0.12f;
-    char hbuf[128];
-    std::snprintf(hbuf, sizeof hbuf, "SERVICE AREA  —  STAGE %d OF %d COMPLETE", st.completed_stage, st.total_stages);
-    out.text(mx + 26.0f * u, my + 20.0f * u, hbuf, ts);
+    char eyebrow[128];
+    std::snprintf(eyebrow, sizeof eyebrow, "%s  •  STAGE %d OF %d COMPLETE", st.championship_name.c_str(),
+                  st.completed_stage, st.total_stages);
+    ui4::title_banner(out, u, mx + 22.0f * u, my + 28.0f * u, "SERVICE AREA", eyebrow, true, 560.0f);
 
-    ui::TextStyle sub;
-    sub.size = 14.0f * u;
-    sub.color = kMuted;
-    sub.font = ui::Font::kB;
-    out.text(mx + 28.0f * u, my + 56.0f * u,
-             st.championship_name + "  •  NEXT: " + st.next_stage_name, sub);
+    // Top-right next-stage distressed off-white pill.
+    const float nx1 = mx + pw - 22.0f * u;
+    const float nx0 = nx1 - 360.0f * u;
+    ui4::offwhite_strip(out, nx0, my + 24.0f * u, nx1, my + 56.0f * u, u, true);
+    ui::TextStyle ns = ui4::style(ui::Font::kE, 13.5f * u, ui4::kInk, ui::Align::kRight);
+    out.text(nx1 - 14.0f * u, my + 33.0f * u, "NEXT: " + st.next_stage_name, ns);
   }
 
-  // Left side: Stage summary, damage bar, and 4 Service Area menu items.
-  const float lx0 = mx + 26.0f * u;
+  // Left side: Stage summary, damage bar, and 4 Service Area brush menu items.
+  const float lx0 = mx + 24.0f * u;
   const float lw = pw * 0.42f;
-  const float ly0 = my + 90.0f * u;
+  const float ly0 = my + 98.0f * u;
 
-  out.rect(lx0, ly0, lx0 + lw, ly0 + 150.0f * u, kPanelAlt, 8.0f * u);
-  out.frame(lx0, ly0, lx0 + lw, ly0 + 150.0f * u, kBorder, 1.0f * u, 8.0f * u);
+  ui4::panel(out, lx0, ly0, lx0 + lw, ly0 + 146.0f * u, u, ui4::kCharcoal, 0, kRallyGold, true);
   {
-    ui::TextStyle lb;
-    lb.size = 13.0f * u;
-    lb.color = kMuted;
-    lb.font = ui::Font::kB;
-    ui::TextStyle vl;
-    vl.size = 20.0f * u;
-    vl.color = kWhite;
-    vl.font = ui::Font::kE;
+    ui::TextStyle lb = ui4::style(ui::Font::kB, 12.5f * u, ui4::kDim);
+    ui::TextStyle vl = ui4::style(ui::Font::kE, 20.0f * u, ui4::kWhite);
 
-    out.text(lx0 + 16.0f * u, ly0 + 14.0f * u, "STAGE TIME", lb);
-    out.text(lx0 + 16.0f * u, ly0 + 32.0f * u, rally_time_str(st.last_stage_time), vl);
+    out.text(lx0 + 18.0f * u, ly0 + 14.0f * u, "STAGE TIME", lb);
+    out.text(lx0 + 18.0f * u, ly0 + 32.0f * u, rally_time_str(st.last_stage_time), vl);
 
     out.text(lx0 + lw * 0.54f, ly0 + 14.0f * u, "STAGE PLACE", lb);
     char sp[32];
@@ -563,86 +539,73 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
     vl.color = kRallyGold;
     out.text(lx0 + lw * 0.54f, ly0 + 32.0f * u, sp, vl);
 
-    out.text(lx0 + 16.0f * u, ly0 + 74.0f * u, "CUMULATIVE TOTAL", lb);
-    vl.color = kWhite;
-    out.text(lx0 + 16.0f * u, ly0 + 92.0f * u, rally_time_str(st.total_time), vl);
+    out.text(lx0 + 18.0f * u, ly0 + 74.0f * u, "CUMULATIVE TOTAL", lb);
+    vl.color = ui4::kWhite;
+    out.text(lx0 + 18.0f * u, ly0 + 92.0f * u, rally_time_str(st.total_time), vl);
 
     out.text(lx0 + lw * 0.54f, ly0 + 74.0f * u, "OVERALL", lb);
     char op[48];
     std::snprintf(op, sizeof op, "%d%s (%s)", st.overall_place, place_suffix(st.overall_place),
                   rally_gap_str(st.gap_to_leader).c_str());
     vl.color = st.overall_place <= 3 ? kRallyGreen : kRallyCyan;
-    out.text(lx0 + lw * 0.54f, ly0 + 92.0f * u, op, vl);
+    vl.size = 18.0f * u;
+    out.text(lx0 + lw * 0.54f, ly0 + 94.0f * u, op, vl);
   }
 
-  // Car Damage & Repair meter.
-  const float dmy = ly0 + 164.0f * u;
-  out.rect(lx0, dmy, lx0 + lw, dmy + 72.0f * u, kPanelAlt, 8.0f * u);
-  out.frame(lx0, dmy, lx0 + lw, dmy + 72.0f * u, kBorder, 1.0f * u, 8.0f * u);
+  // Car Damage & Repair meter with authentic UI4 class badge and flat bar.
+  const float dmy = ly0 + 158.0f * u;
+  ui4::panel(out, lx0, dmy, lx0 + lw, dmy + 72.0f * u, u, ui4::kCharcoal, 0, ui4::kPink, true);
   {
-    ui::TextStyle cs;
-    cs.size = 13.0f * u;
-    cs.color = kWhite;
-    cs.font = ui::Font::kB;
+    ui4::class_badge(out, lx0 + 16.0f * u, dmy + 12.0f * u, 22.0f * u, st.car_class.empty() ? "B" : st.car_class,
+                     st.car_pi > 0 ? st.car_pi : 500, 4);
+    ui::TextStyle cs = ui4::style(ui::Font::kB, 13.0f * u, ui4::kWhite);
     char cbuf[96];
-    std::snprintf(cbuf, sizeof cbuf, "%s [%s %d]  •  DAMAGE: %.0f%%", st.car_name.c_str(), st.car_class.c_str(),
-                  st.car_pi, st.damage_pct);
-    out.text(lx0 + 16.0f * u, dmy + 14.0f * u, cbuf, cs);
+    std::snprintf(cbuf, sizeof cbuf, "%s  •  DAMAGE: %.0f%%", st.car_name.c_str(), st.damage_pct);
+    out.text(lx0 + 86.0f * u, dmy + 16.0f * u, cbuf, cs);
     const float bx0 = lx0 + 16.0f * u, bx1 = lx0 + lw - 16.0f * u;
-    out.rect(bx0, dmy + 42.0f * u, bx1, dmy + 54.0f * u, ui::rgba(46, 54, 66, 220), 4.0f * u);
+    out.rect(bx0, dmy + 46.0f * u, bx1, dmy + 56.0f * u, ui::rgba(52, 56, 66, 230));
     const float dmg = float(std::clamp(st.damage_pct / 100.0, 0.0, 1.0));
-    const uint32_t dcol = dmg < 0.05f ? kRallyGreen : (dmg < 0.4f ? kRallyGold : kRallyRed);
-    out.rect(bx0, dmy + 42.0f * u, bx0 + (bx1 - bx0) * std::max(0.03f, 1.0f - dmg), dmy + 54.0f * u, dcol, 4.0f * u);
+    const uint32_t dcol = dmg < 0.05f ? ui4::kGreen : (dmg < 0.4f ? ui4::kAmber : ui4::kRed);
+    out.rect(bx0, dmy + 46.0f * u, bx0 + (bx1 - bx0) * std::max(0.03f, 1.0f - dmg), dmy + 56.0f * u, dcol);
   }
 
-  // Service Area menu actions.
+  // Service Area menu actions styled as authentic FH1 UI4 brush strips.
   const char* actions[4] = {
       "CONTINUE TO NEXT STAGE",
       st.repaired ? "CAR REPAIRED (100%)" : "REPAIR CAR DAMAGE (FREE)",
       "UPGRADES & TUNING",
       "RETIRE FROM CHAMPIONSHIP",
   };
-  const float my0 = dmy + 88.0f * u;
+  const float my0 = dmy + 86.0f * u;
   for (int i = 0; i < 4; ++i) {
-    const float y = my0 + float(i) * 48.0f * u;
+    const float y = my0 + float(i) * 46.0f * u;
     const bool sel = st.selected == i;
-    out.rect(lx0, y, lx0 + lw, y + 40.0f * u, sel ? ui::rgba(255, 184, 28, 48) : kPanelAlt, 6.0f * u);
-    if (sel) out.rect(lx0, y, lx0 + 5.0f * u, y + 40.0f * u, kRallyGold, 2.0f * u);
-    out.frame(lx0, y, lx0 + lw, y + 40.0f * u, sel ? kRallyGold : kBorder, sel ? 1.8f * u : 1.0f * u, 6.0f * u);
-    ui::TextStyle as;
-    as.size = 15.0f * u;
-    as.color = sel ? kWhite : ui::rgba(216, 222, 232, 255);
-    as.font = ui::Font::kE;
-    out.text(lx0 + 18.0f * u, y + 11.0f * u, actions[i], as);
+    ui4::brush(out, lx0, y, lx0 + lw, y + 38.0f * u, sel ? ui4::kPink : ui4::kBrushBlack, false);
+    if (sel) out.rect(lx0, y, lx0 + 5.0f * u, y + 38.0f * u, ui4::kYellow);
+    ui::TextStyle as = ui4::style(ui::Font::kE, 15.0f * u, sel ? ui4::kWhite : ui::rgba(220, 224, 234, 255));
+    out.text(lx0 + 18.0f * u, y + 10.0f * u, actions[i], as);
   }
 
-  // Right side: 4-Stage Cumulative Standings Leaderboard.
-  const float rx0 = lx0 + lw + 22.0f * u;
-  const float rx1 = mx + pw - 26.0f * u;
-  const float ry1 = my + ph - 52.0f * u;
-  out.rect(rx0, ly0, rx1, ry1, kPanelAlt, 8.0f * u);
-  out.frame(rx0, ly0, rx1, ry1, kBorder, 1.0f * u, 8.0f * u);
+  // Right side: 4-Stage Cumulative Standings Leaderboard (UI4 gritty table + off-white header strip).
+  const float rx0 = lx0 + lw + 20.0f * u;
+  const float rx1 = mx + pw - 24.0f * u;
+  const float ry1 = my + ph - 18.0f * u;
+  ui4::panel(out, rx0, ly0, rx1, ry1, u, ui4::kCharcoal, kRallyGold, 0, true);
 
   {
-    ui::TextStyle th;
-    th.size = 14.0f * u;
-    th.color = kRallyGold;
-    th.font = ui::Font::kE;
-    out.text(rx0 + 16.0f * u, ly0 + 14.0f * u, "CUMULATIVE CHAMPIONSHIP STANDINGS", th);
+    ui::TextStyle th = ui4::style(ui::Font::kE, 15.0f * u, kRallyGold);
+    out.text(rx0 + 16.0f * u, ly0 + 12.0f * u, "CUMULATIVE CHAMPIONSHIP STANDINGS", th);
 
-    ui::TextStyle ch;
-    ch.size = 11.0f * u;
-    ch.color = kMuted;
-    ch.font = ui::Font::kB;
-    out.text(rx0 + 16.0f * u, ly0 + 40.0f * u, "POS", ch);
-    out.text(rx0 + 64.0f * u, ly0 + 40.0f * u, "DRIVER", ch);
+    ui4::offwhite_strip(out, rx0 + 8.0f * u, ly0 + 36.0f * u, rx1 - 8.0f * u, ly0 + 58.0f * u, u, false);
+    ui::TextStyle ch = ui4::style(ui::Font::kB, 11.5f * u, ui4::kInk);
+    out.text(rx0 + 16.0f * u, ly0 + 41.0f * u, "POS", ch);
+    out.text(rx0 + 62.0f * u, ly0 + 41.0f * u, "DRIVER", ch);
     ch.align = ui::Align::kRight;
-    out.text(rx1 - 180.0f * u, ly0 + 40.0f * u, "STAGE", ch);
-    out.text(rx1 - 88.0f * u, ly0 + 40.0f * u, "TOTAL", ch);
-    out.text(rx1 - 14.0f * u, ly0 + 40.0f * u, "GAP", ch);
+    out.text(rx1 - 210.0f * u, ly0 + 41.0f * u, "STAGE", ch);
+    out.text(rx1 - 104.0f * u, ly0 + 41.0f * u, "TOTAL", ch);
+    out.text(rx1 - 14.0f * u, ly0 + 41.0f * u, "GAP", ch);
   }
 
-  // Show top 10 plus player's row if outside top 10.
   std::vector<const race::RallyStandingRow*> rows;
   bool player_in_top = false;
   for (size_t i = 0; i < st.standings.size() && rows.size() < 11; ++i) {
@@ -661,65 +624,43 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
 
   for (size_t i = 0; i < rows.size(); ++i) {
     const auto& r = *rows[i];
-    const float y = ly0 + 62.0f * u + float(i) * 34.0f * u;
+    const float y = ly0 + 64.0f * u + float(i) * 34.0f * u;
     if (y + 30.0f * u > ry1 - 8.0f * u) break;
     if (r.is_player) {
-      out.rect(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui::rgba(255, 184, 28, 46), 4.0f * u);
-      out.frame(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, kRallyGold, 1.2f * u, 4.0f * u);
+      ui4::brush(out, rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui4::kPink, false);
+      out.rect(rx0 + 8.0f * u, y, rx0 + 12.0f * u, y + 30.0f * u, ui4::kYellow);
     } else if (i % 2 == 1) {
-      out.rect(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui::rgba(255, 255, 255, 10), 4.0f * u);
+      out.rect(rx0 + 8.0f * u, y, rx1 - 8.0f * u, y + 30.0f * u, ui4::kRowAlt);
     }
-    ui::TextStyle rs;
-    rs.size = 13.0f * u;
-    rs.color = r.is_player ? kRallyGold : kWhite;
-    rs.font = r.is_player ? ui::Font::kE : ui::Font::kB;
+    ui::TextStyle rs = ui4::style(r.is_player ? ui::Font::kE : ui::Font::kB, 13.0f * u,
+                                  r.is_player ? ui4::kWhite : ui4::kWhite);
     out.text(rx0 + 18.0f * u, y + 7.0f * u, std::to_string(r.overall_place), rs);
-    out.text(rx0 + 64.0f * u, y + 7.0f * u, r.name, rs);
-    rs.align = ui::Align::kRight;
-    out.text(rx1 - 180.0f * u, y + 7.0f * u, rally_time_str(r.last_stage_time), rs);
-    out.text(rx1 - 88.0f * u, y + 7.0f * u, rally_time_str(r.total_time), rs);
-    rs.color = r.overall_place == 1 ? kRallyGreen : kMuted;
-    out.text(rx1 - 14.0f * u, y + 7.0f * u, rally_gap_str(r.gap_to_leader), rs);
+    out.text(rx0 + 62.0f * u, y + 7.0f * u, r.name, rs);
+    // Keep tabular time columns in crisp Font::kB so player & AI times align with generous spacing.
+    ui::TextStyle ts = ui4::style(ui::Font::kB, 13.0f * u, r.is_player ? ui4::kYellow : ui4::kWhite, ui::Align::kRight);
+    out.text(rx1 - 210.0f * u, y + 7.0f * u, rally_time_str(r.last_stage_time), ts);
+    out.text(rx1 - 104.0f * u, y + 7.0f * u, rally_time_str(r.total_time), ts);
+    ts.color = r.overall_place == 1 ? ui4::kGreen : (r.is_player ? ui4::kWhite : ui4::kDim);
+    out.text(rx1 - 14.0f * u, y + 7.0f * u, rally_gap_str(r.gap_to_leader), ts);
   }
 
-  ui::TextStyle ft;
-  ft.size = 13.0f * u;
-  ft.color = !st.notice.empty() ? kRallyGold : kMuted;
-  ft.font = ui::Font::kB;
-  out.text(mx + 26.0f * u, my + ph - 32.0f * u,
-           !st.notice.empty() ? st.notice : "UP/DOWN SELECT   •   ENTER / [A] CONFIRM", ft);
+  ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD", "NAVIGATE"}, {"B", "RETIRE"}}, w, h, 46.0f);
 }
 
 void build_rally_championship_results_screen(ui::List& out, const RallyChampResultsState& st, float w, float h) {
   if (!st.active) return;
   const float u = h / 720.0f;
-  out.rect(0, 0, w, h, ui::rgba(8, 10, 14, 210));
+  ui4::subtle_vignette(out, w, h, 0.40f);
 
   const float mx = 48.0f * u;
   const float my = 32.0f * u;
   const float pw = w - 2.0f * mx;
-  const float ph = h - 2.0f * my;
+  const float ph = h - 76.0f * u;
 
-  out.shadow(mx, my, mx + pw, my + ph, ui::rgba(0, 0, 0, 180), 12.0f * u, 14.0f * u);
-  out.rect(mx, my, mx + pw, my + ph, kPanelBg, 12.0f * u);
-  out.rect(mx, my, mx + pw, my + 6.0f * u, kRallyGold, 3.0f * u);
-  out.frame(mx, my, mx + pw, my + ph, kBorder, 1.2f * u, 12.0f * u);
+  ui4::panel(out, mx, my, mx + pw, my + ph, u, ui4::kCharcoalDark, kRallyGold, 0, true);
 
-  {
-    ui::TextStyle ts;
-    ts.size = 30.0f * u;
-    ts.color = kRallyGold;
-    ts.font = ui::Font::kE;
-    ts.slant = 0.12f;
-    out.text(mx + 26.0f * u, my + 20.0f * u,
-             st.is_heats ? "HORIZON RALLY HEATS COMPLETE" : "CHAMPIONSHIP FINAL RESULTS", ts);
-
-    ui::TextStyle sub;
-    sub.size = 15.0f * u;
-    sub.color = kWhite;
-    sub.font = ui::Font::kB;
-    out.text(mx + 28.0f * u, my + 58.0f * u, st.title, sub);
-  }
+  ui4::title_banner(out, u, mx + 22.0f * u, my + 28.0f * u,
+                    st.is_heats ? "RALLY HEATS COMPLETE" : "CHAMPIONSHIP RESULTS", st.title, true, 600.0f);
 
   // Left: Final Place, Rally XP, Credits Breakdown, Unlock Banner.
   const float lx0 = mx + 26.0f * u;
