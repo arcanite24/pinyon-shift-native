@@ -1,5 +1,7 @@
 #include "cars/sources.h"
 
+#include "cars/mod_manager.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -209,7 +211,7 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
     for (const auto& folder : folders) {
       Package p;
       p.id = folder.filename().string();
-      if (lower(p.id) == lower(kCommunityPackage)) continue;
+      if (modmgr::package_hidden(p.id)) continue;  // community UDLC unless mounted, mods' hide_dlc
       std::vector<fs::path> offers;
       for (const auto& e : fs::directory_iterator(folder, ec))
         if (e.is_directory() && is_content_archive(e.path().filename().string())) offers.push_back(e.path());
@@ -261,7 +263,7 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
     for (const auto& folder : folders) {
       Package p;
       p.id = folder.filename().string();
-      if (lower(p.id) == lower(kCommunityPackage)) continue;
+      if (modmgr::package_hidden(p.id)) continue;  // community UDLC unless mounted, mods' hide_dlc
       std::vector<fs::path> archives;
       const fs::path zips = folder / "Media" / "DLCZips";
       for (const auto& e : fs::directory_iterator(zips, ec)) {
@@ -374,7 +376,7 @@ std::vector<PackInfo> list_packs(const fs::path& state_root) {
   scan(title / "Headers" / "00000002", 1);
   scan(title / "Disabled" / "00000002", 2);
   for (auto& [id, p] : by_id) {
-    if (id == lower(kCommunityPackage)) continue;
+    if (id == lower(kCommunityPackage) && !modmgr::udlc_mounted()) continue;
     for (const char* where : {"00000002", "Disabled/00000002"})
       for (const auto& e : fs::directory_iterator(title / where / p.id / "Media", ec))
         if (e.is_regular_file() && lower(e.path().extension().string()) == ".puboffer") {

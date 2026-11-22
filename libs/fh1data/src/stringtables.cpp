@@ -94,6 +94,15 @@ void StringTables::put(std::string_view name, StringTable table) {
   tables_[string_hash(name)] = std::move(table);
 }
 
+StringTable& StringTables::table(std::string_view name) {
+  if (name.size() > 4) {
+    std::string tail(name.substr(name.size() - 4));
+    for (char& c : tail) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (tail == ".str") name.remove_suffix(4);
+  }
+  return tables_[string_hash(name)];
+}
+
 bool StringTables::is_reference(std::string_view s) {
   if (s.size() < 3 || s[0] != '_' || s[1] != '&') return false;
   return std::all_of(s.begin() + 2, s.end(), [](char c) { return c >= '0' && c <= '9'; }) && s.size() <= 12;

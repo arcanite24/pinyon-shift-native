@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -79,5 +80,21 @@ class Archive {
 
 uint32_t crc32(std::span<const uint8_t> data);
 std::string normalize_member_name(std::string_view name);
+
+// Mod overrides of archive members (cars::mod_merge installs one; none by
+// default). `replace` supplies a member's whole bytes (a replacement, or a
+// member the archive lacks: Archive::read(name) asks it before failing);
+// `patch` edits the bytes read() decoded (XML/INI merges). Both are called
+// with the archive's path and the member's name as the directory spells it,
+// from any thread, so they must be thread-safe.
+struct MemberOverride {
+  std::function<bool(const std::filesystem::path& archive, std::string_view member, std::vector<uint8_t>& out)>
+      replace;
+  std::function<void(const std::filesystem::path& archive, std::string_view member, std::vector<uint8_t>& data)>
+      patch;
+};
+// Installs (or, with null, removes) the override every Archive consults.
+void set_member_override(std::shared_ptr<const MemberOverride> override_hooks);
+std::shared_ptr<const MemberOverride> member_override();
 
 }  // namespace fh1

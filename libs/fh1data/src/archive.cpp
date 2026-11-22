@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <mutex>
 
 #include "fh1data/bytes.h"
 #include "fh1data/inflate.h"
@@ -20,7 +22,25 @@ constexpr size_t kCentralHeaderSize = 46;
 constexpr uint16_t kExtraPayloadOffset = 0x1123;
 constexpr uint16_t kExtraZip64 = 0x0001;
 
+// The installed mod override: a flag for the common no-mods path, the
+// pointer under a mutex (read() copies it, so a swap mid-read is safe).
+std::atomic<bool> g_has_override{false};
+std::mutex g_override_mutex;
+std::shared_ptr<const MemberOverride> g_override;
+
 }  // namespace
+
+void set_member_override(std::shared_ptr<const MemberOverride> override_hooks) {
+  std::lock_guard<std::mutex> lock(g_override_mutex);
+  g_override = std::move(override_hooks);
+  g_has_override.store(g_override != nullptr);
+}
+
+std::shared_ptr<const MemberOverride> member_override() {
+  if (!g_has_override.load(std::memory_order_relaxed)) return nullptr;
+  std::lock_guard<std::mutex> lock(g_override_mutex);
+  return g_override;
+}
 
 std::string normalize_member_name(std::string_view name) {
   std::string out(name);
@@ -170,6 +190,8 @@ std::optional<uint64_t> Archive::resolve_payload(const ArchiveMember& member, st
 
 ReadResult Archive::read(const ArchiveMember& member) {
   ReadResult result;
+  const auto hooks = member_override();
+  if (hooks && hooks->replace && hooks->replace(path_, member.name, result.data)) return result;
   if (member.size > kMaximumMemberSize || member.compressed_size > kMaximumMemberSize) {
     result.error = "member too large";
     return result;
@@ -211,13 +233,20 @@ ReadResult Archive::read(const ArchiveMember& member) {
   if (result.data.size() != member.size || crc32(result.data) != member.crc32) {
     result.error = "CRC mismatch";
     result.data.clear();
+    return result;
   }
+  if (hooks && hooks->patch) hooks->patch(path_, member.name, result.data);
   return result;
 }
 
 ReadResult Archive::read(std::string_view name) {
   const ArchiveMember* member = find(name);
-  if (!member) return ReadResult{{}, "no member named " + std::string(name)};
+  if (!member) {
+    ReadResult added;
+    if (const auto hooks = member_override(); hooks && hooks->replace && hooks->replace(path_, name, added.data))
+      return added;
+    return ReadResult{{}, "no member named " + std::string(name)};
+  }
   return read(*member);
 }
 

@@ -420,6 +420,11 @@ class Showroom {
   // world_textures_mutex_.
   WorldTextureStats world_texture_stats() const;
   bool reserve_world_texture(uint32_t record);
+  // Live texture reload (mods, texture_mods.h): uploads `texture` for a
+  // resident world texture record and points every set that samples it at
+  // the new image (after the GPU is idle), then frees the old one. False
+  // (no change) when the record is not resident.
+  bool replace_world_texture(uint32_t record, const cars::bake::Texture& texture, bool srgb, std::string& error);
   void release_prepare_pins(const std::vector<uint32_t>& records);
   // The world draws the last frame's shadow pass drew (0 without shadows).
   size_t shadow_draw_count() const { return shadow_drawn_; }

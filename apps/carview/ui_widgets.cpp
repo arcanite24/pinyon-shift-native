@@ -527,6 +527,7 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
                   {{"DPAD_LR", "CHANGE"},
                    {"LB", "CATEGORY"},
                    {"A", "REBIND / SAVE"},
+                   {"X", "MODS"},
                    {"B", "BACK"}},
                   screen_w, screen_h, 56.0f);
 }

@@ -238,6 +238,27 @@ add_executable(acoustics_vo_radio_tests acoustics_vo_radio_tests.cpp)
 target_link_libraries(acoustics_vo_radio_tests PRIVATE shift_audio fh1data)
 add_test(NAME acoustics_vo_radio_tests COMMAND acoustics_vo_radio_tests)
 
+# Slice 13A: the modding platform (a sample native mod for the plugin test).
+add_library(shift_test_mod_plugin MODULE mod_plugin_sample.c)
+target_include_directories(shift_test_mod_plugin PRIVATE ../libs/cars/include)
+add_executable(mods_tests mods_tests.cpp)
+target_link_libraries(mods_tests PRIVATE shift_cars shift_sqlite3 fh1data)
+if(TARGET shift_stb)
+  target_link_libraries(mods_tests PRIVATE shift_stb)
+endif()
+add_dependencies(mods_tests shift_test_mod_plugin)
+target_compile_definitions(mods_tests PRIVATE SHIFT_TEST_PLUGIN="$<TARGET_FILE:shift_test_mod_plugin>")
+add_test(NAME mods_tests COMMAND mods_tests)
+set_tests_properties(mods_tests PROPERTIES TIMEOUT 300)
+
+if(SHIFT_BUILD_CARVIEW)
+  add_executable(mods_saves_ui_tests mods_saves_ui_tests.cpp
+    ../apps/carview/mods_page.cpp)
+  target_include_directories(mods_saves_ui_tests PRIVATE ../apps/carview)
+  target_link_libraries(mods_saves_ui_tests PRIVATE carview_render shift_cars shift_profile shift_stb fh1data shift_sqlite3)
+  add_test(NAME mods_saves_ui_tests COMMAND mods_saves_ui_tests)
+endif()
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(fmv_story_tests fmv_story_tests.cpp
     ../apps/carview/fmv_player.cpp

@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "cars/mod_merge.h"
 #include "fh1data/archive.h"
 
 namespace cars {
@@ -97,6 +98,8 @@ bool load_string_tables(const Install& install, fh1::StringTables& out, std::str
   // Load EN first as a per-table fallback when requesting a non-English language.
   if (lang != "en") load_lang_layer("en", false);
   if (!load_lang_layer(lang, true)) return false;
+  // The enabled mods' string table patches (mod_merge.h), over everything.
+  mod_merge::apply_string_patches(out, lang);
   if (counts) *counts = c;
   return true;
 }

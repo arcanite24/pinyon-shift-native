@@ -113,6 +113,8 @@
 #include "settings.h"
 #include "settings_page.h"
 #include "slice12_runtime.h"
+#include "mods_page.h"
+#include "overlay_input.h"
 #include "ui4_chrome.h"
 #include "traffic/gps.h"
 #include "traffic/nav.h"
@@ -1327,6 +1329,7 @@ struct WorldTextureLoader {
     d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
     d->texture.swizzle = t.blocks.swizzle;
     for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
+    carview::world_texture_hook(record, d->srgb, d->texture);  // mods' replacement textures (mods_page.h)
     w.textures.push_back(std::move(d));
     ++decoded;
   }
@@ -1667,6 +1670,10 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path cli_fmv_path;
   std::filesystem::path mods_root;
   bool mods_off = false;
+  // Slice 13: native mods opt-in, save sync folder, device and profile.
+  bool mods_native = false;
+  std::filesystem::path sync_folder;
+  std::string device_name, profile_name;
   for (size_t i = 0; i < args.size(); ++i) {
     const std::string a = args[i];
     auto next = [&]() -> const char* { return i + 1 < args.size() ? args[++i].c_str() : ""; };
@@ -1683,6 +1690,10 @@ int run_drive(int argc, char** argv) {
     else if (a == "--fmv") cli_fmv_path = next();
     else if (a == "--mods") mods_root = next(), mods_off = false;
     else if (a == "--no-mods") mods_off = true;
+    else if (a == "--mods-native") mods_native = true;
+    else if (a == "--sync-folder") sync_folder = next();
+    else if (a == "--device-name") device_name = next();
+    else if (a == "--profile") profile_name = next();
     else if (a == "--headless") headless = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") car = next();
@@ -2080,7 +2091,26 @@ int run_drive(int argc, char** argv) {
   for (const auto& a : args) {
     if (a == "--trainer-cheats" || a == "--festival-pacing" || a == "--hidden-cars") slice12_modded_save = true;
   }
-  if (!save_path.empty() && slice12_modded_save) {
+  // Mods (mods_page.h, cars/mod_manager.h): resolved before the save is
+  // read, because an active mod that changes saves moves the game to the
+  // user-modded copy (or a mod's own profile) and the player's own save is
+  // then never opened.
+  carview::ModsSession mods_session;
+  if (!mods_off) {
+    if (mods_root.empty() && !headless) mods_root = carview::default_mods_root();
+    const char* sr_env = std::getenv("SHIFT_STATE_ROOT");
+    const std::filesystem::path sr = sr_env ? std::filesystem::path(sr_env) : std::filesystem::path{};
+    std::error_code ec;
+    const auto build = !sr.empty() && std::filesystem::is_regular_file(sr / "title-update-v4" / "media.zip", ec)
+                           ? cars::modmgr::GameBuild::kV4
+                           : cars::modmgr::GameBuild::kBase;
+    const auto dir = mods_session.boot(mods_root, save_path.empty() ? std::filesystem::path{} : save_path.parent_path(),
+                                       build, sr);
+    if (!save_path.empty()) save_path = dir / "save.txt";
+    for (const auto& line : mods_session.log) std::printf("mod: %s\n", line.c_str());
+    mods_session.log.clear();
+  }
+  if (!save_path.empty() && slice12_modded_save && !mods_session.isolation().isolated) {
     save_path = drive::resolve_isolated_save_path(save_path, true);
   }
   // The save: its car when none was given (and it is baked), and where it
@@ -2166,19 +2196,18 @@ int run_drive(int argc, char** argv) {
     std::printf("drive: bake %s, car %s, world %s\n", bake_dir.empty() ? "(none found)" : bake_dir.string().c_str(),
                 car.c_str(), world_dir.empty() ? "(none: flat ground)" : world_dir.string().c_str());
   }
-  // Mods (cars/mods.h): the window's from the user folder's mods/, a
+  // Mods (cars/mod_manager.h): the window's from the user folder's mods/, a
   // headless run's only from --mods; --no-mods turns them off.
   if (!mods_off) {
-    if (mods_root.empty() && !headless) mods_root = carview::default_mods_root();
-    const auto mods = cars::mods::list(mods_root);
     const std::filesystem::path mods_game_root =
         !game_root_given.empty() ? game_root_given
                                  : (!world_dir.empty() ? world_dir.parent_path().parent_path().parent_path()
                                                        : std::filesystem::path{});
-    cars::mods::activate(mods, bake_dir, sound_dir, mods_game_root);
-    for (const auto& m : mods)
-      std::printf("mod: %s (%s), %d files, %s\n", m.name.c_str(), m.title.c_str(), m.files,
-                  m.enabled ? "on" : "off (mod.txt: enabled 0)");
+    mods_session.activate(bake_dir, sound_dir, mods_game_root);
+    mods_session.load_plugins(mods_native);
+    carview::set_world_texture_session(&mods_session);
+    for (const auto& line : mods_session.log) std::printf("mod: %s\n", line.c_str());
+    mods_session.log.clear();
   }
   // Colorado's own features (collectibles, the map, traffic) stay off in
   // another world (ColoradoDirt: SPEC-V4-CONTENT, no traffic on a stage).
@@ -2232,7 +2261,7 @@ int run_drive(int argc, char** argv) {
   bool have_garage = false;
   std::filesystem::path garage_path;
   if (!save_path.empty()) garage_path = save_path.parent_path() / "garage.txt";
-  const auto baked_ids = bake_dir.empty() ? std::map<int64_t, std::string>{} : baked_car_ids(bake_dir);
+  auto baked_ids = bake_dir.empty() ? std::map<int64_t, std::string>{} : baked_car_ids(bake_dir);
   auto write_career_garage = [&]() {
     std::string e;
     if (have_garage && !garage_path.empty() && !garage::write_garage(garage_path, career_garage, &e))
@@ -2297,6 +2326,15 @@ int run_drive(int argc, char** argv) {
     std::string e;
     if (!garage::load_class_bands(game_root, class_bands, &e)) std::fprintf(stderr, "carview: note: %s\n", e.c_str());
     if (parts_db.valid()) shared_db = parts_db.get().get();
+  }
+  if (!mods_off) {
+    const size_t mod_cars = carview::extend_baked_catalog(baked_ids, shared_db, mods_session);
+    if (mod_cars > 0) {
+      std::printf("mod: extended car catalog with %zu mod car(s)\n", mod_cars);
+      if (have_garage && !car_given)
+        if (const garage::Car* gc = career_garage.selected_car())
+          if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end()) car = it->second;
+    }
   }
   // Career progression catalog (events, wristbands, restrictions, world triggers) & Skills/Popularity tables.
   race::CareerCatalog career_catalog;
@@ -2685,7 +2723,7 @@ int run_drive(int argc, char** argv) {
       const size_t n = garage_picker();
       std::printf("garage: %zu cars, %zu baked\n", career_garage.cars.size(), n);
     } else if (have_saved && saved.owned_garage) {
-      const auto ids = baked_car_ids(bake_dir);
+      const auto& ids = baked_ids;
       std::vector<std::string> owned;
       for (int id : saved.garage)
         if (auto it = ids.find(id); it != ids.end()) owned.push_back(lower_ascii(it->second));
@@ -3663,7 +3701,7 @@ int run_drive(int argc, char** argv) {
       SettingsPage settings_page;  // the pause menu's settings (M7)
       bool settings_live_overlay = false;  // true when opened via live F6 hotkey
       carview::Slice12Runtime slice12;
-      slice12.save_tree_label = slice12_modded_save ? "user-modded" : "user";
+      slice12.save_tree_label = (slice12_modded_save || mods_session.isolation().isolated) ? "user-modded" : "user";
       {
         SettingsPage boot_sp;
         boot_sp.load(read_settings(settings_path(), nullptr));
@@ -3679,6 +3717,24 @@ int run_drive(int argc, char** argv) {
         slice12.imm_cam_cfg = bls.immersive_camera;
         slice12.tel_cfg = bls.telemetry_udp;
       }
+      // F6 > MODS (mods_page.h): opened from the settings overlay (M / X);
+      // F5 reloads replacement textures anywhere.
+      carview::ModsPage mods_page;
+      auto reload_mod_textures = [&]() {
+        size_t reuploaded = 0;
+        const auto changed = mods_session.reload_textures(
+            [&](uint32_t record, const cars::bake::Texture& t, bool srgb) {
+              std::string why;
+              return showroom.replace_world_texture(record, t, srgb, why);
+            },
+            &reuploaded);
+        notice = changed.empty() ? "textures: no replacement changed"
+                                 : "textures reloaded: " + std::to_string(changed.size()) + " changed, " +
+                                       std::to_string(reuploaded) + " re-uploaded";
+        notice_until = vehicle.time() + 4;
+        mods_page.set_notice(notice);
+        std::printf("mods: %s\n", notice.c_str());
+      };
       freeroam::club::Signal club_signal;
       // Per-step game-event pulses accumulated during the physics step before club_step().
       struct ClubPendingPulses {
@@ -5865,6 +5921,9 @@ int run_drive(int argc, char** argv) {
           list.clear();
           carview::draw_camera_editor_ui4(list, float(width), float(height), slice12.cam_editor_overlay,
                                           slice12.ht_receiver.current_pose());
+        } else if (mods_page.is_open()) {
+          list.clear();
+          carview::draw_mods_page(list, float(width), float(height), mods_page);
         } else if (settings_page.is_open()) {
           list.clear();
           carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
@@ -8122,6 +8181,15 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            // F6 > MODS (mods_page.h): the overlay owns the input while open.
+            if (mods_page.is_open()) {
+              const carview::Nav nv = carview::nav_from_sdl(e);
+              if (nv != carview::Nav::kNone) {
+                audio_host.trigger_ui(nv == carview::Nav::kBack ? audio::UiCue::kCancel : audio::UiCue::kMove);
+                if (mods_page.nav(nv)) reload_mod_textures();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             // The settings page: up and down pick a row, left and right
             // change it (applied live), enter rebinds a key or saves.
             if (settings_page.is_open()) {
@@ -8237,6 +8305,9 @@ int run_drive(int argc, char** argv) {
                   } else if (k == SDLK_Q) {
                     settings_page.switch_tab(-1);
                     audio_host.trigger_ui(audio::UiCue::kMove);
+                  } else if (k == SDLK_M && !e.key.repeat) {
+                    mods_page.open(mods_session);  // F6 > MODS
+                    audio_host.trigger_ui(audio::UiCue::kAccept);
                   } else if (k == SDLK_E || k == SDLK_TAB) {
                     settings_page.switch_tab((e.key.mod & SDL_KMOD_SHIFT) ? -1 : +1);
                     audio_host.trigger_ui(audio::UiCue::kMove);
@@ -8269,6 +8340,9 @@ int run_drive(int argc, char** argv) {
                 } else if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
                   settings_page.switch_tab(-1);
                   audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
+                  mods_page.open(mods_session);  // F6 > MODS
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
                 } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
                   settings_page.switch_tab(1);
                   audio_host.trigger_ui(audio::UiCue::kMove);
@@ -8707,6 +8781,8 @@ int run_drive(int argc, char** argv) {
                 slice12.trainer_overlay.toggle();
                 audio_host.trigger_ui(slice12.trainer_overlay.is_open() ? audio::UiCue::kMenuOpen : audio::UiCue::kCancel);
               }
+              // F5: reload the mods' replacement textures (texture_mods.h).
+              if (e.key.key == SDLK_F5 && !e.key.repeat) reload_mod_textures();
               // F7: Pinyon Shift-style Achievements screen.
               if (e.key.key == SDLK_F7) {
                 eval_achievements(false);
@@ -8986,9 +9062,30 @@ int run_drive(int argc, char** argv) {
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
                                    settings_page.is_open() || paint_open || club_open || rally_hub_open ||
                                    rally_service_open || rally_results_open || photo_mode.active() ||
-                                   replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open();
+                                   replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open() ||
+                                   mods_page.is_open();
           const bool sim_paused = menu_paused || rewind_buf.active();
           achievements.update(frame_dt);
+          // Native mods' per-frame hook (shift_mod_api.h).
+          if (mods_session.plugins().alive()) {
+            static uint32_t mod_frame = 0;
+            const drive::Vec3 mp = vehicle.position();
+            const drive::Vec3 mf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            ShiftModFrame frame{};
+            frame.size = sizeof frame;
+            frame.frame = mod_frame++;
+            frame.time = vehicle.time();
+            frame.dt = frame_dt;
+            frame.position[0] = float(mp.x), frame.position[1] = float(mp.y), frame.position[2] = float(mp.z);
+            frame.heading = std::atan2(float(mf.x), float(mf.z));
+            frame.speed = float(vehicle.speed());
+            frame.rpm = float(vehicle.rpm());
+            frame.gear = vehicle.gear();
+            frame.paused = menu_paused ? 1 : 0;
+            mods_session.tick(frame);
+            for (const auto& [text, seconds] : mods_session.notices) notice = text, notice_until = vehicle.time() + seconds;
+            mods_session.notices.clear();
+          }
           if (sim_paused != was_sim_paused) {
             rig_accel.reset();
             was_sim_paused = sim_paused;

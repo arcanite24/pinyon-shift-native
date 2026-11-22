@@ -73,6 +73,9 @@ void activate(const std::vector<Mod>& mods, const std::filesystem::path& bake_di
     if (std::filesystem::is_directory(m.dir / "sound", ec)) sound.over.push_back(m.dir / "sound"), any = true;
     if (!media.base.empty() && std::filesystem::is_directory(m.dir / "media", ec))
       media.over.push_back(m.dir / "media"), any = true;
+    // Pinyon Shift's layout for whole game files (the XE mod's too).
+    if (!media.base.empty() && std::filesystem::is_directory(m.dir / "game" / "media", ec))
+      media.over.push_back(m.dir / "game" / "media"), any = true;
     if (!radio.base.empty() && std::filesystem::is_directory(m.dir / "radio", ec))
       radio.over.push_back(m.dir / "radio"), any = true;
     if (any) g_active.push_back(m.name);

@@ -1,5 +1,7 @@
 #include "cars/bake.h"
 #include "cars/mods.h"
+#include "cars/shader_mods.h"
+#include "cars/texture_mods.h"
 #include "showroom.h"
 
 #if defined(_MSC_VER)
@@ -1415,6 +1417,13 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
     builtin.levels.push_back({1, 1, {255, 255, 255, 255}});
     texture = &builtin;
   }
+  // A mod's replacement texture (texture_mods.h), by content hash or name.
+  bake::Texture replaced;
+  if (texture != &builtin && cars::texture_mods::any()) {
+    std::string why;
+    if (cars::texture_mods::substitute(*texture, replaced, &why)) texture = &replaced;
+    else if (!why.empty()) notes_.push_back("replacement texture " + why);
+  }
   VkDeviceSize total = 0;
   const uint32_t levels = texture_chain(*texture, total);
   if (!levels) {
@@ -1649,16 +1658,25 @@ bool Showroom::create_pipelines(std::string& error) {
   layout.pSetLayouts = world_layouts;
   VK_TRY(vkCreatePipelineLayout(r_.device_, &layout, nullptr, &world_pipeline_layout_), "world pipeline layout");
 
-  auto make_module = [&](const uint32_t* code, size_t bytes, VkShaderModule& module) {
+  // A mod's override (shader_mods.h) replaces a built-in shader of the same name.
+  std::vector<std::vector<uint32_t>> override_code;
+  auto make_module = [&](const uint32_t* code, size_t bytes, VkShaderModule& module, const char* name = nullptr) {
+    if (name)
+      if (auto o = cars::shader_mods::registry().find(name)) {
+        override_code.push_back(std::move(*o));
+        code = override_code.back().data();
+        bytes = override_code.back().size() * sizeof(uint32_t);
+        notes_.push_back(std::string("shader override: ") + name);
+      }
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     info.codeSize = bytes;
     info.pCode = code;
     return vkCreateShaderModule(r_.device_, &info, nullptr, &module);
   };
   VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE, mask = VK_NULL_HANDLE;
-  VK_TRY(make_module(kShowroom_vert_spv, sizeof(kShowroom_vert_spv), vert), "showroom.vert");
-  VK_TRY(make_module(kShowroom_frag_spv, sizeof(kShowroom_frag_spv), frag), "showroom.frag");
-  VK_TRY(make_module(kMask_frag_spv, sizeof(kMask_frag_spv), mask), "mask.frag");
+  VK_TRY(make_module(kShowroom_vert_spv, sizeof(kShowroom_vert_spv), vert, "showroom.vert"), "showroom.vert");
+  VK_TRY(make_module(kShowroom_frag_spv, sizeof(kShowroom_frag_spv), frag, "showroom.frag"), "showroom.frag");
+  VK_TRY(make_module(kMask_frag_spv, sizeof(kMask_frag_spv), mask, "mask.frag"), "mask.frag");
 
   static_assert(sizeof(bake::Vertex) == 32);
   VkVertexInputBindingDescription binding{0, sizeof(bake::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
@@ -1763,8 +1781,8 @@ bool Showroom::create_pipelines(std::string& error) {
   // The textured world (world.vert / world.frag): opaque, opaque with alpha
   // to coverage, and blended with depth writes off.
   VkShaderModule world_vert = VK_NULL_HANDLE, world_frag = VK_NULL_HANDLE;
-  if (result == VK_SUCCESS) result = make_module(kWorld_vert_spv, sizeof(kWorld_vert_spv), world_vert);
-  if (result == VK_SUCCESS) result = make_module(kWorld_frag_spv, sizeof(kWorld_frag_spv), world_frag);
+  if (result == VK_SUCCESS) result = make_module(kWorld_vert_spv, sizeof(kWorld_vert_spv), world_vert, "world.vert");
+  if (result == VK_SUCCESS) result = make_module(kWorld_frag_spv, sizeof(kWorld_frag_spv), world_frag, "world.frag");
   VkVertexInputBindingDescription world_binding{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
   const VkVertexInputAttributeDescription world_attributes[6] = {
       {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
@@ -1830,7 +1848,7 @@ bool Showroom::create_pipelines(std::string& error) {
     return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
   };
   if (result == VK_SUCCESS && r_.options_.shadow.size > 0) {
-    result = make_module(kShadow_frag_spv, sizeof(kShadow_frag_spv), shadow_frag);
+    result = make_module(kShadow_frag_spv, sizeof(kShadow_frag_spv), shadow_frag, "shadow.frag");
     if (result == VK_SUCCESS)
       result = build_shadow(world_vert, VK_NULL_HANDLE, &world_input, world_pipeline_layout_, shadow_world_);
     if (result == VK_SUCCESS)
@@ -3437,6 +3455,50 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
 size_t Showroom::world_texture_count() const {
   std::lock_guard<std::mutex> lock(world_textures_mutex_);
   return world_textures_.size();
+}
+
+bool Showroom::replace_world_texture(uint32_t record, const bake::Texture& texture, bool srgb, std::string& error) {
+  {
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    if (!world_textures_.count(record)) return false;
+  }
+  GpuTexture image;
+  if (!upload_texture(&texture, srgb, image, error)) {
+    r_.destroy_image(image);
+    return false;
+  }
+  vkDeviceWaitIdle(r_.device_);
+  GpuTexture old;
+  std::vector<std::pair<VkDescriptorSet, uint32_t>> bindings;  // set, binding
+  {
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    auto it = world_textures_.find(record);
+    if (it == world_textures_.end()) {
+      r_.destroy_image(image);
+      return false;
+    }
+    old = it->second;
+    it->second = image;
+    if (auto s = world_sets_.find(record); s != world_sets_.end()) bindings.emplace_back(s->second, 0);
+    for (const auto& [key, set] : world_layer_sets_)
+      for (uint32_t b = 0; b < 7; ++b)
+        if (key[b] == record) bindings.emplace_back(set, b);
+    world_lru_.insert(record, image.bytes, world_frame_);
+  }
+  const VkDescriptorImageInfo info{sampler_, image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  std::vector<VkWriteDescriptorSet> writes;
+  for (const auto& [set, b] : bindings) {
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = set;
+    w.dstBinding = b;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &info;
+    writes.push_back(w);
+  }
+  if (!writes.empty()) vkUpdateDescriptorSets(r_.device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
+  r_.destroy_image(old);
+  return true;
 }
 
 void Showroom::set_world_texture_budget(const WorldTextureBudget& budget) {

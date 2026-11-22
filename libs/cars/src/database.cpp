@@ -14,6 +14,8 @@
 
 #include <sqlite3.h>
 
+#include "cars/db_patch.h"
+#include "cars/mods.h"
 #include "cars/physics.h"
 
 namespace cars {
@@ -147,8 +149,10 @@ struct Merged {
 
 bool open_merged(const Install& install, Merged& m, std::string* error) {
   std::vector<uint8_t> base_bytes, v4_bytes;
-  if (!read_file(install.media / "db" / "gamedb.slt", base_bytes)) {
-    if (error) *error = "cannot read " + (install.media / "db" / "gamedb.slt").string();
+  // A mod may replace the disc's database whole (the XE mod does).
+  const fs::path disc_db = mods::resolve(install.media / "db" / "gamedb.slt");
+  if (!read_file(disc_db, base_bytes)) {
+    if (error) *error = "cannot read " + disc_db.string();
     return false;
   }
   if (!install.v4_media_zip.empty()) {
@@ -195,6 +199,14 @@ bool open_merged(const Install& install, Merged& m, std::string* error) {
       if (!exec(db, "DETACH DATABASE m", error)) return false;
       m.merges_applied.push_back(p.id + ":" + (member.empty() ? where.filename().string() : member));
     }
+  }
+  // The enabled mods' database patches (db_patch.h), after the packages.
+  if (const auto patches = db_patch::active(); !patches.empty()) {
+    db_patch::Report report;
+    db_patch::apply(db, patches, report);
+    for (const auto& a : report.applied) m.merges_applied.push_back("mod:" + a);
+    for (const auto& [id, by] : report.added_by) m.added_by[id] = by;
+    db_patch::set_last_report(report);
   }
   return true;
 }

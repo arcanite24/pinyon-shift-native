@@ -37,6 +37,9 @@ class StringTables {
   // Adds or replaces (whole table) the table named `name` (".str" optional).
   void put(std::string_view name, StringTable table);
   size_t size() const { return tables_.size(); }
+  // The table named `name` (".str" optional), made empty when missing
+  // (string table mods add to it).
+  StringTable& table(std::string_view name);
 
   // `_&N` (or a bare N) -> the text in UTF-8; nullopt when the table or the
   // key is missing, or `ref` is not a reference.
