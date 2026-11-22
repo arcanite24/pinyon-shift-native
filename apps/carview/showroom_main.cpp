@@ -65,6 +65,7 @@
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
 #include "world/stream.h"
+#include "world/vfx.h"
 #include "world/world.h"
 #include "contact_log.h"
 #include "safe_reset.h"
@@ -1172,6 +1173,7 @@ const char* kDriveRuns[][2] = {
     {"launch", "0 0 1 0\n"},
     {"slalom", "0 0 0.6 0\n2 0.8 0.5 0\n3 -0.8 0.5 0\n4 0.8 0.5 0\n5 -0.8 0.5 0\n6 0 0 0.6\n"},
     {"circle", "0 0 0 0\n1 0.5 0.35 0\n"},
+    {"drift", "0 0 1 0\n1.8 0.95 1 0\n2.6 0.85 1 0\n3.4 -0.7 1 0\n4.2 0.85 1 0\n"},
     {"cruise", "0 0 0 0\n"},  // input from world::RoadFollower (needs --world)
 };
 
@@ -2578,6 +2580,20 @@ int run_drive(int argc, char** argv) {
                   tod_system.loaded_sky ? "realtimesky.zip" : "procedural", tod_system.sky_assets.stars.size());
     }
   }
+  // Particle effects (media/effects.zip, Ribbon_00/ParticleEmitters.xml,
+  // SmashableEffects.xml, audio/BackfireTimerConfig.xml), loaded once.
+  world::ParticleLibrary vfx_lib;
+  {
+    const auto groot = game_root_of();
+    if (!groot.empty()) {
+      std::string vfx_err;
+      if (vfx_lib.load(groot / "media", world_dir, &vfx_err)) {
+        std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
+                    vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
+                    vfx_lib.smashable_effects().size());
+      }
+    }
+  }
   freeroam::club::ClubData club_data;
   bool club_tried = false, club_loaded = false;
   std::string club_why;
@@ -2647,7 +2663,16 @@ int run_drive(int argc, char** argv) {
           if (!showroom.upload_carlights(groot / "media", cl_err))
             std::fprintf(stderr, "carview: carlights upload note: %s\n", cl_err.c_str());
         }
+        std::string vfx_gpu_err;
+        if (!showroom.init_vfx(&vfx_lib, vfx_gpu_err))
+          std::fprintf(stderr, "carview: vfx gpu init note: %s\n", vfx_gpu_err.c_str());
       }
+      world::ParticleSystem particle_sys;
+      particle_sys.set_library(&vfx_lib);
+      world::SkidMarkSystem skid_sys;
+      uint32_t last_audio_backfire_count = audio_host.telemetry().backfire_count;
+      int last_vfx_gear = 1;
+      double last_impact_vfx_time = -10.0;
       // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of
       // colour row i, as left and right show it.
       if (const char* pp = std::getenv("SHIFT_PAINT_PREVIEW")) showroom.preview_colour(size_t(std::atoi(pp)));
@@ -3432,6 +3457,9 @@ int run_drive(int argc, char** argv) {
             bhit.pos = {float(at.x), float(at.y), float(at.z)};
             bhit.is_break = true;
             audio_host.trigger_collision(bhit);
+            const drive::Vec3 vel_s = vehicle.velocity();
+            particle_sys.spawn_smashable_burst("flyer", {float(at.x), float(at.y + 0.7), float(at.z)},
+                                               {float(vel_s.x), float(vel_s.y + 2.5), float(vel_s.z)});
             const int n = free_roam->signs_found();
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, collectibles.signs.size(),
                           freeroam::upgrade_discount(n));
@@ -3519,6 +3547,98 @@ int run_drive(int argc, char** argv) {
           }
         }
         const bool smashed_sign = free_roam_step();
+        // SPEC-VFX-AND-PARTICLES: step tyre smoke/dust/gravel/sparks/backfire,
+        // world ambient emitters, and persistent/fading skidmarks & ruts.
+        if (!bench) {
+          const drive::Vec3 vpos = vehicle.position();
+          const drive::Vec3 vvel = vehicle.velocity();
+          const drive::Quat vrot = vehicle.orientation();
+          const drive::Vec3 vfwd = drive::rotate(vrot, {0, 0, 1});
+          const drive::Vec3 vright = drive::rotate(vrot, {1, 0, 0});
+          const drive::Vec3 vup = drive::rotate(vrot, {0, 1, 0});
+          const auto& surfs = collision.surfaces();
+
+          world::VehicleVfxInput vin{};
+          vin.car_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
+          vin.car_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
+          vin.car_forward = {float(vfwd.x), float(vfwd.y), float(vfwd.z)};
+          vin.car_right = {float(vright.x), float(vright.y), float(vright.z)};
+          vin.car_up = {float(vup.x), float(vup.y), float(vup.z)};
+          const float half_len = float(std::max(1.4, vehicle.params().size.z * 0.5));
+          const float half_w = float(std::max(0.6, vehicle.params().size.x * 0.5));
+          const drive::Vec3 ex_l = vpos + drive::rotate(vrot, {-half_w * 0.42, -0.22, -half_len - 0.05});
+          const drive::Vec3 ex_r = vpos + drive::rotate(vrot, {half_w * 0.42, -0.22, -half_len - 0.05});
+          vin.exhaust_tips[0] = {float(ex_l.x), float(ex_l.y), float(ex_l.z)};
+          vin.exhaust_tips[1] = {float(ex_r.x), float(ex_r.y), float(ex_r.z)};
+          vin.exhaust_tip_count = 2;
+
+          const float idle_r = float(std::max(600.0, vehicle.params().idle_rpm));
+          const float red_r = float(std::max(idle_r + 1000.0, vehicle.params().redline_rpm));
+          vin.norm_rpm = std::clamp((float(vehicle.rpm()) - idle_r) / (red_r - idle_r), 0.0f, 1.0f);
+          vin.throttle = float(in.throttle);
+          vin.upshift_event = (vehicle.gear() > last_vfx_gear && vehicle.gear() >= 2);
+          last_vfx_gear = vehicle.gear();
+          vin.backfire_level = std::clamp(audio_upgrades.exhaust, 0, 3);
+          const uint32_t cur_bf = audio_host.telemetry().backfire_count;
+          if (cur_bf > last_audio_backfire_count) {
+            vin.audio_backfire_pulses = cur_bf - last_audio_backfire_count;
+          }
+          last_audio_backfire_count = cur_bf;
+
+          for (int wi = 0; wi < drive::kWheels; ++wi) {
+            const auto& w = vehicle.wheels()[size_t(wi)];
+            auto& wv = vin.wheels[size_t(wi)];
+            wv.grounded = w.contact;
+            if (!w.contact) {
+              skid_sys.break_wheel(size_t(wi));
+              continue;
+            }
+            const double tr = vehicle.params().tyre_radius[size_t(wi)] > 0 ? vehicle.params().tyre_radius[size_t(wi)] : 0.33;
+            const drive::Vec3 patch = vpos + drive::rotate(vrot, {w.centre.x, w.centre.y - tr, w.centre.z});
+            const double cs = std::cos(w.steer), sn = std::sin(w.steer);
+            const drive::Vec3 wr = drive::rotate(vrot, {cs, 0, -sn});
+            const drive::Vec3 wf = drive::rotate(vrot, {sn, 0, cs});
+            wv.contact_pos = {float(patch.x), float(patch.y), float(patch.z)};
+            wv.surface_normal = {float(vup.x), float(vup.y), float(vup.z)};
+            wv.wheel_right = {float(wr.x), float(wr.y), float(wr.z)};
+            wv.wheel_forward = {float(wf.x), float(wf.y), float(wf.z)};
+            wv.tyre_width_m = 0.25f;
+            wv.slip_combined = float(std::hypot(w.slip_ratio, w.slip_angle));
+            wv.wheel_speed_mps = float(std::max(std::fabs(w.omega * tr), std::fabs(vehicle.speed())));
+            wv.surface_index = w.surface;
+            if (w.surface >= 0 && size_t(w.surface) < surfs.size()) {
+              wv.surface = surfs[size_t(w.surface)];
+            } else {
+              // Synthetic fallback (asphalt) when driving on flat ground without collision surfaces.
+              wv.surface.skid_a = 200;
+              wv.surface.skid_texture_index = 0;
+              wv.surface.skid_min_intensity = 0.0f;
+              wv.surface.smoke_weight = 1.0f;
+              wv.surface.should_spark = true;
+            }
+            skid_sys.update_wheel(size_t(wi), wv);
+          }
+
+          // Body scrape / impact sparks on ShouldSpark surfaces.
+          const auto bc = vehicle.strongest_body_contact();
+          const double bc_speed = bc.force * drive::Vehicle::kStep / std::max(500.0, vehicle.params().mass);
+          if (bc.force > 1500.0) {
+            bool spk = true;
+            if (bc.surface >= 0 && size_t(bc.surface) < surfs.size()) spk = surfs[size_t(bc.surface)].should_spark;
+            vin.scraping = true;
+            vin.scrape_pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
+            vin.scrape_normal = {float(bc.normal.x), float(bc.normal.y), float(bc.normal.z)};
+            vin.scrape_should_spark = spk;
+            if (bc_speed > 3.5 && vehicle.time() - last_impact_vfx_time > 0.25) {
+              last_impact_vfx_time = vehicle.time();
+              particle_sys.spawn_collision_impact(vin.scrape_pos, vin.scrape_normal, vin.car_vel, float(bc_speed), spk);
+            }
+          }
+
+          particle_sys.update_vehicle(vin, float(drive::Vehicle::kStep));
+          particle_sys.update_world_emitters(vin.car_pos, float(tod_clock.hour()), float(drive::Vehicle::kStep));
+          particle_sys.step(float(drive::Vehicle::kStep), {0.707f, 0.0f, 0.707f}, 1.45f);
+        }
         // SPEC-SKILLS-POPULARITY: step driving skill detectors in free roam and active races.
         if (skill_tracker && (!race || (race->session().started() && !race->player_finished()))) {
           freeroam::SkillInput si;
@@ -3776,6 +3896,15 @@ int run_drive(int argc, char** argv) {
             rotate_direction(m, shadow_light_game, towards);
             showroom.set_shadow_direction(towards);
           }
+        }
+        if (!bench) {
+          std::vector<world::SkidVertex> asph_tris, rut_tris;
+          skid_sys.build_geometry(asph_tris, rut_tris);
+          showroom.set_skidmarks(asph_tris, rut_tris);
+          std::vector<world::ParticleSprite> p_alpha, p_add;
+          const drive::Vec3 vpos = vehicle.position();
+          particle_sys.build_sprites({float(vpos.x), float(vpos.y + 1.5), float(vpos.z)}, p_alpha, p_add);
+          showroom.set_particles(p_alpha, p_add, particle_sys.used_textures(), 0.25f, tod_cockpit_cam);
         }
       };
       // Writes where the car stands (drive/save.h); the start is the last spawn.
@@ -5699,6 +5828,8 @@ int run_drive(int argc, char** argv) {
               auto do_resume = [&]() {
                 drive::RewindCameraState cs;
                 if (rewind_buf.resume(vehicle, &cs)) {
+                  particle_sys.clear();
+                  skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();
                   accumulator = 0.0;
@@ -5707,6 +5838,7 @@ int run_drive(int argc, char** argv) {
               auto do_cancel = [&]() {
                 drive::RewindCameraState cs;
                 if (rewind_buf.cancel(vehicle, &cs)) {
+                  skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();
                   accumulator = 0.0;

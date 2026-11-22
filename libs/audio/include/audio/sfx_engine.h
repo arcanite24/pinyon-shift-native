@@ -158,6 +158,7 @@ class SfxEngine {
 
   int active_one_shots() const;
   int loaded_sample_count() const;
+  uint32_t backfire_count() const { return backfire_count_.load(std::memory_order_relaxed); }
 
  private:
   struct DecodeJob {
@@ -224,6 +225,7 @@ class SfxEngine {
   double time_s_ = 0.0;
   double last_collision_s_ = -10.0;
   double backfire_timer_ms_ = 500.0;
+  std::atomic<uint32_t> backfire_count_{0};
   std::mt19937 rng_{0x51C2u};
 
   static constexpr int kMaxOneShots = 24;

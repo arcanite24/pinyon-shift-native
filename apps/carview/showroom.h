@@ -29,6 +29,7 @@
 #include "drive/lamps.h"
 #include "renderer.h"
 #include "world/tod.h"
+#include "world/vfx.h"
 #include "world/world.h"
 #include "world_texture_lru.h"
 
@@ -339,6 +340,13 @@ class Showroom {
   // Living cockpit animation (steering wheel rotation, RPM/speed/fuel/boost/power
   // gauge needles, and cockpit mirror render pass enable).
   void set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera);
+  // Batched/instanced soft particle atlas & skidmark pipelines (SPEC-VFX-AND-PARTICLES).
+  bool init_vfx(const world::ParticleLibrary* lib, std::string& error);
+  void set_particles(const std::vector<world::ParticleSprite>& alpha,
+                     const std::vector<world::ParticleSprite>& additive,
+                     const std::vector<std::string>& used_textures, float near_plane, bool cockpit_camera);
+  void set_skidmarks(const std::vector<world::SkidVertex>& asphalt_tris,
+                     const std::vector<world::SkidVertex>& rut_tris);
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no
@@ -699,6 +707,61 @@ class Showroom {
   void record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
                              uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars);
   void fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u) const;
+  // Batched soft particles + terrain-conforming skidmarks (SPEC-VFX-AND-PARTICLES).
+  struct ParticleGpu {
+    float pos_sx[4];
+    float vel_sy[4];
+    float uv_rect[4];
+    float color[4];
+    float light[4];
+    float extra[4];
+  };
+  static_assert(sizeof(ParticleGpu) == 96);
+  struct SkidGpuVertex {
+    float pos[3];
+    float normal[3];
+    float uv[2];
+    uint8_t rgba[4];
+  };
+  static_assert(sizeof(SkidGpuVertex) == 36);
+  static constexpr uint32_t kMaxParticleGpu = 2400;
+  static constexpr uint32_t kMaxSkidVerts = 24000;
+  static constexpr uint32_t kParticleAtlasGrid = 8;
+  static constexpr uint32_t kParticleAtlasCell = 256;
+  static constexpr uint32_t kParticleAtlasSize = kParticleAtlasGrid * kParticleAtlasCell;  // 2048
+  bool vfx_ready_ = false;
+  GpuTexture particle_atlas_;
+  GpuTexture skid_asphalt_tex_;
+  GpuTexture skid_rut_tex_;
+  VkSampler particle_sampler_ = VK_NULL_HANDLE;
+  VkSampler skid_sampler_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout particle_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout particle_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipeline particle_alpha_pipe_ = VK_NULL_HANDLE;
+  VkPipeline particle_add_pipe_ = VK_NULL_HANDLE;
+  VkDescriptorPool particle_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet particle_set_ = VK_NULL_HANDLE;
+  VkImageView particle_bound_depth_ = VK_NULL_HANDLE;
+  Renderer::Buffer particle_buf_;
+  void* particle_mapped_ = nullptr;
+  uint32_t particle_alpha_count_ = 0;
+  uint32_t particle_add_count_ = 0;
+  float particle_near_plane_ = 0.25f;
+  bool particle_cockpit_ = false;
+  std::unordered_map<std::string, uint16_t> atlas_tex_slot_;  // lower-case .xds -> atlas cell [0..63]
+  VkDescriptorSetLayout skid_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout skid_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipeline skid_pipe_ = VK_NULL_HANDLE;
+  VkDescriptorPool skid_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet skid_sets_[2] = {};
+  Renderer::Buffer skid_asphalt_buf_;
+  Renderer::Buffer skid_rut_buf_;
+  void* skid_asphalt_mapped_ = nullptr;
+  void* skid_rut_mapped_ = nullptr;
+  uint32_t skid_asphalt_count_ = 0;
+  uint32_t skid_rut_count_ = 0;
+  void record_skidmarks_draw(VkCommandBuffer cmd);
+  void record_particles_draw(VkCommandBuffer cmd);
   // Living cockpit animation rigs (steering wheel + 5 analog gauge needles).
   struct CockpitRig {
     bool valid = false;

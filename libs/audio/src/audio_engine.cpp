@@ -578,6 +578,7 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.blocks_rendered = blocks_rendered_;
   t.worst_block_ms = worst_block_ms_;
   t.stalls = stalls_;
+  t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;
   telemetry_buf_.write(t);
 }
 

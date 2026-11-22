@@ -210,8 +210,48 @@ bool parse_surface_types(std::string_view xml, std::vector<SurfaceType>& out, st
     read_in(at, end, "TCandStabilitySpeedMultiplier", s.tcs_speed_scale);
     read_bool_in(at, end, "IsPenaltySurface", s.is_penalty_surface);
     read_bool_in(at, end, "IsHandOfGodTriggerSurface", s.is_hand_of_god);
+    read_bool_in(at, end, "ShouldSpark", s.should_spark);
 
     size_t g0 = 0, g1 = 0;
+    if (sub_range("SkidData", g0, g1)) {
+      float r = 0, g = 0, b = 0, a = 0, ti = 0;
+      read_in(g0, g1, "ColorRed", r);
+      read_in(g0, g1, "ColorGreen", g);
+      read_in(g0, g1, "ColorBlue", b);
+      read_in(g0, g1, "ColorAlpha", a);
+      read_in(g0, g1, "TextureIndex", ti);
+      read_in(g0, g1, "MinIntensity", s.skid_min_intensity);
+      auto clamp_u8 = [](float x) -> uint8_t {
+        if (x < 0.0f) return 0;
+        if (x > 255.0f) return 255;
+        return uint8_t(x + 0.5f);
+      };
+      s.skid_r = clamp_u8(r);
+      s.skid_g = clamp_u8(g);
+      s.skid_b = clamp_u8(b);
+      s.skid_a = clamp_u8(a);
+      s.skid_texture_index = int(ti + (ti >= 0.0f ? 0.5f : -0.5f));
+      const size_t st = find_element(xml, "SmokeType", g0, g1);
+      if (st != std::string_view::npos) {
+        auto read_attr = [&](const char* attr, float& out_f) {
+          std::string v;
+          if (attribute(xml, st, attr, v)) out_f = float(std::atof(v.c_str()));
+        };
+        read_attr("Smoke", s.smoke_weight);
+        read_attr("Dust", s.dust_weight);
+        read_attr("Dirt", s.dirt_weight);
+        read_attr("Grass", s.grass_weight);
+        read_attr("GravelBits", s.gravel_weight);
+        read_attr("Litter", s.litter_weight);
+        float leaf_sum = 0.0f;
+        for (const char* lf : {"Leaf1", "Leaf2", "Leaf3", "Leaf4", "Leaf5"}) {
+          float lv = 0.0f;
+          read_attr(lf, lv);
+          if (lv > leaf_sum) leaf_sum = lv;
+        }
+        s.leaf_weight = leaf_sum;
+      }
+    }
     if (sub_range("VelDepFriction", g0, g1)) {
       read_in(g0, g1, "VelPeak0", s.vel_peak0);
       read_in(g0, g1, "VelPeak", s.vel_peak);

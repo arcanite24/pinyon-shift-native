@@ -303,6 +303,12 @@ bool Renderer::pick_device(std::string& error) {
     if (queue_family_ < families && family_props[queue_family_].timestampValidBits > 0)
       timestamp_ns_ = props.limits.timestampPeriod;
   }
+  VkPhysicalDeviceDepthStencilResolveProperties ds_resolve{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
+  VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  props2.pNext = &ds_resolve;
+  vkGetPhysicalDeviceProperties2(physical_, &props2);
+  depth_resolve_supported_ = (ds_resolve.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
   VkFormatProperties format_props;
   vkGetPhysicalDeviceFormatProperties(physical_, VK_FORMAT_D32_SFLOAT, &format_props);
   depth_format_ = (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
@@ -738,18 +744,22 @@ bool Renderer::create_pipeline(VkFormat color_format, std::string& error) {
 bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& error) {
   destroy_targets();
   if (samples_ != VK_SAMPLE_COUNT_1_BIT &&
-      !create_image(width, height, 1, scene_format(), samples_,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+      !create_image(width, height, 1, scene_format(), samples_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, msaa_color_)) {
     error = "MSAA colour target";
     return false;
   }
-  const VkImageUsageFlags depth_usage =
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-      (depth_readable_ ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+  const VkImageUsageFlags depth_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   if (!create_image(width, height, 1, depth_format_, samples_, depth_usage,
                     VK_IMAGE_ASPECT_DEPTH_BIT, depth_)) {
     error = "depth target";
+    return false;
+  }
+  if (!create_image(width, height, 1, depth_format_, VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, depth_resolved_)) {
+    error = "resolved depth target";
     return false;
   }
   if (options_.post.enabled) {
@@ -1225,6 +1235,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
 void Renderer::destroy_targets() {
   destroy_image(msaa_color_);
   destroy_image(depth_);
+  destroy_image(depth_resolved_);
   destroy_image(hdr_);
   for (uint32_t k = 0; k < kBloomLevels; ++k) {
     destroy_image(bloom_a_[k]);
@@ -1264,11 +1275,23 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                 VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
+  const bool two_pass = bool(scene_.draw_particles) && depth_resolved_.view != VK_NULL_HANDLE;
+  const bool can_msaa_depth_resolve = msaa && depth_resolve_supported_ && depth_resolved_.view != VK_NULL_HANDLE;
+  if (two_pass || post) {
+    image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  can_msaa_depth_resolve ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
+                                         : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_NONE,
+                  can_msaa_depth_resolve ? depth_stages : VK_PIPELINE_STAGE_2_COPY_BIT,
+                  can_msaa_depth_resolve ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                         : VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  }
+
   VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   color.imageView = msaa ? msaa_color_.view : scene_view;
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  color.storeOp = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+  color.storeOp = (msaa && !two_pass) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color = {{scene_.clear[0], scene_.clear[1], scene_.clear[2], scene_.clear[3]}};
   if (post)
     for (int k = 0; k < 3; ++k) {
@@ -1276,7 +1299,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
       const float c = scene_.clear[k];
       color.clearValue.color.float32[k] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
     }
-  if (msaa) {
+  if (msaa && !two_pass) {
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
     color.resolveImageView = scene_view;
     color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1285,8 +1308,14 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   depth.imageView = depth_.view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
   depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  depth.storeOp = depth_readable_ ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.storeOp = (depth_readable_ || two_pass || !msaa) ? VK_ATTACHMENT_STORE_OP_STORE
+                                                         : VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.clearValue.depthStencil = {options_.reverse_z ? 0.0f : 1.0f, 0};
+  if (can_msaa_depth_resolve && (two_pass || post)) {
+    depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    depth.resolveImageView = depth_resolved_.view;
+    depth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+  }
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
   rendering.renderArea = {{0, 0}, {target_width_, target_height_}};
   rendering.layerCount = 1;
@@ -1313,6 +1342,62 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
   }
   vkCmdEndRendering(cmd);
+
+  if (two_pass || post) {
+    if (can_msaa_depth_resolve) {
+      image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
+                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                    depth_stages, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    } else if (!msaa) {
+      image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depth_stages,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT);
+      VkImageCopy ic{};
+      ic.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      ic.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      ic.extent = {target_width_, target_height_, 1};
+      vkCmdCopyImage(cmd, depth_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depth_resolved_.image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+      image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_READ_BIT, depth_stages,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+      image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    } else {
+      // Fallback if GPU lacks MSAA depth resolve: clear resolved depth to far plane.
+      const VkClearDepthStencilValue far_v{options_.reverse_z ? 0.0f : 1.0f, 0};
+      const VkImageSubresourceRange rng{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      vkCmdClearDepthStencilImage(cmd, depth_resolved_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far_v, 1, &rng);
+      image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+  }
+
+  if (two_pass) {
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color.storeOp = msaa ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+    if (msaa) {
+      color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+      color.resolveImageView = scene_view;
+      color.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth.storeOp = depth_readable_ ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.resolveMode = VK_RESOLVE_MODE_NONE;
+    depth.resolveImageView = VK_NULL_HANDLE;
+    vkCmdBeginRendering(cmd, &rendering);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    scene_.draw_particles(cmd);
+    vkCmdEndRendering(cmd);
+  }
   if (post) record_post(cmd, final_view);
   if (depth_readable_) {
     image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT,

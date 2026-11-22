@@ -43,6 +43,7 @@ struct AudioTelemetry {
   uint64_t blocks_rendered = 0;
   double worst_block_ms = 0.0;
   uint64_t stalls = 0;  // blocks that exceeded their real-time duration
+  uint32_t backfire_count = 0;  // monotonic exhaust backfire pop counter (coupled to visual flames)
 };
 
 class AudioEngine {

@@ -92,6 +92,18 @@ struct SurfaceType {
   // Flags (COLLISION.md).
   bool is_penalty_surface = false;
   bool is_hand_of_god = false;
+  // Skidmarks, tyre smoke/dust/gravel plumes & sparks (SPEC-VFX-AND-PARTICLES).
+  uint8_t skid_r = 0, skid_g = 0, skid_b = 0, skid_a = 0;
+  int skid_texture_index = 0;  // 0 = asphalt rubber, 1 = off-road tyre rut
+  float skid_min_intensity = 0.0f;
+  float smoke_weight = 0.0f;
+  float dust_weight = 0.0f;
+  float dirt_weight = 0.0f;
+  float grass_weight = 0.0f;
+  float gravel_weight = 0.0f;
+  float leaf_weight = 0.0f;
+  float litter_weight = 0.0f;
+  bool should_spark = false;
   bool defined = false;
 };
 

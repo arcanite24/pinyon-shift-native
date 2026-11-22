@@ -596,6 +596,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
             const float bg = 0.60f * float(lv.volume.present ? lv.volume.eval({norm_rpm, 0, 0, 1}) : 0.7);
             spawn_one_shot(SfxSoundId::kBackfirePop, Bus::kEngine, bg, 0.707f, 0.707f);
             spawn_one_shot(SfxSoundId::kBackfireLfe, Bus::kEngine, bg * 0.65f, 0.707f, 0.707f);
+            backfire_count_.fetch_add(1, std::memory_order_relaxed);
             if (focus_engine) focus_engine->trigger_expander();
           }
         }

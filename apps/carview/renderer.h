@@ -38,6 +38,9 @@ class Showroom;
 struct SceneHooks {
   std::function<void(VkCommandBuffer)> before;
   std::function<void(VkCommandBuffer)> draw;
+  // Optional second subpass after opaque depth has been resolved into
+  // `depth_resolved_view()` (for soft depth-faded particles & glows).
+  std::function<void(VkCommandBuffer)> draw_particles;
   float clear[4] = {0.16f, 0.18f, 0.21f, 1.0f};
 };
 
@@ -162,6 +165,9 @@ class Renderer {
   void ui_atlas_put(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::span<const uint8_t> rgba);
 
   const std::string& device_name() const { return device_name_; }
+  uint32_t target_width() const { return target_width_; }
+  uint32_t target_height() const { return target_height_; }
+  VkImageView depth_resolved_view() const { return depth_resolved_.view; }
   uint32_t samples() const { return uint32_t(samples_); }
   uint32_t validation_messages() const { return validation_messages_; }
 
@@ -263,7 +269,8 @@ class Renderer {
   std::vector<const char*> mark_labels_;
   std::vector<std::pair<std::string, double>> stage_ms_;
   bool depth_readable_ = false;
-  Image msaa_color_, depth_;
+  bool depth_resolve_supported_ = false;
+  Image msaa_color_, depth_, depth_resolved_;
   // The post chain: resolved HDR scene, 5-level bloom pyramid, auto-exposure, 16^3 3D LUT.
   static constexpr uint32_t kBloomLevels = 5;
   static constexpr uint32_t kPostSetCount = 22;
