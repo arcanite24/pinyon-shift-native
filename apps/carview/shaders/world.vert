@@ -37,6 +37,11 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 fog_params;
   vec4 car_light_top;
   vec4 car_light_bot;
+  mat4 shadow_matrix_far;
+  vec4 shadow_far_bias;
+  vec4 env_basis_x;  // xyz game X in render space, w real_time_sec
+  vec4 env_basis_y;  // xyz game Y in render space, w wind_speed
+  vec4 env_basis_z;  // xyz game Z in render space, w wind_amplitude
 } frame;
 
 layout(push_constant) uniform Draw {
@@ -47,7 +52,8 @@ layout(push_constant) uniform Draw {
   vec4 params;  // x blend mode, y flags, z far-ring level
 } draw;
 
-const uint kFlagSky = 2u, kFlagBillboard = 32u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u;
+const uint kFlagSky = 2u, kFlagBillboard = 32u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
+           kFlagAnimFlag = 131072u, kFlagGrass = 262144u;
 // Far-ring levels are pushed away from the eye by this much each (ours):
 // unchanged on screen, behind the near terrain where both are drawn.
 const float kFarPush = 0.03;
@@ -125,6 +131,27 @@ void main() {
   }
   v_position = world.xyz;
   v_normal = dot(in_normal.xyz, in_normal.xyz) > 0.01 ? normal_matrix * in_normal.xyz : vec3(0.0);
+  if ((flags & kFlagAnimFlag) != 0u) {
+    // Waving flag cloth displacement (ANIM_FLAG*): pin pole side (uv0.x ~ 0), ripple free edge.
+    float t = frame.env_basis_x.w;
+    float wspd = max(frame.env_basis_y.w, 0.8);
+    float wamp = clamp(frame.env_basis_z.w, 0.08, 0.65);
+    float pin = clamp(in_uv0.x, 0.0, 1.0);
+    float phase = dot(in_position.xyz, vec3(1.7, 0.9, 1.3));
+    float wave = sin(t * (3.4 + wspd * 2.0) - phase) + 0.35 * sin(t * 7.2 - phase * 1.8);
+    vec3 wave_dir = length(v_normal) > 0.1 ? normalize(v_normal) : normalize(frame.env_basis_x.xyz);
+    world.xyz += wave_dir * (wave * pin * (0.14 + wamp * 0.35));
+    v_position = world.xyz;
+  } else if ((flags & kFlagGrass) != 0u) {
+    // Wind-swaying grass quads (_0x00005007): top of blade sways along wind direction.
+    float t = frame.env_basis_x.w;
+    float wspd = max(frame.env_basis_y.w, 0.8);
+    float wamp = clamp(frame.env_basis_z.w, 0.05, 0.50);
+    float tip = clamp(1.0 - in_uv0.y, 0.0, 1.0);
+    float sway = sin(t * (1.8 + wspd) + dot(in_position.xz, vec2(0.35, 0.27))) * (0.06 + wamp * 0.25) * tip;
+    world.xyz += (frame.env_basis_x.xyz * 0.8 + frame.env_basis_z.xyz * 0.6) * sway;
+    v_position = world.xyz;
+  }
   v_uv0 = in_uv0;
   v_uv1 = in_uv1;
   v_colour = in_colour;

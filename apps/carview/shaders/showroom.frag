@@ -233,9 +233,40 @@ void main() {
     base = (flags & kFlagSlot1) != 0u ? pow(t1.rgb, vec3(2.2)) : vec3(0.03);
     gloss = 0.15;
   } else if (klass == kRim) {
-    gloss = 0.75;
+    float wblur = clamp(draw.params.w, 0.0, 1.0);
+    if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
+      // Rotational wheel spoke blur (blur_rim): 7 angular taps around rim UV centre.
+      vec2 duv = v_uv0 - vec2(0.5);
+      vec3 acc = t0.rgb;
+      float span = wblur * 0.52;
+      for (int k = -3; k <= 3; ++k) {
+        if (k == 0) continue;
+        float a = float(k) * (span / 3.0);
+        float ca = cos(a), sa = sin(a);
+        vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
+        acc += texture(slot0, ruv).rgb;
+      }
+      base = mix(base, acc / 7.0, wblur * 0.92);
+      // Spinning rim metallic sheen softening.
+      base = mix(base, vec3(dot(base, vec3(0.3, 0.59, 0.11))) * 1.08, wblur * 0.22);
+    }
+    gloss = mix(0.75, 0.86, clamp(draw.params.w, 0.0, 1.0));
     metal = 0.6;
   } else if (klass == kChrome) {
+    float wblur = clamp(draw.params.w, 0.0, 1.0);
+    if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
+      vec2 duv = v_uv0 - vec2(0.5);
+      vec3 acc = t0.rgb;
+      float span = wblur * 0.52;
+      for (int k = -3; k <= 3; ++k) {
+        if (k == 0) continue;
+        float a = float(k) * (span / 3.0);
+        float ca = cos(a), sa = sin(a);
+        vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
+        acc += texture(slot0, ruv).rgb;
+      }
+      base = mix(base, acc / 7.0, wblur * 0.88);
+    }
     gloss = 0.95;
     metal = 0.9;
   } else if (klass == kWorld) {

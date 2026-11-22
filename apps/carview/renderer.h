@@ -66,6 +66,39 @@ struct PostSettings {
   float exp_ev[4] = {1.300f, 0.437f, 0.001f, -0.800f};
   float adapt_alpha = 1.0f;     // temporal adaptation factor per frame (1.0 = instant snap)
   float vignette_amount = 0.0f; // 0..1 elliptical vignette strength
+  // Optical post-FX (SPEC-VFX-AND-PARTICLES, PostProcessingZones_Safe.xml, dynamicpost.zip):
+  bool motion_blur = false;
+  bool dof = false;
+  bool god_rays = false;
+  bool lens_flare = false;
+  bool paired_vignette = false;
+  float motion_blur_strength = 0.0f;     // 0..1 radial blur intensity
+  float motion_blur_center[2] = {0.5f, 0.45f};
+  float motion_blur_car_protect = 6.5f;  // metres: keeps player car crisp
+  float dof_focal_distance = 12.0f;      // metres
+  float dof_focal_range = 38.0f;         // metres
+  float dof_max_blur = 0.0f;             // 0..1 bokeh blend
+  float near_plane = 0.25f;
+  float sun_screen_uv[2] = {0.5f, 0.2f};
+  float sun_visibility = 0.0f;           // 0..1 when sun is in front & above horizon
+  float god_ray_strength = 0.48f;
+  float sun_scatter_color[3] = {1.0f, 0.80f, 0.50f};
+  float lens_flare_strength = 0.36f;
+  float contrast = 1.0f;
+  float brightness = 0.0f;
+  float vig_top_color[3] = {0.0f, 0.0f, 0.0f};
+  float vig_top_opacity = 0.0f;
+  float vig_top_center[2] = {0.5f, 0.0f};
+  float vig_top_radius[2] = {0.8f, 0.5f};
+  float vig_top_rot = 0.0f;
+  float vig_top_feather = 0.4f;
+  float vig_bot_color[3] = {0.0f, 0.0f, 0.0f};
+  float vig_bot_opacity = 0.0f;
+  float vig_bot_center[2] = {0.5f, 1.0f};
+  float vig_bot_radius[2] = {0.8f, 0.5f};
+  float vig_bot_rot = 0.0f;
+  float vig_bot_feather = 0.4f;
+  float time_sec = 0.0f;
 };
 
 // The drive's sun shadow (ours): one orthographic cascade around the car,
@@ -290,6 +323,9 @@ class Renderer {
   VkDescriptorPool post_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet post_sets_[kPostSetCount] = {};
   VkSampler post_sampler_ = VK_NULL_HANDLE;
+  VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
+  Buffer post_optical_buf_;
+  void* post_optical_mapped_ = nullptr;
   // The sun shadow map (D16).
   Image shadow_map_;
   VkSampler shadow_sampler_ = VK_NULL_HANDLE;

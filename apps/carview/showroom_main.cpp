@@ -65,6 +65,7 @@
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
 #include "world/smashables.h"
+#include "world/world_anim.h"
 #include "world/stream.h"
 #include "world/vfx.h"
 #include "world/world.h"
@@ -1166,6 +1167,7 @@ void wheel_poses(const drive::Vehicle& v, WheelPose poses[4]) {
     poses[i].centre[2] = float(w.centre.z);
     poses[i].steer = float(w.steer);
     poses[i].spin = float(w.spin);
+    poses[i].omega = float(w.omega);
   }
 }
 
@@ -1218,6 +1220,8 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
       wm.tiling_c = m.tiling_c;
       wm.emissive_force = m.emissive_force;
       wm.is_water = m.is_water;
+      wm.anim_flag = m.anim_flag;
+      wm.is_grass = m.is_grass;
       wm.fade = m.fade;
       w.materials.push_back(wm);
     }
@@ -1493,6 +1497,8 @@ int run_drive(int argc, char** argv) {
   // --bloom / --no-bloom the preset's choice.
   bool post_on = true;
   int bloom_flag = -1;
+  int motion_blur_flag = -1;
+  int dof_flag = -1;
   double exposure_given = 0;
   bool low_preset = false;
   // The sun shadow (ours): --shadows off, low (1024 texels over 80 m, one
@@ -1635,6 +1641,10 @@ int run_drive(int argc, char** argv) {
     }
     else if (a == "--bloom") bloom_flag = 1;
     else if (a == "--no-bloom") bloom_flag = 0;
+    else if (a == "--motion-blur") motion_blur_flag = 1;
+    else if (a == "--no-motion-blur") motion_blur_flag = 0;
+    else if (a == "--dof") dof_flag = 1;
+    else if (a == "--no-dof") dof_flag = 0;
     else if (a == "--exposure") exposure_given = std::atof(next());
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
@@ -2585,6 +2595,7 @@ int run_drive(int argc, char** argv) {
   // SmashableEffects.xml, audio/BackfireTimerConfig.xml), loaded once.
   world::ParticleLibrary vfx_lib;
   world::SmashableWorld smashables;
+  world::AnimatedWorldSystem world_anim;
   {
     const auto groot = game_root_of();
     if (!groot.empty()) {
@@ -2600,6 +2611,13 @@ int run_drive(int argc, char** argv) {
         std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
                     c.top_level, c.total_children, smashables.coll_object_types().size(),
                     smashables.placed_prop_count());
+      }
+      std::string anim_err;
+      if (world_anim.init(groot / "media", tod_system.post_config, &anim_err)) {
+        const auto& cat = world_anim.catalog();
+        std::printf("world_anim: %zu spectator models (%d angles), %zu crowdclasses, %zu animated pgeo / %zu xds\n",
+                    cat.models.size(), cat.num_sprite_angles, cat.crowdclasses.size(), cat.animated_pgeos,
+                    cat.animated_xds);
       }
     }
   }
@@ -3835,9 +3853,13 @@ int run_drive(int argc, char** argv) {
       float last_lut_day = -1.0f, last_lut_night = -1.0f;
       double tod_frame_dt = 0.0;
       bool tod_cockpit_cam = false;
+      bool live_motion_blur = motion_blur_flag >= 0 ? motion_blur_flag == 1 : !low_preset;
+      bool live_dof = dof_flag >= 0 ? dof_flag == 1 : !low_preset;
+      world::PostZoneBlender zone_blender;
       drive::CarLampState player_lamps;
       drive::CockpitAnimState cockpit_anim;
       int light_override = 0;  // 0 auto, 1 low beam, 2 full beam, 3 fog
+      showroom.set_wind(tod_system.post_config.wind_speed, tod_system.post_config.wind_amplitude);
       auto place_world = [&]() {
         if (!streamer) return;
         float m[16];
@@ -3894,7 +3916,12 @@ int run_drive(int argc, char** argv) {
             if (const char* b = std::getenv("SHIFT_BALANCE"))
               std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
             const int zone_idx = tod_system.zones.find_zone(float(vpos.x), float(vpos.z));
-            const auto bt = tod_system.zones.bloom_for(zone_idx, cfg);
+            const float step_dt = float(tod_frame_dt > 0.0 ? tod_frame_dt : (headless ? 10.0 : 1.0 / 60.0));
+            zone_blender.update(tod_system.zones, cfg, float(vpos.x), float(vpos.z), step_dt);
+            const auto& bt = zone_blender.bloom;
+            const auto& cs = zone_blender.color;
+            const auto& vt = zone_blender.vig_top;
+            const auto& vb = zone_blender.vig_bottom;
             ps.bloom = bloom_flag >= 0 ? bloom_flag == 1 : !low_preset;
             ps.bloom_cutoff = std::max(0.05f, bt.cutoff * tod.bloom_cutoff_mult);
             ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult) * 0.45f;
@@ -3902,6 +3929,50 @@ int run_drive(int argc, char** argv) {
             ps.bloom_upper_grad = std::max(0.05f, bt.upper_grad * tod.bloom_upper_grad_mult);
             for (int k = 0; k < 5; ++k) ps.bloom_weights[k] = bt.weights[k];
             ps.vignette_amount = std::clamp(tod.vignette_amount, 0.0f, 1.0f);
+            ps.contrast = std::clamp(1.0f + cs.contrast, 0.5f, 1.8f);
+            ps.brightness = std::clamp(cs.brightness, -0.35f, 0.35f);
+            ps.paired_vignette = !tod_system.zones.vignette_templates.empty() && !low_preset;
+            for (int k = 0; k < 3; ++k) {
+              ps.vig_top_color[k] = vt.color[k];
+              ps.vig_bot_color[k] = vb.color[k];
+              ps.sun_scatter_color[k] = std::clamp(tod.fog_sun_scatter_color[k] * 1.45f + tod.sun_color[k] * 0.45f,
+                                                   0.05f, 2.0f);
+            }
+            constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+            ps.vig_top_opacity = vt.color[3];
+            ps.vig_top_center[0] = 0.5f + vt.pos_x * 0.5f;
+            ps.vig_top_center[1] = 0.5f - vt.pos_y * 0.5f;
+            ps.vig_top_radius[0] = std::max(vt.scale_x, 0.25f);
+            ps.vig_top_radius[1] = std::max(vt.scale_y, 0.25f);
+            ps.vig_top_rot = vt.angle_deg * kDegToRad;
+            ps.vig_top_feather = std::clamp(1.0f / std::max(vt.power, 0.5f), 0.15f, 0.85f);
+            ps.vig_bot_opacity = vb.color[3];
+            ps.vig_bot_center[0] = 0.5f + vb.pos_x * 0.5f;
+            ps.vig_bot_center[1] = 0.5f - vb.pos_y * 0.5f;
+            ps.vig_bot_radius[0] = std::max(vb.scale_x, 0.25f);
+            ps.vig_bot_radius[1] = std::max(vb.scale_y, 0.25f);
+            ps.vig_bot_rot = vb.angle_deg * kDegToRad;
+            ps.vig_bot_feather = std::clamp(1.0f / std::max(vb.power, 0.5f), 0.15f, 0.85f);
+            // Optical post-FX: speed/camera radial motion blur, DoF, god rays & lens flare/dirt.
+            const float mph = float(std::max(0.0, vehicle.speed()) * 2.23693629);
+            const float mph_max = std::max(cfg.detail_blur_mph_max, 40.0f);
+            const float spd_t = std::clamp((mph - 18.0f) / mph_max, 0.0f, 1.0f);
+            ps.motion_blur = live_motion_blur && !bench;
+            ps.motion_blur_strength = std::clamp(spd_t * std::max(cfg.motion_blur_amount, 0.55f), 0.0f, 0.95f);
+            ps.motion_blur_center[0] = 0.5f;
+            ps.motion_blur_center[1] = 0.44f;
+            ps.motion_blur_car_protect = tod_cockpit_cam ? 2.2f : 6.8f;
+            ps.dof = live_dof && !bench;
+            ps.dof_focal_distance = std::clamp(cfg.dof_focal_distance, 5.0f, 40.0f);
+            ps.dof_focal_range = 42.0f;
+            ps.dof_max_blur = std::clamp(cfg.dof_focal_max_blur > 0.05f ? cfg.dof_focal_max_blur * 0.55f : 0.35f,
+                                         0.15f, 0.65f);
+            ps.near_plane = 0.25f;
+            ps.god_rays = !low_preset && !bench;
+            ps.lens_flare = !low_preset && !bench;
+            ps.god_ray_strength = 0.48f;
+            ps.lens_flare_strength = 0.36f;
+            ps.time_sec = float(vehicle.time());
             ps.lut_enabled = true;
             if (exposure_given > 0) {
               ps.auto_exposure = false;
@@ -3946,9 +4017,10 @@ int run_drive(int argc, char** argv) {
           showroom.set_skidmarks(asph_tris, rut_tris);
           std::vector<world::DebrisVertex> debris_tris;
           smashables.build_debris_mesh(debris_tris);
+          const drive::Vec3 vpos = vehicle.position();
+          world_anim.build_mesh(vpos.x, vpos.y + 1.5, vpos.z, float(vehicle.time()), ground, debris_tris, !low_preset);
           showroom.set_debris_mesh(debris_tris);
           std::vector<world::ParticleSprite> p_alpha, p_add;
-          const drive::Vec3 vpos = vehicle.position();
           particle_sys.build_sprites({float(vpos.x), float(vpos.y + 1.5), float(vpos.z)}, p_alpha, p_add);
           showroom.set_particles(p_alpha, p_add, particle_sys.used_textures(), 0.25f, tod_cockpit_cam);
         }
@@ -5751,6 +5823,8 @@ int run_drive(int argc, char** argv) {
                 race_options.rubberband = ls.rubberband;
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
+                live_motion_blur = ls.motion_blur;
+                live_dof = ls.dof;
                 audio_host.apply_config(carview::AudioConfig::from_tokens(settings_page.tokens()), user_music_dir);
                 apply_vehicle_assists(vehicle, live_controls.assists);
                 rewind_buf.set_enabled(live_controls.assists.rewind);

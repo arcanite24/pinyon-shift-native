@@ -401,6 +401,14 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               mm.is_water = 1;
               mm.normal_map = slot_record(1);
             }
+            if (mm.effect.find("ANIM_FLAG") != std::string::npos || mm.effect.find("FLAG") != std::string::npos) {
+              mm.anim_flag = 1;
+            }
+            constexpr uint32_t kGrassTextureId = 0x00005007u;
+            if ((mm.albedo != kNoTexture && impl_->table.textures[mm.albedo].id == kGrassTextureId) ||
+                mm.effect.find("GRASS") != std::string::npos) {
+              mm.is_grass = 1;
+            }
             // Helper: file-backed texture record only (skips all-black Light_Map / all-white AO type-1 stubs).
             auto file_slot = [&](size_t slot) -> uint32_t {
               const uint32_t rec = slot_record(slot);
@@ -672,15 +680,22 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   }
 
   // Props near the point, one per model and spot (a zone lists one object
-  // per LOD level at the same spot).
+  // per LOD level at the same spot). Placed 3D trees beyond prop_radius and
+  // within tree_radius receive runtime camera-facing distant billboards.
   if (options.props && impl_->have_props) {
     std::set<std::tuple<int64_t, long long, long long, long long>> once;
     std::map<std::string, uint32_t> index_of;
     for (uint32_t i = 0; i < models_.size(); ++i) index_of[models_[i].name] = i;
+    const double prop_r2 = options.prop_radius * options.prop_radius;
+    const double tree_r2 = (options.render_data && options.tree_radius > options.prop_radius)
+                               ? (options.tree_radius * options.tree_radius)
+                               : prop_r2;
+    std::map<uint32_t, uint32_t> distant_tree_mat;
     for (const auto& p : impl_->props.placements) {
       const auto& t = p.placement.offset;
       const double dx = t[0] - x, dz = t[2] - z, d2 = dx * dx + dz * dz;
-      if (d2 > options.prop_radius * options.prop_radius) continue;
+      if (d2 > tree_r2) continue;
+      const bool distant_tree_band = d2 > prop_r2;
       if (options.route >= 0 && !fh1::shown_on_route(p.routes, options.route)) {
         ++st.props_off_route;
         continue;
@@ -708,6 +723,80 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             continue;
           }
         }
+      }
+      if (distant_tree_band) {
+        const bool is_tree = prop_family_low.find("tree") != std::string::npos ||
+                             prop_family_low.find("pine") != std::string::npos ||
+                             prop_family_low.find("aspen") != std::string::npos ||
+                             prop_family_low.find("spruce") != std::string::npos ||
+                             prop_family_low.find("birch") != std::string::npos ||
+                             prop_family_low.find("cedar") != std::string::npos ||
+                             prop_family_low.find("fir_") != std::string::npos;
+        if (!is_tree) continue;
+        const int64_t far_member = impl_->prop_models->lod_member(m, 2);
+        if (far_member < 0) continue;
+        if (!once.insert({far_member, std::llround(t[0] * 100), std::llround(t[1] * 100), std::llround(t[2] * 100)})
+                 .second) {
+          continue;
+        }
+        const fh1::RenderModel* tm = impl_->prop_models->model(uint32_t(far_member));
+        if (!tm) continue;
+        const std::string& mname = impl_->prop_models->name_of(uint32_t(far_member));
+        const size_t dot = mname.find('.');
+        const unsigned long member_id =
+            dot != std::string::npos ? std::strtoul(mname.c_str() + dot + 1, nullptr, 10) : 0;
+        uint32_t tex_rec = kNoTexture;
+        if (member_id >= 1 && member_id - 1 < impl_->table.model_textures.size()) {
+          for (uint32_t rec : impl_->table.model_textures[member_id - 1]) {
+            if (rec < impl_->table.textures.size()) {
+              const auto& tr = impl_->table.textures[rec];
+              if (tr.id != kPlaceholderTextureId &&
+                  (tr.type == fh1::kPvsTextureBix || tr.type == fh1::kPvsTextureCaff)) {
+                tex_rec = rec;
+                break;
+              }
+            }
+          }
+        }
+        if (tex_rec == kNoTexture) continue;
+        auto mit = distant_tree_mat.find(tex_rec);
+        if (mit == distant_tree_mat.end()) {
+          MeshMaterial mm;
+          mm.effect = "TREE_BILLBOARD";
+          mm.blend = Blend::kCoverage;
+          mm.layers = Layers::kBillboard;
+          mm.albedo = tex_rec;
+          auto [it, fresh] = material_index.emplace(mm.key(), uint32_t(out.materials.size()));
+          if (fresh) out.materials.push_back(mm);
+          mit = distant_tree_mat.emplace(tex_rec, it->second).first;
+        }
+        const float half_w = std::clamp(0.5f * std::max(tm->box_max[0] - tm->box_min[0],
+                                                        tm->box_max[2] - tm->box_min[2]),
+                                        1.5f, 12.0f);
+        const float height = std::clamp(tm->box_max[1] - tm->box_min[1], 3.0f, 26.0f);
+        const auto gp = p.placement.apply({0.0f, tm->box_min[1], 0.0f});
+        const std::array<float, 3> base{float(gp[0]), float(gp[1]), float(-gp[2])};
+        const std::array<float, 3> up{0.0f, 1.0f, 0.0f};
+        const std::array<std::array<float, 2>, 4> offset{{{-half_w, 0.0f}, {half_w, 0.0f},
+                                                          {half_w, height}, {-half_w, height}}};
+        const std::array<std::array<float, 2>, 4> uv{{{0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f}}};
+        const std::array<uint8_t, 4> tint{128, 128, 128, 255};
+        for (int c : {0, 1, 2, 0, 2, 3}) {
+          out.positions.push_back(base);
+          out.normals.push_back(up);
+          out.uv0.push_back(uv[size_t(c)]);
+          out.uv1.push_back(offset[size_t(c)]);
+          out.colours.push_back(tint);
+        }
+        for (int k = 0; k < 2; ++k) {
+          out.surface.push_back(Surface::kProp);
+          out.model.push_back(0);
+          out.ground.push_back(0);
+          out.material.push_back(mit->second);
+          out.instance.push_back(base);
+        }
+        ++st.trees;
+        continue;
       }
       const bool fading = options.render_data && options.prop_near_radius > 0;
       const bool resolvable = impl_->prop_models->model(m) != nullptr;

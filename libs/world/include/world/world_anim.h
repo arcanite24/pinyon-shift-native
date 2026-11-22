@@ -1,0 +1,138 @@
+// Animated world props & spectator/grass catalog (SPEC-VFX-AND-PARTICLES):
+// - Parses media/Spectators.zip (spectators.xml: sprite angles, models,
+//   modelsets, skeletons, crowdclasses) and inventories media/animatedobjects.zip.
+// - Drives animated world geometry: hot-air balloons, spinning ranch windmills,
+//   cheering festival crowds, waving Horizon festival banner flags, and
+//   wind-swaying roadside grass quads (_0x00005007 / grass shell parameters from
+//   TrackSettings.xml).
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "drive/vehicle.h"
+#include "world/smashables.h"
+#include "world/tod.h"
+
+namespace world {
+
+struct SpectatorModelDef {
+  std::string name;
+  std::string texture;
+  int sprites_per_tex = 9;
+};
+
+struct SpectatorSkeletonDef {
+  std::string name;
+  std::string suffix;
+  std::string subdir;
+  std::vector<std::string> animations;
+};
+
+struct SpectatorCrowdClass {
+  std::string name;
+  std::string skeleton;
+  std::string modelset;
+};
+
+struct SpectatorCatalog {
+  int num_sprite_angles = 10;
+  bool sprites_both_sides = false;
+  std::vector<SpectatorModelDef> models;
+  std::unordered_map<std::string, std::vector<std::string>> modelsets;
+  std::vector<SpectatorSkeletonDef> skeletons;
+  std::vector<SpectatorCrowdClass> crowdclasses;
+
+  // Member counts from retail archives (verification & telemetry).
+  size_t spectators_anim_bins = 0;
+  size_t spectators_skinbins = 0;
+  size_t spectators_xds = 0;
+  size_t animated_pgeos = 0;
+  size_t animated_xds = 0;
+
+  bool load_spectators_xml(const std::string& xml);
+  bool load_from_media(const std::filesystem::path& media_dir, std::string* error = nullptr);
+};
+
+struct HotAirBalloon {
+  std::array<float, 3> base_pos{};  // game frame
+  float radius = 7.5f;
+  float height = 17.5f;
+  float phase = 0.0f;
+  std::array<uint8_t, 3> primary_rgb{232, 62, 46};
+  std::array<uint8_t, 3> secondary_rgb{248, 214, 58};
+  std::array<uint8_t, 3> accent_rgb{42, 132, 214};
+};
+
+struct WindmillProp {
+  std::array<float, 3> base_pos{};  // game frame
+  float yaw = 0.0f;                 // facing direction
+  float tower_height = 14.0f;
+  float blade_radius = 4.2f;
+  float phase = 0.0f;
+};
+
+struct FestivalFlagProp {
+  std::array<float, 3> base_pos{};  // game frame
+  float pole_height = 7.5f;
+  float width = 1.6f;
+  float height = 3.2f;
+  float phase = 0.0f;
+  std::array<uint8_t, 3> primary_rgb{236, 48, 92};
+  std::array<uint8_t, 3> stripe_rgb{250, 210, 44};
+};
+
+struct CrowdCluster {
+  std::array<float, 3> origin{};
+  float dir_x = 1.0f;
+  float dir_z = 0.0f;
+  int count = 12;
+  float spacing = 1.15f;
+  std::string crowdclass = "GigCheer01";
+};
+
+// Wheel angular velocity (rad/s) -> rim/spoke motion blur blend [0..1].
+// Matches FH1's blur_rim / chrome_blur_rim transition speed band.
+inline float wheel_blur_factor(float omega_rad_s) {
+  const float w = omega_rad_s < 0.0f ? -omega_rad_s : omega_rad_s;
+  const float t = (w - 15.0f) / 30.0f;
+  return t <= 0.0f ? 0.0f : (t >= 1.0f ? 1.0f : t);
+}
+
+class AnimatedWorldSystem {
+ public:
+  AnimatedWorldSystem();
+
+  bool init(const std::filesystem::path& media_dir, const TrackPostConfig& post_cfg, std::string* error = nullptr);
+  void set_post_config(const TrackPostConfig& post_cfg) { post_cfg_ = post_cfg; }
+  const TrackPostConfig& post_config() const { return post_cfg_; }
+  const SpectatorCatalog& catalog() const { return catalog_; }
+
+  const std::vector<HotAirBalloon>& balloons() const { return balloons_; }
+  const std::vector<WindmillProp>& windmills() const { return windmills_; }
+  const std::vector<FestivalFlagProp>& flags() const { return flags_; }
+  const std::vector<CrowdCluster>& crowds() const { return crowds_; }
+
+  // Appends animated world triangles (hot-air balloons, spinning windmills,
+  // waving Horizon flags, cheering festival spectators, and wind-swaying
+  // roadside grass quads) in game-frame coordinates to `out`.
+  void build_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
+                  std::vector<DebrisVertex>& out, bool include_grass = true) const;
+
+ private:
+  void populate_default_colorado();
+
+  SpectatorCatalog catalog_;
+  TrackPostConfig post_cfg_;
+  std::vector<HotAirBalloon> balloons_;
+  std::vector<WindmillProp> windmills_;
+  std::vector<FestivalFlagProp> flags_;
+  std::vector<CrowdCluster> crowds_;
+};
+
+}  // namespace world

@@ -105,6 +105,8 @@ struct MeshMaterial {
   std::array<float, 2> tiling_c{1, 1};  // pixel constant 1 xy (Blend_C tiling)
   float emissive_force = 0.0f;          // pixel constant 3 w on _LM effects
   uint8_t is_water = 0;                 // LAKE_* water effect
+  uint8_t anim_flag = 0;                // ANIM_FLAG* waving cloth flag effect
+  uint8_t is_grass = 0;                 // _0x00005007 grass quad / grass shell effect
   // The far ring (ours): 0 near scenery, 1 a MIDDIST object, 2 an UberLOD
   // one. The renderer pushes far levels back in depth so the near terrain
   // wins where both are drawn.
@@ -121,7 +123,7 @@ struct MeshMaterial {
   std::array<int32_t, 3> slot_types{-1, -1, -1};
   auto key() const {
     return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade, light_map, ao_map, normal_map, layer_c,
-                           spec_map, tiling_c, is_water);
+                           spec_map, tiling_c, is_water, anim_flag, is_grass);
   }
 };
 

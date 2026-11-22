@@ -5,6 +5,16 @@
 layout(set = 0, binding = 0) uniform Frame {
   mat4 view_projection;
   vec4 eye;
+  vec4 key_light;
+  vec4 fill_light;
+  vec4 options;
+  vec4 tint_light;
+  vec4 reflect_tint;
+  mat4 transparent_view_projection;
+  vec4 stripe;
+  mat4 shadow_matrix;
+  vec4 shadow;
+  vec4 shadow_bias;  // y: cockpit_clip_dist (> 0 in cockpit camera to prevent glow bleed)
 } frame;
 
 // Per-instance attributes (64 bytes, divisor = 1):
@@ -46,7 +56,9 @@ void main() {
   }
   float max_d = max(in_extra.z, 10.0);
   float dist_fade = 1.0 - smoothstep(max_d * 0.65, max_d, dist);
-  float alpha = cone * dist_fade * in_extra.w;
+  float cockpit_clip = frame.shadow_bias.y;
+  float cockpit_fade = cockpit_clip > 0.05 ? smoothstep(cockpit_clip * 0.65, cockpit_clip, dist) : 1.0;
+  float alpha = cone * dist_fade * cockpit_fade * in_extra.w;
   if (alpha <= 0.002) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     v_color = vec4(0.0);

@@ -549,6 +549,46 @@ bool TrackPostConfig::load_xml(const std::string& xml_text) {
     sun_size_min = ss->num("min", sun_size_min);
     sun_size_max = ss->num("max", sun_size_max);
   }
+  // Wind direction sanitization (SPEC-VFX-AND-PARTICLES: retail TrackSettings.xml
+  // has an uninitialized z = -431602080.0; reject any |component| > 100).
+  if (const auto* wd = root.child_ci("WindDirection")) {
+    auto san = [](float v) { return (std::isfinite(v) && std::fabs(v) <= 100.0f) ? v : 0.0f; };
+    float wx = san(wd->num("x", 1.0f));
+    float wy = san(wd->num("y", 0.0f));
+    float wz = san(wd->num("z", 0.0f));
+    const float hlen = std::sqrt(wx * wx + wz * wz);
+    if (hlen > 1e-5f) {
+      wind_dir[0] = wx / hlen;
+      wind_dir[1] = 0.0f;
+      wind_dir[2] = wz / hlen;
+    } else if (std::fabs(wy) > 1e-5f) {
+      wind_dir[0] = 1.0f;
+      wind_dir[1] = 0.0f;
+      wind_dir[2] = 0.0f;
+    }
+  }
+  if (const auto* wa = root.child_ci("WindAmplitude")) wind_amplitude = wa->num("value", wind_amplitude);
+  if (const auto* ws = root.child_ci("WindSpeed")) wind_speed = ws->num("value", wind_speed);
+  if (const auto* gh = root.child_ci("GrassHeightScale")) grass_height_scale = gh->num("value", grass_height_scale);
+  if (const auto* gl = root.child_ci("GrassLODDist")) grass_lod_dist = gl->num("value", grass_lod_dist);
+  if (const auto* gf = root.child_ci("GrassLODFadeRange")) grass_lod_fade_range = gf->num("value", grass_lod_fade_range);
+  if (const auto* gm = root.child_ci("GrassMinNumShells")) grass_min_shells = int(gm->num("value", float(grass_min_shells)));
+  if (const auto* gfs = root.child_ci("GrassFadeStartDistance")) grass_fade_start = gfs->num("value", grass_fade_start);
+  if (const auto* gfe = root.child_ci("GrassFadeEndDistance")) grass_fade_end = gfe->num("value", grass_fade_end);
+  if (const auto* mb = root.child_ci("motionBlurAmount")) motion_blur_amount = mb->num("value", motion_blur_amount);
+  if (const auto* dbm = root.child_ci("DetailBlurMPHForMaxBlur")) detail_blur_mph_max = dbm->num("value", detail_blur_mph_max);
+  if (const auto* dd = root.child_ci("dofFocalDistance")) dof_focal_distance = dd->num("value", dof_focal_distance);
+  if (const auto* dl = root.child_ci("dofFocalLength")) dof_focal_length = dl->num("value", dof_focal_length);
+  if (const auto* dmb = root.child_ci("dofFocalMaxBlur")) dof_focal_max_blur = dmb->num("value", dof_focal_max_blur);
+  if (const auto* cr = root.child_ci("Crowds")) {
+    crowd_dark[0] = cr->num("dark_x", crowd_dark[0]);
+    crowd_dark[1] = cr->num("dark_y", crowd_dark[1]);
+    crowd_dark[2] = cr->num("dark_z", crowd_dark[2]);
+    crowd_light[0] = cr->num("light_x", crowd_light[0]);
+    crowd_light[1] = cr->num("light_y", crowd_light[1]);
+    crowd_light[2] = cr->num("light_z", crowd_light[2]);
+    crowd_sprite_distance = cr->num("SpriteDistance", crowd_sprite_distance);
+  }
   return true;
 }
 
@@ -786,6 +826,79 @@ bool PostZoneSet::load(const std::filesystem::path& world_dir, const std::filesy
               }
             }
           }
+        } else if (low == "tracks/colorado/colorsettings_templates.xml") {
+          const auto rd = arch->read(m);
+          if (rd.ok()) {
+            std::string cxml(reinterpret_cast<const char*>(rd.data.data()), rd.data.size());
+            XmlElem root;
+            if (parse_xml_root(cxml, root)) {
+              for (const auto& ch : root.children) {
+                ColorSettingsTemplate ct;
+                ct.desat_amount = ch.num("DesatAmount", ct.desat_amount);
+                ct.desat_luminosity[0] = ch.num("DesatLuminosityR", ct.desat_luminosity[0]);
+                ct.desat_luminosity[1] = ch.num("DesatLuminosityG", ct.desat_luminosity[1]);
+                ct.desat_luminosity[2] = ch.num("DesatLuminosityB", ct.desat_luminosity[2]);
+                ct.desat_post_mod[0] = ch.num("DesatPostModR", ct.desat_post_mod[0]);
+                ct.desat_post_mod[1] = ch.num("DesatPostModG", ct.desat_post_mod[1]);
+                ct.desat_post_mod[2] = ch.num("DesatPostModB", ct.desat_post_mod[2]);
+                ct.exposure_bias = ch.num("ExposureBias", ct.exposure_bias);
+                ct.contrast = ch.num("Contrast", ct.contrast);
+                ct.brightness = ch.num("Brightness", ct.brightness);
+                const std::string nm = lower_ascii(ch.attr("Name", ch.tag));
+                if (!nm.empty()) color_templates[nm] = ct;
+              }
+            }
+          }
+        } else if (low == "tracks/colorado/fog_templates.xml") {
+          const auto rd = arch->read(m);
+          if (rd.ok()) {
+            std::string fxml(reinterpret_cast<const char*>(rd.data.data()), rd.data.size());
+            XmlElem root;
+            if (parse_xml_root(fxml, root)) {
+              for (const auto& ch : root.children) {
+                FogTemplate ft;
+                ft.color[0] = ch.num("ColorR", ft.color[0]);
+                ft.color[1] = ch.num("ColorG", ft.color[1]);
+                ft.color[2] = ch.num("ColorB", ft.color[2]);
+                ft.density = ch.num("Density", ft.density);
+                ft.start_distance = ch.num("StartDistance", ft.start_distance);
+                ft.sun_scatter_color[0] = ch.num("SunScatterColorR", ft.sun_scatter_color[0]);
+                ft.sun_scatter_color[1] = ch.num("SunScatterColorG", ft.sun_scatter_color[1]);
+                ft.sun_scatter_color[2] = ch.num("SunScatterColorB", ft.sun_scatter_color[2]);
+                ft.sun_scatter_power = ch.num("SunScatterPower", ft.sun_scatter_power);
+                ft.height_fade_amount = ch.num("HeightFadeAmount", ft.height_fade_amount);
+                ft.height_fade_start = ch.num("HeightFadeStart", ft.height_fade_start);
+                ft.height_fade_end = ch.num("HeightFadeEnd", ft.height_fade_end);
+                const std::string nm = lower_ascii(ch.attr("Name", ch.tag));
+                if (!nm.empty()) fog_templates[nm] = ft;
+              }
+            }
+          }
+        } else if (low == "tracks/colorado/vignette_templates.xml") {
+          const auto rd = arch->read(m);
+          if (rd.ok()) {
+            std::string vxml(reinterpret_cast<const char*>(rd.data.data()), rd.data.size());
+            XmlElem root;
+            if (parse_xml_root(vxml, root)) {
+              for (const auto& ch : root.children) {
+                VignetteTemplate vt;
+                vt.angle_deg = ch.num("Angle", vt.angle_deg);
+                vt.pos_x = ch.num("PosX", vt.pos_x);
+                vt.pos_y = ch.num("PosY", vt.pos_y);
+                vt.scale_x = ch.num("ScaleX", vt.scale_x);
+                vt.scale_y = ch.num("ScaleY", vt.scale_y);
+                vt.power = ch.num("Power", vt.power);
+                vt.color[0] = ch.num("ColorR", vt.color[0]);
+                vt.color[1] = ch.num("ColorG", vt.color[1]);
+                vt.color[2] = ch.num("ColorB", vt.color[2]);
+                vt.color[3] = ch.num("ColorA", vt.color[3]);
+                vt.min_intensity = ch.num("MinIntensity", vt.min_intensity);
+                vt.max_intensity = ch.num("MaxIntensity", vt.max_intensity);
+                const std::string nm = lower_ascii(ch.attr("Name", ch.tag));
+                if (!nm.empty()) vignette_templates[nm] = vt;
+              }
+            }
+          }
         }
       }
     } else if (error) {
@@ -830,6 +943,105 @@ BloomTemplate PostZoneSet::bloom_for(int zone_index, const TrackPostConfig& defa
     if (it != bloom_templates.end()) return it->second;
   }
   return out;
+}
+
+ColorSettingsTemplate PostZoneSet::color_settings_for(int zone_index, const TrackPostConfig& defaults) const {
+  ColorSettingsTemplate out;
+  out.desat_amount = defaults.desat_amount;
+  for (int i = 0; i < 3; ++i) {
+    out.desat_luminosity[i] = defaults.desat_luminosity[i];
+    out.desat_post_mod[i] = defaults.desat_post_mod[i];
+  }
+  if (zone_index >= 0 && size_t(zone_index) < zones.size()) {
+    auto it = color_templates.find(lower_ascii(zones[size_t(zone_index)].color_settings));
+    if (it != color_templates.end()) return it->second;
+  }
+  return out;
+}
+
+FogTemplate PostZoneSet::fog_for(int zone_index) const {
+  if (zone_index >= 0 && size_t(zone_index) < zones.size()) {
+    auto it = fog_templates.find(lower_ascii(zones[size_t(zone_index)].fog_template));
+    if (it != fog_templates.end()) return it->second;
+  }
+  return FogTemplate{};
+}
+
+VignetteTemplate PostZoneSet::vignette_top_for(int zone_index) const {
+  if (zone_index >= 0 && size_t(zone_index) < zones.size()) {
+    auto it = vignette_templates.find(lower_ascii(zones[size_t(zone_index)].vignette_top));
+    if (it != vignette_templates.end()) return it->second;
+  }
+  return VignetteTemplate{};
+}
+
+VignetteTemplate PostZoneSet::vignette_bottom_for(int zone_index) const {
+  if (zone_index >= 0 && size_t(zone_index) < zones.size()) {
+    auto it = vignette_templates.find(lower_ascii(zones[size_t(zone_index)].vignette_bottom));
+    if (it != vignette_templates.end()) return it->second;
+  }
+  return VignetteTemplate{};
+}
+
+void PostZoneBlender::update(const PostZoneSet& set, const TrackPostConfig& defaults, float game_x, float game_z,
+                             float dt, bool snap) {
+  const int z = set.find_zone(game_x, game_z);
+  const auto tb = set.bloom_for(z, defaults);
+  const auto tc = set.color_settings_for(z, defaults);
+  const auto tf = set.fog_for(z);
+  const auto tvt = set.vignette_top_for(z);
+  const auto tvb = set.vignette_bottom_for(z);
+  active_zone = z;
+  if (!initialized || snap || dt <= 0.0f) {
+    initialized = true;
+    bloom = tb;
+    color = tc;
+    fog = tf;
+    vig_top = tvt;
+    vig_bottom = tvb;
+    return;
+  }
+  const float lerp_s = (z >= 0 && size_t(z) < set.zones.size()) ? std::max(set.zones[size_t(z)].lerp_time, 1.0f) : 15.0f;
+  const float a = std::clamp(1.0f - std::exp(-dt / (lerp_s * 0.35f)), 0.0f, 1.0f);
+  auto mixf = [a](float& cur, float dst) { cur += (dst - cur) * a; };
+
+  mixf(bloom.cutoff, tb.cutoff);
+  mixf(bloom.scale, tb.scale);
+  mixf(bloom.persist, tb.persist);
+  mixf(bloom.lower_grad, tb.lower_grad);
+  mixf(bloom.upper_grad, tb.upper_grad);
+  for (int i = 0; i < 5; ++i) mixf(bloom.weights[i], tb.weights[i]);
+
+  mixf(color.desat_amount, tc.desat_amount);
+  mixf(color.exposure_bias, tc.exposure_bias);
+  mixf(color.contrast, tc.contrast);
+  mixf(color.brightness, tc.brightness);
+  for (int i = 0; i < 3; ++i) {
+    mixf(color.desat_luminosity[i], tc.desat_luminosity[i]);
+    mixf(color.desat_post_mod[i], tc.desat_post_mod[i]);
+    mixf(fog.color[i], tf.color[i]);
+    mixf(fog.sun_scatter_color[i], tf.sun_scatter_color[i]);
+  }
+  mixf(fog.density, tf.density);
+  mixf(fog.start_distance, tf.start_distance);
+  mixf(fog.sun_scatter_power, tf.sun_scatter_power);
+  mixf(fog.height_fade_amount, tf.height_fade_amount);
+  mixf(fog.height_fade_start, tf.height_fade_start);
+  mixf(fog.height_fade_end, tf.height_fade_end);
+
+  auto mix_vig = [&](VignetteTemplate& v, const VignetteTemplate& tv) {
+    mixf(v.angle_deg, tv.angle_deg);
+    mixf(v.pos_x, tv.pos_x);
+    mixf(v.pos_y, tv.pos_y);
+    mixf(v.scale_x, tv.scale_x);
+    mixf(v.scale_y, tv.scale_y);
+    mixf(v.power, tv.power);
+    for (int i = 0; i < 4; ++i) mixf(v.color[i], tv.color[i]);
+    mixf(v.min_intensity, tv.min_intensity);
+    mixf(v.max_intensity, tv.max_intensity);
+  };
+  mix_vig(vig_top, tvt);
+  mix_vig(vig_bottom, tvb);
 }
 
 bool parse_stars_bin(std::span<const uint8_t> bytes, std::vector<Star>& out, std::string* error) {

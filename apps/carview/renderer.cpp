@@ -119,6 +119,12 @@ Renderer::~Renderer() {
     if (post_set_layout_) vkDestroyDescriptorSetLayout(device_, post_set_layout_, nullptr);
     if (post_pool_) vkDestroyDescriptorPool(device_, post_pool_, nullptr);
     if (post_sampler_) vkDestroySampler(device_, post_sampler_, nullptr);
+    if (post_depth_sampler_) vkDestroySampler(device_, post_depth_sampler_, nullptr);
+    if (post_optical_mapped_) {
+      vmaUnmapMemory(allocator_, post_optical_buf_.allocation);
+      post_optical_mapped_ = nullptr;
+    }
+    destroy_buffer(post_optical_buf_);
     if (lut_staging_mapped_) {
       vmaUnmapMemory(allocator_, lut_staging_.allocation);
       lut_staging_mapped_ = nullptr;
@@ -814,20 +820,45 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     sources[20][0] = bloom_a_[0].view; sources[20][1] = bloom_b_[1].view;
     sources[21][0] = hdr_.view;        sources[21][1] = bloom_b_[0].view;
 
-    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 4);
-    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 4);
+    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 5);
+    std::vector<VkDescriptorBufferInfo> buf_infos(kPostSetCount);
+    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 6);
     for (uint32_t s = 0; s < kPostSetCount; ++s) {
       const VkImageView views[4] = {sources[s][0], sources[s][1], lut3d_.view, lum_adapt_[0].view};
       for (uint32_t b = 0; b < 4; ++b) {
-        const size_t idx = size_t(s) * 4 + b;
-        images[idx] = {post_sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet& w = writes[idx];
+        const size_t iidx = size_t(s) * 5 + b;
+        const size_t widx = size_t(s) * 6 + b;
+        images[iidx] = {post_sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = post_sets_[s];
         w.dstBinding = b;
         w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.pImageInfo = &images[idx];
+        w.pImageInfo = &images[iidx];
+      }
+      {
+        const size_t iidx = size_t(s) * 5 + 4;
+        const size_t widx = size_t(s) * 6 + 4;
+        images[iidx] = {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet& w = writes[widx];
+        w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = post_sets_[s];
+        w.dstBinding = 4;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &images[iidx];
+      }
+      {
+        const size_t widx = size_t(s) * 6 + 5;
+        buf_infos[s] = {post_optical_buf_.buffer, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet& w = writes[widx];
+        w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = post_sets_[s];
+        w.dstBinding = 5;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        w.pBufferInfo = &buf_infos[s];
       }
     }
     vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
@@ -991,13 +1022,27 @@ bool Renderer::create_post(std::string& error) {
   sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
   sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   VK_TRY(vkCreateSampler(device_, &sampler, nullptr, &post_sampler_), "post sampler");
-  const VkDescriptorSetLayoutBinding bindings[4] = {
+  VkSamplerCreateInfo dsampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  dsampler.magFilter = dsampler.minFilter = VK_FILTER_NEAREST;
+  dsampler.addressModeU = dsampler.addressModeV = dsampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  VK_TRY(vkCreateSampler(device_, &dsampler, nullptr, &post_depth_sampler_), "post depth sampler");
+  constexpr VkDeviceSize kOpticalUboBytes = 12 * 16;  // 12 vec4s = 192 bytes
+  if (!create_buffer(kOpticalUboBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, post_optical_buf_)) {
+    error = "post optical UBO";
+    return false;
+  }
+  VK_TRY(vmaMapMemory(allocator_, post_optical_buf_.allocation, &post_optical_mapped_), "map post optical UBO");
+  std::memset(post_optical_mapped_, 0, size_t(kOpticalUboBytes));
+  const VkDescriptorSetLayoutBinding bindings[6] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 4;
+  set.bindingCount = 6;
   set.pBindings = bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
   VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
@@ -1007,11 +1052,13 @@ bool Renderer::create_post(std::string& error) {
   layout.pushConstantRangeCount = 1;
   layout.pPushConstantRanges = &push;
   VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
-  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 4};
+  const VkDescriptorPoolSize pool_sizes[2] = {
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 5},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPostSetCount}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = kPostSetCount;
-  pool.poolSizeCount = 1;
-  pool.pPoolSizes = &size;
+  pool.poolSizeCount = 2;
+  pool.pPoolSizes = pool_sizes;
   VK_TRY(vkCreateDescriptorPool(device_, &pool, nullptr, &post_pool_), "post descriptor pool");
   VkDescriptorSetLayout layouts[kPostSetCount];
   for (uint32_t i = 0; i < kPostSetCount; ++i) layouts[i] = post_set_layout_;
@@ -1086,6 +1133,73 @@ bool Renderer::create_post(std::string& error) {
 
 void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
   const PostSettings& s = options_.post;
+  // Update optical post-FX UBO (binding 5).
+  if (post_optical_mapped_) {
+    struct PostOpticalUbo {
+      float flags_near[4];
+      float mblur[4];
+      float dof[4];
+      float sun[4];
+      float sun_color[4];
+      float vig_top_col[4];
+      float vig_top_geom[4];
+      float vig_top_rot[4];
+      float vig_bot_col[4];
+      float vig_bot_geom[4];
+      float vig_bot_rot[4];
+      float texel_size[4];
+    };
+    static_assert(sizeof(PostOpticalUbo) == 192);
+    const uint32_t oflags = (s.motion_blur ? 1u : 0u) | (s.dof ? 2u : 0u) | (s.god_rays ? 4u : 0u) |
+                            (s.lens_flare ? 8u : 0u) | (options_.reverse_z ? 16u : 0u) |
+                            (s.paired_vignette ? 32u : 0u);
+    PostOpticalUbo u{};
+    u.flags_near[0] = float(oflags);
+    u.flags_near[1] = s.near_plane;
+    u.flags_near[2] = s.contrast;
+    u.flags_near[3] = s.brightness;
+    u.mblur[0] = s.motion_blur_center[0];
+    u.mblur[1] = s.motion_blur_center[1];
+    u.mblur[2] = s.motion_blur_strength;
+    u.mblur[3] = s.motion_blur_car_protect;
+    u.dof[0] = s.dof_focal_distance;
+    u.dof[1] = s.dof_focal_range;
+    u.dof[2] = s.dof_max_blur;
+    u.sun[0] = s.sun_screen_uv[0];
+    u.sun[1] = s.sun_screen_uv[1];
+    u.sun[2] = s.sun_visibility;
+    u.sun[3] = s.god_ray_strength;
+    u.sun_color[0] = s.sun_scatter_color[0];
+    u.sun_color[1] = s.sun_scatter_color[1];
+    u.sun_color[2] = s.sun_scatter_color[2];
+    u.sun_color[3] = s.lens_flare_strength;
+    u.vig_top_col[0] = s.vig_top_color[0];
+    u.vig_top_col[1] = s.vig_top_color[1];
+    u.vig_top_col[2] = s.vig_top_color[2];
+    u.vig_top_col[3] = s.vig_top_opacity;
+    u.vig_top_geom[0] = s.vig_top_center[0];
+    u.vig_top_geom[1] = s.vig_top_center[1];
+    u.vig_top_geom[2] = s.vig_top_radius[0];
+    u.vig_top_geom[3] = s.vig_top_radius[1];
+    u.vig_top_rot[0] = std::cos(s.vig_top_rot);
+    u.vig_top_rot[1] = std::sin(s.vig_top_rot);
+    u.vig_top_rot[2] = s.vig_top_feather;
+    u.vig_bot_col[0] = s.vig_bot_color[0];
+    u.vig_bot_col[1] = s.vig_bot_color[1];
+    u.vig_bot_col[2] = s.vig_bot_color[2];
+    u.vig_bot_col[3] = s.vig_bot_opacity;
+    u.vig_bot_geom[0] = s.vig_bot_center[0];
+    u.vig_bot_geom[1] = s.vig_bot_center[1];
+    u.vig_bot_geom[2] = s.vig_bot_radius[0];
+    u.vig_bot_geom[3] = s.vig_bot_radius[1];
+    u.vig_bot_rot[0] = std::cos(s.vig_bot_rot);
+    u.vig_bot_rot[1] = std::sin(s.vig_bot_rot);
+    u.vig_bot_rot[2] = s.vig_bot_feather;
+    u.texel_size[0] = target_width_ ? 1.0f / float(target_width_) : 1.0f / 1280.0f;
+    u.texel_size[1] = target_height_ ? 1.0f / float(target_height_) : 1.0f / 720.0f;
+    u.texel_size[2] = s.time_sec;
+    std::memcpy(post_optical_mapped_, &u, sizeof u);
+  }
   // Upload updated 16x16x16 3D LUT when dirty (zero pipeline stall).
   if (lut_dirty_ && lut_staging_mapped_ && lut_pending_.size() == 16 * 16 * 16 * 4) {
     lut_dirty_ = false;

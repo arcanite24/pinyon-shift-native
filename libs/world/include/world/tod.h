@@ -215,6 +215,26 @@ struct TrackPostConfig {
   float sun_size_min = 10.0f;
   float sun_size_max = 20.0f;
 
+  // Wind (sanitized to reject retail uninitialized z = -431602080.0f), grass shells,
+  // crowd tints, and motion blur / DoF parameters (SPEC-VFX-AND-PARTICLES).
+  float wind_dir[3] = {1.0f, 0.0f, 0.0f};
+  float wind_amplitude = 0.20f;
+  float wind_speed = 1.45f;
+  float grass_height_scale = 1.30f;
+  float grass_lod_dist = 4.0f;
+  float grass_lod_fade_range = 3.0f;
+  int grass_min_shells = 2;
+  float grass_fade_start = 250.0f;
+  float grass_fade_end = 280.0f;
+  float motion_blur_amount = 0.0f;
+  float detail_blur_mph_max = 60.0f;
+  float dof_focal_distance = 4.0f;
+  float dof_focal_length = 0.0f;
+  float dof_focal_max_blur = 0.0f;
+  float crowd_dark[3] = {0.501f, 0.521f, 0.541f};
+  float crowd_light[3] = {1.5f, 1.5f, 1.5f};
+  float crowd_sprite_distance = 60.0f;
+
   bool load_xml(const std::string& xml_text);
   bool load_file(const std::filesystem::path& path);
 
@@ -270,11 +290,46 @@ struct BloomTemplate {
   float weights[5] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+struct ColorSettingsTemplate {
+  float desat_amount = 0.9f;
+  float desat_luminosity[3] = {0.2126f, 0.7152f, 0.0722f};
+  float desat_post_mod[3] = {1.0f, 1.0f, 1.0f};
+  float exposure_bias = 0.0f;
+  float contrast = 0.0f;
+  float brightness = 0.0f;
+};
+
+struct FogTemplate {
+  float color[3] = {1.0f, 1.0f, 1.0f};
+  float density = 1.0f;
+  float start_distance = 1.0f;
+  float sun_scatter_color[3] = {1.0f, 1.0f, 1.0f};
+  float sun_scatter_power = 1.0f;
+  float height_fade_amount = 1.0f;
+  float height_fade_start = 1.0f;
+  float height_fade_end = 1.0f;
+};
+
+struct VignetteTemplate {
+  float angle_deg = 0.0f;
+  float pos_x = 0.0f;
+  float pos_y = 0.0f;
+  float scale_x = 1.0f;
+  float scale_y = 1.0f;
+  float power = 2.0f;
+  float color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float min_intensity = 0.25f;
+  float max_intensity = 1.0f;
+};
+
 // Collection of Colorado's 16 post-processing zones + cached 3D LUTs & templates.
 struct PostZoneSet {
   std::vector<PostZone> zones;
   std::map<std::string, ColorLut16> luts;  // lower-case filename -> 16^3 LUT
   std::map<std::string, BloomTemplate> bloom_templates;
+  std::map<std::string, ColorSettingsTemplate> color_templates;
+  std::map<std::string, FogTemplate> fog_templates;
+  std::map<std::string, VignetteTemplate> vignette_templates;
   ColorLut16 fallback_day = ColorLut16::identity();
   ColorLut16 fallback_night = ColorLut16::identity();
 
@@ -285,6 +340,24 @@ struct PostZoneSet {
   const ColorLut16& day_lut_for(int zone_index) const;
   const ColorLut16& night_lut_for(int zone_index) const;
   BloomTemplate bloom_for(int zone_index, const TrackPostConfig& defaults) const;
+  ColorSettingsTemplate color_settings_for(int zone_index, const TrackPostConfig& defaults) const;
+  FogTemplate fog_for(int zone_index) const;
+  VignetteTemplate vignette_top_for(int zone_index) const;
+  VignetteTemplate vignette_bottom_for(int zone_index) const;
+};
+
+// Smoothly interpolates regional PostZone templates over each zone's LerpTime.
+struct PostZoneBlender {
+  bool initialized = false;
+  int active_zone = -1;
+  BloomTemplate bloom{};
+  ColorSettingsTemplate color{};
+  FogTemplate fog{};
+  VignetteTemplate vig_top{};
+  VignetteTemplate vig_bottom{};
+
+  void update(const PostZoneSet& set, const TrackPostConfig& defaults, float game_x, float game_z, float dt,
+              bool snap = false);
 };
 
 // Stars.bin celestial catalog (9,096 stars, 16-byte big-endian float4).

@@ -43,6 +43,7 @@ namespace carview {
 struct WheelPose {
   float centre[3] = {0, 0, 0};
   float steer = 0, spin = 0;
+  float omega = 0;  // angular speed rad/s (drives blur_rim / chrome_blur_rim blend)
 };
 
 // The frame's uniform block (showroom.vert / showroom.frag, set 0 binding 0).
@@ -138,6 +139,8 @@ struct WorldTriangles {
     std::array<float, 2> tiling_c{1, 1};      // Blend_C's UV tiling
     float emissive_force = 0.0f;
     uint8_t is_water = 0;
+    uint8_t anim_flag = 0;               // world::MeshMaterial::anim_flag (ANIM_FLAG*)
+    uint8_t is_grass = 0;                // world::MeshMaterial::is_grass (_0x00005007)
     uint8_t fade = 0;                    // world::MeshMaterial::fade: the distance cross-fade class
   };
   std::vector<std::array<float, 3>> normals;
@@ -306,6 +309,8 @@ class Showroom {
   bool has_sky() const { return sky_ready_; }
   // Updates dynamic 24-hour Time-of-Day lighting, fog, and sky parameters.
   void set_tod(const world::TodState& tod, int moon_phase, float real_time_sec, float eye_game_y);
+  // Updates wind animation parameters (from TrackSettings.xml) for waving flags & grass.
+  void set_wind(float speed, float amplitude) { wind_speed_ = speed, wind_amplitude_ = amplitude; }
   // The direction the sun shadow is cast from (towards the light, the
   // frame's space); null: the world light's sun.
   void set_shadow_direction(const float* towards_light) {
@@ -763,10 +768,20 @@ class Showroom {
   void* skid_rut_mapped_ = nullptr;
   uint32_t skid_asphalt_count_ = 0;
   uint32_t skid_rut_count_ = 0;
-  static constexpr uint32_t kMaxDebrisVerts = 384 * 36;  // 384 dynamic bodies * 36 cube verts
+  static constexpr uint32_t kMaxDebrisVerts = 65536;  // smashable debris + animated world props/grass
   Renderer::Buffer debris_buf_;
   void* debris_mapped_ = nullptr;
   uint32_t debris_count_ = 0;
+  static constexpr uint32_t kMaxDriverVerts = 2048;   // animated 3D seated driver + steering hands
+  Renderer::Buffer driver_buf_;
+  void* driver_mapped_ = nullptr;
+  uint32_t driver_count_ = 0;
+  float driver_wheel_rad_ = 0.0f;
+  bool cockpit_camera_active_ = false;
+  float wind_speed_ = 1.0f;
+  float wind_amplitude_ = 0.15f;
+  void update_driver_mesh(float wheel_rad);
+  void record_driver_draw(VkCommandBuffer cmd);
   void record_skidmarks_draw(VkCommandBuffer cmd);
   void record_debris_draw(VkCommandBuffer cmd);
   void record_particles_draw(VkCommandBuffer cmd);

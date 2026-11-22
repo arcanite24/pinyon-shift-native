@@ -148,6 +148,8 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"noon (12:00)", {"--tod-preset", "12"}},
         {"sunset (19:00)", {"--tod-preset", "19"}},
         {"midnight (00:00)", {"--tod-preset", "0"}}}},
+      {"motion blur", {{"on", {}}, {"off", {"--no-motion-blur"}}}},
+      {"depth of field", {{"on", {}}, {"off", {"--no-dof"}}}},
   };
 }
 
@@ -188,7 +190,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
         if (w.size() == 1 || (has_value && w[1] == tokens[i + 1])) r.pick = c, owned = true;
         else if (w.size() == 2 && has_value) owned = true;  // a value no choice names: the row keeps its pick
       }
-    if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects")) owned = true;
+    if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
+                   t == "--motion-blur" || t == "--dof")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -281,6 +284,8 @@ LiveSettings SettingsPage::live_settings() const {
   ls.rubberband = pick_label("rubber-banding") != "off";
   ls.radio = pick_label("radio") != "off";
   ls.sound = pick_label("sound") != "off";
+  ls.motion_blur = pick_label("motion blur") != "off";
+  ls.dof = pick_label("depth of field") != "off";
 
   const std::string dl = pick_val("day length");
   if (dl == "15m") ls.day_length_scale = 2.0;

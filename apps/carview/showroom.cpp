@@ -28,6 +28,7 @@
 #include <set>
 
 #include "fh1data/archive.h"
+#include "world/world_anim.h"
 #include "fh1data/carbin.h"
 #include "fh1data/xds.h"
 #include "glow_frag_spv.h"
@@ -357,10 +358,12 @@ Showroom::~Showroom() {
   if (skid_asphalt_mapped_) vmaUnmapMemory(r_.allocator_, skid_asphalt_buf_.allocation);
   if (skid_rut_mapped_) vmaUnmapMemory(r_.allocator_, skid_rut_buf_.allocation);
   if (debris_mapped_) vmaUnmapMemory(r_.allocator_, debris_buf_.allocation);
+  if (driver_mapped_) vmaUnmapMemory(r_.allocator_, driver_buf_.allocation);
   r_.destroy_buffer(particle_buf_);
   r_.destroy_buffer(skid_asphalt_buf_);
   r_.destroy_buffer(skid_rut_buf_);
   r_.destroy_buffer(debris_buf_);
+  r_.destroy_buffer(driver_buf_);
   r_.destroy_image(particle_atlas_);
   r_.destroy_image(skid_asphalt_tex_);
   r_.destroy_image(skid_rut_tex_);
@@ -1087,6 +1090,9 @@ void Showroom::set_lamp_vectors(const drive::LampShaderVectors& vectors) {
 
 void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera) {
   mirror_enabled_ = cockpit_camera;
+  cockpit_camera_active_ = cockpit_camera;
+  driver_wheel_rad_ = anim.wheel_rad;
+  update_driver_mesh(anim.wheel_rad);
   auto make_rot = [](const std::array<float, 3>& pivot, const std::array<float, 3>& axis, float angle, float out[16]) {
     const float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
     const float x = axis[0], y = axis[1], z = axis[2];
@@ -1137,6 +1143,12 @@ void Showroom::set_wheel_poses(const WheelPose poses[4]) {
     multiply(steer, spin, a);
     multiply(a, d.local, b);
     multiply(body_to_model_, b, d.push.model);
+    if (d.spins) {
+      const int klass = int(d.push.params[0] + 0.5f);
+      if (klass == 7 || klass == 9) {  // kRim or kChrome: blur_rim / chrome_blur_rim blend
+        d.push.params[3] = world::wheel_blur_factor(p.omega);
+      }
+    }
   }
 }
 
@@ -1886,7 +1898,8 @@ bool Showroom::upload(std::string& error) {
       frame_.env_basis_z[k] = world_transform_[8 + k];
     }
     frame_.env_basis_x[3] = tod_real_time_;
-    frame_.env_basis_y[3] = frame_.env_basis_z[3] = 0.0f;
+    frame_.env_basis_y[3] = wind_speed_;
+    frame_.env_basis_z[3] = wind_amplitude_;
     if (sky_ready_) record_sky_before(cmd);
     record_lights_before(cmd);
     const bool shadows = shadows_on();
@@ -1899,6 +1912,35 @@ bool Showroom::upload(std::string& error) {
       std::memset(frame_.shadow_bias, 0, sizeof frame_.shadow_bias);
       frame_.shadow_far_bias[0] = frame_.shadow_far_bias[1] = 0.0f;
       shadow_drawn_ = shadow_cars_ = 0;
+    }
+    // Cockpit near-clip distance in shadow_bias.y prevents exterior lamp/streetlamp glows bleeding into cockpit.
+    frame_.shadow_bias[1] = cockpit_camera_active_ ? 2.1f : 0.0f;
+    // Frame-exact sun screen-space projection for optical god rays & lens flare in post.frag.
+    if (world_lit_ && r_.options_.post.enabled) {
+      const float sx = world_sun_[0], sy = world_sun_[1], sz = world_sun_[2];
+      const float slen = std::sqrt(sx * sx + sy * sy + sz * sz);
+      if (slen > 1e-4f) {
+        const float dx = sx / slen, dy = sy / slen, dz = sz / slen;
+        const float px = frame_.eye[0] + dx * 1000.0f;
+        const float py = frame_.eye[1] + dy * 1000.0f;
+        const float pz = frame_.eye[2] + dz * 1000.0f;
+        const float* vp = frame_.view_projection;
+        const float cx = vp[0] * px + vp[4] * py + vp[8] * pz + vp[12];
+        const float cy = vp[1] * px + vp[5] * py + vp[9] * pz + vp[13];
+        const float cw = vp[3] * px + vp[7] * py + vp[11] * pz + vp[15];
+        const float sun_up = dx * world_up_[0] + dy * world_up_[1] + dz * world_up_[2];
+        const float elev_fade = std::clamp((sun_up + 0.02f) / 0.10f, 0.0f, 1.0f);
+        if (cw > 1e-4f && elev_fade > 0.001f) {
+          const float nx = cx / cw, ny = cy / cw;
+          r_.options_.post.sun_screen_uv[0] = nx * 0.5f + 0.5f;
+          r_.options_.post.sun_screen_uv[1] = ny * 0.5f + 0.5f;
+          const float off = std::max(std::fabs(nx) - 0.85f, std::fabs(ny) - 0.85f);
+          const float edge_fade = std::clamp(1.0f - std::max(off, 0.0f) / 0.70f, 0.0f, 1.0f);
+          r_.options_.post.sun_visibility = elev_fade * edge_fade;
+        } else {
+          r_.options_.post.sun_visibility = 0.0f;
+        }
+      }
     }
     if (world_lit_ && dyn_env_ready_) {
       record_env_and_mirror(cmd);
@@ -1951,6 +1993,7 @@ bool Showroom::upload(std::string& error) {
     record_world(cmd);
     record_skidmarks_draw(cmd);
     record_debris_draw(cmd);
+    if (draw_car_ && !cockpit_camera_active_) record_driver_draw(cmd);
     if (draw_car_) record_draws(cmd, opaque_, glass_);
     for (const auto& in : instances_)
       if (in.car) in.car->record_instance(cmd, in.model, in.has_lamps ? &in.lamps : nullptr);
@@ -2553,6 +2596,12 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     }
     if (mat.is_water) {
       flags |= 32768u;  // world.frag kFlagWater
+    }
+    if (mat.anim_flag) {
+      flags |= 131072u;  // world.vert kFlagAnimFlag
+    }
+    if (mat.is_grass) {
+      flags |= 262144u;  // world.vert kFlagGrass
     }
     if (flags & 1u) std::memcpy(d.push.tint, mat.tiling.data(), sizeof d.push.tint);
     // The distance cross-fade (world.frag): 128 a prop's LOD00, 256 its
@@ -5286,10 +5335,14 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
       vmaMapMemory(r_.allocator_, skid_rut_buf_.allocation, &skid_rut_mapped_) != VK_SUCCESS ||
       !r_.create_buffer(VkDeviceSize(kMaxDebrisVerts) * sizeof(WorldVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                         host_flags, debris_buf_) ||
-      vmaMapMemory(r_.allocator_, debris_buf_.allocation, &debris_mapped_) != VK_SUCCESS) {
-    error = "skidmark/debris vertex buffers";
+      vmaMapMemory(r_.allocator_, debris_buf_.allocation, &debris_mapped_) != VK_SUCCESS ||
+      !r_.create_buffer(VkDeviceSize(kMaxDriverVerts) * sizeof(WorldVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                        host_flags, driver_buf_) ||
+      vmaMapMemory(r_.allocator_, driver_buf_.allocation, &driver_mapped_) != VK_SUCCESS) {
+    error = "skidmark/debris/driver vertex buffers";
     return false;
   }
+  update_driver_mesh(driver_wheel_rad_);
 
   // 4. Descriptor sets & pipeline layouts.
   {
@@ -5688,6 +5741,166 @@ void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
     for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
   }
   debris_count_ = n;
+}
+
+void Showroom::update_driver_mesh(float wheel_rad) {
+  driver_count_ = 0;
+  if (!driver_mapped_) return;
+
+  // Steering wheel centre & axis in car model space (+X right, +Y up, -Z forward, +Z rearward).
+  std::array<float, 3> pivot{-0.36f, 0.72f, 0.08f};
+  std::array<float, 3> axis{0.0f, -0.25f, -0.968f};
+  if (cockpit_rigs_[0].valid) {
+    pivot = cockpit_rigs_[0].pivot;
+    axis = cockpit_rigs_[0].axis;
+  }
+
+  auto vadd = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+  };
+  auto vsub = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+  };
+  auto vscale = [](const std::array<float, 3>& a, float s) -> std::array<float, 3> {
+    return {a[0] * s, a[1] * s, a[2] * s};
+  };
+  auto vcross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) -> std::array<float, 3> {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+  };
+  auto vnorm = [](const std::array<float, 3>& a) -> std::array<float, 3> {
+    const float l = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    return l > 1e-6f ? std::array<float, 3>{a[0] / l, a[1] / l, a[2] / l} : std::array<float, 3>{0, 1, 0};
+  };
+  auto snorm8 = [](float x) -> int8_t {
+    return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
+  };
+
+  auto* dst = static_cast<WorldVertex*>(driver_mapped_);
+  uint32_t count = 0;
+  auto push_tri = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c,
+                      const std::array<uint8_t, 4>& col) {
+    if (count + 3 > kMaxDriverVerts) return;
+    const auto n = vnorm(vcross(vsub(b, a), vsub(c, a)));
+    const std::array<float, 3>* pts[3] = {&a, &b, &c};
+    for (int k = 0; k < 3; ++k) {
+      WorldVertex& o = dst[count++];
+      o = WorldVertex{};
+      o.position[0] = (*pts[k])[0];
+      o.position[1] = (*pts[k])[1];
+      o.position[2] = (*pts[k])[2];
+      o.normal[0] = snorm8(n[0]);
+      o.normal[1] = snorm8(n[1]);
+      o.normal[2] = snorm8(n[2]);
+      for (int j = 0; j < 4; ++j) o.colour[j] = col[j];
+    }
+  };
+  auto push_quad = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c,
+                       const std::array<float, 3>& d, const std::array<uint8_t, 4>& col) {
+    push_tri(a, b, c, col);
+    push_tri(a, c, d, col);
+  };
+  auto push_box = [&](const std::array<float, 3>& c, const std::array<float, 3>& rx, const std::array<float, 3>& ry,
+                      const std::array<float, 3>& rz, const std::array<uint8_t, 4>& col) {
+    auto pt = [&](float sx, float sy, float sz) -> std::array<float, 3> {
+      return {c[0] + rx[0] * sx + ry[0] * sy + rz[0] * sz, c[1] + rx[1] * sx + ry[1] * sy + rz[1] * sz,
+              c[2] + rx[2] * sx + ry[2] * sy + rz[2] * sz};
+    };
+    const auto p000 = pt(-1, -1, -1), p100 = pt(1, -1, -1), p110 = pt(1, 1, -1), p010 = pt(-1, 1, -1);
+    const auto p001 = pt(-1, -1, 1), p101 = pt(1, -1, 1), p111 = pt(1, 1, 1), p011 = pt(-1, 1, 1);
+    push_quad(p001, p101, p111, p011, col);
+    push_quad(p100, p000, p010, p110, col);
+    push_quad(p011, p111, p110, p010, col);
+    push_quad(p000, p100, p101, p001, col);
+    push_quad(p101, p100, p110, p111, col);
+    push_quad(p000, p001, p011, p010, col);
+  };
+  auto push_limb = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, float rad,
+                       const std::array<uint8_t, 4>& col) {
+    const auto dir = vsub(b, a);
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (len < 1e-4f) return;
+    const auto f = vscale(dir, 0.5f);
+    const auto mid = vadd(a, f);
+    const auto u = vnorm(dir);
+    const std::array<float, 3> ref = std::fabs(u[1]) < 0.9f ? std::array<float, 3>{0, 1, 0} : std::array<float, 3>{1, 0, 0};
+    const auto r1 = vscale(vnorm(vcross(ref, u)), rad);
+    const auto r2 = vscale(vnorm(vcross(u, r1)), rad);
+    push_box(mid, r1, r2, f, col);
+  };
+
+  // Orthonormal wheel plane basis perpendicular to steering column axis.
+  const auto ax = vnorm(axis);
+  const auto wheel_right = vnorm(vcross({0.0f, 1.0f, 0.0f}, vscale(ax, -1.0f)));
+  const auto wheel_up = vnorm(vcross(vscale(ax, -1.0f), wheel_right));
+
+  // Clamp hand animation angle to realistic single-grip range (~ +/- 135 deg) so arms never twist through chest.
+  const float grip_ang = std::clamp(wheel_rad, -2.35f, 2.35f);
+  const float ca = std::cos(grip_ang), sa = std::sin(grip_ang);
+  const float rim_r = 0.165f;
+  // 9 o'clock (-wheel_right) and 3 o'clock (+wheel_right) rotated by grip_ang.
+  const auto l_dir = vadd(vscale(wheel_right, -ca), vscale(wheel_up, sa));
+  const auto r_dir = vadd(vscale(wheel_right, ca), vscale(wheel_up, -sa));
+  const auto l_hand = vadd(pivot, vscale(l_dir, rim_r));
+  const auto r_hand = vadd(pivot, vscale(r_dir, rim_r));
+
+  // Seated driver body behind steering wheel (+Z rearward).
+  const float lean = std::clamp(wheel_rad * 0.03f, -0.045f, 0.045f);
+  const std::array<float, 3> chest{pivot[0] + lean * 0.4f, pivot[1] - 0.06f, pivot[2] + 0.42f};
+  const std::array<float, 3> head{pivot[0] + lean, pivot[1] + 0.24f, pivot[2] + 0.44f};
+
+  const std::array<uint8_t, 4> suit{46, 52, 62, 255};
+  const std::array<uint8_t, 4> stripe{226, 46, 74, 255};
+  const std::array<uint8_t, 4> helmet{236, 238, 242, 255};
+  const std::array<uint8_t, 4> visor{24, 28, 36, 255};
+  const std::array<uint8_t, 4> glove{28, 30, 34, 255};
+
+  // Torso, shoulder collar, neck, racing helmet + tinted visor.
+  push_box(chest, {0.19f, 0, 0}, {0, 0.22f, 0}, {0, 0, 0.11f}, suit);
+  push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.21f, 0, 0}, {0, 0.055f, 0}, {0, 0, 0.115f}, stripe);
+  push_box({head[0], head[1] - 0.11f, head[2]}, {0.055f, 0, 0}, {0, 0.06f, 0}, {0, 0, 0.055f}, suit);
+  push_box(head, {0.115f, 0, 0}, {0, 0.125f, 0}, {0, 0, 0.135f}, helmet);
+  push_box({head[0], head[1] + 0.01f, head[2] - 0.12f}, {0.095f, 0, 0}, {0, 0.045f, 0}, {0, 0, 0.03f}, visor);
+
+  // Left & right shoulders -> elbows -> gloved hands gripping the rotating wheel rim.
+  const std::array<float, 3> l_sh{chest[0] - 0.20f, chest[1] + 0.13f, chest[2] - 0.02f};
+  const std::array<float, 3> r_sh{chest[0] + 0.20f, chest[1] + 0.13f, chest[2] - 0.02f};
+  const std::array<float, 3> l_el{(l_sh[0] + l_hand[0]) * 0.5f - 0.06f, (l_sh[1] + l_hand[1]) * 0.5f - 0.08f,
+                                  (l_sh[2] + l_hand[2]) * 0.5f + 0.04f};
+  const std::array<float, 3> r_el{(r_sh[0] + r_hand[0]) * 0.5f + 0.06f, (r_sh[1] + r_hand[1]) * 0.5f - 0.08f,
+                                  (r_sh[2] + r_hand[2]) * 0.5f + 0.04f};
+  push_limb(l_sh, l_el, 0.046f, suit);
+  push_limb(r_sh, r_el, 0.046f, suit);
+  push_limb(l_el, l_hand, 0.038f, suit);
+  push_limb(r_el, r_hand, 0.038f, suit);
+  push_box(l_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
+  push_box(r_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
+
+  driver_count_ = count;
+}
+
+void Showroom::record_driver_draw(VkCommandBuffer cmd) {
+  if (!vfx_ready_ || driver_count_ == 0 || !world_opaque_ || !world_white_set_) return;
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+  ShowroomPush pc{};
+  identity(pc.model);  // driver vertices are already in car model space
+  for (int i = 0; i < 3; ++i) {
+    pc.uv0[i] = world_sun_[i];
+    pc.uv1[i] = world_up_[i];
+  }
+  pc.uv0[3] = 2.0f;  // swap = none
+  pc.uv1[3] = world_up_[3];
+  pc.tint[0] = pc.tint[1] = pc.tint[2] = pc.tint[3] = 1.0f;
+  pc.params[0] = 0.0f;      // kOpaque
+  pc.params[1] = 65536.0f;  // kFlagVertexLit
+  pc.params[2] = 0.0f;
+  pc.params[3] = 1.0f;
+  vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                     sizeof pc, &pc);
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &driver_buf_.buffer, &zero);
+  vkCmdDraw(cmd, driver_count_, 1, 0, 0);
 }
 
 void Showroom::record_debris_draw(VkCommandBuffer cmd) {

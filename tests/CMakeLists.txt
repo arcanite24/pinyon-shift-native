@@ -149,6 +149,11 @@ add_executable(smashables_tests smashables_tests.cpp)
 target_link_libraries(smashables_tests PRIVATE shift_world)
 add_test(NAME smashables_tests COMMAND smashables_tests)
 
+add_executable(world_polish_tests world_polish_tests.cpp ../apps/carview/settings_page.cpp)
+target_include_directories(world_polish_tests PRIVATE ../apps/carview)
+target_link_libraries(world_polish_tests PRIVATE shift_world shift_drive)
+add_test(NAME world_polish_tests COMMAND world_polish_tests)
+
 add_executable(lamps_tests lamps_tests.cpp)
 target_link_libraries(lamps_tests PRIVATE shift_drive fh1data)
 add_test(NAME lamps_tests COMMAND lamps_tests)
