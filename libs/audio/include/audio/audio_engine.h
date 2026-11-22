@@ -23,6 +23,7 @@
 #include "audio/mixer.h"
 #include "audio/radio.h"
 #include "audio/rt.h"
+#include "audio/satnav_vo.h"
 #include "audio/sfx_engine.h"
 #include "audio/snapshots.h"
 #include "audio/user_music.h"
@@ -44,6 +45,7 @@ struct AudioTelemetry {
   double worst_block_ms = 0.0;
   uint64_t stalls = 0;  // blocks that exceeded their real-time duration
   uint32_t backfire_count = 0;  // monotonic exhaust backfire pop counter (coupled to visual flames)
+  bool satnav_playing = false;
 };
 
 class AudioEngine {
@@ -74,14 +76,17 @@ class AudioEngine {
   void set_vehicle_state(const VehicleAudioState& st);
   void set_engine_player(std::unique_ptr<EnginePlayer> player);
   void set_sfx_engine(std::unique_ptr<SfxEngine> sfx);
+  void set_satnav_vo(std::unique_ptr<SatNavVoPlayer> satnav);
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
   void set_user_music(std::unique_ptr<UserMusicPlayer> player);
 
-  // Lock-free discrete SFX/UI triggers.
+  // Lock-free discrete SFX/UI/VO triggers.
   void trigger_collision(const CollisionHit& hit);
   void trigger_ui(UiCue cue);
+  void trigger_satnav(SatNavCue cue);
+  void set_satnav_enabled(bool on);
 
   // Mixer controls (Sound Mix 0..2 per bus, master volume/mute, compressor).
   void set_bus_level(Bus b, float level);
@@ -144,10 +149,13 @@ class AudioEngine {
       kUserMusicPrev,
       kSwapEngine,
       kSwapSfx,
+      kSwapSatNav,
       kSwapRadio,
       kSwapUserMusic,
       kTriggerCollision,
       kTriggerUi,
+      kTriggerSatNav,
+      kSatNavEnable,
       kMatrixActivate,
       kMatrixRestoreGameplay,
       kDynamicsSpeed,
@@ -165,7 +173,7 @@ class AudioEngine {
     void* ptr1 = nullptr;
   };
   struct Retired {
-    enum Kind : uint8_t { kEngine, kSfx, kRadio, kUserMusic };
+    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kRadio, kUserMusic };
     Kind kind = kEngine;
     void* ptr = nullptr;
   };
@@ -190,10 +198,13 @@ class AudioEngine {
   float matrix_master_smooth_ = 1.0f;
   float matrix_mute_smooth_ = 1.0f;
   bool last_dj_speaking_ = false;
+  bool last_satnav_playing_ = false;
+  bool satnav_enabled_ = true;
 
   // Owned/used exclusively by the audio thread while running.
   EnginePlayer* engine_ = nullptr;
   SfxEngine* sfx_ = nullptr;
+  SatNavVoPlayer* satnav_ = nullptr;
   Radio* radio_ = nullptr;
   RadioPlayer* radio_player_ = nullptr;
   UserMusicPlayer* user_music_ = nullptr;

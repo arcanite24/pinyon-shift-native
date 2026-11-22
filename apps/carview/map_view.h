@@ -53,6 +53,10 @@ struct MapScene {
   std::vector<std::array<double, 2>> opponents;
   // A race's route ahead (x, z), drawn green on the minimap (SPEC-UI-LAYOUTS a).
   std::vector<std::array<double, 2>> route;
+  // Active free-roam GPS route (x, z) and destination point.
+  std::vector<std::array<double, 2>> gps_route;
+  bool has_gps_dest = false;
+  double gps_dest_x = 0, gps_dest_z = 0;
   // Unlocked career events, Street Hubs, and Festival sites.
   std::vector<MapMarker> markers;
   int selected_marker = -1;  // highlighted marker on pause map (-1: none)

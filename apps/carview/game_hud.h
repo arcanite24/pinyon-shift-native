@@ -118,12 +118,24 @@ struct CeremonyHud {
   std::string bonus_car;    // e.g. "1997 Mazda RX-7" (if Rewards_Wristband car awarded)
 };
 
+// Free-roam GPS turn-by-turn HUD prompt (above minimap).
+struct GpsHud {
+  bool active = false;
+  int turn_kind = 0;  // matches traffic::GpsTurnKind
+  std::string turn_text;
+  std::string dest_label;
+  double dist_to_turn_m = 0;
+  double dist_to_dest_m = 0;
+};
+
 // Interactive Pause Map overlay card (hovered destination info + help bar).
 struct MapOverlayHud {
   bool active = false;
   std::string title;
   std::string subtitle;
   std::string action_hint;  // e.g. "ENTER EVENT", "FAST TRAVEL"
+  std::string gps_hint;     // e.g. "SET GPS ROUTE", "CLEAR GPS"
+  bool gps_active = false;
   double distance_m = -1;
 };
 
@@ -149,6 +161,7 @@ struct DriveHud {
   const SkillChainHud* skills = nullptr;
   const CeremonyHud* ceremony = nullptr;
   const MapOverlayHud* map_overlay = nullptr;
+  const GpsHud* gps = nullptr;
   std::vector<NameTagHud> name_tags;
   double kmh = 0, rpm = 0, redline_rpm = 7000;
   int gear = 1;

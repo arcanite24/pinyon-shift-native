@@ -158,6 +158,11 @@ add_executable(lamps_tests lamps_tests.cpp)
 target_link_libraries(lamps_tests PRIVATE shift_drive fh1data)
 add_test(NAME lamps_tests COMMAND lamps_tests)
 
+add_executable(gps_tests gps_tests.cpp ../apps/carview/settings_page.cpp)
+target_include_directories(gps_tests PRIVATE ../apps/carview)
+target_link_libraries(gps_tests PRIVATE shift_traffic shift_audio shift_drive)
+add_test(NAME gps_tests COMMAND gps_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)

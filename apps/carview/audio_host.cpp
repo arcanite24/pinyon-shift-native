@@ -36,6 +36,14 @@ bool AudioConfig::parse_arg(const std::vector<std::string>& args, size_t& i, Aud
     out.radio_dj = false;
     return true;
   }
+  if (a == "--no-satnav") {
+    out.satnav_on = false;
+    return true;
+  }
+  if (a == "--satnav") {
+    out.satnav_on = true;
+    return true;
+  }
   if (a == "--mute") {
     out.mute = true;
     return true;
@@ -111,6 +119,7 @@ void AudioHost::apply_config(const AudioConfig& cfg, const std::filesystem::path
   for (int b = 0; b < audio::kBuses; ++b) engine_.set_bus_level(audio::Bus(b), cfg_.bus_mix[size_t(b)]);
   engine_.radio_set_dj(cfg_.radio_dj);
   engine_.radio_set_volume(cfg_.radio_on ? cfg_.radio_volume : 0.0f);
+  engine_.set_satnav_enabled(cfg_.satnav_on);
   if (enabling_music && !music_dir_.empty()) init_user_music(music_dir_, user_music_non_blocking_);
   engine_.user_music_enable(cfg_.your_music);
   engine_.user_music_set_shuffle(cfg_.your_music_shuffle);
@@ -235,6 +244,23 @@ bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::file
   return has_sfx_;
 }
 
+bool AudioHost::init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                            std::string_view language, bool metric) {
+  if (game_root.empty()) return false;
+  if (!satnav_tried_) {
+    satnav_tried_ = true;
+    auto sn = std::make_unique<audio::SatNavVoPlayer>(kAudioRate);
+    sn->set_enabled(cfg_.satnav_on);
+    std::string snote;
+    if (sn->load(game_root, cache_dir, language, metric, &snote)) {
+      std::printf("%s\n", snote.c_str());
+      engine_.set_satnav_vo(std::move(sn));
+      has_satnav_ = true;
+    }
+  }
+  return has_satnav_;
+}
+
 void AudioHost::init_user_music(const std::filesystem::path& music_dir, bool non_blocking) {
   music_dir_ = music_dir;
   user_music_non_blocking_ = non_blocking;
@@ -350,6 +376,15 @@ void AudioHost::trigger_collision(const audio::CollisionHit& hit) { engine_.trig
 
 void AudioHost::trigger_ui(audio::UiCue cue) { engine_.trigger_ui(cue); }
 
+void AudioHost::trigger_satnav(audio::SatNavCue cue) {
+  if (cfg_.satnav_on) engine_.trigger_satnav(cue);
+}
+
+void AudioHost::set_satnav_enabled(bool on) {
+  cfg_.satnav_on = on;
+  engine_.set_satnav_enabled(on);
+}
+
 void AudioHost::radio_press(int dir) {
   if (!radio_) return;
   engine_.radio_press(dir);
@@ -387,6 +422,7 @@ void AudioHost::save_radio_state(drive::DriveSave& save) {
   }
   save.radio_dj = cfg_.radio_dj;
   save.radio_volume = double(cfg_.radio_volume);
+  save.satnav_enabled = cfg_.satnav_on;
 }
 
 }  // namespace carview

@@ -24,6 +24,7 @@ AudioEngine::~AudioEngine() {
   stop();
   delete engine_;
   delete sfx_;
+  delete satnav_;
   delete radio_player_;
   delete user_music_;
 }
@@ -53,6 +54,7 @@ void AudioEngine::reclaim() {
     switch (r.kind) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(r.ptr); break;
       case Retired::kSfx: delete static_cast<SfxEngine*>(r.ptr); break;
+      case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(r.ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(r.ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(r.ptr); break;
     }
@@ -108,6 +110,20 @@ void AudioEngine::set_sfx_engine(std::unique_ptr<SfxEngine> sfx) {
   }
 }
 
+void AudioEngine::set_satnav_vo(std::unique_ptr<SatNavVoPlayer> satnav) {
+  Command c;
+  c.kind = Command::kSwapSatNav;
+  c.ptr0 = satnav.release();
+  if (!cmds_.push(c)) {
+    if (!running_.load(std::memory_order_acquire)) {
+      drain_commands();
+      reclaim();
+      if (cmds_.push(c)) return;
+    }
+    delete static_cast<SatNavVoPlayer*>(c.ptr0);
+  }
+}
+
 void AudioEngine::trigger_collision(const CollisionHit& hit) {
   Command c;
   c.kind = Command::kTriggerCollision;
@@ -124,6 +140,20 @@ void AudioEngine::trigger_ui(UiCue cue) {
   Command c;
   c.kind = Command::kTriggerUi;
   c.i0 = int(cue);
+  enqueue(c);
+}
+
+void AudioEngine::trigger_satnav(SatNavCue cue) {
+  Command c;
+  c.kind = Command::kTriggerSatNav;
+  c.i0 = int(cue);
+  enqueue(c);
+}
+
+void AudioEngine::set_satnav_enabled(bool on) {
+  Command c;
+  c.kind = Command::kSatNavEnable;
+  c.b0 = on;
   enqueue(c);
 }
 
@@ -334,6 +364,7 @@ void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
     switch (kind) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(ptr); break;
       case Retired::kSfx: delete static_cast<SfxEngine*>(ptr); break;
+      case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(ptr); break;
     }
@@ -415,6 +446,11 @@ void AudioEngine::drain_commands() {
         retire_ptr(Retired::kSfx, sfx_);
         sfx_ = static_cast<SfxEngine*>(c.ptr0);
         break;
+      case Command::kSwapSatNav:
+        retire_ptr(Retired::kSatNav, satnav_);
+        satnav_ = static_cast<SatNavVoPlayer*>(c.ptr0);
+        if (satnav_) satnav_->set_enabled(satnav_enabled_);
+        break;
       case Command::kSwapRadio:
         retire_ptr(Retired::kRadio, radio_player_);
         radio_ = static_cast<Radio*>(c.ptr0);
@@ -436,6 +472,13 @@ void AudioEngine::drain_commands() {
         break;
       case Command::kTriggerUi:
         if (sfx_) sfx_->trigger_ui(UiCue(c.i0));
+        break;
+      case Command::kTriggerSatNav:
+        if (satnav_ && satnav_enabled_) satnav_->trigger(SatNavCue(c.i0));
+        break;
+      case Command::kSatNavEnable:
+        satnav_enabled_ = c.b0;
+        if (satnav_) satnav_->set_enabled(satnav_enabled_);
         break;
     }
   }
@@ -499,6 +542,14 @@ void AudioEngine::render_block(float* out, int frames) {
     sfx_->render(last_veh_state_, sfx_buses, frames, engine_);
   }
 
+  bool satnav_now = false;
+  if (satnav_ && !on_title) {
+    auto& vbuf = bus_bufs_[int(Bus::kVo)];
+    std::fill(vbuf.begin(), vbuf.begin() + ptrdiff_t(samples), 0.0f);
+    satnav_now = satnav_->render(vbuf.data(), frames);
+    if (satnav_now) buses[int(Bus::kVo)] = vbuf.data();
+  }
+
   // Apply GlobalDSPConfig.xml car-bus EQ to active car buses (independent filter state per bus).
   constexpr Bus kCarBuses[4] = {Bus::kEngine, Bus::kOtherCars, Bus::kTyres, Bus::kWind};
   for (int i = 0; i < 4; ++i) {
@@ -512,6 +563,10 @@ void AudioEngine::render_block(float* out, int frames) {
     if (dj_now != last_dj_speaking_) {
       last_dj_speaking_ = dj_now;
       matrix_.activate(dj_now ? "RadioDJSpeaking" : "RadioNormal");
+    }
+    if (satnav_now != last_satnav_playing_) {
+      last_satnav_playing_ = satnav_now;
+      matrix_.activate(satnav_now ? "SatNavPlaying" : "SatNavNotPlaying");
     }
     std::fill(out, out + samples, 0.0f);
     const float a = 1.0f - std::exp(-1.0f / (0.01f * float(rate_)));
@@ -579,6 +634,7 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.worst_block_ms = worst_block_ms_;
   t.stalls = stalls_;
   t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;
+  t.satnav_playing = satnav_ && satnav_->playing();
   telemetry_buf_.write(t);
 }
 

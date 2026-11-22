@@ -42,6 +42,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"collectibles", {{"on", {}}, {"off", {"--no-collectibles"}}}},
       {"radio", {{"on", {}}, {"off", {"--no-radio"}}}},
       {"sound", {{"on", {}}, {"off", {"--no-sound"}}}},
+      {"satnav", {{"on", {}}, {"off", {"--no-satnav"}}}},
       {"camera",
        {{"default", {}},
         {"chase low", {"--camera", "0"}},
@@ -191,7 +192,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
         else if (w.size() == 2 && has_value) owned = true;  // a value no choice names: the row keeps its pick
       }
     if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
-                   t == "--motion-blur" || t == "--dof")) owned = true;
+                   t == "--motion-blur" || t == "--dof" || t == "--satnav")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -284,6 +285,7 @@ LiveSettings SettingsPage::live_settings() const {
   ls.rubberband = pick_label("rubber-banding") != "off";
   ls.radio = pick_label("radio") != "off";
   ls.sound = pick_label("sound") != "off";
+  ls.satnav = pick_label("satnav") != "off";
   ls.motion_blur = pick_label("motion blur") != "off";
   ls.dof = pick_label("depth of field") != "off";
 

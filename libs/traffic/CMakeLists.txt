@@ -1,6 +1,7 @@
 add_library(shift_traffic STATIC
   src/nav.cpp
   src/roads.cpp
+  src/gps.cpp
   src/config.cpp
   src/population.cpp
   src/bodies.cpp)

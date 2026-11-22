@@ -26,6 +26,7 @@ struct AudioConfig {
   bool sound = true;
   bool radio_on = true;
   bool radio_dj = true;
+  bool satnav_on = true;
   float radio_volume = 1.0f;
   float master_volume = 1.0f;
   bool mute = false;
@@ -72,6 +73,8 @@ class AudioHost {
   // (async background FSB decode with disk cache).
   bool init_sfx(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                 const std::string& burble_bank = {});
+  bool init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                   std::string_view language = "EN", bool metric = true);
   std::string car_burble_bank() const;
 
   // Initializes Your Music from `music_dir` (<state>/music).
@@ -80,7 +83,7 @@ class AudioHost {
   // Opens SDL_AudioStream and starts the dedicated audio render thread.
   void start_device();
   void stop_device();
-  bool has_audio() const { return has_car_ || has_sfx_ || radio_ != nullptr || user_music_ready_; }
+  bool has_audio() const { return has_car_ || has_sfx_ || has_satnav_ || radio_ != nullptr || user_music_ready_; }
 
   // Per-frame lock-free updates (main thread).
   void update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
@@ -89,6 +92,8 @@ class AudioHost {
                       int countdown_digit);
   void trigger_collision(const audio::CollisionHit& hit);
   void trigger_ui(audio::UiCue cue);
+  void trigger_satnav(audio::SatNavCue cue);
+  void set_satnav_enabled(bool on);
   void radio_press(int dir);
   bool handle_key(SDL_Keycode key, SDL_Keymod mod, std::string& notice);
   audio::AudioTelemetry telemetry();
@@ -126,6 +131,8 @@ class AudioHost {
   bool mixer_configs_tried_ = false;
   bool sfx_tried_ = false;
   bool has_sfx_ = false;
+  bool satnav_tried_ = false;
+  bool has_satnav_ = false;
   bool last_paused_ = false;
   bool last_menu_ = false;
   bool last_loading_ = false;

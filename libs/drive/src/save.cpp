@@ -62,6 +62,7 @@ std::string save_to_text(const DriveSave& s) {
   if (!s.radio_station.empty() || !s.radio_dj || std::fabs(s.radio_volume - 1.0) > 1e-4)
     out += "radio " + (s.radio_station.empty() ? std::string("-") : s.radio_station) + " " +
            (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
+  if (!s.satnav_enabled) out += "satnav 0\n";
   if (s.num_races)
     out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
            std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
@@ -184,6 +185,9 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         if (l >> dj) out.radio_dj = (dj != 0);
         if (l >> vol && std::isfinite(vol) && vol >= 0.0 && vol <= 2.0) out.radio_volume = vol;
       }
+    } else if (key == "satnav") {
+      int v = 1;
+      if (l >> v) out.satnav_enabled = (v != 0);
     } else if (key == "stats") {
       l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
           out.time_exhibition >> out.top_speed;

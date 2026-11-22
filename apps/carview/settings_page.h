@@ -17,6 +17,7 @@ struct LiveSettings {
   bool rubberband = true;
   bool radio = true;
   bool sound = true;
+  bool satnav = true;
   bool motion_blur = true;
   bool dof = true;
   double day_length_scale = 1.0;  // 1.0 = 30.5m, 2.0 = 15m, 0.5 = 61m, 0.02116 = realtime, 0.0 = frozen

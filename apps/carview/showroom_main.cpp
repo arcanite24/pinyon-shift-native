@@ -91,6 +91,8 @@
 #include "audio_host.h"
 #include "settings.h"
 #include "settings_page.h"
+#include "traffic/gps.h"
+#include "traffic/nav.h"
 
 namespace carview {
 
@@ -1564,6 +1566,8 @@ int run_drive(int argc, char** argv) {
   // unfound ones on the map; --distance adds metres to the total driven;
   // --map-png writes the pause map and the minimap at the end.
   bool collectibles_on = true, reveal = false;
+  bool has_cli_gps = false;
+  double cli_gps_x = 0.0, cli_gps_z = 0.0;
   double seed_distance = 0;
   std::filesystem::path map_png, career_png;  // --career-png: the career page's windows, then exit
   int gather_route = 0;  // --route: the placements' route (-1: every one)
@@ -1712,6 +1716,10 @@ int run_drive(int argc, char** argv) {
       collectibles_on = false;
     } else if (a == "--reveal") {
       reveal = true;
+    } else if (a == "--gps-to" && i + 2 < args.size()) {
+      cli_gps_x = std::atof(args[++i].c_str());
+      cli_gps_z = std::atof(args[++i].c_str());
+      has_cli_gps = true;
     } else if (a == "--distance") {
       seed_distance = std::atof(next());
     } else if (a == "--map-png") {
@@ -2553,6 +2561,9 @@ int run_drive(int argc, char** argv) {
   bool progress_loaded = false;
   MapView map_view;
   bool map_tried = false;
+  traffic::GpsSolver gps_solver;
+  traffic::GpsNavigator gps_nav(&gps_solver);
+  bool cli_gps_applied = false;
   // The audio host (dedicated render thread, mixer, radio, Your Music)
   // outlives car changes so the radio stations keep playing.
   carview::AudioHost audio_host;
@@ -2561,6 +2572,7 @@ int run_drive(int argc, char** argv) {
     if (audio_cfg.radio_dj && !saved.radio_dj) audio_cfg.radio_dj = false;
     if (std::fabs(audio_cfg.radio_volume - 1.0f) < 1e-4f && std::fabs(saved.radio_volume - 1.0) > 1e-4)
       audio_cfg.radio_volume = float(saved.radio_volume);
+    if (audio_cfg.satnav_on && !saved.satnav_enabled) audio_cfg.satnav_on = false;
   }
   const std::filesystem::path user_music_dir =
       !state_root.empty() ? (state_root / "music")
@@ -2923,6 +2935,16 @@ int run_drive(int argc, char** argv) {
               map_tried = true;
               std::string why;
               if (!map_view.open(game_root, &why)) std::fprintf(stderr, "carview: note: no map: %s\n", why.c_str());
+              traffic::NavMap nav_for_gps;
+              if (traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", nav_for_gps, nullptr)) {
+                gps_solver.build(nav_for_gps);
+              }
+            }
+            if (has_cli_gps && !cli_gps_applied && gps_solver.ready()) {
+              cli_gps_applied = true;
+              const double sx0 = have_spawn ? spawn[0] : (near_given || render_ground ? near_x : world::kSpawnX);
+              const double sz0 = have_spawn ? spawn[2] : (near_given || render_ground ? near_z : world::kSpawnZ);
+              gps_nav.set_destination(cli_gps_x, cli_gps_z, traffic::GpsDestKind::kGeneric, "GPS WAYPOINT", sx0, sz0);
             }
           }
           // The radio and Your Music: initialized once, streamed off-thread.
@@ -2949,6 +2971,7 @@ int run_drive(int argc, char** argv) {
               audio_host.init_user_music(user_music_dir, true);
               const auto sfx_cache = !sound_dir.empty() ? sound_dir : (state_root / "sound-cache");
               audio_host.init_sfx(game_root, sfx_cache, audio_host.car_burble_bank());
+              audio_host.init_satnav(game_root, sfx_cache, language, true);
             }
           }
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
@@ -3473,9 +3496,84 @@ int run_drive(int argc, char** argv) {
             return "1000 club: " + list[r.index].label() + " - " + r.run.status(club_signal);
         return {};
       };
+      // Translate GPS prompt events to Anna Sat-Nav VO cues.
+      auto fire_satnav_event = [&](const traffic::GpsPromptEvent& gev) {
+        using K = traffic::GpsPromptEvent::Kind;
+        using T = traffic::GpsTurnKind;
+        using D = traffic::GpsDestKind;
+        if (gev.kind == K::kNone) return;
+        audio::SatNavCue cue = audio::SatNavCue::kDestGeneric;
+        bool play = true;
+        switch (gev.kind) {
+          case K::kDestinationSet:
+            switch (gev.dest_kind) {
+              case D::kFestival: cue = audio::SatNavCue::kDestFestival; break;
+              case D::kFestivalRace: cue = audio::SatNavCue::kDestFestivalRace; break;
+              case D::kShowcase: cue = audio::SatNavCue::kDestShowcase; break;
+              case D::kOutpost: cue = audio::SatNavCue::kDestOutpost; break;
+              case D::kWorkshop: cue = audio::SatNavCue::kDestWorkshop; break;
+              case D::kAutoshow: cue = audio::SatNavCue::kDestAutoshow; break;
+              case D::kPaintShop: cue = audio::SatNavCue::kDestPaintShop; break;
+              case D::kRaceCentral: cue = audio::SatNavCue::kDestRaceCentral; break;
+              case D::kStreetRace: cue = audio::SatNavCue::kDestStreetRace; break;
+              default: cue = audio::SatNavCue::kDestGeneric; break;
+            }
+            break;
+          case K::kRecalculating: cue = audio::SatNavCue::kRecalculating; break;
+          case K::kUTurn: cue = audio::SatNavCue::kUTurn; break;
+          case K::kArrivedNear: cue = audio::SatNavCue::kNearDestination; break;
+          case K::kArrived:
+            cue = audio::SatNavCue::kArrived;
+            popup = {"DESTINATION REACHED", "YOU HAVE ARRIVED AT YOUR WAYPOINT", vehicle.time(), -1,
+                     carview::ui::rgba(74, 238, 97)};
+            break;
+          case K::kTurnNow:
+            switch (gev.turn) {
+              case T::kLeft: cue = audio::SatNavCue::kTurnLeft; break;
+              case T::kRight: cue = audio::SatNavCue::kTurnRight; break;
+              case T::kBearLeft: cue = audio::SatNavCue::kBearLeft; break;
+              case T::kBearRight: cue = audio::SatNavCue::kBearRight; break;
+              case T::kSharpLeft: cue = audio::SatNavCue::kSharpLeft; break;
+              case T::kSharpRight: cue = audio::SatNavCue::kSharpRight; break;
+              default: play = false; break;
+            }
+            break;
+          case K::kTurnNear:
+            switch (gev.turn) {
+              case T::kLeft: cue = audio::SatNavCue::kNearLeft; break;
+              case T::kRight: cue = audio::SatNavCue::kNearRight; break;
+              case T::kBearLeft: cue = audio::SatNavCue::kNearBearLeft; break;
+              case T::kBearRight: cue = audio::SatNavCue::kNearBearRight; break;
+              case T::kSharpLeft: cue = audio::SatNavCue::kNearSharpLeft; break;
+              case T::kSharpRight: cue = audio::SatNavCue::kNearSharpRight; break;
+              default: play = false; break;
+            }
+            break;
+          case K::kTurnFar:
+            switch (gev.turn) {
+              case T::kLeft: cue = audio::SatNavCue::kFarLeft; break;
+              case T::kRight: cue = audio::SatNavCue::kFarRight; break;
+              case T::kBearLeft: cue = audio::SatNavCue::kFarBearLeft; break;
+              case T::kBearRight: cue = audio::SatNavCue::kFarBearRight; break;
+              case T::kSharpLeft: cue = audio::SatNavCue::kFarSharpLeft; break;
+              case T::kSharpRight: cue = audio::SatNavCue::kFarSharpRight; break;
+              default: play = false; break;
+            }
+            break;
+          default: play = false; break;
+        }
+        if (play) audio_host.trigger_satnav(cue);
+      };
+
       // One free-roam step: the rules, then their notices and the props
       // they hide.
       auto free_roam_step = [&]() -> bool {
+        if (!race && gps_nav.active()) {
+          const drive::Vec3 at = vehicle.position();
+          const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const double hdg = std::atan2(f.x, f.z);
+          fire_satnav_event(gps_nav.update(at.x, at.z, hdg, std::fabs(vehicle.speed()), drive::Vehicle::kStep));
+        }
         if (!free_roam) return false;
         freeroam::CarState cs;
         const drive::Vec3 at = vehicle.position();
@@ -4344,6 +4442,17 @@ int run_drive(int argc, char** argv) {
           d.skills = &sk_hud;
         }
         if (world_marker.visible && !race) d.world_marker = &world_marker;
+        carview::GpsHud gps_hud;
+        if (!race && gps_nav.active()) {
+          const auto& gg = gps_nav.guidance();
+          gps_hud.active = true;
+          gps_hud.turn_kind = int(gg.next_turn);
+          gps_hud.turn_text = traffic::gps_turn_label(gg.next_turn);
+          gps_hud.dest_label = gg.dest_label;
+          gps_hud.dist_to_turn_m = gg.dist_to_turn_m;
+          gps_hud.dist_to_dest_m = gg.dist_to_dest_m;
+          d.gps = &gps_hud;
+        }
         d.name_tags = name_tags;
         carview::RaceHud race_hud;
         const bool race_line = race && banner == race_banner();
@@ -4513,7 +4622,14 @@ int run_drive(int argc, char** argv) {
         sc.reveal = reveal;
         if (race) {
           race->opponent_positions(sc.opponents), race->route_near(sc.route);
-        } else if (have_career_catalog) {
+        } else {
+          if (gps_nav.active()) {
+            gps_nav.remaining_polyline(sc.gps_route);
+            sc.has_gps_dest = true;
+            sc.gps_dest_x = gps_nav.route().snapped_dest_x;
+            sc.gps_dest_z = gps_nav.route().snapped_dest_z;
+          }
+          if (have_career_catalog) {
           // Populate Festival sites, unlocked Street Hubs, and unlocked Career Events!
           for (const auto& site : career_catalog.sites) {
             MapMarker mm;
@@ -4561,6 +4677,7 @@ int run_drive(int argc, char** argv) {
             sc.markers.push_back(std::move(mm));
           }
           sc.selected_marker = map_selected_marker;
+          }
         }
         return sc;
       };
@@ -5217,10 +5334,12 @@ int run_drive(int argc, char** argv) {
             map_overlay.action_hint = m.kind == MapMarker::kEvent ? "ENTER EVENT" : "ENTER";
           } else {
             map_overlay.title = "COLORADO MAP";
-            map_overlay.subtitle = "PAN TO ANY EVENT OR FESTIVAL SITE";
+            map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
             map_overlay.distance_m = std::hypot(map_cx - at.x, map_cz - at.z);
             map_overlay.action_hint = "FAST TRAVEL HERE";
           }
+          map_overlay.gps_active = gps_nav.active();
+          map_overlay.gps_hint = gps_nav.active() ? "SET / CLEAR GPS (G)" : "SET GPS ROUTE (G)";
         };
         auto open_map = [&]() {
           if (!map_view.ready()) {
@@ -5543,10 +5662,51 @@ int run_drive(int argc, char** argv) {
                 next_car = car;
                 running = false;
               };
+              auto map_set_gps = [&]() {
+                if (!gps_solver.ready() || race != nullptr) return;
+                const drive::Vec3 at = vehicle.position();
+                double tx = map_cx, tz = map_cz;
+                std::string label = "CUSTOM WAYPOINT";
+                traffic::GpsDestKind dk = traffic::GpsDestKind::kGeneric;
+                if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+                  const auto& m = cached_map_markers[size_t(map_selected_marker)];
+                  tx = m.x, tz = m.z;
+                  label = m.title;
+                  if (m.kind == MapMarker::kEvent) {
+                    dk = m.icon_tag == "exhibition" ? traffic::GpsDestKind::kShowcase
+                                                    : traffic::GpsDestKind::kFestivalRace;
+                  } else if (m.kind == MapMarker::kStreetHub) {
+                    dk = traffic::GpsDestKind::kStreetRace;
+                  } else if (m.kind == MapMarker::kFestivalSite) {
+                    const auto sk = race::FestivalSite::Kind(m.site_or_hub);
+                    if (sk == race::FestivalSite::kRaceCentral) dk = traffic::GpsDestKind::kRaceCentral;
+                    else if (sk == race::FestivalSite::kAutoshow) dk = traffic::GpsDestKind::kAutoshow;
+                    else if (sk == race::FestivalSite::kWorkshop) dk = traffic::GpsDestKind::kWorkshop;
+                    else if (sk == race::FestivalSite::kPaintShop) dk = traffic::GpsDestKind::kPaintShop;
+                  }
+                }
+                // Toggle off if pressing GPS again on the existing destination.
+                if (gps_nav.active() && std::hypot(tx - gps_nav.route().dest_x, tz - gps_nav.route().dest_z) < 120.0) {
+                  gps_nav.clear();
+                  audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                } else {
+                  const auto gev = gps_nav.set_destination(tx, tz, dk, label, at.x, at.z);
+                  fire_satnav_event(gev);
+                }
+                map_dirty = true;
+                update_map_selection();
+              };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
                 if (!e.key.repeat && (k == SDLK_M || k == SDLK_ESCAPE)) close = true;
                 if (!e.key.repeat && (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE)) map_activate();
+                if (!e.key.repeat && k == SDLK_G) map_set_gps();
+                if (!e.key.repeat && k == SDLK_C && gps_nav.active()) {
+                  gps_nav.clear();
+                  audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                  map_dirty = true;
+                  update_map_selection();
+                }
                 if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.5);
                 if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.5);
                 if (k == SDLK_LEFT || k == SDLK_A) pan_by(-pan, 0);
@@ -5559,6 +5719,13 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_BACK)
                   close = true;
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) map_activate();
+                if (b == SDL_GAMEPAD_BUTTON_WEST) map_set_gps();
+                if (b == SDL_GAMEPAD_BUTTON_NORTH && gps_nav.active()) {
+                  gps_nav.clear();
+                  audio_host.trigger_satnav(audio::SatNavCue::kDestReset);
+                  map_dirty = true;
+                  update_map_selection();
+                }
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) zoom_by(1.5);
                 if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) zoom_by(1 / 1.5);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pan_by(-pan, 0);

@@ -420,8 +420,27 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       else cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.5, wpx), Rgba{40, 128, 52, 235});
     }
 
+  // Free-roam GPS route (MapProfileMinimap.xml group "route": r=74 g=238 b=97).
+  if (!scene.gps_route.empty()) {
+    for (int pass = 0; pass < 2; ++pass)
+      for (size_t i = 0; i + 1 < scene.gps_route.size(); ++i) {
+        const P pa = project(scene.gps_route[i][0], scene.gps_route[i][1]);
+        const P pb = project(scene.gps_route[i + 1][0], scene.gps_route[i + 1][1]);
+        if (pa.depth < 1 || pb.depth < 1) continue;
+        const double wpx = focal / ((pa.depth + pb.depth) / 2) * 9.5;
+        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.5, wpx + 2.2), Rgba{14, 72, 24, 185});
+        else cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.8, wpx), Rgba{74, 238, 97, 250});
+      }
+  }
+
   // Icons, standing up (a constant size on screen).
   const double unit = size / 300.0;
+  if (scene.has_gps_dest && std::hypot(scene.gps_dest_x - scene.x, scene.gps_dest_z - scene.z) <= reach) {
+    const P dp = project(scene.gps_dest_x, scene.gps_dest_z);
+    if (dp.depth >= 1) {
+      cv.icon(small_icons_, 2, 4, dp.x, dp.y - 20 * unit, 52 * unit, 0, Rgba{74, 238, 97, 255});
+    }
+  }
   for (const auto& m : marks(scene)) {
     if (std::hypot(m.x - scene.x, m.z - scene.z) > reach) continue;
     const auto it = mini_.icons.find(m.key);
@@ -519,6 +538,25 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       }
     }
 
+  // Free-roam GPS route line on fullscreen map (MapProfileFullscreen.xml "route": r=74 g=238 b=97).
+  const auto& active_route = !scene.gps_route.empty() ? scene.gps_route : scene.route;
+  if (active_route.size() >= 2) {
+    const double rw = std::clamp(14.0 / scale, 3.0, 9.0);
+    for (int pass = 0; pass < 2; ++pass) {
+      auto prev = to_screen(active_route[0][0], active_route[0][1]);
+      for (size_t i = 1; i < active_route.size(); ++i) {
+        const auto cur = to_screen(active_route[i][0], active_route[i][1]);
+        const bool off = (prev[0] < -12 && cur[0] < -12) || (prev[0] > width + 12 && cur[0] > width + 12) ||
+                         (prev[1] < -12 && cur[1] < -12) || (prev[1] > height + 12 && cur[1] > height + 12);
+        if (!off) {
+          if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], rw + 3.0, Rgba{12, 62, 22, 210});
+          else cv.line(prev[0], prev[1], cur[0], cur[1], rw, Rgba{74, 238, 97, 255});
+        }
+        prev = cur;
+      }
+    }
+  }
+
   // Rumour circles: the region's outline over the map, filled faintly.
   if (scene.data && scene.progress)
     for (size_t i = 0; i < scene.data->barns.size() && i < scene.progress->barns.size(); ++i) {
@@ -564,6 +602,17 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       const double oy = 18 * unit;
       cv.line(p[0] - 8 * unit, p[1] - oy, p[0] + 8 * unit, p[1] - oy, 4.5 * unit, Rgba{245, 4, 92, 250});
     }
+  }
+  // GPS destination marker on fullscreen map (Atlas 2,4 in bright green).
+  if (scene.has_gps_dest) {
+    const auto dp = to_screen(scene.gps_dest_x, scene.gps_dest_z);
+    const double r = 18.0 * unit;
+    for (int k = 0; k < 24; ++k) {
+      const double a0 = 2 * kPi * k / 24, a1 = 2 * kPi * (k + 1) / 24;
+      cv.line(dp[0] + r * std::cos(a0), dp[1] + r * std::sin(a0), dp[0] + r * std::cos(a1), dp[1] + r * std::sin(a1),
+              3.0, Rgba{74, 238, 97, 255});
+    }
+    cv.icon(large_icons_, 2, 4, dp[0], dp[1] - 10.0 * unit, 52.0 * unit, 0, Rgba{74, 238, 97, 255});
   }
   for (const auto& o : scene.opponents) {
     const auto p = to_screen(o[0], o[1]);

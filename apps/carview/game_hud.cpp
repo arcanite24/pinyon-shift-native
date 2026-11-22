@@ -1432,7 +1432,61 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g) {
     }
   }
   help_item(l, g, 52, 232, 654, 688, "A", kGreen, mo.action_hint.empty() ? "FAST TRAVEL" : mo.action_hint);
-  help_item(l, g, 238, 355, 654, 688, "B", kRed, str("HelpButtons", "IDS_Back", "BACK"));
+  help_item(l, g, 238, 428, 654, 688, "X", kBlue, mo.gps_hint.empty() ? "SET GPS ROUTE" : mo.gps_hint);
+  help_item(l, g, 434, 548, 654, 688, "B", kRed, str("HelpButtons", "IDS_Back", "BACK"));
+}
+
+// (j2) Free-roam GPS turn-by-turn guidance pill above the minimap.
+void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g) {
+  if (!gps.active) return;
+  const float s = g.s;
+  const float x0 = g.L(84), y0 = g.B(342), x1 = g.L(328), y1 = g.B(404);
+  const uint32_t kGpsGreen = rgba(74, 238, 97);
+  panel(l, x0, y0, x1, y1, s, rgba(10, 14, 16, 222));
+  l.rect(x0, y0, x0 + 6 * s, y1, kGpsGreen, 3 * s);
+
+  // Direction glyph box on the left.
+  const float bx0 = x0 + 14 * s, by0 = y0 + 10 * s, bx1 = x0 + 56 * s, by1 = y1 - 10 * s;
+  l.rect(bx0, by0, bx1, by1, rgba(74, 238, 97, 36), 6 * s);
+  const char* glyph = "^";
+  switch (gps.turn_kind) {
+    case 2: glyph = "\\"; break;   // bear left
+    case 3: glyph = "<"; break;    // left
+    case 4: glyph = "<<"; break;   // sharp left
+    case 5: glyph = "/"; break;    // bear right
+    case 6: glyph = ">"; break;    // right
+    case 7: glyph = ">>"; break;   // sharp right
+    case 8: glyph = "U"; break;    // u-turn
+    case 9: glyph = "*"; break;    // arrive
+    default: glyph = "^"; break;   // straight
+  }
+  l.text(0.5f * (bx0 + bx1), by0 + 8 * s, glyph, font(ui::Font::kE, 26 * s, kGpsGreen, Align::kCenter));
+
+  auto fmt_dist = [](double m, char* buf, size_t n) {
+    if (m >= 1000.0) std::snprintf(buf, n, "%.1f KM", m / 1000.0);
+    else std::snprintf(buf, n, "%d M", std::max(0, int(std::lround(m / 10.0) * 10)));
+  };
+  char dt_buf[32], dd_buf[32];
+  fmt_dist(gps.dist_to_turn_m, dt_buf, sizeof dt_buf);
+  fmt_dist(gps.dist_to_dest_m, dd_buf, sizeof dd_buf);
+
+  const float tx = bx1 + 10 * s;
+  const float max_w = x1 - tx - 10 * s;
+  std::string line1 = gps.turn_text.empty() ? std::string("FOLLOW ROUTE") : gps.turn_text;
+  TextStyle ts = font(ui::Font::kE, 17 * s, kText);
+  fit(line1, ts, max_w, 10 * s);
+  l.text(tx, y0 + 9 * s, line1, ts);
+
+  std::string line2 = std::string(dt_buf) + "  •  DEST " + dd_buf;
+  TextStyle ds = font(ui::Font::kB, 11 * s, kGpsGreen);
+  fit(line2, ds, max_w, 8 * s);
+  l.text(tx, y0 + 31 * s, line2, ds);
+
+  if (!gps.dest_label.empty()) {
+    TextStyle ls = font(ui::Font::kB, 9.5f * s, kDim);
+    fit(gps.dest_label, ls, max_w, 7.5f * s);
+    l.text(tx, y0 + 46 * s, gps.dest_label, ls);
+  }
 }
 
 // A tile: a big number and its label.
@@ -1613,6 +1667,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     if (!st.name_tags.empty() && st.race && st.race->phase == RaceHud::kRacing)
       opponent_name_tags(l, st.name_tags, g);
     if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g);
+    if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g);
     if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
       skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
