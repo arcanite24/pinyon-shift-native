@@ -27,27 +27,35 @@
 #include <vector>
 
 namespace fh1 {
+class Archive;
+struct UiFontMap;
 struct VFont;
 class CjkFont;
 }
 
 namespace carview::ui {
 
-// One shape, 64 bytes, the vertex shader's per-instance input.
+// One shape, 96 bytes, the vertex shader's per-instance input.
 struct Instance {
   float rect[4];  // bounds: x0, y0, x1, y1 (the quad drawn)
   float p[4];     // per kind, see Kind
-  float q[4];
+  float q[4];     // per kind (kImage / kImageMasked tex0 atlas u0, v0, u1, v1)
+  float r[4];     // kImageMasked: tex1 (mask) atlas u0, v0, u1, v1
+  float m[4];     // kImageMasked: tex0 local UV transform (u_scale, v_scale, u_off, v_off)
   uint32_t color, color2, kind, flags;
 };
-static_assert(sizeof(Instance) == 64);
+static_assert(sizeof(Instance) == 96);
+
+inline constexpr uint32_t kMaskBorderTransparent = 1u << 0;  // addressing mode 4: transparent outside [0,1]
+inline constexpr uint32_t kMaskRepeat = 1u << 1;             // tiled pattern: fract(uv)
 
 enum Kind : uint32_t {
-  kRoundRect = 0,  // p: radius, stroke (0 fills), inset (the shape inside the bounds), -; q: softness (a blurred edge, px); colour top to color2 bottom
-  kLine = 1,       // p: ax, ay, bx, by; q: half width
-  kArc = 2,        // p: cx, cy, radius, half width; q: a0, a1 (radians clockwise from 12 o'clock, a0 <= a1), square ends (> 0)
-  kGlyph = 3,      // p: origin x, y (top of the cap height), pixels per unit, stroke radius (units); q: first segment, count, slant
-  kImage = 4,      // p: radius (or rotated: -, half width, half height, radians clockwise about the rect's centre); q: atlas u0, v0, u1, v1 (0..1), tinted by color
+  kRoundRect = 0,    // p: radius, stroke (0 fills), inset, -; q: softness; colour top to color2 bottom
+  kLine = 1,         // p: ax, ay, bx, by; q: half width
+  kArc = 2,          // p: cx, cy, radius, half width; q: a0, a1 (radians clockwise from 12 o'clock), square ends (> 0)
+  kGlyph = 3,        // p: origin x, y, pixels per unit, stroke radius; q: first segment, count, slant
+  kImage = 4,        // p: radius (or rotated: -, hw, hh, angle); q: atlas u0, v0, u1, v1, tinted by color
+  kImageMasked = 5,  // p: same as kImage; q: tex0 atlas uv; r: tex1 atlas uv; m: tex0 (su, sv, ou, ov); flags: kMask*
 };
 
 // The font's segments (ax, ay, bx, by in units), uploaded once.
@@ -61,15 +69,27 @@ uint32_t fade(uint32_t c, double k);
 
 enum class Align { kLeft, kCenter, kRight };
 
-// FORMAT-FONTS' targets (interim roles: titles and menu items E, labels and
-// numbers B, paragraphs A). kAuto: E for slanted text, else B.
-enum class Font { kAuto, kStroke, kA, kB, kD, kE };
+// FORMAT-FONTS' targets: A (sans), B (condensed slab), C, D (heavy B),
+// E (heavy italic), SYM (symbols), DG1..DG5 (digital gauge fonts).
+// kAuto: E for slanted text, else B.
+enum class Font { kAuto, kStroke, kA, kB, kC, kD, kE, kSym, kDg1, kDg2, kDg3, kDg4, kDg5 };
 
 // The game's fonts (any may be null: that role falls back to the stroke
 // font). Clears the glyph cache.
 void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
                       std::shared_ptr<const fh1::VFont> e, std::shared_ptr<const fh1::VFont> d = nullptr);
+// Sets an individual vector font role (C, SYM, DG1..DG5, or A/B/D/E).
+void set_named_vector_font(Font role, std::shared_ptr<const fh1::VFont> font);
+// Installs the parsed fontmap.xml mapping used by resolve_font_name().
+void set_font_map(const fh1::UiFontMap& map);
+// Resolves an FBF font name (e.g. "horizon_d", "d bold", "horizon_dg2",
+// "b_swiss_721_medium medium") through fontmap.xml + fallback rules.
+Font resolve_font_name(std::string_view font_name);
+// Loads fontmap.xml and all available vector fonts (aru/bru/dru/eru, c, sym,
+// dg1..dg5) from media/ui/Fonts.zip. Returns true if core fonts loaded.
+bool load_fonts_from_zip(fh1::Archive& fonts_zip);
 bool vector_fonts_loaded();
+bool font_role_loaded(Font role);
 // CJK bitmap font (CHTB/CHSB/JPB/KORB) used automatically for glyphs outside
 // the Latin/Cyrillic vector fonts (or standalone).
 void set_cjk_font(std::shared_ptr<const fh1::CjkFont> cjk);
@@ -77,21 +97,26 @@ bool cjk_font_loaded();
 
 // The UI atlas (kAtlasSize square, RGBA8, white with the glyphs' coverage
 // in alpha), owned here; the renderer uploads the rectangles that changed.
-// The glyphs use the rows above kGlyphRows; the images (the game's UI
-// textures) the rows below, kept for the run.
-inline constexpr uint32_t kAtlasSize = 4096, kGlyphRows = 1024;
+// Rows 0..kGlyphRows: glyph cache.
+// Rows kGlyphRows..kTransientY0: persistent HUD/UI4 chrome textures.
+// Rows kTransientY0..kAtlasSize: LRU-evicted transient artwork cache
+// (EventTickets, Thumbnails, BGLoadingImages, Upgrade icons, Logos).
+inline constexpr uint32_t kAtlasSize = 4096, kGlyphRows = 1024, kTransientY0 = 2560;
 const std::vector<uint8_t>& atlas_pixels();
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty();  // x, y, w, h
 // An image (straight-alpha RGBA, sRGB) in the atlas under `key`, once; its
-// uv rectangle (0..1). False when it does not fit.
+// uv rectangle (0..1). Transient artwork keys automatically route to the LRU
+// transient cache (never failing on overflow).
 bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
-                 std::array<float, 4>& uv);
-// An image put before; false when there is none.
+                 std::array<float, 4>& uv, bool transient = false);
+// An image put before; false when there is none (bumps LRU tick if transient).
 bool atlas_find(const std::string& key, std::array<float, 4>& uv);
 // Like atlas_image, but a key already there at the same size has its
 // pixels replaced in place (a panel redrawn on the CPU, as the minimap).
 bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
                   std::array<float, 4>& uv);
+uint64_t atlas_transient_evictions();
+void atlas_clear_transient();
 
 struct TextStyle {
   float size = 20;        // cap height, px
@@ -131,6 +156,13 @@ class List {
   // radians clockwise (y down).
   void image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv,
                      uint32_t tint = rgba(255, 255, 255));
+  // Two-texture masked / crop multiply image: color = tint * tex0(t*su+ou, t*sv+ov) * tex1(t).
+  void image_masked(float x0, float y0, float x1, float y1, std::array<float, 4> uv0, std::array<float, 4> uv1,
+                    uint32_t tint = rgba(255, 255, 255), std::array<float, 4> uv0_xform = {1, 1, 0, 0},
+                    uint32_t flags = kMaskBorderTransparent, float radius = 0);
+  void image_masked_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv0,
+                            std::array<float, 4> uv1, uint32_t tint = rgba(255, 255, 255),
+                            std::array<float, 4> uv0_xform = {1, 1, 0, 0}, uint32_t flags = kMaskBorderTransparent);
   // Draws `text` with its cap-height top at y; returns its width. Supports
   // multi-line `\n` breaks and `{font='A'}` / `{font_pop}` / `{colour='R G B A'}`
   // (single or doubled brace) style tags.

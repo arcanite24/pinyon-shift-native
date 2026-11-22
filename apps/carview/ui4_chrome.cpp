@@ -265,16 +265,23 @@ void brush(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour,
   std::array<float, 4> smudge{}, crisp{};
   if (ensure_tape_masks(smudge, crisp, big)) {
     const float h = y1 - y0;
-    const float px = 0.045f * h;
-    const float py = 0.11f * h;
-    std::array<float, 4> sm_uv = smudge;
-    std::array<float, 4> cr_uv = crisp;
-    if (f < 0.999f) {
-      sm_uv[2] = smudge[0] + (smudge[2] - smudge[0]) * f;
-      cr_uv[2] = crisp[0] + (crisp[2] - crisp[0]) * f;
+    const float px = 0.055f * h;
+    const float py = 0.13f * h;
+    const float bx0 = x0 - px, by0 = y0 - py, bx1 = x1 + px, by1 = y1 + py;
+    const float crop_off = 1.0f - f;
+    // Authentic FH1 two-texture masked brush crop:
+    // Smudge_Tape (soft outer spray) + Crisp_Tape (feathered right edge via kImageMasked) + optional Dirt_Tile.
+    const uint32_t sm_col = ui::fade(colour, 0.88f);
+    l.image_masked(bx0, by0, bx1, by1, smudge, smudge, sm_col, {1.0f, 1.0f, crop_off, 0.0f},
+                   ui::kMaskBorderTransparent);
+    l.image_masked(bx0, by0, bx1, by1, crisp, crisp, colour, {1.0f, 1.0f, crop_off, 0.0f},
+                   ui::kMaskBorderTransparent);
+    std::array<float, 4> dirt{};
+    if (texture("DIRTMASKS/DIRTTILE01", dirt)) {
+      const float tile_u = std::max(1.0f, (bx1 - bx0) / std::max(1.0f, (by1 - by0) * 3.5f));
+      l.image_masked(bx0, by0, wx1 + px, by1, dirt, crisp, ui::fade(ui::rgba(255, 255, 255, 36), float((colour >> 24) & 0xFF) / 255.0f),
+                     {tile_u, 1.0f, 0.0f, 0.0f}, ui::kMaskRepeat);
     }
-    l.image(x0 - px, y0 - py, wx1 + px, y1 + py, sm_uv, colour);
-    l.image(x0 - px, y0 - py, wx1 + px, y1 + py, cr_uv, colour);
   } else {
     // Clean sharp-edged fallback (never rounded glass).
     l.rect(x0, y0, wx1, y1, colour);
@@ -301,11 +308,16 @@ void pill(ui::List& l, float x0, float y0, float x1, float y1, uint32_t colour, 
   const float texel = h / 26.0f;
   const float ty0 = y0 - 2.5f * texel;
   const float ty1 = y1 + 2.5f * texel;
-  const float cap = std::min(12.0f * texel, 0.45f * (x1 - x0));
-  const float du = (uv[2] - uv[0]) / texels;
-  const float body = (x1 - cap - x0) / std::max(0.1f, texel);
-  l.image(x0, ty0, x1 - cap, ty1, {uv[0], uv[1], uv[0] + du * std::min(body, texels - 12.0f), uv[3]}, colour);
-  l.image(x1 - cap, ty0, x1, ty1, {uv[2] - du * 12.0f, uv[1], uv[2], uv[3]}, colour);
+  const float full_w = texels * texel;
+  const float vis_w = x1 - x0;
+  if (vis_w < full_w * 0.99f) {
+    // Authentic Anark 2-texture border-transparent crop: tex0 shifted by (1 - vis/full)
+    // multiplied with unshifted tex1 preserves feathered edges on both left and right ends.
+    const float off = 1.0f - std::clamp(vis_w / std::max(1.0f, full_w), 0.02f, 1.0f);
+    l.image_masked(x0, ty0, x0 + full_w, ty1, uv, uv, colour, {1.0f, 1.0f, off, 0.0f}, ui::kMaskBorderTransparent);
+  } else {
+    l.image(x0, ty0, x1, ty1, uv, colour);
+  }
   if (with_pin) {
     std::array<float, 4> pin{};
     if (texture("DIRTMASKS/PILLPIN", pin)) {
@@ -454,18 +466,34 @@ void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std:
 void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, float screen_h, float left_x_canvas) {
   if (items.empty()) return;
   const float s = screen_h / 720.0f;
-  float base_y = screen_h - 66.0f * s;
+  float base_cy = screen_h - 52.0f * s;  // BUTTON_BAR_SCENE canvas y = 668
+  // Authentic BUTTON_BAR_SCENE alternating micro-tilts (BSG y-up degrees: +1, -1, +1, -0.5, +0.5, 0, +1).
+  static constexpr float kDefaultTiltsDeg[7] = {1.0f, -1.0f, 1.0f, -0.5f, 0.5f, 0.0f, 1.0f};
+  float slot_tilts[7];
+  for (int i = 0; i < 7; ++i) slot_tilts[i] = -kDefaultTiltsDeg[i] * (3.14159265f / 180.0f);
+
   if (const fh1::UiScene* bar = scene("BUTTON_BAR_SCENE")) {
+    int slot_idx = 0;
     for (const auto& node : bar->nodes) {
-      if (node.object_index >= 0 && bar->objects[size_t(node.object_index)].name == "BUTTON_BAR") {
+      if (node.object_index < 0) continue;
+      const std::string& nm = bar->objects[size_t(node.object_index)].name;
+      if (nm == "BUTTON_BAR") {
         const float cy = 360.0f - node.y;
-        if (cy > 420.0f && cy < 700.0f) base_y = screen_h - (720.0f - cy) * s;
-        break;
+        if (cy > 420.0f && cy < 700.0f) base_cy = screen_h - (720.0f - cy) * s;
+      } else if (slot_idx < 7 && (nm.rfind("Button_", 0) == 0 || nm.rfind("BUTTON_", 0) == 0) &&
+                 bar->objects[size_t(node.object_index)].kind == fh1::UiObjectKind::kGroup) {
+        if (std::fabs(node.angle) > 1e-4f || slot_idx == 5) {
+          slot_tilts[slot_idx] = -node.angle;
+        }
+        ++slot_idx;
       }
     }
   }
-  const float h = 28.0f * s;
+
+  const float h = 30.0f * s;
+  const float base_y = base_cy - 0.5f * h;
   float cx = left_x_canvas * s;
+  int idx = 0;
   for (const auto& item : items) {
     if (item.label.empty()) continue;
     ui::TextStyle ts = style(ui::Font::kB, 14.0f * s, kWhite, ui::Align::kLeft, false);
@@ -476,12 +504,15 @@ void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, f
     const float pw = tw + btn_pad + 18.0f * s;
     if (cx + pw > screen_w - 40.0f * s) break;
 
-    pill(l, cx, base_y, cx + pw, base_y + h, kPillGrey, PillKind::kMenu, true);
+    const float tilt = slot_tilts[idx % 7];
     const float gy = base_y + 0.5f * h;
+    TiltScope slot_tilt(l, cx + 0.5f * pw, gy, tilt);
+    pill(l, cx, base_y, cx + pw, base_y + h, kPillGrey, PillKind::kMenu, true);
     const float gx = cx + (wide_btn ? 20.0f : 16.0f) * s;
     button_glyph(l, gx, gy, 10.5f * s, btn.c_str());
     l.text(cx + btn_pad + 4.0f * s, gy - 0.5f * ts.size, item.label, ts);
-    cx += pw + 8.0f * s;
+    cx += pw + 10.0f * s;
+    ++idx;
   }
 }
 
@@ -563,18 +594,14 @@ void career_strip(ui::List& l, const CareerStripData& d, float screen_w, float s
     }
   }
 
-  // Row 3: Optional popularity rank / discount tag + Off-white distressed Credits strip!
+  // Row 3: Optional upgrade discount tag + Off-white distressed Credits strip (matching pause-freeroam.png:
+  // retail PlayerBar has wristband goal, wristband graphic, car+PI, and credits — no invented RANK pill).
   if (d.credits >= 0) {
     if (d.discount_percent > 0) {
       char db[32];
       std::snprintf(db, sizeof db, "%d%% OFF", d.discount_percent);
       brush(l, R(974), T(92), R(1078), T(116), kPink);
       l.text(R(1026), T(97), db, style(ui::Font::kE, 13.0f * s, kWhite, ui::Align::kCenter));
-    } else if (d.popularity_rank >= 1 && d.popularity_rank <= 250) {
-      pill(l, R(972), T(92), R(1080), T(116), kPillGrey, PillKind::kMenu);
-      char rk[32];
-      std::snprintf(rk, sizeof rk, "RANK %d%s", d.popularity_rank, ordinal_suffix(d.popularity_rank));
-      l.text(R(1026), T(98), rk, style(ui::Font::kB, 12.5f * s, kYellow, ui::Align::kCenter));
     }
     offwhite_strip(l, R(1084), T(92), R(1210), T(116), s, true);
     const std::string ctext = format_credits(d.credits);

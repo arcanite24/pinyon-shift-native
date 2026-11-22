@@ -50,6 +50,55 @@ void test_bgf_track_and_stacker() {
   const auto ys = fh1::reflow_stacker(125.0f, 50.0f, 5);
   check(ys.size() == 5 && std::fabs(ys[0] - 125.0f) < 1e-4f && std::fabs(ys[4] - 325.0f) < 1e-4f,
         "SUPER_STACKER 50px pitch reflow");
+
+  // Two-texture kImageMasked border-transparent crop + repeat CPU rasterizer check.
+  std::vector<uint8_t> white_px(16 * 16 * 4, 255);
+  std::vector<uint8_t> grad_px(16 * 16 * 4, 255);
+  for (int y = 0; y < 16; ++y)
+    for (int x = 0; x < 16; ++x) {
+      const uint8_t a = x < 8 ? 255 : 0;
+      grad_px[(size_t(y) * 16 + size_t(x)) * 4 + 3] = a;
+    }
+  std::array<float, 4> uv_w{}, uv_g{};
+  check(carview::ui::atlas_image("test.mask.white", 16, 16, white_px, uv_w), "atlas white");
+  check(carview::ui::atlas_image("test.mask.grad", 16, 16, grad_px, uv_g), "atlas grad");
+  carview::ui::List ml;
+  // Border-transparent crop at ou=0.5 clips the right half (t.x > 0.5 -> t0.x > 1.0 -> transparent).
+  ml.image_masked(0, 0, 64, 16, uv_w, uv_w, carview::ui::rgba(249, 0, 100, 255), {1.0f, 1.0f, 0.5f, 0.0f},
+                  carview::ui::kMaskBorderTransparent);
+  std::vector<uint8_t> mfb(64 * 16 * 4, 0);
+  carview::ui::rasterize(ml.items(), mfb, 64, 16);
+  check(mfb[(8 * 64 + 10) * 4 + 3] > 200 && mfb[(8 * 64 + 54) * 4 + 3] == 0,
+        "kImageMasked border-transparent crop masks right half cleanly");
+
+  // FontMap XML parser + resolution rules (including space suffix stripping).
+  fh1::UiFontMap fm;
+  const char* sample_xml = R"(
+    <fontmap>
+      <mapping fontname="Horizon_D" target="D" />
+      <mapping fontname="D_Swiss_721_Roman_Condensed" target="A" />
+      <mapping fontname="DG2_lcd" target="DG2" />
+    </fontmap>
+  )";
+  check(fh1::parse_fontmap_xml(sample_xml, fm), "parse_fontmap_xml succeeds");
+  check(fm.resolve("d_swiss_721_roman_condensed roman") == "A", "fontmap strips style suffix and resolves A");
+  check(fm.resolve("d bold") == "D", "fontmap resolves 'd bold' -> D");
+  check(fm.resolve("dg2_lcd") == "DG2", "fontmap resolves DG2");
+  check(fm.resolve("b_helvetica63-extendedmedium medium") == "B", "fontmap leading-letter fallback -> B");
+
+  // Transient LRU eviction check: fill transient zone past 4096x1536 and verify evictions occur without failing.
+  carview::ui::atlas_clear_transient();
+  const uint64_t ev_before = carview::ui::atlas_transient_evictions();
+  std::vector<uint8_t> big_tile(512 * 512 * 4, 200);
+  bool all_ok = true;
+  for (int i = 0; i < 30; ++i) {
+    std::array<float, 4> tuv{};
+    if (!carview::ui::atlas_image("EventTickets/test_" + std::to_string(i), 512, 512, big_tile, tuv, true))
+      all_ok = false;
+  }
+  check(all_ok, "transient LRU cache never overflows across 30x 512x512 EventTickets");
+  check(carview::ui::atlas_transient_evictions() > ev_before, "transient LRU cache evicted oldest shelves");
+  carview::ui::atlas_clear_transient();
 }
 
 void test_multiline_and_style_tags() {
@@ -165,8 +214,10 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
     }
   }
   if (const fh1::UiScene* pause = load_scene("925_PAUSE_MENU")) {
-    check(pause->bgf.has_contract("SUPER_STACKER") || !pause->bgf.contracts.empty(),
-          "925_PAUSE_MENU parsed BGF contracts");
+    check(pause->bgf.has_contract("SUPER_STACKER"),
+          "925_PAUSE_MENU parsed real SUPER_STACKER contract via 0xACA9EC63");
+    check(pause->bgf.has_contract("PAUSE_MENU_BUTTON"),
+          "925_PAUSE_MENU parsed real PAUSE_MENU_BUTTON contracts via 0xACA9EC63");
     check(!pause->bgf.styles.empty() && !pause->bgf.animations.empty(),
           "925_PAUSE_MENU parsed BGF styles and animations");
   }
@@ -199,21 +250,32 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
     check(cht_font->decode_glyph(0x8CFD, cov, w, h) && w == 48 && h == 48, "CHTB decodes U+8CFD (賽) 48x48");
   }
 
+  // 3b. Verify Fonts.zip fontmap.xml + ALL vector fonts (aru/bru/dru/eru, c, sym, dg1..dg5) load!
+  if (auto fzip = fh1::Archive::open(game_root / "media/ui/Fonts.zip", nullptr)) {
+    check(carview::ui::load_fonts_from_zip(*fzip), "load_fonts_from_zip loads core fonts + fontmap.xml");
+    check(carview::ui::font_role_loaded(carview::ui::Font::kA) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kB) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kC) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kD) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kE) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kSym) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kDg1) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kDg2) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kDg3) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kDg4) &&
+              carview::ui::font_role_loaded(carview::ui::Font::kDg5),
+          "all 11 FH1 vector fonts (A..E, SYM, DG1..DG5) loaded from Fonts.zip");
+    check(carview::ui::resolve_font_name("horizon_dg2") == carview::ui::Font::kDg2, "resolve horizon_dg2");
+    check(carview::ui::resolve_font_name("d bold") == carview::ui::Font::kD, "resolve 'd bold'");
+    check(carview::ui::resolve_font_name("b_swiss_721_medium medium") == carview::ui::Font::kB,
+          "resolve 'b_swiss_721_medium medium'");
+  }
+
   // 4. Optional headless verification screenshots (1280x720) when SHIFT_SLICE9_SCREENSHOT_DIR is set.
   if (screenshot_dir.empty()) return;
   std::filesystem::create_directories(screenshot_dir, ec);
 
-  // Load real vector fonts & Horizon.zip textures so screenshots look 100% authentic!
-  if (auto fzip = fh1::Archive::open(game_root / "media/ui/Fonts.zip", nullptr)) {
-    auto vf_load = [&](const char* nm) {
-      auto r = fzip->read(nm);
-      auto f = std::make_shared<fh1::VFont>();
-      if (r.ok() && fh1::parse_vfont(r.data, *f, nullptr)) return f;
-      return std::shared_ptr<fh1::VFont>{};
-    };
-    carview::ui::set_vector_fonts(vf_load("aru_vector_aa.dt"), vf_load("bru_vector_aa.dt"),
-                                  vf_load("eru_vector_aa.dt"), vf_load("dru_vector_aa.dt"));
-  }
+  // Fonts already loaded above via load_fonts_from_zip!
   auto hz = fh1::Archive::open(game_root / "media/ui/textures/Horizon.zip", nullptr);
   auto tx = fh1::Archive::open(game_root / "media/ui/Textures.zip", nullptr);
   carview::set_ui_textures([&](const std::string& path, std::array<float, 4>& uv) -> bool {

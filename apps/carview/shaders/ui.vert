@@ -3,7 +3,9 @@
 layout(location = 0) in vec4 in_rect;
 layout(location = 1) in vec4 in_p;
 layout(location = 2) in vec4 in_q;
-layout(location = 3) in uvec4 in_cw;  // color, color2, kind, flags
+layout(location = 3) in vec4 in_r;
+layout(location = 4) in vec4 in_m;
+layout(location = 5) in uvec4 in_cw;  // color, color2, kind, flags
 
 layout(push_constant) uniform Push {
   vec2 inv_half;  // scale * 2 / screen size
@@ -14,7 +16,9 @@ layout(location = 0) out vec2 pix;
 layout(location = 1) flat out vec4 rect;
 layout(location = 2) flat out vec4 p;
 layout(location = 3) flat out vec4 q;
-layout(location = 4) flat out uvec4 cw;
+layout(location = 4) flat out vec4 r;
+layout(location = 5) flat out vec4 m;
+layout(location = 6) flat out uvec4 cw;
 
 const vec2 kCorner[6] = vec2[](vec2(0, 0), vec2(1, 0), vec2(1, 1), vec2(0, 0), vec2(1, 1), vec2(0, 1));
 
@@ -23,6 +27,8 @@ void main() {
   rect = in_rect;
   p = in_p;
   q = in_q;
+  r = in_r;
+  m = in_m;
   cw = in_cw;
   gl_Position = vec4(pix * pc.inv_half + pc.offset, 0.0, 1.0);
 }

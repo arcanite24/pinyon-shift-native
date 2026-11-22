@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -30,16 +31,25 @@ struct UiObject {
   // kText.
   std::string font;  // lower case, as the scene names it
   uint32_t text_size = 0, text_align = 0;
+  uint32_t text_valign = 1, text_mode = 2;
+  std::array<float, 2> text_spacing{0.0f, 0.0f};
   float text_width = 0;  // version 1008; 0 otherwise
   // kModel.
   uint32_t geometry = 0;
   // kMaterial: the colour (probable).
   std::array<float, 4> colour{1, 1, 1, 1};
   // kTexture: the owning material's id, the path, the texture matrix
-  // (16 floats as stored).
+  // (16 floats as stored), and the 52-byte sampler tail (13 words).
   uint32_t owner = 0;
   std::string path;
   std::array<float, 16> matrix{};
+  float tex_rotation = 0.0f;
+  float tex_u_offset = 0.0f, tex_v_offset = 0.0f;
+  float tex_u_scale = 1.0f, tex_v_scale = 1.0f;
+  float tex_pivot_u = 0.5f, tex_pivot_v = 0.5f;
+  uint32_t tex_flag = 0;
+  uint32_t tex_address_mode = 4;  // 4: transparent-border crop, 3: clamp/wrap
+  std::array<uint32_t, 4> tex_sampler_enums{};
 };
 
 struct UiNode {
@@ -51,9 +61,10 @@ struct UiNode {
   bool drawable = false;
   // Resolved: the object's index in UiScene::objects (-1: none), and the
   // node on the canvas: centre (pixels, y up from the canvas centre),
-  // rotation about z (radians), scale, and opacity times the parents'.
+  // z depth (BSG painter order), rotation about z (radians), scale, and
+  // opacity times the parents'.
   int object_index = -1;
-  float x = 0, y = 0, angle = 0, sx = 1, sy = 1, alpha = 1;
+  float x = 0, y = 0, z = 0, angle = 0, sx = 1, sy = 1, sz = 1, alpha = 1;
 };
 
 struct UiGeometry {
@@ -82,6 +93,7 @@ struct UiContract {
   int item_index = -1;
   uint32_t owner_hash = 0;
   std::string type;  // e.g. "SUPER_STACKER", "PAUSE_MENU_BUTTON", "HUD_COMBINED_NOTIFICATION"
+  std::string initial_state;  // e.g. "SHOWN", "HIDDEN" (property attribute 0x083BF5F8)
   std::vector<std::string> bindings;
   std::vector<std::string> events;
 };
@@ -167,5 +179,14 @@ std::vector<float> reflow_stacker(float origin, float step, int count);
 // The texture archive member for a scene's texture path: `horizon` true
 // for Horizon.zip, else Textures.zip; the member name ends .xds.
 std::string ui_texture_member(const std::string& path, bool& horizon);
+
+// Font mapping from media/ui/Fonts.zip/fontmap.xml: maps FBF font names
+// (case-insensitive, stripping any style suffix after the first space) to
+// canonical target names ("A", "B", "C", "D", "E", "SYM", "DG1".."DG5").
+struct UiFontMap {
+  std::unordered_map<std::string, std::string> mappings;  // lower(fontname) -> upper(target)
+  std::string resolve(std::string_view font_name) const;
+};
+bool parse_fontmap_xml(std::string_view xml, UiFontMap& out);
 
 }  // namespace fh1

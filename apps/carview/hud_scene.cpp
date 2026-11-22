@@ -51,6 +51,59 @@ int SceneDraw::find(std::string_view name, int under) const {
   return -1;
 }
 
+std::vector<int> SceneDraw::find_all(std::string_view name, int under) const {
+  std::vector<int> out;
+  if (!sc_) return out;
+  for (size_t i = 0; i < sc_->nodes.size(); ++i) {
+    const fh1::UiNode& n = sc_->nodes[i];
+    if (n.object_index < 0 || sc_->objects[size_t(n.object_index)].name != name) continue;
+    if (under < 0) {
+      out.push_back(int(i));
+      continue;
+    }
+    for (int p = n.parent; p >= 0; p = sc_->nodes[size_t(p)].parent) {
+      if (p == under) {
+        out.push_back(int(i));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+int SceneDraw::find_path(std::string_view slash_path, int under) const {
+  if (!sc_ || slash_path.empty()) return -1;
+  int cur = under;
+  size_t pos = 0;
+  while (pos < slash_path.size()) {
+    const size_t next = slash_path.find('/', pos);
+    const std::string_view seg =
+        next == std::string_view::npos ? slash_path.substr(pos) : slash_path.substr(pos, next - pos);
+    if (!seg.empty()) {
+      cur = find(seg, cur);
+      if (cur < 0) return -1;
+    }
+    if (next == std::string_view::npos) break;
+    pos = next + 1;
+  }
+  return cur;
+}
+
+std::vector<int> SceneDraw::children_of(int parent) const {
+  std::vector<int> out;
+  if (!sc_) return out;
+  for (size_t i = 0; i < sc_->nodes.size(); ++i)
+    if (sc_->nodes[i].parent == parent) out.push_back(int(i));
+  return out;
+}
+
+std::string_view SceneDraw::object_name(int node) const {
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return {};
+  const int oi = sc_->nodes[size_t(node)].object_index;
+  if (oi < 0 || size_t(oi) >= sc_->objects.size()) return {};
+  return sc_->objects[size_t(oi)].name;
+}
+
 std::array<float, 2> SceneDraw::at(int node) const {
   if (!sc_ || node < 0) return {640, 360};
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
@@ -70,9 +123,12 @@ float SceneDraw::angle(int node) const { return sc_ && node >= 0 ? sc_->nodes[si
 
 float SceneDraw::alpha(int node) const { return sc_ && node >= 0 ? sc_->nodes[size_t(node)].alpha : 0; }
 
+float SceneDraw::z_depth(int node) const { return sc_ && node >= 0 ? sc_->nodes[size_t(node)].z : 0; }
+
 bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity, float dx, float dy, float visible,
-                      uint32_t tint) const {
-  if (!sc_ || node < 0) return false;
+                      uint32_t tint, std::string_view tex_override, float extra_angle) const {
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return false;
+  if (opacity <= 1e-4f) return false;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
   if (n.object_index < 0 || sc_->objects[size_t(n.object_index)].kind != fh1::UiObjectKind::kModel) return false;
   // The material and its textures follow the model in the FBF.
@@ -90,8 +146,9 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
   auto r = rect(node);
   r[0] += dx, r[2] += dx, r[1] += dy, r[3] += dy;
   // The node's own rotation (scene y up: counter-clockwise on screen).
-  const bool turning = turn_ && n.angle != 0 && !l.turned();
-  if (turning) l.turn(f.x(0.5f * (r[0] + r[2])), f.y(0.5f * (r[1] + r[3])), -n.angle);
+  const float eff_angle = n.angle + extra_angle;
+  const bool turning = (turn_ || extra_angle != 0.0f) && eff_angle != 0.0f && !l.turned();
+  if (turning) l.turn(f.x(0.5f * (r[0] + r[2])), f.y(0.5f * (r[1] + r[3])), -eff_angle);
   struct Unturn {
     ui::List& l;
     bool on;
@@ -100,21 +157,23 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     }
   } unturn{l, turning};
   const uint32_t c = tint ? ui::fade(tint, opacity) : colour_of(mat ? mat->colour : std::array<float, 4>{1, 1, 1, 1}, opacity);
+  if (!tex_override.empty()) {
+    std::array<float, 4> uv{};
+    if (!ui_texture(std::string(tex_override), uv)) return false;
+    l.image(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), uv, c);
+    return true;
+  }
   if (ntex == 0) {
     l.rect(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), c);
     return true;
   }
-  std::array<float, 4> uv;
-  const fh1::UiObject* main = ntex >= 2 ? tex[1] : tex[0];
-  if (!ui_texture(texture_key(main->path), uv)) return false;
-  const auto& m = main->matrix;
-  // The texture rect: u from m12 over m0, v (flipped) from m13 + m5 to m13.
-  auto U = [&](float u) { return uv[0] + (uv[2] - uv[0]) * u; };
-  auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
-  const float u0 = m[12], u1 = m[12] + m[0], v0 = std::min(m[13], m[13] + m[5]), v1 = std::max(m[13], m[13] + m[5]);
   if (ntex < 2) {
-    // A texture offset past its edge (clamped, no wrap): the part outside
-    // 0-1 is empty, so the quad is cut there.
+    std::array<float, 4> uv{};
+    if (!ui_texture(texture_key(tex[0]->path), uv)) return false;
+    const auto& m = tex[0]->matrix;
+    auto U = [&](float u) { return uv[0] + (uv[2] - uv[0]) * u; };
+    auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
+    const float u0 = m[12], u1 = m[12] + m[0], v0 = std::min(m[13], m[13] + m[5]), v1 = std::max(m[13], m[13] + m[5]);
     float x0 = r[0], x1 = r[2], a = u0, b = u1;
     if (b > a && (a < 0 || b > 1)) {
       const float w = (x1 - x0) / (b - a);
@@ -125,29 +184,75 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     l.image(f.x(x0), f.y(r[1]), f.x(x1), f.y(r[3]), {U(a), V(v0), U(b), V(v1)}, c);
     return true;
   }
-  // A crop: the strip's left part to the visible width, then the strip's
-  // own right end (as the offset copy masks it).
+
+  // Real two-texture masked / crop multiply mode (SPEC-UI-SCREENS):
+  // color = material_rgba * tex0(uv0_transformed) * tex1(uv1).
+  std::array<float, 4> uv0{}, uv1{};
+  const std::string key0 = texture_key(tex[0]->path);
+  const std::string key1 = texture_key(tex[1]->path);
+  const bool have0 = ui_texture(key0, uv0);
+  const bool have1 = ui_texture(key1, uv1);
+  if (!have0 && !have1) return false;
+  if (!have0 || !have1) {
+    const auto& uv = have1 ? uv1 : uv0;
+    const auto& m = (have1 ? tex[1] : tex[0])->matrix;
+    auto U = [&](float u) { return uv[0] + (uv[2] - uv[0]) * u; };
+    auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
+    const float u0 = std::clamp(m[12], 0.0f, 1.0f), u1 = std::clamp(m[12] + m[0], 0.0f, 1.0f);
+    const float v0 = std::clamp(std::min(m[13], m[13] + m[5]), 0.0f, 1.0f);
+    const float v1 = std::clamp(std::max(m[13], m[13] + m[5]), 0.0f, 1.0f);
+    l.image(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), {U(u0), V(v0), U(u1), V(v1)}, c);
+    return true;
+  }
+
   const float full = r[2] - r[0];
-  if (full <= 0) return false;
-  const float off = std::clamp(tex[0]->matrix[12], 0.0f, 1.0f);
-  const float vis = std::clamp(visible > 0 ? visible : full * (1 - off), 0.0f, full);
-  const float cap = std::min(vis, 0.012f * full * (r[3] - r[1]) / (r[3] - r[1]));  // 12 texels of 1024 (ours)
-  const float x1 = r[0] + vis;
-  l.image(f.x(r[0]), f.y(r[1]), f.x(x1 - cap), f.y(r[3]), {U(0), V(v0), U((vis - cap) / full), V(v1)}, c);
-  l.image(f.x(x1 - cap), f.y(r[1]), f.x(x1), f.y(r[3]), {U(1 - cap / full), V(v0), U(1), V(v1)}, c);
+  if (full <= 0.0f) return false;
+
+  const auto& m0 = tex[0]->matrix;
+  const auto& m1 = tex[1]->matrix;
+  // Sub-rect for tex1 (mask / base strip).
+  auto U1 = [&](float u) { return uv1[0] + (uv1[2] - uv1[0]) * u; };
+  auto V1 = [&](float v) { return uv1[1] + (uv1[3] - uv1[1]) * v; };
+  const float b_u0 = std::clamp(std::min(m1[12], m1[12] + m1[0]), 0.0f, 1.0f);
+  const float b_u1 = std::clamp(std::max(m1[12], m1[12] + m1[0]), 0.0f, 1.0f);
+  const float b_v0 = std::clamp(std::min(m1[13], m1[13] + m1[5]), 0.0f, 1.0f);
+  const float b_v1 = std::clamp(std::max(m1[13], m1[13] + m1[5]), 0.0f, 1.0f);
+  const std::array<float, 4> mask_uv = {U1(b_u0), V1(b_v0), U1(b_u1), V1(b_v1)};
+
+  const float su0 = (std::fabs(m0[0]) > 1e-4f) ? m0[0] : 1.0f;
+  const float sv0 = (std::fabs(m0[5]) > 1e-4f) ? std::fabs(m0[5]) : 1.0f;
+  const bool tiled = (std::fabs(su0) > 1.05f || std::fabs(sv0) > 1.05f);
+
+  float ou0 = m0[12];
+  float ov0 = 0.0f;
+  if (!tiled && m0[5] < 0.0f) {
+    ov0 = 1.0f - m0[13];
+  } else if (!tiled && m0[5] > 0.0f) {
+    ov0 = m0[13];
+  }
+  if (visible > 0.0f && !tiled) {
+    // Dynamic crop width: shifts tex0 so its right feathered edge lands at `visible`.
+    const float vis = std::clamp(visible, 0.0f, full);
+    ou0 = 1.0f - vis / full;
+  }
+  uint32_t mask_flags = 0u;
+  if (tiled) {
+    mask_flags = ui::kMaskRepeat;
+  } else if (tex[0]->tex_address_mode == 4u || visible > 0.0f || std::fabs(ou0) > 1e-4f || std::fabs(ov0) > 1e-4f) {
+    mask_flags = ui::kMaskBorderTransparent;
+  }
+  l.image_masked(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), uv0, mask_uv, c, {su0, sv0, ou0, ov0}, mask_flags);
   return true;
 }
 
 ui::TextStyle SceneDraw::style(int node, const SceneFrame& f, uint32_t colour) const {
   ui::TextStyle ts{.size = 12 * f.s, .color = colour, .font = ui::Font::kB, .keep_case = true};
-  if (!sc_ || node < 0) return ts;
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return ts;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
   if (n.object_index < 0) return ts;
   const fh1::UiObject& o = sc_->objects[size_t(n.object_index)];
   if (o.kind != fh1::UiObjectKind::kText) return ts;
-  const std::string& fn = o.font;
-  const char last = fn.empty() ? 'b' : fn.back();
-  ts.font = last == 'a' ? ui::Font::kA : last == 'd' ? ui::Font::kD : last == 'e' ? ui::Font::kE : ui::Font::kB;
+  ts.font = ui::resolve_font_name(o.font);
   ts.size = float(o.text_size) * n.sy * f.s;
   ts.align = o.text_align == 1 ? ui::Align::kCenter : o.text_align == 2 ? ui::Align::kRight : ui::Align::kLeft;
   if (turn_ && n.sy > 0) ts.stretch = n.sx / n.sy;
@@ -155,7 +260,7 @@ ui::TextStyle SceneDraw::style(int node, const SceneFrame& f, uint32_t colour) c
 }
 
 float SceneDraw::text_width(int node) const {
-  if (!sc_ || node < 0) return 0;
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return 0;
   const fh1::UiNode& n = sc_->nodes[size_t(node)];
   if (n.object_index < 0) return 0;
   const fh1::UiObject& o = sc_->objects[size_t(n.object_index)];
@@ -164,7 +269,7 @@ float SceneDraw::text_width(int node) const {
 
 float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_view s, uint32_t colour, float dx,
                       float dy, bool fit) const {
-  if (!sc_ || node < 0 || s.empty()) return 0;
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size() || s.empty()) return 0;
   ui::TextStyle ts = style(node, f, colour);
   const float box = text_width(node) * f.s;
   if (fit && box > 0)
@@ -177,6 +282,122 @@ float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_vi
   const float w = l.text(f.x(cx + dx), f.y(cy + dy) - 0.5f * ts.size, s, ts);
   if (turning) l.unturn();
   return w / f.s;
+}
+
+int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, std::string_view root_name,
+                            const SceneBindings& bindings) const {
+  const int root = root_name.empty() ? -1 : find(root_name);
+  if (!root_name.empty() && root < 0) return 0;
+  return draw_subtree(l, f, root, bindings);
+}
+
+int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, const SceneBindings& bindings) const {
+  if (!sc_ || bindings.opacity <= 1e-4f) return 0;
+  const size_t ncount = sc_->nodes.size();
+  if (root_node >= int(ncount)) return 0;
+
+  // Map BGF keyframe tracks by FBF object id when anim_time >= 0.
+  std::unordered_map<uint32_t, float> bgf_alpha_override;
+  if (bindings.anim_time >= 0.0f && sc_->has_bgf && !sc_->bgf.tracks.empty()) {
+    std::unordered_map<uint32_t, uint32_t> hash_to_fbf;
+    for (const auto& it : sc_->bgf.items) {
+      if (it.value != 0) hash_to_fbf[it.name_hash] = it.value;
+    }
+    for (const auto& tr : sc_->bgf.tracks) {
+      if (tr.keys.empty()) continue;
+      const auto it = hash_to_fbf.find(tr.owner_item);
+      if (it == hash_to_fbf.end()) continue;
+      const float val = fh1::evaluate_bgf_track(tr, bindings.anim_time, -1.0f);
+      if (val >= 0.0f && val <= 1.0f) bgf_alpha_override[it->second] = val;
+    }
+  }
+
+  // Parents precede children in BSG; propagate subtree membership, visibility,
+  // accumulated alpha, and group offsets in a single forward pass.
+  std::vector<uint8_t> in_sub(ncount, 0);
+  std::vector<float> eff_alpha(ncount, 0.0f);
+  std::vector<float> acc_dx(ncount, bindings.dx);
+  std::vector<float> acc_dy(ncount, bindings.dy);
+  std::vector<const NodeOverride*> node_ov(ncount, nullptr);
+
+  auto find_override = [&](int idx) -> const NodeOverride* {
+    if (auto it = bindings.by_node.find(idx); it != bindings.by_node.end()) return &it->second;
+    const std::string_view nm = object_name(idx);
+    if (!nm.empty()) {
+      if (auto it = bindings.by_name.find(std::string(nm)); it != bindings.by_name.end()) return &it->second;
+    }
+    return nullptr;
+  };
+
+  struct DrawEntry {
+    int idx;
+    float z;
+    int order;
+  };
+  std::vector<DrawEntry> drawables;
+  drawables.reserve(64);
+
+  for (size_t i = 0; i < ncount; ++i) {
+    const fh1::UiNode& n = sc_->nodes[i];
+    const bool is_root = (root_node < 0) ? (n.parent < 0) : (int(i) == root_node);
+    const bool parent_in = (n.parent >= 0 && size_t(n.parent) < i && in_sub[size_t(n.parent)] != 0);
+    if (!is_root && !parent_in) continue;
+
+    const NodeOverride* ov = find_override(int(i));
+    node_ov[i] = ov;
+    if (ov && ov->visible.has_value() && !*ov->visible) continue;
+
+    const float parent_a = parent_in ? eff_alpha[size_t(n.parent)] : bindings.opacity;
+    float local_a = n.opacity;
+    if (bindings.ignore_zero_alpha && local_a <= 1e-4f) local_a = 1.0f;
+    if (auto ait = bgf_alpha_override.find(n.object); ait != bgf_alpha_override.end()) local_a = ait->second;
+    float a = parent_a * local_a;
+    if (ov && ov->alpha.has_value()) a = *ov->alpha * bindings.opacity;
+    if (ov && ov->visible.has_value() && *ov->visible && a <= 1e-4f) a = bindings.opacity;
+
+    in_sub[i] = 1;
+    eff_alpha[i] = a;
+    acc_dx[i] = (parent_in ? acc_dx[size_t(n.parent)] : bindings.dx) + (ov ? ov->dx : 0.0f);
+    acc_dy[i] = (parent_in ? acc_dy[size_t(n.parent)] : bindings.dy) + (ov ? ov->dy : 0.0f);
+
+    if (a <= 1e-4f || n.object_index < 0) continue;
+    const auto kind = sc_->objects[size_t(n.object_index)].kind;
+    if (kind == fh1::UiObjectKind::kModel || kind == fh1::UiObjectKind::kText) {
+      drawables.push_back({int(i), n.z, int(i)});
+    }
+  }
+
+  // Sort by BSG Z depth (back to front), preserving tree order for equal Z.
+  std::stable_sort(drawables.begin(), drawables.end(), [](const DrawEntry& a, const DrawEntry& b) {
+    if (std::fabs(a.z - b.z) > 1e-4f) return a.z < b.z;
+    return a.order < b.order;
+  });
+
+  int emitted = 0;
+  for (const auto& d : drawables) {
+    const fh1::UiNode& n = sc_->nodes[size_t(d.idx)];
+    const fh1::UiObject& o = sc_->objects[size_t(n.object_index)];
+    const NodeOverride* ov = node_ov[size_t(d.idx)];
+    const float a = std::clamp(eff_alpha[size_t(d.idx)], 0.0f, 1.0f);
+    const float dx = acc_dx[size_t(d.idx)];
+    const float dy = acc_dy[size_t(d.idx)];
+    if (o.kind == fh1::UiObjectKind::kModel) {
+      const float vis_w = (ov && ov->visible_width.has_value()) ? *ov->visible_width : 0.0f;
+      const uint32_t tint = (ov && ov->tint.has_value()) ? *ov->tint : 0u;
+      const std::string_view tex_ov = (ov && ov->texture.has_value()) ? std::string_view(*ov->texture) : std::string_view{};
+      const float ea = ov ? ov->extra_angle : 0.0f;
+      if (model(l, f, d.idx, a, dx, dy, vis_w, tint, tex_ov, ea)) ++emitted;
+    } else if (o.kind == fh1::UiObjectKind::kText) {
+      if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
+      const uint32_t col = ui::fade(ov->tint.has_value() ? *ov->tint : bindings.default_text_color, a);
+      if (text(l, f, d.idx, *ov->text, col, dx, dy, bindings.fit_text) > 0.0f) ++emitted;
+    }
+  }
+  return emitted;
+}
+
+std::vector<float> SceneDraw::stacker_positions(float origin, float step, int visible_count) const {
+  return fh1::reflow_stacker(origin, step, visible_count);
 }
 
 }  // namespace carview

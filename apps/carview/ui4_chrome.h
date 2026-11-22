@@ -20,28 +20,28 @@
 
 namespace carview::ui4 {
 
-// ---- Authentic Forza Horizon 1 UI4 Palette (measured on oracle 1280x720 frames) ----
-inline constexpr uint32_t kPink = ui::rgba(0xF5, 0x04, 0x5C);         // primary FH1 hot pink accent
-inline constexpr uint32_t kPinkHi = ui::rgba(0xFF, 0x03, 0x61);       // highlight/active row pink
-inline constexpr uint32_t kBrushBlack = ui::rgba(14, 15, 18, 232);    // unselected brush strip charcoal
-inline constexpr uint32_t kCharcoal = ui::rgba(24, 26, 30, 228);      // distressed panel body
-inline constexpr uint32_t kCharcoalDark = ui::rgba(14, 16, 20, 236);  // deep distressed card
-inline constexpr uint32_t kPillGrey = ui::rgba(33, 33, 33, 255);      // 0.13 material grey (947_HUD / 925_PAUSE)
+// ---- Authentic Forza Horizon 1 UI4 Palette (exact FBF material values) ----
+inline constexpr uint32_t kPink = ui::rgba(0xF9, 0x00, 0x64);         // primary FH1 hot pink (#F90064)
+inline constexpr uint32_t kPinkHi = ui::rgba(0xFF, 0x1A, 0x72);       // highlight/active row pink
+inline constexpr uint32_t kBrushBlack = ui::rgba(0x0E, 0x0E, 0x0E, 240);  // deep tape black (#0E0E0E)
+inline constexpr uint32_t kCharcoal = ui::rgba(0x21, 0x21, 0x21, 232);    // distressed panel charcoal (#212121)
+inline constexpr uint32_t kCharcoalDark = ui::rgba(0x0E, 0x0E, 0x0E, 240); // deep distressed card (#0E0E0E)
+inline constexpr uint32_t kPillGrey = ui::rgba(0x21, 0x21, 0x21, 255);    // 0.13 material grey (#212121)
 inline constexpr uint32_t kRowAlt = ui::rgba(38, 40, 46, 224);        // alternating table/list row
 inline constexpr uint32_t kRowHighlight = ui::rgba(66, 68, 76, 238);  // highlighted player row (results.png)
 inline constexpr uint32_t kOffWhite = ui::rgba(232, 234, 238, 244);   // off-white strip (Balance, Credits, Table Header)
 inline constexpr uint32_t kWhite = ui::rgba(248, 249, 252, 255);
 inline constexpr uint32_t kDim = ui::rgba(174, 180, 192, 255);
 inline constexpr uint32_t kInk = ui::rgba(26, 28, 32, 255);           // dark ink on off-white / yellow tags
-inline constexpr uint32_t kYellow = ui::rgba(0xF7, 0xFF, 0x26);       // skill chain / highlight yellow
+inline constexpr uint32_t kYellow = ui::rgba(0xDA, 0xFF, 0x00);       // skill / popularity lime-yellow (#DAFF00)
 inline constexpr uint32_t kAmber = ui::rgba(0xFF, 0xB8, 0x1C);        // warm festival gold/amber
 inline constexpr uint32_t kGreen = ui::rgba(0x46, 0xDC, 0x6E);        // GPS / positive stat delta / A button
 inline constexpr uint32_t kRed = ui::rgba(0xEC, 0x34, 0x2C);          // negative stat delta / B button
 inline constexpr uint32_t kBlue = ui::rgba(0x2C, 0x8C, 0xE8);         // X button / blue badge
 inline constexpr uint32_t kSoftShadow = ui::rgba(0, 0, 0, 145);
 
-// Signature FH1 UI4 panel & brush tilt: ~-2.8 deg rising left-to-right (SPEC-UI-LAYOUTS).
-inline constexpr float kTiltRad = -0.049f;
+// Signature FH1 UI4 panel & brush tilt: +3.0 deg in BSG y-up = -0.05236 rad clockwise in screen y-down.
+inline constexpr float kTiltRad = -0.05236f;
 
 // Shared texture & scene resolvers (bound once by the app or tests; also synced
 // automatically by carview::set_ui_textures / carview::set_ui_scenes).

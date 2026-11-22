@@ -276,18 +276,9 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
     std::fprintf(stderr, "carview: note: no UI fonts (%s): the stroke font\n", why.c_str());
     return false;
   }
-  auto load = [&](const char* name) -> std::shared_ptr<const fh1::VFont> {
-    auto r = zip->read(name);
-    auto f = std::make_shared<fh1::VFont>();
-    std::string e;
-    if (!r.ok() || !fh1::parse_vfont(r.data, *f, &e)) {
-      std::fprintf(stderr, "carview: note: UI font %s: %s\n", name, r.ok() ? e.c_str() : r.error.c_str());
-      return nullptr;
-    }
-    return f;
-  };
-  carview::ui::set_vector_fonts(load("aru_vector_aa.dt"), load("bru_vector_aa.dt"), load("eru_vector_aa.dt"),
-                                   load("dru_vector_aa.dt"));
+  if (!carview::ui::load_fonts_from_zip(*zip)) {
+    std::fprintf(stderr, "carview: note: core vector fonts failed to load from Fonts.zip\n");
+  }
   // The game's UI textures by path, on first use (FORMAT-UISCENES).
   carview::set_ui_textures([root = game_root](const std::string& path, std::array<float, 4>& uv) {
     if (carview::ui::atlas_find(path, uv)) return true;

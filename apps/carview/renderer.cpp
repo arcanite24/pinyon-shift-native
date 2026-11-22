@@ -3037,14 +3037,16 @@ bool Renderer::create_ui(std::string& error) {
       {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main",
        nullptr}};
   const VkVertexInputBindingDescription binding{0, sizeof(ui::Instance), VK_VERTEX_INPUT_RATE_INSTANCE};
-  const VkVertexInputAttributeDescription attributes[4] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+  const VkVertexInputAttributeDescription attributes[6] = {{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
                                                            {1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16},
                                                            {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32},
-                                                           {3, 0, VK_FORMAT_R32G32B32A32_UINT, 48}};
+                                                           {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48},
+                                                           {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 64},
+                                                           {5, 0, VK_FORMAT_R32G32B32A32_UINT, 80}};
   VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   vertex_input.vertexBindingDescriptionCount = 1;
   vertex_input.pVertexBindingDescriptions = &binding;
-  vertex_input.vertexAttributeDescriptionCount = 4;
+  vertex_input.vertexAttributeDescriptionCount = 6;
   vertex_input.pVertexAttributeDescriptions = attributes;
   VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;

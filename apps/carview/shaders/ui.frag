@@ -5,7 +5,9 @@ layout(location = 0) in vec2 pix;
 layout(location = 1) flat in vec4 rect;
 layout(location = 2) flat in vec4 p;
 layout(location = 3) flat in vec4 q;
-layout(location = 4) flat in uvec4 cw;
+layout(location = 4) flat in vec4 r;
+layout(location = 5) flat in vec4 m;
+layout(location = 6) flat in uvec4 cw;
 
 layout(std430, set = 0, binding = 0) readonly buffer Font {
   vec4 segments[];
@@ -86,6 +88,37 @@ void main() {
     vec2 t = (pix - rect.xy) / max(rect.zw - rect.xy, vec2(1.0));
     color = texture(atlas, mix(q.xy, q.zw, t)) * c0;
     cov = clamp(0.5 - round_rect(pix, rect, p.x, 0.0), 0.0, 1.0);
+  } else if (kind == 5u) {
+    // Two-texture masked / crop multiply mode (FH1 UI4 2,455 two-texture materials):
+    // color = material_rgba * tex0(uv0_transformed) * tex1(uv1).
+    vec2 t;
+    if (p.y > 0.0) {
+      vec2 d = pix - 0.5 * (rect.xy + rect.zw);
+      float cs = cos(p.w), sn = sin(p.w);
+      vec2 lp = vec2(cs * d.x + sn * d.y, -sn * d.x + cs * d.y);
+      t = lp / (2.0 * p.yz) + 0.5;
+      vec2 e = abs(lp) - p.yz;
+      cov = clamp(0.5 - max(e.x, e.y), 0.0, 1.0);
+    } else {
+      t = (pix - rect.xy) / max(rect.zw - rect.xy, vec2(1.0));
+      cov = clamp(0.5 - round_rect(pix, rect, p.x, 0.0), 0.0, 1.0);
+    }
+    vec2 t0 = vec2(t.x * m.x + m.z, t.y * m.y + m.w);
+    vec4 s0;
+    uint flags = cw.w;
+    if ((flags & 2u) != 0u) {
+      s0 = texture(atlas, mix(q.xy, q.zw, fract(t0)));
+    } else if ((flags & 1u) != 0u) {
+      if (t0.x < 0.0 || t0.x > 1.0 || t0.y < 0.0 || t0.y > 1.0) {
+        s0 = vec4(0.0);
+      } else {
+        s0 = texture(atlas, mix(q.xy, q.zw, t0));
+      }
+    } else {
+      s0 = texture(atlas, mix(q.xy, q.zw, clamp(t0, 0.0, 1.0)));
+    }
+    vec4 s1 = texture(atlas, mix(r.xy, r.zw, clamp(t, 0.0, 1.0)));
+    color = c0 * s0 * s1;
   }
   float a = color.a * cov;
   out_color = vec4(color.rgb * a, a);

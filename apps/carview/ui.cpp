@@ -9,7 +9,9 @@
 #include <utility>
 #include <tuple>
 
+#include "fh1data/archive.h"
 #include "fh1data/cjk_font.h"
+#include "fh1data/ui_scene.h"
 #include "fh1data/vfont.h"
 
 namespace carview::ui {
@@ -170,17 +172,21 @@ void List::rect(float x0, float y0, float x1, float y1, uint32_t color, float ra
     turned(cx, cy);
     x0 += cx - ox, x1 += cx - ox, y0 += cy - oy, y1 += cy - oy;
   }
-  items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {0, 0, 0, 0}, color, color2 ? color2 : color, kRoundRect, 0});
+  items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color,
+                    color2 ? color2 : color, kRoundRect, 0});
 }
 
 void List::frame(float x0, float y0, float x1, float y1, uint32_t color, float width, float radius) {
-  items_.push_back({{x0, y0, x1, y1}, {radius, width, 0, 0}, {0, 0, 0, 0}, color, color, kRoundRect, 0});
+  items_.push_back({{x0, y0, x1, y1}, {radius, width, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color, color,
+                    kRoundRect, 0});
 }
 
 void List::shadow(float x0, float y0, float x1, float y1, uint32_t color, float radius, float blur) {
   items_.push_back({{x0 - blur - 1, y0 - blur - 1, x1 + blur + 1, y1 + blur + 1},
                     {radius, 0, blur + 1, 0},
                     {blur, 0, 0, 0},
+                    {0, 0, 0, 0},
+                    {0, 0, 0, 0},
                     color,
                     color,
                     kRoundRect,
@@ -192,6 +198,8 @@ void List::line(float ax, float ay, float bx, float by, float width, uint32_t co
   items_.push_back({{std::min(ax, bx) - h, std::min(ay, by) - h, std::max(ax, bx) + h, std::max(ay, by) + h},
                     {ax, ay, bx, by},
                     {0.5f * width, 0, 0, 0},
+                    {0, 0, 0, 0},
+                    {0, 0, 0, 0},
                     color,
                     color,
                     kLine,
@@ -203,13 +211,14 @@ void List::circle(float cx, float cy, float r, uint32_t color) { rect(cx - r, cy
 void List::arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color, bool square) {
   if (a1 <= a0) return;
   const float h = radius + 0.5f * width + 1;
-  items_.push_back({{cx - h, cy - h, cx + h, cy + h}, {cx, cy, radius, 0.5f * width}, {a0, a1, square ? 1.0f : 0.0f, 0}, color, color,
-                    kArc, 0});
+  items_.push_back({{cx - h, cy - h, cx + h, cy + h}, {cx, cy, radius, 0.5f * width},
+                    {a0, a1, square ? 1.0f : 0.0f, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color, color, kArc, 0});
 }
 
 void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint, float radius) {
   if (turn_a_ != 0) return image_rotated(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (x1 - x0), 0.5f * (y1 - y0), 0, uv, tint);
-  items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint, kImage, 0});
+  items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {uv[0], uv[1], uv[2], uv[3]}, {0, 0, 0, 0}, {0, 0, 0, 0},
+                    tint, tint, kImage, 0});
 }
 
 void List::image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv, uint32_t tint) {
@@ -217,20 +226,71 @@ void List::image_rotated(float cx, float cy, float hw, float hh, float angle, st
   if (turn_a_ != 0) turned(cx, cy), angle += turn_a_;
   const float c = std::fabs(std::cos(angle)), s = std::fabs(std::sin(angle));
   const float ex = c * hw + s * hh + 1, ey = s * hw + c * hh + 1;
-  items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey}, {0, hw, hh, angle}, {uv[0], uv[1], uv[2], uv[3]}, tint, tint,
-                    kImage, 0});
+  items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey}, {0, hw, hh, angle}, {uv[0], uv[1], uv[2], uv[3]},
+                    {0, 0, 0, 0}, {0, 0, 0, 0}, tint, tint, kImage, 0});
+}
+
+void List::image_masked(float x0, float y0, float x1, float y1, std::array<float, 4> uv0, std::array<float, 4> uv1,
+                        uint32_t tint, std::array<float, 4> uv0_xform, uint32_t flags, float radius) {
+  if (turn_a_ != 0)
+    return image_masked_rotated(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (x1 - x0), 0.5f * (y1 - y0), 0, uv0, uv1,
+                                tint, uv0_xform, flags);
+  items_.push_back({{x0, y0, x1, y1},
+                    {radius, 0, 0, 0},
+                    {uv0[0], uv0[1], uv0[2], uv0[3]},
+                    {uv1[0], uv1[1], uv1[2], uv1[3]},
+                    {uv0_xform[0], uv0_xform[1], uv0_xform[2], uv0_xform[3]},
+                    tint,
+                    tint,
+                    kImageMasked,
+                    flags});
+}
+
+void List::image_masked_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv0,
+                                std::array<float, 4> uv1, uint32_t tint, std::array<float, 4> uv0_xform,
+                                uint32_t flags) {
+  if (hw <= 0 || hh <= 0) return;
+  if (turn_a_ != 0) turned(cx, cy), angle += turn_a_;
+  const float c = std::fabs(std::cos(angle)), s = std::fabs(std::sin(angle));
+  const float ex = c * hw + s * hh + 1, ey = s * hw + c * hh + 1;
+  items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey},
+                    {0, hw, hh, angle},
+                    {uv0[0], uv0[1], uv0[2], uv0[3]},
+                    {uv1[0], uv1[1], uv1[2], uv1[3]},
+                    {uv0_xform[0], uv0_xform[1], uv0_xform[2], uv0_xform[3]},
+                    tint,
+                    tint,
+                    kImageMasked,
+                    flags});
 }
 
 // The vector fonts and their glyph atlas.
 namespace {
 
+constexpr int kNumVFonts = 11;  // 0:A, 1:B, 2:E, 3:D, 4:C, 5:SYM, 6:DG1, 7:DG2, 8:DG3, 9:DG4, 10:DG5
+constexpr int kCjkCacheFontId = 16;
+
+struct TransientShelf {
+  uint32_t y = 0;
+  uint32_t h = 0;
+  uint32_t x = 0;
+  uint64_t last_tick = 0;
+  std::vector<std::string> keys;
+};
+
 struct VectorFonts {
-  std::shared_ptr<const fh1::VFont> font[4];  // A, B, E, D
+  std::shared_ptr<const fh1::VFont> font[kNumVFonts];
+  fh1::UiFontMap font_map;
   std::shared_ptr<const fh1::CjkFont> cjk;    // CHTB / CHSB / JPB / KORB
   std::vector<uint8_t> atlas = std::vector<uint8_t>(size_t(kAtlasSize) * kAtlasSize * 4, 0);
   std::vector<std::array<uint32_t, 4>> dirty;
   uint32_t shelf_x = 0, shelf_y = 0, shelf_h = 0;
-  uint32_t image_x = 0, image_y = kGlyphRows, image_h = 0;  // the image shelf
+  uint32_t image_x = 0, image_y = kGlyphRows, image_h = 0;  // persistent image shelf (kGlyphRows..kTransientY0)
+  uint32_t trans_y_next = kTransientY0;
+  uint64_t lru_tick = 1;
+  uint64_t transient_evictions = 0;
+  std::vector<TransientShelf> trans_shelves;
+  std::map<std::string, int> trans_key_shelf;  // key -> index into trans_shelves
   std::map<std::string, std::array<float, 4>> images;
   struct Entry {
     float u0, v0, u1, v1;  // atlas texels
@@ -238,7 +298,7 @@ struct VectorFonts {
     float advance;         // px advance (used by CJK bitmap glyphs)
     bool empty;
   };
-  // font index: 0..3 VFont (A, B, E, D), 4 CjkFont.
+  // font index: 0..10 VFont, 16 CjkFont.
   std::map<std::tuple<int, uint32_t, int>, Entry> cache;  // (font, code point, px) -> entry
 
   // Clears the glyph rows (the images stay).
@@ -250,6 +310,18 @@ struct VectorFonts {
     shelf_x = shelf_y = shelf_h = 0;
     dirty.push_back({0, 0, kAtlasSize, kGlyphRows});
   }
+
+  void clear_transient() {
+    for (const auto& sh : trans_shelves) {
+      for (const auto& k : sh.keys) {
+        images.erase(k);
+        trans_key_shelf.erase(k);
+        ++transient_evictions;
+      }
+    }
+    trans_shelves.clear();
+    trans_y_next = kTransientY0;
+  }
 };
 
 VectorFonts& vf() {
@@ -259,6 +331,16 @@ VectorFonts& vf() {
     return x;
   }();
   return v;
+}
+
+bool is_auto_transient_key(const std::string& key) {
+  std::string up;
+  up.reserve(std::min<size_t>(key.size(), 32));
+  for (size_t i = 0; i < key.size() && i < 32; ++i)
+    up.push_back(char(std::toupper(static_cast<unsigned char>(key[i]))));
+  return up.rfind("EVENTTICKETS/", 0) == 0 || up.rfind("T:THUMBNAILS/", 0) == 0 || up.rfind("LOADING/", 0) == 0 ||
+         up.rfind("T:UI4/UPGRADES/", 0) == 0 || up.rfind("T:UI4/LOGOS/", 0) == 0 ||
+         up.rfind("T:UI4/DYNAMICLOADING/", 0) == 0 || up.rfind("SPONSORLOGOTILE/", 0) == 0;
 }
 
 }  // namespace
@@ -274,6 +356,107 @@ void atlas_put(VectorFonts& v, uint32_t ax, uint32_t ay, uint32_t w, uint32_t h,
     }
   v.dirty.push_back({ax - 1, ay - 1, w + 2, h + 2});
 }
+
+bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, uint32_t h,
+                           std::span<const uint8_t> rgba, std::array<float, 4>& uv) {
+  const uint32_t need_w = w + 2, need_h = h + 2;
+  if (need_w > kAtlasSize || need_h > (kAtlasSize - kTransientY0)) return false;
+
+  // 1. Try appending to an existing transient shelf with enough remaining width and compatible height.
+  int best_shelf = -1;
+  uint32_t best_waste = 0xFFFFFFFFu;
+  for (int i = 0; i < int(v.trans_shelves.size()); ++i) {
+    const auto& sh = v.trans_shelves[size_t(i)];
+    if (sh.x + need_w <= kAtlasSize && sh.h >= need_h) {
+      const uint32_t waste = sh.h - need_h;
+      if (waste < best_waste) {
+        best_waste = waste;
+        best_shelf = i;
+      }
+    }
+  }
+  if (best_shelf >= 0) {
+    auto& sh = v.trans_shelves[size_t(best_shelf)];
+    const uint32_t ax = sh.x + 1, ay = sh.y + 1;
+    atlas_put(v, ax, ay, w, h, rgba);
+    sh.x += need_w;
+    sh.last_tick = ++v.lru_tick;
+    sh.keys.push_back(key);
+    const float k = 1.0f / float(kAtlasSize);
+    uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
+    v.images[key] = uv;
+    v.trans_key_shelf[key] = best_shelf;
+    return true;
+  }
+
+  // 2. Open a new transient shelf if vertical space remains.
+  if (v.trans_y_next + need_h <= kAtlasSize) {
+    TransientShelf sh;
+    sh.y = v.trans_y_next;
+    sh.h = need_h;
+    sh.x = need_w;
+    sh.last_tick = ++v.lru_tick;
+    sh.keys.push_back(key);
+    const uint32_t ax = 1, ay = sh.y + 1;
+    atlas_put(v, ax, ay, w, h, rgba);
+    v.trans_y_next += need_h;
+    const int idx = int(v.trans_shelves.size());
+    v.trans_shelves.push_back(std::move(sh));
+    const float k = 1.0f / float(kAtlasSize);
+    uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
+    v.images[key] = uv;
+    v.trans_key_shelf[key] = idx;
+    return true;
+  }
+
+  // 3. LRU eviction: recycle the oldest transient shelf tall enough for `need_h`.
+  int victim = -1;
+  uint64_t oldest = UINT64_MAX;
+  for (int i = 0; i < int(v.trans_shelves.size()); ++i) {
+    const auto& sh = v.trans_shelves[size_t(i)];
+    if (sh.h >= need_h && sh.last_tick < oldest) {
+      oldest = sh.last_tick;
+      victim = i;
+    }
+  }
+  if (victim >= 0) {
+    auto& sh = v.trans_shelves[size_t(victim)];
+    for (const auto& old_k : sh.keys) {
+      v.images.erase(old_k);
+      v.trans_key_shelf.erase(old_k);
+      ++v.transient_evictions;
+    }
+    sh.keys.clear();
+    sh.x = need_w;
+    sh.last_tick = ++v.lru_tick;
+    sh.keys.push_back(key);
+    const uint32_t ax = 1, ay = sh.y + 1;
+    atlas_put(v, ax, ay, w, h, rgba);
+    const float k = 1.0f / float(kAtlasSize);
+    uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
+    v.images[key] = uv;
+    v.trans_key_shelf[key] = victim;
+    return true;
+  }
+
+  // 4. Full transient compaction reset (e.g. allocating a tall 1280x720 loading backdrop).
+  v.clear_transient();
+  TransientShelf sh;
+  sh.y = v.trans_y_next;
+  sh.h = need_h;
+  sh.x = need_w;
+  sh.last_tick = ++v.lru_tick;
+  sh.keys.push_back(key);
+  const uint32_t ax = 1, ay = sh.y + 1;
+  atlas_put(v, ax, ay, w, h, rgba);
+  v.trans_y_next += need_h;
+  v.trans_shelves.push_back(std::move(sh));
+  const float k = 1.0f / float(kAtlasSize);
+  uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
+  v.images[key] = uv;
+  v.trans_key_shelf[key] = 0;
+  return true;
+}
 }  // namespace
 
 bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
@@ -285,20 +468,36 @@ bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<cons
     const uint32_t ew = uint32_t(std::lround(u[2] * kAtlasSize)) - ax, eh = uint32_t(std::lround(u[3] * kAtlasSize)) - ay;
     if (ew == w && eh == h && rgba.size() >= size_t(w) * h * 4) {
       atlas_put(v, ax, ay, w, h, rgba);
+      if (auto sit = v.trans_key_shelf.find(key); sit != v.trans_key_shelf.end() &&
+          size_t(sit->second) < v.trans_shelves.size()) {
+        v.trans_shelves[size_t(sit->second)].last_tick = ++v.lru_tick;
+      }
       return uv = u, true;
     }
-    v.images.erase(it);  // another size: a new place (the old one is left unused)
+    v.images.erase(it);  // another size: a new place
   }
   return atlas_image(key, w, h, rgba, uv);
 }
 
 bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
-                 std::array<float, 4>& uv) {
+                 std::array<float, 4>& uv, bool transient) {
   VectorFonts& v = vf();
-  if (auto it = v.images.find(key); it != v.images.end()) return uv = it->second, true;
+  if (auto it = v.images.find(key); it != v.images.end()) {
+    if (auto sit = v.trans_key_shelf.find(key); sit != v.trans_key_shelf.end() &&
+        size_t(sit->second) < v.trans_shelves.size()) {
+      v.trans_shelves[size_t(sit->second)].last_tick = ++v.lru_tick;
+    }
+    return uv = it->second, true;
+  }
   if (!w || !h || w + 2 > kAtlasSize || rgba.size() < size_t(w) * h * 4) return false;
+  if (transient || is_auto_transient_key(key)) {
+    return atlas_alloc_transient(v, key, w, h, rgba, uv);
+  }
   if (v.image_x + w + 2 > kAtlasSize) v.image_x = 0, v.image_y += v.image_h, v.image_h = 0;
-  if (v.image_y + h + 2 > kAtlasSize) return false;
+  if (v.image_y + h + 2 > kTransientY0) {
+    // Persistent shelf full: spill gracefully into transient LRU cache rather than failing!
+    return atlas_alloc_transient(v, key, w, h, rgba, uv);
+  }
   const uint32_t ax = v.image_x + 1, ay = v.image_y + 1;
   atlas_put(v, ax, ay, w, h, rgba);
   v.image_x += w + 2;
@@ -310,25 +509,47 @@ bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const
 }
 
 bool atlas_find(const std::string& key, std::array<float, 4>& uv) {
-  const VectorFonts& v = vf();
-  if (auto it = v.images.find(key); it != v.images.end()) return uv = it->second, true;
+  VectorFonts& v = vf();
+  if (auto it = v.images.find(key); it != v.images.end()) {
+    if (auto sit = v.trans_key_shelf.find(key); sit != v.trans_key_shelf.end() &&
+        size_t(sit->second) < v.trans_shelves.size()) {
+      v.trans_shelves[size_t(sit->second)].last_tick = ++v.lru_tick;
+    }
+    return uv = it->second, true;
+  }
   return false;
 }
 
+uint64_t atlas_transient_evictions() { return vf().transient_evictions; }
+void atlas_clear_transient() { vf().clear_transient(); }
+
 namespace {
 
-// The style's font: 0 A, 1 B, 2 E, -1 the stroke font.
-int font_of(const TextStyle& s) {
-  int f = -1;
-  switch (s.font) {
-    case ui::Font::kStroke: return -1;
-    case ui::Font::kA: f = 0; break;
-    case ui::Font::kB: f = 1; break;
-    case ui::Font::kE: f = 2; break;
-    case ui::Font::kD: f = 3; break;
-    case ui::Font::kAuto: f = s.slant > 0.05f ? 2 : 1; break;
+int font_slot(ui::Font role) {
+  switch (role) {
+    case ui::Font::kA: return 0;
+    case ui::Font::kB: return 1;
+    case ui::Font::kE: return 2;
+    case ui::Font::kD: return 3;
+    case ui::Font::kC: return 4;
+    case ui::Font::kSym: return 5;
+    case ui::Font::kDg1: return 6;
+    case ui::Font::kDg2: return 7;
+    case ui::Font::kDg3: return 8;
+    case ui::Font::kDg4: return 9;
+    case ui::Font::kDg5: return 10;
+    default: return -1;
   }
-  return vf().font[f] ? f : -1;
+}
+
+// The style's font: 0..10 VFont, -1 the stroke font.
+int font_of(const TextStyle& s) {
+  if (s.font == ui::Font::kStroke) return -1;
+  int f = s.font == ui::Font::kAuto ? (s.slant > 0.05f ? 2 : 1) : font_slot(s.font);
+  if (f >= 0 && f < kNumVFonts && vf().font[f]) return f;
+  // Graceful fallback to B when a specialized font (C, SYM, DG1..5) wasn't loaded.
+  if (f >= 4 && vf().font[1]) return 1;
+  return -1;
 }
 
 // The next code point of UTF-8 text (ASCII letters upper-cased, as the
@@ -384,7 +605,7 @@ int cjk_cached_px(float cap_size) {
 const VectorFonts::Entry* cjk_glyph_entry(uint32_t cp, int cell_px) {
   VectorFonts& v = vf();
   if (!v.cjk || !v.cjk->valid()) return nullptr;
-  const auto key = std::make_tuple(4, cp, cell_px);
+  const auto key = std::make_tuple(kCjkCacheFontId, cp, cell_px);
   if (auto it = v.cache.find(key); it != v.cache.end()) return &it->second;
   std::vector<uint8_t> cov;
   int w = 0, h = 0;
@@ -586,7 +807,70 @@ void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const
   v.font[0] = std::move(a), v.font[1] = std::move(b), v.font[2] = std::move(e), v.font[3] = std::move(d);
   v.reset();
 }
+void set_named_vector_font(ui::Font role, std::shared_ptr<const fh1::VFont> font) {
+  const int slot = font_slot(role);
+  if (slot < 0 || slot >= kNumVFonts) return;
+  VectorFonts& v = vf();
+  v.font[slot] = std::move(font);
+  v.reset();
+}
+void set_font_map(const fh1::UiFontMap& map) { vf().font_map = map; }
+ui::Font resolve_font_name(std::string_view font_name) {
+  const std::string target = vf().font_map.resolve(font_name);
+  if (target == "A") return ui::Font::kA;
+  if (target == "B") return ui::Font::kB;
+  if (target == "C") return ui::Font::kC;
+  if (target == "D") return ui::Font::kD;
+  if (target == "E") return ui::Font::kE;
+  if (target == "SYM") return ui::Font::kSym;
+  if (target == "DG1") return ui::Font::kDg1;
+  if (target == "DG2") return ui::Font::kDg2;
+  if (target == "DG3") return ui::Font::kDg3;
+  if (target == "DG4") return ui::Font::kDg4;
+  if (target == "DG5") return ui::Font::kDg5;
+  return ui::Font::kB;
+}
+bool load_fonts_from_zip(fh1::Archive& fonts_zip) {
+  auto load = [&](const char* name) -> std::shared_ptr<const fh1::VFont> {
+    auto r = fonts_zip.read(name);
+    if (!r.ok()) return nullptr;
+    auto f = std::make_shared<fh1::VFont>();
+    if (!fh1::parse_vfont(r.data, *f, nullptr)) return nullptr;
+    return f;
+  };
+  if (auto fm = fonts_zip.read("fontmap.xml"); fm.ok()) {
+    fh1::UiFontMap map;
+    std::string_view xml(reinterpret_cast<const char*>(fm.data.data()), fm.data.size());
+    if (fh1::parse_fontmap_xml(xml, map)) set_font_map(map);
+  }
+  VectorFonts& v = vf();
+  auto a = load("aru_vector_aa.dt");
+  if (!a) a = load("a_vector_aa.dt");
+  auto b = load("bru_vector_aa.dt");
+  if (!b) b = load("b_vector_aa.dt");
+  auto e = load("eru_vector_aa.dt");
+  if (!e) e = load("e_vector_aa.dt");
+  auto d = load("dru_vector_aa.dt");
+  if (!d) d = load("d_vector_aa.dt");
+  v.font[0] = std::move(a);
+  v.font[1] = std::move(b);
+  v.font[2] = std::move(e);
+  v.font[3] = std::move(d);
+  v.font[4] = load("c_vector_aa.dt");
+  v.font[5] = load("sym_vector_aa.dt");
+  v.font[6] = load("dg1_vector_aa.dt");
+  v.font[7] = load("dg2_vector_aa.dt");
+  v.font[8] = load("dg3_vector_aa.dt");
+  v.font[9] = load("dg4_vector_aa.dt");
+  v.font[10] = load("dg5_vector_aa.dt");
+  v.reset();
+  return v.font[1] != nullptr;
+}
 bool vector_fonts_loaded() { return vf().font[1] != nullptr; }
+bool font_role_loaded(ui::Font role) {
+  const int slot = font_slot(role);
+  return slot >= 0 && slot < kNumVFonts && vf().font[slot] != nullptr;
+}
 void set_cjk_font(std::shared_ptr<const fh1::CjkFont> cjk) {
   VectorFonts& v = vf();
   v.cjk = std::move(cjk);
@@ -716,6 +1000,8 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
                                ly + 10 * k + pad + 1.5f * k},
                               {gp, ly, k, r},
                               {float(g->first), float(g->count), rs.slant, 0},
+                              {0, 0, 0, 0},
+                              {0, 0, 0, 0},
                               rs.color,
                               rs.color,
                               kGlyph,
@@ -834,20 +1120,17 @@ float coverage(const Instance& it, float px, float py, float& mix) {
 
 float to_linear_unit(uint32_t c, int shift) { return float((c >> shift) & 0xFF) / 255.0f; }
 
-// An image quad's texel colour (bilinear, clamped to the image's atlas rect), times the tint in `c`.
-void image_rgb(const Instance& it, float px, float py, float c[4]) {
-  float tx, ty, edge;
-  image_t(it, px, py, tx, ty, edge);
-  const float u_lo = std::min(it.q[0], it.q[2]) * kAtlasSize;
-  const float u_hi = std::max(it.q[0], it.q[2]) * kAtlasSize;
-  const float v_lo = std::min(it.q[1], it.q[3]) * kAtlasSize;
-  const float v_hi = std::max(it.q[1], it.q[3]) * kAtlasSize;
+void sample_atlas_rect(const float uv[4], float tx, float ty, float out_rgba[4]) {
+  const float u_lo = std::min(uv[0], uv[2]) * kAtlasSize;
+  const float u_hi = std::max(uv[0], uv[2]) * kAtlasSize;
+  const float v_lo = std::min(uv[1], uv[3]) * kAtlasSize;
+  const float v_hi = std::max(uv[1], uv[3]) * kAtlasSize;
   const int min_x = std::clamp(int(std::floor(u_lo)), 0, int(kAtlasSize) - 1);
   const int max_x = std::clamp(int(std::ceil(u_hi)) - 1, min_x, int(kAtlasSize) - 1);
   const int min_y = std::clamp(int(std::floor(v_lo)), 0, int(kAtlasSize) - 1);
   const int max_y = std::clamp(int(std::ceil(v_hi)) - 1, min_y, int(kAtlasSize) - 1);
-  const float u = (it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize - 0.5f;
-  const float v = (it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize - 0.5f;
+  const float u = (uv[0] + (uv[2] - uv[0]) * tx) * kAtlasSize - 0.5f;
+  const float v = (uv[1] + (uv[3] - uv[1]) * ty) * kAtlasSize - 0.5f;
   const int x0 = int(std::floor(u)), y0 = int(std::floor(v));
   const float fx = u - float(x0), fy = v - float(y0);
   const auto& a = atlas_pixels();
@@ -864,10 +1147,52 @@ void image_rgb(const Instance& it, float px, float py, float c[4]) {
   const float w10 = fx * (1.0f - fy);
   const float w01 = (1.0f - fx) * fy;
   const float w11 = fx * fy;
-  for (int ch = 0; ch < 3; ++ch) {
-    const float vch = (p00[ch] * w00 + p10[ch] * w10 + p01[ch] * w01 + p11[ch] * w11) / 255.0f;
-    c[ch] *= vch;
+  for (int ch = 0; ch < 4; ++ch) {
+    out_rgba[ch] = (p00[ch] * w00 + p10[ch] * w10 + p01[ch] * w01 + p11[ch] * w11) / 255.0f;
   }
+}
+
+void image_masked_rgba(const Instance& it, float px, float py, float c[4], float& edge) {
+  float tx = 0.0f, ty = 0.0f;
+  image_t(it, px, py, tx, ty, edge);
+  if (it.p[1] <= 0.0f && it.p[0] > 0.0f) {
+    const float cx = 0.5f * (it.rect[0] + it.rect[2]), cy = 0.5f * (it.rect[1] + it.rect[3]);
+    const float hx = 0.5f * (it.rect[2] - it.rect[0]), hy = 0.5f * (it.rect[3] - it.rect[1]);
+    const float rr = std::min({it.p[0], hx, hy});
+    const float qx = std::fabs(px - cx) - hx + rr, qy = std::fabs(py - cy) - hy + rr;
+    const float d = std::hypot(std::max(qx, 0.0f), std::max(qy, 0.0f)) + std::min(std::max(qx, qy), 0.0f) - rr;
+    edge = std::clamp(0.5f - d, 0.0f, 1.0f);
+  }
+  if (edge <= 0.0f) {
+    c[3] = 0.0f;
+    return;
+  }
+  float t0x = tx * it.m[0] + it.m[2];
+  float t0y = ty * it.m[1] + it.m[3];
+  float s0[4] = {0, 0, 0, 0};
+  if ((it.flags & kMaskRepeat) != 0u) {
+    t0x = t0x - std::floor(t0x);
+    t0y = t0y - std::floor(t0y);
+    sample_atlas_rect(it.q, t0x, t0y, s0);
+  } else if ((it.flags & kMaskBorderTransparent) != 0u) {
+    if (t0x >= 0.0f && t0x <= 1.0f && t0y >= 0.0f && t0y <= 1.0f) {
+      sample_atlas_rect(it.q, t0x, t0y, s0);
+    }
+  } else {
+    sample_atlas_rect(it.q, std::clamp(t0x, 0.0f, 1.0f), std::clamp(t0y, 0.0f, 1.0f), s0);
+  }
+  float s1[4] = {0, 0, 0, 0};
+  sample_atlas_rect(it.r, std::clamp(tx, 0.0f, 1.0f), std::clamp(ty, 0.0f, 1.0f), s1);
+  for (int ch = 0; ch < 4; ++ch) c[ch] *= s0[ch] * s1[ch];
+}
+
+// An image quad's texel colour (bilinear, clamped to the image's atlas rect), times the tint in `c`.
+void image_rgb(const Instance& it, float px, float py, float c[4]) {
+  float tx, ty, edge;
+  image_t(it, px, py, tx, ty, edge);
+  float s[4] = {0, 0, 0, 0};
+  sample_atlas_rect(it.q, std::clamp(tx, 0.0f, 1.0f), std::clamp(ty, 0.0f, 1.0f), s);
+  for (int ch = 0; ch < 3; ++ch) c[ch] *= s[ch];
 }
 
 }  // namespace
@@ -879,16 +1204,29 @@ void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint3
     const int y0 = std::max(0, int(std::floor(it.rect[1]))), y1 = std::min(int(height), int(std::ceil(it.rect[3])));
     for (int y = y0; y < y1; ++y)
       for (int x = x0; x < x1; ++x) {
-        float mix;
-        const float cov = coverage(it, float(x) + 0.5f, float(y) + 0.5f, mix);
-        if (cov <= 0) continue;
+        const float px = float(x) + 0.5f, py = float(y) + 0.5f;
         float c[4];
-        for (int ch = 0; ch < 4; ++ch) {
-          const int shift = ch == 3 ? 24 : 16 - 8 * ch;
-          c[ch] = to_linear_unit(it.color, shift) * (1 - mix) + to_linear_unit(it.color2, shift) * mix;
+        float a = 0.0f;
+        if (it.kind == kImageMasked) {
+          for (int ch = 0; ch < 4; ++ch) {
+            const int shift = ch == 3 ? 24 : 16 - 8 * ch;
+            c[ch] = to_linear_unit(it.color, shift);
+          }
+          float edge = 1.0f;
+          image_masked_rgba(it, px, py, c, edge);
+          a = c[3] * edge;
+          if (a <= 0.0f) continue;
+        } else {
+          float mix;
+          const float cov = coverage(it, px, py, mix);
+          if (cov <= 0) continue;
+          for (int ch = 0; ch < 4; ++ch) {
+            const int shift = ch == 3 ? 24 : 16 - 8 * ch;
+            c[ch] = to_linear_unit(it.color, shift) * (1 - mix) + to_linear_unit(it.color2, shift) * mix;
+          }
+          if (it.kind == kImage) image_rgb(it, px, py, c);
+          a = c[3] * cov;
         }
-        if (it.kind == kImage) image_rgb(it, float(x) + 0.5f, float(y) + 0.5f, c);
-        const float a = c[3] * cov;
         uint8_t* p = &out[(size_t(y) * width + size_t(x)) * 4];
         for (int ch = 0; ch < 3; ++ch) p[ch] = uint8_t(std::lround(c[ch] * 255 * a + p[ch] * (1 - a)));
         p[3] = uint8_t(std::lround(255 * a + p[3] * (1 - a)));

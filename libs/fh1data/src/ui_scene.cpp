@@ -98,6 +98,9 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
         uint32_t w[8];
         for (auto& v : w) v = r.u32();
         o.text_size = w[0], o.text_align = w[1];
+        o.text_valign = w[2], o.text_mode = w[3];
+        std::memcpy(&o.text_spacing[0], &w[4], 4);
+        std::memcpy(&o.text_spacing[1], &w[5], 4);
         r.u8();
         if (out.version == 1008) o.text_width = r.f32();
         if (out.version >= 1007 && r.u8()) r.skip(59);
@@ -115,7 +118,17 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
         o.owner = r.u32();
         o.path = r.str();
         for (auto& m : o.matrix) m = r.f32();
-        r.skip(52);
+        // 52-byte sampler tail: 7 floats + flag + addressing mode + 4 small enums.
+        o.tex_rotation = r.f32();
+        o.tex_u_offset = r.f32();
+        o.tex_v_offset = r.f32();
+        o.tex_u_scale = r.f32();
+        o.tex_v_scale = r.f32();
+        o.tex_pivot_u = r.f32();
+        o.tex_pivot_v = r.f32();
+        o.tex_flag = r.u32();
+        o.tex_address_mode = r.u32();
+        for (auto& e : o.tex_sampler_enums) e = r.u32();
         break;
       default:
         if (error) *error = "object kind " + std::to_string(uint32_t(o.kind)) + " at " + std::to_string(r.p);
@@ -229,19 +242,20 @@ bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* erro
   for (size_t i = 0; i < out.nodes.size(); ++i) {
     UiNode& n = out.nodes[i];
     if (auto it = index.find(n.object); it != index.end()) n.object_index = it->second;
-    const float lx = n.position[0], ly = n.position[1];
+    const float lx = n.position[0], ly = n.position[1], lz = n.position[2];
     if (n.parent >= 0 && size_t(n.parent) < i) {
       const UiNode& p = out.nodes[size_t(n.parent)];
       const float c = std::cos(p.angle), s = std::sin(p.angle);
       const float ux = lx * p.sx, uy = ly * p.sy;
       n.x = p.x + c * ux - s * uy;
       n.y = p.y + s * ux + c * uy;
+      n.z = p.z + lz * p.sz;
       n.angle = p.angle + n.rotation[2];
-      n.sx = p.sx * n.scale[0], n.sy = p.sy * n.scale[1];
+      n.sx = p.sx * n.scale[0], n.sy = p.sy * n.scale[1], n.sz = p.sz * n.scale[2];
       n.alpha = p.alpha * n.opacity;
     } else {
-      n.x = lx, n.y = ly, n.angle = n.rotation[2];
-      n.sx = n.scale[0], n.sy = n.scale[1];
+      n.x = lx, n.y = ly, n.z = lz, n.angle = n.rotation[2];
+      n.sx = n.scale[0], n.sy = n.scale[1], n.sz = n.scale[2];
       n.alpha = n.opacity;
     }
   }
@@ -364,23 +378,48 @@ bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string
       item.properties.emplace_back(u32_at(cursor), u32_at(cursor + 4));
       cursor += 8;
     }
-    // Extract contracts from kind == 8 items.
+    // Extract contracts from kind == 8 items using the real BGF property attribute hashes:
+    //   0xACA9EC63 -> contract type (e.g. "SUPER_STACKER", "PAUSE_MENU_BUTTON")
+    //   0x083BF5F8 -> initial state (e.g. "SHOWN", "HIDDEN")
+    //   0xA73F25FB / 0xADE4DC33 -> data/node bindings
+    //   0xAE4CB58A -> wrapper tag ("contract" / "UIContract")
     if (item.kind == 8) {
+      constexpr uint32_t kAttrContractType = 0xACA9EC63u;
+      constexpr uint32_t kAttrInitialState = 0x083BF5F8u;
+      constexpr uint32_t kAttrBindingA = 0xA73F25FBu;
+      constexpr uint32_t kAttrBindingB = 0xADE4DC33u;
+      constexpr uint32_t kAttrContractTag = 0xAE4CB58Au;
       UiContract c;
       c.item_index = int(i);
       c.owner_hash = item.parent_hash;
+      auto push_unique = [](std::vector<std::string>& dst, const std::string& val) {
+        if (!val.empty() && std::find(dst.begin(), dst.end(), val) == dst.end()) dst.push_back(val);
+      };
       for (const auto& [attr, val] : item.properties) {
-        (void)attr;
-        if (val < out.identities.size()) {
-          const std::string& s = out.identities[val];
-          if (s.empty() || s == "UIContract") continue;
-          if (c.type.empty() && s.find('.') == std::string::npos) {
-            c.type = s;
-          } else if (s.find('.') != std::string::npos) {
-            c.bindings.push_back(s);
-          } else {
-            c.events.push_back(s);
-          }
+        if (val >= out.identities.size()) continue;
+        const std::string& s = out.identities[val];
+        if (s.empty()) continue;
+        if (attr == kAttrContractType) {
+          c.type = s;
+        } else if (attr == kAttrInitialState) {
+          c.initial_state = s;
+        } else if (attr == kAttrBindingA || attr == kAttrBindingB) {
+          if (s != "UIContract" && s != "contract") push_unique(c.bindings, s);
+        }
+      }
+      for (const auto& [attr, val] : item.properties) {
+        if (attr == kAttrContractType || attr == kAttrInitialState || attr == kAttrBindingA ||
+            attr == kAttrBindingB || attr == kAttrContractTag)
+          continue;
+        if (val >= out.identities.size()) continue;
+        const std::string& s = out.identities[val];
+        if (s.empty() || s == "UIContract" || s == "contract") continue;
+        if (s.find('.') != std::string::npos) {
+          push_unique(c.bindings, s);
+        } else if (c.type.empty() && s != "SHOWN" && s != "HIDDEN") {
+          c.type = s;
+        } else {
+          push_unique(c.events, s);
         }
       }
       if (!c.type.empty()) out.contracts.push_back(std::move(c));
@@ -520,6 +559,98 @@ std::vector<float> reflow_stacker(float origin, float step, int count) {
   out.reserve(size_t(count));
   for (int i = 0; i < count; ++i) out.push_back(origin + float(i) * step);
   return out;
+}
+
+namespace {
+std::string to_lower_ascii(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) out.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+  return out;
+}
+
+std::string to_upper_ascii(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) out.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+  return out;
+}
+
+bool extract_xml_attr(std::string_view tag, std::string_view attr_name, std::string& out) {
+  size_t pos = 0;
+  while ((pos = tag.find(attr_name, pos)) != std::string_view::npos) {
+    if (pos > 0 && std::isalnum(static_cast<unsigned char>(tag[pos - 1]))) {
+      pos += attr_name.size();
+      continue;
+    }
+    size_t i = pos + attr_name.size();
+    while (i < tag.size() && (tag[i] == ' ' || tag[i] == '\t')) ++i;
+    if (i >= tag.size() || tag[i] != '=') {
+      pos = i;
+      continue;
+    }
+    ++i;
+    while (i < tag.size() && (tag[i] == ' ' || tag[i] == '\t')) ++i;
+    if (i >= tag.size() || (tag[i] != '"' && tag[i] != '\'')) return false;
+    const char q = tag[i++];
+    const size_t end = tag.find(q, i);
+    if (end == std::string_view::npos) return false;
+    out.assign(tag.substr(i, end - i));
+    return true;
+  }
+  return false;
+}
+}  // namespace
+
+bool parse_fontmap_xml(std::string_view xml, UiFontMap& out) {
+  out.mappings.clear();
+  size_t pos = 0;
+  while ((pos = xml.find("<mapping", pos)) != std::string_view::npos) {
+    const size_t end = xml.find('>', pos);
+    if (end == std::string_view::npos) break;
+    const std::string_view tag = xml.substr(pos, end - pos + 1);
+    std::string fontname, target;
+    if (extract_xml_attr(tag, "fontname", fontname) && extract_xml_attr(tag, "target", target)) {
+      out.mappings[to_lower_ascii(fontname)] = to_upper_ascii(target);
+    }
+    pos = end + 1;
+  }
+  return !out.mappings.empty();
+}
+
+std::string UiFontMap::resolve(std::string_view font_name) const {
+  if (font_name.empty()) return "B";
+  // Strip any weight/style suffix after the first space (e.g. "d bold" -> "d",
+  // "b_swiss_721_medium medium" -> "b_swiss_721_medium"), per FORMAT-UISCENES.
+  const size_t sp = font_name.find(' ');
+  const std::string base = to_lower_ascii(sp == std::string_view::npos ? font_name : font_name.substr(0, sp));
+  const std::string full = to_lower_ascii(font_name);
+  if (auto it = mappings.find(base); it != mappings.end()) return it->second;
+  if (auto it = mappings.find(full); it != mappings.end()) return it->second;
+  // Direct Horizon_* / target names.
+  if (base == "a" || base == "horizon_a" || base == "horizon_c") return "A";
+  if (base == "b" || base == "horizon_b") return "B";
+  if (base == "c") return "C";
+  if (base == "d" || base == "horizon_d" || base == "dbold") return "D";
+  if (base == "e" || base == "horizon_e") return "E";
+  if (base == "sym" || base == "horizon_sym") return "SYM";
+  if (base == "arial") return "DG1";
+  for (int i = 1; i <= 5; ++i) {
+    const std::string dg = "dg" + std::to_string(i);
+    if (base == dg || base == "horizon_" + dg || base.rfind(dg + "_", 0) == 0) return "DG" + std::to_string(i);
+  }
+  // Leading letter before '_' (e.g. "b_swiss_721_medium", "a_helvetica53-extended", "d_swiss_721_roman_condensed").
+  if (base.size() >= 2 && base[1] == '_') {
+    switch (base[0]) {
+      case 'a': return "A";
+      case 'b': return "B";
+      case 'c': return "C";
+      case 'd': return "D";
+      case 'e': return "E";
+      default: break;
+    }
+  }
+  return "B";
 }
 
 }  // namespace fh1
