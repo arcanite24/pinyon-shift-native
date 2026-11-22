@@ -3141,13 +3141,13 @@ int run_drive(int argc, char** argv) {
         if (status == 0 && !render_ground) race->clip_room(collision);
       }
       if (status == 0 && streamer && colorado_world() &&
-          (traffic_flag == 1 || (traffic_flag < 0 && !headless && !race))) {
+          (traffic_flag == 1 || (traffic_flag < 0 && !headless && (!race || race->uses_traffic())))) {
         // The test driver keeps to the right lane among traffic (SPEC-TRAFFIC,
         // Driving a lane: 2.2 m right of the centre line).
         follower.set_keep_right(2.2);
         traffic = std::make_unique<TrafficView>(renderer, showroom, bake_dir, headless && !async_stream);
         const auto game_root = game_root_of();
-        if (!traffic->open(game_root, &ground, hour, traffic_seed, error)) {
+        if (!traffic->open(game_root, &ground, hour, traffic_seed, error, race != nullptr)) {
           std::fprintf(stderr, "carview: note: no traffic: %s\n", error.c_str());
           error.clear();
           traffic.reset();
@@ -3812,7 +3812,7 @@ int run_drive(int argc, char** argv) {
       double last_touch_y = 0;  // where the wheels last touched, for the fall check
       carview::RigAccelState rig_accel;
       auto step = [&](const drive::Input& user_in) {
-        const drive::Input in = race ? race->player_input(vehicle, user_in) : user_in;
+        const drive::Input in = race ? race->player_input(vehicle, user_in, traffic.get()) : user_in;
         vehicle.step(in, *ground);
         if (race) race->replay_player(vehicle);
         {

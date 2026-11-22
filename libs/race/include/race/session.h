@@ -109,11 +109,20 @@ class Session {
 struct LaneParams {
   float trailing = 7, car_clearance = 0.3f, edge_clearance = 0.4f;
 };
+// A live street-traffic car projected onto the racing line for race AI
+// overtaking and collision avoidance in Street & Nemesis races.
+struct TrafficObstacle {
+  double progress = 0;  // m along the shared racing line
+  float cross = 0;      // m right of the line
+  float speed = 0;      // m/s magnitude
+  bool oncoming = false;
+};
 // `cap` (when not empty): each steered car's speed cap, m/s (ours): while
 // a slower car ahead within the trailing distance is still in its way, no
 // faster than that car plus half the gap beyond a car's length; else 1e9.
 void plan_lanes(const drive::RacingLine& line, std::span<const double> progress, std::span<const float> cross,
                 std::span<const float> speed, std::span<const LaneParams> params, size_t ai, std::span<float> lane,
-                double dt, double rate = 1.5, std::span<float> cap = {});
+                double dt, double rate = 1.5, std::span<float> cap = {},
+                std::span<const TrafficObstacle> traffic = {});
 
 }  // namespace race

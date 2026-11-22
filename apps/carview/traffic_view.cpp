@@ -62,10 +62,10 @@ TrafficView::~TrafficView() {
 }
 
 bool TrafficView::open(const std::filesystem::path& game_root, const drive::Ground* const* ground, double hour,
-                       uint64_t seed, std::string& error) {
+                       uint64_t seed, std::string& error, bool race_mode) {
   game_root_ = game_root;
   if (!traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", map_, &error) ||
-      !traffic::read_traffic_config(game_root, config_, &error))
+      !traffic::read_traffic_config(game_root, config_, &error, race_mode))
     return false;
   roads_.build(map_);
   // The baked traffic models, by Data_Car.Id (the "car" line of the rows).
@@ -206,6 +206,13 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
   double pmd[16], world_to_player[16];
   to_double(pm, pmd);
   invert_affine(pmd, world_to_player);
+  const double now_t = population_->time();
+  const float lamp_dt = lamps_at_ >= 0 ? float(std::clamp(now_t - lamps_at_, 0.0, 0.25)) : float(drive::Vehicle::kStep);
+  lamps_at_ = now_t;
+  std::set<uint32_t> alive_ids;
+  for (const auto& c : population_->cars()) alive_ids.insert(c.id);
+  for (auto it = lamps_.begin(); it != lamps_.end();)
+    it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
   std::vector<Showroom::Instance> list;
   for (const auto& c : population_->cars()) {
     const auto it = guests_.find(c.model);
@@ -232,9 +239,19 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     Showroom::Instance in;
     in.car = it->second.showroom.get();
     multiply(world_to_player, gmd, in.model);
-    drive::CarLampState lstate;
-    lstate.headlamps_on = drive::CarLampState::tod_requests_headlamps(population_->hour() * 3600.0);
-    lstate.brake_on = (c.speed > c.target + 1.0 || (body && body->speed() < 0.2));
+    const bool is_new = !lamps_.count(c.id);
+    drive::CarLampState& lstate = lamps_[c.id];
+    drive::LampInputs lin;
+    lin.brake_cmd = (c.speed > c.target + 1.0 || (body && body->speed() < 0.2)) ? 1.0f : 0.0f;
+    lin.brake_pedal = lin.brake_cmd;
+    lin.gear = body ? body->gear() : 1;
+    lin.tod_sec = population_->hour() * 3600.0;
+    lin.dt = lamp_dt;
+    lin.indicator_mode = c.hazard_on ? 3 : (c.turn_left ? 1 : (c.turn_right ? 2 : 0));
+    lin.light_override = c.flash_headlamps ? 2 : 0;
+    lin.is_ai = true;
+    lin.snap_headlamps = is_new;
+    lstate.update(lin);
     in.lamps = lstate.vectors();
     in.has_lamps = true;
     list.push_back(in);

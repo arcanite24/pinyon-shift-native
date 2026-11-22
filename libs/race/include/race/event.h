@@ -36,6 +36,9 @@ int effective_db_difficulty(Difficulty d, AiMode mode = AiMode::kStock);
 // True when Pinyon Shift HARD mode (+1 tier, max aggression, no rubber-band)
 // is active via either Difficulty::kHardPlus or AiMode::kHard.
 bool is_pinyon_hard(Difficulty d, AiMode mode);
+// CareerRaceModes.xml UseTraffic="true": Street (career_type 4) and Nemesis
+// (career_type 11) races run with live street traffic unless disabled.
+inline bool event_uses_traffic(int career_type) { return career_type == 4 || career_type == 11; }
 
 struct SkillRow {
   int id = 0;

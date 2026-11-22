@@ -92,7 +92,10 @@ class RaceView {
   // Before the player's step: the field's pass; returns what the player's
   // car does (held until the signal; the AI's input under autopilot or
   // once finished; else `user`).
-  drive::Input player_input(const drive::Vehicle& player, const drive::Input& user);
+  drive::Input player_input(const drive::Vehicle& player, const drive::Input& user,
+                            const TrafficView* traffic = nullptr);
+  // CareerRaceModes.xml UseTraffic="true": true for all Street & Nemesis races.
+  bool uses_traffic() const { return race::event_uses_traffic(event_.career_type); }
   // After the player's step: the opponents' steps (on `near` inside the
   // gathered collision, around (cx, cz) within `radius`, else on the
   // ribbon), contacts, the session, rubber bands and resets.

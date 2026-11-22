@@ -12,6 +12,7 @@
 #include <string>
 
 #include "drive/contact.h"
+#include "drive/lamps.h"
 #include "drive/vehicle.h"
 #include "drive_helpers.h"
 #include "showroom.h"
@@ -32,9 +33,10 @@ class TrafficView {
 
   // Reads the road map and settings from the disc (`game_root`), the
   // traffic models' bakes from the bake folder. `ground`: where the
-  // current ground is (it changes as the world streams).
+  // current ground is (it changes as the world streams). When `race_mode` is
+  // true, loads `<Settings name="race">` from AIOpenWorld.xml.
   bool open(const std::filesystem::path& game_root, const drive::Ground* const* ground, double hour, uint64_t seed,
-            std::string& error);
+            std::string& error, bool race_mode = false);
   void set_hour(double hour) { population_->set_hour(hour); }
   double hour() const { return population_->hour(); }
   // One fixed step (drive::Vehicle::kStep), after the player's car's.
@@ -81,8 +83,10 @@ class TrafficView {
   double upload_ms_max_ = 0;
   int uploads_ = 0;
   double guests_at_ = -1;  // the population time guests were last refreshed from step()
+  double lamps_at_ = -1;   // population time when lamps were last updated
   double blend_ = 1.0;
   std::map<uint32_t, TrafficPose> before_;
+  std::map<uint32_t, drive::CarLampState> lamps_;
 };
 
 // Another car drawn with the host's camera: `guest`'s model where `body`

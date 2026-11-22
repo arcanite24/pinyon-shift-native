@@ -18,6 +18,11 @@ const DensityEntry* TrafficConfig::density(int id) const {
   return it == traffic.end() ? nullptr : &it->second;
 }
 
+const DensityEntry* TrafficConfig::festival_density(int id) const {
+  const auto it = festival.find(id);
+  return it == festival.end() ? nullptr : &it->second;
+}
+
 void TrafficConfig::apply(const Registry& r) {
   auto g = [&](const char* id, double& v) { v = r.get(id, v); };
   g("AI/Spawning/Density/EndTimeAtMaxDensity", end_time_at_max);
@@ -26,6 +31,8 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Spawning/Density/StartTimeAtMaxDensity", start_time_at_max);
   g("AI/Spawning/Density/MinTraffic", min_traffic);
   g("AI/Spawning/Density/MaxTraffic", max_traffic);
+  g("AI/Spawning/Density/MinFestival", min_festival);
+  g("AI/Spawning/Density/MaxFestival", max_festival);
   g("AI/Spawning/Density/DensityTestInterval", density_test_interval);
   g("AI/Spawning/Density/DensityDecay", density_decay);
   g("AI/Spawning/SpawnInDistance", spawn_in);
@@ -34,6 +41,8 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Spawning/Interval/TrafficMed", interval_med);
   g("AI/Spawning/Interval/TrafficMax", interval_max);
   g("AI/Spawning/Interval/TrafficVariance", interval_variance);
+  g("AI/Spawning/Interval/SpeedFactor", interval_speed_factor);
+  g("AI/Spawning/Interval/SpeedMax", interval_speed_max);
   g("AI/Spawning/MinDistanceFromOtherCars", min_gap);
   g("AI/Spawning/MaxDistanceFromOtherCars", max_gap);
   g("AI/Spawning/SpeedAtMaxDistanceFromOtherCars", speed_at_max_gap);
@@ -60,6 +69,27 @@ void TrafficConfig::apply(const Registry& r) {
   g("AI/Traffic/VehiclePosition/MaxMediumLodDistance", medium_lod_distance);
   g("AI/Traffic/VehicleControls/AccelMaxInput", accel_max_input);
   g("AI/Traffic/VehicleControls/BrakeMaxInput", brake_max_input);
+  g("AI/Traffic/Junctions/MaxCollisionCheckDistance", junction_max_collision_check_distance);
+  g("AI/Traffic/CollisionAvoidance/Avoidance/JunctionManoeuvreSafeTimeGap", junction_safe_time_gap);
+  double fgw = junction_force_give_way ? 1.0 : 0.0;
+  g("AI/Traffic/Junctions/ForceGiveWay", fgw);
+  junction_force_give_way = fgw >= 0.5;
+  g("AI/Traffic/LaneChangeBehavior/LaneChangeChance", lane_change_chance);
+  g("AI/Traffic/LaneChangeBehavior/LaneChangeRate", lane_change_rate);
+  g("AI/Traffic/LaneChangeBehavior/MinTimeBetweenLaneChanges", lane_change_min_interval);
+  g("AI/Traffic/LaneChangeBehavior/TimeBlockedBeforeLaneChange", lane_change_time_blocked);
+  g("AI/Traffic/CollisionAvoidance/Avoidance/MaxAvoidOffset", avoid_max_offset);
+  g("AI/Traffic/CollisionAvoidance/Avoidance/MaxAvoidSpeed", avoid_max_speed);
+  g("AI/Traffic/CollisionAvoidance/Avoidance/MaxAvoidDistance", avoid_max_distance);
+  g("AI/Traffic/CollisionResponse/LightFlashChance", light_flash_chance);
+  g("AI/Traffic/CollisionResponse/LightFlashTime", light_flash_time);
+  g("AI/Traffic/CollisionResponse/TimeBetweenLightFlashes", time_between_light_flashes);
+  g("AI/Traffic/DeadBehavior/HazardLightDelay", dead_hazard_delay);
+  g("AI/Traffic/DeadBehavior/ReanimateDelay", dead_reanimate_delay);
+  g("AI/Traffic/DeadBehavior/ReanimateMaxSpeed", dead_reanimate_max_speed);
+  g("AI/Traffic/VehicleControls/MinDistanceBeforeIndicating", min_distance_before_indicating);
+  g("AI/Traffic/VehicleControls/TimeBeforeIndicating", time_before_indicating);
+  g("AI/Traffic/VehicleControls/TimeToKeepIndicating", time_to_keep_indicating);
   g("AI/Traffic/VehiclePosition/Interpolation/Min/PositionK", gains_min.position_k);
   g("AI/Traffic/VehiclePosition/Interpolation/Min/HeadingK", gains_min.heading_k);
   g("AI/Traffic/VehiclePosition/Interpolation/Min/LaneOffsetK", gains_min.lane_offset_k);
@@ -90,23 +120,29 @@ void group_models(const audio::XmlNode* list, const std::map<std::string, std::s
 }  // namespace
 
 bool parse_traffic_config(std::string_view aiopenworld_xml, std::string_view registry_xml, TrafficConfig& out,
-                          std::string* error) {
+                          std::string* error, bool race_mode) {
   audio::XmlNode ai, reg;
   if (!audio::parse_xml(aiopenworld_xml, ai, error)) return false;
   if (!audio::parse_xml(registry_xml, reg, error)) return false;
   const audio::XmlNode* settings = nullptr;
-  for (const auto& c : ai.children)
-    if (audio::iequals(c.name, "Settings") && audio::iequals(c.attr("name"), "freeroam")) settings = &c;
+  const audio::XmlNode* freeroam = nullptr;
+  for (const auto& c : ai.children) {
+    if (!audio::iequals(c.name, "Settings")) continue;
+    if (audio::iequals(c.attr("name"), "freeroam")) freeroam = &c;
+    if (race_mode && audio::iequals(c.attr("name"), "race")) settings = &c;
+  }
+  if (!settings) settings = freeroam;
   if (!settings) {
     if (error) *error = "AIOpenWorld.xml: no freeroam settings";
     return false;
   }
   const audio::XmlNode* list = settings->child("CarList");
   if (!list) {
-    if (error) *error = "AIOpenWorld.xml: no freeroam CarList";
+    if (error) *error = "AIOpenWorld.xml: no CarList";
     return false;
   }
   out.initial_cars = int(list->number("numInitialTrafficCars", out.initial_cars));
+  out.initial_festival_cars = int(list->number("numInitialFestivalCars", out.initial_festival_cars));
   out.max_loaded_models = int(list->number("maxLoadedTrafficModels", out.max_loaded_models));
   out.models.clear();
   for (const auto& c : list->children) {
@@ -123,25 +159,36 @@ bool parse_traffic_config(std::string_view aiopenworld_xml, std::string_view reg
     for (const auto& grp : g->children)
       if (audio::iequals(grp.name, "Group"))
         for (const auto& car : grp.children) groups[grp.attr("id")].insert(to_int(car.attr("model")));
+  auto parse_density_list = [&](const audio::XmlNode& dl, std::map<int, DensityEntry>& dst) {
+    for (const auto& d : dl.children) {
+      if (!audio::iequals(d.name, "Density")) continue;
+      DensityEntry e;
+      e.id = int(d.number("id", 0));
+      e.min = d.number("min", 0);
+      e.max = d.number("max", 0);
+      e.speed_mph = d.number("speed", 0);
+      e.spawn_in = d.number("spawnInDistance", 0);
+      e.spawn_out = d.number("spawnOutDistance", 0);
+      e.away_chance = d.number("spawnAwayChance", e.away_chance);
+      group_models(d.child("BannedVehicles"), groups, e.banned);
+      group_models(d.child("AllowedVehicles"), groups, e.allowed);
+      dst[e.id] = e;
+    }
+  };
   out.traffic.clear();
+  out.festival.clear();
   if (const auto* dens = settings->child("Densities"))
     for (const auto& dl : dens->children) {
-      if (!audio::iequals(dl.name, "DensityList") || !audio::iequals(dl.attr("cartype"), "traffic")) continue;
-      for (const auto& d : dl.children) {
-        if (!audio::iequals(d.name, "Density")) continue;
-        DensityEntry e;
-        e.id = int(d.number("id", 0));
-        e.min = d.number("min", 0);
-        e.max = d.number("max", 0);
-        e.speed_mph = d.number("speed", 0);
-        e.spawn_in = d.number("spawnInDistance", 0);
-        e.spawn_out = d.number("spawnOutDistance", 0);
-        e.away_chance = d.number("spawnAwayChance", e.away_chance);
-        group_models(d.child("BannedVehicles"), groups, e.banned);
-        group_models(d.child("AllowedVehicles"), groups, e.allowed);
-        out.traffic[e.id] = e;
-      }
+      if (!audio::iequals(dl.name, "DensityList")) continue;
+      if (audio::iequals(dl.attr("cartype"), "traffic")) parse_density_list(dl, out.traffic);
+      else if (audio::iequals(dl.attr("cartype"), "festival")) parse_density_list(dl, out.festival);
     }
+  if (out.festival.empty() && freeroam && freeroam != settings) {
+    if (const auto* dens = freeroam->child("Densities"))
+      for (const auto& dl : dens->children)
+        if (audio::iequals(dl.name, "DensityList") && audio::iequals(dl.attr("cartype"), "festival"))
+          parse_density_list(dl, out.festival);
+  }
   Registry r;
   for (const auto& v : reg.children)
     if (audio::iequals(v.name, "Value") && v.has("id")) r.values[v.attr("id")] = v.number("value", 0);
@@ -149,7 +196,8 @@ bool parse_traffic_config(std::string_view aiopenworld_xml, std::string_view reg
   return true;
 }
 
-bool read_traffic_config(const std::filesystem::path& game_root, TrafficConfig& out, std::string* error) {
+bool read_traffic_config(const std::filesystem::path& game_root, TrafficConfig& out, std::string* error,
+                         bool race_mode) {
   const auto zip = game_root / "media" / "gametunablesettings.zip";
   auto a = fh1::Archive::open(zip, error);
   if (!a) return false;
@@ -164,7 +212,7 @@ bool read_traffic_config(const std::filesystem::path& game_root, TrafficConfig& 
   };
   std::string ai, reg;
   if (!member("AIOpenWorld.xml", ai) || !member("GlobalRegistry.xml", reg)) return false;
-  return parse_traffic_config(ai, reg, out, error);
+  return parse_traffic_config(ai, reg, out, error, race_mode);
 }
 
 double time_factor(double hour, const TrafficConfig& c) {

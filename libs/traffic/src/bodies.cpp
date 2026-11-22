@@ -170,7 +170,8 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     const drive::Vehicle& v = *it->second.v;
     const Vec3 at = v.position();
     const Vec3 f = drive::rotate(v.orientation(), {0, 0, 1});
-    pop_.follow(i, {at.x, at.y, at.z}, std::atan2(f.x, f.z), v.speed());
+    const Vec3 u = drive::rotate(v.orientation(), {0, 1, 0});
+    pop_.follow(i, {at.x, at.y, at.z}, std::atan2(f.x, f.z), v.speed(), u.y);
     cars[i].pitch = std::asin(std::clamp(f.y, -1.0, 1.0));
   }
 }

@@ -191,12 +191,169 @@ void test_hold_resume() {
   CHECK(std::fabs(lat_end) < 0.3);
 }
 
+// Synthetic multi-lane one-way freeway along +z (11 nodes, 100 m apart).
+traffic::NavMap oneway_freeway() {
+  traffic::NavMap m;
+  m.keys = {"road_type", "traffic_density", "oneway"};
+  m.values = {"freeway", "4", "true"};
+  for (uint32_t i = 0; i < 11; ++i) {
+    traffic::NavNode n;
+    n.id = i;
+    n.z = float(i * 100);
+    m.nodes.push_back(n);
+    m.way_nodes.push_back(i);
+  }
+  m.tags = {{0, 0}, {1, 1}, {2, 2}};
+  traffic::NavWay w;
+  w.node_count = 11;
+  w.tag_count = 3;
+  m.ways.push_back(w);
+  return m;
+}
+
+// Synthetic T-junction: main road along +z (z = 0..200) meeting cross road along +x at (0, 0, 100).
+traffic::NavMap t_junction() {
+  traffic::NavMap m;
+  m.keys = {"road_type", "traffic_density"};
+  m.values = {"a", "5"};
+  // Nodes: 0=(0,0,0), 1=(0,0,100), 2=(0,0,200), 3=(100,0,100), 4=(-100,0,100)
+  const float pts[5][2] = {{0, 0}, {0, 100}, {0, 200}, {100, 100}, {-100, 100}};
+  for (uint32_t i = 0; i < 5; ++i) {
+    traffic::NavNode n;
+    n.id = i;
+    n.x = pts[i][0];
+    n.z = pts[i][1];
+    m.nodes.push_back(n);
+  }
+  m.way_nodes = {0, 1, 2, 4, 1, 3};
+  m.tags = {{0, 0}, {1, 1}, {0, 0}, {1, 1}};
+  traffic::NavWay w0;
+  w0.node_first = 0, w0.node_count = 3, w0.tag_first = 0, w0.tag_count = 2;
+  traffic::NavWay w1;
+  w1.node_first = 3, w1.node_count = 3, w1.tag_first = 2, w1.tag_count = 2;
+  m.ways = {w0, w1};
+  return m;
+}
+
+void test_traffic_behaviors() {
+  // 1. Multi-lane freeway lane change + indicator when blocked by slower car.
+  {
+    const traffic::NavMap map = oneway_freeway();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    traffic::DensityEntry e;
+    e.id = 4, e.speed_mph = 60;
+    c.traffic[4] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 3);
+    traffic::Car slow, fast;
+    slow.model = fast.model = 282;
+    slow.base_speed = slow.speed = slow.target = 10.0;
+    fast.base_speed = fast.speed = fast.target = 25.0;
+    pop.add(slow, 0, 140, 1);
+    pop.add(fast, 0, 120, 1);
+    bool changed_lane = false, indicated = false;
+    for (int i = 0; i < 180; ++i) {
+      pop.step(1.0 / 60.0, {50, 0, 140}, {0, 0, 0});
+      if (pop.cars().size() < 2) continue;
+      const auto& fc = pop.cars()[1];
+      if (fc.lane_index == 1) changed_lane = true;
+      if (fc.turn_left) indicated = true;
+    }
+    CHECK(changed_lane);
+    CHECK(indicated);
+    CHECK(pop.cars().size() >= 2 && pop.cars()[1].lateral < 1.0);
+  }
+  // 2. Player swerve avoidance & oncoming headlight flash.
+  {
+    const traffic::NavMap map = straight_road();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.light_flash_chance = 1.0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 30;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 5);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = car.speed = car.target = 13.4;
+    pop.add(car, 0, 100, 1);
+    bool flashed = false;
+    double max_avoid = 0;
+    for (int i = 0; i < 60; ++i) {
+      // Oncoming player directly in traffic car's lane (+2.2 m right of centre).
+      pop.step(1.0 / 60.0, {2.2, 0, 140.0 - i * 0.25}, {0, 0, -15.0});
+      flashed |= pop.cars()[0].flash_headlamps;
+      max_avoid = std::max(max_avoid, std::fabs(pop.cars()[0].avoid_offset));
+    }
+    CHECK(flashed);
+    CHECK(max_avoid > 0.3);
+  }
+  // 3. DeadBehavior: hazard lights after HazardLightDelay, reanimate after ReanimateDelay.
+  {
+    const traffic::NavMap map = straight_road();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 30;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 9);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = 13.4;
+    car.speed = 0.0;
+    car.off_line = true;
+    pop.add(car, 0, 100, 1);
+    pop.cars()[0].off_line = true;
+    pop.cars()[0].speed = 0.0;
+    bool saw_hazards = false;
+    for (int i = 0; i < 240; ++i) {  // 4.0 s
+      pop.step(1.0 / 60.0, {50, 0, 100}, {0, 0, 0});
+      if (pop.cars().empty()) continue;
+      if (pop.cars()[0].off_line && pop.cars()[0].hazard_on) saw_hazards = true;
+      if (pop.cars()[0].off_line) pop.cars()[0].speed = 0.0;
+    }
+    CHECK(saw_hazards);
+    CHECK(!pop.cars().empty() && !pop.cars()[0].off_line && !pop.cars()[0].hazard_on);
+  }
+  // 4. Junction give-way: approaching cross-traffic causes car to slow/yield.
+  {
+    const traffic::NavMap map = t_junction();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.junction_force_give_way = true;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 30;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 11);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = car.speed = car.target = 13.4;
+    pop.add(car, 0, 85, 1);  // 15 m south of junction (0,0,100)
+    // Player approaching from west (-18, 0, 100) heading east at 12 m/s.
+    pop.step(1.0 / 60.0, {-18, 0, 100}, {12.0, 0, 0});
+    CHECK(!pop.cars().empty() && pop.cars()[0].target < 12.0);
+  }
+}
+
 }  // namespace
 
 int main() {
   test_time_factor();
   test_push();
   test_hold_resume();
+  test_traffic_behaviors();
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root || !*root) {
     std::printf("traffic_tests: SHIFT_GAME_ROOT not set, corpus checks skipped\n");
@@ -343,6 +500,16 @@ int main() {
   }
   std::printf("local density: noon %.2f, 02:00 %.2f cars\n", noon, night);
   CHECK(near(noon, 6.2, 0.1) && near(night, 0.6, 0.05));
+  CHECK(c.initial_festival_cars == 2 && c.festival_density(8) && near(c.festival_density(8)->max, 1.0, 1e-9));
+  CHECK(near(c.junction_max_collision_check_distance, 60.0, 1e-9));
+  CHECK(near(c.avoid_max_offset, 5.0, 1e-4));
+  CHECK(near(c.dead_hazard_delay, 1.4, 1e-9) && near(c.dead_reanimate_delay, 2.0, 1e-9));
+
+  // Race-mode traffic settings (<Settings name="race">).
+  traffic::TrafficConfig rc;
+  CHECK(traffic::read_traffic_config(game, rc, &error, true));
+  CHECK(rc.models.size() == 6 && rc.initial_cars == 0);
+  CHECK(rc.density(4) && near(rc.density(4)->speed_mph, 90.0, 1e-9));
 
   std::printf(failures ? "traffic_tests: %d failure(s)\n" : "traffic_tests: ok\n", failures);
   return failures ? 1 : 0;

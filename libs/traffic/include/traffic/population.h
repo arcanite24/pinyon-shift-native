@@ -33,7 +33,10 @@ struct Car {
   int road = -1;
   int dir = 1;              // +1: node order, -1: against
   double s = 0;             // arc length along the road's centre line
+  int lane_index = 0;       // 0: right/normal lane (+2.2 m), 1: fast/left lane (-1.8 m on multi-lane freeways)
   double lateral = 2.2;     // m right of the centre line, in its direction of travel
+  double target_lateral = 2.2;
+  double avoid_offset = 0;  // lateral swerve away from an encroaching player (m)
   double speed = 0, target = 0;  // m/s
   double base_speed = 0;    // the road's speed with this car's variance
   int last_node = -1;       // the node it last passed (no turning back there)
@@ -45,10 +48,25 @@ struct Car {
   bool off_line = false;    // knocked off its lane (stays in physics until back on it)
   bool body = false;        // the host has a body for it (bodies.h): it is not placed on the lane
   double age = 0;           // s since spawning
+  // Multi-lane & collision-avoidance state
+  double blocked_time = 0;
+  double since_lane_change = 10.0;
+  // Lamp / indicator / flash state (hooked into Slice 3 CarLampState)
+  bool turn_left = false;
+  bool turn_right = false;
+  bool hazard_on = false;
+  bool flash_headlamps = false;
+  double indicator_hold = 0;
+  double flash_timer = 0;
+  double flash_cooldown = 0;
+  // DeadBehavior recovery / reanimation
+  double dead_timer = 0;
+  double stopped_dead_timer = 0;
+  double up_y = 1.0;
 };
 
 struct PopulationStats {
-  int spawned = 0, despawned = 0, initial = 0;
+  int spawned = 0, despawned = 0, initial = 0, overspawn_culled = 0;
   std::vector<double> spawn_distances, despawn_distances;
   int spawned_away = 0;
 };
@@ -80,7 +98,7 @@ class Population {
   std::vector<Car>& cars() { return cars_; }
   // Moves a car in full physics to its body's pose: finds its place on its
   // road (or the road it has reached) and whether it is back on its line.
-  void follow(size_t index, const P3& body, double heading, double speed);
+  void follow(size_t index, const P3& body, double heading, double speed, double up_y = 1.0);
   // A full-physics car's wanted heading change and speed (the host turns
   // them into inputs): the point `ahead` m along its lane.
   P3 lane_point(const Car& car, double ahead) const;
@@ -95,11 +113,17 @@ class Population {
 
  private:
   const DensityEntry* entry(const Road& r) const { return r.traffic ? config_.density(r.density) : nullptr; }
+  bool is_multilane(const Road& r) const;
+  double lane_center(const Road& r, int lane_index) const;
   double road_speed(const Road& r) const;
   void measure(const P3& player);
   void rotate_models();
+  void check_overspawn(const P3& player);
+  double spawn_interval(double player_speed);
   bool spawn(const P3& player, double player_speed, bool initial);
-  bool place(Car& car, int road, double s, int dir);
+  bool place(Car& car, int road, double s, int dir, int lane_index = 0);
+  bool next_junction(const Car& car, double max_dist, uint32_t& node_out, double& dist_out, P3& pos_out,
+                     double& turn_angle_out) const;
   void drive(Car& car, double dt, const P3& player, const P3& player_velocity);
   void advance(Car& car, double distance) const;
   void pose(Car& car) const;
@@ -120,7 +144,7 @@ class Population {
   bool bodies_ = false;
   double time_ = 0;
   double smoothed_ = 0, target_ = 0;
-  double next_test_ = 0, next_spawn_ = 0, next_rotation_ = 0;
+  double next_test_ = 0, next_spawn_ = 0, next_rotation_ = 0, next_overspawn_ = 0;
   // The traffic road lengths within the spawn-out distance (by density id),
   // measured again once the player has moved 10 m.
   std::map<int, double> within_;

@@ -114,7 +114,7 @@ std::vector<size_t> Session::order() const {
 
 void plan_lanes(const drive::RacingLine& line, std::span<const double> progress, std::span<const float> cross,
                 std::span<const float> speed, std::span<const LaneParams> params, size_t ai, std::span<float> lane,
-                double dt, double rate, std::span<float> cap) {
+                double dt, double rate, std::span<float> cap, std::span<const TrafficObstacle> traffic) {
   const size_t n = std::min({progress.size(), cross.size(), speed.size()});
   constexpr float kWidth = 2.05f;  // a car's width, m
   for (size_t i = 0; i < ai && i < n && i < lane.size(); ++i) {
@@ -165,6 +165,36 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       if (side == 0) side = room_r >= room_l ? 1.0f : -1.0f;
       target = side > 0 ? cand_right : cand_left;
     }
+    // Street/Nemesis live traffic avoidance: detect slower or oncoming traffic
+    // ahead along the racing line and shift cleanly onto the wider side.
+    bool dodging_traffic = false;
+    const float tsep = kWidth + std::max(p.car_clearance, 0.35f) + 0.55f;
+    if (!traffic.empty()) {
+      size_t tblock = traffic.size();
+      double tbest = 1e30;
+      for (size_t t = 0; t < traffic.size(); ++t) {
+        const auto& obs = traffic[t];
+        const double gap = obs.progress - progress[i];
+        const double look = obs.oncoming ? std::max(70.0, (std::max(0.0f, speed[i]) + obs.speed) * 2.5)
+                                         : std::max(48.0, std::max(0.0f, speed[i]) * 2.5);
+        if (gap < -3.0 || gap > look || gap >= tbest) continue;
+        if (std::fabs(obs.cross - target) < tsep || std::fabs(obs.cross - cross[i]) < tsep ||
+            std::fabs(obs.cross - lane[i]) < tsep) {
+          tblock = t;
+          tbest = gap;
+        }
+      }
+      if (tblock < traffic.size()) {
+        const auto& obs = traffic[tblock];
+        const float cand_r = std::clamp(obs.cross + tsep + 0.25f, min_lane, max_lane);
+        const float cand_l = std::clamp(obs.cross - tsep - 0.25f, min_lane, max_lane);
+        const float room_r = cand_r - obs.cross;
+        const float room_l = obs.cross - cand_l;
+        if (std::fabs(room_r - room_l) < 0.15f) target = obs.cross >= 0.0f ? cand_l : cand_r;
+        else target = room_r > room_l ? cand_r : cand_l;
+        dodging_traffic = true;
+      }
+    }
     // Check all cars alongside (within 5.8 m longitudinally) so cars never merge
     // sideways into a neighbour or rub doors through a corner.
     for (size_t j = 0; j < n; ++j) {
@@ -178,7 +208,8 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       else target = std::min(target, push);
     }
     target = std::clamp(target, min_lane, max_lane);
-    const float step = float(rate * dt);
+    const double eff_rate = dodging_traffic ? std::max(rate, 4.8) : rate;
+    const float step = float(eff_rate * dt);
     lane[i] += std::clamp(target - lane[i], -step, step);
     if (i < cap.size()) {
       cap[i] = 1e9f;
@@ -201,6 +232,19 @@ void plan_lanes(const drive::RacingLine& line, std::span<const double> progress,
       if (block < n && std::fabs(cross[i] - cross[block]) < kWidth + p.car_clearance &&
           std::fabs(lane[i] - cross[block]) < kWidth + p.car_clearance && best < 9.0) {
         cap[i] = std::min(cap[i], std::max(0.0f, speed[block]) + 0.5f * std::max(0.0f, float(best) - 5.0f));
+      }
+      // Brake smoothly if a live traffic car still blocks our current path.
+      for (const auto& obs : traffic) {
+        const double gap = obs.progress - progress[i];
+        const double range = obs.oncoming ? 55.0 : 42.0;
+        if (gap <= 0 || gap > range) continue;
+        const bool in_curr = std::fabs(cross[i] - obs.cross) < kWidth + 0.45f;
+        const bool in_lane = std::fabs(lane[i] - obs.cross) < kWidth + 0.45f;
+        const bool in_tgt = std::fabs(target - obs.cross) < kWidth + 0.45f;
+        if (!(in_curr && (in_lane || (in_tgt && gap < 14.0)))) continue;
+        const float vt = obs.oncoming ? 0.0f : std::max(0.0f, obs.speed);
+        const float room = std::max(0.0f, float(gap) - 6.5f);
+        cap[i] = std::min(cap[i], std::sqrt(vt * vt + 2 * 16.0f * room));
       }
     }
   }

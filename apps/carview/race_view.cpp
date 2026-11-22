@@ -507,7 +507,8 @@ void RaceView::release_models() {
   models_.clear();
 }
 
-drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::Input& user) {
+drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::Input& user,
+                                    const TrafficView* traffic) {
   const size_t n = cars_.size();
   const drive::Vec3 pp = player.position();
   ppx_ = pp.x, ppz_ = pp.z;
@@ -585,7 +586,30 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   // Lanes from the last step's progress, then the field's pass.
   for (size_t k = 0; k <= n; ++k)
     progress_[k] = field_->progress(k), cross_[k] = field_->cross_track(k), speed_[k] = states_[k].speed;
-  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 3.2, caps_);
+  std::vector<race::TrafficObstacle> traffic_obs;
+  if (traffic && traffic->cars() && !traffic->cars()->empty()) {
+    double min_p = progress_[0], max_p = progress_[0];
+    for (size_t k = 1; k <= n; ++k)
+      min_p = std::min(min_p, progress_[k]), max_p = std::max(max_p, progress_[k]);
+    const double lo_p = std::max(0.0, min_p - 40.0);
+    const double hi_p = std::min(line_.line.length(), max_p + 120.0);
+    for (const auto& tc : *traffic->cars()) {
+      const double tp = line_.line.nearest(tc.position.x, tc.position.z, lo_p, hi_p);
+      double lx, ly, lz, lh;
+      line_.line.pose(tp, 0, lx, ly, lz, lh);
+      const double dx = tc.position.x - lx, dz = tc.position.z - lz;
+      const double rx = std::cos(lh), rz = -std::sin(lh);  // right of line
+      const double cross = dx * rx + dz * rz;
+      const double along_err = dx * std::sin(lh) + dz * std::cos(lh);
+      if (std::fabs(along_err) > 12.0) continue;
+      const double room = std::min(12.0, line_.line.room(tp, cross > 0));
+      if (std::fabs(cross) > room + 3.0) continue;
+      const double dir_dot = std::sin(tc.heading) * std::sin(lh) + std::cos(tc.heading) * std::cos(lh);
+      traffic_obs.push_back({tp, float(cross), float(tc.speed), dir_dot < 0.0});
+    }
+  }
+  race::plan_lanes(line_.line, progress_, cross_, speed_, lane_params_, n, lanes_, drive::Vehicle::kStep, 3.2, caps_,
+                   traffic_obs);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
   // Held on the grid in first: brake under the reverse-select press (0.5) and the handbrake.

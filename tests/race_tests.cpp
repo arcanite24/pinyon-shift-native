@@ -721,6 +721,33 @@ int main() {
 
     // Difficulty bonus for HARD+ (kHardPlus = 4 -> 60%).
     CHECK(race::difficulty_bonus_percent(4) == 60);
+
+    // Street & Nemesis races enable live traffic (CareerRaceModes.xml UseTraffic="true").
+    CHECK(race::event_uses_traffic(4));   // Street
+    CHECK(race::event_uses_traffic(11));  // Nemesis
+    CHECK(!race::event_uses_traffic(1));  // Festival
+    CHECK(!race::event_uses_traffic(8));  // Showcase
+
+    // Race AI traffic avoidance: plan_lanes steers around traffic obstacle & caps speed if blocked.
+    {
+      drive::RacingLine rl;
+      for (int i = 0; i <= 40; ++i) {
+        rl.x.push_back(0.0f);
+        rl.y.push_back(0.0f);
+        rl.z.push_back(float(i * 10));
+        rl.dist.push_back(float(i * 10));
+        rl.radius.push_back(1e6f);
+        rl.speed.push_back(60.0f);
+        rl.room_left.push_back(4.5f);
+        rl.room_right.push_back(4.5f);
+      }
+      double prog[1] = {50.0};
+      float cross[1] = {0.0f}, spd[1] = {35.0f}, lane[1] = {0.0f}, cap[1] = {1e9f};
+      race::LaneParams lp[1] = {{7.0f, 0.3f, 0.4f}};
+      race::TrafficObstacle obs[1] = {{75.0, 0.5f, 13.4f, false}};
+      for (int s = 0; s < 30; ++s) race::plan_lanes(rl, prog, cross, spd, lp, 1, lane, 1.0 / 60.0, 3.2, cap, obs);
+      CHECK(lane[0] < -1.0f);  // moved left around traffic car at cross = +0.5
+    }
   }
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);
   else std::printf("SHIFT_GAME_ROOT not set: disc checks skipped\n");

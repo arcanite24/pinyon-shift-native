@@ -9,6 +9,7 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kMph = 0.44704;
 constexpr double kLane = 2.2;           // m right of the centre line (SPEC-TRAFFIC, Driving a lane)
+constexpr double kFastLane = -1.8;      // m right of centre line (left/fast lane on multi-lane one-way freeways)
 constexpr double kDespawnMargin = 20;   // past the spawn-out distance (370 -> 390 m)
 constexpr double kAwayLerpSpeed = 20;   // AI/Spawning/SpawnAwayChanceLerpSpeed, read as m/s (ours)
 constexpr double kBendDecel = 3;        // m/s^2 when slowing for a bend (ours)
@@ -40,10 +41,56 @@ void Population::set_available(std::vector<int64_t> models) {
   available_ = std::move(models);
 }
 
+bool Population::is_multilane(const Road& r) const {
+  return r.oneway && (r.type == "freeway" || r.density == 4 || r.density == 9 || r.density == 17);
+}
+
+double Population::lane_center(const Road& r, int lane_index) const {
+  return (is_multilane(r) && lane_index == 1) ? kFastLane : kLane;
+}
+
 double Population::road_speed(const Road& r) const {
   const DensityEntry* e = entry(r);
   const double mph = e && e->speed_mph > 0 ? e->speed_mph : 30;
   return std::clamp(mph * kMph, config_.speed_min, config_.speed_max);
+}
+
+double Population::spawn_interval(double player_speed) {
+  double wait = uniform(config_.interval_med - config_.interval_variance,
+                        config_.interval_med + config_.interval_variance);
+  const double sf =
+      1.0 + config_.interval_speed_factor * std::clamp(player_speed / std::max(1.0, config_.interval_speed_max), 0.0, 1.0);
+  wait /= sf;
+  if (target_ < 1.2 && player_speed < 1.0) wait *= 1.25;
+  return std::clamp(wait, config_.interval_min, config_.interval_max);
+}
+
+void Population::check_overspawn(const P3& player) {
+  if (double(cars_.size()) <= target_ + 1.0) return;
+  size_t best_idx = cars_.size();
+  double best_score = -1.0;
+  for (size_t i = 0; i < cars_.size(); ++i) {
+    const Car& c = cars_[i];
+    if (c.physics || c.off_line) continue;
+    const double d = hdist(c.position, player);
+    if (d <= config_.medium_lod_distance) continue;
+    const double out_dot =
+        (c.position.x - player.x) * std::sin(c.heading) + (c.position.z - player.z) * std::cos(c.heading);
+    const double score = d + (out_dot > 0 ? 80.0 : 0.0);
+    if (score > best_score) {
+      best_score = score;
+      best_idx = i;
+    }
+  }
+  if (best_idx < cars_.size()) {
+    const double d = hdist(cars_[best_idx].position, player);
+    stats_.overspawn_culled++;
+    if (d >= config_.spawn_out) {
+      stats_.despawned++;
+      stats_.despawn_distances.push_back(d);
+    }
+    cars_.erase(cars_.begin() + std::ptrdiff_t(best_idx));
+  }
 }
 
 double Population::despawn_distance(const Car& car) const {
@@ -58,6 +105,7 @@ double Population::gap_needed(double player_speed) const {
 }
 
 void Population::measure(const P3& player) {
+  const bool first_measure = within_at_.x > 1e20;
   if (hdist(player, within_at_) > 10) {
     within_ = roads_.traffic_length_within(player.x, player.z, config_.spawn_out);
     within_at_ = player;
@@ -66,7 +114,7 @@ void Population::measure(const P3& player) {
   double d = 0;
   for (const auto& [id, m] : within_)
     if (const DensityEntry* e = config_.density(id)) d += density_at(*e, v) * m / 100;
-  smoothed_ = d + (smoothed_ - d) * config_.density_decay;
+  smoothed_ = first_measure ? d : (d + (smoothed_ - d) * config_.density_decay);
   target_ = std::min(smoothed_, traffic_cap(config_, v));
 }
 
@@ -180,7 +228,8 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
     car.model = model;
     car.base_speed = road_speed(r) * (1 + config_.speed_variance * uniform(-1, 1));
     car.speed = car.target = car.base_speed;
-    if (!place(car, c->road, c->s, dir)) continue;
+    const int lane_idx = (is_multilane(r) && uniform(0, 1) < 0.35) ? 1 : 0;
+    if (!place(car, c->road, c->s, dir, lane_idx)) continue;
     const double d = hdist(car.position, player);
     if (initial) {
       stats_.initial++;
@@ -201,18 +250,22 @@ bool Population::spawn(const P3& player, double player_speed, bool initial) {
   return false;
 }
 
-bool Population::place(Car& car, int road, double s, int dir) {
+bool Population::place(Car& car, int road, double s, int dir, int lane_index) {
   car.road = road;
   car.s = s;
   car.dir = dir;
-  car.lateral = kLane;
+  const Road& r = roads_.roads()[size_t(road)];
+  car.lane_index = is_multilane(r) ? std::clamp(lane_index, 0, 1) : 0;
+  car.target_lateral = lane_center(r, car.lane_index);
+  car.lateral = car.target_lateral;
+  car.avoid_offset = 0;
   pose(car);
   return true;
 }
 
 void Population::add(Car car, int road, double s, int dir) {
   car.id = next_id_++;
-  place(car, road, s, dir);
+  place(car, road, s, dir, car.lane_index);
   cars_.push_back(car);
 }
 
@@ -309,6 +362,72 @@ P3 Population::lane_point(const Car& car, double ahead) const {
   return c.position;
 }
 
+bool Population::next_junction(const Car& car, double max_dist, uint32_t& node_out, double& dist_out, P3& pos_out,
+                               double& turn_angle_out) const {
+  if (car.road < 0) return false;
+  const auto& roads = roads_.roads();
+  const Road& r = roads[size_t(car.road)];
+  const int n = int(r.points.size());
+  if (n < 2) return false;
+  double walked = 0;
+  double cur_s = car.s;
+  int k = car.dir > 0 ? int(std::upper_bound(r.s.begin(), r.s.end(), cur_s) - r.s.begin())
+                      : int(std::lower_bound(r.s.begin(), r.s.end(), cur_s) - r.s.begin()) - 1;
+  while (k >= 0 && k < n) {
+    const double step = std::fabs(r.s[size_t(k)] - cur_s);
+    walked += step;
+    if (walked > max_dist) return false;
+    cur_s = r.s[size_t(k)];
+    const uint32_t node = r.nodes[size_t(k)];
+    const bool at_end = car.dir > 0 ? k == n - 1 : k == 0;
+    if (at_end || roads_.degree(node) >= 3) {
+      struct Option {
+        int road, index, dir;
+      };
+      std::vector<Option> options, allowed;
+      for (const auto& [r2, i2] : roads_.at_node(node)) {
+        const Road& o = roads[size_t(r2)];
+        if (!o.traffic) continue;
+        for (int d2 : {1, -1}) {
+          if (d2 > 0 && i2 + 1 >= int(o.points.size())) continue;
+          if (d2 < 0 && (i2 == 0 || o.oneway)) continue;
+          if (r2 == car.road && d2 == -car.dir) continue;
+          options.push_back({r2, i2, d2});
+          const DensityEntry* e = entry(o);
+          if (e && e->allows(car.model)) allowed.push_back({r2, i2, d2});
+        }
+      }
+      const auto& pickfrom = allowed.empty() ? options : allowed;
+      if (pickfrom.empty()) return false;
+      const Option& o = pickfrom[size_t(mix(uint64_t(car.id) * 0x9e3779b97f4a7c15ull ^ node) % pickfrom.size())];
+      // Incoming and outgoing tangents at the junction node.
+      const int prev_k = std::clamp(k - car.dir, 0, n - 1);
+      double ix = r.points[size_t(k)].x - r.points[size_t(prev_k)].x;
+      double iz = r.points[size_t(k)].z - r.points[size_t(prev_k)].z;
+      const double il = std::hypot(ix, iz);
+      if (il > 1e-6) ix /= il, iz /= il;
+      else ix = std::sin(car.heading), iz = std::cos(car.heading);
+      const Road& nr = roads[size_t(o.road)];
+      const int next_k = std::clamp(o.index + o.dir, 0, int(nr.points.size()) - 1);
+      double ox = nr.points[size_t(next_k)].x - nr.points[size_t(o.index)].x;
+      double oz = nr.points[size_t(next_k)].z - nr.points[size_t(o.index)].z;
+      const double ol = std::hypot(ox, oz);
+      if (ol > 1e-6) ox /= ol, oz /= ol;
+      else ox = ix, oz = iz;
+      // Signed turn angle (+ right, - left) in (+X right, +Z forward).
+      const double cross = iz * ox - ix * oz;
+      const double dot = ix * ox + iz * oz;
+      node_out = node;
+      dist_out = walked;
+      pos_out = r.points[size_t(k)];
+      turn_angle_out = std::atan2(cross, dot);
+      return true;
+    }
+    k += car.dir;
+  }
+  return false;
+}
+
 void Population::drive(Car& car, double dt, const P3& player, const P3& player_velocity) {
   const Road& r = roads_.roads()[size_t(car.road)];
   double target = car.base_speed;
@@ -326,23 +445,157 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
       target = std::min(target, std::sqrt(vb * vb + 2 * kBendDecel * d));
     }
   }
+  // Indicators decay unless refreshed by a junction turn or lane change.
+  if (car.indicator_hold > 0) {
+    car.indicator_hold = std::max(0.0, car.indicator_hold - dt);
+    if (car.indicator_hold <= 0) car.turn_left = car.turn_right = false;
+  }
+  // Headlight flash timers (AI/Traffic/CollisionResponse).
+  if (car.flash_timer > 0) {
+    car.flash_timer = std::max(0.0, car.flash_timer - dt);
+    car.flash_headlamps = car.flash_timer > 0;
+  } else {
+    car.flash_headlamps = false;
+  }
+  if (car.flash_cooldown > 0) car.flash_cooldown = std::max(0.0, car.flash_cooldown - dt);
+
+  // Junction approach: turn indicators and cross-traffic give-way checks.
+  {
+    uint32_t jnode = 0;
+    double jdist = 0, turn_angle = 0;
+    P3 jpos;
+    if (next_junction(car, config_.junction_max_collision_check_distance, jnode, jdist, jpos, turn_angle)) {
+      const double ind_dist = std::max(config_.min_distance_before_indicating,
+                                       car.speed * config_.time_before_indicating);
+      if (jdist <= ind_dist && std::fabs(turn_angle) > 0.35) {
+        car.turn_left = turn_angle < 0;
+        car.turn_right = turn_angle > 0;
+        car.indicator_hold = config_.time_to_keep_indicating;
+      }
+      // Slow for sharp junction turns too.
+      if (std::fabs(turn_angle) > 0.6) {
+        const double vturn = std::max(config_.speed_min, 8.0);
+        target = std::min(target, std::sqrt(vturn * vturn + 2 * kBendDecel * jdist));
+      }
+      // Give-way against approaching cross-traffic or player.
+      if (jdist > 2.5 && !car.off_line) {
+        const double t_me = jdist / std::max(2.0, car.speed);
+        auto check_cross = [&](const P3& op, double ovx, double ovz, bool is_player) {
+          const double dx = jpos.x - op.x, dz = jpos.z - op.z;
+          const double od = std::hypot(dx, dz);
+          if (od < 1.0 || od > config_.junction_max_collision_check_distance) return;
+          const double ov = (ovx * dx + ovz * dz) / od;
+          if (ov < 1.0) return;
+          const double t_other = od / ov;
+          const double gap = config_.junction_safe_time_gap;
+          if (t_other < t_me + gap && t_me < t_other + gap) {
+            const bool yield = config_.junction_force_give_way || is_player || od < jdist - 2.0 ||
+                               (std::fabs(turn_angle) > 0.35 && od < jdist + 8.0);
+            if (yield) {
+              const double stop_d = std::max(0.0, jdist - 6.0);
+              const double vstop = stop_d < 1.5 ? 0.0 : std::sqrt(2.0 * config_.decel_max * stop_d);
+              target = std::min(target, vstop);
+            }
+          }
+        };
+        for (const auto& o : cars_) {
+          if (o.id == car.id || o.road == car.road) continue;
+          check_cross(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, false);
+        }
+        check_cross(player, player_velocity.x, player_velocity.z, true);
+      }
+    }
+  }
+
   // The car or player ahead in the lane: match its speed, stop short of it.
   const double fx = std::sin(car.heading), fz = std::cos(car.heading);
   const auto right = right_of(fx, fz);
-  auto ahead = [&](const P3& p, double vx, double vz, double search, double half_width) {
+  bool blocked_by_traffic = false;
+  auto ahead = [&](const P3& p, double vx, double vz, double search, double half_width, bool is_traffic) {
     const double rx = p.x - car.position.x, rz = p.z - car.position.z;
     const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
     if (d <= 0 || d > search || std::fabs(lat) > half_width) return;
     const double need = std::max(config_.min_look_ahead, car.speed * config_.look_ahead_time) + kCarLength;
     const double along = vx * fx + vz * fz;
+    if (is_traffic && along < car.base_speed - 1.5) blocked_by_traffic = true;
     if (d < need) target = std::min(target, d < 0.6 * need ? 0.0 : std::max(0.0, along - 2.0));
     else if (d < 2 * need) target = std::min(target, std::max(0.0, along) + 2.0);
   };
   for (const auto& o : cars_) {
     if (o.id == car.id) continue;
-    ahead(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, config_.traffic_search, kLaneHalfWidth);
+    ahead(o.position, std::sin(o.heading) * o.speed, std::cos(o.heading) * o.speed, config_.traffic_search,
+          kLaneHalfWidth, true);
   }
-  ahead(player, player_velocity.x, player_velocity.z, config_.player_search, kPlayerHalfWidth);
+  ahead(player, player_velocity.x, player_velocity.z, config_.player_search, kPlayerHalfWidth, false);
+
+  // Multi-lane freeway driving & LaneChangeBehavior.
+  car.since_lane_change += dt;
+  if (is_multilane(r) && !car.off_line) {
+    if (blocked_by_traffic) car.blocked_time += dt;
+    else car.blocked_time = 0;
+    const bool can_change = car.since_lane_change >= config_.lane_change_min_interval;
+    const bool want_overtake = car.blocked_time >= config_.lane_change_time_blocked;
+    const bool want_return = car.lane_index == 1 && !blocked_by_traffic &&
+                             uniform(0, 1) < config_.lane_change_chance * dt;
+    if (can_change && (want_overtake || want_return)) {
+      const int new_lane = 1 - car.lane_index;
+      const double delta_lat = lane_center(r, new_lane) - car.lateral;
+      bool lane_clear = true;
+      auto check_lane = [&](const P3& p) {
+        const double rx = p.x - car.position.x, rz = p.z - car.position.z;
+        const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
+        if (d > -12.0 && d < 28.0 && std::fabs(lat - delta_lat) < 2.2) lane_clear = false;
+      };
+      for (const auto& o : cars_)
+        if (o.id != car.id) check_lane(o.position);
+      check_lane(player);
+      if (lane_clear) {
+        car.lane_index = new_lane;
+        car.since_lane_change = 0;
+        car.blocked_time = 0;
+        car.turn_left = new_lane == 1;
+        car.turn_right = new_lane == 0;
+        car.indicator_hold = config_.time_to_keep_indicating;
+      }
+    }
+  } else {
+    car.lane_index = 0;
+    car.blocked_time = 0;
+  }
+  car.target_lateral = lane_center(r, car.lane_index);
+
+  // Player swerve avoidance (MaxAvoidOffset / MaxAvoidDistance / MaxAvoidSpeed)
+  // and CollisionResponse headlight flashing on oncoming lane encroachments.
+  {
+    double want_avoid = 0.0;
+    const double rx = player.x - car.position.x, rz = player.z - car.position.z;
+    const double d = rx * fx + rz * fz, lat = rx * right[0] + rz * right[1];
+    const double along = player_velocity.x * fx + player_velocity.z * fz;
+    const double p_speed = std::hypot(player_velocity.x, player_velocity.z);
+    if (!car.off_line && d > 0 && d < config_.avoid_max_distance && std::fabs(lat) < 2.6) {
+      const bool oncoming = along < -1.0;
+      const bool slow_blocker = p_speed > 0.3 && p_speed < config_.avoid_max_speed && d < 35.0 && std::fabs(lat) < 2.2;
+      if (oncoming || slow_blocker) {
+        const double dir_sign = lat <= 0.2 ? 1.0 : -1.0;
+        const double max_off = std::min(config_.avoid_max_offset, 2.0);
+        const double mag = std::clamp((2.6 - std::fabs(lat)) * 0.85, 0.4, max_off);
+        want_avoid = dir_sign * mag;
+        if (oncoming && car.flash_cooldown <= 0) {
+          car.flash_cooldown = config_.time_between_light_flashes;
+          if (uniform(0, 1) < config_.light_flash_chance) {
+            car.flash_timer = config_.light_flash_time;
+            car.flash_headlamps = true;
+          }
+        }
+      }
+    }
+    const double avoid_step = 3.5 * dt;
+    car.avoid_offset += std::clamp(want_avoid - car.avoid_offset, -avoid_step, avoid_step);
+    const double desired_lat = car.target_lateral + car.avoid_offset;
+    const double lat_rate = std::fabs(car.avoid_offset) > 0.05 ? 3.5 : std::max(1.2, config_.lane_change_rate * 4.5);
+    car.lateral += std::clamp(desired_lat - car.lateral, -lat_rate * dt, lat_rate * dt);
+  }
+
   car.target = target;
   if (car.physics && bodies_ && car.body) return;  // the host's body moves it
   if (target > car.speed) car.speed = std::min(target, car.speed + config_.accel_max * dt);
@@ -351,8 +604,9 @@ void Population::drive(Car& car, double dt, const P3& player, const P3& player_v
   pose(car);
 }
 
-void Population::follow(size_t index, const P3& body, double heading, double speed) {
+void Population::follow(size_t index, const P3& body, double heading, double speed, double up_y) {
   Car& car = cars_[index];
+  car.up_y = up_y;
   if (car.road < 0) return;
   // Its place on its road near where it was (or the road it has reached).
   const Road& r = roads_.roads()[size_t(car.road)];
@@ -383,7 +637,7 @@ void Population::follow(size_t index, const P3& body, double heading, double spe
   else t = {std::sin(heading), std::cos(heading)};
   const double lane_heading = std::atan2(t[0] * car.dir, t[1] * car.dir);
   const double herr = std::fabs(std::remainder(heading - lane_heading, 2 * kPi));
-  const double lerr = std::fabs(best_lat - kLane);
+  const double lerr = std::fabs(best_lat - car.lateral);
   if (best > 30) car.off_line = true;
   else if (car.off_line) car.off_line = !(lerr < 0.75 && herr < 0.2);
   else car.off_line = lerr > 2.0 || herr > 0.6;
@@ -396,12 +650,13 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
     started_ = true;
     rotate_models();
     next_rotation_ = time_ + config_.model_rotation_time;
+    next_overspawn_ = time_ + config_.overspawn_check_time;
     measure(player);
-    const int n = std::min(config_.initial_cars, config_.initial_max_cars);
+    const int cap_init = target_ > 0 ? std::max(1, int(std::ceil(target_))) : 0;
+    const int n = std::min({config_.initial_cars, config_.initial_max_cars, cap_init});
     for (int i = 0; i < n; ++i) spawn(player, player_speed, true);
     next_test_ = time_ + config_.density_test_interval;
-    next_spawn_ = time_ + uniform(config_.interval_med - config_.interval_variance,
-                                  config_.interval_med + config_.interval_variance);
+    next_spawn_ = time_ + spawn_interval(player_speed);
   }
   while (time_ >= next_test_) {
     measure(player);
@@ -410,6 +665,10 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
   if (time_ >= next_rotation_) {
     rotate_models();
     next_rotation_ += config_.model_rotation_time;
+  }
+  if (time_ >= next_overspawn_) {
+    check_overspawn(player);
+    next_overspawn_ += config_.overspawn_check_time;
   }
   // Despawn past the spawn-out distance (and cars that left the network).
   for (size_t i = cars_.size(); i-- > 0;) {
@@ -425,17 +684,48 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
   if (time_ >= next_spawn_) {
     if (double(cars_.size()) < target_) {
       const bool ok = spawn(player, player_speed, false);
-      const double wait = ok ? std::clamp(uniform(config_.interval_med - config_.interval_variance,
-                                                  config_.interval_med + config_.interval_variance),
-                                          config_.interval_min, config_.interval_max)
-                             : config_.interval_min;
-      next_spawn_ = time_ + wait;
+      next_spawn_ = time_ + (ok ? spawn_interval(player_speed) : config_.interval_min);
     } else {
-      next_spawn_ = time_ + config_.interval_min;
+      next_spawn_ = time_ + (target_ < 1.5 ? spawn_interval(player_speed) : config_.interval_min);
     }
   }
   for (auto& car : cars_) {
     car.age += dt;
+    // DeadBehavior: hazards after HazardLightDelay, reanimate after ReanimateDelay once stopped & upright.
+    if (car.off_line) {
+      car.dead_timer += dt;
+      if (car.dead_timer >= config_.dead_hazard_delay) car.hazard_on = true;
+      if (car.speed <= config_.dead_reanimate_max_speed) car.stopped_dead_timer += dt;
+      else car.stopped_dead_timer = 0;
+      if (car.stopped_dead_timer >= config_.dead_reanimate_delay && car.up_y > 0.5) {
+        const auto hit = roads_.nearest(car.position.x, car.position.z, true, 60);
+        if (hit.road >= 0) {
+          const Road& nr = roads_.roads()[size_t(hit.road)];
+          std::array<double, 2> td;
+          roads_.point_at(hit.road, hit.s, nullptr, &td);
+          const int ndir =
+              nr.oneway ? 1 : ((std::sin(car.heading) * td[0] + std::cos(car.heading) * td[1]) >= 0 ? 1 : -1);
+          car.road = hit.road;
+          car.s = hit.s;
+          car.dir = ndir;
+          car.lane_index = 0;
+          car.target_lateral = kLane;
+          car.avoid_offset = 0;
+          car.off_line = false;
+          car.hazard_on = false;
+          car.dead_timer = 0;
+          car.stopped_dead_timer = 0;
+          if (!car.body) {
+            car.lateral = kLane;
+            pose(car);
+          }
+        }
+      }
+    } else {
+      car.dead_timer = 0;
+      car.stopped_dead_timer = 0;
+      car.hazard_on = false;
+    }
     car.physics = car.off_line || hdist(car.position, player) < config_.high_lod_distance;
     if (car.road >= 0) drive(car, dt, player, player_velocity);
   }
