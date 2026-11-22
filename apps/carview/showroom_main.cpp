@@ -978,8 +978,28 @@ double pad_control_value(SDL_Gamepad* pad, drive::PadControl c, double dz_in, do
   }
 }
 
-// Plumbs AssistSettings into drive::Vehicle once Vehicle assist setters land.
-void apply_vehicle_assists(drive::Vehicle& /*vehicle*/, const drive::AssistSettings& /*assists*/) {}
+// Plumbs live AssistSettings into drive::Vehicle and race::DifficultyAssists.
+void apply_vehicle_assists(drive::Vehicle& vehicle, const drive::AssistSettings& assists) {
+  drive::VehicleAssists va;
+  va.braking = assists.braking;
+  va.steering = assists.steering;
+  va.traction_control = assists.traction_control;
+  va.stability_control = assists.stability_control;
+  va.shifting = assists.shifting;
+  vehicle.set_assists(va);
+}
+
+race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& a) {
+  race::DifficultyAssists da;
+  da.rewind_on = a.rewind;
+  da.braking = a.braking;
+  da.steering = a.steering;
+  da.tcs_on = a.traction_control;
+  da.stm_on = a.stability_control;
+  da.shifting = a.shifting;
+  da.driving_line = a.driving_line;
+  return da;
+}
 
 // SPEC-CAMERAS' rig for the drive: the tuning from camera.zip (v4's layers
 // when installed), the car's CameraOverrides row and MAXData box from the
@@ -3695,9 +3715,14 @@ int run_drive(int argc, char** argv) {
                                     : (front ? audio::View::kFront : audio::View::kFollow);
       };
       drive::RewindBuffer rewind_buf;
+      rewind_buf.set_enabled(live_controls.assists.rewind);
       rewind_buf.start_session(vehicle.time());
+      apply_vehicle_assists(vehicle, live_controls.assists);
+      race_options.assists = to_difficulty_assists(live_controls.assists);
       drive::BrakingTable braking_table = drive::BrakingTable::build(vehicle.params());
-      drive::DrivingLineMode driving_line_mode = drive::DrivingLineMode::kBrakingOnly;
+      drive::DrivingLineMode driving_line_mode =
+          static_cast<drive::DrivingLineMode>(std::clamp(live_controls.assists.driving_line, 0, 2));
+      int pending_shift = 0;
       std::vector<drive::DrivingLineSample> dl_samples;
       std::vector<drive::DrivingLineVertex> dl_verts;
       std::vector<carview::WorldVertex> overlay_verts;
@@ -3842,7 +3867,8 @@ int run_drive(int argc, char** argv) {
         st.redline_rpm = vehicle.params().redline_rpm;
         st.abs = vehicle.abs_active();
         carview::DriveHud d;
-        d.kmh = st.kmh, d.rpm = st.rpm, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs, d.tcs = false;
+        d.kmh = st.kmh, d.rpm = st.rpm, d.redline_rpm = st.redline_rpm, d.gear = st.gear, d.abs = st.abs,
+        d.tcs = vehicle.tcs_active() || vehicle.stm_active();
         d.time = show_title ? title_orbit_time : vehicle.time();
         d.detail_title = std::move(detail_title);
         d.detail_lines = std::move(detail_lines);
@@ -5384,6 +5410,11 @@ int run_drive(int argc, char** argv) {
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
                 apply_vehicle_assists(vehicle, live_controls.assists);
+                rewind_buf.set_enabled(live_controls.assists.rewind);
+                driving_line_mode =
+                    static_cast<drive::DrivingLineMode>(std::clamp(live_controls.assists.driving_line, 0, 2));
+                race_options.assists = to_difficulty_assists(live_controls.assists);
+                if (race) race->set_assists(race_options.assists);
               };
               auto confirm = [&]() {
                 if (settings_page.on_rebind_row()) {
@@ -5554,6 +5585,8 @@ int run_drive(int argc, char** argv) {
               if (!race && live_controls.keys.matches(drive::ControlAction::kActivate, kn)) activate_world_trigger();
               if (live_controls.keys.matches(drive::ControlAction::kReset, kn)) put_back();
               if (!on_banner && live_controls.keys.matches(drive::ControlAction::kRewind, kn)) try_trigger_rewind();
+              if (live_controls.keys.matches(drive::ControlAction::kShiftUp, kn)) pending_shift = +1;
+              if (live_controls.keys.matches(drive::ControlAction::kShiftDown, kn)) pending_shift = -1;
               if (e.key.key == SDLK_L) {
                 driving_line_mode =
                     static_cast<drive::DrivingLineMode>((static_cast<int>(driving_line_mode) + 1) % 3);
@@ -5640,6 +5673,8 @@ int run_drive(int argc, char** argv) {
                 try_trigger_rewind();
               if (act == "RadioLeft") radio_press(-1);
               if (act == "RadioRight") radio_press(+1);
+              if (act == "ShiftUp") pending_shift = +1;
+              if (act == "ShiftDown") pending_shift = -1;
               if (act == "SwitchCamera") {
                 if (picking || !have_rig) browse(1);
                 else rig.cycle();
@@ -5681,6 +5716,7 @@ int run_drive(int argc, char** argv) {
           in.throttle = action_key_down(keys, live_controls.keys, drive::ControlAction::kThrottle) ? 1.0 : 0.0;
           in.brake = action_key_down(keys, live_controls.keys, drive::ControlAction::kBrake) ? 1.0 : 0.0;
           in.handbrake = action_key_down(keys, live_controls.keys, drive::ControlAction::kHandbrake);
+          in.clutch = action_key_down(keys, live_controls.keys, drive::ControlAction::kClutch) ? 1.0 : 0.0;
           // Look around: the right stick turns the chase camera up to half a
           // turn, LookBack key held looks back.
           camera_pull.look_target =
@@ -5691,6 +5727,7 @@ int run_drive(int argc, char** argv) {
           const drive::PadControl gas_ctrl = pad_layout.control_for("Gas");
           const drive::PadControl brake_ctrl = pad_layout.control_for("Brake");
           const drive::PadControl hb_ctrl = pad_layout.control_for("Handbrake");
+          const drive::PadControl clutch_ctrl = pad_layout.control_for("Clutch");
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
             const double steer =
@@ -5698,6 +5735,7 @@ int run_drive(int argc, char** argv) {
             const double throttle = pad_control_value(pad, gas_ctrl, dz.throttle_inside, dz.throttle_outside);
             const double brake = pad_control_value(pad, brake_ctrl, dz.brake_inside, dz.brake_outside);
             const bool handbrake = pad_control_value(pad, hb_ctrl, dz.handbrake_inside, dz.handbrake_outside) > 0.5;
+            const double clutch = pad_control_value(pad, clutch_ctrl, dz.clutch_inside, dz.clutch_outside);
             const double look = drive::apply_deadzone_signed(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
             if (look != 0) camera_pull.look_target = -look * 3.14159265358979;
             // The rig's look (SPEC-CAMERAS, Button): the right stick down
@@ -5707,12 +5745,25 @@ int run_drive(int argc, char** argv) {
               rig_look = 3.14159265358979;
             else if (std::fabs(lx) > 0.5 && std::fabs(lx) >= std::fabs(ly))
               rig_look = (lx > 0 ? 0.5 : -0.5) * 3.14159265358979;
-            if (steer != 0 || throttle > 0 || brake > 0 || handbrake) {
+            if (steer != 0 || throttle > 0 || brake > 0 || handbrake || clutch > 0) {
               in.steer = steer;
               in.throttle = throttle;
               in.brake = brake;
               in.handbrake = handbrake;
+              in.clutch = clutch;
               break;
+            }
+          }
+          // Auto-Brake (Braking == 0 / Assisted, SPEC-CAR-PHYSICS): query the
+          // active racing line's lookahead target speed upstream of stepping.
+          if (!cruise && live_controls.assists.braking == 0 && race && !grid_menu_open && !race->player_finished()) {
+            if (dl_samples.empty()) {
+              drive::build_driving_line(race->racing_line(), braking_table, race->player_progress(),
+                                        std::max(0.0, vehicle.speed()), drive::DrivingLineMode::kBrakingOnly,
+                                        dl_samples);
+            }
+            if (!dl_samples.empty()) {
+              drive::apply_auto_brake(in, vehicle.speed(), dl_samples.front().v_target);
             }
           }
           rig.set_look(rig_look);
@@ -5742,11 +5793,20 @@ int run_drive(int argc, char** argv) {
           double frame_world_impact = 0.0;
           while (!sim_paused && accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
-            if (!step(cruise ? follower.input(vehicle) : in)) {
+            drive::Input step_in = cruise ? follower.input(vehicle) : in;
+            if (!cruise) {
+              step_in.shift = pending_shift;
+              pending_shift = 0;
+            }
+            if (!step(step_in)) {
               running = false;
               status = 1;
               std::fprintf(stderr, "carview: %s\n", error.c_str());
               break;
+            }
+            if (vehicle.hand_of_god_triggered()) {
+              vehicle.clear_hand_of_god();
+              put_back();
             }
             {
               drive::RewindCameraState cs;
@@ -5777,21 +5837,26 @@ int run_drive(int argc, char** argv) {
             ri.tire_traction_front = fl_load > 1e-3 ? fl_slip / fl_load : 0.0;
             ri.tire_traction_rear = rl_load > 1e-3 ? rl_slip / rl_load : 0.0;
             ri.tire_traction = (fl_load + rl_load) > 1e-3 ? (fl_slip + rl_slip) / (fl_load + rl_load) : 0.0;
-            // Surface bumpiness scaled by speed / 22.352 m/s (50 mph).
-            double max_bump = 0.0;
-            const auto& surfs = collision.surfaces();
-            for (int wi = 0; wi < 4; ++wi) {
-              if (!ws[size_t(wi)].contact) continue;
-              const int si = ws[size_t(wi)].surface;
-              double bump = 0.02;
-              if (si >= 0 && size_t(si) < surfs.size()) {
-                const auto& sf = surfs[size_t(si)];
-                if (sf.off_roadness > 0.0f) bump = 0.02 + 0.38 * sf.off_roadness;
-                else if (sf.friction_scale < 0.95f) bump = 0.15;
+            // Surface bumpiness: use exact 2 * Bumpiness.Rumble from Vehicle
+            // when available, else fallback to off-roadness estimate, scaled by speed.
+            double bump_2x = vehicle.surface_bump_rumble();
+            if (bump_2x <= 0.0) {
+              double max_bump = 0.0;
+              const auto& surfs = collision.surfaces();
+              for (int wi = 0; wi < 4; ++wi) {
+                if (!ws[size_t(wi)].contact) continue;
+                const int si = ws[size_t(wi)].surface;
+                double bump = 0.02;
+                if (si >= 0 && size_t(si) < surfs.size()) {
+                  const auto& sf = surfs[size_t(si)];
+                  if (sf.off_roadness > 0.0f) bump = 0.02 + 0.38 * sf.off_roadness;
+                  else if (sf.friction_scale < 0.95f) bump = 0.15;
+                }
+                max_bump = std::max(max_bump, bump);
               }
-              max_bump = std::max(max_bump, bump);
+              bump_2x = 2.0 * max_bump;
             }
-            ri.surface_bumpiness = 2.0 * max_bump * (std::fabs(vehicle.speed()) / 22.352);
+            ri.surface_bumpiness = bump_2x * (std::fabs(vehicle.speed()) / 22.352);
             ri.car_to_world_impulse = frame_world_impact / 500.0;
             ri.on_shift = vehicle.gear() != prev_rumble_gear;
             prev_rumble_gear = vehicle.gear();

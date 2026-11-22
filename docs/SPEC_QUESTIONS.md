@@ -675,7 +675,24 @@ question Q38)" and "Colour byte order"). Built:
   reaches 5 to 8 m/s^2 on 8 to 15 deg, runs wide onto the grass at 340 m
   and never rejoins the line. That is the tyres' lateral force (or the
   front's load) and not the controls; deferred.
-- **Scenario B's mean.** With the new brake unit the pad's stop has its
+- **Closed (Slice 1, 2026-11-21):** With `CAR_PHYSICS.md` `5792a248` and
+  `0077d463` implemented (direct `J = engine + flywheel`, `S_upg` + `RobScale`,
+  turbo power-lag ODE + 15 Hz boost filter, `GameTorqueScale` wheel split,
+  peak-power `T_closed`, immediate `kClutchIn` driveline unlock, `target_rpm`
+  launch PID, Front/Rear/Center LSDs with rpm `RelVelClamp`, 6-iter per-car
+  `init_brakes()` + direct `BrakeInputScale` + 10-pt decel spline, 3D
+  `BodyAero*` + `List_AeroPhysics`, and surface `VelDepFriction` + `Bumpiness`),
+  **all M3 and Slice 1 gates pass within 2 %**:
+  - `physics_tests`: 0 failures, 0 gate misses, 0 report-only misses.
+    Scenario A 0–100 km/h **5.827 s** (oracle 5.840 s, −0.22 %);
+    Scenario B mean decel **8.421 m/s²** (oracle 8.57 m/s², −1.74 %, reverse
+    phase 4.97 m/s² over 1.292 s vs oracle ~5 over 1.26–1.29 s);
+    turn circle **3.340 m** (oracle 3.37 m, −0.89 %).
+  - M3 oracle lap (`drive --run lap`): **39.205 s** (oracle 38.784 s, **+1.08 %**,
+    `physics-behaviour.py compare` PASS: 0–60 2.73 vs 2.72 s, 0–100 5.74 vs
+    5.76 s, top speed 147.6 vs 147.5 km/h).
+
+- **Scenario B's mean (historical, closed above).** With the new brake unit the pad's stop has its
   ABS phase at 11.95 m/s^2 (oracle 11.9 to 12.1; was 13.19) and the braked
   steps at 52 / 76 % (oracle 50 to 54 / 74 to 81). The mean falls to
   7.69 m/s^2 (oracle 8.57) because the reverse phase is still 4.1 m/s^2

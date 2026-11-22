@@ -1144,8 +1144,25 @@ the interim noted here until a later polish sweep.
   line nearest its last waypoint (ours). Races on ribbon-2 routes run once
   to the sprint finish whatever `NumLaps` says (the spec's rule); `FR37`
   (ribbon-0 sprint, 3 laps) is untested.
-- **Race flow left out.** No pre-race menu, cutscene camera or rewind.
-  Ours (2026-11-21): an event card at the grid, the countdown, GO, the
+- **Driving, assists, rewind and physics parity (Slice 1).** All 240 cars
+  use their own per-car engine/turbo/supercharger (`S_upg`, `RobScale`,
+  `GameTorqueScale`, direct inertia, peak-power `T_closed`), Front/Rear/Center
+  LSDs, 6-iteration load-transfer brakes (`BrakeTorqueSlider`, `BrakeBiasSlider`,
+  `BiasHandbrake`, 10-point decel spline), 3D `BodyAero*` + `List_AeroPhysics`
+  downforce/drag + drafting, and surface `VelDepFriction`/`Bumpiness`/
+  `Springiness`/water respawn triggers. Gates pass: Scenario A 0–100 km/h
+  5.827 s (oracle 5.840 s, −0.22 %), Scenario B mean deceleration 8.421 m/s²
+  (oracle 8.57 m/s², −1.74 %, within 2 %), turn circle 3.340 m (oracle 3.37 m),
+  and M3 oracle lap 39.205 s (oracle 38.784 s, +1.08 %, within 2 %,
+  `physics-behaviour.py compare` PASS). Player controls include Automatic /
+  Manual / Manual+Clutch shifting, ABS Off, TCS, STM, Assisted/Normal/Simulation
+  steering, Auto-Brake, per-assist difficulty bonus, 3D Driving/Braking Line
+  (`L` or live settings), Rewind (`Y`/`Backspace` ring buffer + reverse scrub +
+  camera), `ControllerRumble.xml` dual-motor SDL gamepad rumble,
+  `CameraPhysics.xml` bump/jolt/shake layers, rebindable keys, controller
+  layouts 1–5, deadzones, and live-applying settings without restart.
+- **Race flow left out.** No pre-race cutscene camera.
+  Ours (2026-11-21): an event card at the grid, the countdown, GO, rewind, the
   results card (standings, credits, the wristband bar and a NEW WRISTBAND
   banner), then A/Enter continues in free roam at the route's post-race
   spot and Y restarts; the pause menu's race item picks any runnable
