@@ -61,6 +61,14 @@ target_link_libraries(camera_tests PRIVATE shift_drive)
 add_test(NAME camera_tests COMMAND camera_tests)
 set_tests_properties(camera_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
 
+add_executable(rumble_tests rumble_tests.cpp)
+target_link_libraries(rumble_tests PRIVATE shift_drive)
+add_test(NAME rumble_tests COMMAND rumble_tests)
+
+add_executable(controls_tests controls_tests.cpp)
+target_link_libraries(controls_tests PRIVATE shift_drive)
+add_test(NAME controls_tests COMMAND controls_tests)
+
 # SPEC-TRAFFIC: the road map, the settings and the time-of-day factor over
 # the player's files (skipped, exit 77, without SHIFT_GAME_ROOT).
 add_executable(traffic_tests traffic_tests.cpp)
@@ -107,6 +115,7 @@ add_test(NAME garage_tests COMMAND garage_tests)
 # The pause menu's settings page (plain C++).
 add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp)
 target_include_directories(settings_tests PRIVATE ../apps/carview)
+target_link_libraries(settings_tests PRIVATE shift_drive)
 add_test(NAME settings_tests COMMAND settings_tests)
 
 add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp
