@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fh1 {
@@ -54,20 +56,113 @@ struct UiNode {
   float x = 0, y = 0, angle = 0, sx = 1, sy = 1, alpha = 1;
 };
 
+struct UiGeometry {
+  uint32_t index = 0;
+  std::array<float, 3> bounds_min{};
+  std::array<float, 3> bounds_max{};
+  uint32_t gpu_offset = 0;
+  uint32_t gpu_fetch_word = 0;
+  uint32_t extra_offset = 0;
+  bool is_unit_quad = true;
+  // 2D local-space vertices (x, y) extracted for non-quad meshes (or empty for unit quads).
+  std::vector<std::array<float, 2>> vertices;
+};
+
+struct UiBgfItem {
+  uint32_t name_hash = 0;
+  uint32_t parent_hash = 0;
+  uint32_t value = 0;  // FBF native object id for kinds 1..7; 0 for contracts (kind 8)
+  uint8_t kind = 0;
+  uint8_t flags = 0;
+  bool is_wrapper = false;
+  std::vector<std::pair<uint32_t, uint32_t>> properties;  // (attribute hash, raw value)
+};
+
+struct UiContract {
+  int item_index = -1;
+  uint32_t owner_hash = 0;
+  std::string type;  // e.g. "SUPER_STACKER", "PAUSE_MENU_BUTTON", "HUD_COMBINED_NOTIFICATION"
+  std::vector<std::string> bindings;
+  std::vector<std::string> events;
+};
+
+struct UiBgfRelation {
+  uint32_t parent = 0;
+  std::vector<uint32_t> children;
+};
+
+struct UiBgfStyle {
+  uint32_t owner_item = 0;
+  uint16_t state_count = 0;
+};
+
+struct UiBgfKeyframe {
+  uint32_t target_item = 0;
+  uint32_t attr_hash = 0;
+  float time = 0.0f;
+  float value = 0.0f;
+  uint32_t raw_tag = 0;
+  uint32_t raw_value = 0;
+};
+
+struct UiBgfTrack {
+  uint32_t owner_item = 0;
+  std::vector<UiBgfKeyframe> keys;
+};
+
+struct UiBgfAnimation {
+  uint32_t owner_item = 0;
+  uint32_t track_count = 0;
+  uint32_t key_count = 0;
+  uint32_t event_count = 0;
+};
+
+struct UiBgfDocument {
+  uint32_t element_count = 0;
+  uint32_t wrapper_count = 0;
+  uint32_t property_count = 0;
+  std::vector<std::string> identities;
+  std::vector<UiBgfItem> items;
+  std::vector<UiContract> contracts;
+  std::vector<UiBgfRelation> relations;
+  std::vector<UiBgfStyle> styles;
+  std::vector<UiBgfTrack> tracks;
+  std::vector<UiBgfAnimation> animations;
+  bool has_contract(std::string_view type) const;
+  std::vector<const UiContract*> find_contracts(std::string_view type) const;
+};
+
 struct UiScene {
   uint32_t version = 0;
   std::vector<UiObject> objects;  // in file order
   std::vector<UiNode> nodes;
   // The pool's ids that are not nodes (materials, textures).
   std::vector<uint32_t> pool;
+  // FBF geometry descriptors (unit quads and non-quad meshes).
+  std::vector<UiGeometry> geometries;
+  // Optional BGF document (contracts, states, tracks, animations).
+  UiBgfDocument bgf;
+  bool has_bgf = false;
   int find_object(uint32_t id) const;
+  const UiGeometry* geometry_of(int node_index) const;
 };
 
-// Reads the FBF's objects (not the geometry records or GPU data).
+// Reads the FBF's objects and geometry records (unit quads + non-quad meshes).
 bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* error);
 // Reads the BSG's nodes and pool, links them to the objects and resolves
 // the canvas transforms. Call after parse_ui_fbf.
 bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* error);
+// Reads the BGF document: identity pool, items, contracts, relations, styles,
+// tracks/keyframes, and animations.
+bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error);
+
+// Evaluates a BGF keyframe track linearly at `time_s`.
+float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback = 0.0f);
+
+// SUPER_STACKER reflow: computes packed Y (or X) positions for `count` visible
+// rows starting at `origin` with pitch `step` (negative for top-down in scene y-up
+// or positive for y-down canvas coordinates).
+std::vector<float> reflow_stacker(float origin, float step, int count);
 
 // The texture archive member for a scene's texture path: `horizon` true
 // for Horizon.zip, else Textures.zip; the member name ends .xds.

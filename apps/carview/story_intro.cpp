@@ -323,15 +323,10 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
   constexpr uint32_t kDim = ui::rgba(195, 200, 212);
 
   // Top-left story objective card (Horizon pink accent strip + dark panel).
-  const float x0 = 64.0f * s, y0 = 38.0f * s, w = 440.0f * s, h = 66.0f * s;
-  l.rect(x0, y0, x0 + w, y0 + h, kPanel, 4.0f * s);
-  l.rect(x0, y0, x0 + 6.0f * s, y0 + h, kPink);
-
   ui::TextStyle title_ts;
   title_ts.font = ui::Font::kE;
   title_ts.size = 20.0f * s;
   title_ts.color = kWhite;
-  l.text(x0 + 18.0f * s, y0 + 10.0f * s, objective_title_, title_ts);
 
   std::string sub = objective_detail_;
   if (stage_ == StoryStage::kViperDrive) {
@@ -346,6 +341,13 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
   sub_ts.font = ui::Font::kB;
   sub_ts.size = 13.0f * s;
   sub_ts.color = kDim;
+
+  const float x0 = 64.0f * s, y0 = 38.0f * s, h = 66.0f * s;
+  const float w = std::max({440.0f * s, ui::List::measure(objective_title_, title_ts) + 40.0f * s,
+                            ui::List::measure(sub, sub_ts) + 40.0f * s});
+  l.rect(x0, y0, x0 + w, y0 + h, kPanel, 4.0f * s);
+  l.rect(x0, y0, x0 + 6.0f * s, y0 + h, kPink);
+  l.text(x0 + 18.0f * s, y0 + 10.0f * s, objective_title_, title_ts);
   l.text(x0 + 18.0f * s, y0 + 38.0f * s, sub, sub_ts);
 
   // Top-right skip hint for testing / fast-forward.
@@ -358,12 +360,47 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
   skip_ts.align = ui::Align::kRight;
   l.text(sx1 - 12.0f * s, y0 + 9.0f * s, "[TAB] SKIP STORY STAGE", skip_ts);
 
-  // Bottom-centre character VO caption box (Alice / Dak / Scott).
+  // Bottom-left character VO caption box (Alice / Dak / Scott), kept clear of tachometer.
   if (!active_caption_.empty()) {
-    const float cy0 = screen_h - 118.0f * s;
-    const float cw = std::min(screen_w - 160.0f * s, 820.0f * s);
-    const float cx0 = 0.5f * (screen_w - cw);
-    l.rect(cx0, cy0, cx0 + cw, cy0 + 58.0f * s, ui::rgba(8, 10, 15, 210), 4.0f * s);
+    const float cx0 = 64.0f * s;
+    const float cw = std::min(screen_w - 340.0f * s, 840.0f * s);
+    ui::TextStyle cap_ts;
+    cap_ts.font = ui::Font::kA;
+    cap_ts.size = 14.5f * s;
+    cap_ts.color = kWhite;
+    cap_ts.keep_case = true;
+
+    // Word-wrap caption into lines that fit inside cw - 32*s.
+    const float max_line_w = std::max(180.0f * s, cw - 32.0f * s);
+    std::string wrapped;
+    std::string cur;
+    size_t pos = 0;
+    while (pos < active_caption_.size()) {
+      while (pos < active_caption_.size() && active_caption_[pos] == ' ') ++pos;
+      size_t end = active_caption_.find(' ', pos);
+      if (end == std::string::npos) end = active_caption_.size();
+      const std::string word = active_caption_.substr(pos, end - pos);
+      pos = end;
+      if (word.empty()) continue;
+      const std::string cand = cur.empty() ? word : (cur + " " + word);
+      if (!cur.empty() && ui::List::measure(cand, cap_ts) > max_line_w) {
+        if (!wrapped.empty()) wrapped.push_back('\n');
+        wrapped += cur;
+        cur = word;
+      } else {
+        cur = cand;
+      }
+    }
+    if (!cur.empty()) {
+      if (!wrapped.empty()) wrapped.push_back('\n');
+      wrapped += cur;
+    }
+
+    const float cap_h = ui::List::measure_height(wrapped, cap_ts);
+    const float box_h = std::max(58.0f * s, 36.0f * s + cap_h + 12.0f * s);
+    const float cy0 = screen_h - 44.0f * s - box_h;
+    l.rect(cx0, cy0, cx0 + cw, cy0 + box_h, ui::rgba(8, 10, 15, 215), 4.0f * s);
+    l.rect(cx0, cy0, cx0 + 4.0f * s, cy0 + box_h, kPink);
     if (!active_speaker_.empty()) {
       ui::TextStyle sp_ts;
       sp_ts.font = ui::Font::kE;
@@ -371,12 +408,7 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
       sp_ts.color = kPink;
       l.text(cx0 + 16.0f * s, cy0 + 8.0f * s, active_speaker_, sp_ts);
     }
-    ui::TextStyle cap_ts;
-    cap_ts.font = ui::Font::kA;
-    cap_ts.size = 14.5f * s;
-    cap_ts.color = kWhite;
-    cap_ts.keep_case = true;
-    l.text(cx0 + 16.0f * s, cy0 + 28.0f * s, active_caption_, cap_ts);
+    l.text(cx0 + 16.0f * s, cy0 + 28.0f * s, wrapped, cap_ts);
   }
 }
 

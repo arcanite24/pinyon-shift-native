@@ -215,6 +215,16 @@ if(SHIFT_BUILD_CARVIEW)
   target_include_directories(fmv_story_tests PRIVATE ../apps/carview)
   target_link_libraries(fmv_story_tests PRIVATE carview_render shift_audio shift_drive)
   add_test(NAME fmv_story_tests COMMAND fmv_story_tests)
+
+  add_executable(ui4_cjk_l10n_tests ui4_cjk_l10n_tests.cpp
+    ../apps/carview/ui_widgets.cpp
+    ../apps/carview/hud_scene.cpp
+    ../apps/carview/game_hud.cpp
+    ../apps/carview/fmv_player.cpp
+    ../apps/carview/story_intro.cpp)
+  target_include_directories(ui4_cjk_l10n_tests PRIVATE ../apps/carview)
+  target_link_libraries(ui4_cjk_l10n_tests PRIVATE carview_render shift_freeroam shift_cars shift_audio shift_stb)
+  add_test(NAME ui4_cjk_l10n_tests COMMAND ui4_cjk_l10n_tests)
 endif()
 
 if(SHIFT_BUILD_CARVIEW)

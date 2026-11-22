@@ -84,7 +84,8 @@ set(carview_sources
   settings_page.cpp
   audio_host.cpp
   fmv_player.cpp
-  story_intro.cpp)
+  story_intro.cpp
+  ui_widgets.cpp)
 # Android (M7): libmain.so for SDL's activity (tools/android-apk.py makes the
 # APK); SHIFT_ANDROID_EXECUTABLE keeps the executable run over adb.
 option(SHIFT_ANDROID_EXECUTABLE "Android: build carview as an executable, not the app's libmain.so" OFF)

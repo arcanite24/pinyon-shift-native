@@ -28,6 +28,7 @@
 
 namespace fh1 {
 struct VFont;
+class CjkFont;
 }
 
 namespace carview::ui {
@@ -69,6 +70,10 @@ enum class Font { kAuto, kStroke, kA, kB, kD, kE };
 void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const fh1::VFont> b,
                       std::shared_ptr<const fh1::VFont> e, std::shared_ptr<const fh1::VFont> d = nullptr);
 bool vector_fonts_loaded();
+// CJK bitmap font (CHTB/CHSB/JPB/KORB) used automatically for glyphs outside
+// the Latin/Cyrillic vector fonts (or standalone).
+void set_cjk_font(std::shared_ptr<const fh1::CjkFont> cjk);
+bool cjk_font_loaded();
 
 // The UI atlas (kAtlasSize square, RGBA8, white with the glyphs' coverage
 // in alpha), owned here; the renderer uploads the rectangles that changed.
@@ -126,9 +131,14 @@ class List {
   // radians clockwise (y down).
   void image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv,
                      uint32_t tint = rgba(255, 255, 255));
-  // Draws `text` with its cap-height top at y; returns its width.
+  // Draws `text` with its cap-height top at y; returns its width. Supports
+  // multi-line `\n` breaks and `{font='A'}` / `{font_pop}` / `{colour='R G B A'}`
+  // (single or doubled brace) style tags.
   float text(float x, float y, std::string_view text, const TextStyle& style);
   static float measure(std::string_view text, const TextStyle& style);
+  static float measure_height(std::string_view text, const TextStyle& style);
+  // Strips `{font=...}` / `{colour=...}` / `{font_pop}` style tags to plain UTF-8.
+  static std::string strip_style_tags(std::string_view text);
 
  private:
   std::vector<Instance> items_;

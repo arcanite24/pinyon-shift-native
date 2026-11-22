@@ -43,8 +43,10 @@
 #include "audio/xml.h"
 #include "drive_helpers.h"
 #include "fmv_player.h"
+#include "fh1data/cjk_font.h"
 #include "game_hud.h"
 #include "story_intro.h"
+#include "ui_widgets.h"
 #include "hud_scene.h"
 #include "hud.h"
 #include "process_time.h"
@@ -307,11 +309,13 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
     if (!zip) return nullptr;
     auto fbf = zip->read("Scenes/ui4/" + name + ".fbf");
     auto bsg = zip->read("Scenes/ui4/" + name + ".bsg");
+    auto bgf = zip->read("Scenes/ui4/" + name + ".bgf");
     auto sc = std::make_unique<fh1::UiScene>();
     std::string e;
-    if (fbf.ok() && bsg.ok() && fh1::parse_ui_fbf(fbf.data, *sc, &e) && fh1::parse_ui_bsg(bsg.data, *sc, &e))
+    if (fbf.ok() && bsg.ok() && fh1::parse_ui_fbf(fbf.data, *sc, &e) && fh1::parse_ui_bsg(bsg.data, *sc, &e)) {
+      if (bgf.ok()) sc->has_bgf = fh1::parse_ui_bgf(bgf.data, sc->bgf, nullptr);
       slot = std::move(sc);
-    else
+    } else
       std::fprintf(stderr, "carview: note: UI scene %s not loaded%s%s\n", name.c_str(), e.empty() ? "" : ": ", e.c_str());
     return slot.get();
   });
@@ -4957,6 +4961,11 @@ int run_drive(int argc, char** argv) {
         outpost_hub_open = true;
       };
       if (!cli_outpost_hub.empty() && have_outposts) open_outpost_hub(cli_outpost_hub);
+      if (fh1::CjkFont::language_needs_cjk(language)) {
+        auto cf = std::make_shared<fh1::CjkFont>();
+        if (cf->load_for_language(game_root_of(), language, nullptr)) carview::ui::set_cjk_font(cf);
+      }
+      carview::RadioPopupGpuState radio_popup_gpu;
       auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
         HudState st;
         st.banner = banner;
@@ -5229,6 +5238,8 @@ int run_drive(int argc, char** argv) {
             !career_page.is_open())
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
+        if (!show_title && !ceremony.active && radio_popup_gpu.alpha > 0.005f)
+          carview::draw_radio_popup_gpu(list, radio_popup_gpu, float(width), float(height));
         if (story_intro.active()) story_intro.draw_hud(list, float(width), float(height));
         if (fmv_player.active()) {
           list.clear();
@@ -5279,33 +5290,26 @@ int run_drive(int argc, char** argv) {
         if (!legacy_hud_cleared) renderer.set_overlay({}, 0, 0, 0, 0, 0), legacy_hud_cleared = true;
         hud_height = int(carview::drive_hud_dial_height(float(height)));
       };
-      // The radio's popup (overlay layer 3), right-aligned above the HUD
-      // panel; redrawn when what it shows changes.
-      std::string popup_key;
-      auto set_radio_popup = [&](int height) {
+      // GPU vector-font radio popup (Slice 9: replaces CPU 5x7 draw_radio_popup).
+      auto set_radio_popup = [&](int /*height*/) {
         const auto tel = audio_host.telemetry();
         const audio::Radio::Popup p = audio_host.has_radio() && !tel.user_music_active ? tel.radio_popup : audio::Radio::Popup{};
         if (p.alpha <= 0 || p.station < 0 || size_t(p.station) >= audio_host.radio_data().stations.size()) {
-          if (!popup_key.empty()) renderer.set_overlay({}, 0, 0, 0, 0, 3);
-          popup_key.clear();
+          radio_popup_gpu = {};
           return;
         }
         const auto& st = audio_host.radio_data().stations[size_t(p.station)];
-        RadioPopupState ps;
-        ps.off = st.off;
-        if (p.track >= 0 && size_t(p.track) < st.tracks.size())
-          ps.title = st.tracks[size_t(p.track)].title, ps.artist = st.tracks[size_t(p.track)].artist;
-        if (auto it = radio_logos.find(st.name); it != radio_logos.end())
-          ps.logo = it->second.rgba.data(), ps.logo_width = it->second.width, ps.logo_height = it->second.height;
-        ps.alpha = std::round(p.alpha * 16) / 16;
-        const std::string key = st.name + "|" + std::to_string(p.track) + "|" + std::to_string(ps.alpha) + "|" +
-                                std::to_string(height) + "|" + std::to_string(hud_height);
-        if (key == popup_key) return;
-        popup_key = key;
-        const int scale = hud_scale(height);
-        HudImage img = draw_radio_popup(ps, height);
-        renderer.set_overlay(std::move(img.rgba), img.width, img.height, -8 * scale,
-                             -(8 * scale + hud_height + 4 * scale), 3);
+        radio_popup_gpu.station_name = st.name;
+        radio_popup_gpu.station_label = st.off ? "RADIO OFF" : st.name;
+        radio_popup_gpu.off = st.off;
+        if (p.track >= 0 && size_t(p.track) < st.tracks.size()) {
+          radio_popup_gpu.title = st.tracks[size_t(p.track)].title;
+          radio_popup_gpu.artist = st.tracks[size_t(p.track)].artist;
+        } else {
+          radio_popup_gpu.title.clear();
+          radio_popup_gpu.artist.clear();
+        }
+        radio_popup_gpu.alpha = float(std::clamp(p.alpha, 0.0, 1.0));
       };
       auto radio_press = [&](int dir) {
         if (!audio_host.has_radio()) return;
@@ -6201,7 +6205,7 @@ int run_drive(int argc, char** argv) {
           map_cz = vehicle.position().z;
           for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
           mm_size = 0;
-          popup_key.clear();
+          radio_popup_gpu = {};
           cached_map_markers = map_scene().markers;
           update_map_selection();
           save_now("map");
@@ -7015,6 +7019,22 @@ int run_drive(int argc, char** argv) {
                 treasure_map_setting = ls.treasure_map;
                 live_motion_blur = ls.motion_blur;
                 live_dof = ls.dof;
+                skip_intro_movies = ls.skip_intro_movies;
+                start_in_single_player = ls.start_in_single_player;
+                skip_vo_with_a = ls.skip_vo_with_a;
+                if (!ls.language.empty() && ls.language != language) {
+                  language = ls.language;
+                  race_options.language = language;
+                  std::string le;
+                  if (car_names) car_names->load(game_root_of(), state_root, &le, language, shared_db);
+                  if (fh1::CjkFont::language_needs_cjk(language)) {
+                    auto cf = std::make_shared<fh1::CjkFont>();
+                    if (cf->load_for_language(game_root_of(), language, nullptr)) carview::ui::set_cjk_font(cf);
+                  } else {
+                    carview::ui::set_cjk_font(nullptr);
+                  }
+                  ui_atlas_synced = false;
+                }
                 audio_host.apply_config(carview::AudioConfig::from_tokens(settings_page.tokens()), user_music_dir);
                 apply_vehicle_assists(vehicle, live_controls.assists);
                 rewind_buf.set_enabled(live_controls.assists.rewind);
@@ -7296,7 +7316,7 @@ int run_drive(int argc, char** argv) {
                     renderer.set_ui({});
                     mm_size = 0;
                   }
-                  popup_key.clear();
+                  radio_popup_gpu = {};
                   minimap_at = -1;
                 }
               }
@@ -7965,6 +7985,7 @@ int run_drive(int argc, char** argv) {
             if (show_pick_banner)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, baked_cars.size(),
                             carview::car_name(baked_cars[pick]).c_str());
+            if (!show_title && !ceremony.active) set_radio_popup(h);
             set_hud(w, h,
                     show_pick_banner                 ? std::string(line)
                     : vehicle.time() < notice_until  ? notice
@@ -7972,7 +7993,6 @@ int run_drive(int argc, char** argv) {
                                  : vehicle.time() < kIntroSeconds ? intro
                                                      : club_banner(),
                     &menu);
-            if (!show_title && !ceremony.active) set_radio_popup(h);
           }
           vehicle.set_pose(stepped);
           if (!renderer.draw_frame(FrameConstants{}, error)) {

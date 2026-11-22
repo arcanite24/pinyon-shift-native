@@ -51,6 +51,28 @@ int UiScene::find_object(uint32_t id) const {
   return -1;
 }
 
+const UiGeometry* UiScene::geometry_of(int node_index) const {
+  if (node_index < 0 || size_t(node_index) >= nodes.size()) return nullptr;
+  const int oi = nodes[size_t(node_index)].object_index;
+  if (oi < 0 || size_t(oi) >= objects.size()) return nullptr;
+  const UiObject& o = objects[size_t(oi)];
+  if (o.kind != UiObjectKind::kModel || o.geometry >= geometries.size()) return nullptr;
+  return &geometries[o.geometry];
+}
+
+bool UiBgfDocument::has_contract(std::string_view type) const {
+  for (const auto& c : contracts)
+    if (c.type == type) return true;
+  return false;
+}
+
+std::vector<const UiContract*> UiBgfDocument::find_contracts(std::string_view type) const {
+  std::vector<const UiContract*> out;
+  for (const auto& c : contracts)
+    if (c.type == type) out.push_back(&c);
+  return out;
+}
+
 bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* error) {
   Reader r{data};
   out.version = r.u32();
@@ -104,6 +126,57 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
   if (r.bad) {
     if (error) *error = "FBF ends inside its objects";
     return false;
+  }
+  out.geometries.clear();
+  if (r.p + 12 <= data.size()) {
+    const uint32_t gcount = r.u32();
+    const uint32_t extra = r.u32();
+    const uint32_t gpu = r.u32();
+    const size_t gbase = r.p;
+    const size_t extra_base = gbase + size_t(gcount) * 96;
+    const size_t gpu_base = extra_base + size_t(extra);
+    if (!r.bad && gcount <= 200000 && gpu_base <= data.size()) {
+      out.geometries.reserve(gcount);
+      for (uint32_t gi = 0; gi < gcount; ++gi) {
+        Reader gr{data.subspan(gbase + size_t(gi) * 96, 96)};
+        UiGeometry geo;
+        geo.index = gi;
+        gr.skip(16);  // 4 header words
+        geo.bounds_min[0] = gr.f32();
+        geo.bounds_min[1] = gr.f32();
+        geo.bounds_min[2] = gr.f32();
+        gr.f32();
+        geo.bounds_max[0] = gr.f32();
+        geo.bounds_max[1] = gr.f32();
+        geo.bounds_max[2] = gr.f32();
+        gr.f32();
+        gr.skip(24);  // words 12..17
+        const uint32_t fetch0 = gr.u32();
+        const uint32_t fetch1 = gr.u32();
+        geo.gpu_offset = fetch0 & ~3u;
+        geo.gpu_fetch_word = fetch1;
+        geo.extra_offset = gr.u32();
+        auto close = [](float a, float b) { return std::fabs(a - b) < 1e-3f; };
+        geo.is_unit_quad = close(geo.bounds_min[0], -50.0f) && close(geo.bounds_min[1], -50.0f) &&
+                           close(geo.bounds_max[0], 50.0f) && close(geo.bounds_max[1], 50.0f);
+        if (!geo.is_unit_quad && gpu > 0 && gpu_base + geo.gpu_offset + 24 <= data.size()) {
+          // Extract bounded 2D mesh vertices from the GPU vertex buffer (stride 36 bytes or 24 bytes: XYZ floats first).
+          const uint32_t avail = uint32_t(std::min<size_t>(size_t(gpu) - geo.gpu_offset, 2048));
+          const uint32_t stride = 36;
+          const uint32_t vmax = std::min<uint32_t>(avail / stride, 48);
+          for (uint32_t vi = 0; vi < vmax; ++vi) {
+            Reader vr{data.subspan(gpu_base + geo.gpu_offset + size_t(vi) * stride, 12)};
+            const float vx = vr.f32(), vy = vr.f32();
+            if (!std::isfinite(vx) || !std::isfinite(vy)) break;
+            if (vx < geo.bounds_min[0] - 2.0f || vx > geo.bounds_max[0] + 2.0f ||
+                vy < geo.bounds_min[1] - 2.0f || vy > geo.bounds_max[1] + 2.0f)
+              break;
+            geo.vertices.push_back({vx, vy});
+          }
+        }
+        out.geometries.push_back(std::move(geo));
+      }
+    }
   }
   return true;
 }
@@ -187,6 +260,266 @@ std::string ui_texture_member(const std::string& path, bool& horizon) {
   if (horizon) p = p.substr(8);
   if (p.size() > 4 && p.compare(p.size() - 4, 4, ".TGA") == 0) p.resize(p.size() - 4);
   return p + ".xds";
+}
+
+bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error) {
+  out = UiBgfDocument{};
+  static constexpr char kMarker[8] = {'A', 'n', 'a', 'r', 'k', 'B', 'G', 'F'};
+  if (data.size() < 0x8C || std::memcmp(data.data() + 6, kMarker, 8) != 0) {
+    if (error) *error = "not an AnarkBGF document";
+    return false;
+  }
+  auto u32_at = [&](size_t off) -> uint32_t {
+    if (off + 4 > data.size()) return 0;
+    return uint32_t(data[off]) << 24 | uint32_t(data[off + 1]) << 16 | uint32_t(data[off + 2]) << 8 | data[off + 3];
+  };
+  auto u16_at = [&](size_t off) -> uint16_t {
+    if (off + 2 > data.size()) return 0;
+    return uint16_t(uint16_t(data[off]) << 8 | data[off + 1]);
+  };
+  auto f32_at = [&](size_t off) -> float {
+    const uint32_t v = u32_at(off);
+    float f = 0.0f;
+    std::memcpy(&f, &v, 4);
+    return f;
+  };
+
+  out.element_count = u32_at(0x24);
+  out.wrapper_count = u32_at(0x28);
+  out.property_count = u32_at(0x2C);
+  const uint32_t relation_count = u32_at(0x30);
+  const uint32_t identity_count = u32_at(0x3C);
+  const uint32_t style_count = u32_at(0x44);
+  const uint32_t track_count = u32_at(0x4C);
+  const uint32_t anim_count = u32_at(0x5C);
+
+  // 1. Identity string pool at 0x88.
+  const uint32_t id_declared = u32_at(0x88);
+  const size_t id_end = size_t(0x8C) + size_t(id_declared);
+  if (id_end > data.size()) {
+    if (error) *error = "BGF identity section exceeds file";
+    return false;
+  }
+  size_t cursor = 0x8C;
+  out.identities.reserve(identity_count);
+  for (uint32_t i = 0; i < identity_count; ++i) {
+    if (cursor + 4 > id_end) {
+      if (error) *error = "BGF identity string truncated";
+      return false;
+    }
+    const uint32_t len = u32_at(cursor);
+    cursor += 4;
+    if (cursor + len > id_end) {
+      if (error) *error = "BGF identity string body exceeds section";
+      return false;
+    }
+    // Strip trailing NULs if present.
+    size_t trim = len;
+    while (trim > 0 && data[cursor + trim - 1] == 0) --trim;
+    out.identities.emplace_back(reinterpret_cast<const char*>(data.data() + cursor), trim);
+    cursor += len;
+  }
+  cursor = id_end;
+
+  // 2. Item section.
+  if (cursor + 4 > data.size()) {
+    if (error) *error = "BGF missing item section";
+    return false;
+  }
+  const uint32_t item_declared = u32_at(cursor);
+  cursor += 4;
+  const size_t item_end = cursor + size_t(item_declared);
+  if (item_end > data.size()) {
+    if (error) *error = "BGF item section exceeds file";
+    return false;
+  }
+  const uint32_t total_items = out.element_count + out.wrapper_count;
+  out.items.reserve(total_items);
+  for (uint32_t i = 0; i < total_items; ++i) {
+    if (cursor + 14 > item_end) {
+      if (error) *error = "BGF item header truncated";
+      return false;
+    }
+    UiBgfItem item;
+    item.name_hash = u32_at(cursor);
+    item.parent_hash = u32_at(cursor + 4);
+    item.value = u32_at(cursor + 8);
+    item.kind = data[cursor + 12];
+    item.flags = data[cursor + 13];
+    item.is_wrapper = (item.flags & 0x04) != 0;
+    cursor += 14;
+    if (item.is_wrapper) cursor += 5;
+    if (cursor + 4 > item_end) {
+      if (error) *error = "BGF item property count truncated";
+      return false;
+    }
+    const uint32_t pcount = u32_at(cursor);
+    cursor += 4;
+    if (pcount > 1024 || cursor + size_t(pcount) * 8 > item_end) {
+      if (error) *error = "BGF item properties exceed section";
+      return false;
+    }
+    item.properties.reserve(pcount);
+    for (uint32_t p = 0; p < pcount; ++p) {
+      item.properties.emplace_back(u32_at(cursor), u32_at(cursor + 4));
+      cursor += 8;
+    }
+    // Extract contracts from kind == 8 items.
+    if (item.kind == 8) {
+      UiContract c;
+      c.item_index = int(i);
+      c.owner_hash = item.parent_hash;
+      for (const auto& [attr, val] : item.properties) {
+        (void)attr;
+        if (val < out.identities.size()) {
+          const std::string& s = out.identities[val];
+          if (s.empty() || s == "UIContract") continue;
+          if (c.type.empty() && s.find('.') == std::string::npos) {
+            c.type = s;
+          } else if (s.find('.') != std::string::npos) {
+            c.bindings.push_back(s);
+          } else {
+            c.events.push_back(s);
+          }
+        }
+      }
+      if (!c.type.empty()) out.contracts.push_back(std::move(c));
+    }
+    out.items.push_back(std::move(item));
+  }
+  cursor = item_end;
+
+  // 3. Relations section.
+  if (cursor + 4 <= data.size()) {
+    const uint32_t rel_declared = u32_at(cursor);
+    cursor += 4;
+    const size_t rel_end = cursor + size_t(rel_declared);
+    if (rel_end <= data.size()) {
+      out.relations.reserve(relation_count);
+      for (uint32_t i = 0; i < relation_count && cursor + 8 <= rel_end; ++i) {
+        UiBgfRelation rel;
+        rel.parent = u32_at(cursor);
+        const uint32_t cc = u32_at(cursor + 4);
+        cursor += 8;
+        if (cursor + size_t(cc) * 4 > rel_end) break;
+        rel.children.reserve(cc);
+        for (uint32_t k = 0; k < cc; ++k) {
+          rel.children.push_back(u32_at(cursor));
+          cursor += 4;
+        }
+        out.relations.push_back(std::move(rel));
+      }
+      cursor = rel_end;
+    }
+  }
+
+  // 4. Styles / States section (12 + child_count * 24 bytes per style).
+  if (cursor + 4 <= data.size()) {
+    const uint32_t st_declared = u32_at(cursor);
+    cursor += 4;
+    const size_t st_end = cursor + size_t(st_declared);
+    if (st_end <= data.size()) {
+      out.styles.reserve(style_count);
+      for (uint32_t i = 0; i < style_count && cursor + 12 <= st_end; ++i) {
+        UiBgfStyle st;
+        st.owner_item = u32_at(cursor);
+        st.state_count = u16_at(cursor + 10);
+        cursor += 12 + size_t(st.state_count) * 24;
+        if (cursor > st_end) break;
+        out.styles.push_back(st);
+      }
+      cursor = st_end;
+    }
+  }
+
+  // 5. Tracks / Keyframes section.
+  if (cursor + 4 <= data.size()) {
+    const uint32_t tr_declared = u32_at(cursor);
+    cursor += 4;
+    const size_t tr_end = cursor + size_t(tr_declared);
+    if (tr_end <= data.size()) {
+      out.tracks.reserve(track_count);
+      for (uint32_t i = 0; i < track_count && cursor + 8 <= tr_end; ++i) {
+        UiBgfTrack tr;
+        tr.owner_item = u32_at(cursor);
+        const uint32_t child_count = u32_at(cursor + 4);
+        cursor += 8;
+        for (uint32_t ch = 0; ch < child_count && cursor + 8 <= tr_end; ++ch) {
+          const uint32_t key_count = u32_at(cursor + 4);
+          cursor += 8;
+          for (uint32_t k = 0; k < key_count && cursor + 20 <= tr_end; ++k) {
+            UiBgfKeyframe kf;
+            kf.target_item = u32_at(cursor);
+            kf.attr_hash = u32_at(cursor + 4);
+            kf.time = f32_at(cursor + 8);
+            kf.raw_tag = u32_at(cursor + 12);
+            kf.raw_value = u32_at(cursor + 16);
+            kf.value = f32_at(cursor + 16);
+            tr.keys.push_back(kf);
+            cursor += 20;
+          }
+        }
+        out.tracks.push_back(std::move(tr));
+      }
+      cursor = tr_end;
+    }
+  }
+
+  // 6. Empty companion table + 7. Animations section.
+  if (cursor + 4 <= data.size()) {
+    const uint32_t empty_decl = u32_at(cursor);
+    cursor += 4 + size_t(empty_decl);
+  }
+  if (cursor + 4 <= data.size()) {
+    const uint32_t anim_declared = u32_at(cursor);
+    cursor += 4;
+    const size_t anim_end = cursor + size_t(anim_declared);
+    if (anim_end <= data.size()) {
+      out.animations.reserve(anim_count);
+      for (uint32_t i = 0; i < anim_count && cursor + 33 <= anim_end; ++i) {
+        UiBgfAnimation an;
+        an.owner_item = u32_at(cursor + 16);
+        an.track_count = u32_at(cursor + 29);
+        cursor += 33;
+        for (uint32_t t = 0; t < an.track_count && cursor + 9 <= anim_end; ++t) {
+          cursor += 5;
+          const uint32_t kc = u32_at(cursor);
+          cursor += 4 + size_t(kc) * 8;
+          if (cursor + 4 > anim_end) break;
+          const uint32_t ec = u32_at(cursor);
+          cursor += 4 + size_t(ec) * 4;
+          an.key_count += kc;
+          an.event_count += ec;
+        }
+        out.animations.push_back(an);
+      }
+    }
+  }
+  return true;
+}
+
+float evaluate_bgf_track(const UiBgfTrack& track, float time_s, float fallback) {
+  if (track.keys.empty()) return fallback;
+  if (time_s <= track.keys.front().time) return track.keys.front().value;
+  if (time_s >= track.keys.back().time) return track.keys.back().value;
+  for (size_t i = 0; i + 1 < track.keys.size(); ++i) {
+    const auto& a = track.keys[i];
+    const auto& b = track.keys[i + 1];
+    if (time_s >= a.time && time_s <= b.time) {
+      const float span = b.time - a.time;
+      const float t = span > 1e-6f ? (time_s - a.time) / span : 0.0f;
+      return a.value + (b.value - a.value) * t;
+    }
+  }
+  return track.keys.back().value;
+}
+
+std::vector<float> reflow_stacker(float origin, float step, int count) {
+  std::vector<float> out;
+  if (count <= 0) return out;
+  out.reserve(size_t(count));
+  for (int i = 0; i < count; ++i) out.push_back(origin + float(i) * step);
+  return out;
 }
 
 }  // namespace fh1

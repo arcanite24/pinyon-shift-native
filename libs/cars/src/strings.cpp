@@ -50,10 +50,10 @@ bool load_string_tables(const Install& install, fh1::StringTables& out, std::str
   out = fh1::StringTables{};
   StringTableLoad c;
   const std::string lang = lower(language);
-  {
+  auto load_lang_layer = [&](const std::string& l, bool count_stats) -> bool {
     const fs::path st_dir = install.media / "stringtables";
-    const std::string want = lang + ".zip";
-    fs::path archive_path = st_dir / (language + ".zip");
+    const std::string want = l + ".zip";
+    fs::path archive_path = st_dir / (l + ".zip");
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(st_dir, ec)) {
       if (e.is_regular_file() && lower(e.path().filename().string()) == want) {
@@ -61,32 +61,42 @@ bool load_string_tables(const Install& install, fh1::StringTables& out, std::str
         break;
       }
     }
-    auto disc = fh1::Archive::open(archive_path, error);
+    size_t rej = 0;
+    auto disc = fh1::Archive::open(archive_path, count_stats ? error : nullptr);
     if (!disc) return false;
-    c.disc = put_members(*disc, "", out, c.rejected);
-  }
-  if (!install.v4_media_zip.empty()) {
-    std::string why;
-    if (auto v4 = fh1::Archive::open(install.v4_media_zip, &why))
-      c.v4 = put_members(*v4, "stringtables/" + lang + "/", out, c.rejected);
-  }
-  // Every package's StringTables_pri_<q>.zip, ascending q.
-  std::vector<std::pair<uint32_t, fs::path>> zips;
-  std::set<fs::path> folders;
-  for (const auto& p : install.packages)
-    for (const auto& a : p.archives) folders.insert(a.parent_path());
-  std::error_code ec;
-  for (const auto& folder : folders)
-    for (const auto& e : fs::directory_iterator(folder, ec)) {
-      const std::string fname = lower(e.path().filename().string());
-      if (e.is_regular_file() && fname.rfind("stringtables_pri_", 0) == 0 && lower(e.path().extension().string()) == ".zip")
-        zips.emplace_back(priority_of(e.path().stem().string()), e.path());
+    const size_t n_disc = put_members(*disc, "", out, rej);
+    size_t n_v4 = 0, n_pkg = 0;
+    if (!install.v4_media_zip.empty()) {
+      std::string why;
+      if (auto v4 = fh1::Archive::open(install.v4_media_zip, &why))
+        n_v4 = put_members(*v4, "stringtables/" + l + "/", out, rej);
     }
-  std::sort(zips.begin(), zips.end());
-  for (const auto& [q, zip] : zips) {
-    std::string why;
-    if (auto a = fh1::Archive::open(zip, &why)) c.packages += put_members(*a, lang + "/", out, c.rejected);
-  }
+    std::vector<std::pair<uint32_t, fs::path>> zips;
+    std::set<fs::path> folders;
+    for (const auto& p : install.packages)
+      for (const auto& a : p.archives) folders.insert(a.parent_path());
+    for (const auto& folder : folders)
+      for (const auto& e : fs::directory_iterator(folder, ec)) {
+        const std::string fname = lower(e.path().filename().string());
+        if (e.is_regular_file() && fname.rfind("stringtables_pri_", 0) == 0 && lower(e.path().extension().string()) == ".zip")
+          zips.emplace_back(priority_of(e.path().stem().string()), e.path());
+      }
+    std::sort(zips.begin(), zips.end());
+    for (const auto& [q, zip] : zips) {
+      std::string why;
+      if (auto a = fh1::Archive::open(zip, &why)) n_pkg += put_members(*a, l + "/", out, rej);
+    }
+    if (count_stats) {
+      c.disc = n_disc;
+      c.v4 = n_v4;
+      c.packages = n_pkg;
+      c.rejected = rej;
+    }
+    return true;
+  };
+  // Load EN first as a per-table fallback when requesting a non-English language.
+  if (lang != "en") load_lang_layer("en", false);
+  if (!load_lang_layer(lang, true)) return false;
   if (counts) *counts = c;
   return true;
 }

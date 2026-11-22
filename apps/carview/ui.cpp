@@ -1,12 +1,15 @@
 #include "ui.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <utility>
 #include <tuple>
 
+#include "fh1data/cjk_font.h"
 #include "fh1data/vfont.h"
 
 namespace carview::ui {
@@ -223,6 +226,7 @@ namespace {
 
 struct VectorFonts {
   std::shared_ptr<const fh1::VFont> font[4];  // A, B, E, D
+  std::shared_ptr<const fh1::CjkFont> cjk;    // CHTB / CHSB / JPB / KORB
   std::vector<uint8_t> atlas = std::vector<uint8_t>(size_t(kAtlasSize) * kAtlasSize * 4, 0);
   std::vector<std::array<uint32_t, 4>> dirty;
   uint32_t shelf_x = 0, shelf_y = 0, shelf_h = 0;
@@ -231,9 +235,11 @@ struct VectorFonts {
   struct Entry {
     float u0, v0, u1, v1;  // atlas texels
     float left, top;       // the bitmap's top-left from the pen, px at the cached size (y down from the baseline)
+    float advance;         // px advance (used by CJK bitmap glyphs)
     bool empty;
   };
-  std::map<std::tuple<int, uint32_t, int>, Entry> cache;  // (font, code point, px per em) -> entry
+  // font index: 0..3 VFont (A, B, E, D), 4 CjkFont.
+  std::map<std::tuple<int, uint32_t, int>, Entry> cache;  // (font, code point, px) -> entry
 
   // Clears the glyph rows (the images stay).
   void reset() {
@@ -365,23 +371,211 @@ const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px) {
   for (int y = 0; y < h; ++y)
     for (int x = 0; x < w; ++x) v.atlas[((size_t(ay) + size_t(y)) * kAtlasSize + ax + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
   v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
-  VectorFonts::Entry e{float(ax), float(ay), float(ax + uint32_t(w)), float(ay + uint32_t(h)), float(gx0), float(gy0), false};
+  VectorFonts::Entry e{float(ax), float(ay), float(ax + uint32_t(w)), float(ay + uint32_t(h)), float(gx0), float(gy0),
+                       0.0f, false};
   return &(v.cache[key] = e);
 }
 
-float vector_measure(int font, std::string_view text, const TextStyle& s) {
-  const fh1::VFont& f = *vf().font[font];
-  const float k = em_px(f, s.size);
-  float w = 0;
-  size_t n = 0;
-  for (size_t i = 0; i < text.size();) {
-    const uint32_t cp = next_code_point(text, i, s.keep_case);
-    const fh1::VFontGlyph* g = cp == ' ' ? nullptr : f.find(cp);
-    w += (g ? g->advance : f.space_width) * k + s.tracking * s.size;
-    ++n;
+int cjk_cached_px(float cap_size) {
+  const float cell = std::clamp(cap_size * 1.32f, 8.0f, 96.0f);
+  return cell <= 48.0f ? std::max(8, int(std::lround(cell))) : int(std::lround(cell / 4.0f)) * 4;
+}
+
+const VectorFonts::Entry* cjk_glyph_entry(uint32_t cp, int cell_px) {
+  VectorFonts& v = vf();
+  if (!v.cjk || !v.cjk->valid()) return nullptr;
+  const auto key = std::make_tuple(4, cp, cell_px);
+  if (auto it = v.cache.find(key); it != v.cache.end()) return &it->second;
+  std::vector<uint8_t> cov;
+  int w = 0, h = 0;
+  float adv = 0.0f;
+  if (!v.cjk->rasterize_scaled(cp, cell_px, cov, w, h, adv)) return nullptr;
+  if (w <= 0 || h <= 0 || w > int(kAtlasSize) || h > int(kAtlasSize)) return nullptr;
+  if (v.shelf_x + uint32_t(w) > kAtlasSize) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
+  if (v.shelf_y + uint32_t(h) > kGlyphRows) v.reset();
+  const uint32_t ax = v.shelf_x, ay = v.shelf_y;
+  v.shelf_x += uint32_t(w) + 1;
+  v.shelf_h = std::max(v.shelf_h, uint32_t(h) + 1);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x)
+      v.atlas[((size_t(ay) + size_t(y)) * kAtlasSize + ax + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
+  v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
+  // Position bitmap top relative to baseline using font's ascent ratio.
+  const float ascent_ratio = float(v.cjk->ascent()) / float(std::max(1, v.cjk->cell_size()));
+  const float top_from_base = -float(h) * (ascent_ratio - v.cjk->baseline_shift());
+  VectorFonts::Entry e{float(ax), float(ay), float(ax + uint32_t(w)), float(ay + uint32_t(h)), 0.0f, top_from_base,
+                       adv, false};
+  return &(v.cache[key] = e);
+}
+
+float cjk_advance_px(uint32_t cp, float cap_size) {
+  const auto& cjk = vf().cjk;
+  if (!cjk || !cjk->valid()) return cap_size * 0.5f;
+  const fh1::CjkGlyphMetrics* m = cjk->metrics(cp);
+  if (!m) return cap_size * 0.5f;
+  const float cell_px = std::clamp(cap_size * 1.32f, 8.0f, 96.0f);
+  return std::max(2.0f, float(std::max(1, m->advance())) * (cell_px / float(std::max(1, cjk->cell_size()))));
+}
+
+struct StyledRun {
+  std::string text;
+  ui::Font font = ui::Font::kAuto;
+  uint32_t color = 0;
+};
+
+struct StyledLine {
+  std::vector<StyledRun> runs;
+};
+
+bool parse_style_tag(std::string_view tag, ui::Font base_font, uint32_t base_color, std::vector<ui::Font>& font_stack,
+                     uint32_t& cur_color) {
+  auto trim = [](std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\'' || s.front() == '"')) s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\'' || s.back() == '"')) s.remove_suffix(1);
+    return s;
+  };
+  std::string low;
+  low.reserve(tag.size());
+  for (char c : tag) low.push_back(char(std::tolower(static_cast<unsigned char>(c))));
+
+  if (low == "font_pop" || low == "font") {
+    if (font_stack.size() > 1) font_stack.pop_back();
+    else font_stack = {base_font};
+    return true;
   }
-  if (n) w -= s.tracking * s.size;
-  return w * s.stretch;
+  if (low == "colour_pop" || low == "color_pop" || low == "colour" || low == "color") {
+    cur_color = base_color;
+    return true;
+  }
+  if (low.rfind("font=", 0) == 0) {
+    const std::string_view v = trim(std::string_view(low).substr(5));
+    ui::Font nf = base_font;
+    if (v == "a" || v == "horizon_a") nf = ui::Font::kA;
+    else if (v == "b" || v == "horizon_b") nf = ui::Font::kB;
+    else if (v == "d" || v == "horizon_d") nf = ui::Font::kD;
+    else if (v == "e" || v == "horizon_e") nf = ui::Font::kE;
+    font_stack.push_back(nf);
+    return true;
+  }
+  if (low.rfind("colour=", 0) == 0 || low.rfind("color=", 0) == 0) {
+    const size_t eq = low.find('=');
+    const std::string v(trim(std::string_view(low).substr(eq + 1)));
+    int rgba_vals[4] = {255, 255, 255, 255};
+    int n = 0;
+    const char* p = v.c_str();
+    while (*p && n < 4) {
+      while (*p == ' ' || *p == ',' || *p == '\t') ++p;
+      if (!*p) break;
+      char* end = nullptr;
+      const long val = std::strtol(p, &end, 10);
+      if (end == p) break;
+      rgba_vals[n++] = int(std::clamp(val, 0l, 255l));
+      p = end;
+    }
+    if (n >= 3) {
+      // Preserve base alpha factor when styling faded text.
+      const uint32_t base_a = (base_color >> 24) & 0xFFu;
+      const uint32_t a = (uint32_t(rgba_vals[3]) * base_a) / 255u;
+      cur_color = rgba(uint8_t(rgba_vals[0]), uint8_t(rgba_vals[1]), uint8_t(rgba_vals[2]), uint8_t(a));
+    }
+    return true;
+  }
+  return false;
+}
+
+std::vector<StyledLine> parse_styled_lines(std::string_view text, const TextStyle& base) {
+  std::vector<StyledLine> lines(1);
+  std::vector<ui::Font> font_stack = {base.font};
+  uint32_t cur_color = base.color;
+  auto push_text = [&](std::string_view chunk) {
+    if (chunk.empty()) return;
+    auto& runs = lines.back().runs;
+    const ui::Font cf = font_stack.back();
+    if (!runs.empty() && runs.back().font == cf && runs.back().color == cur_color) {
+      runs.back().text.append(chunk);
+    } else {
+      runs.push_back({std::string(chunk), cf, cur_color});
+    }
+  };
+
+  size_t i = 0;
+  size_t plain_start = 0;
+  while (i < text.size()) {
+    if (text[i] == '\n') {
+      push_text(text.substr(plain_start, i - plain_start));
+      lines.emplace_back();
+      ++i;
+      plain_start = i;
+      continue;
+    }
+    if (text[i] == '{') {
+      const bool dbl = (i + 1 < text.size() && text[i + 1] == '{');
+      const size_t tag_start = i + (dbl ? 2 : 1);
+      const size_t close = dbl ? text.find("}}", tag_start) : text.find('}', tag_start);
+      if (close != std::string_view::npos && close - tag_start <= 64) {
+        const std::string_view tag = text.substr(tag_start, close - tag_start);
+        std::vector<ui::Font> test_stack = font_stack;
+        uint32_t test_col = cur_color;
+        if (parse_style_tag(tag, base.font, base.color, test_stack, test_col)) {
+          push_text(text.substr(plain_start, i - plain_start));
+          font_stack = std::move(test_stack);
+          cur_color = test_col;
+          i = close + (dbl ? 2 : 1);
+          plain_start = i;
+          continue;
+        }
+      }
+    }
+    ++i;
+  }
+  push_text(text.substr(plain_start, text.size() - plain_start));
+  return lines;
+}
+
+float measure_run_single_line(std::string_view text, const TextStyle& s) {
+  const int f = font_of(s);
+  const bool have_cjk = vf().cjk && vf().cjk->valid();
+  if (f >= 0) {
+    const fh1::VFont& font = *vf().font[f];
+    const float k = em_px(font, s.size);
+    float w = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < text.size();) {
+      const uint32_t cp = next_code_point(text, i, s.keep_case);
+      const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
+      if (g) {
+        w += g->advance * k + s.tracking * s.size;
+      } else if (cp != ' ' && have_cjk && vf().cjk->has_glyph(cp)) {
+        w += cjk_advance_px(cp, s.size) + s.tracking * s.size;
+      } else {
+        w += font.space_width * k + s.tracking * s.size;
+      }
+      ++n;
+    }
+    if (n) w -= s.tracking * s.size;
+    return w * s.stretch;
+  }
+  if (have_cjk) {
+    float w = 0;
+    size_t n = 0;
+    const float r = s.weight * 10;
+    for (size_t i = 0; i < text.size();) {
+      const uint32_t cp = next_code_point(text, i, s.keep_case);
+      if (cp >= 0x80 && vf().cjk->has_glyph(cp)) {
+        w += cjk_advance_px(cp, s.size) + s.tracking * s.size;
+      } else {
+        w += advance_units(cp < 128 ? glyph(char(cp)) : nullptr, r, s.tracking * 10) * (s.size / 10.0f);
+      }
+      ++n;
+    }
+    if (n) w -= s.tracking * s.size;
+    return w;
+  }
+  const float r = s.weight * 10;
+  float units = 0;
+  for (char c : text) units += advance_units(glyph(c), r, s.tracking * 10);
+  if (!text.empty()) units -= 1.8f + s.tracking * 10;
+  return units * s.size / 10;
 }
 
 }  // namespace
@@ -393,68 +587,146 @@ void set_vector_fonts(std::shared_ptr<const fh1::VFont> a, std::shared_ptr<const
   v.reset();
 }
 bool vector_fonts_loaded() { return vf().font[1] != nullptr; }
+void set_cjk_font(std::shared_ptr<const fh1::CjkFont> cjk) {
+  VectorFonts& v = vf();
+  v.cjk = std::move(cjk);
+  v.reset();
+}
+bool cjk_font_loaded() { return vf().cjk != nullptr && vf().cjk->valid(); }
 const std::vector<uint8_t>& atlas_pixels() { return vf().atlas; }
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty() { return std::exchange(vf().dirty, {}); }
 
+std::string List::strip_style_tags(std::string_view text) {
+  TextStyle base{};
+  const auto lines = parse_styled_lines(text, base);
+  std::string out;
+  for (size_t li = 0; li < lines.size(); ++li) {
+    if (li > 0) out.push_back('\n');
+    for (const auto& run : lines[li].runs) out.append(run.text);
+  }
+  return out;
+}
+
 float List::measure(std::string_view text, const TextStyle& s) {
-  if (const int f = font_of(s); f >= 0) return vector_measure(f, text, s);
-  const float r = s.weight * 10;
-  float units = 0;
-  for (char c : text) units += advance_units(glyph(c), r, s.tracking * 10);
-  if (!text.empty()) units -= 1.8f + s.tracking * 10;  // no gap after the last
-  return units * s.size / 10;
+  const auto lines = parse_styled_lines(text, s);
+  float max_w = 0.0f;
+  for (const auto& ln : lines) {
+    float lw = 0.0f;
+    for (const auto& run : ln.runs) {
+      TextStyle rs = s;
+      rs.font = run.font;
+      rs.color = run.color;
+      lw += measure_run_single_line(run.text, rs);
+    }
+    max_w = std::max(max_w, lw);
+  }
+  return max_w;
+}
+
+float List::measure_height(std::string_view text, const TextStyle& s) {
+  const auto lines = parse_styled_lines(text, s);
+  if (lines.empty()) return 0.0f;
+  return s.size + float(lines.size() - 1) * (s.size * 1.35f);
 }
 
 float List::text(float x, float y, std::string_view text, const TextStyle& s) {
-  const float w = measure(text, s);
-  if (s.align == Align::kCenter) x -= 0.5f * w;
-  if (s.align == Align::kRight) x -= w;
-  if (const int f = font_of(s); f >= 0) {
-    // The game's font: the cap top at y, so the baseline at y + size.
-    const fh1::VFont& font = *vf().font[f];
-    const float k = em_px(font, s.size);
-    const int px = cached_px(k);
-    const float scale = k / float(px);
-    const float base = y + s.size;
+  const auto lines = parse_styled_lines(text, s);
+  const float line_step = s.size * 1.35f;
+  const bool have_cjk = vf().cjk && vf().cjk->valid();
+  const int cjk_px = have_cjk ? cjk_cached_px(s.size) : 0;
+  const float cjk_scale = have_cjk ? std::clamp(s.size * 1.32f, 8.0f, 96.0f) / float(cjk_px) : 1.0f;
+  const float inv = 1.0f / float(kAtlasSize);
+  float max_w = 0.0f;
+
+  for (size_t li = 0; li < lines.size(); ++li) {
+    const auto& ln = lines[li];
+    float lw = 0.0f;
+    for (const auto& run : ln.runs) {
+      TextStyle rs = s;
+      rs.font = run.font;
+      rs.color = run.color;
+      lw += measure_run_single_line(run.text, rs);
+    }
+    max_w = std::max(max_w, lw);
+
     float pen = x;
-    for (size_t i = 0; i < text.size();) {
-      const uint32_t cp = next_code_point(text, i, s.keep_case);
-      const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
-      if (g) {
-        if (const auto* e = glyph_entry(f, cp, px)) {
-          // At the cached size the quad sits on whole pixels (no resampling blur).
-          const float sx = scale * s.stretch;
-          float gx = pen + e->left * sx, gy = base + e->top * scale;
-          if (scale == 1.0f && s.stretch == 1.0f) gx = std::round(gx), gy = std::round(gy);
-          const float inv = 1.0f / float(kAtlasSize);
-          image(gx, gy, gx + (e->u1 - e->u0) * sx, gy + (e->v1 - e->v0) * scale,
-                {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, s.color);
+    if (s.align == Align::kCenter) pen -= 0.5f * lw;
+    if (s.align == Align::kRight) pen -= lw;
+    const float ly = y + float(li) * line_step;
+    const float base = ly + s.size;
+
+    for (const auto& run : ln.runs) {
+      TextStyle rs = s;
+      rs.font = run.font;
+      rs.color = run.color;
+      const int f = font_of(rs);
+      if (f >= 0) {
+        const fh1::VFont& font = *vf().font[f];
+        const float k = em_px(font, rs.size);
+        const int px = cached_px(k);
+        const float scale = k / float(px);
+        for (size_t i = 0; i < run.text.size();) {
+          const uint32_t cp = next_code_point(run.text, i, rs.keep_case);
+          const fh1::VFontGlyph* g = cp == ' ' ? nullptr : font.find(cp);
+          if (g) {
+            if (const auto* e = glyph_entry(f, cp, px)) {
+              const float sx = scale * rs.stretch;
+              float gx = pen + e->left * sx, gy = base + e->top * scale;
+              if (scale == 1.0f && rs.stretch == 1.0f) gx = std::round(gx), gy = std::round(gy);
+              image(gx, gy, gx + (e->u1 - e->u0) * sx, gy + (e->v1 - e->v0) * scale,
+                    {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, rs.color);
+            }
+            pen += (g->advance * k + rs.tracking * rs.size) * rs.stretch;
+          } else if (cp != ' ' && have_cjk && vf().cjk->has_glyph(cp)) {
+            if (const auto* e = cjk_glyph_entry(cp, cjk_px)) {
+              const float sx = cjk_scale * rs.stretch;
+              float gx = pen + e->left * sx, gy = base + e->top * cjk_scale;
+              image(gx, gy, gx + (e->u1 - e->u0) * sx, gy + (e->v1 - e->v0) * cjk_scale,
+                    {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, rs.color);
+              pen += (e->advance * cjk_scale + rs.tracking * rs.size) * rs.stretch;
+            } else {
+              pen += (cjk_advance_px(cp, rs.size) + rs.tracking * rs.size) * rs.stretch;
+            }
+          } else {
+            pen += (font.space_width * k + rs.tracking * rs.size) * rs.stretch;
+          }
+        }
+      } else {
+        const float k = rs.size / 10;
+        const float r = rs.weight * 10;
+        for (size_t i = 0; i < run.text.size();) {
+          const uint32_t cp = next_code_point(run.text, i, rs.keep_case);
+          if (cp >= 0x80 && have_cjk && vf().cjk->has_glyph(cp)) {
+            if (const auto* e = cjk_glyph_entry(cp, cjk_px)) {
+              float gx = pen + e->left * cjk_scale, gy = base + e->top * cjk_scale;
+              image(gx, gy, gx + (e->u1 - e->u0) * cjk_scale, gy + (e->v1 - e->v0) * cjk_scale,
+                    {e->u0 * inv, e->v0 * inv, e->u1 * inv, e->v1 * inv}, rs.color);
+              pen += e->advance * cjk_scale + rs.tracking * rs.size;
+            } else {
+              pen += cjk_advance_px(cp, rs.size) + rs.tracking * rs.size;
+            }
+            continue;
+          }
+          const Glyph* g = cp < 128 ? glyph(char(cp)) : nullptr;
+          if (g && g->count) {
+            const float gp = pen + r * k;
+            const float pad = (r + 1.5f) * k;
+            const float lean = rs.slant * 11 * k;
+            items_.push_back({{gp - pad - std::max(0.0f, -lean), ly - pad, gp + g->width * k + pad + std::max(0.0f, lean),
+                               ly + 10 * k + pad + 1.5f * k},
+                              {gp, ly, k, r},
+                              {float(g->first), float(g->count), rs.slant, 0},
+                              rs.color,
+                              rs.color,
+                              kGlyph,
+                              0});
+          }
+          pen += advance_units(g, r, rs.tracking * 10) * k;
         }
       }
-      pen += ((g ? g->advance : font.space_width) * k + s.tracking * s.size) * s.stretch;
     }
-    return w;
   }
-  const float k = s.size / 10;  // px per unit
-  const float r = s.weight * 10;
-  float pen = x + r * k;  // the first stroke's left edge at x
-  for (char c : text) {
-    const Glyph* g = glyph(c);
-    if (g && g->count) {
-      const float pad = (r + 1.5f) * k;
-      const float lean = s.slant * 11 * k;
-      items_.push_back({{pen - pad - std::max(0.0f, -lean), y - pad, pen + g->width * k + pad + std::max(0.0f, lean),
-                         y + 10 * k + pad + 1.5f * k},
-                        {pen, y, k, r},
-                        {float(g->first), float(g->count), s.slant, 0},
-                        s.color,
-                        s.color,
-                        kGlyph,
-                        0});
-    }
-    pen += advance_units(g, r, s.tracking * 10) * k;
-  }
-  return w;
+  return max_w;
 }
 
 // The CPU twin of shaders/ui.frag.
