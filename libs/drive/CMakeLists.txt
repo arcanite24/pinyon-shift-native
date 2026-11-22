@@ -19,7 +19,8 @@ add_library(shift_drive STATIC
   src/wheel_ffb.cpp
   src/dualsense.cpp
   src/head_tracking.cpp
-  src/telemetry_udp.cpp)
+  src/telemetry_udp.cpp
+  src/trainer.cpp)
 target_include_directories(shift_drive PUBLIC include)
 target_link_libraries(shift_drive PUBLIC shift_cars)
 if(WIN32)

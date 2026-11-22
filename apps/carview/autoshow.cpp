@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <map>
 
+#include "drive/trainer.h"
 #include "game_hud.h"
 
 namespace carview {
@@ -49,7 +51,7 @@ std::string pretty_make(const std::string& icon_base) {
 }  // namespace
 
 bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked, std::string& why,
-                    int64_t credits, bool tutorial_first) {
+                    int64_t credits, bool tutorial_first, bool include_hidden, double price_multiplier) {
   open_ = false;
   tutorial_mode_ = tutorial_first;
   catalog_.clear();
@@ -58,7 +60,11 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   empty_reason_.clear();
 
   std::vector<cars::DealerCar> all;
-  if (!db.dealer(all, &why)) return false;
+  if (!db.dealer(all, &why, include_hidden)) return false;
+
+  drive::FestivalPacingConfig pacing;
+  pacing.enabled = std::fabs(price_multiplier - 1.0) > 1e-4;
+  pacing.price_multiplier = price_multiplier;
 
   // Load List_CarMake readable names.
   std::map<int64_t, std::string> make_names;
@@ -132,7 +138,10 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
           nullptr);
 
   for (auto& c : all) {
+    const drive::HiddenCarInfo* hc = include_hidden ? drive::find_hidden_car(c.id) : nullptr;
+    if (hc && c.base_cost <= 0) c.base_cost = hc->fallback_cost;
     if (c.base_cost <= 0) continue;
+    c.base_cost = pacing.scale_price(c.base_cost, c.is_dlc);
     if (!baked.empty() && !baked.count(lower(c.media_name))) continue;
     // SPEC-AUTOSHOW-PAINT: 2-car tutorial list (ids 1323 and 1009).
     if (tutorial_mode_ && c.id != 1323 && c.id != 1009) continue;
@@ -152,9 +161,13 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
       entry.peak_torque_nm = mit->second.torque_nm;
       entry.curb_weight_kg = mit->second.weight_kg;
     }
+    if (hc) {
+      entry.display_name = hc->display_name;
+      if (entry.make_name.empty()) entry.make_name = hc->make_name;
+    }
     if (auto mn = make_names.find(entry.make_id); mn != make_names.end()) {
       entry.make_name = mn->second;
-    } else {
+    } else if (entry.make_name.empty()) {
       entry.make_name = "Other";
     }
     if (auto sw = swatches_by_car.find(c.id); sw != swatches_by_car.end()) {
@@ -166,7 +179,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   // Fallback if tutorial_mode filtered everything (e.g., neither 1323 nor 1009 baked).
   if (catalog_.empty() && tutorial_mode_) {
     tutorial_mode_ = false;
-    return open(db, baked, why, credits, false);
+    return open(db, baked, why, credits, false, include_hidden, price_multiplier);
   }
   if (catalog_.empty()) {
     why = "no cars to buy";
@@ -174,14 +187,21 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   }
 
   // Build Make Carousel: "All Affordable" first (or "First Car" in tutorial),
+  // optional "Hidden & Showcase" tab when Hidden Cars unlock is active,
   // followed by all makes with >= 1 buyable car sorted alphabetically.
   if (tutorial_mode_) {
     makes_.push_back({-2, "First Car", catalog_.size()});
   } else {
     size_t affordable = 0;
-    for (const auto& c : catalog_)
+    size_t hidden_count = 0;
+    for (const auto& c : catalog_) {
       if (c.dealer.base_cost <= credits) ++affordable;
+      if (drive::is_hidden_car_id(c.dealer.id)) ++hidden_count;
+    }
     makes_.push_back({-1, "All Affordable", affordable});
+    if (include_hidden && hidden_count > 0) {
+      makes_.push_back({-3, "Hidden & Showcase", hidden_count});
+    }
 
     std::map<int64_t, std::pair<std::string, size_t>> by_make;
     for (const auto& c : catalog_) {
@@ -216,6 +236,9 @@ void Autoshow::rebuild_visible(int64_t credits) {
     for (const auto& c : catalog_)
       if (c.dealer.base_cost <= credits) visible_.push_back(c);
     if (visible_.empty()) empty_reason_ = "no affordable cars";
+  } else if (mk.make_id == -3) {
+    for (const auto& c : catalog_)
+      if (drive::is_hidden_car_id(c.dealer.id)) visible_.push_back(c);
   } else if (mk.make_id == -2) {
     visible_ = catalog_;
   } else {

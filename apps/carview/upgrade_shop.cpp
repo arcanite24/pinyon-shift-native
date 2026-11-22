@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "drive/trainer.h"
+
 namespace carview {
 namespace {
 
@@ -65,7 +67,7 @@ const char* shop_category_name(ShopCategory cat) {
 
 bool UpgradeShop::open(const cars::PartsDb& db, garage::Garage& g, int64_t garage_id, std::string& why,
                        const cars::PhysicsSettings* phys_settings, const garage::PiConfig* pi_cfg,
-                       const std::vector<garage::ClassBand>* bands) {
+                       const std::vector<garage::ClassBand>* bands, double price_multiplier) {
   open_ = false;
   changed_ = false;
   visual_dirty_ = false;
@@ -75,6 +77,7 @@ bool UpgradeShop::open(const cars::PartsDb& db, garage::Garage& g, int64_t garag
   phys_settings_ = phys_settings;
   pi_cfg_ = pi_cfg;
   bands_ = bands;
+  price_multiplier_ = std::clamp(price_multiplier, 0.25, 3.0);
 
   if (!reload_slots(why)) return false;
 
@@ -120,14 +123,19 @@ bool UpgradeShop::reload_slots(std::string& why) {
   std::vector<cars::PartRow> rows;
   if (!db_->options(car->car_id, garage::fitted(*car), rows, &why)) return false;
 
+  drive::FestivalPacingConfig pacing;
+  pacing.enabled = std::fabs(price_multiplier_ - 1.0) > 1e-4;
+  pacing.price_multiplier = price_multiplier_;
+
   for (const auto& s : cars::upgrade_slots()) {
     Slot slot;
     slot.part_enum = s.part_enum;
     slot.column = s.column;
     slot.table = s.table;
     slot.category = category_of(s.part_enum);
-    for (const auto& r : rows) {
+    for (auto r : rows) {
       if (r.part_enum == s.part_enum) {
+        if (!r.is_stock && r.price > 0) r.price = pacing.scale_price(r.price, false);
         slot.parts.push_back(r);
         if (s.part_enum == 0) {
           slot.part_names.push_back(r.is_stock ? "Stock Engine" : ("Engine Swap #" + std::to_string(r.level)));
@@ -187,7 +195,7 @@ bool UpgradeShop::reload_slots(std::string& why) {
       pr.id = w.id;
       pr.level = 1;
       pr.is_stock = false;
-      pr.price = w.price;
+      pr.price = pacing.scale_price(w.price, false);
       pr.manufacturer = w.manufacturer_id;
       wslot.parts.push_back(pr);
       wslot.part_names.push_back(w.display_name.empty() ? w.media_name : w.display_name);

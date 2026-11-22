@@ -187,6 +187,90 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"japanese", {"--language", "JP"}},
         {"korean", {"--language", "KO"}},
         {"chinese (trad)", {"--language", "CHT"}}}},
+      // Slice 12: Camera Editor, Immersive Camera & Head Tracking (Display / Controls).
+      {"camera editor", {{"normal", {}}, {"wheel view", {"--driving-view", "wheel"}}, {"replay view", {"--driving-view", "replay"}}}},
+      {"chase height",
+       {{"default", {}},
+        {"-0.50 m", {"--chase-height", "-0.50"}},
+        {"-0.25 m", {"--chase-height", "-0.25"}},
+        {"+0.25 m", {"--chase-height", "0.25"}},
+        {"+0.50 m", {"--chase-height", "0.50"}},
+        {"+0.75 m", {"--chase-height", "0.75"}},
+        {"+1.00 m", {"--chase-height", "1.00"}}}},
+      {"chase distance",
+       {{"default", {}},
+        {"-0.50 m", {"--chase-distance", "-0.50"}},
+        {"+0.50 m", {"--chase-distance", "0.50"}},
+        {"+1.00 m", {"--chase-distance", "1.00"}},
+        {"+1.50 m", {"--chase-distance", "1.50"}},
+        {"+2.00 m", {"--chase-distance", "2.00"}}}},
+      {"chase fov",
+       {{"default", {}},
+        {"85%", {"--chase-fov", "0.85"}},
+        {"95%", {"--chase-fov", "0.95"}},
+        {"105%", {"--chase-fov", "1.05"}},
+        {"115%", {"--chase-fov", "1.15"}},
+        {"125%", {"--chase-fov", "1.25"}}}},
+      {"chase stiffness",
+       {{"default", {}},
+        {"50%", {"--chase-stiffness", "0.50"}},
+        {"75%", {"--chase-stiffness", "0.75"}},
+        {"125%", {"--chase-stiffness", "1.25"}},
+        {"150%", {"--chase-stiffness", "1.50"}},
+        {"200%", {"--chase-stiffness", "2.00"}}}},
+      {"immersive camera",
+       {{"off", {}},
+        {"subtle", {"--immersive-camera", "subtle"}},
+        {"default", {"--immersive-camera", "default"}},
+        {"strong", {"--immersive-camera", "strong"}}}},
+      {"head tracking (opentrack)", {{"off", {}}, {"on (udp 4242)", {"--head-tracking"}}}},
+      // Slice 12: Racing Wheels, Separate Devices, DirectInput FFB & DualSense (Controls).
+      {"wheel steering saturation",
+       {{"100%", {}},
+        {"50%", {"--wheel-sat", "50"}},
+        {"60%", {"--wheel-sat", "60"}},
+        {"75%", {"--wheel-sat", "75"}},
+        {"90%", {"--wheel-sat", "90"}}}},
+      {"wheel separate devices", {{"off", {}}, {"on (multi-usb)", {"--wheel-separate"}}}},
+      {"wheel 900 deg linear", {{"off", {}}, {"on", {"--wheel-900-linear"}}}},
+      {"wheel force feedback",
+       {{"off", {}}, {"rumble only", {"--wheel-ffb-mode", "rumble"}}, {"full (directinput)", {"--wheel-ffb-mode", "full"}}}},
+      {"wheel ffb strength",
+       {{"50%", {}},
+        {"25%", {"--wheel-ffb-strength", "25"}},
+        {"75%", {"--wheel-ffb-strength", "75"}},
+        {"100%", {"--wheel-ffb-strength", "100"}}}},
+      {"wheel ffb invert", {{"off", {}}, {"on", {"--wheel-ffb-invert"}}}},
+      {"dualsense adaptive triggers",
+       {{"off", {}}, {"brake", {"--ds-triggers", "brake"}}, {"full", {"--ds-triggers", "full"}}}},
+      {"dualsense trigger strength",
+       {{"100%", {}},
+        {"75%", {"--ds-trigger-strength", "75"}},
+        {"50%", {"--ds-trigger-strength", "50"}},
+        {"25%", {"--ds-trigger-strength", "25"}}}},
+      {"dualsense gear click", {{"off", {}}, {"on", {"--ds-gear-click"}}}},
+      {"dualsense lightbar",
+       {{"player", {}}, {"rpm", {"--ds-lightbar", "rpm"}}, {"off", {"--ds-lightbar", "off"}}}},
+      {"gyro tilt steering", {{"off", {}}, {"on", {"--gyro-steering"}}}},
+      // Slice 12: Telemetry Out, Trainer, Festival Pacing & Hidden Cars (Gameplay / Pinyon).
+      {"telemetry out (udp)", {{"off", {}}, {"on (127.0.0.1:5300)", {"--telemetry-udp"}}}},
+      {"telemetry format", {{"fm7 dash (311b)", {}}, {"horizon 4/5 (324b)", {"--telemetry-udp-format", "horizon"}}}},
+      {"telemetry moving only", {{"off", {}}, {"on", {"--telemetry-udp-moving-only"}}}},
+      {"f10 trainer (cheats)", {{"off", {}}, {"on (user-modded)", {"--trainer-cheats"}}}},
+      {"festival pacing", {{"off", {}}, {"on (user-modded)", {"--festival-pacing"}}}},
+      {"pacing prices",
+       {{"0.5x", {}},
+        {"0.25x", {"--pacing-prices", "0.25"}},
+        {"1.0x", {"--pacing-prices", "1.0"}},
+        {"2.0x", {"--pacing-prices", "2.0"}},
+        {"3.0x", {"--pacing-prices", "3.0"}}}},
+      {"pacing rewards",
+       {{"2.0x", {}},
+        {"0.5x", {"--pacing-rewards", "0.5"}},
+        {"1.0x", {"--pacing-rewards", "1.0"}},
+        {"3.0x", {"--pacing-rewards", "3.0"}},
+        {"5.0x", {"--pacing-rewards", "5.0"}}}},
+      {"hidden cars (autoshow)", {{"off", {}}, {"unlocked (4 cars)", {"--hidden-cars"}}}},
   };
 }
 
@@ -242,7 +326,19 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--assist-rewind" || t == "--master-volume" || t == "--radio-volume" ||
                       t == "--mix-engine" || t == "--mix-other-cars" || t == "--mix-tyres" || t == "--mix-wind" ||
                       t == "--mix-ambience" || t == "--mix-music" || t == "--mix-ui" || t == "--mix-vo" ||
-                      t == "--your-music-volume" || t == "--day-length" || t == "--tod-preset");
+                      t == "--your-music-volume" || t == "--day-length" || t == "--tod-preset" ||
+                      t == "--wheel-sat" || t == "--wheel-dz" || t == "--wheel-curve" || t == "--wheel-pedal-dz" ||
+                      t == "--wheel-steering" || t == "--wheel-throttle" || t == "--wheel-brake" ||
+                      t == "--wheel-clutch" || t == "--wheel-handbrake" || t == "--wheel-buttons" ||
+                      t == "--wheel-ffb-mode" || t == "--wheel-ffb-strength" || t == "--wheel-ffb-engine-rumble" ||
+                      t == "--wheel-ffb-road-rumble" || t == "--ds-triggers" || t == "--ds-trigger-strength" ||
+                      t == "--ds-lightbar" || t == "--gyro-sensitivity" || t == "--head-tracking-port" ||
+                      t == "--head-tracking-invert" || t == "--chase-height" || t == "--chase-distance" ||
+                      t == "--chase-fov" || t == "--chase-stiffness" || t == "--driving-view" ||
+                      t == "--immersive-camera" || t == "--immersive-gforce" || t == "--immersive-lean" ||
+                      t == "--immersive-shake" || t == "--immersive-head" || t == "--telemetry-udp-format" ||
+                      t == "--telemetry-udp-target" || t == "--trainer-saved-road" || t == "--pacing-prices" ||
+                      t == "--pacing-rewards");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -267,7 +363,8 @@ void SettingsPage::step(int by) {
 namespace {
 SettingsPage::Tab classify_setting_row(const std::string& name) {
   if (name == "preset" || name == "shadows" || name == "bloom" || name == "camera" || name == "camera effects" ||
-      name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day") {
+      name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day" ||
+      name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera") {
     return SettingsPage::Tab::kDisplay;
   }
   if (name == "radio" || name == "sound" || name == "satnav" || name == "master volume" || name == "mute" ||
@@ -278,10 +375,12 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
   if (name == "difficulty" || name == "rubber-banding" || name == "traffic" || name == "collectibles" ||
       name == "treasure map" || name == "braking" || name == "steering" || name == "traction control" ||
       name == "stability control" || name == "shifting" || name == "driving line" || name == "rewind" ||
-      name == "damage" || name == "ai opponents") {
+      name == "damage" || name == "ai opponents" || name.rfind("telemetry", 0) == 0) {
     return SettingsPage::Tab::kGameplay;
   }
-  if (name == "rumble" || name == "rumble scale" || name == "controller layout" || name.find("deadzone") != std::string::npos) {
+  if (name == "rumble" || name == "rumble scale" || name == "controller layout" ||
+      name.find("deadzone") != std::string::npos || name.rfind("wheel ", 0) == 0 ||
+      name.rfind("dualsense ", 0) == 0 || name.rfind("gyro ", 0) == 0 || name.rfind("head tracking", 0) == 0) {
     return SettingsPage::Tab::kControls;
   }
   return SettingsPage::Tab::kPinyon;
@@ -446,6 +545,43 @@ LiveSettings SettingsPage::live_settings() const {
   const std::string ln = pick_val("driving line");
   c.assists.driving_line = ln.empty() ? 0 : std::atoi(ln.c_str());
   c.assists.rewind = pick_label("rewind") != "off";
+
+  // Slice 12 live settings.
+  ls.camera_editor.chase_height_m = num_or("chase height", 0.0);
+  ls.camera_editor.chase_distance_m = num_or("chase distance", 0.0);
+  ls.camera_editor.chase_fov_scale = num_or("chase fov", 1.0);
+  ls.camera_editor.chase_stiffness = num_or("chase stiffness", 1.0);
+  {
+    const std::string dv = pick_val("camera editor");
+    if (dv == "wheel") ls.camera_editor.driving_view = drive::DrivingView::kWheel;
+    else if (dv == "replay") ls.camera_editor.driving_view = drive::DrivingView::kReplay;
+    else ls.camera_editor.driving_view = drive::DrivingView::kNormal;
+  }
+  ls.immersive_camera.apply_preset(drive::parse_immersive_preset(pick_val("immersive camera")));
+  ls.head_tracking.enabled = pick_label("head tracking (opentrack)") != "off";
+
+  ls.wheel_shaping.steering_saturation = int(num_or("wheel steering saturation", 100.0));
+  ls.wheel_separate_devices = pick_label("wheel separate devices") != "off";
+  ls.wheel_900_linear = pick_label("wheel 900 deg linear") != "off";
+  ls.wheel_ffb.mode = drive::parse_wheel_ffb_mode(pick_val("wheel force feedback"));
+  ls.wheel_ffb.strength_percent = int(num_or("wheel ffb strength", 50.0));
+  ls.wheel_ffb.invert = pick_label("wheel ffb invert") != "off";
+
+  ls.dualsense.trigger_mode = drive::dualsense::parse_trigger_mode(pick_val("dualsense adaptive triggers"));
+  ls.dualsense.trigger_strength_pct = int(num_or("dualsense trigger strength", 100.0));
+  ls.dualsense.gear_click = pick_label("dualsense gear click") != "off";
+  ls.dualsense.lightbar_mode = drive::dualsense::parse_lightbar_mode(pick_val("dualsense lightbar"));
+  ls.dualsense.gyro_steering = pick_label("gyro tilt steering") != "off";
+
+  ls.telemetry_udp.enabled = pick_label("telemetry out (udp)") != "off";
+  ls.telemetry_udp.format = drive::telemetry::parse_format(pick_val("telemetry format"));
+  ls.telemetry_udp.moving_only = pick_label("telemetry moving only") != "off";
+
+  ls.trainer_cheats = pick_label("f10 trainer (cheats)") != "off";
+  ls.festival_pacing.enabled = pick_label("festival pacing") != "off";
+  ls.festival_pacing.price_multiplier = num_or("pacing prices", 0.5);
+  ls.festival_pacing.reward_multiplier = num_or("pacing rewards", 2.0);
+  ls.hidden_cars = pick_label("hidden cars (autoshow)") != "off";
   return ls;
 }
 

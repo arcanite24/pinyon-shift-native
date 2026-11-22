@@ -54,7 +54,8 @@ class Autoshow {
   // is true (new career with 0 purchases), restricts to the 2 first-purchase
   // cars (1323 and 1009, SPEC-AUTOSHOW-PAINT).
   bool open(const cars::PartsDb& db, const std::set<std::string>& baked, std::string& why,
-            int64_t credits = 1000000000, bool tutorial_first = false);
+            int64_t credits = 1000000000, bool tutorial_first = false,
+            bool include_hidden = false, double price_multiplier = 1.0);
   void close() { open_ = false; }
   bool is_open() const { return open_; }
 

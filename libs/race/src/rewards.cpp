@@ -257,6 +257,14 @@ RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int car
     const int before = prev == r.event_places.end() ? 0 : tables.points_for(level, prev->second);
     a.wristband_points = std::max(0, tables.points_for(level, place) - before);
   }
+  // Festival Pacing reward multiplier (0.5x..5.0x; 1.0x leaves rewards unchanged).
+  const double rm = std::clamp(extras.reward_multiplier, 0.5, 5.0);
+  if (std::fabs(rm - 1.0) > 1e-4) {
+    a.credits = a.credits > 0 ? std::max<int64_t>(1, int64_t(std::llround(double(a.credits) * rm))) : 0;
+    a.wristband_points = a.wristband_points > 0 ? std::max(1, int(std::lround(double(a.wristband_points) * rm))) : 0;
+    a.driver_xp = a.driver_xp > 0 ? std::max(1, int(std::lround(double(a.driver_xp) * rm))) : 0;
+    a.affinity_xp = a.affinity_xp > 0 ? std::max(1, int(std::lround(double(a.affinity_xp) * rm))) : 0;
+  }
   // 1. The race record; 2. the event record (one race: its place).
   auto rp = r.race_places.find(race_id);
   if (rp == r.race_places.end()) r.race_places[race_id] = place;

@@ -793,18 +793,24 @@ bool PartsDb::options(int64_t car_id, const FittedParts& fit, std::vector<PartRo
   return true;
 }
 
-bool PartsDb::dealer(std::vector<DealerCar>& out, std::string* error) const {
+bool PartsDb::dealer(std::vector<DealerCar>& out, std::string* error, bool include_hidden) const {
   out.clear();
   if (!impl_) {
     if (error) *error = "parts database not open";
     return false;
   }
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  Query q(impl_->merged.db,
-          "SELECT Id, BaseCost, Year, ClassID, PerformanceIndex, MediaName, (SELECT MIN(Sequence) FROM Combo_Colors k "
-          "WHERE k.Ordinal = d.Id) FROM Data_Car d WHERE IsDrivable = 1 AND "
-          "IsSelectable = 1 AND IsUnicorn = 0 AND EXISTS (SELECT 1 FROM PowerTrains p WHERE p.Id = d.PowertrainID) "
-          "ORDER BY ClassID, PerformanceIndex, Id");
+  const char* sql = include_hidden
+                        ? "SELECT Id, BaseCost, Year, ClassID, PerformanceIndex, MediaName, (SELECT MIN(Sequence) "
+                          "FROM Combo_Colors k WHERE k.Ordinal = d.Id) FROM Data_Car d WHERE "
+                          "((IsDrivable = 1 AND IsSelectable = 1 AND IsUnicorn = 0) OR d.Id IN (1565, 1566, 1567, 1568)) "
+                          "AND EXISTS (SELECT 1 FROM PowerTrains p WHERE p.Id = d.PowertrainID) "
+                          "ORDER BY ClassID, PerformanceIndex, Id"
+                        : "SELECT Id, BaseCost, Year, ClassID, PerformanceIndex, MediaName, (SELECT MIN(Sequence) "
+                          "FROM Combo_Colors k WHERE k.Ordinal = d.Id) FROM Data_Car d WHERE IsDrivable = 1 AND "
+                          "IsSelectable = 1 AND IsUnicorn = 0 AND EXISTS (SELECT 1 FROM PowerTrains p WHERE p.Id = "
+                          "d.PowertrainID) ORDER BY ClassID, PerformanceIndex, Id";
+  Query q(impl_->merged.db, sql);
   if (!q.ok()) {
     if (error) *error = "Data_Car: the dealer query failed";
     return false;
@@ -829,7 +835,10 @@ bool PartsDb::dealer(std::vector<DealerCar>& out, std::string* error) const {
   while (q.step()) {
     DealerCar c;
     c.id = q.i(0), c.base_cost = q.i(1), c.year = q.i(2), c.class_id = q.i(3), c.performance_index = q.d(4);
-    if (const auto it = visible.find(c.id); it != visible.end() && !it->second) continue;
+    if (const auto it = visible.find(c.id); it != visible.end()) {
+      if (!it->second) continue;
+      c.is_dlc = true;
+    }
     c.media_name = q.s(5);
     c.first_colour = q.type(6) == SQLITE_NULL ? 0 : q.i(6);
     out.push_back(std::move(c));

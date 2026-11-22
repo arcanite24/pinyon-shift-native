@@ -86,6 +86,7 @@ set(carview_sources
   settings.cpp
   settings_page.cpp
   camera_editor.cpp
+  trainer_overlay.cpp
   photo_mode.cpp
   replay_view.cpp
   achievements.cpp

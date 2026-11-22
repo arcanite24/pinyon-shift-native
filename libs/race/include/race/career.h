@@ -121,8 +121,10 @@ struct CareerCatalog {
   int best_place(const CareerEvent& ev, const CareerRecord& rec) const;
 
   // Car eligibility check against TargetClass + EventRestrictions bucket 0.
+  // When `any_car_override` is true (F10 Trainer), bypasses class & restriction checks.
   EligibilityResult check_eligibility(const CareerEvent& ev, int64_t car_id, int car_class_id,
-                                      const std::vector<std::string>& class_names) const;
+                                      const std::vector<std::string>& class_names,
+                                      bool any_car_override = false) const;
 
   // Map icon tag for an event ("race", "exhibition", "streetrace", "nemesisrace").
   static const char* event_map_tag(const CareerEvent& ev);

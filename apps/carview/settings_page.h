@@ -7,7 +7,13 @@
 #include <string>
 #include <vector>
 
+#include "drive/cameras.h"
 #include "drive/controls.h"
+#include "drive/dualsense.h"
+#include "drive/head_tracking.h"
+#include "drive/telemetry_udp.h"
+#include "drive/trainer.h"
+#include "drive/wheel_ffb.h"
 
 namespace carview {
 
@@ -32,6 +38,19 @@ struct LiveSettings {
   double day_length_scale = 1.0;  // 1.0 = 30.5m, 2.0 = 15m, 0.5 = 61m, 0.02116 = realtime, 0.0 = frozen
   double tod_preset_hour = -1.0;  // < 0: keep current clock, >= 0: jump clock to hour
   drive::ControlSettings controls;
+  // Slice 12: Wheels/FFB, DualSense, OpenTrack, Camera Editor, Immersive Camera, Telemetry, Trainer/Pacing/Hidden.
+  drive::WheelShaping wheel_shaping;
+  drive::WheelFfbConfig wheel_ffb;
+  bool wheel_separate_devices = false;
+  bool wheel_900_linear = false;
+  drive::dualsense::Settings dualsense;
+  drive::HeadTrackingConfig head_tracking;
+  drive::CameraEditorConfig camera_editor;
+  drive::ImmersiveCameraConfig immersive_camera;
+  drive::telemetry::Config telemetry_udp;
+  bool trainer_cheats = false;
+  drive::FestivalPacingConfig festival_pacing;
+  bool hidden_cars = false;
 };
 
 class SettingsPage {

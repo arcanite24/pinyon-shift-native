@@ -110,6 +110,7 @@
 #include "audio_host.h"
 #include "settings.h"
 #include "settings_page.h"
+#include "slice12_runtime.h"
 #include "ui4_chrome.h"
 #include "traffic/gps.h"
 #include "traffic/nav.h"
@@ -2052,6 +2053,13 @@ int run_drive(int argc, char** argv) {
     }
   }
   if (no_save) save_path.clear();
+  bool slice12_modded_save = false;
+  for (const auto& a : args) {
+    if (a == "--trainer-cheats" || a == "--festival-pacing" || a == "--hidden-cars") slice12_modded_save = true;
+  }
+  if (!save_path.empty() && slice12_modded_save) {
+    save_path = drive::resolve_isolated_save_path(save_path, true);
+  }
   // The save: its car when none was given (and it is baked), and where it
   // stood when no spawn was given and the car is the same.
   drive::DriveSave saved;
@@ -3631,6 +3639,23 @@ int run_drive(int argc, char** argv) {
       size_t club_pick = 0;
       SettingsPage settings_page;  // the pause menu's settings (M7)
       bool settings_live_overlay = false;  // true when opened via live F6 hotkey
+      carview::Slice12Runtime slice12;
+      slice12.save_tree_label = slice12_modded_save ? "user-modded" : "user";
+      {
+        SettingsPage boot_sp;
+        boot_sp.load(read_settings(settings_path(), nullptr));
+        const LiveSettings bls = boot_sp.live_settings();
+        slice12.trainer.config.cheats_enabled = bls.trainer_cheats || slice12_modded_save;
+        slice12.trainer.pacing = bls.festival_pacing;
+        slice12.trainer.hidden_cars = bls.hidden_cars;
+        slice12.wheel_shaping = bls.wheel_shaping;
+        slice12.ffb_cfg = bls.wheel_ffb;
+        slice12.ds_cfg = bls.dualsense;
+        slice12.ht_cfg = bls.head_tracking;
+        slice12.cam_editor_cfg = bls.camera_editor;
+        slice12.imm_cam_cfg = bls.immersive_camera;
+        slice12.tel_cfg = bls.telemetry_udp;
+      }
       freeroam::club::Signal club_signal;
       // Per-step game-event pulses accumulated during the physics step before club_step().
       struct ClubPendingPulses {
@@ -5809,7 +5834,15 @@ int run_drive(int argc, char** argv) {
           carview::ui4::title_banner(list, sf, 70.0f * sf, hf - 154.0f * sf, rw_title, "HORIZON REWIND", true, 480.0f);
           carview::ui4::button_bar(list, rw_prompts, wf, hf);
         }
-        if (settings_page.is_open()) {
+        if (slice12.trainer_overlay.is_open()) {
+          list.clear();
+          carview::draw_trainer_ui4(list, float(width), float(height), slice12.trainer_overlay, slice12.trainer,
+                                    career.credits, std::max(0, collected_wristband), slice12.save_tree_label);
+        } else if (slice12.cam_editor_overlay.is_open()) {
+          list.clear();
+          carview::draw_camera_editor_ui4(list, float(width), float(height), slice12.cam_editor_overlay,
+                                          slice12.ht_receiver.current_pose());
+        } else if (settings_page.is_open()) {
           list.clear();
           carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
         } else if (events_page.is_open()) {
@@ -6749,11 +6782,13 @@ int run_drive(int argc, char** argv) {
               why = "no parts database";
               if (const auto db = parts_db.get()) {
                 const bool tutorial_first = !imported && career_garage.cars.size() <= 1 && career.wristband_points == 0;
+                const double price_mult = slice12.trainer.pacing.effective_price_multiplier();
                 ready = is_autoshow
-                            ? autoshow.open(*db, all_baked, why, career.credits, tutorial_first)
+                            ? autoshow.open(*db, all_baked, why, career.credits, tutorial_first,
+                                            slice12.trainer.hidden_cars, price_mult)
                             : shop.open(*db, career_garage,
                                         career_garage.selected_car() ? career_garage.selected_car()->id : 0, why,
-                                        &hub_phys_settings, &hub_pi_cfg, &class_bands);
+                                        &hub_phys_settings, &hub_pi_cfg, &class_bands, price_mult);
               }
             }
           }
@@ -6799,7 +6834,8 @@ int run_drive(int argc, char** argv) {
           int64_t cid = 0;
           int clid = 2;
           current_car_info(cid, clid);
-          const auto elig = career_catalog.check_eligibility(ev, cid, clid, class_name_list());
+          const auto elig = career_catalog.check_eligibility(ev, cid, clid, class_name_list(),
+                                                             slice12.trainer.effective_any_car());
           if (!elig.eligible) {
             // Check if another car in the player's garage qualifies.
             std::string hint;
@@ -7932,6 +7968,64 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            slice12.on_sdl_event(e, pads);
+            if (slice12.trainer_overlay.is_open()) {
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if ((k == SDLK_ESCAPE || k == SDLK_F10) && !e.key.repeat) {
+                  slice12.trainer_overlay.close();
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (k == SDLK_UP || k == SDLK_W) {
+                  slice12.trainer_overlay.move(-1);
+                } else if (k == SDLK_DOWN || k == SDLK_S) {
+                  slice12.trainer_overlay.move(1);
+                } else if (k == SDLK_LEFT || k == SDLK_A) {
+                  slice12.trainer_overlay.step(-1, slice12.trainer);
+                } else if (k == SDLK_RIGHT || k == SDLK_D) {
+                  slice12.trainer_overlay.step(1, slice12.trainer);
+                } else if (k == SDLK_Q) {
+                  slice12.trainer_overlay.switch_tab(-1);
+                } else if (k == SDLK_E || k == SDLK_TAB) {
+                  slice12.trainer_overlay.switch_tab(1);
+                } else if ((k == SDLK_RETURN || k == SDLK_SPACE) && !e.key.repeat) {
+                  const auto res = slice12.trainer_overlay.activate(
+                      slice12.trainer, career.credits, career.wristband_points, collected_wristband,
+                      double(SDL_GetTicksNS()) * 1e-9, bool(race));
+                  if (res.credits_changed || res.wristband_changed) save_due = true;
+                  if (res.close_overlay) slice12.trainer_overlay.close();
+                }
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            if (slice12.cam_editor_overlay.is_open()) {
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if ((k == SDLK_ESCAPE || k == SDLK_F6) && !e.key.repeat) {
+                  slice12.cam_editor_overlay.close();
+                } else if (k == SDLK_UP || k == SDLK_W) {
+                  slice12.cam_editor_overlay.move(-1);
+                } else if (k == SDLK_DOWN || k == SDLK_S) {
+                  slice12.cam_editor_overlay.move(1);
+                } else if (k == SDLK_LEFT || k == SDLK_A) {
+                  slice12.cam_editor_overlay.step(-1);
+                } else if (k == SDLK_RIGHT || k == SDLK_D) {
+                  slice12.cam_editor_overlay.step(1);
+                } else if (k == SDLK_Q) {
+                  slice12.cam_editor_overlay.switch_tab(-1);
+                } else if (k == SDLK_E || k == SDLK_TAB) {
+                  slice12.cam_editor_overlay.switch_tab(1);
+                } else if ((k == SDLK_RETURN || k == SDLK_SPACE) && !e.key.repeat) {
+                  slice12.cam_editor_overlay.activate();
+                }
+                slice12.cam_editor_cfg = slice12.cam_editor_overlay.editor_config();
+                slice12.imm_cam_cfg = slice12.cam_editor_overlay.immersive_config();
+                slice12.ht_cfg = slice12.cam_editor_overlay.head_tracking_config();
+                rig.set_camera_editor(slice12.cam_editor_cfg);
+                rig.set_immersive_camera(slice12.imm_cam_cfg);
+                slice12.ht_receiver.configure(slice12.ht_cfg);
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             // The settings page: up and down pick a row, left and right
             // change it (applied live), enter rebinds a key or saves.
             if (settings_page.is_open()) {
@@ -8000,6 +8094,8 @@ int run_drive(int argc, char** argv) {
                   if (traffic) traffic->set_hour(tod_clock.hour());
                   renderer.reset_auto_exposure();
                 }
+                slice12.apply_live_settings(ls, rig, settings_path().parent_path());
+                slice12.sync_pad_capabilities(pads);
               };
               auto confirm = [&]() {
                 if (settings_page.on_rebind_row()) {
@@ -8499,12 +8595,21 @@ int run_drive(int argc, char** argv) {
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
-              // F6: live tabbed FH1/Pinyon Shift Settings overlay.
+              // F6: live tabbed FH1/Pinyon Shift Settings overlay (Shift+F6 opens live Camera Editor).
               if (e.key.key == SDLK_F6) {
-                settings_page.load(read_settings(settings_path(), nullptr));
-                settings_page.open();
-                settings_live_overlay = true;
+                if (e.key.mod & SDL_KMOD_SHIFT) {
+                  slice12.cam_editor_overlay.open(slice12.cam_editor_cfg, slice12.imm_cam_cfg, slice12.ht_cfg);
+                } else {
+                  settings_page.load(read_settings(settings_path(), nullptr));
+                  settings_page.open();
+                  settings_live_overlay = true;
+                }
                 audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+              }
+              // F10: Pinyon Shift Trainer overlay (isolated user-modded save).
+              if (e.key.key == SDLK_F10) {
+                slice12.trainer_overlay.toggle();
+                audio_host.trigger_ui(slice12.trainer_overlay.is_open() ? audio::UiCue::kMenuOpen : audio::UiCue::kCancel);
               }
               // F7: Pinyon Shift-style Achievements screen.
               if (e.key.key == SDLK_F7) {
@@ -8986,6 +9091,8 @@ int run_drive(int argc, char** argv) {
             ri.scale = rumble_scale;
             const auto ro = gamepad_rumble.update(frame_dt, ri);
             for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, ro.left_u16(), ro.right_u16(), 100);
+            slice12.tick(vehicle, rig, pads, !sim_paused && !show_title, frame_dt, now,
+                         uint32_t(now / 1000000ULL), ro.left_u16() / 65535.0, ro.right_u16() / 65535.0);
           }
           if (now - title_at > 100000000) {  // the speedometer, ten times a second
             title_at = now;
@@ -9460,6 +9567,7 @@ int run_drive(int argc, char** argv) {
           }
         }
         sync_picker = nullptr;
+        slice12.shutdown(pads);
         for (SDL_Gamepad* pad : pads) {
           SDL_RumbleGamepad(pad, 0, 0, 0);
           SDL_CloseGamepad(pad);

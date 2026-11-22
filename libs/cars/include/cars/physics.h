@@ -110,6 +110,7 @@ struct DealerCar {
   double performance_index = 0;
   std::string media_name;
   int64_t first_colour = 0;  // the lowest Combo_Colors Sequence: the swatch the showroom opens on
+  bool is_dlc = false;       // mapped by a DLC ContentOffersMapping row
 };
 
 // The merged database kept open (opening merges every package, so the
@@ -127,7 +128,9 @@ class PartsDb {
   bool physics(int64_t car_id, const FittedParts& fit, CarPhysics& out, std::string* error) const;
   bool options(int64_t car_id, const FittedParts& fit, std::vector<PartRow>& out, std::string* error) const;
   // The listable cars, by ClassID, PerformanceIndex, then Id.
-  bool dealer(std::vector<DealerCar>& out, std::string* error) const;
+  // When `include_hidden` is true, also includes the 4 qualified hidden variants
+  // (1565 Intro Corrado, 1566 Showcase Mini, 1567 500 Abarth, 1568 205 T16).
+  bool dealer(std::vector<DealerCar>& out, std::string* error, bool include_hidden = false) const;
   // A new car's slots: each slot's stock row (the first by Id when a table
   // has several), by Career_Garage column.
   bool stock_slots(int64_t car_id, std::map<std::string, int64_t>& out, std::string* error) const;

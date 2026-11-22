@@ -127,12 +127,17 @@ int CareerCatalog::best_place(const CareerEvent& ev, const CareerRecord& rec) co
 }
 
 EligibilityResult CareerCatalog::check_eligibility(const CareerEvent& ev, int64_t car_id, int car_class_id,
-                                                   const std::vector<std::string>& class_names) const {
+                                                   const std::vector<std::string>& class_names,
+                                                   bool any_car_override) const {
   EligibilityResult r;
   if (ev.player_car_id > 0) {
     r.eligible = true;
     r.uses_loaner = true;
     r.loaner_car_id = ev.player_car_id;
+    return r;
+  }
+  if (any_car_override) {
+    r.eligible = true;
     return r;
   }
   if (ev.target_class > 0 && car_class_id > ev.target_class) {

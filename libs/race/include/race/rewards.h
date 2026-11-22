@@ -161,6 +161,7 @@ struct RaceBonusInputs {
   int64_t skills_points = 0;    // skill points banked during this race
   int64_t bounty_bonus = 0;     // rival / bounty bonus credits
   int wristband_level = -1;     // current wristband level (-1: infer from record.wristband_points)
+  double reward_multiplier = 1.0;  // Festival Pacing multiplier (0.5x..5.0x)
 };
 
 // One finished (or not-finished) race of an event with one race, applied
