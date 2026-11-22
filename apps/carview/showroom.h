@@ -26,7 +26,9 @@
 #include <volk.h>
 
 #include "cars/bake_format.h"
+#include "cars/shader_settings.h"
 #include "cars/visual_setup.h"
+#include "drive/damage.h"
 #include "drive/lamps.h"
 #include "renderer.h"
 #include "world/smashables.h"
@@ -88,8 +90,13 @@ struct ShowroomFrame {
   float env_basis_x[4] = {1.0f, 0.0f, 0.0f, 0.0f};
   float env_basis_y[4] = {0.0f, 1.0f, 0.0f, 0.0f};
   float env_basis_z[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+  // Paint Shop finishes, two-tone pearlescent, window tint, cosmetic damage & dirt.
+  float paint_two_tone[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float paint_finish[4] = {0.0f, 0.25f, 0.0f, 0.0f};
+  float damage_dirt[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float damage_zones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
-static_assert(sizeof(ShowroomFrame) == 624);
+static_assert(sizeof(ShowroomFrame) == 688);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -233,10 +240,18 @@ class Showroom {
   // Creates the pipelines and uploads geometry and textures; the renderer
   // must be initialised. Installs itself as the renderer's scene.
   bool upload(std::string& error);
-  // The caller's camera and lighting; the stripe colour is the car's own.
+  // The caller's camera and lighting; the stripe colour, paint finish, and damage state are the car's own.
   void set_frame(const ShowroomFrame& frame) {
     frame_ = frame;
-    for (int i = 0; i < 4; ++i) frame_.stripe[i] = stripe_[i], frame_.world_fade[i] = world_fade_[i];
+    for (int i = 0; i < 4; ++i) {
+      frame_.stripe[i] = stripe_[i];
+      frame_.world_fade[i] = world_fade_[i];
+      frame_.paint_two_tone[i] = paint_two_tone_[i];
+      frame_.paint_finish[i] = paint_finish_[i];
+      frame_.damage_dirt[i] = damage_dirt_[i];
+      frame_.damage_zones[i] = damage_zones_[i];
+    }
+    if (custom_livery_active_) frame_.options[2] = 2.0f;
   }
   // Moves the wheels, rotors and callipers (LF, RF, LR, RR). Until it is
   // called they stand at the car's rest centres, as the showroom shows them.
@@ -334,6 +349,14 @@ class Showroom {
   const std::vector<cars::bake::Colour>& colours() const { return car_.car.colours; }
   size_t colour_index() const { return options_.colour; }
   void preview_colour(size_t index);
+  // Paint Shop finishes, per-region colours (body, hood, wing, mirrors,
+  // aftermarket non-chrome rims, brake calipers) & window tint.
+  void set_paint_spec(const cars::CarPaintSpec& paint);
+  // Uploads a composited 1024x1024 RGBA8 custom vinyl livery texture onto GPU
+  // and binds it onto all car paint material descriptor sets.
+  bool set_custom_livery(const uint8_t* rgba, uint32_t width, uint32_t height, std::string& error);
+  // Applies cosmetic impact deformation, scratches, cracked glass, and body/tyre dirt.
+  void set_damage_state(const drive::CarDamageState& dmg);
   // A prop's reach from its origin (m): the box test of LOD00 cells allows
   // an instance whose origin is inside the band but whose corners are not.
   static constexpr float kPropReach = 40;
@@ -436,6 +459,7 @@ class Showroom {
     bool brake_lamp = false;  // legacy brake lamp flag
     drive::LampChannel lamp_channel = drive::LampChannel::kNone;
     bool stripe_able = false;  // an exterior paint draw a striped colour row tints (FORMAT-CARS, Paint)
+    std::string part_name;     // lower-case part name (for per-region painting: hood, wing, mirror)
     std::array<float, 3> centre{};  // car space, for sorting glass
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
     bool spins = false;  // rims, tyres and rotors roll; callipers do not
@@ -812,6 +836,13 @@ class Showroom {
   std::vector<std::pair<uint64_t, std::vector<VkDescriptorSet>>> retired_sets_;  // main thread only
   std::vector<VkDescriptorSet> free_world_sets_;
   size_t world_sets_allocated_ = 0;
+  // Paint Shop finish/two-tone/tint, custom 1024^2 livery, and cosmetic damage/dirt state.
+  float paint_two_tone_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float paint_finish_[4] = {0.0f, 0.25f, 0.0f, 0.0f};
+  float damage_dirt_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float damage_zones_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  bool custom_livery_active_ = false;
+  GpuTexture custom_livery_img_;
 };
 
 }  // namespace carview

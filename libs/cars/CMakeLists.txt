@@ -7,7 +7,9 @@ add_library(shift_cars STATIC
   src/physics.cpp
   src/mods.cpp
   src/strings.cpp
-  src/visual_setup.cpp)
+  src/visual_setup.cpp
+  src/shader_settings.cpp
+  src/livery.cpp)
 target_include_directories(shift_cars PUBLIC include)
 target_link_libraries(shift_cars PUBLIC fh1data PRIVATE shift_sqlite3)
 if(MSVC)

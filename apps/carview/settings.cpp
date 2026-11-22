@@ -50,6 +50,7 @@ constexpr Kept kKept[] = {
     {"assist-shifting", true, "assist-shifting"},
     {"assist-line", true, "assist-line"},
     {"assist-rewind", true, "assist-rewind"},
+    {"damage", true, "damage"},
     {"hour", true, "hour"},
     {"day-length", true, "day-length"},
     {"tod-preset", true, "tod-preset"},

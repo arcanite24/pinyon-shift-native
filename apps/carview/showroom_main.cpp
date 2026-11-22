@@ -4578,12 +4578,14 @@ int run_drive(int argc, char** argv) {
       };
       // Writes where the car stands (drive/save.h); the start is the last spawn.
       drive::ControlSettings live_controls;
+      drive::CarDamageState car_damage;
       if (have_saved && saved.has_controls) live_controls = saved.controls;
       {
         SettingsPage init_settings;
         init_settings.load(read_settings(settings_path(), nullptr));
         const LiveSettings init_ls = init_settings.live_settings();
         if (!have_saved || !saved.has_controls) live_controls = init_ls.controls;
+        car_damage.mode = drive::DamageMode(init_ls.damage_mode);
       }
       bool live_sound_enabled = true;
       bool live_radio_enabled = true;
@@ -7423,6 +7425,11 @@ int run_drive(int argc, char** argv) {
                 hit.rel_speed_mps = float(dv_world);
                 hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
                 audio_host.trigger_collision(hit);
+                const drive::Vec3 rel = bc.point - vehicle.position();
+                const drive::Quat q = vehicle.orientation();
+                const drive::Quat qinv{-q.x, -q.y, -q.z, q.w};
+                const drive::Vec3 loc = drive::rotate(qinv, rel);
+                car_damage.record_impact(float(loc.x), float(loc.y), float(loc.z), float(dv_world));
               } else if (dv_car > 1.0) {
                 const drive::Vec3 vp = vehicle.position();
                 audio::CollisionHit hit{};
@@ -7430,7 +7437,14 @@ int run_drive(int argc, char** argv) {
                 hit.pos = {float(vp.x), float(vp.y), float(vp.z)};
                 hit.is_car_on_car = true;
                 audio_host.trigger_collision(hit);
+                car_damage.record_impact(0.0f, 0.5f, 1.5f, float(dv_car));
               }
+              const auto& ws = vehicle.wheels();
+              const bool offroad = (ws[0].surface >= 2 || ws[2].surface >= 2);
+              const std::array<double, 4> slips = {ws[0].slip_ratio, ws[1].slip_ratio, ws[2].slip_ratio, ws[3].slip_ratio};
+              const double rpm_n = vehicle.rpm() / std::max(1000.0, vehicle.params().redline_rpm);
+              car_damage.step(drive::Vehicle::kStep, vehicle.speed(), offroad, step_in.throttle, rpm_n, slips);
+              showroom.set_damage_state(car_damage);
             }
             accumulator -= drive::Vehicle::kStep;
           }

@@ -123,6 +123,10 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"driving line",
        {{"off", {}}, {"braking", {"--assist-line", "1"}}, {"full", {"--assist-line", "2"}}}},
       {"rewind", {{"on", {}}, {"off", {"--assist-rewind", "0"}}}},
+      {"damage",
+       {{"cosmetic", {}},
+        {"none", {"--damage", "none"}},
+        {"simulation", {"--damage", "simulation"}}}},
       vol_row("master volume", "--master-volume"),
       {"mute", {{"off", {}}, {"on", {"--mute"}}}},
       {"full dynamic range", {{"off", {}}, {"on", {"--full-dynamic-range"}}}},
@@ -301,6 +305,11 @@ LiveSettings SettingsPage::live_settings() const {
   ls.treasure_map = pick_label("treasure map") == "on";
   ls.motion_blur = pick_label("motion blur") != "off";
   ls.dof = pick_label("depth of field") != "off";
+
+  const std::string dmg = pick_val("damage");
+  if (dmg == "none") ls.damage_mode = 0;
+  else if (dmg == "simulation") ls.damage_mode = 2;
+  else ls.damage_mode = 1;
 
   const std::string dl = pick_val("day length");
   if (dl == "15m") ls.day_length_scale = 2.0;

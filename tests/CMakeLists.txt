@@ -187,8 +187,20 @@ add_executable(hub_shop_tests hub_shop_tests.cpp
   ../apps/carview/game_hud.cpp
   ../apps/carview/hud_scene.cpp)
 target_include_directories(hub_shop_tests PRIVATE ../apps/carview)
-target_link_libraries(hub_shop_tests PRIVATE carview_render shift_garage shift_drive shift_cars shift_sqlite3)
+target_link_libraries(hub_shop_tests PRIVATE carview_render shift_freeroam shift_garage shift_drive shift_cars shift_sqlite3)
 add_test(NAME hub_shop_tests COMMAND hub_shop_tests)
+
+add_executable(livery_damage_tests livery_damage_tests.cpp
+  ../apps/carview/autoshow.cpp
+  ../apps/carview/upgrade_shop.cpp
+  ../apps/carview/hub_scene.cpp
+  ../apps/carview/livery_editor.cpp
+  ../apps/carview/settings_page.cpp
+  ../apps/carview/game_hud.cpp
+  ../apps/carview/hud_scene.cpp)
+target_include_directories(livery_damage_tests PRIVATE ../apps/carview)
+target_link_libraries(livery_damage_tests PRIVATE carview_render shift_freeroam shift_garage shift_drive shift_cars shift_sqlite3 shift_stb)
+add_test(NAME livery_damage_tests COMMAND livery_damage_tests)
 
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)

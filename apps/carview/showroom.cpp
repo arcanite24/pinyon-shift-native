@@ -299,6 +299,7 @@ Showroom::~Showroom() {
   stop_reaper();
   if (!guest_) r_.set_scene({});
   for (auto& t : gpu_textures_) r_.destroy_image(t);
+  r_.destroy_image(custom_livery_img_);
   r_.destroy_image(environment_);
   r_.destroy_buffer(vertex_buffer_);
   r_.destroy_buffer(index_buffer_);
@@ -1228,6 +1229,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.textures = {t0 == UINT32_MAX ? 0u : t0, t1 == UINT32_MAX ? 0u : t1,
                     livery == UINT32_MAX ? 1u : livery};
       d.glass = s.material == MaterialClass::kGlass;
+      d.part_name = lower(part.name);
       draws_.push_back(d);
       drawn = true;
     }
@@ -2258,6 +2260,112 @@ void Showroom::preview_colour(size_t index) {
     flags = c.metallic ? flags | kFlagMetallic : flags & ~kFlagMetallic;
     flags = c.has_stripe && d.stripe_able ? flags | kFlagStripe : flags & ~kFlagStripe;
     d.push.params[1] = float(flags);
+  }
+}
+
+void Showroom::set_paint_spec(const cars::CarPaintSpec& paint) {
+  auto to_lin = [](uint32_t rgb) -> std::array<float, 3> {
+    return {srgb_to_linear(float((rgb >> 16) & 0xFF) / 255.0f),
+            srgb_to_linear(float((rgb >> 8) & 0xFF) / 255.0f),
+            srgb_to_linear(float(rgb & 0xFF) / 255.0f)};
+  };
+  if (paint.body.active) {
+    const auto sec = to_lin(paint.body.sec_rgb);
+    paint_two_tone_[0] = sec[0];
+    paint_two_tone_[1] = sec[1];
+    paint_two_tone_[2] = sec[2];
+    paint_two_tone_[3] = paint.body.two_tone_power;
+    paint_finish_[0] = float(int(paint.body.finish));
+    paint_finish_[1] = paint.body.two_tone_scale;
+    paint_finish_[2] = paint.body.two_tone_bias;
+  }
+  paint_finish_[3] = std::clamp(paint.window_tint, 0.0f, 1.0f);
+  for (int i = 0; i < 4; ++i) {
+    frame_.paint_two_tone[i] = paint_two_tone_[i];
+    frame_.paint_finish[i] = paint_finish_[i];
+  }
+
+  for (auto& d : draws_) {
+    const auto klass = MaterialClass(uint32_t(d.push.params[0] + 0.5f));
+    if (klass == MaterialClass::kPaint) {
+      const cars::PaintRegionSpec* reg = &paint.body;
+      if (paint.hood.active && d.part_name.rfind("hood", 0) == 0) reg = &paint.hood;
+      else if (paint.wing.active && d.part_name.rfind("wing", 0) == 0) reg = &paint.wing;
+      else if (paint.mirrors.active && d.part_name.find("mirror") != std::string::npos) reg = &paint.mirrors;
+      if (reg->active) {
+        const auto lin = to_lin(reg->rgb);
+        for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
+        uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+        const bool is_met = (reg->finish == cars::PaintFinish::kMetallic || reg->finish == cars::PaintFinish::kTwoTone);
+        flags = is_met ? (flags | kFlagMetallic) : (flags & ~kFlagMetallic);
+        flags &= ~kFlagRaceLivery;
+        d.push.params[1] = float(flags);
+      }
+    } else if (klass == MaterialClass::kRim && paint.rims.active && !options_.visual.wheel_is_chrome) {
+      const auto lin = to_lin(paint.rims.rgb);
+      for (int k = 0; k < 3; ++k) d.push.tint[k] = lin[k];
+    } else if (klass == MaterialClass::kCaliper && paint.calipers.active) {
+      // Calipers use unconverted sRGB per FORMAT-CARS.
+      d.push.tint[0] = float((paint.calipers.rgb >> 16) & 0xFF) / 255.0f;
+      d.push.tint[1] = float((paint.calipers.rgb >> 8) & 0xFF) / 255.0f;
+      d.push.tint[2] = float(paint.calipers.rgb & 0xFF) / 255.0f;
+    }
+  }
+}
+
+bool Showroom::set_custom_livery(const uint8_t* rgba, uint32_t width, uint32_t height, std::string& error) {
+  if (!rgba || width == 0 || height == 0 || !r_.device_) {
+    error = "invalid custom livery or renderer not initialized";
+    return false;
+  }
+  vkDeviceWaitIdle(r_.device_);
+  r_.destroy_image(custom_livery_img_);
+
+  bake::Texture tex;
+  tex.name = "@custom_livery";
+  tex.format = bake::TextureFormat::kRgba8;
+  tex.levels.push_back({width, height, std::vector<uint8_t>(rgba, rgba + size_t(width) * height * 4u)});
+  if (!upload_texture(&tex, true, custom_livery_img_, error)) return false;
+
+  // Bind the custom 1024^2 RGBA8 livery texture into binding 2 of every paint draw's material set.
+  std::set<uint32_t> updated_sets;
+  for (auto& d : draws_) {
+    if (MaterialClass(uint32_t(d.push.params[0] + 0.5f)) != MaterialClass::kPaint) continue;
+    uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    flags |= kFlagLivery;
+    d.push.params[1] = float(flags);
+    if (d.descriptor < material_sets_.size() && updated_sets.insert(d.descriptor).second) {
+      VkDescriptorImageInfo info{sampler_, custom_livery_img_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      write.dstSet = material_sets_[d.descriptor];
+      write.dstBinding = 2;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      write.pImageInfo = &info;
+      vkUpdateDescriptorSets(r_.device_, 1, &write, 0, nullptr);
+    }
+  }
+  custom_livery_active_ = true;
+  frame_.options[2] = 2.0f;
+  return true;
+}
+
+void Showroom::set_damage_state(const drive::CarDamageState& dmg) {
+  if (dmg.mode == drive::DamageMode::kNone) {
+    for (int i = 0; i < 4; ++i) damage_dirt_[i] = damage_zones_[i] = 0.0f;
+  } else {
+    damage_dirt_[0] = std::clamp(dmg.body_dirt, 0.0f, 1.0f);
+    damage_dirt_[1] = std::clamp(dmg.tyre_dirt, 0.0f, 1.0f);
+    damage_dirt_[2] = std::clamp(dmg.glass_crack, 0.0f, 1.0f);
+    damage_dirt_[3] = std::clamp(dmg.scratch_amount, 0.0f, 1.0f);
+    damage_zones_[0] = std::clamp(dmg.zone_front, 0.0f, 1.0f);
+    damage_zones_[1] = std::clamp(dmg.zone_rear, 0.0f, 1.0f);
+    damage_zones_[2] = std::clamp(dmg.zone_left, 0.0f, 1.0f);
+    damage_zones_[3] = std::clamp(dmg.zone_right, 0.0f, 1.0f);
+  }
+  for (int i = 0; i < 4; ++i) {
+    frame_.damage_dirt[i] = damage_dirt_[i];
+    frame_.damage_zones[i] = damage_zones_[i];
   }
 }
 

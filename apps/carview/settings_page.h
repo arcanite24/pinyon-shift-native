@@ -15,6 +15,7 @@ struct LiveSettings {
   int camera_mode = -1;  // -1: unchanged/default, 0..4: CameraMode
   int difficulty = -1;   // -1: unchanged/default, 0..4: Easy/Med/Hard/Pro/Hard+
   int ai_mode = 0;       // 0: stock, 1: fair (no rubber-band), 2: hard (+1 tier, max aggro, no rb)
+  int damage_mode = 1;   // 0=None, 1=Cosmetic, 2=Simulation
   bool rubberband = true;
   bool radio = true;
   bool sound = true;

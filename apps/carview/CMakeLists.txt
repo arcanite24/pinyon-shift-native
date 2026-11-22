@@ -77,6 +77,7 @@ set(carview_sources
   upgrade_shop.cpp
   autoshow.cpp
   hub_scene.cpp
+  livery_editor.cpp
   career_page.cpp
   events_page.cpp
   settings.cpp

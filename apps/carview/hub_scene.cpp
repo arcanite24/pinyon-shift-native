@@ -666,9 +666,9 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
   }
 
   // Right spec & 5-stat card.
-  const float card_w = 344.0f;
-  const float card_x = w - card_w - 28.0f;
-  const float card_y = 112.0f;
+  const float card_w = 376.0f;
+  const float card_x = w - card_w - 24.0f;
+  const float card_y = 108.0f;
   const float card_h = 372.0f;
   list.shadow(card_x, card_y, card_x + card_w, card_y + card_h, ui::rgba(0, 0, 0, 130), 8.0f, 14.0f);
   list.rect(card_x, card_y, card_x + card_w, card_y + card_h, ui::rgba(14, 17, 24, 224), 8.0f);
@@ -696,10 +696,12 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     list.text(card_x + 18.0f, card_y + 16.0f, std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name, mk_st);
 
     ui::TextStyle nm_st;
-    nm_st.size = 22.0f;
+    nm_st.size = 16.5f;
     nm_st.color = ui::rgba(255, 255, 255);
     nm_st.font = ui::Font::kE;
-    list.text(card_x + 18.0f, card_y + 38.0f, car_name(sel_car->dealer.media_name), nm_st);
+    std::string cname = car_name(sel_car->dealer.media_name);
+    if (cname.size() > 21) cname = cname.substr(0, 21);
+    list.text(card_x + 18.0f, card_y + 40.0f, cname, nm_st);
 
     draw_class_badge(list, card_x + 18.0f, card_y + 72.0f, 28.0f, cls, cls_name, shown_pi);
 
@@ -725,13 +727,13 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     // Technical specs row.
     char spec[128];
     const int hp = int(std::lround(sel_car->peak_power_kw * 1.34102));
-    std::snprintf(spec, sizeof spec, "%d HP   |   %.0f NM   |   %.0f KG   |   %s", hp, sel_car->peak_torque_nm,
+    std::snprintf(spec, sizeof spec, "%d HP  %.0f NM  %.0f KG  %s", hp, sel_car->peak_torque_nm,
                   sel_car->curb_weight_kg, drive_label(sel_car->drive_type_id));
     ui::TextStyle sp_st;
-    sp_st.size = 13.0f;
+    sp_st.size = 10.5f;
     sp_st.color = ui::rgba(186, 194, 208);
     sp_st.align = ui::Align::kCenter;
-    list.text(card_x + card_w * 0.5f, card_y + 260.0f, spec, sp_st);
+    list.text(card_x + card_w * 0.5f, card_y + 262.0f, spec, sp_st);
 
     // Factory Colour Bar Picker inside card bottom.
     ui::TextStyle cl_st;
@@ -779,10 +781,12 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
       list.rect(bx, bot_y + 10.0f, bx + cw, bot_y + 62.0f, act ? ui::rgba(240, 88, 24, 235) : ui::rgba(26, 31, 42, 210),
                 5.0f);
       ui::TextStyle cs;
-      cs.size = 13.0f;
+      cs.size = 11.0f;
       cs.color = ui::rgba(255, 255, 255);
       cs.font = ui::Font::kB;
-      list.text(bx + 10.0f, bot_y + 17.0f, car_name(c.dealer.media_name), cs);
+      std::string bname = car_name(c.dealer.media_name);
+      if (bname.size() > 17) bname = bname.substr(0, 17);
+      list.text(bx + 10.0f, bot_y + 18.0f, bname, cs);
       cs.size = 12.0f;
       cs.color = act ? ui::rgba(255, 244, 210) : ui::rgba(176, 184, 198);
       list.text(bx + 10.0f, bot_y + 38.0f, credits_text(c.dealer.base_cost), cs);
@@ -819,6 +823,8 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
             credits_text(credits) + (discount_percent > 0 ? ("  (" + std::to_string(discount_percent) + "% OFF)") : ""),
             cr);
 
+  static const char* kShortCat[8] = {"ENGINE", "PLATFORM", "DRIVETRAIN", "TIRES/RIMS",
+                                     "AERO/BODY", "CONVERSIONS", "AUTO UPG", "TUNING"};
   const int ncat = int(ShopCategory::kCount);
   const float tw = (w - 56.0f) / float(ncat) - 5.0f;
   float tx = 28.0f;
@@ -826,16 +832,16 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
     const bool act = (ShopCategory(i) == shop.category());
     list.rect(tx, 50.0f, tx + tw, 82.0f, act ? ui::rgba(246, 142, 24, 245) : ui::rgba(28, 32, 42, 210), 4.0f);
     ui::TextStyle cs;
-    cs.size = 11.5f;
+    cs.size = 10.5f;
     cs.color = act ? ui::rgba(14, 16, 20) : ui::rgba(204, 210, 222);
     cs.align = ui::Align::kCenter;
     cs.font = ui::Font::kB;
-    list.text(tx + tw * 0.5f, 60.0f, shop_category_name(ShopCategory(i)), cs);
+    list.text(tx + tw * 0.5f, 61.0f, kShortCat[i], cs);
     tx += tw + 5.0f;
   }
 
   // Left slots/parts/sliders panel.
-  const float lx = 28.0f, ly = 110.0f, lw = 420.0f, lh = h - 166.0f;
+  const float lx = 24.0f, ly = 108.0f, lw = 356.0f, lh = h - 160.0f;
   list.rect(lx, ly, lx + lw, ly + lh, ui::rgba(14, 17, 24, 224), 8.0f);
   list.frame(lx, ly, lx + lw, ly + lh, ui::rgba(255, 255, 255, 34), 1.0f, 8.0f);
 
@@ -868,7 +874,8 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
   }
 
   // Right PI & 5-Stat Diff Preview card.
-  const float rx = w - 360.0f, rtop = 110.0f, rw = 332.0f, rh = 334.0f;
+  const float rw = 368.0f, rh = 312.0f;
+  const float rx = w - rw - 24.0f, rtop = 108.0f;
   list.rect(rx, rtop, rx + rw, rtop + rh, ui::rgba(14, 17, 24, 226), 8.0f);
   list.frame(rx, rtop, rx + rw, rtop + rh, ui::rgba(255, 255, 255, 36), 1.0f, 8.0f);
 
@@ -909,16 +916,16 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
   char specs[140];
   const int hp0 = int(std::lround(cur.stats.peak_power_kw * 1.34102));
   const int hp1 = int(std::lround(prv.stats.peak_power_kw * 1.34102));
-  std::snprintf(specs, sizeof specs, "POWER %d->%d HP   |   WEIGHT %.0f->%.0f KG", hp0, hp1,
+  std::snprintf(specs, sizeof specs, "POWER %d->%d HP   WT %.0f->%.0f KG", hp0, hp1,
                 cur.stats.curb_weight_kg, prv.stats.curb_weight_kg);
   ui::TextStyle sp;
-  sp.size = 12.5f;
+  sp.size = 10.0f;
   sp.color = ui::rgba(202, 210, 224);
   sp.align = ui::Align::kCenter;
   list.text(rx + rw * 0.5f, rtop + 236.0f, specs, sp);
 
   char accel_str[140];
-  std::snprintf(accel_str, sizeof accel_str, "0-60: %.2fs   |   60-0: %.1fm   |   LAT G: %.2fg",
+  std::snprintf(accel_str, sizeof accel_str, "0-60: %.2fS  60-0: %.1fM  LAT: %.2fG",
                 prv.stats.time_0_60_s, prv.stats.brake_60_0_m, prv.stats.lat_g_60);
   list.text(rx + rw * 0.5f, rtop + 260.0f, accel_str, sp);
 
