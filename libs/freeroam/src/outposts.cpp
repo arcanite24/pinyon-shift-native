@@ -364,8 +364,8 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.instruction = resolve_str(mission_strings, desc->attr("instruction_text"));
     }
     const int num = parse_trailing_number(s.id);
-    s.title = cam_name.empty() ? ("Speed Stunt #" + std::to_string(num) + " (" + std::to_string(int(std::lround(s.target_mph))) + " MPH)")
-                               : ("Speed Trap: " + cam_name);
+    s.title = cam_name.empty() ? ("Speed Trap #" + std::to_string(num) + " (" + std::to_string(int(std::lround(s.target_mph))) + " MPH)")
+                               : cam_name;
     if (s.instruction.empty()) {
       s.instruction = "Hit " + std::to_string(int(std::lround(s.target_mph))) + " MPH through the speed trap";
     }
@@ -400,7 +400,7 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       if (s.instruction.empty()) s.instruction = resolve_str(mission_strings, desc->attr("instruction_to_skills"));
     }
     const int num = parse_trailing_number(s.id);
-    s.title = "Skill Stunt #" + std::to_string(num) + " (" + format_int_commas(s.target_points) + " PTS)";
+    s.title = format_int_commas(s.target_points) + " PTS Challenge #" + std::to_string(num);
     if (s.instruction.empty()) {
       s.instruction = "Earn " + format_int_commas(s.target_points) + " skill points before time expires";
     }
@@ -440,7 +440,7 @@ bool parse_outposts(std::string_view gas_stations_xml, std::string_view speed_st
       s.instruction = resolve_str(mission_strings, desc->attr("instruction_to_photo"));
     }
     const int num = parse_trailing_number(s.id);
-    s.title = location.empty() ? ("Photo Op #" + std::to_string(num)) : ("Photo Op: " + location);
+    s.title = location.empty() ? ("Landmark #" + std::to_string(num)) : location;
     if (s.instruction.empty()) {
       s.instruction = "Drive to the landmark and press [P] to take a photo";
     }

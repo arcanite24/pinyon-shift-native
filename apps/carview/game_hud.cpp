@@ -1534,7 +1534,7 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g) {
 void pr_stunt_hud(ui::List& l, const PrStuntHud& ps, const Layout& g) {
   if (!ps.active) return;
   const float s = g.s;
-  const float cw = 460 * s;
+  const float cw = 500 * s;
   const float x0 = 0.5f * (g.w - cw), x1 = x0 + cw;
   const float y0 = g.T(26), y1 = y0 + 98 * s;
   const uint32_t kStuntAccent = ps.in_zone ? rgba(74, 238, 97) : rgba(255, 146, 3);
@@ -1548,18 +1548,20 @@ void pr_stunt_hud(ui::List& l, const PrStuntHud& ps, const Layout& g) {
   l.rect(x0 + 14 * s, y0 + 11 * s, x0 + 14 * s + bw, y0 + 29 * s, kStuntAccent, 3 * s);
   l.text(x0 + 22 * s, y0 + 14 * s, badge, bs);
 
-  const float title_x = x0 + 24 * s + bw;
-  const float timer_w = 88 * s;
-  TextStyle ts = font(ui::Font::kE, 17 * s, kText);
-  fit(ps.title, ts, x1 - title_x - timer_w - 16 * s, 10 * s);
-  l.text(title_x, y0 + 10 * s, ps.title, ts);
-
+  float timer_w = 0.0f;
   if (ps.time_remaining_s > 0.0) {
     const bool urgent = ps.time_remaining_s < 15.0;
     const uint32_t tc = urgent ? rgba(255, 72, 72) : kText;
-    l.text(x1 - 14 * s, y0 + 9 * s, race_clock(ps.time_remaining_s),
-           font(ui::Font::kE, 21 * s, tc, Align::kRight));
+    const std::string clk = race_clock(ps.time_remaining_s);
+    const TextStyle cs = font(ui::Font::kE, 21 * s, tc, Align::kRight);
+    timer_w = ui::List::measure(clk, cs) + 16 * s;
+    l.text(x1 - 14 * s, y0 + 9 * s, clk, cs);
   }
+
+  const float title_x = x0 + 24 * s + bw;
+  TextStyle ts = font(ui::Font::kE, 17 * s, kText);
+  fit(ps.title, ts, std::max(40 * s, x1 - title_x - timer_w - 14 * s), 10 * s);
+  l.text(title_x, y0 + 11 * s + (17 * s - ts.size) * 0.4f, ps.title, ts);
 
   // Objective instruction + live status line.
   if (!ps.instruction.empty()) {
