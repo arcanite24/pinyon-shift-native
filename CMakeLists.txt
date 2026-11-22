@@ -11,6 +11,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(SHIFT_BUILD_CARVIEW "Build the carview app (SDL3 + Vulkan)" ON)
+option(SHIFT_BUILD_LAUNCHER "Build the unified cross-platform GUI launcher" ON)
 option(SHIFT_STATIC_RUNTIME "Link libstdc++/libgcc statically on Linux" ON)
 
 if(MSVC)
@@ -46,6 +47,9 @@ add_subdirectory(apps/race-census)
 add_subdirectory(apps/profile-import)
 if(SHIFT_BUILD_CARVIEW)
   add_subdirectory(apps/carview)
+endif()
+if(SHIFT_BUILD_LAUNCHER)
+  add_subdirectory(apps/launcher)
 endif()
 
 enable_testing()
