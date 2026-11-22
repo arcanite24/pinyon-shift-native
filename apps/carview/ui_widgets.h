@@ -43,65 +43,6 @@ struct ButtonBarItem {
 // Draws BUTTON_BAR_SCENE (authentic Horizon pill + controller face glyphs).
 void draw_button_bar_ui4(ui::List& l, const std::vector<ButtonBarItem>& items, float screen_w, float screen_h);
 
-struct PauseMenuUi4State {
-  std::vector<std::string> items;
-  int selected = 0;
-  float selection_anim = 1.0f;  // 0..1 cross-fade wipe on selection change
-  std::string wristband_goal;
-  std::string wristband_label;
-  uint32_t wristband_colour = ui::rgba(0x0A, 0x9B, 0xFA);
-  std::string car_name;
-  std::string car_class;
-  int car_pi = 0;
-  std::string credits_text;
-  std::vector<ButtonBarItem> help_bar;
-};
-
-// Draws 925_PAUSE_MENU using its loaded FBF/BSG/BGF scene (SUPER_STACKER 50 px
-// pitch reflow, pink/black tape brushes, top-right career strip, BUTTON_BAR_SCENE).
-void draw_pause_menu_ui4(ui::List& l, const PauseMenuUi4State& st, float screen_w, float screen_h);
-
-struct MapChromeUi4State {
-  std::string filter_label;
-  std::string roads_label;  // e.g. "ROADS DISCOVERED 142 / 216"
-  std::string hovered_title;
-  std::string hovered_subtitle;
-  std::vector<ButtonBarItem> help_bar;
-};
-
-// Draws H_MAP authentic UI4 chrome (header strip, roads counter, hover card, help bar).
-void draw_map_chrome_ui4(ui::List& l, const MapChromeUi4State& st, float screen_w, float screen_h);
-
-struct PrePostRaceUi4State {
-  bool is_post_race = false;
-  std::string event_type;
-  std::string event_name;
-  std::string place_text;   // e.g. "1ST PLACE" (post-race)
-  std::vector<std::string> menu_items;
-  int selected = 0;
-  std::vector<ButtonBarItem> help_bar;
-};
-
-// Draws PRE_AND_POST_RACE authentic UI4 scene chrome (event card, grid menu / finish banner).
-void draw_pre_post_race_ui4(ui::List& l, const PrePostRaceUi4State& st, float screen_w, float screen_h);
-
-struct StreetRaceHubUi4State {
-  std::string hub_name;
-  std::string hub_subtitle;
-  struct Entry {
-    std::string name;
-    std::string stake;
-    std::string car_class;
-    bool completed = false;
-  };
-  std::vector<Entry> races;
-  int selected = 0;
-  std::vector<ButtonBarItem> help_bar;
-};
-
-// Draws H_STREET_RACE_HUB authentic UI4 scene overlay.
-void draw_street_race_hub_ui4(ui::List& l, const StreetRaceHubUi4State& st, float screen_w, float screen_h);
-
 // Draws authentic FH1 Race Central / Events browser (tab strip + event list + detail card).
 void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPage& page,
                      const std::vector<garage::ClassBand>& bands);

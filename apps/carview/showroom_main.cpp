@@ -6097,13 +6097,15 @@ int run_drive(int argc, char** argv) {
           fmv_player.draw(list, float(width), float(height));
         }
         if (rewind_buf.active()) {
-          // 921_I_REWIND overlay (authentic FH1 tilted brush badge + BUTTON_BAR_SCENE).
+          // 921_I_REWIND overlay: KITPARTS/REWINDLOGO, KITPARTS/REWINDARROW,
+          // MASKS/GRADIATEDBAR timeline + BUTTON_BAR_SCENE.
           const float wf = float(width), hf = float(height), sf = hf / 720.0f;
+          (void)carview::ui_scene("921_I_REWIND");
           carview::ui4::subtle_vignette(list, wf, hf, 0.35f);
           const char* rw_title = "REWIND";
           std::vector<carview::ui4::Prompt> rw_prompts;
           if (rewind_buf.is_rewinding()) {
-            rw_title = rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind ? "<< REWINDING FURTHER" : "<< REWINDING";
+            rw_title = rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind ? "REWINDING FURTHER" : "REWINDING";
             rw_prompts = {{"B", "CANCEL"}};
           } else if (rewind_buf.is_paused_at_keyframe()) {
             rw_title = "REWIND PAUSED";
@@ -6112,7 +6114,30 @@ int run_drive(int argc, char** argv) {
           } else if (rewind_buf.is_settling()) {
             rw_title = "RESUMING";
           }
-          carview::ui4::title_banner(list, sf, 70.0f * sf, hf - 154.0f * sf, rw_title, "HORIZON REWIND", true, 480.0f);
+          const float cx = 0.5f * wf;
+          const float logo_y = hf - 190.0f * sf;
+          std::array<float, 4> rw_logo{}, rw_arrow{}, rw_bar{};
+          if (carview::ui_texture("KITPARTS/REWINDLOGO", rw_logo)) {
+            list.image(cx - 120.0f * sf, logo_y, cx + 120.0f * sf, logo_y + 44.0f * sf, rw_logo, carview::ui4::kWhite);
+          }
+          if (carview::ui_texture("KITPARTS/REWINDARROW", rw_arrow)) {
+            list.image(cx - 168.0f * sf, logo_y + 6.0f * sf, cx - 126.0f * sf, logo_y + 38.0f * sf, rw_arrow,
+                       rewind_buf.is_rewinding() ? carview::ui4::kPink : carview::ui4::kWhite);
+          }
+          const float pill_y = logo_y + 52.0f * sf;
+          carview::ui4::brush(list, cx - 180.0f * sf, pill_y, cx + 180.0f * sf, pill_y + 32.0f * sf,
+                              carview::ui4::kPink);
+          list.text(cx, pill_y + 7.0f * sf, rw_title,
+                    carview::ui4::style(carview::ui::Font::kE, 18.0f * sf, carview::ui4::kWhite,
+                                        carview::ui::Align::kCenter));
+          // Gradiated rewind bar beneath badge
+          const float bar_y = pill_y + 40.0f * sf;
+          if (carview::ui_texture("MASKS/GRADIATEDBAR", rw_bar)) {
+            list.image(cx - 220.0f * sf, bar_y, cx + 220.0f * sf, bar_y + 10.0f * sf, rw_bar, carview::ui4::kPink);
+          } else {
+            list.rect(cx - 220.0f * sf, bar_y, cx + 220.0f * sf, bar_y + 8.0f * sf, carview::ui4::kBrushBlack);
+            list.rect(cx - 220.0f * sf, bar_y, cx + 120.0f * sf, bar_y + 8.0f * sf, carview::ui4::kPink);
+          }
           carview::ui4::button_bar(list, rw_prompts, wf, hf);
         }
         if (slice12.trainer_overlay.is_open()) {

@@ -70,40 +70,36 @@ std::string resolve_rally_car_name(const std::string& raw) {
   return out;
 }
 
-// CoDriverIconSet.xds is a 4x4 sprite atlas of right-turn & hazard pace-note glyphs.
-// Left turns mirror the right-turn cell horizontally (swap u0 <-> u1).
-bool codriver_atlas_cell(race::PaceIconKind kind, int& col, int& row, bool& mirror_x) {
+// CoDriverIconSet.xds is a 512x64 (8x1 horizontal strip of 64x64) sprite atlas of
+// turn & hazard pace-note glyphs. Left turns mirror the right-turn cell horizontally.
+bool codriver_atlas_cell(race::PaceIconKind kind, int& col, bool& mirror_x) {
   mirror_x = false;
   switch (kind) {
     case race::PaceIconKind::kEasyLeft: mirror_x = true; [[fallthrough]];
-    case race::PaceIconKind::kEasyRight: col = 0; row = 0; return true;
+    case race::PaceIconKind::kEasyRight: col = 0; return true;
     case race::PaceIconKind::kMediumLeft: mirror_x = true; [[fallthrough]];
-    case race::PaceIconKind::kMediumRight: col = 1; row = 0; return true;
+    case race::PaceIconKind::kMediumRight: col = 1; return true;
     case race::PaceIconKind::kHardLeft: mirror_x = true; [[fallthrough]];
-    case race::PaceIconKind::kHardRight: col = 2; row = 0; return true;
+    case race::PaceIconKind::kHardRight: col = 2; return true;
     case race::PaceIconKind::kSquareLeft: mirror_x = true; [[fallthrough]];
-    case race::PaceIconKind::kSquareRight: col = 3; row = 0; return true;
+    case race::PaceIconKind::kSquareRight: col = 3; return true;
     case race::PaceIconKind::kHairpinLeft: mirror_x = true; [[fallthrough]];
-    case race::PaceIconKind::kHairpinRight: col = 0; row = 1; return true;
-    case race::PaceIconKind::kCrest: col = 1; row = 1; return true;
-    case race::PaceIconKind::kJump: col = 2; row = 1; return true;
-    case race::PaceIconKind::kCaution: col = 3; row = 1; return true;
+    case race::PaceIconKind::kHairpinRight: col = 4; return true;
     default: return false;
   }
 }
 
 void draw_codriver_icon(ui::List& out, race::PaceIconKind kind, float x0, float y0, float x1, float y1, uint32_t col) {
   std::array<float, 4> sheet{};
-  int cx = 0, cy = 0;
+  int cx = 0;
   bool mirror_x = false;
-  if (codriver_atlas_cell(kind, cx, cy, mirror_x) &&
+  if (codriver_atlas_cell(kind, cx, mirror_x) &&
       (ui_texture("HUD/RALLY/CODRIVERICONSET", sheet) || ui_texture("Hud/Rally/CoDriverIconSet", sheet))) {
-    const float du = (sheet[2] - sheet[0]) * 0.25f;
-    const float dv = (sheet[3] - sheet[1]) * 0.25f;
+    const float du = (sheet[2] - sheet[0]) * 0.125f;  // 8 cells across 512x64 strip
     float u0 = sheet[0] + float(cx) * du;
     float u1 = u0 + du;
-    const float v0 = sheet[1] + float(cy) * dv;
-    const float v1 = v0 + dv;
+    const float v0 = sheet[1];
+    const float v1 = sheet[3];
     if (mirror_x) std::swap(u0, u1);
     out.image(x0, y0, x1, y1, {u0, v0, u1, v1}, col);
     return;
@@ -121,8 +117,8 @@ void draw_codriver_icon(ui::List& out, race::PaceIconKind kind, float x0, float 
     case race::PaceIconKind::kSquareRight: sym = "90R"; break;
     case race::PaceIconKind::kHairpinLeft: sym = "HP L"; break;
     case race::PaceIconKind::kHairpinRight: sym = "HP R"; break;
-    case race::PaceIconKind::kCrest: sym = "CRST"; break;
-    case race::PaceIconKind::kJump: sym = "JUMP"; break;
+    case race::PaceIconKind::kCrest: sym = "^"; break;
+    case race::PaceIconKind::kJump: sym = "^^"; break;
     case race::PaceIconKind::kCaution: sym = "!"; break;
     default: break;
   }

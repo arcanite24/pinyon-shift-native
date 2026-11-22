@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
@@ -36,6 +37,8 @@
 #include "freeroam/outposts.h"
 #include "freeroam/road_discovery.h"
 #include "game_hud.h"
+#include "replay_view.h"
+#include "touch_controls.h"
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
 #include "hub_scene.h"
@@ -171,16 +174,9 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
 
-  // Load authentic disc vector fonts.
+  // Load all 11 authentic disc vector fonts + fontmap.xml from Fonts.zip!
   if (auto fzip = fh1::Archive::open(game_root / "media/ui/Fonts.zip", nullptr)) {
-    auto vf_load = [&](const char* nm) {
-      auto r = fzip->read(nm);
-      auto f = std::make_shared<fh1::VFont>();
-      if (r.ok() && fh1::parse_vfont(r.data, *f, nullptr)) return f;
-      return std::shared_ptr<fh1::VFont>{};
-    };
-    carview::ui::set_vector_fonts(vf_load("aru_vector_aa.dt"), vf_load("bru_vector_aa.dt"),
-                                  vf_load("eru_vector_aa.dt"), vf_load("dru_vector_aa.dt"));
+    check(carview::ui::load_fonts_from_zip(*fzip), "load_fonts_from_zip in ui4_parity_tests");
   }
 
   auto uizip = fh1::Archive::open(game_root / "media/UI.zip", nullptr);
@@ -189,17 +185,41 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
   std::map<std::string, std::unique_ptr<fh1::UiScene>> scene_cache;
   std::set<std::string> failed_tex;
 
+  // Locate optional Rally DLC loose texture directory (CoDriverIconSet.xds / RallyTickets).
+  std::filesystem::path rally_tex_dir;
+  {
+    const std::filesystem::path bases[] = {
+        game_root / ".." / ".." / "dlc",
+        game_root / ".." / "dlc",
+        game_root / "dlc",
+    };
+    for (const auto& base : bases) {
+      if (!std::filesystem::exists(base, ec)) continue;
+      for (const auto& ent : std::filesystem::recursive_directory_iterator(base, ec)) {
+        if (ent.is_regular_file(ec) && ent.path().filename() == "CoDriverIconSet.xds") {
+          rally_tex_dir = ent.path().parent_path().parent_path().parent_path();
+          break;
+        }
+      }
+      if (!rally_tex_dir.empty()) break;
+    }
+  }
+
   carview::set_ui_textures([&](const std::string& path, std::array<float, 4>& uv) -> bool {
     if (carview::ui::atlas_find(path, uv)) return true;
     if (failed_tex.count(path)) return false;
     const bool t = path.rfind("T:", 0) == 0;
+    const std::string rel = (t ? path.substr(2) : path) + ".xds";
     fh1::Archive* a = t ? tx.get() : hz.get();
-    if (!a) {
-      failed_tex.insert(path);
-      return false;
+    fh1::ReadResult r = a ? a->read(rel) : fh1::ReadResult{};
+    if (!r.ok() && !t && !rally_tex_dir.empty()) {
+      const auto p = rally_tex_dir / rel;
+      if (std::filesystem::is_regular_file(p, ec)) {
+        std::ifstream f(p, std::ios::binary);
+        r.data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+      }
     }
-    auto r = a->read((t ? path.substr(2) : path) + ".xds");
-    if (!r.ok()) {
+    if (r.data.empty()) {
       failed_tex.insert(path);
       return false;
     }
@@ -652,20 +672,24 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     carview::build_drive_hud(l, d, float(W), float(H));
     save_frame("ui4_career_events.png", l, load_or_build_backdrop(world_bg_path));
 
-    // Also verify Street Race Hub UI4 chrome emits cleanly.
-    carview::StreetRaceHubUi4State srh;
-    srh.hub_name = "RED ROCK OUTPOST HUB";
-    srh.hub_subtitle = "COLORADO UNDERGROUND";
-    srh.races = {
-        {"RED ROCK CANYON SPRINT", "15,000 CR", "B", true},
-        {"MIDNIGHT MESA RUN", "22,500 CR", "A", false},
-        {"DESERT RIDGE SHOWDOWN", "35,000 CR", "S", false},
+    // Also verify Rally Hub H_STREET_RACE_HUB tilted ticket cards emit cleanly.
+    carview::RallyHubState rhs;
+    rhs.active = true;
+    rhs.car_name = "SUB_IMPREZA22B_98";
+    rhs.car_class = "B";
+    rhs.car_pi = 485;
+    rhs.credits = 264475;
+    rhs.rally_level = 4;
+    rhs.rally_xp = 8200;
+    rhs.selected = 1;
+    rhs.items = {
+        {carview::RallyHubItem::kChampionship, 1, "BEAUMONT RALLY", "B", "1ST", true, true, "", 20000, 4, {"Stage 1", "Stage 2"}},
+        {carview::RallyHubItem::kChampionship, 2, "RED ROCK DIRT CHALLENGE", "A", "NEW", true, true, "", 35000, 4, {"Stage 1", "Stage 2"}},
+        {carview::RallyHubItem::kChampionship, 3, "CLEAR SPRINGS FINALE", "S", "READY", true, true, "", 55000, 4, {"Stage 1", "Stage 2"}},
     };
-    srh.selected = 1;
-    srh.help_bar = {{"A", "START RACE"}, {"B", "BACK"}};
     carview::ui::List lsrh;
-    carview::draw_street_race_hub_ui4(lsrh, srh, float(W), float(H));
-    check(lsrh.items().size() > 25, "Street Race Hub UI4 emits gritty FH1 cards");
+    carview::build_rally_hub_screen(lsrh, rhs, float(W), float(H));
+    check(lsrh.items().size() > 25, "Rally Hub H_STREET_RACE_HUB emits tilted FH1 ticket cards");
     save_frame("ui4_events_preview.png", lsrh, load_or_build_backdrop(world_bg_path));
   }
 
@@ -746,6 +770,288 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     pm.build_hud(lpm, float(W), float(H));
     check(lpm.items().size() > 30, "Photo Mode HUD emits FH1 UI4 chrome");
     save_frame("ui4_photo_preview.png", lpm, load_or_build_backdrop(world_bg_path));
+  }
+
+  // ---------------- UI4 RE LAYOUT PARITY VERIFICATION SCREENSHOTS ----------------
+  auto save_two_up = [&](const std::string& filename, const carview::ui::List& top_l, std::vector<uint8_t> top_fb,
+                         const carview::ui::List& bot_l, std::vector<uint8_t> bot_fb) {
+    carview::ui::rasterize(top_l.items(), top_fb, W, H);
+    carview::ui::rasterize(bot_l.items(), bot_fb, W, H);
+    std::vector<uint8_t> combined(size_t(W) * size_t(H * 2) * 4u, 255);
+    std::memcpy(combined.data(), top_fb.data(), top_fb.size());
+    std::memcpy(combined.data() + top_fb.size(), bot_fb.data(), bot_fb.size());
+    const auto p = out_dir / filename;
+    check(stbi_write_png(p.string().c_str(), int(W), int(H * 2), 4, combined.data(), int(W * 4)) != 0,
+          filename.c_str());
+  };
+
+  // 1. ui4_re_hud_freeroam.png: Clean Free-Roam HUD (947_HUD tach + real
+  //    POPULARITYBARBACKGROUND + SKILLICONSET + layered MapProfileMinimap + clean
+  //    ActivationPrompt + CombinedNotification with real SPONSORLOGOTILE/OAKLEY)
+  {
+    auto bg = load_or_build_backdrop(world_bg_path);
+    carview::MapView mv;
+    if (mv.open(game_root, nullptr)) {
+      carview::MapScene ms;
+      const auto ctr = mv.roads_centre();
+      ms.x = ctr[0] - 40.0;
+      ms.z = ctr[1] + 20.0;
+      ms.heading = 0.25;
+      ms.speed_mps = 34.0;
+      ms.gps_route = {{ms.x, ms.z}, {ms.x + 80, ms.z + 160}, {ms.x + 210, ms.z + 340}};
+      ms.markers = {
+          {carview::MapMarker::kFestivalSite, "racecentral", "fest", "HORIZON FESTIVAL", "", ms.x + 45, ms.z + 110, true, false, true, 0},
+          {carview::MapMarker::kEvent, "race", "FR06", "MEDIA CENTER", "", ms.x - 50, ms.z + 140, true, false, true, 0},
+      };
+      const auto mm = mv.minimap(ms, 224);
+      composite_rgba(bg, W, H, mm, 76, 412);
+    }
+    carview::SkillChainHud sk;
+    sk.active = true;
+    sk.chain_points = 182;
+    sk.multiplier = 2;
+    sk.last_skill = "ULTIMATE AIR";
+    sk.last_points = 500;
+    sk.popularity_rank = 165;
+    sk.popularity_progress = 0.68;
+
+    carview::WorldMarkerHud wm;
+    wm.visible = true;
+    wm.in_range = true;
+    wm.screen_x = 490;
+    wm.screen_y = 250;
+    wm.title = "MEDIA CENTER";
+    wm.prompt = "ENTER NOW";
+    wm.eligible = true;
+
+    carview::DriveHud d;
+    d.driving = true;
+    d.kmh = 131.0;
+    d.rpm = 5600.0;
+    d.redline_rpm = 8000.0;
+    d.gear = 4;
+    d.abs = true;
+    d.tcs = false;
+    d.time = 12.4;
+    d.skills = &sk;
+    d.world_marker = &wm;
+    d.sponsor_title = "OAKLEY RACING CHALLENGE";
+    d.sponsor_detail = "EARN 50,000 SKILL POINTS IN FREE ROAM";
+    d.sponsor_at = 11.2;
+
+    carview::ui::List l;
+    carview::build_drive_hud(l, d, float(W), float(H));
+    save_frame("ui4_re_hud_freeroam.png", l, std::move(bg));
+  }
+
+  // 2. ui4_re_pause_menu.png: Real 925_PAUSE_MENU (feathered 2-tex brushes, BG_Noise,
+  //    DIRTTILE01, TAPECLIPON02, clean PlayerBar without RANK pill, BUTTON_BAR_SCENE)
+  {
+    carview::DriveHud d;
+    d.driving = false;
+    d.pause = true;
+    d.menu_title = "paused";
+    d.menu = {"MAP", "SETTINGS", "PHOTO MODE", "MESSAGE CENTER", "SPONSOR CHALLENGES", "MY PROFILE", "QUIT"};
+    d.menu_selected = 0;
+    d.band_name = "BLUE WRISTBAND";
+    d.band_next = "BLUE";
+    d.band_level = 3;
+    d.band_collect_ready = true;
+    d.car_name = "Nissan Skyline GT-R V-spec II";
+    d.car_class = "B";
+    d.car_pi = 461;
+    d.credits = 117700;
+    carview::ui::List l;
+    carview::build_drive_hud(l, d, float(W), float(H));
+    save_frame("ui4_re_pause_menu.png", l, load_or_build_backdrop(world_bg_path));
+  }
+
+  // 3. ui4_re_world_map.png: Real H_MAP (MAP_CROSSHAIR + #CF2169 MAP_LOCKON +
+  //    right-hand PILL26PX panel + FESTIVALMAPICON + PlayerBar + BUTTON_BAR_SCENE)
+  {
+    carview::MapView mv;
+    std::vector<uint8_t> bg = load_or_build_backdrop({}, true);
+    if (mv.open(game_root, nullptr)) {
+      carview::MapScene ms;
+      const auto ctr = mv.roads_centre();
+      ms.x = ctr[0] + 150.0;
+      ms.z = ctr[1] - 120.0;
+      ms.heading = 0.65;
+      ms.reveal = true;
+      ms.markers = {
+          {carview::MapMarker::kFestivalSite, "racecentral", "festival", "HORIZON FESTIVAL", "RACE CENTRAL", ctr[0], ctr[1], true, false, true, 0},
+          {carview::MapMarker::kOutpost, "gas_station", "redrock", "RED ROCK OUTPOST", "HORIZON OUTPOST  •  PR STUNTS 2/3", ctr[0] - 850, ctr[1] + 500, false, false, true, 1},
+          {carview::MapMarker::kEvent, "race", "FR06", "RED ROCK RAMPAGE", "FESTIVAL RACE  •  CLASS B", ctr[0] + 420, ctr[1] - 320, true, false, true, 0},
+          {carview::MapMarker::kStreetHub, "streetrace", "hub1", "CARSON STREET HUB", "STREET RACES", ctr[0] - 420, ctr[1] - 640, false, false, true, 1},
+      };
+      ms.selected_marker = 1;
+      ms.gps_route = {{ms.x, ms.z}, {ctr[0] - 250, ctr[1] + 180}, {ctr[0] - 850, ctr[1] + 500}};
+      ms.has_gps_dest = true;
+      ms.gps_dest_x = ctr[0] - 850;
+      ms.gps_dest_z = ctr[1] + 500;
+      const auto map_img = mv.pause_map(ms, int(W), int(H), 1.6, ctr[0] - 150, ctr[1] + 80);
+      if (map_img.width == W && map_img.height == H) bg = map_img.rgba;
+    }
+    carview::MapOverlayHud mo;
+    mo.active = true;
+    mo.title = "RED ROCK OUTPOST";
+    mo.subtitle = "HORIZON OUTPOST  •  PR STUNTS 2 / 3";
+    mo.action_hint = "FAST TRAVEL";
+    mo.gps_hint = "CLEAR GPS ROUTE";
+    mo.gps_active = true;
+    mo.distance_m = 1480.0;
+    mo.active_filter = 1;
+    mo.filter_tabs = {"ALL", "EVENTS", "STREET", "OUTPOSTS", "PR STUNTS"};
+    mo.roads_discovered = 142;
+    mo.roads_total = 216;
+    mo.zoom = 2.2;
+    mo.treasure_map = true;
+    carview::DriveHud d;
+    d.driving = false;
+    d.map_overlay = &mo;
+    d.band_name = "BLUE WRISTBAND";
+    d.band_next = "BLUE";
+    d.band_level = 3;
+    d.band_collect_ready = true;
+    d.car_name = "Nissan Skyline GT-R V-spec II";
+    d.car_class = "B";
+    d.car_pi = 461;
+    d.credits = 117700;
+    carview::ui::List l;
+    carview::build_drive_hud(l, d, float(W), float(H));
+    save_frame("ui4_re_world_map.png", l, std::move(bg));
+  }
+
+  // 4. ui4_re_loading_keyboard.png: Full-res 2-up (top: unobstructed 2_C_INI_LOADING with
+  //    BGLoadingImages + LoadingDefs.xml tilted tips + LOADSPINNER; bottom: H_MESSAGE_POPUP
+  //    tilted keyboard — ZERO rounded boxes!)
+  {
+    carview::LoadingScreen ls;
+    ls.load_definitions(game_root);
+    ls.start("RED ROCK CANYON", "FESTIVAL CIRCUIT  •  CLASS A");
+    ls.set_progress(0.72f);
+    ls.update(1.4);
+
+    carview::OnScreenKeyboard kb;
+    kb.open("LICENSE PLATE", "HRZN2012", 12, carview::OnScreenKeyboard::Purpose::kLicensePlate);
+    kb.move(3, 1);
+
+    carview::ui::List l_load, l_kb;
+    ls.draw(l_load, float(W), float(H));
+    kb.draw(l_kb, float(W), float(H));
+    save_two_up("ui4_re_loading_keyboard.png", l_load, load_or_build_backdrop({}, true), l_kb,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // 5. ui4_re_rally_replay.png: Full-res 2-up (top: real CoDriverIconSet.xds Rally Stage HUD;
+  //    bottom: real 926_REPLAY_HUD viewer — ZERO rounded boxes!)
+  {
+    carview::RallyStageHud rsh;
+    rsh.active = true;
+    rsh.championship_name = "BEAUMONT RALLY";
+    rsh.stage_name = "CLEAR SPRINGS GRAVEL";
+    rsh.stage_number = 2;
+    rsh.total_stages = 4;
+    rsh.stage_clock = 92.45;
+    rsh.progress = 0.61;
+    rsh.total_splits = 4;
+    rsh.splits_passed = 2;
+    rsh.last_split_delta = -1.42;
+    rsh.last_split_age = 0.8;
+    rsh.pace.active = true;
+    rsh.pace.icons = {
+        {race::PaceIconKind::kMediumLeft, 3, -1, "3L", true},
+        {race::PaceIconKind::kCrest, 0, 0, "CREST", false},
+        {race::PaceIconKind::kEasyRight, 5, +1, "5R", false},
+    };
+    rsh.pace.modifiers = {"DON'T CUT", "60", "OVER CREST"};
+    rsh.pace.phrase = "LEFT 3  •  DON'T CUT  •  OVER CREST";
+    rsh.pace.age_s = 0.4;
+
+    carview::DriveHud d_rally;
+    d_rally.driving = true;
+    d_rally.kmh = 148.0;
+    d_rally.rpm = 6450.0;
+    d_rally.redline_rpm = 7800.0;
+    d_rally.gear = 4;
+    d_rally.rally_stage = &rsh;
+
+    drive::ReplayRecording rec;
+    rec.meta.event_name = "CLEAR SPRINGS STAGE 2";
+    rec.meta.sample_hz = 30.0;
+    drive::ReplayCarInfo ci;
+    ci.slot = 0;
+    ci.driver_name = "HORIZON RALLY DRIVER";
+    ci.car_media = "1998 Subaru Impreza 22B STi";
+    rec.meta.roster.push_back(ci);
+    rec.meta.markers.push_back({18.0, "SPLIT 1"});
+    rec.meta.markers.push_back({42.0, "JUMP"});
+    for (int f = 0; f < 30; ++f) {
+      drive::ReplayFrame rf;
+      rf.time_s = double(f) * 2.0;
+      drive::ReplayCarSample cs;
+      cs.slot = 0;
+      cs.speed_mps = 41.2f;
+      cs.rpm = 6450.0f;
+      cs.redline_rpm = 7800.0f;
+      cs.gear = 4;
+      cs.throttle_u8 = 235;
+      cs.brake_u8 = 0;
+      cs.steer_i8 = -42;
+      rf.cars.push_back(cs);
+      rec.frames.push_back(std::move(rf));
+    }
+    carview::ReplayViewer rv;
+    rv.open(std::move(rec), true);
+    rv.seek(26.4);
+    rv.set_telemetry(true);
+    rv.update(0.0);
+
+    carview::ui::List l_rally, l_rep;
+    carview::build_drive_hud(l_rally, d_rally, float(W), float(H));
+    rv.build_hud(l_rep, float(W), float(H));
+    save_two_up("ui4_re_rally_replay.png", l_rally, load_or_build_backdrop(world_bg_path), l_rep,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // 6. ui4_re_android_touch.png: Android touch HUD with ZERO tach/minimap overlap!
+  {
+    auto bg = load_or_build_backdrop(world_bg_path);
+    carview::TouchControls tc;
+    tc.set_visibility(carview::TouchVisibility::kAlwaysOn);
+    tc.set_steer_mode(carview::TouchSteerMode::kButtons);
+    const auto lay = carview::TouchControls::compute_layout(float(W), float(H));
+    tc.on_finger_down(1, lay.steer_left.cx(), lay.steer_left.cy(), float(W), float(H), 1.0);
+    tc.on_finger_down(2, lay.throttle.cx(), lay.throttle.cy(), float(W), float(H), 1.0);
+
+    carview::TouchRect mm_r, tach_r;
+    carview::TouchControls::hud_safe_rects(float(W), float(H), mm_r, tach_r);
+    carview::MapView mv;
+    if (mv.open(game_root, nullptr)) {
+      carview::MapScene ms;
+      const auto ctr = mv.roads_centre();
+      ms.x = ctr[0] + 100;
+      ms.z = ctr[1] - 80;
+      ms.heading = 0.35;
+      ms.speed_mps = 38.0;
+      const int mm_px = std::max(96, int(std::lround(std::min(mm_r.w() * float(W), mm_r.h() * float(H)))));
+      const auto mm = mv.minimap(ms, mm_px);
+      composite_rgba(bg, W, H, mm, int(std::lround(mm_r.x0 * float(W))),
+                     int(std::lround(mm_r.y1 * float(H))) - int(mm.height));
+    }
+    carview::DriveHud d;
+    d.driving = true;
+    d.touch_hud_active = true;
+    d.kmh = 156.0;
+    d.rpm = 6200.0;
+    d.redline_rpm = 8000.0;
+    d.gear = 4;
+    d.time = 10.0;
+
+    carview::ui::List l;
+    carview::build_drive_hud(l, d, float(W), float(H));
+    tc.build_overlay(l, float(W), float(H), 1.0, false);
+    save_frame("ui4_re_android_touch.png", l, std::move(bg));
   }
 }
 

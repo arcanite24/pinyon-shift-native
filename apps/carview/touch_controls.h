@@ -5,6 +5,7 @@
 // inactivity, and renders an FH1-styled translucent overlay via carview::ui::List.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -83,12 +84,77 @@ class TouchControls {
   void cycle_steer_mode();
 
   // Computes aspect-ratio-aware layout (safe-area margins for phones, tablets, Odin).
-  static TouchLayout compute_layout(float screen_w, float screen_h);
+  static inline TouchLayout compute_layout(float screen_w, float screen_h) {
+    TouchLayout lay;
+    const float aspect = (screen_h > 1.0f) ? (screen_w / screen_h) : (16.0f / 9.0f);
+    const float mx = aspect >= 2.0f ? 0.045f : (aspect <= 1.5f ? 0.025f : 0.030f);
+    const float my = aspect <= 1.5f ? 0.036f : 0.040f;
+    const float pad_w = aspect >= 2.0f ? 0.086f : (aspect <= 1.5f ? 0.110f : 0.095f);
+    const float pad_h = aspect <= 1.5f ? 0.215f : 0.240f;
+
+    const float sy1 = 1.0f - my;
+    const float sy0 = sy1 - pad_h * 0.72f;
+    lay.steer_left = {mx, sy0, mx + pad_w * 1.05f, sy1};
+    lay.steer_right = {mx + pad_w * 1.15f, sy0, mx + pad_w * 2.20f, sy1};
+    lay.steer_zone = {0.0f, 0.35f, 0.45f, 1.0f};
+
+    const float tx1 = 1.0f - mx;
+    const float tx0 = tx1 - pad_w;
+    lay.throttle = {tx0, 1.0f - my - pad_h, tx1, 1.0f - my};
+
+    const float bx1 = tx0 - 0.014f;
+    const float bx0 = bx1 - pad_w * 0.92f;
+    lay.brake = {bx0, 1.0f - my - pad_h * 0.84f, bx1, 1.0f - my};
+
+    const float hbh = 0.082f;
+    lay.handbrake = {bx0, lay.brake.y0 - 0.016f - hbh, bx1, lay.brake.y0 - 0.016f};
+
+    const float sh_w = pad_w * 0.56f;
+    const float sh_h = 0.082f;
+    const float sh_x1 = bx0 - 0.014f;
+    const float sh_x0 = sh_x1 - sh_w;
+    lay.shift_up = {sh_x0, lay.brake.y0 - 0.012f, sh_x1, lay.brake.y0 - 0.012f + sh_h};
+    lay.shift_down = {sh_x0, lay.shift_up.y1 + 0.014f, sh_x1, lay.shift_up.y1 + 0.014f + sh_h};
+
+    const float top_y0 = my;
+    const float top_y1 = my + 0.064f;
+    const float cw = aspect >= 2.0f ? 0.064f : 0.072f;
+    const float cg = 0.010f;
+    const float group_w = 6.0f * cw + 5.0f * cg;
+    const float gx0 = 0.5f - group_w * 0.5f;
+    lay.btn_mode   = {gx0 + 0 * (cw + cg), top_y0, gx0 + 0 * (cw + cg) + cw, top_y1};
+    lay.btn_rewind = {gx0 + 1 * (cw + cg), top_y0, gx0 + 1 * (cw + cg) + cw, top_y1};
+    lay.btn_camera = {gx0 + 2 * (cw + cg), top_y0, gx0 + 2 * (cw + cg) + cw, top_y1};
+    lay.btn_radio  = {gx0 + 3 * (cw + cg), top_y0, gx0 + 3 * (cw + cg) + cw, top_y1};
+    lay.btn_map    = {gx0 + 4 * (cw + cg), top_y0, gx0 + 4 * (cw + cg) + cw, top_y1};
+    lay.btn_pause  = {gx0 + 5 * (cw + cg), top_y0, gx0 + 5 * (cw + cg) + cw, top_y1};
+    return lay;
+  }
 
   // Non-overlapping normalized [0..1] safe regions for the driving minimap and
   // tachometer when touch controls are visible (guaranteed clear of all pads).
-  static void hud_safe_rects(float screen_w, float screen_h, TouchRect& minimap_out, TouchRect& tach_out);
-  static bool rects_overlap(const TouchRect& a, const TouchRect& b);
+  static inline bool rects_overlap(const TouchRect& a, const TouchRect& b) {
+    return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+  }
+
+  static inline void hud_safe_rects(float screen_w, float screen_h, TouchRect& minimap_out, TouchRect& tach_out) {
+    const TouchLayout lay = compute_layout(screen_w, screen_h);
+    const float aspect = (screen_h > 1.0f) ? (screen_w / screen_h) : (16.0f / 9.0f);
+    const float mx = lay.steer_left.x0;
+    const float gap = 0.028f;
+
+    const float mm_y1 = lay.steer_left.y0 - gap;
+    const float mm_h = std::min(0.24f, std::max(0.14f, mm_y1 - (lay.btn_mode.y1 + 0.04f)));
+    const float mm_w = mm_h / std::max(0.5f, aspect);
+    minimap_out = {mx, mm_y1 - mm_h, mx + mm_w, mm_y1};
+
+    const float right_top = std::min({lay.handbrake.y0, lay.throttle.y0, lay.shift_up.y0});
+    const float tach_y1 = right_top - gap;
+    const float tach_h = std::min(0.25f, std::max(0.16f, tach_y1 - (lay.btn_pause.y1 + 0.04f)));
+    const float tach_w = (tach_h / std::max(0.5f, aspect)) * 1.12f;
+    const float tx1 = lay.throttle.x1;
+    tach_out = {tx1 - tach_w, tach_y1 - tach_h, tx1, tach_y1};
+  }
 
   // Processes an SDL finger event; returns true if consumed by touch controls.
   bool handle_sdl_event(const SDL_Event& e, float screen_w, float screen_h, double now_s);

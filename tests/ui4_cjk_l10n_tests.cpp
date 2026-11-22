@@ -289,6 +289,25 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
     }
   }
 
+  // 3d. Verify media/ui/MapProfileMinimap.xml & MapProfileFullscreen.xml exist with layered road_types!
+  {
+    const auto mm_path = game_root / "media/ui/MapProfileMinimap.xml";
+    const auto fs_path = game_root / "media/ui/MapProfileFullscreen.xml";
+    if (std::filesystem::is_regular_file(mm_path, ec)) {
+      std::ifstream f(mm_path, std::ios::binary);
+      const std::string xml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      check(xml.find("dirt") != std::string::npos && xml.find("freeway") != std::string::npos &&
+                xml.find("route") != std::string::npos,
+            "MapProfileMinimap.xml defines dirt, freeway and route road layers");
+    }
+    if (std::filesystem::is_regular_file(fs_path, ec)) {
+      std::ifstream f(fs_path, std::ios::binary);
+      const std::string xml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      check(xml.find("dirt") != std::string::npos && xml.find("freeway") != std::string::npos,
+            "MapProfileFullscreen.xml defines layered road styles");
+    }
+  }
+
   // 4. Optional headless verification screenshots (1280x720) when SHIFT_SLICE9_SCREENSHOT_DIR is set.
   if (screenshot_dir.empty()) return;
   std::filesystem::create_directories(screenshot_dir, ec);
@@ -366,17 +385,20 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
 
   // Screenshot (b): Authentic UI4 925_PAUSE_MENU + GPU vector-font radio popup.
   {
-    carview::PauseMenuUi4State pm;
-    pm.items = {"RESUME", "MAP", "EVENTS", "GARAGE", "UPGRADES", "SETTINGS", "QUIT"};
-    pm.selected = 1;
-    pm.wristband_goal = "COLLECT BLUE WRISTBAND";
-    pm.wristband_label = "HORIZON 2012";
-    pm.wristband_colour = carview::ui::rgba(0x0A, 0x9B, 0xFA);
-    pm.car_name = "2013 SRT Viper GTS";
-    pm.car_class = "S";
-    pm.car_pi = 682;
-    pm.credits_text = "117,700 Cr";
-    pm.help_bar = {{"A", "SELECT"}, {"B", "RESUME"}};
+    carview::DriveHud d;
+    d.driving = false;
+    d.pause = true;
+    d.menu_title = "paused";
+    d.menu = {"RESUME", "MAP", "EVENTS", "GARAGE", "UPGRADES", "SETTINGS", "QUIT"};
+    d.menu_selected = 1;
+    d.band_name = "BLUE WRISTBAND";
+    d.band_next = "BLUE";
+    d.band_level = 3;
+    d.band_collect_ready = true;
+    d.car_name = "2013 SRT Viper GTS";
+    d.car_class = "S";
+    d.car_pi = 682;
+    d.credits = 117700;
 
     carview::RadioPopupGpuState rp;
     rp.station_name = "Radio1";
@@ -386,7 +408,7 @@ void test_disc_ui4_cjk_and_18_languages(const std::filesystem::path& game_root,
     rp.alpha = 1.0f;
 
     carview::ui::List list;
-    carview::draw_pause_menu_ui4(list, pm, float(W), float(H));
+    carview::build_drive_hud(list, d, float(W), float(H));
     carview::draw_radio_popup_gpu(list, rp, float(W), float(H));
     save_canvas("slice9_ui4_pause_radio.png", list);
   }

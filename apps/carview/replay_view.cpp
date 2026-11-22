@@ -476,12 +476,12 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     telem_bar("BRAKE", float(focus->brake_u8) / 255.0f, ui4::kRed, false);
     telem_bar("STEER", float(focus->steer_i8) / 127.0f, ui4::kAmber, true);
 
-    // Optional real T:I_MAP/I_HUD/I_HUD_DAMAGE_CAR chassis glyph from 926_REPLAY_HUD.
+    // Slim 926_REPLAY_HUD / 968_TELEMETRY chassis status strip (I_HUD_DAMAGE_ENGINE glyph).
     std::array<float, 4> dmg_uv{};
-    if (ui4::texture("T:I_MAP/I_HUD/I_HUD_DAMAGE_CAR", dmg_uv) ||
-        ui4::texture("T:I_MAP/I_HUD/I_HUD_DAMAGE_ENGINE", dmg_uv)) {
-      ui4::pill(out, rx1 - 68.0f * s, ry + 2.0f * s, rx1, ry + 66.0f * s, ui4::kPillGrey, ui4::PillKind::kHud02);
-      out.image(rx1 - 60.0f * s, ry + 6.0f * s, rx1 - 8.0f * s, ry + 62.0f * s, dmg_uv, ui4::kWhite);
+    if (ui4::texture("T:I_MAP/I_HUD/I_HUD_DAMAGE_ENGINE", dmg_uv)) {
+      ui4::pill(out, rx0, ry, rx1, ry + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kHud02);
+      out.image(rx0 + 8.0f * s, ry + 3.0f * s, rx0 + 26.0f * s, ry + 21.0f * s, dmg_uv, ui4::kGreen);
+      out.text(rx0 + 34.0f * s, ry + 5.0f * s, "CHASSIS & ENGINE  100%", ui4::style(Font::kB, 11.0f * s, ui4::kGreen));
     }
   }
 

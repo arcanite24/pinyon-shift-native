@@ -467,8 +467,8 @@ void test_hud_abs_tcs_lamps() {
     }
     return 0;
   };
-  const uint32_t off_col = fade(rgba(33, 33, 33), 0.5f);
-  const uint32_t on_col = rgba(255, 196, 40);
+  const uint32_t off_col = fade(rgba(110, 114, 122), 0.36f);
+  const uint32_t on_col = fade(rgba(232, 236, 244), 0.92f);
 
   {
     List l;

@@ -486,7 +486,8 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
                    scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
         }
         const Rgba road_col = driven ? ls.core : ls.edge;
-        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.0, px + 2.5), Rgba{0, 0, 0, 58});
+        const float under_a = std::max(105.0f, ls.under.a);
+        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.4, px + 3.0), Rgba{ls.under.r, ls.under.g, ls.under.b, under_a});
         if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.2, px), road_col);
       }
     }
