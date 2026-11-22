@@ -307,6 +307,10 @@ if(SHIFT_BUILD_CARVIEW)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)
   add_test(NAME showroom_vram_tests COMMAND showroom_vram_tests)
   set_tests_properties(showroom_vram_tests PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(platform_touch_tests platform_touch_tests.cpp)
+  target_link_libraries(platform_touch_tests PRIVATE carview_render)
+  add_test(NAME platform_touch_tests COMMAND platform_touch_tests)
 endif()
 
 if(SHIFT_BUILD_LAUNCHER)

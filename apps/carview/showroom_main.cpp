@@ -52,11 +52,13 @@
 #include "hud_scene.h"
 #include "hud.h"
 #include "photo_mode.h"
+#include "platform_support.h"
 #include "process_time.h"
 #include "replay_view.h"
 #include "reference.h"
 #include "renderer.h"
 #include "showroom.h"
+#include "touch_controls.h"
 #include "traffic_view.h"
 #include "garage/rally_kit.h"
 #include "race/rally_championship.h"
@@ -1653,6 +1655,9 @@ int run_drive(int argc, char** argv) {
   std::filesystem::path demo_photo_png;
   std::filesystem::path demo_replay_png;
   std::filesystem::path demo_achievements_png;
+  std::filesystem::path demo_touch_hud_png;
+  carview::TouchControls touch_controls;
+  std::string android_gpu_driver = "auto";
   bool save_settings = false;
   bool no_title = false;
   bool skip_intro_movies = false;
@@ -1699,11 +1704,28 @@ int run_drive(int argc, char** argv) {
     else if (a == "--bench") bench = headless = async_stream = true;  // streams like the window
     else if (a == "--msaa") msaa = uint32_t(std::atoi(next()));
     else if (a == "--preset") {
-      // low (ours): no MSAA, cut-outs alpha-tested, no bloom; high: the
-      // default 4x, bloom.
       const std::string p = next();
-      msaa = p == "low" ? 1 : 4;
-      low_preset = p == "low";
+      carview::GraphicsPresetSpec pspec;
+      if (carview::resolve_graphics_preset(p, pspec)) {
+        msaa = pspec.msaa;
+        low_preset = pspec.low_preset;
+        if (shadows_flag.empty()) shadows_flag = pspec.shadows;
+        if (bloom_flag < 0) bloom_flag = pspec.bloom ? 1 : 0;
+      } else {
+        msaa = p == "low" ? 1 : 4;
+        low_preset = p == "low";
+      }
+    }
+    else if (a == "--touch-controls") {
+      carview::TouchVisibility tv;
+      if (carview::parse_touch_visibility(next(), tv)) touch_controls.set_visibility(tv);
+    }
+    else if (a == "--touch-steer") {
+      carview::TouchSteerMode sm;
+      if (carview::parse_touch_steer_mode(next(), sm)) touch_controls.set_steer_mode(sm);
+    }
+    else if (a == "--android-gpu-driver") {
+      android_gpu_driver = next();
     }
     else if (a == "--no-post") post_on = false;
     else if (a == "--shadows") {
@@ -1724,6 +1746,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--demo-photo-mode") demo_photo_png = next(), headless = true;
     else if (a == "--demo-replay-view") demo_replay_png = next(), headless = true;
     else if (a == "--demo-achievements") demo_achievements_png = next(), headless = true;
+    else if (a == "--demo-touch-hud") demo_touch_hud_png = next(), headless = true;
     else if (a == "--exposure") exposure_given = std::atof(next());
     else if (a == "--world-reference") world_reference_path = next();
     else if (a == "--hud") hud = true;
@@ -5880,6 +5903,9 @@ int run_drive(int argc, char** argv) {
                                      !shop.is_open() && !autoshow.is_open() && !garage_open &&
                                      !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open;
         achievements.build_hud_overlays(list, float(width), float(height), show_track_chip);
+        if (show_track_chip) {
+          touch_controls.build_overlay(list, float(width), float(height), vehicle.time());
+        }
         upload_ui_atlas(renderer, !ui_atlas_synced);
         ui_atlas_synced = true;
         renderer.set_ui(list.items());
@@ -6553,6 +6579,36 @@ int run_drive(int argc, char** argv) {
                            achievements.available_gamerscore(), spa_db.achievements.size());
         }
         achievements.close_screen();
+      } else if (!demo_touch_hud_png.empty()) {
+        // Headless Slice 13B verification capture: Android Touch Controls HUD overlay on live Colorado drive.
+        const int demo_steps = int(std::lround(2.5 / drive::Vehicle::kStep));
+        for (int ds = 0; ds <= demo_steps; ++ds) {
+          const drive::Input di = ds == 0 ? drive::Input{} : (cruise ? follower.input(vehicle) : drive::Input{-0.12, 0.88, 0.0, false});
+          if (ds > 0 && !step(di)) break;
+        }
+        wheel_poses(vehicle, poses);
+        showroom.set_wheel_poses(poses);
+        showroom.set_braking(0.0f);
+        showroom.set_draw_car(true);
+        tod_cockpit_cam = false;
+        place_world();
+        const float aspect = float(width) / float(height);
+        showroom.set_frame(drive_frame(aspect, 0.016));
+        set_minimap(int(height), true);
+        touch_controls.set_visibility(carview::TouchVisibility::kAlwaysOn);
+        touch_controls.set_steer_mode(carview::TouchSteerMode::kButtons);
+        touch_controls.on_finger_down(1, 0.06f, 0.86f, float(width), float(height), vehicle.time());
+        touch_controls.on_finger_down(2, 0.92f, 0.72f, float(width), float(height), vehicle.time());
+        set_hud(int(width), int(height), "ANDROID TOUCH CONTROLS - SMOOTH 60 PRESET");
+        std::vector<uint8_t> rgba;
+        if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+          std::fprintf(stderr, "carview: %s\n", error.c_str());
+          status = 1;
+        } else {
+          for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+          if (!write_png(demo_touch_hud_png.string(), width, height, 4, rgba.data())) status = 1;
+          else std::printf("demo touch hud -> %s (%ux%u)\n", demo_touch_hud_png.string().c_str(), width, height);
+        }
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
@@ -7172,6 +7228,46 @@ int run_drive(int argc, char** argv) {
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
+            // macOS Command shortcuts (Cmd+,, Ctrl+Cmd+F, Cmd+Shift+P, Cmd+T, Cmd+Q).
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+#if defined(__APPLE__)
+              constexpr bool kIsMacOs = true;
+#else
+              constexpr bool kIsMacOs = false;
+#endif
+              const auto sc = carview::match_macos_shortcut(e.key.key, e.key.mod, kIsMacOs);
+              if (sc == carview::PlatformShortcut::kQuit) {
+                running = false;
+                continue;
+              } else if (sc == carview::PlatformShortcut::kSettings) {
+                settings_page.load(read_settings(settings_path(), nullptr));
+                settings_page.open();
+                settings_live_overlay = true;
+                audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+                continue;
+              } else if (sc == carview::PlatformShortcut::kToggleFullscreen) {
+                const bool fs = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+                SDL_SetWindowFullscreen(window, !fs);
+                continue;
+              } else if (sc == carview::PlatformShortcut::kPhotoMode && !picking && !(race && race->player_finished())) {
+                const drive::Vec3 pat = vehicle.position();
+                const drive::Vec3 pf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
+                                 carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
+                continue;
+              } else if (sc == carview::PlatformShortcut::kTrainerOrTime) {
+                tod_clock.step_hours(1.0);
+                if (traffic) traffic->set_hour(tod_clock.hour());
+                notice = "MACOS CMD+T: STEPPED TIME +1H";
+                notice_until = vehicle.time() + 2.5;
+                continue;
+              }
+            }
+            // Android / touchscreen multi-touch driving controls.
+            if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_FINGER_MOTION ||
+                e.type == SDL_EVENT_FINGER_UP || e.type == SDL_EVENT_FINGER_CANCELED) {
+              touch_controls.handle_sdl_event(e, float(width), float(height), vehicle.time());
+            }
             if (skip_vo_with_a && !show_title && !menu.open && !settings_page.is_open() && !map_open &&
                 !fmv_player.active() && audio_host.telemetry().vo_playing) {
               const bool pad_a =
@@ -8768,7 +8864,39 @@ int run_drive(int argc, char** argv) {
               in.brake = brake;
               in.handbrake = handbrake;
               in.clutch = clutch;
+              touch_controls.notify_gamepad_input(vehicle.time());
               break;
+            }
+          }
+          // Apply Android multi-touch controls & edge-triggered HUD actions.
+          touch_controls.set_gamepad_connected(!pads.empty());
+          touch_controls.update(vehicle.time());
+          {
+            const carview::TouchActions ta = touch_controls.consume_actions();
+            if (ta.pause) open_menu();
+            if (ta.map) open_map();
+            if (ta.camera) {
+              if (have_rig) rig.cycle();
+              else front = !front;
+            }
+            if (ta.radio_next) radio_press(+1);
+            if (ta.shift_up) pending_shift = +1;
+            if (ta.shift_down) pending_shift = -1;
+            if (ta.rewind) {
+              drive::RewindCameraState cs;
+              if (have_rig) cs.rig = rig;
+              cs.view = last_cam_view;
+              cs.has_view = have_cam_view;
+              cs.front_view = front;
+              const double rc = race ? race->session().clock() : vehicle.time();
+              rewind_buf.trigger(vehicle.time(), rc, vehicle, cs);
+            }
+            const carview::TouchDriveOutput to = touch_controls.output();
+            if (to.active) {
+              in.steer = to.steer;
+              in.throttle = std::max(in.throttle, to.throttle);
+              in.brake = std::max(in.brake, to.brake);
+              in.handbrake = in.handbrake || to.handbrake;
             }
           }
           // Auto-Brake (Braking == 0 / Assisted, SPEC-CAR-PHYSICS): query the

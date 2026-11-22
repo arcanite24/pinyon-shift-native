@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Android app (M7): the drive under SDL's activity, landscape,
-     Vulkan 1.1. No permissions: the play folder is the app's own external
-     files folder. -->
+<!-- The Android app (Slice 13B): Shift Drive under SDL's activity, landscape,
+     Vulkan 1.1+, multi-touch HUD, Turnip custom driver hook, and private LAN
+     Wi-Fi sync client into Android/data/net.shiftengine.drive/files/play. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="net.shiftengine.drive"
-    android:versionCode="1"
-    android:versionName="0.1"
+    android:versionCode="2"
+    android:versionName="0.2"
     android:installLocation="auto">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
@@ -14,11 +14,14 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application android:label="Shift Drive"
         android:allowBackup="false"
         android:hasCode="true"
         android:extractNativeLibs="false"
         android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
         <activity android:name="net.shiftengine.drive.DriveActivity"
             android:label="Shift Drive"

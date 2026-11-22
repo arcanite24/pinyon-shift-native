@@ -51,6 +51,8 @@ add_library(carview_render STATIC
   showroom.cpp
   ui.cpp
   ui4_chrome.cpp
+  platform_support.cpp
+  touch_controls.cpp
   ${shader_headers})
 set_target_properties(carview_render PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${generated}")
@@ -103,5 +105,10 @@ if(ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE)
   target_link_libraries(carview PRIVATE android log)
 else()
   add_executable(carview ${carview_sources})
+  if(APPLE)
+    set_target_properties(carview PROPERTIES
+      BUILD_RPATH "@executable_path/../Frameworks"
+      INSTALL_RPATH "@executable_path/../Frameworks")
+  endif()
 endif()
 target_link_libraries(carview PRIVATE carview_render shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb shift_sqlite3)

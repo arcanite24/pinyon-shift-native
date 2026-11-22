@@ -19,7 +19,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+
+#if defined(__APPLE__) || defined(__ANDROID__)
+#include <dlfcn.h>
+#endif
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -27,6 +33,7 @@
 #include "car_frag_spv.h"
 #include "car_model.h"
 #include "car_vert_spv.h"
+#include "platform_support.h"
 #include "post_frag_spv.h"
 #include "post_vert_spv.h"
 #include "ui_frag_spv.h"
@@ -161,14 +168,59 @@ Renderer::~Renderer() {
 
 bool Renderer::init(const Options& options, std::string& error) {
   options_ = options;
-  if (volkInitialize() != VK_SUCCESS) {
-    error = "no Vulkan loader found (libvulkan / vulkan-1.dll)";
+  bool volk_ok = false;
+#if defined(__ANDROID__)
+  // Optional Turnip / custom Vulkan driver hook (files/state/drivers or SHIFT_ANDROID_GPU_DRIVER).
+  if (const char* drv = std::getenv("SHIFT_ANDROID_GPU_DRIVER"); drv && *drv && std::strcmp(drv, "system") != 0) {
+    if (void* lib = dlopen(drv, RTLD_NOW | RTLD_LOCAL)) {
+      if (auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"))) {
+        volkInitializeCustom(gipa);
+        volk_ok = true;
+        std::fprintf(stderr, "[vulkan] loaded custom Android driver: %s\n", drv);
+      }
+    }
+  }
+#elif defined(__APPLE__)
+  // Probe bundled MoltenVK / Vulkan loader inside Shift Engine.app/Contents/Frameworks
+  // before falling back to system/Homebrew Vulkan loader.
+  if (const char* base = SDL_GetBasePath()) {
+    std::error_code ec;
+    const std::filesystem::path fw = std::filesystem::path(base).parent_path() / "Frameworks";
+    const std::filesystem::path candidates[] = {
+        fw / "libvulkan.1.dylib",
+        fw / "libMoltenVK.dylib",
+        "/opt/homebrew/lib/libvulkan.1.dylib",
+        "/opt/homebrew/lib/libMoltenVK.dylib",
+        "/usr/local/lib/libvulkan.1.dylib",
+    };
+    for (const auto& c : candidates) {
+      if (!std::filesystem::is_regular_file(c, ec)) continue;
+      if (void* lib = dlopen(c.c_str(), RTLD_NOW | RTLD_LOCAL)) {
+        if (auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"))) {
+          volkInitializeCustom(gipa);
+          volk_ok = true;
+          break;
+        }
+      }
+    }
+  }
+#endif
+  if (!volk_ok && volkInitialize() != VK_SUCCESS) {
+    error = "no Vulkan loader found (libvulkan / vulkan-1.dll / libMoltenVK.dylib)";
     return false;
   }
-  if (volkGetInstanceVersion() < VK_API_VERSION_1_3) {
+  const uint32_t loader_ver = volkGetInstanceVersion();
+#if defined(__ANDROID__) || defined(__APPLE__)
+  if (loader_ver < VK_API_VERSION_1_1) {
+    error = "the Vulkan loader is older than 1.1";
+    return false;
+  }
+#else
+  if (loader_ver < VK_API_VERSION_1_3) {
     error = "the Vulkan loader is older than 1.3";
     return false;
   }
+#endif
   if (!create_instance(error) || !pick_device(error) || !create_device(error)) return false;
   if (options_.window) {
     if (!create_swapchain(error)) return false;
@@ -219,9 +271,28 @@ bool Renderer::create_instance(std::string& error) {
   VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
   app.pApplicationName = "carview";
   app.pEngineName = "shift-engine";
-  app.apiVersion = VK_API_VERSION_1_3;
+  app.apiVersion = volkGetInstanceVersion() >= VK_API_VERSION_1_3 ? VK_API_VERSION_1_3 : VK_API_VERSION_1_1;
   VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   info.pApplicationInfo = &app;
+  // Enable VK_KHR_portability_enumeration when offered (required for MoltenVK on macOS).
+  {
+    uint32_t ext_count = 0;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, nullptr) == VK_SUCCESS && ext_count > 0) {
+      std::vector<VkExtensionProperties> avail(ext_count);
+      vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, avail.data());
+      const bool has_portability = std::any_of(avail.begin(), avail.end(), [](const auto& e) {
+        return std::strcmp(e.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0;
+      });
+      if (has_portability) {
+        if (std::none_of(extensions.begin(), extensions.end(), [](const char* n) {
+              return std::strcmp(n, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0;
+            })) {
+          extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        }
+        info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+      }
+    }
+  }
   info.enabledExtensionCount = uint32_t(extensions.size());
   info.ppEnabledExtensionNames = extensions.data();
   info.enabledLayerCount = uint32_t(layers.size());
@@ -350,6 +421,29 @@ bool Renderer::create_device(std::string& error) {
   }
   std::vector<const char*> extensions;
   if (surface_) extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+  // Enable VK_KHR_portability_subset when advertised (MoltenVK on macOS).
+  bool has_portability_subset = false;
+  {
+    uint32_t ext_count = 0;
+    if (vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count, nullptr) == VK_SUCCESS && ext_count > 0) {
+      std::vector<VkExtensionProperties> avail(ext_count);
+      vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count, avail.data());
+      for (const auto& e : avail) {
+        if (std::strcmp(e.extensionName, "VK_KHR_portability_subset") == 0) {
+          extensions.push_back("VK_KHR_portability_subset");
+          has_portability_subset = true;
+          break;
+        }
+      }
+    }
+  }
+  if (std::getenv("SHIFT_VK_REPORT") != nullptr) {
+    VkPhysicalDeviceProperties dp{};
+    vkGetPhysicalDeviceProperties(physical_, &dp);
+    const auto cap = evaluate_vulkan_capabilities(dp.deviceName, dp.apiVersion, f13.dynamicRendering == VK_TRUE,
+                                                  f13.synchronization2 == VK_TRUE, has_portability_subset);
+    std::fprintf(stderr, "%s\n", cap.report_line.c_str());
+  }
   VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   info.pNext = &f2;
   info.queueCreateInfoCount = 1;

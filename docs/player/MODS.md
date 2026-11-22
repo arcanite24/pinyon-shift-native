@@ -1,68 +1,88 @@
-# Mods
+# Mods & Custom Radio Stations
 
-A mod is a folder of files that replace the play folder's own files
-while it is on. The play folder itself is never changed: take a mod out
-(or turn it off) and the game is as setup made it.
+A mod is a folder laid over your play folder and game data while enabled. Your
+original disc files and baked play folder are never modified: disable or remove
+a mod and the game returns to stock.
 
 ## Where mods go
 
-`mods/` in the user folder: `%APPDATA%\shift-engine\mods` on Windows,
-`~/.local/share/shift-engine/mods` on Linux. Each mod is one folder:
+- **Windows:** `%APPDATA%\shift-engine\mods`
+- **Linux / Steam Deck:** `~/.local/share/shift-engine/mods`
+- **macOS:** `~/Library/Application Support/shift-engine/mods`
+- **Android:** `Android/data/net.shiftengine.drive/files/mods` (synced automatically via Wi-Fi Sync)
+- **Portable Mode:** `<launcher folder>/data/mods`
 
-```text
-mods/
-  heavy-r34/
-    mod.txt
-    bake/cars/nis_skylinegtrvspecii_02.physics.txt
-  quiet-engines/
-    mod.txt
-    sound/NIS_SkylineGTRVSpecII_02/...
+Use the **MODS** tab in **`shift-launcher`** to install `.zip` or folder mods
+(or drag and drop them onto the window), toggle mods on/off, reorder load
+priority, edit declared `mod.toml` options, and review save-isolation notices.
+
+## `mod.toml` and `mod.txt`
+
+`shift-engine` and `shift-launcher` support both `mod.toml` (rich metadata,
+options, dependencies, conflicts, save isolation) and legacy `mod.txt`:
+
+```toml
+name = "my_cool_mod"
+title = "My Cool Mod"
+version = "1.0.0"
+author = "Modder"
+description = "Upgraded asphalt textures and balanced tuning."
+shares_save = true
+
+[options.texture_tier]
+title = "Texture Tier"
+default = "4K"
+choices = ["2K", "4K"]
 ```
 
-`carview --mods <dir>` uses another folder; `--no-mods` turns them all off
-for a run. The window lists the mods it found at start-up (`mod: name
-(title), N files, on`).
-
-## mod.txt
+Legacy `mod.txt` (also maintained automatically by `shift-launcher` so every
+build reads load order and enabled state):
 
 ```text
 title Heavy R34
-priority 1
+priority 10
 enabled 1
+shares_save 1
 ```
 
-All lines are optional, but the file must exist. `enabled 0` turns a mod
-off. When two mods hold the same file, the higher `priority` wins, then
-the folder name in alphabetical order. A folder whose name starts with
-`_` or `.` is skipped.
+Higher `priority` wins when two mods touch the same file. Folders starting with
+`_` or `.` are ignored.
 
-## What a mod can replace
+## Save Isolation
 
-The paths are the play folder's, below `bake/` and `sound/`. A car's
-files apply wherever that car appears: your car, race opponents and
-traffic (the engine sound plays for your car only). A sound folder is
-named after the car's media name, as in the play folder's `sound/`.
+- **Visual / audio / radio mods (`shares_save = true`):** Safe to toggle on and
+  off anytime while continuing your normal career save (`user`).
+- **Database / roster / gameplay mods (`db/` or `sql/` patches, `shares_save = false`):**
+  Play on an isolated copy (`user-modded`) so your main career save is never
+  altered.
+- **Total conversions (`profile = "user-xe"`, e.g. Forza Horizon XE):** Run on
+  their own dedicated save profile.
 
-| File | What it is |
-| --- | --- |
-| `bake/cars/<car>.physics.txt` | the car's tuning: mass, engine, gearing, tyres (the values setup read from your game's database) |
-| `bake/cars/<car>.shiftbake` | the car's model and textures |
-| `bake/wheels/<wheel>.shiftbake` | a wheel or tyre model |
-| `bake/shared.shiftbake` | the shared car textures |
-| `sound/<car>/` | the car's whole engine sound folder |
+## Custom Radio Station Builder
 
-Start from a copy of the play folder's file and change it: for example,
-`List_UpgradeCarBodyWeight.Mass` in a `.physics.txt` is the car's mass in
-kilograms. Model and sound files are what `carbake` and `soundbake` write.
+Open the **RADIO** tab in `shift-launcher` to replace or extend **Bass Arena
+(`Radio1`)**, **Horizon Pulse (`Radio2`)**, or **Horizon Rocks (`Radio3`)**:
 
-A mod replaces files only. It cannot add a car, a race or a place in the
-world: those also need rows in the game's database, which the engine reads
-from your own game files.
+1. Pick the target station and choose **REPLACE STOCK TRACKS** or **EXTEND STOCK PLAYLIST**.
+2. Drop a folder of `MP3`, `WAV`, `FLAC`, `OGG`, `M4A`, or `OPUS` files onto the
+   launcher.
+3. Optionally enter a **Custom Station Name** and select a **210×100 PNG**
+   station logo.
+4. Click **ENCODE & PACK CUSTOM RADIO MOD**. `shift-launcher` uses FFmpeg to
+   encode tracks to 48 kHz 160 kbps CBR MPEG-1 Layer III, rebuilds the FSB4
+   bank with `SongStart` / `EventStart` / `IdentStart` sync points, updates
+   `RadioSoundbankInfo_Music.xml` and `RadioSystem.xml`, and writes a ready-to-use
+   mod under `mods/<name>/` (with `shares_save = true`).
 
-## Sharing mods
+## DLC, Title Update v4, UDLC v1.2 & Forza Horizon XE
 
-Share only files you made. A `.shiftbake` or a sound folder made by
-`carbake` or `soundbake` from your copy of the game holds that game's
-models, textures or sounds, so it is not yours to share. Tuning files
-hold the game's numbers too; share the lines you changed, not a whole
-file.
+Open the **DLC & V4** tab in `shift-launcher` to verify and import your own
+Xbox 360 STFS packages (`CON`/`LIVE`/`PIRS`) or extracted offer folders, mount
+Title Update v4 (Horizon Rally + 1000 Club), and detect community **UDLC v1.2**
+and **Forza Horizon XE** packages.
+
+## Sharing Mods
+
+Share only assets and patches you authored yourself. Never distribute baked
+`.shiftbake` files, decoded stock sound banks, or retail game assets extracted
+from the disc.

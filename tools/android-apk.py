@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Make the Android APK from an Android build folder (M7).
+"""Make the Android APK from an Android build folder (M7 / Slice 13B).
 
 The APK holds the drive as lib/arm64-v8a/libmain.so under SDL's activity
-(apps/carview/android). It holds no game data: the player copies the play
-folder that tools/setup.py makes to Android/data/net.shiftengine.drive/
-files/play on the device. No Gradle: javac, d8, aapt2, zipalign and
-apksigner from the SDK, a debug key made once under out/android.
+(apps/carview/android). It holds no game data: the player syncs the play
+folder from shift-launcher over Wi-Fi (or copies it via USB/adb) to
+Android/data/net.shiftengine.drive/files/play on the device.
 
     python tools/android-apk.py --build build-android [--out out/release]
+        [--turnip-dir <dir with libvulkan_freedreno.so>]
+    python tools/android-apk.py --validate-only
 
 ANDROID_HOME (else %LOCALAPPDATA%/Android/Sdk or ~/Android/Sdk) names the
 SDK; JAVA_HOME or the PATH gives javac and keytool.
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -39,7 +41,8 @@ def sdk_root() -> Path:
 
 
 def newest(folder: Path) -> Path:
-    dirs = sorted((d for d in folder.iterdir() if d.is_dir()), key=lambda d: [int(x) if x.isdigit() else 0 for x in d.name.split(".")])
+    dirs = sorted((d for d in folder.iterdir() if d.is_dir()),
+                  key=lambda d: [int(x) if x.isdigit() else 0 for x in d.name.split(".")])
     if not dirs:
         raise SystemExit(f"android-apk: nothing in {folder}")
     return dirs[-1]
@@ -63,11 +66,42 @@ def run(cmd: list[str]) -> None:
         raise SystemExit(f"android-apk: failed: {Path(str(cmd[0])).name}")
 
 
+def validate_android_sources() -> int:
+    manifest = ANDROID_DIR / "AndroidManifest.xml"
+    if not manifest.is_file():
+        print(f"android-apk: missing {manifest}")
+        return 1
+    tree = ET.parse(manifest)
+    root = tree.getroot()
+    pkg = root.attrib.get("package", "")
+    if pkg != "net.shiftengine.drive":
+        print(f"android-apk: unexpected package {pkg!r}")
+        return 1
+    java_files = sorted((ANDROID_DIR / "java").rglob("*.java"))
+    names = {p.name for p in java_files}
+    for req in ("DriveActivity.java", "WifiSyncClient.java"):
+        if req not in names:
+            print(f"android-apk: missing required Java source {req}")
+            return 1
+    print(f"android-apk: manifest ok ({pkg}), {len(java_files)} Java source(s) verified")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--build", type=Path, required=True)
+    ap.add_argument("--build", type=Path)
     ap.add_argument("--out", type=Path, default=ROOT / "out" / "release")
+    ap.add_argument("--turnip-dir", type=Path, help="optional folder containing libvulkan_freedreno.so")
+    ap.add_argument("--validate-only", action="store_true", help="validate Android manifest and Java sources")
     a = ap.parse_args()
+
+    if validate_android_sources() != 0:
+        return 1
+    if a.validate_only:
+        return 0
+    if not a.build:
+        print("android-apk: --build is required unless --validate-only is set")
+        return 2
 
     so = a.build / "apps" / "carview" / "libmain.so"
     if not so.is_file():
@@ -122,6 +156,15 @@ def main() -> int:
             z.write(dex / "classes.dex", "classes.dex", compress_type=zipfile.ZIP_DEFLATED)
             # Stored, so the loader maps it from the APK (extractNativeLibs false).
             z.write(lib, "lib/arm64-v8a/libmain.so", compress_type=zipfile.ZIP_STORED)
+            if a.turnip_dir:
+                turnip_so = a.turnip_dir / "libvulkan_freedreno.so"
+                if turnip_so.is_file():
+                    z.write(turnip_so, "assets/drivers/turnip/libvulkan_freedreno.so",
+                            compress_type=zipfile.ZIP_DEFLATED)
+                    for extra in ("meta.json", "NOTICE.txt"):
+                        ep = a.turnip_dir / extra
+                        if ep.is_file():
+                            z.write(ep, f"assets/drivers/turnip/{extra}", compress_type=zipfile.ZIP_DEFLATED)
         aligned = t / "aligned.apk"
         run([tools / ("zipalign" + EXE), "-P", "16", "-f", "4", base, aligned])
         apk = a.out / "shift-drive-arm64.apk"

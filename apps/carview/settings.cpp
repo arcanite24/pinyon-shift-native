@@ -6,6 +6,8 @@
 #include <fstream>
 #include <map>
 
+#include "platform_support.h"
+
 namespace carview {
 namespace {
 
@@ -142,6 +144,10 @@ constexpr Kept kKept[] = {
     {"pacing-prices", true, "pacing-prices"},
     {"pacing-rewards", true, "pacing-rewards"},
     {"hidden-cars", false, "hidden-cars"},
+    // Slice 13B: Android Touch Controls & Turnip driver selection.
+    {"touch-controls", true, "touch-controls"},
+    {"touch-steer", true, "touch-steer"},
+    {"android-gpu-driver", true, "android-gpu-driver"},
 };
 
 const Kept* kept(const std::string& key) {
@@ -151,6 +157,15 @@ const Kept* kept(const std::string& key) {
 }
 
 std::filesystem::path user_folder() {
+  if (const char* base = SDL_GetBasePath()) {
+#if defined(__APPLE__)
+    constexpr bool kIsMac = true;
+#else
+    constexpr bool kIsMac = false;
+#endif
+    const auto portable = resolve_portable_data_root(std::filesystem::path(base), kIsMac);
+    if (!portable.empty()) return portable;
+  }
   std::filesystem::path out;
   if (char* pref = SDL_GetPrefPath("shift-engine", "drive")) {
     out = std::filesystem::path(pref).parent_path().parent_path();  // ".../shift-engine/drive/" -> ".../shift-engine"
