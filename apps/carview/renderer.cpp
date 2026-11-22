@@ -119,6 +119,15 @@ Renderer::~Renderer() {
     if (post_set_layout_) vkDestroyDescriptorSetLayout(device_, post_set_layout_, nullptr);
     if (post_pool_) vkDestroyDescriptorPool(device_, post_pool_, nullptr);
     if (post_sampler_) vkDestroySampler(device_, post_sampler_, nullptr);
+    if (lut_staging_mapped_) {
+      vmaUnmapMemory(allocator_, lut_staging_.allocation);
+      lut_staging_mapped_ = nullptr;
+    }
+    destroy_buffer(lut_staging_);
+    destroy_image(lut3d_);
+    destroy_image(lum_16_);
+    destroy_image(lum_adapt_[0]);
+    destroy_image(lum_adapt_[1]);
     destroy_image(shadow_map_);
     if (shadow_sampler_) vkDestroySampler(device_, shadow_sampler_, nullptr);
     if (timestamps_) vkDestroyQueryPool(device_, timestamps_, nullptr);
@@ -744,36 +753,74 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     return false;
   }
   if (options_.post.enabled) {
-    // The resolved HDR scene and the bloom pair at a quarter of the size.
-    bloom_width_ = std::max(1u, width / 4);
-    bloom_height_ = std::max(1u, height / 4);
+    // Resolved HDR scene + 5-level bloom pyramid (1/4 down to 1/64).
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     if (!create_image(width, height, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                      hdr_) ||
-        !create_image(bloom_width_, bloom_height_, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, bloom_a_) ||
-        !create_image(bloom_width_, bloom_height_, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, bloom_b_)) {
-      error = "post targets";
+                      hdr_)) {
+      error = "post hdr target";
       return false;
     }
+    uint32_t bw = std::max(1u, width / 4), bh = std::max(1u, height / 4);
+    for (uint32_t k = 0; k < kBloomLevels; ++k) {
+      bloom_w_[k] = bw;
+      bloom_h_[k] = bh;
+      if (!create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                        bloom_a_[k]) ||
+          !create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                        bloom_b_[k])) {
+        error = "post bloom pyramid";
+        return false;
+      }
+      bw = std::max(1u, bw / 2);
+      bh = std::max(1u, bh / 2);
+    }
     if (!create_post(error)) return false;
-    const VkImageView sources[4][2] = {
-        {hdr_.view, hdr_.view}, {bloom_a_.view, bloom_a_.view}, {bloom_b_.view, bloom_b_.view}, {hdr_.view, bloom_a_.view}};
-    VkDescriptorImageInfo images[4][2];
-    VkWriteDescriptorSet writes[8];
-    for (int s = 0; s < 4; ++s)
-      for (int b = 0; b < 2; ++b) {
-        images[s][b] = {post_sampler_, sources[s][b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet& w = writes[s * 2 + b];
+    // Wire the 22 post descriptor sets:
+    //   0: lum16 (hdr, hdr)
+    //   1: lum_adapt (lum_16, lum_adapt[1])
+    //   2: bright (hdr, hdr)
+    //   3..7: blurH[0..4] (bloom_a[k], bloom_a[k])
+    //   8..12: blurV[0..4] (bloom_b[k], bloom_b[k])
+    //   13..16: down[0..3] (bloom_a[k], bloom_a[k])
+    //   17: up3 (bloom_a[3], bloom_a[4])
+    //   18: up2 (bloom_a[2], bloom_b[3])
+    //   19: up1 (bloom_a[1], bloom_b[2])
+    //   20: up0 (bloom_a[0], bloom_b[1])
+    //   21: composite (hdr, bloom_b[0])
+    VkImageView sources[kPostSetCount][2] = {};
+    sources[0][0] = hdr_.view; sources[0][1] = hdr_.view;
+    sources[1][0] = lum_16_.view; sources[1][1] = lum_adapt_[1].view;
+    sources[2][0] = hdr_.view; sources[2][1] = hdr_.view;
+    for (uint32_t k = 0; k < kBloomLevels; ++k) {
+      sources[3 + k][0] = bloom_a_[k].view; sources[3 + k][1] = bloom_a_[k].view;
+      sources[8 + k][0] = bloom_b_[k].view; sources[8 + k][1] = bloom_b_[k].view;
+    }
+    for (uint32_t k = 0; k < kBloomLevels - 1; ++k) {
+      sources[13 + k][0] = bloom_a_[k].view; sources[13 + k][1] = bloom_a_[k].view;
+    }
+    sources[17][0] = bloom_a_[3].view; sources[17][1] = bloom_a_[4].view;
+    sources[18][0] = bloom_a_[2].view; sources[18][1] = bloom_b_[3].view;
+    sources[19][0] = bloom_a_[1].view; sources[19][1] = bloom_b_[2].view;
+    sources[20][0] = bloom_a_[0].view; sources[20][1] = bloom_b_[1].view;
+    sources[21][0] = hdr_.view;        sources[21][1] = bloom_b_[0].view;
+
+    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 4);
+    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 4);
+    for (uint32_t s = 0; s < kPostSetCount; ++s) {
+      const VkImageView views[4] = {sources[s][0], sources[s][1], lut3d_.view, lum_adapt_[0].view};
+      for (uint32_t b = 0; b < 4; ++b) {
+        const size_t idx = size_t(s) * 4 + b;
+        images[idx] = {post_sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet& w = writes[idx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = post_sets_[s];
-        w.dstBinding = uint32_t(b);
+        w.dstBinding = b;
         w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.pImageInfo = &images[s][b];
+        w.pImageInfo = &images[idx];
       }
-    vkUpdateDescriptorSets(device_, 8, writes, 0, nullptr);
+    }
+    vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
   }
   target_width_ = width;
   target_height_ = height;
@@ -834,36 +881,132 @@ bool Renderer::ensure_shadow_map(std::string& error) {
   return ok;
 }
 
+void Renderer::set_post_lut(std::span<const uint8_t> rgba16) {
+  if (rgba16.size() < 16u * 16u * 16u * 4u) return;
+  lut_pending_.assign(rgba16.begin(), rgba16.begin() + 16 * 16 * 16 * 4);
+  lut_dirty_ = true;
+}
+
 bool Renderer::create_post(std::string& error) {
   if (post_final_) return true;
+  // Create auto-exposure targets (16x16 + 1x1 ping-pong) and 16x16x16 3D LUT once.
+  const VkImageUsageFlags lum_usage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  if (!create_image(16, 16, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT, lum_16_) ||
+      !create_image(1, 1, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                    lum_adapt_[0]) ||
+      !create_image(1, 1, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                    lum_adapt_[1])) {
+    error = "post luminance targets";
+    return false;
+  }
+  // Create 16x16x16 3D RGBA8 LUT image + host-visible staging buffer.
+  {
+    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    info.imageType = VK_IMAGE_TYPE_3D;
+    info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    info.extent = {16, 16, 16};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo alloc{};
+    alloc.usage = VMA_MEMORY_USAGE_AUTO;
+    VmaAllocationInfo alloc_info{};
+    VK_TRY(vmaCreateImage(allocator_, &info, &alloc, &lut3d_.image, &lut3d_.allocation, &alloc_info),
+           "vmaCreateImage (3D LUT)");
+    lut3d_.bytes = alloc_info.size;
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = lut3d_.image;
+    view.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    view.format = VK_FORMAT_R8G8B8A8_UNORM;
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VK_TRY(vkCreateImageView(device_, &view, nullptr, &lut3d_.view), "vkCreateImageView (3D LUT)");
+
+    constexpr VkDeviceSize kLutBytes = 16 * 16 * 16 * 4;
+    if (!create_buffer(kLutBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, lut_staging_)) {
+      error = "3D LUT staging buffer";
+      return false;
+    }
+    VK_TRY(vmaMapMemory(allocator_, lut_staging_.allocation, &lut_staging_mapped_), "map 3D LUT staging");
+    // Fill identity ramp by default.
+    auto* dst = static_cast<uint8_t*>(lut_staging_mapped_);
+    for (uint32_t b = 0; b < 16; ++b)
+      for (uint32_t g = 0; g < 16; ++g)
+        for (uint32_t r = 0; r < 16; ++r) {
+          const size_t o = ((size_t(b) * 16 + g) * 16 + r) * 4;
+          dst[o + 0] = uint8_t(std::lround(double(r) * 255.0 / 15.0));
+          dst[o + 1] = uint8_t(std::lround(double(g) * 255.0 / 15.0));
+          dst[o + 2] = uint8_t(std::lround(double(b) * 255.0 / 15.0));
+          dst[o + 3] = 255;
+        }
+    const bool ok = submit_once([&](VkCommandBuffer cmd) {
+      image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      VkBufferImageCopy reg{};
+      reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      reg.imageExtent = {16, 16, 16};
+      vkCmdCopyBufferToImage(cmd, lut_staging_.buffer, lut3d_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+      image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      // Clear lum_adapt_[0..1] to neutral initial luminance and transition to SHADER_READ_ONLY_OPTIMAL.
+      const VkClearColorValue init_lum{{0.35f, 0.35f, 0.0f, 1.0f}};
+      const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      for (int i = 0; i < 2; ++i) {
+        image_barrier(cmd, lum_adapt_[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdClearColorImage(cmd, lum_adapt_[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &init_lum, 1, &range);
+        image_barrier(cmd, lum_adapt_[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      }
+    });
+    if (!ok) {
+      error = "3D LUT initial upload";
+      return false;
+    }
+    lum_reset_ = true;
+  }
+
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter = sampler.minFilter = VK_FILTER_LINEAR;
   sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   VK_TRY(vkCreateSampler(device_, &sampler, nullptr, &post_sampler_), "post sampler");
-  const VkDescriptorSetLayoutBinding bindings[2] = {
+  const VkDescriptorSetLayoutBinding bindings[4] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 2;
+  set.bindingCount = 4;
   set.pBindings = bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
-  VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96};
+  VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
   VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   layout.setLayoutCount = 1;
   layout.pSetLayouts = &post_set_layout_;
   layout.pushConstantRangeCount = 1;
   layout.pPushConstantRanges = &push;
   VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
-  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8};
+  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 4};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = 4;
+  pool.maxSets = kPostSetCount;
   pool.poolSizeCount = 1;
   pool.pPoolSizes = &size;
   VK_TRY(vkCreateDescriptorPool(device_, &pool, nullptr, &post_pool_), "post descriptor pool");
-  const VkDescriptorSetLayout layouts[4] = {post_set_layout_, post_set_layout_, post_set_layout_, post_set_layout_};
+  VkDescriptorSetLayout layouts[kPostSetCount];
+  for (uint32_t i = 0; i < kPostSetCount; ++i) layouts[i] = post_set_layout_;
   VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   alloc.descriptorPool = post_pool_;
-  alloc.descriptorSetCount = 4;
+  alloc.descriptorSetCount = kPostSetCount;
   alloc.pSetLayouts = layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &alloc, post_sets_), "post descriptor sets");
 
@@ -932,15 +1075,35 @@ bool Renderer::create_post(std::string& error) {
 
 void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
   const PostSettings& s = options_.post;
+  // Upload updated 16x16x16 3D LUT when dirty (zero pipeline stall).
+  if (lut_dirty_ && lut_staging_mapped_ && lut_pending_.size() == 16 * 16 * 16 * 4) {
+    lut_dirty_ = false;
+    std::memcpy(lut_staging_mapped_, lut_pending_.data(), lut_pending_.size());
+    image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy reg{};
+    reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    reg.imageExtent = {16, 16, 16};
+    vkCmdCopyBufferToImage(cmd, lut_staging_.buffer, lut3d_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+    image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  }
+
+  const uint32_t flags = (s.bloom ? 1u : 0u) | (s.lut_enabled ? 2u : 0u) | (s.auto_exposure ? 4u : 0u);
   struct {
-    float mode[4], abc[4], def[4], desat[4], bloom[4], balance[4];
+    float mode[4], abc[4], def[4], desat[4], bloom[4], balance[4], exp_keys[4], exp_ev[4];
   } push = {{0, 0, 0, 0},
             {s.hable[0], s.hable[1], s.hable[2], s.white},
             {s.hable[3], s.hable[4], s.hable[5], s.exposure},
             {s.luminance[0], s.luminance[1], s.luminance[2], s.desaturate},
-            {s.bloom_cutoff, s.bloom_scale, s.bloom ? 1.0f : 0.0f, 0},
-            {s.balance[0], s.balance[1], s.balance[2], 0}};
-  static_assert(sizeof(push) == 96);
+            {s.bloom_cutoff, s.bloom_scale, float(flags), s.bloom_lower_grad},
+            {s.balance[0], s.balance[1], s.balance[2], s.bloom_upper_grad},
+            {s.exp_keys[0], s.exp_keys[1], s.exp_keys[2], s.exp_keys[3]},
+            {s.exp_ev[0], s.exp_ev[1], s.exp_ev[2], s.exp_ev[3]}};
+  static_assert(sizeof(push) == 128);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -954,7 +1117,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
   };
   auto pass = [&](VkImageView target, uint32_t w, uint32_t h, VkPipeline pipeline, VkDescriptorSet set, float mode,
-                  float dx, float dy) {
+                  float dx, float dy, float mw = 0.0f) {
     VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     color.imageView = target;
     color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -972,30 +1135,89 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout_, 0, 1, &set, 0, nullptr);
-    push.mode[0] = mode, push.mode[1] = dx, push.mode[2] = dy;
+    push.mode[0] = mode, push.mode[1] = dx, push.mode[2] = dy, push.mode[3] = mw;
     vkCmdPushConstants(cmd, post_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
   };
+
   to_read(hdr_);
-  if (s.bloom) {
-    to_write(bloom_a_);
-    pass(bloom_a_.view, bloom_width_, bloom_height_, post_quarter_, post_sets_[0], 0, 1.0f / float(target_width_),
-         1.0f / float(target_height_));
-    to_read(bloom_a_);
-    to_write(bloom_b_);
-    pass(bloom_b_.view, bloom_width_, bloom_height_, post_quarter_, post_sets_[1], 1, 1.0f / float(bloom_width_), 0);
-    to_read(bloom_b_);
-    image_barrier(cmd, bloom_a_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read, color_stage, color_write);
-    pass(bloom_a_.view, bloom_width_, bloom_height_, post_quarter_, post_sets_[2], 1, 0, 1.0f / float(bloom_height_));
-    to_read(bloom_a_);
-  } else {
-    // The composite's set still names the bloom image: give it a defined layout.
-    to_write(bloom_a_);
-    to_read(bloom_a_);
+
+  // 1. Adaptive auto-exposure: 16x16 centre-weighted reduction -> 1x1 temporal adaptation.
+  if (s.auto_exposure) {
+    to_write(lum_16_);
+    pass(lum_16_.view, 16, 16, post_quarter_, post_sets_[0], 3, 0.25f / 16.0f, 0.25f / 16.0f);
+    to_read(lum_16_);
+    to_write(lum_adapt_[0]);
+    const float alpha = lum_reset_ ? 1.0f : s.adapt_alpha;
+    lum_reset_ = false;
+    pass(lum_adapt_[0].view, 1, 1, post_quarter_, post_sets_[1], 4, 0, 0, alpha);
+    // Copy adapted 1x1 luminance into lum_adapt_[1] for next frame, leave lum_adapt_[0] readable.
+    image_barrier(cmd, lum_adapt_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, color_stage, color_write, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_READ_BIT);
+    image_barrier(cmd, lum_adapt_[1].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, read_stage, read, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageCopy cp{};
+    cp.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    cp.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    cp.extent = {1, 1, 1};
+    vkCmdCopyImage(cmd, lum_adapt_[0].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, lum_adapt_[1].image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    image_barrier(cmd, lum_adapt_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_READ_BIT, read_stage, read);
+    image_barrier(cmd, lum_adapt_[1].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                  VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
   }
-  pass(final_view, target_width_, target_height_, post_final_, post_sets_[3], 2, 0, 0);
+
+  // 2. 5-level multi-mip bloom pyramid (bright pass -> downsample + Gaussian blur -> weighted upsample).
+  if (s.bloom) {
+    to_write(bloom_a_[0]);
+    pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_quarter_, post_sets_[2], 0,
+         1.0f / float(target_width_), 1.0f / float(target_height_));
+    to_read(bloom_a_[0]);
+
+    for (uint32_t k = 0; k < kBloomLevels; ++k) {
+      if (k > 0) {
+        to_write(bloom_a_[k]);
+        // Downsample from bloom_a_[k-1] with light blur kernel.
+        pass(bloom_a_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[13 + k - 1], 1,
+             0.5f / float(bloom_w_[k - 1]), 0.5f / float(bloom_h_[k - 1]));
+        to_read(bloom_a_[k]);
+      }
+      to_write(bloom_b_[k]);
+      pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[3 + k], 1,
+           1.0f / float(bloom_w_[k]), 0);
+      to_read(bloom_b_[k]);
+      image_barrier(cmd, bloom_a_[k].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read, color_stage, color_write);
+      pass(bloom_a_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[8 + k], 1,
+           0, 1.0f / float(bloom_h_[k]));
+      to_read(bloom_a_[k]);
+    }
+    // Upsample combine: 4+3 -> b[3], b[3]+2 -> b[2], b[2]+1 -> b[1], b[1]+0 -> b[0].
+    float w_sum = 0.0f;
+    for (uint32_t k = 0; k < kBloomLevels; ++k) w_sum += std::max(s.bloom_weights[k], 0.0f);
+    const float w_norm = w_sum > 1e-4f ? 1.0f / w_sum : 0.2f;
+    for (int k = int(kBloomLevels) - 2; k >= 0; --k) {
+      const uint32_t set_idx = 17u + uint32_t(3 - k);
+      const float w_cur = std::max(s.bloom_weights[k], 0.0f) * w_norm;
+      const float w_prev = (k == int(kBloomLevels) - 2) ? (std::max(s.bloom_weights[k + 1], 0.0f) * w_norm) : 1.0f;
+      image_barrier(cmd, bloom_b_[k].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read, color_stage, color_write);
+      pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[set_idx], 5, w_cur, w_prev);
+      to_read(bloom_b_[k]);
+    }
+  } else {
+    to_write(bloom_b_[0]);
+    to_read(bloom_b_[0]);
+  }
+
+  // 3. Final composite (scene + bloom -> exposure -> Hable -> 3D LUT -> vignette -> desat -> sRGB).
+  pass(final_view, target_width_, target_height_, post_final_, post_sets_[21], 2, 0, 0, s.vignette_amount);
   mark(cmd, "post");
 }
 
@@ -1003,8 +1225,11 @@ void Renderer::destroy_targets() {
   destroy_image(msaa_color_);
   destroy_image(depth_);
   destroy_image(hdr_);
-  destroy_image(bloom_a_);
-  destroy_image(bloom_b_);
+  for (uint32_t k = 0; k < kBloomLevels; ++k) {
+    destroy_image(bloom_a_[k]);
+    destroy_image(bloom_b_[k]);
+    bloom_w_[k] = bloom_h_[k] = 0;
+  }
   target_width_ = target_height_ = 0;
 }
 

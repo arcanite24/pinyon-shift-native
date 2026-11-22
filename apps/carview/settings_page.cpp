@@ -136,6 +136,18 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"your music", {{"off", {}}, {"on", {"--your-music"}}}},
       {"your music shuffle", {{"off", {}}, {"on", {"--your-music-shuffle"}}}},
       vol_row("your music volume", "--your-music-volume"),
+      {"day length",
+       {{"30 min (default)", {}},
+        {"15 min", {"--day-length", "15m"}},
+        {"60 min", {"--day-length", "60m"}},
+        {"real-time", {"--day-length", "realtime"}},
+        {"frozen", {"--day-length", "frozen"}}}},
+      {"time of day",
+       {{"auto", {}},
+        {"dawn (06:00)", {"--tod-preset", "6"}},
+        {"noon (12:00)", {"--tod-preset", "12"}},
+        {"sunset (19:00)", {"--tod-preset", "19"}},
+        {"midnight (00:00)", {"--tod-preset", "0"}}}},
   };
 }
 
@@ -188,7 +200,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--assist-rewind" || t == "--master-volume" || t == "--radio-volume" ||
                       t == "--mix-engine" || t == "--mix-other-cars" || t == "--mix-tyres" || t == "--mix-wind" ||
                       t == "--mix-ambience" || t == "--mix-music" || t == "--mix-ui" || t == "--mix-vo" ||
-                      t == "--your-music-volume");
+                      t == "--your-music-volume" || t == "--day-length" || t == "--tod-preset");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -269,6 +281,16 @@ LiveSettings SettingsPage::live_settings() const {
   ls.rubberband = pick_label("rubber-banding") != "off";
   ls.radio = pick_label("radio") != "off";
   ls.sound = pick_label("sound") != "off";
+
+  const std::string dl = pick_val("day length");
+  if (dl == "15m") ls.day_length_scale = 2.0;
+  else if (dl == "60m") ls.day_length_scale = 0.5;
+  else if (dl == "realtime") ls.day_length_scale = 1827.9 / 86400.0;
+  else if (dl == "frozen") ls.day_length_scale = 0.0;
+  else ls.day_length_scale = 1.0;
+
+  const std::string tp = pick_val("time of day");
+  ls.tod_preset_hour = tp.empty() ? -1.0 : std::strtod(tp.c_str(), nullptr);
 
   auto& c = ls.controls;
   c.camera_effects = pick_label("camera effects") != "off";

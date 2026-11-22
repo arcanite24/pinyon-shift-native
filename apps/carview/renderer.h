@@ -47,16 +47,22 @@ struct SceneHooks {
 // DesaturateAmount, DesatLuminosity, bloom cutoff and scale).
 struct PostSettings {
   bool enabled = false;
-  bool bloom = true;                                              // ours: a quarter-size bright pass and blur
+  bool bloom = true;                                                        // 5-level multi-mip bloom pyramid
+  bool auto_exposure = false;                                               // 4-key adaptive exposure (SKY_AND_TOD §5.2)
+  bool lut_enabled = false;                                                 // 16^3 3D colour-grading LUT
   float hable[6] = {0.700001f, 0.038f, 0.634f, 0.220001f, 0.003f, 0.107f};  // A, B, C, D, E, F
   float white = 1.0f;
-  float exposure = 0.31f;  // times the scene before the curve
+  float exposure = 0.31f;   // linear multiplier (fixed) or filmic_exposure+bias EV (auto_exposure)
   float desaturate = 0.9f;  // the colour's share; the rest is its luminance
   float luminance[3] = {0.2126f, 0.7152f, 0.0722f};
   float bloom_cutoff = 1.0f, bloom_scale = 1.0f;
-  // Ours, not the spec's (WORLD_MATERIALS leaves the grade open): a linear
-  // gain after the curve, fitted to the game's frames of the hills.
+  float bloom_lower_grad = 1.0f, bloom_upper_grad = 1.0f;
+  float bloom_weights[5] = {0.30f, 0.40f, 0.48f, 0.60f, 0.66f};
   float balance[3] = {1.0f, 1.0f, 1.0f};
+  float exp_keys[4] = {0.0f, 4.0f, 13.0f, 65.0f};
+  float exp_ev[4] = {1.300f, 0.437f, 0.001f, -0.800f};
+  float adapt_alpha = 1.0f;     // temporal adaptation factor per frame (1.0 = instant snap)
+  float vignette_amount = 0.0f; // 0..1 elliptical vignette strength
 };
 
 // The drive's sun shadow (ours): one orthographic cascade around the car,
@@ -126,6 +132,16 @@ class Renderer {
 
   // With hooks set, frames record the hooked scene; upload() is not needed.
   void set_scene(SceneHooks hooks) { scene_ = std::move(hooks); }
+  // Updates per-frame post-processing parameters (TOD curve, auto-exposure, bloom, vignette).
+  void set_post_settings(const PostSettings& post) {
+    const bool was_enabled = options_.post.enabled;
+    options_.post = post;
+    options_.post.enabled = was_enabled;
+  }
+  const PostSettings& post_settings() const { return options_.post; }
+  // Queues an updated 16x16x16 RGBA8 3D colour-grading LUT (16,384 bytes) for upload before post.
+  void set_post_lut(std::span<const uint8_t> rgba16);
+  void reset_auto_exposure() { lum_reset_ = true; }
 
   // An opaque panel drawn on the CPU (RGBA8, already sRGB-encoded) and
   // copied over every following frame with its top-left corner at (x, y)
@@ -248,14 +264,24 @@ class Renderer {
   std::vector<std::pair<std::string, double>> stage_ms_;
   bool depth_readable_ = false;
   Image msaa_color_, depth_;
-  // The post chain: the resolved HDR scene and the quarter-size bloom pair.
-  Image hdr_, bloom_a_, bloom_b_;
-  uint32_t bloom_width_ = 0, bloom_height_ = 0;
+  // The post chain: resolved HDR scene, 5-level bloom pyramid, auto-exposure, 16^3 3D LUT.
+  static constexpr uint32_t kBloomLevels = 5;
+  static constexpr uint32_t kPostSetCount = 22;
+  Image hdr_;
+  Image bloom_a_[kBloomLevels], bloom_b_[kBloomLevels];
+  uint32_t bloom_w_[kBloomLevels] = {}, bloom_h_[kBloomLevels] = {};
+  Image lum_16_, lum_adapt_[2];
+  Image lut3d_;
+  Buffer lut_staging_;
+  void* lut_staging_mapped_ = nullptr;
+  std::vector<uint8_t> lut_pending_;
+  bool lut_dirty_ = false;
+  bool lum_reset_ = true;
   VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
   VkPipeline post_quarter_ = VK_NULL_HANDLE, post_final_ = VK_NULL_HANDLE;
   VkDescriptorPool post_pool_ = VK_NULL_HANDLE;
-  VkDescriptorSet post_sets_[4] = {};  // bright (hdr), blur x (a), blur y (b), composite (hdr, a)
+  VkDescriptorSet post_sets_[kPostSetCount] = {};
   VkSampler post_sampler_ = VK_NULL_HANDLE;
   // The sun shadow map (D16).
   Image shadow_map_;

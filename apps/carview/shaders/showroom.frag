@@ -26,6 +26,14 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 shadow_bias;
   vec4 world_fade;
   vec4 drive;  // xyz world up in the car frame, w 1 in the drive: sun and sky lighting
+  vec4 sun_color;      // rgb dynamic sun colour, w shadow_intensity [0..1] (<0 uses legacy noon)
+  vec4 sky_color;      // rgb dynamic HLTopColour, w switch_on_lights [0..1]
+  vec4 ground_color;   // rgb dynamic HLBottomColour, w day_night_post [0..1]
+  vec4 fog_color;      // rgb dynamic FogColour, w fog_start
+  vec4 fog_scatter;    // rgb dynamic FogSunScatterColour, w fog_scatter_power
+  vec4 fog_params;     // x fog_density_scale, y height_start, z height_end, w height_fade_amount
+  vec4 car_light_top;  // rgb CarHLColourTop, w ibl_ambient_scale
+  vec4 car_light_bot;  // rgb CarHLColourBottom, w eye_game_y
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -80,13 +88,17 @@ vec3 drive_env(vec3 dir, float lod) {
   vec3 up = normalize(frame.drive.xyz), sun = normalize(frame.key_light.xyz);
   float rough = lod / 7.0;
   float h = dot(dir, up);
-  vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(clamp(h, 0.0, 1.0), 0.55));
+  vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
+  vec3 hor_col = frame.sun_color.w >= 0.0 ? max(frame.fog_color.rgb * 2.4, frame.sky_color.rgb * 1.4) : kSkyHorizon;
+  vec3 zen_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb * 0.75 : kSkyZenith;
+  vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb * 1.6 : kDirtReflect;
+  vec3 sky = mix(hor_col, zen_col, pow(clamp(h, 0.0, 1.0), 0.55));
   float toward = max(dot(dir, sun), 0.0);
-  sky = mix(sky, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - clamp(h, 0.0, 1.0)) * 0.55);
-  sky += kSunColour * pow(toward, mix(48.0, 6.0, rough)) * mix(0.9, 0.25, rough);
-  sky /= vec3(1.10, 0.88, 0.88);  // the post chain's warm grade (world.frag's sky_grade)
+  vec3 haze_c = frame.sun_color.w >= 0.0 ? frame.fog_scatter.rgb : vec3(0.80, 0.70, 0.55);
+  sky = mix(sky, haze_c, pow(toward, 6.0) * (1.0 - clamp(h, 0.0, 1.0)) * 0.55);
+  sky += sun_col * pow(toward, mix(48.0, 6.0, rough)) * mix(0.9, 0.25, rough);
   float edge = mix(0.02, 0.5, rough);
-  return mix(kDirtReflect * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
+  return mix(gnd_col * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
 }
 
 // The sun's shadow on the car (ours, world.frag's map): 1 where lit.
@@ -211,17 +223,22 @@ void main() {
   vec3 highlight = pow(max(dot(n, h), 0.0), mix(8.0, 400.0, gloss)) * frame.key_light.w * gloss * frame.tint_light.rgb;
 
   if (frame.drive.w > 0.5) {
-    // Sun and sky as the world has them: the sun's N.L under the shadow
-    // map, the two-colour hemisphere under the baked occlusion, the sun's
-    // highlight (normalised Blinn-Phong) and the sky's reflection.
+    // Sun and sky as the world has them: dynamic TOD sun under the shadow
+    // map, two-colour hemisphere under the baked occlusion, sun highlight
+    // (normalised Blinn-Phong) and environment reflection.
     vec3 up = normalize(frame.drive.xyz);
+    vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
+    vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.car_light_top.rgb : kSkyColour;
+    vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.car_light_bot.rgb : kGroundColour;
+    float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
     float ndl = max(dot(n, key), 0.0);
-    float lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
-    diffuse_light = kSunColour * ndl * lit * mix(0.6, 1.0, occlusion) +
-                    mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up)) * occlusion * 1.4;
+    float raw_lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
+    float lit = mix(1.0, raw_lit, shadow_scale);
+    diffuse_light = sun_col * ndl * lit * mix(0.6, 1.0, occlusion) +
+                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * occlusion * 1.4;
     reflection *= mix(0.5, 1.0, lit);
     float power = mix(8.0, 400.0, gloss);
-    highlight = kSunColour * pow(max(dot(n, h), 0.0), power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
+    highlight = sun_col * pow(max(dot(n, h), 0.0), power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
   }
   vec3 colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
   if (klass == kGlass) {

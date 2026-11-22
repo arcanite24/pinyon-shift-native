@@ -27,6 +27,7 @@
 
 #include "cars/bake_format.h"
 #include "renderer.h"
+#include "world/tod.h"
 #include "world_texture_lru.h"
 
 namespace carview {
@@ -65,8 +66,18 @@ struct ShowroomFrame {
   // frame): xyz the world's up in the car frame, w 1 to light the car by
   // the world's sun and sky rather than the studio.
   float drive[4];
+  // Dynamic 24-hour Time-of-Day lighting and fog (SPEC-SKY-AND-TOD).
+  // sun_color[3] < 0 falls back to legacy fixed midday constants.
+  float sun_color[4] = {0.9695f, 0.8358f, 0.5840f, -1.0f};
+  float sky_color[4] = {0.1687f, 0.2229f, 0.2746f, 0.0f};
+  float ground_color[4] = {0.1788f, 0.1729f, 0.1024f, 0.0f};
+  float fog_color[4] = {0.0910f, 0.1374f, 0.1446f, 975.0f};
+  float fog_scatter[4] = {0.2233f, 0.2232f, 0.2232f, 5.0f};
+  float fog_params[4] = {0.00045f, 200.0f, 4000.0f, 0.9f};
+  float car_light_top[4] = {0.1687f, 0.2229f, 0.2746f, 1.0f};
+  float car_light_bot[4] = {0.1788f, 0.1729f, 0.1024f, 150.0f};
 };
-static_assert(sizeof(ShowroomFrame) == 368);
+static_assert(sizeof(ShowroomFrame) == 496);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -271,6 +282,11 @@ class Showroom {
   // The textured world's light, in the frame's space: towards the sun, up,
   // and an exposure (WORLD-MATERIALS' sunDir is in the game frame).
   void set_world_light(const float sun[3], const float up[3], float exposure);
+  // Real-time sky from media/realtimesky.zip (atmosphere, Stars.bin, sun/moon, clouds).
+  bool upload_sky(const world::RealTimeSkyAssets& assets, std::string& error);
+  bool has_sky() const { return sky_ready_; }
+  // Updates dynamic 24-hour Time-of-Day lighting, fog, and sky parameters.
+  void set_tod(const world::TodState& tod, int moon_phase, float real_time_sec, float eye_game_y);
   // The direction the sun shadow is cast from (towards the light, the
   // frame's space); null: the world light's sun.
   void set_shadow_direction(const float* towards_light) {
@@ -520,6 +536,61 @@ class Showroom {
   uint32_t world_pool_left_ = 0;
   float world_sun_[4] = {0.3848f, 0.8754f, 0.2926f, 1}, world_up_[4] = {0, 1, 0, 1};
   bool world_lit_ = false;  // set_world_light was called: light the car by the world's sun and sky
+  // Dynamic 24-hour Time-of-Day & real-time sky (realtimesky.zip + Stars.bin).
+  bool tod_active_ = false;
+  world::TodState tod_state_{};
+  int tod_moon_phase_ = 2;
+  float tod_real_time_ = 0.0f;
+  float tod_eye_game_y_ = 150.0f;
+  bool sky_ready_ = false;
+  bool sky_has_textures_ = false;
+  struct SkyUniforms {
+    float cam_fwd[4];
+    float cam_right[4];
+    float cam_up[4];
+    float sun_dir[4];
+    float sun_obj_dir[4];
+    float haze_dir[4];
+    float atmo_top[4];
+    float atmo_bottom[4];
+    float atmo_haze[4];
+    float atmo_haze_p[4];
+    float sun_obj_col[4];
+    float far_dense[4];
+    float far_thin[4];
+    float far_params[4];
+    float far_back_dense[4];
+    float far_back_thin[4];
+    float far_scroll[4];
+    float close_top_col[4];
+    float close_bot_col[4];
+    float close_back_col[4];
+    float close_dense_col[4];
+    float close_thin_col[4];
+    float close_intens[4];
+    float close_masks[4];
+    float close_layers[4];
+    float fog_color[4];
+    float fog_scatter[4];
+    float fog_sky[4];
+  };
+  static_assert(sizeof(SkyUniforms) == 28 * 16);
+  Renderer::Buffer sky_ubo_[2];  // mode 0 (atmosphere), mode 1 (disc+clouds+fog)
+  Renderer::Buffer star_vertices_;
+  uint32_t star_count_ = 0;
+  GpuTexture sky_sun_, sky_moons_[5], sky_dither_;
+  GpuTexture sky_far_f_, sky_far_b_, sky_far_mask_;
+  GpuTexture sky_close_ad_f_, sky_close_ad_b_, sky_close_am_f_, sky_close_am_b_, sky_close_tb_f_, sky_close_tb_b_;
+  VkDescriptorSetLayout sky_set_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout sky_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout stars_pipe_layout_ = VK_NULL_HANDLE;
+  VkPipeline sky_pipe_base_ = VK_NULL_HANDLE, sky_pipe_layers_ = VK_NULL_HANDLE, stars_pipe_ = VK_NULL_HANDLE;
+  VkDescriptorPool sky_pool_ = VK_NULL_HANDLE;
+  // 6 sets per mode (sun + 5 moon phases) -> 12 sets total; index = mode * 6 + disc_idx (0=sun, 1..5=moon0..4).
+  VkDescriptorSet sky_sets_[12] = {};
+  void record_sky_before(VkCommandBuffer cmd);
+  void record_sky_draw(VkCommandBuffer cmd);
+  void apply_tod_to_frame();
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
   bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
   void evict_world_textures();

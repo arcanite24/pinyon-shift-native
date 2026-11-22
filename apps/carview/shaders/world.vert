@@ -28,6 +28,15 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 shadow;
   vec4 shadow_bias;
   vec4 world_fade;  // prop LOD distance, its band; the edge fade's start and end
+  vec4 drive;
+  vec4 sun_color;
+  vec4 sky_color;
+  vec4 ground_color;
+  vec4 fog_color;
+  vec4 fog_scatter;
+  vec4 fog_params;
+  vec4 car_light_top;
+  vec4 car_light_bot;
 } frame;
 
 layout(push_constant) uniform Draw {

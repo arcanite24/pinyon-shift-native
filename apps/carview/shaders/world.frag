@@ -22,6 +22,15 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 shadow;
   vec4 shadow_bias;
   vec4 world_fade;  // prop LOD distance, its band; the edge fade's start and end
+  vec4 drive;
+  vec4 sun_color;      // rgb dynamic sun colour, w shadow_intensity [0..1] (<0 uses legacy noon)
+  vec4 sky_color;      // rgb dynamic HLTopColour, w switch_on_lights [0..1]
+  vec4 ground_color;   // rgb dynamic HLBottomColour, w day_night_post [0..1]
+  vec4 fog_color;      // rgb dynamic FogColour, w fog_start
+  vec4 fog_scatter;    // rgb dynamic FogSunScatterColour, w fog_scatter_power
+  vec4 fog_params;     // x fog_density_scale, y height_start, z height_end, w height_fade_amount
+  vec4 car_light_top;  // rgb CarHLColourTop, w ibl_ambient_scale
+  vec4 car_light_bot;  // rgb CarHLColourBottom, w eye_game_y
 } frame;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 
@@ -139,9 +148,27 @@ vec3 haze_colour(vec3 dir, vec3 up, vec3 sun) {
 vec3 apply_haze(vec3 colour, vec3 position, vec3 up, vec3 sun) {
   vec3 to = position - frame.eye.xyz;
   float d = length(to);
-  // Exponential from the start, its scale a third of the span (ours).
+  vec3 view_dir = to / max(d, 1e-3);
+  if (frame.sun_color.w >= 0.0) {
+    // Dynamic TOD atmospheric fog (SPEC-SKY-AND-TOD §4): exponential distance +
+    // altitude smoothstep fade + Mie-like sun in-scattering.
+    float fog_start = frame.fog_color.w;
+    float fog_dens = max(frame.fog_params.x, 0.0);
+    float t_dist = exp2(-max(d - fog_start, 0.0) * fog_dens);
+    float fog_dist = 1.0 - t_dist;
+    float world_y = dot(to, up) + frame.car_light_bot.w;
+    float h_span = max(frame.fog_params.z - frame.fog_params.y, 1.0);
+    float h_u = clamp((world_y - frame.fog_params.y) / h_span, 0.0, 1.0);
+    float h_smooth = h_u * h_u * (3.0 - 2.0 * h_u);
+    float fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, 0.92);
+    float sc_dist = clamp(d / 3500.0, 0.0, 1.0);
+    float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), max(frame.fog_scatter.w, 1.0));
+    vec3 fog_col = mix(frame.fog_color.rgb, frame.fog_scatter.rgb, sc_dist * sc_ang);
+    return colour * (1.0 - fog_amt) + fog_amt * fog_col;
+  }
+  // Legacy fallback when TOD is not set.
   float f = kFogMax * (1.0 - exp(-max(d - kFogNear, 0.0) / ((kFogFar - kFogNear) * 0.47)));
-  return mix(colour, haze_colour(to / max(d, 1e-3), up, sun), f);
+  return mix(colour, haze_colour(view_dir, up, sun), f);
 }
 
 vec3 encode_srgb(vec3 c) {
@@ -230,10 +257,13 @@ void main() {
   vec3 n = dot(v_normal, v_normal) > 1e-6 ? normalize(v_normal) : up;
   vec3 sun = normalize(draw.sun.xyz);
   float ndl = max(dot(n, sun), 0.0);
-  // Tree sprites cast but do not receive: in the shadow pass they face the
-  // sun, here the eye, so they would shadow themselves (ours).
-  float shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n) : 1.0;
-  vec3 light = kSunColour * ndl * shade + mix(kGroundColour, kSkyColour, 0.5 + 0.5 * dot(n, up));
+  vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
+  vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb : kSkyColour;
+  vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
+  float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
+  float raw_shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n) : 1.0;
+  float shade = mix(1.0, raw_shade, shadow_scale);
+  vec3 light = sun_col * ndl * shade + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up));
   vec3 colour = t.rgb * light * draw.up.w * (draw.params.w > 0.0 ? draw.params.w : 1.0);
   colour = apply_haze(colour, v_position, up, sun);
 

@@ -1522,6 +1522,8 @@ int run_drive(int argc, char** argv) {
   // world's lighting does not change with it), T / Shift+T in the window.
   int traffic_flag = -1;  // -1: the default
   double hour = 12;
+  double day_length_scale = 1.0;
+  bool hour_explicit = false;
   uint64_t traffic_seed = 1;
   // --contacts-log (ours, debugging): every hard body contact against the
   // collision, and per gather the walls nothing drawn stands near.
@@ -1631,7 +1633,20 @@ int run_drive(int argc, char** argv) {
     else if (a == "--radio-press") radio_press_every = std::atof(next());
     else if (a == "--traffic") traffic_flag = 1;
     else if (a == "--no-traffic") traffic_flag = 0;
-    else if (a == "--hour") hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
+    else if (a == "--hour") {
+      hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
+      hour_explicit = true;
+    } else if (a == "--tod-preset") {
+      if (!hour_explicit) hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
+      else (void)next();
+    } else if (a == "--day-length") {
+      const std::string dl = next();
+      if (dl == "15m") day_length_scale = 2.0;
+      else if (dl == "60m") day_length_scale = 0.5;
+      else if (dl == "realtime") day_length_scale = 1827.9 / 86400.0;
+      else if (dl == "frozen") day_length_scale = 0.0;
+      else day_length_scale = 1.0;
+    }
     else if (a == "--traffic-seed") traffic_seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--audio-out") audio_out = next();
     else if (a == "--async-stream") async_stream = true;
@@ -2527,6 +2542,20 @@ int run_drive(int argc, char** argv) {
   std::string paint_car;
   // The 1000 Club (SPEC-V4-CONTENT): the package's challenges and v4's
   // named locations, loaded the first time a drive asks.
+  // 24-hour Time-of-Day, real-time sky (realtimesky.zip + Stars.bin), and
+  // PostProcessingZones / 3D LUTs (SPEC-SKY-AND-TOD), loaded once for the world.
+  world::TodSystem tod_system;
+  world::TodClock tod_clock;
+  tod_clock.set_hour(hour);
+  tod_clock.speed_scale = day_length_scale;
+  if (!world_dir.empty()) {
+    std::string tod_err;
+    if (tod_system.load(world_dir, &tod_err)) {
+      std::printf("tod: TimeOfDayA (%zu curves), zones %zu, LUTs %zu, sky %s (%zu stars)\n",
+                  tod_system.preset_a.curves.size(), tod_system.zones.zones.size(), tod_system.zones.luts.size(),
+                  tod_system.loaded_sky ? "realtimesky.zip" : "procedural", tod_system.sky_assets.stars.size());
+    }
+  }
   freeroam::club::ClubData club_data;
   bool club_tried = false, club_loaded = false;
   std::string club_why;
@@ -2579,6 +2608,11 @@ int run_drive(int argc, char** argv) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;
     } else {
+      if (tod_system.loaded_tod) {
+        std::string sky_err;
+        if (!showroom.upload_sky(tod_system.sky_assets, sky_err))
+          std::fprintf(stderr, "carview: sky upload note: %s\n", sky_err.c_str());
+      }
       // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of
       // colour row i, as left and right show it.
       if (const char* pp = std::getenv("SHIFT_PAINT_PREVIEW")) showroom.preview_colour(size_t(std::atoi(pp)));
@@ -3590,6 +3624,10 @@ int run_drive(int argc, char** argv) {
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count());
         return true;
       };
+      int last_lut_zone = -2;
+      float last_lut_day = -1.0f, last_lut_night = -1.0f;
+      double tod_frame_dt = 0.0;
+      bool tod_cockpit_cam = false;
       auto place_world = [&]() {
         if (!streamer) return;
         float m[16];
@@ -3604,13 +3642,73 @@ int run_drive(int argc, char** argv) {
         }
         const float up_game[3] = {0, 1, 0};
         float sun[3], up[3];
-        rotate_direction(m, kSunGame, sun);
         rotate_direction(m, up_game, up);
-        showroom.set_world_light(sun, up, 1.0f);
-        if (have_shadow_light) {
-          float towards[3];
-          rotate_direction(m, shadow_light_game, towards);
-          showroom.set_shadow_direction(towards);
+        if (tod_system.loaded_tod) {
+          const world::TodState tod = tod_system.evaluate(tod_clock);
+          rotate_direction(m, tod.sun_dir.data(), sun);
+          showroom.set_world_light(sun, up, 1.0f);
+          showroom.set_shadow_direction(sun);
+          const drive::Vec3 vpos = vehicle.position();
+          showroom.set_tod(tod, tod_clock.moon_phase(), float(vehicle.time()), float(vpos.y));
+          if (post_on) {
+            const auto& cfg = tod_system.post_config;
+            PostSettings ps = renderer.post_settings();
+            const float dn = tod.day_night_post;
+            for (int k = 0; k < 6; ++k) ps.hable[k] = cfg.hable_day[k] + dn * (cfg.hable_night[k] - cfg.hable_day[k]);
+            ps.white = cfg.white_day + dn * (cfg.white_night - cfg.white_day);
+            ps.desaturate = std::clamp(cfg.desat_amount * tod.desat_amount_mult, 0.0f, 1.5f);
+            for (int k = 0; k < 3; ++k) {
+              ps.luminance[k] = cfg.desat_luminosity[k];
+              ps.balance[k] = cfg.desat_post_mod[k];
+            }
+            if (const char* b = std::getenv("SHIFT_BALANCE"))
+              std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
+            const int zone_idx = tod_system.zones.find_zone(float(vpos.x), float(vpos.z));
+            const auto bt = tod_system.zones.bloom_for(zone_idx, cfg);
+            ps.bloom = bloom_flag >= 0 ? bloom_flag == 1 : !low_preset;
+            ps.bloom_cutoff = std::max(0.05f, bt.cutoff * tod.bloom_cutoff_mult);
+            ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult) * 0.45f;
+            ps.bloom_lower_grad = std::max(0.0f, bt.lower_grad * tod.bloom_lower_grad_mult);
+            ps.bloom_upper_grad = std::max(0.05f, bt.upper_grad * tod.bloom_upper_grad_mult);
+            for (int k = 0; k < 5; ++k) ps.bloom_weights[k] = bt.weights[k];
+            ps.vignette_amount = std::clamp(tod.vignette_amount, 0.0f, 1.0f);
+            ps.lut_enabled = true;
+            if (exposure_given > 0) {
+              ps.auto_exposure = false;
+              ps.exposure = float(exposure_given);
+            } else {
+              ps.auto_exposure = true;
+              const bool cockpit = tod_cockpit_cam;
+              const float* keys = cockpit ? cfg.cockpit_keys : cfg.exterior_keys;
+              const float* evs = cockpit ? cfg.cockpit_ev : cfg.exterior_ev;
+              for (int k = 0; k < 4; ++k) ps.exp_keys[k] = keys[k], ps.exp_ev[k] = evs[k];
+              // Calibrated EV offset so midday matches Colorado reference luminance while night adapts smoothly.
+              ps.exposure = cfg.filmic_exposure - 0.35f;
+              const float tau = std::max(cfg.tonemap_delay * 10.0f, 0.05f);
+              ps.adapt_alpha = (headless || tod_frame_dt <= 0.0)
+                                   ? 1.0f
+                                   : float(1.0 - std::exp(-tod_frame_dt / double(tau)));
+            }
+            renderer.set_post_settings(ps);
+            if (zone_idx != last_lut_zone || std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
+                std::fabs(tod.night_color_grade - last_lut_night) > 0.005f) {
+              last_lut_zone = zone_idx;
+              last_lut_day = tod.day_color_grade;
+              last_lut_night = tod.night_color_grade;
+              const auto lut = world::ColorLut16::blend(tod_system.zones.day_lut_for(zone_idx),
+                                                        tod_system.zones.night_lut_for(zone_idx),
+                                                        tod.day_color_grade, tod.night_color_grade);
+              renderer.set_post_lut(lut.rgba);
+            }
+          }
+        } else {
+          rotate_direction(m, kSunGame, sun);
+          showroom.set_world_light(sun, up, 1.0f);
+          if (have_shadow_light) {
+            float towards[3];
+            rotate_direction(m, shadow_light_game, towards);
+            showroom.set_shadow_direction(towards);
+          }
         }
       };
       // Writes where the car stands (drive/save.h); the start is the last spawn.
@@ -4363,6 +4461,7 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
+          tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), 2 * drive::Vehicle::kStep));
           // --hud: the HUD's cost (its build on the CPU, the UI pass on the GPU).
@@ -4487,6 +4586,7 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
+          tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
           showroom.set_frame(drive_frame(float(width) / float(height), every));
           if (hud) {
@@ -5416,6 +5516,12 @@ int run_drive(int argc, char** argv) {
                     static_cast<drive::DrivingLineMode>(std::clamp(live_controls.assists.driving_line, 0, 2));
                 race_options.assists = to_difficulty_assists(live_controls.assists);
                 if (race) race->set_assists(race_options.assists);
+                tod_clock.speed_scale = ls.day_length_scale;
+                if (ls.tod_preset_hour >= 0.0) {
+                  tod_clock.set_hour(ls.tod_preset_hour);
+                  if (traffic) traffic->set_hour(tod_clock.hour());
+                  renderer.reset_auto_exposure();
+                }
               };
               auto confirm = [&]() {
                 if (settings_page.on_rebind_row()) {
@@ -5615,11 +5721,13 @@ int run_drive(int argc, char** argv) {
               }
               if (results && e.key.key == SDLK_Y) race_restart();
               else if (!results && e.key.key == SDLK_Y) try_trigger_rewind();
-              if (e.key.key == SDLK_T && traffic) {
+              if (e.key.key == SDLK_T) {
                 const bool back = (e.key.mod & SDL_KMOD_SHIFT) != 0;
-                traffic->set_hour(std::fmod(traffic->hour() + (back ? 23 : 1), 24.0));
+                tod_clock.step_hours(back ? -1.0 : 1.0);
+                if (traffic) traffic->set_hour(tod_clock.hour());
+                const int tot_min = int(tod_clock.tod_sec / 60.0);
                 char line_buf[64];
-                std::snprintf(line_buf, sizeof line_buf, "traffic at %02d:00", int(traffic->hour()));
+                std::snprintf(line_buf, sizeof line_buf, "TIME %02d:%02d", (tot_min / 60) % 24, tot_min % 60);
                 notice = line_buf;
                 notice_until = vehicle.time() + 3;
               }
@@ -5782,7 +5890,15 @@ int run_drive(int argc, char** argv) {
           }
           if (!menu_paused) rewind_buf.update(frame_dt);
           // Paused: the car holds still (no steps, no time to catch up).
-          if (!sim_paused) accumulator += frame_dt;
+          tod_frame_dt = frame_dt;
+          if (!sim_paused) {
+            accumulator += frame_dt;
+            if (tod_system.loaded_tod && !race) {
+              const double spd = tod_system.active_preset(tod_clock).scalar("TimeSpeed", float(tod_clock.tod_sec / 60.0), 28.0f);
+              tod_clock.advance(frame_dt, spd);
+              if (traffic) traffic->set_hour(tod_clock.hour());
+            }
+          }
           last = now;
           if (vehicle.time() >= next_save) {
             save_now("timer");
@@ -6032,6 +6148,7 @@ int run_drive(int argc, char** argv) {
           wheel_poses(vehicle, poses);
           showroom.set_wheel_poses(poses);
           showroom.set_braking(brake_glow(vehicle));
+          tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
           // 3D Driving / Braking Line ribbon on the road (SPEC-CAR-PHYSICS).
           if (race && !grid_menu_open && !race->player_finished() &&

@@ -1,0 +1,223 @@
+#version 450
+// carview real-time sky shader (SPEC-SKY-AND-TOD §3):
+//   mode 0: atmosphere gradient dome + elliptical sun haze + sky dither
+//   mode 1: sun/moon billboard disc + far clouds (2 layers) + close lit clouds
+//           (2 layers) + sky horizon fog skirt, alpha-blended over sky + stars.
+// All view directions V are in game frame (+Y up, +X East, +Z North).
+
+layout(constant_id = 0) const bool kLinearOut = false;
+
+layout(set = 0, binding = 0) uniform SkyUniforms {
+  // Camera basis in game frame: V = normalize(cam_fwd + ndc.x * cam_right - ndc.y * cam_up)
+  vec4 cam_fwd;      // xyz forward, w mode (0 = atmo, 1 = disc+clouds+fog)
+  vec4 cam_right;    // xyz right * tan_half_fov_x, w time_days (tod_sec / 86400)
+  vec4 cam_up;       // xyz up * tan_half_fov_y, w real_time_sec
+
+  vec4 sun_dir;      // xyz SunDir (game frame), w sky_gain
+  vec4 sun_obj_dir;  // xyz SunObjectDir (game frame), w sun_disc_radius_rad
+  vec4 haze_dir;     // xyz HazeObjectDir (game frame), w is_moon (0 or 1)
+
+  vec4 atmo_top;     // rgb AtmosphereTopColour, w atmo_color_power
+  vec4 atmo_bottom;  // rgb AtmosphereBottomColour, w atmo_clamp_lo
+  vec4 atmo_haze;    // rgb AtmosphereHazeColour, w atmo_clamp_hi
+  vec4 atmo_haze_p;  // x power, y intensity, z elliptical_scale, w alpha
+
+  vec4 sun_obj_col;  // rgb SunObjectColour, w SunObjectAlpha
+
+  vec4 far_dense;        // rgb FarCloudDenseColour, w far_thin_intensity
+  vec4 far_thin;         // rgb FarCloudThinColour, w far_alpha_power
+  vec4 far_params;       // x front_centre_a, y front_edge_a, z front_coverage, w back_coverage
+  vec4 far_back_dense;   // rgb FarCloudBackDenseColour, w back_centre_a
+  vec4 far_back_thin;    // rgb FarCloudBackThinColour, w back_edge_a
+  vec4 far_scroll;       // xy front scroll uv, zw back scroll uv
+
+  vec4 close_top_col;    // rgb CloseCloudTopColour, w top_power
+  vec4 close_bot_col;    // rgb CloseCloudBottomColour, w bot_power
+  vec4 close_back_col;   // rgb CloseCloudBackColour, w back_power
+  vec4 close_dense_col;  // rgb CloseCloudDenseColour, w dense_intensity
+  vec4 close_thin_col;   // rgb CloseCloudThinColour, w thin_intensity
+  vec4 close_intens;     // x back_int, y top_int, z bot_int, w alpha_curve
+  vec4 close_masks;      // x top_mask_pow, y bot_mask_pow, z top_alpha, w bot_alpha
+  vec4 close_layers;     // x front_alpha, y back_alpha, z front_rev_off, w back_rev_off
+
+  vec4 fog_color;        // rgb FogColour, w sky_fog_start_norm
+  vec4 fog_scatter;      // rgb FogSunScatterColour, w FogSunScatterPower
+  vec4 fog_sky;          // x sky_fog_end_norm, y sky_fog_density, z has_textures, w star_fade
+} sky;
+
+layout(set = 0, binding = 1) uniform sampler2D tex_disc;       // Sun.xds or active MoonN.xds
+layout(set = 0, binding = 2) uniform sampler2D tex_dither;     // SkyDither.xds
+layout(set = 0, binding = 3) uniform sampler2D tex_far_front;  // FarCloudMapFront0.xds
+layout(set = 0, binding = 4) uniform sampler2D tex_far_back;   // FarCloudMapBack0.xds
+layout(set = 0, binding = 5) uniform sampler2D tex_far_mask;   // FarCloudMask.xds
+layout(set = 0, binding = 6) uniform sampler2D tex_close_ad_f; // CloseCloudAlphaDensityFront0.xds
+layout(set = 0, binding = 7) uniform sampler2D tex_close_ad_b; // CloseCloudAlphaDensityBack0.xds
+layout(set = 0, binding = 8) uniform sampler2D tex_close_am_f; // CloseCloudAmbientFront0.xds
+layout(set = 0, binding = 9) uniform sampler2D tex_close_am_b; // CloseCloudAmbientBack0.xds
+layout(set = 0, binding = 10) uniform sampler2D tex_close_tb_f;// CloseCloudTopBottomAmbientFront0.xds
+layout(set = 0, binding = 11) uniform sampler2D tex_close_tb_b;// CloseCloudTopBottomAmbientBack0.xds
+
+layout(location = 0) in vec2 v_ndc;
+layout(location = 1) in vec2 v_uv;
+
+layout(location = 0) out vec4 out_color;
+
+const float kPi = 3.14159265359;
+const float kTwoPi = 6.28318530718;
+
+vec3 encode_srgb(vec3 c) {
+  c = clamp(c, vec3(0.0), vec3(1.0));
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
+vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
+
+void main() {
+  vec3 V = normalize(sky.cam_fwd.xyz + v_ndc.x * sky.cam_right.xyz - v_ndc.y * sky.cam_up.xyz);
+  int mode = int(sky.cam_fwd.w + 0.5);
+
+  if (mode == 0) {
+    // 1. Atmosphere gradient dome + elliptical sun haze (SPEC-SKY-AND-TOD §3.2).
+    float lo = sky.atmo_bottom.w;
+    float hi = max(sky.atmo_haze.w, lo + 0.01);
+    float vy = max(V.y, 0.0);
+    float h_t = pow(clamp((vy - lo) / (hi - lo), 0.0, 1.0), max(sky.atmo_top.w, 0.01));
+    vec3 base_rgb = mix(sky.atmo_bottom.rgb, sky.atmo_top.rgb, h_t);
+
+    vec3 S = normalize(sky.haze_dir.xyz);
+    vec3 horiz_s = vec3(S.x, 0.0, S.z);
+    float hl = length(horiz_s);
+    vec3 T = hl > 1e-4 ? vec3(-horiz_s.z / hl, 0.0, horiz_s.x / hl) : vec3(1.0, 0.0, 0.0);
+    float haze_dot = clamp(dot(V, S), 0.0, 1.0) *
+                     clamp(1.0 + (sky.atmo_haze_p.z - 1.0) * abs(dot(V, T)), 0.0, 1.0);
+    float haze_t = clamp(sky.atmo_haze_p.y * pow(max(haze_dot, 0.0), max(sky.atmo_haze_p.x, 0.5)), 0.0, 1.0) *
+                   sky.atmo_haze_p.w;
+
+    vec3 lin_rgb = mix(base_rgb, sky.atmo_haze.rgb, haze_t) * sky.sun_dir.w;
+    // Slight darkening below the horizon line.
+    if (V.y < 0.0) lin_rgb *= mix(1.0, 0.45, clamp(-V.y * 4.0, 0.0, 1.0));
+    // Subtle sky gradient dither scaled by luminance so night exposure does not amplify it.
+    float dither = (texture(tex_dither, gl_FragCoord.xy / 128.0).r - 0.5) * 0.0004;
+    lin_rgb = max(lin_rgb + vec3(dither), vec3(0.0));
+    out_color = vec4(out_rgb(lin_rgb), 1.0);
+    return;
+  }
+
+  // Mode 1: Sun/Moon disc -> Far clouds -> Close lit clouds -> Sky horizon fog skirt.
+  // Accumulated in premultiplied/straight alpha over the atmosphere + stars pass.
+  vec3 acc_rgb = vec3(0.0);
+  float acc_a = 0.0;
+  {
+    // 3. Sun / Moon billboard disc (SPEC-SKY-AND-TOD §3.4).
+    vec3 D = normalize(sky.sun_obj_dir.xyz);
+    float rad = max(sky.sun_obj_dir.w, 0.005);
+    float cos_ang = dot(V, D);
+    if (cos_ang > 0.0 && sky.sun_obj_col.w > 0.001) {
+      vec3 up_ref = abs(D.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 right_d = normalize(cross(up_ref, D));
+      vec3 up_d = cross(D, right_d);
+      vec3 proj = V / max(cos_ang, 1e-4) - D;
+      vec2 duv = vec2(dot(proj, right_d), -dot(proj, up_d)) / (rad * 2.0) + vec2(0.5);
+      if (duv.x >= 0.0 && duv.x <= 1.0 && duv.y >= 0.0 && duv.y <= 1.0) {
+        vec4 tex = texture(tex_disc, duv);
+        // Sun/Moon textures are authored in sRGB; decode to linear radiance.
+        vec3 disc_rgb = pow(max(tex.rgb, vec3(0.0)), vec3(2.2)) * sky.sun_obj_col.rgb;
+        if (sky.haze_dir.w < 0.5) disc_rgb *= 2.5;  // solar disc HDR bloom punch
+        float disc_a = tex.a * sky.sun_obj_col.w * smoothstep(-0.02, 0.04, V.y);
+        acc_rgb = mix(acc_rgb, disc_rgb, disc_a);
+        acc_a = acc_a + disc_a * (1.0 - acc_a);
+      }
+    }
+
+    // 4. Far high-altitude clouds (2 scrolling layers, SPEC-SKY-AND-TOD §3.5).
+    if (sky.fog_sky.z > 0.5 && V.y > 0.005) {
+      vec2 plane_uv = V.xz / (V.y + 0.14) * 0.22;
+      float horizon_t = smoothstep(0.01, 0.28, V.y);
+
+      // Back far layer
+      vec2 uv_b = plane_uv + sky.far_scroll.zw;
+      float mb1 = texture(tex_far_mask, uv_b * 1.7 + vec2(0.13, 0.27)).r;
+      float mb2 = texture(tex_far_mask, uv_b * 0.85 - sky.far_scroll.zw * 0.5).r;
+      float raw_b = texture(tex_far_back, uv_b).r * mb1 * mb2;
+      float dens_b = clamp((raw_b - (1.0 - sky.far_params.w)) * 1.8, 0.0, 1.0);
+      float alpha_b = pow(dens_b, clamp(sky.far_thin.w * 0.03, 0.35, 3.0)) *
+                      mix(sky.far_back_thin.w, sky.far_back_dense.w, horizon_t) * horizon_t * 0.55;
+      vec3 col_b = mix(sky.far_back_thin.rgb * sky.far_dense.w, sky.far_back_dense.rgb, dens_b);
+
+      // Front far layer
+      vec2 uv_f = plane_uv * 1.15 + sky.far_scroll.xy;
+      float mf1 = texture(tex_far_mask, uv_f * 1.5 + vec2(0.41, 0.19)).r;
+      float mf2 = texture(tex_far_mask, uv_f * 0.75 + sky.far_scroll.xy * 0.4).r;
+      float raw_f = texture(tex_far_front, uv_f).r * mf1 * mf2;
+      float dens_f = clamp((raw_f - (1.0 - sky.far_params.z)) * 1.8, 0.0, 1.0);
+      float alpha_f = pow(dens_f, clamp(sky.far_thin.w * 0.03, 0.35, 3.0)) *
+                      mix(sky.far_params.y, sky.far_params.x, horizon_t) * horizon_t * 0.65;
+      vec3 col_f = mix(sky.far_thin.rgb * sky.far_dense.w, sky.far_dense.rgb, dens_f);
+
+      float far_a = clamp(alpha_f + alpha_b * (1.0 - alpha_f), 0.0, 1.0);
+      vec3 far_rgb = far_a > 1e-4 ? (col_f * alpha_f + col_b * alpha_b * (1.0 - alpha_f)) / far_a : vec3(0.0);
+      if (far_a > 0.001) {
+        acc_rgb = mix(acc_rgb, far_rgb, far_a);
+        acc_a = acc_a + far_a * (1.0 - acc_a);
+      }
+
+      // 5. Close lit dome clouds (2 rotating bands, SPEC-SKY-AND-TOD §3.6).
+      float az = atan(V.z, V.x) / kTwoPi + 0.5;
+      float elev_v = clamp(1.0 - (asin(clamp(V.y, 0.0, 1.0)) / (kPi * 0.5)), 0.0, 1.0);
+      float sun_dot = clamp(dot(V, D), 0.0, 1.0);
+
+      vec2 cuv_f = vec2(fract(az + sky.close_layers.z), elev_v);
+      vec2 ad_f = texture(tex_close_ad_f, cuv_f).rg;
+      float am_f = texture(tex_close_am_f, cuv_f).r;
+      vec2 tb_f = texture(tex_close_tb_f, cuv_f).rg;
+
+      vec3 base_f = mix(sky.close_dense_col.rgb * sky.close_dense_col.w,
+                        sky.close_thin_col.rgb * sky.close_thin_col.w, am_f);
+      vec3 back_f = sky.close_back_col.rgb * sky.close_intens.x *
+                    pow(sun_dot, max(sky.close_back_col.w, 0.5)) * (1.0 - ad_f.g);
+      vec3 top_f = sky.close_top_col.rgb * sky.close_intens.y *
+                   pow(sun_dot, max(sky.close_top_col.w, 0.5)) * pow(tb_f.r, max(sky.close_masks.x, 0.25));
+      vec3 bot_f = sky.close_bot_col.rgb * sky.close_intens.z *
+                   pow(sun_dot, max(sky.close_bot_col.w, 0.5)) * pow(tb_f.g, max(sky.close_masks.y, 0.25));
+      vec3 lit_f = base_f + back_f + top_f + bot_f;
+      float ca_f = ad_f.r * sky.close_layers.x;
+
+      vec2 cuv_b = vec2(fract(az + sky.close_layers.w), elev_v);
+      vec2 ad_b = texture(tex_close_ad_b, cuv_b).rg;
+      float am_b = texture(tex_close_am_b, cuv_b).r;
+      vec2 tb_b = texture(tex_close_tb_b, cuv_b).rg;
+      vec3 base_b = mix(sky.close_dense_col.rgb * sky.close_dense_col.w,
+                        sky.close_thin_col.rgb * sky.close_thin_col.w, am_b);
+      vec3 lit_b = base_b + sky.close_back_col.rgb * sky.close_intens.x * 0.5 *
+                   pow(sun_dot, max(sky.close_back_col.w, 0.5)) * (1.0 - ad_b.g) +
+                   sky.close_top_col.rgb * sky.close_intens.y * 0.5 * pow(tb_b.r, max(sky.close_masks.x, 0.25));
+      float ca_b = ad_b.r * sky.close_layers.y;
+
+      float h_fade = smoothstep(0.01, 0.14, V.y) *
+                     mix(sky.close_masks.w, sky.close_masks.z, clamp(V.y * 2.5, 0.0, 1.0));
+      float close_a = clamp((ca_f + ca_b * (1.0 - ca_f)) * h_fade, 0.0, 1.0);
+      vec3 close_rgb = (ca_f + ca_b * (1.0 - ca_f)) > 1e-4
+                           ? (lit_f * ca_f + lit_b * ca_b * (1.0 - ca_f)) / (ca_f + ca_b * (1.0 - ca_f))
+                           : vec3(0.0);
+      if (close_a > 0.001) {
+        acc_rgb = mix(acc_rgb, close_rgb, close_a);
+        acc_a = acc_a + close_a * (1.0 - acc_a);
+      }
+    }
+
+    // 6. Sky horizon fog skirt (SPEC-SKY-AND-TOD §3.7).
+    float f_start = sky.fog_color.w;
+    float f_end = max(sky.fog_sky.x, f_start + 0.02);
+    float ft = clamp((V.y - f_start) / (f_end - f_start), 0.0, 1.0);
+    float fog_a = (1.0 - ft * ft * (3.0 - 2.0 * ft)) * sky.fog_sky.y;
+    float scatter = pow(clamp(dot(V, normalize(sky.sun_dir.xyz)), 0.0, 1.0), max(sky.fog_scatter.w, 1.0));
+    vec3 fog_rgb = mix(sky.fog_color.rgb, sky.fog_scatter.rgb, scatter);
+    if (fog_a > 0.001) {
+      acc_rgb = mix(acc_rgb, fog_rgb, fog_a);
+      acc_a = acc_a + fog_a * (1.0 - acc_a);
+    }
+  }
+
+  vec3 enc = out_rgb(acc_rgb);
+  out_color = vec4(enc * acc_a, acc_a);
+}
