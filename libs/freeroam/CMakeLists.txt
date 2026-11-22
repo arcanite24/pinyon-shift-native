@@ -1,6 +1,7 @@
 add_library(shift_freeroam STATIC
   src/club.cpp
-  src/collectibles.cpp)
+  src/collectibles.cpp
+  src/skills.cpp)
 target_include_directories(shift_freeroam PUBLIC include)
 target_link_libraries(shift_freeroam PRIVATE fh1data shift_audio)
 if(MSVC)

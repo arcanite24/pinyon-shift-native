@@ -78,8 +78,14 @@ struct DriveSave {
   std::vector<int> garage;
   bool owned_garage = false;
   // The career.
+  bool career_started = false;
   int64_t credits = 0, total_winnings = 0;
   int wristband_points = 0;
+  int collected_wristband = -1;  // -1: legacy/imported (inferred from wristband_points); 0..6: collected at Race Central
+  double popularity_points = 0;  // SPEC-SKILLS-POPULARITY: Fame ladder points
+  int64_t max_skills_score = 0, max_skills_car = 0;
+  int fame_rewards_claimed = 0;
+  int difficulty = 1;  // 0 Easy, 1 Med, 2 Hard, 3 Pro
   int num_races = 0, num_victories = 0, num_podiums = 0;
   double time_festival = 0, time_street = 0, time_exhibition = 0, top_speed = 0;
   std::vector<std::pair<int64_t, int>> race_results, event_results;

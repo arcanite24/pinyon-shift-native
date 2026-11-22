@@ -77,11 +77,31 @@ bool load_wristband_tables(const std::filesystem::path& root, WristbandTables& o
   return ok;
 }
 
+int difficulty_bonus_percent(int difficulty_index) {
+  switch (difficulty_index) {
+    case 0: return 0;
+    case 1: return 15;
+    case 2: return 30;
+    case 3: return 45;
+    default: return 0;
+  }
+}
+
+int64_t mileage_bonus_credits(double distance_m) {
+  if (!(distance_m > 0)) return 0;
+  return round_prize(distance_m * 0.05);
+}
+
 RaceAward award_race(CareerRecord& r, int64_t event_id, int64_t race_id, int career_type, int style, int level,
                      double prize, int racers, int place, bool finished, double race_time, double top_speed,
-                     int64_t prize_car, const WristbandTables& tables) {
+                     int64_t prize_car, const WristbandTables& tables, int difficulty_pct, double distance_m) {
   RaceAward a;
-  a.credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
+  a.base_credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
+  a.mileage_bonus = finished ? mileage_bonus_credits(distance_m) : 0;
+  a.difficulty_pct = std::max(0, difficulty_pct);
+  a.difficulty_bonus =
+      finished && a.difficulty_pct > 0 ? int64_t(std::llround(double(a.base_credits + a.mileage_bonus) * a.difficulty_pct / 100.0)) : 0;
+  a.credits = a.base_credits + a.mileage_bonus + a.difficulty_bonus;
   if (!finished) return a;
   // Wristband points: an improvement only (the previous best from the event record).
   const auto prev = r.event_places.find(event_id);

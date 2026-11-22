@@ -164,7 +164,7 @@ std::vector<Event> FreeRoam::step(const CarState& car) {
   }
 
   // Barns: discovery at status 5, within the trigger radius, below maxMPH.
-  for (size_t i = 0; i < data_.barns.size(); ++i) {
+  for (size_t i = 0; i < data_.barns.size() && i < progress_.barns.size(); ++i) {
     BarnProgress& bp = progress_.barns[i];
     if (bp.status != kBarnRumour) continue;
     const Barn& b = data_.barns[i];

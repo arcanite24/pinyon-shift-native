@@ -49,9 +49,16 @@ std::string save_to_text(const DriveSave& s) {
     out += "\n";
   }
   if (s.owned_garage) out += "owned_garage 1\n";
+  if (s.career_started) out += "career_started 1\n";
   if (s.credits || s.total_winnings)
     out += "credits " + std::to_string(s.credits) + " " + std::to_string(s.total_winnings) + "\n";
   if (s.wristband_points) out += "wristband " + std::to_string(s.wristband_points) + "\n";
+  if (s.collected_wristband >= 0) out += "collected_wristband " + std::to_string(s.collected_wristband) + "\n";
+  if (s.popularity_points > 0) out += "popularity " + num(s.popularity_points) + "\n";
+  if (s.max_skills_score > 0)
+    out += "max_skills " + std::to_string(s.max_skills_score) + " " + std::to_string(s.max_skills_car) + "\n";
+  if (s.fame_rewards_claimed > 0) out += "fame_claimed " + std::to_string(s.fame_rewards_claimed) + "\n";
+  if (s.difficulty != 1) out += "difficulty " + std::to_string(s.difficulty) + "\n";
   if (s.num_races)
     out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
            std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
@@ -128,10 +135,25 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "owned_garage") {
       int v = 0;
       out.owned_garage = (l >> v) && v != 0;
+    } else if (key == "career_started") {
+      int v = 0;
+      out.career_started = (l >> v) && v != 0;
     } else if (key == "credits") {
       l >> out.credits >> out.total_winnings;
     } else if (key == "wristband") {
       l >> out.wristband_points;
+    } else if (key == "collected_wristband") {
+      l >> out.collected_wristband;
+    } else if (key == "popularity") {
+      if (!(l >> out.popularity_points) || !std::isfinite(out.popularity_points) || out.popularity_points < 0)
+        out.popularity_points = 0;
+    } else if (key == "max_skills") {
+      l >> out.max_skills_score >> out.max_skills_car;
+    } else if (key == "fame_claimed") {
+      l >> out.fame_rewards_claimed;
+    } else if (key == "difficulty") {
+      int d = 1;
+      if (l >> d && d >= 0 && d <= 3) out.difficulty = d;
     } else if (key == "stats") {
       l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
           out.time_exhibition >> out.top_speed;

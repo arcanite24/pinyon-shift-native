@@ -49,11 +49,20 @@ struct CareerRecord {
 };
 
 struct RaceAward {
+  int64_t base_credits = 0;
+  int64_t mileage_bonus = 0;
+  int difficulty_pct = 0;
+  int64_t difficulty_bonus = 0;
   int64_t credits = 0;
   int wristband_points = 0;
   bool first_completion = false, won = false;
   int64_t prize_car = 0;  // 0: none
 };
+
+// Difficulty bonus percentage (ours: 0 Easy, 15 Med, 30 Hard, 45 Pro) and
+// mileage bonus from race distance driven (m).
+int difficulty_bonus_percent(int difficulty_index);
+int64_t mileage_bonus_credits(double distance_m);
 
 // One finished (or not-finished) race of an event with one race, applied
 // to `record` in the spec's order. `style`: Events.CareerEventStyle (1:
@@ -62,6 +71,6 @@ struct RaceAward {
 // for place 1.
 RaceAward award_race(CareerRecord& record, int64_t event_id, int64_t race_id, int career_type, int style, int level,
                      double prize, int racers, int place, bool finished, double race_time, double top_speed,
-                     int64_t prize_car, const WristbandTables& tables);
+                     int64_t prize_car, const WristbandTables& tables, int difficulty_pct = 0, double distance_m = 0);
 
 }  // namespace race
