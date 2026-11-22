@@ -187,6 +187,95 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"japanese", {"--language", "JP"}},
         {"korean", {"--language", "KO"}},
         {"chinese (trad)", {"--language", "CHT"}}}},
+      // Slice 11: Render scale, output scaling, AA, SSAO, LUT, VRS, texture cap, VSync, FPS cap, HDR, HUD layout.
+      {"render scale",
+       {{"1x (720p)", {}},
+        {"native", {"--render-scale", "0"}},
+        {"540p 1x", {"--render-scale", "1", "--scene-540p"}},
+        {"2x (1440p)", {"--render-scale", "2"}},
+        {"3x (2160p)", {"--render-scale", "3"}},
+        {"4x (2880p)", {"--render-scale", "4"}}}},
+      {"output scaling",
+       {{"bilinear", {}},
+        {"cas", {"--output", "cas"}},
+        {"fsr 1", {"--output", "fsr1"}},
+        {"fsr 2", {"--output", "fsr2"}},
+        {"fsr 3", {"--output", "fsr3"}},
+        {"dlss", {"--output", "dlss"}}}},
+      {"sharpening",
+       {{"50%", {}},
+        {"0%", {"--sharpening", "0"}},
+        {"25%", {"--sharpening", "25"}},
+        {"75%", {"--sharpening", "75"}},
+        {"100%", {"--sharpening", "100"}}}},
+      {"anti-aliasing",
+       {{"off", {}}, {"fxaa", {"--aa", "fxaa"}}, {"fxaa + hud", {"--aa", "fxaa-hud"}}}},
+      {"ambient occlusion",
+       {{"off", {}},
+        {"low", {"--ssao", "low"}},
+        {"medium", {"--ssao", "medium"}},
+        {"high", {"--ssao", "high"}}}},
+      {"colour lut", {{"none", {}}}},
+      {"lut strength",
+       {{"100%", {}},
+        {"75%", {"--lut-strength", "75"}},
+        {"50%", {"--lut-strength", "50"}},
+        {"25%", {"--lut-strength", "25"}},
+        {"0%", {"--lut-strength", "0"}}}},
+      {"vrs shading", {{"off", {}}, {"on", {"--vrs"}}}},
+      {"texture size",
+       {{"full", {}},
+        {"1024", {"--texture-cap", "1024"}},
+        {"512", {"--texture-cap", "512"}},
+        {"256", {"--texture-cap", "256"}}}},
+      {"vsync",
+       {{"fifo", {}}, {"mailbox", {"--vsync", "mailbox"}}, {"immediate", {"--vsync", "immediate"}}}},
+      {"frame rate",
+       {{"60 fps", {}},
+        {"display", {"--fps-cap", "display"}},
+        {"30 fps", {"--fps-cap", "30"}},
+        {"40 fps", {"--fps-cap", "40"}},
+        {"120 fps", {"--fps-cap", "120"}},
+        {"144 fps", {"--fps-cap", "144"}},
+        {"240 fps", {"--fps-cap", "240"}}}},
+      {"frame gen",
+       {{"off", {}}, {"fsr 3", {"--frame-gen", "fsr3"}}, {"dlss", {"--frame-gen", "dlss"}}}},
+      {"hdr", {{"off", {}}, {"on", {"--hdr"}}}},
+      {"windows auto-hdr", {{"off", {}}, {"on", {"--auto-hdr"}}}},
+      {"hdr paper white",
+       {{"203 nits", {}},
+        {"120 nits", {"--hdr-paper-white", "120"}},
+        {"160 nits", {"--hdr-paper-white", "160"}},
+        {"250 nits", {"--hdr-paper-white", "250"}},
+        {"300 nits", {"--hdr-paper-white", "300"}},
+        {"400 nits", {"--hdr-paper-white", "400"}}}},
+      {"hdr highlights",
+       {{"50%", {}},
+        {"0%", {"--hdr-highlights", "0"}},
+        {"25%", {"--hdr-highlights", "25"}},
+        {"75%", {"--hdr-highlights", "75"}},
+        {"100%", {"--hdr-highlights", "100"}}}},
+      {"hdr peak",
+       {{"1000 nits", {}},
+        {"400 nits", {"--hdr-peak", "400"}},
+        {"600 nits", {"--hdr-peak", "600"}},
+        {"800 nits", {"--hdr-peak", "800"}},
+        {"1400 nits", {"--hdr-peak", "1400"}},
+        {"2000 nits", {"--hdr-peak", "2000"}}}},
+      {"hdr compare", {{"off", {}}, {"on", {"--hdr-compare"}}}},
+      {"hud 16:9 lock", {{"on", {}}, {"off", {"--no-hud-16-9"}}}},
+      {"hud scale",
+       {{"100%", {}},
+        {"80%", {"--hud-scale", "80"}},
+        {"90%", {"--hud-scale", "90"}},
+        {"110%", {"--hud-scale", "110"}},
+        {"120%", {"--hud-scale", "120"}}}},
+      {"safe zone",
+       {{"0%", {}},
+        {"2%", {"--safe-zone", "2"}},
+        {"5%", {"--safe-zone", "5"}},
+        {"8%", {"--safe-zone", "8"}},
+        {"10%", {"--safe-zone", "10"}}}},
       // Slice 12: Camera Editor, Immersive Camera & Head Tracking (Display / Controls).
       {"camera editor", {{"normal", {}}, {"wheel view", {"--driving-view", "wheel"}}, {"replay view", {"--driving-view", "replay"}}}},
       {"chase height",
@@ -289,12 +378,43 @@ std::vector<SettingsPage::RebindRow> SettingsPage::build_rebinds() {
   };
 }
 
+void SettingsPage::set_available_luts(const std::vector<std::string>& names) {
+  lut_files_ = names;
+  for (Row& r : rows_) {
+    if (std::string(r.name) != "colour lut") continue;
+    const std::string cur_val = r.choices[r.pick].tokens.size() == 2 ? r.choices[r.pick].tokens[1] : "";
+    r.choices = {{"none", {}}};
+    for (const std::string& n : lut_files_) {
+      if (!n.empty()) r.choices.push_back({n, {"--lut", n}});
+    }
+    if (!cur_val.empty()) {
+      bool found = false;
+      for (size_t c = 0; c < r.choices.size(); ++c) {
+        if (r.choices[c].tokens.size() == 2 && r.choices[c].tokens[1] == cur_val) {
+          r.pick = c;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        r.choices.push_back({cur_val, {"--lut", cur_val}});
+        r.pick = r.choices.size() - 1;
+      }
+    } else {
+      r.pick = 0;
+    }
+    break;
+  }
+}
+
 void SettingsPage::load(const std::vector<std::string>& tokens) {
   rows_ = build();
+  set_available_luts(lut_files_);
   rebinds_ = build_rebinds();
   keys_ = drive::KeyBindings::defaults();
   other_.clear();
   capturing_ = false;
+  bool seen_540p = false;
   for (size_t i = 0; i < tokens.size(); ++i) {
     const std::string& t = tokens[i];
     const bool has_value = i + 1 < tokens.size() && tokens[i + 1].rfind("--", 0) != 0;
@@ -303,18 +423,54 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
       ++i;
       continue;
     }
+    if (t == "--scene-540p") {
+      seen_540p = true;
+      for (Row& r : rows_) {
+        if (std::string(r.name) == "render scale") r.pick = 2;  // 540p 1x
+      }
+      continue;
+    }
+    if (t == "--lut" && has_value) {
+      const std::string& lut_name = tokens[i + 1];
+      for (Row& r : rows_) {
+        if (std::string(r.name) != "colour lut") continue;
+        bool matched = false;
+        for (size_t c = 0; c < r.choices.size(); ++c) {
+          if (r.choices[c].tokens.size() == 2 && r.choices[c].tokens[1] == lut_name) {
+            r.pick = c;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          r.choices.push_back({lut_name, {"--lut", lut_name}});
+          r.pick = r.choices.size() - 1;
+        }
+      }
+      ++i;
+      continue;
+    }
     bool owned = false;
     for (Row& r : rows_)
       for (size_t c = 0; c < r.choices.size(); ++c) {
         const auto& w = r.choices[c].tokens;
         if (w.empty() || w[0] != t) continue;
-        if (w.size() == 1 || (has_value && w[1] == tokens[i + 1])) r.pick = c, owned = true;
-        else if (w.size() == 2 && has_value) owned = true;  // a value no choice names: the row keeps its pick
+        if (w.size() == 1 || (w.size() >= 2 && has_value && w[1] == tokens[i + 1])) {
+          if (t == "--render-scale" && has_value && tokens[i + 1] == "1" && seen_540p) r.pick = 2;
+          else if (w.size() == 3 && !(t == "--render-scale" && has_value && tokens[i + 1] == "1" && seen_540p))
+            continue;
+          else r.pick = c;
+          owned = true;
+        } else if (w.size() >= 2 && has_value) {
+          owned = true;
+        }
       }
     if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
                    t == "--motion-blur" || t == "--dof" || t == "--satnav" || t == "--no-treasure-map" ||
                    t == "--no-skip-intro-movies" || t == "--no-start-in-single-player" ||
-                   t == "--skip-vo-with-a")) owned = true;
+                   t == "--skip-vo-with-a" || t == "--no-scene-540p" || t == "--no-vrs" ||
+                   t == "--no-hdr" || t == "--no-auto-hdr" || t == "--no-hdr-compare" ||
+                   t == "--hud-16-9")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--ai-mode" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -338,7 +494,11 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--immersive-camera" || t == "--immersive-gforce" || t == "--immersive-lean" ||
                       t == "--immersive-shake" || t == "--immersive-head" || t == "--telemetry-udp-format" ||
                       t == "--telemetry-udp-target" || t == "--trainer-saved-road" || t == "--pacing-prices" ||
-                      t == "--pacing-rewards");
+                      t == "--pacing-rewards" ||
+                      t == "--render-scale" || t == "--aa" || t == "--ssao" || t == "--lut" ||
+                      t == "--lut-strength" || t == "--texture-cap" || t == "--vsync" || t == "--fps-cap" ||
+                      t == "--output" || t == "--sharpening" || t == "--frame-gen" || t == "--hdr-paper-white" ||
+                      t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -364,7 +524,13 @@ namespace {
 SettingsPage::Tab classify_setting_row(const std::string& name) {
   if (name == "preset" || name == "shadows" || name == "bloom" || name == "camera" || name == "camera effects" ||
       name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day" ||
-      name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera") {
+      name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera" ||
+      name == "render scale" || name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
+      name == "ambient occlusion" || name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
+      name == "texture size" || name == "vsync" || name == "frame rate" || name == "frame gen" ||
+      name == "hdr" || name == "windows auto-hdr" || name == "hdr paper white" || name == "hdr highlights" ||
+      name == "hdr peak" || name == "hdr compare" || name == "hud 16:9 lock" || name == "hud scale" ||
+      name == "safe zone") {
     return SettingsPage::Tab::kDisplay;
   }
   if (name == "radio" || name == "sound" || name == "satnav" || name == "master volume" || name == "mute" ||
@@ -545,7 +711,6 @@ LiveSettings SettingsPage::live_settings() const {
   const std::string ln = pick_val("driving line");
   c.assists.driving_line = ln.empty() ? 0 : std::atoi(ln.c_str());
   c.assists.rewind = pick_label("rewind") != "off";
-
   // Slice 12 live settings.
   ls.camera_editor.chase_height_m = num_or("chase height", 0.0);
   ls.camera_editor.chase_distance_m = num_or("chase distance", 0.0);
@@ -582,6 +747,11 @@ LiveSettings SettingsPage::live_settings() const {
   ls.festival_pacing.price_multiplier = num_or("pacing prices", 0.5);
   ls.festival_pacing.reward_multiplier = num_or("pacing rewards", 2.0);
   ls.hidden_cars = pick_label("hidden cars (autoshow)") != "off";
+  {
+    const std::vector<std::string> toks = tokens();
+    for (size_t i = 0; i < toks.size(); ++i) modern::apply_graphics_option(ls.graphics, toks, i);
+    ls.graphics = modern::clamp_graphics(ls.graphics);
+  }
   return ls;
 }
 

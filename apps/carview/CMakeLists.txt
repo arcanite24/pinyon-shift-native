@@ -13,7 +13,7 @@ set(shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${generated}")
 set(shader_headers "")
-foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag world_gpu.vert world_gpu.frag world_tree_gpu.vert world_cull.comp tree_cull.comp hiz_gen.comp post.vert post.frag shadow.frag ui.vert ui.frag sky.vert sky.frag stars.vert stars.frag glow.vert glow.frag particle.vert particle.frag skid.vert skid.frag)
+foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag world_gpu.vert world_gpu.frag world_tree_gpu.vert world_cull.comp tree_cull.comp hiz_gen.comp post.vert post.frag ssao.frag fxaa.frag upscale.frag hdr_output.frag shadow.frag ui.vert ui.frag sky.vert sky.frag stars.vert stars.frag glow.vert glow.frag particle.vert particle.frag skid.vert skid.frag)
   string(REPLACE "." "_" id "${shader}")
   string(SUBSTRING "${id}" 0 1 first)
   string(TOUPPER "${first}" first)
@@ -101,7 +101,8 @@ set(carview_sources
   mods_page.cpp
   save_sync_ui.cpp
   ui_widgets.cpp
-  perf_overlay.cpp)
+  perf_overlay.cpp
+  display_hdr_win.cpp)
 # Android (M7): libmain.so for SDL's activity (tools/android-apk.py makes the
 # APK); SHIFT_ANDROID_EXECUTABLE keeps the executable run over adb.
 option(SHIFT_ANDROID_EXECUTABLE "Android: build carview as an executable, not the app's libmain.so" OFF)

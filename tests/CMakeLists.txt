@@ -142,7 +142,7 @@ target_link_libraries(garage_tests PRIVATE shift_garage)
 add_test(NAME garage_tests COMMAND garage_tests)
 
 # The pause menu's settings page (plain C++).
-add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp)
+add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp)
 target_include_directories(settings_tests PRIVATE ../apps/carview)
 target_link_libraries(settings_tests PRIVATE shift_drive)
 add_test(NAME settings_tests COMMAND settings_tests)

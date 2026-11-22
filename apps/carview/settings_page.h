@@ -14,6 +14,7 @@
 #include "drive/telemetry_udp.h"
 #include "drive/trainer.h"
 #include "drive/wheel_ffb.h"
+#include "render_modern.h"
 
 namespace carview {
 
@@ -38,6 +39,7 @@ struct LiveSettings {
   double day_length_scale = 1.0;  // 1.0 = 30.5m, 2.0 = 15m, 0.5 = 61m, 0.02116 = realtime, 0.0 = frozen
   double tod_preset_hour = -1.0;  // < 0: keep current clock, >= 0: jump clock to hour
   drive::ControlSettings controls;
+<<<<<<< HEAD
   // Slice 12: Wheels/FFB, DualSense, OpenTrack, Camera Editor, Immersive Camera, Telemetry, Trainer/Pacing/Hidden.
   drive::WheelShaping wheel_shaping;
   drive::WheelFfbConfig wheel_ffb;
@@ -51,6 +53,7 @@ struct LiveSettings {
   bool trainer_cheats = false;
   drive::FestivalPacingConfig festival_pacing;
   bool hidden_cars = false;
+  modern::GraphicsSettings graphics;
 };
 
 class SettingsPage {
@@ -92,10 +95,11 @@ class SettingsPage {
   void fill(std::string& title, std::vector<std::string>& lines, int& selected) const;
   // A row's shown choice, by its name ("difficulty", "key throttle"), for tests.
   std::string value(const std::string& name) const;
+  void set_available_luts(const std::vector<std::string>& names);
 
  private:
   struct Choice {
-    const char* label;
+    std::string label;
     std::vector<std::string> tokens;  // what the choice writes (none: the default)
   };
   struct Row {
@@ -111,6 +115,7 @@ class SettingsPage {
   std::vector<RebindRow> rebinds_ = build_rebinds();
   drive::KeyBindings keys_ = drive::KeyBindings::defaults();
   std::vector<std::string> other_;  // the file's tokens no row owns
+  std::vector<std::string> lut_files_;
   bool open_ = false;
   bool capturing_ = false;
   int row_ = 0;

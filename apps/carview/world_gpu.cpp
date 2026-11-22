@@ -343,9 +343,10 @@ bool WorldGpu::create_pipelines(std::string& error) {
   raster.frontFace = VK_FRONT_FACE_CLOCKWISE;
   raster.lineWidth = 1.0f;
   raster.depthBiasEnable = VK_TRUE;
-  const VkDynamicState dyn[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
+  const VkDynamicState dyn[4] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS,
+                                 VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR};
   VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-  dynamic.dynamicStateCount = 3;
+  dynamic.dynamicStateCount = r_.vrs_supported() ? 4u : 3u;
   dynamic.pDynamicStates = dyn;
   VkPipelineColorBlendAttachmentState attachment{};
   attachment.colorWriteMask =
@@ -804,7 +805,10 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   const VkPipeline op_pipe = (p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_;
   for (uint32_t b = 0; b < gpuworld::kBatchCount; ++b) {
     const VkPipeline pipeline = b >= gpuworld::kCutout ? coverage_ : op_pipe;
-    if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+    if (pipeline != bound) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+      r_.apply_vrs(cmd);
+    }
     const bool decal = (b & 1u) != 0;
     vkCmdSetDepthBias(cmd, decal ? p.bias_sign * p.decal_bias_constant : 0.0f, 0.0f,
                       decal ? p.bias_sign * p.decal_bias_slope : 0.0f);
@@ -816,6 +820,7 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   if (generation_.trees_count > 0 && tree_coverage_) {
     vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tree_coverage_);
+    r_.apply_vrs(cmd);
     vkCmdDrawIndirect(cmd, s.tree_cmd.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
   }
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);

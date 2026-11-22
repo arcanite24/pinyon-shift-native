@@ -6,7 +6,8 @@ layout(location = 2) in vec4 in_q;
 layout(location = 3) in uvec4 in_cw;  // color, color2, kind, flags
 
 layout(push_constant) uniform Push {
-  vec2 inv_half;  // 2 / screen size
+  vec2 inv_half;  // scale * 2 / screen size
+  vec2 offset;    // origin * 2 / screen size - 1 (0,0 virtual -> -1,-1 when full screen)
 } pc;
 
 layout(location = 0) out vec2 pix;
@@ -23,5 +24,5 @@ void main() {
   p = in_p;
   q = in_q;
   cw = in_cw;
-  gl_Position = vec4(pix * pc.inv_half - 1.0, 0.0, 1.0);
+  gl_Position = vec4(pix * pc.inv_half + pc.offset, 0.0, 1.0);
 }

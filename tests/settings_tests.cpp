@@ -155,6 +155,36 @@ int main() {
   CHECK(fair_page.value("ai opponents") == "no rubber-banding");
   CHECK(fair_page.live_settings().ai_mode == 1 && !fair_page.live_settings().rubberband);
 
+  // Slice 11: Modern Display settings (render scale, SSAO, FXAA, .cube LUT, VRS, texture cap, VSync, HDR, HUD).
+  carview::SettingsPage gfx_page;
+  gfx_page.set_available_luts({"warm_desert.cube"});
+  gfx_page.load({"--render-scale", "2", "--output", "fsr1", "--sharpening", "75", "--aa", "fxaa",
+                 "--ssao", "high", "--lut", "warm_desert.cube", "--lut-strength", "50", "--vrs",
+                 "--texture-cap", "512", "--vsync", "mailbox", "--fps-cap", "120", "--hdr",
+                 "--hdr-paper-white", "250", "--hdr-highlights", "75", "--hdr-peak", "800",
+                 "--hdr-compare", "--no-hud-16-9", "--hud-scale", "90", "--safe-zone", "5"});
+  CHECK(gfx_page.value("render scale") == "2x (1440p)");
+  CHECK(gfx_page.value("output scaling") == "fsr 1");
+  CHECK(gfx_page.value("anti-aliasing") == "fxaa");
+  CHECK(gfx_page.value("ambient occlusion") == "high");
+  CHECK(gfx_page.value("colour lut") == "warm_desert.cube");
+  CHECK(gfx_page.value("lut strength") == "50%");
+  CHECK(gfx_page.value("vrs shading") == "on");
+  CHECK(gfx_page.value("texture size") == "512");
+  CHECK(gfx_page.value("vsync") == "mailbox");
+  CHECK(gfx_page.value("frame rate") == "120 fps");
+  CHECK(gfx_page.value("hdr") == "on");
+  CHECK(gfx_page.value("hdr compare") == "on");
+  CHECK(gfx_page.value("hud 16:9 lock") == "off");
+  const auto gls = gfx_page.live_settings();
+  CHECK(gls.graphics.scale == 2 && gls.graphics.upscaler == carview::modern::Upscaler::kFsr1);
+  CHECK(gls.graphics.ssao == carview::modern::SsaoQuality::kHigh && gls.graphics.vrs);
+  CHECK(gls.graphics.lut == "warm_desert.cube" && gls.graphics.lut_strength == 50.0f);
+  CHECK(gls.graphics.hdr && gls.graphics.hdr_compare && !gls.graphics.hud_lock_16_9);
+  const auto gt = gfx_page.tokens();
+  CHECK(has(gt, {"--render-scale", "2"}) && has(gt, {"--output", "fsr1"}) && has(gt, {"--ssao", "high"}));
+  CHECK(has(gt, {"--lut", "warm_desert.cube"}) && has(gt, {"--vrs"}) && has(gt, {"--hdr-compare"}));
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

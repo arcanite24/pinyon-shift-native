@@ -263,6 +263,25 @@ void test_cube() {
   CHECK(!parse_cube("", lut, err));
   CHECK(!lut.valid());
   CHECK(!parse_cube("LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n0 0 0\n0 0 1\n0 1 0\n0 1 1\n1 0 0\n1 0 1\n1 1 0\n1 1 1\n", lut, err));
+
+  // 17^3 and 33^3 .cube LUTs parse and pack to exact RGBA8 byte counts.
+  for (uint32_t sz : {17u, 33u}) {
+    std::string txt = "TITLE \"Identity\"\nLUT_3D_SIZE " + std::to_string(sz) + "\n";
+    for (uint32_t b = 0; b < sz; ++b)
+      for (uint32_t g = 0; g < sz; ++g)
+        for (uint32_t r = 0; r < sz; ++r) {
+          char row[64];
+          std::snprintf(row, sizeof row, "%.6f %.6f %.6f\n", double(r) / (sz - 1), double(g) / (sz - 1),
+                        double(b) / (sz - 1));
+          txt += row;
+        }
+    CubeLut big;
+    CHECK(parse_cube(txt, big, err));
+    CHECK(big.size == sz);
+    const auto rgba = cube_to_rgba8(big);
+    CHECK(rgba.size() == size_t(sz) * sz * sz * 4u);
+    CHECK(near(sample_cube(big, {0.5f, 0.25f, 0.75f})[1], 0.25f, 0.01f));
+  }
 }
 
 void test_settings_tokens() {

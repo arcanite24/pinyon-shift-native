@@ -16,6 +16,7 @@ layout(set = 0, binding = 1) uniform sampler2D aux;
 layout(set = 0, binding = 2) uniform sampler3D lut3d;
 layout(set = 0, binding = 3) uniform sampler2D lum_adapt;
 layout(set = 0, binding = 4) uniform sampler2D depth_tex;
+layout(set = 0, binding = 6) uniform sampler2D ao_tex;
 
 layout(set = 0, binding = 5) uniform Optical {
   vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig), y near, z contrast, w brightness
@@ -30,6 +31,7 @@ layout(set = 0, binding = 5) uniform Optical {
   vec4 vig_bot_geom;  // xy center, zw radius
   vec4 vig_bot_rot;   // x cos(rot), y sin(rot), z feather, w unused
   vec4 texel_size;    // xy 1/w, 1/h, z time_sec, w unused
+  vec4 modern_p;      // x ao_strength, y lut_size, z lut_strength, w out_alpha
 } opt;
 
 layout(push_constant) uniform Post {
@@ -245,6 +247,10 @@ void main() {
   }
 
   vec3 c_lin = scene_raw * exp_scale;
+  if (opt.modern_p.x > 0.001) {
+    float ao = texture(ao_tex, clamp(v_uv, vec2(0.001), vec2(0.999))).r;
+    c_lin *= mix(1.0, ao, clamp(opt.modern_p.x, 0.0, 1.0));
+  }
 
   // God rays / volumetric sun shafts (radial sky occlusion march toward sun_screen_uv).
   if ((oflags & 4u) != 0u && opt.sun.z > 0.01 && opt.sun.w > 0.005) {
@@ -318,10 +324,11 @@ void main() {
   vec3 denom = max(hable(vec3(max(p.abc.w, 0.05))), vec3(1e-4));
   vec3 t = clamp(hable(c_lin) / denom, vec3(0.0), vec3(1.0));
 
-  // 16x16x16 3D colour-grading volume LUT (texel-centre addressing 15/16 + 1/32).
-  if ((flags & 2u) != 0u) {
-    vec3 uvw = t * (15.0 / 16.0) + vec3(1.0 / 32.0);
-    t = texture(lut3d, uvw).rgb;
+  // N^3 3D colour-grading volume LUT (texel-centre addressing (N-1)/N + 0.5/N).
+  if ((flags & 2u) != 0u && opt.modern_p.z > 0.001) {
+    float n = max(opt.modern_p.y, 2.0);
+    vec3 uvw = clamp(t, vec3(0.0), vec3(1.0)) * ((n - 1.0) / n) + vec3(0.5 / n);
+    t = mix(t, texture(lut3d, uvw).rgb, clamp(opt.modern_p.z, 0.0, 1.0));
   }
 
   // Paired rotated elliptical VignetteTop + VignetteBottom (Vignette_Templates.xml), or legacy vignette.
@@ -359,5 +366,5 @@ void main() {
     t = mix(t, sep, clamp(opt.dof.w, 0.0, 1.0));
   }
   t = clamp(t * p.balance.rgb, vec3(0.0), vec3(1.0));
-  out_color = vec4(encode_srgb(t), 1.0);
+  out_color = vec4(encode_srgb(t), opt.modern_p.w);
 }

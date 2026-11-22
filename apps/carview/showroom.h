@@ -291,6 +291,7 @@ class Showroom {
     // per texture, its offset and level count (0: upload it apart).
     std::shared_ptr<Renderer::Buffer> texels;
     std::vector<std::pair<VkDeviceSize, uint32_t>> texel_ranges;
+    std::vector<uint32_t> texel_skips;
     // Their images, made by the worker too (per texture; empty where it
     // was already uploaded or failed, which begin_world then handles).
     // The ones begin_world does not take go with the StagedWorld.
@@ -441,6 +442,8 @@ class Showroom {
   };
   void set_world_texture_budget(const WorldTextureBudget& budget);
   WorldTextureBudget world_texture_budget() const;
+  void set_texture_cap(modern::TextureCap cap) { texture_cap_ = cap; }
+  modern::TextureCap texture_cap() const { return texture_cap_; }
   // Main thread only: reads main-thread-owned retired/pool state alongside
   // world_textures_mutex_.
   WorldTextureStats world_texture_stats() const;
@@ -505,12 +508,12 @@ class Showroom {
   uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0);
   bool upload_texture(const cars::bake::Texture* texture, bool srgb, GpuTexture& out, std::string& error);
   bool create_texture_image(const cars::bake::Texture& texture, bool srgb, uint32_t levels, GpuTexture& out,
-                            std::string& error);
+                            std::string& error, uint32_t skip = 0);
   // Makes the image, view and set of a world texture staged in `texels`
   // and records its copy into `cmd` (the scenery's fenced upload).
   // `made`: its image when the worker made it (taken), else null.
   bool begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
-                           VkCommandBuffer cmd, Renderer::Image* made, std::string& error);
+                           uint32_t skip, VkCommandBuffer cmd, Renderer::Image* made, std::string& error);
   // Destroying Vulkan objects off this thread (freeing a scenery's
   // buffers takes milliseconds): `reap` runs `f` on the reaper thread now;
   // `retire` once the frame in flight is done with what `f` frees
@@ -556,6 +559,7 @@ class Showroom {
   void record_instance(VkCommandBuffer cmd, const float m[16], const drive::LampShaderVectors* lamps = nullptr);
 
   bool guest_ = false;
+  modern::TextureCap texture_cap_ = modern::TextureCap::kFull;
   std::vector<Instance> instances_;
   Renderer& r_;
   cars::bake::Bake car_, wheel_, tyre_, tyre_textures_, shared_;

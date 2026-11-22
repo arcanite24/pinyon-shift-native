@@ -1339,13 +1339,15 @@ static uint32_t texture_chain(const bake::Texture& texture, VkDeviceSize& total)
 }
 
 bool Showroom::create_texture_image(const bake::Texture& texture, bool srgb, uint32_t levels, GpuTexture& out,
-                                    std::string& error) {
+                                    std::string& error, uint32_t skip) {
+  if (skip >= levels) skip = levels ? levels - 1 : 0;
+  const uint32_t kept = levels - skip;
   const VkFormat format = vk_format(texture.format, srgb);
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = format;
-  info.extent = {texture.levels[0].width, texture.levels[0].height, 1};
-  info.mipLevels = levels;
+  info.extent = {texture.levels[skip].width, texture.levels[skip].height, 1};
+  info.mipLevels = kept;
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1362,7 +1364,7 @@ bool Showroom::create_texture_image(const bake::Texture& texture, bool srgb, uin
   view.format = format;
   view.components = {vk_swizzle(texture.swizzle[0]), vk_swizzle(texture.swizzle[1]),
                      vk_swizzle(texture.swizzle[2]), vk_swizzle(texture.swizzle[3])};
-  view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
+  view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kept, 0, 1};
   if (vkCreateImageView(r_.device_, &view, nullptr, &out.view) != VK_SUCCESS) {
     r_.destroy_image(out);
     error = "vkCreateImageView failed";
@@ -1371,16 +1373,18 @@ bool Showroom::create_texture_image(const bake::Texture& texture, bool srgb, uin
   return true;
 }
 
-// Copies `levels` levels, packed from `offset` in `staging`, into `image`
+// Copies levels `[skip .. levels)` packed from `offset` in `staging` into `image`
 // and leaves it ready to sample.
 static void record_texture_copy(VkCommandBuffer cmd, VkBuffer staging, VkDeviceSize offset, const bake::Texture& texture,
-                         uint32_t levels, VkImage image) {
+                                uint32_t levels, VkImage image, uint32_t skip = 0) {
+  if (skip >= levels) skip = levels ? levels - 1 : 0;
+  const uint32_t kept = levels - skip;
   std::vector<VkBufferImageCopy> copies;
-  for (uint32_t i = 0; i < levels; ++i) {
+  for (uint32_t i = skip; i < levels; ++i) {
     const auto& level = texture.levels[i];
     VkBufferImageCopy copy{};
     copy.bufferOffset = offset;
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - skip, 0, 1};
     copy.imageExtent = {level.width, level.height, 1};
     copies.push_back(copy);
     offset += level.data.size();
@@ -1393,7 +1397,7 @@ static void record_texture_copy(VkCommandBuffer cmd, VkBuffer staging, VkDeviceS
   b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.image = image;
-  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
+  b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kept, 0, 1};
   VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dep.imageMemoryBarrierCount = 1;
   dep.pImageMemoryBarriers = &b;
@@ -1431,9 +1435,13 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
     error = "texture " + texture->name + ": level 0 has the wrong size";
     return false;
   }
-  if (!create_texture_image(*texture, srgb, levels, out, error)) return false;
+  const uint32_t skip = modern::texture_levels_to_skip(texture->levels[0].width, texture->levels[0].height, levels,
+                                                       texture_cap_);
+  VkDeviceSize kept_bytes = 0;
+  for (uint32_t i = skip; i < levels; ++i) kept_bytes += texture->levels[i].data.size();
+  if (!create_texture_image(*texture, srgb, levels, out, error, skip)) return false;
   Renderer::Buffer staging;
-  if (!r_.create_buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+  if (!r_.create_buffer(kept_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         staging)) {
     r_.destroy_image(out);
@@ -1448,13 +1456,13 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
     return false;
   }
   VkDeviceSize offset = 0;
-  for (uint32_t i = 0; i < levels; ++i) {
+  for (uint32_t i = skip; i < levels; ++i) {
     std::memcpy(mapped + offset, texture->levels[i].data.data(), texture->levels[i].data.size());
     offset += texture->levels[i].data.size();
   }
   vmaUnmapMemory(r_.allocator_, staging.allocation);
   const bool ok = r_.submit_once(
-      [&](VkCommandBuffer cmd) { record_texture_copy(cmd, staging.buffer, 0, *texture, levels, out.image); });
+      [&](VkCommandBuffer cmd) { record_texture_copy(cmd, staging.buffer, 0, *texture, levels, out.image, skip); });
   r_.destroy_buffer(staging);
   if (!ok) {
     error = "texture upload";
@@ -1725,6 +1733,16 @@ bool Showroom::create_pipelines(std::string& error) {
   VkPipelineDynamicStateCreateInfo dynamic_bias{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dynamic_bias.dynamicStateCount = 3;
   dynamic_bias.pDynamicStates = bias_states;
+  const VkDynamicState vrs_states[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                        VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR};
+  VkPipelineDynamicStateCreateInfo dynamic_vrs{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic_vrs.dynamicStateCount = 3;
+  dynamic_vrs.pDynamicStates = vrs_states;
+  const VkDynamicState vrs_bias_states[4] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                             VK_DYNAMIC_STATE_DEPTH_BIAS, VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR};
+  VkPipelineDynamicStateCreateInfo dynamic_bias_vrs{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic_bias_vrs.dynamicStateCount = 4;
+  dynamic_bias_vrs.pDynamicStates = vrs_bias_states;
   auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
                    bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out,
                    VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
@@ -1777,7 +1795,10 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pMultisampleState = &multisample;
     info.pDepthStencilState = &depth;
     info.pColorBlendState = &blend;
-    info.pDynamicState = vertex ? &dynamic_bias : &dynamic;
+    const bool use_vrs = r_.vrs_supported() && color_out && !blend_on && samples == r_.samples_ &&
+                         (&out != &env_world_opaque_);
+    info.pDynamicState = vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
+                                : (use_vrs ? &dynamic_vrs : &dynamic);
     info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
     return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
   };
@@ -2484,6 +2505,7 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
   };
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
+  r_.apply_vrs(cmd);
   for (const auto& d : draws_)
     if (!d.glass || opaque == glass) draw(d);
   if (opaque == glass) return;
@@ -2571,6 +2593,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal) {
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
     for (int pass = 0; pass < 2; ++pass) {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass ? g->glass_ : op_pipe);
+      if (!pass) r_.apply_vrs(cmd);
       for (const auto& d : g->draws_) {
         if (d.glass != (pass == 1)) continue;
         ShowroomPush push = d.push;
@@ -2859,6 +2882,7 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
                           nullptr);
   for (int pass = 0; pass < 2; ++pass) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass ? glass_ : opaque_);
+    if (!pass) r_.apply_vrs(cmd);
     for (const auto& d : draws_) {
       if (d.glass != (pass == 1)) continue;
       ShowroomPush push = d.push;
@@ -3315,24 +3339,30 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     error = "world staging buffers";
     return false;
   }
-  // The new textures' levels, packed (each from a 16-byte boundary).
+  // The new textures' levels, packed (each from a 16-byte boundary), honouring TextureCap.
   VkDeviceSize texel_bytes = 0;
   out.texel_ranges.assign(out.textures.size(), {0, 0});
+  out.texel_skips.assign(out.textures.size(), 0);
   for (size_t i = 0; i < out.textures.size(); ++i) {
     const auto& t = out.textures[i];
     if (!t || t->texture.levels.empty()) continue;
     VkDeviceSize bytes = 0;
     const uint32_t levels = texture_chain(t->texture, bytes);
     if (!levels) continue;  // uploaded apart, which reports it
+    const uint32_t skip = modern::texture_levels_to_skip(t->texture.levels[0].width, t->texture.levels[0].height,
+                                                         levels, texture_cap_);
+    VkDeviceSize kept_bytes = 0;
+    for (uint32_t l = skip; l < levels; ++l) kept_bytes += t->texture.levels[l].data.size();
     out.texel_ranges[i] = {texel_bytes, levels};
-    texel_bytes += (bytes + 15) / 16 * 16;
+    out.texel_skips[i] = skip;
+    texel_bytes += (kept_bytes + 15) / 16 * 16;
   }
   if (texel_bytes) {
     std::vector<uint8_t> packed(size_t(texel_bytes), 0);
     for (size_t i = 0; i < out.textures.size(); ++i) {
       if (!out.texel_ranges[i].second) continue;
       size_t at = size_t(out.texel_ranges[i].first);
-      for (uint32_t l = 0; l < out.texel_ranges[i].second; ++l) {
+      for (uint32_t l = out.texel_skips[i]; l < out.texel_ranges[i].second; ++l) {
         const auto& data = out.textures[i]->texture.levels[l].data;
         std::memcpy(packed.data() + at, data.data(), data.size());
         at += data.size();
@@ -3341,6 +3371,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     if (!stage(packed.data(), texel_bytes, out.texels)) {
       out.texels.reset();  // every texture uploads apart instead
       out.texel_ranges.assign(out.textures.size(), {0, 0});
+      out.texel_skips.assign(out.textures.size(), 0);
     }
   }
   // Their images and views too (thread-safe device calls; on the render
@@ -3359,7 +3390,8 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
         if (world_textures_.count(t->record)) continue;
       }
       std::string why;
-      if (!create_texture_image(t->texture, t->srgb, out.texel_ranges[i].second, (*out.images)[i], why))
+      if (!create_texture_image(t->texture, t->srgb, out.texel_ranges[i].second, (*out.images)[i], why,
+                                out.texel_skips[i]))
         r.destroy_image((*out.images)[i]);  // begin_world tries again and reports it
     }
   }
@@ -3367,12 +3399,12 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
 }
 
 bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, VkDeviceSize offset, uint32_t levels,
-                                   VkCommandBuffer cmd, Renderer::Image* made, std::string& error) {
+                                   uint32_t skip, VkCommandBuffer cmd, Renderer::Image* made, std::string& error) {
   GpuTexture image;
   if (made && made->image) {
     image = *made;
     *made = {};
-  } else if (!create_texture_image(t.texture, t.srgb, levels, image, error)) {
+  } else if (!create_texture_image(t.texture, t.srgb, levels, image, error, skip)) {
     r_.destroy_image(image);
     return false;
   }
@@ -3381,7 +3413,7 @@ bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, V
     r_.destroy_image(image);
     return false;
   }
-  record_texture_copy(cmd, texels, offset, t.texture, levels, image.image);
+  record_texture_copy(cmd, texels, offset, t.texture, levels, image.image, skip);
   {
     std::lock_guard<std::mutex> lock(world_textures_mutex_);
     world_textures_[t.record] = image;
@@ -3536,8 +3568,9 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
         }
         std::string why;
         Renderer::Image* made = st.images && k < st.images->size() ? &(*st.images)[k] : nullptr;
-        if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, p->cmd,
-                                 made, why))
+        const uint32_t skip = k < st.texel_skips.size() ? st.texel_skips[k] : 0u;
+        if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, skip,
+                                 p->cmd, made, why))
           notes_.push_back("world texture " + t->texture.name + ": " + why);  // drawn flat
       }
     }
@@ -4099,6 +4132,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1, &material_sets_[0], 0,
                           nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque_);
+  r_.apply_vrs(cmd);
   for (const auto& d : world_draws_) {
     ShowroomPush push = d.push;
     std::memcpy(push.model, world_transform_, sizeof push.model);
@@ -4190,6 +4224,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : op_pipe;
       if (pipeline != bound) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+        if (d.blend < 2) r_.apply_vrs(cmd);
         bias = -1;
       }
       // Decals and road paint: pulled towards the eye by a few float ulps
@@ -6608,6 +6643,7 @@ void Showroom::update_driver_mesh(float wheel_rad) {
 void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   if (!vfx_ready_ || driver_count_ == 0 || !world_opaque_ || !world_white_set_) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  r_.apply_vrs(cmd);
   const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
   ShowroomPush pc{};
@@ -6633,6 +6669,7 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
 void Showroom::record_debris_draw(VkCommandBuffer cmd) {
   if (!vfx_ready_ || debris_count_ == 0 || !world_opaque_ || !world_white_set_) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  r_.apply_vrs(cmd);
   const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
   ShowroomPush pc{};
@@ -6699,8 +6736,8 @@ void Showroom::record_particles_draw(VkCommandBuffer cmd) {
     float sun_dir[4];
     float up_dir[4];
   } pc{};
-  const uint32_t w = std::max(1u, r_.target_width());
-  const uint32_t h = std::max(1u, r_.target_height());
+  const uint32_t w = std::max(1u, r_.render_width());
+  const uint32_t h = std::max(1u, r_.render_height());
   pc.viewport_near[0] = 1.0f / float(w);
   pc.viewport_near[1] = 1.0f / float(h);
   pc.viewport_near[2] = particle_near_plane_;

@@ -42,6 +42,7 @@
 #include "audio/bake.h"
 #include "audio/radio.h"
 #include "audio/xml.h"
+#include "display_hdr_win.h"
 #include "drive_helpers.h"
 #include "fmv_player.h"
 #include "fh1data/cjk_font.h"
@@ -55,6 +56,7 @@
 #include "platform_support.h"
 #include "perf_overlay.h"
 #include "process_time.h"
+#include "render_modern.h"
 #include "replay_view.h"
 #include "reference.h"
 #include "renderer.h"
@@ -771,9 +773,65 @@ V3 transform(const float* m, V3 p, float w) {
           m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14] * w};
 }
 
+namespace {
+float g_cam_near = 0.25f, g_cam_far = 16000.0f, g_cam_proj00 = 1.0f, g_cam_proj11 = -1.0f;
+
+std::vector<std::string> scan_lut_files(const std::filesystem::path& state_root) {
+  std::vector<std::string> out;
+  if (state_root.empty()) return out;
+  const std::filesystem::path dir = state_root / "luts";
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec)) return out;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    if (entry.path().extension() == ".cube" || entry.path().extension() == ".CUBE") {
+      out.push_back(entry.path().filename().string());
+    }
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+bool apply_user_cube_lut(const std::string& lut_name, const std::filesystem::path& state_root, Renderer& renderer,
+                         std::string& error) {
+  if (lut_name.empty()) return false;
+  std::filesystem::path p(lut_name);
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(p, ec) && !state_root.empty()) {
+    const std::filesystem::path in_luts = state_root / "luts" / p;
+    if (std::filesystem::is_regular_file(in_luts, ec)) p = in_luts;
+  }
+  FILE* f = std::fopen(p.string().c_str(), "rb");
+  if (!f) {
+    error = "cannot open .cube LUT: " + p.string();
+    return false;
+  }
+  std::fseek(f, 0, SEEK_END);
+  const long sz = std::ftell(f);
+  std::fseek(f, 0, SEEK_SET);
+  std::string text;
+  if (sz > 0) {
+    text.resize(size_t(sz));
+    const size_t got = std::fread(text.data(), 1, text.size(), f);
+    text.resize(got);
+  }
+  std::fclose(f);
+  carview::modern::CubeLut cube;
+  if (!carview::modern::parse_cube(text, cube, error)) return false;
+  const auto rgba = carview::modern::cube_to_rgba8(cube);
+  if (rgba.empty()) {
+    error = "empty .cube LUT";
+    return false;
+  }
+  renderer.set_post_lut(rgba, cube.size);
+  return true;
+}
+}  // namespace
+
 // A camera at eye looking at target, in the car's model frame.
 ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery, bool reverse_z = false,
                          float fov_degrees = 55.0f, float near_clip = 0.25f) {
+  fov_degrees = carview::modern::effective_vfov(fov_degrees, aspect);
   const float fovy = fov_degrees * kPi / 180.0f;
   const V3 f = norm(sub(target, eye));
   const V3 side = norm(cross3(f, up));
@@ -793,6 +851,10 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery, bo
     projection[10] = 0;
     projection[14] = near_z;
   }
+  g_cam_near = near_z;
+  g_cam_far = far_z;
+  g_cam_proj00 = projection[0];
+  g_cam_proj11 = projection[5];
   ShowroomFrame frame{};
   multiply4(projection, view, frame.view_projection);
   std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
@@ -1640,6 +1702,9 @@ int run_drive(int argc, char** argv) {
   bool reverse_z = true;
   bool backface_cull = (std::getenv("SHIFT_NO_CULL") == nullptr);
   bool z_prepass = (std::getenv("SHIFT_Z_PREPASS") != nullptr);
+  carview::modern::GraphicsSettings cli_graphics;
+  uint32_t cli_hdr_pattern = 0;
+  float cli_hdr_pattern_nits = 1000.0f;
   // The player's settings (settings.h) go in before the command line, in
   // the window only; --no-settings skips them, --save-settings keeps this
   // run's options for the next.
@@ -1874,6 +1939,11 @@ int run_drive(int argc, char** argv) {
     else if (a == "--size") {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
       size_given = true;
+    } else if (carview::modern::apply_graphics_option(cli_graphics, args, i)) {
+    } else if (a == "--hdr-pattern") {
+      cli_hdr_pattern = uint32_t(std::clamp(std::atoi(next()), 0, 3));
+    } else if (a == "--hdr-pattern-nits") {
+      cli_hdr_pattern_nits = std::clamp(float(std::atof(next())), 80.0f, 10000.0f);
     } else if (a == "--help" || a == "-h") {
       drive_usage();
       return 0;
@@ -2944,6 +3014,15 @@ int run_drive(int argc, char** argv) {
     render_options.reverse_z = reverse_z;
     render_options.backface_cull = backface_cull;
     render_options.z_prepass = z_prepass;
+    cli_graphics = carview::modern::clamp_graphics(cli_graphics);
+    render_options.graphics = cli_graphics;
+    render_options.vsync = cli_graphics.vsync;
+    showroom.set_texture_cap(cli_graphics.texture_cap);
+    if (cli_graphics.auto_hdr && !headless) {
+      const auto st_dir = carview::settings_path().parent_path();
+      if (!st_dir.empty()) carview::set_display_hdr_restore_file(st_dir / "hdr_restore.bin");
+      carview::turn_on_display_hdr();
+    }
     // Anisotropic filtering of the ground's grazing textures (ours): the low preset stays cheap.
     render_options.anisotropy = low_preset ? 2.0f : 16.0f;
     if (post_on) {
@@ -2979,6 +3058,25 @@ int run_drive(int argc, char** argv) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;
     } else {
+      renderer.set_hdr_pattern(cli_hdr_pattern, cli_hdr_pattern_nits);
+      bool user_lut_active = false;
+      carview::modern::GraphicsSettings active_graphics = cli_graphics;
+      carview::modern::FramePacer frame_pacer;
+      int display_hz = 60;
+      if (window) {
+        if (const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window))) {
+          if (dm->refresh_rate > 10.0f) display_hz = int(std::lround(dm->refresh_rate));
+        }
+        frame_pacer.set_interval(carview::modern::fps_cap_interval(active_graphics.fps_cap, display_hz));
+      }
+      if (!active_graphics.lut.empty()) {
+        std::string lut_err;
+        if (apply_user_cube_lut(active_graphics.lut, carview::settings_path().parent_path(), renderer, lut_err)) {
+          user_lut_active = true;
+        } else {
+          std::fprintf(stderr, "carview: LUT note: %s\n", lut_err.c_str());
+        }
+      }
       if (tod_system.loaded_tod) {
         std::string sky_err;
         if (!showroom.upload_sky(tod_system.sky_assets, sky_err))
@@ -3733,6 +3831,7 @@ int run_drive(int argc, char** argv) {
       bool club_open = false;
       size_t club_pick = 0;
       SettingsPage settings_page;  // the pause menu's settings (M7)
+      settings_page.set_available_luts(scan_lut_files(carview::settings_path().parent_path()));
       bool settings_live_overlay = false;  // true when opened via live F6 hotkey
       carview::Slice12Runtime slice12;
       slice12.save_tree_label = (slice12_modded_save || mods_session.isolation().isolated) ? "user-modded" : "user";
@@ -5103,8 +5202,9 @@ int run_drive(int argc, char** argv) {
               ps = photo_mode.effects().apply_to_post(ps);
             }
             renderer.set_post_settings(ps);
-            if (zone_idx != last_lut_zone || std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
-                std::fabs(tod.night_color_grade - last_lut_night) > 0.005f) {
+            if (!user_lut_active &&
+                (zone_idx != last_lut_zone || std::fabs(tod.day_color_grade - last_lut_day) > 0.005f ||
+                 std::fabs(tod.night_color_grade - last_lut_night) > 0.005f)) {
               last_lut_zone = zone_idx;
               last_lut_day = tod.day_color_grade;
               last_lut_night = tod.night_color_grade;
@@ -5533,7 +5633,13 @@ int run_drive(int argc, char** argv) {
         if (cf->load_for_language(game_root_of(), language, nullptr)) carview::ui::set_cjk_font(cf);
       }
       carview::RadioPopupGpuState radio_popup_gpu;
-      auto set_hud = [&](int width, int height, const std::string& banner, const PauseMenu* menu = nullptr) {
+      auto set_hud = [&](int win_w, int win_h, const std::string& banner, const PauseMenu* menu = nullptr) {
+        const carview::modern::HudLayout hl = carview::modern::hud_layout(
+            float(win_w), float(win_h), active_graphics.hud_lock_16_9, active_graphics.hud_scale,
+            active_graphics.safe_zone);
+        renderer.set_hud_layout(hl);
+        const int width = std::max(1, int(std::lround(hl.virtual_w)));
+        const int height = std::max(1, int(std::lround(hl.virtual_h)));
         HudState st;
         st.banner = banner;
         std::string detail_title;
@@ -6433,6 +6539,7 @@ int run_drive(int argc, char** argv) {
           if (hud) set_hud(int(width), int(height), race ? race_banner() : intro);
           const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
           double rec = 0, gpu = 0;
+          renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
           if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
@@ -6787,6 +6894,7 @@ int run_drive(int argc, char** argv) {
             set_radio_popup(int(height));
           }
           std::vector<uint8_t> rgba;
+          renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
@@ -8322,6 +8430,40 @@ int run_drive(int argc, char** argv) {
                 }
                 slice12.apply_live_settings(ls, rig, settings_path().parent_path());
                 slice12.sync_pad_capabilities(pads);
+                if (ls.graphics != active_graphics) {
+                  const bool lut_changed = ls.graphics.lut != active_graphics.lut;
+                  const bool ahdr_changed = ls.graphics.auto_hdr != active_graphics.auto_hdr;
+                  active_graphics = ls.graphics;
+                  renderer.set_graphics_settings(active_graphics);
+                  showroom.set_texture_cap(active_graphics.texture_cap);
+                  frame_pacer.set_interval(carview::modern::fps_cap_interval(active_graphics.fps_cap, display_hz));
+                  if (lut_changed) {
+                    if (active_graphics.lut.empty()) {
+                      user_lut_active = false;
+                      last_lut_zone = -2;
+                    } else {
+                      std::string lut_err;
+                      if (apply_user_cube_lut(active_graphics.lut, carview::settings_path().parent_path(), renderer,
+                                              lut_err)) {
+                        user_lut_active = true;
+                      } else {
+                        user_lut_active = false;
+                        last_lut_zone = -2;
+                        notice = lut_err;
+                        notice_until = vehicle.time() + 3.0;
+                      }
+                    }
+                  }
+                  if (ahdr_changed && window) {
+                    if (active_graphics.auto_hdr) {
+                      const auto st_dir = carview::settings_path().parent_path();
+                      if (!st_dir.empty()) carview::set_display_hdr_restore_file(st_dir / "hdr_restore.bin");
+                      carview::turn_on_display_hdr();
+                    } else {
+                      carview::restore_display_hdr();
+                    }
+                  }
+                }
               };
               auto confirm = [&]() {
                 if (settings_page.on_rebind_row()) {
@@ -9818,11 +9960,16 @@ int run_drive(int argc, char** argv) {
                     &menu);
           }
           vehicle.set_pose(stepped);
+          renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
           }
+          const double now_s =
+              std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+          const double wait_s = frame_pacer.wait_for(now_s);
+          if (wait_s > 0.0005) SDL_DelayNS(Uint64(wait_s * 1e9));
           frame_stats.frame(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
           if (window_frames_limit && frame_stats.frames() >= window_frames_limit) {
             running = false;
@@ -9952,6 +10099,7 @@ int run_drive(int argc, char** argv) {
           }
           set_hud(int(width), int(height), "");
           std::vector<uint8_t> rgba;
+          renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: pause-map-png: %s\n", error.c_str());
             status = 1;

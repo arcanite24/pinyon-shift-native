@@ -3,6 +3,7 @@
 // SDL window's swapchain or offscreen (headless, no window system at all).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -140,6 +141,7 @@ class Renderer {
     modern::VSync vsync = modern::VSync::kFifo;
     bool backface_cull = true;
     bool z_prepass = false;
+    modern::GraphicsSettings graphics;
   };
 
   Renderer() = default;
@@ -227,9 +229,26 @@ class Renderer {
     options_.post.enabled = was_enabled;
   }
   const PostSettings& post_settings() const { return options_.post; }
-  // Queues an updated 16x16x16 RGBA8 3D colour-grading LUT (16,384 bytes) for upload before post.
-  void set_post_lut(std::span<const uint8_t> rgba16);
+  // Queues an updated N^3 RGBA8 3D colour-grading LUT (default 16^3, supports 16/17/33) for upload before post.
+  void set_post_lut(std::span<const uint8_t> rgba, uint32_t size = 16);
+  void set_lut_strength(float pct) { lut_strength_ = std::clamp(pct, 0.0f, 100.0f) / 100.0f; }
   void reset_auto_exposure() { lum_reset_ = true; }
+
+  // Modern graphics pipeline controls (render scale, SSAO, FXAA, VRS, HDR10/scRGB, HUD layout).
+  void set_graphics_settings(const modern::GraphicsSettings& g);
+  const modern::GraphicsSettings& graphics_settings() const { return graphics_; }
+  void set_camera_projection(float near_plane, float far_plane, float proj00, float proj11);
+  void set_hud_layout(const modern::HudLayout& layout) { hud_layout_ = layout; }
+  void set_hdr_pattern(uint32_t pattern, float pattern_nits = 1000.0f) {
+    hdr_pattern_ = pattern;
+    hdr_pattern_nits_ = pattern_nits;
+  }
+  bool vrs_supported() const { return vrs_supported_; }
+  bool vrs_active() const { return vrs_supported_ && graphics_.vrs; }
+  void apply_vrs(VkCommandBuffer cmd) const;
+  bool hdr10_supported() const { return hdr10_supported_; }
+  bool scrgb_supported() const { return scrgb_supported_; }
+  modern::HdrMode hdr_active() const { return hdr_mode_; }
 
   // An opaque panel drawn on the CPU (RGBA8, already sRGB-encoded) and
   // copied over every following frame with its top-left corner at (x, y)
@@ -252,6 +271,8 @@ class Renderer {
   const std::string& device_name() const { return device_name_; }
   uint32_t target_width() const { return target_width_; }
   uint32_t target_height() const { return target_height_; }
+  uint32_t render_width() const { return render_width_ ? render_width_ : target_width_; }
+  uint32_t render_height() const { return render_height_ ? render_height_ : target_height_; }
   VkImageView depth_resolved_view() const { return depth_resolved_.view; }
   uint32_t samples() const { return uint32_t(samples_); }
   uint32_t validation_messages() const { return validation_messages_; }
@@ -287,10 +308,21 @@ class Renderer {
   bool create_pipeline(VkFormat color_format, std::string& error);
   bool create_targets(uint32_t width, uint32_t height, std::string& error);
   bool create_post(std::string& error);  // the post pipelines and sets (once)
+  bool create_modern_passes(std::string& error);
+  void destroy_modern_passes();
+  void update_modern_descriptors();
+  bool ensure_lut_image(uint32_t size, std::string& error);
   // The shadow map (options_.shadow.size, or 1x1 without shadows) and its
   // comparison sampler, made once; left in DEPTH_STENCIL_READ_ONLY_OPTIMAL.
   bool ensure_shadow_map(std::string& error);
-  void record_post(VkCommandBuffer cmd, VkImageView final_view);
+  void record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeline pipe, float out_alpha);
+  void record_ssao(VkCommandBuffer cmd);
+  void record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst_img, VkImageView dst_view, uint32_t w,
+                   uint32_t h);
+  void record_upscale(VkCommandBuffer cmd, VkImage src_img, VkDescriptorSet src_set, uint32_t src_w, uint32_t src_h,
+                      VkImage dst_img, VkImageView dst_view, uint32_t dst_w, uint32_t dst_h);
+  void record_hdr_output(VkCommandBuffer cmd, VkDescriptorSet src_set, VkImage dst_img, VkImageView dst_view,
+                         VkFormat dst_format, uint32_t w, uint32_t h);
   void destroy_targets();
   bool create_swapchain(std::string& error);
   void destroy_swapchain(bool keep_handle);
@@ -310,7 +342,8 @@ class Renderer {
   uint64_t frames_done() const { return frames_done_; }
   void record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                     VkImageLayout final_layout, const FrameConstants& constants,
-                    VkBuffer capture_dst = VK_NULL_HANDLE, bool capture_before_ui = false);
+                    VkBuffer capture_dst = VK_NULL_HANDLE, bool capture_before_ui = false,
+                    VkFormat final_format = VK_FORMAT_UNDEFINED);
   // Copies the changed overlay layers into their buffer (none of the GPU's
   // frames may be using it); false when none is staged.
   bool stage_overlay();
@@ -345,6 +378,19 @@ class Renderer {
   Image texture_;
 
   uint32_t target_width_ = 0, target_height_ = 0;
+  uint32_t render_width_ = 0, render_height_ = 0;
+  modern::GraphicsSettings graphics_;
+  modern::HudLayout hud_layout_;
+  float cam_near_ = 0.25f, cam_far_ = 4000.0f, cam_proj00_ = 1.0f, cam_proj11_ = -1.0f;
+  float lut_strength_ = 1.0f;
+  uint32_t lut_image_size_ = 16, lut_pending_size_ = 16;
+  uint32_t hdr_pattern_ = 0;
+  float hdr_pattern_nits_ = 1000.0f;
+  bool vrs_supported_ = false;
+  bool hdr10_supported_ = false, scrgb_supported_ = false, hdr_colorspace_ext_ = false;
+  modern::HdrMode hdr_mode_ = modern::HdrMode::kOff;
+  VkColorSpaceKHR swapchain_colorspace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+  bool targets_dirty_ = false;
   // render_timed: the kept target and the timestamp queries.
   Image bench_output_;
   VkQueryPool timestamps_ = VK_NULL_HANDLE;
@@ -370,12 +416,30 @@ class Renderer {
   bool lum_reset_ = true;
   VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
-  VkPipeline post_quarter_ = VK_NULL_HANDLE, post_final_ = VK_NULL_HANDLE;
+  VkPipeline post_quarter_ = VK_NULL_HANDLE, post_final_ = VK_NULL_HANDLE, post_final_sdr_ = VK_NULL_HANDLE;
   VkDescriptorPool post_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet post_sets_[kPostSetCount] = {};
   VkSampler post_sampler_ = VK_NULL_HANDLE;
   VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
   Buffer post_optical_buf_;  // device-local, filled by vkCmdUpdateBuffer in the frame's commands
+  // Modern post-FX & HDR targets (SSAO, FXAA, spatial upscale, HDR10/scRGB).
+  Image ao_white_, ao_raw_, ao_tmp_, ao_blur_;
+  uint32_t ao_width_ = 0, ao_height_ = 0;
+  Image scene_sdr_, scene_fxaa_, upscale_tmp_, stand_in_, stand_in_fxaa_;
+  VkDescriptorSetLayout ssao_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout single_tex_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorPool modern_pool_ = VK_NULL_HANDLE;
+  VkPipelineLayout ssao_layout_ = VK_NULL_HANDLE, fxaa_layout_ = VK_NULL_HANDLE,
+                   upscale_layout_ = VK_NULL_HANDLE, hdr_layout_ = VK_NULL_HANDLE;
+  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE;
+  VkPipeline hdr_pipe_sdr_ = VK_NULL_HANDLE, hdr_pipe_swap_ = VK_NULL_HANDLE;
+  VkFormat hdr_swap_fmt_ = VK_FORMAT_UNDEFINED;
+  VkDescriptorSet ssao_sets_[3] = {};
+  VkDescriptorSet fxaa_set_scene_ = VK_NULL_HANDLE, fxaa_set_standin_ = VK_NULL_HANDLE;
+  VkDescriptorSet upscale_set_scene_ = VK_NULL_HANDLE, upscale_set_fxaa_ = VK_NULL_HANDLE,
+                  upscale_set_tmp_ = VK_NULL_HANDLE;
+  VkDescriptorSet hdr_set_standin_ = VK_NULL_HANDLE, hdr_set_fxaa_ = VK_NULL_HANDLE;
+  bool modern_ready_ = false;
   // The sun shadow map (D16).
   Image shadow_map_;
   VkSampler shadow_sampler_ = VK_NULL_HANDLE;
@@ -448,9 +512,10 @@ class Renderer {
   // The UI layer (made on first use).
   bool create_ui(std::string& error);
   void record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view, VkImageLayout& layout,
-                 VkPipelineStageFlags2& last_stage, VkAccessFlags2& last_access);
+                 VkPipelineStageFlags2& last_stage, VkAccessFlags2& last_access, VkPipeline pipeline,
+                 uint32_t width, uint32_t height);
   bool ui_ready_ = false, ui_failed_ = false;
-  VkPipeline ui_pipeline_ = VK_NULL_HANDLE;
+  VkPipeline ui_pipeline_ = VK_NULL_HANDLE, ui_pipeline_sdr_ = VK_NULL_HANDLE;
   VkPipelineLayout ui_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout ui_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorPool ui_pool_ = VK_NULL_HANDLE;
