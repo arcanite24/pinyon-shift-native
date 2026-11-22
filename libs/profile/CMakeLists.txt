@@ -1,6 +1,7 @@
-add_library(shift_profile STATIC src/profile.cpp src/drive_save.cpp)
+add_library(shift_profile STATIC src/profile.cpp src/drive_save.cpp src/sha256.cpp src/backup.cpp src/profiles.cpp
+            src/sync.cpp src/xenia_import.cpp)
 target_include_directories(shift_profile PUBLIC include)
-target_link_libraries(shift_profile PUBLIC shift_drive shift_garage PRIVATE shift_sqlite3)
+target_link_libraries(shift_profile PUBLIC shift_drive shift_garage fh1data PRIVATE shift_sqlite3)
 target_compile_features(shift_profile PUBLIC cxx_std_20)
 if(MSVC)
   target_compile_options(shift_profile PRIVATE /W4)

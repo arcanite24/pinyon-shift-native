@@ -148,6 +148,11 @@ constexpr Kept kKept[] = {
     {"touch-controls", true, "touch-controls"},
     {"touch-steer", true, "touch-steer"},
     {"android-gpu-driver", true, "android-gpu-driver"},
+    // Slice 13A: Modding & Save Ecosystem.
+    {"sync-folder", true, "sync-folder"},
+    {"device-name", true, "device-name"},
+    {"profile", true, "profile"},
+    {"mods-native", false, "mods-native"},
 };
 
 const Kept* kept(const std::string& key) {
@@ -181,6 +186,8 @@ std::filesystem::path settings_path() {
   const auto u = user_folder();
   return u.empty() ? u : u / "settings.txt";
 }
+
+std::filesystem::path default_user_dir() { return user_folder(); }
 
 std::filesystem::path default_mods_root() {
   const auto u = user_folder();

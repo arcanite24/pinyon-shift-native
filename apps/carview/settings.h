@@ -16,6 +16,8 @@ namespace carview {
 // SHIFT_SETTINGS, else <user folder>/settings.txt (SDL's pref path
 // shift-engine/), or empty.
 std::filesystem::path settings_path();
+// The user data folder (SDL's pref path shift-engine/), or empty.
+std::filesystem::path default_user_dir();
 // The user folder's mods/ (the default mods root), or empty.
 std::filesystem::path default_mods_root();
 // The user folder's photos/, replays/, and achievements.txt paths, or empty.

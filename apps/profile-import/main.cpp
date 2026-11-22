@@ -24,6 +24,7 @@
 
 #include "profile/drive_save.h"
 #include "profile/profile.h"
+#include "profile/xenia_import.h"
 #include "cars/sources.h"
 
 namespace {
@@ -83,6 +84,84 @@ void print(const profile::Imported& p) {
   std::printf("%-32s %lld\n", "level", static_cast<long long>(p.level));
   if (const auto* car = p.selected_car())
     std::printf("%-32s %lld (car %lld)\n", "career_car", static_cast<long long>(car->id), static_cast<long long>(car->car_id));
+}
+
+std::filesystem::path default_user_dir() {
+#if defined(_WIN32)
+  if (const char* app = std::getenv("APPDATA"); app && *app) return std::filesystem::path(app) / "shift-engine";
+#else
+  if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) return std::filesystem::path(xdg) / "shift-engine";
+  if (const char* home = std::getenv("HOME"); home && *home)
+    return std::filesystem::path(home) / ".local" / "share" / "shift-engine";
+#endif
+  return std::filesystem::current_path() / "shift-user";
+}
+
+std::map<int64_t, std::string> scan_baked_cars(const std::filesystem::path& bake_dir) {
+  std::map<int64_t, std::string> out;
+  std::error_code ec;
+  if (bake_dir.empty() || !std::filesystem::is_directory(bake_dir / "cars", ec)) return out;
+  for (const auto& f : std::filesystem::directory_iterator(bake_dir / "cars", ec)) {
+    if (!f.path().string().ends_with(".physics.txt")) continue;
+    std::ifstream in(f.path());
+    for (std::string line; std::getline(in, line);) {
+      if (line.rfind("car ", 0) != 0) continue;
+      std::istringstream ls(line.substr(4));
+      int64_t id = 0;
+      std::string media;
+      if (ls >> id >> media) out[id] = media;
+      break;
+    }
+  }
+  return out;
+}
+
+int install(int argc, char** argv) {
+  const std::filesystem::path src = argv[2];
+  std::filesystem::path save_dir, bake_dir, state_root;
+  bool replace = false, v4_flag = false;
+  for (int i = 3; i < argc; ++i) {
+    const std::string a = argv[i];
+    auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+    if (a == "--save-dir") save_dir = next();
+    else if (a == "--bake") bake_dir = next();
+    else if (a == "--state-root") state_root = next();
+    else if (a == "--replace") replace = true;
+    else if (a == "--v4") v4_flag = true;
+    else {
+      std::fprintf(stderr, "profile-import --install: unknown option %s\n", a.c_str());
+      return 2;
+    }
+  }
+  const std::filesystem::path user_dir = default_user_dir();
+  if (save_dir.empty()) save_dir = user_dir / "drive";
+  std::error_code ec;
+  if (state_root.empty())
+    if (const char* s = std::getenv("SHIFT_STATE_ROOT"); s && *s) state_root = s;
+  const auto baked = scan_baked_cars(bake_dir);
+  profile::import::Options opts;
+  opts.save_dir = save_dir;
+  opts.replace_existing = replace;
+  opts.v4_available =
+      v4_flag || (!state_root.empty() && std::filesystem::is_regular_file(state_root / "title-update-v4" / "media.zip", ec));
+  opts.backups.save_dir = save_dir;
+  opts.backups.backups_dir = save_dir.parent_path() / "backups" / "saves";
+  if (!baked.empty()) {
+    opts.media_of = [&](int64_t id) {
+      auto it = baked.find(id);
+      return it == baked.end() ? std::string() : it->second;
+    };
+  }
+  const auto res = profile::import::run(src, opts);
+  for (const auto& n : res.notes) std::printf("note: %s\n", n.c_str());
+  if (!res.ok) {
+    std::fprintf(stderr, "profile-import --install: %s\n", res.error.c_str());
+    return 1;
+  }
+  std::printf("imported into %s: %lld credits, %zu garage cars, %zu signs, car %s (%s)\n", save_dir.string().c_str(),
+              static_cast<long long>(res.credits), res.garage_cars, res.signs, res.car.c_str(),
+              res.v4_save ? "v4" : "base");
+  return 0;
 }
 
 }  // namespace
@@ -194,8 +273,12 @@ int main(int argc, char** argv) {
           std::printf("%-36s %g\n", f.name.c_str(), f.value.as_double());
     return 0;
   }
+  if (argc >= 3 && std::string(argv[1]) == "--install") return install(argc, argv);
   if (argc != 2) {
-    std::fprintf(stderr, "usage: profile-import <export folder> | --check <exports root>\n");
+    std::fprintf(stderr,
+                 "usage: profile-import <export folder> | --check <exports root>\n"
+                 "       profile-import --install <export folder | export ZIP | Xenia/Pinyon folder>\n"
+                 "                      [--save-dir DIR] [--bake DIR] [--state-root DIR] [--replace]\n");
     return 2;
   }
   profile::Imported p;

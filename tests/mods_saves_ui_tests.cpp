@@ -232,7 +232,103 @@ void save_png(const fs::path& p, const carview::ui::List& l, std::vector<uint8_t
 }  // namespace
 
 #ifdef HAVE_SAVE_UI
-void test_save_page(carview::SaveSession& session, carview::SaveProfilePage& page);
+void test_save_page(carview::SaveSession& session, carview::SaveProfilePage& page) {
+  const fs::path user_dir = g_root / "save_ui_user";
+  const fs::path sync_dir = g_root / "save_ui_sync";
+  const fs::path remote_dev = g_root / "save_ui_deck";
+  std::error_code ec;
+  fs::create_directories(sync_dir, ec);
+
+  // Seed a local save and a second device's diverged save so both Backups and
+  // Save Sync Conflict UI have rich authentic data to test & screenshot!
+  auto write_save_txt = [](const fs::path& dir, const std::string& car, int64_t cr) {
+    write(dir / "save.txt", "shift-drive-save 1\ncar " + car + "\nposition 2002.96 143.84 960.00\nheading 2.2008\ncredits " +
+                                std::to_string(cr) + " " + std::to_string(cr) + "\n");
+    write(dir / "garage.txt", "shift-garage 1\n");
+  };
+  write_save_txt(user_dir / "drive", "NIS_SkylineGTRVSpecII_02", 117700);
+  write_save_txt(remote_dev / "drive", "NIS_SkylineGTRVSpecII_02", 164500);
+
+  // Publish Steam Deck save into sync folder.
+  {
+    profile::sync::Context rc;
+    rc.save_dir = remote_dev / "drive";
+    rc.state_file = remote_dev / "config" / "save_sync.toml";
+    rc.sync_folder = sync_dir;
+    rc.device_name = "STEAMDECK";
+    rc.platform = "linux";
+    rc.build = "v4";
+    rc.now = 1795365700;
+    CHECK(profile::sync::boot(rc).published);
+  }
+  // Also publish an older Windows laptop save.
+  {
+    const fs::path lap = g_root / "save_ui_laptop";
+    write_save_txt(lap / "drive", "VW_Corrado_95", 82300);
+    profile::sync::Context lc;
+    lc.save_dir = lap / "drive";
+    lc.state_file = lap / "config" / "save_sync.toml";
+    lc.sync_folder = sync_dir;
+    lc.device_name = "ROG-ALLY";
+    lc.platform = "windows";
+    lc.build = "base";
+    lc.now = 1795360000;
+    CHECK(profile::sync::boot(lc).published);
+  }
+
+  // Boot local SaveSession (v4 desktop) -> takes start backup & detects conflict!
+  carview::SaveSession::BootOptions bo;
+  bo.user_dir = user_dir;
+  bo.default_save_dir = user_dir / "drive";
+  bo.sync_folder = sync_dir;
+  bo.device_name = "DESKTOP-MAIN";
+  bo.v4_available = true;
+  bo.now = 1795365800;
+  session.boot(bo);
+  CHECK(session.sync_report().conflict);
+
+  // Add a couple more rolling backups and a second profile for realistic UI.
+  std::string err;
+  CHECK(session.profiles().set_gamertag("default", "Neri Horizon", &err));
+  CHECK(session.profiles().create("weekend", "Colorado Pro", &err));
+  write_save_txt(user_dir / "drive", "NIS_SkylineGTRVSpecII_02", 124500);
+  CHECK(profile::backup::snapshot(session.backup_config(), "autosave", nullptr, &err, 1795366400));
+  write_save_txt(user_dir / "drive", "FER_F40_87", 215000);
+  CHECK(profile::backup::snapshot(session.backup_config(), "manual", nullptr, &err, 1795367000));
+
+  page.open(session, carview::SaveProfilePage::Tab::kBackups);
+  CHECK(page.is_open());
+  CHECK(page.backups().size() == 3);
+  CHECK(page.remotes().size() == 2);
+
+  // Test Profiles tab + OnScreenKeyboard Gamertag edit!
+  page.set_tab(carview::SaveProfilePage::Tab::kProfiles);
+  page.nav(carview::Nav::kX, session);  // open OSK to edit default gamertag
+  CHECK(page.osk_open());
+  page.backspace();
+  page.type_char('X');
+  // Cancel so we keep "Neri Horizon", then verify close.
+  page.nav(carview::Nav::kBack, session);
+  CHECK(!page.osk_open());
+
+  // Switch back to Save Backups tab and rasterize.
+  page.set_tab(carview::SaveProfilePage::Tab::kBackups);
+  page.set_notice("AUTOMATIC BACKUPS AT START, EVERY 10 MIN & CLEAN EXIT");
+  carview::ui::List l;
+  carview::draw_save_page(l, 1280, 720, page, session);
+  CHECK(l.items().size() > 60);
+  CHECK(lit(l) > 200000);
+
+  // Rasterize Save Sync Conflict tab.
+  page.set_tab(carview::SaveProfilePage::Tab::kSync);
+  l.clear();
+  carview::draw_save_page(l, 1280, 720, page, session);
+  CHECK(l.items().size() > 60);
+  CHECK(lit(l) > 200000);
+
+  // Leave page open on Backups tab for main() screenshot export.
+  page.set_tab(carview::SaveProfilePage::Tab::kBackups);
+}
 #endif
 
 int main() {

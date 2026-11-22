@@ -115,6 +115,7 @@
 #include "slice12_runtime.h"
 #include "mods_page.h"
 #include "overlay_input.h"
+#include "save_sync_ui.h"
 #include "ui4_chrome.h"
 #include "traffic/gps.h"
 #include "traffic/nav.h"
@@ -2091,24 +2092,47 @@ int run_drive(int argc, char** argv) {
   for (const auto& a : args) {
     if (a == "--trainer-cheats" || a == "--festival-pacing" || a == "--hidden-cars") slice12_modded_save = true;
   }
-  // Mods (mods_page.h, cars/mod_manager.h): resolved before the save is
-  // read, because an active mod that changes saves moves the game to the
-  // user-modded copy (or a mod's own profile) and the player's own save is
-  // then never opened.
+  // Mods & Save Ecosystem (mods_page.h, save_sync_ui.h): resolve mods first
+  // to know whether an isolated modded save is active (isolated modded saves
+  // never sync), boot profiles / Save Sync / rolling backups, then apply
+  // modded-save isolation before reading save.txt.
   carview::ModsSession mods_session;
-  if (!mods_off) {
-    if (mods_root.empty() && !headless) mods_root = carview::default_mods_root();
+  carview::SaveSession save_session;
+  {
     const char* sr_env = std::getenv("SHIFT_STATE_ROOT");
     const std::filesystem::path sr = sr_env ? std::filesystem::path(sr_env) : std::filesystem::path{};
     std::error_code ec;
-    const auto build = !sr.empty() && std::filesystem::is_regular_file(sr / "title-update-v4" / "media.zip", ec)
-                           ? cars::modmgr::GameBuild::kV4
-                           : cars::modmgr::GameBuild::kBase;
-    const auto dir = mods_session.boot(mods_root, save_path.empty() ? std::filesystem::path{} : save_path.parent_path(),
-                                       build, sr);
-    if (!save_path.empty()) save_path = dir / "save.txt";
-    for (const auto& line : mods_session.log) std::printf("mod: %s\n", line.c_str());
-    mods_session.log.clear();
+    const bool has_v4 = !sr.empty() && std::filesystem::is_regular_file(sr / "title-update-v4" / "media.zip", ec);
+    const auto build = has_v4 ? cars::modmgr::GameBuild::kV4 : cars::modmgr::GameBuild::kBase;
+    if (!mods_off) {
+      if (mods_root.empty() && !headless) mods_root = carview::default_mods_root();
+      mods_session.boot(mods_root, {}, build, sr);
+    }
+    const bool isolated_mod = slice12_modded_save || (!mods_off && !mods_session.resolution().save_profile.empty());
+    if (!save_path.empty()) {
+      carview::SaveSession::BootOptions sb;
+      sb.user_dir = carview::default_user_dir();
+      if (sb.user_dir.empty()) sb.user_dir = save_path.parent_path().parent_path();
+      sb.default_save_dir = save_path.parent_path();
+      sb.sync_folder = sync_folder;
+      sb.device_name = device_name;
+      sb.profile_override = profile_name;
+      sb.v4_available = has_v4;
+      sb.isolated_mod_save = isolated_mod;
+      sb.achievements_path = carview::default_achievements_path();
+      sb.replays_dir = carview::default_replays_dir();
+      const auto prof_dir = save_session.boot(sb);
+      save_path = prof_dir / "save.txt";
+      for (const auto& line : save_session.log) std::printf("save: %s\n", line.c_str());
+      save_session.log.clear();
+    }
+    if (!mods_off) {
+      const auto dir = mods_session.boot(mods_root, save_path.empty() ? std::filesystem::path{} : save_path.parent_path(),
+                                         build, sr);
+      if (!save_path.empty()) save_path = dir / "save.txt";
+      for (const auto& line : mods_session.log) std::printf("mod: %s\n", line.c_str());
+      mods_session.log.clear();
+    }
   }
   if (!save_path.empty() && slice12_modded_save && !mods_session.isolation().isolated) {
     save_path = drive::resolve_isolated_save_path(save_path, true);
@@ -3718,8 +3742,14 @@ int run_drive(int argc, char** argv) {
         slice12.tel_cfg = bls.telemetry_udp;
       }
       // F6 > MODS (mods_page.h): opened from the settings overlay (M / X);
+      // Profile > Save Backups & Save Sync (save_sync_ui.h): opened via P / Y.
       // F5 reloads replacement textures anywhere.
       carview::ModsPage mods_page;
+      carview::SaveProfilePage save_page;
+      save_page.set_media_resolver([&](int64_t id) {
+        auto it = baked_ids.find(id);
+        return it == baked_ids.end() ? std::string() : it->second;
+      });
       auto reload_mod_textures = [&]() {
         size_t reuploaded = 0;
         const auto changed = mods_session.reload_textures(
@@ -5186,8 +5216,12 @@ int run_drive(int argc, char** argv) {
         s.has_controls = true;
         s.controls = live_controls;
         std::string e;
-        if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
-        else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);
+        if (!drive::write_save(save_path, s, &e)) {
+          std::fprintf(stderr, "carview: %s\n", e.c_str());
+        } else {
+          if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);
+          save_session.on_saved(vehicle.time());
+        }
         saved = s;
         have_saved = true;
       };
@@ -5924,6 +5958,9 @@ int run_drive(int argc, char** argv) {
         } else if (mods_page.is_open()) {
           list.clear();
           carview::draw_mods_page(list, float(width), float(height), mods_page);
+        } else if (save_page.is_open()) {
+          list.clear();
+          carview::draw_save_page(list, float(width), float(height), save_page, save_session);
         } else if (settings_page.is_open()) {
           list.clear();
           carview::draw_settings_ui4(list, float(width), float(height), settings_page, settings_live_overlay);
@@ -8190,6 +8227,21 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
+            // Profile > Save Backups & Save Sync (save_sync_ui.h).
+            if (save_page.is_open()) {
+              if (save_page.osk_open() && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_BACKSPACE) {
+                save_page.backspace();
+              } else if (save_page.osk_open() && e.type == SDL_EVENT_TEXT_INPUT && e.text.text && e.text.text[0]) {
+                for (const char* p = e.text.text; *p; ++p) save_page.type_char(*p);
+              } else {
+                const carview::Nav nv = carview::nav_from_sdl(e);
+                if (nv != carview::Nav::kNone) {
+                  audio_host.trigger_ui(nv == carview::Nav::kBack ? audio::UiCue::kCancel : audio::UiCue::kMove);
+                  save_page.nav(nv, save_session);
+                }
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
             // The settings page: up and down pick a row, left and right
             // change it (applied live), enter rebinds a key or saves.
             if (settings_page.is_open()) {
@@ -8308,6 +8360,11 @@ int run_drive(int argc, char** argv) {
                   } else if (k == SDLK_M && !e.key.repeat) {
                     mods_page.open(mods_session);  // F6 > MODS
                     audio_host.trigger_ui(audio::UiCue::kAccept);
+                  } else if (k == SDLK_P && !e.key.repeat) {
+                    save_page.open(save_session, save_session.sync_report().conflict
+                                                     ? carview::SaveProfilePage::Tab::kSync
+                                                     : carview::SaveProfilePage::Tab::kBackups);
+                    audio_host.trigger_ui(audio::UiCue::kAccept);
                   } else if (k == SDLK_E || k == SDLK_TAB) {
                     settings_page.switch_tab((e.key.mod & SDL_KMOD_SHIFT) ? -1 : +1);
                     audio_host.trigger_ui(audio::UiCue::kMove);
@@ -8342,6 +8399,11 @@ int run_drive(int argc, char** argv) {
                   audio_host.trigger_ui(audio::UiCue::kMove);
                 } else if (b == SDL_GAMEPAD_BUTTON_WEST) {
                   mods_page.open(mods_session);  // F6 > MODS
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                } else if (b == SDL_GAMEPAD_BUTTON_NORTH) {
+                  save_page.open(save_session, save_session.sync_report().conflict
+                                                   ? carview::SaveProfilePage::Tab::kSync
+                                                   : carview::SaveProfilePage::Tab::kBackups);
                   audio_host.trigger_ui(audio::UiCue::kAccept);
                 } else if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
                   settings_page.switch_tab(1);
@@ -9063,9 +9125,15 @@ int run_drive(int argc, char** argv) {
                                    settings_page.is_open() || paint_open || club_open || rally_hub_open ||
                                    rally_service_open || rally_results_open || photo_mode.active() ||
                                    replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open() ||
-                                   mods_page.is_open();
+                                   mods_page.is_open() || save_page.is_open();
           const bool sim_paused = menu_paused || rewind_buf.active();
           achievements.update(frame_dt);
+          save_page.update(frame_dt);
+          if (!save_session.notices.empty()) {
+            notice = save_session.notices.front().first;
+            notice_until = vehicle.time() + save_session.notices.front().second;
+            save_session.notices.erase(save_session.notices.begin());
+          }
           // Native mods' per-frame hook (shift_mod_api.h).
           if (mods_session.plugins().alive()) {
             static uint32_t mod_frame = 0;
@@ -9883,6 +9951,7 @@ int run_drive(int argc, char** argv) {
                     freeroam::upgrade_discount(free_roam->signs_found()), free_roam->barns_found(),
                     collectibles.barns.size(), progress.total_distance / 1000);
       if (!skip_end_save) save_now("end");
+      if (!skip_end_save && !again) save_session.on_exit(vehicle.time());
       if (traffic) std::printf("%s\n", traffic->summary().c_str());
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
@@ -9972,6 +10041,8 @@ int run_drive(int argc, char** argv) {
     SDL_SetWindowTitle(window, ("carview drive - loading " + car).c_str());
   }
   }
+  carview::set_world_texture_session(nullptr);
+  mods_session.shutdown();
   if (window) {
     SDL_DestroyWindow(window);
     SDL_Quit();

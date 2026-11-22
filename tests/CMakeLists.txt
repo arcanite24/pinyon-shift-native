@@ -251,11 +251,23 @@ target_compile_definitions(mods_tests PRIVATE SHIFT_TEST_PLUGIN="$<TARGET_FILE:s
 add_test(NAME mods_tests COMMAND mods_tests)
 set_tests_properties(mods_tests PROPERTIES TIMEOUT 300)
 
+add_executable(save_ecosystem_tests save_ecosystem_tests.cpp)
+target_link_libraries(save_ecosystem_tests PRIVATE shift_profile shift_drive shift_garage fh1data shift_sqlite3)
+add_test(NAME save_ecosystem_tests COMMAND save_ecosystem_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(mods_saves_ui_tests mods_saves_ui_tests.cpp
-    ../apps/carview/mods_page.cpp)
+    ../apps/carview/mods_page.cpp
+    ../apps/carview/save_sync_ui.cpp
+    ../apps/carview/ui_widgets.cpp
+    ../apps/carview/hud_scene.cpp
+    ../apps/carview/game_hud.cpp
+    ../apps/carview/rally_hub.cpp
+    ../apps/carview/events_page.cpp
+    ../apps/carview/settings_page.cpp)
   target_include_directories(mods_saves_ui_tests PRIVATE ../apps/carview)
-  target_link_libraries(mods_saves_ui_tests PRIVATE carview_render shift_cars shift_profile shift_stb fh1data shift_sqlite3)
+  target_link_libraries(mods_saves_ui_tests PRIVATE carview_render shift_cars shift_profile shift_freeroam shift_race
+                        shift_garage shift_drive shift_stb fh1data shift_sqlite3)
   add_test(NAME mods_saves_ui_tests COMMAND mods_saves_ui_tests)
 endif()
 
