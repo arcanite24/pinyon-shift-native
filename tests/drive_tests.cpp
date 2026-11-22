@@ -345,6 +345,73 @@ void test_ai_field() {
   CHECK(worst_lane_error < 1.5);
 }
 
+// Exercises AiField::Options::slip_rule = true + ai_traction(..., steer_guard = false)
+// against default pursuit + steer_guard = true so both steering paths stay covered.
+void test_ai_slip_rule() {
+  std::vector<float> xs, zs;
+  const double r = 60, kPi = 3.14159265358979323846;
+  for (int i = 0; i <= 720; ++i) {
+    const double a = 2 * kPi * i / 360.0;
+    xs.push_back(float(r - r * std::cos(a)));
+    zs.push_back(float(r * std::sin(a)));
+  }
+  const drive::RacingLine line = drive::RacingLine::from_points(xs, zs, 6.0, 4.0, 8.0, 40.0);
+  const drive::FlatGround ground;
+
+  auto run_mode = [&](bool use_slip) {
+    drive::AiField::Options opt;
+    opt.slip_rule = use_slip;
+    drive::AiField field(line, 1, opt);
+    drive::Vehicle car(test_car());
+    field.place(0, 5.0, 0.0f, 0.95f);
+    double x = 0, z = 0, h = 0;
+    field.start_pose(0, x, z, h);
+    car.reset({x, 0, z}, h);
+    float cap = 1.0f;
+    std::vector<drive::AiCarState> st(1);
+    std::vector<drive::Input> ins(1);
+    double max_abs_steer = 0.0;
+    for (int s = 0; s < int(20 / drive::Vehicle::kStep); ++s) {
+      st[0] = drive::ai_state(car);
+      field.drive(st, ins);
+      drive::ai_traction(car, cap, drive::Vehicle::kStep, ins[0], !use_slip);
+      max_abs_steer = std::max(max_abs_steer, std::fabs(ins[0].steer));
+      car.step(ins[0], ground);
+    }
+    CHECK(std::isfinite(car.position().x) && std::isfinite(car.position().z));
+    CHECK(field.progress(0) > 150.0);
+    CHECK(max_abs_steer > 0.02);
+    return field.progress(0);
+  };
+
+  const double p_pursuit = run_mode(false);
+  const double p_slip = run_mode(true);
+  CHECK(p_pursuit > 150.0 && p_slip > 150.0);
+
+  // Direct ai_traction steer_guard comparison during a >11 deg body slip angle:
+  // steer_guard = true counter-steers towards velocity; steer_guard = false preserves steer.
+  drive::Vehicle sliding(test_car());
+  sliding.launch({0, 0, 0}, 0.0, 22.0);
+  bool got_slip = false;
+  for (int i = 0; i < int(2.0 / drive::Vehicle::kStep); ++i) {
+    sliding.step({1.0, 0.0, 0.0, true}, ground);
+    const drive::Vec3 vb = drive::rotate_inverse(sliding.orientation(), sliding.velocity());
+    if (vb.z > 6.0 && std::fabs(std::atan2(vb.x, vb.z)) > 0.20) {
+      got_slip = true;
+      break;
+    }
+  }
+  CHECK(got_slip);
+  drive::Input guarded{0.0, 1.0, 0.0, false};
+  drive::Input unguarded = guarded;
+  float cap1 = 1.0f, cap2 = 1.0f;
+  drive::ai_traction(sliding, cap1, drive::Vehicle::kStep, guarded, true);
+  drive::ai_traction(sliding, cap2, drive::Vehicle::kStep, unguarded, false);
+  CHECK(std::fabs(guarded.steer) > 0.15);
+  CHECK(unguarded.steer == 0.0);
+  CHECK(unguarded.throttle < 0.5);
+}
+
 // SPEC-RACE-AI, Speed planning (Q53): the spec's synthetic cases.
 void test_speed_planner() {
   auto near = [](double a, double b, double tol) { return std::fabs(a - b) <= tol; };
@@ -430,6 +497,7 @@ int main() {
   test_model_to_world();
   test_oracle_lap();
   test_ai_field();
+  test_ai_slip_rule();
   test_speed_planner();
   test_contact_no_tunnelling();
   if (failures) {

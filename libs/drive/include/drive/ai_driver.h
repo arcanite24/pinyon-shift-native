@@ -115,6 +115,7 @@ struct AiCarState {
   float x = 0, z = 0;
   float fwd_x = 0, fwd_z = 1;  // horizontal forward, unit
   float speed = 0;             // m/s along forward
+  float vel_x = 0, vel_z = 0;  // the horizontal velocity, m/s
   float wheelbase = 2.6f;      // m
   float steer_lock = 0.6f;     // rad at full stick
   // The widest road-wheel angle the controller asks for: the pad's lock at
@@ -129,7 +130,9 @@ AiCarState ai_state(const Vehicle& v);
 // spins past the tyre curve's peak (the cap falls at 4 a second and comes
 // back at 2), and is cut as the body's slip angle grows past 7 degrees, to
 // nothing at 13. `cap` is the car's state, 1 at rest.
-void ai_traction(const Vehicle& v, float& cap, double dt, Input& in);
+// `steer_guard` false leaves the steer alone (the SPEC-RACE-AI steering
+// rule counter-steers by itself).
+void ai_traction(const Vehicle& v, float& cap, double dt, Input& in, bool steer_guard = true);
 
 class AiField {
  public:
@@ -147,6 +150,13 @@ class AiField {
     float max_speed = 90.0f;  // m/s, the plan's cap
     float off_line_slack = 1.0f;  // m off the lane before the car slows...
     float off_line_slow = 0.0f;   // ...by this fraction a metre (0: never)
+    // SPEC-RACE-AI, Steering at speed: delta = 0.27 alpha + 0.29 beta, alpha
+    // the bearing of the line point slip_lookahead_s x v ahead (at least
+    // 2 m) less the heading, beta the velocity's direction less the
+    // heading, clamped only by the full lock (off: pure pursuit under the
+    // pad's speed-narrowed lock).
+    bool slip_rule = false;
+    float slip_lookahead_s = 1.0f;
   };
   AiField(const RacingLine& line, size_t cars, const Options& options);
   AiField(const RacingLine& line, size_t cars) : AiField(line, cars, Options{}) {}

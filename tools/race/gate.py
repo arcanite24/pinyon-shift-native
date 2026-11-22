@@ -71,7 +71,7 @@ def run(exe, event, seed, seconds, extra, outdir, replay):
     cmd = [str(exe), "--drive", "--headless", "--bake", str(ROOT / "out" / "bake"), "--car",
            "NIS_SkylineGTRVSpecII_02", "--world", f"{GAME}/media/tracks/colorado", "--event", event,
            "--seconds", str(seconds), "--every", "100000", "--no-save", "--no-sound", "--size", "64x36",
-           "--out", str(outdir / "g.png"), "--race-seed", str(seed)] + extra
+           "--out", str(outdir / f"{event}-s{seed}.png"), "--race-seed", str(seed)] + extra
     with open(log, "w") as f:
         rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT).returncode
     cars = []

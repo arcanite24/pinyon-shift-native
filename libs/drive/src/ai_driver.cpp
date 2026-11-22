@@ -262,7 +262,7 @@ double RacingLine::room(double distance, bool right) const {
   return r[segment(distance, 0)];
 }
 
-void ai_traction(const Vehicle& v, float& cap, double dt, Input& in) {
+void ai_traction(const Vehicle& v, float& cap, double dt, Input& in, bool steer_guard) {
   double spin = 0;
   for (const auto& w : v.wheels())
     if (w.contact) spin = std::max(spin, w.slip_ratio);
@@ -281,7 +281,7 @@ void ai_traction(const Vehicle& v, float& cap, double dt, Input& in) {
     // Past 5 degrees the steer turns towards the velocity (a counter-steer,
     // free of the speed-narrowed lock), all of it by 12 degrees.
     const double w = std::clamp((a - 5 * kDeg) / (7 * kDeg), 0.0, 1.0);
-    if (w > 0) {
+    if (w > 0 && steer_guard) {
       const double lock = std::max(0.05, v.steer_lock());
       in.steer = (1 - w) * in.steer + w * std::clamp(beta / lock, -1.0, 1.0);
       in.brake = std::min(in.brake, 0.3 * (1 - w) + 0.0);
@@ -300,6 +300,10 @@ AiCarState ai_state(const Vehicle& v) {
   s.fwd_x = h > 1e-6 ? float(f.x / h) : 0.0f;
   s.fwd_z = h > 1e-6 ? float(f.z / h) : 1.0f;
   s.speed = float(v.speed());
+  {
+    const Vec3 vel = v.velocity();
+    s.vel_x = float(vel.x), s.vel_z = float(vel.z);
+  }
   const auto& c = v.params().wheel_centres;
   s.wheelbase = float(std::fabs((c[0].z + c[1].z) / 2 - (c[2].z + c[3].z) / 2));
   s.steer_lock = float(v.steer_lock());
@@ -462,7 +466,8 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     }
     // Steering: pure pursuit to the look-ahead point, moved to the lane.
     const float speed = std::fabs(c.speed);
-    const double look = progress_[i] + std::max<double>(o_.min_lookahead, o_.lookahead_s * speed);
+    const double look = progress_[i] + (o_.slip_rule ? std::max<double>(2.0, o_.slip_lookahead_s * speed)
+                                                     : std::max<double>(o_.min_lookahead, o_.lookahead_s * speed));
     const size_t ts = L.segment(look, s);
     const float tf = std::clamp(float((look - L.dist[ts]) / std::max(1e-6f, L.dist[ts + 1] - L.dist[ts])), 0.0f, 1.0f);
     const float tex = L.x[ts + 1] - L.x[ts], tez = L.z[ts + 1] - L.z[ts];
@@ -473,8 +478,14 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     const float lz = rx * c.fwd_x + rz * c.fwd_z, lx = rx * c.fwd_z - rz * c.fwd_x;  // car frame: x right
     const float ld = std::sqrt(lx * lx + lz * lz);
     const float alpha = std::atan2(lx, lz);
-    const float delta = std::clamp(ld > 1e-4f ? std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f, -c.max_delta,
-                                   c.max_delta);
+    float delta = std::clamp(ld > 1e-4f ? std::atan(2 * c.wheelbase * std::sin(alpha) / ld) : 0.0f, -c.max_delta,
+                             c.max_delta);
+    if (o_.slip_rule) {
+      // The velocity's direction in the car frame (x right), from 1 m/s.
+      const float vz = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z, vx = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
+      const float beta = std::hypot(vx, vz) > 1.0f && vz > 0 ? std::atan2(vx, vz) : 0.0f;
+      delta = std::clamp(0.27f * alpha + 0.29f * beta, -c.steer_lock, c.steer_lock);
+    }
     Input& in = inputs[i];
     in = Input{};
     in.steer = c.steer_lock > 0 ? std::clamp(delta / c.steer_lock, -1.0f, 1.0f) : 0.0f;
