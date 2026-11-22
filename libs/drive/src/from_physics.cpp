@@ -293,14 +293,40 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.abs_rear_no_steer = get("List_UpgradeBrakes.ReleasePointABSRearNoSteer", p.abs_rear_no_steer);
   p.abs_rear_full_steer = get("List_UpgradeBrakes.ReleasePointABSRearFullSteer", p.abs_rear_full_steer);
   p.abs_duration = get("List_UpgradeBrakes.DurationABS", p.abs_duration);
+  p.no_abs_brake_travel = s.get("NoABSBrakeTravel", p.no_abs_brake_travel);
+  p.no_abs_disable_time = s.get("NoABSDisableTime", p.no_abs_disable_time);
+  p.no_abs_front_no_steer = s.get("NoABSSlipDefFrontNoSteer", p.no_abs_front_no_steer);
+  p.no_abs_front_full_steer = s.get("NoABSSlipDefFrontFullSteer", p.no_abs_front_full_steer);
+  p.no_abs_rear_no_steer = s.get("NoABSSlipDefRearNoSteer", p.no_abs_rear_no_steer);
+  p.no_abs_rear_full_steer = s.get("NoABSSlipDefRearFullSteer", p.no_abs_rear_full_steer);
+  p.abs_off_braking_friction_scale = s.get("ABSOffBrakingFrictionScale", p.abs_off_braking_friction_scale);
+
+  // TCS, STM, and Manual + Clutch settings (PhysicsSettings.ini).
+  p.tcs_speed_mph = s.get("TractionControlSpeed", p.tcs_speed_mph);
+  p.tcs_steer_scale_rwd = s.get("TCSFullSteerSlipScaleRWD", p.tcs_steer_scale_rwd);
+  p.tcs_steer_scale_fwd = s.get("TCSFullSteerSlipScaleFWD", p.tcs_steer_scale_fwd);
+  p.tcs_steer_scale_awd = s.get("TCSFullSteerSlipScaleAWD", p.tcs_steer_scale_awd);
+  p.tcs_fric_diff = s.get("TCSFullEffectFricDiff", p.tcs_fric_diff);
+  p.tcs_yaw_min_deg = s.get("YawMinAngleForTCS", p.tcs_yaw_min_deg);
+  p.tcs_yaw_max_deg = s.get("YawMaxAngleForTCS", p.tcs_yaw_max_deg);
+  p.stm_speed_mph = s.get("StabilityManageSpeed", p.stm_speed_mph);
+  p.clutch_pedal_dead = s.get("ClutchPedalDistBeforeTorqueStarts", p.clutch_pedal_dead);
+  p.clutch_torque_exp = s.get("ClutchTorqueCurveExponent", p.clutch_torque_exp);
+  p.clutch_max_vel = s.get("ClutchMaxVel", p.clutch_max_vel);
+  p.clutch_vel_no_clutch = s.get("ClutchVelShiftWithoutClutch", p.clutch_vel_no_clutch);
+  p.clutch_stall_timeout = s.get("ClutchStallTimeout", p.clutch_stall_timeout);
+  p.shift_without_clutch_damage = s.get("ShiftWithoutClutchDamageAmount", p.shift_without_clutch_damage);
 
   // Input shaping and steering.
   p.throttle_rate = s.get("ControllerDelays\\AccelDelaySpeed", p.throttle_rate);
   p.brake_rate = s.get("ControllerDelays\\BrakeDelaySpeed", p.brake_rate);
   p.handbrake_rate = s.get("ControllerDelays\\HandBrakeDelaySpeed", p.handbrake_rate);
   p.max_steer = get("Data_Car.SteerMaxAngle", 35) * kDeg;
+  p.max_steer_filtered = get("Data_Car.SteerMaxAngleFiltered", get("Data_Car.SteerMaxAngle", 35)) * kDeg;
   p.steer_rate = get("Data_Car.SteerMaxAngVelTurning", 105) * kDeg;
   p.straighten_rate = get("Data_Car.SteerMaxAngVelStraighten", 105) * kDeg;
+  p.steer_countersteer_rate =
+      get("Data_Car.SteerAngVelCountersteer", s.get("SteerDefCountersteerRate", 105)) * kDeg;
   p.steer_max_gees = get("Data_Car.SteerSpeedSensitiveMaxGees", 1);
   p.steer_min_lock = get("Data_Car.SteerSpeedSensitiveMinMaxAngle", 5) * kDeg;
 

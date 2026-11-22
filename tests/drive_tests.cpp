@@ -645,6 +645,142 @@ void test_per_car_physics() {
   }
 }
 
+void test_assists_and_transmission() {
+  const drive::FlatGround flat;
+
+  // 1. Manual transmission: does not auto-upshift, responds to explicit shift requests.
+  {
+    auto p = test_car();
+    drive::Vehicle v(p);
+    drive::VehicleAssists a;
+    a.shifting = 1;  // Manual
+    v.set_assists(a);
+    for (int i = 0; i < 120 * 5; ++i) v.step({0, 1, 0, false}, flat);
+    CHECK(v.gear() == 1);  // stayed in 1st at redline without auto-upshift
+    v.step({0, 1, 0, false, 0, +1}, flat);
+    for (int i = 0; i < 120; ++i) v.step({0, 1, 0, false}, flat);
+    CHECK(v.gear() == 2);
+    // Downshift back to 1 and then Reverse.
+    v.step({0, 0, 0, false, 0, -1}, flat);
+    for (int i = 0; i < 120; ++i) v.step({0, 0, 0, false}, flat);
+    CHECK(v.gear() == 1);
+  }
+
+  // 2. Manual + Clutch: clutch pedal controls torque engagement; shifting
+  // without clutch adds transmission damage while clutched shift adds zero.
+  {
+    auto p = test_car();
+    drive::Vehicle v(p);
+    drive::VehicleAssists a;
+    a.shifting = 2;  // Manual + Clutch
+    v.set_assists(a);
+    // Hold clutch down (1.0) and rev engine: engine revs freely, car stays still.
+    for (int i = 0; i < 60; ++i) v.step({0, 1, 0, false, 1.0, 0}, flat);
+    CHECK(v.rpm() > 3000.0);
+    CHECK(std::fabs(v.speed()) < 0.2);
+    // Clean shift with clutch pressed (1.0): zero transmission damage.
+    v.step({0, 0.5, 0, false, 1.0, +1}, flat);
+    CHECK(v.gear() == 2);
+    CHECK(v.transmission_damage() == 0.0);
+    // Release clutch (0.0): car accelerates forward.
+    for (int i = 0; i < 120; ++i) v.step({0, 1, 0, false, 0.0, 0}, flat);
+    CHECK(v.speed() > 5.0);
+    // Shift without clutch (0.0 <= 0.8): damages transmission.
+    v.step({0, 1, 0, false, 0.0, +1}, flat);
+    CHECK(v.gear() == 3);
+    CHECK(v.transmission_damage() > 0.0);
+  }
+
+  // 3. ABS Off (braking == 2): below NoABSBrakeTravel (0.975), no ABS cycling.
+  {
+    auto p = test_car();
+    p.front_brake_torque = 6000;
+    p.rear_brake_torque = 4500;
+    drive::Vehicle v_on(p), v_off(p);
+    drive::VehicleAssists a_off;
+    a_off.braking = 2;
+    v_off.set_assists(a_off);
+    v_on.launch({0, 0, 0}, 0, 30.0);
+    v_off.launch({0, 0, 0}, 0, 30.0);
+    bool saw_abs_on = false, saw_abs_off = false;
+    for (int i = 0; i < 120; ++i) {
+      v_on.step({0, 0, 0.90, false}, flat);
+      v_off.step({0, 0, 0.90, false}, flat);
+      saw_abs_on |= v_on.abs_active();
+      saw_abs_off |= v_off.abs_active();
+    }
+    CHECK(saw_abs_on);
+    CHECK(!saw_abs_off);
+  }
+
+  // 4. TCS: activates under high-torque RWD wheelspin and trims slip.
+  {
+    auto p = test_car();
+    p.layout = drive::CarParams::Layout::kRear;
+    p.torque_scale = 950;  // huge torque to force wheelspin
+    drive::Vehicle v_no(p), v_tcs(p);
+    drive::VehicleAssists a_tcs;
+    a_tcs.traction_control = true;
+    v_tcs.set_assists(a_tcs);
+    v_no.launch({0, 0, 0}, 0, 10.0);
+    v_tcs.launch({0, 0, 0}, 0, 10.0);
+    bool saw_tcs = false;
+    double peak_slip_no = 0, peak_slip_tcs = 0;
+    for (int i = 0; i < 120; ++i) {
+      v_no.step({0, 1, 0, false}, flat);
+      v_tcs.step({0, 1, 0, false}, flat);
+      saw_tcs |= v_tcs.tcs_active();
+      peak_slip_no = std::max(peak_slip_no, std::fabs(v_no.wheels()[2].slip_ratio));
+      peak_slip_tcs = std::max(peak_slip_tcs, std::fabs(v_tcs.wheels()[2].slip_ratio));
+    }
+    CHECK(saw_tcs);
+    CHECK(peak_slip_tcs < peak_slip_no);
+  }
+
+  // 5. STM: activates during high-speed oversteer slide and applies counter-yaw brake.
+  {
+    auto p = test_car();
+    drive::Vehicle v(p);
+    drive::VehicleAssists a_stm;
+    a_stm.stability_control = true;
+    v.set_assists(a_stm);
+    v.launch({0, 0, 0}, 0, 28.0);
+    // Induce a slide with handbrake + steering.
+    bool saw_stm = false;
+    for (int i = 0; i < 120; ++i) {
+      v.step({0.6, 0.3, 0, i < 40}, flat);
+      saw_stm |= v.stm_active();
+    }
+    CHECK(saw_stm);
+  }
+
+  // 6. Steering assist modes (Assisted vs Normal vs Simulation) + Auto-Brake.
+  {
+    auto p = test_car();
+    p.max_steer = 0.733;
+    p.max_steer_filtered = 0.55;
+    drive::Vehicle v_ast(p), v_sim(p);
+    drive::VehicleAssists a0, a2;
+    a0.steering = 0;  // Assisted
+    a2.steering = 2;  // Simulation
+    v_ast.set_assists(a0);
+    v_sim.set_assists(a2);
+    // At rest, Assisted caps to SteerMaxAngleFiltered while Simulation uses SteerMaxAngle;
+    // at mid speed (18 m/s), Simulation allows wider steering lock than Assisted.
+    CHECK(v_sim.steer_lock() > v_ast.steer_lock());
+    v_ast.launch({0, 0, 0}, 0, 18.0);
+    v_sim.launch({0, 0, 0}, 0, 18.0);
+    CHECK(v_sim.steer_lock() > v_ast.steer_lock());
+
+    drive::Input in{0, 1.0, 0.0, false};
+    drive::apply_auto_brake(in, 35.0, 25.0);
+    CHECK(in.brake > 0.5 && in.throttle < 0.1);
+    drive::Input in_ok{0, 1.0, 0.0, false};
+    drive::apply_auto_brake(in_ok, 20.0, 25.0);
+    CHECK(in_ok.brake == 0.0 && in_ok.throttle == 1.0);
+  }
+}
+
 int main() {
   test_save();
   test_rest_pose();
@@ -661,6 +797,7 @@ int main() {
   test_speed_planner();
   test_contact_no_tunnelling();
   test_per_car_physics();
+  test_assists_and_transmission();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

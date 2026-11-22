@@ -307,21 +307,41 @@ struct CarParams {
   int abs_smoothing = 5;       // substeps in the slip mean the ABS tests
   double ai_brake_scale = 1.59;
   double abs_ai_release = 0.71;
+  // No-ABS regulator (SPEC-CAR-PHYSICS, ABS and No-ABS).
+  double no_abs_brake_travel = 0.975;
+  double no_abs_disable_time = 0.0;
+  double no_abs_front_no_steer = 1.0, no_abs_front_full_steer = 0.71;
+  double no_abs_rear_no_steer = 1.0, no_abs_rear_full_steer = 0.71;
+  double abs_off_braking_friction_scale = 1.05;
 
-  // Input shaping (SPEC-CAR-PHYSICS, Throttle, brake and steering).
+  // TCS and STM (SPEC-CAR-PHYSICS, Traction control & Stability control).
+  double tcs_speed_mph = 30.0;
+  double tcs_slip_takeoff = 1.0, tcs_slip_moving = 0.85;
+  double tcs_steer_scale_rwd = 1.1, tcs_steer_scale_fwd = 1.2, tcs_steer_scale_awd = 2.0;
+  double tcs_fric_diff = 0.25;
+  double tcs_yaw_min_deg = 20.0, tcs_yaw_max_deg = 50.0;
+  double stm_speed_mph = 30.0;
+  double stm_slip_min = 1.2, stm_slip_max = 2.5;
+
+  // Manual + Clutch (SPEC-CAR-PHYSICS, Manual with Clutch).
+  double clutch_pedal_dead = 0.05;
+  double clutch_torque_exp = 1.5;
+  double clutch_max_vel = 20.0;
+  double clutch_vel_no_clutch = 2.5;
+  double clutch_stall_timeout = 0.5;
+  double shift_without_clutch_damage = 0.05;
+
+  // Input shaping and steering (SPEC-CAR-PHYSICS, Throttle, brake and steering;
+  // Assisted / Normal / Simulation steering).
   double throttle_rate = 5, brake_rate = 20, handbrake_rate = 12;  // full travels per second
   double max_steer = 0.733;          // rad at the road wheels (42 degrees)
+  double max_steer_filtered = 0.733; // Data_Car.SteerMaxAngleFiltered (rad)
   double steer_rate = 1.83;          // rad/s towards the target
   double straighten_rate = 1.83;     // rad/s back towards centre
+  double steer_countersteer_rate = 1.83;  // rad/s (SteerAngVelCountersteer)
   double steer_max_gees = 1.0;       // SteerSpeedSensitiveMaxGees
-  // The pad's lock at speed: atan(steer_gees_fit x steer_max_gees x g x
-  // wheelbase / v^2), the measured 2,410 / v^2 degrees per unit on the R34
-  // at 19 to 22 m/s (the rule is open: a placeholder, SPEC_QUESTIONS Q40).
   double steer_gees_fit = 1.61;
   double steer_min_lock = 0.087;     // rad, the narrowest lock
-  // At speed the wheels also turn slower: the rate scales with the lock's
-  // share of the full lock, down to this share (20 to 38 deg/s measured at
-  // 19 to 22 m/s, against 105 at walking pace; placeholder).
   double steer_rate_min_share = 0.25;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): all force coefficients in
@@ -380,11 +400,28 @@ DraftState compute_follower_draft(const DraftCar& follower, const DraftCar* lead
 DraftState compute_leader_draft(double strength, double speed);
 
 // Raw input, as the player gives it: steer -1 (left) to +1 (right),
-// throttle and brake 0 to 1, handbrake on or off.
+// throttle and brake 0 to 1, handbrake on or off, optional manual clutch
+// pedal (0 released .. 1 pressed) and shift request (+1 up, -1 down, 0 none).
 struct Input {
   double steer = 0, throttle = 0, brake = 0;
   bool handbrake = false;
+  double clutch = 0;
+  int shift = 0;
 };
+
+// Runtime driving assists matching ForzaProfile.sch enums
+// (SPEC-CAR-PHYSICS, Assists and input shaping).
+struct VehicleAssists {
+  int braking = 1;            // 0 Assisted (Auto-Brake), 1 ABS On, 2 ABS Off
+  int steering = 1;           // 0 Assisted, 1 Normal, 2 Simulation
+  bool traction_control = false;
+  bool stability_control = false;
+  int shifting = 0;           // 0 Automatic, 1 Manual, 2 Manual + Clutch
+};
+
+// Auto-Brake upstream helper (Braking == 0 / Assisted, SPEC-CAR-PHYSICS):
+// injects brake demand and cuts throttle when current_speed > target_speed.
+void apply_auto_brake(Input& in, double current_speed, double target_speed);
 
 // Per-wheel state for the renderer and the trace.
 struct WheelState {
@@ -471,6 +508,9 @@ class Vehicle {
   // Aerodynamic drafting multipliers for the next step (SPEC-CAR-PHYSICS).
   void set_draft(const DraftState& d) { draft_ = d; }
   const DraftState& draft() const { return draft_; }
+  // Runtime driving assists & transmission mode (SPEC-CAR-PHYSICS, Assists).
+  void set_assists(const VehicleAssists& a) { assists_ = a; }
+  const VehicleAssists& assists() const { return assists_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -500,6 +540,11 @@ class Vehicle {
   // The clutch output's speed (driven-wheel speed x gear x final drive), rpm, signed.
   double clutch_output_rpm() const;
   bool abs_active() const { return abs_flag_; }  // a wheel was released this step
+  bool tcs_active() const { return tcs_flag_; }  // TCS intervention >= 0.1 this step
+  bool stm_active() const { return stm_flag_; }  // STM intervention active this step
+  double tcs_amount() const { return tcs_amount_; }
+  double stm_amount() const { return stm_amount_; }
+  double transmission_damage() const { return trans_damage_; }  // [0, 1] from shifts without clutch
   int substeps() const { return substeps_; }
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
@@ -599,6 +644,14 @@ class Vehicle {
   double surface_bump_rumble_ = 0;
   bool hand_of_god_ = false;
   bool abs_flag_ = false;
+  bool tcs_flag_ = false;
+  bool stm_flag_ = false;
+  double tcs_amount_ = 0;
+  double stm_amount_ = 0;
+  bool shifted_without_clutch_ = false;
+  double trans_damage_ = 0;
+  double stall_timer_ = 0;
+  VehicleAssists assists_{};
   bool ai_ = false;
   double torque_factor_ = 1;
   bool dirt_rule_ = false, any_dirt_ = false, on_dirt_ = false;
