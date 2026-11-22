@@ -5,6 +5,7 @@
 #include <iterator>
 #include <system_error>
 
+#include "cars/mods.h"
 #include "fh1data/archive.h"
 
 namespace audio {
@@ -136,10 +137,11 @@ bool SoundFiles::read_tuning(TuningKind kind, const std::string& file, std::stri
 
 std::filesystem::path SoundFiles::bank(const std::string& name) const {
   const auto it = banks_.find(lower_name(base_name(name)));
-  return it == banks_.end() ? std::filesystem::path{} : it->second;
+  return it == banks_.end() ? std::filesystem::path{} : cars::mods::resolve(it->second);
 }
 
-bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound& out, std::string* error) {
+bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound& out, std::string* error,
+                       UpgradeLevels levels) {
   out = {};
   out.sound.media = media;
   std::string text, e;
@@ -149,7 +151,7 @@ bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound&
     return false;
   }
   std::vector<HarmonicRef> harmonics;
-  if (!read_engine_tuning(engine, out.sound, harmonics, &e)) {
+  if (!read_engine_tuning(engine, out.sound, harmonics, &e, levels)) {
     if (error) *error = media + ": " + e;
     return false;
   }

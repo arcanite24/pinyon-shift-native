@@ -2,14 +2,17 @@
 #include "audio/bake.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <system_error>
+#include <thread>
 
 namespace audio {
 namespace {
@@ -35,7 +38,16 @@ std::string quoted(const std::filesystem::path& p) { return "\"" + p.string() + 
 
 }  // namespace
 
+std::string baked_sound_key(const std::string& media, UpgradeLevels levels) {
+  const int in_lv = std::clamp(levels.intake, 0, 3);
+  const int ex_lv = std::clamp(levels.exhaust, 0, 3);
+  if (in_lv == 0 && ex_lv == 0) return media;
+  return media + "_I" + std::to_string(in_lv) + "_E" + std::to_string(ex_lv);
+}
+
 std::filesystem::path find_ffmpeg() {
+  std::error_code ec;
+  if (const char* env = std::getenv("SHIFT_FFMPEG"); env && *env && std::filesystem::exists(env, ec)) return env;
   const char* path = std::getenv("PATH");
 #ifdef _WIN32
   const char sep = ';';
@@ -44,7 +56,6 @@ std::filesystem::path find_ffmpeg() {
   const char sep = ':';
   const char* exe = "ffmpeg";
 #endif
-  std::error_code ec;
   if (path) {
     std::stringstream ss(path);
     std::string dir;
@@ -65,16 +76,18 @@ std::filesystem::path find_ffmpeg() {
 }
 
 bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::filesystem::path& out_dir,
-                       const std::filesystem::path& ffmpeg, BakeReport& report, std::string* error) {
+                       const std::filesystem::path& ffmpeg, BakeReport& report, std::string* error,
+                       UpgradeLevels levels) {
   auto fail = [&](const std::string& what) {
     if (error) *error = media + ": " + what;
     return false;
   };
   LoadedSound loaded;
   std::string e;
-  if (!load_engine_sound(files, media, loaded, &e)) return fail(e);
+  if (!load_engine_sound(files, media, loaded, &e, levels)) return fail(e);
   report.notes.insert(report.notes.end(), loaded.notes.begin(), loaded.notes.end());
-  const std::filesystem::path dir = out_dir / media;
+  const std::string key = baked_sound_key(media, levels);
+  const std::filesystem::path dir = out_dir / key;
   std::error_code ec;
   std::filesystem::create_directories(dir / "pcm", ec);
   std::ostringstream index;
@@ -93,7 +106,7 @@ bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::f
     std::vector<HarmonicRef> harmonics;
     EngineSound scratch;
     if (files.read_tuning(TuningKind::kEngine, media + "_ET.xml", text, &e) && parse_xml(text, engine, &e) &&
-        read_engine_tuning(engine, scratch, harmonics, &e))
+        read_engine_tuning(engine, scratch, harmonics, &e, levels))
       for (const auto& h : harmonics) copy(TuningKind::kHarmonic, h.file, "harmonic " + h.element);
   }
   // Every sample a loop uses, once per bank sample (all its channels).
@@ -101,8 +114,15 @@ bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::f
   for (const auto& g : loaded.sound.groups)
     for (const auto& l : g.loops) wanted.insert({lower_name(g.bank), l.sample});
   for (const auto& [bank, samples] : loaded.banks) index << "bank " << bank << ' ' << samples.size() << '\n';
-  const std::filesystem::path temp = std::filesystem::temp_directory_path(ec) / ("shift-sound-" + media);
-  std::filesystem::create_directories(temp, ec);
+
+  // Read each referenced FSB4 bank into memory once.
+  std::map<std::string, std::vector<uint8_t>> bank_bytes;
+  struct Job {
+    std::string bank;
+    int sample = 0;
+    FsbSample info;
+  };
+  std::vector<Job> jobs;
   for (const auto& [bank, sample] : wanted) {
     const auto& samples = loaded.banks.at(bank);
     if (sample < 0 || size_t(sample) >= samples.size()) continue;
@@ -112,39 +132,98 @@ bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::f
       report.notes.push_back(bank + " " + std::to_string(sample) + ": not XMA, skipped");
       continue;
     }
-    std::vector<uint8_t> data;
-    if (!read_file(files.bank(bank), data) || s.offset + s.bytes > data.size()) return fail("cannot read " + bank);
-    const auto wave = xma2_wave(s, std::span<const uint8_t>(data).subspan(size_t(s.offset), s.bytes));
-    const auto in_path = temp / "in.wav", out_path = temp / "out.s16";
-    std::filesystem::remove(out_path, ec);
-    if (!write_file(in_path, wave.data(), wave.size())) return fail("cannot write " + in_path.string());
-    std::string command = quoted(ffmpeg) + " -hide_banner -nostdin -v error -y -i " + quoted(in_path) +
-                          " -f s16le -acodec pcm_s16le " + quoted(out_path);
-#ifdef _WIN32
-    command = "\"" + command + "\"";  // cmd.exe strips one pair of outer quotes
-#endif
-    if (std::system(command.c_str()) != 0) return fail("ffmpeg failed on " + bank + " " + std::to_string(sample));
-    std::vector<uint8_t> pcm;
-    read_file(out_path, pcm);
-    const size_t channels = std::max<size_t>(1, s.channels);
-    size_t frames = pcm.size() / (2 * channels);
-    if (frames != s.frames) ++report.length_mismatches;
-    pcm.resize(size_t(s.frames) * 2 * channels, 0);  // exactly the declared length
-    frames = s.frames;
-    for (size_t c = 0; c < channels; ++c) {
-      std::vector<int16_t> mono(frames);
-      for (size_t f = 0; f < frames; ++f) {
-        const size_t at = (f * channels + c) * 2;
-        mono[f] = int16_t(pcm[at] | pcm[at + 1] << 8);
-      }
-      if (frames > 1)
-        report.worst_seam = std::max(report.worst_seam, std::fabs(mono.back() - mono.front()) / 32768.0);
-      if (!write_file(dir / "pcm" / pcm_name(bank, sample, int(c)), mono.data(), mono.size() * 2))
-        return fail("cannot write PCM");
+    if (!bank_bytes.count(bank)) {
+      std::vector<uint8_t> data;
+      if (!read_file(files.bank(bank), data)) return fail("cannot read " + bank);
+      bank_bytes[bank] = std::move(data);
     }
-    ++report.samples;
+    if (s.offset + s.bytes > bank_bytes[bank].size()) return fail("cannot read " + bank);
+    jobs.push_back({bank, sample, s});
   }
+
+  const std::filesystem::path temp = std::filesystem::temp_directory_path(ec) / ("shift-sound-" + key);
   std::filesystem::remove_all(temp, ec);
+  std::filesystem::create_directories(temp, ec);
+
+  // Decode XMA2 loops in parallel (up to 4 ffmpeg workers) so on-demand
+  // runtime decode finishes in under a second.
+  std::atomic<size_t> next_job{0};
+  std::mutex err_mu;
+  std::string first_err;
+  int mismatches = 0;
+  int decoded = 0;
+  double worst_seam = 0;
+
+  auto worker = [&]() {
+    while (true) {
+      const size_t idx = next_job.fetch_add(1);
+      if (idx >= jobs.size()) break;
+      {
+        std::lock_guard<std::mutex> lk(err_mu);
+        if (!first_err.empty()) break;
+      }
+      const Job& job = jobs[idx];
+      const FsbSample& s = job.info;
+      const auto& data = bank_bytes.at(job.bank);
+      const auto wave = xma2_wave(s, std::span<const uint8_t>(data).subspan(size_t(s.offset), s.bytes));
+      const auto in_path = temp / ("in_" + std::to_string(idx) + ".wav");
+      const auto out_path = temp / ("out_" + std::to_string(idx) + ".s16");
+      std::error_code lec;
+      std::filesystem::remove(out_path, lec);
+      if (!write_file(in_path, wave.data(), wave.size())) {
+        std::lock_guard<std::mutex> lk(err_mu);
+        if (first_err.empty()) first_err = "cannot write " + in_path.string();
+        break;
+      }
+      std::string command = quoted(ffmpeg) + " -hide_banner -nostdin -v error -y -i " + quoted(in_path) +
+                            " -f s16le -acodec pcm_s16le " + quoted(out_path);
+#ifdef _WIN32
+      command = "\"" + command + "\"";  // cmd.exe strips one pair of outer quotes
+#endif
+      if (std::system(command.c_str()) != 0) {
+        std::lock_guard<std::mutex> lk(err_mu);
+        if (first_err.empty()) first_err = "ffmpeg failed on " + job.bank + " " + std::to_string(job.sample);
+        break;
+      }
+      std::vector<uint8_t> pcm;
+      read_file(out_path, pcm);
+      const size_t channels = std::max<size_t>(1, s.channels);
+      size_t frames = pcm.size() / (2 * channels);
+      const bool mismatch = frames != s.frames;
+      pcm.resize(size_t(s.frames) * 2 * channels, 0);  // exactly the declared length
+      frames = s.frames;
+      double seam = 0;
+      for (size_t c = 0; c < channels; ++c) {
+        std::vector<int16_t> mono(frames);
+        for (size_t f = 0; f < frames; ++f) {
+          const size_t at = (f * channels + c) * 2;
+          mono[f] = int16_t(pcm[at] | pcm[at + 1] << 8);
+        }
+        if (frames > 1) seam = std::max(seam, std::fabs(mono.back() - mono.front()) / 32768.0);
+        if (!write_file(dir / "pcm" / pcm_name(job.bank, job.sample, int(c)), mono.data(), mono.size() * 2)) {
+          std::lock_guard<std::mutex> lk(err_mu);
+          if (first_err.empty()) first_err = "cannot write PCM";
+          break;
+        }
+      }
+      std::lock_guard<std::mutex> lk(err_mu);
+      if (mismatch) ++mismatches;
+      worst_seam = std::max(worst_seam, seam);
+      ++decoded;
+    }
+  };
+
+  const size_t threads = std::min<size_t>(4, std::max<size_t>(1, jobs.size()));
+  std::vector<std::thread> pool;
+  for (size_t t = 0; t + 1 < threads; ++t) pool.emplace_back(worker);
+  worker();
+  for (auto& th : pool) th.join();
+
+  std::filesystem::remove_all(temp, ec);
+  if (!first_err.empty()) return fail(first_err);
+  report.samples += decoded;
+  report.length_mismatches += mismatches;
+  report.worst_seam = std::max(report.worst_seam, worst_seam);
   const std::string text = index.str();
   if (!write_file(dir / "sound.txt", text.data(), text.size())) return fail("cannot write sound.txt");
   return true;
@@ -163,9 +242,9 @@ std::vector<std::vector<const PcmSample*>> BakedSound::table() const {
 }
 
 bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& media, BakedSound& out,
-                      std::string* error) {
+                      std::string* error, UpgradeLevels levels) {
   out = {};
-  const std::filesystem::path dir = cars::mods::resolve(out_dir / media);
+  const std::filesystem::path dir = cars::mods::resolve(out_dir / baked_sound_key(media, levels));
   auto fail = [&](const std::string& what) {
     if (error) *error = (dir / "sound.txt").string() + ": " + what;
     return false;
@@ -227,7 +306,8 @@ bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& m
   }
   std::vector<HarmonicRef> refs;
   std::string e;
-  if (engine.name.empty() || !read_engine_tuning(engine, out.loaded.sound, refs, &e)) return fail("no engine tuning");
+  if (engine.name.empty() || !read_engine_tuning(engine, out.loaded.sound, refs, &e, levels))
+    return fail("no engine tuning");
   for (const auto& [element, f] : harmonics) {
     XmlNode h;
     if (parse(f, h)) read_harmonic(engine, h, element, out.loaded.sound, &e);
@@ -243,6 +323,27 @@ bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& m
   XmlNode model;
   if (!model_file.empty() && parse(model_file, model)) read_model_tuning(model, out.loaded.sound);
   return true;
+}
+
+bool decode_engine_sound_runtime(SoundFiles& files, const std::string& media, const std::filesystem::path& cache_dir,
+                                 BakedSound& out, std::string* error, UpgradeLevels levels,
+                                 const std::filesystem::path& ffmpeg) {
+  if (!cache_dir.empty() && load_baked_sound(cache_dir, media, out, nullptr, levels)) return true;
+  const std::filesystem::path ff = ffmpeg.empty() ? find_ffmpeg() : ffmpeg;
+  if (ff.empty()) {
+    if (error) *error = "no baked sound and ffmpeg not found for runtime XMA2 decode";
+    return false;
+  }
+  std::error_code ec;
+  const bool ephemeral = cache_dir.empty();
+  const std::filesystem::path target =
+      ephemeral ? (std::filesystem::temp_directory_path(ec) / ("shift-rt-sound-" + baked_sound_key(media, levels)))
+                : cache_dir;
+  BakeReport report;
+  const bool ok = bake_engine_sound(files, media, target, ff, report, error, levels) &&
+                  load_baked_sound(target, media, out, error, levels);
+  if (ephemeral) std::filesystem::remove_all(target, ec);
+  return ok;
 }
 
 }  // namespace audio

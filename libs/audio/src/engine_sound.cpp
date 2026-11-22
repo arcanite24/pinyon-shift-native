@@ -108,7 +108,7 @@ int group_number(const std::string& name) {
 }  // namespace
 
 bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<HarmonicRef>& harmonics,
-                        std::string* error) {
+                        std::string* error, UpgradeLevels levels) {
   if (!iequals(engine.name, "Engine")) {
     if (error) *error = "not an engine tuning (root " + engine.name + ")";
     return false;
@@ -120,10 +120,21 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
   if (const XmlNode* v = engine.child("VolumeAdjustments")) out.engine_volume = v->number("EngineVolume", 1);
   out.global_volume = read_param(engine.child("GlobalCarVolume"));
   harmonics.clear();
-  for (const char* element : {"EngineIntake", "EngineAmbient", "Exhaust"}) {
+  const int in_lv = std::clamp(levels.intake, 0, 3);
+  const int ex_lv = std::clamp(levels.exhaust, 0, 3);
+  auto pick_upgrade = [](const XmlNode* up, int lv) -> std::string {
+    if (!up) return {};
+    for (int k = lv; k >= 0; --k) {
+      const std::string f = up->attr("L" + std::to_string(k));
+      if (!f.empty()) return f;
+    }
+    return {};
+  };
+  const std::pair<const char*, int> groups[3] = {
+      {"EngineIntake", in_lv}, {"EngineAmbient", 0}, {"Exhaust", ex_lv}};
+  for (const auto& [element, lv] : groups) {
     const XmlNode* g = engine.child(element);
-    const XmlNode* up = g ? g->child("Upgrade") : nullptr;
-    const std::string file = up ? up->attr("L0") : std::string();  // stock: L0
+    const std::string file = pick_upgrade(g ? g->child("Upgrade") : nullptr, lv);
     if (file.empty() || silent_name(file)) continue;
     harmonics.push_back({element, file});
   }

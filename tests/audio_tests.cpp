@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "audio/audio_engine.h"
+#include "audio/bake.h"
 #include "audio/engine_player.h"
 #include "audio/fsb4.h"
 #include "audio/mixer.h"
@@ -224,6 +225,60 @@ void r34_checks() {
   // The exhaust's right loops play the stereo samples' second channel.
   for (const auto& g : s.groups)
     if (g.name == "ExhaustR") CHECK(!g.loops.empty() && g.loops[0].channel == 1 && g.loops[0].sample == 0);
+
+  // Upgrade levels L1..L3 resolve cleanly on the R34 (and runtime XMA2 decode
+  // works without any prior soundbake when ffmpeg is present).
+  std::string err;
+  audio::LoadedSound upgraded;
+  CHECK(audio::load_engine_sound(files, "NIS_SkylineGTRVSpecII_02", upgraded, &err, {3, 3}));
+  CHECK(!upgraded.sound.groups.empty());
+  if (!audio::find_ffmpeg().empty()) {
+    namespace fs = std::filesystem;
+    const fs::path cache = fs::temp_directory_path() / "shift-rt-xma2-test";
+    std::error_code ec;
+    fs::remove_all(cache, ec);
+    audio::BakedSound decoded;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok =
+        audio::decode_engine_sound_runtime(files, "NIS_SkylineGTRVSpecII_02", cache, decoded, &err, {2, 2});
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("r34 runtime XMA2 decode (L2/L2): %s, %zu pcm loops in %.0f ms\n", ok ? "ok" : err.c_str(),
+                decoded.pcm.size(), ms);
+    CHECK(ok && !decoded.pcm.empty() && !decoded.loaded.sound.groups.empty());
+    // Second load hits the cache without running ffmpeg again.
+    audio::BakedSound cached;
+    const auto t1 = std::chrono::steady_clock::now();
+    CHECK(audio::decode_engine_sound_runtime(files, "NIS_SkylineGTRVSpecII_02", cache, cached, &err, {2, 2}));
+    const double ms2 = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+    std::printf("r34 cached reload (L2/L2): %.1f ms\n", ms2);
+    CHECK(cached.pcm.size() == decoded.pcm.size());
+    fs::remove_all(cache, ec);
+  }
+}
+
+void upgrade_level_checks() {
+  const char* et = R"(
+    <Engine>
+      <EngineSettings audio_rpm_idle="800" audio_rpm_redline="7000" />
+      <EngineIntake><Upgrade L0="in0.xml" L1="in1.xml" L2="in2.xml" L3="in3.xml" /></EngineIntake>
+      <EngineAmbient><Upgrade L0="amb0.xml" /></EngineAmbient>
+      <Exhaust><Upgrade L0="ex0.xml" L1="ex1.xml" L2="ex2.xml" L3="ex3.xml" /></Exhaust>
+    </Engine>
+  )";
+  audio::XmlNode root;
+  std::string err;
+  CHECK(audio::parse_xml(et, root, &err));
+  audio::EngineSound s;
+  std::vector<audio::HarmonicRef> refs;
+  CHECK(audio::read_engine_tuning(root, s, refs, &err, {0, 0}));
+  CHECK(refs.size() == 3 && refs[0].file == "in0.xml" && refs[1].file == "amb0.xml" && refs[2].file == "ex0.xml");
+  CHECK(audio::read_engine_tuning(root, s, refs, &err, {2, 3}));
+  CHECK(refs.size() == 3 && refs[0].file == "in2.xml" && refs[1].file == "amb0.xml" && refs[2].file == "ex3.xml");
+  // Out-of-range levels clamp to 0..3.
+  CHECK(audio::read_engine_tuning(root, s, refs, &err, {9, -1}));
+  CHECK(refs.size() == 3 && refs[0].file == "in3.xml" && refs[2].file == "ex0.xml");
+  CHECK(audio::baked_sound_key("CarA", {0, 0}) == "CarA");
+  CHECK(audio::baked_sound_key("CarA", {1, 3}) == "CarA_I1_E3");
 }
 
 // The real-time hand-off primitives: order, capacity, latest-wins, and a
@@ -541,6 +596,7 @@ void audio_thread_checks() {
 int main() {
   rule_checks();
   xml_checks();
+  upgrade_level_checks();
   fsb_checks();
   player_checks();
   rt_checks();

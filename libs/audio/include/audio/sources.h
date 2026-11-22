@@ -47,14 +47,16 @@ class SoundFiles {
   std::map<std::string, std::filesystem::path> banks_;
 };
 
-// A car's engine sound at stock (L0), its loop indices resolved against the
-// banks. `banks` receives each group's bank headers (by bank name).
+// A car's engine sound at the given intake/exhaust upgrade levels (L0..L3;
+// default stock L0), its loop indices resolved against the banks. `banks`
+// receives each group's bank headers (by bank name).
 struct LoadedSound {
   EngineSound sound;
   std::map<std::string, std::vector<FsbSample>> banks;  // lower-case bank name
   std::vector<std::string> notes;                       // missing files and silent groups
 };
-bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound& out, std::string* error);
+bool load_engine_sound(SoundFiles& files, const std::string& media, LoadedSound& out, std::string* error,
+                       UpgradeLevels levels = {});
 
 std::string lower_name(std::string s);
 

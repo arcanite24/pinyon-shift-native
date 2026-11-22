@@ -80,12 +80,17 @@ void resolve_loop_indices(std::vector<Loop>& loops, int sample_count, const std:
 // Parsing. The engine tuning names the harmonic tunings; each harmonic
 // tuning's file is read separately (read_harmonic). `model` may be null
 // (no model tuning: every view level 1).
+struct UpgradeLevels {
+  int intake = 0;   // 0..3 -> L0..L3 (SPEC-ENGINE-SOUND "Emission groups and upgrade levels")
+  int exhaust = 0;  // 0..3 -> L0..L3
+};
+
 struct HarmonicRef {
   std::string element;  // EngineIntake, EngineAmbient or Exhaust
-  std::string file;     // the L0 harmonic tuning, e.g. "6T2_RB26_o1043_Exh_HT.xml"
+  std::string file;     // the selected harmonic tuning, e.g. "6T2_RB26_o1043_Exh_HT.xml"
 };
 bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<HarmonicRef>& harmonics,
-                        std::string* error);
+                        std::string* error, UpgradeLevels levels = {});
 // Adds the harmonic tuning's groups (ExhaustL and ExhaustR for an Exhaust
 // tuning) to `out`, with the engine tuning's EmissionGroup<g> gain when it
 // has one. Silent (NA) tunings and banks add nothing.

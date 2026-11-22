@@ -30,8 +30,11 @@ struct BakeReport {
   std::vector<std::string> notes;
 };
 
+std::string baked_sound_key(const std::string& media, UpgradeLevels levels = {});
+
 bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::filesystem::path& out_dir,
-                       const std::filesystem::path& ffmpeg, BakeReport& report, std::string* error);
+                       const std::filesystem::path& ffmpeg, BakeReport& report, std::string* error,
+                       UpgradeLevels levels = {});
 
 // A baked car: its sound (loop indices resolved) and each loop's PCM.
 struct BakedSound {
@@ -42,9 +45,17 @@ struct BakedSound {
   std::vector<std::vector<const PcmSample*>> table() const;
 };
 bool load_baked_sound(const std::filesystem::path& out_dir, const std::string& media, BakedSound& out,
-                      std::string* error);
+                      std::string* error, UpgradeLevels levels = {});
 
-// FFmpeg on PATH, or in WinGet's package folder on Windows; empty if none.
+// Runtime on-demand XMA2 decode path: loads from `cache_dir` when already
+// present, otherwise decodes the car's FSB4 XMA2 samples from `files` on
+// demand via FFmpeg (no prior offline soundbake required) and caches the
+// PCM under `cache_dir` (or a temporary directory when `cache_dir` is empty).
+bool decode_engine_sound_runtime(SoundFiles& files, const std::string& media, const std::filesystem::path& cache_dir,
+                                 BakedSound& out, std::string* error, UpgradeLevels levels = {},
+                                 const std::filesystem::path& ffmpeg = {});
+
+// FFmpeg on SHIFT_FFMPEG, PATH, or in WinGet's package folder on Windows; empty if none.
 std::filesystem::path find_ffmpeg();
 
 }  // namespace audio
