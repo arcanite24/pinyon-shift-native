@@ -202,6 +202,10 @@ target_include_directories(livery_damage_tests PRIVATE ../apps/carview)
 target_link_libraries(livery_damage_tests PRIVATE carview_render shift_freeroam shift_garage shift_drive shift_cars shift_sqlite3 shift_stb)
 add_test(NAME livery_damage_tests COMMAND livery_damage_tests)
 
+add_executable(acoustics_vo_radio_tests acoustics_vo_radio_tests.cpp)
+target_link_libraries(acoustics_vo_radio_tests PRIVATE shift_audio fh1data)
+add_test(NAME acoustics_vo_radio_tests COMMAND acoustics_vo_radio_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(fmv_story_tests fmv_story_tests.cpp
     ../apps/carview/fmv_player.cpp

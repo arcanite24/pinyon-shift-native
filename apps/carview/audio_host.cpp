@@ -207,6 +207,18 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
     auto rp = std::make_unique<audio::RadioPlayer>(*radio_, kAudioRate, non_blocking);
     rp->master = kRadioMaster;
     rp->volume = cfg_.radio_on ? double(cfg_.radio_volume) : 0.0;
+    // Register canonical Colorado 3D location stations (Festival stages, Autoshow, Workshop, Paintshop).
+    std::vector<audio::LocationRadioEmitter> locs;
+    auto add_loc = [&](std::string_view st_name, std::array<float, 3> pos, float max_d) {
+      const int idx = radio_->find_station(st_name);
+      if (idx >= 0) locs.push_back({idx, pos, 14.0f, max_d});
+    };
+    add_loc("Radio5_3d_PreRace", {-1468.0f, 26.0f, -345.0f}, 280.0f);
+    add_loc("Radio5_3d_PreRace", {-1398.0f, 1.0f, -22.0f}, 240.0f);
+    add_loc("Radio6_3d_Autoshow", {-1020.0f, 0.0f, -260.0f}, 160.0f);
+    add_loc("Radio7_3d_Workshop", {-960.0f, 0.0f, -180.0f}, 160.0f);
+    add_loc("Radio8_3d_Paintshop", {-1080.0f, 0.0f, -190.0f}, 160.0f);
+    if (!locs.empty()) rp->set_location_emitters(std::move(locs));
     engine_.set_radio(radio_.get(), std::move(rp));
     return true;
   }
@@ -259,6 +271,63 @@ bool AudioHost::init_satnav(const std::filesystem::path& game_root, const std::f
     }
   }
   return has_satnav_;
+}
+
+bool AudioHost::init_vo(const std::filesystem::path& game_root, std::string_view language) {
+  if (game_root.empty()) return false;
+  if (!vo_tried_) {
+    vo_tried_ = true;
+    auto vp = std::make_unique<audio::VoPlayer>(kAudioRate, true);
+    std::string note;
+    if (vp->load(game_root, language, &note)) {
+      std::printf("%s\n", note.c_str());
+      engine_.set_vo_player(std::move(vp));
+      has_vo_ = true;
+    }
+  }
+  return has_vo_;
+}
+
+bool AudioHost::init_acoustics(const std::filesystem::path& game_root) {
+  if (game_root.empty()) return false;
+  if (!acoustics_tried_) {
+    acoustics_tried_ = true;
+    std::string note;
+    if (acoustics_.load_configs(game_root, &note)) {
+      std::printf("%s\n", note.c_str());
+      has_acoustics_ = true;
+    }
+  }
+  return has_acoustics_;
+}
+
+void AudioHost::trigger_vo(std::string_view trigger_id, bool interrupt) {
+  if (has_vo_) engine_.trigger_vo(trigger_id, interrupt);
+}
+
+void AudioHost::skip_vo() {
+  if (has_vo_) engine_.skip_vo();
+}
+
+void AudioHost::radio_set_time_of_day(double hour) {
+  if (radio_) engine_.radio_set_time_of_day(hour);
+}
+
+void AudioHost::radio_trigger_special(std::string_view gameplay_event) {
+  if (radio_) engine_.radio_trigger_special(gameplay_event);
+}
+
+void AudioHost::radio_trigger_immediate(std::string_view gameplay_event) {
+  if (radio_) engine_.radio_trigger_immediate(gameplay_event);
+}
+
+void AudioHost::radio_trigger_festival_update(std::string_view gameplay_event) {
+  if (radio_) engine_.radio_trigger_festival_update(gameplay_event);
+}
+
+void AudioHost::update_world_acoustics(float x, float y, float z, float heading_rad) {
+  if (radio_) engine_.set_listener_pose({x, y, z}, heading_rad);
+  if (has_acoustics_) engine_.set_acoustics_sample(acoustics_.evaluate(x, y, z));
 }
 
 void AudioHost::init_user_music(const std::filesystem::path& music_dir, bool non_blocking) {

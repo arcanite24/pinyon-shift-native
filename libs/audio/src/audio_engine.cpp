@@ -7,12 +7,13 @@
 
 namespace audio {
 
-AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)) {
+AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)), ambience_bed_(std::max(8000, rate)) {
   mixer_.prepare(rate_);
   mixer_.snapshots().add_defaults();
   snap_title_ = mixer_.snapshots().find("Title");
   for (auto& eq : car_eqs_) eq.prepare(rate_);
   rms_stage_.prepare(rate_);
+  reverb_.prepare(rate_);
   matrix_bus_smooth_.fill(1.0f);
   // Pre-allocate stereo bus scratch buffers for up to 4096 frames so the
   // audio thread never allocates in steady state.
@@ -25,6 +26,7 @@ AudioEngine::~AudioEngine() {
   delete engine_;
   delete sfx_;
   delete satnav_;
+  delete vo_;
   delete radio_player_;
   delete user_music_;
 }
@@ -55,6 +57,7 @@ void AudioEngine::reclaim() {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(r.ptr); break;
       case Retired::kSfx: delete static_cast<SfxEngine*>(r.ptr); break;
       case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(r.ptr); break;
+      case Retired::kVo: delete static_cast<VoPlayer*>(r.ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(r.ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(r.ptr); break;
     }
@@ -194,6 +197,82 @@ void AudioEngine::set_fmv_audio(FmvAudioFn fn, void* ctx) {
     fmv_ctx_.store(ctx, std::memory_order_release);
     fmv_fn_.store(fn, std::memory_order_release);
   }
+}
+
+void AudioEngine::set_vo_player(std::unique_ptr<VoPlayer> vo) {
+  Command c;
+  c.kind = Command::kSwapVo;
+  c.ptr0 = vo.release();
+  if (!cmds_.push(c)) {
+    if (!running_.load(std::memory_order_acquire)) {
+      drain_commands();
+      reclaim();
+      if (cmds_.push(c)) return;
+    }
+    delete static_cast<VoPlayer*>(c.ptr0);
+  }
+}
+
+void AudioEngine::set_acoustics_sample(const AcousticsSample& sample) { acoustics_in_.write(sample); }
+
+void AudioEngine::set_listener_pose(std::array<float, 3> pos, float heading_rad) {
+  Command c;
+  c.kind = Command::kListenerPose;
+  c.f0 = pos[0];
+  c.f1 = pos[1];
+  c.f2 = pos[2];
+  c.f3 = heading_rad;
+  enqueue(c);
+}
+
+void AudioEngine::trigger_vo(std::string_view trigger_id, bool interrupt) {
+  Command c;
+  c.kind = Command::kTriggerVo;
+  c.b0 = interrupt;
+  const size_t n = std::min(trigger_id.size(), c.text.size() - 1);
+  std::memcpy(c.text.data(), trigger_id.data(), n);
+  c.text[n] = '\0';
+  enqueue(c);
+}
+
+void AudioEngine::skip_vo() {
+  Command c;
+  c.kind = Command::kSkipVo;
+  enqueue(c);
+}
+
+void AudioEngine::radio_set_time_of_day(double hour) {
+  Command c;
+  c.kind = Command::kRadioTod;
+  c.f0 = float(hour);
+  enqueue(c);
+}
+
+void AudioEngine::radio_trigger_special(std::string_view gameplay_event) {
+  Command c;
+  c.kind = Command::kRadioSpecial;
+  const size_t n = std::min(gameplay_event.size(), c.text.size() - 1);
+  std::memcpy(c.text.data(), gameplay_event.data(), n);
+  c.text[n] = '\0';
+  enqueue(c);
+}
+
+void AudioEngine::radio_trigger_immediate(std::string_view gameplay_event) {
+  Command c;
+  c.kind = Command::kRadioImmediate;
+  const size_t n = std::min(gameplay_event.size(), c.text.size() - 1);
+  std::memcpy(c.text.data(), gameplay_event.data(), n);
+  c.text[n] = '\0';
+  enqueue(c);
+}
+
+void AudioEngine::radio_trigger_festival_update(std::string_view gameplay_event) {
+  Command c;
+  c.kind = Command::kRadioFestivalUpdate;
+  const size_t n = std::min(gameplay_event.size(), c.text.size() - 1);
+  std::memcpy(c.text.data(), gameplay_event.data(), n);
+  c.text[n] = '\0';
+  enqueue(c);
 }
 
 void AudioEngine::set_bus_level(Bus b, float level) {
@@ -375,6 +454,7 @@ void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(ptr); break;
       case Retired::kSfx: delete static_cast<SfxEngine*>(ptr); break;
       case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(ptr); break;
+      case Retired::kVo: delete static_cast<VoPlayer*>(ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(ptr); break;
     }
@@ -432,6 +512,18 @@ void AudioEngine::drain_commands() {
       case Command::kRadioVolume:
         if (radio_player_) radio_player_->volume = double(c.f0);
         break;
+      case Command::kRadioTod:
+        if (radio_) radio_->set_time_of_day_hour(double(c.f0));
+        break;
+      case Command::kRadioSpecial:
+        if (radio_) radio_->trigger_special_dialogue(c.text.data());
+        break;
+      case Command::kRadioImmediate:
+        if (radio_) radio_->trigger_immediate_dialogue(c.text.data());
+        break;
+      case Command::kRadioFestivalUpdate:
+        if (radio_) radio_->trigger_festival_update(c.text.data());
+        break;
       case Command::kUserMusicEnable:
         if (user_music_) user_music_->set_enabled(c.b0);
         break;
@@ -460,6 +552,10 @@ void AudioEngine::drain_commands() {
         retire_ptr(Retired::kSatNav, satnav_);
         satnav_ = static_cast<SatNavVoPlayer*>(c.ptr0);
         if (satnav_) satnav_->set_enabled(satnav_enabled_);
+        break;
+      case Command::kSwapVo:
+        retire_ptr(Retired::kVo, vo_);
+        vo_ = static_cast<VoPlayer*>(c.ptr0);
         break;
       case Command::kSwapRadio:
         retire_ptr(Retired::kRadio, radio_player_);
@@ -490,6 +586,15 @@ void AudioEngine::drain_commands() {
         satnav_enabled_ = c.b0;
         if (satnav_) satnav_->set_enabled(satnav_enabled_);
         break;
+      case Command::kTriggerVo:
+        if (vo_) vo_->trigger(c.text.data(), c.b0);
+        break;
+      case Command::kSkipVo:
+        if (vo_) vo_->skip_current();
+        break;
+      case Command::kListenerPose:
+        if (radio_player_) radio_player_->set_listener({c.f0, c.f1, c.f2}, c.f3);
+        break;
     }
   }
 }
@@ -500,6 +605,12 @@ void AudioEngine::render_block(float* out, int frames) {
 
   VehicleAudioState vst{};
   if (veh_state_in_.read(vst)) last_veh_state_ = vst;
+  AcousticsSample ac{};
+  if (acoustics_in_.read(ac)) {
+    last_acoustics_ = ac;
+    have_acoustics_ = true;
+    reverb_.set_parameters(last_acoustics_.reverb);
+  }
   drain_commands();
 
   const size_t samples = size_t(frames) * 2;
@@ -564,11 +675,24 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   bool satnav_now = false;
-  if (satnav_ && !on_title) {
+  bool vo_now = false;
+  if ((satnav_ || vo_) && !on_title) {
     auto& vbuf = bus_bufs_[int(Bus::kVo)];
     std::fill(vbuf.begin(), vbuf.begin() + ptrdiff_t(samples), 0.0f);
-    satnav_now = satnav_->render(vbuf.data(), frames);
-    if (satnav_now) buses[int(Bus::kVo)] = vbuf.data();
+    if (satnav_) satnav_now = satnav_->render(vbuf.data(), frames);
+    if (vo_) vo_now = vo_->render(vbuf.data(), frames);
+    if (satnav_now || vo_now) buses[int(Bus::kVo)] = vbuf.data();
+  }
+
+  // World ambience bed (soundscape regional & festival crowd beds) + 3D location radio stations.
+  if (!on_title && (have_acoustics_ || radio_player_)) {
+    auto& abuf = bus_bufs_[int(Bus::kAmbience)];
+    if (!buses[int(Bus::kAmbience)]) {
+      std::fill(abuf.begin(), abuf.begin() + ptrdiff_t(samples), 0.0f);
+      buses[int(Bus::kAmbience)] = abuf.data();
+    }
+    if (have_acoustics_) ambience_bed_.render(last_acoustics_, last_veh_state_.speed_mph, abuf.data(), frames);
+    if (radio_player_ && !user_music_on) radio_player_->render_location_stations(abuf.data(), frames);
   }
 
   // Apply GlobalDSPConfig.xml car-bus EQ to active car buses (independent filter state per bus).
@@ -578,16 +702,38 @@ void AudioEngine::render_block(float* out, int frames) {
       car_eqs_[size_t(i)].process(bus_bufs_[int(kCarBuses[i])].data(), frames);
     }
   }
+  // Environmental reverb (colorado_reverb.xml I3DL2 zones) applied to focus car engine bus.
+  if (have_acoustics_ && buses[int(Bus::kEngine)]) {
+    reverb_.process(bus_bufs_[int(Bus::kEngine)].data(), frames);
+  }
 
   if (use_matrix_) {
     const bool dj_now = !on_title && !user_music_on && radio_player_ && radio_player_->dj_speaking();
-    if (dj_now != last_dj_speaking_) {
+    const bool fest_now = !on_title && !user_music_on && radio_player_ && radio_player_->festival_update_playing();
+    if (fest_now != last_festival_update_ || dj_now != last_dj_speaking_) {
+      last_festival_update_ = fest_now;
       last_dj_speaking_ = dj_now;
-      matrix_.activate(dj_now ? "RadioDJSpeaking" : "RadioNormal");
+      if (fest_now) matrix_.activate("RadioFestivalUpdate");
+      else if (dj_now) matrix_.activate("RadioDJSpeaking");
+      else matrix_.activate("RadioNormal");
     }
     if (satnav_now != last_satnav_playing_) {
       last_satnav_playing_ = satnav_now;
       matrix_.activate(satnav_now ? "SatNavPlaying" : "SatNavNotPlaying");
+    }
+    if (vo_now != last_vo_playing_) {
+      last_vo_playing_ = vo_now;
+      matrix_.activate(vo_now ? "VOPlaying" : "VONotPlaying");
+    }
+    if (have_acoustics_) {
+      if (last_acoustics_.in_tunnel != last_in_tunnel_) {
+        last_in_tunnel_ = last_acoustics_.in_tunnel;
+        matrix_.activate(last_in_tunnel_ ? "InTunnel" : "NotInTunnel");
+      }
+      if (!last_acoustics_.ambience_snapshot.empty() && last_acoustics_.ambience_snapshot != last_ambience_snap_) {
+        last_ambience_snap_ = last_acoustics_.ambience_snapshot;
+        matrix_.activate(last_ambience_snap_);
+      }
     }
     std::fill(out, out + samples, 0.0f);
     const float a = 1.0f - std::exp(-1.0f / (0.01f * float(rate_)));
@@ -656,6 +802,8 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.stalls = stalls_;
   t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;
   t.satnav_playing = satnav_ && satnav_->playing();
+  t.vo_playing = vo_ && vo_->playing();
+  t.in_tunnel = have_acoustics_ && last_acoustics_.in_tunnel;
   telemetry_buf_.write(t);
 }
 

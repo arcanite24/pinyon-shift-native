@@ -75,6 +75,8 @@ class AudioHost {
                 const std::string& burble_bank = {});
   bool init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                    std::string_view language = "EN", bool metric = true);
+  bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
+  bool init_acoustics(const std::filesystem::path& game_root);
   std::string car_burble_bank() const;
 
   // Initializes Your Music from `music_dir` (<state>/music).
@@ -95,6 +97,13 @@ class AudioHost {
   void trigger_ui(audio::UiCue cue);
   void trigger_satnav(audio::SatNavCue cue);
   void set_satnav_enabled(bool on);
+  void trigger_vo(std::string_view trigger_id, bool interrupt = false);
+  void skip_vo();
+  void radio_set_time_of_day(double hour);
+  void radio_trigger_special(std::string_view gameplay_event);
+  void radio_trigger_immediate(std::string_view gameplay_event);
+  void radio_trigger_festival_update(std::string_view gameplay_event);
+  void update_world_acoustics(float x, float y, float z, float heading_rad);
   void radio_press(int dir);
   bool handle_key(SDL_Keycode key, SDL_Keymod mod, std::string& notice);
   audio::AudioTelemetry telemetry();
@@ -134,6 +143,11 @@ class AudioHost {
   bool has_sfx_ = false;
   bool satnav_tried_ = false;
   bool has_satnav_ = false;
+  bool vo_tried_ = false;
+  bool has_vo_ = false;
+  bool acoustics_tried_ = false;
+  bool has_acoustics_ = false;
+  audio::WorldAcousticsData acoustics_;
   bool last_paused_ = false;
   bool last_menu_ = false;
   bool last_loading_ = false;

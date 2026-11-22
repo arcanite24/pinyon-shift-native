@@ -12,6 +12,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace audio {
@@ -35,14 +37,33 @@ struct RadioClip {
 struct RadioTrack {
   std::string title, artist, name;
   int clip = -1;  // into RadioData::music
+  double likelihood_day = 1.0;
+  double likelihood_morning = 1.0;
+  double likelihood_evening = 1.0;
+  double likelihood_night = 1.0;
 };
 
 struct RadioStation {
   std::string name;
   bool off = false;
+  bool is_3d = false;
+  double volume = 1.0;
+  double reverb_wet_level = 0.0;
+  double pan_level_3d = 0.0;
   std::vector<RadioTrack> tracks;
   std::vector<int> idents, dj;  // into RadioData::vo
+  std::vector<int> festival_lead_in, festival_lead_out;  // into RadioData::vo
+  std::unordered_map<std::string, int> special_dialogue;    // lowercase gameplayEvent -> vo clip
+  std::unordered_map<std::string, int> immediate_dialogue;  // lowercase gameplayEvent -> vo clip
   int no_repeat_tracks = 0, no_repeat_idents = 0, no_repeat_dj = 0;
+  int no_repeat_lead_in = 0, no_repeat_lead_out = 0;
+};
+
+struct RadioVoxPops {
+  std::vector<std::string> events;
+  int no_repeat = 0;
+  double interval_min_s = 3600.0;
+  double interval_max_s = 48000.0;
 };
 
 // The System element's levels and times.
@@ -51,24 +72,31 @@ struct RadioLevels {
   double duck = 0.3, duck_down = 0.1, duck_up = 0.5;
   double change_fade = 0.25;      // stationChangeFadeTimeUser
   double new_track_delay = 2.0;   // HUDNewTrackDisplayDelayFreeRoam
+  int max_tracks_between_dj = 1;  // maxTracksBetweenDJ
 };
 
 struct RadioData {
   RadioLevels levels;
   std::vector<RadioStation> stations;
   std::vector<RadioClip> music, vo;
+  std::unordered_map<std::string, int> festival_updates;  // lowercase gameplayEvent -> vo clip
+  RadioVoxPops vox_pops;
   std::filesystem::path music_bank, vo_bank;
   std::string language = "EN";  // resolved VO language code
   int unresolved = 0;           // names no info entry gives
   // The D-pad cycle: the player stations (not off, not the 3D location
   // stations) in file order, then the off station.
   std::vector<int> cycle;
+  // The 3D location stations (Radio5_3d_PreRace..Radio9_3d_Streetrace).
+  std::vector<int> location_stations;
 };
 
 // Parses RadioSystem.xml and the two info files' text; `music_info` and
 // `vo_info` resolve track and VO names.
 bool parse_radio(std::string_view system_xml, std::string_view music_info, std::string_view vo_info, RadioData& out,
                  std::string* error);
+// Parses RadioDJVoxPops.xml.
+bool parse_radio_vox_pops(std::string_view vox_pops_xml, RadioVoxPops& out, std::string* error = nullptr);
 // Reads media/audio/radio under `game_root` (honouring cars::mods::resolve;
 // uses `language`'s VO bank when it exists, else falls back to EN).
 bool load_radio(const std::filesystem::path& game_root, RadioData& out, std::string* error,
@@ -90,7 +118,7 @@ class RadioPicker {
   std::deque<int> recent_;
 };
 
-enum class RadioKind { kTrack, kIdent, kDj };
+enum class RadioKind { kTrack, kIdent, kDj, kFestivalUpdate };
 
 struct RadioEvent {
   RadioKind kind = RadioKind::kTrack;
@@ -113,17 +141,38 @@ class StationSchedule {
   const RadioEvent* track_at(double t, double* offset = nullptr);
   void set_dj_enabled(bool on) { use_dj_ = on; }
   bool dj_enabled() const { return use_dj_; }
+  void set_time_of_day_hour(double hour) { tod_hour_ = hour; }
+
+  // Gameplay-triggered radio dialogue (Slice 9):
+  // - Special dialogue (barn-find / location hints) plays over next track intro.
+  // - Immediate dialogue (story lines) starts right away at `now_clock`.
+  // - Festival update queues LeadIn -> Update -> LeadOut over next track intro.
+  bool queue_special_dialogue(std::string_view gameplay_event);
+  bool trigger_immediate_dialogue(std::string_view gameplay_event, double now_clock);
+  bool queue_festival_update(std::string_view gameplay_event);
 
  private:
   void extend();  // schedules the ident, the next track and a DJ line
+  int pick_weighted_track();
   const RadioData& data_;
   const RadioStation& st_;
   std::mt19937_64 rng_;
-  RadioPicker tracks_, idents_, dj_;
+  RadioPicker tracks_, idents_, dj_, lead_in_, lead_out_;
   bool use_dj_ = true;
+  double tod_hour_ = 12.0;
+  int tracks_since_dj_ = 0;
+  std::deque<int> pending_special_;   // vo clip indices
+  std::deque<int> pending_festival_;  // vo clip indices
   std::deque<RadioEvent> events_;
   const RadioEvent* last_track() const;
   uint64_t next_id_ = 0, station_ = 0;
+};
+
+struct LocationRadioEmitter {
+  int station = -1;  // index into RadioData::stations (e.g. Radio5_3d_PreRace..Radio9_3d_Streetrace)
+  std::array<float, 3> pos{};
+  float min_distance = 12.0f;
+  float max_distance = 220.0f;
 };
 
 // The radio: the selected station in the cycle, one clock for every
@@ -142,6 +191,11 @@ class Radio {
   std::string selected_name() const;
   void set_dj_enabled(bool on);
   bool dj_enabled() const { return dj_enabled_; }
+  void set_time_of_day_hour(double hour);
+  bool trigger_special_dialogue(std::string_view gameplay_event);
+  bool trigger_immediate_dialogue(std::string_view gameplay_event);
+  bool trigger_festival_update(std::string_view gameplay_event);
+  double location_clock() const { return location_clock_; }
   // Advances the clock (while on, or with `run`: a station still fading
   // out) and the popup by `dt` seconds of output.
   void advance(double dt, bool run = false);
@@ -162,6 +216,10 @@ class Radio {
   int pos_ = 0;
   bool dj_enabled_ = true;
   double clock_ = 0;
+  double location_clock_ = 0;
+  double since_festival_update_s_ = 0;
+  double next_vox_pop_s_ = 3600.0;
+  size_t vox_pop_rr_ = 0;
   // The popup's timer: it shows from `popup_from` for kPopupShow seconds
   // (on the popup clock, which runs whether the radio is on or not).
   double popup_clock_ = 0, popup_from_ = -1e9;
@@ -186,6 +244,13 @@ class RadioPlayer {
   double volume = 1;  // SPEC-RADIO: RADIO VOLUME option (0..1)
   int decoders() const;
   bool dj_speaking() const { return dj_speaking_; }
+  bool festival_update_playing() const { return festival_update_playing_; }
+
+  // 3D location station emitters (Radio5_3d_PreRace..Radio9_3d_Streetrace).
+  void set_location_emitters(std::vector<LocationRadioEmitter> emitters);
+  void set_listener(std::array<float, 3> pos, float heading_rad);
+  // Renders active 3D location stations near the listener into `out` (additive).
+  void render_location_stations(float* out, int frames);
 
  private:
   struct Voice;
@@ -201,6 +266,10 @@ class RadioPlayer {
   std::vector<double> station_gain_;
   double duck_ = 1;
   bool dj_speaking_ = false;
+  bool festival_update_playing_ = false;
+  std::vector<LocationRadioEmitter> emitters_;
+  std::array<float, 3> listener_pos_{};
+  float listener_heading_ = 0.0f;
   std::vector<RadioEvent> scratch_;
   std::vector<float> mix_;
 };

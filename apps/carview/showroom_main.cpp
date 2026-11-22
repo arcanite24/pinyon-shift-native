@@ -3122,6 +3122,8 @@ int run_drive(int argc, char** argv) {
               const auto sfx_cache = !sound_dir.empty() ? sound_dir : (state_root / "sound-cache");
               audio_host.init_sfx(game_root, sfx_cache, audio_host.car_burble_bank());
               audio_host.init_satnav(game_root, sfx_cache, language, true);
+              audio_host.init_vo(game_root, language);
+              audio_host.init_acoustics(game_root);
             }
           }
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
@@ -6344,6 +6346,12 @@ int run_drive(int argc, char** argv) {
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
+            if (skip_vo_with_a && !show_title && !menu.open && !settings_page.is_open() && !map_open &&
+                !fmv_player.active() && audio_host.telemetry().vo_playing) {
+              const bool pad_a =
+                  e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH;
+              if (pad_a) audio_host.skip_vo();
+            }
             if (fmv_player.active()) {
               const bool skip_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
                                     (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE || e.key.key == SDLK_ESCAPE);
@@ -7438,6 +7446,8 @@ int run_drive(int argc, char** argv) {
               award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
               if (career.credits < 15000) career.credits = 15000;
             }
+            if (!sa.radio_immediate_event.empty()) audio_host.radio_trigger_immediate(sa.radio_immediate_event);
+            if (!sa.vo_trigger.empty()) audio_host.trigger_vo(sa.vo_trigger, false);
             if (sa.open_autoshow) open_shop_or_autoshow(true);
             if (sa.intro_finished) saved.intro_completed = true;
           };
@@ -7465,6 +7475,12 @@ int run_drive(int argc, char** argv) {
             const drive::Vec3 vp = vehicle.position();
             const bool rf = race && race->player_finished();
             apply_story_action(story_intro.update(frame_dt, {vp.x, vp.z}, fmv_player.active(), rf));
+          }
+          {
+            const drive::Vec3 vp = vehicle.position();
+            const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            audio_host.update_world_acoustics(float(vp.x), float(vp.y), float(vp.z), std::atan2(float(vf.x), float(vf.z)));
+            audio_host.radio_set_time_of_day(tod_clock.hour());
           }
           const bool menu_paused = show_title || fmv_player.active() || ceremony.active || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||

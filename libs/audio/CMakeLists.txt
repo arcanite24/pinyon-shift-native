@@ -14,9 +14,11 @@ add_library(shift_audio STATIC
   src/event_configs.cpp
   src/sfx_engine.cpp
   src/satnav_vo.cpp
+  src/vo_player.cpp
+  src/world_acoustics.cpp
   src/audio_engine.cpp)
 target_include_directories(shift_audio PUBLIC include)
-target_link_libraries(shift_audio PUBLIC shift_cars PRIVATE shift_dr_libs)
+target_link_libraries(shift_audio PUBLIC shift_cars fh1data PRIVATE shift_dr_libs)
 if(MSVC)
   target_compile_options(shift_audio PRIVATE /W4)
 else()

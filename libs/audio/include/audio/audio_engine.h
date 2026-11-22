@@ -27,6 +27,8 @@
 #include "audio/sfx_engine.h"
 #include "audio/snapshots.h"
 #include "audio/user_music.h"
+#include "audio/vo_player.h"
+#include "audio/world_acoustics.h"
 
 namespace audio {
 
@@ -46,6 +48,8 @@ struct AudioTelemetry {
   uint64_t stalls = 0;  // blocks that exceeded their real-time duration
   uint32_t backfire_count = 0;  // monotonic exhaust backfire pop counter (coupled to visual flames)
   bool satnav_playing = false;
+  bool vo_playing = false;
+  bool in_tunnel = false;
 };
 
 class AudioEngine {
@@ -77,6 +81,9 @@ class AudioEngine {
   void set_engine_player(std::unique_ptr<EnginePlayer> player);
   void set_sfx_engine(std::unique_ptr<SfxEngine> sfx);
   void set_satnav_vo(std::unique_ptr<SatNavVoPlayer> satnav);
+  void set_vo_player(std::unique_ptr<VoPlayer> vo);
+  void set_acoustics_sample(const AcousticsSample& sample);
+  void set_listener_pose(std::array<float, 3> pos, float heading_rad);
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
@@ -91,6 +98,8 @@ class AudioEngine {
   void trigger_ui(UiCue cue);
   void trigger_satnav(SatNavCue cue);
   void set_satnav_enabled(bool on);
+  void trigger_vo(std::string_view trigger_id, bool interrupt = false);
+  void skip_vo();
 
   // Mixer controls (Sound Mix 0..2 per bus, master volume/mute, compressor).
   void set_bus_level(Bus b, float level);
@@ -120,6 +129,10 @@ class AudioEngine {
   void radio_select(int station);
   void radio_set_dj(bool on);
   void radio_set_volume(float volume);
+  void radio_set_time_of_day(double hour);
+  void radio_trigger_special(std::string_view gameplay_event);
+  void radio_trigger_immediate(std::string_view gameplay_event);
+  void radio_trigger_festival_update(std::string_view gameplay_event);
 
   // Your Music commands.
   void user_music_enable(bool on);
@@ -146,6 +159,10 @@ class AudioEngine {
       kRadioSelect,
       kRadioDj,
       kRadioVolume,
+      kRadioTod,
+      kRadioSpecial,
+      kRadioImmediate,
+      kRadioFestivalUpdate,
       kUserMusicEnable,
       kUserMusicShuffle,
       kUserMusicVolume,
@@ -154,12 +171,16 @@ class AudioEngine {
       kSwapEngine,
       kSwapSfx,
       kSwapSatNav,
+      kSwapVo,
       kSwapRadio,
       kSwapUserMusic,
       kTriggerCollision,
       kTriggerUi,
       kTriggerSatNav,
       kSatNavEnable,
+      kTriggerVo,
+      kSkipVo,
+      kListenerPose,
       kMatrixActivate,
       kMatrixRestoreGameplay,
       kDynamicsSpeed,
@@ -175,9 +196,10 @@ class AudioEngine {
     bool b1 = false;
     void* ptr0 = nullptr;
     void* ptr1 = nullptr;
+    std::array<char, 64> text{};
   };
   struct Retired {
-    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kRadio, kUserMusic };
+    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kVo, kRadio, kUserMusic };
     Kind kind = kEngine;
     void* ptr = nullptr;
   };
@@ -202,16 +224,25 @@ class AudioEngine {
   float matrix_master_smooth_ = 1.0f;
   float matrix_mute_smooth_ = 1.0f;
   bool last_dj_speaking_ = false;
+  bool last_festival_update_ = false;
   bool last_satnav_playing_ = false;
+  bool last_vo_playing_ = false;
+  bool last_in_tunnel_ = false;
+  std::string last_ambience_snap_;
   bool satnav_enabled_ = true;
 
   // Owned/used exclusively by the audio thread while running.
   EnginePlayer* engine_ = nullptr;
   SfxEngine* sfx_ = nullptr;
   SatNavVoPlayer* satnav_ = nullptr;
+  VoPlayer* vo_ = nullptr;
   Radio* radio_ = nullptr;
   RadioPlayer* radio_player_ = nullptr;
   UserMusicPlayer* user_music_ = nullptr;
+  EnvironmentalReverb reverb_;
+  AmbienceBedPlayer ambience_bed_{48000};
+  AcousticsSample last_acoustics_{};
+  bool have_acoustics_ = false;
 
   EnginePlayer::Update last_engine_in_{};
   bool have_engine_in_ = false;
@@ -222,6 +253,7 @@ class AudioEngine {
 
   TripleBuffer<EnginePlayer::Update> engine_in_;
   TripleBuffer<VehicleAudioState> veh_state_in_;
+  TripleBuffer<AcousticsSample> acoustics_in_;
   TripleBuffer<AudioTelemetry> telemetry_buf_;
   SpscQueue<Command> cmds_{512};
   SpscQueue<Retired> retired_{64};

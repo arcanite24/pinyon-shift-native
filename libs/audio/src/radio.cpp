@@ -125,6 +125,7 @@ bool parse_radio(std::string_view system_xml, std::string_view music_info, std::
     l.duck_up = s->number("duckFadeUpTime", l.duck_up);
     l.change_fade = s->number("stationChangeFadeTimeUser", l.change_fade);
     l.new_track_delay = s->number("HUDNewTrackDisplayDelayFreeRoam", l.new_track_delay);
+    l.max_tracks_between_dj = std::max(1, int(s->number("maxTracksBetweenDJ", 1)));
   }
   // Clips are kept once per name.
   std::map<std::string, int> music_at, vo_at;
@@ -141,15 +142,35 @@ bool parse_radio(std::string_view system_xml, std::string_view music_info, std::
     return at[key] = int(clips.size() - 1);
   };
   for (const auto& node : root.children) {
+    if (iequals(node.name, "FestivalUpdates")) {
+      for (const auto& fu : node.children) {
+        if (!iequals(fu.name, "FestivalUpdate")) continue;
+        const std::string ev = lower(fu.attr("gameplayEvent"));
+        const int k = resolve(fu.attr("fmodName"), vo, vo_at, out.vo);
+        if (!ev.empty() && k >= 0) out.festival_updates[ev] = k;
+      }
+      continue;
+    }
     if (!iequals(node.name, "RadioStation")) continue;
     RadioStation st;
     st.name = node.attr("name");
     st.off = iequals(node.attr("isOffStation"), "true");
+    st.is_3d = lower(st.name).find("_3d") != std::string::npos;
+    st.volume = node.number("volume", 1.0);
+    st.reverb_wet_level = node.number("reverbWetLevel", 0.0);
+    st.pan_level_3d = node.number("3dPanLevel", st.is_3d ? 1.0 : 0.0);
     if (const XmlNode* p = node.child("Playlist")) {
       st.no_repeat_tracks = int(p->number("noRepeat"));
       for (const auto& t : p->children) {
         if (!iequals(t.name, "MusicTrack")) continue;
-        RadioTrack tr{t.attr("name"), t.attr("artist"), t.attr("fmodname"), -1};
+        RadioTrack tr;
+        tr.title = t.attr("name");
+        tr.artist = t.attr("artist");
+        tr.name = t.attr("fmodname");
+        tr.likelihood_day = std::max(0.0, t.number("likelihoodDaytime", 1.0));
+        tr.likelihood_morning = std::max(0.0, t.number("likelihoodMorning", 1.0));
+        tr.likelihood_evening = std::max(0.0, t.number("likelihoodEvening", 1.0));
+        tr.likelihood_night = std::max(0.0, t.number("likelihoodNight", 1.0));
         tr.clip = resolve(tr.name, music, music_at, out.music);
         if (tr.clip >= 0) st.tracks.push_back(std::move(tr));
       }
@@ -162,18 +183,53 @@ bool parse_radio(std::string_view system_xml, std::string_view music_info, std::
         if (iequals(c.name, item))
           if (int k = resolve(c.attr("fmodName"), vo, vo_at, out.vo); k >= 0) into.push_back(k);
     };
+    auto special_map = [&](const char* element, std::unordered_map<std::string, int>& into) {
+      const XmlNode* l = node.child(element);
+      if (!l) return;
+      for (const auto& c : l->children) {
+        if (!iequals(c.name, "SpecialDialogue")) continue;
+        const std::string ev = lower(c.attr("gameplayEvent"));
+        const int k = resolve(c.attr("fmodName"), vo, vo_at, out.vo);
+        if (!ev.empty() && k >= 0) into[ev] = k;
+      }
+    };
     list("Idents", "Ident", st.idents, st.no_repeat_idents);
     list("DJRegularDialogue", "SimpleDialogue", st.dj, st.no_repeat_dj);
+    list("DJFestivalUpdateLeadIn", "SimpleDialogue", st.festival_lead_in, st.no_repeat_lead_in);
+    list("DJFestivalUpdateLeadOut", "SimpleDialogue", st.festival_lead_out, st.no_repeat_lead_out);
+    special_map("DJSpecialDialogue", st.special_dialogue);
+    special_map("DJImmediateDialogue", st.immediate_dialogue);
     out.stations.push_back(std::move(st));
   }
   int off = -1;
   for (size_t i = 0; i < out.stations.size(); ++i) {
     const auto& st = out.stations[i];
     if (st.off) off = off < 0 ? int(i) : off;
-    else if (lower(st.name).find("_3d") == std::string::npos && !st.tracks.empty()) out.cycle.push_back(int(i));
+    else if (st.is_3d) {
+      if (!st.tracks.empty()) out.location_stations.push_back(int(i));
+    } else if (!st.tracks.empty()) {
+      out.cycle.push_back(int(i));
+    }
   }
   if (out.cycle.empty()) return fail(error, "RadioSystem.xml has no player station");
   if (off >= 0) out.cycle.push_back(off);
+  return true;
+}
+
+bool parse_radio_vox_pops(std::string_view vox_pops_xml, RadioVoxPops& out, std::string* error) {
+  out = RadioVoxPops{};
+  XmlNode root;
+  if (!parse_xml(vox_pops_xml, root, error)) return false;
+  for (const auto& c : root.children) {
+    if (iequals(c.name, "Festival")) {
+      const std::string ev = c.attr("gameplayEvent");
+      if (!ev.empty()) out.events.push_back(ev);
+    } else if (iequals(c.name, "Setup")) {
+      out.no_repeat = int(c.number("NoRepeat", 0));
+      out.interval_min_s = std::max(10.0, c.number("IntervalMin", 3600.0));
+      out.interval_max_s = std::max(out.interval_min_s, c.number("IntervalMax", 48000.0));
+    }
+  }
   return true;
 }
 
@@ -196,6 +252,8 @@ bool load_radio(const std::filesystem::path& game_root, RadioData& out, std::str
   for (const auto& p : {system, music_info, vo_info, music_bank, vo_bank})
     if (!std::filesystem::exists(p, ec)) return fail(error, "no " + p.string());
   if (!parse_radio(read_text(system), read_text(music_info), read_text(vo_info), out, error)) return false;
+  const auto vox_pops = resolve_radio("RadioDJVoxPops.xml");
+  if (std::filesystem::exists(vox_pops, ec)) parse_radio_vox_pops(read_text(vox_pops), out.vox_pops, nullptr);
   out.music_bank = music_bank;
   out.vo_bank = vo_bank;
   out.language = lang;
@@ -209,12 +267,71 @@ StationSchedule::StationSchedule(const RadioData& data, int station, uint64_t se
   tracks_.reset(int(st_.tracks.size()), st_.no_repeat_tracks);
   idents_.reset(int(st_.idents.size()), st_.no_repeat_idents);
   dj_.reset(int(st_.dj.size()), st_.no_repeat_dj);
-  const int t = tracks_.pick(rng_);
+  lead_in_.reset(int(st_.festival_lead_in.size()), st_.no_repeat_lead_in);
+  lead_out_.reset(int(st_.festival_lead_out.size()), st_.no_repeat_lead_out);
+  const int t = pick_weighted_track();
   if (t < 0) return;
   const RadioClip& c = data_.music[size_t(st_.tracks[size_t(t)].clip)];
   const double until = c.ident_start > 0 ? c.ident_start : c.length;
   const double u = std::uniform_real_distribution<double>(0, std::max(0.0, until))(rng_);
   events_.push_back({RadioKind::kTrack, st_.tracks[size_t(t)].clip, t, t0 - u, t0 - u + c.length, next_id_++});
+}
+
+int StationSchedule::pick_weighted_track() {
+  const int n = int(st_.tracks.size());
+  if (n <= 0) return -1;
+  auto tod_weight = [&](const RadioTrack& tr) {
+    const double h = std::fmod(std::fmod(tod_hour_, 24.0) + 24.0, 24.0);
+    if (h >= 5.0 && h < 11.0) return tr.likelihood_morning;
+    if (h >= 11.0 && h < 17.0) return tr.likelihood_day;
+    if (h >= 17.0 && h < 21.0) return tr.likelihood_evening;
+    return tr.likelihood_night;
+  };
+  double total_w = 0.0;
+  bool uniform = true;
+  double first_w = tod_weight(st_.tracks[0]);
+  for (const auto& tr : st_.tracks) {
+    const double w = tod_weight(tr);
+    total_w += w;
+    if (std::fabs(w - first_w) > 1e-6) uniform = false;
+  }
+  if (uniform || total_w <= 0.0) return tracks_.pick(rng_);
+  // Weighted selection respecting positive likelihoods via allow predicate.
+  const double target = std::uniform_real_distribution<double>(0.0, total_w)(rng_);
+  double acc = 0.0;
+  int chosen = 0;
+  for (int i = 0; i < n; ++i) {
+    acc += tod_weight(st_.tracks[size_t(i)]);
+    if (acc >= target) {
+      chosen = i;
+      break;
+    }
+  }
+  return tracks_.pick(rng_, [&](int k) { return k == chosen || tod_weight(st_.tracks[size_t(k)]) > 0.0; });
+}
+
+bool StationSchedule::queue_special_dialogue(std::string_view gameplay_event) {
+  auto it = st_.special_dialogue.find(lower(gameplay_event));
+  if (it == st_.special_dialogue.end()) return false;
+  pending_special_.push_back(it->second);
+  return true;
+}
+
+bool StationSchedule::trigger_immediate_dialogue(std::string_view gameplay_event, double now_clock) {
+  auto it = st_.immediate_dialogue.find(lower(gameplay_event));
+  if (it == st_.immediate_dialogue.end()) return false;
+  const int clip = it->second;
+  if (clip < 0 || size_t(clip) >= data_.vo.size()) return false;
+  const double len = std::max(0.5, data_.vo[size_t(clip)].length);
+  events_.push_back({RadioKind::kDj, clip, -1, now_clock, now_clock + len, next_id_++});
+  return true;
+}
+
+bool StationSchedule::queue_festival_update(std::string_view gameplay_event) {
+  auto it = data_.festival_updates.find(lower(gameplay_event));
+  if (it == data_.festival_updates.end()) return false;
+  pending_festival_.push_back(it->second);
+  return true;
 }
 
 const RadioEvent* StationSchedule::last_track() const {
@@ -236,15 +353,55 @@ void StationSchedule::extend() {
     events_.push_back({RadioKind::kIdent, clip, -1, ident_at, ident_at + ic.length, next_id_++});
     next_at = ident_at + (ic.next_track > 0 ? ic.next_track : ic.length);
   }
-  const int t = tracks_.pick(rng_);
+  const int t = pick_weighted_track();
   if (t < 0) return;
   const RadioClip& tc = data_.music[size_t(st_.tracks[size_t(t)].clip)];
   events_.push_back({RadioKind::kTrack, st_.tracks[size_t(t)].clip, t, next_at, next_at + tc.length, next_id_++});
-  if (use_dj_) {
+
+  // Priority 1: Festival Update (LeadIn -> Update -> LeadOut).
+  if (!pending_festival_.empty()) {
+    const int fu_clip = pending_festival_.front();
+    pending_festival_.pop_front();
+    double cursor = next_at;
+    if (const int li = lead_in_.pick(rng_); li >= 0) {
+      const int clip = st_.festival_lead_in[size_t(li)];
+      const double len = data_.vo[size_t(clip)].length;
+      events_.push_back({RadioKind::kFestivalUpdate, clip, -1, cursor, cursor + len, next_id_++});
+      cursor += len;
+    }
+    if (fu_clip >= 0 && size_t(fu_clip) < data_.vo.size()) {
+      const double len = data_.vo[size_t(fu_clip)].length;
+      events_.push_back({RadioKind::kFestivalUpdate, fu_clip, -1, cursor, cursor + len, next_id_++});
+      cursor += len;
+    }
+    if (const int lo = lead_out_.pick(rng_); lo >= 0) {
+      const int clip = st_.festival_lead_out[size_t(lo)];
+      const double len = data_.vo[size_t(clip)].length;
+      events_.push_back({RadioKind::kFestivalUpdate, clip, -1, cursor, cursor + len, next_id_++});
+    }
+    tracks_since_dj_ = 0;
+    return;
+  }
+
+  // Priority 2: Special Dialogue (barn-find / location hints).
+  if (!pending_special_.empty()) {
+    const int sp_clip = pending_special_.front();
+    pending_special_.pop_front();
+    if (sp_clip >= 0 && size_t(sp_clip) < data_.vo.size()) {
+      events_.push_back({RadioKind::kDj, sp_clip, -1, next_at, next_at + data_.vo[size_t(sp_clip)].length, next_id_++});
+      tracks_since_dj_ = 0;
+      return;
+    }
+  }
+
+  // Priority 3: Regular DJ banter respecting maxTracksBetweenDJ.
+  ++tracks_since_dj_;
+  if (use_dj_ && tracks_since_dj_ >= std::max(1, data_.levels.max_tracks_between_dj)) {
     const int d = dj_.pick(rng_, [&](int k) { return data_.vo[size_t(st_.dj[size_t(k)])].length <= tc.event_start; });
     if (d >= 0) {
       const int clip = st_.dj[size_t(d)];
       events_.push_back({RadioKind::kDj, clip, -1, next_at, next_at + data_.vo[size_t(clip)].length, next_id_++});
+      tracks_since_dj_ = 0;
     }
   }
 }
@@ -285,6 +442,13 @@ Radio::Radio(const RadioData& data, uint64_t seed, bool dj) : data_(data), dj_en
     if (!data.stations[size_t(s)].off)
       schedules_[size_t(s)] = std::make_unique<StationSchedule>(data, s, seed * 0x9E3779B97F4A7C15ull + i + 1, 0.0, dj);
   }
+  for (size_t i = 0; i < data.location_stations.size(); ++i) {
+    const int s = data.location_stations[i];
+    if (!schedules_[size_t(s)])
+      schedules_[size_t(s)] =
+          std::make_unique<StationSchedule>(data, s, seed * 0xBF58476D1CE4E5B9ull + i + 17, 0.0, false);
+  }
+  next_vox_pop_s_ = std::max(60.0, data.vox_pops.interval_min_s);
 }
 
 bool Radio::on() const {
@@ -321,6 +485,33 @@ void Radio::set_dj_enabled(bool on) {
     if (s) s->set_dj_enabled(on);
 }
 
+void Radio::set_time_of_day_hour(double hour) {
+  for (auto& s : schedules_)
+    if (s) s->set_time_of_day_hour(hour);
+}
+
+bool Radio::trigger_special_dialogue(std::string_view gameplay_event) {
+  bool any = false;
+  for (int s : data_.cycle)
+    if (auto* sc = schedule(s)) any |= sc->queue_special_dialogue(gameplay_event);
+  return any;
+}
+
+bool Radio::trigger_immediate_dialogue(std::string_view gameplay_event) {
+  if (auto* sc = schedule(selected()); sc && on()) {
+    return sc->trigger_immediate_dialogue(gameplay_event, clock_);
+  }
+  return false;
+}
+
+bool Radio::trigger_festival_update(std::string_view gameplay_event) {
+  bool any = false;
+  for (int s : data_.cycle)
+    if (auto* sc = schedule(s)) any |= sc->queue_festival_update(gameplay_event);
+  if (any) since_festival_update_s_ = 0.0;
+  return any;
+}
+
 void Radio::press(int dir) {
   const int n = int(data_.cycle.size());
   if (n == 0) return;
@@ -331,11 +522,19 @@ void Radio::press(int dir) {
 
 void Radio::advance(double dt, bool run) {
   popup_clock_ += dt;
+  location_clock_ += dt;
   if (!on()) {
     if (run) clock_ += dt;
     return;
   }
   clock_ += dt;
+  since_festival_update_s_ += dt;
+  if (dj_enabled_ && !data_.vox_pops.events.empty() && since_festival_update_s_ >= next_vox_pop_s_) {
+    const std::string& ev = data_.vox_pops.events[vox_pop_rr_++ % data_.vox_pops.events.size()];
+    trigger_festival_update(ev);
+    since_festival_update_s_ = 0.0;
+    next_vox_pop_s_ = std::max(60.0, data_.vox_pops.interval_min_s);
+  }
   // A new track on the selected station: its popup after the delay.
   if (const RadioEvent* t = schedule(selected())->track_at(clock_); t && t->id != seen_track_) {
     seen_track_ = t->id;
@@ -457,6 +656,7 @@ void RadioPlayer::render(float* out, int frames) {
   const double fade_step = 1.0 / (std::max(0.01, lv.change_fade) * rate_);
   const double vol = std::clamp(volume, 0.0, 2.0);
   bool any_sel_dj = false;
+  bool any_sel_festival = false;
   for (size_t s = 0; s < station_gain_.size(); ++s) {
     const double target = int(s) == sel ? 1.0 : 0.0;
     if (station_gain_[s] <= 0 && target <= 0) continue;
@@ -470,6 +670,7 @@ void RadioPlayer::render(float* out, int frames) {
     // already decoded on the worker thread before they start.
     sched->audible(t0, t1 + (int(s) == sel ? prefetch_s_ : 0.0), scratch_);
     bool dj = false;
+    bool fest = false;
     for (const auto& e : scratch_) {
       const bool now_audible = e.start < t1 && e.end > t0;
       const int first = now_audible ? std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames) : 0;
@@ -478,7 +679,8 @@ void RadioPlayer::render(float* out, int frames) {
       Voice* v = voice_for(e, int64_t(approx_start));
       v->used = true;
       if (!now_audible || last <= first || v->slot < 0) continue;
-      dj |= e.kind == RadioKind::kDj;
+      dj |= (e.kind == RadioKind::kDj || e.kind == RadioKind::kFestivalUpdate);
+      fest |= (e.kind == RadioKind::kFestivalUpdate);
       PcmStream* st = banks_->pool->stream(v->slot);
       if (!st) continue;
       if (!non_blocking_ && (st->state() == PcmStream::kLoading || !st->positioned()))
@@ -534,6 +736,7 @@ void RadioPlayer::render(float* out, int frames) {
     }
     const double duck_target = dj ? lv.duck : 1.0;
     if (int(s) == sel && dj) any_sel_dj = true;
+    if (int(s) == sel && fest) any_sel_festival = true;
     const double duck_step = (1 - lv.duck) / (std::max(0.01, duck_target < duck_ ? lv.duck_down : lv.duck_up) * rate_);
     double g = station_gain_[s];
     for (int i = 0; i < frames; ++i) {
@@ -556,8 +759,77 @@ void RadioPlayer::render(float* out, int frames) {
     }
   }
   dj_speaking_ = any_sel_dj;
+  festival_update_playing_ = any_sel_festival;
   // The clock runs while on, and while the last station fades to off.
   radio_.advance(dt, fading);
+}
+
+void RadioPlayer::set_location_emitters(std::vector<LocationRadioEmitter> emitters) {
+  emitters_ = std::move(emitters);
+}
+
+void RadioPlayer::set_listener(std::array<float, 3> pos, float heading_rad) {
+  listener_pos_ = pos;
+  listener_heading_ = heading_rad;
+}
+
+void RadioPlayer::render_location_stations(float* out, int frames) {
+  if (!out || frames <= 0 || emitters_.empty()) return;
+  const RadioData& data = radio_.data();
+  const double t0 = radio_.location_clock();
+  const double dt = double(frames) / double(rate_);
+  const double t1 = t0 + dt;
+  const float rx = std::cos(listener_heading_);
+  const float rz = -std::sin(listener_heading_);
+
+  for (const auto& em : emitters_) {
+    if (em.station < 0 || size_t(em.station) >= data.stations.size()) continue;
+    const float dx = em.pos[0] - listener_pos_[0];
+    const float dy = em.pos[1] - listener_pos_[1];
+    const float dz = em.pos[2] - listener_pos_[2];
+    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist >= em.max_distance) continue;
+    const float att =
+        dist <= em.min_distance ? 1.0f : std::clamp(1.0f - (dist - em.min_distance) / std::max(1.0f, em.max_distance - em.min_distance), 0.0f, 1.0f);
+    const float att2 = att * att;
+    const auto& st_def = data.stations[size_t(em.station)];
+    const float pan_raw = dist > 1e-3f ? std::clamp((dx * rx + dz * rz) / dist, -1.0f, 1.0f) : 0.0f;
+    const float pan = pan_raw * float(std::clamp(st_def.pan_level_3d, 0.0, 1.0));
+    const float gl = float(st_def.volume * master * volume) * att2 * std::sqrt(0.5f * (1.0f - pan));
+    const float gr = float(st_def.volume * master * volume) * att2 * std::sqrt(0.5f * (1.0f + pan));
+
+    StationSchedule* sched = radio_.schedule(em.station);
+    if (!sched) continue;
+    sched->audible(t0, t1 + 1.0, scratch_);
+    for (const auto& e : scratch_) {
+      const bool now_audible = e.start < t1 && e.end > t0;
+      const int first = now_audible ? std::clamp(int(std::ceil((e.start - t0) * rate_)), 0, frames) : 0;
+      const int last = now_audible ? std::clamp(int(std::ceil((e.end - t0) * rate_)), 0, frames) : 0;
+      const double approx_start = now_audible ? std::max(0.0, (t0 + double(first) / rate_ - e.start) * 48000.0) : 0.0;
+      Voice* v = voice_for(e, int64_t(approx_start));
+      v->used = true;
+      if (!now_audible || last <= first || v->slot < 0) continue;
+      PcmStream* st = banks_->pool->stream(v->slot);
+      if (!st) continue;
+      if (!non_blocking_ && (st->state() == PcmStream::kLoading || !st->positioned()))
+        banks_->pool->wait_ready(v->slot);
+      if (st->state() != PcmStream::kReady || !st->positioned()) continue;
+      const int src_rate = st->rate();
+      const double step = double(src_rate) / double(rate_);
+      const int64_t rfrom = st->from(), rend = st->end();
+      const int n = last - first;
+      for (int i = 0; i < n; ++i, v->pos += step) {
+        const int64_t a = int64_t(std::floor(v->pos));
+        if (a < rfrom || a >= rend) continue;
+        float al = 0, ar = 0;
+        st->sample(a, al, ar);
+        const float mono = 0.5f * (al + ar);
+        out[2 * (first + i)] += mono * gl;
+        out[2 * (first + i) + 1] += mono * gr;
+      }
+      st->hint(std::max<int64_t>(rfrom, int64_t(std::floor(v->pos)) - 4));
+    }
+  }
 }
 
 }  // namespace audio
