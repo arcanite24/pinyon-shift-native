@@ -20,7 +20,7 @@ constexpr double kKgf = 9.80665;
 constexpr double kMinCurvature = 0.001;
 constexpr double kAeroK = 9.80665 / (67.056 * 67.056);
 
-// 26-bin speed table matching sub_82BDE4A0 (v = 5..130 m/s, dv = 5 m/s).
+// 26-bin speed table (v = 5..130 m/s, dv = 5 m/s).
 constexpr int kSpeedBins = 26;
 constexpr double kV0 = 5.0;
 constexpr double kDv = 5.0;
@@ -197,7 +197,7 @@ double max_long_accel(const drive::CarParams& p, double v, double grip_scale,
   if (ref_redline_ms && !ref_redline_ms->empty()) {
     for (double v_red : *ref_redline_ms) {
       if (v_red <= 1.0) continue;
-      // Ratio placing engine redline at v_red (sub_82BF2DF0).
+      // Ratio placing engine redline at v_red.
       const double total_ratio = (redline_rad * r_drive) / v_red;
       test_gear(total_ratio);
     }
@@ -275,7 +275,7 @@ struct SpeedTable {
     return lerp(bins[i0].a_lat, bins[i1].a_lat, t);
   }
 
-  // Max cornering speed for radius R (inverts min_radius = v^2 / a_lat, sub_82BDE9B0).
+  // Max cornering speed for radius R (inverts min_radius = v^2 / a_lat).
   double corner_speed_for_radius(double radius) const {
     for (int i = kSpeedBins - 1; i >= 1; --i) {
       const double r0 = bins[i - 1].min_radius;
@@ -326,9 +326,8 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
   const double corner_grip = cfg.corner_accel_grip[size_t(dt_idx)];
   const double lap_scale = cfg.lap_time_scale[size_t(dt_idx)];
 
-  // Gear redline speeds in m/s: adjustable race transmission uses PI.xml's
-  // 8 reference gears; stock/non-adjustable transmission uses its own gears
-  // (sub_82BF2C40 lines 86431..86639).
+  // Gear redline speeds in m/s: use PI.xml's 8 reference gears when present,
+  // otherwise derive redline speeds from the car's own transmission ratios.
   std::vector<double> redlines_ms;
   if (use_ref_gears && !cfg.gear_redline_mph.empty()) {
     redlines_ms.reserve(cfg.gear_redline_mph.size());
@@ -343,11 +342,11 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
   }
   const std::vector<double>* ref_gears = (use_ref_gears && !redlines_ms.empty()) ? &redlines_ms : nullptr;
 
-  // Shift duration: 0.5 * (clutch_in + clutch_out) + gear_shift_time (sub_82BF2D94).
+  // Shift duration: 0.5 * (clutch_in + clutch_out) + gear_shift_time.
   const double shift_time = 0.5 * (p.clutch_in_time + p.clutch_out_time) + p.gear_shift_time;
   const double coast_drag_ratio = 1.0 / std::max(1.0, p.mass);
 
-  // Build 26-bin speed table (sub_82BDE4A0).
+  // Build 26-bin speed table.
   SpeedTable tbl;
   for (int i = 0; i < kSpeedBins; ++i) {
     SpeedBin& b = tbl.bins[i];
@@ -367,14 +366,14 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
     b.a_accel = max_long_accel(p, b.v, straight_grip, ref_gears);
   }
 
-  // Precompute max corner apex speed for each segment (sub_82BE9658).
+  // Precompute max corner apex speed for each segment.
   const size_t nseg = cfg.segments.size();
   std::vector<double> v_corner(nseg, 10.0);
   for (size_t s = 0; s < nseg; ++s) {
     v_corner[s] = std::max(2.0, tbl.corner_speed_for_radius(cfg.segments[s].corner_radius_m));
   }
 
-  // Start lap exiting last corner at sqrt(0.95) * v_corner[last] (sub_82BE0E68).
+  // Start lap exiting last corner at sqrt(0.95) * v_corner[last].
   constexpr double kApexFactor = 0.9746794344808963;  // sqrt(0.95)
   double v = kApexFactor * v_corner.back();
   double total_time = 0.0;
@@ -390,7 +389,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
     const double v_target = kApexFactor * v_corner[s];
     const double straight_len = std::max(10.0, seg.effective_straight_m);
 
-    // --- 1. Straight (sub_82BE0538) ---
+    // --- 1. Straight ---
     double dist = 0.0;
     bool shifting = false;
     double shift_rem = 0.0;
@@ -442,7 +441,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
       // Check if we crossed the braking point for the upcoming corner.
       const double rem = straight_len - dist;
       if (v > v_target && tbl.brake_distance(v, v_target) > rem) {
-        // 10-iteration bisection on dt within [0, dt] (sub_82BE0710).
+        // 10-iteration bisection on dt within [0, dt].
         double lo = 0.0, hi = dt;
         double best_v = saved_v, best_t = saved_t;
         for (int b = 0; b < 10; ++b) {
@@ -470,7 +469,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
     }
     v = std::min(v, v_target);
 
-    // --- 2. Corner entry + exit unwind (sub_82BE07F0) ---
+    // --- 2. Corner entry + exit unwind ---
     // Phase 1: entry_arc (constant radius R, target speed sqrt(0.95) * v_corner).
     // Phase 2: exit_arc (curvature unwinds kappa(u) = 1/R + (0.001 - 1/R) * u^p,
     //          accelerating on traction circle using remaining grip * corner_grip).
@@ -498,7 +497,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
           break;
         }
 
-        // Traction circle (sub_82BDEA80): lateral load fraction q = clamp((v/v_max_lat)^2, 0, 1),
+        // Traction circle: lateral load fraction q = clamp((v/v_max_lat)^2, 0, 1),
         // available longitudinal grip fraction = max(0, sqrt(1 - q^2) - (1 - corner_grip)).
         const double q = std::clamp((v * v) / std::max(1.0, v_max_lat * v_max_lat), 0.0, 1.0);
         const double avail_grip = std::max(0.0, std::sqrt(std::max(0.0, 1.0 - q * q)) - (1.0 - corner_grip));
@@ -552,7 +551,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
 }  // namespace
 
 void PiConfig::finalize_segments() {
-  // Exact Euler-spiral exit-curve solver from sub_82BDEC90 + overlap subtraction from sub_82BF3610.
+  // Euler-spiral exit-curve solver and corner overlap subtraction.
   for (PiSegment& seg : segments) {
     const double theta = std::fabs(seg.corner_angle_deg) * kDeg;
     const double R = std::max(2.0, seg.corner_radius_m);
@@ -707,7 +706,7 @@ PiConfig synthetic_pi_config() {
 double simulate_pi_lap(const drive::CarParams& p, const cars::CarPhysics* car, const PiConfig& cfg) {
   // Use PI.xml's 8 reference gear redline speeds (SPEC-GARAGE-UPGRADES: gearing does not move PI).
   const bool use_ref_gears = !cfg.gear_redline_mph.empty();
-  // Evaluate up to 3 aero tunes (default, min downforce 0.0, max downforce 1.0) matching sub_82BF2F38.
+  // Evaluate up to 3 aero tunes (default, min downforce 0.0, max downforce 1.0).
   double best_t = run_single_lap(p, cfg, use_ref_gears);
   if (car && (car->has("FrontBumperAero.Drag0") || car->has("RearWingAero.Drag0"))) {
     for (double slider : {0.0, 1.0}) {

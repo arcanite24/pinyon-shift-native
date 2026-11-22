@@ -20,7 +20,7 @@ struct PiSegment {
   double straight_m = 200.0;
   double corner_radius_m = 50.0;
   double corner_angle_deg = 90.0;
-  // Precomputed Euler-spiral corner geometry (sub_82BDEC90).
+  // Precomputed Euler-spiral corner geometry.
   double effective_straight_m = 200.0;
   double entry_arc_m = 0.0;
   double exit_arc_m = 0.0;
