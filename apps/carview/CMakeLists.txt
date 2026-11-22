@@ -76,6 +76,7 @@ set(carview_sources
   map_view.cpp
   upgrade_shop.cpp
   autoshow.cpp
+  hub_scene.cpp
   career_page.cpp
   events_page.cpp
   settings.cpp
@@ -91,4 +92,4 @@ if(ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE)
 else()
   add_executable(carview ${carview_sources})
 endif()
-target_link_libraries(carview PRIVATE carview_render shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb)
+target_link_libraries(carview PRIVATE carview_render shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb shift_sqlite3)

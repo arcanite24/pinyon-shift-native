@@ -89,6 +89,8 @@
 #include "garage/garage.h"
 #include "upgrade_shop.h"
 #include "autoshow.h"
+#include "hub_scene.h"
+#include "garage/pi_calc.h"
 #include "career_page.h"
 #include "events_page.h"
 #include "cars/mods.h"
@@ -4771,6 +4773,14 @@ int run_drive(int argc, char** argv) {
       std::vector<size_t> paint_order;
       size_t paint_pick = 0, paint_before = 0;
       carview::Autoshow autoshow;
+      carview::BarnFindCard barn_card;
+      cars::PhysicsSettings hub_phys_settings;
+      garage::PiConfig hub_pi_cfg = garage::synthetic_pi_config();
+      if (const auto gr = game_root_of(); !gr.empty()) {
+        const auto pzip = gr / "media" / "physics.zip";
+        cars::load_physics_settings(pzip, hub_phys_settings, nullptr);
+        garage::load_pi_config(pzip, hub_pi_cfg, nullptr);
+      }
       carview::CareerPage career_page;
       carview::EventsPage events_page;
       carview::CeremonyHud ceremony;
@@ -5221,6 +5231,19 @@ int run_drive(int argc, char** argv) {
             label = "RESUMING...";
           }
           list.text(0.5f * wf, bar_y + 0.5f * (bar_h - ts.size), label, ts);
+        }
+        if (autoshow.is_open()) {
+          list.clear();
+          carview::draw_autoshow_hud(list, float(width), float(height), autoshow, class_bands, career.credits,
+                                     vehicle.time() < notice_until ? notice : std::string());
+        } else if (shop.is_open()) {
+          list.clear();
+          carview::draw_upgrade_shop_hud(list, float(width), float(height), shop, class_bands, discount(),
+                                         career.credits, carview::car_name(car),
+                                         vehicle.time() < notice_until ? notice : std::string());
+        }
+        if (barn_card.visible) {
+          carview::draw_barn_find_hud(list, float(width), float(height), barn_card);
         }
         upload_ui_atlas(renderer, !ui_atlas_synced);
         ui_atlas_synced = true;
@@ -5951,11 +5974,14 @@ int run_drive(int argc, char** argv) {
             why = "loading parts database, try again in a second";
             if (parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
               why = "no parts database";
-              if (const auto db = parts_db.get())
+              if (const auto db = parts_db.get()) {
+                const bool tutorial_first = !imported && career_garage.cars.size() <= 1 && career.wristband_points == 0;
                 ready = is_autoshow
-                            ? autoshow.open(*db, all_baked, why)
+                            ? autoshow.open(*db, all_baked, why, career.credits, tutorial_first)
                             : shop.open(*db, career_garage,
-                                        career_garage.selected_car() ? career_garage.selected_car()->id : 0, why);
+                                        career_garage.selected_car() ? career_garage.selected_car()->id : 0, why,
+                                        &hub_phys_settings, &hub_pi_cfg, &class_bands);
+              }
             }
           }
           if (!ready) notice = why, notice_until = vehicle.time() + 3;
@@ -6743,6 +6769,13 @@ int run_drive(int argc, char** argv) {
                 if (k == SDLK_DOWN || k == SDLK_S) shop.move_slot(1);
                 if (k == SDLK_LEFT || k == SDLK_A) shop.move_part(-1);
                 if (k == SDLK_RIGHT || k == SDLK_D) shop.move_part(1);
+                if (k == SDLK_Q) shop.move_category(-1);
+                if (k == SDLK_E) shop.move_category(1);
+                if (k == SDLK_X) {
+                  std::string smsg;
+                  shop.sell_shown_part(career.credits, smsg);
+                  notice = smsg, notice_until = vehicle.time() + 3;
+                }
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) fit();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -6752,6 +6785,8 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) shop.move_slot(1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) shop.move_part(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) shop.move_part(1);
+                if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) shop.move_category(-1);
+                if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) shop.move_category(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) fit();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
@@ -6784,6 +6819,9 @@ int run_drive(int argc, char** argv) {
                 if (k == SDLK_DOWN || k == SDLK_S) autoshow.move(1);
                 if (k == SDLK_LEFT || k == SDLK_A) autoshow.jump_class(-1);
                 if (k == SDLK_RIGHT || k == SDLK_D) autoshow.jump_class(1);
+                if (k == SDLK_Q) autoshow.move_make(-1, career.credits);
+                if (k == SDLK_E) autoshow.move_make(1, career.credits);
+                if (k == SDLK_C) autoshow.move_colour(1);
                 if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) buy();
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -6793,6 +6831,9 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move(1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) autoshow.jump_class(-1);
                 if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) autoshow.jump_class(1);
+                if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) autoshow.move_make(-1, career.credits);
+                if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) autoshow.move_make(1, career.credits);
+                if (b == SDL_GAMEPAD_BUTTON_NORTH) autoshow.move_colour(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) buy();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;

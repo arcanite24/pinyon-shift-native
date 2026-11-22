@@ -180,6 +180,16 @@ add_executable(visual_upgrades_tests visual_upgrades_tests.cpp)
 target_link_libraries(visual_upgrades_tests PRIVATE shift_cars)
 add_test(NAME visual_upgrades_tests COMMAND visual_upgrades_tests)
 
+add_executable(hub_shop_tests hub_shop_tests.cpp
+  ../apps/carview/autoshow.cpp
+  ../apps/carview/upgrade_shop.cpp
+  ../apps/carview/hub_scene.cpp
+  ../apps/carview/game_hud.cpp
+  ../apps/carview/hud_scene.cpp)
+target_include_directories(hub_shop_tests PRIVATE ../apps/carview)
+target_link_libraries(hub_shop_tests PRIVATE carview_render shift_garage shift_drive shift_cars shift_sqlite3)
+add_test(NAME hub_shop_tests COMMAND hub_shop_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)
