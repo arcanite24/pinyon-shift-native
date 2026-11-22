@@ -18,6 +18,8 @@ VK_DEFINE_HANDLE(VmaAllocator);
 VK_DEFINE_HANDLE(VmaAllocation);
 
 #include "render_modern.h"
+#include "frame_inspector.h"
+#include "upscaler.h"
 #include "ui.h"
 
 struct SDL_Window;
@@ -238,10 +240,24 @@ class Renderer {
   void set_graphics_settings(const modern::GraphicsSettings& g);
   const modern::GraphicsSettings& graphics_settings() const { return graphics_; }
   void set_camera_projection(float near_plane, float far_plane, float proj00, float proj11);
+  void set_camera_vp(const float vp[16], float jitter_uv_x = 0.0f, float jitter_uv_y = 0.0f);
   void set_hud_layout(const modern::HudLayout& layout) { hud_layout_ = layout; }
   void set_hdr_pattern(uint32_t pattern, float pattern_nits = 1000.0f) {
     hdr_pattern_ = pattern;
     hdr_pattern_nits_ = pattern_nits;
+  }
+  void set_inspector_preview(bool active, InspectorView view);
+  void set_hiz_preview_view(VkImageView view);
+  bool take_inspector_preview(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
+  static constexpr uint32_t kInspectorPreviewW = 320;
+  static constexpr uint32_t kInspectorPreviewH = 180;
+  const UpscalerRuntimeInfo& upscaler_runtime() const { return upscaler_runtime_; }
+  modern::UpscalerChoice active_upscaler() const {
+    return modern::resolve_upscaler(graphics_.upscaler, upscaler_runtime_.support,
+                                    {render_width(), render_height()}, {target_width(), target_height()});
+  }
+  modern::FrameGen active_frame_gen() const {
+    return modern::resolve_frame_gen(graphics_.frame_gen, upscaler_runtime_.support);
   }
   bool vrs_supported() const { return vrs_supported_; }
   bool vrs_active() const { return vrs_supported_ && graphics_.vrs; }
@@ -273,6 +289,10 @@ class Renderer {
   uint32_t target_height() const { return target_height_; }
   uint32_t render_width() const { return render_width_ ? render_width_ : target_width_; }
   uint32_t render_height() const { return render_height_ ? render_height_ : target_height_; }
+  modern::Extent expected_render_extent(uint32_t out_w, uint32_t out_h) const {
+    return options_.post.enabled ? modern::scene_extent({out_w, out_h}, graphics_.scale, graphics_.base_540p)
+                                 : modern::Extent{out_w, out_h};
+  }
   VkImageView depth_resolved_view() const { return depth_resolved_.view; }
   uint32_t samples() const { return uint32_t(samples_); }
   uint32_t validation_messages() const { return validation_messages_; }
@@ -319,8 +339,11 @@ class Renderer {
   void record_ssao(VkCommandBuffer cmd);
   void record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst_img, VkImageView dst_view, uint32_t w,
                    uint32_t h);
-  void record_upscale(VkCommandBuffer cmd, VkImage src_img, VkDescriptorSet src_set, uint32_t src_w, uint32_t src_h,
-                      VkImage dst_img, VkImageView dst_view, uint32_t dst_w, uint32_t dst_h);
+  void record_upscale(VkCommandBuffer cmd, VkImage src_img, VkDescriptorSet src_set, bool src_is_fxaa,
+                      uint32_t src_w, uint32_t src_h, VkImage dst_img, VkImageView dst_view, uint32_t dst_w,
+                      uint32_t dst_h);
+  void record_motion_vectors(VkCommandBuffer cmd);
+  void record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_dst);
   void record_hdr_output(VkCommandBuffer cmd, VkDescriptorSet src_set, VkImage dst_img, VkImageView dst_view,
                          VkFormat dst_format, uint32_t w, uint32_t h);
   void destroy_targets();
@@ -343,13 +366,15 @@ class Renderer {
   void record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                     VkImageLayout final_layout, const FrameConstants& constants,
                     VkBuffer capture_dst = VK_NULL_HANDLE, bool capture_before_ui = false,
-                    VkFormat final_format = VK_FORMAT_UNDEFINED);
+                    VkFormat final_format = VK_FORMAT_UNDEFINED, VkBuffer inspector_dst = VK_NULL_HANDLE);
   // Copies the changed overlay layers into their buffer (none of the GPU's
   // frames may be using it); false when none is staged.
   bool stage_overlay();
 
   Options options_;
   std::string device_name_;
+  uint32_t device_vendor_id_ = 0;
+  UpscalerRuntimeInfo upscaler_runtime_;
   VkInstance instance_ = VK_NULL_HANDLE;
   VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
   VkSurfaceKHR surface_ = VK_NULL_HANDLE;
@@ -382,6 +407,17 @@ class Renderer {
   modern::GraphicsSettings graphics_;
   modern::HudLayout hud_layout_;
   float cam_near_ = 0.25f, cam_far_ = 4000.0f, cam_proj00_ = 1.0f, cam_proj11_ = -1.0f;
+  float cam_vp_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  float prev_cam_vp_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  float cam_jitter_uv_x_ = 0.0f, cam_jitter_uv_y_ = 0.0f;
+  float prev_jitter_uv_x_ = 0.0f, prev_jitter_uv_y_ = 0.0f;
+  bool cam_vp_set_ = false, prev_cam_vp_valid_ = false;
+  bool inspector_active_ = false;
+  InspectorView inspector_view_ = InspectorView::kColor;
+  VkImageView hiz_preview_view_ = VK_NULL_HANDLE;
+  bool inspector_has_rgba_ = false;
+  std::vector<uint8_t> inspector_rgba_;
+  Buffer inspector_offscreen_buf_;
   float lut_strength_ = 1.0f;
   uint32_t lut_image_size_ = 16, lut_pending_size_ = 16;
   uint32_t hdr_pattern_ = 0;
@@ -426,19 +462,29 @@ class Renderer {
   Image ao_white_, ao_raw_, ao_tmp_, ao_blur_;
   uint32_t ao_width_ = 0, ao_height_ = 0;
   Image scene_sdr_, scene_fxaa_, upscale_tmp_, stand_in_, stand_in_fxaa_;
+  Image motion_vec_, temporal_hist_[2], inspector_thumb_;
+  uint32_t temporal_idx_ = 0;
+  bool temporal_reset_ = true;
   VkDescriptorSetLayout ssao_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout single_tex_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout temporal_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorPool modern_pool_ = VK_NULL_HANDLE;
   VkPipelineLayout ssao_layout_ = VK_NULL_HANDLE, fxaa_layout_ = VK_NULL_HANDLE,
-                   upscale_layout_ = VK_NULL_HANDLE, hdr_layout_ = VK_NULL_HANDLE;
-  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE;
+                   upscale_layout_ = VK_NULL_HANDLE, hdr_layout_ = VK_NULL_HANDLE,
+                   motion_layout_ = VK_NULL_HANDLE, temporal_layout_ = VK_NULL_HANDLE,
+                   inspector_layout_ = VK_NULL_HANDLE;
+  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE,
+             motion_pipe_ = VK_NULL_HANDLE, temporal_pipe_ = VK_NULL_HANDLE, inspector_pipe_ = VK_NULL_HANDLE;
   VkPipeline hdr_pipe_sdr_ = VK_NULL_HANDLE, hdr_pipe_swap_ = VK_NULL_HANDLE;
   VkFormat hdr_swap_fmt_ = VK_FORMAT_UNDEFINED;
   VkDescriptorSet ssao_sets_[3] = {};
   VkDescriptorSet fxaa_set_scene_ = VK_NULL_HANDLE, fxaa_set_standin_ = VK_NULL_HANDLE;
   VkDescriptorSet upscale_set_scene_ = VK_NULL_HANDLE, upscale_set_fxaa_ = VK_NULL_HANDLE,
-                  upscale_set_tmp_ = VK_NULL_HANDLE;
+                  upscale_set_tmp_ = VK_NULL_HANDLE, upscale_set_hist_[2] = {};
   VkDescriptorSet hdr_set_standin_ = VK_NULL_HANDLE, hdr_set_fxaa_ = VK_NULL_HANDLE;
+  VkDescriptorSet motion_set_ = VK_NULL_HANDLE;
+  VkDescriptorSet temporal_sets_[4] = {};
+  VkDescriptorSet inspector_sets_[6] = {};
   bool modern_ready_ = false;
   // The sun shadow map (D16).
   Image shadow_map_;
@@ -462,11 +508,13 @@ class Renderer {
     std::vector<const char*> labels;  // the marks of its frame
     uint32_t mark_end = 1;
     bool timed = false;
-    Buffer ui_instances, ui_staging, overlay, lut_staging;
+    Buffer ui_instances, ui_staging, overlay, lut_staging, inspector_readback;
     void* ui_instances_mapped = nullptr;
     void* ui_staging_mapped = nullptr;
     void* overlay_mapped = nullptr;
     void* lut_staging_mapped = nullptr;
+    void* inspector_readback_mapped = nullptr;
+    bool inspector_ready = false;
     uint64_t overlay_ver[4] = {};        // the version of each overlay layer this slot's buffer holds
     VkDeviceSize overlay_off[4] = {};    // and where
   };

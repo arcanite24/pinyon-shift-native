@@ -39,7 +39,6 @@ struct LiveSettings {
   double day_length_scale = 1.0;  // 1.0 = 30.5m, 2.0 = 15m, 0.5 = 61m, 0.02116 = realtime, 0.0 = frozen
   double tod_preset_hour = -1.0;  // < 0: keep current clock, >= 0: jump clock to hour
   drive::ControlSettings controls;
-<<<<<<< HEAD
   // Slice 12: Wheels/FFB, DualSense, OpenTrack, Camera Editor, Immersive Camera, Telemetry, Trainer/Pacing/Hidden.
   drive::WheelShaping wheel_shaping;
   drive::WheelFfbConfig wheel_ffb;

@@ -3202,9 +3202,13 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   if (arena_on() && geometry.textured && !geometry.indices.empty()) {
     r_.wait_idle();
     ++world_frame_;
+    drop_pending_world();
+    drop_fading_world(true);
     StagedWorld st;
     if (!stage_world(std::move(geometry), st, error, 0, 0)) return false;
-    return begin_world(std::move(st), error) && poll_world(true, nullptr);
+    const bool ok = begin_world(std::move(st), error) && poll_world(true, nullptr);
+    drop_fading_world(true);
+    return ok;
   }
   r_.wait_idle();
   ++world_frame_;
@@ -3730,6 +3734,7 @@ void Showroom::drop_fading_world(bool now) {
     world_release_draws(fading_.draws);
     fading_.draws.clear();
     fading_.arena = false;
+    if (!now) evict_world_textures();
     return;
   }
   fading_.draws.clear();
@@ -4091,6 +4096,8 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       world_stats_.drawn += drawn + (trees_drawn > 0 ? 1 : 0);
       world_stats_.culled += tested > drawn ? tested - drawn : 0;
       world_stats_.indices += trees_drawn * 6;
+      world_stats_.white += gpu_table_white_;
+      world_stats_.layer_fallback += gpu_table_layer_fallback_;
       r_.mark(cmd, "world gpu");
     }
     record_world_textured(cmd, world_draws_, world_transform_, swap, false);
@@ -6643,6 +6650,7 @@ void Showroom::update_driver_mesh(float wheel_rad) {
 void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   if (!vfx_ready_ || driver_count_ == 0 || !world_opaque_ || !world_white_set_) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   r_.apply_vrs(cmd);
   const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
@@ -6669,6 +6677,7 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
 void Showroom::record_debris_draw(VkCommandBuffer cmd) {
   if (!vfx_ready_ || debris_count_ == 0 || !world_opaque_ || !world_white_set_) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   r_.apply_vrs(cmd);
   const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
@@ -6875,6 +6884,8 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
 // plus template rows for hardware-instanced tree sprites.
 bool Showroom::build_gpu_table(std::string& error) {
   for (auto& d : world_draws_) d.gpu = false;
+  gpu_table_white_ = 0;
+  gpu_table_layer_fallback_ = 0;
   if (!arena_on()) return true;
   std::vector<gpuworld::DrawGpu> rows;
   rows.reserve(world_draws_.size());
@@ -6897,8 +6908,10 @@ bool Showroom::build_gpu_table(std::string& error) {
     if (per_batch[batch] >= WorldGpu::kMaxPerBatch) continue;  // left to the CPU loop
     // A texture that did not upload: the draw falls back as the per-draw sets did.
     if (!have(d.texture)) {
+      if (d.texture != kNoWorldTexture) ++gpu_table_white_;
       if (flags == 1) flags = 0;
     } else if (d.texture_b != kNoWorldTexture && !(have(d.texture_b) && have(d.splat))) {
+      ++gpu_table_layer_fallback_;
       flags = 1;
     }
     if (d.blend == 1 && single_sample) flags |= 64u;  // cut-outs without MSAA: world.frag's alpha test

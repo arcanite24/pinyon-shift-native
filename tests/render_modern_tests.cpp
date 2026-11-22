@@ -4,8 +4,10 @@
 #include <cstdio>
 #include <string>
 
+#include "frame_inspector.h"
 #include "perf_overlay.h"
 #include "render_modern.h"
+#include "upscaler.h"
 
 using namespace carview::modern;
 
@@ -353,6 +355,58 @@ void test_frame_stats() {
   CHECK(!list.empty());
 }
 
+void test_upscaler_runtime_and_inspector() {
+  // Missing DLLs under non-existent path must cleanly yield unavailable fallback without crashing.
+  const std::filesystem::path bogus = std::filesystem::temp_directory_path() / "shift_no_upscalers_dir_xyz";
+  const auto rt_amd = carview::probe_upscaler_runtime(0x1002u, bogus, bogus);
+  CHECK(!rt_amd.support.rtx && !rt_amd.support.dlss_runtime && !rt_amd.support.temporal);
+  const auto rt_nv = carview::probe_upscaler_runtime(0x10DEu, bogus, bogus);
+  CHECK(rt_nv.support.rtx && !rt_nv.support.dlss_runtime && !rt_nv.support.temporal);
+  CHECK(rt_nv.ffx_dll_path.empty() && rt_nv.dlss_dll_path.empty() && rt_nv.dlssg_dll_path.empty());
+
+  const auto dlss_choice = resolve_upscaler(Upscaler::kDlss, rt_amd.support, {1280, 720}, {1920, 1080});
+  CHECK(dlss_choice.unavailable && dlss_choice.active == Upscaler::kFsr1);
+  const auto fsr3_choice = resolve_upscaler(Upscaler::kFsr3, rt_amd.support, {1280, 720}, {1920, 1080});
+  CHECK(fsr3_choice.unavailable && fsr3_choice.active == Upscaler::kFsr1);
+
+  // Frame Inspector view parsing & layout generation.
+  CHECK(carview::parse_inspector_view("color") == carview::InspectorView::kColor);
+  CHECK(carview::parse_inspector_view("depth") == carview::InspectorView::kDepth);
+  CHECK(carview::parse_inspector_view("ao") == carview::InspectorView::kAo);
+  CHECK(carview::parse_inspector_view("ssao") == carview::InspectorView::kAo);
+  CHECK(carview::parse_inspector_view("shadow") == carview::InspectorView::kShadow);
+  CHECK(carview::parse_inspector_view("motion") == carview::InspectorView::kMotion);
+  CHECK(carview::parse_inspector_view("hiz") == carview::InspectorView::kHiZ);
+  CHECK(carview::parse_inspector_view("hi-z") == carview::InspectorView::kHiZ);
+
+  carview::FrameInspectorSnapshot snap;
+  snap.open = true;
+  snap.view = carview::InspectorView::kDepth;
+  snap.render_w = 1280, snap.render_h = 720, snap.output_w = 1920, snap.output_h = 1080;
+  snap.cpu_ms = 2.1, snap.gpu_ms = 3.4;
+  snap.pass_timings = {{"zpre", 0.3}, {"world", 1.2}, {"post", 0.8}};
+  snap.world_draws = 412, snap.world_culled = 98, snap.world_triangles = 125000;
+  snap.shadow_draws = 64, snap.shadow_cars = 4;
+  snap.resident_cells = 18, snap.resident_draws = 520;
+  snap.vram_used = 256ull << 20, snap.vram_budget = 8ull << 30;
+  snap.vrs_active = true, snap.reverse_z = true, snap.z_prepass = true;
+  snap.hdr_mode = "HDR10", snap.upscaler = "FSR 1";
+  snap.has_preview = true, snap.preview_uv = {0.1f, 0.1f, 0.3f, 0.3f};
+
+  const auto ilines = carview::frame_inspector_lines(snap);
+  CHECK(ilines.size() >= 8);
+  CHECK(ilines[0].find("DEPTH") != std::string::npos);
+  bool has_draws = false, has_pass = false;
+  for (const auto& l : ilines) {
+    if (l.find("WORLD 412") != std::string::npos && l.find("98 CULLED") != std::string::npos) has_draws = true;
+    if (l.find("world") != std::string::npos && l.find("1.20") != std::string::npos) has_pass = true;
+  }
+  CHECK(has_draws && has_pass);
+  carview::ui::List ilist;
+  carview::build_frame_inspector(ilist, snap, 1920, 1080);
+  CHECK(!ilist.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -365,6 +419,7 @@ int main() {
   test_cube();
   test_settings_tokens();
   test_frame_stats();
+  test_upscaler_runtime_and_inspector();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

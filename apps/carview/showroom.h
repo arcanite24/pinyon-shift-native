@@ -336,6 +336,8 @@ class Showroom {
     size_t white = 0, layer_fallback = 0;
   };
   WorldDrawStats world_draw_stats() const { return world_stats_; }
+  uint32_t gpu_resident_draws() const { return gpu_world_ ? gpu_world_->resident_draws() : 0u; }
+  VkImageView hiz_image_view() const { return gpu_world_ ? gpu_world_->hiz_image_view() : VK_NULL_HANDLE; }
   // Frustum culling of the world's draws (on by default).
   void set_world_culling(bool on) { world_cull_ = on; }
   const ShowroomFrame& frame() const { return frame_; }
@@ -644,6 +646,7 @@ class Showroom {
   bool place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& vertex_copies,
                          std::vector<WorldGpu::Copy>& index_copies, std::string& error);
   size_t world_triangles_ = 0;
+  size_t gpu_table_white_ = 0, gpu_table_layer_fallback_ = 0;
   WorldDrawStats world_stats_;
   bool world_cull_ = true;
   float world_transform_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

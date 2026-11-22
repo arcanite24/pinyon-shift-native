@@ -146,7 +146,7 @@ void build_perf_overlay(ui::List& list, const PerfInfo& info, float width, float
   float w = 0.0f;
   for (const auto& l : lines) w = std::max(w, ui::List::measure(l, style));
   const float x0 = 10.0f * k, y0 = 10.0f * k;
-  list.rect(x0, y0, x0 + w + 2 * pad, y0 + float(lines.size()) * line_h + 2 * pad - 4.0f * k, ui::rgba(8, 10, 14, 190),
+  list.rect(x0, y0, x0 + w + 2 * pad, y0 + float(lines.size()) * line_h + 2 * pad - 4.0f * k, ui::rgba(8, 10, 14, 224),
             4.0f * k);
   for (size_t i = 0; i < lines.size(); ++i) {
     ui::TextStyle s = style;

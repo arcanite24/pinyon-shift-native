@@ -45,6 +45,7 @@
 #include "display_hdr_win.h"
 #include "drive_helpers.h"
 #include "fmv_player.h"
+#include "frame_inspector.h"
 #include "fh1data/cjk_font.h"
 #include "game_hud.h"
 #include "rally_hub.h"
@@ -775,6 +776,7 @@ V3 transform(const float* m, V3 p, float w) {
 
 namespace {
 float g_cam_near = 0.25f, g_cam_far = 16000.0f, g_cam_proj00 = 1.0f, g_cam_proj11 = -1.0f;
+float g_cam_vp_unjittered[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
 std::vector<std::string> scan_lut_files(const std::filesystem::path& state_root) {
   std::vector<std::string> out;
@@ -857,6 +859,7 @@ ShowroomFrame look_frame(V3 eye, V3 target, V3 up, float aspect, bool livery, bo
   g_cam_proj11 = projection[5];
   ShowroomFrame frame{};
   multiply4(projection, view, frame.view_projection);
+  std::memcpy(g_cam_vp_unjittered, frame.view_projection, sizeof g_cam_vp_unjittered);
   std::memcpy(frame.transparent_view_projection, frame.view_projection, sizeof frame.view_projection);
   frame.eye[0] = eye.x;
   frame.eye[1] = eye.y;
@@ -1705,6 +1708,9 @@ int run_drive(int argc, char** argv) {
   carview::modern::GraphicsSettings cli_graphics;
   uint32_t cli_hdr_pattern = 0;
   float cli_hdr_pattern_nits = 1000.0f;
+  bool cli_perf_overlay = false;
+  bool cli_frame_inspector = false;
+  carview::InspectorView cli_inspector_view = carview::InspectorView::kColor;
   // The player's settings (settings.h) go in before the command line, in
   // the window only; --no-settings skips them, --save-settings keeps this
   // run's options for the next.
@@ -1944,6 +1950,12 @@ int run_drive(int argc, char** argv) {
       cli_hdr_pattern = uint32_t(std::clamp(std::atoi(next()), 0, 3));
     } else if (a == "--hdr-pattern-nits") {
       cli_hdr_pattern_nits = std::clamp(float(std::atof(next())), 80.0f, 10000.0f);
+    } else if (a == "--perf-overlay") {
+      cli_perf_overlay = true;
+    } else if (a == "--frame-inspector") {
+      cli_frame_inspector = true;
+    } else if (a == "--inspector-view") {
+      cli_inspector_view = carview::parse_inspector_view(next());
     } else if (a == "--help" || a == "-h") {
       drive_usage();
       return 0;
@@ -3060,6 +3072,15 @@ int run_drive(int argc, char** argv) {
     } else {
       renderer.set_hdr_pattern(cli_hdr_pattern, cli_hdr_pattern_nits);
       bool user_lut_active = false;
+      bool perf_overlay_open = cli_perf_overlay;
+      bool inspector_open = cli_frame_inspector;
+      carview::InspectorView inspector_view = cli_inspector_view;
+      uint32_t temporal_frame_idx = 0;
+      double last_frame_cpu_ms = -1.0;
+      std::array<float, 4> inspector_preview_uv{};
+      bool has_inspector_preview = false;
+      if (perf_overlay_open || inspector_open) renderer.set_gpu_timing(true);
+      renderer.set_inspector_preview(inspector_open, inspector_view);
       carview::modern::GraphicsSettings active_graphics = cli_graphics;
       carview::modern::FramePacer frame_pacer;
       int display_hz = 60;
@@ -6118,6 +6139,90 @@ int run_drive(int argc, char** argv) {
         if (show_track_chip) {
           touch_controls.build_overlay(list, float(width), float(height), vehicle.time());
         }
+        auto append_modern_overlays = [&](carview::ui::List& target_list) {
+          if (perf_overlay_open) {
+            const auto vram = renderer.vram_stats();
+            const auto ws = showroom.world_draw_stats();
+            const auto up = renderer.active_upscaler();
+            const auto fg = renderer.active_frame_gen();
+            carview::PerfInfo pinfo;
+            const auto rex = renderer.render_width()
+                                 ? carview::modern::Extent{renderer.render_width(), renderer.render_height()}
+                                 : renderer.expected_render_extent(uint32_t(width), uint32_t(height));
+            const uint32_t out_w = renderer.target_width() ? renderer.target_width() : uint32_t(width);
+            const uint32_t out_h = renderer.target_height() ? renderer.target_height() : uint32_t(height);
+            pinfo.fps = frame_stats.fps();
+            pinfo.cpu_ms = last_frame_cpu_ms >= 0.0 ? last_frame_cpu_ms : frame_stats.ms_avg();
+            if (headless && pinfo.fps < 0.5 && pinfo.cpu_ms > 0.1) pinfo.fps = 1000.0 / pinfo.cpu_ms;
+            pinfo.generated_fps = frame_stats.generated_fps();
+            pinfo.render_w = rex.w;
+            pinfo.render_h = rex.h;
+            pinfo.output_w = out_w;
+            pinfo.output_h = out_h;
+            pinfo.gpu_ms = renderer.gpu_frame_ms();
+            pinfo.gpu_stages = renderer.gpu_stages();
+            pinfo.vram_used = vram.device_local_usage ? vram.device_local_usage : vram.allocation_bytes;
+            pinfo.vram_budget = vram.device_local_budget;
+            pinfo.resident_draws = showroom.gpu_resident_draws();
+            pinfo.resident_cells = pinfo.resident_draws;
+            pinfo.draws_drawn = uint32_t(ws.drawn);
+            pinfo.draws_culled = uint32_t(ws.culled);
+            pinfo.hdr = renderer.hdr_active() != carview::modern::HdrMode::kOff;
+            pinfo.vsync = active_graphics.vsync == carview::modern::VSync::kImmediate ? "IMMEDIATE"
+                          : active_graphics.vsync == carview::modern::VSync::kMailbox ? "MAILBOX"
+                                                                                       : "FIFO";
+            pinfo.upscaler = up.label;
+            pinfo.frame_generation = carview::modern::frame_gen_name(fg);
+            pinfo.device = renderer.device_name();
+            pinfo.build = "shift-engine slice11";
+            carview::build_perf_overlay(target_list, pinfo, float(width), float(height), 1.0f);
+          }
+          if (inspector_open) {
+            renderer.set_hiz_preview_view(showroom.hiz_image_view());
+            std::vector<uint8_t> insp_rgba;
+            uint32_t insp_w = 0, insp_h = 0;
+            if (renderer.take_inspector_preview(insp_rgba, insp_w, insp_h) && insp_w > 0 && insp_h > 0) {
+              has_inspector_preview = carview::ui::atlas_update("inspector.preview", insp_w, insp_h, insp_rgba,
+                                                                inspector_preview_uv);
+            }
+            const auto vram = renderer.vram_stats();
+            const auto ws = showroom.world_draw_stats();
+            const auto up = renderer.active_upscaler();
+            const auto rex = renderer.render_width()
+                                 ? carview::modern::Extent{renderer.render_width(), renderer.render_height()}
+                                 : renderer.expected_render_extent(uint32_t(width), uint32_t(height));
+            carview::FrameInspectorSnapshot snap;
+            snap.open = true;
+            snap.view = inspector_view;
+            snap.render_w = rex.w;
+            snap.render_h = rex.h;
+            snap.output_w = renderer.target_width() ? renderer.target_width() : uint32_t(width);
+            snap.output_h = renderer.target_height() ? renderer.target_height() : uint32_t(height);
+            snap.cpu_ms = last_frame_cpu_ms >= 0.0 ? last_frame_cpu_ms : frame_stats.ms_avg();
+            snap.gpu_ms = renderer.gpu_frame_ms();
+            snap.pass_timings = renderer.gpu_stages();
+            snap.world_draws = uint32_t(ws.drawn);
+            snap.world_culled = uint32_t(ws.culled);
+            snap.world_triangles = uint32_t(ws.indices / 3);
+            snap.shadow_draws = uint32_t(showroom.shadow_draw_count());
+            snap.shadow_cars = uint32_t(showroom.shadow_car_count());
+            snap.resident_draws = showroom.gpu_resident_draws();
+            snap.resident_cells = snap.resident_draws;
+            snap.vram_used = vram.device_local_usage ? vram.device_local_usage : vram.allocation_bytes;
+            snap.vram_budget = vram.device_local_budget;
+            snap.vrs_active = renderer.vrs_active();
+            snap.reverse_z = renderer.reverse_z();
+            snap.z_prepass = z_prepass;
+            snap.hdr_mode = renderer.hdr_active() == carview::modern::HdrMode::kHdr10
+                                ? "HDR10"
+                                : renderer.hdr_active() == carview::modern::HdrMode::kScRgb ? "scRGB" : "SDR";
+            snap.upscaler = carview::modern::upscaler_name(up.active);
+            snap.preview_uv = inspector_preview_uv;
+            snap.has_preview = has_inspector_preview;
+            carview::build_frame_inspector(target_list, snap, float(width), float(height));
+          }
+        };
+        append_modern_overlays(list);
         upload_ui_atlas(renderer, !ui_atlas_synced);
         ui_atlas_synced = true;
         renderer.set_ui(list.items());
@@ -6540,6 +6645,7 @@ int run_drive(int argc, char** argv) {
           const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
           double rec = 0, gpu = 0;
           renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
+          renderer.set_camera_vp(g_cam_vp_unjittered, 0.0f, 0.0f);
           if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
@@ -6864,7 +6970,19 @@ int run_drive(int argc, char** argv) {
           showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
-          const ShowroomFrame hframe = drive_frame(float(width) / float(height), every);
+          ShowroomFrame hframe = drive_frame(float(width) / float(height), every);
+          float h_jitter_uv_x = 0.0f, h_jitter_uv_y = 0.0f;
+          if (renderer.active_upscaler().temporal) {
+            const auto rex = renderer.render_width()
+                                 ? carview::modern::Extent{renderer.render_width(), renderer.render_height()}
+                                 : renderer.expected_render_extent(width, height);
+            const uint32_t jphase = carview::modern::jitter_phase_count(rex, {width, height});
+            const auto j = carview::modern::halton_jitter(temporal_frame_idx++, jphase);
+            apply_ndc_jitter(hframe, 2.0f * j[0] / float(std::max(1u, rex.w)),
+                             2.0f * j[1] / float(std::max(1u, rex.h)));
+            h_jitter_uv_x = j[0] / float(std::max(1u, rex.w));
+            h_jitter_uv_y = j[1] / float(std::max(1u, rex.h));
+          }
           showroom.set_frame(hframe);
           name_tags.clear();
           if (race && !race->player_finished()) {
@@ -6885,21 +7003,27 @@ int run_drive(int argc, char** argv) {
                                      fc.in_h2h});
             }
           }
-          if (hud) {
-            set_minimap(int(height), true);
+          if (hud || perf_overlay_open || inspector_open) {
+            if (hud) set_minimap(int(height), true);
             set_hud(int(width), int(height), vehicle.time() < notice_until  ? notice
                                  : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
                                                                   : club_banner());
-            set_radio_popup(int(height));
+            if (hud) set_radio_popup(int(height));
           }
           std::vector<uint8_t> rgba;
           renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
+          renderer.set_camera_vp(g_cam_vp_unjittered, h_jitter_uv_x, h_jitter_uv_y);
+          const auto rt0 = std::chrono::steady_clock::now();
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
           }
+          const auto rt1 = std::chrono::steady_clock::now();
+          last_frame_cpu_ms = std::chrono::duration<double, std::milli>(rt1 - rt0).count();
+          frame_stats.frame(std::chrono::duration<double>(rt1.time_since_epoch()).count());
+          if (renderer.active_frame_gen() != carview::modern::FrameGen::kOff) frame_stats.generated(1);
           for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
           char name[32];
           std::snprintf(name, sizeof name, "_%05d.png", int(std::lround(vehicle.time() * 100)));
@@ -7481,6 +7605,35 @@ int run_drive(int argc, char** argv) {
             if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_FINGER_MOTION ||
                 e.type == SDL_EVENT_FINGER_UP || e.type == SDL_EVENT_FINGER_CANCELED) {
               touch_controls.handle_sdl_event(e, float(width), float(height), vehicle.time());
+            }
+            if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+              if (e.key.key == SDLK_F3) {
+                perf_overlay_open = !perf_overlay_open;
+                renderer.set_gpu_timing(perf_overlay_open || inspector_open);
+                continue;
+              }
+              if (e.key.key == SDLK_F8 && (e.key.mod & SDL_KMOD_CTRL) != 0) {
+                inspector_open = !inspector_open;
+                renderer.set_inspector_preview(inspector_open, inspector_view);
+                renderer.set_gpu_timing(perf_overlay_open || inspector_open);
+                if (!inspector_open) has_inspector_preview = false;
+                continue;
+              }
+              if (inspector_open) {
+                int next_v = -1;
+                if (e.key.key == SDLK_LEFTBRACKET)
+                  next_v = (int(inspector_view) + int(carview::InspectorView::kCount) - 1) %
+                           int(carview::InspectorView::kCount);
+                else if (e.key.key == SDLK_RIGHTBRACKET)
+                  next_v = (int(inspector_view) + 1) % int(carview::InspectorView::kCount);
+                else if (e.key.key >= SDLK_1 && e.key.key <= SDLK_6)
+                  next_v = int(e.key.key - SDLK_1);
+                if (next_v >= 0) {
+                  inspector_view = static_cast<carview::InspectorView>(next_v);
+                  renderer.set_inspector_preview(true, inspector_view);
+                  continue;
+                }
+              }
             }
             if (skip_vo_with_a && !show_title && !menu.open && !settings_page.is_open() && !map_open &&
                 !fmv_player.active() && audio_host.telemetry().vo_playing) {
@@ -9758,10 +9911,21 @@ int run_drive(int argc, char** argv) {
                               : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
                                     ? camera_view_frame(rw_cam, info, vehicle, aspect, renderer.reverse_z())
                                     : drive_frame(aspect, frame_dt);
+          float w_jitter_uv_x = 0.0f, w_jitter_uv_y = 0.0f;
           if (photo_mode.active() && photo_mode.accumulator().active()) {
             float jx = 0.0f, jy = 0.0f;
             photo_mode.accumulator().jitter_ndc(jx, jy);
             apply_ndc_jitter(cam_frame, jx, jy);
+          } else if (renderer.active_upscaler().temporal) {
+            const auto rex = renderer.render_width()
+                                 ? carview::modern::Extent{renderer.render_width(), renderer.render_height()}
+                                 : renderer.expected_render_extent(uint32_t(w), uint32_t(h));
+            const uint32_t jphase = carview::modern::jitter_phase_count(rex, {uint32_t(w), uint32_t(h)});
+            const auto j = carview::modern::halton_jitter(temporal_frame_idx++, jphase);
+            apply_ndc_jitter(cam_frame, 2.0f * j[0] / float(std::max(1u, rex.w)),
+                             2.0f * j[1] / float(std::max(1u, rex.h)));
+            w_jitter_uv_x = j[0] / float(std::max(1u, rex.w));
+            w_jitter_uv_y = j[1] / float(std::max(1u, rex.h));
           }
           if (photo_mode.active() || replay_viewer.active() || show_title || (race && grid_menu_open) ||
               ceremony.active || rewind_scrub_view)
@@ -9961,16 +10125,21 @@ int run_drive(int argc, char** argv) {
           }
           vehicle.set_pose(stepped);
           renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
+          renderer.set_camera_vp(g_cam_vp_unjittered, w_jitter_uv_x, w_jitter_uv_y);
+          const auto wf_t0 = std::chrono::steady_clock::now();
           if (!renderer.draw_frame(FrameConstants{}, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
           }
+          last_frame_cpu_ms =
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wf_t0).count();
           const double now_s =
               std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
           const double wait_s = frame_pacer.wait_for(now_s);
           if (wait_s > 0.0005) SDL_DelayNS(Uint64(wait_s * 1e9));
           frame_stats.frame(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+          if (renderer.active_frame_gen() != carview::modern::FrameGen::kOff) frame_stats.generated(1);
           if (window_frames_limit && frame_stats.frames() >= window_frames_limit) {
             running = false;
             const auto vram = renderer.vram_stats();

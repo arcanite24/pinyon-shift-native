@@ -35,10 +35,13 @@
 #include "car_vert_spv.h"
 #include "fxaa_frag_spv.h"
 #include "hdr_output_frag_spv.h"
+#include "inspector_preview_frag_spv.h"
+#include "motion_vectors_frag_spv.h"
 #include "platform_support.h"
 #include "post_frag_spv.h"
 #include "post_vert_spv.h"
 #include "ssao_frag_spv.h"
+#include "temporal_upscale_frag_spv.h"
 #include "ui_frag_spv.h"
 #include "ui_vert_spv.h"
 #include "upscale_frag_spv.h"
@@ -91,6 +94,54 @@ void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect
   vkCmdPipelineBarrier2(cmd, &dependency);
 }
 
+void mat4_mul(const float a[16], const float b[16], float out[16]) {
+  for (int c = 0; c < 4; ++c)
+    for (int r = 0; r < 4; ++r)
+      out[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1] +
+                       a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
+}
+
+bool mat4_inv(const float m[16], float out[16]) {
+  float inv[16];
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] +
+           m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] -
+           m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] +
+           m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] -
+            m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] -
+           m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] +
+           m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] -
+           m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] +
+            m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] +
+           m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] -
+           m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] +
+            m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] -
+            m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] -
+           m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] +
+           m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] -
+            m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] +
+            m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+  const float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if (std::fabs(det) < 1e-12f) return false;
+  const float inv_det = 1.0f / det;
+  for (int i = 0; i < 16; ++i) out[i] = inv[i] * inv_det;
+  return true;
+}
+
 }  // namespace
 
 Renderer::~Renderer() {
@@ -101,17 +152,21 @@ Renderer::~Renderer() {
     destroy_buffer(vertex_buffer_);
     destroy_buffer(index_buffer_);
     destroy_buffer(capture_buffer_);
+    destroy_buffer(inspector_offscreen_buf_);
     destroy_buffer(ui_font_);
     for (FrameSlot& s : slots_) {
       if (s.overlay_mapped) vmaUnmapMemory(allocator_, s.overlay.allocation);
       if (s.ui_instances_mapped) vmaUnmapMemory(allocator_, s.ui_instances.allocation);
       if (s.ui_staging_mapped) vmaUnmapMemory(allocator_, s.ui_staging.allocation);
       if (s.lut_staging_mapped) vmaUnmapMemory(allocator_, s.lut_staging.allocation);
-      s.overlay_mapped = s.ui_instances_mapped = s.ui_staging_mapped = s.lut_staging_mapped = nullptr;
+      if (s.inspector_readback_mapped) vmaUnmapMemory(allocator_, s.inspector_readback.allocation);
+      s.overlay_mapped = s.ui_instances_mapped = s.ui_staging_mapped = s.lut_staging_mapped =
+          s.inspector_readback_mapped = nullptr;
       destroy_buffer(s.overlay);
       destroy_buffer(s.ui_instances);
       destroy_buffer(s.ui_staging);
       destroy_buffer(s.lut_staging);
+      destroy_buffer(s.inspector_readback);
       if (s.timestamps) vkDestroyQueryPool(device_, s.timestamps, nullptr);
       if (s.image_ready) vkDestroySemaphore(device_, s.image_ready, nullptr);
       if (s.fence) vkDestroyFence(device_, s.fence, nullptr);
@@ -229,6 +284,14 @@ bool Renderer::init(const Options& options, std::string& error) {
   }
 #endif
   if (!create_instance(error) || !pick_device(error) || !create_device(error)) return false;
+  {
+    std::filesystem::path exe_dir;
+    if (const char* base = SDL_GetBasePath(); base && *base) exe_dir = base;
+    upscaler_runtime_ = probe_upscaler_runtime(device_vendor_id_, exe_dir);
+    if (const char* tf = std::getenv("SHIFT_TEMPORAL_FORCE"); tf && *tf == '1') {
+      upscaler_runtime_.support.temporal = true;
+    }
+  }
   if (options_.window) {
     if (!create_swapchain(error)) return false;
     for (FrameSlot& s : slots_) {
@@ -379,6 +442,7 @@ bool Renderer::pick_device(std::string& error) {
         physical_ = candidate;
         queue_family_ = i;
         device_name_ = props.deviceName;
+        device_vendor_id_ = props.vendorID;
       }
       break;
     }
@@ -1061,10 +1125,19 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
                       VK_IMAGE_ASPECT_COLOR_BIT, stand_in_) ||
         !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, stand_in_fxaa_)) {
+                      VK_IMAGE_ASPECT_COLOR_BIT, stand_in_fxaa_) ||
+        !create_image(rw, rh, 1, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                      motion_vec_) ||
+        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, temporal_hist_[0]) ||
+        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, temporal_hist_[1])) {
       error = "post modern targets";
       return false;
     }
+    temporal_reset_ = true;
+    temporal_idx_ = 0;
     if (!create_post(error)) return false;
     if (!create_modern_passes(error)) return false;
     // Wire the 22 post descriptor sets:
@@ -1247,6 +1320,47 @@ void Renderer::set_camera_projection(float near_plane, float far_plane, float pr
   cam_far_ = std::max(far_plane, cam_near_ + 1.0f);
   cam_proj00_ = proj00;
   cam_proj11_ = proj11;
+}
+
+void Renderer::set_camera_vp(const float vp[16], float jitter_uv_x, float jitter_uv_y) {
+  if (!vp) return;
+  std::memcpy(cam_vp_, vp, sizeof(cam_vp_));
+  cam_jitter_uv_x_ = jitter_uv_x;
+  cam_jitter_uv_y_ = jitter_uv_y;
+  cam_vp_set_ = true;
+}
+
+void Renderer::set_inspector_preview(bool active, InspectorView view) {
+  inspector_active_ = active;
+  inspector_view_ = view;
+  if (!active) inspector_has_rgba_ = false;
+}
+
+void Renderer::set_hiz_preview_view(VkImageView view) {
+  if (view == hiz_preview_view_) return;
+  hiz_preview_view_ = view;
+  if (!modern_ready_ || !inspector_sets_[5] || !post_depth_sampler_ || !post_sampler_ || !depth_resolved_.view) return;
+  if (options_.window && device_) wait_idle();
+  const VkDescriptorImageInfo info =
+      hiz_preview_view_ ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+                        : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+                                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  w.dstSet = inspector_sets_[5];
+  w.dstBinding = 0;
+  w.descriptorCount = 1;
+  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  w.pImageInfo = &info;
+  vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
+}
+
+bool Renderer::take_inspector_preview(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height) {
+  if (!inspector_has_rgba_ || inspector_rgba_.empty()) return false;
+  rgba = inspector_rgba_;
+  width = kInspectorPreviewW;
+  height = kInspectorPreviewH;
+  inspector_has_rgba_ = false;
+  return true;
 }
 
 void Renderer::set_post_lut(std::span<const uint8_t> rgba, uint32_t size) {
@@ -1559,6 +1673,15 @@ bool Renderer::create_modern_passes(std::string& error) {
   VK_TRY(vkCreateDescriptorSetLayout(device_, &tex_set_info, nullptr, &single_tex_set_layout_),
          "single tex set layout");
 
+  const VkDescriptorSetLayoutBinding temporal_bindings[3] = {
+      {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+  VkDescriptorSetLayoutCreateInfo temp_set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  temp_set_info.bindingCount = 3;
+  temp_set_info.pBindings = temporal_bindings;
+  VK_TRY(vkCreateDescriptorSetLayout(device_, &temp_set_info, nullptr, &temporal_set_layout_), "temporal set layout");
+
   auto make_layout = [&](VkDescriptorSetLayout set_layout, uint32_t push_bytes, VkPipelineLayout& out,
                          const char* what) -> bool {
     VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, push_bytes};
@@ -1573,12 +1696,15 @@ bool Renderer::create_modern_passes(std::string& error) {
   if (!make_layout(ssao_set_layout_, 48, ssao_layout_, "ssao layout") ||
       !make_layout(single_tex_set_layout_, 16, fxaa_layout_, "fxaa layout") ||
       !make_layout(single_tex_set_layout_, 48, upscale_layout_, "upscale layout") ||
-      !make_layout(single_tex_set_layout_, 48, hdr_layout_, "hdr layout"))
+      !make_layout(single_tex_set_layout_, 48, hdr_layout_, "hdr layout") ||
+      !make_layout(single_tex_set_layout_, 80, motion_layout_, "motion layout") ||
+      !make_layout(temporal_set_layout_, 48, temporal_layout_, "temporal layout") ||
+      !make_layout(single_tex_set_layout_, 16, inspector_layout_, "inspector layout"))
     return false;
 
-  const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
+  const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 40};
   VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool_info.maxSets = 12;
+  pool_info.maxSets = 24;
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &pool_size;
   VK_TRY(vkCreateDescriptorPool(device_, &pool_info, nullptr, &modern_pool_), "modern descriptor pool");
@@ -1590,13 +1716,12 @@ bool Renderer::create_modern_passes(std::string& error) {
   salloc.pSetLayouts = ssao_layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &salloc, ssao_sets_), "ssao descriptor sets");
 
-  VkDescriptorSetLayout tex_layouts[7] = {single_tex_set_layout_, single_tex_set_layout_, single_tex_set_layout_,
-                                          single_tex_set_layout_, single_tex_set_layout_, single_tex_set_layout_,
-                                          single_tex_set_layout_};
-  VkDescriptorSet tex_sets[7] = {};
+  VkDescriptorSetLayout tex_layouts[16];
+  for (int i = 0; i < 16; ++i) tex_layouts[i] = single_tex_set_layout_;
+  VkDescriptorSet tex_sets[16] = {};
   VkDescriptorSetAllocateInfo talloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   talloc.descriptorPool = modern_pool_;
-  talloc.descriptorSetCount = 7;
+  talloc.descriptorSetCount = 16;
   talloc.pSetLayouts = tex_layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &talloc, tex_sets), "modern tex descriptor sets");
   fxaa_set_scene_ = tex_sets[0];
@@ -1606,6 +1731,18 @@ bool Renderer::create_modern_passes(std::string& error) {
   upscale_set_tmp_ = tex_sets[4];
   hdr_set_standin_ = tex_sets[5];
   hdr_set_fxaa_ = tex_sets[6];
+  motion_set_ = tex_sets[7];
+  upscale_set_hist_[0] = tex_sets[8];
+  upscale_set_hist_[1] = tex_sets[9];
+  for (int i = 0; i < 6; ++i) inspector_sets_[i] = tex_sets[10 + i];
+
+  VkDescriptorSetLayout temp_layouts[4] = {temporal_set_layout_, temporal_set_layout_, temporal_set_layout_,
+                                           temporal_set_layout_};
+  VkDescriptorSetAllocateInfo tmp_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  tmp_alloc.descriptorPool = modern_pool_;
+  tmp_alloc.descriptorSetCount = 4;
+  tmp_alloc.pSetLayouts = temp_layouts;
+  VK_TRY(vkAllocateDescriptorSets(device_, &tmp_alloc, temporal_sets_), "temporal descriptor sets");
 
   auto make_fs_pipe = [&](const uint32_t* frag_code, size_t frag_bytes, VkPipelineLayout layout, VkFormat fmt,
                           VkPipeline& out, const char* what) -> bool {
@@ -1673,9 +1810,22 @@ bool Renderer::create_modern_passes(std::string& error) {
                     "fxaa pipeline") ||
       !make_fs_pipe(kUpscale_frag_spv, sizeof(kUpscale_frag_spv), upscale_layout_, VK_FORMAT_R8G8B8A8_UNORM,
                     upscale_pipe_, "upscale pipeline") ||
+      !make_fs_pipe(kMotion_vectors_frag_spv, sizeof(kMotion_vectors_frag_spv), motion_layout_,
+                    VK_FORMAT_R16G16_SFLOAT, motion_pipe_, "motion pipeline") ||
+      !make_fs_pipe(kTemporal_upscale_frag_spv, sizeof(kTemporal_upscale_frag_spv), temporal_layout_,
+                    VK_FORMAT_R8G8B8A8_UNORM, temporal_pipe_, "temporal pipeline") ||
+      !make_fs_pipe(kInspector_preview_frag_spv, sizeof(kInspector_preview_frag_spv), inspector_layout_,
+                    VK_FORMAT_R8G8B8A8_UNORM, inspector_pipe_, "inspector preview pipeline") ||
       !make_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, VK_FORMAT_R8G8B8A8_UNORM,
                     hdr_pipe_sdr_, "hdr sdr pipeline"))
     return false;
+  if (!create_image(kInspectorPreviewW, kInspectorPreviewH, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, inspector_thumb_)) {
+    error = "inspector thumbnail image";
+    return false;
+  }
   if (color_format_ != VK_FORMAT_R8G8B8A8_UNORM) {
     if (!make_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, color_format_, hdr_pipe_swap_,
                       "hdr swap pipeline"))
@@ -1695,24 +1845,36 @@ void Renderer::destroy_modern_passes() {
   hdr_pipe_swap_ = VK_NULL_HANDLE;
   hdr_swap_fmt_ = VK_FORMAT_UNDEFINED;
   if (hdr_pipe_sdr_) vkDestroyPipeline(device_, hdr_pipe_sdr_, nullptr), hdr_pipe_sdr_ = VK_NULL_HANDLE;
+  if (inspector_pipe_) vkDestroyPipeline(device_, inspector_pipe_, nullptr), inspector_pipe_ = VK_NULL_HANDLE;
+  if (temporal_pipe_) vkDestroyPipeline(device_, temporal_pipe_, nullptr), temporal_pipe_ = VK_NULL_HANDLE;
+  if (motion_pipe_) vkDestroyPipeline(device_, motion_pipe_, nullptr), motion_pipe_ = VK_NULL_HANDLE;
   if (upscale_pipe_) vkDestroyPipeline(device_, upscale_pipe_, nullptr), upscale_pipe_ = VK_NULL_HANDLE;
   if (fxaa_pipe_) vkDestroyPipeline(device_, fxaa_pipe_, nullptr), fxaa_pipe_ = VK_NULL_HANDLE;
   if (ssao_pipe_) vkDestroyPipeline(device_, ssao_pipe_, nullptr), ssao_pipe_ = VK_NULL_HANDLE;
+  if (inspector_layout_) vkDestroyPipelineLayout(device_, inspector_layout_, nullptr), inspector_layout_ = VK_NULL_HANDLE;
+  if (temporal_layout_) vkDestroyPipelineLayout(device_, temporal_layout_, nullptr), temporal_layout_ = VK_NULL_HANDLE;
+  if (motion_layout_) vkDestroyPipelineLayout(device_, motion_layout_, nullptr), motion_layout_ = VK_NULL_HANDLE;
   if (hdr_layout_) vkDestroyPipelineLayout(device_, hdr_layout_, nullptr), hdr_layout_ = VK_NULL_HANDLE;
   if (upscale_layout_) vkDestroyPipelineLayout(device_, upscale_layout_, nullptr), upscale_layout_ = VK_NULL_HANDLE;
   if (fxaa_layout_) vkDestroyPipelineLayout(device_, fxaa_layout_, nullptr), fxaa_layout_ = VK_NULL_HANDLE;
   if (ssao_layout_) vkDestroyPipelineLayout(device_, ssao_layout_, nullptr), ssao_layout_ = VK_NULL_HANDLE;
   if (modern_pool_) vkDestroyDescriptorPool(device_, modern_pool_, nullptr), modern_pool_ = VK_NULL_HANDLE;
+  if (temporal_set_layout_)
+    vkDestroyDescriptorSetLayout(device_, temporal_set_layout_, nullptr), temporal_set_layout_ = VK_NULL_HANDLE;
   if (single_tex_set_layout_)
     vkDestroyDescriptorSetLayout(device_, single_tex_set_layout_, nullptr), single_tex_set_layout_ = VK_NULL_HANDLE;
   if (ssao_set_layout_)
     vkDestroyDescriptorSetLayout(device_, ssao_set_layout_, nullptr), ssao_set_layout_ = VK_NULL_HANDLE;
+  destroy_image(inspector_thumb_);
   destroy_image(ao_white_);
   modern_ready_ = false;
 }
 
 void Renderer::update_modern_descriptors() {
   if (!modern_ready_ || !depth_resolved_.view) return;
+  const VkImageView ao_view =
+      (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view : ao_white_.view;
+  const VkImageView shadow_view = shadow_map_.view ? shadow_map_.view : depth_resolved_.view;
   VkDescriptorImageInfo ssao_imgs[6] = {
       {post_sampler_, ao_white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
@@ -1721,7 +1883,7 @@ void Renderer::update_modern_descriptors() {
       {post_sampler_, ao_tmp_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
   };
-  VkDescriptorImageInfo tex_imgs[7] = {
+  VkDescriptorImageInfo tex_imgs[16] = {
       {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, stand_in_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -1729,10 +1891,38 @@ void Renderer::update_modern_descriptors() {
       {post_sampler_, upscale_tmp_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, stand_in_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, stand_in_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_sampler_, temporal_hist_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, temporal_hist_[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_sampler_, ao_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, shadow_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      hiz_preview_view_
+          ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+          : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
   };
-  VkDescriptorSet tex_sets[7] = {fxaa_set_scene_,   fxaa_set_standin_, upscale_set_scene_, upscale_set_fxaa_,
-                                 upscale_set_tmp_, hdr_set_standin_,  hdr_set_fxaa_};
-  VkWriteDescriptorSet writes[13]{};
+  VkDescriptorSet tex_sets[16] = {fxaa_set_scene_,    fxaa_set_standin_,  upscale_set_scene_,   upscale_set_fxaa_,
+                                  upscale_set_tmp_,   hdr_set_standin_,   hdr_set_fxaa_,      motion_set_,
+                                  upscale_set_hist_[0], upscale_set_hist_[1], inspector_sets_[0], inspector_sets_[1],
+                                  inspector_sets_[2], inspector_sets_[3], inspector_sets_[4], inspector_sets_[5]};
+  VkDescriptorImageInfo temp_imgs[12] = {
+      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, temporal_hist_[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, temporal_hist_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, scene_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, temporal_hist_[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, scene_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, temporal_hist_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+  };
+  VkWriteDescriptorSet writes[34]{};
   for (int i = 0; i < 6; ++i) {
     writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[i].dstSet = ssao_sets_[i / 2];
@@ -1741,7 +1931,7 @@ void Renderer::update_modern_descriptors() {
     writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[i].pImageInfo = &ssao_imgs[i];
   }
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 16; ++i) {
     writes[6 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[6 + i].dstSet = tex_sets[i];
     writes[6 + i].dstBinding = 0;
@@ -1749,7 +1939,15 @@ void Renderer::update_modern_descriptors() {
     writes[6 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[6 + i].pImageInfo = &tex_imgs[i];
   }
-  vkUpdateDescriptorSets(device_, 13, writes, 0, nullptr);
+  for (int i = 0; i < 12; ++i) {
+    writes[22 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[22 + i].dstSet = temporal_sets_[i / 3];
+    writes[22 + i].dstBinding = uint32_t(i % 3);
+    writes[22 + i].descriptorCount = 1;
+    writes[22 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[22 + i].pImageInfo = &temp_imgs[i];
+  }
+  vkUpdateDescriptorSets(device_, 34, writes, 0, nullptr);
 }
 
 void Renderer::record_ssao(VkCommandBuffer cmd) {
@@ -1830,8 +2028,114 @@ void Renderer::record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst
   mark(cmd, "fxaa");
 }
 
-void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescriptorSet src_set, uint32_t src_w,
-                              uint32_t src_h, VkImage dst_img, VkImageView dst_view, uint32_t dst_w, uint32_t dst_h) {
+void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
+  if (!modern_ready_ || !motion_pipe_ || !motion_vec_.view) return;
+  const uint32_t rw = render_width(), rh = render_height();
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+
+  image_barrier(cmd, motion_vec_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+  VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  col.imageView = motion_vec_.view;
+  col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  rend.renderArea = {{0, 0}, {rw, rh}};
+  rend.layerCount = 1;
+  rend.colorAttachmentCount = 1;
+  rend.pColorAttachments = &col;
+  vkCmdBeginRendering(cmd, &rend);
+  VkViewport vp{0, 0, float(rw), float(rh), 0.0f, 1.0f};
+  VkRect2D sc{{0, 0}, {rw, rh}};
+  vkCmdSetViewport(cmd, 0, 1, &vp);
+  vkCmdSetScissor(cmd, 0, 1, &sc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, motion_pipe_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, motion_layout_, 0, 1, &motion_set_, 0, nullptr);
+
+  struct {
+    float prev_vp_inv_curr[16];
+    float params[4];
+  } pc{};
+  for (int i = 0; i < 4; ++i) pc.prev_vp_inv_curr[i * 5] = 1.0f;
+  float curr_inv[16];
+  if (cam_vp_set_ && prev_cam_vp_valid_ && mat4_inv(cam_vp_, curr_inv)) {
+    mat4_mul(prev_cam_vp_, curr_inv, pc.prev_vp_inv_curr);
+  }
+  pc.params[0] = cam_jitter_uv_x_ - prev_jitter_uv_x_;
+  pc.params[1] = cam_jitter_uv_y_ - prev_jitter_uv_y_;
+  pc.params[2] = options_.reverse_z ? 1.0f : 0.0f;
+  vkCmdPushConstants(cmd, motion_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+  vkCmdEndRendering(cmd);
+  image_barrier(cmd, motion_vec_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+  if (cam_vp_set_) {
+    std::memcpy(prev_cam_vp_, cam_vp_, sizeof(cam_vp_));
+    prev_jitter_uv_x_ = cam_jitter_uv_x_;
+    prev_jitter_uv_y_ = cam_jitter_uv_y_;
+    prev_cam_vp_valid_ = true;
+  }
+  mark(cmd, "motion");
+}
+
+void Renderer::record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_dst) {
+  if (!modern_ready_ || !inspector_pipe_ || !inspector_thumb_.view || readback_dst == VK_NULL_HANDLE) return;
+  const int idx = std::clamp(int(inspector_view_), 0, int(InspectorView::kCount) - 1);
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  image_barrier(cmd, inspector_thumb_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+  VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  col.imageView = inspector_thumb_.view;
+  col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  rend.renderArea = {{0, 0}, {kInspectorPreviewW, kInspectorPreviewH}};
+  rend.layerCount = 1;
+  rend.colorAttachmentCount = 1;
+  rend.pColorAttachments = &col;
+  vkCmdBeginRendering(cmd, &rend);
+  VkViewport vp{0, 0, float(kInspectorPreviewW), float(kInspectorPreviewH), 0.0f, 1.0f};
+  VkRect2D sc{{0, 0}, {kInspectorPreviewW, kInspectorPreviewH}};
+  vkCmdSetViewport(cmd, 0, 1, &vp);
+  vkCmdSetScissor(cmd, 0, 1, &sc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, inspector_pipe_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, inspector_layout_, 0, 1, &inspector_sets_[idx], 0,
+                          nullptr);
+  const float mode = (idx == 5 && !hiz_preview_view_) ? 1.0f : float(idx);
+  const float params[4] = {mode, cam_near_, options_.reverse_z ? 1.0f : 0.0f, cam_far_};
+  vkCmdPushConstants(cmd, inspector_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(params), params);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+  vkCmdEndRendering(cmd);
+
+  image_barrier(cmd, inspector_thumb_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, color_stage, color_write, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+  VkBufferImageCopy copy{};
+  copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  copy.imageExtent = {kInspectorPreviewW, kInspectorPreviewH, 1};
+  vkCmdCopyImageToBuffer(cmd, inspector_thumb_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback_dst, 1, &copy);
+  VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+  host.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+  host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+  host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dep.memoryBarrierCount = 1;
+  dep.pMemoryBarriers = &host;
+  vkCmdPipelineBarrier2(cmd, &dep);
+  mark(cmd, "inspect");
+}
+
+void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescriptorSet src_set, bool src_is_fxaa,
+                              uint32_t src_w, uint32_t src_h, VkImage dst_img, VkImageView dst_view, uint32_t dst_w,
+                              uint32_t dst_h) {
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -1869,9 +2173,58 @@ void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescri
     image_barrier(cmd, target_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
   };
-  const modern::UpscalerSupport sup{};
-  const auto choice = modern::resolve_upscaler(graphics_.upscaler, sup, {src_w, src_h}, {dst_w, dst_h});
-  if (choice.active == modern::Upscaler::kFsr1) {
+  const auto choice = active_upscaler();
+  if (choice.temporal && temporal_pipe_ && temporal_hist_[0].view && temporal_hist_[1].view) {
+    if (temporal_reset_) {
+      const VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
+      const VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      for (int i = 0; i < 2; ++i) {
+        image_barrier(cmd, temporal_hist_[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, read_stage, VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdClearColorImage(cmd, temporal_hist_[i].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rng);
+        image_barrier(cmd, temporal_hist_[i].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read_acc);
+      }
+    }
+    const uint32_t out_idx = temporal_idx_ & 1u;
+    const Image& hist_out = temporal_hist_[out_idx];
+    image_barrier(cmd, hist_out.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read_acc, color_stage, color_write);
+    VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    col.imageView = hist_out.view;
+    col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rend.renderArea = {{0, 0}, {dst_w, dst_h}};
+    rend.layerCount = 1;
+    rend.colorAttachmentCount = 1;
+    rend.pColorAttachments = &col;
+    vkCmdBeginRendering(cmd, &rend);
+    VkViewport vp{0, 0, float(dst_w), float(dst_h), 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {dst_w, dst_h}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, temporal_pipe_);
+    const uint32_t tset_idx = (src_is_fxaa ? 2u : 0u) + out_idx;
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, temporal_layout_, 0, 1, &temporal_sets_[tset_idx], 0,
+                            nullptr);
+    struct {
+      float render_size[4], output_size[4], params[4];
+    } tpc = {{float(src_w), float(src_h), 1.0f / float(std::max(1u, src_w)), 1.0f / float(std::max(1u, src_h))},
+             {float(dst_w), float(dst_h), 1.0f / float(std::max(1u, dst_w)), 1.0f / float(std::max(1u, dst_h))},
+             {cam_jitter_uv_x_, cam_jitter_uv_y_, temporal_reset_ ? 1.0f : 0.0f, 0.90f}};
+    vkCmdPushConstants(cmd, temporal_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(tpc), &tpc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+    image_barrier(cmd, hist_out.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+    draw_up(upscale_set_hist_[out_idx], dst_img, dst_view, dst_w, dst_h, dst_w, dst_h, sharp > 0.0f ? 3.0f : 0.0f);
+    temporal_reset_ = false;
+    temporal_idx_ ^= 1u;
+  } else if (choice.active == modern::Upscaler::kFsr1) {
     draw_up(src_set, upscale_tmp_.image, upscale_tmp_.view, src_w, src_h, dst_w, dst_h, 2.0f);
     draw_up(upscale_set_tmp_, dst_img, dst_view, dst_w, dst_h, dst_w, dst_h, 3.0f);
   } else if (choice.active == modern::Upscaler::kCas) {
@@ -2194,6 +2547,11 @@ void Renderer::destroy_targets() {
   destroy_image(upscale_tmp_);
   destroy_image(stand_in_);
   destroy_image(stand_in_fxaa_);
+  destroy_image(motion_vec_);
+  destroy_image(temporal_hist_[0]);
+  destroy_image(temporal_hist_[1]);
+  temporal_reset_ = true;
+  prev_cam_vp_valid_ = false;
   ao_width_ = ao_height_ = 0;
   for (uint32_t k = 0; k < kBloomLevels; ++k) {
     destroy_image(bloom_a_[k]);
@@ -2206,7 +2564,8 @@ void Renderer::destroy_targets() {
 
 void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view,
                             VkImageLayout final_layout, const FrameConstants& constants,
-                            VkBuffer capture_dst, bool capture_before_ui, VkFormat final_format) {
+                            VkBuffer capture_dst, bool capture_before_ui, VkFormat final_format,
+                            VkBuffer inspector_dst) {
   if (final_format == VK_FORMAT_UNDEFINED) final_format = color_format_;
   const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
   if (scene_.before) scene_.before(cmd);
@@ -2403,6 +2762,9 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   }
 
   if (post) record_ssao(cmd);
+  const bool need_motion =
+      post && (active_upscaler().temporal || (inspector_active_ && inspector_view_ == InspectorView::kMotion));
+  if (need_motion) record_motion_vectors(cmd);
 
   const bool need_scale = (rw != target_width_ || rh != target_height_);
   const bool need_upscaler = need_scale || graphics_.upscaler != modern::Upscaler::kBilinear;
@@ -2410,7 +2772,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   const bool need_fxaa_world = (graphics_.aa == modern::AaMode::kFxaaWorld) && fxaa_pipe_ != VK_NULL_HANDLE;
   const bool need_fxaa_all = (graphics_.aa == modern::AaMode::kFxaaAll) && fxaa_pipe_ != VK_NULL_HANDLE;
   const bool use_modern_chain = post && modern_ready_ && scene_sdr_.view && stand_in_.view &&
-                                (need_upscaler || need_hdr_stage || need_fxaa_world || need_fxaa_all);
+                                (need_upscaler || need_hdr_stage || need_fxaa_world || need_fxaa_all ||
+                                 inspector_active_);
 
   if (depth_readable_) {
     image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -2482,12 +2845,18 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
 
     VkImage cur_img = scene_sdr_.image;
     VkDescriptorSet cur_up_set = upscale_set_scene_;
+    bool cur_is_fxaa = false;
     if (need_fxaa_world) {
       record_fxaa(cmd, fxaa_set_scene_, scene_fxaa_.image, scene_fxaa_.view, rw, rh);
       cur_img = scene_fxaa_.image;
       cur_up_set = upscale_set_fxaa_;
+      cur_is_fxaa = true;
     }
-    record_upscale(cmd, cur_img, cur_up_set, rw, rh, stand_in_.image, stand_in_.view, target_width_, target_height_);
+    if (inspector_active_ && inspector_dst != VK_NULL_HANDLE) {
+      record_inspector_preview(cmd, inspector_dst);
+    }
+    record_upscale(cmd, cur_img, cur_up_set, cur_is_fxaa, rw, rh, stand_in_.image, stand_in_.view, target_width_,
+                   target_height_);
 
     VkImageLayout si_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkPipelineStageFlags2 si_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -2937,10 +3306,39 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     error = "readback buffer";
     return false;
   }
+  VkBuffer inspector_dst = VK_NULL_HANDLE;
+  const VkDeviceSize insp_bytes = VkDeviceSize(kInspectorPreviewW) * kInspectorPreviewH * 4;
+  if (inspector_active_) {
+    if (!inspector_offscreen_buf_.buffer) {
+      create_buffer(insp_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    inspector_offscreen_buf_);
+    }
+    inspector_dst = inspector_offscreen_buf_.buffer;
+  }
+  const bool time_offscreen = gpu_timing_ && timestamp_ns_ > 0;
+  if (time_offscreen && !timestamps_) {
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = kTimestamps;
+    if (vkCreateQueryPool(device_, &info, nullptr, &timestamps_) != VK_SUCCESS) timestamp_ns_ = 0;
+  }
   stage_overlay();  // submit_once waits for the queue: no frame is using the buffer
   const bool ok = submit_once([&](VkCommandBuffer cmd) {
+    mark_labels_.clear();
+    ts_pool_ = timestamps_;
+    if (time_offscreen && timestamps_) {
+      vkCmdResetQueryPool(cmd, timestamps_, 0, kTimestamps);
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, timestamps_, 0);
+      timing_ = true;
+    }
     record_scene(cmd, output.image, output.view, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, constants,
-                 VK_NULL_HANDLE, false, out_fmt);
+                 VK_NULL_HANDLE, false, out_fmt, inspector_dst);
+    if (timing_) {
+      mark_end_ = uint32_t(mark_labels_.size()) + 1;
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, timestamps_, mark_end_);
+      timing_ = false;
+    }
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {width, height, 1};
@@ -2977,6 +3375,25 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     } else {
       error = "offscreen readback map failed";
       readback_ok = false;
+    }
+    if (inspector_active_ && inspector_dst != VK_NULL_HANDLE) {
+      void* imapped = nullptr;
+      if (vmaMapMemory(allocator_, inspector_offscreen_buf_.allocation, &imapped) == VK_SUCCESS) {
+        inspector_rgba_.assign(static_cast<uint8_t*>(imapped), static_cast<uint8_t*>(imapped) + insp_bytes);
+        vmaUnmapMemory(allocator_, inspector_offscreen_buf_.allocation);
+        inspector_has_rgba_ = true;
+      }
+    }
+    if (time_offscreen && timestamps_) {
+      uint64_t ticks[kTimestamps] = {};
+      if (vkGetQueryPoolResults(device_, timestamps_, 0, mark_end_ + 1, sizeof ticks, ticks, sizeof(uint64_t),
+                                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+        auto ms = [&](uint32_t a, uint32_t b) { return double(ticks[b] - ticks[a]) * timestamp_ns_ / 1e6; };
+        gpu_frame_ms_ = ms(0, mark_end_);
+        slot_stages_.clear();
+        for (uint32_t i = 0; i < mark_labels_.size(); ++i) slot_stages_.push_back({mark_labels_[i], ms(i, i + 1)});
+        slot_stages_.push_back({"rest", ms(uint32_t(mark_labels_.size()), mark_end_)});
+      }
     }
   } else {
     error = "offscreen render submission failed";
@@ -3042,6 +3459,8 @@ bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uin
     gpu_ms = ms(0, mark_end_);
     for (uint32_t i = 0; i < mark_labels_.size(); ++i) stage_ms_.push_back({mark_labels_[i], ms(i, i + 1)});
     stage_ms_.push_back({"rest", ms(uint32_t(mark_labels_.size()), mark_end_)});
+    gpu_frame_ms_ = gpu_ms;
+    slot_stages_ = stage_ms_;
   }
   return true;
 }
@@ -3228,6 +3647,13 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   vkWaitForFences(device_, 1, &fs.fence, VK_TRUE, UINT64_MAX);
   if (fs.submit_id > frames_done_) frames_done_ = fs.submit_id;
   collect_slot_timing(fs);
+  if (fs.inspector_ready && fs.inspector_readback_mapped) {
+    const size_t insp_bytes = size_t(kInspectorPreviewW) * kInspectorPreviewH * 4;
+    inspector_rgba_.assign(static_cast<const uint8_t*>(fs.inspector_readback_mapped),
+                           static_cast<const uint8_t*>(fs.inspector_readback_mapped) + insp_bytes);
+    inspector_has_rgba_ = true;
+    fs.inspector_ready = false;
+  }
   int w = 0, h = 0;
   SDL_GetWindowSizeInPixels(options_.window, &w, &h);
   if (w <= 0 || h <= 0) return true;  // minimised
@@ -3281,10 +3707,24 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
     vkCmdResetQueryPool(fs.cmd, fs.timestamps, 0, kTimestamps);
     vkCmdWriteTimestamp2(fs.cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, fs.timestamps, 0);
   }
+  VkBuffer inspector_dst = VK_NULL_HANDLE;
+  if (inspector_active_) {
+    const VkDeviceSize insp_bytes = VkDeviceSize(kInspectorPreviewW) * kInspectorPreviewH * 4;
+    if (!fs.inspector_readback.buffer) {
+      if (create_buffer(insp_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        fs.inspector_readback)) {
+        vmaMapMemory(allocator_, fs.inspector_readback.allocation, &fs.inspector_readback_mapped);
+      }
+    }
+    inspector_dst = fs.inspector_readback.buffer;
+  }
   stage_overlay();  // the slot's fence above: its last frame is done with its buffers
   record_scene(fs.cmd, swapchain_images_[index], swapchain_views_[index],
                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, constants,
-               do_capture ? capture_buffer_.buffer : VK_NULL_HANDLE, !capture_include_ui_);
+               do_capture ? capture_buffer_.buffer : VK_NULL_HANDLE, !capture_include_ui_,
+               VK_FORMAT_UNDEFINED, inspector_dst);
+  if (inspector_dst != VK_NULL_HANDLE) fs.inspector_ready = true;
   if (timing_) {
     fs.labels = mark_labels_;
     fs.mark_end = uint32_t(fs.labels.size()) + 1;
