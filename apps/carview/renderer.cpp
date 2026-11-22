@@ -379,6 +379,14 @@ bool Renderer::create_instance(std::string& error) {
           extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
         }
         info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+      } else {
+        // Direct libMoltenVK.dylib (without libvulkan loader) does not advertise
+        // VK_KHR_portability_enumeration even though SDL3 requests it on macOS.
+        extensions.erase(
+            std::remove_if(extensions.begin(), extensions.end(), [](const char* n) {
+              return std::strcmp(n, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0;
+            }),
+            extensions.end());
       }
     }
   }
@@ -2688,7 +2696,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   set_vrs(graphics_.vrs ? 2u : 1u, graphics_.vrs ? 2u : 1u);
   if (scene_.draw) {
     scene_.draw(cmd);
-  } else {
+  } else if (index_count_ > 0 && vertex_buffer_.buffer != VK_NULL_HANDLE &&
+             index_buffer_.buffer != VK_NULL_HANDLE) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
                             &descriptor_set_, 0, nullptr);
