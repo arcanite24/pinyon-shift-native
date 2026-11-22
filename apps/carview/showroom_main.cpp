@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -1064,44 +1065,52 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
 // The world textures decoded so far, by texture record. Only the gathers'
 // Prepare touches it, and gathers run one at a time.
 struct WorldTextureLoader {
-  std::set<uint32_t> done, failed;
+  std::set<uint32_t> failed;
   std::set<uint32_t> cutout;  // textures whose base level has alpha under one half
   size_t decoded = 0;
-  // Decodes the textures `w` names that are new; a texture that does not
-  // decode leaves its materials flat.
-  void load(world::World& colorado, WorldTriangles& w) {
+  // Decodes the textures `w` names that are not already resident in `showroom`;
+  // resident records are pinned in `pin_records` until the staged world is
+  // consumed or dropped. A texture that does not decode leaves its materials flat.
+  void load(world::World& colorado, WorldTriangles& w, Showroom& showroom,
+            std::vector<uint32_t>& pin_records) {
+    std::unordered_set<uint32_t> batch_seen;
     for (auto& m : w.materials)
-      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat}) load_one(colorado, w, *slot);
+      for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat})
+        load_one(colorado, w, showroom, batch_seen, pin_records, *slot);
   }
-  void load_one(world::World& colorado, WorldTriangles& w, uint32_t& record) {
-    {
-      if (record == kNoWorldTexture || done.count(record)) return;
-      if (failed.count(record)) {
-        record = kNoWorldTexture;
-        return;
-      }
-      fh1::WorldTexture t;
-      std::string e;
-      if (!colorado.read_texture(record, t, &e)) {
-        std::fprintf(stderr, "carview: texture record %u: %s\n", record, e.c_str());
-        failed.insert(record);
-        record = kNoWorldTexture;
-        return;
-      }
-      if (fh1::world_texture_has_cutout(t)) cutout.insert(record);
-      auto d = std::make_shared<WorldTextureData>();
-      d->record = record;
-      d->srgb = t.format.gamma;
-      char name[40];
-      std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[record].id);
-      d->texture.name = name;
-      d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
-      d->texture.swizzle = t.blocks.swizzle;
-      for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
-      done.insert(record);
-      w.textures.push_back(std::move(d));
-      ++decoded;
+  void load_one(world::World& colorado, WorldTriangles& w, Showroom& showroom,
+                std::unordered_set<uint32_t>& batch_seen, std::vector<uint32_t>& pin_records,
+                uint32_t& record) {
+    if (record == kNoWorldTexture) return;
+    if (failed.count(record)) {
+      record = kNoWorldTexture;
+      return;
     }
+    if (!batch_seen.insert(record).second) return;
+    if (showroom.reserve_world_texture(record)) {
+      pin_records.push_back(record);
+      return;
+    }
+    fh1::WorldTexture t;
+    std::string e;
+    if (!colorado.read_texture(record, t, &e)) {
+      std::fprintf(stderr, "carview: texture record %u: %s\n", record, e.c_str());
+      failed.insert(record);
+      record = kNoWorldTexture;
+      return;
+    }
+    if (fh1::world_texture_has_cutout(t)) cutout.insert(record);
+    auto d = std::make_shared<WorldTextureData>();
+    d->record = record;
+    d->srgb = t.format.gamma;
+    char name[40];
+    std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[record].id);
+    d->texture.name = name;
+    d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
+    d->texture.swizzle = t.blocks.swizzle;
+    for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
+    w.textures.push_back(std::move(d));
+    ++decoded;
   }
 };
 
@@ -2676,12 +2685,17 @@ int run_drive(int argc, char** argv) {
                                                                         double cz) {
             auto staged = std::make_shared<Showroom::StagedWorld>();
             std::string e;
+            std::vector<uint32_t> pin_records;
             WorldTriangles triangles = scenery(mesh, cx, cz);
-            texture_loader.load(colorado, triangles);
+            texture_loader.load(colorado, triangles, showroom, pin_records);
+            std::shared_ptr<const void> pin_guard(
+                reinterpret_cast<const void*>(1),
+                [&showroom, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
             if (!showroom.stage_world(build_world(triangles), *staged, e)) staged.reset();
             if (staged) {
               staged->origin_x = cx;
               staged->origin_z = cz;
+              staged->pin_guard = std::move(pin_guard);
             }
             auto prepared = std::make_shared<Prepared>();
             prepared->staged = std::move(staged);
@@ -2870,6 +2884,13 @@ int run_drive(int argc, char** argv) {
         const auto ds = showroom.world_draw_stats();
         std::printf("  renderer fallbacks: %zu draws with a texture that did not upload, %zu with a layer set that did not\n",
                     ds.white, ds.layer_fallback);
+        const auto vram = renderer.vram_stats();
+        const auto wts = showroom.world_texture_stats();
+        std::printf("  vram: %u blocks, %u allocs (%.1f/%.1f MiB); world textures: resident %zu (%.1f MiB), evictions %llu, reuploads %llu, pools %zu\n",
+                    vram.block_count, vram.allocation_count,
+                    double(vram.allocation_bytes) / (1024.0 * 1024.0), double(vram.block_bytes) / (1024.0 * 1024.0),
+                    wts.resident_count, double(wts.resident_bytes) / (1024.0 * 1024.0),
+                    (unsigned long long)wts.evictions, (unsigned long long)wts.reuploads, wts.descriptor_pools);
         for (size_t i = 0; i < top.size() && i < 20; ++i) {
           const auto& [key, v] = *top[i].second;
           std::printf("  %9.0f px %6zu tris  %s  %s  %s  at %.0f %.0f %.0f, y %.1f to %.1f\n", v.px, v.tris,
@@ -4206,6 +4227,14 @@ int run_drive(int argc, char** argv) {
                       shadow_cars_sum / double(n));
         std::printf("bench: process CPU %.2f s over %.2f s wall: %.2f ms per frame, %.0f%% of one core\n", cpu, wall,
                     n ? cpu * 1000 / double(n) : 0.0, wall > 0 ? cpu / wall * 100 : 0.0);
+        const auto vram = renderer.vram_stats();
+        const auto wts = showroom.world_texture_stats();
+        std::printf("bench: vram %u blocks, %u allocs (%.1f/%.1f MiB); world textures: resident %zu (%.1f MiB), uploads %llu, evictions %llu, reuploads %llu, pools %zu\n",
+                    vram.block_count, vram.allocation_count,
+                    double(vram.allocation_bytes) / (1024.0 * 1024.0), double(vram.block_bytes) / (1024.0 * 1024.0),
+                    wts.resident_count, double(wts.resident_bytes) / (1024.0 * 1024.0),
+                    (unsigned long long)wts.uploads, (unsigned long long)wts.evictions,
+                    (unsigned long long)wts.reuploads, wts.descriptor_pools);
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
@@ -4285,6 +4314,16 @@ int run_drive(int argc, char** argv) {
         if (streamer)
           std::printf("longest step with its streaming: %.1f ms (%s gathers)\n", longest_step * 1000,
                       async_stream ? "background" : "synchronous");
+        if (texture_census || streamer) {
+          const auto vram = renderer.vram_stats();
+          const auto wts = showroom.world_texture_stats();
+          std::printf("vram summary: %u blocks, %u allocs (%.1f/%.1f MiB); world textures: resident %zu (%.1f MiB), uploads %llu, evictions %llu, reuploads %llu, pools %zu, retired_pending %zu\n",
+                      vram.block_count, vram.allocation_count,
+                      double(vram.allocation_bytes) / (1024.0 * 1024.0), double(vram.block_bytes) / (1024.0 * 1024.0),
+                      wts.resident_count, double(wts.resident_bytes) / (1024.0 * 1024.0),
+                      (unsigned long long)wts.uploads, (unsigned long long)wts.evictions,
+                      (unsigned long long)wts.reuploads, wts.descriptor_pools, wts.retired_pending);
+        }
         if (race) {
           std::printf("%s m\nrace: results at %.2f s%s\n%s", race->summary().c_str(), race->session().clock(),
                       race->session().all_finished() ? "" : " (not every car finished)", race->results().c_str());

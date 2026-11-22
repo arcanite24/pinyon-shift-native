@@ -11,6 +11,9 @@
 
 #include <volk.h>
 
+VK_DEFINE_HANDLE(VmaAllocator);
+VK_DEFINE_HANDLE(VmaAllocation);
+
 #include "ui.h"
 
 struct SDL_Window;
@@ -146,16 +149,29 @@ class Renderer {
   uint32_t samples() const { return uint32_t(samples_); }
   uint32_t validation_messages() const { return validation_messages_; }
 
+  struct VramStats {
+    uint32_t block_count = 0;
+    uint32_t allocation_count = 0;
+    uint64_t block_bytes = 0;
+    uint64_t allocation_bytes = 0;
+    uint64_t device_local_usage = 0;
+    uint64_t device_local_budget = 0;
+  };
+  VramStats vram_stats() const;
+  VramStats vram_detailed_stats() const;
+  VkDeviceSize device_local_bytes() const;
+
  private:
   struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
   };
   struct Image {
     VkImage image = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
+    VkDeviceSize bytes = 0;
   };
 
   bool create_instance(std::string& error);
@@ -172,7 +188,6 @@ class Renderer {
   bool create_swapchain(std::string& error);
   void destroy_swapchain(bool keep_handle);
 
-  uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags flags) const;
   bool create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags,
                      Buffer& out);
   void destroy_buffer(Buffer& b);
@@ -199,6 +214,7 @@ class Renderer {
   VkSurfaceKHR surface_ = VK_NULL_HANDLE;
   VkPhysicalDevice physical_ = VK_NULL_HANDLE;
   VkDevice device_ = VK_NULL_HANDLE;
+  VmaAllocator allocator_ = VK_NULL_HANDLE;
   uint32_t queue_family_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;
   VkCommandPool pool_ = VK_NULL_HANDLE;

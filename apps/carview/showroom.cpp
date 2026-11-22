@@ -1,12 +1,28 @@
 #include "cars/mods.h"
 #include "showroom.h"
 
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+#pragma GCC diagnostic ignored "-Wextra"
+#endif
+#include <vk_mem_alloc.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <regex>
 #include <unordered_map>
 #include <set>
@@ -47,6 +63,21 @@ std::string lower(std::string s) {
 }
 bool ends_with(const std::string& s, const std::string& tail) {
   return s.size() >= tail.size() && s.compare(s.size() - tail.size(), tail.size(), tail) == 0;
+}
+
+bool parse_env_u64(const char* name, uint64_t& out) {
+  const char* val = std::getenv(name);
+  if (!val || !*val) return false;
+  while (*val && std::isspace(static_cast<unsigned char>(*val))) ++val;
+  if (*val < '0' || *val > '9') return false;
+  errno = 0;
+  char* end = nullptr;
+  const unsigned long long parsed = std::strtoull(val, &end, 10);
+  if (errno == ERANGE || end == val) return false;
+  while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+  if (*end != '\0') return false;
+  out = uint64_t(parsed);
+  return true;
 }
 
 void identity(float* m) {
@@ -248,6 +279,8 @@ Showroom::~Showroom() {
   VkDevice d = r_.device_;
   if (!d) return;
   vkDeviceWaitIdle(d);
+  drop_pending_world();
+  drop_fading_world(true);
   stop_reaper();
   if (!guest_) r_.set_scene({});
   for (auto& t : gpu_textures_) r_.destroy_image(t);
@@ -256,8 +289,6 @@ Showroom::~Showroom() {
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
   r_.destroy_buffer(shadow_frame_buffer_);
-  drop_pending_world();
-  drop_fading_world(true);
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
   for (auto& [record, t] : world_textures_) r_.destroy_image(t);
@@ -868,9 +899,10 @@ void Showroom::set_wheel_poses(const WheelPose poses[4]) {
 // The levels of `texture` that form a mip chain with valid sizes, and
 // their bytes.
 static uint32_t texture_chain(const bake::Texture& texture, VkDeviceSize& total) {
+  total = 0;
+  if (texture.levels.empty()) return 0;
   const uint32_t w0 = texture.levels[0].width, h0 = texture.levels[0].height;
   uint32_t levels = 0;
-  total = 0;
   for (const auto& level : texture.levels) {
     const uint32_t w = std::max(1u, w0 >> levels), h = std::max(1u, h0 >> levels);
     if (level.width != w || level.height != h || level.data.size() != level_bytes(texture.format, w, h)) break;
@@ -892,14 +924,12 @@ bool Showroom::create_texture_image(const bake::Texture& texture, bool srgb, uin
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-  VK_TRY(vkCreateImage(r_.device_, &info, nullptr, &out.image), "vkCreateImage");
-  VkMemoryRequirements req;
-  vkGetImageMemoryRequirements(r_.device_, out.image, &req);
-  VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  alloc.allocationSize = req.size;
-  alloc.memoryTypeIndex = r_.memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  VK_TRY(vkAllocateMemory(r_.device_, &alloc, nullptr, &out.memory), "vkAllocateMemory");
-  vkBindImageMemory(r_.device_, out.image, out.memory, 0);
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VmaAllocationInfo alloc_info{};
+  VK_TRY(vmaCreateImage(r_.allocator_, &info, &alloc, &out.image, &out.allocation, &alloc_info),
+         "vmaCreateImage");
+  out.bytes = alloc_info.size;
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view.image = out.image;
   view.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -907,7 +937,11 @@ bool Showroom::create_texture_image(const bake::Texture& texture, bool srgb, uin
   view.components = {vk_swizzle(texture.swizzle[0]), vk_swizzle(texture.swizzle[1]),
                      vk_swizzle(texture.swizzle[2]), vk_swizzle(texture.swizzle[3])};
   view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
-  VK_TRY(vkCreateImageView(r_.device_, &view, nullptr, &out.view), "vkCreateImageView");
+  if (vkCreateImageView(r_.device_, &view, nullptr, &out.view) != VK_SUCCESS) {
+    r_.destroy_image(out);
+    error = "vkCreateImageView failed";
+    return false;
+  }
   return true;
 }
 
@@ -969,17 +1003,23 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
   if (!r_.create_buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         staging)) {
+    r_.destroy_image(out);
     error = "texture staging buffer";
     return false;
   }
   uint8_t* mapped = nullptr;
-  vkMapMemory(r_.device_, staging.memory, 0, total, 0, reinterpret_cast<void**>(&mapped));
+  if (vmaMapMemory(r_.allocator_, staging.allocation, reinterpret_cast<void**>(&mapped)) != VK_SUCCESS) {
+    r_.destroy_buffer(staging);
+    r_.destroy_image(out);
+    error = "texture staging map";
+    return false;
+  }
   VkDeviceSize offset = 0;
   for (uint32_t i = 0; i < levels; ++i) {
     std::memcpy(mapped + offset, texture->levels[i].data.data(), texture->levels[i].data.size());
     offset += texture->levels[i].data.size();
   }
-  vkUnmapMemory(r_.device_, staging.memory);
+  vmaUnmapMemory(r_.allocator_, staging.allocation);
   const bool ok = r_.submit_once(
       [&](VkCommandBuffer cmd) { record_texture_copy(cmd, staging.buffer, 0, *texture, levels, out.image); });
   r_.destroy_buffer(staging);
@@ -1055,20 +1095,22 @@ bool Showroom::upload_environment(std::string& error) {
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-  VK_TRY(vkCreateImage(r_.device_, &info, nullptr, &environment_.image), "vkCreateImage (cube)");
-  VkMemoryRequirements req;
-  vkGetImageMemoryRequirements(r_.device_, environment_.image, &req);
-  VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  alloc.allocationSize = req.size;
-  alloc.memoryTypeIndex = r_.memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  VK_TRY(vkAllocateMemory(r_.device_, &alloc, nullptr, &environment_.memory), "vkAllocateMemory");
-  vkBindImageMemory(r_.device_, environment_.image, environment_.memory, 0);
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VmaAllocationInfo alloc_info{};
+  VK_TRY(vmaCreateImage(r_.allocator_, &info, &alloc, &environment_.image, &environment_.allocation, &alloc_info),
+         "vmaCreateImage (cube)");
+  environment_.bytes = alloc_info.size;
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view.image = environment_.image;
   view.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
   view.format = format;
   view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kLevels, 0, 6};
-  VK_TRY(vkCreateImageView(r_.device_, &view, nullptr, &environment_.view), "vkCreateImageView (cube)");
+  if (vkCreateImageView(r_.device_, &view, nullptr, &environment_.view) != VK_SUCCESS) {
+    r_.destroy_image(environment_);
+    error = "vkCreateImageView (cube)";
+    return false;
+  }
   Renderer::Buffer staging;
   const VkDeviceSize bytes = halfs.size() * 2;
   if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -1078,9 +1120,13 @@ bool Showroom::upload_environment(std::string& error) {
     return false;
   }
   void* mapped = nullptr;
-  vkMapMemory(r_.device_, staging.memory, 0, bytes, 0, &mapped);
+  if (vmaMapMemory(r_.allocator_, staging.allocation, &mapped) != VK_SUCCESS) {
+    r_.destroy_buffer(staging);
+    error = "environment staging map";
+    return false;
+  }
   std::memcpy(mapped, halfs.data(), size_t(bytes));
-  vkUnmapMemory(r_.device_, staging.memory);
+  vmaUnmapMemory(r_.allocator_, staging.allocation);
   const bool ok = r_.submit_once([&](VkCommandBuffer cmd) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -1331,6 +1377,20 @@ bool Showroom::create_pipelines(std::string& error) {
 }
 
 bool Showroom::upload(std::string& error) {
+  {
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    if (!world_budget_explicit_) {
+      uint64_t max_bytes = std::clamp<uint64_t>(r_.device_local_bytes() / 4, 256ULL << 20, 512ULL << 20);
+      size_t max_count = 1536;
+      if (uint64_t mb = 0; parse_env_u64("SHIFT_WORLD_TEX_BUDGET_MB", mb) &&
+                            mb <= (std::numeric_limits<uint64_t>::max() >> 20))
+        max_bytes = mb << 20;
+      if (uint64_t cnt = 0; parse_env_u64("SHIFT_WORLD_TEX_MAX_COUNT", cnt) &&
+                            cnt <= std::numeric_limits<size_t>::max())
+        max_count = size_t(cnt);
+      world_lru_.set_budget(max_bytes, max_count);
+    }
+  }
   if (!r_.ensure_shadow_map(error) || !create_pipelines(error)) return false;
   const bool shadows = r_.options_.shadow.size > 0;
   if (shadows && !r_.create_buffer(sizeof(ShowroomFrame),
@@ -1457,6 +1517,8 @@ bool Showroom::upload(std::string& error) {
   if (guest_) return true;
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) {
+    ++world_frame_;
+    release_retired();
     if (world_lit_ && draw_car_) {
       // The drive: the car takes the world's sun and sky (showroom.frag).
       for (int k = 0; k < 3; ++k) frame_.key_light[k] = world_sun_[k], frame_.drive[k] = world_up_[k];
@@ -1757,6 +1819,10 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     ShowroomPush push = d.push;
     if (d.blend == 1) {
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+      if (set) {
+        std::lock_guard<std::mutex> lock(world_textures_mutex_);
+        world_lru_.touch(d.texture, world_frame_);
+      }
       if (!set) {
         set = world_white_set_;
         push.params[1] = 0;
@@ -2083,12 +2149,18 @@ bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
 
 bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   vkDeviceWaitIdle(r_.device_);
+  ++world_frame_;
+  drop_pending_world();
   drop_fading_world(true);
   r_.destroy_buffer(world_vertices_);
   r_.destroy_buffer(world_indices_);
   world_draws_.clear();
   world_triangles_ = 0;
-  if (geometry.indices.empty()) return true;
+  if (geometry.indices.empty()) {
+    evict_world_textures();
+    release_retired();
+    return true;
+  }
   if (!upload_world_textures(geometry.textures, error)) return false;
   world_textured_ = geometry.textured;
   const void* vertex_data =
@@ -2103,6 +2175,8 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   }
   world_draws_ = std::move(geometry.draws);
   world_triangles_ = geometry.triangles;
+  evict_world_textures();
+  release_retired();
   return true;
 }
 
@@ -2123,9 +2197,9 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *buffer))
       return false;
     void* mapped = nullptr;
-    if (vkMapMemory(r.device_, buffer->memory, 0, size, 0, &mapped) != VK_SUCCESS) return false;
+    if (vmaMapMemory(r.allocator_, buffer->allocation, &mapped) != VK_SUCCESS) return false;
     std::memcpy(mapped, data, size_t(size));
-    vkUnmapMemory(r.device_, buffer->memory);
+    vmaUnmapMemory(r.allocator_, buffer->allocation);
     return true;
   };
   const bool staged_vertices =
@@ -2199,19 +2273,18 @@ bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, V
     r_.destroy_image(image);
     return false;
   }
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!create_world_single_set(image.view, set, error)) {
+    r_.destroy_image(image);
+    return false;
+  }
   record_texture_copy(cmd, texels, offset, t.texture, levels, image.image);
   {
     std::lock_guard<std::mutex> lock(world_textures_mutex_);
     world_textures_[t.record] = image;
+    world_sets_[t.record] = set;
+    world_lru_.insert(t.record, image.bytes, world_frame_);
   }
-  // Its set: the texture at binding 0, white at 1 and 2. Drawn only once
-  // the scenery's copy is fenced (poll_world).
-  const VkDescriptorSet set = world_layer_set({t.record, kNoWorldTexture, kNoWorldTexture});
-  if (!set) {
-    error = "world texture set";
-    return false;
-  }
-  world_sets_[t.record] = set;
   return true;
 }
 
@@ -2268,12 +2341,22 @@ void Showroom::release_retired() {
       ++k;
     }
   }
+  for (size_t k = 0; k < retired_sets_.size();) {
+    if (retired_sets_[k].first <= done) {
+      free_world_sets_.insert(free_world_sets_.end(), retired_sets_[k].second.begin(), retired_sets_[k].second.end());
+      retired_sets_.erase(retired_sets_.begin() + ptrdiff_t(k));
+    } else {
+      ++k;
+    }
+  }
 }
 
 void Showroom::stop_reaper() {
   // The GPU is idle (the caller waited): what is retired can go now.
   for (auto& [tag, f] : retired_) f();
   retired_.clear();
+  retired_sets_.clear();
+  free_world_sets_.clear();
   if (!reaper_.joinable()) return;
   {
     std::lock_guard<std::mutex> lock(reap_mutex_);
@@ -2325,7 +2408,11 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
       const auto& st = p->staged;
       for (size_t k = 0; k < st.textures.size() && k < st.texel_ranges.size(); ++k) {
         const auto& t = st.textures[k];
-        if (!t || !st.texel_ranges[k].second || world_textures_.count(t->record)) continue;
+        if (!t || !st.texel_ranges[k].second) continue;
+        {
+          std::lock_guard<std::mutex> lock(world_textures_mutex_);
+          if (world_textures_.count(t->record)) continue;
+        }
         std::string why;
         Renderer::Image* made = st.images && k < st.images->size() ? &(*st.images)[k] : nullptr;
         if (!begin_world_texture(*t, st.texels->buffer, st.texel_ranges[k].first, st.texel_ranges[k].second, p->cmd,
@@ -2347,6 +2434,7 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     }
   }
   pending_world_ = std::move(p);
+  evict_world_textures();
   return true;
 }
 
@@ -2386,6 +2474,12 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     world_draws_ = std::move(p.staged.draws);
     world_triangles_ = p.staged.triangles;
     world_textured_ = p.staged.textured;
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    for (const auto& d : world_draws_) {
+      if (d.texture != kNoWorldTexture) world_lru_.touch(d.texture, world_frame_);
+      if (d.texture_b != kNoWorldTexture) world_lru_.touch(d.texture_b, world_frame_);
+      if (d.splat != kNoWorldTexture) world_lru_.touch(d.splat, world_frame_);
+    }
   } else {
     world_draws_.clear();
     world_triangles_ = 0;
@@ -2393,6 +2487,8 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
   world_origin_[0] = p.staged.origin_x;
   world_origin_[1] = p.staged.origin_z;
   drop_pending_world();
+  evict_world_textures();
+  release_retired();
   if (swapped) *swapped = true;
   return true;
 }
@@ -2413,6 +2509,7 @@ void Showroom::drop_fading_world(bool now) {
       r_.destroy_buffer(v);
       r_.destroy_buffer(i);
     });
+    evict_world_textures();
   }
   fading_.vertices = {};
   fading_.indices = {};
@@ -2430,10 +2527,16 @@ void Showroom::set_world_light(const float sun[3], const float up[3], float expo
 }
 
 bool Showroom::allocate_world_set(VkDescriptorSet& out, std::string& error) {
+  if (!free_world_sets_.empty()) {
+    out = free_world_sets_.back();
+    free_world_sets_.pop_back();
+    return true;
+  }
   if (world_pool_left_ == 0) {
     constexpr uint32_t kSets = 256;
     const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSets * 3};
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool.maxSets = kSets;
     pool.poolSizeCount = 1;
     pool.pPoolSizes = &size;
@@ -2448,35 +2551,46 @@ bool Showroom::allocate_world_set(VkDescriptorSet& out, std::string& error) {
   alloc.pSetLayouts = &material_layout_;
   VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &out), "world material set");
   --world_pool_left_;
+  ++world_sets_allocated_;
+  return true;
+}
+
+bool Showroom::create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error) {
+  if (gpu_textures_.empty()) {
+    error = "no built-in white texture";
+    return false;
+  }
+  if (!allocate_world_set(out, error)) return false;
+  VkDescriptorImageInfo images[3];
+  VkWriteDescriptorSet writes[3];
+  for (uint32_t b = 0; b < 3; ++b) {
+    images[b] = {sampler_, b == 0 ? view : gpu_textures_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[b].dstSet = out;
+    writes[b].dstBinding = b;
+    writes[b].descriptorCount = 1;
+    writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[b].pImageInfo = &images[b];
+  }
+  vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
   return true;
 }
 
 bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
                                      std::string& error) {
-  auto write_set = [&](VkDescriptorSet set, VkImageView view) {
-    VkDescriptorImageInfo images[3];
-    VkWriteDescriptorSet writes[3];
-    for (uint32_t b = 0; b < 3; ++b) {
-      images[b] = {sampler_, b == 0 ? view : gpu_textures_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      writes[b].dstSet = set;
-      writes[b].dstBinding = b;
-      writes[b].descriptorCount = 1;
-      writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      writes[b].pImageInfo = &images[b];
-    }
-    vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
-  };
   if (!world_white_set_) {
     if (gpu_textures_.empty()) {
       error = "no built-in white texture";
       return false;
     }
-    if (!allocate_world_set(world_white_set_, error)) return false;
-    write_set(world_white_set_, gpu_textures_[0].view);
+    if (!create_world_single_set(gpu_textures_[0].view, world_white_set_, error)) return false;
   }
   for (const auto& t : textures) {
-    if (!t || world_textures_.count(t->record)) continue;
+    if (!t) continue;
+    {
+      std::lock_guard<std::mutex> lock(world_textures_mutex_);
+      if (world_textures_.count(t->record)) continue;
+    }
     GpuTexture image;
     std::string why;
     if (!upload_texture(&t->texture, t->srgb, image, why)) {
@@ -2485,18 +2599,131 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
       continue;  // drawn flat
     }
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if (!allocate_world_set(set, error)) {
+    if (!create_world_single_set(image.view, set, error)) {
       r_.destroy_image(image);
       return false;
     }
-    write_set(set, image.view);
     {
       std::lock_guard<std::mutex> lock(world_textures_mutex_);
       world_textures_[t->record] = image;
+      world_sets_[t->record] = set;
+      world_lru_.insert(t->record, image.bytes, world_frame_);
     }
-    world_sets_[t->record] = set;
   }
   return true;
+}
+
+size_t Showroom::world_texture_count() const {
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  return world_textures_.size();
+}
+
+void Showroom::set_world_texture_budget(const WorldTextureBudget& budget) {
+  {
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    world_budget_explicit_ = true;
+    world_lru_.set_budget(budget.max_bytes, budget.max_count);
+  }
+  if (r_.device_) evict_world_textures();
+}
+
+WorldTextureBudget Showroom::world_texture_budget() const {
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  return world_lru_.budget();
+}
+
+Showroom::WorldTextureStats Showroom::world_texture_stats() const {
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  WorldTextureStats s;
+  s.resident_count = world_textures_.size();
+  s.retired_pending = retired_.size() + retired_sets_.size();
+  s.descriptor_sets_allocated = world_sets_allocated_;
+  s.descriptor_sets_free = free_world_sets_.size();
+  s.descriptor_pools = world_pools_.size();
+  s.resident_bytes = world_lru_.total_bytes();
+  s.uploads = world_lru_.uploads();
+  s.evictions = world_lru_.evictions();
+  s.reuploads = world_lru_.reuploads();
+  return s;
+}
+
+bool Showroom::reserve_world_texture(uint32_t record) {
+  if (record == kNoWorldTexture) return false;
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  if (!world_textures_.count(record)) return false;
+  ++prepare_pins_[record];
+  return true;
+}
+
+void Showroom::release_prepare_pins(const std::vector<uint32_t>& records) {
+  if (records.empty()) return;
+  std::lock_guard<std::mutex> lock(world_textures_mutex_);
+  for (uint32_t record : records) {
+    auto it = prepare_pins_.find(record);
+    if (it == prepare_pins_.end()) continue;
+    if (it->second <= 1) prepare_pins_.erase(it);
+    else --it->second;
+  }
+}
+
+void Showroom::evict_world_textures() {
+  std::vector<GpuTexture> evicted_images;
+  std::vector<VkDescriptorSet> evicted_sets;
+  {
+    std::lock_guard<std::mutex> lock(world_textures_mutex_);
+    const auto b = world_lru_.budget();
+    if (b.max_bytes == 0 && b.max_count == 0) return;
+    if ((b.max_bytes == 0 || world_lru_.total_bytes() <= b.max_bytes) &&
+        (b.max_count == 0 || world_lru_.count() <= b.max_count))
+      return;
+    const uint64_t epoch = world_lru_.begin_pin_epoch();
+    auto pin_draw = [&](const WorldGeometry::Draw& d) {
+      if (d.texture != kNoWorldTexture) world_lru_.pin(d.texture, epoch);
+      if (d.texture_b != kNoWorldTexture) world_lru_.pin(d.texture_b, epoch);
+      if (d.splat != kNoWorldTexture) world_lru_.pin(d.splat, epoch);
+    };
+    for (const auto& d : world_draws_) pin_draw(d);
+    if (fading_on_)
+      for (const auto& d : fading_.draws) pin_draw(d);
+    if (pending_world_) {
+      for (const auto& d : pending_world_->staged.draws) pin_draw(d);
+      for (const auto& t : pending_world_->staged.textures)
+        if (t) world_lru_.pin(t->record, epoch);
+    }
+    for (const auto& [record, count] : prepare_pins_)
+      if (count > 0) world_lru_.pin(record, epoch);
+    std::vector<uint32_t> victims;
+    world_lru_.evict_unpinned(epoch, victims);
+    if (victims.empty()) return;
+    evicted_images.reserve(victims.size());
+    for (uint32_t record : victims) {
+      if (auto it = world_textures_.find(record); it != world_textures_.end()) {
+        evicted_images.push_back(it->second);
+        world_textures_.erase(it);
+      }
+      if (auto it = world_sets_.find(record); it != world_sets_.end()) {
+        evicted_sets.push_back(it->second);
+        world_sets_.erase(it);
+      }
+      for (auto it = world_layer_sets_.begin(); it != world_layer_sets_.end();) {
+        const auto& k = it->first;
+        if (k[0] == record || k[1] == record || k[2] == record) {
+          evicted_sets.push_back(it->second);
+          it = world_layer_sets_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+  }
+  if (!evicted_images.empty()) {
+    retire([this, imgs = std::move(evicted_images)]() mutable {
+      for (auto& img : imgs) r_.destroy_image(img);
+    });
+  }
+  if (!evicted_sets.empty()) {
+    retired_sets_.push_back({r_.frames_submitted(), std::move(evicted_sets)});
+  }
 }
 
 VkDescriptorSet Showroom::world_layer_set(const std::array<uint32_t, 3>& records) {
@@ -2663,11 +2890,21 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
         vkCmdSetDepthBias(cmd, d.decal ? sign * kDecalBiasConstant : 0.0f, 0.0f, d.decal ? sign * kDecalBiasSlope : 0.0f);
       }
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+      if (set) {
+        std::lock_guard<std::mutex> lock(world_textures_mutex_);
+        world_lru_.touch(d.texture, world_frame_);
+      }
       ShowroomPush push = d.push;
       if (set && d.texture_b != kNoWorldTexture) {
         VkDescriptorSet layered = world_layer_set({d.texture, d.texture_b, d.splat});
-        if (layered) set = layered;
-        else push.params[1] = 1, ++world_stats_.layer_fallback;  // a layer did not upload: slot 0 alone
+        if (layered) {
+          set = layered;
+          std::lock_guard<std::mutex> lock(world_textures_mutex_);
+          world_lru_.touch(d.texture_b, world_frame_);
+          if (d.splat != kNoWorldTexture) world_lru_.touch(d.splat, world_frame_);
+        } else {
+          push.params[1] = 1, ++world_stats_.layer_fallback;  // a layer did not upload: slot 0 alone
+        }
       }
       if (!set) {
         if (d.texture != kNoWorldTexture) ++world_stats_.white;
@@ -2715,6 +2952,7 @@ bool Showroom::render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>
   if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, readback)) {
     r_.destroy_image(target);
+    r_.destroy_image(multi);
     error = "mask readback";
     return false;
   }
@@ -2781,20 +3019,25 @@ bool Showroom::render_mask(uint32_t width, uint32_t height, std::vector<uint8_t>
     host_dep.pMemoryBarriers = &host;
     vkCmdPipelineBarrier2(cmd, &host_dep);
   });
+  bool readback_ok = ok;
   if (ok) {
     void* mapped = nullptr;
-    vkMapMemory(r_.device_, readback.memory, 0, bytes, 0, &mapped);
-    const uint8_t* src = static_cast<const uint8_t*>(mapped);
-    mask.resize(size_t(bytes));
-    for (size_t i = 0; i < mask.size(); ++i) mask[i] = fraction ? src[i] : (src[i] != 0 ? 255 : 0);
-    vkUnmapMemory(r_.device_, readback.memory);
+    if (vmaMapMemory(r_.allocator_, readback.allocation, &mapped) == VK_SUCCESS) {
+      const uint8_t* src = static_cast<const uint8_t*>(mapped);
+      mask.resize(size_t(bytes));
+      for (size_t i = 0; i < mask.size(); ++i) mask[i] = fraction ? src[i] : (src[i] != 0 ? 255 : 0);
+      vmaUnmapMemory(r_.allocator_, readback.allocation);
+    } else {
+      error = "mask readback map failed";
+      readback_ok = false;
+    }
   } else {
     error = "mask render submission failed";
   }
   r_.destroy_buffer(readback);
   r_.destroy_image(target);
   r_.destroy_image(multi);
-  return ok;
+  return readback_ok;
 }
 
 }  // namespace carview

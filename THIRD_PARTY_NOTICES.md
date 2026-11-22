@@ -10,6 +10,7 @@ fetches these projects with CMake FetchContent, pinned in
 | [SDL](https://github.com/libsdl-org/SDL) | `release-3.2.28` | window, input, Vulkan surface | zlib |
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | `vulkan-sdk-1.4.350.1` | Vulkan API headers | Apache-2.0 / MIT |
 | [volk](https://github.com/zeux/volk) | `vulkan-sdk-1.4.350.1` | loads the Vulkan loader at run time | MIT |
+| [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | `v3.3.0` | Vulkan memory sub-allocation (`vk_mem_alloc.h`) | MIT |
 | [SQLite](https://www.sqlite.org) | `3.50.4` amalgamation (2025-07-30), SHA-256 pinned | reads the game database read-only (`event-restrictions-corpus`) | public domain |
 | [stb](https://github.com/nothings/stb) | `f58f558c` (2025-05-26) | `stb_image_write.h`, PNG output | MIT or public domain |
 | [dr_libs](https://github.com/mackron/dr_libs) | `mp3-0.7.4` (`aec2dd20`) | `dr_mp3.h`, the radio's MPEG decoding | public domain or MIT-0 |

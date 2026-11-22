@@ -20,12 +20,14 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <volk.h>
 
 #include "cars/bake_format.h"
 #include "renderer.h"
+#include "world_texture_lru.h"
 
 namespace carview {
 
@@ -225,6 +227,7 @@ class Showroom {
     // was already uploaded or failed, which begin_world then handles).
     // The ones begin_world does not take go with the StagedWorld.
     std::shared_ptr<std::vector<Renderer::Image>> images;
+    std::shared_ptr<const void> pin_guard;
     double origin_x = 0, origin_z = 0;  // what the positions are relative to
   };
   bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error);
@@ -301,7 +304,25 @@ class Showroom {
   void set_instances(std::vector<Instance> list) { instances_ = std::move(list); }
   void add_instances(const std::vector<Instance>& more) { instances_.insert(instances_.end(), more.begin(), more.end()); }
   size_t instance_count() const { return instances_.size(); }
-  size_t world_texture_count() const { return world_textures_.size(); }
+  size_t world_texture_count() const;
+  struct WorldTextureStats {
+    size_t resident_count = 0;
+    size_t retired_pending = 0;
+    size_t descriptor_sets_allocated = 0;
+    size_t descriptor_sets_free = 0;
+    size_t descriptor_pools = 0;
+    uint64_t resident_bytes = 0;
+    uint64_t uploads = 0;
+    uint64_t evictions = 0;
+    uint64_t reuploads = 0;
+  };
+  void set_world_texture_budget(const WorldTextureBudget& budget);
+  WorldTextureBudget world_texture_budget() const;
+  // Main thread only: reads main-thread-owned retired/pool state alongside
+  // world_textures_mutex_.
+  WorldTextureStats world_texture_stats() const;
+  bool reserve_world_texture(uint32_t record);
+  void release_prepare_pins(const std::vector<uint32_t>& records);
   // The world draws the last frame's shadow pass drew (0 without shadows).
   size_t shadow_draw_count() const { return shadow_drawn_; }
   // The traffic cars it drew.
@@ -491,6 +512,15 @@ class Showroom {
   float world_sun_[4] = {0.3848f, 0.8754f, 0.2926f, 1}, world_up_[4] = {0, 1, 0, 1};
   bool world_lit_ = false;  // set_world_light was called: light the car by the world's sun and sky
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
+  bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
+  void evict_world_textures();
+  WorldTextureLru world_lru_;
+  bool world_budget_explicit_ = false;
+  uint64_t world_frame_ = 0;
+  std::unordered_map<uint32_t, size_t> prepare_pins_;
+  std::vector<std::pair<uint64_t, std::vector<VkDescriptorSet>>> retired_sets_;  // main thread only
+  std::vector<VkDescriptorSet> free_world_sets_;
+  size_t world_sets_allocated_ = 0;
 };
 
 }  // namespace carview

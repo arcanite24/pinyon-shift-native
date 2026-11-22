@@ -71,6 +71,20 @@ if(SHIFT_BUILD_CARVIEW)
     target_link_libraries(shift_volk PUBLIC ${CMAKE_DL_LIBS})
   endif()
 
+  # VulkanMemoryAllocator (MIT): sub-allocates device and staging memory.
+  FetchContent_Declare(vma
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG v3.3.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _no_cmake_)
+  FetchContent_MakeAvailable(vma)
+  add_library(shift_vma INTERFACE)
+  target_include_directories(shift_vma SYSTEM INTERFACE "${vma_SOURCE_DIR}/include")
+  target_link_libraries(shift_vma INTERFACE shift_volk)
+  target_compile_definitions(shift_vma INTERFACE
+    VMA_STATIC_VULKAN_FUNCTIONS=0
+    VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
+
   # SDL3, static, without the subsystems carview does not use.
   set(SDL_SHARED OFF CACHE BOOL "" FORCE)
   set(SDL_STATIC ON CACHE BOOL "" FORCE)

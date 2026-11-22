@@ -1,5 +1,20 @@
 #include "renderer.h"
 
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+#pragma GCC diagnostic ignored "-Wextra"
+#endif
+#define VMA_IMPLEMENTATION
+#include <vk_mem_alloc.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -74,9 +89,21 @@ Renderer::~Renderer() {
     destroy_targets();
     destroy_buffer(vertex_buffer_);
     destroy_buffer(index_buffer_);
+    if (overlay_mapped_) {
+      vmaUnmapMemory(allocator_, overlay_buffer_.allocation);
+      overlay_mapped_ = nullptr;
+    }
     destroy_buffer(overlay_buffer_);
     destroy_buffer(ui_font_);
+    if (ui_instances_mapped_) {
+      vmaUnmapMemory(allocator_, ui_instances_.allocation);
+      ui_instances_mapped_ = nullptr;
+    }
     destroy_buffer(ui_instances_);
+    if (ui_staging_mapped_) {
+      vmaUnmapMemory(allocator_, ui_staging_.allocation);
+      ui_staging_mapped_ = nullptr;
+    }
     destroy_buffer(ui_staging_);
     destroy_image(ui_atlas_);
     if (ui_pipeline_) vkDestroyPipeline(device_, ui_pipeline_, nullptr);
@@ -103,6 +130,10 @@ Renderer::~Renderer() {
     if (pipeline_layout_) vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
     if (set_layout_) vkDestroyDescriptorSetLayout(device_, set_layout_, nullptr);
     if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
+    if (allocator_) {
+      vmaDestroyAllocator(allocator_);
+      allocator_ = VK_NULL_HANDLE;
+    }
     vkDestroyDevice(device_, nullptr);
   }
   if (instance_) {
@@ -305,6 +336,20 @@ bool Renderer::create_device(std::string& error) {
   info.ppEnabledExtensionNames = extensions.data();
   VK_TRY(vkCreateDevice(physical_, &info, nullptr, &device_), "vkCreateDevice");
   volkLoadDevice(device_);
+  {
+    VmaVulkanFunctions funcs{};
+    funcs.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    funcs.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    VmaAllocatorCreateInfo alloc_info{};
+    // Default locking (flags = 0): stage_world() and reaper_ run off the main thread.
+    alloc_info.flags = 0;
+    alloc_info.physicalDevice = physical_;
+    alloc_info.device = device_;
+    alloc_info.pVulkanFunctions = &funcs;
+    alloc_info.instance = instance_;
+    alloc_info.vulkanApiVersion = VK_API_VERSION_1_3;
+    VK_TRY(vmaCreateAllocator(&alloc_info, &allocator_), "vmaCreateAllocator");
+  }
   vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -313,42 +358,77 @@ bool Renderer::create_device(std::string& error) {
   return true;
 }
 
-uint32_t Renderer::memory_type(uint32_t bits, VkMemoryPropertyFlags flags) const {
-  for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
-    if ((bits & (1u << i)) && (memory_properties_.memoryTypes[i].propertyFlags & flags) == flags)
-      return i;
+VkDeviceSize Renderer::device_local_bytes() const {
+  VkDeviceSize total = 0;
+  for (uint32_t i = 0; i < memory_properties_.memoryHeapCount; ++i) {
+    if (memory_properties_.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+      total += memory_properties_.memoryHeaps[i].size;
   }
-  return UINT32_MAX;
+  return total;
+}
+
+Renderer::VramStats Renderer::vram_stats() const {
+  VramStats out;
+  if (!allocator_) return out;
+  VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+  vmaGetHeapBudgets(allocator_, budgets);
+  for (uint32_t i = 0; i < memory_properties_.memoryHeapCount; ++i) {
+    out.block_count += budgets[i].statistics.blockCount;
+    out.allocation_count += budgets[i].statistics.allocationCount;
+    out.block_bytes += budgets[i].statistics.blockBytes;
+    out.allocation_bytes += budgets[i].statistics.allocationBytes;
+    if (memory_properties_.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+      out.device_local_usage += budgets[i].usage;
+      out.device_local_budget += budgets[i].budget;
+    }
+  }
+  return out;
+}
+
+Renderer::VramStats Renderer::vram_detailed_stats() const {
+  VramStats out = vram_stats();
+  if (!allocator_) return out;
+  VmaTotalStatistics stats{};
+  vmaCalculateStatistics(allocator_, &stats);
+  out.block_count = stats.total.statistics.blockCount;
+  out.allocation_count = stats.total.statistics.allocationCount;
+  out.block_bytes = stats.total.statistics.blockBytes;
+  out.allocation_bytes = stats.total.statistics.allocationBytes;
+  return out;
 }
 
 bool Renderer::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                              VkMemoryPropertyFlags flags, Buffer& out) {
+  if (!allocator_ || size == 0) return false;
   VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   info.size = size;
   info.usage = usage;
-  if (vkCreateBuffer(device_, &info, nullptr, &out.buffer) != VK_SUCCESS) return false;
-  VkMemoryRequirements req;
-  vkGetBufferMemoryRequirements(device_, out.buffer, &req);
-  VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  alloc.allocationSize = req.size;
-  alloc.memoryTypeIndex = memory_type(req.memoryTypeBits, flags);
-  if (alloc.memoryTypeIndex == UINT32_MAX ||
-      vkAllocateMemory(device_, &alloc, nullptr, &out.memory) != VK_SUCCESS)
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+    alloc.flags = (usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+                      ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                      : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      alloc.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  }
+  if (vmaCreateBuffer(allocator_, &info, &alloc, &out.buffer, &out.allocation, nullptr) != VK_SUCCESS) {
+    out = Buffer{};
     return false;
-  vkBindBufferMemory(device_, out.buffer, out.memory, 0);
+  }
   out.size = size;
   return true;
 }
 
 void Renderer::destroy_buffer(Buffer& b) {
-  if (b.buffer) vkDestroyBuffer(device_, b.buffer, nullptr);
-  if (b.memory) vkFreeMemory(device_, b.memory, nullptr);
+  if ((b.buffer || b.allocation) && allocator_) vmaDestroyBuffer(allocator_, b.buffer, b.allocation);
   b = Buffer{};
 }
 
 bool Renderer::create_image(uint32_t width, uint32_t height, uint32_t levels, VkFormat format,
                             VkSampleCountFlagBits samples, VkImageUsageFlags usage,
                             VkImageAspectFlags aspect, Image& out) {
+  if (!allocator_) return false;
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = format;
@@ -359,28 +439,29 @@ bool Renderer::create_image(uint32_t width, uint32_t height, uint32_t levels, Vk
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
   info.usage = usage;
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  if (vkCreateImage(device_, &info, nullptr, &out.image) != VK_SUCCESS) return false;
-  VkMemoryRequirements req;
-  vkGetImageMemoryRequirements(device_, out.image, &req);
-  VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  alloc.allocationSize = req.size;
-  alloc.memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-  if (alloc.memoryTypeIndex == UINT32_MAX ||
-      vkAllocateMemory(device_, &alloc, nullptr, &out.memory) != VK_SUCCESS)
+  VmaAllocationCreateInfo alloc{};
+  alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  VmaAllocationInfo alloc_info{};
+  if (vmaCreateImage(allocator_, &info, &alloc, &out.image, &out.allocation, &alloc_info) != VK_SUCCESS) {
+    out = Image{};
     return false;
-  vkBindImageMemory(device_, out.image, out.memory, 0);
+  }
+  out.bytes = alloc_info.size;
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   view.image = out.image;
   view.viewType = VK_IMAGE_VIEW_TYPE_2D;
   view.format = format;
   view.subresourceRange = {aspect, 0, levels, 0, 1};
-  return vkCreateImageView(device_, &view, nullptr, &out.view) == VK_SUCCESS;
+  if (vkCreateImageView(device_, &view, nullptr, &out.view) != VK_SUCCESS) {
+    destroy_image(out);
+    return false;
+  }
+  return true;
 }
 
 void Renderer::destroy_image(Image& i) {
-  if (i.view) vkDestroyImageView(device_, i.view, nullptr);
-  if (i.image) vkDestroyImage(device_, i.image, nullptr);
-  if (i.memory) vkFreeMemory(device_, i.memory, nullptr);
+  if (i.view && device_) vkDestroyImageView(device_, i.view, nullptr);
+  if ((i.image || i.allocation) && allocator_) vmaDestroyImage(allocator_, i.image, i.allocation);
   i = Image{};
 }
 
@@ -414,9 +495,12 @@ bool Renderer::upload_buffer(const void* data, VkDeviceSize size, VkBufferUsageF
                      staging))
     return false;
   void* mapped = nullptr;
-  vkMapMemory(device_, staging.memory, 0, size, 0, &mapped);
+  if (vmaMapMemory(allocator_, staging.allocation, &mapped) != VK_SUCCESS) {
+    destroy_buffer(staging);
+    return false;
+  }
   std::memcpy(mapped, data, size_t(size));
-  vkUnmapMemory(device_, staging.memory);
+  vmaUnmapMemory(allocator_, staging.allocation);
   bool ok = create_buffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, out);
   if (ok) {
@@ -466,7 +550,11 @@ bool Renderer::upload(const CarModel& model, std::string& error) {
     return false;
   }
   uint8_t* mapped = nullptr;
-  vkMapMemory(device_, staging.memory, 0, total, 0, reinterpret_cast<void**>(&mapped));
+  if (vmaMapMemory(allocator_, staging.allocation, reinterpret_cast<void**>(&mapped)) != VK_SUCCESS) {
+    destroy_buffer(staging);
+    error = "texture staging map";
+    return false;
+  }
   std::vector<VkBufferImageCopy> copies;
   VkDeviceSize offset = 0;
   for (uint32_t i = 0; i < levels.size(); ++i) {
@@ -478,7 +566,7 @@ bool Renderer::upload(const CarModel& model, std::string& error) {
     copies.push_back(copy);
     offset += levels[i].rgba.size();
   }
-  vkUnmapMemory(device_, staging.memory);
+  vmaUnmapMemory(allocator_, staging.allocation);
   const uint32_t level_count = uint32_t(levels.size());
   if (!create_image(levels[0].width, levels[0].height, level_count, VK_FORMAT_R8G8B8A8_UNORM,
                     VK_SAMPLE_COUNT_1_BIT,
@@ -1208,12 +1296,13 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
     VkDeviceSize bytes = 0;
     for (const auto& p : ui_puts_) bytes += p.rgba.size();
     if (ui_staging_.size < bytes) {
-      if (ui_staging_mapped_) vkUnmapMemory(device_, ui_staging_.memory);
+      if (ui_staging_mapped_) vmaUnmapMemory(allocator_, ui_staging_.allocation);
       ui_staging_mapped_ = nullptr;
       destroy_buffer(ui_staging_);
       if (create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_staging_))
-        vkMapMemory(device_, ui_staging_.memory, 0, bytes, 0, &ui_staging_mapped_);
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_staging_) &&
+          vmaMapMemory(allocator_, ui_staging_.allocation, &ui_staging_mapped_) != VK_SUCCESS)
+        ui_staging_mapped_ = nullptr;
     }
     if (ui_staging_mapped_) {
       std::vector<VkBufferImageCopy> regions;
@@ -1243,14 +1332,16 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
   if (ui_items_.empty() || ui_format_ != color_format_) return;
   const VkDeviceSize bytes = ui_items_.size() * sizeof(ui::Instance);
   if (ui_instances_.size < bytes) {
-    if (ui_instances_mapped_) vkUnmapMemory(device_, ui_instances_.memory);
+    if (ui_instances_mapped_) vmaUnmapMemory(allocator_, ui_instances_.allocation);
     ui_instances_mapped_ = nullptr;
     destroy_buffer(ui_instances_);
     const VkDeviceSize cap = std::max<VkDeviceSize>(bytes * 2, 64 * 1024);
     if (!create_buffer(cap, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_instances_) ||
-        vkMapMemory(device_, ui_instances_.memory, 0, cap, 0, &ui_instances_mapped_) != VK_SUCCESS)
+        vmaMapMemory(allocator_, ui_instances_.allocation, &ui_instances_mapped_) != VK_SUCCESS) {
+      ui_instances_mapped_ = nullptr;
       return;
+    }
   }
   std::memcpy(ui_instances_mapped_, ui_items_.data(), size_t(bytes));
   image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1319,13 +1410,13 @@ bool Renderer::stage_overlay() {
   if (bytes == 0) return false;
   bool all = false;  // every staged layer is copied again (a new buffer, moved offsets)
   if (overlay_buffer_.size < bytes) {
-    if (overlay_mapped_) vkUnmapMemory(device_, overlay_buffer_.memory);
+    if (overlay_mapped_) vmaUnmapMemory(allocator_, overlay_buffer_.allocation);
     overlay_mapped_ = nullptr;
     destroy_buffer(overlay_buffer_);
     if (!create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, overlay_buffer_))
       return false;
-    if (vkMapMemory(device_, overlay_buffer_.memory, 0, bytes, 0, &overlay_mapped_) != VK_SUCCESS) {
+    if (vmaMapMemory(allocator_, overlay_buffer_.allocation, &overlay_mapped_) != VK_SUCCESS) {
       overlay_mapped_ = nullptr;
       return false;
     }
@@ -1403,15 +1494,20 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     dependency.pMemoryBarriers = &host;
     vkCmdPipelineBarrier2(cmd, &dependency);
   });
+  bool readback_ok = ok;
   if (ok) {
     void* mapped = nullptr;
-    vkMapMemory(device_, readback.memory, 0, readback_bytes, 0, &mapped);
-    rgba.assign(static_cast<uint8_t*>(mapped), static_cast<uint8_t*>(mapped) + bytes);
-    if (depth) {
-      depth->resize(size_t(width) * height);
-      std::memcpy(depth->data(), static_cast<uint8_t*>(mapped) + bytes, size_t(bytes));
+    if (vmaMapMemory(allocator_, readback.allocation, &mapped) == VK_SUCCESS) {
+      rgba.assign(static_cast<uint8_t*>(mapped), static_cast<uint8_t*>(mapped) + bytes);
+      if (depth) {
+        depth->resize(size_t(width) * height);
+        std::memcpy(depth->data(), static_cast<uint8_t*>(mapped) + bytes, size_t(bytes));
+      }
+      vmaUnmapMemory(allocator_, readback.allocation);
+    } else {
+      error = "offscreen readback map failed";
+      readback_ok = false;
     }
-    vkUnmapMemory(device_, readback.memory);
   } else {
     error = "offscreen render submission failed";
   }
@@ -1421,7 +1517,7 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     destroy_targets();
     depth_readable_ = false;
   }
-  return ok;
+  return readback_ok;
 }
 
 bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uint32_t height, double& record_ms,
