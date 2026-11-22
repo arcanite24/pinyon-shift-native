@@ -103,7 +103,8 @@ std::string save_to_text(const DriveSave& s) {
     const auto& a = c.assists;
     out += "controls_assists " + std::to_string(a.braking) + " " + std::to_string(a.steering) + " " +
            (a.traction_control ? "1 " : "0 ") + (a.stability_control ? "1 " : "0 ") +
-           std::to_string(a.shifting) + " " + std::to_string(a.driving_line) + "\n";
+           std::to_string(a.shifting) + " " + std::to_string(a.driving_line) + " " +
+           (a.rewind ? "1\n" : "0\n");
   }
   return out;
 }
@@ -232,8 +233,9 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       }
     } else if (key == "controls_assists") {
       auto& a = out.controls.assists;
-      int tcs = 0, stm = 1;
+      int tcs = 0, stm = 1, rew = 1;
       if (l >> a.braking >> a.steering >> tcs >> stm >> a.shifting >> a.driving_line) {
+        if (l >> rew) a.rewind = rew != 0;
         a.traction_control = tcs != 0;
         a.stability_control = stm != 0;
         out.has_controls = true;

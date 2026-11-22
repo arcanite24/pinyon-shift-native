@@ -107,6 +107,7 @@ add_test(NAME garage_tests COMMAND garage_tests)
 # The pause menu's settings page (plain C++).
 add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp)
 target_include_directories(settings_tests PRIVATE ../apps/carview)
+target_link_libraries(settings_tests PRIVATE shift_drive)
 add_test(NAME settings_tests COMMAND settings_tests)
 
 add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp

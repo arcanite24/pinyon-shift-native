@@ -1,6 +1,7 @@
 // The pause menu's settings page: rows read from the file's tokens, left
-// and right step a row, and the tokens written keep the file's other
-// options.
+// and right step a row, key rebinds capture a key, live_settings() reflects
+// immediate state, and tokens() keeps the file's other options.
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -27,18 +28,57 @@ static bool has(const std::vector<std::string>& v, const std::vector<std::string
 
 int main() {
   carview::SettingsPage page;
-  page.load(
-      {"--size", "1280x720", "--preset", "low", "--no-traffic", "--difficulty", "hard", "--hour", "18", "--language", "FR"});
+  page.load({"--size", "1280x720", "--preset", "low", "--no-traffic", "--difficulty", "hard", "--hour", "18",
+             "--language", "FR", "--no-rumble", "--rumble-scale", "0.50", "--controller-layout", "2",
+             "--steer-dz-in", "0.10", "--no-camera-effects", "--assist-braking", "2", "--assist-steering", "2",
+             "--assist-tcs", "1", "--assist-stm", "0", "--assist-shifting", "2", "--assist-line", "1",
+             "--assist-rewind", "0", "--keys", "throttle=I,camera=F1"});
   CHECK(page.value("preset") == "low");
   CHECK(page.value("traffic") == "off");
   CHECK(page.value("difficulty") == "hard");
   CHECK(page.value("radio") == "on");
   CHECK(page.value("camera") == "default");
+  CHECK(page.value("camera effects") == "off");
+  CHECK(page.value("rumble") == "off");
+  CHECK(page.value("rumble scale") == "50%");
+  CHECK(page.value("controller layout") == "layout 3");
+  CHECK(page.value("steer deadzone in") == "10%");
+  CHECK(page.value("braking") == "abs off");
+  CHECK(page.value("steering") == "simulation");
+  CHECK(page.value("traction control") == "on");
+  CHECK(page.value("stability control") == "off");
+  CHECK(page.value("shifting") == "manual+clutch");
+  CHECK(page.value("driving line") == "braking");
+  CHECK(page.value("rewind") == "off");
+  CHECK(page.value("key throttle") == "I");
+  CHECK(page.value("key camera") == "F1");
+
+  // Live settings reflect all loaded controls and assists immediately.
+  {
+    const auto ls = page.live_settings();
+    CHECK(ls.difficulty == 2);
+    CHECK(ls.radio && ls.sound && ls.rubberband);
+    CHECK(!ls.controls.camera_effects);
+    CHECK(!ls.controls.rumble_enabled);
+    CHECK(std::fabs(ls.controls.rumble_scale - 0.50) < 1e-6);
+    CHECK(ls.controls.layout_id == 2);
+    CHECK(std::fabs(ls.controls.deadzones.steering_inside - 0.10) < 1e-6);
+    CHECK(ls.controls.keys.matches(drive::ControlAction::kThrottle, "I"));
+    CHECK(ls.controls.keys.matches(drive::ControlAction::kSwitchCamera, "F1"));
+    CHECK(ls.controls.assists.braking == 2);
+    CHECK(ls.controls.assists.steering == 2);
+    CHECK(ls.controls.assists.traction_control);
+    CHECK(!ls.controls.assists.stability_control);
+    CHECK(ls.controls.assists.shifting == 2);
+    CHECK(ls.controls.assists.driving_line == 1);
+    CHECK(!ls.controls.assists.rewind);
+  }
 
   // Unchanged: the same options come back.
   auto t = page.tokens();
   CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}) && has(t, {"--language", "FR"}));
   CHECK(has(t, {"--preset", "low"}) && has(t, {"--no-traffic"}) && has(t, {"--difficulty", "hard"}));
+  CHECK(has(t, {"--no-rumble"}) && has(t, {"--controller-layout", "2"}) && has(t, {"--no-camera-effects"}));
 
   // Rows: preset, shadows, bloom, difficulty, rubber-banding, traffic, ...
   page.open();
@@ -54,6 +94,17 @@ int main() {
   CHECK(has(t, {"--preset", "high"}) && !has(t, {"--no-traffic"}) && has(t, {"--difficulty", "pro"}));
   CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}) && has(t, {"--language", "FR"}));
 
+  // Rebind row capture and commit.
+  page.open();
+  page.move(-2);  // one before save line -> last rebind row ("key rewind")
+  CHECK(page.on_rebind_row());
+  page.begin_rebind();
+  CHECK(page.capturing_key());
+  CHECK(page.commit_rebind("Backspace"));
+  CHECK(!page.capturing_key());
+  CHECK(page.value("key rewind") == "Backspace");
+  CHECK(page.live_settings().controls.keys.matches(drive::ControlAction::kRewind, "Backspace"));
+
   // The save line follows the last row and wraps.
   page.open();
   page.move(-1);
@@ -64,7 +115,7 @@ int main() {
   std::vector<std::string> lines;
   int selected = -1;
   page.fill(title, lines, selected);
-  CHECK(lines.size() == 11 && selected == 0 && lines[0] == "preset  < high >");
+  CHECK(selected == 0 && lines[0] == "preset  < high >" && lines.back() == "save & apply");
 
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;

@@ -53,6 +53,7 @@
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "drive/cameras.h"
+#include "drive/controls.h"
 #include "drive/rumble.h"
 #include "drive/ai_driver.h"
 #include "drive/contact.h"
@@ -898,6 +899,85 @@ const char* difficulty_name(race::Difficulty d) {
   }
   return "MED";
 }
+
+SDL_Scancode sdl_scancode_for(std::string_view name) {
+  if (name.empty()) return SDL_SCANCODE_UNKNOWN;
+  if (name == "Comma") return SDL_SCANCODE_COMMA;
+  if (name == "Period") return SDL_SCANCODE_PERIOD;
+  if (name == "LeftShift") return SDL_SCANCODE_LSHIFT;
+  if (name == "RightShift") return SDL_SCANCODE_RSHIFT;
+  if (name == "LeftCtrl") return SDL_SCANCODE_LCTRL;
+  if (name == "RightCtrl") return SDL_SCANCODE_RCTRL;
+  return SDL_GetScancodeFromName(std::string(name).c_str());
+}
+
+std::string sdl_key_name(SDL_Keycode k) {
+  switch (k) {
+    case SDLK_COMMA: return "Comma";
+    case SDLK_PERIOD: return "Period";
+    case SDLK_LSHIFT: return "LeftShift";
+    case SDLK_RSHIFT: return "RightShift";
+    case SDLK_LCTRL: return "LeftCtrl";
+    case SDLK_RCTRL: return "RightCtrl";
+    default: break;
+  }
+  const char* raw = SDL_GetKeyName(k);
+  if (!raw || !*raw) return {};
+  std::string out;
+  for (const char* p = raw; *p; ++p)
+    if (*p != ' ') out.push_back(*p);
+  return out;
+}
+
+bool action_key_down(const bool* keys, const drive::KeyBindings& kb, drive::ControlAction act) {
+  const auto& b = kb.map[size_t(act)];
+  const SDL_Scancode s1 = sdl_scancode_for(b.primary);
+  if (s1 != SDL_SCANCODE_UNKNOWN && keys[s1]) return true;
+  const SDL_Scancode s2 = sdl_scancode_for(b.secondary);
+  if (s2 != SDL_SCANCODE_UNKNOWN && keys[s2]) return true;
+  return false;
+}
+
+drive::PadControl pad_control_from_button(Uint8 b) {
+  switch (b) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return drive::PadControl::kButtonA;
+    case SDL_GAMEPAD_BUTTON_EAST: return drive::PadControl::kButtonB;
+    case SDL_GAMEPAD_BUTTON_WEST: return drive::PadControl::kButtonX;
+    case SDL_GAMEPAD_BUTTON_NORTH: return drive::PadControl::kButtonY;
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return drive::PadControl::kLeftShoulder;
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return drive::PadControl::kRightShoulder;
+    case SDL_GAMEPAD_BUTTON_BACK: return drive::PadControl::kBack;
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return drive::PadControl::kDPadUp;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return drive::PadControl::kDPadDown;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return drive::PadControl::kDPadLeft;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return drive::PadControl::kDPadRight;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return drive::PadControl::kLeftStickClick;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return drive::PadControl::kRightStickClick;
+    default: return drive::PadControl::kNone;
+  }
+}
+
+double pad_control_value(SDL_Gamepad* pad, drive::PadControl c, double dz_in, double dz_out) {
+  auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
+  switch (c) {
+    case drive::PadControl::kLeftTrigger:
+      return drive::apply_deadzone_unsigned(axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), dz_in, dz_out);
+    case drive::PadControl::kRightTrigger:
+      return drive::apply_deadzone_unsigned(axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), dz_in, dz_out);
+    case drive::PadControl::kButtonA: return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH) ? 1.0 : 0.0;
+    case drive::PadControl::kButtonB: return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST) ? 1.0 : 0.0;
+    case drive::PadControl::kButtonX: return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST) ? 1.0 : 0.0;
+    case drive::PadControl::kButtonY: return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH) ? 1.0 : 0.0;
+    case drive::PadControl::kLeftShoulder:
+      return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) ? 1.0 : 0.0;
+    case drive::PadControl::kRightShoulder:
+      return SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) ? 1.0 : 0.0;
+    default: return 0.0;
+  }
+}
+
+// Plumbs AssistSettings into drive::Vehicle once Vehicle assist setters land.
+void apply_vehicle_assists(drive::Vehicle& /*vehicle*/, const drive::AssistSettings& /*assists*/) {}
 
 // SPEC-CAMERAS' rig for the drive: the tuning from camera.zip (v4's layers
 // when installed), the car's CameraOverrides row and MAXData box from the
@@ -3487,6 +3567,17 @@ int run_drive(int argc, char** argv) {
         }
       };
       // Writes where the car stands (drive/save.h); the start is the last spawn.
+      drive::ControlSettings live_controls;
+      if (have_saved && saved.has_controls) live_controls = saved.controls;
+      {
+        SettingsPage init_settings;
+        init_settings.load(read_settings(settings_path(), nullptr));
+        const LiveSettings init_ls = init_settings.live_settings();
+        if (!have_saved || !saved.has_controls) live_controls = init_ls.controls;
+      }
+      bool live_sound_enabled = true;
+      bool live_radio_enabled = true;
+      bool loaded_camera_effects = live_controls.camera_effects;
       auto save_now = [&](const char* why) {
         if (save_path.empty() || status != 0) return;
         drive::DriveSave s;
@@ -3524,6 +3615,8 @@ int run_drive(int argc, char** argv) {
         s.difficulty = int(race_options.difficulty);
         if (have_saved) s.carry_from(saved);
         s.club = saved.club;
+        s.has_controls = true;
+        s.controls = live_controls;
         std::string e;
         if (!drive::write_save(save_path, s, &e)) std::fprintf(stderr, "carview: %s\n", e.c_str());
         else if (headless) std::printf("save (%s): %s at %.1f %.1f %.1f\n", why, save_path.string().c_str(), at.x, at.y, at.z);
@@ -3559,13 +3652,13 @@ int run_drive(int argc, char** argv) {
       drive::DriveCamera rig;
       bool have_rig = false;
       drive::GamepadRumble gamepad_rumble;
-      bool rumble_enabled = true;
-      double rumble_scale = 1.0;
+      bool rumble_enabled = live_controls.rumble_enabled;
+      double rumble_scale = live_controls.rumble_scale;
       int prev_rumble_gear = vehicle.gear();
       double rig_min_distance = 1e9, rig_max_distance = 0;  // the chase eye from the CoM, over the run
       if (!world_dir.empty()) {
         std::string note;
-        have_rig = load_camera_rig(game_root_of(), bake_dir, info, vehicle, rig, note);
+        have_rig = load_camera_rig(game_root_of(), bake_dir, info, vehicle, rig, note, loaded_camera_effects);
         if (!have_rig) std::fprintf(stderr, "carview: note: the camera spec's rig is off: %s\n", note.c_str());
         else if (!note.empty()) std::fprintf(stderr, "carview: note: camera: %s\n", note.c_str());
         rig.set_mode(drive::CameraMode(std::clamp(camera_mode, 0, drive::kCameraModes - 1)));
@@ -5209,36 +5302,88 @@ int run_drive(int argc, char** argv) {
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
             // The settings page: up and down pick a row, left and right
-            // change it, enter on the last line writes the file (the next
-            // start applies it), escape leaves without writing.
+            // change it (applied live), enter rebinds a key or saves.
             if (settings_page.is_open()) {
-              auto save = [&]() {
+              auto apply_live = [&]() {
+                const LiveSettings ls = settings_page.live_settings();
+                live_controls = ls.controls;
+                rumble_enabled = ls.controls.rumble_enabled;
+                rumble_scale = ls.controls.rumble_scale;
+                if (!rumble_enabled || rumble_scale <= 0.0) {
+                  for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, 0, 0, 0);
+                }
+                if (ls.camera_mode >= 0 && have_rig) {
+                  rig.set_mode(drive::CameraMode(std::clamp(ls.camera_mode, 0, drive::kCameraModes - 1)));
+                }
+                if (have_rig && ls.controls.camera_effects != loaded_camera_effects) {
+                  const drive::CameraMode cur_mode = rig.mode();
+                  std::string cam_note;
+                  if (load_camera_rig(game_root_of(), bake_dir, info, vehicle, rig, cam_note,
+                                      ls.controls.camera_effects)) {
+                    rig.set_mode(cur_mode);
+                    loaded_camera_effects = ls.controls.camera_effects;
+                  }
+                }
+                if (ls.difficulty >= 0 && ls.difficulty <= 3) race_options.difficulty = race::Difficulty(ls.difficulty);
+                race_options.rubberband = ls.rubberband;
+                live_sound_enabled = ls.sound;
+                live_radio_enabled = ls.radio;
+                apply_vehicle_assists(vehicle, live_controls.assists);
+              };
+              auto confirm = [&]() {
+                if (settings_page.on_rebind_row()) {
+                  settings_page.begin_rebind();
+                  return;
+                }
                 if (!settings_page.on_save_line()) return;
+                apply_live();
                 std::string why;
                 const auto file = settings_path();
                 if (file.empty()) why = "no user folder";
                 else if (!write_settings(file, settings_page.tokens(), &why)) why = why.empty() ? "not written" : why;
-                notice = why.empty() ? "settings saved: they apply on the next start" : "settings: " + why;
+                save_now("settings");
+                notice = why.empty() ? "settings saved and applied" : "settings: " + why;
                 notice_until = vehicle.time() + 4;
                 if (why.empty()) settings_page.close();
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE && !e.key.repeat) settings_page.close();
-                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) save();
-                else if (k == SDLK_UP || k == SDLK_W) settings_page.move(-1);
-                else if (k == SDLK_DOWN || k == SDLK_S) settings_page.move(1);
-                else if (k == SDLK_LEFT || k == SDLK_A) settings_page.step(-1);
-                else if (k == SDLK_RIGHT || k == SDLK_D) settings_page.step(1);
+                if (settings_page.capturing_key()) {
+                  if (!e.key.repeat) {
+                    if (k == SDLK_ESCAPE) {
+                      settings_page.cancel_rebind();
+                    } else {
+                      const std::string kn = sdl_key_name(k);
+                      if (!kn.empty() && settings_page.commit_rebind(kn)) apply_live();
+                    }
+                  }
+                } else {
+                  if (k == SDLK_ESCAPE && !e.key.repeat) settings_page.close();
+                  else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) confirm();
+                  else if (k == SDLK_UP || k == SDLK_W) settings_page.move(-1);
+                  else if (k == SDLK_DOWN || k == SDLK_S) settings_page.move(1);
+                  else if (k == SDLK_LEFT || k == SDLK_A) {
+                    settings_page.step(-1);
+                    apply_live();
+                  } else if (k == SDLK_RIGHT || k == SDLK_D) {
+                    settings_page.step(1);
+                    apply_live();
+                  }
+                }
               }
-              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && !settings_page.capturing_key()) {
                 const auto b = e.gbutton.button;
                 if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) settings_page.close();
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) save();
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm();
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) settings_page.move(-1);
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) settings_page.move(1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) settings_page.step(-1);
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) settings_page.step(1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) {
+                  settings_page.step(-1);
+                  apply_live();
+                } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) {
+                  settings_page.step(1);
+                  apply_live();
+                }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -5293,13 +5438,14 @@ int run_drive(int argc, char** argv) {
               }
               if (on_banner && e.key.key == SDLK_BACKSPACE) results_table = false;
               if (on_banner && e.key.key == SDLK_X) results_table = true;  // X: RACE RESULTS
-              if (!race && e.key.key == SDLK_E) activate_world_trigger();
-              if (e.key.key == SDLK_R) put_back();
-              if (e.key.key == SDLK_M) open_map();
-              if (e.key.key == SDLK_COMMA) radio_press(-1);
-              if (e.key.key == SDLK_PERIOD) radio_press(+1);
-              // V: SwitchCamera (the rig); without the rig, the front view.
-              if (e.key.key == SDLK_V) {
+              const std::string kn = sdl_key_name(e.key.key);
+              if (!race && live_controls.keys.matches(drive::ControlAction::kActivate, kn)) activate_world_trigger();
+              if (live_controls.keys.matches(drive::ControlAction::kReset, kn)) put_back();
+              if (live_controls.keys.matches(drive::ControlAction::kMap, kn)) open_map();
+              if (live_controls.keys.matches(drive::ControlAction::kRadioPrev, kn)) radio_press(-1);
+              if (live_controls.keys.matches(drive::ControlAction::kRadioNext, kn)) radio_press(+1);
+              // SwitchCamera (the rig); without the rig, the front view.
+              if (live_controls.keys.matches(drive::ControlAction::kSwitchCamera, kn)) {
                 if (have_rig) rig.cycle();
                 else front = !front;
               }
@@ -5355,18 +5501,19 @@ int run_drive(int argc, char** argv) {
               }
             }
             if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+              const drive::ControllerLayout pad_layout = drive::default_controller_layout(live_controls.layout_id);
+              const drive::PadControl pc = pad_control_from_button(e.gbutton.button);
+              const std::string_view act = pad_layout.action_for(pc);
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START) open_menu();
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) open_map();
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT) radio_press(-1);
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) radio_press(+1);
-              // The right shoulder is SwitchCamera (SPEC-CAMERAS: the default
-              // layout); in the picker it pages forward. The left one opens
-              // the picker and pages back.
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
-              if (e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+              if (act == "Map") open_map();
+              if (act == "RadioLeft") radio_press(-1);
+              if (act == "RadioRight") radio_press(+1);
+              if (act == "SwitchCamera") {
                 if (picking || !have_rig) browse(1);
                 else rig.cycle();
               }
+              if (picking && e.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) browse(-1);
+              if (picking && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER && act != "SwitchCamera") browse(1);
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(race && race->player_finished())) {
                 if (picking) take_pick();
                 else activate_world_trigger();
@@ -5393,30 +5540,34 @@ int run_drive(int argc, char** argv) {
                 }
           }
           if (!running) break;
-          // Keyboard, then the first gamepad with any input.
+          // Keyboard (rebindable), then the first gamepad with any input
+          // (using the active ControllerLayouts preset and inside/outside deadzones).
           const bool* keys = SDL_GetKeyboardState(nullptr);
           drive::Input in;
-          in.steer = (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D] ? 1.0 : 0.0) -
-                     (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A] ? 1.0 : 0.0);
-          in.throttle = keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W] ? 1.0 : 0.0;
-          in.brake = keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S] ? 1.0 : 0.0;
-          in.handbrake = keys[SDL_SCANCODE_SPACE];
+          in.steer = (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerRight) ? 1.0 : 0.0) -
+                     (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerLeft) ? 1.0 : 0.0);
+          in.throttle = action_key_down(keys, live_controls.keys, drive::ControlAction::kThrottle) ? 1.0 : 0.0;
+          in.brake = action_key_down(keys, live_controls.keys, drive::ControlAction::kBrake) ? 1.0 : 0.0;
+          in.handbrake = action_key_down(keys, live_controls.keys, drive::ControlAction::kHandbrake);
           // Look around: the right stick turns the chase camera up to half a
-          // turn, Y (or C held) looks back.
-          camera_pull.look_target = keys[SDL_SCANCODE_C] ? 3.14159265358979 : 0.0;
+          // turn, LookBack key held looks back.
+          camera_pull.look_target =
+              action_key_down(keys, live_controls.keys, drive::ControlAction::kLookBack) ? 3.14159265358979 : 0.0;
           double rig_look = camera_pull.look_target;
+          const drive::ControllerLayout pad_layout = drive::default_controller_layout(live_controls.layout_id);
+          const auto& dz = live_controls.deadzones;
+          const drive::PadControl gas_ctrl = pad_layout.control_for("Gas");
+          const drive::PadControl brake_ctrl = pad_layout.control_for("Brake");
+          const drive::PadControl hb_ctrl = pad_layout.control_for("Handbrake");
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
-            const double steer = deadzone(axis(SDL_GAMEPAD_AXIS_LEFTX), 0.10, 0.95);
-            const double throttle = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), 0.03, 0.97);
-            const double brake = deadzone(axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER), 0.03, 0.97);
-            const double look = deadzone(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
-            if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) {
-              camera_pull.look_target = 3.14159265358979;
-              rig_look = 3.14159265358979;
-            } else if (look != 0) {
-              camera_pull.look_target = -look * 3.14159265358979;
-            }
+            const double steer =
+                drive::apply_deadzone_signed(axis(SDL_GAMEPAD_AXIS_LEFTX), dz.steering_inside, dz.steering_outside);
+            const double throttle = pad_control_value(pad, gas_ctrl, dz.throttle_inside, dz.throttle_outside);
+            const double brake = pad_control_value(pad, brake_ctrl, dz.brake_inside, dz.brake_outside);
+            const bool handbrake = pad_control_value(pad, hb_ctrl, dz.handbrake_inside, dz.handbrake_outside) > 0.5;
+            const double look = drive::apply_deadzone_signed(axis(SDL_GAMEPAD_AXIS_RIGHTX), 0.20, 0.95);
+            if (look != 0) camera_pull.look_target = -look * 3.14159265358979;
             // The rig's look (SPEC-CAMERAS, Button): the right stick down
             // looks back, left and right to the sides, its click straight back.
             const double lx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ly = axis(SDL_GAMEPAD_AXIS_RIGHTY);
@@ -5424,11 +5575,11 @@ int run_drive(int argc, char** argv) {
               rig_look = 3.14159265358979;
             else if (std::fabs(lx) > 0.5 && std::fabs(lx) >= std::fabs(ly))
               rig_look = (lx > 0 ? 0.5 : -0.5) * 3.14159265358979;
-            if (steer != 0 || throttle > 0 || brake > 0 || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) {
+            if (steer != 0 || throttle > 0 || brake > 0 || handbrake) {
               in.steer = steer;
               in.throttle = throttle;
               in.brake = brake;
-              in.handbrake = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH);
+              in.handbrake = handbrake;
               break;
             }
           }
@@ -5529,11 +5680,12 @@ int run_drive(int argc, char** argv) {
           }
           if (audio_stream) {
             if (engine_sound) {
-              engine_sound->master = sim_paused ? 0.0 : kEngineMaster;
+              engine_sound->master = (sim_paused || !live_sound_enabled) ? 0.0 : kEngineMaster;
               engine_sound->set(sound_inputs(audio_view()));
             }
             if (radio_player) {
-              const bool radio_mute = show_title || menu.open || settings_page.is_open() || map_open;
+              const bool radio_mute =
+                  !live_sound_enabled || !live_radio_enabled || show_title || menu.open || settings_page.is_open() || map_open;
               radio_player->master = radio_mute ? 0.0 : (sim_paused ? 0.25 * kRadioMaster : kRadioMaster);
             }
             const int queued = SDL_GetAudioStreamQueued(audio_stream) / int(2 * sizeof(float));

@@ -163,24 +163,32 @@ regather costs the window about 10 ms.
 `--flat-world` draws the earlier flat colours, `--no-props` leaves the
 placed props out, `--no-far` the far ring, `--no-trees` the tree sprites.
 
-| | Keyboard | Gamepad |
+| | Keyboard (default; rebindable in Settings) | Gamepad (Layout 1; 5 presets in Settings) |
 | --- | --- | --- |
 | Throttle | W or Up | right trigger |
 | Brake (held at a stop: reverse, then it is the throttle) | S or Down | left trigger |
 | Steer | A/D or Left/Right | left stick |
 | Handbrake | Space | A |
+| Clutch / Shift up / Shift down | LeftShift / X / Z | LB / B / X |
+| Rewind | Y | Y |
 | Back on the nearest road | R | |
-| Pause menu: resume, map, change car, reset to road, quit | Esc | Start |
-| In the menu: choose, take, close | Up/Down (W/S), Enter or Space, Esc | D-pad, A, B or Start |
+| Pause menu: resume, map, settings, change car, reset to road, quit | Esc | Start |
+| In the menu / settings: choose, change live, rebind or save, close | Up/Down (W/S), Left/Right (A/D), Enter or Space, Esc | D-pad, A, B or Start |
 | Map (the drive waits): close, zoom, pan | M; M or Esc, + and -, arrows | Back; B, LB and RB, D-pad |
 | Radio station: previous, next (Bass Arena, Pulse, Rocks, off) | , and . | D-pad left, right |
-| Chase or front view | V | |
+| Switch driving camera (low/high chase, cockpit, hood, bumper) | V | RB |
 | Look around | | right stick |
-| Look back (held) | C | Y |
-| Choose another car (shown in the title) | [ and ] | LB and RB |
+| Look back (held) | C | right stick down or click |
+| Choose another car (shown in the title) | [ and ] | LB and RB (in picker) |
 | Drive the chosen car (from where this one stands) | Enter | X |
 | Hide or show the HUD | H | |
 | Traffic's time of day, an hour on or back | T, Shift+T | |
+
+The pause menu's Settings page applies camera, camera effects, gamepad
+rumble (on/off and scale), controller layout presets (1–5), inside/outside
+axis deadzones, keyboard rebinds, audio toggles, difficulty and assist
+toggles live without a restart, and persists them to `settings.txt` and
+the drive save.
 
 The pause menu stops the car and is drawn over the HUD; "change car"
 opens the picker (Esc closes it without a change), "quit" closes the

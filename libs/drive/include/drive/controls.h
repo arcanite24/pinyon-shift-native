@@ -110,6 +110,7 @@ struct AssistSettings {
   bool stability_control = true;
   int shifting = 0;           // 0 Automatic, 1 Manual, 2 Manual + Clutch
   int driving_line = 0;       // 0 Off, 1 Braking Only, 2 Full
+  bool rewind = true;         // Rewind ON/OFF (REWIND.md: OFF adds +20% bonus)
 };
 
 struct ControlSettings {
