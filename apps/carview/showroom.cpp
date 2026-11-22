@@ -356,9 +356,11 @@ Showroom::~Showroom() {
   if (particle_mapped_) vmaUnmapMemory(r_.allocator_, particle_buf_.allocation);
   if (skid_asphalt_mapped_) vmaUnmapMemory(r_.allocator_, skid_asphalt_buf_.allocation);
   if (skid_rut_mapped_) vmaUnmapMemory(r_.allocator_, skid_rut_buf_.allocation);
+  if (debris_mapped_) vmaUnmapMemory(r_.allocator_, debris_buf_.allocation);
   r_.destroy_buffer(particle_buf_);
   r_.destroy_buffer(skid_asphalt_buf_);
   r_.destroy_buffer(skid_rut_buf_);
+  r_.destroy_buffer(debris_buf_);
   r_.destroy_image(particle_atlas_);
   r_.destroy_image(skid_asphalt_tex_);
   r_.destroy_image(skid_rut_tex_);
@@ -1948,6 +1950,7 @@ bool Showroom::upload(std::string& error) {
     r_.mark(cmd, "setup");
     record_world(cmd);
     record_skidmarks_draw(cmd);
+    record_debris_draw(cmd);
     if (draw_car_) record_draws(cmd, opaque_, glass_);
     for (const auto& in : instances_)
       if (in.car) in.car->record_instance(cmd, in.model, in.has_lamps ? &in.lamps : nullptr);
@@ -5280,8 +5283,11 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
       vmaMapMemory(r_.allocator_, skid_asphalt_buf_.allocation, &skid_asphalt_mapped_) != VK_SUCCESS ||
       !r_.create_buffer(VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                         host_flags, skid_rut_buf_) ||
-      vmaMapMemory(r_.allocator_, skid_rut_buf_.allocation, &skid_rut_mapped_) != VK_SUCCESS) {
-    error = "skidmark vertex buffers";
+      vmaMapMemory(r_.allocator_, skid_rut_buf_.allocation, &skid_rut_mapped_) != VK_SUCCESS ||
+      !r_.create_buffer(VkDeviceSize(kMaxDebrisVerts) * sizeof(WorldVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                        host_flags, debris_buf_) ||
+      vmaMapMemory(r_.allocator_, debris_buf_.allocation, &debris_mapped_) != VK_SUCCESS) {
+    error = "skidmark/debris vertex buffers";
     return false;
   }
 
@@ -5658,6 +5664,55 @@ void Showroom::set_skidmarks(const std::vector<world::SkidVertex>& asphalt_tris,
   };
   skid_asphalt_count_ = pack(asphalt_tris, skid_asphalt_mapped_);
   skid_rut_count_ = pack(rut_tris, skid_rut_mapped_);
+}
+
+void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
+  debris_count_ = 0;
+  if (!vfx_ready_ || !debris_mapped_ || tris.empty()) return;
+  const uint32_t n = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)));
+  auto* dst = static_cast<WorldVertex*>(debris_mapped_);
+  auto snorm8 = [](float x) -> int8_t {
+    return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
+  };
+  for (uint32_t i = 0; i < n; ++i) {
+    const auto& v = tris[i];
+    WorldVertex& o = dst[i];
+    o = WorldVertex{};
+    o.position[0] = float(double(v.pos[0]) - world_origin_[0]);
+    o.position[1] = v.pos[1];
+    o.position[2] = float(double(v.pos[2]) - world_origin_[1]);
+    o.normal[0] = snorm8(v.normal[0]);
+    o.normal[1] = snorm8(v.normal[1]);
+    o.normal[2] = snorm8(v.normal[2]);
+    o.normal[3] = 0;
+    for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+  }
+  debris_count_ = n;
+}
+
+void Showroom::record_debris_draw(VkCommandBuffer cmd) {
+  if (!vfx_ready_ || debris_count_ == 0 || !world_opaque_ || !world_white_set_) return;
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+  ShowroomPush pc{};
+  std::memcpy(pc.model, world_transform_, sizeof pc.model);
+  for (int i = 0; i < 3; ++i) {
+    pc.uv0[i] = world_sun_[i];
+    pc.uv1[i] = world_up_[i];
+  }
+  pc.uv0[3] = 2.0f;  // swap = none
+  pc.uv1[3] = world_up_[3];
+  pc.tint[0] = pc.tint[1] = pc.tint[2] = pc.tint[3] = 1.0f;
+  pc.params[0] = 0.0f;       // kOpaque
+  pc.params[1] = 65536.0f;   // kFlagVertexLit
+  pc.params[2] = 0.0f;
+  pc.params[3] = 1.0f;
+  vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                     sizeof pc, &pc);
+  VkDeviceSize zero = 0;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buffer, &zero);
+  vkCmdDraw(cmd, debris_count_, 1, 0, 0);
 }
 
 void Showroom::record_skidmarks_draw(VkCommandBuffer cmd) {

@@ -20,6 +20,28 @@ float placeholder_grip(Surface s) {
 
 namespace {
 
+// Uses exact .fiz collision first, falling back to visual terrain ground only
+// where the .fiz strip terminates (e.g. off-strip dirt yard east of Bugatti barn).
+class FallbackGround final : public drive::Ground {
+ public:
+  FallbackGround(const drive::MeshGround* primary, std::unique_ptr<drive::MeshGround> fallback)
+      : primary_(primary), fallback_(std::move(fallback)) {}
+
+  bool raycast(const drive::Vec3& origin, const drive::Vec3& dir, double max_distance, drive::Hit& hit) const override {
+    if (primary_ && primary_->raycast(origin, dir, max_distance, hit)) return true;
+    // Only fall back for downward wheel/ground probes, never horizontal wall rays.
+    if (fallback_ && dir.y < -0.5 && fallback_->raycast(origin, dir, max_distance, hit)) {
+      if (hit.surface < 0) hit.surface = 1;  // Dirt
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  const drive::MeshGround* primary_ = nullptr;
+  std::unique_ptr<drive::MeshGround> fallback_;
+};
+
 void drop(const Streamer& streamer, Spawn& s) {
   double y = 0;
   if (ground_height(streamer.ground(), s.position[0], s.position[2], s.position[1] + 2, y)) s.position[1] = y + 0.02;
@@ -112,8 +134,8 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
       grip.push_back(placeholder_grip(mesh.surface[t]));
     }
   }
-  g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
   if (collision_) {
+    g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
     std::vector<drive::SurfaceTyre> tyres;
     for (const auto& s : collision_->surfaces()) {
       drive::SurfaceTyre t;
@@ -145,7 +167,28 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
       t.is_hand_of_god = s.is_hand_of_god;
       tyres.push_back(t);
     }
-    g->ground->set_surface_tyres(std::move(tyres));
+    g->ground->set_surface_tyres(tyres);
+    // Build a visual terrain fallback for off-strip .fiz edge aprons (e.g. Bugatti barn east).
+    std::vector<std::array<float, 3>> fb_pos;
+    std::vector<float> fb_grip;
+    std::vector<uint8_t> fb_surf;
+    const auto& mesh = g->mesh;
+    for (size_t t = 0; t < mesh.triangles(); ++t) {
+      if (!mesh.ground[t]) continue;
+      fb_pos.push_back(mesh.positions[t * 3]);
+      fb_pos.push_back(mesh.positions[t * 3 + 1]);
+      fb_pos.push_back(mesh.positions[t * 3 + 2]);
+      fb_grip.push_back(placeholder_grip(mesh.surface[t]));
+      fb_surf.push_back(mesh.surface[t] == Surface::kRoad ? uint8_t(0) : uint8_t(1));
+    }
+    std::unique_ptr<drive::MeshGround> fallback;
+    if (!fb_pos.empty()) {
+      fallback = std::make_unique<drive::MeshGround>(std::move(fb_pos), std::move(fb_grip), std::move(fb_surf));
+      fallback->set_surface_tyres(std::move(tyres));
+    }
+    g->composite_ground = std::make_unique<FallbackGround>(g->ground.get(), std::move(fallback));
+  } else {
+    g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
   }
   if (prepare_) g->prepared = prepare_(g->mesh, x, z);
   g->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -156,6 +199,7 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
 void Streamer::take(Gathered&& g) {
   // Swapped, not moved: `g` leaves with the old gather (the caller frees it).
   std::swap(ground_, g.ground);
+  std::swap(composite_ground_, g.composite_ground);
   std::swap(mesh_, g.mesh);
   stats_ = std::move(g.stats);
   std::swap(collision_mesh_, g.collision);

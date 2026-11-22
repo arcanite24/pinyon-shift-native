@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "drive/vehicle.h"
@@ -89,6 +90,7 @@ class Collision {
   std::unique_ptr<Impl> impl_;
   int route_ = 0;
   fh1::ColIndex index_;
+  std::unordered_set<uint32_t> occupied_cells_;
   std::vector<fh1::SurfaceType> surfaces_;
   std::map<uint32_t, Core> cache_;  // by record position
 };

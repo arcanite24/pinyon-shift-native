@@ -64,6 +64,7 @@
 #include "drive/save.h"
 #include "drive/vehicle.h"
 #include "world/road_follow.h"
+#include "world/smashables.h"
 #include "world/stream.h"
 #include "world/vfx.h"
 #include "world/world.h"
@@ -2583,6 +2584,7 @@ int run_drive(int argc, char** argv) {
   // Particle effects (media/effects.zip, Ribbon_00/ParticleEmitters.xml,
   // SmashableEffects.xml, audio/BackfireTimerConfig.xml), loaded once.
   world::ParticleLibrary vfx_lib;
+  world::SmashableWorld smashables;
   {
     const auto groot = game_root_of();
     if (!groot.empty()) {
@@ -2591,6 +2593,13 @@ int run_drive(int argc, char** argv) {
         std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
                     vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
                     vfx_lib.smashable_effects().size());
+      }
+      std::string sm_err;
+      if (smashables.load(groot / "media", world_dir, &sm_err)) {
+        const auto c = smashables.definitions().counts();
+        std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
+                    c.top_level, c.total_children, smashables.coll_object_types().size(),
+                    smashables.placed_prop_count());
       }
     }
   }
@@ -2874,6 +2883,20 @@ int run_drive(int argc, char** argv) {
               }
               free_roam = std::make_unique<freeroam::FreeRoam>(collectibles, progress);
               gather_options.hidden = hidden_sent = free_roam->hidden();
+              if (!world_dir.empty() && !collectibles.barns.empty()) {
+                std::vector<world::BarnDoorCollider> bspecs;
+                bspecs.reserve(collectibles.barns.size());
+                for (const auto& b : collectibles.barns) {
+                  world::BarnDoorCollider bd;
+                  bd.barn_name = b.name;
+                  bd.closed_coll_id = b.closed_coll_id;
+                  bd.open_coll_id = b.open_coll_id;
+                  bspecs.push_back(std::move(bd));
+                }
+                if (smashables.load_barn_doors(world_dir / "Ribbon_00" / "GameObjs.xml", bspecs) && hidden_sent) {
+                  smashables.sync_barns_from_hidden(*hidden_sent);
+                }
+              }
               std::printf("free roam: %d of %zu signs, %d of %zu barn finds, %.1f km driven\n",
                           free_roam->signs_found(), collectibles.signs.size(), free_roam->barns_found(),
                           collectibles.barns.size(), progress.total_distance / 1000);
@@ -3460,6 +3483,9 @@ int run_drive(int argc, char** argv) {
             const drive::Vec3 vel_s = vehicle.velocity();
             particle_sys.spawn_smashable_burst("flyer", {float(at.x), float(at.y + 0.7), float(at.z)},
                                                {float(vel_s.x), float(vel_s.y + 2.5), float(vel_s.z)});
+            const auto& sign_at = collectibles.signs[size_t(ev.index)].at;
+            smashables.spawn_flyer_shatter({float(sign_at.x), float(sign_at.y), float(sign_at.z)},
+                                           {float(vel_s.x), float(vel_s.y), float(vel_s.z)});
             const int n = free_roam->signs_found();
             std::snprintf(line, sizeof line, "discount sign %d/%zu - upgrades %d percent off", n, collectibles.signs.size(),
                           freeroam::upgrade_discount(n));
@@ -3547,6 +3573,23 @@ int run_drive(int argc, char** argv) {
           }
         }
         const bool smashed_sign = free_roam_step();
+        if (free_roam && free_roam->hidden()) smashables.sync_barns_from_hidden(*free_roam->hidden());
+        bool smashed_prop = smashed_sign;
+        // FORMAT-PHYSICS-DEFINITIONS: step 384-body smashable prop pool & barn doors.
+        if (!bench) {
+          std::vector<world::SmashEvent> sm_events;
+          smashables.step(vehicle, *ground, float(drive::Vehicle::kStep), sm_events);
+          for (const auto& sev : sm_events) {
+            smashed_prop = true;
+            particle_sys.spawn_smashable_burst(sev.prop_stem, sev.pos, sev.impulse_vel);
+            audio::CollisionHit bhit{};
+            bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
+            bhit.pos = {sev.pos[0], sev.pos[1], sev.pos[2]};
+            bhit.is_break = true;
+            audio_host.trigger_collision(bhit);
+            if (sev.object_type_index == 1) audio_host.trigger_ui(audio::UiCue::kSignSmash);
+          }
+        }
         // SPEC-VFX-AND-PARTICLES: step tyre smoke/dust/gravel/sparks/backfire,
         // world ambient emitters, and persistent/fading skidmarks & ruts.
         if (!bench) {
@@ -3665,7 +3708,7 @@ int run_drive(int argc, char** argv) {
           const double mass = std::max(500.0, vehicle.params().mass);
           si.world_impact_ms = vehicle.strongest_body_contact().force * drive::Vehicle::kStep / mass;
           si.car_impact_ms = traffic ? traffic->player_impulse() / mass : 0.0;
-          si.smashed_object = smashed_sign;
+          si.smashed_object = smashed_prop;
           const drive::Vec3 at = vehicle.position();
           auto check_other = [&](double ox, double oz, double ospeed) {
             const double dx = ox - at.x, dz = oz - at.z;
@@ -3901,6 +3944,9 @@ int run_drive(int argc, char** argv) {
           std::vector<world::SkidVertex> asph_tris, rut_tris;
           skid_sys.build_geometry(asph_tris, rut_tris);
           showroom.set_skidmarks(asph_tris, rut_tris);
+          std::vector<world::DebrisVertex> debris_tris;
+          smashables.build_debris_mesh(debris_tris);
+          showroom.set_debris_mesh(debris_tris);
           std::vector<world::ParticleSprite> p_alpha, p_add;
           const drive::Vec3 vpos = vehicle.position();
           particle_sys.build_sprites({float(vpos.x), float(vpos.y + 1.5), float(vpos.z)}, p_alpha, p_add);
@@ -5829,6 +5875,7 @@ int run_drive(int argc, char** argv) {
                 drive::RewindCameraState cs;
                 if (rewind_buf.resume(vehicle, &cs)) {
                   particle_sys.clear();
+                  smashables.clear_debris();
                   skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();

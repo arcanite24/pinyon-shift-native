@@ -81,7 +81,7 @@ const uint kOpaque = 0u, kCoverage = 1u, kAlpha = 2u, kAdditive = 3u;
 const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat = 8u, kFlagVertexFade = 16u,
            kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
            kFlagUnlitVertexColor = 1024u, kFlagLightMap = 2048u, kFlagNormalMap = 4096u, kFlagAoMap = 8192u,
-           kFlagLayerC = 16384u, kFlagWater = 32768u;
+           kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u;
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -363,6 +363,8 @@ void main() {
         t = mix(t, b, v_colour.r);
       }
     }
+  } else if ((flags & kFlagVertexLit) != 0u) {
+    t = vec4(pow(v_colour.rgb, vec3(2.2)), v_colour.a);
   } else {
     t = vec4(draw.tint.rgb, 1.0);
   }

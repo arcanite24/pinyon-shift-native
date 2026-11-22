@@ -145,6 +145,10 @@ add_executable(vfx_tests vfx_tests.cpp)
 target_link_libraries(vfx_tests PRIVATE shift_world)
 add_test(NAME vfx_tests COMMAND vfx_tests)
 
+add_executable(smashables_tests smashables_tests.cpp)
+target_link_libraries(smashables_tests PRIVATE shift_world)
+add_test(NAME smashables_tests COMMAND smashables_tests)
+
 add_executable(lamps_tests lamps_tests.cpp)
 target_link_libraries(lamps_tests PRIVATE shift_drive fh1data)
 add_test(NAME lamps_tests COMMAND lamps_tests)

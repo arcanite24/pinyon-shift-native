@@ -28,6 +28,7 @@
 #include "cars/bake_format.h"
 #include "drive/lamps.h"
 #include "renderer.h"
+#include "world/smashables.h"
 #include "world/tod.h"
 #include "world/vfx.h"
 #include "world/world.h"
@@ -347,6 +348,8 @@ class Showroom {
                      const std::vector<std::string>& used_textures, float near_plane, bool cockpit_camera);
   void set_skidmarks(const std::vector<world::SkidVertex>& asphalt_tris,
                      const std::vector<world::SkidVertex>& rut_tris);
+  // Dynamic lit 3D smashable debris mesh (game frame, rendered via world_opaque_).
+  void set_debris_mesh(const std::vector<world::DebrisVertex>& tris);
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no
@@ -760,7 +763,12 @@ class Showroom {
   void* skid_rut_mapped_ = nullptr;
   uint32_t skid_asphalt_count_ = 0;
   uint32_t skid_rut_count_ = 0;
+  static constexpr uint32_t kMaxDebrisVerts = 384 * 36;  // 384 dynamic bodies * 36 cube verts
+  Renderer::Buffer debris_buf_;
+  void* debris_mapped_ = nullptr;
+  uint32_t debris_count_ = 0;
   void record_skidmarks_draw(VkCommandBuffer cmd);
+  void record_debris_draw(VkCommandBuffer cmd);
   void record_particles_draw(VkCommandBuffer cmd);
   // Living cockpit animation rigs (steering wheel + 5 analog gauge needles).
   struct CockpitRig {

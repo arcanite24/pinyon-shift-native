@@ -24,6 +24,9 @@ bool Collision::open(const fs::path& colorado, const fs::path& physics_zip, std:
   std::vector<uint8_t> bytes;
   if (!ribbon.open(col.parent_path(), error) || !ribbon.read(col.filename().string(), bytes, error)) return false;
   if (!fh1::parse_col(bytes, index_, error)) return false;
+  occupied_cells_.clear();
+  occupied_cells_.reserve(index_.records.size());
+  for (const auto& rec : index_.records) occupied_cells_.insert(rec.cell);
   cache_.clear();
 
   surfaces_.clear();
@@ -90,12 +93,32 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
       uint16_t mask = 0x8000;
       for (size_t e = 0; e < tile.routes.size(); ++e)
         if (int(tile.routes[e]) == route_) mask |= uint16_t(1u << e);
+      const double cell_x0 = index_.x0 + double(i) * s, cell_z0 = index_.z0 + double(j) * s;
+      const double cell_x1 = cell_x0 + s, cell_z1 = cell_z0 + s;
+      auto centroid_owned_elsewhere = [&](double cx, double cz) {
+        if (cx < index_.x0 || cz < index_.z0) return false;
+        const int ci = int(std::floor((cx - index_.x0) / s));
+        const int cj = int(std::floor((cz - index_.z0) / s));
+        if (ci < 0 || cj < 0 || uint32_t(ci) >= index_.width || uint32_t(cj) >= index_.height) return false;
+        const uint32_t cidx = uint32_t(cj) * index_.width + uint32_t(ci);
+        return occupied_cells_.find(cidx) != occupied_cells_.end();
+      };
       for (const auto& t : tile.triangles) {
         const auto& a = tile.vertices[t.v[0]];
         const auto& b = tile.vertices[t.v[1]];
         const auto& c = tile.vertices[t.v[2]];
         const double cx = (double(a[0]) + b[0] + c[0]) / 3, cz = (double(a[2]) + b[2] + c[2]) / 3;
-        if (!in_cell(r, cx, cz)) continue;
+        if (!in_cell(r, cx, cz)) {
+          // Keep large boundary triangles whose centroid overhangs into an empty
+          // lattice cell (e.g. 1782.fiz triangle 0 covering flyer_053) when the
+          // triangle's XZ extent actually overlaps this tile's 100 m cell.
+          if (centroid_owned_elsewhere(cx, cz)) continue;
+          const double min_x = std::min({double(a[0]), double(b[0]), double(c[0])});
+          const double max_x = std::max({double(a[0]), double(b[0]), double(c[0])});
+          const double min_z = std::min({double(a[2]), double(b[2]), double(c[2])});
+          const double max_z = std::max({double(a[2]), double(b[2]), double(c[2])});
+          if (max_x < cell_x0 || min_x > cell_x1 || max_z < cell_z0 || min_z > cell_z1) continue;
+        }
         core.positions.push_back(a);
         core.positions.push_back(b);
         core.positions.push_back(c);

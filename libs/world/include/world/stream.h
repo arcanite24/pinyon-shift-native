@@ -60,7 +60,7 @@ class Streamer {
   // Seconds the last gather took (on whichever thread ran it).
   double last_gather_seconds() const { return last_seconds_; }
   const Mesh& mesh() const { return mesh_; }
-  const drive::Ground& ground() const { return *ground_; }
+  const drive::Ground& ground() const { return composite_ground_ ? *composite_ground_ : static_cast<const drive::Ground&>(*ground_); }
   const drive::MeshGround& mesh_ground() const { return *ground_; }
   const GatherStats& stats() const { return stats_; }
   // The collision triangles of the last gather (empty without a Collision).
@@ -81,6 +81,7 @@ class Streamer {
     GatherStats stats;
     CollisionMesh collision;
     std::unique_ptr<drive::MeshGround> ground;
+    std::unique_ptr<drive::Ground> composite_ground;
     std::vector<uint32_t> ground_source;
     std::any prepared;
     double x = 0, z = 0, seconds = 0;
@@ -104,6 +105,7 @@ class Streamer {
   Mesh mesh_;
   GatherStats stats_;
   std::unique_ptr<drive::MeshGround> ground_;
+  std::unique_ptr<drive::Ground> composite_ground_;
   bool async_ = false;
   Prepare prepare_;
   std::any prepared_;
