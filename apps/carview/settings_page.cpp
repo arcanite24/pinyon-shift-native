@@ -40,6 +40,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"rubber-banding", {{"on", {}}, {"off", {"--no-rubberband"}}}},
       {"traffic", {{"on", {}}, {"off", {"--no-traffic"}}}},
       {"collectibles", {{"on", {}}, {"off", {"--no-collectibles"}}}},
+      {"treasure map", {{"off", {}}, {"on", {"--treasure-map"}}}},
       {"radio", {{"on", {}}, {"off", {"--no-radio"}}}},
       {"sound", {{"on", {}}, {"off", {"--no-sound"}}}},
       {"satnav", {{"on", {}}, {"off", {"--no-satnav"}}}},
@@ -192,7 +193,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
         else if (w.size() == 2 && has_value) owned = true;  // a value no choice names: the row keeps its pick
       }
     if (!owned && (t == "--traffic" || t == "--rumble" || t == "--camera-effects" ||
-                   t == "--motion-blur" || t == "--dof" || t == "--satnav")) owned = true;
+                   t == "--motion-blur" || t == "--dof" || t == "--satnav" || t == "--no-treasure-map")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -286,6 +287,7 @@ LiveSettings SettingsPage::live_settings() const {
   ls.radio = pick_label("radio") != "off";
   ls.sound = pick_label("sound") != "off";
   ls.satnav = pick_label("satnav") != "off";
+  ls.treasure_map = pick_label("treasure map") == "on";
   ls.motion_blur = pick_label("motion blur") != "off";
   ls.dof = pick_label("depth of field") != "off";
 

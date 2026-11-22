@@ -93,6 +93,13 @@ struct DriveSave {
   bool radio_dj = true;
   double radio_volume = 1.0;
   bool satnav_enabled = true;
+  bool treasure_map = false;
+  // Roads Discovered (CRoadDiscovery bitset: node_count + ceil(node_count/32) words).
+  uint32_t road_discovery_nodes = 0;
+  std::vector<uint32_t> road_discovery_words;
+  // Discovered Festival Outposts (GasStation_01..10) & completed PR Stunts.
+  std::vector<std::string> discovered_outposts;
+  std::vector<std::string> completed_pr_stunts;
   int num_races = 0, num_victories = 0, num_podiums = 0;
   double time_festival = 0, time_street = 0, time_exhibition = 0, top_speed = 0;
   std::vector<std::pair<int64_t, int>> race_results, event_results;

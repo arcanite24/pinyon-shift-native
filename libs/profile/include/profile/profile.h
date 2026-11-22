@@ -112,6 +112,13 @@ struct Imported {
   std::vector<Sign> signs;
   std::vector<Barn> barns;
   std::vector<ClubCar> club;
+  // CRoadDiscovery (Colorado): node count + ceil(node_count/32) uint32 words.
+  uint32_t road_discovery_nodes = 0;
+  std::vector<uint32_t> road_discovery_words;
+  // CGasStationState & CMissionState (Colorado).
+  std::vector<std::string> outposts_discovered;
+  std::vector<std::string> pr_stunts_completed;
+  bool satnav_on = true;
   // PlayerDatabase.
   std::vector<GarageCar> garage;
   std::vector<PurchasedPart> parts;

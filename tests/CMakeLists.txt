@@ -163,6 +163,11 @@ target_include_directories(gps_tests PRIVATE ../apps/carview)
 target_link_libraries(gps_tests PRIVATE shift_traffic shift_audio shift_drive)
 add_test(NAME gps_tests COMMAND gps_tests)
 
+add_executable(road_discovery_tests road_discovery_tests.cpp ../apps/carview/map_view.cpp ../apps/carview/settings_page.cpp)
+target_include_directories(road_discovery_tests PRIVATE ../apps/carview)
+target_link_libraries(road_discovery_tests PRIVATE shift_freeroam shift_traffic shift_profile shift_drive fh1data shift_audio)
+add_test(NAME road_discovery_tests COMMAND road_discovery_tests)
+
 if(SHIFT_BUILD_CARVIEW)
   add_executable(showroom_vram_tests showroom_vram_tests.cpp)
   target_link_libraries(showroom_vram_tests PRIVATE carview_render)

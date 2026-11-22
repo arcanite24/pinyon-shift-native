@@ -128,7 +128,8 @@ struct GpsHud {
   double dist_to_dest_m = 0;
 };
 
-// Interactive Pause Map overlay card (hovered destination info + help bar).
+// Interactive Pause Map overlay card (hovered destination info, filter tabs,
+// roads discovered counter, and legend/help bar).
 struct MapOverlayHud {
   bool active = false;
   std::string title;
@@ -137,6 +138,12 @@ struct MapOverlayHud {
   std::string gps_hint;     // e.g. "SET GPS ROUTE", "CLEAR GPS"
   bool gps_active = false;
   double distance_m = -1;
+  int active_filter = 0;
+  std::vector<std::string> filter_tabs;
+  int roads_discovered = 0;
+  int roads_total = 216;
+  double zoom = 1.0;
+  bool treasure_map = false;
 };
 
 // The career page's board (right of the career page list).
@@ -146,6 +153,9 @@ struct CareerBoard {
   int64_t credits = 0, winnings = 0;
   int races = 0, wins = 0, podiums = 0, garage = 0;
   int signs = 0, signs_total = 100, barns = 0, barns_total = 0;
+  int roads = 0, roads_total = 216;
+  int outposts = 0, outposts_total = 0;
+  int pr_stunts = 0, pr_stunts_total = 0;
   int club_cars = 0, club_done = 0, club_total = 0;
   int popularity_rank = 250;
   int64_t max_skills = 0;

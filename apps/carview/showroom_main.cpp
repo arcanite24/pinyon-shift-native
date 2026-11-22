@@ -79,6 +79,7 @@
 #include "fh1data/xds.h"
 #include "freeroam/club.h"
 #include "freeroam/collectibles.h"
+#include "freeroam/road_discovery.h"
 #include "freeroam/skills.h"
 #include "race/career.h"
 #include "profile/drive_save.h"
@@ -1565,7 +1566,7 @@ int run_drive(int argc, char** argv) {
   // --no-collectibles or --bench (a smash regathers); --reveal shows the
   // unfound ones on the map; --distance adds metres to the total driven;
   // --map-png writes the pause map and the minimap at the end.
-  bool collectibles_on = true, reveal = false;
+  bool collectibles_on = true, reveal = false, treasure_map_setting = false;
   bool has_cli_gps = false;
   double cli_gps_x = 0.0, cli_gps_z = 0.0;
   double seed_distance = 0;
@@ -1716,6 +1717,10 @@ int run_drive(int argc, char** argv) {
       collectibles_on = false;
     } else if (a == "--reveal") {
       reveal = true;
+    } else if (a == "--treasure-map") {
+      treasure_map_setting = true;
+    } else if (a == "--no-treasure-map") {
+      treasure_map_setting = false;
     } else if (a == "--gps-to" && i + 2 < args.size()) {
       cli_gps_x = std::atof(args[++i].c_str());
       cli_gps_z = std::atof(args[++i].c_str());
@@ -2563,6 +2568,7 @@ int run_drive(int argc, char** argv) {
   bool map_tried = false;
   traffic::GpsSolver gps_solver;
   traffic::GpsNavigator gps_nav(&gps_solver);
+  freeroam::RoadDiscovery road_discovery;
   bool cli_gps_applied = false;
   // The audio host (dedicated render thread, mixer, radio, Your Music)
   // outlives car changes so the radio stations keep playing.
@@ -2573,6 +2579,7 @@ int run_drive(int argc, char** argv) {
     if (std::fabs(audio_cfg.radio_volume - 1.0f) < 1e-4f && std::fabs(saved.radio_volume - 1.0) > 1e-4)
       audio_cfg.radio_volume = float(saved.radio_volume);
     if (audio_cfg.satnav_on && !saved.satnav_enabled) audio_cfg.satnav_on = false;
+    if (saved.treasure_map) treasure_map_setting = true;
   }
   const std::filesystem::path user_music_dir =
       !state_root.empty() ? (state_root / "music")
@@ -2938,6 +2945,13 @@ int run_drive(int argc, char** argv) {
               traffic::NavMap nav_for_gps;
               if (traffic::read_nav(game_root / "media" / "tracks" / "colorado" / "colorado.nav", nav_for_gps, nullptr)) {
                 gps_solver.build(nav_for_gps);
+                if (road_discovery.build(nav_for_gps) && have_saved && !saved.road_discovery_words.empty()) {
+                  road_discovery.load_words(saved.road_discovery_nodes, saved.road_discovery_words);
+                }
+                if (road_discovery.ready()) {
+                  std::printf("roads discovered: %d / %d\n", road_discovery.discovered_count(),
+                              road_discovery.total_roads());
+                }
               }
             }
             if (has_cli_gps && !cli_gps_applied && gps_solver.ready()) {
@@ -3568,11 +3582,25 @@ int run_drive(int argc, char** argv) {
       // One free-roam step: the rules, then their notices and the props
       // they hide.
       auto free_roam_step = [&]() -> bool {
-        if (!race && gps_nav.active()) {
+        if (!race) {
           const drive::Vec3 at = vehicle.position();
-          const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
-          const double hdg = std::atan2(f.x, f.z);
-          fire_satnav_event(gps_nav.update(at.x, at.z, hdg, std::fabs(vehicle.speed()), drive::Vehicle::kStep));
+          if (gps_nav.active()) {
+            const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            const double hdg = std::atan2(f.x, f.z);
+            fire_satnav_event(gps_nav.update(at.x, at.z, hdg, std::fabs(vehicle.speed()), drive::Vehicle::kStep));
+          }
+          if (road_discovery.ready()) {
+            for (const auto& rev : road_discovery.update(at.x, at.z)) {
+              char rb[96];
+              std::snprintf(rb, sizeof rb, "ROAD DISCOVERED  %d / %d", rev.discovered_count, rev.total_count);
+              std::string rname = rev.road_name;
+              for (char& ch : rname) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+              popup = {rb, rname, vehicle.time(), double(rev.discovered_count) / double(std::max(1, rev.total_count)),
+                       carview::ui::rgba(74, 238, 97)};
+              audio_host.trigger_ui(audio::UiCue::kSkillAward);
+              save_due = true;
+            }
+          }
         }
         if (!free_roam) return false;
         freeroam::CarState cs;
@@ -4171,6 +4199,14 @@ int run_drive(int argc, char** argv) {
         s.fame_rewards_claimed = skill_tracker ? skill_tracker->fame_rewards_claimed() : (have_saved ? saved.fame_rewards_claimed : 0);
         s.difficulty = int(race_options.difficulty);
         audio_host.save_radio_state(s);
+        s.treasure_map = treasure_map_setting;
+        if (road_discovery.ready()) {
+          s.road_discovery_nodes = road_discovery.node_count();
+          s.road_discovery_words = road_discovery.words();
+        } else if (have_saved) {
+          s.road_discovery_nodes = saved.road_discovery_nodes;
+          s.road_discovery_words = saved.road_discovery_words;
+        }
         if (have_saved) s.carry_from(saved);
         s.club = saved.club;
         s.has_controls = true;
@@ -4536,7 +4572,14 @@ int run_drive(int argc, char** argv) {
         d.menu = st.menu;
         d.menu_selected = st.menu_selected;
         carview::CareerBoard board;
-        if (career_page.is_open()) board = career_board(career_page), d.career = &board;
+        if (career_page.is_open()) {
+          board = career_board(career_page);
+          if (road_discovery.ready()) {
+            board.roads = road_discovery.discovered_count();
+            board.roads_total = road_discovery.total_roads();
+          }
+          d.career = &board;
+        }
         carview::ui::List list;
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, and grid menu.
         if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
@@ -4617,9 +4660,15 @@ int run_drive(int argc, char** argv) {
         sc.x = at.x;
         sc.z = at.z;
         sc.heading = std::atan2(f.x, f.z);
+        sc.speed_mps = std::fabs(vehicle.speed());
         sc.data = progress_loaded ? &collectibles : nullptr;
         sc.progress = progress_loaded ? &progress : nullptr;
-        sc.reveal = reveal;
+        sc.road_discovery = road_discovery.ready() ? &road_discovery : nullptr;
+        sc.reveal = reveal || treasure_map_setting;
+        if (traffic && traffic->cars()) {
+          sc.traffic.reserve(traffic->cars()->size());
+          for (const auto& tc : *traffic->cars()) sc.traffic.push_back({tc.position.x, tc.position.z});
+        }
         if (race) {
           race->opponent_positions(sc.opponents), race->route_near(sc.route);
         } else {
@@ -5311,17 +5360,38 @@ int run_drive(int argc, char** argv) {
         };
         // The pause map: M, or the pause menu's item; the drive waits while
         // it is open.
-        bool map_open = false, map_dirty = false;
+        bool map_open = false, map_dirty = false, map_dragging = false;
         double map_zoom = 2, map_cx = 0, map_cz = 0;
+        MapFilter map_filter = MapFilter::kAll;
         int map_w = 0, map_h = 0;
+        auto map_marker_visible = [&](const MapMarker& m) -> bool {
+          switch (map_filter) {
+            case MapFilter::kAll: return true;
+            case MapFilter::kEvents: return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite;
+            case MapFilter::kStreetRaces: return m.kind == MapMarker::kStreetHub || m.icon_tag == "streetrace";
+            case MapFilter::kOutposts: return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
+            case MapFilter::kCollectibles: return false;
+            case MapFilter::kPrStunts: return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost;
+            default: return true;
+          }
+        };
         auto update_map_selection = [&]() {
           map_selected_marker = -1;
           map_overlay = carview::MapOverlayHud{};
           if (!map_open) return;
           map_overlay.active = true;
+          map_overlay.active_filter = int(map_filter);
+          map_overlay.filter_tabs.clear();
+          for (int fi = 0; fi < int(MapFilter::kCount); ++fi)
+            map_overlay.filter_tabs.push_back(map_filter_name(MapFilter(fi)));
+          map_overlay.roads_discovered = road_discovery.ready() ? road_discovery.discovered_count() : 0;
+          map_overlay.roads_total = road_discovery.ready() ? road_discovery.total_roads() : 216;
+          map_overlay.zoom = map_zoom;
+          map_overlay.treasure_map = reveal || treasure_map_setting;
           const double snap_r = 280.0 / std::max(0.5, map_zoom);
           double best_d = snap_r;
           for (size_t i = 0; i < cached_map_markers.size(); ++i) {
+            if (!map_marker_visible(cached_map_markers[i])) continue;
             const double d = std::hypot(cached_map_markers[i].x - map_cx, cached_map_markers[i].z - map_cz);
             if (d < best_d) best_d = d, map_selected_marker = int(i);
           }
@@ -5707,12 +5777,36 @@ int run_drive(int argc, char** argv) {
                   map_dirty = true;
                   update_map_selection();
                 }
-                if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.5);
-                if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.5);
-                if (k == SDLK_LEFT || k == SDLK_A) pan_by(-pan, 0);
-                if (k == SDLK_RIGHT || k == SDLK_D) pan_by(pan, 0);
-                if (k == SDLK_UP || k == SDLK_W) pan_by(0, pan);
-                if (k == SDLK_DOWN || k == SDLK_S) pan_by(0, -pan);
+                if (k == SDLK_EQUALS || k == SDLK_PLUS || k == SDLK_KP_PLUS) zoom_by(1.35);
+                if (k == SDLK_MINUS || k == SDLK_KP_MINUS) zoom_by(1 / 1.35);
+                if (!e.key.repeat && k == SDLK_Q) {
+                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_dirty = true;
+                  update_map_selection();
+                }
+                if (!e.key.repeat && (k == SDLK_E || k == SDLK_TAB)) {
+                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_dirty = true;
+                  update_map_selection();
+                }
+                if (k == SDLK_LEFT || k == SDLK_A) pan_by(-pan * 0.45, 0);
+                if (k == SDLK_RIGHT || k == SDLK_D) pan_by(pan * 0.45, 0);
+                if (k == SDLK_UP || k == SDLK_W) pan_by(0, pan * 0.45);
+                if (k == SDLK_DOWN || k == SDLK_S) pan_by(0, -pan * 0.45);
+              }
+              if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                if (e.wheel.y > 0) zoom_by(1.22);
+                else if (e.wheel.y < 0) zoom_by(1.0 / 1.22);
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
+                map_dragging = true;
+              }
+              if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
+                map_dragging = false;
+              }
+              if (e.type == SDL_EVENT_MOUSE_MOTION && map_dragging && map_w > 64 && map_h > 64) {
+                const double mpp = std::max(freeroam::kMapWidth / map_w, freeroam::kMapHeight / map_h) / map_zoom;
+                pan_by(-double(e.motion.xrel) * mpp, double(e.motion.yrel) * mpp);
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
@@ -5726,14 +5820,25 @@ int run_drive(int argc, char** argv) {
                   map_dirty = true;
                   update_map_selection();
                 }
-                if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) zoom_by(1.5);
-                if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) zoom_by(1 / 1.5);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pan_by(-pan, 0);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) pan_by(pan, 0);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) pan_by(0, pan);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pan_by(0, -pan);
+                if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) {
+                  map_filter = MapFilter((int(map_filter) + int(MapFilter::kCount) - 1) % int(MapFilter::kCount));
+                  map_dirty = true;
+                  update_map_selection();
+                }
+                if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
+                  map_filter = MapFilter((int(map_filter) + 1) % int(MapFilter::kCount));
+                  map_dirty = true;
+                  update_map_selection();
+                }
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pan_by(-pan * 0.45, 0);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) pan_by(pan * 0.45, 0);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) pan_by(0, pan * 0.45);
+                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pan_by(0, -pan * 0.45);
               }
-              if (close) close_map();
+              if (close) {
+                map_dragging = false;
+                close_map();
+              }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
             // 5. Race Central / Events / Street Hub browser.
@@ -5990,6 +6095,7 @@ int run_drive(int argc, char** argv) {
                 race_options.rubberband = ls.rubberband;
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
+                treasure_map_setting = ls.treasure_map;
                 live_motion_blur = ls.motion_blur;
                 live_dof = ls.dof;
                 audio_host.apply_config(carview::AudioConfig::from_tokens(settings_page.tokens()), user_music_dir);
@@ -6757,19 +6863,38 @@ int run_drive(int argc, char** argv) {
           }
 
           if (map_open) {
+            // Smooth analog-stick panning and trigger zooming on the fullscreen map.
+            for (SDL_Gamepad* pad : pads) {
+              const double sx = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0, 0.18, 0.95);
+              const double sy = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0, 0.18, 0.95);
+              const double z_in = std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0);
+              const double z_out = std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0);
+              if (std::fabs(sx) > 0.01 || std::fabs(sy) > 0.01) {
+                const double speed = (3600.0 / map_zoom) * std::clamp(frame_dt, 0.001, 0.05);
+                map_cx += sx * speed;
+                map_cz -= sy * speed;
+                map_dirty = true;
+              }
+              if (z_in > 0.08 || z_out > 0.08) {
+                const double zf = std::pow(2.4, (z_in - z_out) * std::clamp(frame_dt, 0.001, 0.05));
+                map_zoom = std::clamp(map_zoom * zf, 1.0, 24.0);
+                map_dirty = true;
+              }
+            }
             if (w != map_w || h != map_h) map_dirty = true;
             if (map_dirty && w > 64 && h > 64) {
               map_dirty = false;
               map_w = w, map_h = h;
               const int m = std::max(16, h / 30);
               MapScene ms = map_scene();
+              ms.filter = map_filter;
               cached_map_markers = ms.markers;
               update_map_selection();
               ms.selected_marker = map_selected_marker;
               HudImage img = map_view.pause_map(ms, w - 2 * m, h - 2 * m, map_zoom, map_cx, map_cz);
               renderer.set_overlay(std::move(img.rgba), img.width, img.height, m, m, 2);
             }
-            set_hud(w, h, "", nullptr);  // draws MapOverlayHud (hovered card + help bar) on UI layer!
+            set_hud(w, h, "", nullptr);  // draws MapOverlayHud (hovered card, filters, roads counter & help bar) on UI layer!
           } else if (show_hud || show_title || ceremony.active) {
             set_minimap(h, false);
             char line[160] = "";

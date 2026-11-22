@@ -23,41 +23,69 @@
 #include <vector>
 
 #include "freeroam/collectibles.h"
+#include "freeroam/road_discovery.h"
 #include "hud.h"
 
 namespace carview {
 
+enum class MapFilter : int {
+  kAll = 0,
+  kEvents,
+  kStreetRaces,
+  kOutposts,
+  kCollectibles,
+  kPrStunts,
+  kCount
+};
+
+inline const char* map_filter_name(MapFilter f) {
+  switch (f) {
+    case MapFilter::kAll: return "ALL";
+    case MapFilter::kEvents: return "EVENTS";
+    case MapFilter::kStreetRaces: return "STREET";
+    case MapFilter::kOutposts: return "OUTPOSTS";
+    case MapFilter::kCollectibles: return "COLLECTIBLES";
+    case MapFilter::kPrStunts: return "PR STUNTS";
+    default: return "ALL";
+  }
+}
+
 struct MapMarker {
-  enum Kind { kEvent, kStreetHub, kFestivalSite };
+  enum Kind { kEvent, kStreetHub, kFestivalSite, kOutpost, kPrStunt };
   Kind kind = kEvent;
-  std::string icon_tag;  // MapProfile key: race, exhibition, streetrace, nemesisrace, racecentral, autoshow, workshop, paintshop
-  std::string id;        // HorizonEventID, hub id, or site name
+  std::string icon_tag;  // MapProfile key: race, exhibition, streetrace, nemesisrace, racecentral, autoshow, workshop, paintshop, gas_station, ...
+  std::string id;        // HorizonEventID, hub id, site name, outpost id, or stunt id
   std::string title;
   std::string subtitle;
   double x = 0, z = 0;
   bool is_new = false;
   bool completed = false;
-  int site_or_hub = 0;  // FestivalSite::Kind or StreetHub::id
+  bool discovered = true;  // false for undiscovered outposts
+  int site_or_hub = 0;  // FestivalSite::Kind, StreetHub::id, or Outpost index
 };
 
 struct MapScene {
   double x = 0, z = 0;  // the player, game frame
   double heading = 0;   // rad, 0 faces +z (north), positive turns towards +x (east)
+  double speed_mps = 0; // player speed (m/s) for dynamic minimap zoom
   const freeroam::Collectibles* data = nullptr;
   const freeroam::Progress* progress = nullptr;
+  const freeroam::RoadDiscovery* road_discovery = nullptr;
   // Unfound signs and barns' exact places on the map (the game's Treasure
   // Map, or its collectibles cheat); found ones and rumours always show.
   bool reveal = false;
-  // A race's opponents (x, z), drawn as dots (ours: the profiles' opponent
-  // icon is not mapped yet).
+  MapFilter filter = MapFilter::kAll;
+  // A race's opponents (x, z), drawn as dots.
   std::vector<std::array<double, 2>> opponents;
+  // Free-roam traffic vehicles (x, z), drawn as subtle car dots on the minimap.
+  std::vector<std::array<double, 2>> traffic;
   // A race's route ahead (x, z), drawn green on the minimap (SPEC-UI-LAYOUTS a).
   std::vector<std::array<double, 2>> route;
   // Active free-roam GPS route (x, z) and destination point.
   std::vector<std::array<double, 2>> gps_route;
   bool has_gps_dest = false;
   double gps_dest_x = 0, gps_dest_z = 0;
-  // Unlocked career events, Street Hubs, and Festival sites.
+  // Unlocked career events, Street Hubs, Festival sites, Outposts & PR Stunts.
   std::vector<MapMarker> markers;
   int selected_marker = -1;  // highlighted marker on pause map (-1: none)
 };
@@ -99,9 +127,16 @@ class MapView {
     std::vector<uint8_t> rgba;
   };
 
+  // Returns how many of the 15 high-res map tiles are currently cached in RAM.
+  int loaded_high_tiles() const;
+
  private:
+  void ensure_high_tiles(int c0, int c1, int r0, int r1) const;
+  bool sample_high_pixel(int px, int py, uint8_t out_rgb[3]) const;
+
   struct Road {
     int style = 0;  // index into kRoadTypes
+    std::vector<uint32_t> nodes;  // colorado.nav node indices
     std::vector<std::array<double, 2>> points;
   };
   std::vector<Road> roads_;
@@ -111,6 +146,10 @@ class MapView {
   std::vector<std::vector<std::pair<uint32_t, uint32_t>>> grid_;
   Profile mini_, full_;
   Atlas small_icons_, large_icons_, background_;
+  std::filesystem::path horizon_zip_path_;
+  static constexpr int kHighCols = 5, kHighRows = 3, kHighTileSize = 1024;
+  mutable std::array<Atlas, 15> high_tiles_{};
+  mutable std::array<uint8_t, 15> high_tile_state_{};  // 0 unloaded, 1 loaded, 2 failed
 };
 
 }  // namespace carview

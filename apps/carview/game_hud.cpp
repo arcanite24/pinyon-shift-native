@@ -1409,12 +1409,14 @@ void ceremony_overlay(ui::List& l, const CeremonyHud& c, const Layout& g) {
   help_item(l, g, 70, 196, 653, 689, "A", kGreen, str("HelpButtons", "IDS_ContinueMenu", "CONTINUE"));
 }
 
-// (j) Interactive Pause Map HUD overlay (hovered destination card + help bar).
+// (j) Interactive Pause Map HUD overlay (hovered destination card, filter tabs,
+// roads discovered counter, and legend/help bar).
 void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g) {
   const float s = g.s;
+  // Top-left destination info card.
   if (!mo.title.empty()) {
-    const float x0 = g.L(48), y0 = g.T(44), x1 = g.L(470), y1 = g.T(142);
-    panel(l, x0, y0, x1, y1, s, rgba(10, 12, 18, 225));
+    const float x0 = g.L(48), y0 = g.T(44), x1 = g.L(462), y1 = g.T(142);
+    panel(l, x0, y0, x1, y1, s, rgba(10, 12, 18, 228));
     l.rect(x0, y0, x1, y0 + 5 * s, kPink);
     TextStyle ts = font(ui::Font::kE, 24 * s, kText);
     fit(mo.title, ts, x1 - x0 - 32 * s, 12 * s);
@@ -1431,9 +1433,48 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g) {
       l.text(x0 + 16 * s, y0 + 72 * s, db, font(ui::Font::kB, 13 * s, rgba(247, 255, 38)));
     }
   }
+
+  // Top-right category filter tab strip.
+  if (!mo.filter_tabs.empty()) {
+    const int n = int(mo.filter_tabs.size());
+    const float tab_w = 108 * s, gap = 6 * s, total_w = n * tab_w + (n - 1) * gap;
+    const float x_start = g.R(1232) - total_w, y0 = g.T(44), y1 = g.T(76);
+    for (int i = 0; i < n; ++i) {
+      const float tx0 = x_start + i * (tab_w + gap), tx1 = tx0 + tab_w;
+      const bool active = i == mo.active_filter;
+      l.rect(tx0, y0, tx1, y1, active ? kPink : rgba(12, 15, 22, 220), 4 * s);
+      TextStyle fs = font(ui::Font::kB, 11.5f * s, active ? kText : kDim, Align::kCenter);
+      fit(mo.filter_tabs[size_t(i)], fs, tab_w - 10 * s, 8 * s);
+      l.text(0.5f * (tx0 + tx1), y0 + 9 * s, mo.filter_tabs[size_t(i)], fs);
+    }
+    // Roads Discovered + High-Res / Treasure Map status pill right under the tabs.
+    const float sy0 = g.T(84), sy1 = g.T(116), sx0 = g.R(1232) - 312 * s, sx1 = g.R(1232);
+    panel(l, sx0, sy0, sx1, sy1, s, rgba(10, 12, 18, 222));
+    char rb[96];
+    std::snprintf(rb, sizeof rb, "ROADS DISCOVERED  %d / %d", mo.roads_discovered, mo.roads_total);
+    l.text(sx0 + 14 * s, sy0 + 9 * s, rb, font(ui::Font::kB, 12 * s, kText));
+    if (mo.zoom >= 2.0) {
+      l.text(sx1 - 12 * s, sy0 + 9 * s, "HD", font(ui::Font::kE, 12 * s, rgba(74, 238, 97), Align::kRight));
+    }
+    if (mo.treasure_map) {
+      const float ty0 = g.T(122), ty1 = g.T(146);
+      l.rect(sx1 - 166 * s, ty0, sx1, ty1, rgba(255, 186, 20, 215), 4 * s);
+      l.text(sx1 - 83 * s, ty0 + 5 * s, "TREASURE MAP ON", font(ui::Font::kB, 10.5f * s, kInk, Align::kCenter));
+    }
+  }
+
+  // Bottom legend & help bar.
+  l.rect(g.L(44), g.B(648), g.R(1236), g.B(694), rgba(8, 10, 14, 220), 6 * s);
   help_item(l, g, 52, 232, 654, 688, "A", kGreen, mo.action_hint.empty() ? "FAST TRAVEL" : mo.action_hint);
-  help_item(l, g, 238, 428, 654, 688, "X", kBlue, mo.gps_hint.empty() ? "SET GPS ROUTE" : mo.gps_hint);
-  help_item(l, g, 434, 548, 654, 688, "B", kRed, str("HelpButtons", "IDS_Back", "BACK"));
+  help_item(l, g, 238, 434, 654, 688, "X", kBlue, mo.gps_hint.empty() ? "SET GPS ROUTE" : mo.gps_hint);
+  help_item(l, g, 440, 620, 654, 688, "Q/E", kPink, "FILTER");
+  help_item(l, g, 626, 816, 654, 688, "+/-", kAccent, "ZOOM / DRAG PAN");
+  help_item(l, g, 822, 956, 654, 688, "B", kRed, str("HelpButtons", "IDS_Back", "BACK"));
+  // Road shading legend on far right of the bottom bar.
+  l.rect(g.R(1000), g.B(667), g.R(1022), g.B(673), rgba(220, 220, 220));
+  l.text(g.R(1028), g.B(663), "DRIVEN", font(ui::Font::kB, 10.5f * s, kText));
+  l.rect(g.R(1096), g.B(667), g.R(1118), g.B(673), rgba(94, 96, 102));
+  l.text(g.R(1124), g.B(663), "UNDRIVEN", font(ui::Font::kB, 10.5f * s, kDim));
 }
 
 // (j2) Free-roam GPS turn-by-turn guidance pill above the minimap.
@@ -1571,12 +1612,13 @@ void career_board(ui::List& l, const CareerBoard& c, float w, float h, float s) 
             "GARAGE", s);
   y += th + 16 * s;
   // Collections.
-  const float rows = c.rally ? 5.f : 4.f;
-  const float rh = 40 * s, ph = 24 * s + rows * rh;
-  if (y + ph > h - 30 * s) return;
+  const float rows = c.rally ? 6.f : 5.f;
+  const float rh = 38 * s, ph = 24 * s + rows * rh;
+  if (y + ph > h - 24 * s) return;
   panel(l, x0, y, x1, y + ph, s, rgba(10, 12, 17, 190));
   const float rx0 = x0 + 24 * s, rx1 = x1 - 24 * s;
   float ry = y + 16 * s;
+  collection_row(l, rx0, rx1, ry, "ROADS DISCOVERED", c.roads, c.roads_total, s, rgba(74, 238, 97)), ry += rh;
   collection_row(l, rx0, rx1, ry, "DISCOUNT SIGNS", c.signs, c.signs_total, s), ry += rh;
   collection_row(l, rx0, rx1, ry, "BARN FINDS", c.barns, c.barns_total, s), ry += rh;
   collection_row(l, rx0, rx1, ry, "1000 CLUB CHALLENGES", c.club_done, c.club_total, s), ry += rh;

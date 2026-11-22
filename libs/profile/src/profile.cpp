@@ -268,6 +268,7 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
   out.num_rallies = num("NumRallies"), out.num_rally_stages = num("NumRallyStages");
   out.num_rally_victories = num("NumRallyVictories"), out.rally_winnings = num("RallyWinnings");
   out.rally_xp = num("RallyXP"), out.rally_level = num("RallyWristbandLevel");
+  if (const Field* sn = find(fs, "Main/SatNav")) out.satnav_on = sn->value.as_int() != 0;
 
   // The records: signs and barns under Colorado, the 1000 Club.
   for (const auto& blk : out.body.blocks)
@@ -292,6 +293,19 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
             b.found_at = f32(3), b.rumour_at = f32(7);
             b.status = uint32_t(c.payload[11]) << 24 | uint32_t(c.payload[12]) << 16 | uint32_t(c.payload[13]) << 8 | c.payload[14];
             out.barns.push_back(b);
+          }
+          if (c.class_name == "CRoadDiscovery" && c.payload.size() >= 4) {
+            Reader rr{c.payload};
+            out.road_discovery_nodes = rr.u32();
+            const size_t nwords = (c.payload.size() - 4) / 4;
+            out.road_discovery_words.resize(nwords);
+            for (size_t wi = 0; wi < nwords; ++wi) out.road_discovery_words[wi] = rr.u32();
+          }
+          if (c.class_name == "CGasStationState" && !c.payload.empty() && c.payload[0] != 0) {
+            out.outposts_discovered.push_back(c.name);
+          }
+          if (c.class_name == "CMissionState" && c.payload.size() >= 2 && (c.payload[0] != 0 || c.payload[1] != 0)) {
+            out.pr_stunts_completed.push_back(c.name);
           }
         }
       }

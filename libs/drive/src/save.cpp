@@ -63,6 +63,32 @@ std::string save_to_text(const DriveSave& s) {
     out += "radio " + (s.radio_station.empty() ? std::string("-") : s.radio_station) + " " +
            (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
   if (!s.satnav_enabled) out += "satnav 0\n";
+  if (s.treasure_map) out += "treasure_map 1\n";
+  if (s.road_discovery_nodes > 0 && !s.road_discovery_words.empty()) {
+    size_t last = s.road_discovery_words.size();
+    while (last > 0 && s.road_discovery_words[last - 1] == 0u) --last;
+    out += "roads_discovered " + std::to_string(s.road_discovery_nodes) + " ";
+    if (last == 0) {
+      out += "0\n";
+    } else {
+      char hb[9];
+      for (size_t i = 0; i < last; ++i) {
+        std::snprintf(hb, sizeof hb, "%08x", s.road_discovery_words[i]);
+        out.append(hb, 8);
+      }
+      out += "\n";
+    }
+  }
+  if (!s.discovered_outposts.empty()) {
+    out += "outposts";
+    for (const auto& id : s.discovered_outposts) out += " " + id;
+    out += "\n";
+  }
+  if (!s.completed_pr_stunts.empty()) {
+    out += "pr_stunts";
+    for (const auto& id : s.completed_pr_stunts) out += " " + id;
+    out += "\n";
+  }
   if (s.num_races)
     out += "stats " + std::to_string(s.num_races) + " " + std::to_string(s.num_victories) + " " +
            std::to_string(s.num_podiums) + " " + num(s.time_festival) + " " + num(s.time_street) + " " +
@@ -188,6 +214,42 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "satnav") {
       int v = 1;
       if (l >> v) out.satnav_enabled = (v != 0);
+    } else if (key == "treasure_map") {
+      int v = 0;
+      if (l >> v) out.treasure_map = (v != 0);
+    } else if (key == "roads_discovered") {
+      uint32_t n_nodes = 0;
+      std::string hex;
+      if (l >> n_nodes >> hex) {
+        out.road_discovery_nodes = n_nodes;
+        out.road_discovery_words.clear();
+        if (hex != "0" && hex.size() % 8 == 0) {
+          const size_t nw = hex.size() / 8;
+          out.road_discovery_words.resize(nw, 0u);
+          bool ok_hex = true;
+          for (size_t i = 0; i < nw && ok_hex; ++i) {
+            uint32_t v = 0;
+            for (size_t k = 0; k < 8; ++k) {
+              const char ch = hex[i * 8 + k];
+              int nib = -1;
+              if (ch >= '0' && ch <= '9') nib = ch - '0';
+              else if (ch >= 'a' && ch <= 'f') nib = 10 + (ch - 'a');
+              else if (ch >= 'A' && ch <= 'F') nib = 10 + (ch - 'A');
+              if (nib < 0) {
+                ok_hex = false;
+                break;
+              }
+              v = (v << 4) | uint32_t(nib);
+            }
+            out.road_discovery_words[i] = v;
+          }
+          if (!ok_hex) out.road_discovery_words.clear();
+        }
+      }
+    } else if (key == "outposts") {
+      for (std::string id; l >> id;) out.discovered_outposts.push_back(id);
+    } else if (key == "pr_stunts") {
+      for (std::string id; l >> id;) out.completed_pr_stunts.push_back(id);
     } else if (key == "stats") {
       l >> out.num_races >> out.num_victories >> out.num_podiums >> out.time_festival >> out.time_street >>
           out.time_exhibition >> out.top_speed;

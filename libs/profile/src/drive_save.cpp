@@ -36,6 +36,11 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   for (const auto& s : p.signs)
     if (s.found) out.signs_found.push_back(s.name);
   for (const auto& b : p.barns) out.barns.push_back({b.name, int(b.status), b.rumour_at, b.found_at});
+  out.road_discovery_nodes = p.road_discovery_nodes;
+  out.road_discovery_words = p.road_discovery_words;
+  out.discovered_outposts = p.outposts_discovered;
+  out.completed_pr_stunts = p.pr_stunts_completed;
+  out.satnav_enabled = p.satnav_on;
   // Carried as is: the level, unlocks, Rally counters and the 1000 Club.
   out.level = int(p.level);
   out.event_unlocks = p.event_unlocks, out.hub_unlocks = p.hub_unlocks;

@@ -245,26 +245,42 @@ struct Mark {
   double x, z;
   bool is_new = false;
   bool completed = false;
+  bool discovered = true;
   int marker_index = -1;
 };
-std::vector<Mark> marks(const MapScene& s) {
+
+bool marker_matches_filter(const MapMarker& m, MapFilter f) {
+  if (f == MapFilter::kAll) return true;
+  switch (f) {
+    case MapFilter::kEvents: return m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite;
+    case MapFilter::kStreetRaces: return m.kind == MapMarker::kStreetHub || m.icon_tag == "streetrace";
+    case MapFilter::kOutposts: return m.kind == MapMarker::kOutpost || m.kind == MapMarker::kFestivalSite;
+    case MapFilter::kCollectibles: return false;
+    case MapFilter::kPrStunts: return m.kind == MapMarker::kPrStunt || m.kind == MapMarker::kOutpost;
+    default: return true;
+  }
+}
+
+std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
   std::vector<Mark> out;
-  if (s.data && s.progress) {
+  const bool show_collectibles = !apply_filter || s.filter == MapFilter::kAll || s.filter == MapFilter::kCollectibles;
+  if (show_collectibles && s.data && s.progress) {
     for (const auto& sign : s.data->signs) {
       const bool found = s.progress->signs_found.count(sign.id) > 0;
-      if (found) out.push_back({"flyer_collected", sign.at.x, sign.at.z, false, true, -1});
-      else if (s.reveal) out.push_back({"flyer", sign.at.x, sign.at.z, false, false, -1});
+      if (found) out.push_back({"flyer_collected", sign.at.x, sign.at.z, false, true, true, -1});
+      else if (s.reveal) out.push_back({"flyer", sign.at.x, sign.at.z, false, false, true, -1});
     }
     for (size_t i = 0; i < s.data->barns.size(); ++i) {
       const auto& b = s.data->barns[i];
       const int status = i < s.progress->barns.size() ? s.progress->barns[i].status : freeroam::kBarnNotSpawned;
-      if (status == freeroam::kBarnFound) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, -1});
-      else if (s.reveal) out.push_back({"barnfind", b.at.x, b.at.z, false, false, -1});
+      if (status == freeroam::kBarnFound) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, true, -1});
+      else if (s.reveal) out.push_back({"barnfind", b.at.x, b.at.z, false, false, true, -1});
     }
   }
   for (size_t i = 0; i < s.markers.size(); ++i) {
     const auto& m = s.markers[i];
-    out.push_back({m.icon_tag, m.x, m.z, m.is_new, m.completed, int(i)});
+    if (apply_filter && !marker_matches_filter(m, s.filter)) continue;
+    out.push_back({m.icon_tag, m.x, m.z, m.is_new, m.completed, m.discovered, int(i)});
   }
   return out;
 }
@@ -285,6 +301,7 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
     if (it == std::end(kRoadTypes) || r.points.size() < 2) continue;  // none, shortcut: not drawn
     Road road;
     road.style = int(it - std::begin(kRoadTypes));
+    road.nodes = r.nodes;
     for (const auto& p : r.points) {
       road.points.push_back({p.x, p.z});
       min_x_ = std::min(min_x_, p.x), max_x_ = std::max(max_x_, p.x);
@@ -313,11 +330,67 @@ bool MapView::open(const std::filesystem::path& game_root, std::string* error) {
   full_ = read_profile(full);
 
   std::string why;
-  auto zip = fh1::Archive::open(media / "ui" / "textures" / "Horizon.zip", &why);
+  horizon_zip_path_ = media / "ui" / "textures" / "Horizon.zip";
+  high_tile_state_.fill(0);
+  for (auto& t : high_tiles_) t = Atlas{};
+  auto zip = fh1::Archive::open(horizon_zip_path_, &why);
   if (!zip) return fail(error, why);
   if (!read_texture(*zip, "Map/background/low-0-0.xds", background_, error)) return false;
   if (!read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheetSmall.xds", small_icons_, error)) return false;
   if (!read_texture(*zip, "Map/icons/MapIcons/EN/MapIconSheet.xds", large_icons_, error)) return false;
+  return true;
+}
+
+int MapView::loaded_high_tiles() const {
+  int n = 0;
+  for (uint8_t s : high_tile_state_)
+    if (s == 1) ++n;
+  return n;
+}
+
+void MapView::ensure_high_tiles(int c0, int c1, int r0, int r1) const {
+  if (horizon_zip_path_.empty()) return;
+  c0 = std::clamp(c0, 0, kHighCols - 1);
+  c1 = std::clamp(c1, 0, kHighCols - 1);
+  r0 = std::clamp(r0, 0, kHighRows - 1);
+  r1 = std::clamp(r1, 0, kHighRows - 1);
+  bool need = false;
+  for (int r = r0; r <= r1 && !need; ++r)
+    for (int c = c0; c <= c1; ++c)
+      if (high_tile_state_[size_t(r * kHighCols + c)] == 0) {
+        need = true;
+        break;
+      }
+  if (!need) return;
+  auto zip = fh1::Archive::open(horizon_zip_path_, nullptr);
+  if (!zip) return;
+  for (int r = r0; r <= r1; ++r) {
+    for (int c = c0; c <= c1; ++c) {
+      const size_t idx = size_t(r * kHighCols + c);
+      if (high_tile_state_[idx] != 0) continue;
+      const std::string member = "Map/background/high-" + std::to_string(c) + "-" + std::to_string(r) + ".xds";
+      if (read_texture(*zip, member, high_tiles_[idx], nullptr) &&
+          high_tiles_[idx].width == uint32_t(kHighTileSize) &&
+          high_tiles_[idx].height == uint32_t(kHighTileSize)) {
+        high_tile_state_[idx] = 1;
+      } else {
+        high_tile_state_[idx] = 2;
+      }
+    }
+  }
+}
+
+bool MapView::sample_high_pixel(int px, int py, uint8_t out_rgb[3]) const {
+  px = std::clamp(px, 0, kHighCols * kHighTileSize - 1);
+  py = std::clamp(py, 0, kHighRows * kHighTileSize - 1);
+  const int c = px / kHighTileSize, r = py / kHighTileSize;
+  const size_t idx = size_t(r * kHighCols + c);
+  if (high_tile_state_[idx] != 1) return false;
+  const int lx = px - c * kHighTileSize, ly = py - r * kHighTileSize;
+  const uint8_t* p = &high_tiles_[idx].rgba[(size_t(ly) * kHighTileSize + lx) * 4];
+  out_rgb[0] = p[0];
+  out_rgb[1] = p[1];
+  out_rgb[2] = p[2];
   return true;
 }
 
@@ -326,13 +399,13 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   // edge (ours: over the outer 45 % of the half size, as an ellipse).
   Canvas cv(size, size, {0, 0, 0, 0});
   cv.edge_fade = 0.3f;
-  // The camera (ours, the spec's interim): 120 m up and 60 m behind the
-  // point it looks at, 60 m ahead of the car, pitched down 45 degrees, a
-  // half field of view of atan(0.5): the far edge 300 m ahead, the car at
-  // five sixths of the panel's height.
+  // Speed-responsive dynamic minimap zoom: pulls higher & further ahead as speed rises.
   const double fx = std::sin(scene.heading), fz = std::cos(scene.heading);
   const double rx = fz, rz = -fx;  // right of the heading (+X when facing +Z)
-  constexpr double kHeight = 120, kBack = 60, kS = 0.70710678118654752;
+  const double speed_t = std::clamp(std::fabs(scene.speed_mps) / 67.0, 0.0, 1.0);
+  const double kHeight = 108.0 + 88.0 * speed_t;
+  const double kBack = 54.0 + 42.0 * speed_t;
+  constexpr double kS = 0.70710678118654752;
   const double focal = size, cxp = size / 2.0, cyp = size / 2.0;
   struct P {
     double x, y, depth;
@@ -344,7 +417,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     if (depth < 1) return P{0, 0, -1};
     return P{cxp + focal * c / depth, cyp - focal * kS * (a - kHeight) / depth, depth};
   };
-  const double reach = 450;  // m around the car that can show
+  const double reach = 420.0 + 300.0 * speed_t;  // m around the car that can show
 
   // Rumour circles (sort order 21, under the roads).
   if (scene.data && scene.progress)
@@ -404,8 +477,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
         const P pa = project(a[0], a[1]), pb = project(b[0], b[1]);
         if (pa.depth < 1 || pb.depth < 1) continue;
         const double px = focal / ((pa.depth + pb.depth) / 2) * 9.0 * std::max(0.35, ls.line_size / widest);
-        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.0, px + 2.5), Rgba{0, 0, 0, 50});
-        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.2, px), Rgba{246, 246, 246, 255});
+        bool driven = true;
+        if (scene.road_discovery && scene.road_discovery->ready() && s + 1 < roads_[r].nodes.size()) {
+          driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) ||
+                   scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
+        }
+        const Rgba road_col = driven ? ls.core : ls.edge;
+        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.0, px + 2.5), Rgba{0, 0, 0, 58});
+        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.2, px), road_col);
       }
     }
 
@@ -441,16 +520,18 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       cv.icon(small_icons_, 2, 4, dp.x, dp.y - 20 * unit, 52 * unit, 0, Rgba{74, 238, 97, 255});
     }
   }
-  for (const auto& m : marks(scene)) {
+  for (const auto& m : marks(scene, false)) {
     if (std::hypot(m.x - scene.x, m.z - scene.z) > reach) continue;
-    const auto it = mini_.icons.find(m.key);
+    auto it = mini_.icons.find(m.key);
+    if (it == mini_.icons.end()) it = mini_.icons.find("gas_station");
     if (it == mini_.icons.end()) continue;
     const P p = project(m.x, m.z);
     if (p.depth < 1) continue;
     double top_y = p.y;
     for (const auto& ic : it->second) {
       Rgba tint = ic.colour;
-      if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
+      if (!m.discovered) tint = {145, 145, 155, tint.a * 0.72f};
+      else if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
       const double iy = p.y - ic.size * unit * 0.4;
       top_y = std::min(top_y, iy - ic.size * unit * 0.45);
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, ic.size * unit, 0, tint);
@@ -460,6 +541,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       const double bw = 14 * unit, bh = 5 * unit;
       cv.line(p.x - bw * 0.5, top_y - bh * 0.5, p.x + bw * 0.5, top_y - bh * 0.5, bh, Rgba{245, 4, 92, 245});
     }
+  }
+  // Free-roam traffic vehicles: compact grey-white car dots on the minimap.
+  for (const auto& t : scene.traffic) {
+    if (std::hypot(t[0] - scene.x, t[1] - scene.z) > reach) continue;
+    const P p = project(t[0], t[1]);
+    if (p.depth < 1) continue;
+    cv.line(p.x, p.y, p.x, p.y, 10 * unit + 1.5, Rgba{25, 28, 34, 210});
+    cv.line(p.x, p.y, p.x, p.y, 8 * unit, Rgba{198, 204, 212, 235});
   }
   // Opponents: white discs with a grey rim, as the race frames show.
   for (const auto& o : scene.opponents) {
@@ -488,34 +577,89 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     return std::array<double, 2>{width / 2.0 + (x - cx) / scale, height / 2.0 - (z - cz) / scale};
   };
 
-  // The background's low level, bilinear.
+  // Seamless 2-level map background pyramid: low-0-0.xds blended into the
+  // 5x3 high-c-r.xds (5120x3072) tiles as the player zooms in.
+  const double hi_blend = std::clamp((zoom - 1.8) / 1.7, 0.0, 1.0);
+  if (hi_blend > 0.0) {
+    const double wx0 = cx - (width * 0.5) * scale, wx1 = cx + (width * 0.5) * scale;
+    const double wz_top = cz + (height * 0.5) * scale, wz_bot = cz - (height * 0.5) * scale;
+    const double u0 = (wx0 - freeroam::kMapWest) / freeroam::kMapWidth;
+    const double u1 = (wx1 - freeroam::kMapWest) / freeroam::kMapWidth;
+    const double v0 = (freeroam::kMapNorth - wz_top) / freeroam::kMapHeight;
+    const double v1 = (freeroam::kMapNorth - wz_bot) / freeroam::kMapHeight;
+    ensure_high_tiles(int(std::floor(u0 * kHighCols)) - 1, int(std::floor(u1 * kHighCols)) + 1,
+                      int(std::floor(v0 * kHighRows)) - 1, int(std::floor(v1 * kHighRows)) + 1);
+  }
   if (!background_.rgba.empty()) {
     const int bw = int(background_.width), bh = int(background_.height);
+    const int hw = kHighCols * kHighTileSize, hh = kHighRows * kHighTileSize;
     for (int y = 0; y < height; ++y) {
       const double z = cz - (y + 0.5 - height / 2.0) * scale;
-      const double v = (freeroam::kMapNorth - z) / freeroam::kMapHeight * bh - 0.5;
+      const double vn = (freeroam::kMapNorth - z) / freeroam::kMapHeight;
+      const double v = vn * bh - 0.5;
       if (v < -0.5 || v > bh - 0.5) continue;
       const int iy = std::clamp(int(std::floor(v)), 0, bh - 1), iy1 = std::min(bh - 1, iy + 1);
       const double fy = std::clamp(v - iy, 0.0, 1.0);
+
+      const double hv = vn * hh - 0.5;
+      const int hiy = std::clamp(int(std::floor(hv)), 0, hh - 1), hiy1 = std::min(hh - 1, hiy + 1);
+      const double hfy = std::clamp(hv - hiy, 0.0, 1.0);
+
       float* row = &cv.rgb[size_t(y) * width * 3];
       for (int x = 0; x < width; ++x) {
         const double wx = cx + (x + 0.5 - width / 2.0) * scale;
-        const double u = (wx - freeroam::kMapWest) / freeroam::kMapWidth * bw - 0.5;
+        const double un = (wx - freeroam::kMapWest) / freeroam::kMapWidth;
+        const double u = un * bw - 0.5;
         if (u < -0.5 || u > bw - 0.5) continue;
-        const int ix = std::clamp(int(std::floor(u)), 0, bw - 1), ix1 = std::min(bw - 1, ix + 1);
-        const double fx = std::clamp(u - ix, 0.0, 1.0);
-        const uint8_t* a = &background_.rgba[(size_t(iy) * bw + ix) * 4];
-        const uint8_t* b = &background_.rgba[(size_t(iy) * bw + ix1) * 4];
-        const uint8_t* c = &background_.rgba[(size_t(iy1) * bw + ix) * 4];
-        const uint8_t* d = &background_.rgba[(size_t(iy1) * bw + ix1) * 4];
-        for (int ch = 0; ch < 3; ++ch)
-          row[x * 3 + ch] = float((a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy);
+        float lo_rgb[3];
+        if (hi_blend < 0.999) {
+          const int ix = std::clamp(int(std::floor(u)), 0, bw - 1), ix1 = std::min(bw - 1, ix + 1);
+          const double fx = std::clamp(u - ix, 0.0, 1.0);
+          const uint8_t* a = &background_.rgba[(size_t(iy) * bw + ix) * 4];
+          const uint8_t* b = &background_.rgba[(size_t(iy) * bw + ix1) * 4];
+          const uint8_t* c = &background_.rgba[(size_t(iy1) * bw + ix) * 4];
+          const uint8_t* d = &background_.rgba[(size_t(iy1) * bw + ix1) * 4];
+          for (int ch = 0; ch < 3; ++ch)
+            lo_rgb[ch] = float((a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy);
+        }
+        bool got_hi = false;
+        float hi_rgb[3] = {0, 0, 0};
+        if (hi_blend > 0.0) {
+          const double hu = un * hw - 0.5;
+          const int hix = std::clamp(int(std::floor(hu)), 0, hw - 1), hix1 = std::min(hw - 1, hix + 1);
+          const double hfx = std::clamp(hu - hix, 0.0, 1.0);
+          uint8_t ha[3], hb[3], hc[3], hd[3];
+          if (sample_high_pixel(hix, hiy, ha) && sample_high_pixel(hix1, hiy, hb) &&
+              sample_high_pixel(hix, hiy1, hc) && sample_high_pixel(hix1, hiy1, hd)) {
+            for (int ch = 0; ch < 3; ++ch)
+              hi_rgb[ch] = float((ha[ch] * (1 - hfx) + hb[ch] * hfx) * (1 - hfy) +
+                                 (hc[ch] * (1 - hfx) + hd[ch] * hfx) * hfy);
+            got_hi = true;
+          }
+        }
+        if (got_hi && hi_blend >= 0.999) {
+          row[x * 3] = hi_rgb[0], row[x * 3 + 1] = hi_rgb[1], row[x * 3 + 2] = hi_rgb[2];
+        } else if (got_hi) {
+          const float kb = float(hi_blend);
+          for (int ch = 0; ch < 3; ++ch) row[x * 3 + ch] = lo_rgb[ch] * (1.0f - kb) + hi_rgb[ch] * kb;
+        } else {
+          if (hi_blend >= 0.999) {
+            const int ix = std::clamp(int(std::floor(u)), 0, bw - 1), ix1 = std::min(bw - 1, ix + 1);
+            const double fx = std::clamp(u - ix, 0.0, 1.0);
+            const uint8_t* a = &background_.rgba[(size_t(iy) * bw + ix) * 4];
+            const uint8_t* b = &background_.rgba[(size_t(iy) * bw + ix1) * 4];
+            const uint8_t* c = &background_.rgba[(size_t(iy1) * bw + ix) * 4];
+            const uint8_t* d = &background_.rgba[(size_t(iy1) * bw + ix1) * 4];
+            for (int ch = 0; ch < 3; ++ch)
+              lo_rgb[ch] = float((a[ch] * (1 - fx) + b[ch] * fx) * (1 - fy) + (c[ch] * (1 - fx) + d[ch] * fx) * fy);
+          }
+          row[x * 3] = lo_rgb[0], row[x * 3 + 1] = lo_rgb[1], row[x * 3 + 2] = lo_rgb[2];
+        }
       }
     }
   }
 
-  // Roads: a width in metres from the profile size, kept between 1.2 and 7
-  // pixels (ours).
+  // Roads: driven vs undriven shading (ColourSecondary vs ColourPrimary).
   for (int pass = 0; pass < 2; ++pass)
     for (int style = 0; style < kRoadTypeCount; ++style) {
       const auto st = full_.roads.find(kRoadTypes[style]);
@@ -530,8 +674,14 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
           const bool off = (prev[0] < -8 && cur[0] < -8) || (prev[0] > width + 8 && cur[0] > width + 8) ||
                            (prev[1] < -8 && cur[1] < -8) || (prev[1] > height + 8 && cur[1] > height + 8);
           if (!off) {
-            if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], line + 1.5, Rgba{ls.under.r, ls.under.g, ls.under.b, 110});
-            else cv.line(prev[0], prev[1], cur[0], cur[1], line, ls.core);
+            bool driven = true;
+            if (scene.road_discovery && scene.road_discovery->ready() && k < road.nodes.size()) {
+              driven = scene.road_discovery->is_node_discovered(road.nodes[k - 1]) ||
+                       scene.road_discovery->is_node_discovered(road.nodes[k]);
+            }
+            const Rgba seg_col = driven ? ls.core : Rgba{94, 96, 102, 235};
+            if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], line + 1.5, Rgba{ls.under.r, ls.under.g, ls.under.b, 125});
+            else cv.line(prev[0], prev[1], cur[0], cur[1], line, seg_col);
           }
           prev = cur;
         }
@@ -558,7 +708,7 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
   }
 
   // Rumour circles: the region's outline over the map, filled faintly.
-  if (scene.data && scene.progress)
+  if ((scene.filter == MapFilter::kAll || scene.filter == MapFilter::kCollectibles) && scene.data && scene.progress)
     for (size_t i = 0; i < scene.data->barns.size() && i < scene.progress->barns.size(); ++i) {
       if (scene.progress->barns[i].status != freeroam::kBarnRumour) continue;
       const auto& b = scene.data->barns[i];
@@ -578,8 +728,9 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
   // Icons lying flat; profile sizes in our pixels, growing a little with
   // the zoom.
   const double unit = std::min(2.0, 0.8 + zoom * 0.2) * std::max(1.0, height / 900.0);
-  for (const auto& m : marks(scene)) {
-    const auto it = full_.icons.find(m.key);
+  for (const auto& m : marks(scene, true)) {
+    auto it = full_.icons.find(m.key);
+    if (it == full_.icons.end()) it = full_.icons.find("gas_station");
     if (it == full_.icons.end()) continue;
     const auto p = to_screen(m.x, m.z);
     const bool sel = m.marker_index >= 0 && m.marker_index == scene.selected_marker;
@@ -594,7 +745,8 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     }
     for (const auto& ic : it->second) {
       Rgba tint = ic.colour;
-      if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
+      if (!m.discovered) tint = {140, 145, 155, tint.a * 0.7f};
+      else if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
       const double sz = ic.size * unit * (sel ? 1.25 : 1.0);
       cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, 0, tint);
     }
