@@ -309,6 +309,82 @@ int main() {
       cam.cycle();
     }
   }
+  // CameraEffects == 0 loads CameraPhysicsSansEffects.xml with fewer layers.
+  {
+    std::string ini_se, xml_se;
+    drive::CameraTuning t_se;
+    CHECK(cars::load_camera_files(install, ini_se, xml_se, &error, false));
+    CHECK(drive::parse_camera_settings(ini_se, t_se, &error));
+    CHECK(drive::parse_camera_physics(xml_se, t_se, &error));
+    CHECK(t_se.layers[0].size() < t.layers[0].size());
+  }
+  // Bump, jolt (impulse + attack/decay) and noise shake layers compose cleanly.
+  {
+    const char* kLayerXml = R"xml(
+<CameraPhysics>
+  <FollowCam >
+    <Layer Enabled="1" InputType="SurfaceBumpOffset_FR" NoiseType="None" OutputType="CameraSpaceYPROffset"
+           InputClampMin="-1" InputClampMax="1" InputToParamMapping="Linear"
+           Param.x="0" Param.y="5.0" Param.z="0" Param.w="0" Sprung="0"/>
+    <Layer Enabled="1" InputType="WorldCollision_Longitudinal" NoiseType="None" OutputType="CarSpaceYPRImpulse"
+           InputClampMin="-10" InputClampMax="10" InputMagAttackDecay="1" InputAttack="500" InputDecay="20"
+           InputToParamMapping="Linear" ImpulseInputSizeCutoff="0.5"
+           Param.x="0" Param.y="10.0" Param.z="0" Param.w="0" Sprung="1" SpringK="200" SpringDPercent="0.5"/>
+    <Layer Enabled="1" InputType="SpeedMPH" NoiseType="Sin" OutputType="CameraSpaceXYZOffset"
+           InputClampMin="0" InputClampMax="200" InputToNoiseFreqMapping="ConstantOne"
+           NoiseFreq="10.0" NoiseSeed="0.0" NoiseOutputRangeMin="-1.0" NoiseOutputRangeMax="1.0"
+           InputToParamMapping="Linear" Param.x="0" Param.y="0.01" Param.z="0" Param.w="0" Sprung="0"/>
+    <Layer Enabled="1" InputType="ConstantOne" NoiseType="Perlin" OutputType="CarSpaceYPROffset"
+           NoiseFreq="5.0" NoiseSeed="1.0" NoiseOutputRangeMin="0.0" NoiseOutputRangeMax="0.0"
+           InputToParamMapping="ConstantOne" Param.x="10.0" Param.y="10.0" Param.z="10.0" Param.w="0" Sprung="0"/>
+  </FollowCam>
+  <FollowCam2 ></FollowCam2>
+  <DriverCam >
+    <Layer Enabled="1" InputType="Gs_Lateral" NoiseType="None" OutputType="CarSpaceYPROffset"
+           InputToParamMapping="Linear" Param.x="0" Param.y="0" Param.z="5.0" Param.w="0" Sprung="0"/>
+  </DriverCam>
+  <Hood ></Hood>
+  <BumperHigh ></BumperHigh>
+</CameraPhysics>
+)xml";
+    drive::CameraTuning lt = t;
+    CHECK(drive::parse_camera_physics(kLayerXml, lt, &error));
+    CHECK(lt.layers[0].size() == 4);
+    drive::DriveCamera cam;
+    cam.set_tuning(lt);
+    cam.set_car(r34.car);
+    cam.set_mode(drive::CameraMode::kFollowLow);
+    auto in = parked(r34.ride);
+    auto base_v = cam.update(0.0, in);  // settles
+    // 0..0 noise range produces zero offset.
+    auto next_v = cam.update(0.016, in);
+    CHECK(near(base_v.forward[1], next_v.forward[1], 1e-6));
+    // Surface bump pitches camera down.
+    in.surface_bump[1] = 0.5;
+    auto bump_v = cam.update(0.016, in);
+    CHECK(bump_v.forward[1] < base_v.forward[1] - 0.02);
+    in.surface_bump[1] = 0.0;
+    // Collision impulse kicks pitch and decays back.
+    in.world_collision_longitudinal = 8.0;
+    auto jolt_v = cam.update(0.016, in);
+    CHECK(std::fabs(jolt_v.forward[1] - base_v.forward[1]) > 0.01);
+    in.world_collision_longitudinal = 0.0;
+    for (int k = 0; k < 120; ++k) jolt_v = cam.update(0.016, in);
+    CHECK(near(jolt_v.forward[1], base_v.forward[1], 0.01));
+    // Speed shake oscillates eye height with Sin noise.
+    cam.restart();
+    in.speed = 40.0;  // ~89.5 mph
+    (void)cam.update(0.0, in);        // settles at phase 0
+    auto s1 = cam.update(0.025, in);  // quarter period of 10 Hz -> sin = +1
+    auto s2 = cam.update(0.050, in);  // three-quarter period -> sin = -1
+    CHECK(s1.eye[1] > s2.eye[1] + 0.5);
+    // On-car cockpit roll tilts up vector.
+    cam.set_mode(drive::CameraMode::kCockpit);
+    auto ci = parked(r34.ride);
+    ci.g_lateral = 2.0;  // 10 deg roll
+    auto cv = cam.update(0.0, ci);
+    CHECK(std::fabs(cv.up[0]) > 0.1);
+  }
   std::printf("%s (%d failures)\n", failures ? "FAILED" : "ok", failures);
   return failures ? 1 : 0;
 }

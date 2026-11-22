@@ -49,6 +49,74 @@ void spring_implicit(double& x, double& v, double target, double k, double c, do
   x += dt * v;
 }
 
+double eval_curve(CameraLayer::Mapping mapping, const std::vector<std::pair<double, double>>& points, bool mirrored,
+                  double x) {
+  if (mapping == CameraLayer::Mapping::kConstantOne) return 1.0;
+  if (mapping == CameraLayer::Mapping::kLinear) return x;
+  if (points.empty()) return 1.0;
+  const double sign = mirrored && x < 0 ? -1.0 : 1.0;
+  const double u = mirrored ? std::fabs(x) : x;
+  double s = 1.0;
+  if (u <= points.front().first) s = points.front().second;
+  else if (u >= points.back().first) s = points.back().second;
+  else {
+    for (size_t k = 1; k < points.size(); ++k) {
+      if (u <= points[k].first) {
+        const double span = points[k].first - points[k - 1].first;
+        const double f = span > 0 ? (u - points[k - 1].first) / span : 1.0;
+        s = points[k - 1].second + f * (points[k].second - points[k - 1].second);
+        break;
+      }
+    }
+  }
+  return s * sign;
+}
+
+// Deterministic 1D hash in [-1, 1] for camera shake noise.
+double hash1(int64_t n, uint64_t salt) {
+  uint64_t x = static_cast<uint64_t>(n) ^ salt;
+  x ^= x >> 33;
+  x *= 0xff51afd7ed558ccdULL;
+  x ^= x >> 33;
+  x *= 0xc4ceb9fe1a85ec53ULL;
+  x ^= x >> 33;
+  return static_cast<double>(static_cast<int64_t>(x >> 11)) / static_cast<double>(1LL << 52) - 1.0;
+}
+
+double fade(double t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
+
+double eval_noise(CameraLayer::Noise type, double phase) {
+  switch (type) {
+    case CameraLayer::Noise::kNone: return 1.0;
+    case CameraLayer::Noise::kSin: return std::sin(2.0 * kPi * phase);
+    case CameraLayer::Noise::kPerlin:
+    case CameraLayer::Noise::kSimplex: {
+      const uint64_t salt = type == CameraLayer::Noise::kPerlin ? 0x9e3779b97f4a7c15ULL : 0xbf58476d1ce4e5b9ULL;
+      const double fl = std::floor(phase);
+      const int64_t i0 = static_cast<int64_t>(fl);
+      const double t = phase - fl;
+      const double g0 = hash1(i0, salt);
+      const double g1 = hash1(i0 + 1, salt);
+      const double n0 = g0 * t;
+      const double n1 = g1 * (t - 1.0);
+      const double u = fade(t);
+      return std::clamp(2.0 * (n0 + u * (n1 - n0)), -1.0, 1.0);
+    }
+    case CameraLayer::Noise::kHeightGrid: {
+      const double fl = std::floor(phase);
+      const int64_t i0 = static_cast<int64_t>(fl);
+      const double t = phase - fl;
+      const double v0 = hash1(i0, 0x94d049bb133111ebULL);
+      const double v1 = hash1(i0 + 1, 0x94d049bb133111ebULL);
+      const double u = t * t * (3.0 - 2.0 * t);
+      return std::clamp(v0 + u * (v1 - v0), -1.0, 1.0);
+    }
+  }
+  return 0.0;
+}
+
+V3 cross(V3 a, V3 b) { return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; }
+
 // --- Parsing ---------------------------------------------------------------
 
 std::string_view trim(std::string_view s) {
@@ -163,40 +231,87 @@ bool parse_camera_physics(std::string_view xml, CameraTuning& out, std::string* 
       };
       CameraLayer l;
       const std::string input = text("InputType"), output = text("OutputType"), noise = text("NoiseType");
-      bool kept = noise == "None" || noise.empty();
+      bool kept = true;
+      if (noise == "None" || noise.empty()) l.noise = CameraLayer::Noise::kNone;
+      else if (noise == "Perlin") l.noise = CameraLayer::Noise::kPerlin;
+      else if (noise == "Simplex") l.noise = CameraLayer::Noise::kSimplex;
+      else if (noise == "HeightGrid") l.noise = CameraLayer::Noise::kHeightGrid;
+      else if (noise == "Sin" || noise == "Sine") l.noise = CameraLayer::Noise::kSin;
+      else kept = false;
+
       if (input == "SpeedMPH") l.input = CameraLayer::Input::kSpeedMph;
+      else if (input == "Speed") l.input = CameraLayer::Input::kSpeed;
       else if (input == "ConstantOne") l.input = CameraLayer::Input::kConstantOne;
+      else if (input == "OneWhenStationary") l.input = CameraLayer::Input::kOneWhenStationary;
       else if (input == "PitchAngleDegrees") l.input = CameraLayer::Input::kPitchDegrees;
       else if (input == "Gs_Longitudinal") l.input = CameraLayer::Input::kGsLongitudinal;
       else if (input == "Gs_Lateral") l.input = CameraLayer::Input::kGsLateral;
+      else if (input == "Slip_Longitudinal") l.input = CameraLayer::Input::kSlipLongitudinal;
+      else if (input == "Slip_Lateral") l.input = CameraLayer::Input::kSlipLateral;
+      else if (input == "Slip") l.input = CameraLayer::Input::kSlip;
+      else if (input == "SurfaceBumpOffset_FL") l.input = CameraLayer::Input::kSurfaceBumpFL;
+      else if (input == "SurfaceBumpOffset_FR") l.input = CameraLayer::Input::kSurfaceBumpFR;
+      else if (input == "SurfaceBumpOffset_RL") l.input = CameraLayer::Input::kSurfaceBumpRL;
+      else if (input == "SurfaceBumpOffset_RR") l.input = CameraLayer::Input::kSurfaceBumpRR;
+      else if (input == "SuspensionBias_Longitudinal") l.input = CameraLayer::Input::kSuspensionBiasLongitudinal;
+      else if (input == "WorldCollision") l.input = CameraLayer::Input::kWorldCollision;
+      else if (input == "WorldCollision_Longitudinal") l.input = CameraLayer::Input::kWorldCollisionLongitudinal;
+      else if (input == "WorldCollision_Lateral") l.input = CameraLayer::Input::kWorldCollisionLateral;
+      else if (input == "CarCollision") l.input = CameraLayer::Input::kCarCollision;
+      else if (input == "CarCollision_Longitudinal") l.input = CameraLayer::Input::kCarCollisionLongitudinal;
+      else if (input == "CarCollision_Lateral") l.input = CameraLayer::Input::kCarCollisionLateral;
       else kept = false;
+
       if (output == "CarSpaceXYZOffset") l.output = CameraLayer::Output::kCarXYZ;
       else if (output == "CarSpaceYPROffset") l.output = CameraLayer::Output::kCarYPR;
       else if (output == "CameraSpaceXYZOffset") l.output = CameraLayer::Output::kCameraXYZ;
       else if (output == "CameraSpaceYPROffset") l.output = CameraLayer::Output::kCameraYPR;
+      else if (output == "CarSpaceYPRImpulse") l.output = CameraLayer::Output::kCarYPRImpulse;
+      else if (output == "CameraSpaceYPRImpulse") l.output = CameraLayer::Output::kCameraYPRImpulse;
       else if (output == "FOV") l.output = CameraLayer::Output::kFov;
       else kept = false;
-      if (number(a, "InputTakeDerivative") != 0 || number(a, "InputMagAttackDecay") != 0) kept = false;
+
       if (!kept) {
         ++out.layers_left_out[size_t(m)];
         continue;
       }
-      const std::string mapping = text("InputToParamMapping");
-      if (mapping == "ConstantOne") l.mapping = CameraLayer::Mapping::kConstantOne;
-      else if (mapping == "Linear") l.mapping = CameraLayer::Mapping::kLinear;
-      else l.mapping = CameraLayer::Mapping::kPoints;
+      auto parse_mapping = [](const std::string& m_str) {
+        if (m_str == "ConstantOne") return CameraLayer::Mapping::kConstantOne;
+        if (m_str == "Linear") return CameraLayer::Mapping::kLinear;
+        return CameraLayer::Mapping::kPoints;
+      };
+      l.mapping = parse_mapping(text("InputToParamMapping"));
       if (a.count("InputClampMin")) l.clamp_min = number(a, "InputClampMin");
       if (a.count("InputClampMax")) l.clamp_max = number(a, "InputClampMax");
+      l.take_derivative = number(a, "InputTakeDerivative") != 0;
+      l.mag_attack_decay = number(a, "InputMagAttackDecay") != 0;
+      l.input_attack = number(a, "InputAttack");
+      l.input_decay = number(a, "InputDecay");
       for (int i = 0; i < 5; ++i) {
         const std::string k = "InputToParamCurveInput" + std::to_string(i);
         if (!a.count(k)) break;
         l.points.push_back({number(a, k), number(a, "InputToParamCurveOutput" + std::to_string(i))});
       }
       l.mirrored = number(a, "InputToParamCurveMirrored") != 0;
+      if (l.noise != CameraLayer::Noise::kNone) {
+        l.noise_freq_mapping = parse_mapping(text("InputToNoiseFreqMapping"));
+        for (int i = 0; i < 5; ++i) {
+          const std::string k = "InputToNoiseFreqCurveInput" + std::to_string(i);
+          if (!a.count(k)) break;
+          l.noise_freq_points.push_back({number(a, k), number(a, "InputToNoiseFreqCurveOutput" + std::to_string(i))});
+        }
+        l.noise_freq_mirrored = number(a, "InputToNoiseFreqCurveMirrored") != 0;
+        l.noise_freq = number(a, "NoiseFreq", 1.0);
+        l.noise_seed = number(a, "NoiseSeed", 0.0);
+        l.noise_range_min = number(a, "NoiseOutputRangeMin", -1.0);
+        l.noise_range_max = number(a, "NoiseOutputRangeMax", 1.0);
+      }
       l.param = {number(a, "Param.x"), number(a, "Param.y"), number(a, "Param.z"), number(a, "Param.w")};
       l.sprung = number(a, "Sprung") != 0;
       l.spring_k = number(a, "SpringK");
       l.spring_d_percent = number(a, "SpringDPercent");
+      l.impulse_cutoff = number(a, "ImpulseInputSizeCutoff");
+      l.impulse_delay = number(a, "ImpulseDelay");
       out.layers[size_t(m)].push_back(l);
     }
   }
@@ -226,33 +341,95 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
   LayerOut out;
   for (size_t i = 0; i < layers.size(); ++i) {
     const CameraLayer& l = layers[i];
-    double x = l.input == CameraLayer::Input::kSpeedMph       ? std::fabs(in.speed) * kMph
-               : l.input == CameraLayer::Input::kPitchDegrees ? in.pitch_degrees
-               : l.input == CameraLayer::Input::kGsLongitudinal ? in.g_longitudinal
-               : l.input == CameraLayer::Input::kGsLateral    ? in.g_lateral
-                                                              : 1.0;
-    x = std::clamp(x, l.clamp_min, l.clamp_max);
-    double s = 1;
-    if (l.mapping == CameraLayer::Mapping::kLinear) {
-      s = x;
-    } else if (l.mapping == CameraLayer::Mapping::kPoints && !l.points.empty()) {
-      const double sign = l.mirrored && x < 0 ? -1 : 1;
-      const double u = l.mirrored ? std::fabs(x) : x;
-      const auto& p = l.points;
-      if (u <= p.front().first) s = p.front().second;
-      else if (u >= p.back().first) s = p.back().second;
-      else
-        for (size_t k = 1; k < p.size(); ++k)
-          if (u <= p[k].first) {
-            const double span = p[k].first - p[k - 1].first;
-            const double f = span > 0 ? (u - p[k - 1].first) / span : 1;
-            s = p[k - 1].second + f * (p[k].second - p[k - 1].second);
-            break;
-          }
-      s *= sign;
+    double x = 1.0;
+    switch (l.input) {
+      case CameraLayer::Input::kSpeedMph: x = std::fabs(in.speed) * kMph; break;
+      case CameraLayer::Input::kSpeed: x = std::clamp(std::fabs(in.speed) * kMph / 200.0, 0.0, 1.0); break;
+      case CameraLayer::Input::kConstantOne: x = 1.0; break;
+      case CameraLayer::Input::kOneWhenStationary: x = std::fabs(in.speed) < 0.5 ? 1.0 : 0.0; break;
+      case CameraLayer::Input::kPitchDegrees: x = in.pitch_degrees; break;
+      case CameraLayer::Input::kGsLongitudinal: x = in.g_longitudinal; break;
+      case CameraLayer::Input::kGsLateral: x = in.g_lateral; break;
+      case CameraLayer::Input::kSlipLongitudinal: x = in.slip_longitudinal; break;
+      case CameraLayer::Input::kSlipLateral: x = in.slip_lateral; break;
+      case CameraLayer::Input::kSlip: x = std::hypot(in.slip_longitudinal, in.slip_lateral); break;
+      case CameraLayer::Input::kSurfaceBumpFL: x = in.surface_bump[0]; break;
+      case CameraLayer::Input::kSurfaceBumpFR: x = in.surface_bump[1]; break;
+      case CameraLayer::Input::kSurfaceBumpRL: x = in.surface_bump[2]; break;
+      case CameraLayer::Input::kSurfaceBumpRR: x = in.surface_bump[3]; break;
+      case CameraLayer::Input::kSuspensionBiasLongitudinal: x = in.suspension_bias_longitudinal; break;
+      case CameraLayer::Input::kWorldCollision:
+        x = std::hypot(in.world_collision_longitudinal, in.world_collision_lateral);
+        break;
+      case CameraLayer::Input::kWorldCollisionLongitudinal: x = in.world_collision_longitudinal; break;
+      case CameraLayer::Input::kWorldCollisionLateral: x = in.world_collision_lateral; break;
+      case CameraLayer::Input::kCarCollision:
+        x = std::hypot(in.car_collision_longitudinal, in.car_collision_lateral);
+        break;
+      case CameraLayer::Input::kCarCollisionLongitudinal: x = in.car_collision_longitudinal; break;
+      case CameraLayer::Input::kCarCollisionLateral: x = in.car_collision_lateral; break;
     }
+    x = std::clamp(x, l.clamp_min, l.clamp_max);
     LayerState& st = layer_state_[i];
-    if (l.sprung && st.started) {
+    if (l.take_derivative) {
+      const double raw = x;
+      x = (!st.started || dt >= kSettle || dt <= 1e-6) ? 0.0 : (raw - st.prev_in) / dt;
+      st.prev_in = raw;
+    }
+    if (l.mag_attack_decay) {
+      const double mag = std::fabs(x);
+      if (mag > 1e-9) st.env_sign = x < 0 ? -1.0 : 1.0;
+      if (!st.started || dt >= kSettle) {
+        st.env = mag;
+      } else if (mag > st.env) {
+        st.env = std::min(mag, st.env + l.input_attack * dt);
+      } else {
+        st.env = std::max(mag, st.env - l.input_decay * dt);
+      }
+      x = st.env * st.env_sign;
+    }
+
+    double s = eval_curve(l.mapping, l.points, l.mirrored, x);
+
+    if (l.noise != CameraLayer::Noise::kNone) {
+      if (!st.started) st.noise_phase = l.noise_seed;
+      const double f_mult = eval_curve(l.noise_freq_mapping, l.noise_freq_points, l.noise_freq_mirrored, x);
+      if (dt < kSettle) st.noise_phase += dt * l.noise_freq * f_mult;
+      const double n = eval_noise(l.noise, st.noise_phase);
+      const double mapped = l.noise_range_min + 0.5 * (n + 1.0) * (l.noise_range_max - l.noise_range_min);
+      s *= mapped;
+    }
+
+    const bool is_impulse =
+        l.output == CameraLayer::Output::kCarYPRImpulse || l.output == CameraLayer::Output::kCameraYPRImpulse;
+    if (is_impulse) {
+      if (!st.started || dt >= kSettle) {
+        st.x = 0;
+        st.v = 0;
+        st.impulse_timer = -1.0;
+        st.pending_impulse = 0.0;
+      } else {
+        if (std::fabs(x) >= l.impulse_cutoff && std::fabs(s) > 1e-9) {
+          if (l.impulse_delay > 0.0) {
+            st.pending_impulse = s;
+            st.impulse_timer = l.impulse_delay;
+          } else {
+            st.v += s;
+          }
+        }
+        if (st.impulse_timer >= 0.0) {
+          st.impulse_timer -= dt;
+          if (st.impulse_timer <= 0.0) {
+            st.v += st.pending_impulse;
+            st.pending_impulse = 0.0;
+            st.impulse_timer = -1.0;
+          }
+        }
+        const double k = l.spring_k > 0 ? l.spring_k : 100.0;
+        const double d_pct = l.spring_d_percent > 0 ? l.spring_d_percent : 0.7;
+        spring_implicit(st.x, st.v, 0.0, k, d_pct * 2.0 * std::sqrt(k), dt);
+      }
+    } else if (l.sprung && st.started) {
       // Damping SpringDPercent of critical (2 sqrt K): the spec's reading.
       spring_implicit(st.x, st.v, s, l.spring_k, l.spring_d_percent * 2 * std::sqrt(l.spring_k), dt);
     } else {
@@ -264,9 +441,11 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
     std::array<double, 3>* xyz = nullptr;
     switch (l.output) {
       case CameraLayer::Output::kCarXYZ: xyz = &out.car_xyz; break;
-      case CameraLayer::Output::kCarYPR: xyz = &out.car_ypr; break;
+      case CameraLayer::Output::kCarYPR:
+      case CameraLayer::Output::kCarYPRImpulse: xyz = &out.car_ypr; break;
       case CameraLayer::Output::kCameraXYZ: xyz = &out.camera_xyz; break;
-      case CameraLayer::Output::kCameraYPR: xyz = &out.camera_ypr; break;
+      case CameraLayer::Output::kCameraYPR:
+      case CameraLayer::Output::kCameraYPRImpulse: xyz = &out.camera_ypr; break;
       case CameraLayer::Output::kFov: out.fov += l.param[0] * v; break;
     }
     if (xyz)
@@ -385,14 +564,26 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
   // from the eye the layers move (SPEC-CAMERAS, How the layers compose).
   const V3 look_at = add(com, {0, car_.box_max[1] - car_.com[1] + target + c_, 0});
   V3 f = normalise(add(look_at, mul(eye, -1)));
-  // The layers' car-space offsets (the speed pull-back, the pitch lift).
+  // The layers' car-space offsets (the speed pull-back, the pitch lift),
+  // plus camera-space offsets along the view's right/up/forward axes.
   eye = add(eye, vector(in.car_to_world, l.car_xyz));
+  if (l.camera_xyz[0] != 0 || l.camera_xyz[1] != 0 || l.camera_xyz[2] != 0) {
+    const V3 cam_right = normalise(cross({0, 1, 0}, f));
+    const V3 cam_up = normalise(cross(f, cam_right));
+    eye = add(eye, add(mul(cam_right, l.camera_xyz[0]),
+                       add(mul(cam_up, l.camera_xyz[1]), mul(f, l.camera_xyz[2]))));
+  }
   // Clearance (probable): 0.3 m above the world under the eye.
   if (in.ground_below) {
     double gy = 0;
     if (in.ground_below(eye[0], eye[1] + 2.0, eye[2], gy) && eye[1] < gy + kClearance) eye[1] = gy + kClearance;
   }
-  // The layers' pitch (positive down), about the view's right axis.
+  // The layers' yaw (positive right) and pitch (positive down).
+  const double layer_yaw = (l.car_ypr[0] + l.camera_ypr[0]) * kDeg;
+  if (layer_yaw != 0) {
+    const double cy = std::cos(layer_yaw), sy = std::sin(layer_yaw);
+    f = {f[0] * cy + f[2] * sy, f[1], -f[0] * sy + f[2] * cy};
+  }
   const double pitch = (l.car_ypr[1] + l.camera_ypr[1]) * kDeg;
   if (pitch != 0) {
     const double horizontal = std::hypot(f[0], f[2]);
@@ -467,7 +658,21 @@ CameraView DriveCamera::on_car(const CameraInput& in, const LayerOut& l) {
   CameraView v;
   v.eye = point(in.car_to_world, eye);
   v.forward = normalise(vector(in.car_to_world, direction(yaw, pitch * kDeg)));
-  v.up = normalise(vector(in.car_to_world, {0, 1, 0}));
+  V3 up = normalise(vector(in.car_to_world, {0, 1, 0}));
+  if (l.camera_xyz[0] != 0 || l.camera_xyz[1] != 0 || l.camera_xyz[2] != 0) {
+    const V3 cam_right = normalise(cross(up, v.forward));
+    const V3 cam_up = normalise(cross(v.forward, cam_right));
+    v.eye = add(v.eye, add(mul(cam_right, l.camera_xyz[0]),
+                           add(mul(cam_up, l.camera_xyz[1]), mul(v.forward, l.camera_xyz[2]))));
+  }
+  const double roll = (l.car_ypr[2] + l.camera_ypr[2]) * kDeg;
+  if (roll != 0) {
+    const double d = v.forward[0] * up[0] + v.forward[1] * up[1] + v.forward[2] * up[2];
+    const V3 u = normalise({up[0] - d * v.forward[0], up[1] - d * v.forward[1], up[2] - d * v.forward[2]});
+    const V3 right = cross(v.forward, u);
+    up = add(mul(u, std::cos(roll)), mul(right, std::sin(roll)));
+  }
+  v.up = up;
   v.fov_degrees = fov + l.fov;
   v.near_clip = near_clip;
   v.interior = mode_ == CameraMode::kCockpit;

@@ -905,14 +905,14 @@ const char* difficulty_name(race::Difficulty d) {
 // (with a note) when something is missing: the drive keeps the old chase.
 bool load_camera_rig(const std::filesystem::path& game_root, const std::filesystem::path& bake_dir,
                      const cars::bake::CarInfo& info, const drive::Vehicle& v, drive::DriveCamera& rig,
-                     std::string& note) {
+                     std::string& note, bool camera_effects = true) {
   cars::Install install;
   const char* state = std::getenv("SHIFT_STATE_ROOT");
   std::string ini, xml;
   drive::CameraTuning tuning;
   if (!cars::discover_install(game_root, state ? state : "", "", install, &note) ||
-      !cars::load_camera_files(install, ini, xml, &note) || !drive::parse_camera_settings(ini, tuning, &note) ||
-      !drive::parse_camera_physics(xml, tuning, &note))
+      !cars::load_camera_files(install, ini, xml, &note, camera_effects) ||
+      !drive::parse_camera_settings(ini, tuning, &note) || !drive::parse_camera_physics(xml, tuning, &note))
     return false;
   // The box's z shift and the pristine box (the fallback) from the bake's rows.
   cars::CarPhysics physics;
@@ -978,13 +978,29 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
   int down = 0;
   const double c = std::cos(info.pitch), s = std::sin(info.pitch);
+  double slip_long_sum = 0, slip_lat_sum = 0;
   for (int i = 0; i < 4; ++i) {
     const auto& w = v.wheels()[size_t(i)];
     down += w.contact ? 1 : 0;
     const double y = w.centre.y - v.params().tyre_radius[size_t(i)] - info.lift;
     in.wheel_ground_y[size_t(i)] = c * y + s * w.centre.z;
+    in.surface_bump[size_t(i)] = w.contact ? w.compression : 0.0;
+    slip_long_sum += w.slip_ratio;
+    slip_lat_sum += w.slip_angle;
   }
   in.contact = down / 4.0;
+  in.slip_longitudinal = slip_long_sum * 0.25;
+  in.slip_lateral = slip_lat_sum * 0.25;
+  in.suspension_bias_longitudinal =
+      0.5 * (v.wheels()[0].compression + v.wheels()[1].compression) -
+      0.5 * (v.wheels()[2].compression + v.wheels()[3].compression);
+  if (v.body_contact_force() > 0.0) {
+    const auto& bc = v.strongest_body_contact();
+    const double mag = bc.force / std::max(1.0, v.params().mass);
+    const drive::Vec3 right = drive::rotate(v.orientation(), {1, 0, 0});
+    in.world_collision_longitudinal = mag * (bc.normal.x * fwd.x + bc.normal.y * fwd.y + bc.normal.z * fwd.z);
+    in.world_collision_lateral = mag * (bc.normal.x * right.x + bc.normal.y * right.y + bc.normal.z * right.z);
+  }
   if (ground)
     in.ground_below = [ground](double x, double y, double z, double& gy) {
       drive::Hit hit;

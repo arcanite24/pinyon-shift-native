@@ -21,22 +21,63 @@ enum class CameraMode { kFollowLow = 0, kFollowHigh, kCockpit, kHood, kBumper };
 constexpr int kCameraModes = 5;
 const char* camera_mode_name(CameraMode m);
 
-// One CameraPhysics.xml layer (SPEC-CAMERAS, Camera physics layers). Only
-// the layers without noise whose input is the speed, a constant one or the
-// car's pitch are kept; the rest (motion effects and shake) are counted.
+// One CameraPhysics.xml layer (SPEC-CAMERAS, Camera physics layers):
+// steady speed/g/pitch layers as well as bump, slip, collision jolt and
+// noise shake layers.
 struct CameraLayer {
-  enum class Input { kSpeedMph, kConstantOne, kPitchDegrees, kGsLongitudinal, kGsLateral };
-  enum class Output { kCarXYZ, kCarYPR, kCameraXYZ, kCameraYPR, kFov };
+  enum class Input {
+    kSpeedMph,
+    kSpeed,
+    kConstantOne,
+    kOneWhenStationary,
+    kPitchDegrees,
+    kGsLongitudinal,
+    kGsLateral,
+    kSlipLongitudinal,
+    kSlipLateral,
+    kSlip,
+    kSurfaceBumpFL,
+    kSurfaceBumpFR,
+    kSurfaceBumpRL,
+    kSurfaceBumpRR,
+    kSuspensionBiasLongitudinal,
+    kWorldCollision,
+    kWorldCollisionLongitudinal,
+    kWorldCollisionLateral,
+    kCarCollision,
+    kCarCollisionLongitudinal,
+    kCarCollisionLateral,
+  };
+  enum class Output {
+    kCarXYZ,
+    kCarYPR,
+    kCameraXYZ,
+    kCameraYPR,
+    kCarYPRImpulse,
+    kCameraYPRImpulse,
+    kFov,
+  };
   enum class Mapping { kConstantOne, kLinear, kPoints };
+  enum class Noise { kNone, kPerlin, kSimplex, kHeightGrid, kSin };
   Input input = Input::kConstantOne;
   Output output = Output::kFov;
   Mapping mapping = Mapping::kConstantOne;
   double clamp_min = -1e30, clamp_max = 1e30;
+  bool take_derivative = false;
+  bool mag_attack_decay = false;
+  double input_attack = 0, input_decay = 0;
   std::vector<std::pair<double, double>> points;  // the curve, by input
   bool mirrored = false;
+  Noise noise = Noise::kNone;
+  Mapping noise_freq_mapping = Mapping::kConstantOne;
+  std::vector<std::pair<double, double>> noise_freq_points;
+  bool noise_freq_mirrored = false;
+  double noise_freq = 1.0, noise_seed = 0.0;
+  double noise_range_min = -1.0, noise_range_max = 1.0;
   std::array<double, 4> param{};  // x, y, z, w
   bool sprung = false;
   double spring_k = 0, spring_d_percent = 0;
+  double impulse_cutoff = 0, impulse_delay = 0;
 };
 
 // CameraSettings.ini and CameraPhysics.xml.
@@ -85,6 +126,12 @@ struct CameraInput {
   double g_longitudinal = 0, g_lateral = 0;
   // Each wheel's ground point's height in the car frame (LF, RF, LR, RR).
   std::array<double, 4> wheel_ground_y{};
+  // Motion-effect and jolt layer inputs (SPEC-CAMERAS, Camera physics layers).
+  double slip_longitudinal = 0, slip_lateral = 0;
+  std::array<double, 4> surface_bump{};  // FL, FR, RL, RR surface/suspension bump
+  double suspension_bias_longitudinal = 0;
+  double world_collision_longitudinal = 0, world_collision_lateral = 0;
+  double car_collision_longitudinal = 0, car_collision_lateral = 0;
   // The world's height under a point (for the chase clearance); empty: none.
   std::function<bool(double x, double y, double z, double& ground_y)> ground_below;
 };
@@ -128,6 +175,10 @@ class DriveCamera {
  private:
   struct LayerState {
     double x = 0, v = 0;
+    double prev_in = 0;
+    double env = 0, env_sign = 1.0;
+    double noise_phase = 0;
+    double impulse_timer = -1.0, pending_impulse = 0.0;
     bool started = false;
   };
   struct LayerOut {
