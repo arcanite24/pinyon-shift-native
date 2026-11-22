@@ -154,6 +154,57 @@ const char* camera_mode_name(CameraMode m) {
   return kNames[int(m)];
 }
 
+const char* driving_view_name(DrivingView v) {
+  switch (v) {
+    case DrivingView::kNormal: return "normal";
+    case DrivingView::kWheel: return "wheel";
+    case DrivingView::kReplay: return "replay";
+  }
+  return "normal";
+}
+
+const char* immersive_preset_name(ImmersivePreset p) {
+  switch (p) {
+    case ImmersivePreset::kOff: return "off";
+    case ImmersivePreset::kSubtle: return "subtle";
+    case ImmersivePreset::kDefault: return "default";
+    case ImmersivePreset::kStrong: return "strong";
+    case ImmersivePreset::kCustom: return "custom";
+  }
+  return "off";
+}
+
+ImmersivePreset parse_immersive_preset(std::string_view text) {
+  std::string l(text);
+  for (char& c : l) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  if (l == "subtle") return ImmersivePreset::kSubtle;
+  if (l == "default") return ImmersivePreset::kDefault;
+  if (l == "strong") return ImmersivePreset::kStrong;
+  if (l == "custom") return ImmersivePreset::kCustom;
+  return ImmersivePreset::kOff;
+}
+
+void ImmersiveCameraConfig::apply_preset(ImmersivePreset p) {
+  double v = 0.0;
+  switch (p) {
+    case ImmersivePreset::kOff: v = 0.0; break;
+    case ImmersivePreset::kSubtle: v = 0.5; break;
+    case ImmersivePreset::kDefault: v = 1.0; break;
+    case ImmersivePreset::kStrong: v = 1.5; break;
+    case ImmersivePreset::kCustom: return;
+  }
+  gforce = lean = shake = head = v;
+}
+
+ImmersivePreset ImmersiveCameraConfig::detect_preset() const {
+  auto eq = [](double a, double b) { return std::fabs(a - b) < 1e-3; };
+  if (eq(gforce, 0.0) && eq(lean, 0.0) && eq(shake, 0.0) && eq(head, 0.0)) return ImmersivePreset::kOff;
+  if (eq(gforce, 0.5) && eq(lean, 0.5) && eq(shake, 0.5) && eq(head, 0.5)) return ImmersivePreset::kSubtle;
+  if (eq(gforce, 1.0) && eq(lean, 1.0) && eq(shake, 1.0) && eq(head, 1.0)) return ImmersivePreset::kDefault;
+  if (eq(gforce, 1.5) && eq(lean, 1.5) && eq(shake, 1.5) && eq(head, 1.5)) return ImmersivePreset::kStrong;
+  return ImmersivePreset::kCustom;
+}
+
 bool parse_camera_settings(std::string_view ini, CameraTuning& out, std::string* error) {
   std::map<std::string, double> v;
   while (!ini.empty()) {
@@ -457,6 +508,11 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
 void DriveCamera::start(const CameraInput& in) {
   started_ = true;
   layer_state_.clear();
+  imm_g_long_ = 0;
+  imm_g_lat_ = 0;
+  imm_prev_g_long_ = in.g_longitudinal;
+  imm_jolt_ = 0;
+  imm_jolt_v_ = 0;
   look_ = look_target_;
   if (mode_ == CameraMode::kFollowLow || mode_ == CameraMode::kFollowHigh) {
     const int i = mode_ == CameraMode::kFollowLow ? 0 : 1;
@@ -483,6 +539,110 @@ void DriveCamera::start(const CameraInput& in) {
   if (mode_ == CameraMode::kBumper) bumper_ground_ = in.wheel_ground_y[0];
 }
 
+DriveCamera::LayerOut DriveCamera::step_immersive(double dt, const CameraInput& in) {
+  LayerOut out;
+  const double gf = std::clamp(immersive_.gforce, 0.0, 2.0);
+  const double ln = std::clamp(immersive_.lean, 0.0, 2.0);
+  const double sh = std::clamp(immersive_.shake, 0.0, 2.0);
+  const double hd = std::clamp(immersive_.head, 0.0, 2.0);
+  if (gf <= 0.0 && ln <= 0.0 && sh <= 0.0 && hd <= 0.0) return out;
+
+  const bool is_cockpit = mode_ == CameraMode::kCockpit;
+  const bool is_hood = mode_ == CameraMode::kHood;
+  const bool is_chase_or_bumper = !is_cockpit && !is_hood;
+  // Cockpit gets full effect, hood gets 70% of lean/shake/head, chase & bumper get G-forces only.
+  const double cabin_scale = is_cockpit ? 1.0 : (is_hood ? 0.70 : 0.0);
+
+  if (dt >= kSettle) {
+    imm_g_long_ = std::clamp(in.g_longitudinal, -2.5, 2.5);
+    imm_g_lat_ = std::clamp(in.g_lateral, -2.5, 2.5);
+    imm_prev_g_long_ = imm_g_long_;
+    imm_jolt_ = 0.0;
+    imm_jolt_v_ = 0.0;
+  } else {
+    const double a = 1.0 - std::exp(-dt * 9.0);
+    const double gl_raw = std::clamp(in.g_longitudinal, -2.5, 2.5);
+    const double gla_raw = std::clamp(in.g_lateral, -2.5, 2.5);
+    imm_g_long_ += (gl_raw - imm_g_long_) * a;
+    imm_g_lat_ += (gla_raw - imm_g_lat_) * a;
+    // Throttle/brake onset jolt from longitudinal G derivative.
+    const double dg = dt > 1e-5 ? std::clamp((gl_raw - imm_prev_g_long_) / dt, -25.0, 25.0) : 0.0;
+    imm_prev_g_long_ = gl_raw;
+    if (std::fabs(dg) > 2.0) imm_jolt_v_ += std::clamp(dg * 0.015, -0.4, 0.4);
+    spring_implicit(imm_jolt_, imm_jolt_v_, 0.0, 65.0, 2.0 * 0.65 * std::sqrt(65.0), dt);
+    imm_phase_ += dt;
+  }
+
+  // 1. G-Force push-back under acceleration, throw-forward under braking, and onset jolt.
+  if (gf > 0.0) {
+    const double z_gain = is_chase_or_bumper ? 0.14 : 0.045;
+    // Positive g_longitudinal (accelerating) pushes camera back (-Z); braking throws forward (+Z).
+    out.camera_xyz[2] += (-imm_g_long_ * z_gain - imm_jolt_ * (is_chase_or_bumper ? 0.10 : 0.03)) * gf;
+    // Pitch dive under braking, slight squat under acceleration.
+    out.camera_ypr[1] += (-imm_g_long_ * (is_chase_or_bumper ? 0.65 : 1.15) - imm_jolt_ * 1.6) * gf;
+    // Slight lateral shift in chase/cockpit under lateral G.
+    out.camera_xyz[0] += (-imm_g_lat_ * (is_chase_or_bumper ? 0.10 : 0.028)) * gf;
+  }
+
+  // 2. Corner lean (roll & subtle look-into-apex yaw in cockpit & hood).
+  if (ln > 0.0 && cabin_scale > 0.0) {
+    out.camera_ypr[2] += (imm_g_lat_ * 2.4) * ln * cabin_scale;
+    out.camera_ypr[0] += (imm_g_lat_ * 1.6) * ln * cabin_scale;
+  }
+
+  // 3. Speed & hard-braking micro-shake (cockpit & hood).
+  if (sh > 0.0 && cabin_scale > 0.0) {
+    const double speed_n = std::clamp((std::fabs(in.speed) * kMph - 25.0) / 150.0, 0.0, 1.0);
+    const double brake_hard = std::clamp((-imm_g_long_ - 0.55) / 1.0, 0.0, 1.0);
+    const double amp = (0.0045 * speed_n * speed_n + 0.0055 * brake_hard) * sh * cabin_scale;
+    const double n1 = eval_noise(CameraLayer::Noise::kPerlin, imm_phase_ * (14.0 + 18.0 * speed_n));
+    const double n2 = eval_noise(CameraLayer::Noise::kSimplex, imm_phase_ * (17.0 + 20.0 * speed_n) + 13.7);
+    out.camera_xyz[0] += n1 * amp;
+    out.camera_xyz[1] += n2 * amp;
+    out.camera_ypr[1] += n2 * (0.28 * speed_n + 0.45 * brake_hard) * sh * cabin_scale;
+  }
+
+  // 4. Slow cockpit breathing & subtle head sway.
+  if (hd > 0.0 && cabin_scale > 0.0) {
+    const double breath = std::sin(2.0 * kPi * 0.24 * imm_phase_);
+    const double sway = std::sin(2.0 * kPi * 0.17 * imm_phase_ + 0.8);
+    out.camera_xyz[1] += 0.0045 * breath * hd * cabin_scale;
+    out.camera_xyz[0] += 0.0040 * sway * hd * cabin_scale;
+    out.camera_ypr[2] += 0.35 * sway * hd * cabin_scale;
+  }
+
+  return out;
+}
+
+CameraView DriveCamera::special_view(const CameraInput& in, const LayerOut& l) {
+  CameraView v;
+  V3 eye_local{};
+  double yaw = 0.0, pitch = 0.0, fov = 56.0;
+  if (editor_.driving_view == DrivingView::kWheel) {
+    // Front-left wheel-arch driving camera looking forward past the front tyre.
+    eye_local = {car_.box_min[0] - 0.28, car_.box_min[1] + 0.48, car_.com[2] - 0.15};
+    yaw = 0.06;
+    pitch = 1.5;
+    fov = 60.0;
+  } else {
+    // Car-relative dynamic low 3/4 replay driving view.
+    eye_local = {car_.box_max[0] + 1.35, car_.box_max[1] + 0.35, car_.box_min[2] - 2.35};
+    yaw = -0.32;
+    pitch = 4.0;
+    fov = 48.0;
+  }
+  eye_local = add(eye_local, l.car_xyz);
+  v.eye = point(in.car_to_world, eye_local);
+  v.forward = normalise(vector(in.car_to_world, direction(yaw + (l.car_ypr[0] + l.camera_ypr[0]) * kDeg,
+                                                          (pitch + l.car_ypr[1] + l.camera_ypr[1]) * kDeg)));
+  v.up = normalise(vector(in.car_to_world, {0, 1, 0}));
+  v.fov_degrees = fov + l.fov;
+  v.near_clip = 0.2;
+  v.mode = mode_;
+  v.interior = false;
+  return v;
+}
+
 CameraView DriveCamera::update(double dt, const CameraInput& in) {
   dt = std::fabs(dt);
   if (!started_) {
@@ -491,9 +651,26 @@ CameraView DriveCamera::update(double dt, const CameraInput& in) {
   }
   if (dt >= kSettle) look_ = look_target_;
   else look_ += (look_target_ - look_) * (1 - std::exp(-dt / kLookTime));
-  const LayerOut l = step_layers(dt, in);
-  CameraView v = mode_ == CameraMode::kFollowLow || mode_ == CameraMode::kFollowHigh ? chase(dt, in, l) : on_car(in, l);
+  LayerOut l = step_layers(dt, in);
+  const LayerOut imm = step_immersive(dt, in);
+  for (size_t k = 0; k < 3; ++k) {
+    l.car_xyz[k] += imm.car_xyz[k];
+    l.car_ypr[k] += imm.car_ypr[k];
+    l.camera_xyz[k] += imm.camera_xyz[k];
+    l.camera_ypr[k] += imm.camera_ypr[k];
+  }
+  l.fov += imm.fov;
+
+  CameraView v;
+  if (editor_.driving_view != DrivingView::kNormal) {
+    v = special_view(in, l);
+  } else {
+    v = mode_ == CameraMode::kFollowLow || mode_ == CameraMode::kFollowHigh ? chase(dt, in, l) : on_car(in, l);
+  }
   v.mode = mode_;
+  if (editor_.driving_view == DrivingView::kNormal && !head_pose_.is_zero()) {
+    apply_head_tracking(v, head_pose_, mode_);
+  }
   return v;
 }
 
@@ -505,8 +682,12 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     const double o = car_.override(p + column);
     return o != 0 ? o : global;
   };
-  const double height = pick("HeightOffset", t.height), radius = pick("RadiusOffset", t.radius),
-               target = pick("TargetYOffset", t.target);
+  const double height = pick("HeightOffset", t.height) + editor_.chase_height_m;
+  const double radius = pick("RadiusOffset", t.radius) + editor_.chase_distance_m;
+  const double target = pick("TargetYOffset", t.target);
+  const double stiff = std::clamp(editor_.chase_stiffness, 0.5, 2.0);
+  const double stiff_d = std::sqrt(stiff);  // preserves damping ratio
+  const double fov_scale = std::clamp(editor_.chase_fov_scale, 0.8, 1.3);
   const V3 com = point(in.car_to_world, car_.com);
 
   // Heading spring (SPEC-CAMERAS, Q51): the damping acts on the camera's
@@ -519,7 +700,7 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     omega_ = 0;
   } else {
     const double e = std::remainder(in.heading - theta_, 2 * kPi);
-    omega_ += dt * in.contact * (t.yaw_k * e - t.yaw_d * (omega_ - t.yaw_car_damp * in.yaw_rate));
+    omega_ += dt * in.contact * (t.yaw_k * stiff * e - t.yaw_d * stiff_d * (omega_ - t.yaw_car_damp * in.yaw_rate));
     omega_ = std::clamp(omega_, -t.yaw_max_speed, t.yaw_max_speed);
     theta_ = std::remainder(theta_ + dt * omega_, 2 * kPi);
   }
@@ -527,10 +708,11 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
 
   // Distance: the box's rear behind the CoM, the radius offset and d_base,
   // times sin(F) / sin(F + dF), F the full vertical tuning FOV (Q51).
-  const double fov = t.fov + l.fov;
+  const double base_fov = t.fov * fov_scale;
+  const double fov = base_fov + l.fov;
   const double rear = car_.com[2] - car_.box_min[2];
   double r = rear + radius + kBaseDistance[i];
-  r *= std::sin(t.fov * kDeg) / std::sin(fov * kDeg);
+  r *= std::sin(base_fov * kDeg) / std::sin(fov * kDeg);
   const double yaw = theta_ + look_;
   const V3 ahead{std::sin(yaw), 0, std::cos(yaw)};
   V3 eye = add(com, mul(ahead, -r));
@@ -556,7 +738,7 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     h_ = h_target;
     h_rate_ = 0;
   } else {
-    h_rate_ += dt * (t.height_k * (h_target - h_) - t.height_d * h_rate_);
+    h_rate_ += dt * (t.height_k * stiff * (h_target - h_) - t.height_d * stiff_d * h_rate_);
     h_ += dt * h_rate_;
   }
   eye[1] = com[1] + height + c_ + h_;

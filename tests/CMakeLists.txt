@@ -74,6 +74,12 @@ target_include_directories(wheel_dualsense_tests PRIVATE ../apps/carview)
 target_link_libraries(wheel_dualsense_tests PRIVATE shift_drive fh1data)
 add_test(NAME wheel_dualsense_tests COMMAND wheel_dualsense_tests)
 
+add_executable(camera_telemetry_tests camera_telemetry_tests.cpp ../apps/carview/camera_editor.cpp
+               ../apps/carview/ui.cpp ../apps/carview/ui4_chrome.cpp)
+target_include_directories(camera_telemetry_tests PRIVATE ../apps/carview)
+target_link_libraries(camera_telemetry_tests PRIVATE shift_drive fh1data)
+add_test(NAME camera_telemetry_tests COMMAND camera_telemetry_tests)
+
 # SPEC-TRAFFIC: the road map, the settings and the time-of-day factor over
 # the player's files (skipped, exit 77, without SHIFT_GAME_ROOT).
 add_executable(traffic_tests traffic_tests.cpp)

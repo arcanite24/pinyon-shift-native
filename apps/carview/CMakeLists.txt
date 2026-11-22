@@ -85,6 +85,7 @@ set(carview_sources
   rally_hub.cpp
   settings.cpp
   settings_page.cpp
+  camera_editor.cpp
   photo_mode.cpp
   replay_view.cpp
   achievements.cpp

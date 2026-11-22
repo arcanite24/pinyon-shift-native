@@ -14,12 +14,47 @@
 #include <string_view>
 #include <vector>
 
+#include "drive/head_tracking.h"
+
 namespace drive {
 
 // The driving group, in the cycle's order (the game's modes 0 to 4).
 enum class CameraMode { kFollowLow = 0, kFollowHigh, kCockpit, kHood, kBumper };
 constexpr int kCameraModes = 5;
 const char* camera_mode_name(CameraMode m);
+
+// Live Camera Editor overrides (Pinyon Shift F6 > DISPLAY > CAMERA EDITOR).
+enum class DrivingView { kNormal = 0, kWheel = 1, kReplay = 2 };
+const char* driving_view_name(DrivingView v);
+
+struct CameraEditorConfig {
+  double chase_height_m = 0.0;      // -0.50 .. +1.50 m
+  double chase_distance_m = 0.0;    // -1.00 .. +3.00 m
+  double chase_fov_scale = 1.0;     // 0.80 .. 1.30 (percentage of chase FOV)
+  double chase_stiffness = 1.0;     // 0.50 .. 2.00 (K *= s, D *= sqrt(s) preserves damping ratio)
+  DrivingView driving_view = DrivingView::kNormal;
+
+  void reset() { *this = CameraEditorConfig{}; }
+  bool is_default() const {
+    return chase_height_m == 0.0 && chase_distance_m == 0.0 && chase_fov_scale == 1.0 &&
+           chase_stiffness == 1.0 && driving_view == DrivingView::kNormal;
+  }
+};
+
+// Immersive Camera layered over DriveCamera (F6 > DISPLAY > IMMERSIVE CAMERA).
+enum class ImmersivePreset { kOff = 0, kSubtle = 1, kDefault = 2, kStrong = 3, kCustom = 4 };
+const char* immersive_preset_name(ImmersivePreset p);
+ImmersivePreset parse_immersive_preset(std::string_view text);
+
+struct ImmersiveCameraConfig {
+  double gforce = 0.0;  // 0.0 .. 2.0 (accel push-back, brake throw, onset jolts)
+  double lean = 0.0;    // 0.0 .. 2.0 (corner roll & yaw lean; cockpit/hood)
+  double shake = 0.0;   // 0.0 .. 2.0 (speed vibration & hard-braking judder; cockpit/hood)
+  double head = 0.0;    // 0.0 .. 2.0 (cockpit breathing & head sway; cockpit/hood)
+
+  void apply_preset(ImmersivePreset p);
+  ImmersivePreset detect_preset() const;
+};
 
 // One CameraPhysics.xml layer (SPEC-CAMERAS, Camera physics layers):
 // steady speed/g/pitch layers as well as bump, slip, collision jolt and
@@ -153,6 +188,13 @@ class DriveCamera {
   void cycle();  // SwitchCamera: the next mode, wrapping
   // The look stick's target: 0 ahead, pi back, +pi/2 right, -pi/2 left.
   void set_look(double angle) { look_target_ = angle; }
+  // Live Camera Editor, Immersive Camera, and OpenTrack head tracking layers.
+  void set_camera_editor(const CameraEditorConfig& cfg) { editor_ = cfg; }
+  const CameraEditorConfig& camera_editor() const { return editor_; }
+  void set_immersive_camera(const ImmersiveCameraConfig& cfg) { immersive_ = cfg; }
+  const ImmersiveCameraConfig& immersive_camera() const { return immersive_; }
+  void set_head_pose(const HeadPose& pose) { head_pose_ = pose; }
+  const HeadPose& head_pose() const { return head_pose_; }
   // Starts the current camera again (a reset or a new car).
   void restart() { started_ = false; }
   // Steps the springs by dt (a dt over half a second settles them) and
@@ -186,15 +228,24 @@ class DriveCamera {
     double fov = 0;
   };
   LayerOut step_layers(double dt, const CameraInput& in);
+  LayerOut step_immersive(double dt, const CameraInput& in);
   CameraView chase(double dt, const CameraInput& in, const LayerOut& l);
   CameraView on_car(const CameraInput& in, const LayerOut& l);
+  CameraView special_view(const CameraInput& in, const LayerOut& l);
   void start(const CameraInput& in);
 
   CameraTuning tuning_;
   CameraCar car_;
   CameraMode mode_ = CameraMode::kFollowLow;
+  CameraEditorConfig editor_;
+  ImmersiveCameraConfig immersive_;
+  HeadPose head_pose_;
   bool started_ = false;
   std::vector<LayerState> layer_state_;
+  // Immersive camera runtime springs/phases.
+  double imm_g_long_ = 0, imm_g_lat_ = 0;
+  double imm_prev_g_long_ = 0, imm_jolt_ = 0, imm_jolt_v_ = 0;
+  double imm_phase_ = 0;
   double look_ = 0, look_target_ = 0;
   // Chase state.
   // slope_hold_: seconds since three or more wheels last touched.
