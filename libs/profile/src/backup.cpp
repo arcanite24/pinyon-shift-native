@@ -173,7 +173,10 @@ bool snapshot(const Config& cfg, std::string_view reason, Entry* out, std::strin
     for (const auto& r : fs::directory_iterator(cfg.replays_dir, ec))
       if (r.is_regular_file(ec))
         list << "replay " << r.path().filename().string() << " " << r.file_size(ec) << " "
-             << r.last_write_time(ec).time_since_epoch().count() << "\n";
+             << static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    r.last_write_time(ec).time_since_epoch())
+                    .count())
+             << "\n";
     const std::string s = list.str();
     std::vector<uint8_t> bytes(s.begin(), s.end());
     write_bytes(tmp / "replays.txt", bytes);

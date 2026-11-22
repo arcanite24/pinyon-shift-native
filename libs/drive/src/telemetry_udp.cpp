@@ -360,7 +360,7 @@ struct UdpSender::Impl {
 #else
   using Socket = int;
   static constexpr Socket kNoSocket = -1;
-  static void close_sock(Socket s) { close(s); }
+  static void close_sock(Socket s) { ::close(s); }
 #endif
   Socket sock = kNoSocket;
   sockaddr_storage addr{};
