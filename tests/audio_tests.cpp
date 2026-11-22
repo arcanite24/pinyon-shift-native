@@ -14,6 +14,8 @@
 #include "audio/audio_engine.h"
 #include "audio/bake.h"
 #include "audio/engine_player.h"
+#include "audio/event_configs.h"
+#include "audio/fev.h"
 #include "audio/fsb4.h"
 #include "audio/mixer.h"
 #include "audio/rt.h"
@@ -864,6 +866,119 @@ void snapshot_and_master_dsp_checks() {
   }
 }
 
+// SPEC-AUDIO-EVENTS Parts 1 & 2: 6-point 3D rolloff, Doppler, BOV thresholds,
+// and full base-disc 34-FEV / XML census checks.
+void fev_and_event_config_checks() {
+  // BOV thresholds.
+  CHECK(audio::select_bov_variant(4.5) == audio::BovVariant::kNone);
+  CHECK(audio::select_bov_variant(8.0) == audio::BovVariant::kLo);
+  CHECK(audio::select_bov_variant(13.0) == audio::BovVariant::kLo);
+  CHECK(audio::select_bov_variant(15.0) == audio::BovVariant::kHi);
+
+  // 6-point 3D rolloff curve.
+  audio::RolloffCurve rc{10.0f, 50.0f, 100.0f, 200.0f};
+  const float dists[] = {0, 10, 30, 50, 100, 200, 250, 300};
+  const float want[] = {1.0f, 1.0f, 0.675f, 0.35f, 0.10f, 0.05f, 0.025f, 0.0f};
+  for (size_t i = 0; i < 8; ++i) CHECK(near(rc.eval(dists[i], 1.0f), want[i], 1e-5));
+  CHECK(audio::replay_fov_rolloff_scale(0.35f, 0.87f, 0.45f) > 1.4f);
+
+  // Doppler & stereo pan.
+  const float dp_approach = audio::compute_doppler_pitch({0, 0, 0}, {0, 0, 0}, {0, 0, 50}, {0, 0, -34}, 1.0f);
+  const float dp_recede = audio::compute_doppler_pitch({0, 0, 0}, {0, 0, 0}, {0, 0, 50}, {0, 0, 34}, 1.0f);
+  CHECK(near(dp_approach, 340.0 / 306.0, 1e-4));
+  CHECK(near(dp_recede, 340.0 / 374.0, 1e-4));
+  float pl = 0, pr = 0;
+  audio::compute_stereo_pan({0, 0, 0}, {1, 0, 0}, {10, 0, 0}, pl, pr);
+  CHECK(pr > 0.99f && pl < 0.01f);
+
+  const char* game = std::getenv("SHIFT_GAME_ROOT");
+  if (!game) return;
+  namespace fs = std::filesystem;
+  const fs::path audio_root = fs::path(game) / "media" / "audio";
+  int fev_files = 0, v40 = 0, v37 = 0;
+  int total_events = 0, complex_ev = 0, simple_ev = 0;
+  int total_sdefs = 0, total_entries = 0, wavetable = 0, silence = 0, programmer = 0;
+  audio::FevProject ui_fev, gen_fev;
+  std::string err;
+  for (const auto& entry : fs::recursive_directory_iterator(audio_root)) {
+    if (!entry.is_regular_file()) continue;
+    std::string ext = entry.path().extension().string();
+    for (char& c : ext) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (ext != ".fev") continue;
+    audio::FevProject proj;
+    if (!audio::load_fev(entry.path(), proj, &err)) {
+      std::printf("FAIL load_fev %s: %s\n", entry.path().string().c_str(), err.c_str());
+      ++failures;
+      continue;
+    }
+    ++fev_files;
+    if (proj.version == 0x00400000u) ++v40;
+    else if (proj.version == 0x00370000u) ++v37;
+    total_events += int(proj.events.size());
+    for (const auto& ev : proj.events) {
+      if (ev.is_complex()) ++complex_ev;
+      else if (ev.is_simple()) ++simple_ev;
+    }
+    total_sdefs += int(proj.sound_defs.size());
+    for (const auto& sd : proj.sound_defs) {
+      total_entries += int(sd.entries.size());
+      for (const auto& e : sd.entries) {
+        if (e.entry_type == 0) ++wavetable;
+        else if (e.entry_type == 2) ++silence;
+        else if (e.entry_type == 3) ++programmer;
+      }
+    }
+    if (audio::iequals(proj.name, "UIInGame")) ui_fev = std::move(proj);
+    else if (audio::iequals(proj.name, "General")) gen_fev = std::move(proj);
+  }
+  std::printf("disc fev census: %d files (%d v40, %d v37), %d events (%d complex, %d simple), %d sdefs, %d entries\n",
+              fev_files, v40, v37, total_events, complex_ev, simple_ev, total_sdefs, total_entries);
+  CHECK(fev_files == 34 && v40 == 32 && v37 == 2);
+  CHECK(total_events == 1093 && complex_ev == 418 && simple_ev == 675);
+  CHECK(total_sdefs == 1032 && total_entries == 4342);
+  CHECK(wavetable == 4242 && silence == 96 && programmer == 4);
+
+  // ui4audio.xml census + 100% resolution of non-Blank entries to UIInGame/General.
+  audio::UiAudioMap uimap;
+  CHECK(uimap.load(game, &err));
+  CHECK(uimap.total_entries() == 762 && uimap.defaults.size() == 757);
+  int non_blank = 0, resolved = 0, blank = 0;
+  auto check_entry = [&](const audio::UiAudioEntry& e) {
+    if (e.is_blank()) {
+      ++blank;
+    } else {
+      ++non_blank;
+      const std::string p = e.full_path();
+      if (ui_fev.find_event(p) || gen_fev.find_event(p)) ++resolved;
+    }
+  };
+  for (const auto& e : uimap.defaults) check_entry(e);
+  for (const auto& [k, list] : uimap.overrides)
+    for (const auto& e : list) check_entry(e);
+  std::printf("disc ui4audio: %d total, %d/%d non-blank resolved, %d blank\n", uimap.total_entries(), resolved,
+              non_blank, blank);
+  CHECK(non_blank == 382 && resolved == 382 && blank == 380);
+
+  // Tires.xml, SurfaceChanges.xml, CollisionData.xml, Backfire*, GlobalRolloffs*.
+  audio::TiresConfig tc;
+  CHECK(tc.load(game, &err));
+  CHECK(tc.surfaces.size() == 42 && tc.changes.size() == 581);
+  CHECK(tc.surface_change_event("Asphalt", "Brick") == "HardToHard");
+
+  audio::CollisionAudioConfig cc;
+  CHECK(cc.load(game, &err));
+  CHECK(cc.pairs.size() == 615 && near(cc.ms_between_diff_collisions, 75.0, 1e-3));
+  CHECK(cc.find_pair("Asphalt", "CarAluminum") != nullptr);
+
+  audio::BackfireConfig bc;
+  CHECK(bc.load(game, &err));
+  CHECK(bc.levels[0].silence_weighting == 100 && bc.levels[3].silence_weighting == 80);
+
+  audio::RolloffConfig rg, rt;
+  CHECK(rg.load(game, false, false, &err) && rt.load(game, true, false, &err));
+  CHECK(near(rg.chassis_exhaust_l.min_dist, 10.0, 1e-3));
+}
+
 }  // namespace
 
 int main() {
@@ -875,6 +990,7 @@ int main() {
   rt_checks();
   mixer_checks();
   snapshot_and_master_dsp_checks();
+  fev_and_event_config_checks();
   user_music_checks();
   audio_thread_checks();
   r34_checks();
