@@ -78,11 +78,13 @@ float eval_auto_exposure() {
   } else {
     ev_curve = p.exp_ev.w;
   }
-  float ev_total = clamp(ev_curve + p.def.w, -2.0, 6.0);
-  return exp2(ev_total);
+  // p.def.w holds linear base filmic exposure (TrackSettings filmicTone.exposure = 0.31),
+  // modulated by the 4-key adaptive EV curve so midday ~0.31 and midnight ~0.68..0.78.
+  float base_exp = max(p.def.w, 0.05);
+  return clamp(base_exp * exp2(clamp(ev_curve, -2.0, 4.0)), 0.05, 8.0);
 }
 
-vec3 raw_scene(vec2 uv) { return min(max(texture(src, clamp(uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0)), vec3(4.0)); }
+vec3 raw_scene(vec2 uv) { return min(max(texture(src, clamp(uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0)), vec3(64.0)); }
 
 bool is_sky_depth(float z, bool rev_z) {
   return rev_z ? (z <= 1e-4) : (z >= 0.9999);
@@ -331,19 +333,24 @@ void main() {
     t = mix(t, texture(lut3d, uvw).rgb, clamp(opt.modern_p.z, 0.0, 1.0));
   }
 
-  // Paired rotated elliptical VignetteTop + VignetteBottom (Vignette_Templates.xml), or legacy vignette.
+  // Paired rotated elliptical VignetteTop + VignetteBottom (SKY_AND_TOD.md §5.5 step 4):
+  // evaluated in sqrt (gamma-2) space with FH1's subtractive sky-tinting formula.
   float vig_scale = clamp(p.mode.w, 0.0, 1.0);
   if ((oflags & 32u) != 0u) {
+    vec3 s = sqrt(max(t, vec3(0.0)));
     if (opt.vig_top_col.w > 0.001) {
       float m_top = eval_rotated_vignette(v_uv, opt.vig_top_geom, opt.vig_top_rot);
-      float a_top = clamp(m_top * opt.vig_top_col.w * max(vig_scale, 0.35) * 0.45, 0.0, 0.55);
-      t = mix(t, t * opt.vig_top_col.rgb, a_top);
+      float a_top = clamp(m_top * opt.vig_top_col.w * max(vig_scale, 0.35), 0.0, 1.0);
+      vec3 target_top = clamp(s - vec3(1.0) + opt.vig_top_col.rgb, vec3(0.0), vec3(1.0));
+      s = mix(s, target_top, a_top);
     }
     if (opt.vig_bot_col.w > 0.001) {
       float m_bot = eval_rotated_vignette(v_uv, opt.vig_bot_geom, opt.vig_bot_rot);
-      float a_bot = clamp(m_bot * opt.vig_bot_col.w * max(vig_scale, 0.35) * 0.45, 0.0, 0.55);
-      t = mix(t, t * opt.vig_bot_col.rgb, a_bot);
+      float a_bot = clamp(m_bot * opt.vig_bot_col.w * max(vig_scale, 0.35), 0.0, 1.0);
+      vec3 target_bot = clamp(s - vec3(1.0) + opt.vig_bot_col.rgb, vec3(0.0), vec3(1.0));
+      s = mix(s, target_bot, a_bot);
     }
+    t = s * s;
   } else if (vig_scale > 0.001) {
     vec2 q = (v_uv - vec2(0.5)) * 2.0;
     float r2 = dot(q, q);
@@ -366,5 +373,6 @@ void main() {
     t = mix(t, sep, clamp(opt.dof.w, 0.0, 1.0));
   }
   t = clamp(t * p.balance.rgb, vec3(0.0), vec3(1.0));
-  out_color = vec4(encode_srgb(t), opt.modern_p.w);
+  // FH1 display transfer (SKY_AND_TOD.md §5.5): gamma-2.0 sqrt output, preserving modern_p.w alpha.
+  out_color = vec4(sqrt(t), opt.modern_p.w);
 }

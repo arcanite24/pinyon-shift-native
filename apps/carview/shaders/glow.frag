@@ -25,6 +25,6 @@ void main() {
   float mask = max(t.a, dot(t.rgb, vec3(0.3333)));
   if (mask <= 0.004) discard;
   vec3 col = t.rgb * v_color.rgb;
-  if (kLinearOut) col = min(col, vec3(4.0));
+  if (kLinearOut) col = min(col, vec3(64.0));
   out_color = vec4(col, clamp(mask * v_color.a, 0.0, 1.0));
 }

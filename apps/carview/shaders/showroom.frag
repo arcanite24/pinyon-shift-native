@@ -37,10 +37,12 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 paint_finish;       // x finish (0..7), y two_tone_scale, z two_tone_bias, w window_tint (0..1)
   vec4 damage_dirt;        // x body_dirt, y tyre_dirt, z glass_crack, w scratch_amount
   vec4 damage_zones;       // x front, y rear, z left, w right (0..1)
+  vec4 car_sun_color;      // rgb sun scaled by IBLDirectScaleCar, w ibl_direct_car (<0 fallback)
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 layout(set = 0, binding = 5) uniform sampler2D mirror_map;
+layout(set = 0, binding = 7) uniform samplerCube static_environment;
 
 struct CarInstanceGpu {
   mat4 model;
@@ -83,7 +85,20 @@ vec3 encode_srgb(vec3 c) {
 }
 
 layout(constant_id = 0) const bool kLinearOut = false;
-vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
+vec3 filmic_showroom(vec3 x) {
+  // Soft Hable shoulder for standalone UNORM showroom (drive.w < 0.5) so HDR
+  // staticcarcubemap.xpr 80-97 studio strips roll cleanly without clipping white paint.
+  const float A = 0.22, B = 0.30, C = 0.10, D = 0.20, E = 0.01, F = 0.30;
+  vec3 num = (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
+  float w = 8.0;
+  float den = (w * (A * w + C * B) + D * E) / (w * (A * w + B) + D * F) - E / F;
+  return clamp(num / den, vec3(0.0), vec3(1.0));
+}
+vec3 out_rgb(vec3 c) {
+  if (kLinearOut) return min(max(c, vec3(0.0)), vec3(64.0));
+  if (frame.drive.w < 0.5) return encode_srgb(filmic_showroom(max(c, vec3(0.0)) * 1.65));
+  return encode_srgb(c);
+}
 
 const vec3 kSunColour = vec3(0.9695, 0.8358, 0.584);
 const vec3 kSkyColour = vec3(0.1687, 0.2229, 0.2746);
@@ -174,7 +189,7 @@ vec3 env(vec3 dir, float lod) {
     }
     return drive_env(dir, lod);
   }
-  return textureLod(environment, dir, lod).rgb * frame.options.y;
+  return textureLod(static_environment, dir, lod).rgb * frame.options.y;
 }
 
 void main() {
@@ -182,6 +197,7 @@ void main() {
   uint flags = uint(draw.params.y + 0.5);
   vec4 draw_tint = draw.tint;
   vec3 stripe_rgb = frame.stripe.rgb;
+  uint submat = uint(max(draw.params.z, 0.0) + 0.5);
   if ((flags & kFlagInstanced) != 0u) {
     stripe_rgb = car_instances[v_instance].stripe.rgb;
     uint ch = (flags >> 14u) & 31u;
@@ -210,6 +226,10 @@ void main() {
   float alpha = 1.0;
   vec3 emissive = vec3(0.0);
   float flake_boost = 0.0;
+  bool is_clearcoat = false;
+  float coat_mask = 1.0;
+  float paint_metallic = 0.0;
+  float paint_scale = 1.0;
 
   if ((flags & kFlagGrille) != 0u) {
     if ((flags & kFlagCutout) != 0u && t1.a < 0.5) discard;
@@ -220,12 +240,14 @@ void main() {
     vec3 paint_col = draw_tint.rgb;
     int finish = int(frame.paint_finish.x + 0.5);
     if (finish == 1) {
-      // Metallic Flake (ShaderSettings/Metallic.xml): crisp sparkle & metallic depth.
+      // Metallic Flake (ShaderSettings/Metallic.xml): crisp sparkle & dual-lobe metallic depth.
       float flake = hash21(floor(v_position.xz * 260.0 + v_position.y * 260.0));
-      flake_boost = smoothstep(0.76, 0.99, flake) * 0.45;
-      metal = max(frame.options.w, 0.52);
-      gloss = 0.92;
-      reflectivity = 0.08;
+      flake_boost = smoothstep(0.76, 0.99, flake) * 0.55;
+      is_clearcoat = true;
+      paint_metallic = 1.0;
+      paint_scale = 0.50;
+      gloss = 0.94;
+      reflectivity = 0.047;
     } else if (finish == 2) {
       // Matte (ShaderSettings/Matte.xml): satin sheen, low environment mirror.
       metal = 0.04;
@@ -239,10 +261,12 @@ void main() {
       float fres = clamp(pow(1.0 - nv, clamp(tt_pow * 0.25, 0.8, 5.0)) * (1.2 + tt_scale * 2.0) + tt_bias, 0.0, 1.0);
       paint_col = mix(paint_col, frame.paint_two_tone.rgb, fres);
       float flake = hash21(floor(v_position.xz * 240.0 + v_position.y * 240.0));
-      flake_boost = smoothstep(0.74, 0.99, flake) * 0.55;
-      metal = 0.62;
-      gloss = 0.94;
-      reflectivity = 0.10;
+      flake_boost = smoothstep(0.74, 0.99, flake) * 0.60;
+      is_clearcoat = true;
+      paint_metallic = 1.0;
+      paint_scale = 0.50;
+      gloss = 0.95;
+      reflectivity = 0.047;
     } else if (finish == 4) {
       // Chrome special finish.
       metal = 0.94;
@@ -253,16 +277,20 @@ void main() {
       vec2 wuv = v_position.xz * 55.0 + v_position.yy * 55.0;
       float weave = sin(wuv.x) * cos(wuv.y);
       paint_col = mix(paint_col * 0.22, paint_col * 0.52, 0.5 + 0.5 * weave);
-      metal = 0.18;
-      gloss = 0.88;
-      reflectivity = 0.06;
+      is_clearcoat = true;
+      paint_metallic = 0.20;
+      paint_scale = 0.90;
+      gloss = 0.92;
+      reflectivity = 0.047;
     } else if (finish == 6) {
       // Wood grain special finish.
       float ring = sin((v_position.z * 16.0 + fbm(v_position.xz * 6.0) * 4.0) * 3.14159);
       paint_col = mix(paint_col * 0.45, paint_col * 1.05, 0.5 + 0.5 * ring);
-      metal = 0.02;
-      gloss = 0.55;
-      reflectivity = 0.04;
+      is_clearcoat = true;
+      paint_metallic = 0.0;
+      paint_scale = 1.0;
+      gloss = 0.78;
+      reflectivity = 0.047;
     } else if (finish == 7) {
       // Camouflage special finish.
       float c1 = fbm(v_position.xz * 3.2 + v_position.y * 2.4);
@@ -274,14 +302,29 @@ void main() {
       gloss = 0.18;
       reflectivity = 0.02;
     } else {
-      reflectivity = 0.05;
-      gloss = 0.9;
-      if ((flags & kFlagMetallic) != 0u) metal = frame.options.w;
+      // FH1 stock paint (Normal.xml / Metallic.xml): always 2-layer clearcoat;
+      // metallic rows get PaintScale=0.5 + blurred metallic cube + dual flake lobes.
+      is_clearcoat = true;
+      reflectivity = 0.047;
+      gloss = 0.95;
+      if ((flags & kFlagMetallic) != 0u) {
+        paint_metallic = 1.0;
+        paint_scale = 0.50;
+        float flake = hash21(floor(v_position.xz * 260.0 + v_position.y * 260.0));
+        flake_boost = smoothstep(0.80, 0.99, flake) * 0.30;
+      }
     }
 
     vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * stripe_rgb : t0.rgb;
     base = mix(paint_col, texel, t0.a);
-    if ((flags & kFlagRaceLivery) != 0u) base = t0.rgb;
+    // Non-paint baked atlas details (badges, black trim) are not metallic flake.
+    paint_metallic *= (1.0 - t0.a);
+    paint_scale = mix(paint_scale, 1.0, t0.a);
+    if ((flags & kFlagRaceLivery) != 0u) {
+      base = t0.rgb;
+      paint_metallic = 0.0;
+      paint_scale = 1.0;
+    }
 
     // Livery layer: options.z > 1.5 composites custom 1024^2 RGBA vinyls;
     // options.z in (0.5, 1.5) draws the legacy magenta mask overlay.
@@ -289,9 +332,11 @@ void main() {
       vec4 liv = texture(livery, v_uv0);
       float mask_a = liv.a * (1.0 - t0.a);
       base = mix(base, liv.rgb, mask_a);
-      // Vinyl decals have glossy clear-over-vinyl response.
-      metal = mix(metal, 0.08, mask_a * 0.85);
-      gloss = mix(gloss, 0.86, mask_a * 0.75);
+      // Vinyl decals sit under glossy clearcoat without metallic flake.
+      paint_metallic *= (1.0 - mask_a * 0.85);
+      paint_scale = mix(paint_scale, 1.0, mask_a);
+      metal = mix(metal, 0.04, mask_a * 0.85);
+      gloss = mix(gloss, 0.90, mask_a * 0.75);
     } else if ((flags & kFlagLivery) != 0u && frame.options.z > 0.5) {
       base = mix(base, vec3(1.0, 0.0, 1.0), 0.5 * texture(livery, v_uv0).r * (1.0 - t0.a));
     }
@@ -299,28 +344,36 @@ void main() {
     base = mix(draw_tint.rgb, t0.rgb, t0.a);
     gloss = 0.65;
   } else if (klass == kGlass) {
-    float wtint = clamp(frame.paint_finish.w, 0.0, 1.0);
-    base = mix(vec3(0.01, 0.012, 0.016), vec3(0.002, 0.003, 0.004), wtint);
-    reflectivity = 0.06;
-    gloss = 0.95;
-    alpha = mix(0.60, 0.94, wtint);
-    if ((flags & kFlagCover) != 0u) {
-      base = draw_tint.rgb;
-      alpha = draw_tint.r - draw_tint.g > 0.1 ? 0.72 : 0.16;
-    }
-    if ((flags & kFlagLampEmissive) != 0u) {
-      emissive = draw_tint.rgb;
-    }
-    // Cracked windshield / glass spiderweb fracture lines when damage_dirt.z > 0.
-    float crack = frame.damage_dirt.z;
-    if (crack > 0.05 && (flags & kFlagCover) == 0u) {
-      vec2 cp = v_position.xz * 12.0 + v_position.y * 8.0;
-      float radial = abs(sin(atan(cp.y, cp.x) * 9.0 + fbm(cp * 2.5) * 3.5));
-      float rings = abs(sin(length(cp) * 7.0 + fbm(cp * 3.0) * 2.0));
-      float line_mask = smoothstep(0.14, 0.02, min(radial, rings)) * smoothstep(0.05, 0.55, crack);
-      base = mix(base, vec3(0.75, 0.80, 0.86), line_mask * 0.75);
-      alpha = clamp(alpha + line_mask * 0.35, 0.0, 0.98);
-      gloss = mix(gloss, 0.25, line_mask);
+    if (submat == 6u) {
+      // Rear-window defroster heater lines (defrost_lines, 69 base cars): thin translucent amber wires.
+      base = vec3(0.24, 0.08, 0.02);
+      reflectivity = 0.02;
+      gloss = 0.35;
+      alpha = 0.24;
+    } else {
+      float wtint = clamp(frame.paint_finish.w, 0.0, 1.0);
+      base = mix(vec3(0.01, 0.012, 0.016), vec3(0.002, 0.003, 0.004), wtint);
+      reflectivity = 0.06;
+      gloss = 0.95;
+      alpha = mix(0.60, 0.94, wtint);
+      if ((flags & kFlagCover) != 0u) {
+        base = draw_tint.rgb;
+        alpha = draw_tint.r - draw_tint.g > 0.1 ? 0.72 : 0.16;
+      }
+      if ((flags & kFlagLampEmissive) != 0u) {
+        emissive = draw_tint.rgb;
+      }
+      // Cracked windshield / glass spiderweb fracture lines when damage_dirt.z > 0.
+      float crack = frame.damage_dirt.z;
+      if (crack > 0.05 && (flags & kFlagCover) == 0u) {
+        vec2 cp = v_position.xz * 12.0 + v_position.y * 8.0;
+        float radial = abs(sin(atan(cp.y, cp.x) * 9.0 + fbm(cp * 2.5) * 3.5));
+        float rings = abs(sin(length(cp) * 7.0 + fbm(cp * 3.0) * 2.0));
+        float line_mask = smoothstep(0.14, 0.02, min(radial, rings)) * smoothstep(0.05, 0.55, crack);
+        base = mix(base, vec3(0.75, 0.80, 0.86), line_mask * 0.75);
+        alpha = clamp(alpha + line_mask * 0.35, 0.0, 0.98);
+        gloss = mix(gloss, 0.25, line_mask);
+      }
     }
   } else if (klass == kLamp) {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
@@ -331,21 +384,35 @@ void main() {
       emissive = draw_tint.rgb;
     }
   } else if (klass == kInterior || klass == kGauge) {
+    if ((flags & kFlagCutout) != 0u && (flags & kFlagSlot1) != 0u && t1.a < 0.5) discard;
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
-    if (klass == kInterior) base = ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.01)) * draw_tint.rgb;
-    if (klass == kGauge && (flags & kFlagLampEmissive) != 0u) {
-      emissive = base * draw_tint.rgb;
+    if (klass == kInterior) {
+      base = ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.02)) * draw_tint.rgb;
+      if (submat == 5u) {
+        // Cockpit brushed metal / metal2 trim.
+        metal = 0.60;
+        gloss = 0.65;
+        reflectivity = 0.22;
+      } else {
+        gloss = 0.22;
+      }
+    } else {
+      if ((flags & kFlagLampEmissive) != 0u) {
+        emissive = base * draw_tint.rgb;
+      }
+      gloss = 0.25;
     }
-    gloss = 0.2;
   } else if (klass == kTyre) {
-    base = (flags & kFlagSlot1) != 0u ? pow(t1.rgb, vec3(2.2)) : vec3(0.03);
+    // BC3_SRGB already decodes sidewall/tread textures to linear in hardware (no extra pow(2.2)!).
+    base = (flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.035);
     // Dynamic off-road tyre mud & dust coating (damage_dirt.y).
     if (frame.damage_dirt.y > 0.01) {
       float mud_n = fbm(v_position.xz * 18.0 + v_position.y * 14.0);
       float mud = clamp(frame.damage_dirt.y * (0.55 + 0.65 * mud_n), 0.0, 0.88);
       base = mix(base, vec3(0.16, 0.11, 0.065), mud);
     }
-    gloss = 0.15;
+    reflectivity = 0.035;
+    gloss = 0.18;
   } else if (klass == kRim) {
     // Allow painted aftermarket rims when draw.tint != white.
     base *= draw_tint.rgb;
@@ -364,8 +431,33 @@ void main() {
       base = mix(base, acc / 7.0, wblur * 0.92);
       base = mix(base, vec3(dot(base, vec3(0.3, 0.59, 0.11))) * 1.08, wblur * 0.22);
     }
-    gloss = mix(0.75, 0.86, clamp(draw.params.w, 0.0, 1.0));
-    metal = 0.6;
+    if (submat == 1u) {
+      // outer_rim (Tire/Normal.xml: PaintScale=0, CubeScale=1 pure chrome lip).
+      metal = 0.94;
+      gloss = 0.96;
+      reflectivity = 0.72;
+    } else if (submat == 2u) {
+      // inner_rim / wheel_black (Tire/Normal.xml: dark matte barrel, CubeScale=0).
+      base *= 0.40;
+      metal = 0.12;
+      gloss = 0.22;
+      reflectivity = 0.03;
+    } else if (submat == 3u) {
+      // rotor / brake / drum (brushed iron disc).
+      metal = 0.65;
+      gloss = 0.52;
+      reflectivity = 0.24;
+    } else if (submat == 4u) {
+      // hub (machined alloy).
+      metal = 0.72;
+      gloss = 0.70;
+      reflectivity = 0.35;
+    } else {
+      // Standard painted alloy rim (Tire/Normal.xml: PaintScale=0.65, CubeScale=0.20).
+      gloss = mix(0.78, 0.88, clamp(draw.params.w, 0.0, 1.0));
+      metal = 0.52;
+      reflectivity = 0.16;
+    }
   } else if (klass == kChrome) {
     float wblur = clamp(draw.params.w, 0.0, 1.0);
     if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
@@ -381,16 +473,20 @@ void main() {
       }
       base = mix(base, acc / 7.0, wblur * 0.88);
     }
-    gloss = 0.95;
-    metal = 0.9;
+    gloss = 0.96;
+    metal = 0.92;
+    reflectivity = 0.80;
   } else if (klass == kWorld) {
     base = draw_tint.rgb;
     reflectivity = 0.02;
     gloss = 0.05;
   } else if (klass == kCarbon) {
     base = t0.rgb * ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(1.0));
-    reflectivity = 0.05;
-    gloss = 0.85;
+    is_clearcoat = true;
+    paint_metallic = 0.12;
+    paint_scale = 0.85;
+    reflectivity = 0.06;
+    gloss = 0.88;
   }
 
   // Cosmetic scratches, scuffs & exposed primer/metal on impacted body zones,
@@ -410,6 +506,7 @@ void main() {
       base = mix(base, bare_metal, clamp(scuff * 0.92, 0.0, 0.92));
       gloss = mix(gloss, 0.14, clamp(scuff * 0.85, 0.0, 0.85));
       metal = mix(metal, 0.35, clamp(scuff * 0.50, 0.0, 0.50));
+      coat_mask *= (1.0 - clamp(scuff * 0.90, 0.0, 0.90));
     }
     if (frame.damage_dirt.x > 0.01) {
       // Lower-body road grit & wheel-arch mud splatter (strongest near ground y < 0.55 m).
@@ -423,40 +520,93 @@ void main() {
       base = mix(base, mud_col, dirt);
       gloss = mix(gloss, 0.08, dirt * 0.92);
       metal = mix(metal, 0.0, dirt * 0.95);
+      coat_mask *= (1.0 - dirt * 0.95);
     }
   }
 
   float occlusion = mix(0.35, 1.0, v_occlusion);
-  if (klass == kInterior || klass == kGauge) occlusion *= 0.4;
+  if (klass == kInterior || klass == kGauge) occlusion *= 0.45;
   vec3 key = normalize(frame.key_light.xyz), fill = normalize(frame.fill_light.xyz);
-  vec3 diffuse_light = env(n, 7.0) * frame.tint_light.rgb * occlusion +
-                       (frame.key_light.w * max(dot(n, key), 0.0) * mix(0.5, 1.0, occlusion) +
-                        frame.fill_light.w * max(dot(n, fill), 0.0) * occlusion) * frame.tint_light.rgb;
-  float fresnel = reflectivity + (1.0 - reflectivity) * pow(1.0 - nv, 5.0);
-  vec3 specular_colour = mix(vec3(fresnel), base * mix(0.5, 1.0, fresnel), metal);
-  vec3 reflection = env(r, (1.0 - gloss) * 7.0) * frame.reflect_tint.rgb * occlusion;
   vec3 h = normalize(view + key);
-  vec3 highlight = pow(max(dot(n, h), 0.0), mix(8.0, 400.0, gloss)) * frame.key_light.w * gloss * frame.tint_light.rgb;
-  if (flake_boost > 0.0) {
-    highlight += base * flake_boost * pow(max(dot(n, h), 0.0), 18.0) * frame.key_light.w;
-  }
+  float nh = max(dot(n, h), 0.0);
+  float ndl = max(dot(n, key), 0.0);
+
+  vec3 diffuse_light = env(n, 6.0) * frame.tint_light.rgb * occlusion +
+                       (frame.key_light.w * ndl * mix(0.5, 1.0, occlusion) +
+                        frame.fill_light.w * max(dot(n, fill), 0.0) * occlusion) * frame.tint_light.rgb;
+  vec3 direct_col = frame.key_light.w * frame.tint_light.rgb;
+  float lit = 1.0;
+  float occ_refl = occlusion;
 
   if (frame.drive.w > 0.5) {
     vec3 up = normalize(frame.drive.xyz);
-    vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
+    // Use car-specific sun color scaled by IBLDirectScaleCar (0.6238 vs env 1.30).
+    vec3 sun_col = frame.car_sun_color.w >= 0.0
+                       ? frame.car_sun_color.rgb
+                       : (frame.sun_color.w >= 0.0 ? frame.sun_color.rgb * 0.48 : kSunColour * 0.48);
     vec3 sky_col = frame.sun_color.w >= 0.0 ? frame.car_light_top.rgb : kSkyColour;
     vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.car_light_bot.rgb : kGroundColour;
+    // Provide subtle ground-bounce floor when TimeOfDayA CarHLColourBottom is zero so undersides aren't black voids.
+    if (dot(gnd_col, vec3(1.0)) < 0.02) {
+      vec3 world_gnd = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
+      gnd_col = max(world_gnd * 0.45, sky_col * 0.16);
+    }
     float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
-    float ndl = max(dot(n, key), 0.0);
     float raw_lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
-    float lit = mix(1.0, raw_lit, shadow_scale);
+    lit = mix(1.0, raw_lit, shadow_scale);
+    // Removed ad-hoc * 1.4 ambient boost so clearcoat reflections contrast cleanly against diffuse paint.
     diffuse_light = sun_col * ndl * lit * mix(0.6, 1.0, occlusion) +
-                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * occlusion * 1.4;
-    reflection *= mix(0.5, 1.0, lit);
-    float power = mix(8.0, 400.0, gloss);
-    highlight = sun_col * pow(max(dot(n, h), 0.0), power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
+                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * occlusion;
+    direct_col = sun_col;
+    // DynamicEnvLightmapDampner = 0.30 (0.50 for chrome per Normal.xml).
+    float damp = (klass == kChrome) ? 0.50 : 0.35;
+    occ_refl = occlusion * mix(damp, 1.0, lit);
   }
-  vec3 colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
+
+  float fresnel = reflectivity + (1.0 - reflectivity) * pow(1.0 - nv, 5.0);
+  vec3 specular_colour = mix(vec3(fresnel), base * mix(0.5, 1.0, fresnel), metal);
+  vec3 reflection = env(r, (1.0 - gloss) * 6.0) * frame.reflect_tint.rgb * occ_refl;
+  vec3 highlight = vec3(0.0);
+  if (frame.drive.w > 0.5) {
+    float power = mix(8.0, 400.0, gloss);
+    highlight = direct_col * pow(nh, power) * (power + 8.0) * 0.04 * ndl * lit * gloss;
+  } else {
+    highlight = pow(nh, mix(8.0, 400.0, gloss)) * direct_col * gloss;
+  }
+
+  vec3 colour;
+  if (is_clearcoat) {
+    // True FH1 Two-Layer Car Paint BRDF (Normal.xml + Metallic.xml):
+    // Layer 1 (Clearcoat): neutral dielectric Fresnel (IOR=1.55, F0=0.047, FresnelScalar=0.90)
+    //   sampling sharp mip-0 cubemap + tight white sun highlight.
+    // Layer 2 (Basecoat, attenuated by 1 - F_coat): diffuse * PaintScale + (when metallic)
+    //   base-tinted blurred glossy cubemap + dual broad metallic flake lobes (Power2=6, Power3=4).
+    float F_coat = clamp(0.047 + 0.90 * pow(1.0 - nv, 4.2), 0.047, 0.95) * coat_mask;
+    vec3 coat_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
+    vec3 coat_spec = direct_col * pow(nh, 110.0) * 2.2 * ndl * lit * coat_mask;
+
+    vec3 basecoat = base * paint_scale * diffuse_light;
+    if (paint_metallic > 0.01) {
+      vec3 met_cube = env(r, 3.2) * frame.reflect_tint.rgb * occ_refl;
+      float broad2 = pow(nh, 6.0) * 0.52;
+      float broad3 = pow(nh, 4.0) * 0.28;
+      basecoat += base * met_cube * 0.55 * paint_metallic;
+      basecoat += base * direct_col * (broad2 + broad3) * ndl * lit * paint_metallic;
+      if (flake_boost > 0.0) {
+        basecoat += base * direct_col * flake_boost * pow(nh, 22.0) * ndl * lit;
+      }
+    }
+    colour = basecoat * (1.0 - F_coat) + F_coat * coat_refl + coat_spec + emissive;
+  } else {
+    colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
+    if (klass == kTyre) {
+      // Tire/Normal.xml: broad satin rubber specular (SpecularPower = 5.0) + soft grazing rubber sheen.
+      float rubber_spec = pow(nh, 5.0) * 0.16 * ndl * lit;
+      float rubber_rim = pow(1.0 - nv, 3.0) * 0.06;
+      colour += direct_col * rubber_spec + env(n, 5.0) * rubber_rim * occlusion;
+    }
+  }
+
   if ((flags & kFlagMirror) != 0u) {
     if (frame.shadow_far_bias.w > 0.5) {
       float rz = max(r.z, 0.2);

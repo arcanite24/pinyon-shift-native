@@ -1120,16 +1120,47 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       std::memcpy(d.push.uv0, &s.uv_transform[0], 4 * sizeof(float));
       std::memcpy(d.push.uv1, &s.uv_transform[4], 4 * sizeof(float));
       uint32_t flags = 0;
+      const std::string technique = lower(s.technique);
+      // Classify active emissive lamp channel and re-classify technique BEFORE resolving slot 1
+      // so newly classified interior/lamp/carbon/rim/defrost techniques always bind their real textures
+      // (both on freshly baked and existing v3 .shiftbake packs).
+      d.lamp_channel = drive::classify_lamp_technique(s.technique);
+      d.brake_lamp = (d.lamp_channel == drive::LampChannel::kBrake ||
+                      d.lamp_channel == drive::LampChannel::kTailBrake2S ||
+                      d.lamp_channel == drive::LampChannel::kTail);
+      MaterialClass klass = cars::classify(s.technique, s.transparent, model.role);
+      if (klass == MaterialClass::kOpaque && d.lamp_channel != drive::LampChannel::kNone) {
+        klass = (d.lamp_channel == drive::LampChannel::kGaugeBacklight ||
+                 d.lamp_channel == drive::LampChannel::kDigitalGauge ||
+                 d.lamp_channel == drive::LampChannel::kNumPlate)
+                    ? MaterialClass::kGauge
+                    : MaterialClass::kLamp;
+      }
+      const bool is_defrost = (technique == "defrost_lines");
+      // Resolve slot 1 (with fallback for existing v3 .shiftbake packs whose slots[1] was empty).
+      std::string slot1 = s.slots[1];
+      if (slot1.empty()) {
+        if (klass == MaterialClass::kInterior || klass == MaterialClass::kGauge) {
+          slot1 = "car:interior_lod0.xds";
+        } else if (klass == MaterialClass::kLamp ||
+                   (klass == MaterialClass::kGlass && technique.rfind("detail_glass_", 0) == 0)) {
+          slot1 = (s.lod == 0) ? "car:lights_lod0.xds" : "car:lights.xds";
+        } else if (klass == MaterialClass::kCarbon) {
+          slot1 = "shared:carbonfiber.xds";
+        }
+      }
       // Glass techniques never sample the body atlas (FORMAT-CARS, Paint):
       // an opaque glass draw (the windscreen's black_glass band) is a flat
-      // dark grey, the shade of the glass draws' constant not being known.
-      const bool flat_glass = s.material != MaterialClass::kGlass && s.slots[0] == "@atlas" &&
-                              s.technique.find("glass") != std::string::npos;
+      // dark grey; defrost_lines is rendered as thin translucent copper-amber heater lines.
+      const bool flat_glass = (klass != MaterialClass::kGlass && s.slots[0] == "@atlas" &&
+                               technique.find("glass") != std::string::npos) ||
+                              is_defrost;
       const uint32_t t0 = flat_glass ? UINT32_MAX : texture_index(s.slots[0], pack, s.lod == 0);
-      const uint32_t t1 = texture_index(s.slots[1], pack, s.lod == 0);
+      uint32_t t1 = texture_index(slot1, pack, s.lod == 0);
+      if (t1 == UINT32_MAX && slot1 == "car:lights.xds") t1 = texture_index("car:lights_lod0.xds", pack, true);
       if (t0 == UINT32_MAX) flags |= kFlagNoSlot0;
       if (t1 != UINT32_MAX) flags |= kFlagSlot1;
-      if (s.material == MaterialClass::kPaint) {
+      if (klass == MaterialClass::kPaint) {
         if (colour) {
           d.push.tint[0] = srgb_to_linear(float((colour->rgb >> 16) & 0xFF) / 255.0f);
           d.push.tint[1] = srgb_to_linear(float((colour->rgb >> 8) & 0xFF) / 255.0f);
@@ -1149,7 +1180,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         // A factory livery (HasRaceLivery): the texel at every alpha, no
         // paint (FORMAT-CARS, Factory liveries).
         if (stock_ && stock_->race_livery) flags |= kFlagRaceLivery;
-      } else if (s.material == MaterialClass::kCaliper) {
+      } else if (klass == MaterialClass::kCaliper) {
         const uint32_t rgb = info.caliper_rgb[size_t(axle)];
         d.push.tint[0] = float((rgb >> 16) & 0xFF) / 255.0f;
         d.push.tint[1] = float((rgb >> 8) & 0xFF) / 255.0f;
@@ -1157,7 +1188,6 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       }
       // A grille shows its Shared tile (slot 1) on the tiled UV0; the
       // alpha-tested techniques (FORMAT-CARS: grille1_alpha) cut it out.
-      const std::string technique = lower(s.technique);
       if (t1 != UINT32_MAX && technique.rfind("grille", 0) == 0) {
         flags |= kFlagGrille;
         if (ends_with(technique, "_alpha")) flags |= kFlagCutout;
@@ -1183,7 +1213,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       }
       // Lamp covers (detail_glass_red, _amber, _clear): passive coloured glass
       // (CAR_LAMPS.md §3.2 — covers NEVER emit).
-      if (s.material == MaterialClass::kGlass && technique.rfind("detail_glass_", 0) == 0) {
+      if (klass == MaterialClass::kGlass && technique.rfind("detail_glass_", 0) == 0) {
         const std::string hue = technique.substr(13);
         float c[3] = {0.55f, 0.58f, 0.6f};
         if (hue.rfind("red", 0) == 0) c[0] = 0.22f, c[1] = 0.006f, c[2] = 0.005f;
@@ -1191,47 +1221,40 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         flags |= kFlagCover;
         std::memcpy(d.push.tint, c, sizeof c);
       }
-      // Classify active emissive lamp channel (CAR_LAMPS.md §3).
-      d.lamp_channel = drive::classify_lamp_technique(s.technique);
-      d.brake_lamp = (d.lamp_channel == drive::LampChannel::kBrake ||
-                      d.lamp_channel == drive::LampChannel::kTailBrake2S ||
-                      d.lamp_channel == drive::LampChannel::kTail);
+      // Alpha-tested emissive gauge overlays (z_gauge_emissive_alpha, gauge_emissive_alpha):
+      // discard transparent surround so no solid white rectangle blocks the gauge dials.
+      if (klass == MaterialClass::kGauge && ends_with(technique, "_alpha")) {
+        flags |= kFlagCutout;
+      }
       d.push.tint[3] = 1;
-      // Numbered copies of the interior techniques (the R34's bump_plastic2,
-      // bump_leather2) bake as opaque; they are cabin surfaces (FORMAT-CARS'
-      // interior list by name; interim, ours).
-      MaterialClass klass = s.material;
-      if (klass == MaterialClass::kOpaque && d.lamp_channel != drive::LampChannel::kNone) {
-        klass = (d.lamp_channel == drive::LampChannel::kGaugeBacklight ||
-                 d.lamp_channel == drive::LampChannel::kDigitalGauge ||
-                 d.lamp_channel == drive::LampChannel::kNumPlate)
-                    ? MaterialClass::kGauge
-                    : MaterialClass::kLamp;
-      }
-      if (klass == MaterialClass::kOpaque) {
+      // Sub-material variant ID encoded in params[2] for showroom.frag:
+      // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel), 3=rotor/brake/drum,
+      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines.
+      float submat_id = 0.0f;
+      if (is_defrost) {
+        submat_id = 6.0f;
+      } else if (klass == MaterialClass::kRim) {
+        if (technique == "outer_rim") submat_id = 1.0f;
+        else if (technique == "inner_rim" || technique == "wheel_black") submat_id = 2.0f;
+        else if (technique == "rotor" || technique == "brake" || technique == "drum") submat_id = 3.0f;
+        else if (technique == "hub") submat_id = 4.0f;
+      } else if (klass == MaterialClass::kInterior) {
         std::string base_name = technique;
         while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
-        static const char* const kCabin[] = {"leather", "cloth", "plastic", "solid", "mottled", "headliner",
-                                             "bump_leather", "bump_plastic", "bump_stitching"};
-        if (base_name != technique)
-          for (const char* c : kCabin)
-            if (base_name == c) klass = MaterialClass::kInterior;
-      }
-      // The cabin techniques' texel scale (CARS, Cockpit interior and
-      // mirrors: the effect defaults, then the car's lighting): plastic,
-      // cloth and solid 0.5, mottled 0.35, bump_plastic 0.3, gauges 1.
-      // Leather, headliner and the other bump techniques: 0.5 (ours).
-      if (klass == MaterialClass::kInterior) {
-        std::string base_name = technique;
-        while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
-        const float k = base_name == "mottled" ? 0.35f : base_name == "bump_plastic" ? 0.3f : 0.5f;
+        if (base_name == "metal") submat_id = 5.0f;
+        // The cabin techniques' texel scale (CARS, Cockpit interior and mirrors):
+        // plastic, cloth and solid 0.5, mottled 0.35, bump_plastic 0.3, metal 0.65.
+        const float k = base_name == "mottled" ? 0.35f :
+                        base_name == "bump_plastic" ? 0.3f :
+                        base_name == "metal" ? 0.65f : 0.5f;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = k;
       }
       d.push.params[0] = float(uint32_t(klass));
       d.push.params[1] = float(flags);
+      d.push.params[2] = submat_id;
       d.textures = {t0 == UINT32_MAX ? 0u : t0, t1 == UINT32_MAX ? 0u : t1,
                     livery == UINT32_MAX ? 1u : livery};
-      d.glass = s.material == MaterialClass::kGlass;
+      d.glass = (klass == MaterialClass::kGlass);
       d.part_name = lower(part.name);
       draws_.push_back(d);
       drawn = true;
@@ -1625,8 +1648,9 @@ bool Showroom::upload_environment(std::string& error) {
 }
 
 bool Showroom::create_pipelines(std::string& error) {
-  // Set 0: frame UBO, environment cube, sun shadow map, headlight cookie, headlights UBO, mirror map, car instances SSBO.
-  const VkDescriptorSetLayoutBinding frame_bindings[7] = {
+  // Set 0: frame UBO, dynamic/active environment cube, sun shadow map, headlight cookie,
+  // headlights UBO, mirror map, car instances SSBO (6), and static studio cube (7, staticcarcubemap.xpr).
+  const VkDescriptorSetLayoutBinding frame_bindings[8] = {
       {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
        nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1634,9 +1658,10 @@ bool Showroom::create_pipelines(std::string& error) {
       {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 7;
+  set.bindingCount = 8;
   set.pBindings = frame_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &frame_layout_), "frame set layout");
   VkDescriptorSetLayoutBinding material_bindings[3];
@@ -2011,7 +2036,7 @@ bool Showroom::upload(std::string& error) {
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
   const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 16},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 24},
                                          {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = sets + 4;
@@ -2045,13 +2070,15 @@ bool Showroom::upload(std::string& error) {
         (target == frame_set_ && dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
     if (target == frame_set_ && cube_view == dyn_env_.view) dyn_env_bound_ = true;
     VkDescriptorImageInfo cube{sampler_, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
                               VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
     VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet writes[7] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+    VkWriteDescriptorSet writes[8] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
@@ -2093,7 +2120,12 @@ bool Showroom::upload(std::string& error) {
     writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[6].pBufferInfo = &inst_buf;
-    vkUpdateDescriptorSets(r_.device_, 7, writes, 0, nullptr);
+    writes[7].dstSet = target;
+    writes[7].dstBinding = 7;
+    writes[7].descriptorCount = 1;
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[7].pImageInfo = &static_cube;
+    vkUpdateDescriptorSets(r_.device_, 8, writes, 0, nullptr);
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -4411,6 +4443,7 @@ void Showroom::set_tod(const world::TodState& tod, int moon_phase, float real_ti
 void Showroom::apply_tod_to_frame() {
   if (!tod_active_) {
     frame_.sun_color[3] = -1.0f;
+    frame_.car_sun_color[3] = -1.0f;
     return;
   }
   const auto& t = tod_state_;
@@ -4420,6 +4453,11 @@ void Showroom::apply_tod_to_frame() {
   frame_.sun_color[1] = t.sun_color[1];
   frame_.sun_color[2] = t.sun_color[2];
   frame_.sun_color[3] = shadow_w;
+
+  frame_.car_sun_color[0] = t.car_sun_color[0];
+  frame_.car_sun_color[1] = t.car_sun_color[1];
+  frame_.car_sun_color[2] = t.car_sun_color[2];
+  frame_.car_sun_color[3] = t.ibl_direct_car;
 
   frame_.sky_color[0] = t.hl_top[0];
   frame_.sky_color[1] = t.hl_top[1];

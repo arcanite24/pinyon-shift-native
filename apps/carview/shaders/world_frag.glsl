@@ -243,7 +243,7 @@ vec3 encode_srgb(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
 
-vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
+vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : encode_srgb(c); }
 
 // Multi-cascade sun shadow (2x1 atlas: left half Near ~28 m, right half Far ~185 m).
 float sample_cascade(vec4 s, float x_off) {

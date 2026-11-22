@@ -377,7 +377,7 @@ TodState evaluate_tod(const TodPreset& p, double tod_sec) {
   const float sun_mult = p.scalar("SunColorMult", m, 1.0f);
   for (int i = 0; i < 3; ++i) {
     s.sun_color[i] = raw_sun[i] * sun_mult * s.ibl_direct_env;
-    s.car_sun_color[i] = raw_sun[i] * sun_mult * std::max(s.ibl_direct_env, 1.0f);
+    s.car_sun_color[i] = raw_sun[i] * sun_mult * s.ibl_direct_car;
   }
   s.sun_object_color = p.vec3("SunObjectColour", m, {1.0f, 0.99f, 0.92f});
   s.sun_object_size = p.scalar("SunObjectSize", m, 20.0f);

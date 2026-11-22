@@ -54,6 +54,12 @@ void test_synthetic_tod() {
 
   const auto s1 = world::evaluate_tod(preset, 390.0 * 60.0);
   check(!s1.is_moon, "sun active at 06:30");
+
+  // Verify IBLDirectScaleCar scales car_sun_color independently from IBLDirectScaleEnvironment.
+  check(s1.car_sun_color[0] < s1.sun_color[0] * 0.6f, "car_sun_color scaled by IBLDirectScaleCar (< env sun)");
+  const float expected_ratio = s1.ibl_direct_car / s1.ibl_direct_env;
+  check(near(s1.car_sun_color[0] / s1.sun_color[0], expected_ratio, 1e-3f),
+        "car_sun_color / sun_color matches IBLDirectScaleCar / IBLDirectScaleEnvironment");
 }
 
 void test_clock() {

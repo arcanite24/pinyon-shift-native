@@ -56,7 +56,7 @@ void test_hub_stage_and_camera() {
     carview::ShowroomFrame frame;
     carview::build_hub_frame(room, cam, 1280, 720, frame, false);
     CHECK(frame.drive[3] == 0.0f);  // studio cubemap mode
-    CHECK(frame.options[0] > 0.5f);
+    CHECK(frame.options[0] >= 0.35f && frame.options[0] <= 0.70f);
   }
 
   CHECK(carview::focus_for_part_enum(43) == carview::HubCameraFocus::kWheels);

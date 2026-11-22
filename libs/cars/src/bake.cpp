@@ -154,6 +154,9 @@ void assign_slots(bake::Subsection& s, Role role, const std::set<std::string>& o
     case MaterialClass::kCarbon:
       s.slots[1] = shared_ref("carbonfiber.xds");
       break;
+    case MaterialClass::kGlass:
+      if (starts_with(t, "detail_glass_")) s.slots[1] = own_ref("lights_lod0.xds", "lights.xds");
+      break;
     default:
       if (t == "numplate") s.slots[1] = own_ref("lights_lod0.xds", "lights.xds");
       if (t == "bumper_frame") s.slots[1] = shared_ref("bumper_frame.xds");
@@ -318,30 +321,46 @@ void bake_livery(Folder& folder, bake::Bake& out, std::vector<std::string>& note
 }  // namespace
 
 MaterialClass classify(const std::string& technique, bool transparent, Role role) {
+  (void)role;
   const std::string t = lower(technique);
   if (t == "blur_rim" || t == "chrome_blur_rim") return MaterialClass::kHidden;
+  // Rear-window heater lines (69 base cars): translucent glass overlay, never opaque @atlas.
+  if (t == "defrost_lines") return MaterialClass::kGlass;
   if (transparent) return MaterialClass::kGlass;
-  if (role == Role::kWheel) {
-    if (t == "rim" || t == "inner_rim" || t == "outer_rim" || t == "wheel_black" || t == "blur_lip" ||
-        t == "hub")
-      return MaterialClass::kRim;
-  }
+  if (t == "black_glass_breakable") return MaterialClass::kGlass;
+  // Classify wheel/brake techniques regardless of model role so embedded rims/rotors
+  // inside _lod0.carbin or kRotor never fall through to kOpaque.
+  if (t == "rim" || t == "inner_rim" || t == "outer_rim" || t == "wheel_black" || t == "blur_lip" ||
+      t == "hub" || t == "rotor" || t == "brake" || t == "drum")
+    return MaterialClass::kRim;
   if (t == "tire" || t == "sidewall" || t == "tread") return MaterialClass::kTyre;
   if (t == "body" || t == "body_2") return MaterialClass::kPaint;
   if (t == "caliper") return MaterialClass::kCaliper;
-  static const std::set<std::string> kLampExact = {"head_light", "hidhead", "oldhead", "xenonhead", "fullbeam",
-                                                   "taillight2s", "taillightst", "drlwhite", "slorange",
-                                                   "textured_reflector", "reflector"};
+  static const std::set<std::string> kLampExact = {
+      "head_light", "head_light2", "hidhead", "oldhead", "xenonhead", "fullbeam",
+      "taillight2s", "taillightst", "drlwhite", "drlwhiteswitch", "drlred", "drlorange",
+      "drlbrakered", "drlbrakeorange", "slorange", "slinlorange", "slinrorange",
+      "lindtailside", "rindtailside", "linred", "rinred", "brinl", "brinr",
+      "brkreverse", "white_brake", "fogred", "fogwhite",
+      "textured_reflector", "reflector"};
   if (kLampExact.count(t) || starts_with(t, "tail_light") || starts_with(t, "indicator_") ||
-      starts_with(t, "reverse_light") || starts_with(t, "lights_gls_"))
+      starts_with(t, "reverse_light") || starts_with(t, "lights_gls_") ||
+      starts_with(t, "drl") || starts_with(t, "slin"))
     return MaterialClass::kLamp;
-  static const std::set<std::string> kInterior = {"leather", "cloth", "plastic", "solid", "mottled",
-                                                  "headliner", "bump_leather", "bump_plastic", "bump_stitching"};
-  if (kInterior.count(t)) return MaterialClass::kInterior;
-  if (t == "gauge_emissive" || t == "z_gauge_emissive_alpha" || t == "gauge_needle" || t == "digital_gauge")
+  static const std::set<std::string> kInterior = {
+      "leather", "cloth", "plastic", "solid", "mottled", "headliner",
+      "bump_leather", "bump_plastic", "bump_stitching",
+      "metal", "rubber", "stitching", "wood", "interior", "suede"};
+  std::string base = t;
+  while (!base.empty() && std::isdigit(static_cast<unsigned char>(base.back()))) base.pop_back();
+  if (kInterior.count(t) || (!base.empty() && kInterior.count(base))) return MaterialClass::kInterior;
+  if (t == "gauge_emissive" || t == "z_gauge_emissive_alpha" || t == "gauge_emissive_alpha" ||
+      t == "gauge_needle" || t == "cockpit_gauge_needle" || t == "digital_gauge" ||
+      t == "cockpit_digital_gauge" || starts_with(t, "cockpit_gauge_emissive"))
     return MaterialClass::kGauge;
   if (starts_with(t, "chrome")) return MaterialClass::kChrome;
-  if (t == "carbon_fiber") return MaterialClass::kCarbon;
+  if (t == "carbon_fiber" || t == "unicolor_carbon_fiber" || t == "carbon_fiber2" || t == "carbon_fiber_no_env")
+    return MaterialClass::kCarbon;
   return MaterialClass::kOpaque;
 }
 

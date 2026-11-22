@@ -439,34 +439,34 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
   out.key_light[0] = 0.45f;
   out.key_light[1] = 0.78f;
   out.key_light[2] = -0.42f;
-  out.key_light[3] = 1.55f;
+  out.key_light[3] = 0.65f;  // SHOWROOM_LIGHTING.md: 0.6525 key with HDR staticcarcubemap.xpr
 
   out.fill_light[0] = -0.60f;
   out.fill_light[1] = 0.45f;
   out.fill_light[2] = 0.66f;
-  out.fill_light[3] = 0.65f;
+  out.fill_light[3] = 0.12f;
 
-  out.options[0] = 1.25f;  // exposure
-  out.options[1] = 1.15f;  // studio cubemap reflection intensity
+  out.options[0] = 0.46f;  // exposure: holds white paint at ~190-215/255 with crisp HDR studio strips
+  out.options[1] = 0.90f;  // studio cubemap reflection intensity (staticcarcubemap.xpr 80-97 HDR)
   out.options[2] = 0.0f;   // livery debug mask off
-  out.options[3] = 0.48f;  // metallic flake strength
+  out.options[3] = 1.0f;   // full Metallic.xml two-layer metallic response
 
   out.tint[0] = out.tint[1] = out.tint[2] = out.tint[3] = 1.0f;
   out.reflect_tint[0] = out.reflect_tint[1] = out.reflect_tint[2] = out.reflect_tint[3] = 1.0f;
 
   if (room == HubRoom::kWorkshop) {
-    out.tint[0] = 1.05f;
+    out.tint[0] = 1.04f;
     out.tint[1] = 0.98f;
-    out.tint[2] = 0.90f;
-    out.options[0] = 1.20f;
+    out.tint[2] = 0.91f;
+    out.options[0] = 0.44f;
   } else if (room == HubRoom::kPaintShop) {
-    out.options[0] = 1.32f;
-    out.options[1] = 1.25f;
+    out.options[0] = 0.50f;
+    out.options[1] = 0.95f;
   } else if (room == HubRoom::kBarnFind) {
-    out.tint[0] = 1.12f;
+    out.tint[0] = 1.10f;
     out.tint[1] = 0.94f;
-    out.tint[2] = 0.76f;
-    out.options[0] = 1.10f;
+    out.tint[2] = 0.78f;
+    out.options[0] = 0.42f;
   }
 }
 

@@ -1225,12 +1225,34 @@ void test_bake_format() {
 
   CHECK(cars::classify("body", false, Role::kLod0) == MaterialClass::kPaint);
   CHECK(cars::classify("window", true, Role::kLod0) == MaterialClass::kGlass);
+  CHECK(cars::classify("defrost_lines", false, Role::kLod0) == MaterialClass::kGlass);
   CHECK(cars::classify("blur_rim", true, Role::kWheel) == MaterialClass::kHidden);
   CHECK(cars::classify("hub", false, Role::kWheel) == MaterialClass::kRim);
-  CHECK(cars::classify("hub", false, Role::kRotor) == MaterialClass::kOpaque);
+  CHECK(cars::classify("hub", false, Role::kRotor) == MaterialClass::kRim);
+  CHECK(cars::classify("outer_rim", false, Role::kLod0) == MaterialClass::kRim);
+  CHECK(cars::classify("inner_rim", false, Role::kLod0) == MaterialClass::kRim);
+  CHECK(cars::classify("rotor", false, Role::kRotor) == MaterialClass::kRim);
   CHECK(cars::classify("tail_light_lod0", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("fogred", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("fogwhite", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("slinrorange", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("lindtailside", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("drlred", false, Role::kLod0) == MaterialClass::kLamp);
+  CHECK(cars::classify("brkreverse", false, Role::kLod0) == MaterialClass::kLamp);
   CHECK(cars::classify("leather", false, Role::kCockpit) == MaterialClass::kInterior);
-  CHECK(cars::classify("plastic2", false, Role::kLod0) == MaterialClass::kOpaque);
+  CHECK(cars::classify("plastic2", false, Role::kLod0) == MaterialClass::kInterior);
+  CHECK(cars::classify("metal", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("metal2", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("rubber", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("stitching", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("wood", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("suede", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("bump_leather2", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("bump_plastic2", false, Role::kCockpit) == MaterialClass::kInterior);
+  CHECK(cars::classify("z_gauge_emissive_alpha", false, Role::kCockpit) == MaterialClass::kGauge);
+  CHECK(cars::classify("gauge_emissive_alpha", false, Role::kCockpit) == MaterialClass::kGauge);
+  CHECK(cars::classify("unicolor_carbon_fiber", false, Role::kLod0) == MaterialClass::kCarbon);
+  CHECK(cars::classify("carbon_fiber2", false, Role::kCockpit) == MaterialClass::kCarbon);
 
   // TGA: a 2 x 2 RLE image stored bottom row first.
   const std::vector<uint8_t> tga = {0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 8,

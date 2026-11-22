@@ -161,11 +161,7 @@ PostSettings PhotoEffects::apply_to_post(const PostSettings& base) const {
   PostSettings out = base;
   // Exposure: 50 is neutral (0 EV); 0..100 maps to [-1.5, +1.5] EV.
   const float ev_offset = (exposure - 50.0f) / 50.0f * 1.5f;
-  if (out.auto_exposure) {
-    out.exposure += ev_offset;
-  } else {
-    out.exposure *= std::exp2(ev_offset);
-  }
+  out.exposure *= std::exp2(ev_offset);
   // Contrast: 50 -> 1.0, range [0.5, 1.8].
   const float contrast_scale =
       contrast >= 50.0f ? 1.0f + (contrast - 50.0f) / 50.0f * 0.8f : 0.5f + (contrast / 50.0f) * 0.5f;

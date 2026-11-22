@@ -40,6 +40,7 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 paint_finish;
   vec4 damage_dirt;
   vec4 damage_zones;  // x front, y rear, z left, w right (0..1)
+  vec4 car_sun_color; // rgb sun scaled by IBLDirectScaleCar, w ibl_direct_car (<0 fallback)
 } frame;
 
 layout(push_constant) uniform Draw {

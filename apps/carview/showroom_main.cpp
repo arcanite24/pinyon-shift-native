@@ -5183,7 +5183,7 @@ int run_drive(int argc, char** argv) {
             const auto& vb = zone_blender.vig_bottom;
             ps.bloom = bloom_flag >= 0 ? bloom_flag == 1 : !low_preset;
             ps.bloom_cutoff = std::max(0.05f, bt.cutoff * tod.bloom_cutoff_mult);
-            ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult) * 0.45f;
+            ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult);
             ps.bloom_lower_grad = std::max(0.0f, bt.lower_grad * tod.bloom_lower_grad_mult);
             ps.bloom_upper_grad = std::max(0.05f, bt.upper_grad * tod.bloom_upper_grad_mult);
             for (int k = 0; k < 5; ++k) ps.bloom_weights[k] = bt.weights[k];
@@ -5242,8 +5242,9 @@ int run_drive(int argc, char** argv) {
               const float* keys = cockpit ? cfg.cockpit_keys : cfg.exterior_keys;
               const float* evs = cockpit ? cfg.cockpit_ev : cfg.exterior_ev;
               for (int k = 0; k < 4; ++k) ps.exp_keys[k] = keys[k], ps.exp_ev[k] = evs[k];
-              // Calibrated EV offset so midday matches Colorado reference luminance while night adapts smoothly.
-              ps.exposure = cfg.filmic_exposure - 0.35f;
+              // Linear base exposure from TrackSettings.xml (filmicTone.exposure = 0.31),
+              // modulated by the 4-key adaptive EV curve in post.frag.
+              ps.exposure = std::max(cfg.filmic_exposure, 0.05f);
               const float tau = std::max(cfg.tonemap_delay * 10.0f, 0.05f);
               ps.adapt_alpha = (headless || tod_frame_dt <= 0.0)
                                    ? 1.0f

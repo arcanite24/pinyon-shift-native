@@ -96,8 +96,10 @@ struct ShowroomFrame {
   float paint_finish[4] = {0.0f, 0.25f, 0.0f, 0.0f};
   float damage_dirt[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float damage_zones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  // Car-specific direct sun color scaled by IBLDirectScaleCar (0.6238 vs env 1.30).
+  float car_sun_color[4] = {0.464f, 0.400f, 0.280f, -1.0f};
 };
-static_assert(sizeof(ShowroomFrame) == 688);
+static_assert(sizeof(ShowroomFrame) == 704);
 
 // Per-draw push constants.
 struct ShowroomPush {

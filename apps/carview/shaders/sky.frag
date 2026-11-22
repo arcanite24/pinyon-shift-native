@@ -70,7 +70,7 @@ vec3 encode_srgb(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
 
-vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(4.0)) : encode_srgb(c); }
+vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : encode_srgb(c); }
 
 void main() {
   vec3 V = normalize(sky.cam_fwd.xyz + v_ndc.x * sky.cam_right.xyz - v_ndc.y * sky.cam_up.xyz);
