@@ -46,10 +46,12 @@
 
 #include <array>
 #include <cstdint>
-#include <utility>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "drive/controls.h"
 
 namespace drive {
 
@@ -97,6 +99,8 @@ struct DriveSave {
   int num_rallies = 0, num_rally_stages = 0, num_rally_victories = 0, rally_xp = 0, rally_level = 0;
   int64_t rally_winnings = 0;
   std::vector<SavedClubCar> club;
+  bool has_controls = false;
+  ControlSettings controls;
   // Copies the carried fields (the ones the drive does not change) from `s`.
   void carry_from(const DriveSave& s) {
     level = s.level, event_unlocks = s.event_unlocks, hub_unlocks = s.hub_unlocks;

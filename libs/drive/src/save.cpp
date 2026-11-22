@@ -88,6 +88,23 @@ std::string save_to_text(const DriveSave& s) {
     for (const auto& [key, done] : car.challenges) out += " " + std::to_string(key) + (done ? ":1" : ":0");
     out += "\n";
   }
+  if (s.has_controls) {
+    const auto& c = s.controls;
+    out += "controls_layout " + std::to_string(c.layout_id) + "\n";
+    const auto& d = c.deadzones;
+    out += "controls_deadzones " + num(d.steering_inside) + " " + num(d.steering_outside) + " " +
+           num(d.throttle_inside) + " " + num(d.throttle_outside) + " " + num(d.brake_inside) + " " +
+           num(d.brake_outside) + " " + num(d.clutch_inside) + " " + num(d.clutch_outside) + " " +
+           num(d.handbrake_inside) + " " + num(d.handbrake_outside) + "\n";
+    out += "controls_rumble " + std::string(c.rumble_enabled ? "1 " : "0 ") + num(c.rumble_scale) + "\n";
+    out += "controls_camera_effects " + std::string(c.camera_effects ? "1\n" : "0\n");
+    const std::string kb = c.keys.serialize();
+    if (!kb.empty()) out += "controls_keys " + kb + "\n";
+    const auto& a = c.assists;
+    out += "controls_assists " + std::to_string(a.braking) + " " + std::to_string(a.steering) + " " +
+           (a.traction_control ? "1 " : "0 ") + (a.stability_control ? "1 " : "0 ") +
+           std::to_string(a.shifting) + " " + std::to_string(a.driving_line) + "\n";
+  }
   return out;
 }
 
@@ -185,6 +202,42 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         car.challenges.emplace_back(uint32_t(std::strtoul(kv.c_str(), nullptr, 10)), kv.substr(colon + 1) == "1");
       }
       out.club.push_back(std::move(car));
+    } else if (key == "controls_layout") {
+      if (l >> out.controls.layout_id) out.has_controls = true;
+    } else if (key == "controls_deadzones") {
+      auto& d = out.controls.deadzones;
+      if (l >> d.steering_inside >> d.steering_outside >> d.throttle_inside >> d.throttle_outside >>
+          d.brake_inside >> d.brake_outside >> d.clutch_inside >> d.clutch_outside >>
+          d.handbrake_inside >> d.handbrake_outside) {
+        d.clamp_valid();
+        out.has_controls = true;
+      }
+    } else if (key == "controls_rumble") {
+      int en = 1;
+      if (l >> en >> out.controls.rumble_scale) {
+        out.controls.rumble_enabled = en != 0;
+        out.has_controls = true;
+      }
+    } else if (key == "controls_camera_effects") {
+      int en = 1;
+      if (l >> en) {
+        out.controls.camera_effects = en != 0;
+        out.has_controls = true;
+      }
+    } else if (key == "controls_keys") {
+      std::string kb;
+      if (l >> kb) {
+        out.controls.keys.deserialize(kb);
+        out.has_controls = true;
+      }
+    } else if (key == "controls_assists") {
+      auto& a = out.controls.assists;
+      int tcs = 0, stm = 1;
+      if (l >> a.braking >> a.steering >> tcs >> stm >> a.shifting >> a.driving_line) {
+        a.traction_control = tcs != 0;
+        a.stability_control = stm != 0;
+        out.has_controls = true;
+      }
     }
   }
   if (out.car.empty()) return fail(error, "save without a car");
