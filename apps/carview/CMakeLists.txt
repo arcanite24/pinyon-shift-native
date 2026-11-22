@@ -80,6 +80,7 @@ set(carview_sources
   hub_scene.cpp
   livery_editor.cpp
   career_page.cpp
+  club_view.cpp
   events_page.cpp
   rally_hub.cpp
   settings.cpp

@@ -64,6 +64,8 @@ struct SavedBarn {
 struct SavedClubCar {
   int64_t car_id = 0;
   std::vector<std::pair<uint32_t, bool>> challenges;  // key, completed
+  // Optional per-challenge save_progress node counts (parallel to `challenges`).
+  std::vector<std::vector<int>> progress;
 };
 
 struct DriveSave {

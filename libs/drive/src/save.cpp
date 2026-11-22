@@ -134,7 +134,21 @@ std::string save_to_text(const DriveSave& s) {
            std::to_string(s.rally_xp) + " " + std::to_string(s.rally_level) + "\n";
   for (const auto& car : s.club) {
     out += "club " + std::to_string(car.car_id);
-    for (const auto& [key, done] : car.challenges) out += " " + std::to_string(key) + (done ? ":1" : ":0");
+    for (size_t i = 0; i < car.challenges.size(); ++i) {
+      const auto& [key, done] = car.challenges[i];
+      out += " " + std::to_string(key) + (done ? ":1" : ":0");
+      if (i < car.progress.size() && !car.progress[i].empty()) {
+        bool any_nonzero = false;
+        for (int v : car.progress[i]) any_nonzero = any_nonzero || (v > 0);
+        if (any_nonzero) {
+          out += ":";
+          for (size_t j = 0; j < car.progress[i].size(); ++j) {
+            if (j) out += ",";
+            out += std::to_string(car.progress[i][j]);
+          }
+        }
+      }
+    }
     out += "\n";
   }
   if (s.has_controls) {
@@ -327,7 +341,23 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       for (std::string kv; l >> kv;) {
         const auto colon = kv.find(':');
         if (colon == std::string::npos) continue;
-        car.challenges.emplace_back(uint32_t(std::strtoul(kv.c_str(), nullptr, 10)), kv.substr(colon + 1) == "1");
+        const auto colon2 = kv.find(':', colon + 1);
+        const std::string done_str =
+            colon2 == std::string::npos ? kv.substr(colon + 1) : kv.substr(colon + 1, colon2 - colon - 1);
+        car.challenges.emplace_back(uint32_t(std::strtoul(kv.c_str(), nullptr, 10)), done_str == "1");
+        std::vector<int> prog;
+        if (colon2 != std::string::npos) {
+          size_t pos = colon2 + 1;
+          while (pos < kv.size()) {
+            const size_t comma = kv.find(',', pos);
+            const std::string part =
+                comma == std::string::npos ? kv.substr(pos) : kv.substr(pos, comma - pos);
+            if (!part.empty()) prog.push_back(std::max(0, std::atoi(part.c_str())));
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+          }
+        }
+        car.progress.push_back(std::move(prog));
       }
       out.club.push_back(std::move(car));
     } else if (key == "controls_layout") {

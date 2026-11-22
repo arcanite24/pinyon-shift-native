@@ -371,7 +371,8 @@ void SkillTracker::emit_tag(const PendingTag& tag, double time, std::vector<Skil
   last_skill_ = tag.label;
   last_points_ = tag.points;
   const int mult = skill_count_ >= 6 ? 3 : skill_count_ >= 3 ? 2 : 1;
-  out.push_back({SkillEvent::kSkillAwarded, tag.label, tag.canonical_id, tag.points, mult, popularity_rank(), 0});
+  out.push_back(
+      {SkillEvent::kSkillAwarded, tag.label, tag.canonical_id, tag.points, mult, popularity_rank(), 0, tag.grade});
   record_sponsor_skill(tag.canonical_id, tag.grade, tag.is_combo, out);
   if (tag.id != kCombo) {
     recent_.push_back({tag.id, tag.canonical_id, tag.grade, time});

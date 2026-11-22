@@ -211,8 +211,8 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
   }
 
   // 2. Top-right Rally Stage Split Timer & Stage Progress.
-  const float rw = 264.0f * u;
-  const float rx1 = w - 26.0f * u;
+  const float rw = 336.0f * u;
+  const float rx1 = w - 24.0f * u;
   const float rx0 = rx1 - rw;
   const float ry0 = 24.0f * u;
   const float rh = (st.last_split_age < 4.5 && st.splits_passed > 0) ? 124.0f * u : 92.0f * u;
@@ -224,7 +224,7 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
 
   {
     ui::TextStyle hs;
-    hs.size = 12.0f * u;
+    hs.size = 11.5f * u;
     hs.color = kRallyGold;
     hs.font = ui::Font::kE;
     char hdr[96];
@@ -234,10 +234,10 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
   }
   {
     ui::TextStyle cs;
-    cs.size = 28.0f * u;
+    cs.size = 24.0f * u;
     cs.color = kWhite;
     cs.font = ui::Font::kE;
-    out.text(rx0 + 12.0f * u, ry0 + 28.0f * u, rally_time_str(std::max(0.0, st.stage_clock)), cs);
+    out.text(rx0 + 12.0f * u, ry0 + 30.0f * u, rally_time_str(std::max(0.0, st.stage_clock)), cs);
 
     ui::TextStyle ps;
     ps.size = 14.0f * u;

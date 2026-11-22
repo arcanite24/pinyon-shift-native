@@ -83,6 +83,7 @@
 #include "contact_log.h"
 #include "safe_reset.h"
 #include "race_view.h"
+#include "club_view.h"
 #include "map_view.h"
 #include "fh1data/archive.h"
 #include "fh1data/spa.h"
@@ -1615,6 +1616,7 @@ int run_drive(int argc, char** argv) {
   double cli_gps_x = 0.0, cli_gps_z = 0.0;
   std::string cli_pr_stunt, cli_outpost_hub;
   bool demo_speed_trap = false, demo_h2h = false;
+  bool demo_rally_stage = false, demo_rally_service = false, demo_club = false;
   std::filesystem::path pause_map_png;
   double cli_map_zoom = 4.5;
   double seed_distance = 0;
@@ -1754,6 +1756,9 @@ int run_drive(int argc, char** argv) {
     else if (a == "--no-traffic") traffic_flag = 0;
     else if (a == "--demo-speed-trap") demo_speed_trap = true;
     else if (a == "--demo-h2h") demo_h2h = true;
+    else if (a == "--demo-rally-stage") demo_rally_stage = true;
+    else if (a == "--demo-rally-service") demo_rally_service = true;
+    else if (a == "--demo-club") demo_club = true;
     else if (a == "--hour") {
       hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
       hour_explicit = true;
@@ -3627,8 +3632,67 @@ int run_drive(int argc, char** argv) {
       SettingsPage settings_page;  // the pause menu's settings (M7)
       bool settings_live_overlay = false;  // true when opened via live F6 hotkey
       freeroam::club::Signal club_signal;
+      // Per-step game-event pulses accumulated during the physics step before club_step().
+      struct ClubPendingPulses {
+        std::vector<freeroam::club::SkillAward> skills;
+        bool skill_chain_completed = false;
+        std::vector<std::string> smashables;
+        std::vector<freeroam::club::SpeedCameraHit> cameras;
+        bool event_started = false;
+        bool event_restarted = false;
+        bool event_completed = false;
+        int event_finish_place = 0;
+        bool encounter_started = false;
+        bool encounter_completed = false;
+        int encounter_finish_place = 0;
+        void clear() {
+          skills.clear();
+          skill_chain_completed = false;
+          smashables.clear();
+          cameras.clear();
+          event_started = event_restarted = event_completed = false;
+          event_finish_place = 0;
+          encounter_started = encounter_completed = false;
+          encounter_finish_place = 0;
+        }
+      } club_pending;
+      carview::ClubMedalCeremony club_ceremony{};
+      double club_ceremony_at = -1e9;
+      bool club_race_was_started = false;
+      bool club_race_was_finished = false;
       bool club_was_air = false;
       drive::Vec3 club_takeoff{};
+      std::map<int64_t, std::string> club_event_names;
+      std::map<int64_t, freeroam::club::CarMeta> club_car_meta;
+      bool club_meta_built = false;
+      auto club_ensure_meta = [&]() {
+        if (!*car_names_loaded) carview::car_name("");  // ensures v4 carchallenge* string tables are loaded
+        if (club_meta_built || !have_career_catalog) return;
+        club_meta_built = true;
+        for (const auto& cev : career_catalog.events) {
+          std::string nm = carview::game_text(cev.name_ref);
+          if (nm.empty() || nm.rfind("_&", 0) == 0) nm = cev.horizon_id;
+          club_event_names[cev.event_id] = std::move(nm);
+        }
+        for (const auto& [cid, spec] : career_catalog.cars) {
+          freeroam::club::CarMeta m;
+          m.car_id = cid;
+          m.base_cost = spec.base_cost;
+          m.make = car_names->short_name(spec.media_name);
+          club_car_meta[cid] = std::move(m);
+        }
+      };
+      auto club_medal_stats = [&]() -> freeroam::club::ClubMedalStats {
+        club_ensure_meta();
+        std::vector<std::pair<int64_t, int>> per_car;
+        per_car.reserve(saved.club.size());
+        for (const auto& c : saved.club) {
+          int n = 0;
+          for (const auto& ch : c.challenges) n += ch.second ? 1 : 0;
+          if (n > 0) per_car.emplace_back(c.car_id, n);
+        }
+        return freeroam::club::compute_medal_stats(per_car, club_car_meta);
+      };
       auto club_record = [&]() -> drive::SavedClubCar* {
         for (auto& c : saved.club)
           if (c.car_id == club_car) return &c;
@@ -3644,7 +3708,7 @@ int run_drive(int argc, char** argv) {
           club_tried = true;
           club_loaded = freeroam::club::load_club(state ? state : "", club_data, &club_why);
           if (club_loaded)
-            std::printf("1000 club: %zu cars, %zu challenges (%zu measured today), %zu locations\n",
+            std::printf("1000 club: %zu cars, %zu challenges (%zu measured), %zu locations\n",
                         club_data.cars.size(), club_data.challenges(), club_data.measured(),
                         club_data.locations.size());
         }
@@ -3658,7 +3722,7 @@ int run_drive(int argc, char** argv) {
           std::string e;
           race::load_wristband_tables(game_root_of(), state_root, shared_db, wristbands, &e);
         }
-        if (wristbands.level_index(career.wristband_points) < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND"))
+        if (wristbands.level_index(career.wristband_points) < 1 && !std::getenv("SHIFT_CLUB_ANY_BAND") && !demo_club)
           return club_gate = "needs the green wristband", void();
         // The car driven: the selected garage row when it is this car, else
         // any garage row of this car (a --car pick).
@@ -3671,6 +3735,9 @@ int run_drive(int argc, char** argv) {
           for (const auto& gc : career_garage.cars)
             if (club_car < 0 && is_this(gc)) club_car = gc.car_id;
         }
+        if (club_car < 0 && demo_club && have_career_catalog) {
+          if (const auto* sp = career_catalog.find_car_by_media(car)) club_car = sp->car_id;
+        }
         if (club_car < 0) return club_gate = "only in your own garage cars", void();
         if (!club_data.cars.count(club_car)) return club_gate = "this car has no challenges", void();
         club_gate.clear();
@@ -3678,14 +3745,29 @@ int run_drive(int argc, char** argv) {
         drive::SavedClubCar* rec = club_record();
         if (!rec) return;  // not begun in this car
         if (rec->challenges.size() < list.size()) rec->challenges.resize(list.size(), {0u, false});
-        for (size_t i = 0; i < list.size(); ++i)
-          if (!rec->challenges[i].second) club_runs.push_back({i, freeroam::club::Run(list[i], club_data.locations), 0});
+        if (rec->progress.size() < list.size()) rec->progress.resize(list.size());
+        for (size_t i = 0; i < list.size(); ++i) {
+          if (rec->challenges[i].first == 0u) rec->challenges[i].first = list[i].definition_hash;
+          if (!rec->challenges[i].second) {
+            freeroam::club::Run r(list[i], club_data.locations);
+            if (!rec->progress[i].empty()) r.import_save_progress(rec->progress[i]);
+            club_runs.push_back({i, std::move(r), 0});
+          }
+        }
       };
-      // One step of every running challenge on the car's state.
+      // One step of every running challenge on the car's state and per-step game events.
       auto club_step = [&]() {
-        if (club_runs.empty()) return;
+        if (club_runs.empty()) {
+          club_pending.clear();
+          return;
+        }
         auto& s = club_signal;
         const drive::Vec3 at = vehicle.position();
+        const drive::Vec3 vel = vehicle.velocity();
+        const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        const drive::Vec3 right = drive::rotate(vehicle.orientation(), {1, 0, 0});
+        const double v_fwd = vel.x * fwd.x + vel.y * fwd.y + vel.z * fwd.z;
+        const double v_lat = std::fabs(vel.x * right.x + vel.y * right.y + vel.z * right.z);
         s.time = vehicle.time();
         s.speed_mph = std::fabs(vehicle.speed()) * 2.2369363;
         s.gear = vehicle.gear() < 0 ? 0 : vehicle.gear() == 0 ? -1 : vehicle.gear();
@@ -3695,79 +3777,193 @@ int run_drive(int argc, char** argv) {
         if (air && !club_was_air) club_takeoff = at;
         club_was_air = air;
         s.in_air = air;
+        s.is_drifting = !air && s.speed_mph >= 12.0 && v_fwd > 2.0 && v_lat > 2.2 && (v_lat / std::max(1.0, v_fwd)) > 0.18;
         s.jump_m = air ? std::hypot(at.x - club_takeoff.x, at.z - club_takeoff.z) : 0;
-        // A serious collision (interim, ours): one body contact pushing
-        // with more than four times the car's weight, or a traffic car's
-        // impulse worth over 2 m/s of the car's speed.
         s.collided = vehicle.strongest_body_contact().force > 4 * vehicle.params().mass * 9.81 ||
                      (traffic && traffic->player_impulse() > 2.0 * vehicle.params().mass);
         s.x = at.x, s.z = at.z;
+
+        // Skills, smashables, speed cameras, events, and H2H pulses.
+        s.skills_awarded = std::move(club_pending.skills);
+        s.skill_chain_completed = club_pending.skill_chain_completed;
+        if (skill_tracker) {
+          const auto sh = skill_tracker->hud();
+          s.skill_points = sh.active ? double(sh.chain_points) * double(std::max(1, sh.multiplier)) : 0.0;
+        } else {
+          s.skill_points = 0.0;
+        }
+        s.smashables_broken = std::move(club_pending.smashables);
+        s.speed_cameras = std::move(club_pending.cameras);
+        s.event_started = club_pending.event_started;
+        s.event_restarted = club_pending.event_restarted;
+        s.event_completed = club_pending.event_completed;
+        s.event_finish_place = club_pending.event_finish_place;
+        s.encounter_started = club_pending.encounter_started;
+        s.encounter_completed = club_pending.encounter_completed;
+        s.encounter_finish_place = club_pending.encounter_finish_place;
+        if (race) {
+          const auto& ev = race->event();
+          s.event_id = ev.event_id;
+          s.career_event_style =
+              (ev.style == 2 || ev.career_type == 4) ? "street" : (ev.style == 1 ? "festival" : "none");
+          s.event_hub.clear();
+          if (have_career_catalog) {
+            if (const auto* cev = career_catalog.find_event(ev.horizon_id); cev && cev->hub_id > 0) {
+              std::string hname;
+              if (const auto* hub = career_catalog.find_hub(cev->hub_id))
+                hname = lower_ascii(carview::game_text(hub->name_ref));
+              if (hname.find("gladstone") != std::string::npos || cev->hub_id == 2) s.event_hub = "gladstone";
+              else if (hname.find("red") != std::string::npos || cev->hub_id == 3) s.event_hub = "redrock";
+              else s.event_hub = "carson";
+            }
+          }
+          const auto& pc = race->session().car(race->player_index());
+          // Before rolling off the start line, race_progress stays < 0 so wait-at-start challenges work cleanly.
+          const double raw_prog = race->session().started() ? (pc.distance > 0.5 ? pc.distance : -0.01) : -0.01;
+          s.race_progress = (raw_prog < 0.0 || std::fabs(vehicle.speed()) < 1.5 && pc.distance < 1.0) ? -0.01 : raw_prog;
+        } else {
+          s.event_id = 0;
+          s.event_hub.clear();
+          s.career_event_style = "none";
+          s.race_progress = -1.0;
+        }
+        club_pending.clear();
+
+        club_ensure_meta();
+        const fh1::StringTables* stbls = car_names->strings();
         const auto& list = club_data.cars.at(club_car);
         drive::SavedClubCar* rec = club_record();
         for (size_t k = 0; k < club_runs.size();) {
           ClubRun& r = club_runs[k];
-          const std::string label = list[r.index].label();
-          if (r.run.step(s)) {
-            if (rec) rec->challenges[r.index].second = true;
+          const std::string title = list[r.index].format_title(stbls);
+          const std::string desc = list[r.index].format_description(stbls, &club_event_names);
+          const bool won = r.run.step(s);
+          // Sync save_progress partial counts into the save record whenever they advance.
+          if (rec && r.run.has_save_progress() && r.index < rec->progress.size()) {
+            auto cur_prog = r.run.export_save_progress();
+            if (cur_prog != rec->progress[r.index]) {
+              rec->progress[r.index] = std::move(cur_prog);
+              save_due = true;
+            }
+          }
+          if (won) {
+            if (rec) {
+              rec->challenges[r.index].first =
+                  rec->challenges[r.index].first ? rec->challenges[r.index].first : list[r.index].definition_hash;
+              rec->challenges[r.index].second = true;
+            }
             int done = 0;
             if (rec)
               for (const auto& c : rec->challenges) done += c.second;
-            char line[160];
-            std::snprintf(line, sizeof line, "1000 club medal! %s (%d/%zu in this car)", label.c_str(), done,
-                          list.size());
-            std::printf("t %.2f s: %s\n", s.time, line);
-            popup = {"1000 CLUB MEDAL",
-                     label + "   " + std::to_string(done) + "/" + std::to_string(list.size()) + " IN THIS CAR", s.time,
-                     double(done) / double(std::max<size_t>(1, list.size())), carview::ui::rgba(240, 196, 70)};
+            const auto mstats = club_medal_stats();
+            std::printf("t %.2f s: 1000 club medal! %s (%d/%zu in this car, %d total)\n", s.time, title.c_str(), done,
+                        list.size(), mstats.total_medals);
+            club_ceremony = {};
+            club_ceremony.active = true;
+            club_ceremony.challenge_title = title;
+            club_ceremony.challenge_desc = desc;
+            club_ceremony.car_name = carview::car_name(car);
+            club_ceremony.car_medals = done;
+            club_ceremony.car_total = int(list.size());
+            club_ceremony.total_medals = mstats.total_medals;
+            club_ceremony.cars_with_medal = mstats.cars_with_medal;
+            club_ceremony.age = 0.0;
+            club_ceremony_at = s.time;
+            audio_host.trigger_ui(audio::UiCue::kSignSmash);
             save_due = true;
             club_runs.erase(club_runs.begin() + std::ptrdiff_t(k));
             continue;
           }
           if (r.run.failures() != r.failures_seen) {
             r.failures_seen = r.run.failures();
-            notice = "1000 club: " + label + " failed - try again";
+            notice = "1000 CLUB: " + title + " FAILED - TRY AGAIN";
             notice_until = s.time + 3;
             std::printf("t %.2f s: %s\n", s.time, notice.c_str());
           }
           ++k;
         }
       };
-      // The page's title and lines (the pause menu's 1000 club).
+      // Builds the full 1000 Club Pause Screen model with localized strings & live progress.
+      auto build_club_screen = [&]() -> carview::ClubScreenState {
+        club_ensure_meta();
+        const fh1::StringTables* stbls = car_names->strings();
+        carview::ClubScreenState cs;
+        cs.active = true;
+        cs.car_name = carview::car_name(car);
+        cs.stats = club_medal_stats();
+        if (!club_gate.empty() || club_car < 0 || !club_data.cars.count(club_car)) {
+          cs.gate_reason = club_gate.empty() ? "1000 Club is unavailable for this car" : club_gate;
+          return cs;
+        }
+        const auto& list = club_data.cars.at(club_car);
+        const drive::SavedClubCar* rec = club_record();
+        cs.challenges_begun = (rec != nullptr);
+        cs.show_intro = (rec == nullptr || cs.stats.total_medals == 0);
+        cs.car_total = int(list.size());
+        cs.selected = int(std::min(club_pick, list.empty() ? size_t(0) : list.size() - 1));
+        for (size_t i = 0; i < list.size(); ++i) {
+          carview::ClubChallengeRow row;
+          row.title = list[i].format_title(stbls);
+          row.description = list[i].format_description(stbls, &club_event_names);
+          row.hint = list[i].format_hint(0, stbls);
+          row.completed = (rec && i < rec->challenges.size() && rec->challenges[i].second);
+          if (row.completed) {
+            ++cs.car_medals;
+            row.progress = 1.0;
+            row.status = "MEDAL EARNED";
+          } else if (rec) {
+            for (const auto& r : club_runs) {
+              if (r.index == i) {
+                row.status = r.run.status(club_signal);
+                row.progress = r.run.progress(club_signal);
+                row.has_save_progress = r.run.has_save_progress();
+                break;
+              }
+            }
+          } else {
+            row.status = "READY";
+          }
+          cs.rows.push_back(std::move(row));
+        }
+        return cs;
+      };
+      // Text fallback for SHIFT_CLUB_PAGE debug logging.
       auto club_page = [&](std::string& title, std::vector<std::string>& lines) {
         lines.clear();
-        const auto* list = club_gate.empty() ? &club_data.cars.at(club_car) : nullptr;
-        const drive::SavedClubCar* rec = club_record();
-        int done = 0;
-        if (rec)
-          for (const auto& c : rec->challenges) done += c.second;
-        if (!list) {
+        const auto cs = build_club_screen();
+        if (!cs.gate_reason.empty()) {
           title = "1000 club";
-          lines.push_back(club_gate);
+          lines.push_back(cs.gate_reason);
           return;
         }
-        title = "1000 club: " + std::to_string(done) + "/" + std::to_string(list->size()) +
-                " medals in this car (esc leaves)";
-        for (size_t i = 0; i < list->size(); ++i) {
-          std::string line = (*list)[i].label() + " - ";
-          if (rec && i < rec->challenges.size() && rec->challenges[i].second) line += "medal";
-          else if (!(*list)[i].supported) line += "not measured yet";
-          else if (!rec) line += (*list)[i].summary();
-          else
-            for (const auto& r : club_runs)
-              if (r.index == i) line += r.run.status(club_signal);
-          if (line.size() > 90) line = line.substr(0, 87) + "...";
-          lines.push_back(line);
+        title = "1000 club: " + std::to_string(cs.car_medals) + "/" + std::to_string(cs.car_total) +
+                " medals in this car";
+        for (const auto& r : cs.rows) {
+          lines.push_back(r.title + " - " + r.description + " [" + r.status + "]");
         }
-        lines.push_back(rec ? "challenges running in this car" : "begin challenges in this car");
+        lines.push_back(cs.challenges_begun ? "challenges running in this car" : "begin challenges in this car");
       };
-      // The banner while a challenge is under way.
-      auto club_banner = [&]() -> std::string {
-        if (club_runs.empty()) return {};
+      // Active challenge strip while driving.
+      auto build_club_active_strip = [&]() -> carview::ClubActiveStrip {
+        carview::ClubActiveStrip st;
+        if (club_runs.empty()) return st;
+        club_ensure_meta();
+        const fh1::StringTables* stbls = car_names->strings();
         const auto& list = club_data.cars.at(club_car);
-        for (const auto& r : club_runs)
-          if (r.run.under_way(club_signal))
-            return "1000 club: " + list[r.index].label() + " - " + r.run.status(club_signal);
-        return {};
+        for (const auto& r : club_runs) {
+          if (r.run.under_way(club_signal)) {
+            st.active = true;
+            st.title = list[r.index].format_title(stbls);
+            st.status = r.run.status(club_signal);
+            st.progress = r.run.progress(club_signal);
+            return st;
+          }
+        }
+        return st;
+      };
+      auto club_banner = [&]() -> std::string {
+        const auto s = build_club_active_strip();
+        return s.active ? ("1000 CLUB: " + s.title + " - " + s.status) : std::string();
       };
       // Translate GPS prompt events to Anna Sat-Nav VO cues.
       auto fire_satnav_event = [&](const traffic::GpsPromptEvent& gev) {
@@ -4041,16 +4237,28 @@ int run_drive(int argc, char** argv) {
         }
         log_contacts();
         if (traffic) traffic->step(vehicle);
-        club_step();  // after traffic: its contacts count as crashes
         if (race && streamer) {
           race->after_step(vehicle, *ground, streamer->centre_x(), streamer->centre_z(),
                            streamer->collision_radius(), traffic.get());
+          const bool r_started = race->session().started();
+          if (r_started && !club_race_was_started) club_pending.event_started = true;
+          club_race_was_started = r_started;
+          const auto& pc = race->session().car(race->player_index());
+          const bool r_finished = (pc.finish >= 0.0);
+          if (r_finished && !club_race_was_finished) {
+            club_pending.event_completed = true;
+            club_pending.event_finish_place = pc.place;
+          }
+          club_race_was_finished = r_finished;
           if (race->is_stage()) {
             race::CoDriverAudioCue cd_cue;
             while (race->codriver().pop_audio_cue(cd_cue)) {
               audio_host.trigger_codriver(cd_cue.group + "/" + cd_cue.cue);
             }
           }
+        } else {
+          club_race_was_started = false;
+          club_race_was_finished = false;
         }
         if (race && race->is_stage() && race->player_finished() && rally_session.active() && !rally_service_open &&
             !rally_results_open) {
@@ -4127,6 +4335,7 @@ int run_drive(int argc, char** argv) {
           }
         }
         const bool smashed_sign = free_roam_step();
+        if (smashed_sign) club_pending.smashables.push_back("sign");
         if (free_roam && free_roam->hidden()) smashables.sync_barns_from_hidden(*free_roam->hidden());
         bool smashed_prop = smashed_sign;
         // FORMAT-PHYSICS-DEFINITIONS: step 384-body smashable prop pool & barn doors.
@@ -4135,6 +4344,8 @@ int run_drive(int argc, char** argv) {
           smashables.step(vehicle, *ground, float(drive::Vehicle::kStep), sm_events);
           for (const auto& sev : sm_events) {
             smashed_prop = true;
+            club_pending.smashables.push_back(
+                freeroam::club::classify_smashable_type(sev.prop_stem, sev.object_type_index));
             particle_sys.spawn_smashable_burst(sev.prop_stem, sev.pos, sev.impulse_vel);
             audio::CollisionHit bhit{};
             bhit.rel_speed_mps = float(std::fabs(vehicle.speed()));
@@ -4292,6 +4503,13 @@ int run_drive(int argc, char** argv) {
           }
           const int64_t prev_max_skills = skill_tracker->max_skills_score();
           for (const auto& sev : skill_tracker->step(si)) {
+            if (sev.kind == freeroam::SkillEvent::kSkillAwarded) {
+              club_pending.skills.push_back(
+                  {sev.skill_id, freeroam::club::skill_tracker_grade_to_club_grade(sev.grade)});
+            } else if (sev.kind == freeroam::SkillEvent::kChainBanked ||
+                       sev.kind == freeroam::SkillEvent::kChainLost) {
+              club_pending.skill_chain_completed = true;
+            }
             if (sev.kind == freeroam::SkillEvent::kFameSponsor && sev.credits > 0) {
               career.credits = std::min<int64_t>(999999999, career.credits + sev.credits);
               career.total_winnings += sev.credits;
@@ -4358,6 +4576,14 @@ int run_drive(int argc, char** argv) {
           for (const auto& ev : speed_evs) {
             if (ev.kind == freeroam::SpeedActivityEvent::kTrapTriggered ||
                 ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted) {
+              const bool is_zone = (ev.kind == freeroam::SpeedActivityEvent::kZoneCompleted);
+              int sb_id = 0;
+              if (is_zone) {
+                if (const auto* z = speed_data.find_zone(ev.id)) sb_id = z->scoreboard_id;
+              } else {
+                if (const auto* t = speed_data.find_trap(ev.id)) sb_id = t->scoreboard_id;
+              }
+              club_pending.cameras.push_back({is_zone, sb_id, ev.id, ev.speed_mph});
               if (ev.is_new_pb && have_prog_tables) {
                 race::apply_progression_xp(career, 750, current_make_id(), 350, prog_tables);
               }
@@ -4376,7 +4602,9 @@ int run_drive(int argc, char** argv) {
           if (demo_h2h && !demo_h2h_started && vehicle.time() >= 3.0) {
             demo_h2h_started = true;
             const uint32_t fid = festival_mgr->spawn_ahead({fp.x, fp.y, fp.z}, fh, 18.0);
-            if (fid) festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, fh, vehicle.time(), fid);
+            if (fid && festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, fh, vehicle.time(), fid)) {
+              club_pending.encounter_started = true;
+            }
             if (have_prog_tables && career.driver_xp < 36000) {
               race::apply_progression_xp(career, 36000, current_make_id(), 18000, prog_tables);
             }
@@ -4387,6 +4615,8 @@ int run_drive(int argc, char** argv) {
           freeroam::HeadToHeadResult hres;
           if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
                                  &hres)) {
+            club_pending.encounter_completed = true;
+            club_pending.encounter_finish_place = hres.won ? 1 : 2;
             ++h2h_races;
             if (hres.won) {
               ++h2h_wins;
@@ -4401,6 +4631,7 @@ int run_drive(int argc, char** argv) {
             save_due = true;
           }
         }
+        club_step();  // evaluates all active 1000 Club challenges on full step signals
         if (!streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road (the windowed mode has R).
@@ -5195,10 +5426,6 @@ int run_drive(int argc, char** argv) {
         if (autoshow.is_open()) autoshow.fill(class_bands, career.credits, st.menu_title, st.menu, st.menu_selected);
         if (career_page.is_open()) career_page.fill(st.menu_title, st.menu, st.menu_selected);
         if (settings_page.is_open()) settings_page.fill(st.menu_title, st.menu, st.menu_selected);
-        if (club_open) {
-          club_page(st.menu_title, st.menu);
-          st.menu_selected = int(std::min(club_pick, st.menu.size() - 1));
-        }
         if (paint_open) {
           st.menu_title = "PAINT SHOP (FREE): LEFT/RIGHT PREVIEW   ENTER APPLY";
           st.menu.clear();
@@ -5423,19 +5650,92 @@ int run_drive(int argc, char** argv) {
         carview::RallyStageHud rally_stage_hud;
         carview::RallyHubState rally_hub_state;
         carview::RallyServiceAreaState rally_service_state;
-        if (race && race->is_stage() && race_hud.phase == carview::RaceHud::kRacing) {
+        if (demo_rally_service && !rally_session.active()) {
+          if (!rally_catalog.loaded) {
+            const auto db_ptr = parts_db.valid() ? parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+            if (!*car_names_loaded) carview::car_name("");
+            std::string rerr;
+            race::load_rally_catalog(state_root, db_ptr.get(), car_names->strings(), rally_catalog, &rerr);
+          }
+          if (rally_catalog.loaded && !rally_catalog.championships.empty()) {
+            rally_session.start_championship(rally_catalog, rally_catalog.championships.front().event_id,
+                                             int(race_options.difficulty));
+            rally_session.record_stage_finish(rally_catalog, 134.82);
+            rally_session.advance_from_service_area();
+            rally_session.record_stage_finish(rally_catalog, 148.19);
+            rally_service_open = true;
+            rally_service_selected = 0;
+            rally_service_repaired = false;
+          }
+        }
+        if (demo_club && !club_open) {
+          club_check();
+          if (club_gate.empty() && club_car >= 0 && club_data.cars.count(club_car)) {
+            const auto& clist = club_data.cars.at(club_car);
+            drive::SavedClubCar* rec = club_record();
+            if (!rec) {
+              drive::SavedClubCar nrec;
+              nrec.car_id = club_car;
+              for (const auto& ch : clist) {
+                nrec.challenges.emplace_back(ch.definition_hash, false);
+                nrec.progress.emplace_back();
+              }
+              saved.club.push_back(std::move(nrec));
+              rec = club_record();
+            }
+            if (rec && rec->challenges.size() >= 2) {
+              rec->challenges[0].second = true;
+              rec->challenges[1].second = true;
+              club_check();
+              club_ensure_meta();
+              const fh1::StringTables* stbls = car_names->strings();
+              const auto ms = club_medal_stats();
+              club_ceremony = {};
+              club_ceremony.active = true;
+              club_ceremony.challenge_title = clist[1].format_title(stbls);
+              club_ceremony.challenge_desc = clist[1].format_description(stbls, &club_event_names);
+              club_ceremony.car_name = carview::car_name(car);
+              club_ceremony.car_medals = 2;
+              club_ceremony.car_total = int(clist.size());
+              club_ceremony.total_medals = ms.total_medals;
+              club_ceremony.cars_with_medal = ms.cars_with_medal;
+              club_ceremony.age = 1.2;
+              club_ceremony_at = vehicle.time() - 1.2;
+            }
+            club_open = true;
+            club_pick = 2 < clist.size() ? 2 : 0;
+          }
+        }
+        if (race && race->is_stage() && (race_hud.phase == carview::RaceHud::kRacing || demo_rally_stage)) {
           rally_stage_hud.active = true;
-          rally_stage_hud.championship_name = rally_session.active() ? rally_session.title() : "HORIZON RALLY";
+          rally_stage_hud.championship_name = rally_session.active() ? rally_session.title() : "BEAUMONT RALLY";
           rally_stage_hud.stage_name = race_hud.event;
           rally_stage_hud.stage_number = rally_session.active() ? (rally_session.current_stage_index() + 1) : 1;
-          rally_stage_hud.total_stages = rally_session.active() ? rally_session.total_stages() : 1;
+          rally_stage_hud.total_stages = rally_session.active() ? rally_session.total_stages() : 4;
           rally_stage_hud.stage_clock = race_hud.clock;
           rally_stage_hud.progress = race_hud.progress;
-          rally_stage_hud.total_splits = int(race->stage_track().splits.size());
+          rally_stage_hud.total_splits = std::max(4, int(race->stage_track().splits.size()));
           rally_stage_hud.splits_passed = int(race->split_times().size());
           rally_stage_hud.last_split_delta = race->last_split_delta();
           rally_stage_hud.last_split_age = race_hud.clock - race->last_split_at();
           rally_stage_hud.pace = race->codriver().hud(race_hud.clock);
+          if (demo_rally_stage && rally_stage_hud.splits_passed == 0) {
+            rally_stage_hud.splits_passed = 1;
+            rally_stage_hud.last_split_delta = -1.42;
+            rally_stage_hud.last_split_age = 0.8;
+          }
+          if (demo_rally_stage && !rally_stage_hud.pace.active) {
+            rally_stage_hud.splits_passed = std::max(1, rally_stage_hud.splits_passed);
+            rally_stage_hud.last_split_delta = -1.42;
+            rally_stage_hud.last_split_age = 0.8;
+            rally_stage_hud.pace.active = true;
+            rally_stage_hud.pace.age_s = 0.4;
+            rally_stage_hud.pace.icons.push_back({race::PaceIconKind::kHardLeft, 2, -1, "2L", true});
+            rally_stage_hud.pace.icons.push_back({race::PaceIconKind::kCrest, 0, 0, "CREST", true});
+            rally_stage_hud.pace.icons.push_back({race::PaceIconKind::kMediumRight, 4, 1, "4R", true});
+            rally_stage_hud.pace.modifiers = {"DON'T CUT", "50", "GRAVEL"};
+            rally_stage_hud.pace.phrase = "2 LEFT  •  OVER CREST  •  INTO 4 RIGHT";
+          }
           d.rally_stage = &rally_stage_hud;
         }
         if (rally_hub_open && rally_catalog.loaded) {
@@ -5464,11 +5764,25 @@ int run_drive(int argc, char** argv) {
         }
         if (rally_results_open) d.rally_results = &rally_results_state;
         carview::ui::List list;
-        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally screens, and grid menu.
+        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, and grid menu.
         if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
-            !career_page.is_open() && !rally_hub_open && !rally_service_open && !rally_results_open)
+            !career_page.is_open() && !rally_hub_open && !rally_service_open && !rally_results_open && !club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
+        if (club_open) {
+          const auto club_sc = build_club_screen();
+          carview::draw_club_screen(list, width, height, club_sc);
+        } else if (!show_title && !ceremony.active && !rally_hub_open && !rally_service_open && !rally_results_open &&
+                   st.menu.empty()) {
+          const auto cstrip = build_club_active_strip();
+          if (cstrip.active) carview::draw_club_active_strip(list, width, height, cstrip);
+        }
+        if (club_ceremony.active) {
+          club_ceremony.age = demo_club ? 1.2 : (vehicle.time() - club_ceremony_at);
+          club_ceremony.dock_bottom_right = club_open;
+          if (club_ceremony.age > club_ceremony.duration) club_ceremony.active = false;
+          else carview::draw_club_medal_ceremony(list, width, height, club_ceremony);
+        }
         if (!show_title && !ceremony.active && radio_popup_gpu.alpha > 0.005f)
           carview::draw_radio_popup_gpu(list, radio_popup_gpu, float(width), float(height));
         if (story_intro.active()) story_intro.draw_hud(list, float(width), float(height));
@@ -6709,8 +7023,9 @@ int run_drive(int argc, char** argv) {
             }
           }
           if (act == PauseMenu::kClub) {
+            club_check();
             club_open = true;
-            club_pick = club_gate.empty() ? club_data.cars.at(club_car).size() : 0;
+            club_pick = 0;
           }
           if (act == PauseMenu::kAchievements) {
             eval_achievements(false);
@@ -6734,6 +7049,8 @@ int run_drive(int argc, char** argv) {
           }
           if (act == PauseMenu::kReset) put_back();
           if (act == PauseMenu::kRestartRace && race) {
+            club_pending.event_restarted = true;
+            club_step();
             results_page = 0;
             next_event = race_event;
             running = false;
@@ -7530,19 +7847,23 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
-            // The 1000 Club page: up and down scroll, enter on the last line
-            // begins the challenges in this car (its record in the save).
+            // The 1000 Club screen: up/down inspects challenges & hints, enter begins challenges in this car.
             if (club_open) {
-              const size_t rows = club_gate.empty() ? club_data.cars.at(club_car).size() + 1 : 1;
+              const size_t rows = (club_gate.empty() && club_car >= 0 && club_data.cars.count(club_car))
+                                      ? std::max<size_t>(1, club_data.cars.at(club_car).size())
+                                      : 1;
               auto begin = [&]() {
-                if (!club_gate.empty() || club_pick + 1 != rows || club_record()) return;
+                if (!club_gate.empty() || club_car < 0 || !club_data.cars.count(club_car) || club_record()) return;
                 drive::SavedClubCar rec;
                 rec.car_id = club_car;
-                rec.challenges.assign(club_data.cars.at(club_car).size(), {0u, false});
-                saved.club.push_back(rec);
+                for (const auto& ch : club_data.cars.at(club_car)) {
+                  rec.challenges.emplace_back(ch.definition_hash, false);
+                  rec.progress.emplace_back();
+                }
+                saved.club.push_back(std::move(rec));
                 save_now("1000 club");
                 club_check();
-                notice = "1000 club: challenges begun in this car";
+                notice = "1000 CLUB: CHALLENGES BEGUN IN THIS CAR";
                 notice_until = vehicle.time() + 4;
                 club_open = false;
               };
@@ -8228,6 +8549,7 @@ int run_drive(int argc, char** argv) {
                   const drive::Vec3 fp = vehicle.position();
                   const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
                   if (festival_mgr->start_head_to_head({fp.x, fp.y, fp.z}, std::atan2(ff.x, ff.z), vehicle.time())) {
+                    club_pending.encounter_started = true;
                     notice = "HEAD-TO-HEAD RACE STARTED!";
                     notice_until = vehicle.time() + 2.5;
                     minimap_at = -1;

@@ -133,6 +133,7 @@ struct SkillEvent {
   int multiplier = 1;
   int rank = 250;
   int64_t credits = 0;
+  int grade = 1;          // 1=Standard, 2=Great, 3=Awesome, 4=Ultimate
 };
 
 struct SkillHudState {
