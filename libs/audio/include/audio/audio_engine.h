@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -22,9 +23,12 @@
 #include "audio/mixer.h"
 #include "audio/radio.h"
 #include "audio/rt.h"
+#include "audio/snapshots.h"
 #include "audio/user_music.h"
 
 namespace audio {
+
+enum class CarDspMode : uint8_t { kOff = 0, kRewind, kCountdown, kCockpit };
 
 struct AudioTelemetry {
   Radio::Popup radio_popup{};
@@ -82,6 +86,18 @@ class AudioEngine {
   int find_snapshot(std::string_view name) const;
   void set_snapshot(int id, bool active);
 
+  // Loads AudioMixerSnapshots.xml, GlobalDSPConfig.xml, and AudioEngineConfig.xml
+  // from `game_root` (call before start()). When loaded, the 9x22 SnapshotMatrix,
+  // CarBusEq, and MasterRmsStage drive the mix.
+  bool load_mixer_configs(const std::filesystem::path& game_root, std::string* note = nullptr);
+  bool has_snapshot_matrix() const { return use_matrix_; }
+  int find_matrix_snapshot(std::string_view name) const { return matrix_.find(name); }
+  void activate_matrix_snapshot(std::string_view name);
+  void activate_matrix_snapshot_idx(int idx);
+  void restore_gameplay_snapshot();
+  void set_dynamics_speed(float speed_mph, float top_speed_mph = 140.0f);
+  void set_car_bus_dsp_mode(CarDspMode mode);
+
   // Radio commands (executed on the audio thread so Radio is single-threaded).
   void radio_press(int dir);
   void radio_select(int station);
@@ -121,10 +137,15 @@ class AudioEngine {
       kSwapEngine,
       kSwapRadio,
       kSwapUserMusic,
+      kMatrixActivate,
+      kMatrixRestoreGameplay,
+      kDynamicsSpeed,
+      kCarBusDspMode,
     };
     Kind kind = kBusLevel;
     int i0 = 0;
     float f0 = 0.0f;
+    float f1 = 0.0f;
     bool b0 = false;
     void* ptr0 = nullptr;
     void* ptr1 = nullptr;
@@ -145,6 +166,16 @@ class AudioEngine {
   int rate_ = 48000;
   Mixer mixer_;
   int snap_title_ = -1;
+
+  bool use_matrix_ = false;
+  SnapshotMatrix matrix_;
+  GlobalDspConfig global_dsp_{};
+  CarBusEq car_eq_;
+  MasterRmsStage rms_stage_;
+  std::array<float, kBuses> matrix_bus_smooth_{};
+  float matrix_master_smooth_ = 1.0f;
+  float matrix_mute_smooth_ = 1.0f;
+  bool last_dj_speaking_ = false;
 
   // Owned/used exclusively by the audio thread while running.
   EnginePlayer* engine_ = nullptr;

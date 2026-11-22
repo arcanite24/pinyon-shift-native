@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 namespace audio {
@@ -10,6 +11,9 @@ AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)) {
   mixer_.prepare(rate_);
   mixer_.snapshots().add_defaults();
   snap_title_ = mixer_.snapshots().find("Title");
+  car_eq_.prepare(rate_);
+  rms_stage_.prepare(rate_);
+  matrix_bus_smooth_.fill(1.0f);
   // Pre-allocate stereo bus scratch buffers for up to 4096 frames so the
   // audio thread never allocates in steady state.
   bus_engine_.resize(4096 * 2, 0.0f);
@@ -162,6 +166,65 @@ void AudioEngine::set_snapshot(int id, bool active) {
   enqueue(c);
 }
 
+bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note) {
+  if (running_.load(std::memory_order_acquire) || game_root.empty()) return false;
+  std::string err;
+  const bool have_matrix = matrix_.load(game_root, &err);
+  if (have_matrix) {
+    use_matrix_ = true;
+    for (int b = 0; b < kBuses; ++b) matrix_bus_smooth_[size_t(b)] = matrix_.bus_gain(Bus(b));
+  }
+  global_dsp_.load(game_root, nullptr);
+  MasterDspConfig mdsp;
+  if (mdsp.load(game_root, nullptr)) rms_stage_.set_config(mdsp);
+  if (note) {
+    if (have_matrix) {
+      *note = "audio mixer: " + std::to_string(matrix_.snapshot_count()) + " snapshots, " +
+              std::to_string(matrix_.category_count()) + " categories";
+    } else {
+      *note = err;
+    }
+  }
+  return have_matrix;
+}
+
+void AudioEngine::activate_matrix_snapshot(std::string_view name) {
+  if (!use_matrix_) return;
+  const int idx = matrix_.find(name);
+  if (idx >= 0) activate_matrix_snapshot_idx(idx);
+}
+
+void AudioEngine::activate_matrix_snapshot_idx(int idx) {
+  if (!use_matrix_ || idx < 0) return;
+  Command c;
+  c.kind = Command::kMatrixActivate;
+  c.i0 = idx;
+  enqueue(c);
+}
+
+void AudioEngine::restore_gameplay_snapshot() {
+  if (!use_matrix_) return;
+  Command c;
+  c.kind = Command::kMatrixRestoreGameplay;
+  enqueue(c);
+}
+
+void AudioEngine::set_dynamics_speed(float speed_mph, float top_speed_mph) {
+  if (!use_matrix_) return;
+  Command c;
+  c.kind = Command::kDynamicsSpeed;
+  c.f0 = speed_mph;
+  c.f1 = top_speed_mph;
+  enqueue(c);
+}
+
+void AudioEngine::set_car_bus_dsp_mode(CarDspMode mode) {
+  Command c;
+  c.kind = Command::kCarBusDspMode;
+  c.i0 = int(mode);
+  enqueue(c);
+}
+
 void AudioEngine::radio_press(int dir) {
   Command c;
   c.kind = Command::kRadioPress;
@@ -250,8 +313,34 @@ void AudioEngine::drain_commands() {
         break;
       case Command::kMasterVolume: mixer_.set_master(c.f0); break;
       case Command::kMute: mixer_.set_mute(c.b0); break;
-      case Command::kFullDynamicRange: mixer_.stage().set_full_dynamic_range(c.b0); break;
+      case Command::kFullDynamicRange:
+        mixer_.stage().set_full_dynamic_range(c.b0);
+        rms_stage_.set_full_dynamic_range(c.b0);
+        break;
       case Command::kSnapshot: mixer_.snapshots().set_active(c.i0, c.b0); break;
+      case Command::kMatrixActivate:
+        if (use_matrix_) {
+          if (const auto* d = matrix_.def(c.i0)) matrix_.activate(d->name);
+        }
+        break;
+      case Command::kMatrixRestoreGameplay:
+        if (use_matrix_) matrix_.restore_gameplay();
+        break;
+      case Command::kDynamicsSpeed:
+        if (use_matrix_) matrix_.update_dynamics(0.0, c.f0, c.f1);
+        break;
+      case Command::kCarBusDspMode: {
+        GlobalDspBand band{};
+        switch (CarDspMode(c.i0)) {
+          case CarDspMode::kRewind: band = global_dsp_.rewind; break;
+          case CarDspMode::kCountdown: band = global_dsp_.countdown; break;
+          case CarDspMode::kCockpit: band = global_dsp_.cockpit[0]; break;
+          case CarDspMode::kOff:
+          default: band.bypass = true; break;
+        }
+        car_eq_.set_target(band);
+        break;
+      }
       case Command::kRadioPress:
         if (radio_) radio_->press(c.i0);
         break;
@@ -316,6 +405,7 @@ void AudioEngine::render_block(float* out, int frames) {
   const float* buses[kBuses] = {};
   if (engine_) {
     engine_->render(bus_engine_.data(), frames);
+    car_eq_.process(bus_engine_.data(), frames);
     buses[int(Bus::kEngine)] = bus_engine_.data();
   }
 
@@ -332,7 +422,47 @@ void AudioEngine::render_block(float* out, int frames) {
     buses[int(Bus::kMusic)] = bus_music_.data();
   }
 
-  mixer_.mix(buses, frames, out);
+  if (use_matrix_) {
+    const bool dj_now = !on_title && !user_music_on && radio_player_ && radio_player_->dj_speaking();
+    if (dj_now != last_dj_speaking_) {
+      last_dj_speaking_ = dj_now;
+      matrix_.activate(dj_now ? "RadioDJSpeaking" : "RadioNormal");
+    }
+    std::fill(out, out + samples, 0.0f);
+    const float a = 1.0f - std::exp(-1.0f / (0.01f * float(rate_)));
+    for (int b = 0; b < kBuses; ++b) {
+      // Combine AudioMixerSnapshots.xml matrix gain with the built-in Title/Menu
+      // guards and user Sound Mix level (0..2).
+      const float snap_g = matrix_.bus_gain(Bus(b)) * mixer_.snapshots().level(Bus(b));
+      const float target = mixer_.bus_level(Bus(b)) * snap_g;
+      float& s = matrix_bus_smooth_[size_t(b)];
+      const float* in = buses[b];
+      if (!in) {
+        s = target;
+        continue;
+      }
+      for (int i = 0; i < frames; ++i) {
+        s += (target - s) * a;
+        out[2 * i] += in[2 * i] * s;
+        out[2 * i + 1] += in[2 * i + 1] * s;
+      }
+    }
+    const float m_target = mixer_.master();
+    const float mute_target = mixer_.muted() ? 0.0f : 1.0f;
+    for (int i = 0; i < frames; ++i) {
+      matrix_master_smooth_ += (m_target - matrix_master_smooth_) * a;
+      matrix_mute_smooth_ += (mute_target - matrix_mute_smooth_) * a;
+      const float g = matrix_master_smooth_ * matrix_mute_smooth_;
+      out[2 * i] *= g;
+      out[2 * i + 1] *= g;
+    }
+    rms_stage_.process(out, frames, 2);
+    const double dt = double(frames) / double(rate_);
+    matrix_.advance(dt);
+    mixer_.snapshots().advance(dt);
+  } else {
+    mixer_.mix(buses, frames, out);
+  }
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   const double budget_ms = 1000.0 * double(frames) / double(rate_);
   publish_telemetry(ms, budget_ms);
@@ -357,8 +487,8 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
     if (n > 0) std::memcpy(t.user_music_title.data(), title.data(), n);
     t.user_music_title[n] = '\0';
   }
-  t.peak = mixer_.stage().peak();
-  t.gain_reduction_db = mixer_.stage().gain_reduction_db();
+  t.peak = use_matrix_ ? rms_stage_.peak() : mixer_.stage().peak();
+  t.gain_reduction_db = use_matrix_ ? rms_stage_.gain_reduction_db() : mixer_.stage().gain_reduction_db();
   t.blocks_rendered = blocks_rendered_;
   t.worst_block_ms = worst_block_ms_;
   t.stalls = stalls_;

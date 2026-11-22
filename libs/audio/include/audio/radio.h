@@ -185,6 +185,7 @@ class RadioPlayer {
   double master = 1;  // ours: the radio against the engine
   double volume = 1;  // SPEC-RADIO: RADIO VOLUME option (0..1)
   int decoders() const;
+  bool dj_speaking() const { return dj_speaking_; }
 
  private:
   struct Voice;
@@ -199,6 +200,7 @@ class RadioPlayer {
   std::vector<Voice> voices_;
   std::vector<double> station_gain_;
   double duck_ = 1;
+  bool dj_speaking_ = false;
   std::vector<RadioEvent> scratch_;
   std::vector<float> mix_;
 };

@@ -17,6 +17,7 @@
 #include "audio/fsb4.h"
 #include "audio/mixer.h"
 #include "audio/rt.h"
+#include "audio/snapshots.h"
 #include "audio/sources.h"
 #include "audio/user_music.h"
 #include "audio/xml.h"
@@ -591,6 +592,178 @@ void audio_thread_checks() {
   fs::remove_all(dir, ec);
 }
 
+// SPEC-AUDIO-EVENTS Part 3: 9x22 SnapshotMatrix, overrides, DynamicsData
+// CrashData latch, GlobalDspConfig/CarBusEq slewing, and MasterRmsStage +
+// soft saturator (with LFE bypass).
+void snapshot_and_master_dsp_checks() {
+  const char* xml = R"(
+    <MixSnapshots>
+      <DynamicsData>
+        <MusicHighpass fadeinrate="3.0" fadeoutrate="33.0" zonefilterlevel="200.0"/>
+        <CrashData threshold="50" drop="10"/>
+        <TopSpeedData threshold="0.70"/>
+      </DynamicsData>
+      <FreeRoam group="Gameplay">
+        <FocusCar active="1" destvolume="0.8" fadetime="0" returntime="0" returnfadetime="0"/>
+        <GameUI active="1" destvolume="0.9" fadetime="0" returntime="0" returnfadetime="0"/>
+      </FreeRoam>
+      <Paused group="Gameplay">
+        <FocusCar active="1" destvolume="0.0" fadetime="0" returntime="0" returnfadetime="0"/>
+        <GameUI active="0" destvolume="0.1" fadetime="0" returntime="0" returnfadetime="0"/>
+      </Paused>
+      <RadioNormal group="Radio">
+        <FocusCar active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+      </RadioNormal>
+      <RadioDJSpeaking group="Radio">
+        <FocusCar active="1" destvolume="0.4" fadetime="0" returntime="0" returnfadetime="0"/>
+      </RadioDJSpeaking>
+      <VONotPlaying group="VO">
+        <FocusCar active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+      </VONotPlaying>
+      <VOPlaying group="VO">
+        <FocusCar active="1" destvolume="0.5" fadetime="0" returntime="0" returnfadetime="0"/>
+      </VOPlaying>
+      <VOPlayingOnUIExterior group="VO">
+        <FocusCar active="1" destvolume="0.25" fadetime="0" returntime="0" returnfadetime="0"/>
+      </VOPlayingOnUIExterior>
+      <SatNavNotPlaying group="SatNav">
+        <GameMusic active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+      </SatNavNotPlaying>
+      <SatNavPlaying group="SatNav">
+        <GameMusic active="1" destvolume="0.3" fadetime="0" returntime="0" returnfadetime="0"/>
+      </SatNavPlaying>
+      <Crash group="Impact">
+        <FocusCar active="1" destvolume="0.2" fadetime="0.1" returntime="0.5" returnfadetime="0.4"/>
+      </Crash>
+      <LowSpeed group="Speed">
+        <GameMusic active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+      </LowSpeed>
+      <TopSpeed group="Speed">
+        <GameMusic active="1" destvolume="0.9" fadetime="0" returntime="0" returnfadetime="0"/>
+      </TopSpeed>
+    </MixSnapshots>
+  )";
+  audio::SnapshotMatrix m;
+  std::string err;
+  CHECK(m.parse(xml, &err));
+  CHECK(m.snapshot_count() == 12);
+
+  // Snapshot multiplication: 0.8 * 0.4 * 0.5 = 0.16.
+  CHECK(m.activate("RadioDJSpeaking"));
+  CHECK(m.activate("VOPlaying"));
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.16, 1e-5));
+
+  // SatNavPlaying ignored while RadioDJSpeaking active.
+  CHECK(!m.activate("SatNavPlaying"));
+  CHECK(near(m.gain(audio::Category::kGameMusic), 1.0, 1e-5));
+
+  // active = 0 leaves GameUI unchanged (stays 0.9); VOPlaying while Paused -> VOPlayingOnUIExterior.
+  CHECK(m.activate("Paused"));
+  CHECK(near(m.gain(audio::Category::kGameUI), 0.9, 1e-5));
+  CHECK(m.activate("VOPlaying"));
+  CHECK(m.active_name(audio::SnapshotGroup::kVO) == "VOPlayingOnUIExterior");
+  m.restore_gameplay();
+  CHECK(m.active_name(audio::SnapshotGroup::kGameplay) == "FreeRoam");
+  CHECK(m.activate("RadioNormal"));
+  CHECK(m.activate("VONotPlaying"));
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8, 1e-5));
+
+  // Return timing: fade 0.1 s -> hold 0.5 s -> return fade 0.4 s.
+  CHECK(m.activate("Crash"));
+  m.advance(0.1);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8 * 0.2, 1e-4));
+  m.advance(0.5);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8 * 0.2, 1e-4));
+  m.advance(0.2);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8 * 0.6, 1e-3));
+  m.advance(0.2);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8, 1e-4));
+
+  // CrashData latch: 60 -> 45 fires; 45 -> 30 does not; 0 -> 6 clears latch.
+  m.reset_dynamics();
+  m.update_dynamics(0.033, 60.0f, 140.0f);
+  m.update_dynamics(0.033, 45.0f, 140.0f);
+  m.advance(0.1);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8 * 0.2, 1e-4));
+  m.advance(1.0);  // return complete
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8, 1e-4));
+  m.update_dynamics(0.033, 30.0f, 140.0f);  // latched, no re-fire
+  m.advance(0.1);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8, 1e-4));
+  m.update_dynamics(0.033, 0.0f, 140.0f);   // saw slow
+  m.update_dynamics(0.033, 6.0f, 140.0f);   // latch cleared
+  m.update_dynamics(0.033, 65.0f, 140.0f);
+  m.update_dynamics(0.033, 50.0f, 140.0f);  // re-fires!
+  m.advance(0.1);
+  CHECK(near(m.gain(audio::Category::kFocusCar), 0.8 * 0.2, 1e-4));
+
+  // Master saturator exact formula: |x|*level=0.5, sat=0.9 (t=0.1) -> 0.5/1.4 = 0.35714286.
+  CHECK(near(audio::master_saturate(0.5f, 1.0f, 0.9f, 1.0f), 0.5 / 1.4, 1e-5));
+  CHECK(near(audio::master_saturate(-0.5f, 1.0f, 0.9f, 1.0f), -0.5 / 1.4, 1e-5));
+  CHECK(near(audio::master_saturate(0.05f, 1.0f, 0.9f, 1.0f), 0.05, 1e-6));
+
+  // Master RMS compressor with 5.1 LFE pass-through.
+  audio::MasterRmsStage stage;
+  stage.prepare(48000);
+  audio::MasterDspConfig mdsp;
+  mdsp.compressor_threshold = 0.1f;
+  mdsp.compressor_ratio = 0.25f;
+  mdsp.compressor_attack = 0.01f;
+  mdsp.compressor_release = 0.1f;
+  mdsp.saturator_bypass = true;
+  stage.set_config(mdsp);
+  std::vector<float> buf6(256 * 6, 0.0f);
+  for (int blk = 0; blk < 30; ++blk) {
+    for (int i = 0; i < 256; ++i) {
+      buf6[size_t(i) * 6 + 0] = 0.5f;  // FL
+      buf6[size_t(i) * 6 + 1] = 0.5f;  // FR
+      buf6[size_t(i) * 6 + 2] = 0.5f;  // C
+      buf6[size_t(i) * 6 + 3] = 0.5f;  // LFE (must pass untouched!)
+      buf6[size_t(i) * 6 + 4] = 0.5f;  // RL
+      buf6[size_t(i) * 6 + 5] = 0.5f;  // RR
+    }
+    stage.process(buf6.data(), 256, 6);
+  }
+  const float expected_g = (0.1f + (0.5f - 0.1f) * 0.25f) / 0.5f;  // 0.4
+  CHECK(near(stage.current_gain(), expected_g, 0.02));
+  CHECK(near(buf6[255 * 6 + 0], 0.5f * expected_g, 0.02));
+  CHECK(near(buf6[255 * 6 + 3], 0.5f, 1e-5));  // LFE untouched!
+
+  // CarBusEq slewing check.
+  audio::CarBusEq eq;
+  eq.prepare(48000);
+  eq.set_target({false, 0.30f, 3.36f, 3772.0f});
+  std::vector<float> st(4800 * 2, 0.1f);
+  eq.process(st.data(), 4800);  // 0.1 s
+  eq.process(st.data(), 4800);  // 0.2 s
+  CHECK(near(eq.center(), 3772.0f, 1.0f));
+  CHECK(near(eq.gain(), 0.30f, 1e-3f));
+
+  // Disc census check for AudioMixerSnapshots.xml, GlobalDSPConfig.xml, AudioEngineConfig.xml.
+  if (const char* game = std::getenv("SHIFT_GAME_ROOT")) {
+    audio::SnapshotMatrix disc_m;
+    CHECK(disc_m.load(game, &err));
+    CHECK(disc_m.snapshot_count() == 39 && disc_m.category_count() == 21);
+    CHECK(near(disc_m.dynamics().crash_threshold_mph, 50.0, 1e-3));
+    CHECK(near(disc_m.dynamics().crash_drop_mph, 10.0, 1e-3));
+    CHECK(near(disc_m.dynamics().top_speed_threshold, 0.70, 1e-3));
+    CHECK(near(disc_m.dynamics().music_hp_cutoff, 200.0, 1e-3));
+
+    audio::GlobalDspConfig gdsp;
+    CHECK(gdsp.load(game, &err));
+    CHECK(!gdsp.rewind.bypass && near(gdsp.rewind.gain, 0.30, 1e-3) && near(gdsp.rewind.center, 3772.0, 1.0));
+    CHECK(!gdsp.countdown.bypass && near(gdsp.countdown.gain, 0.10, 1e-3));
+    CHECK(gdsp.cockpit[0].bypass && gdsp.cockpit[1].bypass && gdsp.cockpit[2].bypass && gdsp.cockpit[3].bypass);
+
+    audio::MasterDspConfig disc_mdsp;
+    CHECK(disc_mdsp.load(game, &err));
+    CHECK(near(disc_mdsp.compressor_ratio, 0.25, 1e-4) && near(disc_mdsp.compressor_ratio_tv, 0.15, 1e-4));
+    CHECK(near(disc_mdsp.saturator_saturation, 0.90, 1e-4));
+    std::printf("disc snapshots: %d snapshots, %d categories, compressor ratio %.2f/%.2f\n", disc_m.snapshot_count(),
+                disc_m.category_count(), disc_mdsp.compressor_ratio, disc_mdsp.compressor_ratio_tv);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -601,6 +774,7 @@ int main() {
   player_checks();
   rt_checks();
   mixer_checks();
+  snapshot_and_master_dsp_checks();
   user_music_checks();
   audio_thread_checks();
   r34_checks();

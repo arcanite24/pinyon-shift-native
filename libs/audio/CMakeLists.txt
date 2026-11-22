@@ -9,6 +9,7 @@ add_library(shift_audio STATIC
   src/stream.cpp
   src/user_music.cpp
   src/mixer.cpp
+  src/snapshots.cpp
   src/audio_engine.cpp)
 target_include_directories(shift_audio PUBLIC include)
 target_link_libraries(shift_audio PUBLIC shift_cars PRIVATE shift_dr_libs)

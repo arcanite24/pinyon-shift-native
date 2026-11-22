@@ -456,6 +456,7 @@ void RadioPlayer::render(float* out, int frames) {
   float* voice = mix_.data() + 2 * size_t(frames);
   const double fade_step = 1.0 / (std::max(0.01, lv.change_fade) * rate_);
   const double vol = std::clamp(volume, 0.0, 2.0);
+  bool any_sel_dj = false;
   for (size_t s = 0; s < station_gain_.size(); ++s) {
     const double target = int(s) == sel ? 1.0 : 0.0;
     if (station_gain_[s] <= 0 && target <= 0) continue;
@@ -532,6 +533,7 @@ void RadioPlayer::render(float* out, int frames) {
       else st->hint(std::max<int64_t>(rfrom, cur - 4));
     }
     const double duck_target = dj ? lv.duck : 1.0;
+    if (int(s) == sel && dj) any_sel_dj = true;
     const double duck_step = (1 - lv.duck) / (std::max(0.01, duck_target < duck_ ? lv.duck_down : lv.duck_up) * rate_);
     double g = station_gain_[s];
     for (int i = 0; i < frames; ++i) {
@@ -553,6 +555,7 @@ void RadioPlayer::render(float* out, int frames) {
       ++it;
     }
   }
+  dj_speaking_ = any_sel_dj;
   // The clock runs while on, and while the last station fades to off.
   radio_.advance(dt, fading);
 }
