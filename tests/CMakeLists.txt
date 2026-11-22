@@ -153,6 +153,16 @@ add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/ui4_
 target_include_directories(ui_tests PRIVATE ../apps/carview)
 target_link_libraries(ui_tests PRIVATE shift_stb fh1data shift_race shift_garage shift_freeroam)
 add_test(NAME ui_tests COMMAND ui_tests)
+# Slice 11: render scale / HUD / HDR / upscaler fallbacks / .cube reader / frame stats (no Vulkan).
+add_executable(render_modern_tests render_modern_tests.cpp ../apps/carview/render_modern.cpp
+               ../apps/carview/perf_overlay.cpp ../apps/carview/ui.cpp)
+target_include_directories(render_modern_tests PRIVATE ../apps/carview)
+target_link_libraries(render_modern_tests PRIVATE shift_stb fh1data)
+add_test(NAME render_modern_tests COMMAND render_modern_tests)
+# Slice 11: the GPU-driven world's arena allocator, resident set, draw table and culling rule (no Vulkan).
+add_executable(world_gpu_tests world_gpu_tests.cpp ../apps/carview/world_gpu_logic.cpp)
+target_include_directories(world_gpu_tests PRIVATE ../apps/carview)
+add_test(NAME world_gpu_tests COMMAND world_gpu_tests)
 
 add_executable(career_tests career_tests.cpp)
 target_link_libraries(career_tests PRIVATE shift_race shift_freeroam shift_drive shift_data)

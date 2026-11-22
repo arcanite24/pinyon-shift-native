@@ -28,6 +28,7 @@
 #include <limits>
 #include <regex>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 
 #include "fh1data/archive.h"
@@ -49,6 +50,7 @@
 #include "stars_frag_spv.h"
 #include "stars_vert_spv.h"
 #include "world_frag_spv.h"
+#include "world_gpu_logic.h"
 #include "world_vert_spv.h"
 
 namespace carview {
@@ -295,10 +297,11 @@ std::array<float, 3> studio(float x, float y, float z) {
 Showroom::~Showroom() {
   VkDevice d = r_.device_;
   if (!d) return;
-  vkDeviceWaitIdle(d);
+  r_.wait_idle();
   drop_pending_world();
   drop_fading_world(true);
   stop_reaper();
+  gpu_world_.reset();
   if (!guest_) r_.set_scene({});
   for (auto& t : gpu_textures_) r_.destroy_image(t);
   r_.destroy_image(custom_livery_img_);
@@ -328,8 +331,9 @@ Showroom::~Showroom() {
   for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
-  for (VkPipeline p : {opaque_, glass_, mask_, world_opaque_, world_coverage_, world_alpha_, shadow_world_,
-                       shadow_cutout_, shadow_car_, sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
+  for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, mask_, world_opaque_, world_opaque_after_z_,
+                       world_z_prepass_, world_coverage_, world_alpha_, shadow_world_, shadow_cutout_, shadow_car_,
+                       sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
     if (p) vkDestroyPipeline(d, p, nullptr);
   if (sky_pipe_layout_) vkDestroyPipelineLayout(d, sky_pipe_layout_, nullptr);
   if (stars_pipe_layout_) vkDestroyPipelineLayout(d, stars_pipe_layout_, nullptr);
@@ -358,16 +362,13 @@ Showroom::~Showroom() {
   for (auto& g : glow_tex_) r_.destroy_image(g);
   r_.destroy_image(headlight_cookie_);
   r_.destroy_buffer(headlights_ubo_);
-  if (particle_mapped_) vmaUnmapMemory(r_.allocator_, particle_buf_.allocation);
-  if (skid_asphalt_mapped_) vmaUnmapMemory(r_.allocator_, skid_asphalt_buf_.allocation);
-  if (skid_rut_mapped_) vmaUnmapMemory(r_.allocator_, skid_rut_buf_.allocation);
-  if (debris_mapped_) vmaUnmapMemory(r_.allocator_, debris_buf_.allocation);
-  if (driver_mapped_) vmaUnmapMemory(r_.allocator_, driver_buf_.allocation);
-  r_.destroy_buffer(particle_buf_);
-  r_.destroy_buffer(skid_asphalt_buf_);
-  r_.destroy_buffer(skid_rut_buf_);
-  r_.destroy_buffer(debris_buf_);
-  r_.destroy_buffer(driver_buf_);
+  destroy_dyn_buffer(car_inst_buf_);
+  r_.destroy_buffer(empty_inst_ssbo_);
+  destroy_dyn_buffer(particle_buf_);
+  destroy_dyn_buffer(skid_asphalt_buf_);
+  destroy_dyn_buffer(skid_rut_buf_);
+  destroy_dyn_buffer(debris_buf_);
+  destroy_dyn_buffer(driver_buf_);
   r_.destroy_image(particle_atlas_);
   r_.destroy_image(skid_asphalt_tex_);
   r_.destroy_image(skid_rut_tex_);
@@ -1616,17 +1617,18 @@ bool Showroom::upload_environment(std::string& error) {
 }
 
 bool Showroom::create_pipelines(std::string& error) {
-  // Set 0: frame UBO, environment cube, sun shadow map, headlight cookie, headlights UBO, mirror map.
-  const VkDescriptorSetLayoutBinding frame_bindings[6] = {
+  // Set 0: frame UBO, environment cube, sun shadow map, headlight cookie, headlights UBO, mirror map, car instances SSBO.
+  const VkDescriptorSetLayoutBinding frame_bindings[7] = {
       {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
        nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 6;
+  set.bindingCount = 7;
   set.pBindings = frame_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &frame_layout_), "frame set layout");
   VkDescriptorSetLayoutBinding material_bindings[3];
@@ -1726,19 +1728,24 @@ bool Showroom::create_pipelines(std::string& error) {
   auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
                    bool depth_attachment, bool depth_write, bool blend_on, VkPipeline& out,
                    VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
-                   bool coverage = false, VkPipelineLayout pipe_layout = VK_NULL_HANDLE) {
+                   bool coverage = false, VkPipelineLayout pipe_layout = VK_NULL_HANDLE,
+                   VkCullModeFlags cull_mode = VK_CULL_MODE_NONE, bool depth_equal = false, bool color_out = true) {
     const VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
          vertex ? vertex : vert, "main", vertex ? &spec : nullptr},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
          fragment, "main", fragment == mask ? nullptr : &spec}};
+    VkPipelineRasterizationStateCreateInfo rstate = vertex ? raster_bias : raster;
+    rstate.cullMode = cull_mode;
+    if (vertex) rstate.frontFace = VK_FRONT_FACE_CLOCKWISE;  // world_transform_ flips det = -1
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = samples;
     multisample.alphaToCoverageEnable = coverage && samples != VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable = depth_attachment;
     depth.depthWriteEnable = depth_write;
-    depth.depthCompareOp = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
+    depth.depthCompareOp = depth_equal ? VK_COMPARE_OP_EQUAL
+                                       : (r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL);
     VkPipelineColorBlendAttachmentState attachment{};
     attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -1753,20 +1760,20 @@ bool Showroom::create_pipelines(std::string& error) {
       attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     }
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    blend.attachmentCount = 1;
-    blend.pAttachments = &attachment;
+    blend.attachmentCount = color_out ? 1u : 0u;
+    blend.pAttachments = color_out ? &attachment : nullptr;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &color_format;
+    rendering.colorAttachmentCount = color_out ? 1u : 0u;
+    rendering.pColorAttachmentFormats = color_out ? &color_format : nullptr;
     rendering.depthAttachmentFormat = depth_attachment ? r_.depth_format_ : VK_FORMAT_UNDEFINED;
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &rendering;
-    info.stageCount = 2;
+    info.stageCount = fragment ? 2u : 1u;
     info.pStages = stages;
     info.pVertexInputState = input ? input : &vertex_input;
     info.pInputAssemblyState = &assembly;
     info.pViewportState = &viewport;
-    info.pRasterizationState = vertex ? &raster_bias : &raster;
+    info.pRasterizationState = &rstate;
     info.pMultisampleState = &multisample;
     info.pDepthStencilState = &depth;
     info.pColorBlendState = &blend;
@@ -1774,7 +1781,15 @@ bool Showroom::create_pipelines(std::string& error) {
     info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
     return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
   };
-  VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, false, opaque_);
+  const VkCullModeFlags cull_back = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
+  VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, false, opaque_,
+                          VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back);
+  if (result == VK_SUCCESS)
+    result = build(frag, r_.scene_format(), r_.samples_, true, false, false, opaque_after_z_,
+                   VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, true);
+  if (result == VK_SUCCESS)
+    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, false, car_z_prepass_,
+                   VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, false, false);
   if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, true, glass_);
   if (result == VK_SUCCESS)
     result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, false, mask_);
@@ -1798,7 +1813,13 @@ bool Showroom::create_pipelines(std::string& error) {
   world_input.pVertexAttributeDescriptions = world_attributes;
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_opaque_, world_vert,
-                   &world_input, false, world_pipeline_layout_);
+                   &world_input, false, world_pipeline_layout_, cull_back);
+  if (result == VK_SUCCESS)
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, false, world_opaque_after_z_, world_vert,
+                   &world_input, false, world_pipeline_layout_, cull_back, true);
+  if (result == VK_SUCCESS)
+    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, false, world_z_prepass_, world_vert,
+                   &world_input, false, world_pipeline_layout_, cull_back, false, false);
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, true, false, world_coverage_, world_vert,
                    &world_input, true, world_pipeline_layout_);
@@ -1807,13 +1828,13 @@ bool Showroom::create_pipelines(std::string& error) {
                    &world_input, false, world_pipeline_layout_);
   if (result == VK_SUCCESS && !guest_)
     result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, false,
-                   env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_);
+                   env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
   // The sun shadow pass (ours): depth only into the shadow map, biased;
   // opaque casters with no fragment shader, cut-outs alpha-tested.
   VkShaderModule shadow_frag = VK_NULL_HANDLE;
   auto build_shadow = [&](VkShaderModule vertex, VkShaderModule fragment,
                           const VkPipelineVertexInputStateCreateInfo* input, VkPipelineLayout pipe_layout,
-                          VkPipeline& out) {
+                          VkCullModeFlags cull_mode, VkPipeline& out) {
     const VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex, "main",
          nullptr},
@@ -1826,6 +1847,8 @@ bool Showroom::create_pipelines(std::string& error) {
     depth.depthWriteEnable = VK_TRUE;
     depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineRasterizationStateCreateInfo biased = raster;
+    biased.cullMode = cull_mode;
+    if (vertex == world_vert) biased.frontFace = VK_FRONT_FACE_CLOCKWISE;
     biased.depthBiasEnable = VK_TRUE;
     biased.depthBiasConstantFactor = 2.0f;
     biased.depthBiasSlopeFactor = 2.5f;
@@ -1850,11 +1873,11 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS && r_.options_.shadow.size > 0) {
     result = make_module(kShadow_frag_spv, sizeof(kShadow_frag_spv), shadow_frag, "shadow.frag");
     if (result == VK_SUCCESS)
-      result = build_shadow(world_vert, VK_NULL_HANDLE, &world_input, world_pipeline_layout_, shadow_world_);
+      result = build_shadow(world_vert, VK_NULL_HANDLE, &world_input, world_pipeline_layout_, cull_back, shadow_world_);
     if (result == VK_SUCCESS)
-      result = build_shadow(world_vert, shadow_frag, &world_input, world_pipeline_layout_, shadow_cutout_);
+      result = build_shadow(world_vert, shadow_frag, &world_input, world_pipeline_layout_, VK_CULL_MODE_NONE, shadow_cutout_);
     if (result == VK_SUCCESS)
-      result = build_shadow(vert, VK_NULL_HANDLE, &vertex_input, pipeline_layout_, shadow_car_);
+      result = build_shadow(vert, VK_NULL_HANDLE, &vertex_input, pipeline_layout_, cull_back, shadow_car_);
   }
   if (shadow_frag) vkDestroyShaderModule(r_.device_, shadow_frag, nullptr);
   if (world_vert) vkDestroyShaderModule(r_.device_, world_vert, nullptr);
@@ -1904,7 +1927,11 @@ bool Showroom::upload(std::string& error) {
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, headlights_ubo_) ||
       (!guest_ && !r_.create_buffer(kMaxOverlayVertices * sizeof(WorldVertex),
                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, overlay_vertices_))) {
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, overlay_vertices_)) ||
+      (!guest_ && !create_dyn_buffer(car_inst_buf_, kMaxCarInstances * sizeof(CarInstanceGpu), error,
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) ||
+      (guest_ && !r_.create_buffer(sizeof(CarInstanceGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, empty_inst_ssbo_))) {
     error = "showroom buffers";
     return false;
   }
@@ -1962,11 +1989,12 @@ bool Showroom::upload(std::string& error) {
     d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
-  const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 16}};
+  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 3 + 16},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = sets + 4;
-  pool.poolSizeCount = 2;
+  pool.poolSizeCount = 3;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
   VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -2001,7 +2029,9 @@ bool Showroom::upload(std::string& error) {
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
     VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet writes[6] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+    VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet writes[7] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
+                                      {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
@@ -2037,7 +2067,12 @@ bool Showroom::upload(std::string& error) {
     writes[5].descriptorCount = 1;
     writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[5].pImageInfo = &mir;
-    vkUpdateDescriptorSets(r_.device_, 6, writes, 0, nullptr);
+    writes[6].dstSet = target;
+    writes[6].dstBinding = 6;
+    writes[6].descriptorCount = 1;
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[6].pBufferInfo = &inst_buf;
+    vkUpdateDescriptorSets(r_.device_, 7, writes, 0, nullptr);
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -2059,6 +2094,27 @@ bool Showroom::upload(std::string& error) {
     vkUpdateDescriptorSets(r_.device_, 3, writes, 0, nullptr);
   }
 
+  if (!guest_ && r_.gpu_driven_supported() && !std::getenv("SHIFT_NO_ARENA")) {
+    // The GPU-driven world: arenas for the resident draws, bindless textures, compute culling.
+    WorldGpu::Setup gs;
+    gs.frame_layout = frame_layout_;
+    gs.sampler = sampler_;
+    gs.white = gpu_textures_[0].view;
+    gs.black = gpu_textures_[1].view;
+    gs.flat_normal = flat_normal_tex_.view;
+    uint64_t vb_bytes = std::clamp<uint64_t>(r_.device_local_bytes() / 8, 96ULL << 20, 160ULL << 20);
+    if (uint64_t mb = 0; parse_env_u64("SHIFT_WORLD_ARENA_MB", mb) && mb >= 16 && mb <= 2048) vb_bytes = mb << 20;
+    gs.vertex_capacity = uint32_t(vb_bytes / sizeof(WorldVertex));
+    gs.index_capacity = gs.vertex_capacity * 3;
+    gs.retire = [this](std::function<void()> f) { retire(std::move(f)); };
+    auto gw = std::make_unique<WorldGpu>(r_);
+    std::string gerr;
+    if (gw->init(gs, gerr)) {
+      gpu_world_ = std::move(gw);
+    } else {
+      notes_.push_back("GPU-driven world off: " + gerr);
+    }
+  }
   if (guest_) return true;
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) {
@@ -2133,25 +2189,36 @@ bool Showroom::upload(std::string& error) {
     frame_.shadow_far_bias[2] = (dyn_env_bound_ && dyn_env_initialized_) ? 1.0f : 0.0f;
     frame_.shadow_far_bias[3] = mirror_valid_ ? 1.0f : 0.0f;
     update_frame(cmd);
-    // Each guest's frame block: this car's camera and light, its own stripe.
-    std::vector<Showroom*> seen;
-    for (const auto& in : instances_) {
-      if (!in.car || std::find(seen.begin(), seen.end(), in.car) != seen.end()) continue;
-      seen.push_back(in.car);
-      in.car->frame_ = frame_;
-      for (int i = 0; i < 4; ++i) in.car->frame_.stripe[i] = in.car->stripe_[i];
-      // Guests use their own static environment if they don't bind host dyn_env_.
-      in.car->frame_.shadow_far_bias[2] = 0.0f;
-      in.car->frame_.shadow_far_bias[3] = 0.0f;
-      in.car->update_frame(cmd);
-      if (shadows && in.car->shadow_set_) {
-        in.car->shadow_frame_ = shadow_frame_;
-        in.car->update_buffer(cmd, in.car->shadow_frame_buffer_.buffer, in.car->shadow_frame_);
-        if (in.car->shadow_set_far_) {
-          in.car->shadow_frame_far_ = shadow_frame_far_;
-          in.car->update_buffer(cmd, in.car->shadow_frame_far_buffer_.buffer, in.car->shadow_frame_far_);
+    record_world_cull(cmd);
+    // Pack traffic / AI car instances for hardware instancing (main pass + shadow pass).
+    if (!instances_.empty() && car_inst_buf_.ready()) {
+      auto* dst = static_cast<CarInstanceGpu*>(car_inst_buf_.data());
+      std::vector<Showroom*> groups;
+      for (const auto& in : instances_) {
+        if (in.car && std::find(groups.begin(), groups.end(), in.car) == groups.end()) groups.push_back(in.car);
+      }
+      uint32_t written = 0;
+      for (Showroom* g : groups) {
+        for (const auto& in : instances_) {
+          if (in.car != g || written >= kMaxCarInstances) continue;
+          CarInstanceGpu& ci = dst[written++];
+          std::memcpy(ci.model, in.model, sizeof ci.model);
+          for (int k = 0; k < 4; ++k) ci.stripe[k] = g->stripe_[k];
+          const drive::LampShaderVectors& active_lamps = in.has_lamps ? in.lamps : g->lamp_vectors_;
+          for (uint32_t ch = 0; ch < 30; ++ch) {
+            if (ch == 0) {
+              ci.lamp_rgb[ch][0] = ci.lamp_rgb[ch][1] = ci.lamp_rgb[ch][2] = ci.lamp_rgb[ch][3] = 0.0f;
+            } else {
+              const auto rgb = drive::evaluate_lamp_emission(static_cast<drive::LampChannel>(ch), active_lamps,
+                                                             g->lamp_colors_);
+              ci.lamp_rgb[ch][0] = rgb[0], ci.lamp_rgb[ch][1] = rgb[1], ci.lamp_rgb[ch][2] = rgb[2],
+              ci.lamp_rgb[ch][3] = 1.0f;
+            }
+          }
         }
       }
+      ++car_inst_buf_.ver;
+      dyn_sync(car_inst_buf_, VkDeviceSize(written) * sizeof(CarInstanceGpu));
     }
     if (shadows) {
       update_buffer(cmd, shadow_frame_buffer_.buffer, shadow_frame_);
@@ -2173,20 +2240,26 @@ bool Showroom::upload(std::string& error) {
       vkUpdateDescriptorSets(r_.device_, 1, &wd, 0, nullptr);
     }
   };
+  hooks.draw_z_prepass = [this](VkCommandBuffer cmd) {
+    record_z_prepass(cmd);
+  };
   hooks.draw = [this](VkCommandBuffer cmd) {
     r_.mark(cmd, "setup");
     record_world(cmd);
     record_skidmarks_draw(cmd);
     record_debris_draw(cmd);
     if (draw_car_ && !cockpit_camera_active_) record_driver_draw(cmd);
-    if (draw_car_) record_draws(cmd, opaque_, glass_);
-    for (const auto& in : instances_)
-      if (in.car) in.car->record_instance(cmd, in.model, in.has_lamps ? &in.lamps : nullptr);
+    const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
+    if (draw_car_) record_draws(cmd, car_op, glass_);
+    record_all_instances(cmd, r_.z_prepass());
     record_glows_draw(cmd);
     r_.mark(cmd, "car");
   };
   hooks.draw_particles = [this](VkCommandBuffer cmd) {
     record_particles_draw(cmd);
+  };
+  hooks.build_hiz = [this](VkCommandBuffer cmd, VkImageView dv, uint32_t w, uint32_t h, bool rev) {
+    if (arena_on() && gpu_world_) gpu_world_->record_hiz(cmd, dv, w, h, rev);
   };
   hooks.clear[0] = 0.09f;
   hooks.clear[1] = 0.095f;
@@ -2336,7 +2409,7 @@ bool Showroom::set_custom_livery(const uint8_t* rgba, uint32_t width, uint32_t h
     error = "invalid custom livery or renderer not initialized";
     return false;
   }
-  vkDeviceWaitIdle(r_.device_);
+  r_.wait_idle();
   r_.destroy_image(custom_livery_img_);
 
   bake::Texture tex;
@@ -2430,6 +2503,89 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
                    [&](const Draw* a, const Draw* b) { return distance(a) > distance(b); });
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glass);
   for (const Draw* d : sorted) draw(*d);
+}
+
+void Showroom::record_z_prepass(VkCommandBuffer cmd) {
+  if (world_textured_ && !world_draws_.empty()) {
+    if (arena_on() && gpu_world_->table_rows() > 0) {
+      WorldGpu::DrawParams dp;
+      dp.frame_set = frame_set_;
+      std::memcpy(dp.model, world_transform_, sizeof dp.model);
+      for (int k = 0; k < 3; ++k) dp.sun[k] = world_sun_[k];
+      for (int k = 0; k < 4; ++k) dp.up[k] = world_up_[k];
+      dp.bias_sign = r_.reverse_z() ? 1.0f : -1.0f;
+      dp.decal_bias_constant = kDecalBiasConstant;
+      dp.decal_bias_slope = kDecalBiasSlope;
+      gpu_world_->record_z_prepass(cmd, dp);
+    } else if (world_z_prepass_) {
+      world_bind_buffers(cmd, false);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_z_prepass_);
+      for (const auto& d : world_draws_) {
+        if (!d.cull || d.blend != 0) continue;
+        ShowroomPush push = d.push;
+        world_draw_model(d, world_transform_, push.model);
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(ShowroomPush), &push);
+        vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+      }
+    }
+  }
+  if (draw_car_ && car_z_prepass_ && !draws_.empty()) {
+    const VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, car_z_prepass_);
+    for (const auto& d : draws_) {
+      if (d.glass) continue;
+      vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(ShowroomPush), &d.push);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+    }
+  }
+}
+
+void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal) {
+  if (instances_.empty()) return;
+  if (!car_inst_buf_.ready() || !frame_set_) {
+    for (const auto& in : instances_)
+      if (in.car) in.car->record_instance(cmd, in.model, in.has_lamps ? &in.lamps : nullptr);
+    return;
+  }
+  std::vector<Showroom*> groups;
+  for (const auto& in : instances_) {
+    if (in.car && std::find(groups.begin(), groups.end(), in.car) == groups.end()) groups.push_back(in.car);
+  }
+  const uint32_t slot_base = r_.frame_slot() * kMaxCarInstances;
+  uint32_t offset = 0;
+  const VkPipeline op_pipe = (depth_equal && opaque_after_z_) ? opaque_after_z_ : opaque_;
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+  for (Showroom* g : groups) {
+    uint32_t count = 0;
+    for (const auto& in : instances_)
+      if (in.car == g && offset + count < kMaxCarInstances) ++count;
+    if (count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
+    const VkDeviceSize zero = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
+    vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    for (int pass = 0; pass < 2; ++pass) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass ? g->glass_ : op_pipe);
+      for (const auto& d : g->draws_) {
+        if (d.glass != (pass == 1)) continue;
+        ShowroomPush push = d.push;
+        uint32_t flags = uint32_t(push.params[1] + 0.5f) | 8192u;
+        flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
+        push.params[1] = float(flags);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                &g->material_sets_[d.descriptor], 0, nullptr);
+        vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(ShowroomPush), &push);
+        vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+      }
+    }
+    offset += count;
+  }
 }
 
 bool Showroom::shadows_on() const {
@@ -2590,9 +2746,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
       }
       return false;
     };
-    VkDeviceSize zero = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
-    vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    world_bind_buffers(cmd, false);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &cascade_set, 0,
                             nullptr);
     VkPipeline bound = VK_NULL_HANDLE;
@@ -2619,26 +2773,46 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
           vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1,
                                   &(bound_set = set), 0, nullptr);
       }
-      std::memcpy(push.model, world_transform_, sizeof push.model);
+      world_draw_model(d, world_transform_, push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
       std::memcpy(push.uv1, world_up_, sizeof push.uv1);
       push.params[2] = 0;
       vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
-      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
     }
     // Player & traffic cars cast crisp shadows in Near cascade (and Far if close).
     if (!is_far) {
       if (draw_car_) record_shadow_car(cmd, nullptr);
-      const float reach = 1.0f + 5.0f / std::max(r_.options_.shadow.radius, 10.0f);
-      for (const auto& in : instances_) {
-        if (!in.car) continue;
-        const float* t = in.model + 12;
-        const float x = vp[0] * t[0] + vp[4] * t[1] + vp[8] * t[2] + vp[12];
-        const float y = vp[1] * t[0] + vp[5] * t[1] + vp[9] * t[2] + vp[13];
-        if (std::fabs(x) > reach || std::fabs(y) > reach) continue;
-        in.car->record_shadow_car(cmd, in.model);
-        ++shadow_cars_;
+      if (!instances_.empty() && car_inst_buf_.ready() && shadow_car_) {
+        std::vector<Showroom*> groups;
+        for (const auto& in : instances_) {
+          if (in.car && std::find(groups.begin(), groups.end(), in.car) == groups.end()) groups.push_back(in.car);
+        }
+        const uint32_t slot_base = r_.frame_slot() * kMaxCarInstances;
+        uint32_t offset = 0;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_car_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
+        for (Showroom* g : groups) {
+          uint32_t count = 0;
+          for (const auto& in : instances_)
+            if (in.car == g && offset + count < kMaxCarInstances) ++count;
+          if (count > 0 && !g->draws_.empty()) {
+            const VkDeviceSize zero = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
+            vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+            for (const auto& d : g->draws_) {
+              if (d.glass) continue;
+              ShowroomPush push = d.push;
+              push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 8192u);
+              vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof(ShowroomPush), &push);
+              vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+            }
+            shadow_cars_ += count;
+            offset += count;
+          }
+        }
       }
     }
   };
@@ -2814,9 +2988,31 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     for (int i = 0; i < 3; ++i) d.box_min[i] = 1e30f, d.box_max[i] = -1e30f;
     float reach = 0;
     shared.clear();
+    const bool normalize_ccw = (mat.blend == 0 && !mat.is_water && !mat.anim_flag && !mat.is_grass && !billboard);
     for (size_t j = first; j < last; ++j) {
       const uint32_t t = cells[j].second;
-      for (int k = 0; k < 3; ++k) {
+      int corners[3] = {0, 1, 2};
+      if (normalize_ccw) {
+        const size_t c0 = size_t(t) * 3;
+        const auto& p0 = world.positions[c0];
+        const auto& p1 = world.positions[c0 + 1];
+        const auto& p2 = world.positions[c0 + 2];
+        const float e1[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+        const float e2[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+        const float g_x = e1[1] * e2[2] - e1[2] * e2[1];
+        const float g_y = e1[2] * e2[0] - e1[0] * e2[2];
+        const float g_z = e1[0] * e2[1] - e1[1] * e2[0];
+        const float nx = world.normals[c0][0] + world.normals[c0 + 1][0] + world.normals[c0 + 2][0];
+        const float ny = world.normals[c0][1] + world.normals[c0 + 1][1] + world.normals[c0 + 2][1];
+        const float nz = world.normals[c0][2] + world.normals[c0 + 1][2] + world.normals[c0 + 2][2];
+        const bool have_n = (nx * nx + ny * ny + nz * nz) > 1e-4f;
+        const float ref_dot = have_n ? (g_x * nx + g_y * ny + g_z * nz) : g_y;
+        if (ref_dot < 0.0f) {
+          corners[1] = 2;
+          corners[2] = 1;
+        }
+      }
+      for (int k : corners) {
         const size_t c = size_t(t) * 3 + size_t(k);
         VertexKey key{};
         WorldVertex& v = key.v;
@@ -2979,7 +3175,14 @@ bool Showroom::set_world(const WorldTriangles& world, std::string& error) {
 }
 
 bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
-  vkDeviceWaitIdle(r_.device_);
+  if (arena_on() && geometry.textured && !geometry.indices.empty()) {
+    r_.wait_idle();
+    ++world_frame_;
+    StagedWorld st;
+    if (!stage_world(std::move(geometry), st, error, 0, 0)) return false;
+    return begin_world(std::move(st), error) && poll_world(true, nullptr);
+  }
+  r_.wait_idle();
   ++world_frame_;
   drop_pending_world();
   drop_fading_world(true);
@@ -3011,13 +3214,82 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   return true;
 }
 
-bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error) {
+bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error, double origin_x,
+                           double origin_z) {
   out = StagedWorld{};
   out.draws = std::move(geometry.draws);
   out.triangles = geometry.triangles;
   out.textured = geometry.textured;
   out.textures = std::move(geometry.textures);
   if (geometry.indices.empty()) return true;
+  if (arena_on() && geometry.textured) {
+    // Extract hardware-instanced tree sprite quads before index relocalization.
+    for (const auto& d : out.draws) {
+      const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
+      if ((fl & 32u) == 0u || d.index_count < 6 || (d.index_count % 6) != 0) continue;
+      for (uint32_t k = 0; k + 5 < d.index_count; k += 6) {
+        const WorldVertex& v0 = geometry.textured_vertices[geometry.indices[size_t(d.first_index) + k + 0]];
+        const WorldVertex& v1 = geometry.textured_vertices[geometry.indices[size_t(d.first_index) + k + 1]];
+        const WorldVertex& v2 = geometry.textured_vertices[geometry.indices[size_t(d.first_index) + k + 2]];
+        const WorldVertex& v3 = geometry.textured_vertices[geometry.indices[size_t(d.first_index) + k + 5]];
+        if (v0.position[0] != v1.position[0] || v0.position[2] != v1.position[2]) continue;
+        StagedWorld::TreeRaw tr{};
+        for (int i = 0; i < 3; ++i) {
+          tr.base[i] = v0.position[i];
+          tr.up[i] = float(v0.normal[i]) / 127.0f;
+        }
+        tr.half_width = std::max(std::fabs(v0.uv1[0]), std::fabs(v1.uv1[0]));
+        tr.height = std::max(v2.uv1[1], v3.uv1[1]);
+        tr.uv[0] = v0.uv0[0];
+        tr.uv[1] = v2.uv0[1];
+        tr.uv[2] = v2.uv0[0];
+        tr.uv[3] = v0.uv0[1];
+        tr.rgba8 = uint32_t(v0.colour[0]) | (uint32_t(v0.colour[1]) << 8) |
+                   (uint32_t(v0.colour[2]) << 16) | (uint32_t(v0.colour[3]) << 24);
+        tr.texture = d.texture;
+        out.trees.push_back(tr);
+      }
+    }
+    // The resident arenas: each draw's indices made relative to its own vertices, and its content key (positions
+    // made absolute, so a later gather, relative to another origin, finds the same draw).
+    out.arena = true;
+    for (auto& d : out.draws) {
+      if (d.index_count == 0) continue;
+      uint32_t lo = ~0u, hi = 0;
+      for (uint32_t k = 0; k < d.index_count; ++k) {
+        const uint32_t v = geometry.indices[size_t(d.first_index) + k];
+        lo = std::min(lo, v), hi = std::max(hi, v);
+      }
+      d.vertex_begin = lo;
+      d.vertex_count = hi - lo + 1;
+      for (uint32_t k = 0; k < d.index_count; ++k) geometry.indices[size_t(d.first_index) + k] -= lo;
+      uint64_t h = 0x9e3779b97f4a7c15ull;
+      for (uint32_t t : {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c})
+        h = gpuworld::hash_mix(h, t);
+      h = gpuworld::hash_mix(h, uint64_t(d.blend) | uint64_t(d.decal) << 8 | uint64_t(d.cull) << 16);
+      for (float f : d.push.params) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof bits);
+        h = gpuworld::hash_mix(h, bits);
+      }
+      for (float f : d.push.tint) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof bits);
+        h = gpuworld::hash_mix(h, bits);
+      }
+      h = gpuworld::hash_mix(h, uint64_t(d.index_count) << 32 | d.vertex_count);
+      h = gpuworld::hash_bytes(h, &geometry.indices[d.first_index], size_t(d.index_count) * sizeof(uint32_t));
+      for (uint32_t v = lo; v <= hi; ++v) {
+        const WorldVertex& wv = geometry.textured_vertices[v];
+        h = gpuworld::hash_mix(h, uint64_t(gpuworld::quantize_mm(double(wv.position[0]) + origin_x)));
+        h = gpuworld::hash_mix(h, uint64_t(gpuworld::quantize_mm(double(wv.position[1]))));
+        h = gpuworld::hash_mix(h, uint64_t(gpuworld::quantize_mm(double(wv.position[2]) + origin_z)));
+        h = gpuworld::hash_bytes(h, reinterpret_cast<const unsigned char*>(&wv) + sizeof wv.position,
+                                 sizeof wv - sizeof wv.position);
+      }
+      d.key = h;
+    }
+  }
   Renderer& r = r_;
   auto stage = [&](const void* data, VkDeviceSize size, std::shared_ptr<Renderer::Buffer>& buffer) {
     buffer = std::shared_ptr<Renderer::Buffer>(new Renderer::Buffer{}, [&r](Renderer::Buffer* b) {
@@ -3115,6 +3387,7 @@ bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, V
     world_textures_[t.record] = image;
     world_sets_[t.record] = set;
     world_lru_.insert(t.record, image.bytes, world_frame_);
+    if (gpu_world_) gpu_world_->add_texture(t.record, image.view);
   }
   return true;
 }
@@ -3126,6 +3399,10 @@ void Showroom::drop_pending_world() {
     vkWaitForFences(r_.device_, 1, &p.fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(r_.device_, p.fence, nullptr);
   }
+  if (p.fence)  // submitted and waited: the copies ran
+    for (const auto& d : p.staged.draws)
+      if (d.resident && arena_on()) gpu_world_->resident().mark_valid(d.key);
+  world_release_draws(p.staged.draws);
   if (p.cmd) vkFreeCommandBuffers(r_.device_, r_.pool_, 1, &p.cmd);
   // Its copy is done (the fence): the staging buffers, the worker's
   // images not taken and buffers never swapped in go on the reaper.
@@ -3218,10 +3495,17 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc.commandBufferCount = 1;
     VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    if (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->vertices) ||
-        !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->indices) ||
+    const bool arena = p->staged.arena && arena_on();
+    std::vector<WorldGpu::Copy> arena_vertex_copies, arena_index_copies;
+    if (arena && !place_world_arena(p->staged, arena_vertex_copies, arena_index_copies, error)) {
+      pending_world_ = std::move(p);
+      drop_pending_world();
+      return false;
+    }
+    if ((!arena && (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->vertices) ||
+                    !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->indices))) ||
         vkAllocateCommandBuffers(r_.device_, &alloc, &p->cmd) != VK_SUCCESS ||
         vkCreateFence(r_.device_, &fence, nullptr, &p->fence) != VK_SUCCESS) {
       pending_world_ = std::move(p);
@@ -3232,9 +3516,15 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(p->cmd, &begin);
-    const VkBufferCopy v{0, 0, vb}, i{0, 0, ib};
-    vkCmdCopyBuffer(p->cmd, p->staged.vertices->buffer, p->vertices.buffer, 1, &v);
-    vkCmdCopyBuffer(p->cmd, p->staged.indices->buffer, p->indices.buffer, 1, &i);
+    if (arena) {
+      // Only the draws the arenas do not hold yet.
+      gpu_world_->record_copies(p->cmd, p->staged.vertices->buffer, arena_vertex_copies, p->staged.indices->buffer,
+                                arena_index_copies);
+    } else {
+      const VkBufferCopy v{0, 0, vb}, i{0, 0, ib};
+      vkCmdCopyBuffer(p->cmd, p->staged.vertices->buffer, p->vertices.buffer, 1, &v);
+      vkCmdCopyBuffer(p->cmd, p->staged.indices->buffer, p->indices.buffer, 1, &i);
+    }
     if (fenced) {
       const auto& st = p->staged;
       for (size_t k = 0; k < st.textures.size() && k < st.texel_ranges.size(); ++k) {
@@ -3255,7 +3545,12 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &p->cmd;
-    if (vkQueueSubmit(r_.queue_, 1, &submit, p->fence) != VK_SUCCESS) {
+    VkResult submitted;
+    {
+      std::lock_guard<std::mutex> qlock(r_.queue_mutex_);
+      submitted = vkQueueSubmit(r_.queue_, 1, &submit, p->fence);
+    }
+    if (submitted != VK_SUCCESS) {
       vkDestroyFence(r_.device_, p->fence, nullptr);
       p->fence = VK_NULL_HANDLE;
       pending_world_ = std::move(p);
@@ -3283,6 +3578,69 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
   // swap fade it is kept and drawn dithered under the new one first (ours:
   // a regather's changes cross-fade rather than pop).
   drop_fading_world(false);
+  if (p.staged.arena && arena_on()) {
+    // Resident draws: the new scenery's references were taken in begin_world. What the old scenery drew that the
+    // new one does not is kept, dithered out; the rest of its references go (the arenas keep the content cached).
+    const uint64_t tag = r_.frames_submitted();
+    std::unordered_set<uint64_t> new_keys;
+    for (const auto& d : p.staged.draws)
+      if (d.resident) {
+        new_keys.insert(d.key);
+        gpu_world_->resident().mark_valid(d.key);  // the copy is done (the fence above)
+      }
+    std::unordered_set<uint64_t> old_keys;
+    for (const auto& d : world_draws_)
+      if (d.resident) old_keys.insert(d.key);
+    const bool fade = swap_fade_seconds_ > 0 && world_textured_ && !world_draws_.empty();
+    fading_ = FadingWorld{};
+    fading_.arena = true;
+    fading_.origin[0] = world_origin_[0];
+    fading_.origin[1] = world_origin_[1];
+    for (auto& d : world_draws_) {
+      if (!d.resident) continue;
+      if (fade && d.cull && !new_keys.count(d.key)) {
+        d.fade_in = false;
+        fading_.draws.push_back(d);  // keeps its reference until the fade ends
+      } else {
+        gpu_world_->resident().release(d.key, tag);
+      }
+    }
+    world_draws_ = std::move(p.staged.draws);
+    for (auto& d : world_draws_) d.fade_in = fade && d.resident && d.cull && !old_keys.count(d.key);
+    if (!fading_.draws.empty()) {
+      fading_on_ = true;
+      fade_start_ = std::chrono::steady_clock::now();
+    }
+    world_triangles_ = p.staged.triangles;
+    world_textured_ = p.staged.textured;
+    {
+      std::lock_guard<std::mutex> lock(world_textures_mutex_);
+      for (const auto& d : world_draws_) {
+        if (d.texture != kNoWorldTexture) world_lru_.touch(d.texture, world_frame_);
+        if (d.texture_b != kNoWorldTexture) world_lru_.touch(d.texture_b, world_frame_);
+        if (d.splat != kNoWorldTexture) world_lru_.touch(d.splat, world_frame_);
+        if (d.light_map != kNoWorldTexture) world_lru_.touch(d.light_map, world_frame_);
+        if (d.normal_map != kNoWorldTexture) world_lru_.touch(d.normal_map, world_frame_);
+        if (d.ao_map != kNoWorldTexture) world_lru_.touch(d.ao_map, world_frame_);
+        if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
+      }
+    }
+    const bool origin_changed = (world_origin_[0] != p.staged.origin_x || world_origin_[1] != p.staged.origin_z);
+    world_origin_[0] = p.staged.origin_x;
+    world_origin_[1] = p.staged.origin_z;
+    world_trees_ = std::move(p.staged.trees);
+    if (origin_changed) {
+      gpu_world_->invalidate_hiz();
+      have_prev_vp_ = false;
+    }
+    std::string table_error;
+    if (!build_gpu_table(table_error)) notes_.push_back("world draw table: " + table_error);
+    drop_pending_world();
+    evict_world_textures();
+    release_retired();
+    if (swapped) *swapped = true;
+    return true;
+  }
   if (swap_fade_seconds_ > 0 && world_textured_ && p.staged.textured && world_vertices_.buffer && p.vertices.buffer) {
     fading_.vertices = world_vertices_;
     fading_.indices = world_indices_;
@@ -3335,6 +3693,12 @@ bool Showroom::set_world(StagedWorld staged, std::string& error) {
 void Showroom::drop_fading_world(bool now) {
   if (!fading_on_) return;
   fading_on_ = false;
+  if (fading_.arena) {
+    world_release_draws(fading_.draws);
+    fading_.draws.clear();
+    fading_.arena = false;
+    return;
+  }
   fading_.draws.clear();
   if (now) {
     r_.destroy_buffer(fading_.vertices);
@@ -3447,6 +3811,7 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
       world_textures_[t->record] = image;
       world_sets_[t->record] = set;
       world_lru_.insert(t->record, image.bytes, world_frame_);
+      if (gpu_world_) gpu_world_->add_texture(t->record, image.view);
     }
   }
   return true;
@@ -3584,6 +3949,7 @@ void Showroom::evict_world_textures() {
     if (victims.empty()) return;
     evicted_images.reserve(victims.size());
     for (uint32_t record : victims) {
+      if (gpu_world_) gpu_world_->remove_texture(record);
       if (auto it = world_textures_.find(record); it != world_textures_.end()) {
         evicted_images.push_back(it->second);
         world_textures_.erase(it);
@@ -3663,9 +4029,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
     record_sky_draw(cmd);
     r_.mark(cmd, "sky");
   }
-  VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
-  vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+  world_bind_buffers(cmd, false);
   if (world_textured_) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
     world_stats_ = {};
@@ -3676,6 +4040,26 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       if (t >= 1.0) drop_fading_world(false);
       else swap = float(std::max(t, 0.0));
     }
+    if (arena_on() && gpu_world_->table_rows() > 0) {
+      // The opaque and cut-out draws, culled on the GPU into indirect batches.
+      WorldGpu::DrawParams dp;
+      dp.frame_set = frame_set_;
+      std::memcpy(dp.model, world_transform_, sizeof dp.model);
+      for (int k = 0; k < 3; ++k) dp.sun[k] = world_sun_[k];
+      for (int k = 0; k < 4; ++k) dp.up[k] = world_up_[k];
+      dp.swap = swap;
+      dp.bias_sign = r_.reverse_z() ? 1.0f : -1.0f;
+      dp.decal_bias_constant = kDecalBiasConstant;
+      dp.decal_bias_slope = kDecalBiasSlope;
+      dp.depth_prepass = r_.z_prepass();
+      gpu_world_->record_draw(cmd, dp);
+      const size_t tested = gpu_world_->last_tested(), drawn = gpu_world_->last_drawn();
+      const size_t trees_drawn = gpu_world_->last_trees_drawn();
+      world_stats_.drawn += drawn + (trees_drawn > 0 ? 1 : 0);
+      world_stats_.culled += tested > drawn ? tested - drawn : 0;
+      world_stats_.indices += trees_drawn * 6;
+      r_.mark(cmd, "world gpu");
+    }
     record_world_textured(cmd, world_draws_, world_transform_, swap, false);
     if (fading_on_) {
       // The outgoing scenery's positions are relative to its own origin:
@@ -3684,9 +4068,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       float m[16];
       std::memcpy(m, world_transform_, sizeof m);
       for (int r = 0; r < 4; ++r) m[12 + r] += world_transform_[r] * dx + world_transform_[8 + r] * dz;
-      VkDeviceSize zero = 0;
-      vkCmdBindVertexBuffers(cmd, 0, 1, &fading_.vertices.buffer, &zero);
-      vkCmdBindIndexBuffer(cmd, fading_.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
+      world_bind_buffers(cmd, true);
       record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true);
     }
     if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
@@ -3785,6 +4167,7 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
     int bias = -1;  // the depth bias set: -1 none yet, else the decal flag
     const auto eye = eye_in_scenery(transform);
     for (const auto& d : draws) {
+      if (!outgoing && d.gpu) continue;  // drawn by the culling pass
       if (outgoing && !d.cull) continue;  // the sky: the incoming one's is drawn whole
       if (d.cull && ((world_cull_ && outside(d)) || near_lod_beyond(d, eye))) {
         ++world_stats_.culled;
@@ -3803,7 +4186,8 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
         group = d.blend;
       }
       // Additive (3) shares the blended pipeline: its fragments carry alpha 0.
-      const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : world_opaque_;
+      const VkPipeline op_pipe = (r_.z_prepass() && world_opaque_after_z_) ? world_opaque_after_z_ : world_opaque_;
+      const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : op_pipe;
       if (pipeline != bound) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
         bias = -1;
@@ -3851,13 +4235,13 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       // Cut-outs without MSAA: world.frag's alpha test (flag 64).
       if (d.blend == 1 && r_.samples_ == VK_SAMPLE_COUNT_1_BIT)
         push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 64u);
-      std::memcpy(push.model, transform, sizeof push.model);
+      world_draw_model(d, transform, push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
       push.uv0[3] = swap;  // world.frag's swap dither
       std::memcpy(push.uv1, world_up_, sizeof push.uv1);
       vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
-      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
     }
     if (group >= 0 && group < 99) r_.mark(cmd, kGroup[std::min(group, 2)]);
   }
@@ -4566,7 +4950,7 @@ void Showroom::load_car_lamps(const std::filesystem::path& game_root, const std:
 
 void Showroom::update_frame_cookie_descriptor() {
   if (!r_.device_ || !headlight_cookie_.view) return;
-  for (VkDescriptorSet target : {frame_set_, shadow_set_}) {
+  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_far_, env_frame_set_}) {
     if (!target) continue;
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -4638,7 +5022,7 @@ bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::str
   // Replace the 1x1 default headlight cookie with media/carlights/headlight_beam_dip.xds.
   GpuTexture cookie;
   if (load_xds_rgba(carlights / "headlight_beam_dip.xds", cookie, true)) {
-    vkDeviceWaitIdle(r_.device_);
+    r_.wait_idle();
     r_.destroy_image(headlight_cookie_);
     headlight_cookie_ = cookie;
     update_frame_cookie_descriptor();
@@ -5154,6 +5538,22 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
       bs[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
     vkCmdPipelineBarrier2(cmd, &dep);
+    VkImageMemoryBarrier2 dbs[2]{};
+    for (int i = 0; i < 2; ++i) {
+      dbs[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+      dbs[i].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+      dbs[i].dstAccessMask =
+          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      dbs[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      dbs[i].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+      dbs[i].srcQueueFamilyIndex = dbs[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      dbs[i].image = i == 0 ? dyn_env_depth_.image : mirror_depth_.image;
+      dbs[i].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    }
+    VkDependencyInfo ddep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    ddep.imageMemoryBarrierCount = 2;
+    ddep.pImageMemoryBarriers = dbs;
+    vkCmdPipelineBarrier2(cmd, &ddep);
   });
   if (!ok) {
     error = "dynamic env clear";
@@ -5243,9 +5643,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       }
       return false;
     };
-    VkDeviceSize zero = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &world_vertices_.buffer, &zero);
-    vkCmdBindIndexBuffer(cmd, world_indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    world_bind_buffers(cmd, false);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_world_opaque_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
                             nullptr);
@@ -5264,13 +5662,13 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       ShowroomPush push = d.push;
       // Strip multi-texture flags since we bound single-albedo set for speed.
       push.params[1] = float(fl & ~(4u | 8u | 4096u | 8192u | 16384u));
-      std::memcpy(push.model, world_transform_, sizeof push.model);
+      world_draw_model(d, world_transform_, push.model);
       std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
       push.uv0[3] = 2.0f;
       std::memcpy(push.uv1, world_up_, sizeof push.uv1);
       vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
-      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
     }
   }
   (void)include_cars;
@@ -5655,25 +6053,14 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
   VK_TRY(vkCreateSampler(r_.device_, &ssamp, nullptr, &skid_sampler_), "skid sampler");
 
   // 3. Mapped host-visible dynamic buffers.
-  const VkMemoryPropertyFlags host_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  if (!r_.create_buffer(VkDeviceSize(kMaxParticleGpu) * sizeof(ParticleGpu), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                        host_flags, particle_buf_) ||
-      vmaMapMemory(r_.allocator_, particle_buf_.allocation, &particle_mapped_) != VK_SUCCESS) {
+  if (!create_dyn_buffer(particle_buf_, VkDeviceSize(kMaxParticleGpu) * sizeof(ParticleGpu), error)) {
     error = "particle instance buffer";
     return false;
   }
-  if (!r_.create_buffer(VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                        host_flags, skid_asphalt_buf_) ||
-      vmaMapMemory(r_.allocator_, skid_asphalt_buf_.allocation, &skid_asphalt_mapped_) != VK_SUCCESS ||
-      !r_.create_buffer(VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                        host_flags, skid_rut_buf_) ||
-      vmaMapMemory(r_.allocator_, skid_rut_buf_.allocation, &skid_rut_mapped_) != VK_SUCCESS ||
-      !r_.create_buffer(VkDeviceSize(kMaxDebrisVerts) * sizeof(WorldVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                        host_flags, debris_buf_) ||
-      vmaMapMemory(r_.allocator_, debris_buf_.allocation, &debris_mapped_) != VK_SUCCESS ||
-      !r_.create_buffer(VkDeviceSize(kMaxDriverVerts) * sizeof(WorldVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                        host_flags, driver_buf_) ||
-      vmaMapMemory(r_.allocator_, driver_buf_.allocation, &driver_mapped_) != VK_SUCCESS) {
+  if (!create_dyn_buffer(skid_asphalt_buf_, VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), error) ||
+      !create_dyn_buffer(skid_rut_buf_, VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), error) ||
+      !create_dyn_buffer(debris_buf_, VkDeviceSize(kMaxDebrisVerts) * sizeof(WorldVertex), error) ||
+      !create_dyn_buffer(driver_buf_, VkDeviceSize(kMaxDriverVerts) * sizeof(WorldVertex), error)) {
     error = "skidmark/debris/driver vertex buffers";
     return false;
   }
@@ -5944,7 +6331,7 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
   particle_add_count_ = 0;
   particle_near_plane_ = std::max(near_plane, 0.05f);
   particle_cockpit_ = cockpit_camera;
-  if (!vfx_ready_ || !particle_mapped_) return;
+  if (!vfx_ready_ || !particle_buf_.ready()) return;
 
   const float* m = world_transform_;
   auto xform_pt = [&](const std::array<float, 3>& g) -> std::array<float, 3> {
@@ -5965,7 +6352,7 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
     };
   };
 
-  auto* dst = static_cast<ParticleGpu*>(particle_mapped_);
+  auto* dst = static_cast<ParticleGpu*>(particle_buf_.data());
   uint32_t out_n = 0;
   const float cell_uv = 1.0f / float(kParticleAtlasGrid);
   const float inset = 1.5f / float(kParticleAtlasSize);
@@ -6025,13 +6412,14 @@ void Showroom::set_particles(const std::vector<world::ParticleSprite>& alpha,
 
   particle_alpha_count_ = emit_batch(alpha);
   particle_add_count_ = emit_batch(additive);
+  ++particle_buf_.ver;
 }
 
 void Showroom::set_skidmarks(const std::vector<world::SkidVertex>& asphalt_tris,
                              const std::vector<world::SkidVertex>& rut_tris) {
   skid_asphalt_count_ = 0;
   skid_rut_count_ = 0;
-  if (!vfx_ready_ || !skid_asphalt_mapped_ || !skid_rut_mapped_) return;
+  if (!vfx_ready_ || !skid_asphalt_buf_.ready() || !skid_rut_buf_.ready()) return;
 
   auto pack = [&](const std::vector<world::SkidVertex>& src, void* mapped) -> uint32_t {
     const uint32_t n = uint32_t(std::min(src.size(), size_t(kMaxSkidVerts)));
@@ -6050,15 +6438,17 @@ void Showroom::set_skidmarks(const std::vector<world::SkidVertex>& asphalt_tris,
     }
     return n;
   };
-  skid_asphalt_count_ = pack(asphalt_tris, skid_asphalt_mapped_);
-  skid_rut_count_ = pack(rut_tris, skid_rut_mapped_);
+  skid_asphalt_count_ = pack(asphalt_tris, skid_asphalt_buf_.data());
+  skid_rut_count_ = pack(rut_tris, skid_rut_buf_.data());
+  ++skid_asphalt_buf_.ver;
+  ++skid_rut_buf_.ver;
 }
 
 void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
   debris_count_ = 0;
-  if (!vfx_ready_ || !debris_mapped_ || tris.empty()) return;
+  if (!vfx_ready_ || !debris_buf_.ready() || tris.empty()) return;
   const uint32_t n = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)));
-  auto* dst = static_cast<WorldVertex*>(debris_mapped_);
+  auto* dst = static_cast<WorldVertex*>(debris_buf_.data());
   auto snorm8 = [](float x) -> int8_t {
     return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
   };
@@ -6076,11 +6466,12 @@ void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
     for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
   }
   debris_count_ = n;
+  ++debris_buf_.ver;
 }
 
 void Showroom::update_driver_mesh(float wheel_rad) {
   driver_count_ = 0;
-  if (!driver_mapped_) return;
+  if (!driver_buf_.ready()) return;
 
   // Steering wheel centre & axis in car model space (+X right, +Y up, -Z forward, +Z rearward).
   std::array<float, 3> pivot{-0.36f, 0.72f, 0.08f};
@@ -6110,7 +6501,7 @@ void Showroom::update_driver_mesh(float wheel_rad) {
     return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
   };
 
-  auto* dst = static_cast<WorldVertex*>(driver_mapped_);
+  auto* dst = static_cast<WorldVertex*>(driver_buf_.data());
   uint32_t count = 0;
   auto push_tri = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c,
                       const std::array<uint8_t, 4>& col) {
@@ -6211,6 +6602,7 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   push_box(r_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
 
   driver_count_ = count;
+  ++driver_buf_.ver;
 }
 
 void Showroom::record_driver_draw(VkCommandBuffer cmd) {
@@ -6233,8 +6625,8 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   pc.params[3] = 1.0f;
   vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                      sizeof pc, &pc);
-  VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &driver_buf_.buffer, &zero);
+  VkDeviceSize at = dyn_sync(driver_buf_, VkDeviceSize(driver_count_) * sizeof(WorldVertex));
+  vkCmdBindVertexBuffers(cmd, 0, 1, &driver_buf_.buf.buffer, &at);
   vkCmdDraw(cmd, driver_count_, 1, 0, 0);
 }
 
@@ -6258,8 +6650,8 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
   pc.params[3] = 1.0f;
   vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                      sizeof pc, &pc);
-  VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buffer, &zero);
+  VkDeviceSize at = dyn_sync(debris_buf_, VkDeviceSize(debris_count_) * sizeof(WorldVertex));
+  vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buf.buffer, &at);
   vkCmdDraw(cmd, debris_count_, 1, 0, 0);
 }
 
@@ -6278,14 +6670,14 @@ void Showroom::record_skidmarks_draw(VkCommandBuffer cmd) {
   }
   pc.sun_dir[3] = world_up_[3];
 
-  VkDeviceSize zero = 0;
   if (skid_asphalt_count_ > 0) {
     pc.up_dir[3] = 0.0f;
     const VkDescriptorSet sets[2] = {frame_set_, skid_sets_[0]};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skid_pipe_layout_, 0, 2, sets, 0, nullptr);
     vkCmdPushConstants(cmd, skid_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof pc, &pc);
-    vkCmdBindVertexBuffers(cmd, 0, 1, &skid_asphalt_buf_.buffer, &zero);
+    VkDeviceSize at = dyn_sync(skid_asphalt_buf_, VkDeviceSize(skid_asphalt_count_) * sizeof(SkidGpuVertex));
+    vkCmdBindVertexBuffers(cmd, 0, 1, &skid_asphalt_buf_.buf.buffer, &at);
     vkCmdDraw(cmd, skid_asphalt_count_, 1, 0, 0);
   }
   if (skid_rut_count_ > 0) {
@@ -6294,7 +6686,8 @@ void Showroom::record_skidmarks_draw(VkCommandBuffer cmd) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skid_pipe_layout_, 0, 2, sets, 0, nullptr);
     vkCmdPushConstants(cmd, skid_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof pc, &pc);
-    vkCmdBindVertexBuffers(cmd, 0, 1, &skid_rut_buf_.buffer, &zero);
+    VkDeviceSize at = dyn_sync(skid_rut_buf_, VkDeviceSize(skid_rut_count_) * sizeof(SkidGpuVertex));
+    vkCmdBindVertexBuffers(cmd, 0, 1, &skid_rut_buf_.buf.buffer, &at);
     vkCmdDraw(cmd, skid_rut_count_, 1, 0, 0);
   }
 }
@@ -6320,13 +6713,14 @@ void Showroom::record_particles_draw(VkCommandBuffer cmd) {
   pc.up_dir[3] = (particle_bound_depth_ != VK_NULL_HANDLE) ? 1.0f : 0.0f;
 
   const VkDescriptorSet sets[2] = {frame_set_, particle_set_};
-  VkDeviceSize zero = 0;
+  const VkDeviceSize at =
+      dyn_sync(particle_buf_, VkDeviceSize(particle_alpha_count_ + particle_add_count_) * sizeof(ParticleGpu));
   if (particle_alpha_count_ > 0 && particle_alpha_pipe_) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particle_alpha_pipe_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particle_pipe_layout_, 0, 2, sets, 0, nullptr);
     vkCmdPushConstants(cmd, particle_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof pc, &pc);
-    vkCmdBindVertexBuffers(cmd, 0, 1, &particle_buf_.buffer, &zero);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &particle_buf_.buf.buffer, &at);
     vkCmdDraw(cmd, 6, particle_alpha_count_, 0, 0);
   }
   if (particle_add_count_ > 0 && particle_add_pipe_) {
@@ -6334,9 +6728,266 @@ void Showroom::record_particles_draw(VkCommandBuffer cmd) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particle_pipe_layout_, 0, 2, sets, 0, nullptr);
     vkCmdPushConstants(cmd, particle_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof pc, &pc);
-    vkCmdBindVertexBuffers(cmd, 0, 1, &particle_buf_.buffer, &zero);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &particle_buf_.buf.buffer, &at);
     vkCmdDraw(cmd, 6, particle_add_count_, 0, particle_alpha_count_);
   }
+}
+
+bool Showroom::arena_on() const { return gpu_world_ && gpu_world_->ready(); }
+
+void Showroom::world_bind_buffers(VkCommandBuffer cmd, bool fading) {
+  VkDeviceSize zero = 0;
+  if (arena_on() && (!fading || fading_.arena)) {
+    VkBuffer vb = gpu_world_->vertex_buffer(), ib = gpu_world_->index_buffer();
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &zero);
+    vkCmdBindIndexBuffer(cmd, ib, 0, VK_INDEX_TYPE_UINT32);
+    return;
+  }
+  const Renderer::Buffer& v = fading ? fading_.vertices : world_vertices_;
+  const Renderer::Buffer& i = fading ? fading_.indices : world_indices_;
+  vkCmdBindVertexBuffers(cmd, 0, 1, &v.buffer, &zero);
+  vkCmdBindIndexBuffer(cmd, i.buffer, 0, VK_INDEX_TYPE_UINT32);
+}
+
+// A draw's model matrix: the scenery's transform with the draw's origin shift (a resident draw's positions are
+// relative to the gather that made it) folded into the translation.
+void Showroom::world_draw_model(const WorldGeometry::Draw& d, const float transform[16], float out[16]) const {
+  std::memcpy(out, transform, 16 * sizeof(float));
+  if (d.shift[0] == 0.0f && d.shift[1] == 0.0f) return;
+  for (int r = 0; r < 4; ++r) out[12 + r] += transform[r] * d.shift[0] + transform[8 + r] * d.shift[1];
+}
+
+void Showroom::world_release_draws(std::vector<WorldGeometry::Draw>& draws) {
+  if (!arena_on()) return;
+  const uint64_t tag = r_.frames_submitted();
+  for (auto& d : draws) {
+    if (!d.resident) continue;
+    gpu_world_->resident().release(d.key, tag);
+    d.resident = false;
+  }
+}
+
+// Gives each draw of a pending world its place in the arenas: found by key (a regather that left it as it was
+// uploads nothing) or placed, its vertices and indices copied from the staging buffers. When the arenas are full
+// of scenery in use, the GPU is waited for, the old scenery given up and this one placed afresh.
+bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& vertex_copies,
+                                 std::vector<WorldGpu::Copy>& index_copies, std::string& error) {
+  auto& res = gpu_world_->resident();
+  std::vector<uint32_t> staged_first(st.draws.size());
+  for (size_t i = 0; i < st.draws.size(); ++i) staged_first[i] = st.draws[i].first_index;
+  std::vector<const gpuworld::ResidentDraw*> placed(st.draws.size(), nullptr);
+  const uint64_t generation = ++world_generation_;
+  auto attempt = [&]() {
+    vertex_copies.clear();
+    index_copies.clear();
+    for (size_t i = 0; i < st.draws.size(); ++i) {
+      auto& d = st.draws[i];
+      placed[i] = nullptr;
+      if (d.vertex_count == 0 || d.index_count == 0) continue;
+      const gpuworld::ResidentDraw* rd = res.acquire(d.key, generation);
+      const bool known = rd != nullptr;
+      if (!rd)
+        rd = res.place(d.key, d.vertex_count, d.index_count, st.origin_x, st.origin_z, generation, r_.frames_done());
+      if (!rd) {
+        for (size_t k = 0; k < i; ++k)
+          if (placed[k]) res.release(st.draws[k].key, 0);
+        return false;
+      }
+      placed[i] = rd;
+      if (!known) {
+        vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
+                                 VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
+                                 VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
+        index_copies.push_back({VkDeviceSize(staged_first[i]) * sizeof(uint32_t),
+                                VkDeviceSize(rd->index_base) * sizeof(uint32_t),
+                                VkDeviceSize(d.index_count) * sizeof(uint32_t)});
+      }
+    }
+    return true;
+  };
+  if (!attempt()) {
+    r_.wait_idle();
+    drop_fading_world(true);
+    world_release_draws(world_draws_);
+    world_draws_.clear();
+    release_retired();
+    res.evict_unreferenced(r_.frames_done());
+    if (!attempt()) {
+      error = "world arena full";
+      return false;
+    }
+  }
+  for (size_t i = 0; i < st.draws.size(); ++i) {
+    auto& d = st.draws[i];
+    const gpuworld::ResidentDraw* rd = placed[i];
+    if (!rd) continue;
+    d.first_index = rd->index_base;
+    d.vertex_offset = int32_t(rd->vertex_base);
+    d.shift[0] = float(rd->origin_x - st.origin_x);
+    d.shift[1] = float(rd->origin_z - st.origin_z);
+    for (int k = 0; k < 3; k += 2) {
+      d.box_min[k] += d.shift[k / 2];
+      d.box_max[k] += d.shift[k / 2];
+    }
+    d.resident = true;
+  }
+  return true;
+}
+
+// The table the culling pass reads: one row per resident opaque or cut-out draw,
+// plus template rows for hardware-instanced tree sprites.
+bool Showroom::build_gpu_table(std::string& error) {
+  for (auto& d : world_draws_) d.gpu = false;
+  if (!arena_on()) return true;
+  std::vector<gpuworld::DrawGpu> rows;
+  rows.reserve(world_draws_.size());
+  uint32_t per_batch[gpuworld::kBatchCount] = {};
+  const bool single_sample = r_.samples_ == VK_SAMPLE_COUNT_1_BIT;
+  const bool instanced_trees = !world_trees_.empty();
+  auto have = [&](uint32_t record) { return record == kNoWorldTexture || gpu_world_->has_texture(record); };
+  auto slot = [&](uint32_t record, uint32_t fallback) {
+    return record != kNoWorldTexture && gpu_world_->has_texture(record) ? gpu_world_->texture_slot(record) : fallback;
+  };
+  for (auto& d : world_draws_) {
+    if (!d.resident || !d.cull || d.index_count == 0 || !gpuworld::in_gpu_batches(d.blend)) continue;
+    uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    if ((flags & 2u) != 0) continue;  // the sky dome
+    if (instanced_trees && (flags & 32u) != 0) {
+      d.gpu = true;  // drawn via single hardware-instanced tree pass
+      continue;
+    }
+    const gpuworld::Batch batch = gpuworld::batch_of(d.blend, d.decal != 0);
+    if (per_batch[batch] >= WorldGpu::kMaxPerBatch) continue;  // left to the CPU loop
+    // A texture that did not upload: the draw falls back as the per-draw sets did.
+    if (!have(d.texture)) {
+      if (flags == 1) flags = 0;
+    } else if (d.texture_b != kNoWorldTexture && !(have(d.texture_b) && have(d.splat))) {
+      flags = 1;
+    }
+    if (d.blend == 1 && single_sample) flags |= 64u;  // cut-outs without MSAA: world.frag's alpha test
+    gpuworld::DrawGpu row{};
+    for (int k = 0; k < 4; ++k) row.tint[k] = d.push.tint[k];
+    row.params[0] = d.push.params[0];
+    row.params[1] = float(flags);
+    row.params[2] = d.push.params[2];
+    row.params[3] = d.push.params[3];
+    row.tex0[0] = slot(d.texture, WorldGpu::kDefaultWhite);
+    row.tex0[1] = slot(d.texture_b, WorldGpu::kDefaultWhite);
+    row.tex0[2] = slot(d.splat, WorldGpu::kDefaultWhite);
+    row.tex0[3] = slot(d.light_map, WorldGpu::kDefaultBlack);
+    row.tex1[0] = slot(d.normal_map, WorldGpu::kDefaultFlatNormal);
+    row.tex1[1] = slot(d.ao_map, WorldGpu::kDefaultWhite);
+    row.tex1[2] = slot(d.layer_c, WorldGpu::kDefaultWhite);
+    row.tex1[3] = d.fade_in ? 1u : 0u;
+    for (int k = 0; k < 3; ++k) row.box_min[k] = d.box_min[k], row.box_max[k] = d.box_max[k];
+    row.draw[0] = d.index_count;
+    row.draw[1] = d.first_index;
+    std::memcpy(&row.draw[2], &d.vertex_offset, sizeof(int32_t));
+    row.draw[3] = batch;
+    row.shift[0] = d.shift[0];
+    row.shift[2] = d.shift[1];
+    rows.push_back(row);
+    ++per_batch[batch];
+    d.gpu = true;
+  }
+  std::vector<gpuworld::TreeInstanceGpu> gpu_trees;
+  if (instanced_trees) {
+    std::unordered_map<uint32_t, uint32_t> tmpl_by_tex;
+    gpu_trees.reserve(world_trees_.size());
+    for (const auto& t : world_trees_) {
+      auto [it, added] = tmpl_by_tex.emplace(t.texture, uint32_t(rows.size()));
+      if (added) {
+        gpuworld::DrawGpu row{};
+        uint32_t fl = have(t.texture) ? (1u | 32u) : 32u;
+        if (single_sample) fl |= 64u;
+        row.tint[0] = row.tint[1] = row.tint[2] = row.tint[3] = 1.0f;
+        row.params[0] = 1.0f;  // coverage
+        row.params[1] = float(fl);
+        row.params[3] = 1.0f;
+        row.tex0[0] = slot(t.texture, WorldGpu::kDefaultWhite);
+        row.tex0[1] = WorldGpu::kDefaultWhite;
+        row.tex0[2] = WorldGpu::kDefaultWhite;
+        row.tex0[3] = WorldGpu::kDefaultBlack;
+        row.tex1[0] = WorldGpu::kDefaultFlatNormal;
+        row.tex1[1] = WorldGpu::kDefaultWhite;
+        row.tex1[2] = WorldGpu::kDefaultWhite;
+        row.draw[0] = 0u;  // template-only row: skipped by world_cull.comp
+        row.draw[3] = gpuworld::kCutout;
+        rows.push_back(row);
+      }
+      gpuworld::TreeInstanceGpu gt{};
+      gt.base_hw[0] = t.base[0], gt.base_hw[1] = t.base[1], gt.base_hw[2] = t.base[2], gt.base_hw[3] = t.half_width;
+      gt.up_h[0] = t.up[0], gt.up_h[1] = t.up[1], gt.up_h[2] = t.up[2], gt.up_h[3] = t.height;
+      for (int k = 0; k < 4; ++k) gt.uv_rect[k] = t.uv[k];
+      gt.col_tex[0] = t.rgba8;
+      gt.col_tex[1] = slot(t.texture, WorldGpu::kDefaultWhite);
+      gt.col_tex[2] = it->second;
+      gpu_trees.push_back(gt);
+    }
+  }
+  return gpu_world_->set_table(rows, error, gpu_trees);
+}
+
+// Before the scene: the culling pass over the table, with the view's side planes in the scenery's frame.
+void Showroom::record_world_cull(VkCommandBuffer cmd) {
+  if (!arena_on()) return;
+  gpuworld::CullView view;
+  float clip[16];
+  for (int col = 0; col < 4; ++col)
+    for (int row = 0; row < 4; ++row) {
+      float s = 0;
+      for (int k = 0; k < 4; ++k) s += frame_.view_projection[k * 4 + row] * world_transform_[col * 4 + k];
+      clip[col * 4 + row] = s;
+    }
+  for (int col = 0; col < 4; ++col) {
+    const float x = clip[col * 4 + 0], y = clip[col * 4 + 1], w = clip[col * 4 + 3];
+    view.planes[0][col] = w + x, view.planes[1][col] = w - x, view.planes[2][col] = w + y, view.planes[3][col] = w - y;
+  }
+  const auto eye = eye_in_scenery(world_transform_);
+  for (int k = 0; k < 3; ++k) view.eye[k] = eye[size_t(k)];
+  view.lod_reach = world_fade_[1] > 0 ? world_fade_[0] + world_fade_[1] + kPropReach : 0.0f;
+  view.frustum = world_cull_;
+  view.hiz = hiz_enabled_ && have_prev_vp_ && gpu_world_->hiz_valid();
+  view.reverse_z = r_.reverse_z();
+  view.hiz_width = WorldGpu::kHizWidth;
+  view.hiz_height = WorldGpu::kHizHeight;
+  std::memcpy(view.prev_vp, prev_vp_, sizeof prev_vp_);
+  gpu_world_->record_cull(cmd, view);
+  std::memcpy(prev_vp_, clip, sizeof prev_vp_);
+  have_prev_vp_ = true;
+}
+
+bool Showroom::create_dyn_buffer(DynBuffer& d, VkDeviceSize cap, std::string& error, VkBufferUsageFlags usage) {
+  const VkMemoryPropertyFlags host_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  d.cap = cap;
+  if (!r_.create_buffer(cap * Renderer::kFramesInFlight, usage, host_flags, d.buf) ||
+      vmaMapMemory(r_.allocator_, d.buf.allocation, &d.gpu) != VK_SUCCESS) {
+    error = "dynamic vertex buffer";
+    d.gpu = nullptr;
+    return false;
+  }
+  d.cpu.assign(size_t(cap), 0);
+  d.ver = 1;
+  for (auto& v : d.slot_ver) v = 0;
+  return true;
+}
+
+void Showroom::destroy_dyn_buffer(DynBuffer& d) {
+  if (d.gpu) vmaUnmapMemory(r_.allocator_, d.buf.allocation);
+  d.gpu = nullptr;
+  r_.destroy_buffer(d.buf);
+  d.cpu.clear();
+}
+
+VkDeviceSize Showroom::dyn_sync(DynBuffer& d, VkDeviceSize used_bytes) {
+  const uint32_t slot = r_.frame_slot();
+  const VkDeviceSize at = d.cap * slot;
+  if (d.slot_ver[slot] != d.ver && d.gpu) {
+    // This slot's previous frame is done (draw_frame waited its fence).
+    std::memcpy(static_cast<uint8_t*>(d.gpu) + at, d.cpu.data(), size_t(std::min(used_bytes, d.cap)));
+    d.slot_ver[slot] = d.ver;
+  }
+  return at;
 }
 
 }  // namespace carview

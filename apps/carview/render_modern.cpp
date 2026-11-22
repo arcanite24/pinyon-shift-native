@@ -1,0 +1,530 @@
+#include "render_modern.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+namespace carview::modern {
+
+// ---- Render scale ---------------------------------------------------------------
+int clamp_scale(int scale) { return std::clamp(scale, kMinScale, kMaxScale); }
+
+Extent scene_extent(Extent window, int scale, bool base_540p) {
+  scale = clamp_scale(scale);
+  if (window.w == 0 || window.h == 0) return {0, 0};
+  if (scale == 0) return window;
+  const uint32_t base_h = base_540p ? 540u : 720u;
+  const double aspect = double(window.w) / double(window.h);
+  uint32_t h = std::min(base_h * uint32_t(scale), 8192u);
+  uint32_t w = uint32_t(std::lround(double(h) * aspect));
+  w = (w + 1) & ~1u;  // even, so 2x2 resolves and chroma-style passes line up
+  w = std::clamp(w, 64u, 16384u);
+  h = std::max(h, 64u);
+  return {w, h};
+}
+
+std::string scale_label(int scale, bool base_540p, Extent window) {
+  scale = clamp_scale(scale);
+  if (scale == 0) return "NATIVE";
+  const Extent e = scene_extent(window.w ? window : Extent{16, 9}, scale, base_540p);
+  const Extent ref = base_540p ? Extent{960, 540} : Extent{1280, 720};
+  std::string s = (base_540p ? "540P " : "") + std::to_string(scale) + "X";
+  const Extent shown = window.w ? e : Extent{ref.w * uint32_t(scale), ref.h * uint32_t(scale)};
+  s += " (" + std::to_string(shown.w) + "x" + std::to_string(shown.h) + ")";
+  return s;
+}
+
+// ---- Ultrawide ----------------------------------------------------------------------
+float hfov_from_vfov(float vfov_deg, float aspect) {
+  const float v = vfov_deg * 3.14159265f / 180.0f;
+  return 2.0f * std::atan(std::tan(v * 0.5f) * aspect) * 180.0f / 3.14159265f;
+}
+
+float effective_vfov(float vfov_deg, float aspect, float max_hfov_deg) {
+  if (aspect <= 0.0f) return vfov_deg;
+  if (hfov_from_vfov(vfov_deg, aspect) <= max_hfov_deg) return vfov_deg;
+  const float h = max_hfov_deg * 3.14159265f / 180.0f;
+  return 2.0f * std::atan(std::tan(h * 0.5f) / aspect) * 180.0f / 3.14159265f;
+}
+
+// ---- HUD ------------------------------------------------------------------------------
+HudLayout hud_layout(float window_w, float window_h, bool lock_16_9, float hud_scale_percent, float safe_zone_percent) {
+  HudLayout l;
+  if (window_w <= 0 || window_h <= 0) return l;
+  const float hs = std::clamp(hud_scale_percent, kMinHudScale, kMaxHudScale) / 100.0f;
+  const float safe = std::clamp(safe_zone_percent, 0.0f, kMaxSafeZone) / 100.0f;
+  float vw = window_w, vh = window_h;
+  if (lock_16_9 && window_w / window_h > kHudAspect) vw = window_h * kHudAspect;
+  l.virtual_w = vw;
+  l.virtual_h = vh;
+  l.scale = hs * (1.0f - 2.0f * safe);
+  l.origin_x = window_w * 0.5f - vw * 0.5f * l.scale;
+  l.origin_y = window_h * 0.5f - vh * 0.5f * l.scale;
+  return l;
+}
+
+// ---- AA, AO, textures --------------------------------------------------------------------
+int ssao_taps(SsaoQuality q) {
+  switch (q) {
+    case SsaoQuality::kLow: return 6;
+    case SsaoQuality::kMedium: return 10;
+    case SsaoQuality::kHigh: return 16;
+    default: return 0;
+  }
+}
+
+float ssao_radius_m(SsaoQuality q) {
+  switch (q) {
+    case SsaoQuality::kLow: return 0.6f;
+    case SsaoQuality::kMedium: return 0.9f;
+    case SsaoQuality::kHigh: return 1.2f;
+    default: return 0.0f;
+  }
+}
+
+uint32_t texture_levels_to_skip(uint32_t width, uint32_t height, uint32_t level_count, TextureCap cap) {
+  if (cap == TextureCap::kFull || level_count <= 1) return 0;
+  uint32_t skip = 0;
+  uint32_t side = std::max(width, height);
+  while (side > uint32_t(cap) && skip + 1 < level_count) {
+    side = std::max(side / 2, 1u);
+    ++skip;
+  }
+  return skip;
+}
+
+// ---- Presentation --------------------------------------------------------------------------
+VSync resolve_vsync(VSync requested, uint32_t available_mask) {
+  auto has = [&](VSync v) { return (available_mask & vsync_bit(v)) != 0; };
+  if (requested == VSync::kImmediate && has(VSync::kImmediate)) return VSync::kImmediate;
+  if (requested == VSync::kMailbox && has(VSync::kMailbox)) return VSync::kMailbox;
+  if (requested == VSync::kImmediate && has(VSync::kMailbox)) return VSync::kMailbox;
+  return VSync::kFifo;
+}
+
+double fps_cap_interval(int cap, double display_hz) {
+  if (cap > 0) return 1.0 / double(cap);
+  return display_hz > 1.0 ? 1.0 / display_hz : 1.0 / 60.0;
+}
+
+double FramePacer::wait_for(double now) {
+  if (interval_ <= 0) {
+    next_ = -1;
+    return 0;
+  }
+  if (next_ < 0) next_ = now;
+  const double wait = next_ - now;
+  if (wait > 0) {
+    next_ += interval_;
+    return wait;
+  }
+  // Late: go at once; skip the missed slots so the frames after do not burst.
+  next_ += interval_;
+  if (next_ < now) next_ = now + interval_;
+  return 0;
+}
+
+// ---- HDR ------------------------------------------------------------------------------------
+HdrMode resolve_hdr(bool wanted, bool has_hdr10, bool has_scrgb) {
+  if (!wanted) return HdrMode::kOff;
+  if (has_scrgb) return HdrMode::kScRgb;
+  if (has_hdr10) return HdrMode::kHdr10;
+  return HdrMode::kOff;
+}
+
+float clamp_paper_white(float nits) { return std::clamp(nits, 80.0f, 400.0f); }
+
+namespace {
+constexpr float kM1 = 2610.0f / 16384.0f, kM2 = 2523.0f / 4096.0f * 128.0f, kC1 = 3424.0f / 4096.0f,
+                kC2 = 2413.0f / 4096.0f * 32.0f, kC3 = 2392.0f / 4096.0f * 32.0f;
+}  // namespace
+
+float pq_encode(float nits) {
+  const float y = std::clamp(nits / 10000.0f, 0.0f, 1.0f);
+  const float yp = std::pow(y, kM1);
+  return std::pow((kC1 + kC2 * yp) / (1.0f + kC3 * yp), kM2);
+}
+
+float pq_decode(float code) {
+  const float c = std::clamp(code, 0.0f, 1.0f);
+  const float p = std::pow(c, 1.0f / kM2);
+  const float num = std::max(p - kC1, 0.0f);
+  const float den = kC2 - kC3 * p;
+  return 10000.0f * std::pow(num / den, 1.0f / kM1);
+}
+
+std::array<float, 3> rec709_to_rec2020(const std::array<float, 3>& c) {
+  return {0.6274040f * c[0] + 0.3292820f * c[1] + 0.0433136f * c[2],
+          0.0690970f * c[0] + 0.9195400f * c[1] + 0.0113612f * c[2],
+          0.0163916f * c[0] + 0.0880132f * c[1] + 0.8955950f * c[2]};
+}
+
+float expand_highlight(float t, float highlights_percent, float paper_white_nits, float peak_nits) {
+  const float h = std::clamp(highlights_percent, 0.0f, 100.0f) / 100.0f;
+  const float ratio = std::max(peak_nits, paper_white_nits) / std::max(paper_white_nits, 1.0f);
+  const float max_out = 1.0f + (ratio - 1.0f) * h;
+  const float u = std::max(t - 0.5f, 0.0f) / 0.5f;
+  return t + (max_out - 1.0f) * u * u;
+}
+
+// ---- Upscaling --------------------------------------------------------------------------------
+const char* upscaler_name(Upscaler u) {
+  switch (u) {
+    case Upscaler::kBilinear: return "BILINEAR";
+    case Upscaler::kCas: return "CAS";
+    case Upscaler::kFsr1: return "FSR 1";
+    case Upscaler::kFsr2: return "FSR 2";
+    case Upscaler::kFsr3: return "FSR 3";
+    case Upscaler::kDlss: return "DLSS";
+  }
+  return "?";
+}
+
+const char* frame_gen_name(FrameGen f) {
+  switch (f) {
+    case FrameGen::kOff: return "OFF";
+    case FrameGen::kFsr3: return "FSR 3";
+    case FrameGen::kDlss: return "DLSS";
+  }
+  return "?";
+}
+
+UpscalerChoice resolve_upscaler(Upscaler requested, const UpscalerSupport& s, Extent render, Extent output) {
+  UpscalerChoice c;
+  c.requested = c.active = requested;
+  c.native_aa = render.w == output.w && render.h == output.h;
+  c.label = upscaler_name(requested);
+  switch (requested) {
+    case Upscaler::kBilinear:
+    case Upscaler::kCas:
+    case Upscaler::kFsr1: break;
+    case Upscaler::kFsr2:
+    case Upscaler::kFsr3:
+      if (s.temporal) {
+        c.temporal = true;
+        if (c.native_aa) c.label += " (NATIVE AA)";
+      } else {
+        c.unavailable = true;
+        c.active = Upscaler::kFsr1;
+        c.label += " (UNAVAILABLE)";
+      }
+      break;
+    case Upscaler::kDlss:
+      if (s.rtx && s.dlss_runtime && s.temporal) {
+        c.temporal = true;
+        c.label = c.native_aa ? "DLAA" : "DLSS";
+      } else {
+        c.unavailable = true;
+        c.active = Upscaler::kFsr1;
+        c.label += " (UNAVAILABLE)";
+      }
+      break;
+  }
+  return c;
+}
+
+FrameGen resolve_frame_gen(FrameGen requested, const UpscalerSupport& s, bool hdr_ok) {
+  if (!hdr_ok) return FrameGen::kOff;
+  if (!s.frame_gen || !s.temporal) return FrameGen::kOff;
+  if (requested == FrameGen::kDlss && !(s.rtx && s.dlss_runtime)) return FrameGen::kOff;
+  return requested;
+}
+
+static float halton(uint32_t index, uint32_t base) {
+  float f = 1.0f, r = 0.0f;
+  while (index > 0) {
+    f /= float(base);
+    r += f * float(index % base);
+    index /= base;
+  }
+  return r;
+}
+
+std::array<float, 2> halton_jitter(uint32_t index, uint32_t phase_count) {
+  const uint32_t n = std::max(phase_count, 1u);
+  const uint32_t i = index % n + 1;
+  return {halton(i, 2) - 0.5f, halton(i, 3) - 0.5f};
+}
+
+uint32_t jitter_phase_count(Extent render, Extent output) {
+  if (render.w == 0 || output.w == 0) return 8;
+  const double ratio = double(output.w) / double(render.w);
+  return std::max(8u, uint32_t(std::ceil(8.0 * ratio * ratio)));
+}
+
+// ---- .cube -------------------------------------------------------------------------------------
+namespace {
+bool parse_floats(const char* p, float* out, int count) {
+  char* end = nullptr;
+  for (int i = 0; i < count; ++i) {
+    out[i] = std::strtof(p, &end);
+    if (end == p) return false;
+    p = end;
+  }
+  while (*p == ' ' || *p == '\t' || *p == '\r') ++p;
+  return *p == 0;  // nothing after the numbers
+}
+}  // namespace
+
+bool parse_cube(std::string_view text, CubeLut& out, std::string& error) {
+  out = CubeLut{};
+  uint32_t declared = 0;
+  size_t line_no = 0;
+  size_t pos = 0;
+  bool saw_data = false;
+  while (pos <= text.size()) {
+    size_t eol = text.find('\n', pos);
+    if (eol == std::string_view::npos) eol = text.size();
+    std::string line(text.substr(pos, eol - pos));
+    pos = eol + 1;
+    ++line_no;
+    // Trim.
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    size_t b = 0;
+    while (b < line.size() && (line[b] == ' ' || line[b] == '\t')) ++b;
+    line.erase(0, b);
+    if (line.empty() || line[0] == '#') continue;
+    auto fail = [&](const std::string& why) {
+      error = "line " + std::to_string(line_no) + ": " + why;
+      return false;
+    };
+    if (std::isalpha(static_cast<unsigned char>(line[0]))) {
+      if (saw_data) return fail("keyword after table data");
+      auto starts = [&](const char* k) { return line.rfind(k, 0) == 0; };
+      if (starts("TITLE")) {
+        const size_t q1 = line.find('"'), q2 = line.rfind('"');
+        out.title = q1 != std::string::npos && q2 > q1 ? line.substr(q1 + 1, q2 - q1 - 1) : line.substr(5);
+      } else if (starts("LUT_3D_SIZE")) {
+        const long n = std::strtol(line.c_str() + 11, nullptr, 10);
+        if (n < 2 || n > 65) return fail("LUT_3D_SIZE must be 2..65");
+        declared = uint32_t(n);
+      } else if (starts("LUT_1D_SIZE")) {
+        return fail("1D LUTs are not supported (use a 3D .cube)");
+      } else if (starts("DOMAIN_MIN")) {
+        float v[3];
+        if (!parse_floats(line.c_str() + 10, v, 3)) return fail("bad DOMAIN_MIN");
+        out.domain_min = {v[0], v[1], v[2]};
+      } else if (starts("DOMAIN_MAX")) {
+        float v[3];
+        if (!parse_floats(line.c_str() + 10, v, 3)) return fail("bad DOMAIN_MAX");
+        out.domain_max = {v[0], v[1], v[2]};
+      } else if (starts("LUT_1D_INPUT_RANGE") || starts("LUT_3D_INPUT_RANGE")) {
+        // ignored: the domain lines carry the range
+      } else {
+        return fail("unknown keyword");
+      }
+      continue;
+    }
+    if (declared == 0) return fail("table data before LUT_3D_SIZE");
+    float v[3];
+    if (!parse_floats(line.c_str(), v, 3)) return fail("expected three numbers");
+    saw_data = true;
+    out.rgb.push_back(v[0]);
+    out.rgb.push_back(v[1]);
+    out.rgb.push_back(v[2]);
+  }
+  if (declared == 0) {
+    error = "no LUT_3D_SIZE";
+    return false;
+  }
+  out.size = declared;
+  const size_t want = size_t(declared) * declared * declared * 3;
+  if (out.rgb.size() != want) {
+    error = "expected " + std::to_string(want / 3) + " entries, found " + std::to_string(out.rgb.size() / 3);
+    out = CubeLut{};
+    return false;
+  }
+  for (int k = 0; k < 3; ++k)
+    if (!(out.domain_max[size_t(k)] > out.domain_min[size_t(k)])) {
+      error = "DOMAIN_MAX must exceed DOMAIN_MIN";
+      out = CubeLut{};
+      return false;
+    }
+  return true;
+}
+
+std::vector<uint8_t> cube_to_rgba8(const CubeLut& lut) {
+  std::vector<uint8_t> px;
+  if (!lut.valid()) return px;
+  const size_t n = size_t(lut.size) * lut.size * lut.size;
+  px.resize(n * 4);
+  for (size_t i = 0; i < n; ++i) {
+    for (int c = 0; c < 3; ++c) {
+      const float lo = lut.domain_min[size_t(c)], hi = lut.domain_max[size_t(c)];
+      const float v = (lut.rgb[i * 3 + size_t(c)] - lo) / (hi - lo);
+      px[i * 4 + size_t(c)] = uint8_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f));
+    }
+    px[i * 4 + 3] = 255;
+  }
+  return px;
+}
+
+std::array<float, 3> sample_cube(const CubeLut& lut, const std::array<float, 3>& rgb) {
+  if (!lut.valid()) return rgb;
+  const uint32_t N = lut.size;
+  float f[3];
+  uint32_t i0[3], i1[3];
+  for (int c = 0; c < 3; ++c) {
+    const float x = std::clamp(rgb[size_t(c)], 0.0f, 1.0f) * float(N - 1);
+    i0[c] = std::min(uint32_t(x), N - 1);
+    i1[c] = std::min(i0[c] + 1, N - 1);
+    f[c] = x - float(i0[c]);
+  }
+  auto at = [&](uint32_t r, uint32_t g, uint32_t b, int ch) {
+    const float raw = lut.rgb[((size_t(b) * N + g) * N + r) * 3 + size_t(ch)];
+    const float lo = lut.domain_min[size_t(ch)], hi = lut.domain_max[size_t(ch)];
+    return std::clamp((raw - lo) / (hi - lo), 0.0f, 1.0f);
+  };
+  std::array<float, 3> out{};
+  for (int ch = 0; ch < 3; ++ch) {
+    float acc = 0;
+    for (int dz = 0; dz < 2; ++dz)
+      for (int dy = 0; dy < 2; ++dy)
+        for (int dx = 0; dx < 2; ++dx) {
+          const float w = (dx ? f[0] : 1 - f[0]) * (dy ? f[1] : 1 - f[1]) * (dz ? f[2] : 1 - f[2]);
+          acc += w * at(dx ? i1[0] : i0[0], dy ? i1[1] : i0[1], dz ? i1[2] : i0[2], ch);
+        }
+    out[size_t(ch)] = acc;
+  }
+  return out;
+}
+
+// ---- Settings tokens ------------------------------------------------------------------------------
+namespace {
+const char* aa_name(AaMode m) {
+  return m == AaMode::kFxaaWorld ? "fxaa" : m == AaMode::kFxaaAll ? "fxaa-hud" : "off";
+}
+const char* ssao_name(SsaoQuality q) {
+  return q == SsaoQuality::kLow ? "low" : q == SsaoQuality::kMedium ? "medium" : q == SsaoQuality::kHigh ? "high" : "off";
+}
+const char* vsync_name(VSync v) { return v == VSync::kMailbox ? "mailbox" : v == VSync::kImmediate ? "immediate" : "fifo"; }
+const char* output_name(Upscaler u) {
+  switch (u) {
+    case Upscaler::kCas: return "cas";
+    case Upscaler::kFsr1: return "fsr1";
+    case Upscaler::kFsr2: return "fsr2";
+    case Upscaler::kFsr3: return "fsr3";
+    case Upscaler::kDlss: return "dlss";
+    default: return "bilinear";
+  }
+}
+std::string num(float v) {
+  char b[32];
+  std::snprintf(b, sizeof b, "%g", double(v));
+  return b;
+}
+}  // namespace
+
+const std::vector<std::string>& graphics_option_names() {
+  static const std::vector<std::string> names = {
+      "--render-scale", "--scene-540p", "--no-scene-540p", "--aa", "--ssao", "--lut", "--lut-strength", "--vrs",
+      "--no-vrs", "--texture-cap", "--vsync", "--fps-cap", "--output", "--sharpening", "--frame-gen", "--hdr",
+      "--no-hdr", "--auto-hdr", "--no-auto-hdr", "--hdr-paper-white", "--hdr-highlights", "--hdr-peak",
+      "--hdr-compare", "--no-hdr-compare", "--hud-scale", "--safe-zone", "--hud-16-9", "--no-hud-16-9"};
+  return names;
+}
+
+std::vector<std::string> graphics_tokens(const GraphicsSettings& s) {
+  const GraphicsSettings d;
+  std::vector<std::string> t;
+  auto add = [&](const char* k, const std::string& v) {
+    t.push_back(k);
+    t.push_back(v);
+  };
+  if (s.scale != d.scale) add("--render-scale", std::to_string(s.scale));
+  if (s.base_540p) t.push_back("--scene-540p");
+  if (s.aa != d.aa) add("--aa", aa_name(s.aa));
+  if (s.ssao != d.ssao) add("--ssao", ssao_name(s.ssao));
+  if (!s.lut.empty()) add("--lut", s.lut);
+  if (s.lut_strength != d.lut_strength) add("--lut-strength", num(s.lut_strength));
+  if (s.vrs) t.push_back("--vrs");
+  if (s.texture_cap != d.texture_cap) add("--texture-cap", std::to_string(int(s.texture_cap)));
+  if (s.vsync != d.vsync) add("--vsync", vsync_name(s.vsync));
+  if (s.fps_cap != d.fps_cap) add("--fps-cap", s.fps_cap == 0 ? std::string("display") : std::to_string(s.fps_cap));
+  if (s.upscaler != d.upscaler) add("--output", output_name(s.upscaler));
+  if (s.sharpening != d.sharpening) add("--sharpening", num(s.sharpening));
+  if (s.frame_gen != d.frame_gen) add("--frame-gen", s.frame_gen == FrameGen::kFsr3 ? "fsr3" : s.frame_gen == FrameGen::kDlss ? "dlss" : "off");
+  if (s.hdr) t.push_back("--hdr");
+  if (s.auto_hdr) t.push_back("--auto-hdr");
+  if (s.paper_white != d.paper_white) add("--hdr-paper-white", num(s.paper_white));
+  if (s.hdr_highlights != d.hdr_highlights) add("--hdr-highlights", num(s.hdr_highlights));
+  if (s.peak_nits != d.peak_nits) add("--hdr-peak", num(s.peak_nits));
+  if (s.hdr_compare) t.push_back("--hdr-compare");
+  if (s.hud_scale != d.hud_scale) add("--hud-scale", num(s.hud_scale));
+  if (s.safe_zone != d.safe_zone) add("--safe-zone", num(s.safe_zone));
+  if (!s.hud_lock_16_9) t.push_back("--no-hud-16-9");
+  return t;
+}
+
+bool apply_graphics_option(GraphicsSettings& s, const std::vector<std::string>& args, size_t& i) {
+  const std::string& a = args[i];
+  auto value = [&]() -> std::string { return i + 1 < args.size() ? args[++i] : std::string(); };
+  auto number = [&](float fallback) {
+    const std::string v = value();
+    return v.empty() ? fallback : float(std::atof(v.c_str()));
+  };
+  if (a == "--render-scale") s.scale = clamp_scale(int(number(1)));
+  else if (a == "--scene-540p") s.base_540p = true;
+  else if (a == "--no-scene-540p") s.base_540p = false;
+  else if (a == "--aa") {
+    const std::string v = value();
+    s.aa = v == "fxaa" ? AaMode::kFxaaWorld : v == "fxaa-hud" ? AaMode::kFxaaAll : AaMode::kOff;
+  } else if (a == "--ssao") {
+    const std::string v = value();
+    s.ssao = v == "low" ? SsaoQuality::kLow : v == "medium" ? SsaoQuality::kMedium : v == "high" ? SsaoQuality::kHigh : SsaoQuality::kOff;
+  } else if (a == "--lut") s.lut = value();
+  else if (a == "--lut-strength") s.lut_strength = std::clamp(number(100), 0.0f, 100.0f);
+  else if (a == "--vrs") s.vrs = true;
+  else if (a == "--no-vrs") s.vrs = false;
+  else if (a == "--texture-cap") {
+    const int v = std::atoi(value().c_str());
+    s.texture_cap = v == 1024 ? TextureCap::k1024 : v == 512 ? TextureCap::k512 : v == 256 ? TextureCap::k256 : TextureCap::kFull;
+  } else if (a == "--vsync") {
+    const std::string v = value();
+    s.vsync = v == "mailbox" ? VSync::kMailbox : v == "immediate" ? VSync::kImmediate : VSync::kFifo;
+  } else if (a == "--fps-cap") {
+    const std::string v = value();
+    s.fps_cap = v == "display" ? 0 : std::atoi(v.c_str());
+    if (v != "display" && std::find(kFpsCaps.begin(), kFpsCaps.end(), s.fps_cap) == kFpsCaps.end()) s.fps_cap = 60;
+  } else if (a == "--output") {
+    const std::string v = value();
+    s.upscaler = v == "cas" ? Upscaler::kCas : v == "fsr1" ? Upscaler::kFsr1 : v == "fsr2" ? Upscaler::kFsr2
+                 : v == "fsr3" ? Upscaler::kFsr3 : v == "dlss" ? Upscaler::kDlss : Upscaler::kBilinear;
+  } else if (a == "--sharpening") s.sharpening = std::clamp(number(50), 0.0f, 100.0f);
+  else if (a == "--frame-gen") {
+    const std::string v = value();
+    s.frame_gen = v == "fsr3" ? FrameGen::kFsr3 : v == "dlss" ? FrameGen::kDlss : FrameGen::kOff;
+  } else if (a == "--hdr") s.hdr = true;
+  else if (a == "--no-hdr") s.hdr = false;
+  else if (a == "--auto-hdr") s.auto_hdr = true;
+  else if (a == "--no-auto-hdr") s.auto_hdr = false;
+  else if (a == "--hdr-paper-white") s.paper_white = clamp_paper_white(number(203));
+  else if (a == "--hdr-highlights") s.hdr_highlights = std::clamp(number(50), 0.0f, 100.0f);
+  else if (a == "--hdr-peak") s.peak_nits = std::clamp(number(1000), 200.0f, 10000.0f);
+  else if (a == "--hdr-compare") s.hdr_compare = true;
+  else if (a == "--no-hdr-compare") s.hdr_compare = false;
+  else if (a == "--hud-scale") s.hud_scale = std::clamp(number(100), kMinHudScale, kMaxHudScale);
+  else if (a == "--safe-zone") s.safe_zone = std::clamp(number(0), 0.0f, kMaxSafeZone);
+  else if (a == "--hud-16-9") s.hud_lock_16_9 = true;
+  else if (a == "--no-hud-16-9") s.hud_lock_16_9 = false;
+  else return false;
+  return true;
+}
+
+GraphicsSettings clamp_graphics(GraphicsSettings s) {
+  s.scale = clamp_scale(s.scale);
+  s.lut_strength = std::clamp(s.lut_strength, 0.0f, 100.0f);
+  s.sharpening = std::clamp(s.sharpening, 0.0f, 100.0f);
+  s.paper_white = clamp_paper_white(s.paper_white);
+  s.hdr_highlights = std::clamp(s.hdr_highlights, 0.0f, 100.0f);
+  s.peak_nits = std::clamp(s.peak_nits, 200.0f, 10000.0f);
+  s.hud_scale = std::clamp(s.hud_scale, kMinHudScale, kMaxHudScale);
+  s.safe_zone = std::clamp(s.safe_zone, 0.0f, kMaxSafeZone);
+  if (s.fps_cap != 0 && std::find(kFpsCaps.begin(), kFpsCaps.end(), s.fps_cap) == kFpsCaps.end()) s.fps_cap = 60;
+  return s;
+}
+
+}  // namespace carview::modern

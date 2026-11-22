@@ -35,6 +35,7 @@
 #include "world/tod.h"
 #include "world/vfx.h"
 #include "world/world.h"
+#include "world_gpu.h"
 #include "world_texture_lru.h"
 
 namespace carview {
@@ -195,6 +196,17 @@ struct WorldGeometry {
     // always drawn (the sky, the flat world).
     bool cull = false;
     float box_min[3] = {0, 0, 0}, box_max[3] = {0, 0, 0};
+    // The GPU-driven world (world_gpu.h): a resident draw lives in the
+    // arenas (first_index and vertex_offset then address them, its indices
+    // relative to its own vertices), found again across regathers by `key`.
+    // `shift` (m, x and z) is what its positions need added to be relative
+    // to the scenery being drawn; `fade_in` marks a draw new to the scenery,
+    // dithered in with the swap; `gpu` that the culling pass draws it.
+    bool resident = false, fade_in = false, gpu = false;
+    int32_t vertex_offset = 0;
+    uint64_t key = 0;
+    uint32_t vertex_begin = 0, vertex_count = 0;  // its vertices in the staged buffer
+    float shift[2] = {0, 0};
   };
   bool textured = false;
   std::vector<WorldVertex> textured_vertices;  // textured: in place of vertices
@@ -285,8 +297,21 @@ class Showroom {
     std::shared_ptr<std::vector<Renderer::Image>> images;
     std::shared_ptr<const void> pin_guard;
     double origin_x = 0, origin_z = 0;  // what the positions are relative to
+    bool arena = false;                 // staged for the resident arenas (indices relative to each draw)
+    struct TreeRaw {
+      float base[3];
+      float half_width;
+      float up[3];
+      float height;
+      float uv[4];
+      uint32_t rgba8;
+      uint32_t texture;
+    };
+    std::vector<TreeRaw> trees;
   };
-  bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error);
+  // `origin_x/z`: what the geometry's positions are relative to, for the content keys of the GPU-driven world.
+  bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error, double origin_x = 0,
+                   double origin_z = 0);
   bool begin_world(StagedWorld staged, std::string& error);
   // Swaps in a begun world once its copy is done (or waits, with `wait`).
   // `swapped`: whether it did.
@@ -497,6 +522,8 @@ class Showroom {
   bool upload_environment(std::string& error);
   bool create_pipelines(std::string& error);
   void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
+  void record_z_prepass(VkCommandBuffer cmd);
+  void record_all_instances(VkCommandBuffer cmd, bool depth_equal);
   void record_world(VkCommandBuffer cmd);
   // The eye in a scenery's frame, and whether a cell of LOD00 copies lies
   // wholly past the LOD band (showroom.cpp).
@@ -559,7 +586,8 @@ class Showroom {
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout world_pipeline_layout_ = VK_NULL_HANDLE;
   GpuTexture flat_normal_tex_;  // 1x1 (128, 128, 255, 255) fallback normal map
-  VkPipeline opaque_ = VK_NULL_HANDLE, glass_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
+  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, car_z_prepass_ = VK_NULL_HANDLE,
+             glass_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
   // The sun shadow pass: Near + Far cascades in a 2x1 atlas.
@@ -587,6 +615,7 @@ class Showroom {
   struct FadingWorld {
     Renderer::Buffer vertices, indices;
     std::vector<WorldGeometry::Draw> draws;
+    bool arena = false;          // its draws are resident (their references are held until it goes)
     double origin[2] = {0, 0};
   };
   float world_fade_[4] = {0, 0, 0, 0};  // set_world_fade's, kept over set_frame
@@ -595,6 +624,21 @@ class Showroom {
   std::chrono::steady_clock::time_point fade_start_{};
   double swap_fade_seconds_ = 0;
   std::vector<WorldGeometry::Draw> world_draws_;
+  std::vector<StagedWorld::TreeRaw> world_trees_;
+  float prev_vp_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  bool have_prev_vp_ = false;
+  bool hiz_enabled_ = true;
+  // The GPU-driven world: arenas, bindless textures, culling (world_gpu.h).
+  std::unique_ptr<WorldGpu> gpu_world_;
+  bool arena_on() const;  // the arenas hold the scenery (else the monolithic buffers)
+  uint64_t world_generation_ = 0;
+  void world_bind_buffers(VkCommandBuffer cmd, bool fading);
+  void world_draw_model(const WorldGeometry::Draw& d, const float transform[16], float out[16]) const;
+  void world_release_draws(std::vector<WorldGeometry::Draw>& draws);
+  bool build_gpu_table(std::string& error);
+  void record_world_cull(VkCommandBuffer cmd);
+  bool place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& vertex_copies,
+                         std::vector<WorldGpu::Copy>& index_copies, std::string& error);
   size_t world_triangles_ = 0;
   WorldDrawStats world_stats_;
   bool world_cull_ = true;
@@ -611,7 +655,9 @@ class Showroom {
   // The textured world.
   bool world_textured_ = false;
   bool draw_car_ = true;
-  VkPipeline world_opaque_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
+  VkPipeline world_opaque_ = VK_NULL_HANDLE, world_opaque_after_z_ = VK_NULL_HANDLE,
+             world_z_prepass_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE,
+             world_alpha_ = VK_NULL_HANDLE;
   std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
   // Held for writes to world_textures_ and for the worker's reads.
   mutable std::mutex world_textures_mutex_;
@@ -787,8 +833,36 @@ class Showroom {
   VkDescriptorPool particle_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet particle_set_ = VK_NULL_HANDLE;
   VkImageView particle_bound_depth_ = VK_NULL_HANDLE;
-  Renderer::Buffer particle_buf_;
-  void* particle_mapped_ = nullptr;
+  // A vertex/instance buffer the CPU rewrites each frame, one region per
+  // frame in flight: the setters write `cpu` (the newest content) and the
+  // draw copies it into its slot's region when that region is out of date.
+  struct DynBuffer {
+    Renderer::Buffer buf;         // kFramesInFlight regions of `cap` bytes
+    void* gpu = nullptr;          // its mapping
+    std::vector<uint8_t> cpu;     // `cap` bytes
+    VkDeviceSize cap = 0;
+    uint64_t ver = 1;             // bumped when `cpu` changes
+    uint64_t slot_ver[Renderer::kFramesInFlight] = {};
+    bool ready() const { return gpu != nullptr && !cpu.empty(); }
+    void* data() { return cpu.data(); }
+  };
+  bool create_dyn_buffer(DynBuffer& d, VkDeviceSize cap, std::string& error,
+                         VkBufferUsageFlags usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  void destroy_dyn_buffer(DynBuffer& d);
+  // Copies the content into this frame's region if needed; returns the
+  // region's byte offset to bind.
+  VkDeviceSize dyn_sync(DynBuffer& d, VkDeviceSize used_bytes);
+  static constexpr uint32_t kMaxCarInstances = 256;
+  struct CarInstanceGpu {
+    float model[16];
+    float stripe[4];
+    float lamp_rgb[30][4];
+    float pad[4];
+  };
+  static_assert(sizeof(CarInstanceGpu) == 576);
+  DynBuffer car_inst_buf_;
+  Renderer::Buffer empty_inst_ssbo_;
+  DynBuffer particle_buf_;
   uint32_t particle_alpha_count_ = 0;
   uint32_t particle_add_count_ = 0;
   float particle_near_plane_ = 0.25f;
@@ -799,19 +873,15 @@ class Showroom {
   VkPipeline skid_pipe_ = VK_NULL_HANDLE;
   VkDescriptorPool skid_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet skid_sets_[2] = {};
-  Renderer::Buffer skid_asphalt_buf_;
-  Renderer::Buffer skid_rut_buf_;
-  void* skid_asphalt_mapped_ = nullptr;
-  void* skid_rut_mapped_ = nullptr;
+  DynBuffer skid_asphalt_buf_;
+  DynBuffer skid_rut_buf_;
   uint32_t skid_asphalt_count_ = 0;
   uint32_t skid_rut_count_ = 0;
   static constexpr uint32_t kMaxDebrisVerts = 65536;  // smashable debris + animated world props/grass
-  Renderer::Buffer debris_buf_;
-  void* debris_mapped_ = nullptr;
+  DynBuffer debris_buf_;
   uint32_t debris_count_ = 0;
   static constexpr uint32_t kMaxDriverVerts = 2048;   // animated 3D seated driver + steering hands
-  Renderer::Buffer driver_buf_;
-  void* driver_mapped_ = nullptr;
+  DynBuffer driver_buf_;
   uint32_t driver_count_ = 0;
   float driver_wheel_rad_ = 0.0f;
   bool cockpit_camera_active_ = false;

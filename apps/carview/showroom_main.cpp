@@ -53,6 +53,7 @@
 #include "hud.h"
 #include "photo_mode.h"
 #include "platform_support.h"
+#include "perf_overlay.h"
 #include "process_time.h"
 #include "replay_view.h"
 #include "reference.h"
@@ -1570,6 +1571,8 @@ int run_drive(int argc, char** argv) {
   bool near_given = false, have_spawn = false, fast_travel = false, render_ground = false, async_stream = false,
        flat_world = false, no_props = false, no_far = false, no_trees = false;
   bool bench = false;     // headless: render every frame, timed, no images
+  uint32_t window_frames_limit = 0;  // --window-frames N: the window closes after N presented frames (soaks, perf)
+  carview::FrameStats frame_stats;   // presented-frame times of the window
   uint32_t msaa = 4;
   std::filesystem::path world_reference_path;
   std::string car, out, run = "slalom", view = "chase";
@@ -1635,6 +1638,8 @@ int run_drive(int argc, char** argv) {
   // Reversed depth with an infinite far plane (ours; --no-reverse-z: the
   // 0.25 m to 16 km projection).
   bool reverse_z = true;
+  bool backface_cull = (std::getenv("SHIFT_NO_CULL") == nullptr);
+  bool z_prepass = (std::getenv("SHIFT_Z_PREPASS") != nullptr);
   // The player's settings (settings.h) go in before the command line, in
   // the window only; --no-settings skips them, --save-settings keeps this
   // run's options for the next.
@@ -1703,6 +1708,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--view") view = next();
     else if (a == "--script") script_path = next();
     else if (a == "--seconds") seconds = std::atof(next());
+    else if (a == "--window-frames") window_frames_limit = uint32_t(std::atoi(next()));
     else if (a == "--every") every = std::atof(next());
     else if (a == "--world") world_dir = next();
     else if (a == "--game") game_root_given = next();
@@ -1818,6 +1824,8 @@ int run_drive(int argc, char** argv) {
     else if (a == "--camera") camera_mode = std::atoi(next());
     else if (a == "--language") language = next();
     else if (a == "--no-reverse-z") reverse_z = false;
+    else if (a == "--no-cull") backface_cull = false;
+    else if (a == "--z-prepass") z_prepass = true;
     else if (a == "--near") {
       near_x = std::atof(next());
       near_z = std::atof(next());
@@ -2934,6 +2942,8 @@ int run_drive(int argc, char** argv) {
     if (paint_sequence >= 0 && lower_ascii(paint_car) == lower_ascii(car)) options.match_sequence = paint_sequence;
     Renderer::Options render_options{window, validation, msaa};
     render_options.reverse_z = reverse_z;
+    render_options.backface_cull = backface_cull;
+    render_options.z_prepass = z_prepass;
     // Anisotropic filtering of the ground's grazing textures (ours): the low preset stays cheap.
     render_options.anisotropy = low_preset ? 2.0f : 16.0f;
     if (post_on) {
@@ -3306,7 +3316,7 @@ int run_drive(int argc, char** argv) {
             std::shared_ptr<const void> pin_guard(
                 reinterpret_cast<const void*>(1),
                 [&showroom, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
-            if (!showroom.stage_world(build_world(triangles), *staged, e)) staged.reset();
+            if (!showroom.stage_world(build_world(triangles), *staged, e, cx, cz)) staged.reset();
             if (staged) {
               staged->origin_x = cx;
               staged->origin_z = cz;
@@ -9812,6 +9822,14 @@ int run_drive(int argc, char** argv) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
+          }
+          frame_stats.frame(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+          if (window_frames_limit && frame_stats.frames() >= window_frames_limit) {
+            running = false;
+            const auto vram = renderer.vram_stats();
+            std::printf("window: %s\nwindow: vram %.1f MiB allocated in %u allocs, %.1f MiB device-local in use\n",
+                        frame_stats.summary().c_str(), double(vram.allocation_bytes) / (1024.0 * 1024.0),
+                        vram.allocation_count, double(vram.device_local_usage) / (1024.0 * 1024.0));
           }
           // Process real Vulkan swapchain / color-target PNG captures (F8, F12, Photo Mode 4x SSAA).
           if (pending_shot != PendingShot::kNone) {

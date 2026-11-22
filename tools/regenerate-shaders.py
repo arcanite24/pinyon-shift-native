@@ -51,7 +51,7 @@ def main() -> int:
         print("no glslangValidator or glslc found; pass --compiler", file=sys.stderr)
         return 1
     is_glslc = Path(compiler).stem.lower() == "glslc"
-    for source in sorted(SHADERS.glob("*.vert")) + sorted(SHADERS.glob("*.frag")):
+    for source in sorted(SHADERS.glob("*.vert")) + sorted(SHADERS.glob("*.frag")) + sorted(SHADERS.glob("*.comp")):
         out = SHADERS / "prebuilt" / (source.name + ".spv")
         if is_glslc:
             command = [compiler, f"--target-env={args.target_env}", "-o", str(out), str(source)]

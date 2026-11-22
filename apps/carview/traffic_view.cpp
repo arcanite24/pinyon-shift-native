@@ -150,34 +150,55 @@ void TrafficView::update_guests() {
       const std::filesystem::path root = game_root_;
       const std::string media = media_[id];
       Renderer* r = &r_;
-      g.loading = std::async(std::launch::async, [r, bake, root, media]() {
+      const bool upload_on_worker = !sync_;
+      g.loading = std::async(std::launch::async, [r, bake, root, media, upload_on_worker]() {
+        Loaded out;
         auto s = std::make_unique<Showroom>(*r);
         s->set_guest();
         std::string e;
         if (!s->load(bake, media, ShowroomOptions{}, e)) {
           std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
-          s.reset();
-        } else {
-          s->load_car_lamps(root, media);
+          return out;
         }
-        return s;
+        s->load_car_lamps(root, media);
+        if (upload_on_worker) {
+          const auto t0 = std::chrono::steady_clock::now();
+          if (!s->upload(e)) {
+            out.error = e;
+            out.showroom = std::move(s);
+            return out;
+          }
+          out.upload_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          out.uploaded = true;
+        }
+        out.showroom = std::move(s);
+        return out;
       });
     }
     if (!sync_ && g.loading.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
-    auto s = g.loading.get();
+    Loaded loaded = g.loading.get();
+    auto s = std::move(loaded.showroom);
     if (!s) {
       g.failed = true;
       continue;
     }
-    const auto t0 = std::chrono::steady_clock::now();
-    std::string e;
-    if (!s->upload(e)) {
-      std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), e.c_str());
+    if (!loaded.error.empty()) {
+      std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), loaded.error.c_str());
       g.failed = true;
       continue;
     }
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    upload_ms_max_ = std::max(upload_ms_max_, ms);
+    double ms = loaded.upload_ms;
+    if (!loaded.uploaded) {
+      const auto t0 = std::chrono::steady_clock::now();
+      std::string e;
+      if (!s->upload(e)) {
+        std::fprintf(stderr, "carview: traffic model %s: %s\n", media_[id].c_str(), e.c_str());
+        g.failed = true;
+        continue;
+      }
+      ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    upload_ms_max_ = std::max(upload_ms_max_, loaded.uploaded ? 0.0 : ms);  // render-thread stall only
     ++uploads_;
     params_[id] = drive::params_for_baked_car(s->car(), bake_dir_);
     g.showroom = std::move(s);

@@ -13,7 +13,7 @@ set(shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${generated}")
 set(shader_headers "")
-foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag post.vert post.frag shadow.frag ui.vert ui.frag sky.vert sky.frag stars.vert stars.frag glow.vert glow.frag particle.vert particle.frag skid.vert skid.frag)
+foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag world_gpu.vert world_gpu.frag world_tree_gpu.vert world_cull.comp tree_cull.comp hiz_gen.comp post.vert post.frag shadow.frag ui.vert ui.frag sky.vert sky.frag stars.vert stars.frag glow.vert glow.frag particle.vert particle.frag skid.vert skid.frag)
   string(REPLACE "." "_" id "${shader}")
   string(SUBSTRING "${id}" 0 1 first)
   string(TOUPPER "${first}" first)
@@ -30,7 +30,7 @@ foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.ver
     endif()
     add_custom_command(OUTPUT "${spv}"
       COMMAND "${SHIFT_GLSL_COMPILER}" ${compile_args}
-      DEPENDS "${source}" VERBATIM)
+      DEPENDS "${source}" "${shader_dir}/world_vert.glsl" "${shader_dir}/world_frag.glsl" VERBATIM)
   else()
     set(spv "${shader_dir}/prebuilt/${shader}.spv")
   endif()
@@ -53,6 +53,9 @@ add_library(carview_render STATIC
   ui4_chrome.cpp
   platform_support.cpp
   touch_controls.cpp
+  render_modern.cpp
+  world_gpu_logic.cpp
+  world_gpu.cpp
   ${shader_headers})
 set_target_properties(carview_render PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${generated}")
@@ -97,7 +100,8 @@ set(carview_sources
   story_intro.cpp
   mods_page.cpp
   save_sync_ui.cpp
-  ui_widgets.cpp)
+  ui_widgets.cpp
+  perf_overlay.cpp)
 # Android (M7): libmain.so for SDL's activity (tools/android-apk.py makes the
 # APK); SHIFT_ANDROID_EXECUTABLE keeps the executable run over adb.
 option(SHIFT_ANDROID_EXECUTABLE "Android: build carview as an executable, not the app's libmain.so" OFF)

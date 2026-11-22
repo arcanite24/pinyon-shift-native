@@ -42,6 +42,14 @@ layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 layout(set = 0, binding = 5) uniform sampler2D mirror_map;
 
+struct CarInstanceGpu {
+  mat4 model;
+  vec4 stripe;
+  vec4 lamp_rgb[30];
+  vec4 pad;
+};
+layout(std430, set = 0, binding = 6) readonly buffer CarInstances { CarInstanceGpu car_instances[]; };
+
 layout(set = 1, binding = 0) uniform sampler2D slot0;
 layout(set = 1, binding = 1) uniform sampler2D slot1;
 layout(set = 1, binding = 2) uniform sampler2D livery;
@@ -59,6 +67,7 @@ layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_uv0;
 layout(location = 3) in vec2 v_uv1;
 layout(location = 4) in float v_occlusion;
+layout(location = 5) flat in uint v_instance;
 
 layout(location = 0) out vec4 out_color;
 
@@ -66,7 +75,7 @@ const uint kOpaque = 0u, kPaint = 1u, kGlass = 2u, kLamp = 3u, kInterior = 4u, k
            kTyre = 6u, kRim = 7u, kCaliper = 8u, kChrome = 9u, kCarbon = 10u, kWorld = 11u;
 const uint kFlagSlot1 = 1u, kFlagMetallic = 2u, kFlagLivery = 8u, kFlagNoSlot0 = 16u, kFlagStripe = 32u, kFlagFlat = 64u,
            kFlagRaceLivery = 128u, kFlagGrille = 256u, kFlagCutout = 512u, kFlagCover = 1024u,
-           kFlagLampEmissive = 2048u, kFlagMirror = 4096u;
+           kFlagLampEmissive = 2048u, kFlagMirror = 4096u, kFlagInstanced = 8192u;
 
 vec3 encode_srgb(vec3 c) {
   c = max(c, vec3(0.0));
@@ -171,6 +180,19 @@ vec3 env(vec3 dir, float lod) {
 void main() {
   uint klass = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
+  vec4 draw_tint = draw.tint;
+  vec3 stripe_rgb = frame.stripe.rgb;
+  if ((flags & kFlagInstanced) != 0u) {
+    stripe_rgb = car_instances[v_instance].stripe.rgb;
+    uint ch = (flags >> 14u) & 31u;
+    if (ch > 0u && ch < 30u) {
+      vec3 lrgb = car_instances[v_instance].lamp_rgb[ch].rgb;
+      if (max(lrgb.r, max(lrgb.g, lrgb.b)) > 1e-4) {
+        draw_tint.rgb = lrgb;
+        flags |= kFlagLampEmissive;
+      }
+    }
+  }
   vec4 t0 = (flags & kFlagNoSlot0) != 0u ? vec4(1.0, 1.0, 1.0, 0.0) : texture(slot0, v_uv0);
   vec4 t1 = vec4(1.0);
   if ((flags & kFlagSlot1) != 0u) t1 = texture(slot1, klass == kCarbon ? v_uv1 : v_uv0);
@@ -181,7 +203,7 @@ void main() {
   vec3 r = reflect(-view, n);
   float nv = clamp(dot(n, view), 0.0, 1.0);
 
-  vec3 base = (flags & kFlagFlat) != 0u ? draw.tint.rgb : t0.rgb;
+  vec3 base = (flags & kFlagFlat) != 0u ? draw_tint.rgb : t0.rgb;
   float reflectivity = 0.04;
   float gloss = 0.3;
   float metal = 0.0;
@@ -195,7 +217,7 @@ void main() {
   }
 
   if (klass == kPaint) {
-    vec3 paint_col = draw.tint.rgb;
+    vec3 paint_col = draw_tint.rgb;
     int finish = int(frame.paint_finish.x + 0.5);
     if (finish == 1) {
       // Metallic Flake (ShaderSettings/Metallic.xml): crisp sparkle & metallic depth.
@@ -257,7 +279,7 @@ void main() {
       if ((flags & kFlagMetallic) != 0u) metal = frame.options.w;
     }
 
-    vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * frame.stripe.rgb : t0.rgb;
+    vec3 texel = (flags & kFlagStripe) != 0u ? t0.rgb * stripe_rgb : t0.rgb;
     base = mix(paint_col, texel, t0.a);
     if ((flags & kFlagRaceLivery) != 0u) base = t0.rgb;
 
@@ -274,7 +296,7 @@ void main() {
       base = mix(base, vec3(1.0, 0.0, 1.0), 0.5 * texture(livery, v_uv0).r * (1.0 - t0.a));
     }
   } else if (klass == kCaliper) {
-    base = mix(draw.tint.rgb, t0.rgb, t0.a);
+    base = mix(draw_tint.rgb, t0.rgb, t0.a);
     gloss = 0.65;
   } else if (klass == kGlass) {
     float wtint = clamp(frame.paint_finish.w, 0.0, 1.0);
@@ -283,11 +305,11 @@ void main() {
     gloss = 0.95;
     alpha = mix(0.60, 0.94, wtint);
     if ((flags & kFlagCover) != 0u) {
-      base = draw.tint.rgb;
-      alpha = draw.tint.r - draw.tint.g > 0.1 ? 0.72 : 0.16;
+      base = draw_tint.rgb;
+      alpha = draw_tint.r - draw_tint.g > 0.1 ? 0.72 : 0.16;
     }
     if ((flags & kFlagLampEmissive) != 0u) {
-      emissive = draw.tint.rgb;
+      emissive = draw_tint.rgb;
     }
     // Cracked windshield / glass spiderweb fracture lines when damage_dirt.z > 0.
     float crack = frame.damage_dirt.z;
@@ -306,13 +328,13 @@ void main() {
     gloss = 0.85;
     metal = 0.5;
     if ((flags & kFlagLampEmissive) != 0u) {
-      emissive = draw.tint.rgb;
+      emissive = draw_tint.rgb;
     }
   } else if (klass == kInterior || klass == kGauge) {
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
-    if (klass == kInterior) base = ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.01)) * draw.tint.rgb;
+    if (klass == kInterior) base = ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.01)) * draw_tint.rgb;
     if (klass == kGauge && (flags & kFlagLampEmissive) != 0u) {
-      emissive = base * draw.tint.rgb;
+      emissive = base * draw_tint.rgb;
     }
     gloss = 0.2;
   } else if (klass == kTyre) {
@@ -326,18 +348,18 @@ void main() {
     gloss = 0.15;
   } else if (klass == kRim) {
     // Allow painted aftermarket rims when draw.tint != white.
-    base *= draw.tint.rgb;
+    base *= draw_tint.rgb;
     float wblur = clamp(draw.params.w, 0.0, 1.0);
     if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
       vec2 duv = v_uv0 - vec2(0.5);
-      vec3 acc = t0.rgb * draw.tint.rgb;
+      vec3 acc = t0.rgb * draw_tint.rgb;
       float span = wblur * 0.52;
       for (int k = -3; k <= 3; ++k) {
         if (k == 0) continue;
         float a = float(k) * (span / 3.0);
         float ca = cos(a), sa = sin(a);
         vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
-        acc += texture(slot0, ruv).rgb * draw.tint.rgb;
+        acc += texture(slot0, ruv).rgb * draw_tint.rgb;
       }
       base = mix(base, acc / 7.0, wblur * 0.92);
       base = mix(base, vec3(dot(base, vec3(0.3, 0.59, 0.11))) * 1.08, wblur * 0.22);
@@ -362,7 +384,7 @@ void main() {
     gloss = 0.95;
     metal = 0.9;
   } else if (klass == kWorld) {
-    base = draw.tint.rgb;
+    base = draw_tint.rgb;
     reflectivity = 0.02;
     gloss = 0.05;
   } else if (klass == kCarbon) {

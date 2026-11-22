@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <thread>
 #include <span>
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@
 VK_DEFINE_HANDLE(VmaAllocator);
 VK_DEFINE_HANDLE(VmaAllocation);
 
+#include "render_modern.h"
 #include "ui.h"
 
 struct SDL_Window;
@@ -31,16 +34,21 @@ struct FrameConstants {
 static_assert(sizeof(FrameConstants) == 112);
 
 class Showroom;
+class WorldGpu;
 
 // Lets another scene (the showroom) record its own draws in place of the
 // single car pipeline: `before` runs outside rendering (buffer updates),
 // `draw` inside it with the viewport and scissor set.
 struct SceneHooks {
   std::function<void(VkCommandBuffer)> before;
+  // Optional depth-only prepass before the main colour pass (reduces fragment overdraw).
+  std::function<void(VkCommandBuffer)> draw_z_prepass;
   std::function<void(VkCommandBuffer)> draw;
   // Optional second subpass after opaque depth has been resolved into
   // `depth_resolved_view()` (for soft depth-faded particles & glows).
   std::function<void(VkCommandBuffer)> draw_particles;
+  // Optional Hi-Z pyramid generation from resolved depth (`depth_resolved_view()`).
+  std::function<void(VkCommandBuffer, VkImageView, uint32_t, uint32_t, bool)> build_hiz;
   float clear[4] = {0.16f, 0.18f, 0.21f, 1.0f};
 };
 
@@ -126,6 +134,12 @@ class Renderer {
     // GREATER(_OR_EQUAL), and the camera's projection maps the near plane to
     // 1 and infinity to 0, so the float depth keeps its precision far out.
     bool reverse_z = false;
+    // Frames the CPU may record ahead of the GPU (1..kFramesInFlight): 2 hides the CPU/GPU
+    // sync stall; 1 is the lock-step of the earlier renderer.
+    uint32_t frames_in_flight = 2;
+    modern::VSync vsync = modern::VSync::kFifo;
+    bool backface_cull = true;
+    bool z_prepass = false;
   };
 
   Renderer() = default;
@@ -154,11 +168,42 @@ class Renderer {
   const std::vector<std::pair<std::string, double>>& stage_ms() const { return stage_ms_; }
   // Ends a stage of a timed frame at this point of `cmd` (nothing otherwise).
   void mark(VkCommandBuffer cmd, const char* label);
+  // Frames in flight (Slice 11): the CPU records frame N+1 while the GPU
+  // still draws frame N. Per-frame state (command buffer, fence, acquire
+  // semaphore, staging and instance buffers, timestamp pool) lives in one of
+  // kFramesInFlight slots; a dynamic buffer the CPU writes every frame is
+  // kFramesInFlight copies, indexed by frame_slot().
+  static constexpr uint32_t kFramesInFlight = 3;  // the most slots; frames_in_flight() of them are used
+  uint32_t frames_in_flight() const { return frames_in_flight_; }
+  // The device offers what the GPU-driven world needs (see create_device).
+  bool gpu_driven_supported() const { return gpu_driven_; }
+  // V-sync (live): FIFO, MAILBOX or IMMEDIATE; takes effect on the next frame
+  // (the swapchain is rebuilt) and falls back to what the surface offers.
+  void set_vsync(modern::VSync v) {
+    if (v != vsync_) vsync_ = v, swapchain_dirty_ = true;
+  }
+  modern::VSync vsync_requested() const { return vsync_; }
+  modern::VSync vsync_active() const { return vsync_active_; }
+  uint32_t frame_slot() const { return slot_; }
+  // Blocks until every submitted frame is done (a resize, a device-wide
+  // change); every object retired so far may then go.
+  void wait_idle();
+  // GPU time of the last finished windowed frame (two frames behind) and its
+  // marked stages, for the F3 overlay and the frame inspector; ms < 0 when
+  // the queue has no timestamps.
+  double gpu_frame_ms() const { return gpu_frame_ms_; }
+  const std::vector<std::pair<std::string, double>>& gpu_stages() const { return slot_stages_; }
+  // Records a GPU timestamp pair per marked stage in windowed frames.
+  void set_gpu_timing(bool on) { gpu_timing_ = on; }
+  bool gpu_timing() const { return gpu_timing_; }
   // The format the scene's pipelines draw into: the output's, or RGBA16F
   // under the post chain.
   VkFormat scene_format() const { return options_.post.enabled ? VK_FORMAT_R16G16B16A16_SFLOAT : color_format_; }
   bool post() const { return options_.post.enabled; }
   bool reverse_z() const { return options_.reverse_z; }
+  bool backface_cull() const { return options_.backface_cull; }
+  bool z_prepass() const { return options_.z_prepass; }
+  void set_z_prepass(bool on) { options_.z_prepass = on; }
   // The MSAA sample count in use (1 when off).
   uint32_t sample_count() const { return uint32_t(samples_); }
   // The anisotropy the scene's samplers use: options.anisotropy within the
@@ -304,7 +349,7 @@ class Renderer {
   Image bench_output_;
   VkQueryPool timestamps_ = VK_NULL_HANDLE;
   double timestamp_ns_ = 0;  // ns per tick; 0 without timestamps
-  static constexpr uint32_t kTimestamps = 16;
+  static constexpr uint32_t kTimestamps = 32;
   bool timing_ = false;
   uint32_t mark_end_ = 1;
   std::vector<const char*> mark_labels_;
@@ -320,8 +365,6 @@ class Renderer {
   uint32_t bloom_w_[kBloomLevels] = {}, bloom_h_[kBloomLevels] = {};
   Image lum_16_, lum_adapt_[2];
   Image lut3d_;
-  Buffer lut_staging_;
-  void* lut_staging_mapped_ = nullptr;
   std::vector<uint8_t> lut_pending_;
   bool lut_dirty_ = false;
   bool lum_reset_ = true;
@@ -332,8 +375,7 @@ class Renderer {
   VkDescriptorSet post_sets_[kPostSetCount] = {};
   VkSampler post_sampler_ = VK_NULL_HANDLE;
   VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
-  Buffer post_optical_buf_;
-  void* post_optical_mapped_ = nullptr;
+  Buffer post_optical_buf_;  // device-local, filled by vkCmdUpdateBuffer in the frame's commands
   // The sun shadow map (D16).
   Image shadow_map_;
   VkSampler shadow_sampler_ = VK_NULL_HANDLE;
@@ -346,9 +388,40 @@ class Renderer {
   std::vector<VkImage> swapchain_images_;
   std::vector<VkImageView> swapchain_views_;
   std::vector<VkSemaphore> render_done_;  // one per swapchain image
-  VkSemaphore image_ready_ = VK_NULL_HANDLE;
-  VkFence frame_fence_ = VK_NULL_HANDLE;
-  VkCommandBuffer frame_cmd_ = VK_NULL_HANDLE;
+  // Frame slots (windowed): see kFramesInFlight.
+  struct FrameSlot {
+    VkSemaphore image_ready = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    uint64_t submit_id = 0;  // frames_submitted_ when its frame was submitted (0: none)
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    std::vector<const char*> labels;  // the marks of its frame
+    uint32_t mark_end = 1;
+    bool timed = false;
+    Buffer ui_instances, ui_staging, overlay, lut_staging;
+    void* ui_instances_mapped = nullptr;
+    void* ui_staging_mapped = nullptr;
+    void* overlay_mapped = nullptr;
+    void* lut_staging_mapped = nullptr;
+    uint64_t overlay_ver[4] = {};        // the version of each overlay layer this slot's buffer holds
+    VkDeviceSize overlay_off[4] = {};    // and where
+  };
+  FrameSlot slots_[kFramesInFlight];
+  uint32_t slot_ = 0;
+  uint32_t frames_in_flight_ = 2;  // options.frames_in_flight, SHIFT_FRAMES_IN_FLIGHT (1: the old one-frame lock step)
+  bool gpu_driven_ = false;
+  modern::VSync vsync_ = modern::VSync::kFifo, vsync_active_ = modern::VSync::kFifo;
+  FrameSlot& slot() { return slots_[slot_]; }
+  void collect_slot_timing(FrameSlot& s);
+  double gpu_frame_ms_ = -1.0;
+  std::vector<std::pair<std::string, double>> slot_stages_;
+  bool gpu_timing_ = false;
+  VkQueryPool ts_pool_ = VK_NULL_HANDLE;  // the pool mark() writes into
+  std::mutex queue_mutex_;  // vkQueueSubmit / vkQueuePresent: uploads run on any thread
+  std::mutex pool_mutex_;   // the command pool
+  std::vector<VkCommandPool> free_pools_, all_pools_;  // for threads other than the render thread's
+  VkQueue transfer_queue_ = VK_NULL_HANDLE;  // a second queue of the family for off-thread uploads
+  std::thread::id render_thread_;
   bool swapchain_dirty_ = false;
 
   SceneHooks scene_;
@@ -359,7 +432,8 @@ class Renderer {
     bool dirty = false;           // set since last copied into the buffer
     bool staged = false;          // this frame copies it
     VkOffset2D at{};
-    VkDeviceSize offset = 0;      // in overlay_buffer_
+    VkDeviceSize offset = 0;      // (unused: each slot keeps its own offsets)
+    uint64_t version = 1;         // bumped by set_overlay; a slot's buffer holds one version
   };
   OverlayLayer overlays_[kOverlayLayers];
   bool overlay_staged_ = false;     // this frame copies a layer
@@ -371,7 +445,6 @@ class Renderer {
   uint32_t capture_w_ = 0, capture_h_ = 0;
   std::vector<uint8_t> capture_rgba_;
   Buffer capture_buffer_;
-  Buffer overlay_buffer_;
   // The UI layer (made on first use).
   bool create_ui(std::string& error);
   void record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView final_view, VkImageLayout& layout,
@@ -384,9 +457,7 @@ class Renderer {
   VkDescriptorSet ui_set_ = VK_NULL_HANDLE;
   VkSampler ui_sampler_ = VK_NULL_HANDLE;
   VkFormat ui_format_ = VK_FORMAT_UNDEFINED;
-  Buffer ui_font_, ui_instances_, ui_staging_;
-  void* ui_instances_mapped_ = nullptr;
-  void* ui_staging_mapped_ = nullptr;
+  Buffer ui_font_;
   std::vector<ui::Instance> ui_items_;
   struct UiAtlasPut {
     uint32_t x, y, w, h;
@@ -394,9 +465,9 @@ class Renderer {
   };
   std::vector<UiAtlasPut> ui_puts_;
   Image ui_atlas_;
-  void* overlay_mapped_ = nullptr;
   uint32_t validation_messages_ = 0;
   friend class Showroom;
+  friend class WorldGpu;
   friend VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT,
                                                        VkDebugUtilsMessageTypeFlagsEXT,
                                                        const VkDebugUtilsMessengerCallbackDataEXT*,

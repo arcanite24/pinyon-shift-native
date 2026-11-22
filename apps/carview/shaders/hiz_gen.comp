@@ -1,0 +1,49 @@
+#version 450
+// carview: Hi-Z depth pyramid generator (world_gpu.cpp).
+// Mip 0 reads depth_resolved (arbitrary resolution) and reduces each mapped texel
+// footprint to dst_size; mips 1..N reduce 2x2 texels from the previous mip.
+// Reverse-Z stores the minimum (furthest visible depth in the tile); forward-Z
+// stores the maximum.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src_tex;
+layout(set = 0, binding = 1, r32f) writeonly uniform image2D dst_img;
+
+layout(push_constant) uniform Push {
+  uvec2 src_size;
+  uvec2 dst_size;
+  uint reverse_z;
+  uint is_mip0;
+} p;
+
+void main() {
+  const uvec2 dst = gl_GlobalInvocationID.xy;
+  if (dst.x >= p.dst_size.x || dst.y >= p.dst_size.y) return;
+
+  float out_d = (p.reverse_z != 0u) ? 1.0 : 0.0;
+  if (p.is_mip0 != 0u) {
+    const uint x0 = (dst.x * p.src_size.x) / p.dst_size.x;
+    const uint y0 = (dst.y * p.src_size.y) / p.dst_size.y;
+    const uint x1 = min(p.src_size.x - 1u, max(x0, ((dst.x + 1u) * p.src_size.x + p.dst_size.x - 1u) / p.dst_size.x - 1u));
+    const uint y1 = min(p.src_size.y - 1u, max(y0, ((dst.y + 1u) * p.src_size.y + p.dst_size.y - 1u) / p.dst_size.y - 1u));
+    for (uint y = y0; y <= y1; ++y) {
+      for (uint x = x0; x <= x1; ++x) {
+        const float d = texelFetch(src_tex, ivec2(int(x), int(y)), 0).r;
+        out_d = (p.reverse_z != 0u) ? min(out_d, d) : max(out_d, d);
+      }
+    }
+  } else {
+    const ivec2 base = ivec2(dst * 2u);
+    const ivec2 max_c = ivec2(p.src_size) - ivec2(1);
+    const int nx = (dst.x * 2u + 2u < p.src_size.x && dst.x + 1u == p.dst_size.x) ? 3 : 2;
+    const int ny = (dst.y * 2u + 2u < p.src_size.y && dst.y + 1u == p.dst_size.y) ? 3 : 2;
+    for (int dy = 0; dy < ny; ++dy) {
+      for (int dx = 0; dx < nx; ++dx) {
+        const ivec2 c = min(base + ivec2(dx, dy), max_c);
+        const float d = texelFetch(src_tex, c, 0).r;
+        out_d = (p.reverse_z != 0u) ? min(out_d, d) : max(out_d, d);
+      }
+    }
+  }
+  imageStore(dst_img, ivec2(dst), vec4(out_d, 0.0, 0.0, 0.0));
+}

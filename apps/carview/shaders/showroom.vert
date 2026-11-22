@@ -50,11 +50,22 @@ layout(push_constant) uniform Draw {
   vec4 params;  // x material class, y flags
 } draw;
 
+struct CarInstanceGpu {
+  mat4 model;
+  vec4 stripe;
+  vec4 lamp_rgb[30];
+  vec4 pad;
+};
+layout(std430, set = 0, binding = 6) readonly buffer CarInstances { CarInstanceGpu car_instances[]; };
+
 layout(location = 0) out vec3 v_position;
 layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec2 v_uv0;
 layout(location = 3) out vec2 v_uv1;
 layout(location = 4) out float v_occlusion;
+layout(location = 5) flat out uint v_instance;
+
+const uint kFlagInstanced = 8192u;
 
 vec3 rotate(vec4 q, vec3 v) {
   return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -64,8 +75,11 @@ void main() {
   vec3 p = in_position;
   vec4 q = normalize(in_frame);
   vec3 n = rotate(q, vec3(1.0, 0.0, 0.0));
-  vec4 world = draw.model * vec4(p, 1.0);
-  mat3 normal_matrix = transpose(inverse(mat3(draw.model)));
+  uint flags = uint(draw.params.y + 0.5);
+  v_instance = uint(gl_InstanceIndex);
+  mat4 model_mat = (flags & kFlagInstanced) != 0u ? (car_instances[v_instance].model * draw.model) : draw.model;
+  vec4 world = model_mat * vec4(p, 1.0);
+  mat3 normal_matrix = transpose(inverse(mat3(model_mat)));
   vec3 wn = normalize(normal_matrix * n);
 
   // Cosmetic impact-zone mesh dent deformation on body/paint/chrome/carbon/glass

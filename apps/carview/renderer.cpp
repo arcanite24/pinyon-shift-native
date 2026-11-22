@@ -96,23 +96,22 @@ Renderer::~Renderer() {
     destroy_targets();
     destroy_buffer(vertex_buffer_);
     destroy_buffer(index_buffer_);
-    if (overlay_mapped_) {
-      vmaUnmapMemory(allocator_, overlay_buffer_.allocation);
-      overlay_mapped_ = nullptr;
-    }
-    destroy_buffer(overlay_buffer_);
     destroy_buffer(capture_buffer_);
     destroy_buffer(ui_font_);
-    if (ui_instances_mapped_) {
-      vmaUnmapMemory(allocator_, ui_instances_.allocation);
-      ui_instances_mapped_ = nullptr;
+    for (FrameSlot& s : slots_) {
+      if (s.overlay_mapped) vmaUnmapMemory(allocator_, s.overlay.allocation);
+      if (s.ui_instances_mapped) vmaUnmapMemory(allocator_, s.ui_instances.allocation);
+      if (s.ui_staging_mapped) vmaUnmapMemory(allocator_, s.ui_staging.allocation);
+      if (s.lut_staging_mapped) vmaUnmapMemory(allocator_, s.lut_staging.allocation);
+      s.overlay_mapped = s.ui_instances_mapped = s.ui_staging_mapped = s.lut_staging_mapped = nullptr;
+      destroy_buffer(s.overlay);
+      destroy_buffer(s.ui_instances);
+      destroy_buffer(s.ui_staging);
+      destroy_buffer(s.lut_staging);
+      if (s.timestamps) vkDestroyQueryPool(device_, s.timestamps, nullptr);
+      if (s.image_ready) vkDestroySemaphore(device_, s.image_ready, nullptr);
+      if (s.fence) vkDestroyFence(device_, s.fence, nullptr);
     }
-    destroy_buffer(ui_instances_);
-    if (ui_staging_mapped_) {
-      vmaUnmapMemory(allocator_, ui_staging_.allocation);
-      ui_staging_mapped_ = nullptr;
-    }
-    destroy_buffer(ui_staging_);
     destroy_image(ui_atlas_);
     if (ui_pipeline_) vkDestroyPipeline(device_, ui_pipeline_, nullptr);
     if (ui_layout_) vkDestroyPipelineLayout(device_, ui_layout_, nullptr);
@@ -128,16 +127,7 @@ Renderer::~Renderer() {
     if (post_pool_) vkDestroyDescriptorPool(device_, post_pool_, nullptr);
     if (post_sampler_) vkDestroySampler(device_, post_sampler_, nullptr);
     if (post_depth_sampler_) vkDestroySampler(device_, post_depth_sampler_, nullptr);
-    if (post_optical_mapped_) {
-      vmaUnmapMemory(allocator_, post_optical_buf_.allocation);
-      post_optical_mapped_ = nullptr;
-    }
     destroy_buffer(post_optical_buf_);
-    if (lut_staging_mapped_) {
-      vmaUnmapMemory(allocator_, lut_staging_.allocation);
-      lut_staging_mapped_ = nullptr;
-    }
-    destroy_buffer(lut_staging_);
     destroy_image(lut3d_);
     destroy_image(lum_16_);
     destroy_image(lum_adapt_[0]);
@@ -145,14 +135,13 @@ Renderer::~Renderer() {
     destroy_image(shadow_map_);
     if (shadow_sampler_) vkDestroySampler(device_, shadow_sampler_, nullptr);
     if (timestamps_) vkDestroyQueryPool(device_, timestamps_, nullptr);
-    if (image_ready_) vkDestroySemaphore(device_, image_ready_, nullptr);
-    if (frame_fence_) vkDestroyFence(device_, frame_fence_, nullptr);
     if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
     if (descriptor_pool_) vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
     if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
     if (pipeline_layout_) vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
     if (set_layout_) vkDestroyDescriptorSetLayout(device_, set_layout_, nullptr);
     if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
+    for (VkCommandPool p : all_pools_) vkDestroyCommandPool(device_, p, nullptr);
     if (allocator_) {
       vmaDestroyAllocator(allocator_);
       allocator_ = VK_NULL_HANDLE;
@@ -168,6 +157,14 @@ Renderer::~Renderer() {
 
 bool Renderer::init(const Options& options, std::string& error) {
   options_ = options;
+  frames_in_flight_ = std::clamp<uint32_t>(options.frames_in_flight, 1, kFramesInFlight);
+  vsync_ = options.vsync;
+  if (const char* e = std::getenv("SHIFT_VSYNC"); e && *e)  // fifo | mailbox | immediate (tuning)
+    vsync_ = std::string(e) == "immediate" ? modern::VSync::kImmediate
+             : std::string(e) == "mailbox" ? modern::VSync::kMailbox : modern::VSync::kFifo;
+  if (const char* e = std::getenv("SHIFT_FRAMES_IN_FLIGHT"); e && *e)
+    frames_in_flight_ = std::clamp<uint32_t>(uint32_t(std::atoi(e)), 1, kFramesInFlight);
+  render_thread_ = std::this_thread::get_id();
   bool volk_ok = false;
 #if defined(__ANDROID__)
   // Optional Turnip / custom Vulkan driver hook (files/state/drivers or SHIFT_ANDROID_GPU_DRIVER).
@@ -224,16 +221,24 @@ bool Renderer::init(const Options& options, std::string& error) {
   if (!create_instance(error) || !pick_device(error) || !create_device(error)) return false;
   if (options_.window) {
     if (!create_swapchain(error)) return false;
-    VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VK_TRY(vkCreateSemaphore(device_, &semaphore, nullptr, &image_ready_), "vkCreateSemaphore");
-    VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VK_TRY(vkCreateFence(device_, &fence, nullptr, &frame_fence_), "vkCreateFence");
-    VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    alloc.commandPool = pool_;
-    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc.commandBufferCount = 1;
-    VK_TRY(vkAllocateCommandBuffers(device_, &alloc, &frame_cmd_), "vkAllocateCommandBuffers");
+    for (FrameSlot& s : slots_) {
+      VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+      VK_TRY(vkCreateSemaphore(device_, &semaphore, nullptr, &s.image_ready), "vkCreateSemaphore");
+      VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+      VK_TRY(vkCreateFence(device_, &fence, nullptr, &s.fence), "vkCreateFence");
+      VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+      alloc.commandPool = pool_;
+      alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      alloc.commandBufferCount = 1;
+      VK_TRY(vkAllocateCommandBuffers(device_, &alloc, &s.cmd), "vkAllocateCommandBuffers");
+      if (timestamp_ns_ > 0) {
+        VkQueryPoolCreateInfo qp{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qp.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qp.queryCount = kTimestamps;
+        if (vkCreateQueryPool(device_, &qp, nullptr, &s.timestamps) != VK_SUCCESS) s.timestamps = VK_NULL_HANDLE;
+      }
+    }
   } else {
     color_format_ = VK_FORMAT_R8G8B8A8_UNORM;
   }
@@ -396,19 +401,71 @@ bool Renderer::pick_device(std::string& error) {
 }
 
 bool Renderer::create_device(std::string& error) {
-  const float priority = 1.0f;
+  const float priorities[2] = {1.0f, 0.5f};
+  uint32_t family_queues = 1;
+  {
+    uint32_t families = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &families, nullptr);
+    std::vector<VkQueueFamilyProperties> family_props(families);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_, &families, family_props.data());
+    if (queue_family_ < families && family_props[queue_family_].queueCount >= 2 &&
+        !std::getenv("SHIFT_NO_TRANSFER_QUEUE"))
+      family_queues = 2;
+  }
   VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
   queue.queueFamilyIndex = queue_family_;
-  queue.queueCount = 1;
-  queue.pQueuePriorities = &priority;
+  queue.queueCount = family_queues;
+  queue.pQueuePriorities = priorities;
   VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
   f13.dynamicRendering = VK_TRUE;
   f13.synchronization2 = VK_TRUE;
   // The car shaders' alpha-tested discards compile to demote (a Vulkan 1.3
   // required feature, but it must still be enabled).
   f13.shaderDemoteToHelperInvocation = VK_TRUE;
+  // Compute shaders compiled with --target-env=vulkan1.3 may emit LocalSizeId.
+  f13.maintenance4 = VK_TRUE;
   VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
   f2.pNext = &f13;
+  // The GPU-driven world (Slice 11): indirect draws with a GPU count, a
+  // bindless texture array and compute culling. Needs Vulkan 1.2's
+  // descriptor indexing and draw-indirect-count, and first-instance
+  // indirect draws; without them the world is drawn the old way.
+  VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+  f13.pNext = &f12;
+  {
+    VkPhysicalDeviceVulkan13Features o13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceVulkan12Features o12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    o13.pNext = &o12;
+    VkPhysicalDeviceFeatures2 offered2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    offered2.pNext = &o13;
+    vkGetPhysicalDeviceFeatures2(physical_, &offered2);
+    f13.maintenance4 = o13.maintenance4;
+    VkPhysicalDeviceDescriptorIndexingProperties di{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &di;
+    vkGetPhysicalDeviceProperties2(physical_, &p2);
+    const bool env_off = [] {
+      const char* e = std::getenv("SHIFT_GPU_WORLD");
+      return e && *e == '0';
+    }();
+    gpu_driven_ = !env_off && o12.drawIndirectCount && o12.descriptorIndexing && o12.runtimeDescriptorArray &&
+                  o12.shaderSampledImageArrayNonUniformIndexing && o12.descriptorBindingPartiallyBound &&
+                  o12.descriptorBindingSampledImageUpdateAfterBind && o12.descriptorBindingUpdateUnusedWhilePending &&
+                  offered2.features.multiDrawIndirect && offered2.features.drawIndirectFirstInstance &&
+                  di.maxPerStageDescriptorUpdateAfterBindSamplers >= 4096 + 64 &&
+                  di.maxDescriptorSetUpdateAfterBindSampledImages >= 4096 + 64;
+    if (gpu_driven_) {
+      f12.drawIndirectCount = VK_TRUE;
+      f12.descriptorIndexing = VK_TRUE;
+      f12.runtimeDescriptorArray = VK_TRUE;
+      f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+      f12.descriptorBindingPartiallyBound = VK_TRUE;
+      f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+      f12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+      f2.features.multiDrawIndirect = VK_TRUE;
+      f2.features.drawIndirectFirstInstance = VK_TRUE;
+    }
+  }
   {
     VkPhysicalDeviceFeatures offered{};
     vkGetPhysicalDeviceFeatures(physical_, &offered);
@@ -467,6 +524,9 @@ bool Renderer::create_device(std::string& error) {
     VK_TRY(vmaCreateAllocator(&alloc_info, &allocator_), "vmaCreateAllocator");
   }
   vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
+  // Uploads off the render thread (traffic and car models) go to the second
+  // queue of the family, so they never wait behind a frame's submission.
+  if (family_queues > 1) vkGetDeviceQueue(device_, queue_family_, 1, &transfer_queue_);
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   pool.queueFamilyIndex = queue_family_;
@@ -581,26 +641,75 @@ void Renderer::destroy_image(Image& i) {
   i = Image{};
 }
 
+// A one-time submit that waits for its own work only (a fence), never the
+// whole queue: frames in flight keep drawing, and any thread may call it. On
+// a thread other than the render thread it uses the second queue when the
+// family has one (asynchronous uploads).
 bool Renderer::submit_once(const std::function<void(VkCommandBuffer)>& record) {
+  const bool render_thread = std::this_thread::get_id() == render_thread_;
+  // A command pool is externally synchronised: the render thread has its
+  // own, other threads borrow one from the free list for the call.
+  VkCommandPool use_pool = pool_;
+  if (!render_thread) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    if (!free_pools_.empty()) {
+      use_pool = free_pools_.back();
+      free_pools_.pop_back();
+    } else {
+      VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+      pool.queueFamilyIndex = queue_family_;
+      if (vkCreateCommandPool(device_, &pool, nullptr, &use_pool) != VK_SUCCESS) return false;
+      all_pools_.push_back(use_pool);
+    }
+  }
+  auto give_back = [&] {
+    if (render_thread) return;
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    free_pools_.push_back(use_pool);
+  };
   VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  alloc.commandPool = pool_;
+  alloc.commandPool = use_pool;
   alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc.commandBufferCount = 1;
   VkCommandBuffer cmd;
-  if (vkAllocateCommandBuffers(device_, &alloc, &cmd) != VK_SUCCESS) return false;
+  if (vkAllocateCommandBuffers(device_, &alloc, &cmd) != VK_SUCCESS) {
+    give_back();
+    return false;
+  }
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cmd, &begin);
   record(cmd);
   vkEndCommandBuffer(cmd);
-  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &cmd;
-  const bool ok = vkQueueSubmit(queue_, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS &&
-                  vkQueueWaitIdle(queue_) == VK_SUCCESS;
-  if (ok) frames_done_ = ++frames_submitted_;  // the queue is idle: every frame is done
-  vkFreeCommandBuffers(device_, pool_, 1, &cmd);
+  VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  VkFence fence = VK_NULL_HANDLE;
+  bool ok = vkCreateFence(device_, &fence_info, nullptr, &fence) == VK_SUCCESS;
+  if (ok) {
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    const bool async = !render_thread && transfer_queue_ != VK_NULL_HANDLE;
+    {
+      // One mutex for both queues keeps this simple: a submit is brief.
+      std::lock_guard<std::mutex> lock(queue_mutex_);
+      ok = vkQueueSubmit(async ? transfer_queue_ : queue_, 1, &submit, fence) == VK_SUCCESS;
+    }
+    ok = ok && vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+  }
+  if (fence) vkDestroyFence(device_, fence, nullptr);
+  vkFreeCommandBuffers(device_, use_pool, 1, &cmd);
+  give_back();
   return ok;
+}
+
+void Renderer::wait_idle() {
+  if (!device_) return;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    vkDeviceWaitIdle(device_);
+  }
+  frames_done_ = frames_submitted_;
 }
 
 bool Renderer::upload_buffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
@@ -919,7 +1028,10 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     std::vector<VkDescriptorBufferInfo> buf_infos(kPostSetCount);
     std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 6);
     for (uint32_t s = 0; s < kPostSetCount; ++s) {
-      const VkImageView views[4] = {sources[s][0], sources[s][1], lut3d_.view, lum_adapt_[0].view};
+      // Only the final composite (s == 21) samples lum_adapt_[0]; pass 1 renders into lum_adapt_[0],
+      // so earlier sets bind lum_adapt_[1] (already SHADER_READ_ONLY_OPTIMAL) to avoid a layout conflict.
+      const VkImageView adapt_view = (s == 21) ? lum_adapt_[0].view : lum_adapt_[1].view;
+      const VkImageView views[4] = {sources[s][0], sources[s][1], lut3d_.view, adapt_view};
       for (uint32_t b = 0; b < 4; ++b) {
         const size_t iidx = size_t(s) * 5 + b;
         const size_t widx = size_t(s) * 6 + b;
@@ -1063,14 +1175,16 @@ bool Renderer::create_post(std::string& error) {
     VK_TRY(vkCreateImageView(device_, &view, nullptr, &lut3d_.view), "vkCreateImageView (3D LUT)");
 
     constexpr VkDeviceSize kLutBytes = 16 * 16 * 16 * 4;
+    Buffer lut_staging;
     if (!create_buffer(kLutBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, lut_staging_)) {
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, lut_staging)) {
       error = "3D LUT staging buffer";
       return false;
     }
-    VK_TRY(vmaMapMemory(allocator_, lut_staging_.allocation, &lut_staging_mapped_), "map 3D LUT staging");
+    void* lut_staging_mapped = nullptr;
+    VK_TRY(vmaMapMemory(allocator_, lut_staging.allocation, &lut_staging_mapped), "map 3D LUT staging");
     // Fill identity ramp by default.
-    auto* dst = static_cast<uint8_t*>(lut_staging_mapped_);
+    auto* dst = static_cast<uint8_t*>(lut_staging_mapped);
     for (uint32_t b = 0; b < 16; ++b)
       for (uint32_t g = 0; g < 16; ++g)
         for (uint32_t r = 0; r < 16; ++r) {
@@ -1087,7 +1201,7 @@ bool Renderer::create_post(std::string& error) {
       VkBufferImageCopy reg{};
       reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       reg.imageExtent = {16, 16, 16};
-      vkCmdCopyBufferToImage(cmd, lut_staging_.buffer, lut3d_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+      vkCmdCopyBufferToImage(cmd, lut_staging.buffer, lut3d_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
       image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -1106,6 +1220,8 @@ bool Renderer::create_post(std::string& error) {
                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
       }
     });
+    vmaUnmapMemory(allocator_, lut_staging.allocation);
+    destroy_buffer(lut_staging);
     if (!ok) {
       error = "3D LUT initial upload";
       return false;
@@ -1122,13 +1238,11 @@ bool Renderer::create_post(std::string& error) {
   dsampler.addressModeU = dsampler.addressModeV = dsampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   VK_TRY(vkCreateSampler(device_, &dsampler, nullptr, &post_depth_sampler_), "post depth sampler");
   constexpr VkDeviceSize kOpticalUboBytes = 12 * 16;  // 12 vec4s = 192 bytes
-  if (!create_buffer(kOpticalUboBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, post_optical_buf_)) {
+  if (!create_buffer(kOpticalUboBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, post_optical_buf_)) {
     error = "post optical UBO";
     return false;
   }
-  VK_TRY(vmaMapMemory(allocator_, post_optical_buf_.allocation, &post_optical_mapped_), "map post optical UBO");
-  std::memset(post_optical_mapped_, 0, size_t(kOpticalUboBytes));
   const VkDescriptorSetLayoutBinding bindings[6] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1228,8 +1342,9 @@ bool Renderer::create_post(std::string& error) {
 
 void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
   const PostSettings& s = options_.post;
-  // Update optical post-FX UBO (binding 5).
-  if (post_optical_mapped_) {
+  // Update optical post-FX UBO (binding 5): in the frame's commands, behind
+  // a barrier, so a frame still in flight keeps its own values.
+  if (post_optical_buf_.buffer) {
     struct PostOpticalUbo {
       float flags_near[4];
       float mblur[4];
@@ -1294,19 +1409,45 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view) {
     u.texel_size[0] = target_width_ ? 1.0f / float(target_width_) : 1.0f / 1280.0f;
     u.texel_size[1] = target_height_ ? 1.0f / float(target_height_) : 1.0f / 720.0f;
     u.texel_size[2] = s.time_sec;
-    std::memcpy(post_optical_mapped_, &u, sizeof u);
+    VkBufferMemoryBarrier2 ub{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    ub.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    ub.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    ub.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    ub.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    ub.srcQueueFamilyIndex = ub.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ub.buffer = post_optical_buf_.buffer;
+    ub.size = VK_WHOLE_SIZE;
+    VkDependencyInfo udep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    udep.bufferMemoryBarrierCount = 1;
+    udep.pBufferMemoryBarriers = &ub;
+    vkCmdPipelineBarrier2(cmd, &udep);
+    vkCmdUpdateBuffer(cmd, post_optical_buf_.buffer, 0, sizeof u, &u);
+    ub.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    ub.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    ub.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    ub.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier2(cmd, &udep);
   }
   // Upload updated 16x16x16 3D LUT when dirty (zero pipeline stall).
-  if (lut_dirty_ && lut_staging_mapped_ && lut_pending_.size() == 16 * 16 * 16 * 4) {
+  if (lut_dirty_ && lut_pending_.size() == 16 * 16 * 16 * 4) {
+    FrameSlot& fs = slot();
+    if (!fs.lut_staging.buffer) {
+      if (create_buffer(lut_pending_.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, fs.lut_staging) &&
+          vmaMapMemory(allocator_, fs.lut_staging.allocation, &fs.lut_staging_mapped) != VK_SUCCESS)
+        fs.lut_staging_mapped = nullptr;
+    }
+  }
+  if (lut_dirty_ && slot().lut_staging_mapped && lut_pending_.size() == 16 * 16 * 16 * 4) {
     lut_dirty_ = false;
-    std::memcpy(lut_staging_mapped_, lut_pending_.data(), lut_pending_.size());
+    std::memcpy(slot().lut_staging_mapped, lut_pending_.data(), lut_pending_.size());
     image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy reg{};
     reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     reg.imageExtent = {16, 16, 16};
-    vkCmdCopyBufferToImage(cmd, lut_staging_.buffer, lut3d_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+    vkCmdCopyBufferToImage(cmd, slot().lut_staging.buffer, lut3d_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
     image_barrier(cmd, lut3d_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                   VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -1487,15 +1628,42 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
   const bool two_pass = bool(scene_.draw_particles) && depth_resolved_.view != VK_NULL_HANDLE;
+  const bool need_hiz = bool(scene_.build_hiz) && depth_resolved_.view != VK_NULL_HANDLE;
   const bool can_msaa_depth_resolve = msaa && depth_resolve_supported_ && depth_resolved_.view != VK_NULL_HANDLE;
-  if (two_pass || post) {
+  if (two_pass || post || need_hiz) {
     image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   can_msaa_depth_resolve ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL
                                          : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_NONE,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE,
                   can_msaa_depth_resolve ? depth_stages : VK_PIPELINE_STAGE_2_COPY_BIT,
                   can_msaa_depth_resolve ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
                                          : VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  }
+
+  const bool run_z_prepass = options_.z_prepass && bool(scene_.draw_z_prepass);
+  if (run_z_prepass) {
+    VkRenderingAttachmentInfo z_depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    z_depth.imageView = depth_.view;
+    z_depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    z_depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    z_depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    z_depth.clearValue.depthStencil = {options_.reverse_z ? 0.0f : 1.0f, 0};
+    VkRenderingInfo z_rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    z_rend.renderArea = {{0, 0}, {target_width_, target_height_}};
+    z_rend.layerCount = 1;
+    z_rend.pDepthAttachment = &z_depth;
+    vkCmdBeginRendering(cmd, &z_rend);
+    VkViewport viewport{0, 0, float(target_width_), float(target_height_), 0.0f, 1.0f};
+    VkRect2D scissor{{0, 0}, {target_width_, target_height_}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    scene_.draw_z_prepass(cmd);
+    vkCmdEndRendering(cmd);
+    image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, depth_stages,
+                  VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, depth_stages,
+                  VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+    mark(cmd, "zpre");
   }
 
   VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1518,11 +1686,11 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   depth.imageView = depth_.view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  depth.storeOp = (depth_readable_ || two_pass || !msaa) ? VK_ATTACHMENT_STORE_OP_STORE
-                                                         : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  depth.loadOp = run_z_prepass ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp = (depth_readable_ || two_pass || !msaa || need_hiz) ? VK_ATTACHMENT_STORE_OP_STORE
+                                                                     : VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.clearValue.depthStencil = {options_.reverse_z ? 0.0f : 1.0f, 0};
-  if (can_msaa_depth_resolve && (two_pass || post)) {
+  if (can_msaa_depth_resolve && (two_pass || post || need_hiz)) {
     depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
     depth.resolveImageView = depth_resolved_.view;
     depth.resolveImageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
@@ -1554,12 +1722,13 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   }
   vkCmdEndRendering(cmd);
 
-  if (two_pass || post) {
+  if (two_pass || post || need_hiz) {
+    const auto read_stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     if (can_msaa_depth_resolve) {
       image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
                     VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                     depth_stages, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                    read_stages, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     } else if (!msaa) {
       image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depth_stages,
@@ -1577,7 +1746,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
       image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stages,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     } else {
       // Fallback if GPU lacks MSAA depth resolve: clear resolved depth to far plane.
@@ -1586,9 +1755,10 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
       vkCmdClearDepthStencilImage(cmd, depth_resolved_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far_v, 1, &rng);
       image_barrier(cmd, depth_resolved_.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stages,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
+    if (need_hiz) scene_.build_hiz(cmd, depth_resolved_.view, target_width_, target_height_, options_.reverse_z);
   }
 
   if (two_pass) {
@@ -1648,15 +1818,16 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferImageCopy regions[kOverlayLayers]{};
     uint32_t count = 0;
-    for (const auto& l : overlays_) {
+    for (int li = 0; li < kOverlayLayers; ++li) {
+      const auto& l = overlays_[li];
       if (!l.staged) continue;
       VkBufferImageCopy& region = regions[count++];
-      region.bufferOffset = l.offset;
+      region.bufferOffset = slot().overlay_off[li];
       region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       region.imageOffset = {l.at.x, l.at.y, 0};
       region.imageExtent = {l.width, l.height, 1};
     }
-    vkCmdCopyBufferToImage(cmd, overlay_buffer_.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count,
+    vkCmdCopyBufferToImage(cmd, slot().overlay.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count,
                            regions);
     layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -1841,20 +2012,22 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
   if (!ui_puts_.empty()) {
     VkDeviceSize bytes = 0;
     for (const auto& p : ui_puts_) bytes += p.rgba.size();
-    if (ui_staging_.size < bytes) {
-      if (ui_staging_mapped_) vmaUnmapMemory(allocator_, ui_staging_.allocation);
-      ui_staging_mapped_ = nullptr;
-      destroy_buffer(ui_staging_);
+    FrameSlot& fs = slot();
+    if (fs.ui_staging.size < bytes) {
+      // This slot's last frame is done (its fence): the buffer is free to replace.
+      if (fs.ui_staging_mapped) vmaUnmapMemory(allocator_, fs.ui_staging.allocation);
+      fs.ui_staging_mapped = nullptr;
+      destroy_buffer(fs.ui_staging);
       if (create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_staging_) &&
-          vmaMapMemory(allocator_, ui_staging_.allocation, &ui_staging_mapped_) != VK_SUCCESS)
-        ui_staging_mapped_ = nullptr;
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, fs.ui_staging) &&
+          vmaMapMemory(allocator_, fs.ui_staging.allocation, &fs.ui_staging_mapped) != VK_SUCCESS)
+        fs.ui_staging_mapped = nullptr;
     }
-    if (ui_staging_mapped_) {
+    if (fs.ui_staging_mapped) {
       std::vector<VkBufferImageCopy> regions;
       VkDeviceSize at = 0;
       for (const auto& p : ui_puts_) {
-        std::memcpy(static_cast<uint8_t*>(ui_staging_mapped_) + at, p.rgba.data(), p.rgba.size());
+        std::memcpy(static_cast<uint8_t*>(fs.ui_staging_mapped) + at, p.rgba.data(), p.rgba.size());
         VkBufferImageCopy r{};
         r.bufferOffset = at;
         r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1866,7 +2039,7 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
       image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-      vkCmdCopyBufferToImage(cmd, ui_staging_.buffer, ui_atlas_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      vkCmdCopyBufferToImage(cmd, fs.ui_staging.buffer, ui_atlas_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                              uint32_t(regions.size()), regions.data());
       image_barrier(cmd, ui_atlas_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1877,19 +2050,20 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
   }
   if (ui_items_.empty() || ui_format_ != color_format_) return;
   const VkDeviceSize bytes = ui_items_.size() * sizeof(ui::Instance);
-  if (ui_instances_.size < bytes) {
-    if (ui_instances_mapped_) vmaUnmapMemory(allocator_, ui_instances_.allocation);
-    ui_instances_mapped_ = nullptr;
-    destroy_buffer(ui_instances_);
+  FrameSlot& us = slot();
+  if (us.ui_instances.size < bytes) {
+    if (us.ui_instances_mapped) vmaUnmapMemory(allocator_, us.ui_instances.allocation);
+    us.ui_instances_mapped = nullptr;
+    destroy_buffer(us.ui_instances);
     const VkDeviceSize cap = std::max<VkDeviceSize>(bytes * 2, 64 * 1024);
     if (!create_buffer(cap, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ui_instances_) ||
-        vmaMapMemory(allocator_, ui_instances_.allocation, &ui_instances_mapped_) != VK_SUCCESS) {
-      ui_instances_mapped_ = nullptr;
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, us.ui_instances) ||
+        vmaMapMemory(allocator_, us.ui_instances.allocation, &us.ui_instances_mapped) != VK_SUCCESS) {
+      us.ui_instances_mapped = nullptr;
       return;
     }
   }
-  std::memcpy(ui_instances_mapped_, ui_items_.data(), size_t(bytes));
+  std::memcpy(us.ui_instances_mapped, ui_items_.data(), size_t(bytes));
   image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 last_stage, last_access, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -1916,7 +2090,7 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
   const float inv[2] = {2.0f / float(target_width_), 2.0f / float(target_height_)};
   vkCmdPushConstants(cmd, ui_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof inv, inv);
   VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &ui_instances_.buffer, &zero);
+  vkCmdBindVertexBuffers(cmd, 0, 1, &us.ui_instances.buffer, &zero);
   vkCmdDraw(cmd, 6, uint32_t(ui_items_.size()), 0, 0);
   vkCmdEndRendering(cmd);
   mark(cmd, "ui");
@@ -1933,6 +2107,7 @@ void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t h
   l.x = x;
   l.y = y;
   l.dirty = true;
+  ++l.version;
 }
 
 bool Renderer::stage_overlay() {
@@ -1955,15 +2130,16 @@ bool Renderer::stage_overlay() {
   }
   if (bytes == 0) return false;
   bool all = false;  // every staged layer is copied again (a new buffer, moved offsets)
-  if (overlay_buffer_.size < bytes) {
-    if (overlay_mapped_) vmaUnmapMemory(allocator_, overlay_buffer_.allocation);
-    overlay_mapped_ = nullptr;
-    destroy_buffer(overlay_buffer_);
+  FrameSlot& os = slot();
+  if (os.overlay.size < bytes) {
+    if (os.overlay_mapped) vmaUnmapMemory(allocator_, os.overlay.allocation);
+    os.overlay_mapped = nullptr;
+    destroy_buffer(os.overlay);
     if (!create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, overlay_buffer_))
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, os.overlay))
       return false;
-    if (vmaMapMemory(allocator_, overlay_buffer_.allocation, &overlay_mapped_) != VK_SUCCESS) {
-      overlay_mapped_ = nullptr;
+    if (vmaMapMemory(allocator_, os.overlay.allocation, &os.overlay_mapped) != VK_SUCCESS) {
+      os.overlay_mapped = nullptr;
       return false;
     }
     all = true;
@@ -1972,10 +2148,11 @@ bool Renderer::stage_overlay() {
   for (int i = 0; i < kOverlayLayers; ++i) {
     OverlayLayer& l = overlays_[i];
     if (!l.staged) continue;
-    if (!all && !l.dirty && l.offset == offsets[i]) continue;
-    l.offset = offsets[i];
-    l.dirty = false;
-    auto* out = static_cast<uint8_t*>(overlay_mapped_) + l.offset;
+    // Each slot's buffer remembers which version of a layer it holds.
+    if (!all && os.overlay_ver[i] == l.version && os.overlay_off[i] == offsets[i]) continue;
+    os.overlay_off[i] = offsets[i];
+    os.overlay_ver[i] = l.version;
+    auto* out = static_cast<uint8_t*>(os.overlay_mapped) + os.overlay_off[i];
     for (size_t k = 0; k < l.pixels.size(); k += 4) {
       out[k + 0] = l.pixels[k + (bgra ? 2 : 0)];
       out[k + 1] = l.pixels[k + 1];
@@ -1995,6 +2172,7 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     return false;
   }
   depth_readable_ = depth != nullptr;
+  if (options_.window) wait_idle();  // the targets below are shared with frames in flight
   if (!create_targets(width, height, error)) return false;
   Image output;
   if (!create_image(width, height, 1, color_format_, VK_SAMPLE_COUNT_1_BIT,
@@ -2087,6 +2265,7 @@ bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uin
   const bool ok = submit_once([&](VkCommandBuffer cmd) {
     const auto t0 = std::chrono::steady_clock::now();
     mark_labels_.clear();
+    ts_pool_ = timestamps_;
     if (timestamps_) {
       vkCmdResetQueryPool(cmd, timestamps_, 0, kTimestamps);
       vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, timestamps_, 0);
@@ -2118,9 +2297,9 @@ bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uin
 }
 
 void Renderer::mark(VkCommandBuffer cmd, const char* label) {
-  if (!timing_ || mark_labels_.size() + 2 >= kTimestamps) return;
+  if (!timing_ || !ts_pool_ || mark_labels_.size() + 2 >= kTimestamps) return;
   mark_labels_.push_back(label);
-  vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, timestamps_, uint32_t(mark_labels_.size()));
+  vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, ts_pool_, uint32_t(mark_labels_.size()));
 }
 
 bool Renderer::create_swapchain(std::string& error) {
@@ -2173,6 +2352,24 @@ bool Renderer::create_swapchain(std::string& error) {
   info.preTransform = caps.currentTransform;
   info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+  {
+    uint32_t mode_count = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &mode_count, nullptr);
+    std::vector<VkPresentModeKHR> modes(mode_count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &mode_count, modes.data());
+    uint32_t mask = modern::vsync_bit(modern::VSync::kFifo);
+    for (VkPresentModeKHR m : modes) {
+      if (m == VK_PRESENT_MODE_MAILBOX_KHR) mask |= modern::vsync_bit(modern::VSync::kMailbox);
+      if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) mask |= modern::vsync_bit(modern::VSync::kImmediate);
+    }
+    vsync_active_ = modern::resolve_vsync(vsync_, mask);
+    info.presentMode = vsync_active_ == modern::VSync::kImmediate ? VK_PRESENT_MODE_IMMEDIATE_KHR
+                       : vsync_active_ == modern::VSync::kMailbox ? VK_PRESENT_MODE_MAILBOX_KHR
+                                                                   : VK_PRESENT_MODE_FIFO_KHR;
+    // Mailbox and immediate want a spare image.
+    if (vsync_active_ != modern::VSync::kFifo && (!caps.maxImageCount || info.minImageCount < caps.maxImageCount))
+      info.minImageCount = std::max(info.minImageCount, std::min(caps.minImageCount + 2, caps.maxImageCount ? caps.maxImageCount : caps.minImageCount + 2));
+  }
   info.clipped = VK_TRUE;
   info.oldSwapchain = swapchain_;
   VkSwapchainKHR created = VK_NULL_HANDLE;
@@ -2231,21 +2428,41 @@ bool Renderer::take_captured_frame(std::vector<uint8_t>& rgba, uint32_t& width, 
   return !rgba.empty() && width > 0 && height > 0;
 }
 
+// Reads the timestamps of a slot's last frame (its fence is done).
+void Renderer::collect_slot_timing(FrameSlot& s) {
+  if (!s.timed || !s.timestamps) return;
+  s.timed = false;
+  uint64_t ticks[kTimestamps] = {};
+  if (vkGetQueryPoolResults(device_, s.timestamps, 0, s.mark_end + 1, sizeof ticks, ticks, sizeof(uint64_t),
+                            VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+    return;
+  auto ms = [&](uint32_t a, uint32_t b) { return double(ticks[b] - ticks[a]) * timestamp_ns_ / 1e6; };
+  gpu_frame_ms_ = ms(0, s.mark_end);
+  slot_stages_.clear();
+  for (uint32_t i = 0; i < s.labels.size(); ++i) slot_stages_.push_back({s.labels[i], ms(i, i + 1)});
+  slot_stages_.push_back({"rest", ms(uint32_t(s.labels.size()), s.mark_end)});
+}
+
 bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
-  vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
-  frames_done_ = frames_submitted_;
+  FrameSlot& fs = slot();
+  // This slot's last frame (two submissions ago) must be done before its
+  // command buffer, staging buffers and queries are reused; the other
+  // slot's frame may still be drawing.
+  vkWaitForFences(device_, 1, &fs.fence, VK_TRUE, UINT64_MAX);
+  if (fs.submit_id > frames_done_) frames_done_ = fs.submit_id;
+  collect_slot_timing(fs);
   int w = 0, h = 0;
   SDL_GetWindowSizeInPixels(options_.window, &w, &h);
   if (w <= 0 || h <= 0) return true;  // minimised
   if (swapchain_dirty_ || !swapchain_ || uint32_t(w) != swapchain_extent_.width ||
       uint32_t(h) != swapchain_extent_.height) {
-    vkDeviceWaitIdle(device_);
+    wait_idle();
     if (!create_swapchain(error)) return false;
     if (!swapchain_) return true;
   }
   uint32_t index = 0;
   VkResult result =
-      vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_ready_, VK_NULL_HANDLE, &index);
+      vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, fs.image_ready, VK_NULL_HANDLE, &index);
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     swapchain_dirty_ = true;
     return true;
@@ -2264,37 +2481,58 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
     }
     do_capture = capture_buffer_.buffer != VK_NULL_HANDLE;
   }
-  vkResetFences(device_, 1, &frame_fence_);
-  vkResetCommandBuffer(frame_cmd_, 0);
+  vkResetFences(device_, 1, &fs.fence);
+  vkResetCommandBuffer(fs.cmd, 0);
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(frame_cmd_, &begin);
-  stage_overlay();  // the fence above: the last frame is done with its buffer
-  record_scene(frame_cmd_, swapchain_images_[index], swapchain_views_[index],
+  vkBeginCommandBuffer(fs.cmd, &begin);
+  mark_labels_.clear();
+  ts_pool_ = fs.timestamps;
+  timing_ = gpu_timing_ && fs.timestamps != VK_NULL_HANDLE;
+  if (timing_) {
+    vkCmdResetQueryPool(fs.cmd, fs.timestamps, 0, kTimestamps);
+    vkCmdWriteTimestamp2(fs.cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, fs.timestamps, 0);
+  }
+  stage_overlay();  // the slot's fence above: its last frame is done with its buffers
+  record_scene(fs.cmd, swapchain_images_[index], swapchain_views_[index],
                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, constants,
                do_capture ? capture_buffer_.buffer : VK_NULL_HANDLE, !capture_include_ui_);
-  vkEndCommandBuffer(frame_cmd_);
+  if (timing_) {
+    fs.labels = mark_labels_;
+    fs.mark_end = uint32_t(fs.labels.size()) + 1;
+    vkCmdWriteTimestamp2(fs.cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, fs.timestamps, fs.mark_end);
+    fs.timed = true;
+    timing_ = false;
+  }
+  vkEndCommandBuffer(fs.cmd);
   const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   submit.waitSemaphoreCount = 1;
-  submit.pWaitSemaphores = &image_ready_;
+  submit.pWaitSemaphores = &fs.image_ready;
   submit.pWaitDstStageMask = &wait_stage;
   submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &frame_cmd_;
+  submit.pCommandBuffers = &fs.cmd;
   submit.signalSemaphoreCount = 1;
   submit.pSignalSemaphores = &render_done_[index];
-  VK_TRY(vkQueueSubmit(queue_, 1, &submit, frame_fence_), "vkQueueSubmit");
-  ++frames_submitted_;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    VK_TRY(vkQueueSubmit(queue_, 1, &submit, fs.fence), "vkQueueSubmit");
+  }
+  fs.submit_id = ++frames_submitted_;
   VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   present.waitSemaphoreCount = 1;
   present.pWaitSemaphores = &render_done_[index];
   present.swapchainCount = 1;
   present.pSwapchains = &swapchain_;
   present.pImageIndices = &index;
-  result = vkQueuePresentKHR(queue_, &present);
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    result = vkQueuePresentKHR(queue_, &present);
+  }
+  slot_ = (slot_ + 1) % frames_in_flight_;
   if (do_capture) {
-    vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
-    frames_done_ = frames_submitted_;
+    vkWaitForFences(device_, 1, &fs.fence, VK_TRUE, UINT64_MAX);
+    if (fs.submit_id > frames_done_) frames_done_ = fs.submit_id;
     void* mapped = nullptr;
     if (vmaMapMemory(allocator_, capture_buffer_.allocation, &mapped) == VK_SUCCESS) {
       capture_w_ = swapchain_extent_.width;
@@ -2314,8 +2552,7 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
     capture_requested_ = false;
   } else if (capture_requested_ && !capture_supported_) {
     // Fallback when swapchain does not support TRANSFER_SRC_BIT: render offscreen.
-    vkWaitForFences(device_, 1, &frame_fence_, VK_TRUE, UINT64_MAX);
-    frames_done_ = frames_submitted_;
+    wait_idle();  // render_offscreen rebuilds the targets the other frame may still use
     std::string cap_err;
     std::vector<uint8_t> saved_ui_items_guard;
     const auto saved_ui = ui_items_;

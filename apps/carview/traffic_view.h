@@ -58,9 +58,18 @@ class TrafficView {
   void contact_bodies(std::vector<drive::ContactBody>& out, int group);
 
  private:
+  // What a loading worker returns: the model, and (in the window) its GPU
+  // upload too, done on the worker through the renderer's second queue so
+  // the render thread never waits for it.
+  struct Loaded {
+    std::unique_ptr<Showroom> showroom;
+    bool uploaded = false;
+    std::string error;
+    double upload_ms = 0;
+  };
   struct Guest {
     std::unique_ptr<Showroom> showroom;  // uploaded
-    std::future<std::unique_ptr<Showroom>> loading;
+    std::future<Loaded> loading;
     bool failed = false;
   };
   void update_guests();
