@@ -37,6 +37,7 @@ struct PauseMenu {
     kPaint,
     kAutoshow,
     kCareer,
+    kRally,
     kClub,
     kAchievements,
     kPhotoMode,
@@ -51,6 +52,7 @@ struct PauseMenu {
   };
   bool open = false;
   bool in_race = false;
+  bool in_rally_world = false;
   std::string events_label;      // e.g. "COLLECT GREEN WRISTBAND!" or "RACE CENTRAL"
   std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+15%) >"
   int selected = 0;

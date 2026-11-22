@@ -18,7 +18,15 @@ Collision::Collision() : impl_(std::make_unique<Impl>()) {}
 Collision::~Collision() = default;
 
 bool Collision::open(const fs::path& colorado, const fs::path& physics_zip, std::string* error, std::string* warning) {
-  if (!impl_->source.open(colorado / "bin.zip", error)) return false;
+  std::error_code ec;
+  fs::path bin_zip = colorado / "bin.zip";
+  if (!fs::exists(bin_zip, ec)) {
+    const fs::path alt1 = colorado / "ColoradoDirt_pri_65.zip";
+    const fs::path alt2 = colorado.parent_path().parent_path().parent_path().parent_path() / "ColoradoDirt_pri_65.zip";
+    if (fs::exists(alt1, ec)) bin_zip = alt1;
+    else if (fs::exists(alt2, ec)) bin_zip = alt2;
+  }
+  if (!impl_->source.open(bin_zip, error)) return false;
   const fs::path col = ribbon_file(colorado, "_track_00.col");
   fh1::MemberSource ribbon;
   std::vector<uint8_t> bytes;
@@ -32,7 +40,6 @@ bool Collision::open(const fs::path& colorado, const fs::path& physics_zip, std:
   surfaces_.clear();
   std::string why;
   fh1::MemberSource physics;
-  std::error_code ec;
   if (!physics_zip.empty() && fs::exists(physics_zip, ec) && physics.open(physics_zip, &why) &&
       physics.read("surfacetypes.xml", bytes, &why) &&
       fh1::parse_surface_types(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),

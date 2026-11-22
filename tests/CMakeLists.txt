@@ -103,6 +103,10 @@ add_executable(race_tests race_tests.cpp)
 target_link_libraries(race_tests PRIVATE shift_race)
 add_test(NAME race_tests COMMAND race_tests)
 
+add_executable(rally_tests rally_tests.cpp)
+target_link_libraries(rally_tests PRIVATE shift_race shift_garage shift_audio shift_data shift_drive)
+add_test(NAME rally_tests COMMAND rally_tests)
+
 # The Pinyon Shift reference save's counts (FORMAT-PROFILE Tests) over the
 # plaintext exports in out/profile (skipped, exit 77, without them).
 add_test(NAME profile_import_counts COMMAND profile-import --check ${CMAKE_SOURCE_DIR}/out/profile)
@@ -120,7 +124,7 @@ add_test(NAME settings_tests COMMAND settings_tests)
 
 add_executable(ui_tests ui_tests.cpp ../apps/carview/ui.cpp ../apps/carview/ui4_chrome.cpp
                ../apps/carview/game_hud.cpp ../apps/carview/hud_scene.cpp
-               ../apps/carview/events_page.cpp ../apps/carview/hud.cpp)
+               ../apps/carview/events_page.cpp ../apps/carview/rally_hub.cpp ../apps/carview/hud.cpp)
 target_include_directories(ui_tests PRIVATE ../apps/carview)
 target_link_libraries(ui_tests PRIVATE shift_stb fh1data shift_race shift_garage shift_freeroam)
 add_test(NAME ui_tests COMMAND ui_tests)
@@ -186,9 +190,10 @@ add_executable(hub_shop_tests hub_shop_tests.cpp
   ../apps/carview/upgrade_shop.cpp
   ../apps/carview/hub_scene.cpp
   ../apps/carview/game_hud.cpp
+  ../apps/carview/rally_hub.cpp
   ../apps/carview/hud_scene.cpp)
 target_include_directories(hub_shop_tests PRIVATE ../apps/carview)
-target_link_libraries(hub_shop_tests PRIVATE carview_render shift_freeroam shift_garage shift_drive shift_cars shift_sqlite3)
+target_link_libraries(hub_shop_tests PRIVATE carview_render shift_freeroam shift_garage shift_race shift_drive shift_cars shift_sqlite3)
 add_test(NAME hub_shop_tests COMMAND hub_shop_tests)
 
 add_executable(livery_damage_tests livery_damage_tests.cpp
@@ -198,9 +203,10 @@ add_executable(livery_damage_tests livery_damage_tests.cpp
   ../apps/carview/livery_editor.cpp
   ../apps/carview/settings_page.cpp
   ../apps/carview/game_hud.cpp
+  ../apps/carview/rally_hub.cpp
   ../apps/carview/hud_scene.cpp)
 target_include_directories(livery_damage_tests PRIVATE ../apps/carview)
-target_link_libraries(livery_damage_tests PRIVATE carview_render shift_freeroam shift_garage shift_drive shift_cars shift_sqlite3 shift_stb)
+target_link_libraries(livery_damage_tests PRIVATE carview_render shift_freeroam shift_garage shift_race shift_drive shift_cars shift_sqlite3 shift_stb)
 add_test(NAME livery_damage_tests COMMAND livery_damage_tests)
 
 add_executable(acoustics_vo_radio_tests acoustics_vo_radio_tests.cpp)
@@ -222,6 +228,7 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/hud_scene.cpp
     ../apps/carview/game_hud.cpp
     ../apps/carview/events_page.cpp
+    ../apps/carview/rally_hub.cpp
     ../apps/carview/settings_page.cpp
     ../apps/carview/fmv_player.cpp
     ../apps/carview/story_intro.cpp)
@@ -236,6 +243,7 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/game_hud.cpp
     ../apps/carview/map_view.cpp
     ../apps/carview/events_page.cpp
+    ../apps/carview/rally_hub.cpp
     ../apps/carview/autoshow.cpp
     ../apps/carview/upgrade_shop.cpp
     ../apps/carview/hub_scene.cpp

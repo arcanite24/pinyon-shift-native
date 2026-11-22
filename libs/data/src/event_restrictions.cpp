@@ -26,6 +26,7 @@ constexpr std::array<int, kMaskBits> kWidths = [] {
   w[restriction_bit::kFlag34] = 0;
   w[restriction_bit::kValueMin] = 4;
   w[restriction_bit::kValueMax] = 4;
+  w[restriction_bit::kRallyUpgraded] = 0;
   return w;
 }();
 
@@ -53,6 +54,7 @@ Fields to_fields(const RestrictionSet& s) {
   if (s.flag34) f[b::kFlag34] = 0;
   f[b::kValueMin] = s.value_min;
   f[b::kValueMax] = s.value_max;
+  if (s.rally_upgraded) f[b::kRallyUpgraded] = 0;
   return f;
 }
 
@@ -70,6 +72,7 @@ RestrictionSet from_fields(const Fields& f) {
   s.flag34 = f[b::kFlag34].has_value();
   s.value_min = f[b::kValueMin];
   s.value_max = f[b::kValueMax];
+  s.rally_upgraded = f[b::kRallyUpgraded].has_value();
   return s;
 }
 
@@ -169,6 +172,7 @@ bool car_passes(const RestrictionSet& s, const CarProperties& car) {
   if (s.make && car.make != *s.make) return false;
   if (s.model_family && car.model_family != *s.model_family) return false;
   if (s.drive_type && car.drive_type != *s.drive_type) return false;
+  if (s.rally_upgraded && !car.rally_upgraded) return false;
   // flag34 has no known effect (spec: clearing it changed nothing seen).
   return true;
 }

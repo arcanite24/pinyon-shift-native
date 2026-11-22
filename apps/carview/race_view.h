@@ -23,6 +23,7 @@
 #include "race/event.h"
 #include "race/race_line.h"
 #include "race/rally.h"
+#include "race/rally_codriver.h"
 #include "race/rewards.h"
 #include "race/route.h"
 #include "race/session.h"
@@ -64,7 +65,9 @@ class RaceView {
     // "stage:<route>" in this world folder (ColoradoDirt): its own route
     // file and loose AI line, the player alone on slot 00, one lap.
     std::filesystem::path stage_world;
+    std::filesystem::path rally_package;
     std::filesystem::path state_root;
+    std::string stage_title;  // optional display name for Rally stage / championship stage
     const cars::PartsDb* parts_db = nullptr;
     std::string language = "EN";
   };
@@ -159,6 +162,16 @@ class RaceView {
   void set_blend(double alpha) { blend_ = alpha; }
   bool player_finished() const { return session_->finished(player_index()); }
   size_t player_index() const { return cars_.size(); }
+  bool is_stage() const { return stage_; }
+  const race::StageTrack& stage_track() const { return stage_track_; }
+  const std::vector<double>& stage_field() const { return stage_field_; }
+  const std::vector<double>& split_times() const { return split_times_; }
+  double last_split_delta() const { return last_split_delta_; }
+  double last_split_at() const { return last_split_at_; }
+  int stage_place() const { return stage_place_; }
+  double stage_finish_time() const { return session_ && session_->finished(player_index()) ? session_->car(player_index()).finish : -1.0; }
+  race::RallyPaceNoteTracker& codriver() { return codriver_; }
+  const race::RallyPaceNoteTracker& codriver() const { return codriver_; }
   std::string summary() const;
 
  private:
@@ -216,7 +229,9 @@ class RaceView {
   bool have_stage_track_ = false;
   race::StageTrack stage_track_;
   std::vector<double> stage_field_, split_times_;
+  double last_split_delta_ = 0.0, last_split_at_ = -1e9;
   int stage_place_ = 0;
+  race::RallyPaceNoteTracker codriver_;
   std::vector<race::Gate> checkpoint_gates_;  // a street race's checkpoints in order
   std::vector<size_t> next_checkpoint_;       // each car's next checkpoint (the player last)
   std::vector<double> checkpoint_progress_;   // each checkpoint's distance along the line

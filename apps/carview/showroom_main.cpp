@@ -46,6 +46,7 @@
 #include "fmv_player.h"
 #include "fh1data/cjk_font.h"
 #include "game_hud.h"
+#include "rally_hub.h"
 #include "story_intro.h"
 #include "ui_widgets.h"
 #include "hud_scene.h"
@@ -57,6 +58,9 @@
 #include "renderer.h"
 #include "showroom.h"
 #include "traffic_view.h"
+#include "garage/rally_kit.h"
+#include "race/rally_championship.h"
+#include "race/rally_codriver.h"
 #include "cars/physics.h"
 #include "cars/sources.h"
 #include "drive/cameras.h"
@@ -2783,6 +2787,24 @@ int run_drive(int argc, char** argv) {
   freeroam::club::ClubData club_data;
   bool club_tried = false, club_loaded = false;
   std::string club_why;
+  // Horizon Rally Expansion (Slice 8): seamless Colorado <-> ColoradoDirt world
+  // transition, 7x4 Championships + RALLY_HEATS, Service Area & Co-Driver VO.
+  const std::filesystem::path colorado_world_dir = world_dir;
+  bool has_colorado_return = false;
+  std::array<double, 3> colorado_return_pos{};
+  double colorado_return_heading = 0.0;
+  race::RallyCatalog rally_catalog;
+  bool rally_catalog_tried = false;
+  race::RallyChampionshipSession rally_session;
+  bool rally_hub_open = false;
+  int rally_hub_selected = 0;
+  bool rally_service_open = false;
+  int rally_service_selected = 0;
+  bool rally_service_repaired = false;
+  bool rally_results_open = false;
+  carview::RallyChampResultsState rally_results_state{};
+  int rally_world_switch = 0;  // 0 none, +1 enter ColoradoDirt, -1 return to Colorado
+  std::string rally_notice;
   for (bool again = true; again;) {
   again = false;
   if (skill_tracker) skill_tracker->reset_session_clock();
@@ -4020,9 +4042,37 @@ int run_drive(int argc, char** argv) {
         log_contacts();
         if (traffic) traffic->step(vehicle);
         club_step();  // after traffic: its contacts count as crashes
-        if (race && streamer)
+        if (race && streamer) {
           race->after_step(vehicle, *ground, streamer->centre_x(), streamer->centre_z(),
                            streamer->collision_radius(), traffic.get());
+          if (race->is_stage()) {
+            race::CoDriverAudioCue cd_cue;
+            while (race->codriver().pop_audio_cue(cd_cue)) {
+              audio_host.trigger_codriver(cd_cue.group + "/" + cd_cue.cue);
+            }
+          }
+        }
+        if (race && race->is_stage() && race->player_finished() && rally_session.active() && !rally_service_open &&
+            !rally_results_open) {
+          const double ftime = race->stage_finish_time();
+          const auto fin = rally_session.record_stage_finish(rally_catalog, ftime, race->stage_field());
+          audio_host.trigger_codriver(fin.stage_place <= 10 ? "CoDriver/FinishGood/Good1" : "CoDriver/FinishBad/Bad1");
+          if (fin.championship_complete) {
+            const int dpct = race::difficulty_bonus_percent(int(race_options.difficulty));
+            const int apct = race::assist_difficulty_bonus_percent(race_options.assists);
+            const auto rew = rally_session.finalize(rally_catalog, saved, dpct, apct);
+            career.credits = saved.credits;
+            career.total_winnings = saved.total_winnings;
+            rally_results_state = carview::make_rally_results_state(rally_catalog, rally_session, rew, saved.credits);
+            rally_results_open = true;
+            save_due = true;
+          } else {
+            rally_service_open = true;
+            rally_service_selected = 0;
+            rally_service_repaired = false;
+            rally_notice.clear();
+          }
+        }
         if (race && race->session().started()) {
           race_top_speed = std::max(race_top_speed, std::fabs(vehicle.speed()));
           race::RaceBonusInputs bonus_in;
@@ -5370,10 +5420,53 @@ int run_drive(int argc, char** argv) {
           }
           d.career = &board;
         }
+        carview::RallyStageHud rally_stage_hud;
+        carview::RallyHubState rally_hub_state;
+        carview::RallyServiceAreaState rally_service_state;
+        if (race && race->is_stage() && race_hud.phase == carview::RaceHud::kRacing) {
+          rally_stage_hud.active = true;
+          rally_stage_hud.championship_name = rally_session.active() ? rally_session.title() : "HORIZON RALLY";
+          rally_stage_hud.stage_name = race_hud.event;
+          rally_stage_hud.stage_number = rally_session.active() ? (rally_session.current_stage_index() + 1) : 1;
+          rally_stage_hud.total_stages = rally_session.active() ? rally_session.total_stages() : 1;
+          rally_stage_hud.stage_clock = race_hud.clock;
+          rally_stage_hud.progress = race_hud.progress;
+          rally_stage_hud.total_splits = int(race->stage_track().splits.size());
+          rally_stage_hud.splits_passed = int(race->split_times().size());
+          rally_stage_hud.last_split_delta = race->last_split_delta();
+          rally_stage_hud.last_split_age = race_hud.clock - race->last_split_at();
+          rally_stage_hud.pace = race->codriver().hud(race_hud.clock);
+          d.rally_stage = &rally_stage_hud;
+        }
+        if (rally_hub_open && rally_catalog.loaded) {
+          int64_t cid = 0;
+          int clid = 4;
+          current_car_info(cid, clid);
+          const int disc = free_roam ? freeroam::upgrade_discount(free_roam->signs_found()) : 0;
+          saved.credits = career.credits;
+          const auto db_ptr = parts_db.valid() ? parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+          rally_hub_state = carview::make_rally_hub_state(rally_catalog, saved, have_garage ? &career_garage : nullptr,
+                                                          db_ptr.get(), class_bands, car, clid, d.car_pi, disc,
+                                                          rally_hub_selected, rally_notice);
+          d.rally_hub = &rally_hub_state;
+        }
+        if (rally_service_open && rally_session.active()) {
+          const double dmg_pct =
+              std::clamp(double(std::max({car_damage.scratch_amount, car_damage.engine_damage,
+                                          car_damage.trans_damage, car_damage.brake_damage, car_damage.zone_front,
+                                          car_damage.zone_rear, car_damage.zone_left, car_damage.zone_right})) *
+                             100.0,
+                         0.0, 100.0);
+          rally_service_state = carview::make_rally_service_state(rally_session, d.car_name, d.car_class, d.car_pi,
+                                                                  dmg_pct, rally_service_repaired,
+                                                                  rally_service_selected, rally_notice);
+          d.rally_service = &rally_service_state;
+        }
+        if (rally_results_open) d.rally_results = &rally_results_state;
         carview::ui::List list;
-        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, and grid menu.
+        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally screens, and grid menu.
         if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
-            !career_page.is_open())
+            !career_page.is_open() && !rally_hub_open && !rally_service_open && !rally_results_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         carview::build_drive_hud(list, d, float(width), float(height));
         if (!show_title && !ceremony.active && radio_popup_gpu.alpha > 0.005f)
@@ -6564,6 +6657,7 @@ int run_drive(int argc, char** argv) {
           std::snprintf(db, sizeof db, "< DIFFICULTY: %s (+%d%%) >", difficulty_name(race_options.difficulty),
                         race::difficulty_bonus_percent(int(race_options.difficulty)));
           menu.difficulty_label = db;
+          menu.in_rally_world = !colorado_world();
         };
         auto cycle_difficulty = [&](int by) {
           const int d = ((int(race_options.difficulty) + by) % 5 + 5) % 5;
@@ -6584,6 +6678,36 @@ int run_drive(int argc, char** argv) {
           if (act == PauseMenu::kUpgrades) open_shop_or_autoshow(false);
           if (act == PauseMenu::kAutoshow) open_shop_or_autoshow(true);
           if (act == PauseMenu::kPaint) open_paint();
+          if (act == PauseMenu::kRally) {
+            if (!rally_catalog_tried && !state_root.empty()) {
+              rally_catalog_tried = true;
+              const auto db_ptr = parts_db.valid() ? parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+              std::string rerr;
+              if (race::load_rally_catalog(state_root, db_ptr.get(), nullptr, rally_catalog, &rerr)) {
+                const auto cd_cache = save_path.empty() ? (std::filesystem::path("out") / "audio_cache")
+                                                        : (save_path.parent_path() / "audio_cache");
+                audio_host.init_codriver(rally_catalog.package_dir, cd_cache, language);
+              } else {
+                std::fprintf(stderr, "rally: catalog load failed: %s\n", rerr.c_str());
+              }
+            }
+            if (!rally_catalog.loaded || rally_catalog.package_dir.empty()) {
+              notice = "Horizon Rally expansion package not installed";
+              notice_until = vehicle.time() + 4;
+            } else if (colorado_world()) {
+              const drive::Vec3 vp = vehicle.position();
+              const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+              colorado_return_pos = {vp.x, vp.y, vp.z};
+              colorado_return_heading = std::atan2(vf.x, vf.z);
+              has_colorado_return = true;
+              rally_world_switch = +1;
+              running = false;
+            } else {
+              rally_hub_open = true;
+              rally_hub_selected = 0;
+              rally_notice.clear();
+            }
+          }
           if (act == PauseMenu::kClub) {
             club_open = true;
             club_pick = club_gate.empty() ? club_data.cars.at(club_car).size() : 0;
@@ -7269,6 +7393,140 @@ int run_drive(int argc, char** argv) {
                 if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) autoshow.move_make(1, career.credits);
                 if (b == SDL_GAMEPAD_BUTTON_NORTH) autoshow.move_colour(1);
                 if (b == SDL_GAMEPAD_BUTTON_SOUTH) buy();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            // Horizon Rally Hub / Service Area / Championship Results input.
+            if (rally_results_open) {
+              const bool confirm = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                                    (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE ||
+                                     e.key.key == SDLK_ESCAPE)) ||
+                                   (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                                    (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
+                                     e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST));
+              if (confirm) {
+                rally_results_open = false;
+                rally_session.retire();
+                rally_hub_open = true;
+                leave_race = true;
+                running = false;
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            if (rally_service_open) {
+              auto act_service = [&]() {
+                if (rally_service_selected == 0) {
+                  rally_service_open = false;
+                  if (rally_session.advance_from_service_area()) {
+                    if (const auto* stg = rally_session.current_stage()) {
+                      race_options.stage_title = stg->name;
+                      next_event = "stage:" + std::to_string(stg->route_id);
+                      running = false;
+                    }
+                  }
+                } else if (rally_service_selected == 1) {
+                  car_damage.reset();
+                  rally_service_repaired = true;
+                  rally_notice = "CAR REPAIRED TO 100% — READY FOR NEXT STAGE";
+                } else if (rally_service_selected == 2) {
+                  rally_service_open = false;
+                  open_shop_or_autoshow(false);
+                } else if (rally_service_selected == 3) {
+                  rally_service_open = false;
+                  rally_session.retire();
+                  rally_hub_open = true;
+                  leave_race = true;
+                  running = false;
+                }
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                if (e.key.key == SDLK_UP || e.key.key == SDLK_W) rally_service_selected = (rally_service_selected + 3) % 4;
+                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) rally_service_selected = (rally_service_selected + 1) % 4;
+                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) act_service();
+              } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) rally_service_selected = (rally_service_selected + 3) % 4;
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) rally_service_selected = (rally_service_selected + 1) % 4;
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) act_service();
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            if (rally_hub_open && rally_catalog.loaded) {
+              int64_t cid = 0;
+              int clid = 4;
+              current_car_info(cid, clid);
+              const int disc = free_roam ? freeroam::upgrade_discount(free_roam->signs_found()) : 0;
+              const auto db_ptr = parts_db.valid() ? parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+              const auto hst = carview::make_rally_hub_state(rally_catalog, saved, have_garage ? &career_garage : nullptr,
+                                                             db_ptr.get(), class_bands, car, clid, 0, disc,
+                                                             rally_hub_selected, rally_notice);
+              const int n_items = std::max(1, int(hst.items.size()));
+              auto activate_rally = [&]() {
+                if (rally_hub_selected < 0 || size_t(rally_hub_selected) >= hst.items.size()) return;
+                const auto& it = hst.items[size_t(rally_hub_selected)];
+                if (it.kind == carview::RallyHubItem::kHeats) {
+                  if (rally_session.start_heats(rally_catalog, int(race_options.difficulty), race_options.seed)) {
+                    if (auto bit = baked_ids.find(rally_catalog.heats.player_car_id); bit != baked_ids.end()) {
+                      pre_loaner_car = car;
+                      pre_loaner_garage_id = career_garage.selected;
+                      car = bit->second;
+                    }
+                    rally_hub_open = false;
+                    race_options.stage_title = rally_catalog.heats.name;
+                    next_event = "stage:" + std::to_string(rally_catalog.heats.route_id);
+                    running = false;
+                  }
+                } else if (it.kind == carview::RallyHubItem::kChampionship) {
+                  if (!it.unlocked || !it.eligible) {
+                    rally_notice = it.lock_reason;
+                    return;
+                  }
+                  if (rally_session.start_championship(rally_catalog, it.event_id, int(race_options.difficulty),
+                                                       race_options.seed)) {
+                    if (const auto* stg = rally_session.current_stage()) {
+                      rally_hub_open = false;
+                      race_options.stage_title = stg->name;
+                      next_event = "stage:" + std::to_string(stg->route_id);
+                      running = false;
+                    }
+                  }
+                } else if (it.kind == carview::RallyHubItem::kFitRallyKit) {
+                  if (have_garage && db_ptr && db_ptr->is_open()) {
+                    if (const garage::Car* sc = career_garage.selected_car()) {
+                      const auto plan = garage::plan_rally_kit(career_garage, *db_ptr, sc->id, disc, true,
+                                                               &hub_phys_settings, &hub_pi_cfg,
+                                                               !class_bands.empty() ? &class_bands : nullptr);
+                      std::string msg;
+                      if (garage::apply_rally_kit(career_garage, *db_ptr, sc->id, plan, disc, career.credits,
+                                                  &hub_phys_settings, &hub_pi_cfg,
+                                                  !class_bands.empty() ? &class_bands : nullptr, &msg)) {
+                        saved.credits = career.credits;
+                        save_now("rally kit");
+                        rally_notice = msg;
+                        again = true;
+                        running = false;
+                      } else {
+                        rally_notice = msg;
+                      }
+                    }
+                  }
+                } else if (it.kind == carview::RallyHubItem::kFreeRoam) {
+                  rally_hub_open = false;
+                } else if (it.kind == carview::RallyHubItem::kReturnColorado) {
+                  rally_hub_open = false;
+                  rally_world_switch = -1;
+                  running = false;
+                }
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                if (e.key.key == SDLK_ESCAPE) rally_hub_open = false;
+                else if (e.key.key == SDLK_UP || e.key.key == SDLK_W) rally_hub_selected = (rally_hub_selected + n_items - 1) % n_items;
+                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) rally_hub_selected = (rally_hub_selected + 1) % n_items;
+                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) activate_rally();
+              } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST || e.gbutton.button == SDL_GAMEPAD_BUTTON_START) rally_hub_open = false;
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) rally_hub_selected = (rally_hub_selected + n_items - 1) % n_items;
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) rally_hub_selected = (rally_hub_selected + 1) % n_items;
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) activate_rally();
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -8171,7 +8429,8 @@ int run_drive(int argc, char** argv) {
           const bool menu_paused = show_title || fmv_player.active() || ceremony.active || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
-                                   settings_page.is_open() || paint_open || club_open || photo_mode.active() ||
+                                   settings_page.is_open() || paint_open || club_open || rally_hub_open ||
+                                   rally_service_open || rally_results_open || photo_mode.active() ||
                                    replay_viewer.active() || replay_viewer.browser_open() || achievements.screen_open();
           const bool sim_paused = menu_paused || rewind_buf.active();
           achievements.update(frame_dt);
@@ -8973,6 +9232,40 @@ int run_drive(int argc, char** argv) {
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
     }
+  }
+  if (status == 0 && rally_world_switch != 0) {
+    const int dir = rally_world_switch;
+    rally_world_switch = 0;
+    race.reset();
+    race_event.clear();
+    if (dir > 0 && !rally_catalog.package_dir.empty()) {
+      world_dir = rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "Tracks" / "ColoradoDirt";
+      race_options.stage_world = world_dir;
+      race_options.rally_package = rally_catalog.package_dir;
+      cache_path.clear();
+      have_spawn = false;
+      rally_hub_open = true;
+      rally_hub_selected = 0;
+      rally_notice.clear();
+      std::printf("rally: switched world to ColoradoDirt (%s)\n", world_dir.string().c_str());
+    } else if (dir < 0 && !colorado_world_dir.empty()) {
+      world_dir = colorado_world_dir;
+      race_options.stage_world = world_dir;
+      cache_path.clear();
+      if (has_colorado_return) {
+        spawn[0] = colorado_return_pos[0];
+        spawn[1] = colorado_return_pos[1];
+        spawn[2] = colorado_return_pos[2];
+        spawn[3] = colorado_return_heading;
+        have_spawn = true;
+      }
+      rally_session.retire();
+      rally_hub_open = false;
+      rally_service_open = false;
+      rally_results_open = false;
+      std::printf("rally: returned to Colorado (%s)\n", world_dir.string().c_str());
+    }
+    again = true;
   }
   if (status == 0 && leave_race) {
     leave_race = false;

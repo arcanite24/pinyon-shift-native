@@ -30,6 +30,7 @@ inline constexpr int kDriveType = 25;
 inline constexpr int kFlag34 = 34;
 inline constexpr int kValueMin = 37;
 inline constexpr int kValueMax = 38;
+inline constexpr int kRallyUpgraded = 39;  // v4 Horizon Rally flag (0x80 in byte 4, width 0)
 }  // namespace restriction_bit
 
 // Drive type IDs (List_DriveType).
@@ -51,6 +52,7 @@ struct RestrictionSet {
   bool flag34 = false;                   // bit 34, no value; no known effect
   std::optional<uint32_t> value_min;     // bit 37, 4 bytes, credits
   std::optional<uint32_t> value_max;     // bit 38, 4 bytes, credits
+  bool rally_upgraded = false;           // bit 39 (0x80 in byte 4), no value; car must have Rally upgrades
 
   bool empty() const;
   bool operator==(const RestrictionSet&) const = default;
@@ -95,6 +97,7 @@ struct CarProperties {
   uint16_t make = 0;
   uint16_t model_family = 0;
   uint8_t drive_type = 0;
+  bool rally_upgraded = false;
 };
 
 // True when the car satisfies every field present in the set.

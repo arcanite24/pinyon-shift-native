@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "audio/codriver_vo.h"
 #include "audio/engine_player.h"
 #include "audio/mixer.h"
 #include "audio/radio.h"
@@ -81,6 +82,7 @@ class AudioEngine {
   void set_engine_player(std::unique_ptr<EnginePlayer> player);
   void set_sfx_engine(std::unique_ptr<SfxEngine> sfx);
   void set_satnav_vo(std::unique_ptr<SatNavVoPlayer> satnav);
+  void set_codriver_vo(std::unique_ptr<CoDriverVoPlayer> codriver);
   void set_vo_player(std::unique_ptr<VoPlayer> vo);
   void set_acoustics_sample(const AcousticsSample& sample);
   void set_listener_pose(std::array<float, 3> pos, float heading_rad);
@@ -100,6 +102,8 @@ class AudioEngine {
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
   void skip_vo();
+  void trigger_codriver(std::string_view cue_path);
+  void clear_codriver();
 
   // Mixer controls (Sound Mix 0..2 per bus, master volume/mute, compressor).
   void set_bus_level(Bus b, float level);
@@ -171,6 +175,7 @@ class AudioEngine {
       kSwapEngine,
       kSwapSfx,
       kSwapSatNav,
+      kSwapCoDriver,
       kSwapVo,
       kSwapRadio,
       kSwapUserMusic,
@@ -178,6 +183,8 @@ class AudioEngine {
       kTriggerUi,
       kTriggerSatNav,
       kSatNavEnable,
+      kTriggerCoDriver,
+      kClearCoDriver,
       kTriggerVo,
       kSkipVo,
       kListenerPose,
@@ -199,7 +206,7 @@ class AudioEngine {
     std::array<char, 64> text{};
   };
   struct Retired {
-    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kVo, kRadio, kUserMusic };
+    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kCoDriver, kVo, kRadio, kUserMusic };
     Kind kind = kEngine;
     void* ptr = nullptr;
   };
@@ -235,6 +242,7 @@ class AudioEngine {
   EnginePlayer* engine_ = nullptr;
   SfxEngine* sfx_ = nullptr;
   SatNavVoPlayer* satnav_ = nullptr;
+  CoDriverVoPlayer* codriver_ = nullptr;
   VoPlayer* vo_ = nullptr;
   Radio* radio_ = nullptr;
   RadioPlayer* radio_player_ = nullptr;

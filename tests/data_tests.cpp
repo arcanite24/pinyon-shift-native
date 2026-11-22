@@ -100,7 +100,7 @@ void test_other_errors() {
   // Every unknown bit is refused, including even pair bits and bits above 34.
   for (int bit = 0; bit < 40; ++bit) {
     const bool known = bit == 8 || bit == 9 || bit == 11 || bit == 15 || bit == 17 || bit == 19 ||
-                       bit == 21 || bit == 25 || bit == 34 || bit == 37 || bit == 38;
+                       bit == 21 || bit == 25 || bit == 34 || bit == 37 || bit == 38 || bit == 39;
     if (known) continue;
     RestrictionSet empty;
     std::string v = encode_restriction_value(empty);
@@ -132,6 +132,7 @@ void test_other_errors() {
 void test_round_trip() {
   check_round_trip("0000000000");
   check_round_trip("0000000004");
+  check_round_trip("0000000084");  // v4 Horizon Rally: flag34 (0x04) + rally_upgraded (0x80)
   check_round_trip("0003000004000007BC000007C5");
   check_round_trip("0000080004000D");
   check_round_trip("000000020403");
@@ -236,6 +237,14 @@ void test_predicate() {
   car.make = 14;
   CHECK(car_passes(make, car) == car_passes(make_no_flag, car));
   car.make = 13;
+
+  // v4 Horizon Rally restriction bit 0x80 (0000000084 = flag34 + rally_upgraded).
+  const auto rally_d = decode_restriction_value("0000000084");
+  CHECK(rally_d.ok() && rally_d.set.flag34 && rally_d.set.rally_upgraded);
+  car.rally_upgraded = false;
+  CHECK(!car_passes(rally_d.set, car));
+  car.rally_upgraded = true;
+  CHECK(car_passes(rally_d.set, car));
 }
 
 void test_buckets() {

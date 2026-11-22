@@ -26,6 +26,7 @@ AudioEngine::~AudioEngine() {
   delete engine_;
   delete sfx_;
   delete satnav_;
+  delete codriver_;
   delete vo_;
   delete radio_player_;
   delete user_music_;
@@ -57,6 +58,7 @@ void AudioEngine::reclaim() {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(r.ptr); break;
       case Retired::kSfx: delete static_cast<SfxEngine*>(r.ptr); break;
       case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(r.ptr); break;
+      case Retired::kCoDriver: delete static_cast<CoDriverVoPlayer*>(r.ptr); break;
       case Retired::kVo: delete static_cast<VoPlayer*>(r.ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(r.ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(r.ptr); break;
@@ -211,6 +213,35 @@ void AudioEngine::set_vo_player(std::unique_ptr<VoPlayer> vo) {
     }
     delete static_cast<VoPlayer*>(c.ptr0);
   }
+}
+
+void AudioEngine::set_codriver_vo(std::unique_ptr<CoDriverVoPlayer> codriver) {
+  Command c;
+  c.kind = Command::kSwapCoDriver;
+  c.ptr0 = codriver.release();
+  if (!cmds_.push(c)) {
+    if (!running_.load(std::memory_order_acquire)) {
+      drain_commands();
+      reclaim();
+      if (cmds_.push(c)) return;
+    }
+    delete static_cast<CoDriverVoPlayer*>(c.ptr0);
+  }
+}
+
+void AudioEngine::trigger_codriver(std::string_view cue_path) {
+  Command c;
+  c.kind = Command::kTriggerCoDriver;
+  const size_t n = std::min(cue_path.size(), c.text.size() - 1);
+  std::memcpy(c.text.data(), cue_path.data(), n);
+  c.text[n] = '\0';
+  enqueue(c);
+}
+
+void AudioEngine::clear_codriver() {
+  Command c;
+  c.kind = Command::kClearCoDriver;
+  enqueue(c);
 }
 
 void AudioEngine::set_acoustics_sample(const AcousticsSample& sample) { acoustics_in_.write(sample); }
@@ -553,6 +584,10 @@ void AudioEngine::drain_commands() {
         satnav_ = static_cast<SatNavVoPlayer*>(c.ptr0);
         if (satnav_) satnav_->set_enabled(satnav_enabled_);
         break;
+      case Command::kSwapCoDriver:
+        retire_ptr(Retired::kCoDriver, codriver_);
+        codriver_ = static_cast<CoDriverVoPlayer*>(c.ptr0);
+        break;
       case Command::kSwapVo:
         retire_ptr(Retired::kVo, vo_);
         vo_ = static_cast<VoPlayer*>(c.ptr0);
@@ -585,6 +620,12 @@ void AudioEngine::drain_commands() {
       case Command::kSatNavEnable:
         satnav_enabled_ = c.b0;
         if (satnav_) satnav_->set_enabled(satnav_enabled_);
+        break;
+      case Command::kTriggerCoDriver:
+        if (codriver_) codriver_->enqueue_cue(c.text.data());
+        break;
+      case Command::kClearCoDriver:
+        if (codriver_) codriver_->clear();
         break;
       case Command::kTriggerVo:
         if (vo_) vo_->trigger(c.text.data(), c.b0);
@@ -676,11 +717,12 @@ void AudioEngine::render_block(float* out, int frames) {
 
   bool satnav_now = false;
   bool vo_now = false;
-  if ((satnav_ || vo_) && !on_title) {
+  if ((satnav_ || vo_ || codriver_) && !on_title) {
     auto& vbuf = bus_bufs_[int(Bus::kVo)];
     std::fill(vbuf.begin(), vbuf.begin() + ptrdiff_t(samples), 0.0f);
     if (satnav_) satnav_now = satnav_->render(vbuf.data(), frames);
     if (vo_) vo_now = vo_->render(vbuf.data(), frames);
+    if (codriver_ && codriver_->render(vbuf.data(), frames)) vo_now = true;
     if (satnav_now || vo_now) buses[int(Bus::kVo)] = vbuf.data();
   }
 
@@ -802,7 +844,7 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.stalls = stalls_;
   t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;
   t.satnav_playing = satnav_ && satnav_->playing();
-  t.vo_playing = vo_ && vo_->playing();
+  t.vo_playing = (vo_ && vo_->playing()) || (codriver_ && codriver_->playing());
   t.in_tunnel = have_acoustics_ && last_acoustics_.in_tunnel;
   telemetry_buf_.write(t);
 }

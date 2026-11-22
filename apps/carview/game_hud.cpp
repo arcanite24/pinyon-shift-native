@@ -1954,6 +1954,18 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     map_overlay_hud(l, *st.map_overlay, g);
     return;
   }
+  if (st.rally_hub && st.rally_hub->active) {
+    build_rally_hub_screen(l, *st.rally_hub, w, h);
+    return;
+  }
+  if (st.rally_service && st.rally_service->active) {
+    build_rally_service_area_screen(l, *st.rally_service, w, h);
+    return;
+  }
+  if (st.rally_results && st.rally_results->active) {
+    build_rally_championship_results_screen(l, *st.rally_results, w, h);
+    return;
+  }
   const bool menu = !st.menu_title.empty() || !st.menu.empty();
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
@@ -1975,6 +1987,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
         showcase_hud(l, r, g);
       }
     }
+    if (st.rally_stage && st.rally_stage->active) build_rally_pace_notes_hud(l, *st.rally_stage, w, h);
     progression_hud(l, st, g);
     popup_card(l, st, g);
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);

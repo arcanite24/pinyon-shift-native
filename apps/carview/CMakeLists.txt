@@ -81,6 +81,7 @@ set(carview_sources
   livery_editor.cpp
   career_page.cpp
   events_page.cpp
+  rally_hub.cpp
   settings.cpp
   settings_page.cpp
   photo_mode.cpp

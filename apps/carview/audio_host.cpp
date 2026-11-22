@@ -273,6 +273,22 @@ bool AudioHost::init_satnav(const std::filesystem::path& game_root, const std::f
   return has_satnav_;
 }
 
+bool AudioHost::init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
+                              std::string_view language) {
+  if (rally_package_dir.empty()) return false;
+  if (!codriver_tried_) {
+    codriver_tried_ = true;
+    auto cd = std::make_unique<audio::CoDriverVoPlayer>(kAudioRate);
+    std::string note;
+    if (cd->load(rally_package_dir, cache_dir, language, &note)) {
+      std::printf("%s\n", note.c_str());
+      engine_.set_codriver_vo(std::move(cd));
+      has_codriver_ = true;
+    }
+  }
+  return has_codriver_;
+}
+
 bool AudioHost::init_vo(const std::filesystem::path& game_root, std::string_view language) {
   if (game_root.empty()) return false;
   if (!vo_tried_) {
@@ -307,6 +323,14 @@ void AudioHost::trigger_vo(std::string_view trigger_id, bool interrupt) {
 
 void AudioHost::skip_vo() {
   if (has_vo_) engine_.skip_vo();
+}
+
+void AudioHost::trigger_codriver(std::string_view cue_path) {
+  if (has_codriver_) engine_.trigger_codriver(cue_path);
+}
+
+void AudioHost::clear_codriver() {
+  if (has_codriver_) engine_.clear_codriver();
 }
 
 void AudioHost::radio_set_time_of_day(double hour) {

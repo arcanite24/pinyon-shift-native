@@ -178,7 +178,7 @@ std::vector<PauseMenu::Action> PauseMenu::items() const {
   if (in_race) {
     return {kResume, kRestartRace, kPhotoMode, kReplay, kMap, kDifficulty, kSettings, kQuitRace};
   }
-  return {kResume, kMap, kEvents, kPhotoMode, kReplay, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub, kAchievements, kSettings, kQuitToTitle};
+  return {kResume, kMap, kEvents, kRally, kPhotoMode, kReplay, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub, kAchievements, kSettings, kQuitToTitle};
 }
 
 PauseMenu::Action PauseMenu::selected_action() const {
@@ -197,6 +197,7 @@ std::string PauseMenu::label(Action a) const {
     case kPaint: return "PAINT";
     case kAutoshow: return "AUTOSHOW";
     case kCareer: return "MY PROFILE";
+    case kRally: return in_rally_world ? "RALLY HUB" : "HORIZON RALLY";
     case kClub: return "1000 CLUB";
     case kAchievements: return "ACHIEVEMENTS";
     case kPhotoMode: return "PHOTO MODE";

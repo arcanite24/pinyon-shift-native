@@ -13,6 +13,7 @@
 #include <tuple>
 #include <unordered_map>
 
+#include "fh1data/archive.h"
 #include "fh1data/members.h"
 #include "fh1data/placements.h"
 #include "fh1data/props.h"
@@ -223,9 +224,24 @@ std::string model_prefix(const fs::path& world) {
 
 bool World::open(const fs::path& colorado, const fs::path& cache, std::string* error) {
   name_ = (colorado.has_filename() ? colorado : colorado.parent_path()).filename().string();
-  const fs::path zip = colorado / "bin.zip";
-  if (!impl_->source.open(zip, error)) return false;
   std::error_code ec;
+  fs::path zip = colorado / "bin.zip";
+  fs::path dlc_zips;
+  if (!fs::exists(zip, ec)) {
+    // Horizon Rally DLC package layout:
+    // <pkg>/Media/DLCZips/ColoradoDirt_pri_65.zip alongside 1600_pri_65/Media/Tracks/ColoradoDirt.
+    const fs::path alt1 = colorado / "ColoradoDirt_pri_65.zip";
+    const fs::path parent_zips = colorado.parent_path().parent_path().parent_path().parent_path();
+    const fs::path alt2 = parent_zips / "ColoradoDirt_pri_65.zip";
+    if (fs::exists(alt1, ec)) {
+      zip = alt1;
+      dlc_zips = colorado;
+    } else if (fs::exists(alt2, ec)) {
+      zip = alt2;
+      dlc_zips = parent_zips;
+    }
+  }
+  if (!impl_->source.open(zip, error)) return false;
   const auto zip_size = fs::file_size(zip, ec);
 
   // The model index: the cache, or a parse of every model.
@@ -281,9 +297,17 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
 
   // Props: the object table and every placement.
   const fs::path pvs = ribbon_file(colorado, "_00.pvs");
-  std::ifstream f(pvs, std::ios::binary);
-  if (f) {
-    std::vector<uint8_t> pvs_bytes((std::istreambuf_iterator<char>(f)), {});
+  std::vector<uint8_t> pvs_bytes;
+  if (std::ifstream f(pvs, std::ios::binary); f) {
+    pvs_bytes.assign((std::istreambuf_iterator<char>(f)), {});
+  } else if (!dlc_zips.empty()) {
+    std::string zwhy;
+    if (auto pkg_zip = fh1::Archive::open(dlc_zips / "1600_pri_65.zip", &zwhy)) {
+      auto r = pkg_zip->read("media/Tracks/ColoradoDirt/Ribbon_00/ColoradoDirt_00.pvs");
+      if (r.ok()) pvs_bytes = std::move(r.data);
+    }
+  }
+  if (!pvs_bytes.empty()) {
     fh1::PropLoadOptions options;
     options.census_first_rule = false;
     std::string e;

@@ -75,6 +75,8 @@ class AudioHost {
                 const std::string& burble_bank = {});
   bool init_satnav(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
                    std::string_view language = "EN", bool metric = true);
+  bool init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
+                     std::string_view language = "EN");
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
   bool init_acoustics(const std::filesystem::path& game_root);
   std::string car_burble_bank() const;
@@ -99,6 +101,8 @@ class AudioHost {
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
   void skip_vo();
+  void trigger_codriver(std::string_view cue_path);
+  void clear_codriver();
   void radio_set_time_of_day(double hour);
   void radio_trigger_special(std::string_view gameplay_event);
   void radio_trigger_immediate(std::string_view gameplay_event);
@@ -143,6 +147,8 @@ class AudioHost {
   bool has_sfx_ = false;
   bool satnav_tried_ = false;
   bool has_satnav_ = false;
+  bool codriver_tried_ = false;
+  bool has_codriver_ = false;
   bool vo_tried_ = false;
   bool has_vo_ = false;
   bool acoustics_tried_ = false;

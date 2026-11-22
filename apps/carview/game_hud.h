@@ -9,6 +9,7 @@
 
 #include "freeroam/festival_ai.h"
 #include "freeroam/speed_zones.h"
+#include "rally_hub.h"
 #include "ui.h"
 
 namespace carview {
@@ -207,6 +208,10 @@ struct DriveHud {
   const PrStuntHud* pr_stunt = nullptr;
   const freeroam::SpeedActivityHud* speed_hud = nullptr;
   const freeroam::HeadToHeadHud* h2h = nullptr;
+  const RallyStageHud* rally_stage = nullptr;
+  const RallyHubState* rally_hub = nullptr;
+  const RallyServiceAreaState* rally_service = nullptr;
+  const RallyChampResultsState* rally_results = nullptr;
   int driver_level = 1, driver_xp = 0, driver_next_xp = 0;
   int affinity_level = 0;
   double affinity_discount_pct = 0.0;

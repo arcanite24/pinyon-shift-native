@@ -24,8 +24,9 @@ std::string credits_text(int64_t v) {
   return (v < 0 ? "-" : "") + s;
 }
 
-const char* level_name(int level, bool is_stock) {
+const char* level_name(int part_enum, int level, bool is_stock) {
   if (is_stock || level <= 0) return "Stock";
+  if (garage::is_rally_part(part_enum, level)) return "Rally";
   switch (level) {
     case 1: return "Street";
     case 2: return "Sport";
@@ -135,7 +136,8 @@ bool UpgradeShop::reload_slots(std::string& why) {
         } else if (s.part_enum == 2) {
           slot.part_names.push_back(r.is_stock ? "Stock Body" : ("Body Conversion #" + std::to_string(r.level)));
         } else {
-          slot.part_names.push_back(std::string(level_name(r.level, r.is_stock)) + " (L" + std::to_string(r.level) + ")");
+          slot.part_names.push_back(std::string(level_name(s.part_enum, r.level, r.is_stock)) + " (L" +
+                                    std::to_string(r.level) + ")");
         }
       }
     }
@@ -441,6 +443,28 @@ void UpgradeShop::reset_tuning() {
   }
   changed_ = true;
   visual_dirty_ = true;
+}
+
+garage::RallyKitPlan UpgradeShop::rally_kit_plan(int discount_percent, bool include_optional_aero) const {
+  if (!open_ || !garage_ || !db_) return {};
+  return garage::plan_rally_kit(*garage_, *db_, garage_id_, discount_percent, include_optional_aero, phys_settings_,
+                                pi_cfg_, bands_);
+}
+
+bool UpgradeShop::fit_rally_kit(int discount_percent, int64_t& credits, std::string& message,
+                                bool include_optional_aero) {
+  if (!open_ || !garage_ || !db_) return false;
+  const auto plan = rally_kit_plan(discount_percent, include_optional_aero);
+  if (!garage::apply_rally_kit(*garage_, *db_, garage_id_, plan, discount_percent, credits, phys_settings_, pi_cfg_,
+                               bands_, &message)) {
+    return false;
+  }
+  changed_ = true;
+  visual_dirty_ = true;
+  std::string ignored;
+  reload_slots(ignored);
+  refresh_current_and_preview();
+  return true;
 }
 
 int UpgradeShop::active_part_enum() const {

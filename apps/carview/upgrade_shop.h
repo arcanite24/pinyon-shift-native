@@ -13,6 +13,7 @@
 #include "cars/visual_setup.h"
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
+#include "garage/rally_kit.h"
 #include "garage/tuning.h"
 
 namespace carview {
@@ -53,6 +54,9 @@ class UpgradeShop {
 
   // Fits the shown part / conversion, applies Auto Upgrade, or resets Tuning slider.
   bool fit(int discount_percent, int64_t& credits, std::string& message);
+  // Inspects / plans / installs the full Horizon Rally Conversion Kit (tyres, suspension, transmission, aero).
+  garage::RallyKitPlan rally_kit_plan(int discount_percent, bool include_optional_aero = true) const;
+  bool fit_rally_kit(int discount_percent, int64_t& credits, std::string& message, bool include_optional_aero = true);
   // Sells an owned non-fitted non-stock part for 50% resale value.
   bool sell_shown_part(int64_t& credits, std::string& message);
   // Resets all tuning sliders back to stock defaults (when on Tuning tab).

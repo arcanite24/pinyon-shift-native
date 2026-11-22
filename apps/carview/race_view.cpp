@@ -11,6 +11,8 @@
 #include "drive/from_physics.h"
 #include "garage/garage.h"
 #include "race/street_line.h"
+#include "race/rally_championship.h"
+#include "fh1data/archive.h"
 #include "traffic/nav.h"
 #include "traffic_view.h"
 #include "world/collision.h"
@@ -112,10 +114,41 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     std::snprintf(route_name, sizeof route_name, "TrackRoute%03d.xml", event_.route_id);
     std::snprintf(line_name, sizeof line_name, "route_%03d.owt", event_.route_id);
     const auto media = o.stage_world.parent_path().parent_path();
-    if (!race::load_route_file(o.stage_world / "Ribbon_00" / route_name, event_.route_id, route_, &e) ||
-        !race::load_owt_file(media / "aiopenworld" / world / "Ribbon_00" / line_name, owt_, &e)) {
+    std::filesystem::path rally_pkg = o.rally_package;
+    if (rally_pkg.empty() && !state_root.empty()) rally_pkg = race::find_rally_package(state_root);
+
+    bool route_ok = race::load_route_file(o.stage_world / "Ribbon_00" / route_name, event_.route_id, route_, &e);
+    if (!route_ok && !rally_pkg.empty()) {
+      std::string zwhy;
+      if (auto zip = fh1::Archive::open(rally_pkg / "Media" / "DLCZips" / "1600_pri_65.zip", &zwhy)) {
+        auto r = zip->read(std::string("media/Tracks/ColoradoDirt/Ribbon_00/") + route_name);
+        if (r.ok()) {
+          route_.id = event_.route_id;
+          route_ok = race::parse_route(std::string_view(reinterpret_cast<const char*>(r.data.data()), r.data.size()),
+                                       route_, &e);
+        }
+      }
+    }
+    bool owt_ok = race::load_owt_file(media / "aiopenworld" / world / "Ribbon_00" / line_name, owt_, &e);
+    if (!owt_ok && !rally_pkg.empty()) {
+      owt_ok = race::load_owt_file(rally_pkg / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "AIOpenWorld" /
+                                       "coloradodirt" / "Ribbon_00" / line_name,
+                                   owt_, &e);
+    }
+    if (!route_ok || !owt_ok) {
       error = e;
       return false;
+    }
+    if (!o.stage_title.empty()) event_.name = o.stage_title;
+
+    // Load Co-Driver pace notes & RallyCall gates for this stage.
+    codriver_.reset();
+    race::CoDriverAudioMap cd_map;
+    std::vector<race::RallyCallGate> gates;
+    if (!rally_pkg.empty()) race::load_codriver_audio_map(rally_pkg, cd_map, nullptr);
+    if (race::load_rally_calls(o.stage_world, rally_pkg, event_.route_id, gates, nullptr) && !gates.empty()) {
+      codriver_.load(std::move(gates), cd_map);
+      std::printf("race: loaded %zu Co-Driver RallyCall gates for route %d\n", codriver_.gate_count(), event_.route_id);
     }
   } else if (!race::load_event(root, event, o.difficulty, event_, &e, state_root, o.parts_db, o.ai_mode) ||
              !race::load_route(root, event_.route_id, route_, &e)) {
@@ -827,8 +860,12 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     if (session_->finished(i) && session_->car(i).finish > session_->clock() - drive::Vehicle::kStep - 1e-9)
       std::printf("race: t %.2f s: %s finished %s in %.3f s\n", session_->clock(), name_of(i).c_str(),
                   ordinal(session_->car(i).place), session_->car(i).finish);
-  // A stage's splits (SplitPoints fractions of the length past the start)
-  // and, at the finish, the place among the timed field.
+  // A stage's splits (StartLine + (FinishLine - StartLine) * SplitPoints_k),
+  // Co-Driver pace-note gate crossings, and stage finish ranking.
+  if (stage_ && session_->clock() >= 0.0 && !session_->finished(n)) {
+    const auto& pos = player.position();
+    codriver_.observe(session_->clock(), pos.x, pos.z);
+  }
   if (have_stage_track_ && stage_place_ == 0) {
     if (session_->finished(n)) {
       const double t = session_->car(n).finish;
@@ -837,11 +874,19 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       std::sort(sorted.begin(), sorted.end());
       std::printf("race: stage time %.3f s: %d of %zu (field %.2f to %.2f s)\n", t, stage_place_,
                   stage_field_.size() + 1, sorted.empty() ? 0.0 : sorted.front(), sorted.empty() ? 0.0 : sorted.back());
-    } else if (split_times_.size() < stage_track_.splits.size() && session_->clock() > 0 &&
-               field_->progress(n) >=
-                   line_.gate_progress + stage_track_.splits[split_times_.size()] * stage_track_.length) {
-      split_times_.push_back(session_->clock());
-      std::printf("race: t %.2f s: split %zu\n", session_->clock(), split_times_.size());
+    } else if (split_times_.size() < stage_track_.splits.size() && session_->clock() > 0) {
+      const size_t k = split_times_.size();
+      const double frac =
+          stage_track_.start_line + (stage_track_.finish_line - stage_track_.start_line) * stage_track_.splits[k];
+      if (field_->progress(n) >= line_.gate_progress + frac * stage_track_.length) {
+        const double clk = session_->clock();
+        split_times_.push_back(clk);
+        double target_cum = 0.0;
+        for (size_t j = 0; j <= k && j < stage_track_.best.size(); ++j) target_cum += stage_track_.best[j];
+        last_split_delta_ = target_cum > 0.0 ? (clk - target_cum) : 0.0;
+        last_split_at_ = clk;
+        std::printf("race: t %.2f s: split %zu (delta %+.2f s)\n", clk, split_times_.size(), last_split_delta_);
+      }
     }
   }
 }
