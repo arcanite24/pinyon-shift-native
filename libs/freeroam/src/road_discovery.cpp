@@ -105,13 +105,13 @@ bool RoadDiscovery::is_road_discovered(int road_group) const {
 
 void RoadDiscovery::reset() {
   std::fill(bits_.begin(), bits_.end(), 0u);
-  std::fill(road_discovered_.begin(), road_discovered_.end(), 0);
+  std::fill(road_discovered_.begin(), road_discovered_.end(), uint8_t{0});
   discovered_roads_ = 0;
 }
 
 void RoadDiscovery::recompute_discovered_roads() {
   discovered_roads_ = 0;
-  std::fill(road_discovered_.begin(), road_discovered_.end(), 0);
+  std::fill(road_discovered_.begin(), road_discovered_.end(), uint8_t{0});
   for (size_t g = 0; g < road_nodes_.size(); ++g) {
     bool any = false;
     for (uint32_t n : road_nodes_[g]) {

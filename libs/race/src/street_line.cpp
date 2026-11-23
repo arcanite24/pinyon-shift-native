@@ -61,8 +61,8 @@ std::vector<uint32_t> shortest(const Graph& g, uint32_t a, uint32_t b, std::vect
   std::vector<uint32_t> prev(n, std::numeric_limits<uint32_t>::max());
   using Q = std::pair<float, uint32_t>;
   std::priority_queue<Q, std::vector<Q>, std::greater<Q>> q;
-  dist[a] = 0;
-  q.push({0, a});
+  dist[a] = 0.0f;
+  q.push({0.0f, a});
   while (!q.empty()) {
     const auto [d, u] = q.top();
     q.pop();
