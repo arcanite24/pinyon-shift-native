@@ -1,0 +1,162 @@
+# Feature tables rendered where a page contains {{features}}.
+#
+# Each platform cell begins with one of:
+#   "yes"      supported
+#   "partly"   supported with a limit, explained after a colon
+#   "not yet"  planned or missing
+#   "n/a"      does not apply
+
+platforms = ["Windows", "Linux and Steam Deck", "macOS", "Android"]
+
+[[original]]
+feature = "Engine"
+link = "performance.md#architecture"
+xbox = "PowerPC game executable on Xbox 360"
+shift = "Clean-room C++20 and Vulkan 1.3 native engine; reads your disc's assets directly without emulation or binary translation"
+
+[[original]]
+feature = "Resolution and scaling"
+link = "performance.md#presets-and-scaling"
+xbox = "1280 × 720"
+shift = "Native 720p through 4K+, ultrawide with centered 16:9 UI4 chrome, render-scale options, CAS / FSR / temporal upscaling, optional VRS"
+
+[[original]]
+feature = "Frame rate"
+link = "performance.md#measured-numbers"
+xbox = "30 fps"
+shift = "Uncapped or paced 60 / 120+ fps; 120 Hz car physics decoupled from display refresh"
+
+[[original]]
+feature = "Rendering"
+link = "performance.md#architecture"
+xbox = "Fixed Xbox 360 Xenos pipeline"
+shift = "GPU-driven world culling and Hi-Z occlusion, cascaded shadows, dynamic cubemaps, 3-band cockpit mirrors, MSAA up to 4x, SSAO, FXAA, bloom, HDR10 output"
+
+[[original]]
+feature = "Driving and assists"
+link = "features.md#driving-physics-and-assists"
+xbox = "Automatic / Manual / Manual+Clutch, ABS, TCS, STM, rewind, racing line"
+shift = "Per-car physics from your disc's database, Automatic / Manual / Manual+Clutch, ABS, TCS, STM, steering assist, 3D driving line, rewind buffer"
+
+[[original]]
+feature = "Audio and radio"
+link = "features.md#audio-and-radio"
+xbox = "FMOD engine synthesis, 3 radio stations, DJs, race voiceover"
+shift = "Dedicated lock-free audio thread, baked engine loops and tuning curves, 3 radio stations via `dr_mp3`, voiceover/acoustics, custom radio station builder"
+
+[[original]]
+feature = "World and career"
+link = "features.md#colorado-world-career-and-dlc"
+xbox = "Colorado open world, wristbands, outposts, street races, showcases, barn finds"
+shift = "Streamed Colorado world with traffic, day/night cycle, smashables, discount signs, barn finds, wristbands, outposts, showcases, Horizon Rally and 1000 Club (with your v4 TU)"
+
+[[original]]
+feature = "User interface"
+link = "features.md#ui4-interface-and-overlays"
+xbox = "Anark UI4 `.bgf`/`.bsg`/`.fbf` tilted scenes and vector fonts"
+shift = "Reads the disc's `.bgf` scenes, `.xds` artwork, 2-texture masks and 11 vector fonts; live settings (<kbd>F6</kbd>), achievements (<kbd>F7</kbd>), trainer (<kbd>F10</kbd>), camera editor"
+
+[[original]]
+feature = "Input and devices"
+link = "features.md#controllers-wheels-dualsense-and-head-tracking"
+xbox = "Xbox 360 controller and licensed 360 wheels"
+shift = "SDL3 gamepads, keyboard driving with rebinding, racing wheels with pedal/FFB tuning, DualSense adaptive triggers/lightbar, OpenTrack head tracking, UDP telemetry"
+
+[[original]]
+feature = "Mods and saves"
+link = "modding.md"
+xbox = "None; console storage only"
+shift = "`mod.toml` / `mod.txt` overlay with priority order, DB patches, live texture reload, custom radio builder, save isolation, automatic backups, Xenia save import and LAN sync"
+
+[[original]]
+feature = "Loading and car switches"
+link = "performance.md#measured-numbers"
+xbox = "Full scene reload between cars and events"
+shift = "Persistent `VkPipelineCache`, parallel startup (~3.7 s warm on desktop), in-place hot car swap (~0.21 s)"
+
+# Platform matrix
+
+[[platform]]
+feature = "Renderer"
+link = "performance.md#architecture"
+cells = [
+  "yes: Vulkan 1.3",
+  "yes: Vulkan 1.3 (RADV or NVIDIA)",
+  "yes: Vulkan on Metal via bundled MoltenVK",
+  "yes: Vulkan 1.1+ (system or Mesa Turnip)",
+]
+
+[[platform]]
+feature = "GUI launcher (`shift-launcher`)"
+link = "install.md#using-the-launcher"
+cells = [
+  "yes: portable `.zip`",
+  "yes: `.zip` with Add to Steam",
+  "partly: unsigned `Shift Engine.app` (approve once in System Settings)",
+  "n/a: syncs from the PC launcher over local Wi-Fi",
+]
+
+[[platform]]
+feature = "GPU-driven world culling"
+link = "performance.md#split-bindless-and-tbdr"
+cells = [
+  "yes",
+  "yes",
+  "yes: split bindless (`1x sampler + 4096 sampled images`)",
+  "yes: split bindless on Vulkan 1.1+ drivers with descriptor indexing",
+]
+
+[[platform]]
+feature = "Controllers and input"
+link = "features.md#controllers-wheels-dualsense-and-head-tracking"
+cells = [
+  "yes: gamepads, keyboard, wheels, DualSense, OpenTrack",
+  "yes: gamepads, Steam Input, keyboard, wheels",
+  "yes: gamepads, keyboard (`Cmd` shortcuts)",
+  "yes: Bluetooth/USB/built-in gamepads and multi-touch driving HUD",
+]
+
+[[platform]]
+feature = "HDR10 output"
+link = "features.md#ui4-interface-and-overlays"
+cells = [
+  "yes: native swapchain and Windows display HDR toggle",
+  "partly: offered when the Vulkan swapchain exposes HDR10",
+  "partly: offered when MoltenVK exposes HDR10",
+  "partly: offered when the Android surface exposes HDR10",
+]
+
+[[platform]]
+feature = "DLC, Title Update v4, Rally and 1000 Club"
+link = "features.md#colorado-world-career-and-dlc"
+cells = [
+  "yes: imported in launcher or CLI",
+  "yes: imported in launcher or CLI",
+  "yes: imported in launcher or CLI",
+  "partly: baked on PC and transferred via LAN Wi-Fi Sync",
+]
+
+[[platform]]
+feature = "Mods and custom radio"
+link = "modding.md"
+cells = [
+  "yes: launcher Mod Manager and Custom Radio Builder",
+  "yes: launcher Mod Manager and Custom Radio Builder",
+  "yes: launcher Mod Manager and Custom Radio Builder",
+  "partly: enabled mods and custom radio synced from PC over LAN",
+]
+
+[[platform]]
+feature = "Save backups and sync"
+link = "modding.md#save-isolation-and-sync"
+cells = ["yes", "yes", "yes", "yes: LAN Wi-Fi Sync with PC launcher"]
+
+[[platform]]
+feature = "Benchmark suite (`tools/benchmark.py`)"
+link = "performance.md#running-benchmarks"
+cells = [
+  "yes: local JSON/CSV + HTML dashboard",
+  "yes: local or `--remote` SSH",
+  "yes: local or `--remote` SSH",
+  "yes: over `adb` with `-DSHIFT_ANDROID_EXECUTABLE=ON`",
+]
