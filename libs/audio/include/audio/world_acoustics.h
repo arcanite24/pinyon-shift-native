@@ -124,8 +124,9 @@ class WorldAcousticsData {
  public:
   bool load_configs(const std::filesystem::path& game_root, std::string* note = nullptr);
   // Loads a bounded subset (or all) of .soundscape tiles from Colorado's
-  // `media/tracks/colorado/bin.zip` into the spatial index.
+  // `media/tracks/colorado/bin.zip` or Rally's `ColoradoDirt_pri_65.zip`.
   int load_soundscapes_from_archive(const std::filesystem::path& bin_zip, int max_tiles = 0);
+  void clear_soundscapes();
   void add_tile(SoundscapeTile tile);
 
   const std::vector<ReverbTemplate>& reverb_templates() const { return reverb_templates_; }

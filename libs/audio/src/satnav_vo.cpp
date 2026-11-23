@@ -319,6 +319,24 @@ void SatNavVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem::
         ok = decode_fsb_clip(job.bank_path, job.subsound, ffmpeg, tmp, *pcm);
         if (ok && !cpath.empty()) write_cached_pcm(cpath, *pcm);
       }
+      if (!ok) {
+        // Android / no-ffmpeg fallback: gentle two-tone SatNav confirmation chime so turn cues stay audible.
+        constexpr int kRate = 24000;
+        const size_t n = size_t(0.24 * kRate);
+        pcm->rate = kRate;
+        pcm->data.resize(n);
+        const double f0 = (int(job.cue) & 1) ? 740.0 : 620.0;
+        const double f1 = f0 * 1.25;
+        double ph = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+          const double u = double(i) / double(n);
+          const double f = u < 0.48 ? f0 : f1;
+          ph += 6.283185307179586 * f / double(kRate);
+          const double env = std::sin(3.14159265 * std::fmod(u * 2.0, 1.0)) * std::exp(-2.2 * u);
+          pcm->data[i] = float(0.22 * env * std::sin(ph));
+        }
+        ok = true;
+      }
       if (ok && !pcm->data.empty()) {
         if (!loaded_q_.push({job.cue, pcm.get()})) continue;
         pcm.release();

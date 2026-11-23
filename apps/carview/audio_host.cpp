@@ -321,8 +321,19 @@ bool AudioHost::init_vo(const std::filesystem::path& game_root, std::string_view
   return has_vo_;
 }
 
-bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
+bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                               const std::filesystem::path& world_dir, const std::filesystem::path& rally_package) {
   if (game_root.empty()) return false;
+  auto low = [](std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+  };
+  const std::string wname = low(world_dir.filename().string().empty() ? world_dir.parent_path().filename().string()
+                                                                      : world_dir.filename().string());
+  const bool is_rally = wname.find("coloradodirt") != std::string::npos ||
+                        low(world_dir.string()).find("coloradodirt") != std::string::npos;
+  const std::string world_key = is_rally ? "coloradodirt" : "colorado";
+
   if (!acoustics_tried_) {
     acoustics_tried_ = true;
     std::string note;
@@ -330,23 +341,49 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
       std::printf("%s\n", note.c_str());
       has_acoustics_ = true;
     }
-    // Load Colorado .soundscape tiles (tunnels, canyons, regional reverb & ambience zones)
-    // from media/tracks/colorado/bin.zip (Pillar 5 P0-12).
-    std::error_code ec;
-    const auto bin_lower = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "bin.zip");
-    const auto bin_upper = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "Bin.zip");
-    const auto& bin_zip = std::filesystem::exists(bin_lower, ec) ? bin_lower : bin_upper;
-    if (std::filesystem::exists(bin_zip, ec)) {
-      const int tiles = acoustics_.load_soundscapes_from_archive(bin_zip);
-      if (tiles > 0) {
-        has_acoustics_ = true;
-        std::printf("world acoustics: loaded %d .soundscape tiles (%zu reverb zones, %zu ambience zones)\n", tiles,
-                    acoustics_.reverb_zone_count(), acoustics_.ambience_zone_count());
-      }
-    }
     const int beds = engine_.load_ambience_beds(game_root, cache_dir);
     if (beds > 0) {
       std::printf("world acoustics: queued %d AMB_*.fev ambience beds for async decode\n", beds);
+    }
+  }
+
+  if (acoustics_world_key_ != world_key) {
+    acoustics_.clear_soundscapes();
+    acoustics_world_key_ = world_key;
+    std::error_code ec;
+    std::filesystem::path archive_path;
+    if (is_rally) {
+      // Horizon Rally Expansion: locate ColoradoDirt_pri_65.zip or ColoradoDirt/bin.zip.
+      std::vector<std::filesystem::path> cands;
+      if (!rally_package.empty()) {
+        cands.push_back(rally_package / "Media" / "DLCZips" / "ColoradoDirt_pri_65.zip");
+        cands.push_back(rally_package / "media" / "dlczips" / "ColoradoDirt_pri_65.zip");
+      }
+      if (!world_dir.empty()) {
+        cands.push_back(world_dir / "ColoradoDirt_pri_65.zip");
+        cands.push_back(world_dir.parent_path().parent_path().parent_path().parent_path() / "ColoradoDirt_pri_65.zip");
+        cands.push_back(world_dir / "bin.zip");
+        cands.push_back(world_dir / "Bin.zip");
+      }
+      cands.push_back(cars::mods::resolve(game_root / "media" / "tracks" / "coloradodirt" / "bin.zip"));
+      for (const auto& c : cands) {
+        if (!c.empty() && std::filesystem::exists(c, ec)) {
+          archive_path = c;
+          break;
+        }
+      }
+    } else {
+      const auto bin_lower = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "bin.zip");
+      const auto bin_upper = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "Bin.zip");
+      archive_path = std::filesystem::exists(bin_lower, ec) ? bin_lower : bin_upper;
+    }
+    if (!archive_path.empty() && std::filesystem::exists(archive_path, ec)) {
+      const int tiles = acoustics_.load_soundscapes_from_archive(archive_path);
+      if (tiles > 0) {
+        has_acoustics_ = true;
+        std::printf("world acoustics (%s): loaded %d .soundscape tiles (%zu reverb zones, %zu ambience zones)\n",
+                    world_key.c_str(), tiles, acoustics_.reverb_zone_count(), acoustics_.ambience_zone_count());
+      }
     }
   }
   return has_acoustics_;

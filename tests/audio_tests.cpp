@@ -1297,6 +1297,190 @@ void sfx_engine_checks() {
     CHECK(bus_rms(mout) > 0.01);  // Not hard-muted by legacy Menu/Paused snapshot!
   }
 
+  // P0-2: Concurrent SfxEngine stress test — simultaneous worker_, burble_worker_,
+  // set_sample() producers, and real-time audio render() consumer with zero races.
+  {
+    namespace fs = std::filesystem;
+    const fs::path tmp_root = fs::temp_directory_path() / "shift-sfx-race-test";
+    const fs::path tmp_cache = tmp_root / "cache";
+    std::error_code ec;
+    fs::remove_all(tmp_root, ec);
+    const fs::path burble_dir = tmp_root / "media" / "audio" / "cars" / "Engines" / "Soundbanks" / "Burbles";
+    const fs::path sfx_cache = tmp_cache / "sfx";
+    fs::create_directories(burble_dir, ec);
+    fs::create_directories(sfx_cache, ec);
+
+    // Create two synthetic FSB4 banks with 4 subsounds each and pre-seed their .s16 cache files
+    // so both worker_ and burble_worker_ push rapidly and concurrently without waiting on ffmpeg.
+    auto make_mock_fsb4 = [&](const fs::path& p, uint32_t subs) {
+      const size_t data_off = (48 + subs * 80 + 31) & ~size_t(31);
+      std::vector<uint8_t> bank(data_off + subs * 64, 0);
+      auto put32 = [&](size_t at, uint32_t v) {
+        for (int i = 0; i < 4; ++i) bank[at + size_t(i)] = uint8_t(v >> (8 * i));
+      };
+      std::copy_n("FSB4", 4, bank.begin());
+      put32(4, subs);
+      put32(8, subs * 80);
+      put32(12, subs * 64);
+      for (uint32_t s = 0; s < subs; ++s) {
+        const size_t off = 48 + s * 80;
+        bank[off] = 80;
+        put32(off + 32, 64);
+        put32(off + 36, 64);
+        put32(off + 48, 0x01000000);
+        put32(off + 52, 48000);
+        bank[off + 62] = 1;
+      }
+      std::ofstream f(p, std::ios::binary);
+      f.write(reinterpret_cast<const char*>(bank.data()), std::streamsize(bank.size()));
+    };
+    auto write_s16 = [&](const std::string& stem, uint32_t sub, float freq) {
+      const fs::path cp = sfx_cache / (stem + "." + std::to_string(sub) + ".s16");
+      std::ofstream f(cp, std::ios::binary | std::ios::trunc);
+      const int32_t rate = 48000;
+      const uint32_t frames = 512;
+      f.write(reinterpret_cast<const char*>(&rate), 4);
+      f.write(reinterpret_cast<const char*>(&frames), 4);
+      std::vector<int16_t> pcm(frames);
+      for (uint32_t i = 0; i < frames; ++i) {
+        pcm[i] = int16_t(std::lround(12000.0 * std::sin(2.0 * 3.14159265358979 * freq * double(i) / 48000.0)));
+      }
+      f.write(reinterpret_cast<const char*>(pcm.data()), std::streamsize(frames * 2));
+    };
+
+    make_mock_fsb4(burble_dir / "burble_a.fsb", 4);
+    make_mock_fsb4(burble_dir / "burble_b.fsb", 4);
+    for (uint32_t i = 0; i < 4; ++i) {
+      write_s16("burble_a", i, 180.0f + 40.0f * float(i));
+      write_s16("burble_b", i, 260.0f + 50.0f * float(i));
+    }
+
+    audio::SfxEngine stress_sfx(48000);
+    std::atomic<bool> done{false};
+    std::atomic<int> bad_samples{0};
+
+    // Audio consumer thread: continuously renders and triggers UI/collisions.
+    std::thread consumer([&]() {
+      std::vector<float> eng(256 * 2, 0.0f);
+      std::vector<float> wind(256 * 2, 0.0f);
+      std::vector<float> ui(256 * 2, 0.0f);
+      float* buses[audio::kBuses]{};
+      buses[int(audio::Bus::kEngine)] = eng.data();
+      buses[int(audio::Bus::kWind)] = wind.data();
+      buses[int(audio::Bus::kUi)] = ui.data();
+      audio::VehicleAudioState vs{};
+      vs.speed_mph = 95.0f;
+      vs.rpm = 4800.0f;
+      vs.throttle = 0.0f;
+      vs.backfire_level = 3;
+      while (!done.load(std::memory_order_acquire)) {
+        std::fill(eng.begin(), eng.end(), 0.0f);
+        std::fill(wind.begin(), wind.end(), 0.0f);
+        std::fill(ui.begin(), ui.end(), 0.0f);
+        stress_sfx.render(vs, buses, 256, nullptr);
+        for (float v : eng)
+          if (!std::isfinite(v)) bad_samples.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+
+    // Producer 1: repeatedly reloads main SFX bank (worker_ -> loaded_q_).
+    std::thread p_main([&]() {
+      for (int i = 0; i < 20; ++i) {
+        stress_sfx.load(tmp_root, tmp_cache, (i & 1) ? "burble_a.fsb" : "burble_b.fsb", nullptr);
+      }
+    });
+    // Producer 2: repeatedly reloads burble bank (burble_worker_ -> burble_loaded_q_).
+    std::thread p_burble([&]() {
+      for (int i = 0; i < 40; ++i) {
+        stress_sfx.reload_burble_bank(tmp_root, tmp_cache, (i & 1) ? "burble_b.fsb" : "burble_a.fsb");
+      }
+    });
+    // Producer 3: pushes direct samples concurrently (set_sample -> direct_loaded_q_).
+    std::thread p_direct([&]() {
+      for (int i = 0; i < 80; ++i) {
+        stress_sfx.set_sample(audio::SfxSoundId::kWind, make_tone(200.0 + double(i), 256));
+        stress_sfx.set_sample(audio::SfxSoundId::kUiAccept, make_tone(600.0 + double(i), 256));
+      }
+    });
+
+    p_main.join();
+    p_burble.join();
+    p_direct.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    done.store(true, std::memory_order_release);
+    consumer.join();
+
+    // Final drain and verification.
+    float* null_buses[audio::kBuses]{};
+    audio::VehicleAudioState vs{};
+    stress_sfx.render(vs, null_buses, 64, nullptr);
+    CHECK(bad_samples.load() == 0);
+    CHECK(stress_sfx.loaded_sample_count() >= 4);
+    fs::remove_all(tmp_root, ec);
+  }
+
+  // P0-6: Airborne Showcase 3D aircraft audio (procedural fallback + decoded PCM + Doppler).
+  {
+    audio::SfxEngine sc_sfx(48000);
+    std::vector<float> other(4800 * 2, 0.0f);
+    float* buses[audio::kBuses]{};
+    buses[int(audio::Bus::kOtherCars)] = other.data();
+    for (uint8_t kind = 0; kind <= 4; ++kind) {
+      std::fill(other.begin(), other.end(), 0.0f);
+      audio::VehicleAudioState vs{};
+      vs.listener_pos = {0.0f, 0.0f, 0.0f};
+      vs.listener_right = {1.0f, 0.0f, 0.0f};
+      vs.showcase.active = true;
+      vs.showcase.kind = kind;
+      vs.showcase.pos = {15.0f, 20.0f, 25.0f};
+      vs.showcase.vel = {0.0f, -2.0f, -55.0f};
+      vs.showcase.speed_mps = 55.0f;
+      vs.showcase.bank = 0.4f;
+      vs.showcase.pitch = 0.1f;
+      sc_sfx.render(vs, buses, 4800, nullptr);
+      CHECK(bus_rms(other) > 0.005);
+    }
+    // Also verify decoded Triggerable_Events PCM takes precedence when loaded.
+    sc_sfx.set_sample(audio::SfxSoundId::kShowcaseHeli, make_tone(320.0, 9600));
+    std::fill(other.begin(), other.end(), 0.0f);
+    audio::VehicleAudioState vs{};
+    vs.showcase.active = true;
+    vs.showcase.kind = 4;
+    vs.showcase.pos = {5.0f, 15.0f, 10.0f};
+    vs.showcase.speed_mps = 40.0f;
+    sc_sfx.render(vs, buses, 4800, nullptr);
+    CHECK(bus_rms(other) > 0.02);
+  }
+
+  // P0-8: Android procedural SFX fallback populates rich non-silent SFX without external ffmpeg.
+  {
+    audio::SfxEngine droid_sfx(48000);
+    droid_sfx.populate_procedural_fallbacks();
+    std::vector<float> wind(2400 * 2, 0.0f), tyres(2400 * 2, 0.0f), eng(2400 * 2, 0.0f), ui(2400 * 2, 0.0f);
+    float* buses[audio::kBuses]{};
+    buses[int(audio::Bus::kWind)] = wind.data();
+    buses[int(audio::Bus::kTyres)] = tyres.data();
+    buses[int(audio::Bus::kEngine)] = eng.data();
+    buses[int(audio::Bus::kUi)] = ui.data();
+    audio::VehicleAudioState vs{};
+    vs.speed_mph = 110.0f;
+    vs.rpm = 5400.0f;
+    vs.throttle = 0.8f;
+    vs.forced_induction = 1;
+    vs.turbo_norm_rpm = 0.9f;
+    for (auto& w : vs.wheels) {
+      w.load = 1.0f;
+      w.slip_combined = 0.6f;
+    }
+    droid_sfx.trigger_ui(audio::UiCue::kAccept);
+    droid_sfx.render(vs, buses, 2400, nullptr);
+    CHECK(droid_sfx.loaded_sample_count() >= 40);
+    CHECK(bus_rms(wind) > 0.005);
+    CHECK(bus_rms(tyres) > 0.005);
+    CHECK(bus_rms(eng) > 0.005);
+    CHECK(bus_rms(ui) > 0.005);
+  }
+
   // Optional disc smoke check when SHIFT_GAME_ROOT is set.
   const char* game_env = std::getenv("SHIFT_GAME_ROOT");
   if (game_env && *game_env) {

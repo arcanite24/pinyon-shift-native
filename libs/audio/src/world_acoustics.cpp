@@ -320,6 +320,11 @@ int WorldAcousticsData::load_soundscapes_from_archive(const std::filesystem::pat
   return loaded;
 }
 
+void WorldAcousticsData::clear_soundscapes() {
+  reverb_zones_.clear();
+  ambience_zones_.clear();
+}
+
 void WorldAcousticsData::add_tile(SoundscapeTile tile) {
   for (auto& rz : tile.reverb_zones) reverb_zones_.push_back(std::move(rz));
   for (auto& az : tile.ambience_zones) ambience_zones_.push_back(std::move(az));
@@ -759,7 +764,10 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
     jobs.push_back({slot, bank, sub});
   };
 
-  const std::filesystem::path amb_dir = game_root / "media" / "audio" / "ambience";
+  const std::filesystem::path amb_dirs[] = {
+      game_root / "media" / "audio" / "Tracks" / "Colorado",
+      game_root / "media" / "audio" / "ambience",
+  };
   const char* kFevCandidates[] = {
       "AMB_Quads.fev",
       "AMB_Default.fev",
@@ -767,50 +775,52 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
       "Colorado_Festival.fev",
       "Colorado_Ambience.fev",
   };
-  for (const char* fev_name : kFevCandidates) {
-    const auto fev_path = cars::mods::resolve(amb_dir / fev_name);
-    FevProject proj;
-    if (!load_fev(fev_path, proj, nullptr)) continue;
-    for (const auto& ev : proj.events) {
-      std::filesystem::path bank;
-      uint32_t sub = 0;
-      if (!pick_first_fev_sample(proj, ev, bank, sub)) continue;
-      const std::string lp = lower_str(ev.path);
-      if (lp.find("crowd") != std::string::npos || lp.find("cheer") != std::string::npos) {
-        assign_slot(AmbienceBedSlot::kCrowd, bank, sub);
-      } else if (lp.find("festival") != std::string::npos || lp.find("stage") != std::string::npos) {
-        assign_slot(AmbienceBedSlot::kFestival, bank, sub);
-      } else if (lp.find("mountain") != std::string::npos || lp.find("forest") != std::string::npos ||
-                 lp.find("alpine") != std::string::npos) {
-        assign_slot(AmbienceBedSlot::kMountains, bank, sub);
-      } else if (lp.find("redrock") != std::string::npos || lp.find("canyon") != std::string::npos ||
-                 lp.find("desert") != std::string::npos) {
-        assign_slot(AmbienceBedSlot::kRedRock, bank, sub);
-      } else if (lp.find("town") != std::string::npos || lp.find("urban") != std::string::npos ||
-                 lp.find("city") != std::string::npos) {
-        assign_slot(AmbienceBedSlot::kMainTown, bank, sub);
-      } else if (lp.find("default") != std::string::npos || lp.find("plain") != std::string::npos ||
-                 lp.find("quad") != std::string::npos) {
-        assign_slot(AmbienceBedSlot::kDefault, bank, sub);
+  for (const auto& amb_dir : amb_dirs) {
+    for (const char* fev_name : kFevCandidates) {
+      const auto fev_path = cars::mods::resolve(amb_dir / fev_name);
+      FevProject proj;
+      if (!load_fev(fev_path, proj, nullptr)) continue;
+      for (const auto& ev : proj.events) {
+        std::filesystem::path bank;
+        uint32_t sub = 0;
+        if (!pick_first_fev_sample(proj, ev, bank, sub)) continue;
+        const std::string lp = lower_str(ev.path);
+        if (lp.find("crowd") != std::string::npos || lp.find("cheer") != std::string::npos) {
+          assign_slot(AmbienceBedSlot::kCrowd, bank, sub);
+        } else if (lp.find("festival") != std::string::npos || lp.find("stage") != std::string::npos) {
+          assign_slot(AmbienceBedSlot::kFestival, bank, sub);
+        } else if (lp.find("mountain") != std::string::npos || lp.find("forest") != std::string::npos ||
+                   lp.find("alpine") != std::string::npos) {
+          assign_slot(AmbienceBedSlot::kMountains, bank, sub);
+        } else if (lp.find("redrock") != std::string::npos || lp.find("canyon") != std::string::npos ||
+                   lp.find("desert") != std::string::npos) {
+          assign_slot(AmbienceBedSlot::kRedRock, bank, sub);
+        } else if (lp.find("town") != std::string::npos || lp.find("urban") != std::string::npos ||
+                   lp.find("city") != std::string::npos) {
+          assign_slot(AmbienceBedSlot::kMainTown, bank, sub);
+        } else if (lp.find("default") != std::string::npos || lp.find("plain") != std::string::npos ||
+                   lp.find("quad") != std::string::npos) {
+          assign_slot(AmbienceBedSlot::kDefault, bank, sub);
+        }
       }
     }
-  }
-  // Fallback: if AMB_Quads_Stream.fsb exists directly under ambience/, queue its subsounds.
-  const auto quad_fsb = cars::mods::resolve(amb_dir / "AMB_Quads_Stream.fsb");
-  std::error_code ec;
-  if (std::filesystem::exists(quad_fsb, ec)) {
-    std::vector<uint8_t> raw;
-    std::vector<FsbSample> fsb_s;
-    if (read_bytes_amb(quad_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
-      for (uint32_t i = 0; i < fsb_s.size(); ++i) {
-        const std::string nm = lower_str(fsb_s[i].name);
-        if (nm.find("mountain") != std::string::npos) assign_slot(AmbienceBedSlot::kMountains, quad_fsb, i);
-        else if (nm.find("redrock") != std::string::npos || nm.find("canyon") != std::string::npos)
-          assign_slot(AmbienceBedSlot::kRedRock, quad_fsb, i);
-        else if (nm.find("town") != std::string::npos) assign_slot(AmbienceBedSlot::kMainTown, quad_fsb, i);
-        else if (nm.find("festival") != std::string::npos) assign_slot(AmbienceBedSlot::kFestival, quad_fsb, i);
-        else if (nm.find("crowd") != std::string::npos) assign_slot(AmbienceBedSlot::kCrowd, quad_fsb, i);
-        else if (!assigned[size_t(AmbienceBedSlot::kDefault)]) assign_slot(AmbienceBedSlot::kDefault, quad_fsb, i);
+    // Fallback: if AMB_Quads_Stream.fsb exists directly under amb_dir, queue its subsounds.
+    const auto quad_fsb = cars::mods::resolve(amb_dir / "AMB_Quads_Stream.fsb");
+    std::error_code ec;
+    if (std::filesystem::exists(quad_fsb, ec)) {
+      std::vector<uint8_t> raw;
+      std::vector<FsbSample> fsb_s;
+      if (read_bytes_amb(quad_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+        for (uint32_t i = 0; i < fsb_s.size(); ++i) {
+          const std::string nm = lower_str(fsb_s[i].name);
+          if (nm.find("mountain") != std::string::npos) assign_slot(AmbienceBedSlot::kMountains, quad_fsb, i);
+          else if (nm.find("redrock") != std::string::npos || nm.find("canyon") != std::string::npos)
+            assign_slot(AmbienceBedSlot::kRedRock, quad_fsb, i);
+          else if (nm.find("town") != std::string::npos) assign_slot(AmbienceBedSlot::kMainTown, quad_fsb, i);
+          else if (nm.find("festival") != std::string::npos) assign_slot(AmbienceBedSlot::kFestival, quad_fsb, i);
+          else if (nm.find("crowd") != std::string::npos) assign_slot(AmbienceBedSlot::kCrowd, quad_fsb, i);
+          else if (!assigned[size_t(AmbienceBedSlot::kDefault)]) assign_slot(AmbienceBedSlot::kDefault, quad_fsb, i);
+        }
       }
     }
   }
@@ -819,22 +829,21 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
   if (jobs.empty()) return 0;
 
   stop_worker_.store(false, std::memory_order_release);
-  worker_ = std::thread([this, jobs = std::move(jobs), cache_dir]() {
+  worker_ = std::thread([this, jobs = std::move(jobs), cache_dir, game_root]() {
     const std::filesystem::path ffmpeg = find_ffmpeg();
     std::error_code tec;
     const std::filesystem::path amb_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "ambience");
+    const std::filesystem::path prebaked_amb = game_root / "play" / "sound" / "ambience";
     const std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path(tec) /
         ("shift-amb-decode-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
     std::filesystem::create_directories(temp_dir, tec);
     for (const auto& j : jobs) {
       if (stop_worker_.load(std::memory_order_acquire)) break;
-      const std::filesystem::path cf =
-          amb_cache.empty()
-              ? std::filesystem::path{}
-              : (amb_cache / (lower_str(j.bank.stem().string()) + "." + std::to_string(j.sub) + ".s16"));
+      const std::string fname = lower_str(j.bank.stem().string()) + "." + std::to_string(j.sub) + ".s16";
+      const std::filesystem::path cf = amb_cache.empty() ? std::filesystem::path{} : (amb_cache / fname);
       auto pcm = std::make_unique<PcmSample>();
-      bool ok = !cf.empty() && read_cached_amb(cf, *pcm);
+      bool ok = (!cf.empty() && read_cached_amb(cf, *pcm)) || read_cached_amb(prebaked_amb / fname, *pcm);
       if (!ok) {
         ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
         if (ok && !cf.empty()) write_cached_amb(cf, *pcm);

@@ -78,7 +78,11 @@ class AudioHost {
   bool init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
                      std::string_view language = "EN");
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
-  bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {});
+  bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {},
+                      const std::filesystem::path& world_dir = {}, const std::filesystem::path& rally_package = {});
+  const std::string& acoustics_world_key() const { return acoustics_world_key_; }
+  size_t acoustics_reverb_zones() const { return acoustics_.reverb_zone_count(); }
+  size_t acoustics_ambience_zones() const { return acoustics_.ambience_zone_count(); }
   std::string car_burble_bank() const;
 
   // Initializes Your Music from `music_dir` (<state>/music).
@@ -162,6 +166,7 @@ class AudioHost {
   bool has_vo_ = false;
   bool acoustics_tried_ = false;
   bool has_acoustics_ = false;
+  std::string acoustics_world_key_;
   audio::WorldAcousticsData acoustics_;
   bool last_paused_ = false;
   bool last_menu_ = false;

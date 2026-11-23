@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
@@ -38,6 +39,16 @@ struct WheelAudio {
   float wheel_rpm = 0.0f;
   float load = 1.0f;
   float bottom_out_force = 0.0f;
+};
+
+struct ShowcaseAudioState {
+  bool active = false;
+  uint8_t kind = 0;  // 0=MustangP51, 1=HotAirBalloon, 2=StuntJet, 3=Biplane, 4=Helicopter
+  Vec3f pos{};
+  Vec3f vel{};
+  float speed_mps = 0.0f;
+  float bank = 0.0f;   // roll angle (rad)
+  float pitch = 0.0f;  // pitch angle (rad)
 };
 
 struct VehicleAudioState {
@@ -74,6 +85,7 @@ struct VehicleAudioState {
   bool rewinding = false;
   bool music_active = false;
   std::array<OtherCarAudio, kMaxOtherCars> other_cars{};
+  ShowcaseAudioState showcase{};
 };
 
 struct CollisionHit {
@@ -162,6 +174,11 @@ enum class SfxSoundId : int {
   kOtherCarLoop2,
   kOtherCarLoop3,
   kTrafficCarLoop,
+  kShowcaseP51,
+  kShowcaseBiplane,
+  kShowcaseHeli,
+  kShowcaseBalloon,
+  kShowcaseJet,
   kCount
 };
 
@@ -181,6 +198,8 @@ class SfxEngine {
 
   // Injects a PCM sample directly (for unit tests without game data).
   void set_sample(SfxSoundId id, PcmSample sample);
+  // Populates clean procedural SFX fallbacks for core slots (Android / no-ffmpeg fallback).
+  void populate_procedural_fallbacks();
   void set_rolloffs(const RolloffConfig& cars, const RolloffConfig& traffic) {
     car_rolloff_ = cars;
     traffic_rolloff_ = traffic;
@@ -227,8 +246,10 @@ class SfxEngine {
     float pitch = 1.0f;
   };
 
-  void start_decoder_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir);
+  void start_decoder_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir,
+                            std::filesystem::path game_root = {});
   void stop_decoder_worker();
+  void drain_queue(SpscQueue<LoadedSample>& q);
   void drain_loaded();
   void spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch = 1.0f);
   void mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float target_l, float target_r,
@@ -245,7 +266,13 @@ class SfxEngine {
   RolloffConfig traffic_rolloff_{};
 
   std::array<PcmSample*, int(SfxSoundId::kCount)> samples_{};
-  SpscQueue<LoadedSample> loaded_q_{256};
+  // Dedicated SPSC queues (one per producer) so the real-time audio thread
+  // drains all loaded samples lock-free with zero multi-producer races.
+  SpscQueue<LoadedSample> loaded_q_{256};         // producer: worker_
+  SpscQueue<LoadedSample> burble_loaded_q_{32};   // producer: burble_worker_
+  SpscQueue<LoadedSample> direct_loaded_q_{256};  // producer: set_sample() (guarded by direct_q_mu_)
+  std::mutex direct_q_mu_;
+  std::mutex lifecycle_mu_;  // guards control-thread worker start/stop only (never locked on audio thread)
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
   std::atomic<bool> stop_burble_worker_{false};
@@ -263,6 +290,11 @@ class SfxEngine {
   LoopVoice rewind_voice_{};
   std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_voices_{};
   std::array<double, VehicleAudioState::kMaxOtherCars> whoosh_cooldown_s_{-10.0, -10.0, -10.0, -10.0, -10.0, -10.0};
+  LoopVoice showcase_voice_{};
+  double showcase_synth_phase_ = 0.0;
+  double showcase_synth_lfo_ = 0.0;
+  float showcase_synth_lp_ = 0.0f;
+  uint32_t showcase_synth_rng_ = 0x5A0C45E1u;
 
   // Edge detection & timers (audio thread).
   SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;

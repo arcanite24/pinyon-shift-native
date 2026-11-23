@@ -510,6 +510,7 @@ void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(ptr); break;
       case Retired::kSfx: delete static_cast<SfxEngine*>(ptr); break;
       case Retired::kSatNav: delete static_cast<SatNavVoPlayer*>(ptr); break;
+      case Retired::kCoDriver: delete static_cast<CoDriverVoPlayer*>(ptr); break;
       case Retired::kVo: delete static_cast<VoPlayer*>(ptr); break;
       case Retired::kRadio: delete static_cast<RadioPlayer*>(ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(ptr); break;

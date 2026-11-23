@@ -272,6 +272,25 @@ void test_world_acoustics_and_reverb() {
     check(amb_e > 0.5, "AmbienceBedPlayer renders strong real PCM regional bed");
   }
 
+  // P1: WorldAcousticsData::clear_soundscapes() cleanly swaps Colorado -> ColoradoDirt zones.
+  {
+    audio::WorldAcousticsData sw;
+    audio::SoundscapeTile t1;
+    audio::ReverbZone rz1;
+    rz1.template0 = 0;
+    rz1.template1 = 1;
+    rz1.min_x = -10;
+    rz1.max_x = 10;
+    rz1.min_z = -10;
+    rz1.max_z = 10;
+    t1.reverb_zones.push_back(rz1);
+    sw.add_tile(t1);
+    check(sw.reverb_zone_count() == 1, "Colorado soundscape tile added");
+    sw.clear_soundscapes();
+    check(sw.reverb_zone_count() == 0 && sw.ambience_zone_count() == 0,
+          "clear_soundscapes resets zones cleanly for Rally world switch");
+  }
+
   // Verify real disc files if available (24 reverb templates, 6 ambience templates, real RadioSystem + DialogueScript).
   const std::filesystem::path game_root = "../horizon1-recomp/.local/game/base";
   std::error_code ec;

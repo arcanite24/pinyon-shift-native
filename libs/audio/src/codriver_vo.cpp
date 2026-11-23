@@ -197,6 +197,20 @@ void CoDriverVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem
         ok = decode_fsb_subsound(bank_data, bank_samples, job.bank_path, job.subsound, ffmpeg, temp_dir, *pcm);
         if (ok && !cache_file.empty()) write_cached_pcm(cache_file, *pcm);
       }
+      if (!ok) {
+        // Android / no-ffmpeg fallback: crisp rally pace-note attention chime so stage calls are never silent.
+        constexpr int kRate = 24000;
+        const size_t n = size_t(0.14 * kRate);
+        pcm->rate = kRate;
+        pcm->data.resize(n);
+        const double f = 540.0 + double((job.subsound % 5u) * 75u);
+        for (size_t i = 0; i < n; ++i) {
+          const double u = double(i) / double(n);
+          const double env = std::sin(3.14159265 * u) * std::exp(-3.0 * u);
+          pcm->data[i] = float(0.20 * env * std::sin(6.283185307179586 * f * double(i) / double(kRate)));
+        }
+        ok = true;
+      }
       if (ok) {
         if (!loaded_q_.push({job.clip_id, pcm})) delete pcm;
       } else {
