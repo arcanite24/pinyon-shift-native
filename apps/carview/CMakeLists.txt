@@ -187,9 +187,9 @@ set(carview_sources
 # APK); SHIFT_ANDROID_EXECUTABLE keeps the executable run over adb.
 option(SHIFT_ANDROID_EXECUTABLE "Android: build carview as an executable, not the app's libmain.so" OFF)
 if(ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE)
-  add_library(carview SHARED ${carview_sources})
+  add_library(carview SHARED ${carview_sources} android/jni/android_setup_jni.cpp)
   set_target_properties(carview PROPERTIES OUTPUT_NAME main)
-  target_link_libraries(carview PRIVATE android log)
+  target_link_libraries(carview PRIVATE android log shift_setup)
 else()
   add_executable(carview ${carview_sources})
   if(APPLE)
