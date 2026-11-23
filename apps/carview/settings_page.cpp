@@ -472,6 +472,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
   keys_ = drive::KeyBindings::defaults();
   other_.clear();
   capturing_ = false;
+  tab_ = Tab::kDisplay;
+  row_ = 0;
   bool seen_540p = false;
   for (size_t i = 0; i < tokens.size(); ++i) {
     const std::string& t = tokens[i];
@@ -584,19 +586,6 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
   }
 }
 
-void SettingsPage::move(int by) {
-  if (capturing_) return;
-  const int n = int(rows_.size() + rebinds_.size()) + 1;
-  row_ = ((row_ + by) % n + n) % n;
-}
-
-void SettingsPage::step(int by) {
-  if (capturing_ || row_ >= int(rows_.size())) return;
-  Row& r = rows_[size_t(row_)];
-  const int n = int(r.choices.size());
-  r.pick = size_t(((int(r.pick) + by) % n + n) % n);
-}
-
 namespace {
 SettingsPage::Tab classify_setting_row(const std::string& name) {
   if (name == "preset" || name == "shadows" || name == "bloom" || name == "camera" || name == "camera effects" ||
@@ -605,6 +594,8 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "render scale" || name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
       name == "ambient occlusion" || name == "contact shadows" || name == "tonemapper" ||
       name == "terrain hex-tiling" || name == "velocity motion blur" ||
+      name == "shadow softness (pcss)" || name == "screen-space reflections" ||
+      name == "volumetric fog & beams" || name == "car clearcoat detail" ||
       name == "ray tracing" || name == "rt bounces" || name == "rt samples" || name == "rt denoiser" ||
       name == "graphics backend" ||
       name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
@@ -634,44 +625,87 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
 }
 }  // namespace
 
-SettingsPage::Tab SettingsPage::active_tab() const {
-  if (row_ >= 0 && row_ < int(rows_.size())) return classify_setting_row(rows_[size_t(row_)].name);
-  if (on_rebind_row()) return Tab::kControls;
-  return Tab::kPinyon;
+std::vector<int> SettingsPage::tab_flat_indices(Tab t) const {
+  std::vector<int> out;
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    if (classify_setting_row(rows_[i].name) == t) out.push_back(int(i));
+  }
+  if (t == Tab::kControls) {
+    for (size_t i = 0; i < rebinds_.size(); ++i) out.push_back(int(rows_.size() + i));
+  }
+  out.push_back(int(rows_.size() + rebinds_.size()));  // SAVE & APPLY SETTINGS
+  return out;
 }
+
+void SettingsPage::open() {
+  open_ = true;
+  capturing_ = false;
+  tab_ = Tab::kDisplay;
+  const auto indices = tab_flat_indices(tab_);
+  row_ = indices.empty() ? 0 : indices.front();
+}
+
+void SettingsPage::move(int by) {
+  if (capturing_) return;
+  const auto indices = tab_flat_indices(tab_);
+  const int n = int(indices.size());
+  if (n <= 0) return;
+  int pos = 0;
+  for (int i = 0; i < n; ++i) {
+    if (indices[size_t(i)] == row_) {
+      pos = i;
+      break;
+    }
+  }
+  pos = ((pos + by) % n + n) % n;
+  row_ = indices[size_t(pos)];
+}
+
+void SettingsPage::step(int by) {
+  if (capturing_ || row_ < 0 || row_ >= int(rows_.size())) return;
+  Row& r = rows_[size_t(row_)];
+  const int n = int(r.choices.size());
+  r.pick = size_t(((int(r.pick) + by) % n + n) % n);
+}
+
+int SettingsPage::selected_in_tab() const {
+  const auto indices = tab_flat_indices(tab_);
+  for (size_t i = 0; i < indices.size(); ++i) {
+    if (indices[i] == row_) return int(i);
+  }
+  return 0;
+}
+
+int SettingsPage::tab_row_count() const { return int(tab_flat_indices(tab_).size()); }
 
 void SettingsPage::switch_tab(int by) {
   if (capturing_) return;
   const int count = int(Tab::kCount);
-  const int next = ((int(active_tab()) + by) % count + count) % count;
-  const Tab target = Tab(next);
-  for (size_t i = 0; i < rows_.size(); ++i) {
-    if (classify_setting_row(rows_[i].name) == target) {
-      row_ = int(i);
-      return;
-    }
-  }
-  if (target == Tab::kControls && !rebinds_.empty()) row_ = int(rows_.size());
+  tab_ = Tab(((int(tab_) + by) % count + count) % count);
+  const auto indices = tab_flat_indices(tab_);
+  row_ = indices.empty() ? 0 : indices.front();
 }
 
 void SettingsPage::select_row(int flat_idx) {
   if (capturing_) return;
   const int n = int(rows_.size() + rebinds_.size()) + 1;
-  if (flat_idx >= 0 && flat_idx < n) row_ = flat_idx;
+  if (flat_idx < 0 || flat_idx >= n) return;
+  row_ = flat_idx;
+  if (flat_idx < int(rows_.size())) {
+    tab_ = classify_setting_row(rows_[size_t(flat_idx)].name);
+  } else if (on_rebind_row()) {
+    tab_ = Tab::kControls;
+  }
+  // On the SAVE & APPLY line, preserve the current tab_.
 }
 
 void SettingsPage::select_tab(int tab_idx) {
   if (capturing_) return;
   const int count = int(Tab::kCount);
   if (tab_idx < 0 || tab_idx >= count) return;
-  const Tab target = Tab(tab_idx);
-  for (size_t i = 0; i < rows_.size(); ++i) {
-    if (classify_setting_row(rows_[i].name) == target) {
-      row_ = int(i);
-      return;
-    }
-  }
-  if (target == Tab::kControls && !rebinds_.empty()) row_ = int(rows_.size());
+  tab_ = Tab(tab_idx);
+  const auto indices = tab_flat_indices(tab_);
+  row_ = indices.empty() ? 0 : indices.front();
 }
 
 std::vector<SettingsPage::DisplayRow> SettingsPage::display_rows() const {

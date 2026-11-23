@@ -76,15 +76,17 @@ class SettingsPage {
   // `tokens`: the file's options as command-line tokens (read_settings).
   void load(const std::vector<std::string>& tokens);
   bool is_open() const { return open_; }
-  void open() { open_ = true, row_ = 0, capturing_ = false; }
+  void open();
   void close() { open_ = false, capturing_ = false; }
-  void move(int by);  // up and down, wrapping over the rows and the save line
+  void move(int by);  // up and down, wrapping within the active tab (including the save line)
   void step(int by);  // left and right on the selected row
-  void switch_tab(int by);  // jumps selection to the first setting in the next/prev category tab
+  void switch_tab(int by);  // switches category tab and resets selection to row 0 of that tab
   void select_row(int flat_idx);
   void select_tab(int tab_idx);
   int selected() const { return row_; }
-  Tab active_tab() const;
+  int selected_in_tab() const;
+  int tab_row_count() const;
+  Tab active_tab() const { return tab_; }
   std::vector<DisplayRow> display_rows() const;
   bool on_save_line() const { return row_ == int(rows_.size() + rebinds_.size()); }
   bool on_rebind_row() const {
@@ -123,7 +125,9 @@ class SettingsPage {
   std::vector<std::string> lut_files_;
   bool open_ = false;
   bool capturing_ = false;
+  Tab tab_ = Tab::kDisplay;
   int row_ = 0;
+  std::vector<int> tab_flat_indices(Tab t) const;
   static std::vector<Row> build();
   static std::vector<RebindRow> build_rebinds();
 };

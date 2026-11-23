@@ -3,6 +3,8 @@
 // (Renderer::set_overlay). Ours: the game's own HUD is not specified.
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -56,8 +58,18 @@ struct PauseMenu {
   std::string events_label;      // e.g. "COLLECT GREEN WRISTBAND!" or "RACE CENTRAL"
   std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+15%) >"
   int selected = 0;
-  std::vector<Action> items() const;
-  Action selected_action() const;
+  std::vector<Action> items() const {
+    if (in_race) {
+      return {kResume, kRestartRace, kPhotoMode, kReplay, kMap, kDifficulty, kSettings, kQuitRace};
+    }
+    return {kResume, kMap, kEvents, kRally, kPhotoMode, kReplay, kGarage, kUpgrades, kPaint, kAutoshow, kCareer, kClub,
+            kAchievements, kSettings, kQuitToTitle};
+  }
+  Action selected_action() const {
+    const auto list = items();
+    if (list.empty()) return kResume;
+    return list[size_t(std::clamp(selected, 0, int(list.size()) - 1))];
+  }
   std::string label(Action a) const;
   void show(bool racing = false) {
     open = true;
@@ -70,6 +82,80 @@ struct PauseMenu {
   }
   // Fills the HUD's menu fields (nothing while closed).
   void fill(HudState& st) const;
+};
+
+// Deterministic Left-Stick -> cardinal menu direction translator with
+// engage/release hysteresis, axis-dominance lock (prevents diagonal bleed),
+// and initial/steady auto-repeat.
+struct MenuStickNav {
+  enum class Dir : int { kNone = 0, kUp, kDown, kLeft, kRight };
+
+  double engage_threshold = 0.55;
+  double release_threshold = 0.35;
+  double dominance_ratio = 1.25;
+  double initial_delay_s = 0.38;
+  double repeat_interval_s = 0.11;
+
+  Dir held = Dir::kNone;
+  double next_fire_s = 0.0;
+  bool latched_neutral = false;
+
+  void reset() {
+    held = Dir::kNone;
+    next_fire_s = 0.0;
+    latched_neutral = false;
+  }
+
+  void latch_until_neutral() {
+    held = Dir::kNone;
+    next_fire_s = 0.0;
+    latched_neutral = true;
+  }
+
+  // `lx`, `ly` in [-1, 1] (SDL convention: +x right, +y down).
+  Dir update(double lx, double ly, double now_s) {
+    const double ax = std::fabs(lx);
+    const double ay = std::fabs(ly);
+
+    if (latched_neutral) {
+      if (ax < release_threshold && ay < release_threshold) latched_neutral = false;
+      return Dir::kNone;
+    }
+
+    if (held != Dir::kNone) {
+      bool still_held = false;
+      switch (held) {
+        case Dir::kUp: still_held = (ly <= -release_threshold); break;
+        case Dir::kDown: still_held = (ly >= release_threshold); break;
+        case Dir::kLeft: still_held = (lx <= -release_threshold); break;
+        case Dir::kRight: still_held = (lx >= release_threshold); break;
+        case Dir::kNone: break;
+      }
+      if (!still_held) {
+        held = Dir::kNone;
+      } else {
+        if (now_s >= next_fire_s) {
+          next_fire_s = now_s + repeat_interval_s;
+          return held;
+        }
+        return Dir::kNone;
+      }
+    }
+
+    Dir cand = Dir::kNone;
+    if (ay >= engage_threshold && ay >= ax * dominance_ratio) {
+      cand = (ly > 0.0) ? Dir::kDown : Dir::kUp;
+    } else if (ax >= engage_threshold && ax >= ay * dominance_ratio) {
+      cand = (lx > 0.0) ? Dir::kRight : Dir::kLeft;
+    }
+
+    if (cand != Dir::kNone) {
+      held = cand;
+      next_fire_s = now_s + initial_delay_s;
+      return held;
+    }
+    return Dir::kNone;
+  }
 };
 
 struct HudImage {

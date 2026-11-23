@@ -426,6 +426,53 @@ void DriveSession::poll_sdl_events() {
               slice12.sync_wheel_devices();
             }
   }
+  // Left-stick menu navigation with deadzone, axis-dominance lock & repeat
+  // for Pause Menu, Settings Menu, and Pause sub-pages/overlays.
+  static MenuStickNav menu_stick_nav;
+  static bool menu_stick_was_active = false;
+  const bool menu_nav_active =
+      !pads.empty() &&
+      ((settings_page.is_open() && !settings_page.capturing_key()) || menu.open || career_page.is_open() ||
+       achievements.screen_open() || mods_page.is_open() || save_page.is_open() ||
+       slice12.trainer_overlay.is_open() || slice12.cam_editor_overlay.is_open());
+  if (!menu_nav_active) {
+    menu_stick_nav.reset();
+    menu_stick_was_active = false;
+  } else {
+    double best_lx = 0.0, best_ly = 0.0, best_mag2 = -1.0;
+    for (SDL_Gamepad* pad : pads) {
+      const double lx = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0;
+      const double ly = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0;
+      const double mag2 = lx * lx + ly * ly;
+      if (mag2 > best_mag2) {
+        best_mag2 = mag2;
+        best_lx = lx;
+        best_ly = ly;
+      }
+    }
+    if (!menu_stick_was_active) {
+      menu_stick_was_active = true;
+      if (std::fabs(best_lx) >= menu_stick_nav.release_threshold ||
+          std::fabs(best_ly) >= menu_stick_nav.release_threshold) {
+        menu_stick_nav.latch_until_neutral();
+      }
+    }
+    const double now_s = double(SDL_GetTicksNS()) * 1e-9;
+    const MenuStickNav::Dir dir = menu_stick_nav.update(best_lx, best_ly, now_s);
+    if (dir != MenuStickNav::Dir::kNone) {
+      SDL_Event syn{};
+      syn.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+      syn.gbutton.down = true;
+      switch (dir) {
+        case MenuStickNav::Dir::kUp: syn.gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_UP; break;
+        case MenuStickNav::Dir::kDown: syn.gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_DOWN; break;
+        case MenuStickNav::Dir::kLeft: syn.gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_LEFT; break;
+        case MenuStickNav::Dir::kRight: syn.gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_RIGHT; break;
+        case MenuStickNav::Dir::kNone: break;
+      }
+      if (!handle_dev_overlays_event(syn)) handle_settings_and_media_event(syn);
+    }
+  }
 }
 
 void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
