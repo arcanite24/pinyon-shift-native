@@ -217,15 +217,26 @@ bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* e
   return ok;
 }
 
+bool is_water_effect(std::string_view effect) {
+  if (effect.empty()) return false;
+  std::string up;
+  up.reserve(effect.size());
+  for (char c : effect) up.push_back(char(std::toupper(static_cast<unsigned char>(c))));
+  if (up.rfind("LAKE", 0) == 0 || up.find("_LAKE") != std::string::npos) return true;
+  if (up.find("RIVER") != std::string::npos || up.find("POND") != std::string::npos) return true;
+  if (up.find("WATER") != std::string::npos && up.find("WATERMARK") == std::string::npos) return true;
+  return false;
+}
+
 bool decal_effect(const std::string& e) {
   if (e.find("DECAL") != std::string::npos) return true;
-  return effect_blend(e) == Blend::kAlpha && e.rfind("LAKE", 0) != 0;
+  return effect_blend(e) == Blend::kAlpha && !is_water_effect(e);
 }
 
 Blend effect_blend(const std::string& e) {
   auto starts = [&](const char* prefix) { return e.rfind(prefix, 0) == 0; };
   if (starts("DIFF_GLOW")) return Blend::kAdditive;  // interim (ours), see Blend
-  if ((starts("H_ROAD") && e.find("_BLEND_") != std::string::npos) || starts("H_VBLND_DECAL") || starts("LAKE"))
+  if ((starts("H_ROAD") && e.find("_BLEND_") != std::string::npos) || starts("H_VBLND_DECAL") || is_water_effect(e))
     return Blend::kAlpha;
   // Props and trees drew with alpha to coverage in the frame; other effects
   // named _OPAC (vertex-blend cut-outs) are given it too (ours).
@@ -451,10 +462,18 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
                   (*texture_list)[size_t(v)] < impl_->table.textures.size())
                 mm.slot_types[k] = int32_t(impl_->table.textures[(*texture_list)[size_t(v)]].type);
             }
-            if (mm.effect.rfind("LAKE", 0) == 0) {
-              mm.albedo = kNoTexture;  // slot 0 is a cube map there
+            // Helper: file-backed texture record only (skips all-black Light_Map / all-white AO type-1 stubs).
+            auto file_slot = [&](size_t slot) -> uint32_t {
+              const uint32_t rec = slot_record(slot);
+              if (rec == kNoTexture) return kNoTexture;
+              const uint8_t ty = impl_->table.textures[rec].type;
+              return (ty == fh1::kPvsTextureBix || ty == fh1::kPvsTextureCaff) ? rec : kNoTexture;
+            };
+            if (is_water_effect(mm.effect)) {
+              mm.albedo = kNoTexture;  // slot 0 on LAKE_* is a cube map, not a 2D diffuse
               mm.is_water = 1;
-              mm.normal_map = slot_record(1);
+              mm.normal_map = file_slot(1);  // NormalMap A (only when file-backed)
+              mm.layer_b = file_slot(2);     // NormalMap B / foam map (only when file-backed)
             }
             if (mm.effect.find("ANIM_FLAG") != std::string::npos || mm.effect.find("FLAG") != std::string::npos) {
               mm.anim_flag = 1;
@@ -464,13 +483,6 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
                 mm.effect.find("GRASS") != std::string::npos) {
               mm.is_grass = 1;
             }
-            // Helper: file-backed texture record only (skips all-black Light_Map / all-white AO type-1 stubs).
-            auto file_slot = [&](size_t slot) -> uint32_t {
-              const uint32_t rec = slot_record(slot);
-              if (rec == kNoTexture) return kNoTexture;
-              const uint8_t ty = impl_->table.textures[rec].type;
-              return (ty == fh1::kPvsTextureBix || ty == fh1::kPvsTextureCaff) ? rec : kNoTexture;
-            };
             // Terrain layers (WORLD-MATERIALS, Terrain shading): pixel
             // constants 0 and 1 are the tilings, 4's x the vertex weight's
             // gain; Blend_B in slot 1, Splat in slot 2, Blend_C in slot 5 (H_BLND3).

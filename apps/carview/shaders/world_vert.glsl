@@ -87,7 +87,7 @@ layout(push_constant) uniform Draw {
 #endif
 
 const uint kFlagSky = 2u, kFlagBillboard = 32u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
-           kFlagAnimFlag = 131072u, kFlagGrass = 262144u;
+           kFlagWater = 32768u, kFlagAnimFlag = 131072u, kFlagGrass = 262144u;
 // Far-ring levels are pushed away from the eye by this much each (ours):
 // unchanged on screen, behind the near terrain where both are drawn.
 const float kFarPush = 0.03;
@@ -205,7 +205,8 @@ void main() {
     v_position = world.xyz;
   }
   v_uv0 = in_uv0;
-  v_uv1 = in_uv1;
+  // Pass stable game-world meter coordinates (in_pos.xz) to world_frag for water wave synthesis.
+  v_uv1 = (flags & kFlagWater) != 0u ? in_pos.xz : in_uv1;
   v_uv2 = in_uv2;
   v_colour = in_colour;
   vec4 placed = world;

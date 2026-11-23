@@ -59,6 +59,8 @@ bool ground_object(const std::string& object);
 // state (their textures are black where nothing glows).
 enum class Blend : uint8_t { kOpaque, kCoverage, kAlpha, kAdditive };
 Blend effect_blend(const std::string& effect);
+// Whether an effect represents a water surface (LAKE_*, *WATER*, *RIVER*, *POND*).
+bool is_water_effect(std::string_view effect);
 // Whether an effect lies on another surface and is drawn with a depth bias
 // (ours): H_VBLND_DECAL*, any *_DECAL*, and the blended road and decal
 // families (kAlpha but the lake).

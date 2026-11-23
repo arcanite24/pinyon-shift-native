@@ -133,7 +133,7 @@ const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat 
            kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
            kFlagUnlitVertexColor = 1024u, kFlagLightMap = 2048u, kFlagNormalMap = 4096u, kFlagAoMap = 8192u,
            kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagSpecMap = 524288u,
-           kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u;
+           kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u, kFlagWaterNormalB = 4194304u;
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -448,50 +448,152 @@ void main() {
   vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb : kGroundColour;
   float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
 
-  // LAKE water shader (kFlagWater): animated dual-scroll ripples, Fresnel cubemap reflection,
-  // crisp sun specular sparkle, and Colorado mountain-lake depth absorption.
+  // LAKE / WATER shader (kFlagWater):
+  // - 4-octave dual-direction animated wave normals in stable world-meter coords
+  //   (blended with real FH1 NormalMap A/B when bound)
+  // - Physically-based Schlick Fresnel (F0=0.02)
+  // - Crisp distance-adapted dynamic cubemap reflections
+  // - Beer-Lambert Colorado alpine lake depth absorption & subtle sun subsurface scatter
+  // - Sparkling dual-lobe GGX sun highlights + soft animated shoreline foam
   if ((flags & kFlagWater) != 0u) {
     float t_sec = frame.env_basis_x.w;
-    vec2 wuv = v_uv0 * 0.25;
-    vec2 uv_a = wuv + vec2(t_sec * 0.018, t_sec * 0.011);
-    vec2 uv_b = wuv * 1.45 - vec2(t_sec * 0.014, -t_sec * 0.019);
-    vec3 nw = n_geom;
+    float wind = clamp(max(frame.env_basis_y.w, 0.85), 0.65, 2.2);
+    // Stable world-space horizontal coordinates in meters (passed via v_uv1 from world_vert).
+    vec2 wp = v_uv1;
+    // Exact horizontal world tangent frame in render space.
+    vec3 t_x = normalize(frame.env_basis_x.xyz);
+    vec3 t_z = normalize(frame.env_basis_z.xyz);
+
+    // 4-octave multi-scale alpine lake wave gradient (swells -> chop -> ripples -> capillary shimmer).
+    // Physically realistic gentle mountain-lake slopes (~2-5 deg) with zero zebra banding.
+    vec2 grad = vec2(0.0);
+    float crest = 0.0;
+    float dist_atten = 1.0 / (1.0 + eye_dist * 0.012);
+    float micro_atten = 1.0 / (1.0 + eye_dist * 0.055);
+
+    // Layer 1: Gentle broad swells (~8 m wavelength, rotated dual-direction so never 1D-striped)
+    vec2 s1a = wp * 0.24 + vec2(t_sec * 0.16, t_sec * 0.11) * wind;
+    vec2 s1b = wp * 0.31 + vec2(-t_sec * 0.13, t_sec * 0.18) * wind;
+    float n1a = sky_noise(s1a);
+    float n1b = sky_noise(s1b);
+    vec2 g1a = vec2(sky_noise(s1a + vec2(0.18, 0.0)) - n1a, sky_noise(s1a + vec2(0.0, 0.18)) - n1a);
+    vec2 g1b = vec2(sky_noise(s1b + vec2(0.18, 0.0)) - n1b, sky_noise(s1b + vec2(0.0, 0.18)) - n1b);
+    grad += (g1a + g1b) * 0.12 * dist_atten;
+    crest += (n1a + n1b - 1.0) * 0.45;
+
+    // Layer 2: Soft cross-wind wavelets (~2.5 m wavelength)
+    vec2 s2a = wp * 0.68 + vec2(t_sec * 0.34, -t_sec * 0.24) * wind;
+    vec2 s2b = wp * 0.94 + vec2(-t_sec * 0.29, -t_sec * 0.36) * wind;
+    float n2a = sky_noise(s2a);
+    float n2b = sky_noise(s2b);
+    vec2 g2a = vec2(sky_noise(s2a + vec2(0.16, 0.0)) - n2a, sky_noise(s2a + vec2(0.0, 0.16)) - n2a);
+    vec2 g2b = vec2(sky_noise(s2b + vec2(0.16, 0.0)) - n2b, sky_noise(s2b + vec2(0.0, 0.16)) - n2b);
+    grad += (g2a + g2b) * 0.15 * dist_atten;
+    crest += (n2a + n2b - 1.0) * 0.35;
+
+    // Layer 3: Crisp capillary ripples (~0.9 m wavelength)
+    vec2 r3a = wp * 1.55 + vec2(t_sec * 0.52, t_sec * 0.37) * wind;
+    vec2 r3b = wp * 2.15 + vec2(-t_sec * 0.44, t_sec * 0.58) * wind;
+    float n3a = sky_noise(r3a);
+    float n3b = sky_noise(r3b);
+    vec2 g3a = vec2(sky_noise(r3a + vec2(0.15, 0.0)) - n3a, sky_noise(r3a + vec2(0.0, 0.15)) - n3a);
+    vec2 g3b = vec2(sky_noise(r3b + vec2(0.15, 0.0)) - n3b, sky_noise(r3b + vec2(0.0, 0.15)) - n3b);
+    grad += (g3a + g3b) * 0.14 * dist_atten;
+    crest += (n3a + n3b - 1.0) * 0.20;
+
+    // Layer 4: Fine micro-ripples (~0.32 m wavelength) for lively sun sparkle near the camera
+    vec2 r4a = wp * 4.2 + vec2(t_sec * 0.85, -t_sec * 0.62) * wind;
+    vec2 r4b = wp * 5.8 + vec2(-t_sec * 0.72, -t_sec * 0.84) * wind;
+    float n4a = sky_noise(r4a);
+    float n4b = sky_noise(r4b);
+    vec2 g4 = vec2((sky_noise(r4a + vec2(0.18, 0.0)) - n4a) + 0.7 * (sky_noise(r4b + vec2(0.18, 0.0)) - n4b),
+                   (sky_noise(r4a + vec2(0.0, 0.18)) - n4a) + 0.7 * (sky_noise(r4b + vec2(0.0, 0.18)) - n4b));
+    grad += g4 * 0.11 * micro_atten;
+
+    // Blend in FH1's real scrolling normal map(s) when file-backed normal textures are bound.
     if ((flags & kFlagNormalMap) != 0u) {
-      vec2 na = texture(normal_map, uv_a).xy;
-      vec2 nb = texture(normal_map, uv_b).xy;
-      nw = perturb_normal(n_geom, v_position, wuv, 0.5 * (na + nb));
-    } else {
-      // Procedural dual-layer wave ripples when no normal map is bound.
-      float h1 = sky_noise(v_position.xz * 0.35 + vec2(t_sec * 0.65, t_sec * 0.35));
-      float h2 = sky_noise(v_position.xz * 0.85 - vec2(t_sec * 0.45, -t_sec * 0.55));
-      float dx = (sky_noise(v_position.xz * 0.35 + vec2(0.08 + t_sec * 0.65, t_sec * 0.35)) - h1) +
-                 0.5 * (sky_noise(v_position.xz * 0.85 + vec2(0.08 - t_sec * 0.45, t_sec * 0.55)) - h2);
-      float dz = (sky_noise(v_position.xz * 0.35 + vec2(t_sec * 0.65, 0.08 + t_sec * 0.35)) - h1) +
-                 0.5 * (sky_noise(v_position.xz * 0.85 + vec2(-t_sec * 0.45, 0.08 + t_sec * 0.55)) - h2);
-      vec3 t_x = normalize(cross(up, abs(up.z) < 0.9 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
-      vec3 t_z = cross(t_x, up);
-      nw = normalize(n_geom + (t_x * dx + t_z * dz) * 0.28);
+      vec2 wuv = wp * 0.16;
+      vec2 nm_a = texture(normal_map, wuv + vec2(t_sec * 0.032, t_sec * 0.021)).xy * 2.0 - 1.0;
+      vec2 nm_b = ((flags & kFlagWaterNormalB) != 0u)
+                      ? (texture(layer_b, wuv * 1.55 - vec2(t_sec * 0.026, -t_sec * 0.034)).xy * 2.0 - 1.0)
+                      : (texture(normal_map, wuv * 1.55 - vec2(t_sec * 0.026, -t_sec * 0.034)).xy * 2.0 - 1.0);
+      grad += (nm_a + nm_b) * 0.055 * dist_atten;
     }
-    vec3 r_dir = reflect(-view, nw);
-    if (dot(r_dir, up) < 0.02) r_dir = normalize(r_dir + up * (0.04 - dot(r_dir, up)));
+
+    vec3 nw = normalize(n_geom + (t_x * grad.x + t_z * grad.y));
+    // Smooth Fresnel normal avoids harsh 0->1 flicker on individual capillary ripples.
+    vec3 nw_fres = normalize(mix(n_geom, nw, 0.55));
+    float nv = clamp(dot(nw_fres, view), 0.001, 1.0);
+
+    // Physically-based Schlick Fresnel for air-water interface (IOR 1.333 -> F0 = 0.02).
+    float fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+
+    // Crisp dynamic cubemap reflections with smooth horizon lift so ripples never sample dark mud.
+    vec3 nw_refl = normalize(mix(n_geom, nw, 0.78));
+    vec3 r_dir = reflect(-view, nw_refl);
+    float r_up = dot(r_dir, up);
+    if (r_up < 0.06) {
+      r_dir = normalize(r_dir + up * (0.06 - r_up));
+    }
+    float refl_mip = mix(0.25, 1.25, smoothstep(14.0, 220.0, eye_dist));
     vec3 refl;
     if (frame.shadow_far_bias.z > 0.5) {
-      refl = textureLod(environment, render_to_game_dir(r_dir), 1.0).rgb;
+      vec3 env_c = textureLod(environment, render_to_game_dir(r_dir), refl_mip).rgb;
+      vec3 sky_r = sky_colour(r_dir, up, sun);
+      // Softly blend toward sky near horizon angles so environment cubemap floor never dark-bands.
+      float hor_lift = smoothstep(0.05, 0.22, dot(r_dir, up));
+      refl = mix(mix(sky_r * 0.65, env_c, 0.65), env_c, hor_lift);
     } else {
-      refl = mix(sky_col * 1.4, sun_col * 0.5 + sky_col, clamp(dot(r_dir, up), 0.0, 1.0));
+      refl = sky_colour(r_dir, up, sun);
     }
-    float nv = clamp(dot(nw, view), 0.0, 1.0);
-    float fresnel = 0.04 + 0.96 * pow(1.0 - nv, 4.5);
-    float day_amt = clamp(dot(up, sun) * 2.5 + 0.25, 0.05, 1.0);
-    vec3 deep_water = vec3(0.010, 0.036, 0.052) * (0.35 + 0.65 * day_amt) + gnd_col * 0.08;
+
+    // Beer-Lambert Colorado mountain-lake depth absorption using vertex shoreline alpha.
+    float shore_a = clamp(v_colour.a, 0.0, 1.0);
+    // Estimate optical water depth: shallow near shore (0.25 m), deep open lake (6+ m).
+    float depth_m = mix(0.25, 6.5, smoothstep(0.02, 0.85, shore_a)) / max(nv, 0.24);
+    vec3 extinction = vec3(0.45, 0.15, 0.10);
+    vec3 transmittance = exp(-depth_m * extinction);
+    float day_amt = clamp(dot(up, sun) * 2.4 + 0.24, 0.08, 1.0);
+    vec3 shallow_tint = vec3(0.036, 0.128, 0.132) * (0.48 + 0.52 * day_amt) + gnd_col * 0.12;
+    vec3 deep_tint = vec3(0.010, 0.052, 0.084) * (0.40 + 0.60 * day_amt) + sky_col * 0.14;
+    vec3 body_col = mix(deep_tint, shallow_tint, transmittance);
+
+    // Subtle subsurface turquoise scatter on sunlit wave crests.
+    float sss_ang = pow(clamp(dot(view, -sun + nw * 0.35), 0.0, 1.0), 3.5);
+    float crest_mask = clamp(crest * 0.5 + 0.5, 0.0, 1.0);
+    body_col += vec3(0.016, 0.088, 0.092) * sun_col * sss_ang * crest_mask * 0.32;
+
+    // Sparkling dual-lobe GGX sun specular (sharp glints + soft solar reflection trail).
     vec3 h_w = normalize(view + sun);
-    float spec_w = pow(max(dot(nw, h_w), 0.0), 240.0) * 2.2 + pow(max(dot(nw, h_w), 0.0), 36.0) * 0.25;
+    float nh = max(dot(nw, h_w), 0.0);
+    float nl_w = max(dot(nw, sun), 0.0);
+    float a1 = 0.028 * 0.028;
+    float d_g1 = nh * nh * (a1 - 1.0) + 1.0;
+    float ggx_glint = (a1 / max(3.14159265 * d_g1 * d_g1, 1e-5)) * 0.095;
+    float a2 = 0.18 * 0.18;
+    float d_g2 = nh * nh * (a2 - 1.0) + 1.0;
+    float ggx_sheen = (a2 / max(3.14159265 * d_g2 * d_g2, 1e-5)) * 0.045;
     float shade_w = mix(1.0, sun_shadow(v_position, n_geom), shadow_scale);
-    vec3 w_col = mix(deep_water, refl, clamp(fresnel * 1.15, 0.05, 0.96)) + sun_col * spec_w * shade_w;
+    vec3 spec_col = sun_col * (ggx_glint + ggx_sheen) * nl_w * shade_w;
+
+    // Combine refracted depth body + Fresnel sky/mountain reflection + sparkling sun glints.
+    vec3 w_col = mix(body_col, refl, clamp(fresnel * 0.92 + 0.05, 0.05, 0.92)) + spec_col;
+
+    // Soft animated shoreline foam where water meets gravel/rock banks.
+    float shore_zone = smoothstep(0.55, 0.06, shore_a) * smoothstep(0.0, 0.06, shore_a);
+    float foam_noise = sky_noise(wp * 2.4 + vec2(t_sec * 0.32, -t_sec * 0.22)) * 0.6 +
+                       sky_noise(wp * 5.8 - vec2(t_sec * 0.48, t_sec * 0.36)) * 0.4;
+    float foam_band = smoothstep(0.50, 0.80, foam_noise + shore_zone * 0.34 + crest * 0.08) * shore_zone;
+    vec3 foam_col = (sky_col * 0.85 + sun_col * 0.42 * shade_w) * 1.10;
+    w_col = mix(w_col, foam_col, clamp(foam_band * 0.55, 0.0, 0.65));
+
     w_col *= draw.up.w;
     w_col = apply_haze(w_col, v_position, up, sun);
     vec3 w_enc = out_rgb(w_col);
-    float wa = clamp(0.76 + fresnel * 0.24, 0.76, 0.98);
+    // Smooth shoreline transparency: clear edge tapering into deep reflective alpine lake.
+    float depth_opac = 1.0 - transmittance.r;
+    float wa = clamp(mix(shore_a * 0.72, 0.96, clamp(fresnel * 0.65 + depth_opac * 0.65 + foam_band * 0.4, 0.0, 1.0)),
+                     0.0, 0.98);
     out_color = blend == kAlpha ? vec4(w_enc * wa, wa) : vec4(w_enc, 1.0);
     return;
   }

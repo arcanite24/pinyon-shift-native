@@ -369,6 +369,10 @@ if(SHIFT_BUILD_CARVIEW)
   add_executable(platform_touch_tests platform_touch_tests.cpp)
   target_link_libraries(platform_touch_tests PRIVATE carview_render)
   add_test(NAME platform_touch_tests COMMAND platform_touch_tests)
+
+  add_executable(playability_fixes_tests playability_fixes_tests.cpp)
+  target_link_libraries(playability_fixes_tests PRIVATE carview_render shift_drive shift_world)
+  add_test(NAME playability_fixes_tests COMMAND playability_fixes_tests)
 endif()
 
 if(SHIFT_BUILD_LAUNCHER)

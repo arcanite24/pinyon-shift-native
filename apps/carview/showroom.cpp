@@ -4166,6 +4166,10 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     }
     if (mat.is_water) {
       flags |= 32768u;  // world.frag kFlagWater
+      if (mat.layer_b != kNoWorldTexture) {
+        d.texture_b = mat.layer_b;
+        flags |= 4194304u;  // world.frag kFlagWaterNormalB (LAKE_* slot 2 normal/foam map)
+      }
     }
     if (mat.anim_flag) {
       flags |= 131072u;  // world.vert kFlagAnimFlag
@@ -8303,10 +8307,12 @@ bool Showroom::build_gpu_table(std::string& error) {
     if (!have(d.texture)) {
       if (d.texture != kNoWorldTexture) ++gpu_table_white_;
       if (flags == 1) flags = 0;
-    } else if (d.texture_b != kNoWorldTexture && !(have(d.texture_b) && have(d.splat))) {
+    } else if ((flags & 32768u) == 0u && d.texture_b != kNoWorldTexture && !(have(d.texture_b) && have(d.splat))) {
       ++gpu_table_layer_fallback_;
       flags = 1;
     }
+    if (d.normal_map == kNoWorldTexture || !have(d.normal_map)) flags &= ~4096u;
+    if ((flags & 32768u) != 0u && (d.texture_b == kNoWorldTexture || !have(d.texture_b))) flags &= ~4194304u;
     if (d.spec_map == kNoWorldTexture || !have(d.spec_map)) flags &= ~524288u;
     if (d.blend == 1 && single_sample) flags |= 64u;  // cut-outs without MSAA: world.frag's alpha test
     gpuworld::DrawGpu row{};
