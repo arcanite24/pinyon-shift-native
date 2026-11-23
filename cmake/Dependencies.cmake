@@ -94,7 +94,11 @@ if(SHIFT_BUILD_CARVIEW)
   set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
   set(SDL_RENDER OFF CACHE BOOL "" FORCE)
   set(SDL_GPU OFF CACHE BOOL "" FORCE)
-  set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
+  if(NOT ANDROID)
+    set(SDL_DIALOG ON CACHE BOOL "" FORCE)
+  else()
+    set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
+  endif()
   set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
