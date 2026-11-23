@@ -863,5 +863,107 @@ bool Showroom::create_pipelines(std::string& error) {
   return true;
 }
 
+int run_precompile_shaders(int argc, char** argv) {
+  std::filesystem::path play_dir;
+  std::filesystem::path cache_path;
+  uint32_t msaa = 4;
+  bool post_on = true;
+  bool low_preset = false;
+  bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
+  for (int i = 1; i < argc; ++i) {
+    const std::string a = argv[i];
+    auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
+    if (a == "--play") play_dir = next();
+    else if (a == "--cache" || a == "--pipeline-cache") cache_path = next();
+    else if (a == "--msaa") msaa = uint32_t(std::max(1, std::atoi(next())));
+    else if (a == "--no-post") post_on = false;
+    else if (a == "--validation") validation = true;
+    else if (a == "--preset") {
+      const std::string p = next();
+      if (p == "low" || p == "low-power") {
+        low_preset = true;
+        msaa = 1;
+      }
+    }
+  }
+
+  Renderer::Options ropts{};
+  ropts.window = nullptr;
+  ropts.validation = validation;
+  ropts.msaa = msaa;
+  ropts.reverse_z = true;
+  ropts.backface_cull = true;
+  ropts.z_prepass = true;
+  ropts.post.enabled = post_on;
+  ropts.post.bloom = post_on && !low_preset;
+  ropts.shadow.size = low_preset ? 1024u : 2048u;
+  ropts.shadow.radius = low_preset ? 40.0f : 60.0f;
+  ropts.shadow.taps = low_preset ? 1u : 4u;
+  ropts.shadow.cascades = low_preset ? 2u : 3u;
+  if (const char* pc_env = std::getenv("SHIFT_PIPELINE_CACHE"); pc_env && *pc_env) {
+    ropts.pipeline_cache_path = pc_env;
+  } else if (!cache_path.empty()) {
+    ropts.pipeline_cache_path = cache_path;
+  } else if (!play_dir.empty()) {
+    ropts.pipeline_cache_path = play_dir / "cache" / "vk_pipeline_cache.bin";
+  } else {
+    ropts.pipeline_cache_path = std::filesystem::path("out") / "cache" / "vk_pipeline_cache.bin";
+  }
+
+  const auto t0 = std::chrono::steady_clock::now();
+  Renderer renderer;
+  std::string err;
+  if (!renderer.init(ropts, err)) {
+    std::fprintf(stderr, "carview --precompile-shaders: renderer init failed: %s\n", err.c_str());
+    return 1;
+  }
+  const bool had_cache = renderer.pipeline_cache_loaded();
+  int compiled_groups = 1;  // Renderer base + post + modern + UI
+
+  {
+    Showroom showroom(renderer);
+    showroom.set_low_memory_mode(low_preset);
+    showroom.init_minimal_for_precompile();
+    if (!showroom.upload(err)) {
+      std::fprintf(stderr, "carview --precompile-shaders: showroom upload failed: %s\n", err.c_str());
+      return 1;
+    }
+    ++compiled_groups;  // Showroom car/world/shadow/contact_shadow/env_prefilter + WorldGpu
+
+    // Sky + Stars (provide 1 dummy star so stars_pipe_ is also compiled).
+    world::RealTimeSkyAssets dummy_sky{};
+    dummy_sky.stars.emplace_back();
+    std::string sky_err;
+    if (showroom.upload_sky(dummy_sky, sky_err)) ++compiled_groups;
+    else std::fprintf(stderr, "carview --precompile-shaders: sky note: %s\n", sky_err.c_str());
+
+    // Car lights glow pipeline.
+    std::string cl_err;
+    if (showroom.upload_carlights({}, cl_err)) ++compiled_groups;
+    else std::fprintf(stderr, "carview --precompile-shaders: carlights note: %s\n", cl_err.c_str());
+
+    // VFX particles (alpha + additive) + skidmarks pipelines.
+    std::string vfx_err;
+    if (showroom.init_vfx(nullptr, vfx_err)) ++compiled_groups;
+    else std::fprintf(stderr, "carview --precompile-shaders: vfx note: %s\n", vfx_err.c_str());
+
+    // Hardware Ray Tracing / Path Tracing compute pipelines (when supported by device).
+    if (renderer.rt_supported()) {
+      std::string rt_err;
+      if (showroom.precompile_rt_pipelines(rt_err)) ++compiled_groups;
+      else std::fprintf(stderr, "carview --precompile-shaders: RT note: %s\n", rt_err.c_str());
+    }
+  }
+
+  renderer.save_pipeline_cache();
+  const double total_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  std::printf("[aot] precompiled %d pipeline groups (msaa=%u, rt=%s, cache=%s) in %.1f ms -> %s (%.1f KiB)\n",
+              compiled_groups, renderer.sample_count(), renderer.rt_supported() ? "yes" : "no",
+              had_cache ? "warm" : "cold", total_ms, ropts.pipeline_cache_path.string().c_str(),
+              double(renderer.pipeline_cache_bytes()) / 1024.0);
+  return 0;
+}
+
 
 }  // namespace carview

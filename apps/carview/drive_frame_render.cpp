@@ -579,6 +579,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                                      : club_banner(),
                     &menu);
           }
+          host.pump_deferred_world();
           vehicle.set_pose(stepped);
           host.renderer.set_camera_projection(host.cam_proj.near_z, host.cam_proj.far_z, host.cam_proj.proj00, host.cam_proj.proj11);
           host.renderer.set_camera_vp(host.cam_proj.vp_unjittered, w_jitter_uv_x, w_jitter_uv_y);

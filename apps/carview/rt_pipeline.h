@@ -8,6 +8,7 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "renderer.h"
@@ -25,8 +26,11 @@ class RtPipeline {
   RtPipeline& operator=(const RtPipeline&) = delete;
   ~RtPipeline();
 
+  using RetireFn = std::function<void(std::function<void()>)>;
+
   bool init(VkDescriptorSetLayout world_bindless_layout, VkSampler world_sampler, VkImageView fallback_white,
-            std::string& error);
+            std::string& error, RetireFn retire_fn = {});
+  bool prewarm_targets(uint32_t width, uint32_t height);
   void shutdown();
   bool ready() const { return ready_; }
 
@@ -78,6 +82,7 @@ class RtPipeline {
   bool create_compute_pipeline(const uint32_t* spv, size_t spv_bytes, VkPipeline& out, std::string& error);
 
   Renderer& r_;
+  RetireFn retire_fn_;
   bool ready_ = false;
   uint32_t width_ = 0, height_ = 0;
   uint32_t frame_index_ = 0;

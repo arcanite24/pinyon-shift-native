@@ -146,11 +146,12 @@ bool RtPipeline::create_compute_pipeline(const uint32_t* spv, size_t spv_bytes, 
 }
 
 bool RtPipeline::init(VkDescriptorSetLayout world_bindless_layout, VkSampler world_sampler, VkImageView fallback_white,
-                      std::string& error) {
+                      std::string& error, RetireFn retire_fn) {
   if (!r_.rt_supported()) {
     error = "RT not supported";
     return false;
   }
+  retire_fn_ = std::move(retire_fn);
   VkDevice d = r_.device_;
 
   // Samplers for depth/motion/dyn_env in RT compute shaders.
@@ -422,10 +423,50 @@ void RtPipeline::shutdown() {
   ready_ = false;
 }
 
+bool RtPipeline::prewarm_targets(uint32_t width, uint32_t height) {
+  if (!ready_ || width == 0 || height == 0) return true;
+  if (width_ == width && height_ == height && gbuf_norm_.image) return true;
+  bool ok = false;
+  const bool submitted = r_.submit_once([&](VkCommandBuffer cmd) { ok = ensure_targets(width, height, cmd); });
+  return submitted && ok;
+}
+
 bool RtPipeline::ensure_targets(uint32_t width, uint32_t height, VkCommandBuffer cmd) {
   if (width_ == width && height_ == height && gbuf_norm_.image) return true;
-  if (gbuf_norm_.image) r_.wait_idle();
-  destroy_targets();
+  if (gbuf_norm_.image) {
+    if (retire_fn_) {
+      // Defer destruction until in-flight frames finish: zero vkDeviceWaitIdle hitch on resize!
+      Renderer* r = &r_;
+      auto old_gn = gbuf_norm_, old_ga = gbuf_albedo_, old_rf = refl_img_, old_sa = shad_ao_img_, old_pt = pt_img_;
+      auto old_h0 = hist_img_[0], old_h1 = hist_img_[1], old_st = svgf_tmp_;
+      auto old_m0 = moments_img_[0], old_m1 = moments_img_[1];
+      auto old_r0 = reservoirs_[0], old_r1 = reservoirs_[1];
+      gbuf_norm_ = gbuf_albedo_ = refl_img_ = shad_ao_img_ = pt_img_ = {};
+      hist_img_[0] = hist_img_[1] = svgf_tmp_ = moments_img_[0] = moments_img_[1] = {};
+      reservoirs_[0] = reservoirs_[1] = {};
+      width_ = height_ = 0;
+      history_valid_ = false;
+      photo_accum_count_ = 0;
+      retire_fn_([r, old_gn, old_ga, old_rf, old_sa, old_pt, old_h0, old_h1, old_st, old_m0, old_m1, old_r0,
+                  old_r1]() mutable {
+        r->destroy_image(old_gn);
+        r->destroy_image(old_ga);
+        r->destroy_image(old_rf);
+        r->destroy_image(old_sa);
+        r->destroy_image(old_pt);
+        r->destroy_image(old_h0);
+        r->destroy_image(old_h1);
+        r->destroy_image(old_st);
+        r->destroy_image(old_m0);
+        r->destroy_image(old_m1);
+        r->destroy_buffer(old_r0);
+        r->destroy_buffer(old_r1);
+      });
+    } else {
+      r_.wait_idle();
+      destroy_targets();
+    }
+  }
 
   const VkImageUsageFlags storage_usage =
       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;

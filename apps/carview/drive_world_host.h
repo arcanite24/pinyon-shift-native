@@ -78,6 +78,7 @@ struct DriveWorldHost {
   double start_heading = 0;
   bool streamer_async = false;
   bool first_session = true;
+  std::shared_ptr<Prepared> deferred_prepared_;
 
   explicit DriveWorldHost(DriveApp& a)
       : app(a),
@@ -91,6 +92,7 @@ struct DriveWorldHost {
 
   ShowroomOptions build_car_options();
   bool set_staged_world();
+  bool pump_deferred_world();
   bool open_world_and_car();
   bool hot_reload_car_and_world();
   void run();

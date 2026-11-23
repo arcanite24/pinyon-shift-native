@@ -49,6 +49,7 @@
 namespace carview {
 int run_showroom(int argc, char** argv);
 int run_drive(int argc, char** argv);
+int run_precompile_shaders(int argc, char** argv);
 }
 
 namespace {
@@ -324,6 +325,9 @@ static int carview_main(int argc, char** argv) {
     if (std::strcmp(argv[i], "--list-backends") == 0) {
       carview::print_rhi_backends();
       return 0;
+    }
+    if (std::strcmp(argv[i], "--precompile-shaders") == 0) {
+      return carview::run_precompile_shaders(argc, argv);
     }
   }
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
