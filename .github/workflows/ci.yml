@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Hygiene & docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Check clean-room provenance
+        run: python3 tools/check-provenance.py
+      - name: Validate Android manifest and Java sources
+        run: python3 tools/android-apk.py --validate-only
+      - name: Self-test benchmark runner
+        run: python3 tools/benchmark.py --self-test
+      - name: Build docs site and verify internal links
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 site/build.py --out "$RUNNER_TEMP/site"
+
+  windows:
+    name: Windows (MSVC Release)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Ensure Ninja is available
+        shell: powershell
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install -y ninja
+          }
+      - name: Configure and build (Release)
+        shell: powershell
+        run: .\tools\build-windows.ps1 -BuildDir build -Config Release
+      - name: Run unit tests
+        shell: powershell
+        run: ctest --test-dir build -LE corpus --output-on-failure -j 4
+      - name: Self-test benchmark runner
+        shell: powershell
+        run: python tools/benchmark.py --self-test
+
+  linux:
+    name: Linux (GCC Release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build and SDL3 system libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            cmake ninja-build pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxfixes-dev libxss-dev \
+            libwayland-dev libxkbcommon-dev \
+            libasound2-dev libpulse-dev libdbus-1-dev libudev-dev
+      - name: Configure (Release)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+      - name: Run unit tests
+        run: ctest --test-dir build -LE corpus --output-on-failure -j "$(nproc)"
+
+  macos:
+    name: macOS (Apple Silicon Release)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Ninja and MoltenVK
+        run: brew install ninja molten-vk
+      - name: Configure (Release)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+      - name: Run unit tests
+        run: ctest --test-dir build -LE corpus --output-on-failure -j "$(sysctl -n hw.ncpu)"
