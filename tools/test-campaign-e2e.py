@@ -805,7 +805,7 @@ def run_self_test() -> int:
                     "chunks_loaded": 0,
                     "streamer_world_models": 20,
                     "streamer_dist_m": 1800.0,
-                    "frame_ms": 12.0,
+                    "frame_ms": 145.0,
                     "captured_png": str(p_brown),
                 },
             ],
