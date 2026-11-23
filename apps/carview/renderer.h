@@ -150,6 +150,8 @@ class Renderer {
     modern::GraphicsSettings graphics;
     // Optional on-disk VkPipelineCache path (e.g. <play>/cache/vk_pipeline_cache.bin).
     std::filesystem::path pipeline_cache_path;
+    // UI atlas side in pixels (default 4096; 2048 on low-memory presets saves 48 MiB VRAM).
+    uint32_t ui_atlas_size = kUiAtlas;
   };
 
   Renderer() = default;
@@ -236,8 +238,10 @@ class Renderer {
   // Updates per-frame post-processing parameters (TOD curve, auto-exposure, bloom, vignette).
   void set_post_settings(const PostSettings& post) {
     const bool was_enabled = options_.post.enabled;
+    const bool bloom_changed = post.bloom != options_.post.bloom;
     options_.post = post;
     options_.post.enabled = was_enabled;
+    if (was_enabled && bloom_changed) targets_dirty_ = true;
   }
   const PostSettings& post_settings() const { return options_.post; }
   // Queues an updated N^3 RGBA8 3D colour-grading LUT (default 16^3, supports 16/17/33) for upload before post.
@@ -252,9 +256,11 @@ class Renderer {
   void set_camera_vp(const float vp[16], float jitter_uv_x = 0.0f, float jitter_uv_y = 0.0f);
   void set_hud_layout(const modern::HudLayout& layout) { hud_layout_ = layout; }
   void set_hdr_pattern(uint32_t pattern, float pattern_nits = 1000.0f) {
+    if ((pattern != 0) != (hdr_pattern_ != 0)) targets_dirty_ = true;
     hdr_pattern_ = pattern;
     hdr_pattern_nits_ = pattern_nits;
   }
+  modern::ModernTargetPlan allocated_modern_targets() const { return allocated_targets_; }
   void set_inspector_preview(bool active, InspectorView view);
   void set_hiz_preview_view(VkImageView view);
   bool take_inspector_preview(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
@@ -496,6 +502,7 @@ class Renderer {
   VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
   Buffer post_optical_buf_;  // device-local, filled by vkCmdUpdateBuffer in the frame's commands
   // Modern post-FX & HDR targets (SSAO, FXAA, spatial upscale, HDR10/scRGB).
+  modern::ModernTargetPlan allocated_targets_{};
   Image ao_white_, ao_raw_, ao_tmp_, ao_blur_;
   uint32_t ao_width_ = 0, ao_height_ = 0;
   Image scene_sdr_, scene_fxaa_, upscale_tmp_, stand_in_, stand_in_fxaa_;

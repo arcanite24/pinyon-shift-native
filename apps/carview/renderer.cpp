@@ -1219,69 +1219,110 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     return false;
   }
   if (options_.post.enabled) {
-    // Resolved HDR scene + 5-level bloom pyramid (1/4 down to 1/64).
+    // Resolved HDR scene (always needed when post is on) + lazily allocated optional passes.
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     if (!create_image(rw, rh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
                       hdr_)) {
       error = "post hdr target";
       return false;
     }
-    uint32_t bw = std::max(1u, rw / 4), bh = std::max(1u, rh / 4);
-    for (uint32_t k = 0; k < kBloomLevels; ++k) {
-      bloom_w_[k] = bw;
-      bloom_h_[k] = bh;
-      if (!create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                        bloom_a_[k]) ||
-          !create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                        bloom_b_[k])) {
-        error = "post bloom pyramid";
-        return false;
-      }
-      bw = std::max(1u, bw / 2);
-      bh = std::max(1u, bh / 2);
-    }
-    const uint32_t aow = std::max(1u, rw / 2), aoh = std::max(1u, rh / 2);
-    ao_width_ = aow;
-    ao_height_ = aoh;
-    if (!create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                      ao_raw_) ||
-        !create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                      ao_tmp_) ||
-        !create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                      ao_blur_)) {
-      error = "post ssao targets";
-      return false;
-    }
-    const VkImageUsageFlags sdr_usage =
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (!create_image(rw, rh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, scene_sdr_) ||
-        !create_image(rw, rh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, scene_fxaa_) ||
-        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, upscale_tmp_) ||
-        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, stand_in_) ||
-        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, stand_in_fxaa_) ||
-        !create_image(rw, rh, 1, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
-                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                      motion_vec_) ||
-        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, temporal_hist_[0]) ||
-        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                      VK_IMAGE_ASPECT_COLOR_BIT, temporal_hist_[1])) {
-      error = "post modern targets";
-      return false;
-    }
-    temporal_reset_ = true;
-    temporal_idx_ = 0;
     const auto post_t0 = std::chrono::steady_clock::now();
     if (!create_post(error)) return false;
     if (!create_modern_passes(error)) return false;
     pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - post_t0).count();
-    // Wire the 22 post descriptor sets:
+    const auto up_choice = modern::resolve_upscaler(graphics_.upscaler, upscaler_runtime_.support, {rw, rh},
+                                                    {width, height});
+    const modern::ModernTargetPlan plan = modern::plan_modern_targets(
+        graphics_, {rw, rh}, {width, height}, options_.post.bloom, hdr_mode_, hdr_pattern_, inspector_active_,
+        inspector_view_ == InspectorView::kMotion, up_choice);
+    allocated_targets_ = plan;
+
+    if (plan.bloom) {
+      uint32_t bw = std::max(1u, rw / 4), bh = std::max(1u, rh / 4);
+      for (uint32_t k = 0; k < kBloomLevels; ++k) {
+        bloom_w_[k] = bw;
+        bloom_h_[k] = bh;
+        if (!create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                          bloom_a_[k]) ||
+            !create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                          bloom_b_[k])) {
+          error = "post bloom pyramid";
+          return false;
+        }
+        bw = std::max(1u, bw / 2);
+        bh = std::max(1u, bh / 2);
+      }
+    }
+    if (plan.ssao) {
+      const uint32_t aow = std::max(1u, rw / 2), aoh = std::max(1u, rh / 2);
+      ao_width_ = aow;
+      ao_height_ = aoh;
+      if (!create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                        ao_raw_) ||
+          !create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                        ao_tmp_) ||
+          !create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                        ao_blur_)) {
+        error = "post ssao targets";
+        return false;
+      }
+    }
+    const VkImageUsageFlags sdr_usage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (plan.modern_chain) {
+      if (!create_image(rw, rh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, scene_sdr_) ||
+          !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, stand_in_)) {
+        error = "post modern targets";
+        return false;
+      }
+    }
+    if (plan.fxaa_scene &&
+        !create_image(rw, rh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, scene_fxaa_)) {
+      error = "post fxaa target";
+      return false;
+    }
+    if (plan.fxaa_standin &&
+        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, stand_in_fxaa_)) {
+      error = "post standin fxaa target";
+      return false;
+    }
+    if (plan.upscale_tmp &&
+        !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                      VK_IMAGE_ASPECT_COLOR_BIT, upscale_tmp_)) {
+      error = "post upscale target";
+      return false;
+    }
+    if (plan.motion_vec &&
+        !create_image(rw, rh, 1, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                      motion_vec_)) {
+      error = "post motion target";
+      return false;
+    }
+    if (plan.temporal_hist &&
+        (!create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                       VK_IMAGE_ASPECT_COLOR_BIT, temporal_hist_[0]) ||
+         !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                       VK_IMAGE_ASPECT_COLOR_BIT, temporal_hist_[1]))) {
+      error = "post temporal targets";
+      return false;
+    }
+    if (plan.inspector &&
+        !create_image(kInspectorPreviewW, kInspectorPreviewH, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_SAMPLED_BIT,
+                      VK_IMAGE_ASPECT_COLOR_BIT, inspector_thumb_)) {
+      error = "inspector thumbnail image";
+      return false;
+    }
+    temporal_reset_ = true;
+    temporal_idx_ = 0;
+    // Wire the 22 post descriptor sets (falling back to ao_white_ when bloom is disabled):
     //   0: lum16 (hdr, hdr)
     //   1: lum_adapt (lum_16, lum_adapt[1])
     //   2: bright (hdr, hdr)
@@ -1293,22 +1334,24 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     //   19: up1 (bloom_a[1], bloom_b[2])
     //   20: up0 (bloom_a[0], bloom_b[1])
     //   21: composite (hdr, bloom_b[0])
+    const VkImageView fallback_v = ao_white_.view;
+    auto bv = [&](const Image& img) { return img.view ? img.view : fallback_v; };
     VkImageView sources[kPostSetCount][2] = {};
     sources[0][0] = hdr_.view; sources[0][1] = hdr_.view;
     sources[1][0] = lum_16_.view; sources[1][1] = lum_adapt_[1].view;
     sources[2][0] = hdr_.view; sources[2][1] = hdr_.view;
     for (uint32_t k = 0; k < kBloomLevels; ++k) {
-      sources[3 + k][0] = bloom_a_[k].view; sources[3 + k][1] = bloom_a_[k].view;
-      sources[8 + k][0] = bloom_b_[k].view; sources[8 + k][1] = bloom_b_[k].view;
+      sources[3 + k][0] = bv(bloom_a_[k]); sources[3 + k][1] = bv(bloom_a_[k]);
+      sources[8 + k][0] = bv(bloom_b_[k]); sources[8 + k][1] = bv(bloom_b_[k]);
     }
     for (uint32_t k = 0; k < kBloomLevels - 1; ++k) {
-      sources[13 + k][0] = bloom_a_[k].view; sources[13 + k][1] = bloom_a_[k].view;
+      sources[13 + k][0] = bv(bloom_a_[k]); sources[13 + k][1] = bv(bloom_a_[k]);
     }
-    sources[17][0] = bloom_a_[3].view; sources[17][1] = bloom_a_[4].view;
-    sources[18][0] = bloom_a_[2].view; sources[18][1] = bloom_b_[3].view;
-    sources[19][0] = bloom_a_[1].view; sources[19][1] = bloom_b_[2].view;
-    sources[20][0] = bloom_a_[0].view; sources[20][1] = bloom_b_[1].view;
-    sources[21][0] = hdr_.view;        sources[21][1] = bloom_b_[0].view;
+    sources[17][0] = bv(bloom_a_[3]); sources[17][1] = bv(bloom_a_[4]);
+    sources[18][0] = bv(bloom_a_[2]); sources[18][1] = bv(bloom_b_[3]);
+    sources[19][0] = bv(bloom_a_[1]); sources[19][1] = bv(bloom_b_[2]);
+    sources[20][0] = bv(bloom_a_[0]); sources[20][1] = bv(bloom_b_[1]);
+    sources[21][0] = hdr_.view;       sources[21][1] = bv(bloom_b_[0]);
 
     std::vector<VkDescriptorImageInfo> images(kPostSetCount * 6);
     std::vector<VkDescriptorBufferInfo> buf_infos(kPostSetCount);
@@ -1447,6 +1490,7 @@ void Renderer::set_graphics_settings(const modern::GraphicsSettings& g) {
   const bool need_targets =
       clamped.scale != graphics_.scale || clamped.base_540p != graphics_.base_540p ||
       clamped.ssao != graphics_.ssao || clamped.hdr != graphics_.hdr ||
+      clamped.hdr_compare != graphics_.hdr_compare ||
       clamped.aa != graphics_.aa || clamped.upscaler != graphics_.upscaler;
   const bool hdr_changed = clamped.hdr != graphics_.hdr;
   graphics_ = clamped;
@@ -1472,6 +1516,7 @@ void Renderer::set_camera_vp(const float vp[16], float jitter_uv_x, float jitter
 }
 
 void Renderer::set_inspector_preview(bool active, InspectorView view) {
+  if (active != inspector_active_ || (active && view != inspector_view_)) targets_dirty_ = true;
   inspector_active_ = active;
   inspector_view_ = view;
   if (!active) inspector_has_rgba_ = false;
@@ -1960,13 +2005,6 @@ bool Renderer::create_modern_passes(std::string& error) {
       !make_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, VK_FORMAT_R8G8B8A8_UNORM,
                     hdr_pipe_sdr_, "hdr sdr pipeline"))
     return false;
-  if (!create_image(kInspectorPreviewW, kInspectorPreviewH, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                        VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, inspector_thumb_)) {
-    error = "inspector thumbnail image";
-    return false;
-  }
   if (color_format_ != VK_FORMAT_R8G8B8A8_UNORM) {
     if (!make_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, color_format_, hdr_pipe_swap_,
                       "hdr swap pipeline"))
@@ -2013,33 +2051,35 @@ void Renderer::destroy_modern_passes() {
 
 void Renderer::update_modern_descriptors() {
   if (!modern_ready_ || !depth_resolved_.view) return;
+  const VkImageView fb = ao_white_.view;
+  auto vv = [&](const Image& img) { return img.view ? img.view : fb; };
   const VkImageView ao_view =
       (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view : ao_white_.view;
   const VkImageView shadow_view = shadow_map_.view ? shadow_map_.view : depth_resolved_.view;
   VkDescriptorImageInfo ssao_imgs[6] = {
       {post_sampler_, ao_white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-      {post_sampler_, ao_raw_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(ao_raw_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-      {post_sampler_, ao_tmp_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(ao_tmp_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
   };
   VkDescriptorImageInfo tex_imgs[16] = {
-      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, stand_in_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, scene_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, upscale_tmp_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, stand_in_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, stand_in_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(stand_in_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(upscale_tmp_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(stand_in_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(stand_in_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-      {post_sampler_, temporal_hist_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, temporal_hist_[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(temporal_hist_[0]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(temporal_hist_[1]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, ao_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, shadow_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       hiz_preview_view_
           ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
           : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
@@ -2050,18 +2090,18 @@ void Renderer::update_modern_descriptors() {
                                   upscale_set_hist_[0], upscale_set_hist_[1], inspector_sets_[0], inspector_sets_[1],
                                   inspector_sets_[2], inspector_sets_[3], inspector_sets_[4], inspector_sets_[5]};
   VkDescriptorImageInfo temp_imgs[12] = {
-      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, temporal_hist_[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, scene_sdr_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, temporal_hist_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, scene_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, temporal_hist_[1].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, scene_fxaa_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, temporal_hist_[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, motion_vec_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(temporal_hist_[1]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(temporal_hist_[0]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(temporal_hist_[1]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(scene_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(temporal_hist_[0]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
   };
   VkWriteDescriptorSet writes[34]{};
   for (int i = 0; i < 6; ++i) {
@@ -2628,7 +2668,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
   }
 
   // 2. 5-level multi-mip bloom pyramid (bright pass -> downsample + Gaussian blur -> weighted upsample).
-  if (s.bloom) {
+  if (s.bloom && bloom_a_[0].image && bloom_b_[0].image) {
     to_write(bloom_a_[0]);
     pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_quarter_, post_sets_[2], 0,
          1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)));
@@ -2665,7 +2705,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[set_idx], 5, w_cur, w_prev);
       to_read(bloom_b_[k]);
     }
-  } else {
+  } else if (bloom_b_[0].image) {
     to_write(bloom_b_[0]);
     to_read(bloom_b_[0]);
   }
@@ -2691,6 +2731,8 @@ void Renderer::destroy_targets() {
   destroy_image(motion_vec_);
   destroy_image(temporal_hist_[0]);
   destroy_image(temporal_hist_[1]);
+  destroy_image(inspector_thumb_);
+  allocated_targets_ = {};
   temporal_reset_ = true;
   prev_cam_vp_valid_ = false;
   ao_width_ = ao_height_ = 0;
@@ -3085,7 +3127,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
 void Renderer::set_ui(std::span<const ui::Instance> items) { ui_items_.assign(items.begin(), items.end()); }
 
 void Renderer::ui_atlas_put(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::span<const uint8_t> rgba) {
-  if (!w || !h || x + w > kUiAtlas || y + h > kUiAtlas || rgba.size() < size_t(w) * h * 4) return;
+  const uint32_t atlas_sz = options_.ui_atlas_size ? options_.ui_atlas_size : kUiAtlas;
+  if (!w || !h || x + w > atlas_sz || y + h > atlas_sz || rgba.size() < size_t(w) * h * 4) return;
   ui_puts_.push_back({x, y, w, h, std::vector<uint8_t>(rgba.begin(), rgba.begin() + ptrdiff_t(size_t(w) * h * 4))});
 }
 
@@ -3096,7 +3139,8 @@ bool Renderer::create_ui(std::string& error) {
       error = "UI font buffer";
       return false;
     }
-    if (!create_image(kUiAtlas, kUiAtlas, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+    const uint32_t atlas_sz = options_.ui_atlas_size ? options_.ui_atlas_size : kUiAtlas;
+    if (!create_image(atlas_sz, atlas_sz, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT, ui_atlas_)) {
       error = "UI atlas";
       return false;
@@ -3301,6 +3345,14 @@ void Renderer::record_ui(VkCommandBuffer cmd, VkImage final_image, VkImageView f
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
     ui_puts_.clear();
+  } else {
+    // Release oversized transient UI staging buffers (> 2 MiB) once this slot's fence has passed.
+    FrameSlot& fs = slot();
+    if (fs.ui_staging.size > (2ULL << 20)) {
+      if (fs.ui_staging_mapped) vmaUnmapMemory(allocator_, fs.ui_staging.allocation);
+      fs.ui_staging_mapped = nullptr;
+      destroy_buffer(fs.ui_staging);
+    }
   }
   if (ui_items_.empty() || !pipeline) return;
   const VkDeviceSize bytes = ui_items_.size() * sizeof(ui::Instance);

@@ -1462,6 +1462,7 @@ void Showroom::set_lamp_vectors(const drive::LampShaderVectors& vectors) {
 void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera) {
   mirror_enabled_ = cockpit_camera;
   cockpit_camera_active_ = cockpit_camera;
+  if (cockpit_camera && dyn_env_ready_ && !mirror_tex_.view) ensure_mirror_targets();
   driver_wheel_rad_ = anim.wheel_rad;
   update_driver_mesh(anim.wheel_rad);
   auto make_rot = [](const std::array<float, 3>& pivot, const std::array<float, 3>& axis, float angle, float out[16]) {
@@ -2214,11 +2215,15 @@ bool Showroom::create_pipelines(std::string& error) {
 }
 
 bool Showroom::upload(std::string& error) {
+  const modern::WorldMemoryBudget mem_budget =
+      modern::choose_world_memory_budget(r_.device_local_bytes(), low_memory_mode_, reflection_rate_);
+  dyn_env_size_ = mem_budget.dyn_env_size;
+  dyn_env_mips_ = std::min(mem_budget.dyn_env_mips, kDynEnvMips);
   {
     std::lock_guard<std::mutex> lock(world_textures_mutex_);
     if (!world_budget_explicit_) {
-      uint64_t max_bytes = std::clamp<uint64_t>(r_.device_local_bytes() / 4, 256ULL << 20, 512ULL << 20);
-      size_t max_count = 1536;
+      uint64_t max_bytes = mem_budget.texture_lru_bytes;
+      size_t max_count = mem_budget.texture_lru_count;
       if (uint64_t mb = 0; parse_env_u64("SHIFT_WORLD_TEX_BUDGET_MB", mb) &&
                             mb <= (std::numeric_limits<uint64_t>::max() >> 20))
         max_bytes = mb << 20;
@@ -2513,7 +2518,7 @@ bool Showroom::upload(std::string& error) {
     gs.white = gpu_textures_[0].view;
     gs.black = gpu_textures_[1].view;
     gs.flat_normal = flat_normal_tex_.view;
-    uint64_t vb_bytes = std::clamp<uint64_t>(r_.device_local_bytes() / 8, 96ULL << 20, 160ULL << 20);
+    uint64_t vb_bytes = mem_budget.vertex_arena_bytes;
     if (uint64_t mb = 0; parse_env_u64("SHIFT_WORLD_ARENA_MB", mb) && mb >= 16 && mb <= 2048) vb_bytes = mb << 20;
     gs.vertex_capacity = uint32_t(vb_bytes / sizeof(WorldVertex));
     gs.index_capacity = gs.vertex_capacity * 3;
@@ -6181,14 +6186,16 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
   if (guest_ || !r_.device_) return true;
   if (dyn_env_ready_) return true;
 
-  // 256x256x6 RGBA16F cubemap with 9 mip levels for live drive reflections (car + LAKE water).
+  // RGBA16F cubemap (256^2x9 high, 128^2x8 low-power) for live drive reflections (car + LAKE water).
   const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+  const uint32_t env_sz = dyn_env_size_;
+  const uint32_t env_mips = std::min(dyn_env_mips_, kDynEnvMips);
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   ci.imageType = VK_IMAGE_TYPE_2D;
   ci.format = hdr_fmt;
-  ci.extent = {kDynEnvSize, kDynEnvSize, 1};
-  ci.mipLevels = kDynEnvMips;
+  ci.extent = {env_sz, env_sz, 1};
+  ci.mipLevels = env_mips;
   ci.arrayLayers = 6;
   ci.samples = VK_SAMPLE_COUNT_1_BIT;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -6205,7 +6212,7 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
   cv.image = dyn_env_.image;
   cv.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
   cv.format = hdr_fmt;
-  cv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, 0, 6};
+  cv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, env_mips, 0, 6};
   VK_TRY(vkCreateImageView(r_.device_, &cv, nullptr, &dyn_env_.view), "dynamic env cube view");
 
   VkImageViewCreateInfo cv0{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -6222,7 +6229,7 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     fv.format = hdr_fmt;
     fv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
     VK_TRY(vkCreateImageView(r_.device_, &fv, nullptr, &dyn_env_faces_[f]), "dynamic env face view");
-    for (uint32_t m = 1; m < kDynEnvMips; ++m) {
+    for (uint32_t m = 1; m < env_mips; ++m) {
       fv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, m, 1, f, 1};
       VK_TRY(vkCreateImageView(r_.device_, &fv, nullptr, &dyn_env_mip_faces_[m][f]), "dynamic env mip face view");
     }
@@ -6305,22 +6312,10 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     VK_TRY(pr_res, "prefilter pipeline");
   }
 
-  if (!r_.create_image(kDynEnvSize, kDynEnvSize, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
+  if (!r_.create_image(env_sz, env_sz, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                        VK_IMAGE_ASPECT_DEPTH_BIT, dyn_env_depth_)) {
     error = "dynamic env depth";
-    return false;
-  }
-
-  // 512x128 RGBA16F rearview/side mirror render target + depth.
-  if (!r_.create_image(kMirrorWidth, kMirrorHeight, 1, hdr_fmt, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT, mirror_tex_) ||
-      !r_.create_image(kMirrorWidth, kMirrorHeight, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
-                       VK_IMAGE_ASPECT_DEPTH_BIT, mirror_depth_)) {
-    error = "mirror render targets";
     return false;
   }
 
@@ -6337,51 +6332,42 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     return false;
   }
 
-  // Clear both images to SHADER_READ_ONLY_OPTIMAL so descriptors are valid before first draw.
+  // Clear cubemap to SHADER_READ_ONLY_OPTIMAL so descriptors are valid before first draw.
+  // Cockpit mirror targets are allocated lazily on first cockpit camera activation.
   const bool ok = r_.submit_once([&](VkCommandBuffer cmd) {
-    VkImageMemoryBarrier2 bs[2]{};
-    bs[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    bs[0].dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-    bs[0].dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    bs[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    bs[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    bs[0].srcQueueFamilyIndex = bs[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bs[0].image = dyn_env_.image;
-    bs[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kDynEnvMips, 0, 6};
-    bs[1] = bs[0];
-    bs[1].image = mirror_tex_.image;
-    bs[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = dyn_env_.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, env_mips, 0, 6};
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = 2;
-    dep.pImageMemoryBarriers = bs;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &dep);
     const VkClearColorValue clr{{0.08f, 0.10f, 0.14f, 1.0f}};
-    vkCmdClearColorImage(cmd, dyn_env_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &bs[0].subresourceRange);
-    vkCmdClearColorImage(cmd, mirror_tex_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &bs[1].subresourceRange);
-    for (int i = 0; i < 2; ++i) {
-      bs[i].srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
-      bs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      bs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-      bs[i].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-      bs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-      bs[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }
+    vkCmdClearColorImage(cmd, dyn_env_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &b.subresourceRange);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     vkCmdPipelineBarrier2(cmd, &dep);
-    VkImageMemoryBarrier2 dbs[2]{};
-    for (int i = 0; i < 2; ++i) {
-      dbs[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-      dbs[i].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-      dbs[i].dstAccessMask =
-          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-      dbs[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      dbs[i].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-      dbs[i].srcQueueFamilyIndex = dbs[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      dbs[i].image = i == 0 ? dyn_env_depth_.image : mirror_depth_.image;
-      dbs[i].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-    }
+    VkImageMemoryBarrier2 db{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    db.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    db.dstAccessMask =
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    db.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    db.image = dyn_env_depth_.image;
+    db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
     VkDependencyInfo ddep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    ddep.imageMemoryBarrierCount = 2;
-    ddep.pImageMemoryBarriers = dbs;
+    ddep.imageMemoryBarrierCount = 1;
+    ddep.pImageMemoryBarriers = &db;
     vkCmdPipelineBarrier2(cmd, &ddep);
   });
   if (!ok) {
@@ -6389,6 +6375,78 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     return false;
   }
   dyn_env_ready_ = true;
+  if (mirror_enabled_) ensure_mirror_targets();
+  return true;
+}
+
+bool Showroom::ensure_mirror_targets() {
+  if (guest_ || !r_.device_) return false;
+  if (mirror_tex_.view && mirror_depth_.view) return true;
+  const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+  if (!r_.create_image(kMirrorWidth, kMirrorHeight, 1, hdr_fmt, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT, mirror_tex_) ||
+      !r_.create_image(kMirrorWidth, kMirrorHeight, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT, mirror_depth_)) {
+    r_.destroy_image(mirror_tex_);
+    r_.destroy_image(mirror_depth_);
+    return false;
+  }
+  const bool ok = r_.submit_once([&](VkCommandBuffer cmd) {
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = mirror_tex_.image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    const VkClearColorValue clr{{0.08f, 0.10f, 0.14f, 1.0f}};
+    vkCmdClearColorImage(cmd, mirror_tex_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &b.subresourceRange);
+    b.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    VkImageMemoryBarrier2 db{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    db.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    db.dstAccessMask =
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    db.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    db.image = mirror_depth_.image;
+    db.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VkDependencyInfo ddep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    ddep.imageMemoryBarrierCount = 1;
+    ddep.pImageMemoryBarriers = &db;
+    vkCmdPipelineBarrier2(cmd, &ddep);
+  });
+  if (!ok) {
+    r_.destroy_image(mirror_tex_);
+    r_.destroy_image(mirror_depth_);
+    return false;
+  }
+  if (frame_set_ && sampler_) {
+    r_.wait_idle();
+    VkDescriptorImageInfo info{sampler_, mirror_tex_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = frame_set_;
+    w.dstBinding = 6;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &info;
+    vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+  }
+  mirror_valid_ = false;
   return true;
 }
 
@@ -6464,6 +6522,19 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       }
       return false;
     };
+    const auto eye_sc = [&]() -> std::array<float, 3> {
+      const float e[3] = {view_frame.eye[0] - world_transform_[12], view_frame.eye[1] - world_transform_[13],
+                          view_frame.eye[2] - world_transform_[14]};
+      std::array<float, 3> out{};
+      for (int c = 0; c < 3; ++c)
+        out[size_t(c)] = world_transform_[c * 4 + 0] * e[0] + world_transform_[c * 4 + 1] * e[1] +
+                         world_transform_[c * 4 + 2] * e[2];
+      return out;
+    }();
+    const float max_dist = include_cars ? 200.0f : 160.0f;
+    const float max_dist2 = max_dist * max_dist;
+    const float cutout_dist2 = include_cars ? (110.0f * 110.0f) : (75.0f * 75.0f);
+    const float layer_dist2 = 80.0f * 80.0f;
     world_bind_buffers(cmd, false);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
                             nullptr);
@@ -6472,7 +6543,16 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     for (const auto& d : world_draws_) {
       // Include opaque (blend 0) AND H_DIFF*/TREE_* alpha-tested props/trees/banners (blend 1).
-      if (!d.cull || d.blend > 1 || outside(d)) continue;
+      if (!d.cull || d.blend > 1) continue;
+      // Fast squared AABB distance cull before frustum planes (cuts ~3,400 draws down to ~150-250).
+      float d2 = 0.0f;
+      for (int k = 0; k < 3; ++k) {
+        const float q = std::max({d.box_min[k] - eye_sc[size_t(k)], 0.0f, eye_sc[size_t(k)] - d.box_max[k]});
+        d2 += q * q;
+      }
+      if (d2 > max_dist2) continue;
+      if (d.blend == 1 && d2 > cutout_dist2) continue;
+      if (outside(d)) continue;
       const uint32_t fl = uint32_t(d.push.params[1] + 0.5f);
       if ((fl & (2u | 32768u)) != 0u) continue;
       VkPipeline want_pipe = (d.blend == 1 && env_world_coverage_) ? env_world_coverage_ : env_world_opaque_;
@@ -6481,9 +6561,10 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
 
       VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
       uint32_t out_fl = fl;
-      const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
-                             d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
-                             d.light_map != kNoWorldTexture || d.spec_map != kNoWorldTexture;
+      const bool has_extra = (d2 <= layer_dist2) &&
+                             (d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
+                              d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
+                              d.light_map != kNoWorldTexture || d.spec_map != kNoWorldTexture);
       if ((set || d.texture == kNoWorldTexture) && has_extra) {
         VkDescriptorSet layered = world_layer_set(
             {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
@@ -6492,6 +6573,8 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         } else {
           out_fl &= ~(4u | 8u | 4096u | 8192u | 16384u | 524288u);
         }
+      } else if (!has_extra) {
+        out_fl &= ~(4u | 8u | 2048u | 4096u | 8192u | 16384u | 524288u);
       }
       if (!set) {
         set = world_white_set_;
@@ -6577,123 +6660,127 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
   static constexpr std::array<float, 3> kUp[6] = {
       {0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0}};
 
-  // First frame populates all 6 faces (also guarantees complete headless renders);
-  // subsequent live frames amortize 1 face per frame for minimal GPU cost.
-  const uint32_t first_f = dyn_env_initialized_ ? uint32_t((world_frame_ - 1) % 6) : 0u;
-  const uint32_t count_f = dyn_env_initialized_ ? 1u : 6u;
+  // Schedule dynamic cubemap face updates per preset.reflection_rate and stagger 3-band cockpit mirrors.
+  const modern::ReflectionStep rstep = modern::schedule_reflections(
+      world_frame_, reflection_rate_, dyn_env_initialized_, mirror_enabled_, mirror_valid_);
+  const uint32_t env_sz = dyn_env_size_;
+  const uint32_t env_mips = std::min(dyn_env_mips_, kDynEnvMips);
   // Probe center slightly above car roof in render space.
   const std::array<float, 3> cube_eye = {0.0f, 1.35f, 0.0f};
   // Pass A: Render updated face(s) into mip 0 and transition mip 0 to SHADER_READ_ONLY_OPTIMAL.
-  for (uint32_t i = 0; i < count_f; ++i) {
-    const uint32_t f = (first_f + i) % 6;
-    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = dyn_env_.image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &dep);
+  if (rstep.render_cubemap) {
+    for (uint32_t i = 0; i < rstep.face_count; ++i) {
+      const uint32_t f = (rstep.first_face + i) % 6;
+      VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+      b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+      b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+      b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      b.image = dyn_env_.image;
+      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, f, 1};
+      VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+      dep.imageMemoryBarrierCount = 1;
+      dep.pImageMemoryBarriers = &b;
+      vkCmdPipelineBarrier2(cmd, &dep);
 
-    ShowroomFrame vf = frame_;
-    vf.shadow[0] = 0.0f;
-    vf.shadow_far_bias[1] = vf.shadow_far_bias[2] = vf.shadow_far_bias[3] = 0.0f;
-    vf.eye[0] = cube_eye[0];
-    vf.eye[1] = cube_eye[1];
-    vf.eye[2] = cube_eye[2];
-    vf.eye[3] = 1.0f;
-    make_view_proj(cube_eye, game_to_render(kRight[f]), game_to_render(kUp[f]), game_to_render(kFwd[f]),
-                   1.0f, 1.0f, vf.view_projection);
-    std::memcpy(vf.transparent_view_projection, vf.view_projection, sizeof vf.view_projection);
+      ShowroomFrame vf = frame_;
+      vf.shadow[0] = 0.0f;
+      vf.shadow_far_bias[1] = vf.shadow_far_bias[2] = vf.shadow_far_bias[3] = 0.0f;
+      vf.eye[0] = cube_eye[0];
+      vf.eye[1] = cube_eye[1];
+      vf.eye[2] = cube_eye[2];
+      vf.eye[3] = 1.0f;
+      make_view_proj(cube_eye, game_to_render(kRight[f]), game_to_render(kUp[f]), game_to_render(kFwd[f]),
+                     1.0f, 1.0f, vf.view_projection);
+      std::memcpy(vf.transparent_view_projection, vf.view_projection, sizeof vf.view_projection);
 
-    record_offscreen_view(cmd, dyn_env_faces_[f], dyn_env_depth_.view, kDynEnvSize, kDynEnvSize, vf, false,
-                          0u, 0u, 0u, 0u, true, &env_draws_);
+      record_offscreen_view(cmd, dyn_env_faces_[f], dyn_env_depth_.view, env_sz, env_sz, vf, false,
+                            0u, 0u, 0u, 0u, true, &env_draws_);
 
-    b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    vkCmdPipelineBarrier2(cmd, &dep);
-  }
-  r_.mark(cmd, "env_cubemap");
+      b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+      b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+      b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+      b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      vkCmdPipelineBarrier2(cmd, &dep);
+    }
+    r_.mark(cmd, "env_cubemap");
 
-  // Pass B: Cross-face GGX prefilter mips 1..kDynEnvMips-1 sampling mip 0 across all 6 faces
-  // seamlessly (eliminating cube seams on rough/metallic car paint).
-  if (env_prefilter_pipe_ && env_prefilter_set_) {
-    for (uint32_t i = 0; i < count_f; ++i) {
-      const uint32_t f = (first_f + i) % 6;
-      uint32_t mip_w = kDynEnvSize;
-      for (uint32_t mip = 1; mip < kDynEnvMips; ++mip) {
-        mip_w = std::max(1u, mip_w / 2u);
-        VkImageMemoryBarrier2 mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        mb.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        mb.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        mb.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        mb.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        mb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        mb.image = dyn_env_.image;
-        mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, f, 1};
-        VkDependencyInfo mdep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        mdep.imageMemoryBarrierCount = 1;
-        mdep.pImageMemoryBarriers = &mb;
-        vkCmdPipelineBarrier2(cmd, &mdep);
+    // Pass B: Cross-face GGX prefilter mips 1..env_mips-1 sampling mip 0 across all 6 faces
+    // seamlessly (eliminating cube seams on rough/metallic car paint).
+    if (env_prefilter_pipe_ && env_prefilter_set_) {
+      for (uint32_t i = 0; i < rstep.face_count; ++i) {
+        const uint32_t f = (rstep.first_face + i) % 6;
+        uint32_t mip_w = env_sz;
+        for (uint32_t mip = 1; mip < env_mips; ++mip) {
+          mip_w = std::max(1u, mip_w / 2u);
+          VkImageMemoryBarrier2 mb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+          mb.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+          mb.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+          mb.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+          mb.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+          mb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+          mb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+          mb.srcQueueFamilyIndex = mb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+          mb.image = dyn_env_.image;
+          mb.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, f, 1};
+          VkDependencyInfo mdep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+          mdep.imageMemoryBarrierCount = 1;
+          mdep.pImageMemoryBarriers = &mb;
+          vkCmdPipelineBarrier2(cmd, &mdep);
 
-        VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-        ca.imageView = dyn_env_mip_faces_[mip][f];
-        ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        ca.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        ri.renderArea = {{0, 0}, {mip_w, mip_w}};
-        ri.layerCount = 1;
-        ri.colorAttachmentCount = 1;
-        ri.pColorAttachments = &ca;
-        vkCmdBeginRendering(cmd, &ri);
-        const VkViewport vp{0, 0, float(mip_w), float(mip_w), 0.0f, 1.0f};
-        const VkRect2D sc{{0, 0}, {mip_w, mip_w}};
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &sc);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_prefilter_pipe_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_prefilter_pipe_layout_, 0, 1,
-                                &env_prefilter_set_, 0, nullptr);
-        const float rough = float(mip) / float(kDynEnvMips - 1u);
-        const float pp[4] = {float(f), rough, float(mip), 1.0f / float(mip_w)};
-        vkCmdPushConstants(cmd, env_prefilter_pipe_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pp), pp);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRendering(cmd);
+          VkRenderingAttachmentInfo ca{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+          ca.imageView = dyn_env_mip_faces_[mip][f];
+          ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+          ca.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+          ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+          VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+          ri.renderArea = {{0, 0}, {mip_w, mip_w}};
+          ri.layerCount = 1;
+          ri.colorAttachmentCount = 1;
+          ri.pColorAttachments = &ca;
+          vkCmdBeginRendering(cmd, &ri);
+          const VkViewport vp{0, 0, float(mip_w), float(mip_w), 0.0f, 1.0f};
+          const VkRect2D sc{{0, 0}, {mip_w, mip_w}};
+          vkCmdSetViewport(cmd, 0, 1, &vp);
+          vkCmdSetScissor(cmd, 0, 1, &sc);
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_prefilter_pipe_);
+          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_prefilter_pipe_layout_, 0, 1,
+                                  &env_prefilter_set_, 0, nullptr);
+          const float rough = float(mip) / float(env_mips - 1u);
+          const float pp[4] = {float(f), rough, float(mip), 1.0f / float(mip_w)};
+          vkCmdPushConstants(cmd, env_prefilter_pipe_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pp), pp);
+          vkCmdDraw(cmd, 3, 1, 0, 0);
+          vkCmdEndRendering(cmd);
 
-        mb.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        mb.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        mb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        mb.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        mb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        mb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        vkCmdPipelineBarrier2(cmd, &mdep);
+          mb.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+          mb.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+          mb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+          mb.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+          mb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+          mb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+          vkCmdPipelineBarrier2(cmd, &mdep);
+        }
       }
     }
     r_.mark(cmd, "env_prefilter");
+    dyn_env_initialized_ = true;
   }
-  dyn_env_initialized_ = true;
 
-  // Dedicated 3-band cockpit mirror pass (1024x256) when cockpit camera is active:
+  // Dedicated 3-band cockpit mirror pass (1024x256) ONLY when cockpit camera is active:
   // Band 0 [0..341): mirrorLeft, Band 1 [341..683): mirrorMiddle, Band 2 [683..1024): mirrorRight.
-  if (mirror_enabled_ && mirror_tex_.view && mirror_depth_.view) {
+  // Staggers 1 band/frame after initial full 3-band populate (preserving untouched bands).
+  if (rstep.render_mirror && mirror_tex_.view && mirror_depth_.view) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
     b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.oldLayout = mirror_valid_ ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
     b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = mirror_tex_.image;
@@ -6714,8 +6801,8 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
         {341u, 342u, {0.0f, 1.18f, 0.25f}, {0.0f, -0.02f, 0.9998f}, 0.58f, 0.22f},
         {683u, 341u, {0.95f, 0.95f, 0.25f}, {0.20f * sl, -0.04f * sl, 0.98f * sl}, 0.50f, 0.28f},
     };
-    for (int bi = 0; bi < 3; ++bi) {
-      const auto& mb = bands[bi];
+    for (uint32_t bi = 0; bi < rstep.mirror_band_count; ++bi) {
+      const auto& mb = bands[(rstep.mirror_band_begin + bi) % 3u];
       // right = cross(fwd, up=(0,1,0)) = (-fwd.z, 0, fwd.x)
       const std::array<float, 3> mright = {-mb.fwd[2], 0.0f, mb.fwd[0]};
       ShowroomFrame mf = frame_;
@@ -6740,7 +6827,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
     vkCmdPipelineBarrier2(cmd, &dep);
     mirror_valid_ = true;
     r_.mark(cmd, "cockpit_mirrors");
-  } else {
+  } else if (!mirror_enabled_) {
     mirror_valid_ = false;
   }
 }

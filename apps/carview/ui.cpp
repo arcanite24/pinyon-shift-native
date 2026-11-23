@@ -289,10 +289,15 @@ struct VectorFonts {
   std::shared_ptr<const fh1::VFont> font[kNumVFonts];
   fh1::UiFontMap font_map;
   std::shared_ptr<const fh1::CjkFont> cjk;    // CHTB / CHSB / JPB / KORB
-  std::vector<uint8_t> atlas = std::vector<uint8_t>(size_t(kAtlasSize) * kAtlasSize * 4, 0);
+  uint32_t atlas_size = kAtlasSize;
+  uint32_t glyph_rows = kGlyphRows;
+  uint32_t transient_y0 = kTransientY0;
+  bool gpu_mode = false;
+  std::vector<uint8_t> atlas;  // lazily allocated only when !gpu_mode (or atlas_pixels() requested)
   std::vector<std::array<uint32_t, 4>> dirty;
+  std::vector<AtlasPatch> dirty_patches;
   uint32_t shelf_x = 0, shelf_y = 0, shelf_h = 0;
-  uint32_t image_x = 0, image_y = kGlyphRows, image_h = 0;  // persistent image shelf (kGlyphRows..kTransientY0)
+  uint32_t image_x = 0, image_y = kGlyphRows, image_h = 0;  // persistent image shelf (glyph_rows..transient_y0)
   uint32_t trans_y_next = kTransientY0;
   uint64_t lru_tick = 1;
   uint64_t transient_evictions = 0;
@@ -308,14 +313,33 @@ struct VectorFonts {
   // font index: 0..10 VFont, 16 CjkFont.
   std::map<std::tuple<int, uint32_t, int>, Entry> cache;  // (font, code point, px) -> entry
 
+  void ensure_cpu_atlas() {
+    const size_t want = size_t(atlas_size) * atlas_size * 4;
+    if (atlas.size() != want) {
+      atlas.assign(want, uint8_t(0));
+      const size_t glyph_bytes = size_t(atlas_size) * glyph_rows * 4;
+      for (size_t i = 0; i < glyph_bytes; i += 4) atlas[i] = atlas[i + 1] = atlas[i + 2] = 255;
+    }
+  }
+
   // Clears the glyph rows (the images stay).
   void reset() {
-    const size_t glyph_bytes = size_t(kAtlasSize) * kGlyphRows * 4;
-    std::fill(atlas.begin(), atlas.begin() + ptrdiff_t(glyph_bytes), uint8_t(0));
-    for (size_t i = 0; i < glyph_bytes; i += 4) atlas[i] = atlas[i + 1] = atlas[i + 2] = 255;
+    const uint32_t used_h = std::min(glyph_rows, shelf_y + shelf_h);
+    if (!gpu_mode) {
+      ensure_cpu_atlas();
+      const size_t glyph_bytes = size_t(atlas_size) * glyph_rows * 4;
+      std::fill(atlas.begin(), atlas.begin() + ptrdiff_t(glyph_bytes), uint8_t(0));
+      for (size_t i = 0; i < glyph_bytes; i += 4) atlas[i] = atlas[i + 1] = atlas[i + 2] = 255;
+      if (used_h > 0) dirty.push_back({0, 0, atlas_size, used_h});
+    } else if (used_h > 0) {
+      AtlasPatch p;
+      p.x = 0, p.y = 0, p.w = atlas_size, p.h = used_h;
+      p.rgba.assign(size_t(atlas_size) * used_h * 4, uint8_t(0));
+      for (size_t i = 0; i < p.rgba.size(); i += 4) p.rgba[i] = p.rgba[i + 1] = p.rgba[i + 2] = 255;
+      dirty_patches.push_back(std::move(p));
+    }
     cache.clear();
     shelf_x = shelf_y = shelf_h = 0;
-    dirty.push_back({0, 0, kAtlasSize, kGlyphRows});
   }
 
   void clear_transient() {
@@ -327,16 +351,12 @@ struct VectorFonts {
       }
     }
     trans_shelves.clear();
-    trans_y_next = kTransientY0;
+    trans_y_next = transient_y0;
   }
 };
 
 VectorFonts& vf() {
-  static VectorFonts v = [] {
-    VectorFonts x;
-    x.reset();
-    return x;
-  }();
+  static VectorFonts v;
   return v;
 }
 
@@ -356,25 +376,46 @@ namespace {
 // Copies w x h pixels to (ax, ay) with one texel of edge padding all round,
 // so bilinear taps stay inside.
 void atlas_put(VectorFonts& v, uint32_t ax, uint32_t ay, uint32_t w, uint32_t h, std::span<const uint8_t> rgba) {
+  const uint32_t pw = w + 2, ph = h + 2;
+  if (v.gpu_mode) {
+    AtlasPatch patch;
+    patch.x = ax - 1;
+    patch.y = ay - 1;
+    patch.w = pw;
+    patch.h = ph;
+    patch.rgba.resize(size_t(pw) * ph * 4);
+    for (int y = -1; y <= int(h); ++y) {
+      const uint32_t sy = uint32_t(std::clamp(y, 0, int(h) - 1));
+      uint8_t* dst_row = &patch.rgba[size_t(y + 1) * pw * 4];
+      const uint8_t* src_row = &rgba[size_t(sy) * w * 4];
+      std::memcpy(dst_row, src_row, 4);
+      std::memcpy(dst_row + 4, src_row, size_t(w) * 4);
+      std::memcpy(dst_row + (size_t(w) + 1) * 4, src_row + (size_t(w) - 1) * 4, 4);
+    }
+    v.dirty_patches.push_back(std::move(patch));
+    return;
+  }
+  v.ensure_cpu_atlas();
   for (int y = -1; y <= int(h); ++y)
     for (int x = -1; x <= int(w); ++x) {
       const uint32_t sx = uint32_t(std::clamp(x, 0, int(w) - 1)), sy = uint32_t(std::clamp(y, 0, int(h) - 1));
-      std::memcpy(&v.atlas[((size_t(int(ay) + y)) * kAtlasSize + size_t(int(ax) + x)) * 4], &rgba[(size_t(sy) * w + sx) * 4], 4);
+      std::memcpy(&v.atlas[((size_t(int(ay) + y)) * v.atlas_size + size_t(int(ax) + x)) * 4],
+                  &rgba[(size_t(sy) * w + sx) * 4], 4);
     }
-  v.dirty.push_back({ax - 1, ay - 1, w + 2, h + 2});
+  v.dirty.push_back({ax - 1, ay - 1, pw, ph});
 }
 
 bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, uint32_t h,
                            std::span<const uint8_t> rgba, std::array<float, 4>& uv) {
   const uint32_t need_w = w + 2, need_h = h + 2;
-  if (need_w > kAtlasSize || need_h > (kAtlasSize - kTransientY0)) return false;
+  if (need_w > v.atlas_size || need_h > (v.atlas_size - v.transient_y0)) return false;
 
   // 1. Try appending to an existing transient shelf with enough remaining width and compatible height.
   int best_shelf = -1;
   uint32_t best_waste = 0xFFFFFFFFu;
   for (int i = 0; i < int(v.trans_shelves.size()); ++i) {
     const auto& sh = v.trans_shelves[size_t(i)];
-    if (sh.x + need_w <= kAtlasSize && sh.h >= need_h) {
+    if (sh.x + need_w <= v.atlas_size && sh.h >= need_h) {
       const uint32_t waste = sh.h - need_h;
       if (waste < best_waste) {
         best_waste = waste;
@@ -389,7 +430,7 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
     sh.x += need_w;
     sh.last_tick = ++v.lru_tick;
     sh.keys.push_back(key);
-    const float k = 1.0f / float(kAtlasSize);
+    const float k = 1.0f / float(v.atlas_size);
     uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
     v.images[key] = uv;
     v.trans_key_shelf[key] = best_shelf;
@@ -397,7 +438,7 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
   }
 
   // 2. Open a new transient shelf if vertical space remains.
-  if (v.trans_y_next + need_h <= kAtlasSize) {
+  if (v.trans_y_next + need_h <= v.atlas_size) {
     TransientShelf sh;
     sh.y = v.trans_y_next;
     sh.h = need_h;
@@ -409,7 +450,7 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
     v.trans_y_next += need_h;
     const int idx = int(v.trans_shelves.size());
     v.trans_shelves.push_back(std::move(sh));
-    const float k = 1.0f / float(kAtlasSize);
+    const float k = 1.0f / float(v.atlas_size);
     uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
     v.images[key] = uv;
     v.trans_key_shelf[key] = idx;
@@ -439,7 +480,7 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
     sh.keys.push_back(key);
     const uint32_t ax = 1, ay = sh.y + 1;
     atlas_put(v, ax, ay, w, h, rgba);
-    const float k = 1.0f / float(kAtlasSize);
+    const float k = 1.0f / float(v.atlas_size);
     uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
     v.images[key] = uv;
     v.trans_key_shelf[key] = victim;
@@ -458,7 +499,7 @@ bool atlas_alloc_transient(VectorFonts& v, const std::string& key, uint32_t w, u
   atlas_put(v, ax, ay, w, h, rgba);
   v.trans_y_next += need_h;
   v.trans_shelves.push_back(std::move(sh));
-  const float k = 1.0f / float(kAtlasSize);
+  const float k = 1.0f / float(v.atlas_size);
   uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
   v.images[key] = uv;
   v.trans_key_shelf[key] = 0;
@@ -471,8 +512,8 @@ bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<cons
   VectorFonts& v = vf();
   if (auto it = v.images.find(key); it != v.images.end()) {
     const auto& u = it->second;
-    const uint32_t ax = uint32_t(std::lround(u[0] * kAtlasSize)), ay = uint32_t(std::lround(u[1] * kAtlasSize));
-    const uint32_t ew = uint32_t(std::lround(u[2] * kAtlasSize)) - ax, eh = uint32_t(std::lround(u[3] * kAtlasSize)) - ay;
+    const uint32_t ax = uint32_t(std::lround(u[0] * v.atlas_size)), ay = uint32_t(std::lround(u[1] * v.atlas_size));
+    const uint32_t ew = uint32_t(std::lround(u[2] * v.atlas_size)) - ax, eh = uint32_t(std::lround(u[3] * v.atlas_size)) - ay;
     if (ew == w && eh == h && rgba.size() >= size_t(w) * h * 4) {
       atlas_put(v, ax, ay, w, h, rgba);
       if (auto sit = v.trans_key_shelf.find(key); sit != v.trans_key_shelf.end() &&
@@ -496,12 +537,12 @@ bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const
     }
     return uv = it->second, true;
   }
-  if (!w || !h || w + 2 > kAtlasSize || rgba.size() < size_t(w) * h * 4) return false;
+  if (!w || !h || w + 2 > v.atlas_size || rgba.size() < size_t(w) * h * 4) return false;
   if (transient || is_auto_transient_key(key)) {
     return atlas_alloc_transient(v, key, w, h, rgba, uv);
   }
-  if (v.image_x + w + 2 > kAtlasSize) v.image_x = 0, v.image_y += v.image_h, v.image_h = 0;
-  if (v.image_y + h + 2 > kTransientY0) {
+  if (v.image_x + w + 2 > v.atlas_size) v.image_x = 0, v.image_y += v.image_h, v.image_h = 0;
+  if (v.image_y + h + 2 > v.transient_y0) {
     // Persistent shelf full: spill gracefully into transient LRU cache rather than failing!
     return atlas_alloc_transient(v, key, w, h, rgba, uv);
   }
@@ -509,7 +550,7 @@ bool atlas_image(const std::string& key, uint32_t w, uint32_t h, std::span<const
   atlas_put(v, ax, ay, w, h, rgba);
   v.image_x += w + 2;
   v.image_h = std::max(v.image_h, h + 2);
-  const float k = 1.0f / float(kAtlasSize);
+  const float k = 1.0f / float(v.atlas_size);
   uv = {float(ax) * k, float(ay) * k, float(ax + w) * k, float(ay + h) * k};
   v.images[key] = uv;
   return true;
@@ -605,17 +646,30 @@ const VectorFonts::Entry* glyph_entry(int font, uint32_t cp, int px) {
   const int gx0 = int(std::floor(g->min_x * k)) - pad, gx1 = int(std::ceil(g->max_x * k)) + pad;
   const int gy0 = int(std::floor(-g->max_y * k)) - pad, gy1 = int(std::ceil(-g->min_y * k)) + pad;
   const int w = gx1 - gx0, h = gy1 - gy0;
-  if (w <= 0 || h <= 0 || w > int(kAtlasSize) || h > int(kAtlasSize)) return nullptr;
-  if (v.shelf_x + uint32_t(w) > kAtlasSize) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
-  if (v.shelf_y + uint32_t(h) > kGlyphRows) v.reset();  // full: start over (this frame may show stale glyphs)
+  if (w <= 0 || h <= 0 || w > int(v.atlas_size) || h > int(v.atlas_size)) return nullptr;
+  if (v.shelf_x + uint32_t(w) > v.atlas_size) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
+  if (v.shelf_y + uint32_t(h) > v.glyph_rows) v.reset();  // full: start over (this frame may show stale glyphs)
   const uint32_t ax = v.shelf_x, ay = v.shelf_y;
   v.shelf_x += uint32_t(w) + 1;
   v.shelf_h = std::max(v.shelf_h, uint32_t(h) + 1);
   std::vector<uint8_t> cov;
   fh1::rasterize_vfont_glyph(*g, k, float(-gx0), float(-gy0), cov, w, h);
-  for (int y = 0; y < h; ++y)
-    for (int x = 0; x < w; ++x) v.atlas[((size_t(ay) + size_t(y)) * kAtlasSize + ax + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
-  v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
+  if (v.gpu_mode) {
+    AtlasPatch patch;
+    patch.x = ax, patch.y = ay, patch.w = uint32_t(w), patch.h = uint32_t(h);
+    patch.rgba.resize(size_t(w) * size_t(h) * 4, 255);
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        patch.rgba[(size_t(y) * size_t(w) + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
+    v.dirty_patches.push_back(std::move(patch));
+  } else {
+    v.ensure_cpu_atlas();
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        v.atlas[((size_t(ay) + size_t(y)) * v.atlas_size + ax + size_t(x)) * 4 + 3] =
+            cov[size_t(y) * size_t(w) + size_t(x)];
+    v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
+  }
   VectorFonts::Entry e{float(ax), float(ay), float(ax + uint32_t(w)), float(ay + uint32_t(h)), float(gx0), float(gy0),
                        0.0f, false};
   return &(v.cache[key] = e);
@@ -635,16 +689,28 @@ const VectorFonts::Entry* cjk_glyph_entry(uint32_t cp, int cell_px) {
   int w = 0, h = 0;
   float adv = 0.0f;
   if (!v.cjk->rasterize_scaled(cp, cell_px, cov, w, h, adv)) return nullptr;
-  if (w <= 0 || h <= 0 || w > int(kAtlasSize) || h > int(kAtlasSize)) return nullptr;
-  if (v.shelf_x + uint32_t(w) > kAtlasSize) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
-  if (v.shelf_y + uint32_t(h) > kGlyphRows) v.reset();
+  if (w <= 0 || h <= 0 || w > int(v.atlas_size) || h > int(v.atlas_size)) return nullptr;
+  if (v.shelf_x + uint32_t(w) > v.atlas_size) v.shelf_x = 0, v.shelf_y += v.shelf_h, v.shelf_h = 0;
+  if (v.shelf_y + uint32_t(h) > v.glyph_rows) v.reset();
   const uint32_t ax = v.shelf_x, ay = v.shelf_y;
   v.shelf_x += uint32_t(w) + 1;
   v.shelf_h = std::max(v.shelf_h, uint32_t(h) + 1);
-  for (int y = 0; y < h; ++y)
-    for (int x = 0; x < w; ++x)
-      v.atlas[((size_t(ay) + size_t(y)) * kAtlasSize + ax + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
-  v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
+  if (v.gpu_mode) {
+    AtlasPatch patch;
+    patch.x = ax, patch.y = ay, patch.w = uint32_t(w), patch.h = uint32_t(h);
+    patch.rgba.resize(size_t(w) * size_t(h) * 4, 255);
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        patch.rgba[(size_t(y) * size_t(w) + size_t(x)) * 4 + 3] = cov[size_t(y) * size_t(w) + size_t(x)];
+    v.dirty_patches.push_back(std::move(patch));
+  } else {
+    v.ensure_cpu_atlas();
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        v.atlas[((size_t(ay) + size_t(y)) * v.atlas_size + ax + size_t(x)) * 4 + 3] =
+            cov[size_t(y) * size_t(w) + size_t(x)];
+    v.dirty.push_back({ax, ay, uint32_t(w), uint32_t(h)});
+  }
   // Position bitmap top relative to baseline using font's ascent ratio.
   const float ascent_ratio = float(v.cjk->ascent()) / float(std::max(1, v.cjk->cell_size()));
   const float top_from_base = -float(h) * (ascent_ratio - v.cjk->baseline_shift());
@@ -901,8 +967,43 @@ void set_cjk_font(std::shared_ptr<const fh1::CjkFont> cjk) {
   v.reset();
 }
 bool cjk_font_loaded() { return vf().cjk != nullptr && vf().cjk->valid(); }
-const std::vector<uint8_t>& atlas_pixels() { return vf().atlas; }
+void set_atlas_size(uint32_t side) {
+  VectorFonts& v = vf();
+  const uint32_t clamped = side <= 2048 ? 2048u : kAtlasSize;
+  if (v.atlas_size == clamped) return;
+  v.atlas_size = clamped;
+  v.glyph_rows = clamped == 2048u ? 512u : kGlyphRows;
+  v.transient_y0 = clamped == 2048u ? 1024u : kTransientY0;
+  v.image_x = 0;
+  v.image_y = v.glyph_rows;
+  v.image_h = 0;
+  v.trans_y_next = v.transient_y0;
+  v.trans_shelves.clear();
+  v.trans_key_shelf.clear();
+  v.images.clear();
+  v.cache.clear();
+  v.shelf_x = v.shelf_y = v.shelf_h = 0;
+  v.dirty.clear();
+  v.dirty_patches.clear();
+  std::vector<uint8_t>().swap(v.atlas);
+}
+uint32_t atlas_size() { return vf().atlas_size; }
+void set_gpu_atlas_mode(bool on) {
+  VectorFonts& v = vf();
+  v.gpu_mode = on;
+  if (on && !v.atlas.empty()) {
+    std::vector<uint8_t>().swap(v.atlas);
+  }
+}
+bool gpu_atlas_mode() { return vf().gpu_mode; }
+size_t atlas_cpu_bytes() { return vf().atlas.size(); }
+const std::vector<uint8_t>& atlas_pixels() {
+  VectorFonts& v = vf();
+  v.ensure_cpu_atlas();
+  return v.atlas;
+}
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty() { return std::exchange(vf().dirty, {}); }
+std::vector<AtlasPatch> atlas_take_dirty_patches() { return std::exchange(vf().dirty_patches, {}); }
 
 std::string List::strip_style_tags(std::string_view text) {
   TextStyle base{};
@@ -943,7 +1044,7 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
   const bool have_cjk = vf().cjk && vf().cjk->valid();
   const int cjk_px = have_cjk ? cjk_cached_px(s.size) : 0;
   const float cjk_scale = have_cjk ? std::clamp(s.size * 1.32f, 8.0f, 96.0f) / float(cjk_px) : 1.0f;
-  const float inv = 1.0f / float(kAtlasSize);
+  const float inv = 1.0f / float(vf().atlas_size);
   float max_w = 0.0f;
 
   for (size_t li = 0; li < lines.size(); ++li) {
@@ -1125,12 +1226,13 @@ float coverage(const Instance& it, float px, float py, float& mix) {
       // white (glyphs) times the tint, so only coverage changes.
       float tx, ty, edge = 1;
       image_t(it, px, py, tx, ty, edge);
-      const float u = (it.q[0] + (it.q[2] - it.q[0]) * tx) * kAtlasSize - 0.5f;
-      const float v = (it.q[1] + (it.q[3] - it.q[1]) * ty) * kAtlasSize - 0.5f;
+      const uint32_t asz = atlas_size();
+      const float u = (it.q[0] + (it.q[2] - it.q[0]) * tx) * asz - 0.5f;
+      const float v = (it.q[1] + (it.q[3] - it.q[1]) * ty) * asz - 0.5f;
       const auto& a = atlas_pixels();
       auto at = [&](int x, int y) {
-        x = std::clamp(x, 0, int(kAtlasSize) - 1), y = std::clamp(y, 0, int(kAtlasSize) - 1);
-        return float(a[(size_t(y) * kAtlasSize + size_t(x)) * 4 + 3]) / 255.0f;
+        x = std::clamp(x, 0, int(asz) - 1), y = std::clamp(y, 0, int(asz) - 1);
+        return float(a[(size_t(y) * asz + size_t(x)) * 4 + 3]) / 255.0f;
       };
       const int x0 = int(std::floor(u)), y0 = int(std::floor(v));
       const float fx = u - float(x0), fy = v - float(y0);
@@ -1145,23 +1247,24 @@ float coverage(const Instance& it, float px, float py, float& mix) {
 float to_linear_unit(uint32_t c, int shift) { return float((c >> shift) & 0xFF) / 255.0f; }
 
 void sample_atlas_rect(const float uv[4], float tx, float ty, float out_rgba[4]) {
-  const float u_lo = std::min(uv[0], uv[2]) * kAtlasSize;
-  const float u_hi = std::max(uv[0], uv[2]) * kAtlasSize;
-  const float v_lo = std::min(uv[1], uv[3]) * kAtlasSize;
-  const float v_hi = std::max(uv[1], uv[3]) * kAtlasSize;
-  const int min_x = std::clamp(int(std::floor(u_lo)), 0, int(kAtlasSize) - 1);
-  const int max_x = std::clamp(int(std::ceil(u_hi)) - 1, min_x, int(kAtlasSize) - 1);
-  const int min_y = std::clamp(int(std::floor(v_lo)), 0, int(kAtlasSize) - 1);
-  const int max_y = std::clamp(int(std::ceil(v_hi)) - 1, min_y, int(kAtlasSize) - 1);
-  const float u = (uv[0] + (uv[2] - uv[0]) * tx) * kAtlasSize - 0.5f;
-  const float v = (uv[1] + (uv[3] - uv[1]) * ty) * kAtlasSize - 0.5f;
+  const uint32_t asz = atlas_size();
+  const float u_lo = std::min(uv[0], uv[2]) * asz;
+  const float u_hi = std::max(uv[0], uv[2]) * asz;
+  const float v_lo = std::min(uv[1], uv[3]) * asz;
+  const float v_hi = std::max(uv[1], uv[3]) * asz;
+  const int min_x = std::clamp(int(std::floor(u_lo)), 0, int(asz) - 1);
+  const int max_x = std::clamp(int(std::ceil(u_hi)) - 1, min_x, int(asz) - 1);
+  const int min_y = std::clamp(int(std::floor(v_lo)), 0, int(asz) - 1);
+  const int max_y = std::clamp(int(std::ceil(v_hi)) - 1, min_y, int(asz) - 1);
+  const float u = (uv[0] + (uv[2] - uv[0]) * tx) * asz - 0.5f;
+  const float v = (uv[1] + (uv[3] - uv[1]) * ty) * asz - 0.5f;
   const int x0 = int(std::floor(u)), y0 = int(std::floor(v));
   const float fx = u - float(x0), fy = v - float(y0);
   const auto& a = atlas_pixels();
   auto sample = [&](int x, int y) {
     x = std::clamp(x, min_x, max_x);
     y = std::clamp(y, min_y, max_y);
-    return &a[(size_t(y) * kAtlasSize + size_t(x)) * 4];
+    return &a[(size_t(y) * asz + size_t(x)) * 4];
   };
   const uint8_t* p00 = sample(x0, y0);
   const uint8_t* p10 = sample(x0 + 1, y0);

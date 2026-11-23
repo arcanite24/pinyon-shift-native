@@ -210,4 +210,44 @@ struct SplitBindlessLimits {
 };
 bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t texture_slots = 4096);
 
+// ---- Lazy render-target allocation plan -----------------------------------------------------
+struct ModernTargetPlan {
+  bool bloom = false;
+  bool ssao = false;
+  bool modern_chain = false;
+  bool fxaa_scene = false;
+  bool fxaa_standin = false;
+  bool upscale_tmp = false;
+  bool motion_vec = false;
+  bool temporal_hist = false;
+  bool inspector = false;
+  bool operator==(const ModernTargetPlan&) const = default;
+};
+ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,
+                                     HdrMode hdr_mode, uint32_t hdr_pattern, bool inspector_active,
+                                     bool inspector_needs_motion, const UpscalerChoice& up_choice);
+
+// ---- Dynamic cubemap & 3-band cockpit mirror scheduling ------------------------------------
+struct ReflectionStep {
+  bool render_cubemap = false;
+  uint32_t first_face = 0;
+  uint32_t face_count = 0;
+  bool render_mirror = false;
+  uint32_t mirror_band_begin = 0;
+  uint32_t mirror_band_count = 0;
+};
+ReflectionStep schedule_reflections(uint64_t frame_index, float reflection_rate, bool cubemap_initialized,
+                                    bool mirror_active, bool mirror_initialized);
+
+// ---- Preset-aware WorldGpu arena & world texture LRU budget --------------------------------
+struct WorldMemoryBudget {
+  uint64_t vertex_arena_bytes = 0;
+  uint64_t texture_lru_bytes = 0;
+  size_t texture_lru_count = 0;
+  uint32_t dyn_env_size = 256;
+  uint32_t dyn_env_mips = 9;
+};
+WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool low_preset,
+                                             float reflection_rate = 1.0f);
+
 }  // namespace carview::modern

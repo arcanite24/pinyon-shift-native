@@ -390,17 +390,24 @@ bool load_ui_fonts(const std::filesystem::path& game_root) {
 // The UI atlas's changed rectangles to the renderer (`full`: upload the whole
 // atlas once on a fresh Renderer after a car/race reload).
 void upload_ui_atlas(Renderer& renderer, bool full = false) {
+  if (carview::ui::gpu_atlas_mode()) {
+    for (auto& patch : carview::ui::atlas_take_dirty_patches()) {
+      renderer.ui_atlas_put(patch.x, patch.y, patch.w, patch.h, patch.rgba);
+    }
+    return;
+  }
   const auto& a = carview::ui::atlas_pixels();
+  const uint32_t side = carview::ui::atlas_size();
   if (full) {
     carview::ui::atlas_take_dirty();
-    renderer.ui_atlas_put(0, 0, carview::ui::kAtlasSize, carview::ui::kAtlasSize, a);
+    renderer.ui_atlas_put(0, 0, side, side, a);
     return;
   }
   std::vector<uint8_t> rows;
   for (const auto& [x, y, w, h] : carview::ui::atlas_take_dirty()) {
     rows.resize(size_t(w) * h * 4);
     for (uint32_t r = 0; r < h; ++r)
-      std::memcpy(&rows[size_t(r) * w * 4], &a[(size_t(y + r) * carview::ui::kAtlasSize + x) * 4], size_t(w) * 4);
+      std::memcpy(&rows[size_t(r) * w * 4], &a[(size_t(y + r) * side + x) * 4], size_t(w) * 4);
     renderer.ui_atlas_put(x, y, w, h, rows);
   }
 }
@@ -1755,6 +1762,8 @@ int run_drive(int argc, char** argv) {
   bool reverse_z = true;
   bool backface_cull = (std::getenv("SHIFT_NO_CULL") == nullptr);
   bool z_prepass = (std::getenv("SHIFT_Z_PREPASS") != nullptr);
+  float preset_reflection_rate = 1.0f;
+  float preset_anisotropy = -1.0f;
   carview::modern::GraphicsSettings cli_graphics;
   uint32_t cli_hdr_pattern = 0;
   float cli_hdr_pattern_nits = 1000.0f;
@@ -1870,11 +1879,15 @@ int run_drive(int argc, char** argv) {
       if (carview::resolve_graphics_preset(p, pspec)) {
         msaa = pspec.msaa;
         low_preset = pspec.low_preset;
+        preset_reflection_rate = pspec.env_map_rate;
+        preset_anisotropy = pspec.anisotropy;
         if (shadows_flag.empty()) shadows_flag = pspec.shadows;
         if (bloom_flag < 0) bloom_flag = pspec.bloom ? 1 : 0;
       } else {
         msaa = p == "low" ? 1 : 4;
         low_preset = p == "low";
+        preset_reflection_rate = low_preset ? 0.5f : 1.0f;
+        preset_anisotropy = low_preset ? 2.0f : 16.0f;
       }
     }
     else if (a == "--touch-controls") {
@@ -2488,6 +2501,10 @@ int run_drive(int argc, char** argv) {
   }
   // The career page's PNGs and the HUD: the game's fonts.
   const auto db_cat_t0 = std::chrono::steady_clock::now();
+  if (career_png.empty() && map_png.empty()) {
+    carview::ui::set_atlas_size(low_preset ? 2048u : Renderer::kUiAtlas);
+    carview::ui::set_gpu_atlas_mode(true);
+  }
   if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of());
   // The screen's car names (FORMAT-STRINGTABLES), loaded on first use.
   auto car_names = std::make_shared<race::CarNames>();
@@ -3181,13 +3198,16 @@ int run_drive(int argc, char** argv) {
       render_options.pipeline_cache_path = bake_dir.parent_path() / "cache" / "vk_pipeline_cache.bin";
     }
     showroom.set_texture_cap(cli_graphics.texture_cap);
+    showroom.set_reflection_rate(preset_reflection_rate);
+    showroom.set_low_memory_mode(low_preset);
+    render_options.ui_atlas_size = carview::ui::atlas_size();
     if (cli_graphics.auto_hdr && !headless) {
       const auto st_dir = carview::settings_path().parent_path();
       if (!st_dir.empty()) carview::set_display_hdr_restore_file(st_dir / "hdr_restore.bin");
       carview::turn_on_display_hdr();
     }
-    // Anisotropic filtering of the ground's grazing textures (ours): the low preset stays cheap.
-    render_options.anisotropy = low_preset ? 2.0f : 16.0f;
+    // Anisotropic filtering of the ground's grazing textures (honors preset.anisotropy).
+    render_options.anisotropy = preset_anisotropy > 0.0f ? preset_anisotropy : (low_preset ? 2.0f : 16.0f);
     if (post_on) {
       PostSettings& post = render_options.post;
       post.enabled = true;

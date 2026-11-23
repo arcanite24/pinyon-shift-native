@@ -259,6 +259,10 @@ class Showroom {
   // Creates the pipelines and uploads geometry and textures; the renderer
   // must be initialised. Installs itself as the renderer's scene.
   bool upload(std::string& error);
+  void set_reflection_rate(float rate) { reflection_rate_ = std::clamp(rate, 0.0f, 1.0f); }
+  float reflection_rate() const { return reflection_rate_; }
+  void set_low_memory_mode(bool on) { low_memory_mode_ = on; }
+  bool mirror_targets_allocated() const { return mirror_tex_.view != VK_NULL_HANDLE; }
   // The caller's camera and lighting; the stripe colour, paint finish, and damage state are the car's own.
   void set_frame(const ShowroomFrame& frame) {
     frame_ = frame;
@@ -810,6 +814,10 @@ class Showroom {
   std::filesystem::path env_xpr_path_;
   static constexpr uint32_t kDynEnvSize = 256;
   static constexpr uint32_t kDynEnvMips = 9;
+  uint32_t dyn_env_size_ = kDynEnvSize;
+  uint32_t dyn_env_mips_ = kDynEnvMips;
+  float reflection_rate_ = 1.0f;
+  bool low_memory_mode_ = false;
   static constexpr uint32_t kMirrorWidth = 1024;
   static constexpr uint32_t kMirrorHeight = 256;
   GpuTexture dyn_env_;
@@ -839,6 +847,7 @@ class Showroom {
   bool mirror_enabled_ = false;
   bool mirror_valid_ = false;
   bool init_dynamic_reflections(std::string& error);
+  bool ensure_mirror_targets();
   void record_env_and_mirror(VkCommandBuffer cmd);
   void record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
                              uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars,

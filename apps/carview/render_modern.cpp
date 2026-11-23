@@ -579,4 +579,83 @@ bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t textur
          limits.max_set_sampled_images >= need_images;
 }
 
+ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,
+                                     HdrMode hdr_mode, uint32_t hdr_pattern, bool inspector_active,
+                                     bool inspector_needs_motion, const UpscalerChoice& up_choice) {
+  ModernTargetPlan p{};
+  p.bloom = post_bloom;
+  p.ssao = (g.ssao != SsaoQuality::kOff);
+  const bool need_scale = (render.w != output.w || render.h != output.h);
+  const bool need_upscaler = need_scale || g.upscaler != Upscaler::kBilinear;
+  const bool need_hdr_stage = (hdr_mode != HdrMode::kOff) || g.hdr_compare || (hdr_pattern != 0);
+  p.fxaa_scene = (g.aa == AaMode::kFxaaWorld);
+  p.fxaa_standin = (g.aa == AaMode::kFxaaAll);
+  p.modern_chain = need_upscaler || need_hdr_stage || p.fxaa_scene || p.fxaa_standin || inspector_active;
+  p.upscale_tmp = p.modern_chain && !up_choice.temporal && up_choice.active == Upscaler::kFsr1;
+  p.temporal_hist = p.modern_chain && up_choice.temporal;
+  p.motion_vec = p.temporal_hist || (inspector_active && inspector_needs_motion);
+  p.inspector = inspector_active;
+  return p;
+}
+
+ReflectionStep schedule_reflections(uint64_t frame_index, float reflection_rate, bool cubemap_initialized,
+                                    bool mirror_active, bool mirror_initialized) {
+  ReflectionStep s{};
+  if (reflection_rate > 0.0f) {
+    if (!cubemap_initialized) {
+      s.render_cubemap = true;
+      s.first_face = 0;
+      s.face_count = 6;
+    } else {
+      // rate >= 1.0 -> 1 face every frame; 0.5 -> every 2 frames; <= 0.25 -> every 4 frames.
+      const uint64_t interval =
+          reflection_rate >= 0.99f ? 1ull : (reflection_rate >= 0.49f ? 2ull : 4ull);
+      const uint64_t f = frame_index > 0 ? frame_index - 1ull : 0ull;
+      if ((f % interval) == 0ull) {
+        s.render_cubemap = true;
+        s.first_face = uint32_t((f / interval) % 6ull);
+        s.face_count = 1;
+      }
+    }
+  }
+  if (mirror_active) {
+    s.render_mirror = true;
+    if (!mirror_initialized) {
+      s.mirror_band_begin = 0;
+      s.mirror_band_count = 3;
+    } else {
+      // Stagger 1 mirror band per frame (L / Center / R) to slash cockpit CPU/GPU cost 3x.
+      const uint64_t f = frame_index > 0 ? frame_index - 1ull : 0ull;
+      s.mirror_band_begin = uint32_t(f % 3ull);
+      s.mirror_band_count = 1;
+    }
+  }
+  return s;
+}
+
+WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool low_preset, float reflection_rate) {
+  WorldMemoryBudget b{};
+  if (low_preset) {
+    // 58 MiB vertex + 14.5 MiB index = 72.5 MiB total (down from 200 MiB), sized to hold Colorado's
+    // low-preset gather cleanly while keeping low-power total VRAM under 260 MiB.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 16, 58ULL << 20, 60ULL << 20);
+    b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 8, 96ULL << 20, 128ULL << 20);
+    b.texture_lru_count = 768;
+  } else {
+    // 96 MiB vertex + 24 MiB index = 120 MiB total (down from 200 MiB), leaving generous
+    // headroom for overlapping fading cells during 240 km/h streaming.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 12, 96ULL << 20, 112ULL << 20);
+    b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 6, 192ULL << 20, 320ULL << 20);
+    b.texture_lru_count = 1536;
+  }
+  if (low_preset || reflection_rate <= 0.25f) {
+    b.dyn_env_size = 128;
+    b.dyn_env_mips = 8;  // 128 -> 1 (8 levels)
+  } else {
+    b.dyn_env_size = 256;
+    b.dyn_env_mips = 9;  // 256 -> 1 (9 levels)
+  }
+  return b;
+}
+
 }  // namespace carview::modern

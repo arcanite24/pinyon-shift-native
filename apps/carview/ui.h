@@ -102,8 +102,20 @@ bool cjk_font_loaded();
 // Rows kTransientY0..kAtlasSize: LRU-evicted transient artwork cache
 // (EventTickets, Thumbnails, BGLoadingImages, Upgrade icons, Logos).
 inline constexpr uint32_t kAtlasSize = 4096, kGlyphRows = 1024, kTransientY0 = 2560;
+struct AtlasPatch {
+  uint32_t x = 0, y = 0, w = 0, h = 0;
+  std::vector<uint8_t> rgba;
+};
+// Configures runtime atlas side (2048 or 4096) and GPU-only patch mode (avoids
+// keeping a permanent 64 MiB CPU shadow copy when rendering with Vulkan).
+void set_atlas_size(uint32_t side);
+uint32_t atlas_size();
+void set_gpu_atlas_mode(bool on);
+bool gpu_atlas_mode();
+size_t atlas_cpu_bytes();
 const std::vector<uint8_t>& atlas_pixels();
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty();  // x, y, w, h
+std::vector<AtlasPatch> atlas_take_dirty_patches();
 // An image (straight-alpha RGBA, sRGB) in the atlas under `key`, once; its
 // uv rectangle (0..1). Transient artwork keys automatically route to the LRU
 // transient cache (never failing on overflow).
