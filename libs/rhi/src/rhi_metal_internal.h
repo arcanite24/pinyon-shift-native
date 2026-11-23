@@ -329,6 +329,12 @@ class MetalCommandListImpl final : public CommandList {
   uint32_t rp_width_ = 0;
   uint32_t rp_height_ = 0;
 
+  // Cross-encoder barrier synchronization (required for bindless/MTLResidencySet
+  // resources that bypass Metal's automatic hazard tracking across encoders).
+  id<MTLFence> barrier_fence_ = nil;
+  bool fence_updated_ = false;
+  bool fence_wait_pending_ = false;
+
   // Staging buffers & arrays kept alive for the lifetime of this command buffer
   std::vector<id<MTLBuffer>> transient_buffers_;
   std::vector<id> transient_objects_;

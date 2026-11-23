@@ -17,7 +17,11 @@ namespace shift::rhi::mtl {
 // MetalCommandListImpl
 // -----------------------------------------------------------------------------
 MetalCommandListImpl::MetalCommandListImpl(MetalDeviceImpl& device, id<MTLCommandBuffer> cmd_buf)
-    : device_(device), cmd_buf_(cmd_buf) {}
+    : device_(device), cmd_buf_(cmd_buf) {
+  if (device_.mtl_device()) {
+    barrier_fence_ = [device_.mtl_device() newFence];
+  }
+}
 
 MetalCommandListImpl::~MetalCommandListImpl() {
   end_active_encoder();
@@ -39,6 +43,8 @@ void MetalCommandListImpl::reset_command_buffer(id<MTLCommandBuffer> cmd_buf) {
   for (uint32_t i = 0; i < kMaxBindSets; ++i) pending_compute_groups_[i] = {};
   rp_width_ = 0;
   rp_height_ = 0;
+  fence_updated_ = false;
+  fence_wait_pending_ = false;
   transient_buffers_.clear();
   transient_objects_.clear();
 }
@@ -51,6 +57,8 @@ void MetalCommandListImpl::begin() {
   push_const_compute_dirty_ = false;
   compute_pipeline_dirty_ = false;
   for (uint32_t i = 0; i < kMaxBindSets; ++i) pending_compute_groups_[i] = {};
+  fence_updated_ = false;
+  fence_wait_pending_ = false;
 }
 
 void MetalCommandListImpl::end() {
@@ -60,19 +68,43 @@ void MetalCommandListImpl::end() {
 void MetalCommandListImpl::end_active_encoder() {
   switch (active_encoder_) {
     case EncoderKind::Render:
-      if (render_enc_) [render_enc_ endEncoding];
+      if (render_enc_) {
+        if (barrier_fence_) {
+          [render_enc_ updateFence:barrier_fence_ afterStages:MTLRenderStageFragment];
+          fence_updated_ = true;
+        }
+        [render_enc_ endEncoding];
+      }
       render_enc_ = nil;
       break;
     case EncoderKind::Compute:
-      if (compute_enc_) [compute_enc_ endEncoding];
+      if (compute_enc_) {
+        if (barrier_fence_) {
+          [compute_enc_ updateFence:barrier_fence_];
+          fence_updated_ = true;
+        }
+        [compute_enc_ endEncoding];
+      }
       compute_enc_ = nil;
       break;
     case EncoderKind::Blit:
-      if (blit_enc_) [blit_enc_ endEncoding];
+      if (blit_enc_) {
+        if (barrier_fence_) {
+          [blit_enc_ updateFence:barrier_fence_];
+          fence_updated_ = true;
+        }
+        [blit_enc_ endEncoding];
+      }
       blit_enc_ = nil;
       break;
     case EncoderKind::AccelStruct:
-      if (accel_enc_) [accel_enc_ endEncoding];
+      if (accel_enc_) {
+        if (barrier_fence_) {
+          [accel_enc_ updateFence:barrier_fence_];
+          fence_updated_ = true;
+        }
+        [accel_enc_ endEncoding];
+      }
       accel_enc_ = nil;
       break;
     case EncoderKind::None:
@@ -87,7 +119,13 @@ id<MTLComputeCommandEncoder> MetalCommandListImpl::ensure_compute_encoder() {
   end_active_encoder();
   if (!cmd_buf_) return nil;
   compute_enc_ = [cmd_buf_ computeCommandEncoder];
-  if (compute_enc_) active_encoder_ = EncoderKind::Compute;
+  if (compute_enc_) {
+    active_encoder_ = EncoderKind::Compute;
+    if (fence_wait_pending_ && barrier_fence_) {
+      [compute_enc_ waitForFence:barrier_fence_];
+      fence_wait_pending_ = false;
+    }
+  }
   return compute_enc_;
 }
 
@@ -97,7 +135,13 @@ id<MTLBlitCommandEncoder> MetalCommandListImpl::ensure_blit_encoder() {
   end_active_encoder();
   if (!cmd_buf_) return nil;
   blit_enc_ = [cmd_buf_ blitCommandEncoder];
-  if (blit_enc_) active_encoder_ = EncoderKind::Blit;
+  if (blit_enc_) {
+    active_encoder_ = EncoderKind::Blit;
+    if (fence_wait_pending_ && barrier_fence_) {
+      [blit_enc_ waitForFence:barrier_fence_];
+      fence_wait_pending_ = false;
+    }
+  }
   return blit_enc_;
 }
 
@@ -107,7 +151,13 @@ id<MTLAccelerationStructureCommandEncoder> MetalCommandListImpl::ensure_accel_en
   end_active_encoder();
   if (!cmd_buf_) return nil;
   accel_enc_ = [cmd_buf_ accelerationStructureCommandEncoder];
-  if (accel_enc_) active_encoder_ = EncoderKind::AccelStruct;
+  if (accel_enc_) {
+    active_encoder_ = EncoderKind::AccelStruct;
+    if (fence_wait_pending_ && barrier_fence_) {
+      [accel_enc_ waitForFence:barrier_fence_];
+      fence_wait_pending_ = false;
+    }
+  }
   return accel_enc_;
 }
 
@@ -126,11 +176,15 @@ void MetalCommandListImpl::barrier(const BarrierDesc& desc) {
     }
     return;
   }
-  // Across encoders (Blit <-> Compute <-> Render <-> AccelStruct), ending the active encoder
-  // establishes hazard-tracked Metal pass ordering on default-tracked resources.
+  // Across encoders (Blit <-> Compute <-> Render <-> AccelStruct), end the active encoder
+  // (which updates barrier_fence_) and arm a wait on the next encoder so resources referenced
+  // indirectly via bindless argument buffers / MTLResidencySet observe prior writes deterministically.
   if (desc.global_compute_uav || desc.global_as_build_to_read || desc.global_host_read ||
       !desc.buffers.empty() || !desc.textures.empty()) {
     end_active_encoder();
+    if (fence_updated_) {
+      fence_wait_pending_ = true;
+    }
   }
 }
 
@@ -240,6 +294,11 @@ void MetalCommandListImpl::begin_render_pass(const RenderPassDesc& desc) {
       active_encoder_ = EncoderKind::Render;
       rp_width_ = desc.width;
       rp_height_ = desc.height;
+      if (fence_wait_pending_ && barrier_fence_) {
+        [render_enc_ waitForFence:barrier_fence_
+                     beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+        fence_wait_pending_ = false;
+      }
       if (desc.debug_label && *desc.debug_label) {
         render_enc_.label = [NSString stringWithUTF8String:desc.debug_label];
       }
