@@ -1,6 +1,9 @@
 # Build trees
 /build*/
 /out/
+# Static site output
+/site/_build/
+/_site/
 # Renders and reports come from the player's game data: never commit them.
 *.png
 *.log
