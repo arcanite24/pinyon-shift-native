@@ -1,0 +1,75 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// RT-3: Built-In SVGF Edge-Stopping A-Trous Wavelet Filter (step sizes 1, 2, 4, 8).
+// Preserves crisp car panel edges, rims, and horizon silhouettes while removing Monte Carlo noise.
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 sz = ivec2(int(ubo.rt_params.z), int(ubo.rt_params.w));
+  if (px.x >= sz.x || px.y >= sz.y) return;
+
+  int step_sz = max(rt_pc.pc.x, 1);
+  bool ping = (rt_pc.pc.y == 0);
+
+  vec4 center_val = ping ? imageLoad(rt_hist_curr, px) : imageLoad(rt_svgf_tmp, px);
+  vec4 center_norm_r = imageLoad(rt_gbuf_norm, px);
+  vec3 center_n = center_norm_r.xyz;
+  float center_l = luma(center_val.rgb);
+  float center_var = max(center_val.a, 1e-4);
+  bool is_pt = (int(ubo.env_basis_y.w + 0.5) == 2);
+  float center_demod = is_pt ? imageLoad(rt_gbuf_albedo, px).w : 0.0;
+
+  vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+  float z_c = textureLod(depth_tex, uv, 0.0).r;
+  if (is_sky_depth_val(z_c) || dot(center_n, center_n) < 0.01) {
+    if (ping) imageStore(rt_svgf_tmp, px, center_val);
+    else imageStore(rt_hist_curr, px, center_val);
+    return;
+  }
+  float d_c = linearize_depth(z_c);
+
+  // 3x3 B3-spline wavelet kernel weights.
+  const float kKern[3] = float[3](1.0, 2.0 / 3.0, 1.0 / 6.0);
+  float sigma_l = 4.0 * sqrt(center_var) + 0.06;
+  float phi_z = max(d_c * 0.045, 0.08) * float(step_sz);
+
+  vec3 sum_col = center_val.rgb;
+  float sum_var = center_var;
+  float sum_w = 1.0;
+
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) continue;
+      ivec2 q = px + ivec2(dx * step_sz, dy * step_sz);
+      if (q.x < 0 || q.y < 0 || q.x >= sz.x || q.y >= sz.y) continue;
+
+      vec4 q_val = ping ? imageLoad(rt_hist_curr, q) : imageLoad(rt_svgf_tmp, q);
+      vec3 q_n = imageLoad(rt_gbuf_norm, q).xyz;
+      if (dot(q_n, q_n) < 0.01) continue;
+      if (is_pt && abs(center_demod - imageLoad(rt_gbuf_albedo, q).w) > 0.5) continue;
+
+      vec2 q_uv = (vec2(q) + 0.5) / vec2(sz);
+      float d_q = linearize_depth(textureLod(depth_tex, q_uv, 0.0).r);
+
+      float w_n = pow(max(dot(center_n, q_n), 0.0), 48.0);
+      float w_z = exp(-abs(d_c - d_q) / phi_z);
+      float w_l = exp(-abs(center_l - luma(q_val.rgb)) / sigma_l);
+      float k_w = kKern[abs(dx)] * kKern[abs(dy)];
+      float w = k_w * w_n * w_z * w_l;
+
+      sum_col += q_val.rgb * w;
+      sum_var += q_val.a * w * w;
+      sum_w += w;
+    }
+  }
+
+  vec3 out_col = sum_col / max(sum_w, 1e-5);
+  float out_var = sum_var / max(sum_w * sum_w, 1e-5);
+  vec4 result = vec4(out_col, out_var);
+
+  if (ping) imageStore(rt_svgf_tmp, px, result);
+  else imageStore(rt_hist_curr, px, result);
+}

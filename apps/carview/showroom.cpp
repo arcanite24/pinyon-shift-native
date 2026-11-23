@@ -329,6 +329,8 @@ Showroom::~Showroom() {
   VkDevice d = r_.device_;
   if (!d) return;
   if (!skip_wait_idle_on_destroy_) r_.wait_idle();
+  rt_pipeline_.reset();
+  rt_scene_.reset();
   drop_pending_world();
   drop_fading_world(true);
   stop_reaper();
@@ -2457,10 +2459,16 @@ bool Showroom::upload(std::string& error) {
     error = "shadow frame buffer";
     return false;
   }
+  const VkBufferUsageFlags rt_geom_flags =
+      r_.rt_supported()
+          ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+          : 0u;
   if (!r_.upload_buffer(vertices_.data(), vertices_.size() * sizeof(bake::Vertex),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer_) ||
-      !r_.upload_buffer(indices_.data(), indices_.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                        index_buffer_) ||
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_geom_flags, vertex_buffer_) ||
+      !r_.upload_buffer(indices_.data(), indices_.size() * sizeof(uint32_t),
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_geom_flags, index_buffer_) ||
       !r_.create_buffer(sizeof(ShowroomFrame),
                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, frame_buffer_) ||
@@ -2954,6 +2962,22 @@ bool Showroom::upload(std::string& error) {
       record_shadow(cmd);
       r_.mark(cmd, "shadows");
     }
+    if (r_.active_rt_mode() != rt::RtMode::kOff) {
+      if (!rt_scene_ && !rt_init_failed_) {
+        auto sc = std::make_unique<RtScene>(r_);
+        std::string rt_err;
+        if (sc->init([this](std::function<void()> fn) { retire(std::move(fn)); }, rt_err)) {
+          rt_scene_ = std::move(sc);
+        } else {
+          rt_init_failed_ = true;
+          notes_.push_back("RT scene init failed: " + rt_err);
+        }
+      }
+      if (rt_scene_ && rt_scene_->ready()) {
+        rt_scene_->record_update(cmd, *this);
+        r_.mark(cmd, "rt_bvh");
+      }
+    }
     if (vfx_ready_ && particle_set_ && r_.depth_resolved_view() && r_.depth_resolved_view() != particle_bound_depth_) {
       particle_bound_depth_ = r_.depth_resolved_view();
       VkDescriptorImageInfo depth_info{particle_sampler_, particle_bound_depth_,
@@ -3000,6 +3024,25 @@ bool Showroom::upload(std::string& error) {
   };
   hooks.build_hiz = [this](VkCommandBuffer cmd, VkImageView dv, uint32_t w, uint32_t h, bool rev) {
     if (arena_on() && gpu_world_) gpu_world_->record_hiz(cmd, dv, w, h, rev);
+  };
+  hooks.record_rt = [this](VkCommandBuffer cmd, VkImage hdr_img, VkImageView hdr_view, VkImageView depth_view,
+                           VkImageView motion_view, uint32_t w, uint32_t h) {
+    if (r_.active_rt_mode() == rt::RtMode::kOff || !rt_scene_ || !rt_scene_->ready()) return;
+    if (!rt_pipeline_ && !rt_init_failed_) {
+      auto pipe = std::make_unique<RtPipeline>(r_);
+      VkDescriptorSetLayout bl_layout = gpu_world_ ? gpu_world_->bindless_layout() : VK_NULL_HANDLE;
+      VkImageView fb_white = !gpu_textures_.empty() ? gpu_textures_[0].view : VK_NULL_HANDLE;
+      std::string rt_err;
+      if (pipe->init(bl_layout, sampler_, fb_white, rt_err)) {
+        rt_pipeline_ = std::move(pipe);
+      } else {
+        rt_init_failed_ = true;
+        notes_.push_back("RT pipeline init failed: " + rt_err);
+      }
+    }
+    if (rt_pipeline_ && rt_pipeline_->ready()) {
+      rt_pipeline_->record(cmd, *this, *rt_scene_, hdr_img, hdr_view, depth_view, motion_view, w, h);
+    }
   };
   hooks.clear[0] = 0.09f;
   hooks.clear[1] = 0.095f;
@@ -3347,11 +3390,17 @@ bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::stri
   if (!load(bake_dir, car, options, error)) return false;
 
   // Upload new car vertex & index buffers.
+  const VkBufferUsageFlags rt_geom_flags =
+      r_.rt_supported()
+          ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+          : 0u;
   Renderer::Buffer new_vb, new_ib;
   if (!r_.upload_buffer(vertices_.data(), vertices_.size() * sizeof(bake::Vertex),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, new_vb) ||
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_geom_flags, new_vb) ||
       !r_.upload_buffer(indices_.data(), indices_.size() * sizeof(uint32_t),
-                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT, new_ib)) {
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_geom_flags, new_ib)) {
     r_.destroy_buffer(new_vb);
     r_.destroy_buffer(new_ib);
     error = "reload_car geometry buffers";
@@ -4763,9 +4812,15 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
         return false;
       }
     }
-    if ((!arena && (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    const VkBufferUsageFlags world_rt_flags =
+        r_.rt_supported()
+            ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+            : 0u;
+    if ((!arena && (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | world_rt_flags,
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->vertices) ||
-                    !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    !r_.create_buffer(ib, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | world_rt_flags,
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->indices))) ||
         vkAllocateCommandBuffers(r_.device_, &alloc, &p->cmd) != VK_SUCCESS ||
         vkCreateFence(r_.device_, &fence, nullptr, &p->fence) != VK_SUCCESS) {

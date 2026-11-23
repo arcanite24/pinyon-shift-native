@@ -32,6 +32,8 @@
 #include "drive/damage.h"
 #include "drive/lamps.h"
 #include "renderer.h"
+#include "rt_pipeline.h"
+#include "rt_scene.h"
 #include "world/smashables.h"
 #include "world/tod.h"
 #include "world/vfx.h"
@@ -1018,6 +1020,12 @@ class Showroom {
   uint32_t mirror_draws_ = 0;
   uint32_t car_draws_ = 0;
   std::atomic<uint64_t> world_staging_bytes_{0};
+  // Hardware Ray Tracing / Path Tracing scene manager & pipeline (lazily created only when RT != kOff).
+  std::unique_ptr<RtScene> rt_scene_;
+  std::unique_ptr<RtPipeline> rt_pipeline_;
+  bool rt_init_failed_ = false;
+  friend class RtScene;
+  friend class RtPipeline;
 };
 
 }  // namespace carview

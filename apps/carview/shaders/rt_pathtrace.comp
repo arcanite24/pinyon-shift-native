@@ -1,0 +1,360 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// RT-3 & RT-4: Full Real-Time Multi-Bounce Path Tracer (VK_KHR_ray_query) with
+// ReSTIR DI Spatiotemporal Reservoir Resampling, 2-Layer Automotive Clearcoat +
+// Metallic Flake BSDF, Refractive Glass Optics, and Photo Mode Progressive PT!
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Evaluates unshadowed direct lighting contribution from light `li` at surface `s`.
+vec3 eval_light_contrib(RtSurface s, vec3 V, uint li, out vec3 light_dir, out float light_dist) {
+  RtLightGpu L = lights[li];
+  uint ltype = uint(L.pos_type.w + 0.5);
+  vec3 radiance = vec3(0.0);
+  light_dir = vec3(0.0, 1.0, 0.0);
+  light_dist = 1000.0;
+
+  if (ltype == 0u) {
+    // Directional solar disc.
+    light_dir = safe_normalize(L.pos_type.xyz, vec3(0.38, 0.87, 0.29));
+    light_dist = 900.0;
+    radiance = L.color_power.rgb * clamp(ubo.sun_dir_elev.w, 0.0, 1.0) * 2.65;
+  } else {
+    vec3 to_l = L.pos_type.xyz - s.pos;
+    float d = length(to_l);
+    if (d > L.dir_range.w || d < 0.08) return vec3(0.0);
+    light_dir = to_l / d;
+    light_dist = max(d - 0.12, 0.02);
+    float atten = 1.0 / (1.0 + 0.14 * d * d);
+    float edge = clamp(1.0 - pow(d / max(L.dir_range.w, 1.0), 4.0), 0.0, 1.0);
+    atten *= edge * edge;
+    if (ltype == 1u) {
+      // Vehicle headlight spotlight cone.
+      float spot = dot(-light_dir, L.dir_range.xyz);
+      atten *= smoothstep(L.color_power.w, L.extra.x, spot);
+    }
+    radiance = L.color_power.rgb * atten;
+  }
+
+  float ndl = max(dot(s.normal, light_dir), 0.0);
+  if (ndl <= 1e-4) return vec3(0.0);
+
+  // 2-Layer Automotive BSDF evaluation (Basecoat + Dielectric Clearcoat).
+  float ndv = max(dot(s.normal, V), 1e-4);
+  vec3 H = safe_normalize(light_dir + V, s.normal);
+  float ndh = max(dot(s.normal, H), 0.0);
+  float vdh = max(dot(V, H), 0.0);
+
+  vec3 F0 = mix(vec3(0.04), s.albedo, s.metallic);
+  float a = max(s.roughness * s.roughness, 0.008);
+  vec3 F = fresnel_schlick(F0, vdh);
+  float D = ggx_d(ndh, a);
+  float G = smith_g1(ndv, a) * smith_g1(ndl, a);
+  vec3 spec = (D * G * F) / max(4.0 * ndv * ndl, 1e-4);
+  vec3 diff = s.albedo * (vec3(1.0) - F) * (1.0 - s.metallic) * kInvPi;
+
+  vec3 brdf = diff + spec;
+  if (s.clearcoat > 0.5) {
+    float Fc = 0.047 + 0.953 * pow(1.0 - vdh, 5.0);
+    float Dc = ggx_d(ndh, 0.03);
+    float Gc = smith_g1(ndv, 0.03) * smith_g1(ndl, 0.03);
+    float coat_spec = (Dc * Gc * Fc) / max(4.0 * ndv * ndl, 1e-4);
+    brdf = brdf * (1.0 - Fc) + vec3(coat_spec);
+  }
+  return brdf * radiance * ndl;
+}
+
+// ReSTIR DI: Weighted Reservoir Sampling over Sun + dynamic headlights, taillights, and Colorado glows.
+vec3 eval_restir_di(RtSurface s, vec3 V, ivec2 px, ivec2 sz, uint pixel_idx, inout uint rng, bool photo_mode) {
+  uint light_cnt = max(uint(ubo.rt_params.y), 1u);
+  RtReservoir r;
+  r.light_idx = 0u;
+  r.weight_sum = 0.0;
+  r.W = 0.0;
+  r.M = 0u;
+
+  // Candidate 0: always evaluate Sun disc (or skip at deep night).
+  vec3 sun_ld;
+  float sun_dist;
+  vec3 sun_f = eval_light_contrib(s, V, 0u, sun_ld, sun_dist);
+  float sun_p = luma(sun_f);
+  if (sun_p > 1e-5) {
+    r.light_idx = 0u;
+    r.weight_sum = sun_p;
+    r.M = 1u;
+  }
+
+  // Draw M = 8 stratified candidates from dynamic headlights, taillights & Colorado world glows.
+  if (light_cnt > 1u) {
+    uint num_cands = min(light_cnt - 1u, 8u);
+    float inv_pdf = float(light_cnt - 1u) / float(num_cands);
+    for (uint c = 0u; c < num_cands; ++c) {
+      uint li = 1u + uint(rand01(rng) * float(light_cnt - 1u));
+      li = min(li, light_cnt - 1u);
+      vec3 ld;
+      float ldist;
+      vec3 contrib = eval_light_contrib(s, V, li, ld, ldist);
+      float w = luma(contrib) * inv_pdf;
+      r.weight_sum += w;
+      r.M += 1u;
+      if (w > 0.0 && rand01(rng) * r.weight_sum < w) {
+        r.light_idx = li;
+      }
+    }
+  }
+
+  // Evaluate target PDF of selected candidate and test visibility.
+  vec3 win_ld;
+  float win_dist;
+  vec3 win_f = eval_light_contrib(s, V, r.light_idx, win_ld, win_dist);
+  float win_p = luma(win_f);
+  r.W = (win_p > 1e-5 && r.M > 0u) ? (r.weight_sum / (win_p * float(r.M))) : 0.0;
+
+  if (r.W > 0.0) {
+    // Jitter solar disc for soft area shadows when winner is the Sun.
+    vec3 ray_d = win_ld;
+    if (r.light_idx == 0u) {
+      float cone_tan = mix(0.014, 0.0065, clamp(win_ld.y * 2.0, 0.0, 1.0));
+      vec2 u = rand2(rng);
+      float rad = sqrt(u.x) * cone_tan;
+      float phi = 2.0 * kPi * u.y;
+      vec3 st, sb;
+      make_onb(win_ld, st, sb);
+      ray_d = normalize(win_ld + (st * cos(phi) + sb * sin(phi)) * rad);
+    }
+    vec3 orig = s.pos + s.geom_normal * max(0.018, 0.0006 * s.hit_t);
+    uint smask = (r.light_idx > 0u && s.inst_kind == 1u) ? (kMaskShadowCasters & ~kMaskPlayerCar) : kMaskShadowCasters;
+    float vis = trace_visibility(orig, ray_d, 0.015, win_dist, smask);
+    if (vis < 0.5) {
+      r.W = 0.0;
+    }
+  }
+
+  // Temporal reservoir reuse in real-time PT mode (disabled in unbiased Photo Mode PT).
+  if (!photo_mode && ubo.eye_frame.w > 1.5 && light_cnt > 1u) {
+    vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+    vec4 mv = textureLod(motion_tex, uv, 0.0);
+    vec2 prev_uv = uv - mv.xy;
+    if (all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThan(prev_uv, vec2(1.0))) && mv.b < 0.45) {
+      ivec2 prev_px = clamp(ivec2(prev_uv * vec2(sz)), ivec2(0), sz - ivec2(1));
+      uint prev_idx = uint(prev_px.y * sz.x + prev_px.x);
+      RtReservoir prev_r = res_prev[prev_idx];
+      if (prev_r.M > 0u && prev_r.W > 0.0 && prev_r.light_idx < light_cnt) {
+        uint prev_M = min(prev_r.M, 16u);
+        vec3 p_ld;
+        float p_dist;
+        vec3 p_f = eval_light_contrib(s, V, prev_r.light_idx, p_ld, p_dist);
+        float p_hat = luma(p_f);
+        float w_prev = p_hat * prev_r.W * float(prev_M);
+        float w_curr = win_p * r.W * float(r.M);
+        float w_tot = w_curr + w_prev;
+        uint M_tot = r.M + prev_M;
+        if (w_tot > 1e-6) {
+          if (rand01(rng) * w_tot < w_prev) {
+            r.light_idx = prev_r.light_idx;
+            win_f = p_f;
+            win_p = p_hat;
+            win_ld = p_ld;
+            win_dist = p_dist;
+          }
+          r.M = M_tot;
+          r.weight_sum = w_tot;
+          r.W = win_p > 1e-5 ? (w_tot / (win_p * float(M_tot))) : 0.0;
+        }
+      }
+    }
+  }
+
+  res_curr[pixel_idx] = r;
+  return win_f * clamp(r.W, 0.0, 12.0);
+}
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 sz = ivec2(int(ubo.rt_params.z), int(ubo.rt_params.w));
+  if (px.x >= sz.x || px.y >= sz.y) return;
+
+  uint pixel_idx = uint(px.y * sz.x + px.x);
+  uint frame_idx = uint(ubo.eye_frame.w);
+  int rt_mode = int(ubo.env_basis_y.w + 0.5);
+  bool photo_mode = (rt_mode == 3);
+  int max_bounces = clamp(int(ubo.env_basis_z.w + 0.5), 1, 4);
+  int spp = clamp(int(ubo.rt_params.x + 0.5), 1, 16);
+
+  uint rng = init_rng(uvec2(px), frame_idx, 131u);
+  vec3 radiance_sum = vec3(0.0);
+  vec3 first_norm = vec3(0.0);
+  vec3 first_albedo = vec3(0.0);
+  float first_rough = 1.0;
+  float first_hit_t = 1e5;
+  bool any_hit = false;
+  bool demod_primary = false;
+
+  for (int s_idx = 0; s_idx < spp; ++s_idx) {
+    // Sub-pixel jitter in Photo Mode PT for reference-grade anti-aliasing; centered in real-time PT.
+    vec2 jitter = photo_mode ? (rand2(rng) - 0.5) : vec2(0.0);
+    vec2 uv = (vec2(px) + 0.5 + jitter) / vec2(sz);
+    vec3 ray_origin = ubo.eye_frame.xyz;
+    vec3 ray_dir = primary_ray_dir(uv);
+
+    vec3 throughput = vec3(1.0);
+    vec3 L_path = vec3(0.0);
+    float primary_dist = 0.0;
+
+    for (int bounce = 0; bounce <= max_bounces; ++bounce) {
+      uint mask = (bounce == 0) ? kMaskPrimaryHits : kMaskReflectionHits;
+      rayQueryEXT rq;
+      rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, mask, ray_origin, bounce == 0 ? 0.05 : 0.015, ray_dir, 1400.0);
+      PROCEED_ALPHA_TESTED(rq);
+
+      if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
+        if (bounce == 0) {
+          // Primary sky miss: preserve raster real-time clouds/stars from hdr_img for seamless Colorado sky!
+          vec3 raster_sky = imageLoad(hdr_img, px).rgb;
+          vec3 ana_sky = eval_tod_sky(ray_dir, true);
+          L_path += dot(raster_sky, raster_sky) > 1e-4 ? raster_sky : ana_sky;
+        } else {
+          L_path += throughput * eval_tod_sky(ray_dir, bounce == 1);
+        }
+        break;
+      }
+
+      float cone_lod = (bounce == 0) ? 0.5 : clamp(1.5 + float(bounce), 1.5, 4.5);
+      RtSurface surf = unpack_hit_surface(rq, ray_origin, ray_dir, cone_lod);
+      vec3 V = -ray_dir;
+
+      if (bounce == 0) {
+        any_hit = true;
+        primary_dist = surf.hit_t;
+        if (s_idx == 0) {
+          first_norm = surf.normal;
+          first_albedo = surf.albedo;
+          first_rough = surf.roughness;
+          first_hit_t = surf.hit_t;
+          // Demodulate matte/textured surfaces (roads, rocks, foliage, terrain) in SVGF so
+          // high-frequency texture details stay pixel-sharp while GI/shadows denoise smoothly.
+          demod_primary = (surf.clearcoat < 0.5 && surf.metallic < 0.5 &&
+                           (surf.flags & (kRtGeomFlagGlass | kRtGeomFlagWater | kRtGeomFlagEmissive)) == 0u &&
+                           surf.roughness > 0.14);
+        }
+      }
+
+      // Emissive contribution (car headlights, brake lights, Festival neon, world lightmaps).
+      L_path += throughput * surf.emissive;
+
+      // Refractive dielectric automotive glass & headlight covers (IOR = 1.52).
+      if ((surf.flags & kRtGeomFlagGlass) != 0u) {
+        float ndv = max(dot(surf.normal, V), 0.001);
+        float F_glass = 0.043 + 0.957 * pow(1.0 - ndv, 5.0);
+        if (rand01(rng) < clamp(F_glass * 1.35, 0.08, 0.92)) {
+          // Crisp Fresnel reflection off glass exterior.
+          vec3 R = reflect(-V, surf.normal);
+          ray_origin = surf.pos + surf.geom_normal * 0.012;
+          ray_dir = normalize(R);
+        } else {
+          // Thin-walled Beer-Lambert tinted transmission revealing interior/headlight housing!
+          float tint_amt = clamp(ubo.paint_finish.w, 0.0, 0.85);
+          vec3 glass_trans = mix(vec3(0.84, 0.90, 0.88), vec3(0.18, 0.20, 0.22), tint_amt);
+          throughput *= glass_trans;
+          ray_origin = surf.pos - surf.geom_normal * 0.025;
+        }
+        continue;
+      }
+
+      // Direct Illumination: ReSTIR DI at primary hit, fast MIS sun sample on deeper bounces.
+      if (bounce == 0 && s_idx == 0) {
+        L_path += throughput * eval_restir_di(surf, V, px, sz, pixel_idx, rng, photo_mode);
+      } else {
+        vec3 sld;
+        float sdist;
+        vec3 sf = eval_light_contrib(surf, V, 0u, sld, sdist);
+        if (luma(sf) > 1e-4) {
+          vec3 sorig = surf.pos + surf.geom_normal * max(0.02, 0.0006 * surf.hit_t);
+          float vis = trace_visibility(sorig, sld, 0.015, sdist, kMaskShadowCasters);
+          L_path += throughput * sf * vis;
+        }
+      }
+
+      if (bounce == max_bounces) break;
+
+      // Russian Roulette termination on deeper bounces.
+      if (bounce >= 2) {
+        float p_survive = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.15, 0.95);
+        if (rand01(rng) > p_survive) break;
+        throughput /= p_survive;
+      }
+
+      // Sample next indirect bounce direction via 2-Layer Automotive Clearcoat / GGX / Diffuse BSDF.
+      float ndv = max(dot(surf.normal, V), 1e-4);
+      float p_coat = (surf.clearcoat > 0.5) ? clamp(0.047 + 0.953 * pow(1.0 - ndv, 5.0), 0.12, 0.88) : 0.0;
+      float p_spec = (1.0 - p_coat) * mix(0.15, 0.92, max(surf.metallic, 1.0 - surf.roughness));
+      float pick = rand01(rng);
+
+      // Path-space roughness regularization on deeper bounces prevents fireflies while keeping primary clearcoat sharp.
+      float bounce_rough = (bounce == 0) ? surf.roughness : max(surf.roughness, 0.22);
+      vec3 next_dir;
+
+      if (pick < p_coat) {
+        // Layer 1: Razor-sharp dielectric automotive clearcoat reflection!
+        vec3 H = sample_ggx_vndf(surf.normal, V, 0.03, rand2(rng));
+        next_dir = reflect(-V, H);
+        float Fc = 0.047 + 0.953 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+        throughput *= (Fc / max(p_coat, 0.05));
+      } else if (pick < p_coat + p_spec) {
+        // Layer 2: GGX metallic / glossy specular reflection.
+        vec3 H = sample_ggx_vndf(surf.normal, V, bounce_rough, rand2(rng));
+        next_dir = reflect(-V, H);
+        vec3 F0 = mix(vec3(0.04), surf.albedo, surf.metallic);
+        vec3 F = fresnel_schlick(F0, max(dot(V, H), 0.0));
+        throughput *= (F * (1.0 - p_coat) / max(p_spec, 0.05));
+      } else {
+        // Diffuse multi-bounce GI (Colorado red canyon & asphalt color bleeding!).
+        next_dir = sample_cosine_hemisphere(surf.normal, rand2(rng));
+        float p_diff = max(1.0 - p_coat - p_spec, 0.05);
+        throughput *= (surf.albedo * (1.0 - surf.metallic) * (1.0 - p_coat) / p_diff);
+      }
+
+      if (dot(next_dir, surf.geom_normal) <= 0.0) {
+        next_dir = sample_cosine_hemisphere(surf.geom_normal, rand2(rng));
+      }
+      ray_dir = normalize(next_dir);
+      ray_origin = surf.pos + surf.geom_normal * max(0.015, 0.0005 * surf.hit_t);
+    }
+
+    // Apply atmospheric Colorado distance haze on primary hit paths.
+    if (any_hit && primary_dist > 1.0) {
+      L_path = apply_rt_haze(L_path, primary_dist, primary_ray_dir(uv));
+    }
+
+    // Soft firefly suppressor (keeps crisp sun reflections while preventing single-sample spikes).
+    float lum = luma(L_path);
+    float max_lum = photo_mode ? 36.0 : 16.0;
+    if (lum > max_lum) L_path *= (max_lum / lum);
+    if (any(isnan(L_path)) || any(isinf(L_path))) L_path = vec3(0.0);
+
+    radiance_sum += L_path;
+  }
+
+  vec3 final_rad = radiance_sum / float(spp);
+
+  // Store Thin G-Buffer + SVGF albedo demodulation factor (w = 1 -> demodulate, 0 -> direct radiance).
+  imageStore(rt_gbuf_norm, px, vec4(first_norm, first_rough));
+  vec3 demod_alb = demod_primary ? max(first_albedo, vec3(0.06)) : vec3(1.0);
+  imageStore(rt_gbuf_albedo, px, vec4(demod_alb, (any_hit && demod_primary) ? 1.0 : 0.0));
+
+  if (photo_mode) {
+    // Photo Mode Progressive Accumulation Path Tracing (converges cleanly up to 64..256 spp).
+    float accum_n = max(ubo.fog_params.w, 1.0);
+    if (accum_n <= 1.5) {
+      imageStore(rt_hist_curr, px, vec4(final_rad, first_hit_t));
+    } else {
+      vec3 prev = imageLoad(rt_hist_prev, px).rgb;
+      vec3 blended = mix(prev, final_rad, 1.0 / accum_n);
+      imageStore(rt_hist_curr, px, vec4(blended, first_hit_t));
+    }
+    imageStore(rt_pt_img, px, vec4(final_rad, first_hit_t));
+  } else {
+    imageStore(rt_pt_img, px, vec4(final_rad, first_hit_t));
+  }
+}

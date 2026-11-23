@@ -13,7 +13,11 @@ set(shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 set(generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${generated}")
 set(shader_headers "")
-foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag world_opaque.frag world_gpu.vert world_gpu.frag world_gpu_opaque.frag world_tree_gpu.vert world_cull.comp tree_cull.comp hiz_gen.comp post.vert post.frag bloom_down.frag bloom_up.frag ssao.frag sscs.frag ssr.frag volumetric.frag fxaa.frag upscale.frag motion_vectors.frag mblur_tile.frag temporal_upscale.frag inspector_preview.frag hdr_output.frag shadow.frag ui.vert ui.frag sky.vert sky.frag stars.vert stars.frag glow.vert glow.frag particle.vert particle.frag skid.vert skid.frag env_prefilter.frag contact_shadow.vert contact_shadow.frag)
+set(carview_shaders car.vert car.frag showroom.vert showroom.frag mask.frag world.vert world.frag world_opaque.frag world_gpu.vert world_gpu.frag world_gpu_opaque.frag world_tree_gpu.vert world_cull.comp tree_cull.comp hiz_gen.comp post.vert post.frag bloom_down.frag bloom_up.frag ssao.frag sscs.frag ssr.frag volumetric.frag fxaa.frag upscale.frag motion_vectors.frag mblur_tile.frag temporal_upscale.frag inspector_preview.frag hdr_output.frag shadow.frag ui.vert ui.frag sky.vert sky.frag stars.vert stars.frag glow.vert glow.frag particle.vert particle.frag skid.vert skid.frag env_prefilter.frag contact_shadow.vert contact_shadow.frag)
+if(SHIFT_ENABLE_RAY_TRACING)
+  list(APPEND carview_shaders rt_reflections.comp rt_shadows.comp rt_ao.comp rt_pathtrace.comp rt_svgf_temporal.comp rt_svgf_atrous.comp rt_composite.comp)
+endif()
+foreach(shader ${carview_shaders})
   string(REPLACE "." "_" id "${shader}")
   string(SUBSTRING "${id}" 0 1 first)
   string(TOUPPER "${first}" first)
@@ -30,7 +34,7 @@ foreach(shader car.vert car.frag showroom.vert showroom.frag mask.frag world.ver
     endif()
     add_custom_command(OUTPUT "${spv}"
       COMMAND "${SHIFT_GLSL_COMPILER}" ${compile_args}
-      DEPENDS "${source}" "${shader_dir}/world_vert.glsl" "${shader_dir}/world_frag.glsl" VERBATIM)
+      DEPENDS "${source}" "${shader_dir}/world_vert.glsl" "${shader_dir}/world_frag.glsl" "${shader_dir}/rt_common.glsl" VERBATIM)
   else()
     set(spv "${shader_dir}/prebuilt/${shader}.spv")
   endif()
@@ -70,6 +74,9 @@ add_library(carview_render STATIC
   gamepad_db.cpp
   touch_controls.cpp
   render_modern.cpp
+  rt_logic.cpp
+  rt_scene.cpp
+  rt_pipeline.cpp
   upscaler.cpp
   frame_inspector.cpp
   perf_overlay.cpp
@@ -80,7 +87,8 @@ set_target_properties(carview_render PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${generated}")
 target_compile_definitions(carview_render PUBLIC
   SHIFT_GIT_COMMIT="${SHIFT_GIT_COMMIT}"
-  SHIFT_BUILD_CONFIG="$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,${CMAKE_BUILD_TYPE}>")
+  SHIFT_BUILD_CONFIG="$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,${CMAKE_BUILD_TYPE}>"
+  $<$<BOOL:${SHIFT_ENABLE_RAY_TRACING}>:SHIFT_ENABLE_RAY_TRACING=1>)
 target_link_libraries(carview_render PUBLIC fh1data shift_cars shift_drive shift_world shift_volk shift_vma SDL3::SDL3-static)
 if(NOT WIN32)
   find_package(Threads REQUIRED)
