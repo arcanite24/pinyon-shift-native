@@ -380,8 +380,8 @@ bool opt_arrow(ui::List& l, float cx, float cy, float size, int dir, uint32_t ti
   const float r = size * 0.5f;
   std::array<float, 4> uv{};
   if (texture("OPTIONS/OPT_BAR_ARROW", uv) || texture("COMMON/ARROW", uv) || texture("DIRTMASKS/ARROW", uv)) {
-    // Flip U horizontally for left vs right so both directions point authentically.
-    const std::array<float, 4> oriented = (dir < 0) ? std::array<float, 4>{uv[2], uv[1], uv[0], uv[3]} : uv;
+    // OPTIONS/OPT_BAR_ARROW.xds natively points left (<); flip U for right (>).
+    const std::array<float, 4> oriented = (dir > 0) ? std::array<float, 4>{uv[2], uv[1], uv[0], uv[3]} : uv;
     l.image(cx - r, cy - r, cx + r, cy + r, oriented, tint);
     return true;
   }
@@ -1041,9 +1041,9 @@ bool sponsor_logo_tile(ui::List& l, float x0, float y0, float x1, float y1, std:
       {"nixon", "NIXON"},         {"oakley", "OAKLEY"},       {"pioneer", "PIONEER"},
       {"puma", "PUMA"},           {"redbull", "REDBULL"},     {"rockstar", "ROCKSTAR"},
       {"zooyork", "ZOOYORK"},
-      // Skill-challenge category aliases -> authentic FH1 sponsors
-      {"drift", "HKS"},           {"nearmiss", "BONDURANT"},  {"speed", "OAKLEY"},
-      {"air", "REDBULL"},         {"burnout", "ROCKSTAR"},    {"draft", "ADIDAS"},
+      // Skill-challenge category aliases -> authentic licensed shipping FH1 sponsor logos
+      {"drift", "ROCKSTAR"},      {"nearmiss", "BONDURANT"},  {"speed", "OAKLEY"},
+      {"air", "GOPRO"},           {"burnout", "BOSE"},        {"draft", "ADIDAS"},
       {"pass", "PUMA"},           {"destruction", "DIESEL"},  {"fame", "HORIZONLOGO"},
       {"skill", "GOPRO"},         {"tradingpaint", "KRASHMAX"}, {"donut", "ZOOYORK"},
       {"turn180", "GSHOCK"},      {"twowheels", "NIKE"},      {"jturn", "NIXON"},
@@ -1172,6 +1172,329 @@ std::string pretty_car_media_name(std::string_view raw_media) {
   out += make;
   if (!model.empty()) out += " " + model;
   return out;
+}
+
+void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& spec) {
+  const float s = h / 720.0f;
+  // Open Colorado shines cleanly around floating +3.0 deg pills (ZERO opaque full-screen dark wall!).
+  subtle_vignette(l, w, h, 0.24f);
+
+  float tilt_rad = kTiltRad;
+  if (!spec.scene_hint.empty()) {
+    if (const fh1::UiScene* sc_ptr = scene(spec.scene_hint)) {
+      for (const auto& node : sc_ptr->nodes) {
+        if (node.object_index < 0 || size_t(node.object_index) >= sc_ptr->objects.size()) continue;
+        const std::string& nm = sc_ptr->objects[size_t(node.object_index)].name;
+        if (nm == "RotationHelper" || nm == "Group_BLADE" || nm == "Group_BODY") {
+          const float a = -node.angle;
+          if (std::fabs(a) > 1e-3f && std::fabs(a) < 0.25f) {
+            tilt_rad = a;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Compact top-right status strip (floating PILL01, never an oversized charcoal box).
+  if (!spec.status_value.empty()) {
+    const float sx1 = w - 58.0f * s;
+    const float sx0 = sx1 - 356.0f * s;
+    const float sy0 = 32.0f * s;
+    pill(l, sx0, sy0, sx1, sy0 + 48.0f * s, kCharcoalDark, PillKind::kPillBig, false, true);
+    l.rect(sx0, sy0, sx0 + 5.0f * s, sy0 + 48.0f * s, spec.status_color);
+    if (!spec.status_kicker.empty()) {
+      l.text(sx0 + 16.0f * s, sy0 + 7.0f * s, spec.status_kicker, style(ui::Font::kB, 10.0f * s, kDim));
+    }
+    if (!spec.status_tag.empty()) {
+      l.text(sx1 - 14.0f * s, sy0 + 7.0f * s, spec.status_tag,
+             style(ui::Font::kE, 10.5f * s, spec.status_color, ui::Align::kRight));
+    }
+    ui::TextStyle sv = style(ui::Font::kE, 16.0f * s, kWhite);
+    fit_text(spec.status_value, sv, 326.0f * s, 10.0f * s);
+    l.text(sx0 + 16.0f * s, sy0 + 24.0f * s, spec.status_value, sv);
+  }
+
+  auto wrap_blade_text = [](const std::string& text, const ui::TextStyle& ts, float max_w, int max_lines) {
+    std::vector<std::string> out;
+    std::string cur;
+    size_t i = 0;
+    while (i < text.size() && int(out.size()) < max_lines) {
+      while (i < text.size() && text[i] == ' ') ++i;
+      if (i >= text.size()) break;
+      if (text[i] == '\n') {
+        if (!cur.empty()) out.push_back(cur), cur.clear();
+        ++i;
+        continue;
+      }
+      size_t j = i;
+      while (j < text.size() && text[j] != ' ' && text[j] != '\n') ++j;
+      const std::string word = text.substr(i, j - i);
+      i = j;
+      const std::string cand = cur.empty() ? word : (cur + " " + word);
+      if (!cur.empty() && ui::List::measure(cand, ts) > max_w) {
+        out.push_back(cur);
+        cur = word;
+      } else {
+        cur = cand;
+      }
+    }
+    if (!cur.empty() && int(out.size()) < max_lines) out.push_back(cur);
+    return out;
+  };
+
+  // ---- Entire blade tilted +3.0 deg (H_FIXED_SETTING_LIST / 300_I_OPT_ASSISTS_DIFFICULTY) ----
+  {
+    TiltScope rot(l, 0.5f * w, 0.5f * h, tilt_rad);
+
+    // 1. TitleTape (TAPECLIPON02 + SMUDGETAPE01 + CRISPTAPE01 + DIRTTILE01) + optional eyebrow
+    float header_y = 32.0f * s;
+    if (!spec.eyebrow.empty()) {
+      ui::TextStyle es = style(ui::Font::kE, 14.0f * s, kWhite);
+      fit_text(spec.eyebrow, es, 560.0f * s, 9.5f * s);
+      const float ew = ui::List::measure(spec.eyebrow, es);
+      brush(l, 74.0f * s, header_y, 74.0f * s + ew + 34.0f * s, header_y + 24.0f * s, kBrushBlack);
+      l.text(90.0f * s, header_y + 4.5f * s, spec.eyebrow, es);
+      header_y += 22.0f * s;
+    }
+    title_tape(l, s, 80.0f * s, header_y, spec.title, kPink, 34.0f, 580.0f);
+
+    float content_y = header_y + 58.0f * s;
+    if (!spec.tabs.empty()) {
+      tab_strip(l, s, 78.0f * s, content_y, w - 78.0f * s, spec.tabs, spec.active_tab, spec.show_tab_bumpers, kPink);
+      content_y += 42.0f * s;
+    }
+
+    // 2. Floating Left List Column (PILL01 #BFBFBF header + floating PILL02/03 rows over open Colorado)
+    const float lx0 = 78.0f * s;
+    const float lw = 696.0f * s;
+    const float list_bot = h - 98.0f * s - (spec.notice.empty() ? 0.0f : 32.0f * s);
+
+    pill(l, lx0, content_y, lx0 + lw, content_y + 28.0f * s, ui::rgba(0xBF, 0xBF, 0xBF, 242), PillKind::kMenu, false,
+         true);
+    l.text(lx0 + 16.0f * s, content_y + 7.0f * s, spec.list_header, style(ui::Font::kD, 13.0f * s, kInk));
+    if (!spec.list_header_right.empty()) {
+      l.text(lx0 + lw - 16.0f * s, content_y + 7.5f * s, spec.list_header_right,
+             style(ui::Font::kB, 11.5f * s, kInk, ui::Align::kRight));
+    }
+
+    const float rows_top = content_y + 34.0f * s;
+    const int n = int(spec.rows.size());
+    bool any_sub = false;
+    for (const auto& r : spec.rows) {
+      if (!r.subtitle.empty() || r.has_slider) {
+        any_sub = true;
+        break;
+      }
+    }
+    const float row_h = (any_sub ? 44.0f : 34.0f) * s;
+    const float row_pitch = row_h + 5.0f * s;
+    const int max_vis = std::min(std::max(1, spec.max_visible), std::max(1, int((list_bot - rows_top) / row_pitch)));
+    const int sel = n > 0 ? std::clamp(spec.selected_index, 0, n - 1) : 0;
+    const int first = std::clamp(sel - max_vis / 2, 0, std::max(0, n - max_vis));
+
+    float ry = rows_top;
+    if (n == 0) {
+      pill(l, lx0, ry, lx0 + lw, ry + 42.0f * s, kPillGrey, PillKind::kPill02);
+      ui::TextStyle es = style(ui::Font::kB, 12.5f * s, kDim, ui::Align::kLeft, true);
+      fit_text(spec.empty_message, es, lw - 32.0f * s, 9.0f * s);
+      l.text(lx0 + 16.0f * s, ry + 14.0f * s, spec.empty_message, es);
+    } else {
+      for (int i = first; i < std::min(n, first + max_vis); ++i) {
+        const auto& r = spec.rows[size_t(i)];
+        const bool act = r.selected || (i == sel);
+        const uint32_t bg_col = act ? (r.row_accent != 0 ? r.row_accent : kPink)
+                                    : ((i % 2 == 0) ? kPillGrey : ui::rgba(0x18, 0x18, 0x1C, 236));
+        pill(l, lx0, ry, lx0 + lw, ry + row_h, bg_col, (i % 2 == 0) ? PillKind::kPill02 : PillKind::kPill03, false,
+             act);
+
+        const bool dark_ink_row = act && (r.row_accent == kAmber || r.row_accent == kYellow || r.row_accent == kGreen);
+        const uint32_t primary_fg = dark_ink_row ? kInk : kWhite;
+        const uint32_t sub_fg = dark_ink_row ? kInk : (act ? kOffWhite : kDim);
+
+        float tx = lx0 + 16.0f * s;
+        if (!r.index_label.empty()) {
+          l.text(tx, ry + 0.5f * (row_h - 13.0f * s), r.index_label,
+                 style(ui::Font::kE, 13.0f * s, dark_ink_row ? kInk : kDim));
+          tx += 26.0f * s;
+        }
+        if (r.has_checkbox) {
+          const float bs = 18.0f * s;
+          const float by = ry + 0.5f * (row_h - bs);
+          l.rect(tx, by, tx + bs, by + bs, r.checked ? r.checkbox_color : ui::rgba(255, 255, 255, 34));
+          if (r.checked) {
+            l.line(tx + 3.5f * s, by + 9.0f * s, tx + 7.5f * s, by + 13.5f * s, 2.2f * s, kInk);
+            l.line(tx + 7.5f * s, by + 13.5f * s, tx + 14.5f * s, by + 4.5f * s, 2.2f * s, kInk);
+          }
+          tx += 26.0f * s;
+        }
+        if (r.badge_icon_kind >= 0) {
+          const float isz = std::min(row_h - 8.0f * s, 30.0f * s);
+          const float iy = ry + 0.5f * (row_h - isz);
+          if (!badge_icon(l, tx, iy, tx + isz, iy + isz, static_cast<BadgeIconKind>(r.badge_icon_kind))) {
+            l.rect(tx, iy, tx + isz, iy + isz, ui::rgba(255, 255, 255, 24));
+          }
+          tx += isz + 10.0f * s;
+        }
+
+        const float right_zone_w = r.arrows ? 228.0f * s : 210.0f * s;
+        const float label_max_w = std::max(100.0f * s, (lx0 + lw - right_zone_w) - tx);
+        ui::TextStyle lts = style(act ? ui::Font::kE : ui::Font::kD, (act ? 14.5f : 13.5f) * s, primary_fg);
+        fit_text(r.label, lts, label_max_w, 9.5f * s);
+        if (!r.subtitle.empty()) {
+          l.text(tx, ry + 6.0f * s, r.label, lts);
+          ui::TextStyle sts = style(ui::Font::kB, 10.5f * s, sub_fg, ui::Align::kLeft, true);
+          fit_text(r.subtitle, sts, label_max_w + 24.0f * s, 8.0f * s);
+          l.text(tx, ry + 25.0f * s, r.subtitle, sts);
+        } else if (r.has_slider) {
+          l.text(tx, ry + 6.0f * s, r.label, lts);
+          opt_slider(l, tx, ry + 27.0f * s, lx0 + lw - 196.0f * s, ry + 36.0f * s, r.slider_norm, s,
+                     act ? kYellow : r.slider_color, act);
+        } else {
+          l.text(tx, ry + 0.5f * (row_h - lts.size), r.label, lts);
+        }
+
+        // Right value / authentic OPT_BAR_ARROW selector
+        const float vx0 = lx0 + lw - 196.0f * s;
+        const float vx1 = lx0 + lw - 16.0f * s;
+        const float vcy = ry + 0.5f * row_h;
+        float val_left_x = vx1 - 74.0f * s;
+        if (r.arrows) {
+          const uint32_t arr_col = dark_ink_row ? kInk : (act ? kWhite : ui::rgba(190, 196, 208, 175));
+          opt_arrow(l, vx0 + 10.0f * s, vcy, 14.0f * s, -1, arr_col);
+          opt_arrow(l, vx1 - 10.0f * s, vcy, 14.0f * s, +1, arr_col);
+          ui::TextStyle vs = style(act ? ui::Font::kE : ui::Font::kB, 13.5f * s,
+                                   dark_ink_row ? kInk : (act ? kYellow : r.value_color), ui::Align::kCenter);
+          fit_text(r.value, vs, (vx1 - vx0) - 42.0f * s, 9.0f * s);
+          l.text(0.5f * (vx0 + vx1), ry + 0.5f * (row_h - vs.size), r.value, vs);
+          val_left_x = vx0 - 8.0f * s;
+        } else if (!r.value.empty()) {
+          ui::TextStyle vs = style(ui::Font::kE, 13.0f * s, dark_ink_row ? kInk : (act ? kYellow : r.value_color),
+                                   ui::Align::kRight);
+          fit_text(r.value, vs, 128.0f * s, 8.5f * s);
+          const float vw = ui::List::measure(r.value, vs);
+          l.text(vx1, ry + 0.5f * (row_h - vs.size), r.value, vs);
+          val_left_x = vx1 - vw - 10.0f * s;
+        }
+
+        // Optional compact tag chip (e.g. "SAVE", "NATIVE", "100G") placed cleanly left of value!
+        if (!r.badge_tag.empty()) {
+          const float tag_w = std::max(44.0f * s, float(r.badge_tag.size()) * 7.5f * s + 12.0f * s);
+          const float tag_x1 = std::min(lx0 + lw - 76.0f * s, val_left_x);
+          const float tag_x0 = tag_x1 - tag_w;
+          const float tag_y = ry + 0.5f * (row_h - 18.0f * s);
+          l.rect(tag_x0, tag_y, tag_x1, tag_y + 18.0f * s, r.badge_color);
+          const bool dk = (r.badge_color == kAmber || r.badge_color == kYellow || r.badge_color == kGreen);
+          l.text(0.5f * (tag_x0 + tag_x1), tag_y + 4.0f * s, r.badge_tag,
+                 style(ui::Font::kE, 9.5f * s, dk ? kInk : kWhite, ui::Align::kCenter));
+        }
+        ry += row_pitch;
+      }
+
+      // Authentic COMMON/SCROLLINDICATOR + SPECULAR/SPEC_SHEEN2
+      scroll_indicator(l, lx0 + lw + 8.0f * s, rows_top, lx0 + lw + 16.0f * s, ry - 4.0f * s, first, max_vis, n, s);
+    }
+
+    if (!spec.notice.empty()) {
+      const float ny = std::min(list_bot + 4.0f * s, h - 110.0f * s);
+      brush(l, lx0, ny, lx0 + lw, ny + 26.0f * s, kBrushBlack);
+      ui::TextStyle ns = style(ui::Font::kE, 12.0f * s, kYellow, ui::Align::kCenter);
+      fit_text(spec.notice, ns, lw - 32.0f * s, 8.5f * s);
+      l.text(lx0 + 0.5f * lw, ny + 6.5f * s, spec.notice, ns);
+    }
+
+    // 3. Compact Right DIRTMASKS/PANEL01 Detail Card (tightly sized to content — ZERO empty charcoal void!)
+    const float rx0 = lx0 + lw + 28.0f * s;
+    const float rx1 = w - 68.0f * s;
+    const float dw = (rx1 - rx0) - 32.0f * s;
+    if (!spec.detail_title.empty() || !spec.detail_kvs.empty() || !spec.detail_paragraphs.empty()) {
+      // Pre-wrap text to measure exact compact height so there is ZERO wasted empty void!
+      ui::TextStyle p_ts = style(ui::Font::kB, 11.5f * s, kWhite, ui::Align::kLeft, true);
+      std::vector<std::string> wrapped_p;
+      for (const auto& para : spec.detail_paragraphs) {
+        auto lines = wrap_blade_text(para, p_ts, dw, 4);
+        wrapped_p.insert(wrapped_p.end(), lines.begin(), lines.end());
+      }
+      ui::TextStyle f_ts = style(ui::Font::kB, 10.5f * s, kOffWhite, ui::Align::kLeft, true);
+      std::vector<std::string> wrapped_f;
+      if (!spec.detail_footer.empty()) wrapped_f = wrap_blade_text(spec.detail_footer, f_ts, dw - 12.0f * s, 3);
+
+      float card_h = 16.0f * s;
+      if (!spec.detail_header.empty()) card_h += 30.0f * s;
+      if (!spec.detail_title.empty()) card_h += 44.0f * s;
+      card_h += float(wrapped_p.size()) * 17.0f * s + (wrapped_p.empty() ? 0.0f : 8.0f * s);
+      card_h += float(spec.detail_kvs.size()) * 23.0f * s + (spec.detail_kvs.empty() ? 0.0f : 6.0f * s);
+      if (spec.detail_progress >= 0.0f) card_h += 36.0f * s;
+      if (!wrapped_f.empty()) card_h += float(wrapped_f.size()) * 15.0f * s + 18.0f * s;
+      card_h = std::min(card_h, (h - 102.0f * s) - content_y);
+
+      panel01(l, rx0, content_y, rx1, content_y + card_h, s, kCharcoalDark, kPink);
+      float dy = content_y + 8.0f * s;
+
+      if (!spec.detail_header.empty()) {
+        pill(l, rx0 + 8.0f * s, dy, rx1 - 8.0f * s, dy + 24.0f * s, ui::rgba(0xBF, 0xBF, 0xBF, 240), PillKind::kMenu);
+        l.text(rx0 + 18.0f * s, dy + 5.5f * s, spec.detail_header, style(ui::Font::kD, 12.0f * s, kInk));
+        dy += 30.0f * s;
+      }
+
+      if (!spec.detail_title.empty()) {
+        const uint32_t tbg = spec.detail_title_color != 0 ? spec.detail_title_color : kPink;
+        const bool dk = (tbg == kAmber || tbg == kYellow || tbg == kGreen);
+        brush(l, rx0 - 4.0f * s, dy, rx1 + 4.0f * s, dy + 34.0f * s, tbg);
+        float dtx = rx0 + 16.0f * s;
+        if (spec.detail_icon_kind >= 0) {
+          badge_icon(l, rx0 + 12.0f * s, dy + 3.0f * s, rx0 + 40.0f * s, dy + 31.0f * s,
+                     static_cast<BadgeIconKind>(spec.detail_icon_kind));
+          dtx = rx0 + 46.0f * s;
+        }
+        ui::TextStyle dt = style(ui::Font::kE, 16.0f * s, dk ? kInk : kWhite);
+        fit_text(spec.detail_title, dt, (rx1 - dtx) - 12.0f * s, 10.0f * s);
+        l.text(dtx, dy + 8.0f * s, spec.detail_title, dt);
+        dy += 42.0f * s;
+      }
+
+      for (const auto& ln : wrapped_p) {
+        if (dy + 16.0f * s > content_y + card_h - 6.0f * s) break;
+        l.text(rx0 + 16.0f * s, dy, ln, p_ts);
+        dy += 17.0f * s;
+      }
+      if (!wrapped_p.empty()) dy += 6.0f * s;
+
+      for (const auto& kv : spec.detail_kvs) {
+        if (dy + 20.0f * s > content_y + card_h - 6.0f * s) break;
+        l.text(rx0 + 16.0f * s, dy, kv.key, style(ui::Font::kB, 10.5f * s, kDim));
+        ui::TextStyle vs = style(ui::Font::kE, 12.0f * s, kv.value_color, ui::Align::kRight, true);
+        fit_text(kv.value, vs, dw - 104.0f * s, 8.5f * s);
+        l.text(rx1 - 16.0f * s, dy - 0.5f * s, kv.value, vs);
+        dy += 22.0f * s;
+      }
+
+      if (spec.detail_progress >= 0.0f && dy + 30.0f * s <= content_y + card_h - 4.0f * s) {
+        dy += 4.0f * s;
+        if (!spec.detail_progress_label.empty()) {
+          l.text(rx0 + 16.0f * s, dy, spec.detail_progress_label, style(ui::Font::kE, 11.0f * s, spec.detail_progress_color));
+        }
+        opt_slider(l, rx0 + 16.0f * s, dy + 16.0f * s, rx1 - 16.0f * s, dy + 25.0f * s, spec.detail_progress, s,
+                   spec.detail_progress_color, true);
+        dy += 32.0f * s;
+      }
+
+      if (!wrapped_f.empty() && dy + 16.0f * s <= content_y + card_h - 4.0f * s) {
+        dy += 4.0f * s;
+        const float fh = float(wrapped_f.size()) * 15.0f * s + 10.0f * s;
+        l.rect(rx0 + 12.0f * s, dy, rx1 - 12.0f * s, std::min(content_y + card_h - 6.0f * s, dy + fh),
+               ui::rgba(255, 255, 255, 14));
+        float fy = dy + 5.0f * s;
+        for (const auto& fl : wrapped_f) {
+          if (fy + 13.0f * s > content_y + card_h - 6.0f * s) break;
+          l.text(rx0 + 18.0f * s, fy, fl, f_ts);
+          fy += 15.0f * s;
+        }
+      }
+    }
+  }
+
+  button_bar(l, spec.prompts, w, h, 56.0f);
 }
 
 }  // namespace carview::ui4

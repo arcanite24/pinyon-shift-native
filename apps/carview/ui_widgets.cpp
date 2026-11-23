@@ -217,15 +217,17 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         } else if (e.best_place == 3 && has_brz) {
           l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, brz_uv);
         } else if (e.unlocked && e.best_place == 0 && has_new) {
-          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv);
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv, kTicketPink);
         }
 
         // 6. LARGETAPE title banner (#EF2493 active / #212121 inactive) + event name
         const float tape_y0 = art_y1 + 4.0f * s, tape_y1 = art_y1 + 52.0f * s;
-        if (has_tape) {
-          l.image(cx0 - 4.0f * s, tape_y0, cx1 + 4.0f * s, tape_y1, tape_uv, act ? kTicketPink : ui4::kPillGrey);
+        if (act) {
+          ui4::brush(l, cx0 - 6.0f * s, tape_y0 + 2.0f * s, cx1 + 6.0f * s, tape_y1 - 2.0f * s, kTicketPink);
+        } else if (has_tape) {
+          l.image(cx0 - 4.0f * s, tape_y0, cx1 + 4.0f * s, tape_y1, tape_uv, ui4::kPillGrey);
         } else {
-          l.rect(cx0, tape_y0, cx1, tape_y1, act ? kTicketPink : ui4::kPillGrey);
+          l.rect(cx0, tape_y0, cx1, tape_y1, ui4::kPillGrey);
         }
         ui::TextStyle ts = ui4::style(ui::Font::kE, 17.0f * s, !e.unlocked ? ui4::kDim : ui4::kWhite);
         ui4::fit_text(e.display_name, ts, cw - 24.0f * s, 10.5f * s);
@@ -236,9 +238,11 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
             e.is_collect_wristband ? "COLLECT WRISTBAND"
             : e.event              ? ui4::format_credits(int64_t(e.event->cash_prize))
                                    : "";
-        l.text(cx0 + 12.0f * s, tape_y1 + 10.0f * s, "1ST PRIZE", ui4::style(ui::Font::kB, 10.0f * s, ui4::kDim));
-        l.text(cx0 + 12.0f * s, tape_y1 + 24.0f * s, prize_str,
-               ui4::style(ui::Font::kE, 21.0f * s, act ? ui4::kYellow : ui4::kWhite));
+        l.text(cx0 + 12.0f * s, tape_y1 + 10.0f * s, e.is_collect_wristband ? "WRISTBAND READY" : "1ST PRIZE",
+               ui4::style(ui::Font::kB, 10.0f * s, ui4::kDim));
+        ui::TextStyle pzs = ui4::style(ui::Font::kE, 21.0f * s, act ? ui4::kYellow : ui4::kWhite);
+        ui4::fit_text(prize_str, pzs, cw - 24.0f * s, 12.0f * s);
+        l.text(cx0 + 12.0f * s, tape_y1 + 24.0f * s, prize_str, pzs);
 
         std::string status = "READY TO RACE";
         uint32_t st_col = ui4::kGreen;
@@ -361,14 +365,16 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
         if (c.completed && has_done) {
           l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, done_uv);
         } else if (c.is_stunt && !c.completed && has_new) {
-          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv);
+          l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv, kTicketPink);
         }
 
         const float tape_y0 = art_y1 + 4.0f * s, tape_y1 = art_y1 + 52.0f * s;
-        if (has_tape) {
-          l.image(cx0 - 4.0f * s, tape_y0, cx1 + 4.0f * s, tape_y1, tape_uv, act ? kTicketPink : ui4::kPillGrey);
+        if (act) {
+          ui4::brush(l, cx0 - 6.0f * s, tape_y0 + 2.0f * s, cx1 + 6.0f * s, tape_y1 - 2.0f * s, kTicketPink);
+        } else if (has_tape) {
+          l.image(cx0 - 4.0f * s, tape_y0, cx1 + 4.0f * s, tape_y1, tape_uv, ui4::kPillGrey);
         } else {
-          l.rect(cx0, tape_y0, cx1, tape_y1, act ? kTicketPink : ui4::kPillGrey);
+          l.rect(cx0, tape_y0, cx1, tape_y1, ui4::kPillGrey);
         }
         ui::TextStyle ts = ui4::style(ui::Font::kE, 16.5f * s, ui4::kWhite);
         ui4::fit_text(c.title, ts, cw - 24.0f * s, 10.0f * s);

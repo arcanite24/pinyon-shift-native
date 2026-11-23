@@ -145,9 +145,20 @@ void test_mods_page(carview::ModsSession& session, carview::ModsPage& page) {
   CHECK(!back.order.empty() && back.order[0] == "skyline_mod" && back.enabled.at("pacing"));
 
   carview::ui::List l;
+  std::set<std::string> requested;
+  carview::ui4::set_texture_loader([&](const std::string& p, std::array<float, 4>& uv) {
+    requested.insert(p);
+    uv = {0.0f, 0.0f, 0.1f, 0.1f};
+    return true;
+  });
   carview::draw_mods_page(l, 1280, 720, page);
-  CHECK(l.items().size() > 80);
-  CHECK(lit(l) > 200000);
+  carview::ui4::set_texture_loader({});
+  CHECK(l.items().size() > 60);
+  CHECK(lit(l) > 80000);
+  CHECK(requested.count("DIRTMASKS/PILL02") > 0);
+  CHECK(requested.count("DIRTMASKS/PANEL01") > 0);
+  CHECK(carview::ui4::pretty_car_media_name("FER_F40_87") == "1987 Ferrari F40");
+  CHECK(carview::ui4::pretty_car_media_name("NIS_SKYLINEGTRVSPECII_02") == "2002 Nissan Skyline GT-R V-Spec II");
   page.nav(carview::Nav::kBack);
   CHECK(!page.is_open());
   page.open(session);
@@ -315,16 +326,25 @@ void test_save_page(carview::SaveSession& session, carview::SaveProfilePage& pag
   page.set_tab(carview::SaveProfilePage::Tab::kBackups);
   page.set_notice("AUTOMATIC BACKUPS AT START, EVERY 10 MIN & CLEAN EXIT");
   carview::ui::List l;
+  std::set<std::string> save_tex;
+  carview::ui4::set_texture_loader([&](const std::string& p, std::array<float, 4>& uv) {
+    save_tex.insert(p);
+    uv = {0.0f, 0.0f, 0.1f, 0.1f};
+    return true;
+  });
   carview::draw_save_page(l, 1280, 720, page, session);
-  CHECK(l.items().size() > 60);
-  CHECK(lit(l) > 200000);
+  CHECK(l.items().size() > 50);
+  CHECK(lit(l) > 80000);
+  CHECK(save_tex.count("DIRTMASKS/PILL02") > 0);
+  CHECK(save_tex.count("DIRTMASKS/PANEL01") > 0);
 
   // Rasterize Save Sync Conflict tab.
   page.set_tab(carview::SaveProfilePage::Tab::kSync);
   l.clear();
   carview::draw_save_page(l, 1280, 720, page, session);
-  CHECK(l.items().size() > 60);
-  CHECK(lit(l) > 200000);
+  carview::ui4::set_texture_loader({});
+  CHECK(l.items().size() > 50);
+  CHECK(lit(l) > 80000);
 
   // Leave page open on Backups tab for main() screenshot export.
   page.set_tab(carview::SaveProfilePage::Tab::kBackups);

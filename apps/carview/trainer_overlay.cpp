@@ -335,121 +335,70 @@ std::vector<TrainerOverlay::RowView> TrainerOverlay::rows(const drive::TrainerSt
 void draw_trainer_ui4(ui::List& l, float screen_w, float screen_h, const TrainerOverlay& overlay,
                       const drive::TrainerState& state, int64_t credits, int wristband_level,
                       const std::string& save_tree_label) {
-  const float s = screen_h / 720.0f;
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.32f);
-
-  ui4::title_banner(l, s, 60.0f * s, 26.0f * s, "F10 TRAINER",
-                    std::string("ISOLATED SAVE: ") + save_tree_label + "  —  MAIN SAVE UNTOUCHED", true, 640.0f);
-
   const std::vector<std::string> tabs = {"PLAYER", "WORLD", "VEHICLE", "DEBUG & MODS"};
   const int cur_tab = int(overlay.active_tab());
-  ui4::tab_strip(l, s, 56.0f * s, 114.0f * s, screen_w - 56.0f * s, tabs, cur_tab, true, ui4::kPink);
-
-  const float top_y = 158.0f * s;
-  const float bot_y = screen_h - 86.0f * s;
-  const float lx0 = 56.0f * s;
-  const float lx1 = screen_w * 0.62f;
-  const float rx0 = lx1 + 18.0f * s;
-  const float rx1 = screen_w - 56.0f * s;
-
-  // Left card: trainer actions.
-  ui4::panel(l, lx0, top_y, lx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(lx0 + 22.0f * s, top_y + 15.0f * s,
-         tabs[size_t(cur_tab)] + (state.config.cheats_enabled ? "  —  CHEATS ACTIVE" : "  —  CHEATS OFF"),
-         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-
   const auto rows = overlay.rows(state);
-  const float row_h = 56.0f * s;
-  float ry = top_y + 46.0f * s;
+
+  ui4::TiltedBladeSpec spec;
+  spec.title = "F10 TRAINER";
+  spec.eyebrow = "ISOLATED SAVE: " + save_tree_label + "  —  MAIN SAVE UNTOUCHED";
+  spec.scene_hint = "300_I_OPT_ASSISTS_DIFFICULTY";
+  spec.status_kicker = "SANDBOX PROFILE";
+  spec.status_value = ui4::format_credits(credits);
+  spec.status_tag = state.config.cheats_enabled ? "CHEATS ACTIVE" : "CHEATS OFF";
+  spec.status_color = state.config.cheats_enabled ? ui4::kAmber : ui4::kDim;
+  spec.tabs = tabs;
+  spec.active_tab = cur_tab;
+  spec.list_header = tabs[size_t(std::clamp(cur_tab, 0, 3))] +
+                     (state.config.cheats_enabled ? "  —  CHEATS ACTIVE" : "  —  CHEATS OFF");
+  spec.list_header_right = "WRISTBAND: " + std::string(drive::wristband_tier_name(wristband_level));
+  spec.notice = overlay.last_message();
+  spec.max_visible = 9;
+
   const TrainerOverlay::RowView* sel_row = nullptr;
   for (size_t i = 0; i < rows.size(); ++i) {
     const auto& r = rows[i];
-    if (r.selected) sel_row = &r;
     if (r.selected) {
-      ui4::brush(l, lx0 + 8.0f * s, ry + 2.0f * s, lx1 - 8.0f * s, ry + row_h - 4.0f * s,
-                 r.is_action ? ui4::kAmber : ui4::kPink);
-    } else {
-      l.rect(lx0 + 12.0f * s, ry + 2.0f * s, lx1 - 12.0f * s, ry + row_h - 4.0f * s,
-             (i % 2 == 0) ? ui4::kRowAlt : ui::rgba(28, 30, 36, 196));
+      sel_row = &r;
+      spec.selected_index = int(i);
     }
-
-    const uint32_t label_col = !r.enabled ? ui4::kDim : (r.selected && r.is_action ? ui4::kInk : ui4::kWhite);
-    ui::TextStyle ns = ui4::style(r.selected ? ui::Font::kE : ui::Font::kB, 14.5f * s, label_col);
-    ui4::fit_text(r.label, ns, (lx1 - lx0) - 230.0f * s, 10.0f * s);
-    l.text(lx0 + 24.0f * s, ry + 18.0f * s, r.label, ns);
-
-    const float vx0 = lx1 - 196.0f * s;
-    const float vx1 = lx1 - 22.0f * s;
-    l.rect(vx0, ry + 10.0f * s, vx1, ry + row_h - 14.0f * s, ui::rgba(14, 16, 20, 190));
-    const std::string vstr = (r.selected && !r.is_action) ? ("< " + r.value + " >") : r.value;
-    ui::TextStyle vs = ui4::style(ui::Font::kE, 13.5f * s,
-                                  !r.enabled ? ui4::kDim : (r.selected ? ui4::kYellow : ui4::kWhite),
-                                  ui::Align::kCenter);
-    ui4::fit_text(vstr, vs, (vx1 - vx0) - 10.0f * s, 9.0f * s);
-    l.text(0.5f * (vx0 + vx1), ry + 18.0f * s, vstr, vs);
-    ry += row_h;
+    ui4::BladeRow br;
+    br.label = r.label;
+    br.value = r.value;
+    br.value_color = !r.enabled ? ui4::kDim : ui4::kWhite;
+    br.selected = r.selected;
+    // Real OPTIONS/OPT_BAR_ARROW toggles on non-action rows (ZERO ASCII "< >"!)
+    br.arrows = !r.is_action;
+    if (r.is_action) br.row_accent = ui4::kAmber;
+    spec.rows.push_back(std::move(br));
   }
 
-  // Right card: isolated profile & active modifiers status.
-  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kAmber, 0, true);
-  ui4::offwhite_strip(l, rx0 + 12.0f * s, top_y + 10.0f * s, rx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "SANDBOX PROFILE STATUS",
-         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-
+  spec.detail_header = "SANDBOX PROFILE STATUS";
   if (sel_row) {
-    ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-    ui::TextStyle stt = ui4::style(ui::Font::kE, 15.5f * s, ui4::kWhite);
-    ui4::fit_text(sel_row->label, stt, (rx1 - rx0) - 34.0f * s, 10.5f * s);
-    l.text(rx0 + 20.0f * s, top_y + 54.0f * s, sel_row->label, stt);
-
-    ui::TextStyle ds = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-    ui4::fit_text(sel_row->detail, ds, (rx1 - rx0) - 40.0f * s, 9.5f * s);
-    l.text(rx0 + 20.0f * s, top_y + 98.0f * s, sel_row->detail, ds);
+    spec.detail_title = sel_row->label;
+    spec.detail_title_color = sel_row->is_action ? ui4::kAmber : ui4::kPink;
+    spec.detail_paragraphs.push_back(sel_row->detail);
   }
+  spec.detail_kvs.push_back({"CREDITS", ui4::format_credits(credits), ui4::kAmber});
+  spec.detail_kvs.push_back({"WRISTBAND", drive::wristband_tier_name(wristband_level), ui4::kWhite});
+  spec.detail_kvs.push_back({"GAME SPEED", fmt_mult(state.effective_game_speed()), ui4::kWhite});
+  spec.detail_kvs.push_back(
+      {"TIME OF DAY", fmt_tod(state.config.time_of_day_hour) + " (" + fmt_day_length(state.config.day_length_minutes) + ")",
+       ui4::kWhite});
+  spec.detail_kvs.push_back({"ANY CAR / FREE CAM",
+                             std::string(state.effective_any_car() ? "ON" : "OFF") + " / " +
+                                 (state.effective_free_camera() ? "ON" : "OFF"),
+                             ui4::kPink});
+  spec.detail_kvs.push_back({"PRICES / REWARDS",
+                             fmt_mult(state.pacing.effective_price_multiplier()) + " / " +
+                                 fmt_mult(state.pacing.effective_reward_multiplier()),
+                             state.pacing.enabled ? ui4::kGreen : ui4::kDim});
+  spec.detail_kvs.push_back(
+      {"HIDDEN CARS", state.hidden_cars ? "4 VARIANTS UNLOCKED" : "STOCK CATALOG",
+       state.hidden_cars ? ui4::kGreen : ui4::kDim});
 
-  float sy = top_y + 154.0f * s;
-  auto info_box = [&](const char* hdr, const std::string& l1, const std::string& l2, uint32_t accent) {
-    l.rect(rx0 + 14.0f * s, sy, rx1 - 14.0f * s, sy + 72.0f * s, ui::rgba(255, 255, 255, 14));
-    l.rect(rx0 + 14.0f * s, sy, rx0 + 18.0f * s, sy + 72.0f * s, accent);
-    l.text(rx0 + 28.0f * s, sy + 8.0f * s, hdr, ui4::style(ui::Font::kE, 11.5f * s, accent));
-    l.text(rx0 + 28.0f * s, sy + 27.0f * s, l1, ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite));
-    l.text(rx0 + 28.0f * s, sy + 46.0f * s, l2, ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
-    sy += 82.0f * s;
-  };
-
-  info_box("PLAYER (MODDED PROFILE)",
-           "CREDITS: " + ui4::format_credits(credits),
-           std::string("WRISTBAND: ") + drive::wristband_tier_name(wristband_level) + "  |  SAVE: " + save_tree_label,
-           ui4::kAmber);
-
-  info_box("WORLD & EVENTS",
-           std::string("SPEED: ") + fmt_mult(state.effective_game_speed()) + "  |  TOD: " +
-               fmt_tod(state.config.time_of_day_hour) + "  |  DAY: " + fmt_day_length(state.config.day_length_minutes),
-           std::string("ANY CAR: ") + (state.effective_any_car() ? "ON" : "OFF") + "  |  FREE CAM: " +
-               (state.effective_free_camera() ? "ON" : "OFF") + "  |  SIGNS: " +
-               (state.effective_reveal_collectibles() ? "ON" : "OFF"),
-           ui4::kPink);
-
-  info_box("PACING & HIDDEN CARS",
-           std::string("PRICES: ") + fmt_mult(state.pacing.effective_price_multiplier()) + "  |  REWARDS: " +
-               fmt_mult(state.pacing.effective_reward_multiplier()),
-           std::string("HIDDEN CARS: ") + (state.hidden_cars ? "4 VARIANTS UNLOCKED" : "STOCK CATALOG"),
-           state.hidden_cars || state.pacing.enabled ? ui4::kGreen : ui4::kDim);
-
-  if (!overlay.last_message().empty()) {
-    ui4::pill(l, rx0 + 14.0f * s, bot_y - 42.0f * s, rx1 - 14.0f * s, bot_y - 12.0f * s, ui4::kGreen);
-    ui::TextStyle ms = ui4::style(ui::Font::kE, 12.0f * s, ui4::kInk);
-    ui4::fit_text(overlay.last_message(), ms, (rx1 - rx0) - 48.0f * s, 9.0f * s);
-    l.text(rx0 + 26.0f * s, bot_y - 34.0f * s, overlay.last_message(), ms);
-  }
-
-  ui4::button_bar(l,
-                  {{"DPAD_LR", "CHANGE"},
-                   {"LB", "TAB"},
-                   {"A", "APPLY"},
-                   {"B", "CLOSE (F10)"}},
-                  screen_w, screen_h, 56.0f);
+  spec.prompts = {{"DPAD_LR", "CHANGE"}, {"LB", "TAB"}, {"A", "APPLY"}, {"B", "CLOSE (F10)"}};
+  ui4::tilted_blade_screen(l, screen_w, screen_h, spec);
 }
 
 }  // namespace carview

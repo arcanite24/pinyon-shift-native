@@ -1,22 +1,85 @@
 #include "club_view.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
+#include "game_hud.h"
 #include "ui4_chrome.h"
 
 namespace carview {
 namespace {
 
 constexpr uint32_t kGold = ui::rgba(246, 198, 56, 255);
-constexpr uint32_t kGoldDark = ui::rgba(148, 108, 20, 255);
 constexpr uint32_t kCyan = ui::rgba(56, 194, 240, 255);
 
-std::string clip_text(const std::string& s, size_t max_chars) {
-  if (s.size() <= max_chars) return s;
-  if (max_chars <= 3) return s.substr(0, max_chars);
-  return s.substr(0, max_chars - 3) + "...";
+std::string sanitize_club_text(std::string s) {
+  // Replace raw internal outpost/transform IDs (e.g. "OUTPOST_REDROCK_NODE") with clean display names.
+  auto replace_all = [&](const std::string& from, const std::string& to) {
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+      s.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  };
+  replace_all("OUTPOST_REDROCK_NODE", "Red Rock Outpost");
+  replace_all("OUTPOST_REDROCK", "Red Rock Outpost");
+  replace_all("OUTPOST_BEAUMONT_NODE", "Beaumont Outpost");
+  replace_all("OUTPOST_BEAUMONT", "Beaumont Outpost");
+  replace_all("OUTPOST_CARSON_NODE", "Carson Outpost");
+  replace_all("OUTPOST_CARSON", "Carson Outpost");
+  replace_all("OUTPOST_CLEAR_SPRINGS_NODE", "Clear Springs Outpost");
+  replace_all("OUTPOST_CLEAR_SPRINGS", "Clear Springs Outpost");
+  replace_all("OUTPOST_FINLEY_NODE", "Finley Dam Outpost");
+  replace_all("OUTPOST_DAM", "Finley Dam Outpost");
+  replace_all("OUTPOST_GOLF", "Golf Course Outpost");
+  replace_all("OUTPOST_MONTANO", "Montano Plains Outpost");
+  replace_all("OUTPOST_BUNKERS", "Bunker Outpost");
+  // Generic fallback for any remaining OUTPOST_XXX token
+  for (size_t pos = 0; (pos = s.find("OUTPOST_", pos)) != std::string::npos;) {
+    size_t end = pos + 8;
+    while (end < s.size() && (std::isalnum(static_cast<unsigned char>(s[end])) || s[end] == '_')) ++end;
+    std::string body = s.substr(pos + 8, end - (pos + 8));
+    std::string nice;
+    bool cap = true;
+    for (char c : body) {
+      if (c == '_') {
+        nice.push_back(' ');
+        cap = true;
+      } else {
+        nice.push_back(char(cap ? std::toupper(static_cast<unsigned char>(c)) : std::tolower(static_cast<unsigned char>(c))));
+        cap = false;
+      }
+    }
+    if (nice.empty()) nice = "Horizon";
+    nice += " Outpost";
+    s.replace(pos, end - pos, nice);
+    pos += nice.size();
+  }
+  return s;
+}
+
+std::string resolve_club_car_name(const std::string& raw) {
+  if (raw.empty()) return "COLORADO GARAGE";
+  const std::string looked = car_name(raw);
+  if (!looked.empty() && looked != raw && looked.find('_') == std::string::npos) return looked;
+  return ui4::pretty_car_media_name(raw);
+}
+
+// Draws authentic FH1 Gold/Silver/Bronze medal artwork (T:UI4/Common/Icon_Gold, TicketStickerGold, Padlock).
+void draw_medal_badge(ui::List& out, float cx, float cy, float r, bool earned, bool active_ring) {
+  const float sz = r * 2.15f;
+  const ui4::BadgeIconKind kind = earned ? ui4::BadgeIconKind::kGoldMedal
+                                         : (active_ring ? ui4::BadgeIconKind::kSilverMedal : ui4::BadgeIconKind::kLocked);
+  const uint32_t tint = earned ? ui4::kWhite : (active_ring ? ui::rgba(210, 214, 224, 155) : ui::rgba(160, 166, 178, 175));
+  if (ui4::badge_icon(out, cx - 0.5f * sz, cy - 0.5f * sz, cx + 0.5f * sz, cy + 0.5f * sz, kind, tint)) {
+    return;
+  }
+  // Sharp-edged fallback diamond badge (ZERO raw SDF circles).
+  out.rect(cx - r * 0.85f, cy - r * 0.85f, cx + r * 0.85f, cy + r * 0.85f,
+           earned ? kGold : ui::rgba(28, 30, 36, 232));
+  out.frame(cx - r * 0.85f, cy - r * 0.85f, cx + r * 0.85f, cy + r * 0.85f, earned ? ui4::kWhite : kGold, 1.5f);
 }
 
 void draw_text(ui::List& out, float x, float y, float size, std::string_view text, uint32_t col,
@@ -26,200 +89,106 @@ void draw_text(ui::List& out, float x, float y, float size, std::string_view tex
   out.text(x, y, text, ts);
 }
 
-// Draws a crisp anti-aliased SDF FH1 1000 Club gold medal emblem.
-void draw_medal_badge(ui::List& out, float cx, float cy, float r, bool earned, bool active_ring) {
-  constexpr float kTwoPi = 6.2831853f;
-  if (earned) {
-    out.circle(cx, cy, r, kGold);
-    out.arc(cx, cy, r * 0.74f, std::max(1.5f, r * 0.12f), 0.0f, kTwoPi, kGoldDark);
-    const float lw = std::max(2.0f, r * 0.18f);
-    out.line(cx - r * 0.34f, cy + r * 0.04f, cx - r * 0.08f, cy + r * 0.32f, lw, ui::rgba(28, 20, 8, 255));
-    out.line(cx - r * 0.08f, cy + r * 0.32f, cx + r * 0.38f, cy - r * 0.28f, lw, ui::rgba(28, 20, 8, 255));
-  } else {
-    const uint32_t ring = active_ring ? ui::rgba(246, 198, 56, 200) : ui::rgba(150, 158, 174, 120);
-    out.circle(cx, cy, r, ui::rgba(20, 22, 28, 232));
-    out.arc(cx, cy, r * 0.92f, std::max(1.6f, r * 0.14f), 0.0f, kTwoPi, ring);
-  }
-}
-
 }  // namespace
 
 void draw_club_screen(ui::List& out, int w, int h, const ClubScreenState& st) {
   if (!st.active) return;
   const float W = float(w), H = float(h);
-  const float sx = W / 1280.0f, sy = H / 720.0f;
-  const float s = std::min(sx, sy);
 
-  // Authentic UI4 subtle edge vignette so Colorado shines cleanly behind the screen.
-  ui4::subtle_vignette(out, W, H, 0.36f);
+  const std::string car_hdr = resolve_club_car_name(st.car_name);
+  char status_val[96];
+  std::snprintf(status_val, sizeof status_val, "%d / %d MEDALS IN THIS CAR", st.car_medals,
+                std::max(1, st.car_total));
+  char status_tag[64];
+  std::snprintf(status_tag, sizeof status_tag, "CAREER: %d (%d CARS)", st.stats.total_medals,
+                st.stats.cars_with_medal);
 
-  const float px = 48.0f * sx;
-  const float py = 30.0f * sy;
-  const float pw = W - 2.0f * px;
-  const float ph = H - 76.0f * sy;
-
-  ui4::panel(out, px, py, px + pw, py + ph, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-
-  // Iconic tilted FH1 UI4 banner header ("1000 CLUB" over current car eyebrow).
-  const std::string car_hdr = st.car_name.empty() ? "COLORADO GARAGE" : st.car_name;
-  ui4::title_banner(out, s, px + 22.0f * sx, py + 28.0f * sy, "1000 CLUB", clip_text(car_hdr, 40), true, 520.0f);
-
-  // Top-right off-white career medal summary & car medal slot strip.
-  {
-    const int slots = std::clamp(st.car_total > 0 ? st.car_total : 5, 1, 6);
-    const float slot_r = 13.0f * s;
-    const float slot_step = 34.0f * sx;
-    const float slot_x0 = px + pw - 26.0f * sx - float(slots - 1) * slot_step;
-    const float slot_cy = py + 34.0f * sy;
-    for (int i = 0; i < slots; ++i) {
-      const bool earned = (i < int(st.rows.size())) ? st.rows[size_t(i)].completed : (i < st.car_medals);
-      draw_medal_badge(out, slot_x0 + float(i) * slot_step, slot_cy, slot_r, earned, st.challenges_begun);
-    }
-
-    const float st_x1 = px + pw - 22.0f * sx;
-    const float st_x0 = st_x1 - 450.0f * sx;
-    ui4::offwhite_strip(out, st_x0, py + 58.0f * sy, st_x1, py + 84.0f * sy, s, true);
-    char sub[128];
-    std::snprintf(sub, sizeof sub, "%d / %d IN THIS CAR   |   CAREER: %d MEDALS (%d CARS)",
-                  st.car_medals, st.car_total, st.stats.total_medals, st.stats.cars_with_medal);
-    draw_text(out, st_x1 - 12.0f * sx, py + 65.0f * sy, 12.0f * s, sub, ui4::kInk, ui::Font::kB, false,
-              ui::Align::kRight);
-  }
-
-  const float body_y = py + 98.0f * sy;
-  const float body_h = ph - 114.0f * sy;
+  ui4::TiltedBladeSpec spec;
+  spec.title = "1000 CLUB";
+  spec.eyebrow = car_hdr;
+  spec.scene_hint = "H_FIXED_SETTING_LIST";
+  spec.status_kicker = "HORIZON 1000 CLUB";
+  spec.status_value = status_val;
+  spec.status_tag = status_tag;
+  spec.status_color = kGold;
+  spec.list_header = "CAR CHALLENGES";
+  spec.list_header_right = st.challenges_begun ? "CHALLENGES ACTIVE" : "PRESS [A] TO BEGIN";
+  spec.selected_index = st.selected;
+  spec.max_visible = 7;
 
   if (!st.gate_reason.empty()) {
-    ui4::panel(out, px + 24.0f * sx, body_y + 20.0f * sy, px + pw - 24.0f * sx, body_y + 184.0f * sy, s,
-               ui4::kCharcoal, kGold, ui4::kPink, true);
-    draw_text(out, px + 48.0f * sx, body_y + 46.0f * sy, 20.0f * s, "1000 CLUB LOCKED", kGold, ui::Font::kE);
-    draw_text(out, px + 48.0f * sx, body_y + 84.0f * sy, 16.0f * s, st.gate_reason, ui4::kWhite, ui::Font::kB, true);
-    draw_text(out, px + 48.0f * sx, body_y + 120.0f * sy, 13.0f * s,
-              "Earn the Horizon Green Wristband and drive one of your own Colorado garage cars to enter.", ui4::kDim,
-              ui::Font::kB, true);
-    ui4::button_bar(out, {{"B", "BACK"}}, W, H, 48.0f);
+    spec.empty_message = st.gate_reason;
+    spec.detail_header = "1000 CLUB LOCKED";
+    spec.detail_title = "GREEN WRISTBAND REQUIRED";
+    spec.detail_title_color = ui4::kAmber;
+    spec.detail_icon_kind = int(ui4::BadgeIconKind::kLocked);
+    spec.detail_paragraphs = {st.gate_reason,
+                              "Earn the Horizon Green Wristband and drive one of your own Colorado garage cars to enter."};
+    spec.prompts = {{"B", "BACK"}};
+    ui4::tilted_blade_screen(out, W, H, spec);
     return;
   }
 
-  // Left column (67%): optional intro brush strip + sharp distressed challenge rows.
-  const float left_x = px + 22.0f * sx;
-  const float left_w = pw * 0.67f;
-  float cur_y = body_y;
+  for (size_t i = 0; i < st.rows.size(); ++i) {
+    const auto& r = st.rows[i];
+    ui4::BladeRow br;
+    br.label = sanitize_club_text(r.title);
+    br.subtitle = sanitize_club_text(r.description);
+    br.selected = (int(i) == st.selected);
+    br.badge_icon_kind = r.completed ? int(ui4::BadgeIconKind::kGoldMedal)
+                                     : (st.challenges_begun ? int(ui4::BadgeIconKind::kSilverMedal)
+                                                            : int(ui4::BadgeIconKind::kLocked));
+    if (r.completed) {
+      br.value = "MEDAL EARNED";
+      br.value_color = kGold;
+    } else {
+      br.value = r.status.empty() ? (st.challenges_begun ? "ACTIVE" : "READY") : sanitize_club_text(r.status);
+      br.value_color = st.challenges_begun ? kCyan : ui4::kDim;
+    }
+    spec.rows.push_back(std::move(br));
+  }
+
+  // Right compact PANEL01 card: focused challenge details + 1000 Club Medal Milestones (NO full-screen charcoal wall!)
+  spec.detail_header = "1000 CLUB MILESTONES  •  " + std::to_string(st.stats.achievements_unlocked) + "/10";
+  if (st.selected >= 0 && st.selected < int(st.rows.size())) {
+    const auto& sr = st.rows[size_t(st.selected)];
+    spec.detail_title = sanitize_club_text(sr.title);
+    spec.detail_title_color = sr.completed ? kGold : ui4::kPink;
+    spec.detail_icon_kind = sr.completed ? int(ui4::BadgeIconKind::kGoldMedal) : int(ui4::BadgeIconKind::kSilverMedal);
+    spec.detail_paragraphs.push_back(sanitize_club_text(sr.description));
+    if (!sr.hint.empty()) spec.detail_paragraphs.push_back("Hint: " + sanitize_club_text(sr.hint));
+    if (!sr.completed) {
+      spec.detail_progress = float(std::clamp(sr.progress, 0.0, 1.0));
+      spec.detail_progress_label = sr.status.empty() ? "CHALLENGE PROGRESS" : sanitize_club_text(sr.status);
+      spec.detail_progress_color = ui4::kYellow;
+    }
+  } else {
+    spec.detail_title = "GOLD MEDAL MILESTONES";
+    spec.detail_title_color = kGold;
+    spec.detail_icon_kind = int(ui4::BadgeIconKind::kGoldMedal);
+  }
+
+  auto mk_kv = [&](const char* lbl, int cur, int target, bool done) {
+    char vb[24];
+    std::snprintf(vb, sizeof vb, "%d / %d", std::min(cur, target), target);
+    spec.detail_kvs.push_back({lbl, vb, done ? ui4::kGreen : ui4::kWhite});
+  };
+  mk_kv("FIRST MEDAL", std::min(1, st.stats.total_medals), 1, st.stats.ach_first_medal);
+  mk_kv("DIFFERENT CARS", st.stats.cars_with_medal, 5, st.stats.ach_multi_cars);
+  mk_kv("FORD / FERRARI", st.stats.ford_cars + st.stats.ferrari_cars, 8, st.stats.ach_ford && st.stats.ach_ferrari);
+  mk_kv("NISSAN / BMW", st.stats.nissan_cars + st.stats.bmw_cars, 6, st.stats.ach_nissan && st.stats.ach_bmw);
+  mk_kv("BRITISH CARS", st.stats.british_cars, 5, st.stats.ach_british);
+  mk_kv("1,000,000+ CR CAR", st.stats.million_cr_cars, 1, st.stats.ach_million_cr);
 
   if (st.show_intro) {
-    const float intro_h = 52.0f * sy;
-    ui4::panel(out, left_x, cur_y, left_x + left_w, cur_y + intro_h, s, ui4::kCharcoal, 0, ui4::kPink, true);
-    draw_text(out, left_x + 16.0f * sx, cur_y + 8.0f * sy, 13.5f * s, "WELCOME TO THE HORIZON 1000 CLUB", kGold,
-              ui::Font::kE);
-    draw_text(out, left_x + 16.0f * sx, cur_y + 28.0f * sy, 12.0f * s,
-              "Complete challenges in each garage car to earn Gold Medals and unlock 1000 Club Achievements.",
-              ui4::kWhite, ui::Font::kB, true);
-    cur_y += intro_h + 10.0f * sy;
+    spec.detail_footer = "Complete challenges in each garage car to earn Gold Medals and unlock 1000 Club Achievements.";
   }
 
-  const int row_count = int(st.rows.size());
-  const float avail_h = (body_y + body_h) - cur_y;
-  const float gap = 8.0f * sy;
-  const float row_h = std::min(78.0f * sy, std::max(54.0f * sy, (avail_h - gap * float(std::max(1, row_count - 1))) /
-                                                                    float(std::max(1, row_count))));
-
-  for (int i = 0; i < row_count; ++i) {
-    const auto& r = st.rows[size_t(i)];
-    const bool sel = (i == st.selected);
-    const float ry = cur_y + float(i) * (row_h + gap);
-    if (sel) {
-      ui4::panel(out, left_x, ry, left_x + left_w, ry + row_h, s, ui::rgba(52, 26, 44, 240), 0, ui4::kPink, true);
-      out.rect(left_x, ry, left_x + 4.0f * sx, ry + row_h, ui4::kYellow);
-    } else {
-      ui4::panel(out, left_x, ry, left_x + left_w, ry + row_h, s, ui4::kCharcoal, 0,
-                 r.completed ? kGold : ui::rgba(80, 86, 98, 160), true);
-    }
-
-    draw_medal_badge(out, left_x + 30.0f * sx, ry + row_h * 0.5f, 15.0f * s, r.completed, st.challenges_begun);
-
-    const float tx = left_x + 58.0f * sx;
-    draw_text(out, tx, ry + 8.0f * sy, 15.5f * s, clip_text(r.title, 44), r.completed ? kGold : ui4::kWhite,
-              ui::Font::kE);
-    draw_text(out, tx, ry + 30.0f * sy, 12.5f * s, clip_text(r.description, 68), sel ? ui4::kWhite : ui4::kDim,
-              ui::Font::kB, true);
-
-    const float bar_w = 152.0f * sx;
-    const float bar_x = left_x + left_w - bar_w - 14.0f * sx;
-    if (r.completed) {
-      ui4::brush(out, bar_x + 18.0f * sx, ry + 14.0f * sy, bar_x + bar_w, ry + 38.0f * sy, ui::rgba(246, 198, 56, 228),
-                 false);
-      draw_text(out, bar_x + 85.0f * sx, ry + 20.0f * sy, 12.0f * s, "MEDAL EARNED", ui4::kInk, ui::Font::kE, false,
-                ui::Align::kCenter);
-    } else {
-      const std::string status_txt = r.status.empty() ? (st.challenges_begun ? "ACTIVE" : "READY") : r.status;
-      draw_text(out, bar_x, ry + 10.0f * sy, 12.0f * s, clip_text(status_txt, 22),
-                st.challenges_begun ? kCyan : ui4::kDim);
-      const float p = float(std::clamp(r.progress, 0.0, 1.0));
-      const float by = ry + 32.0f * sy;
-      out.rect(bar_x, by, bar_x + bar_w, by + 7.0f * sy, ui::rgba(255, 255, 255, 24));
-      if (p > 0.001f) out.rect(bar_x, by, bar_x + bar_w * p, by + 7.0f * sy, ui4::kYellow);
-    }
-    if (sel && !r.hint.empty() && row_h >= 62.0f * sy) {
-      draw_text(out, tx, ry + 48.0f * sy, 11.0f * s, "Hint: " + clip_text(r.hint, 64), ui::rgba(220, 228, 242, 230),
-                ui::Font::kB, true);
-    }
-  }
-
-  // Right sidebar: 1000 Club Medal Milestones & Achievements (SPA 216..225) in UI4 gritty panel.
-  const float side_x = left_x + left_w + 16.0f * sx;
-  const float side_w = (px + pw - 22.0f * sx) - side_x;
-  ui4::panel(out, side_x, body_y, side_x + side_w, body_y + body_h, s, ui4::kCharcoal, kGold, 0, true);
-
-  draw_text(out, side_x + 14.0f * sx, body_y + 12.0f * sy, 15.0f * s, "1000 CLUB MILESTONES", kGold, ui::Font::kE);
-  ui4::offwhite_strip(out, side_x + 10.0f * sx, body_y + 36.0f * sy, side_x + side_w - 10.0f * sx, body_y + 58.0f * sy,
-                      s, false);
-  char ach_hdr[64];
-  std::snprintf(ach_hdr, sizeof ach_hdr, "ACHIEVEMENTS: %d / 10", st.stats.achievements_unlocked);
-  draw_text(out, side_x + 16.0f * sx, body_y + 41.0f * sy, 12.0f * s, ach_hdr, ui4::kInk);
-
-  struct MilestoneLine {
-    const char* label;
-    int cur;
-    int target;
-    bool done;
-  };
-  const MilestoneLine lines[] = {
-      {"FIRST MEDAL", std::min(1, st.stats.total_medals), 1, st.stats.ach_first_medal},
-      {"DIFFERENT CARS", st.stats.cars_with_medal, 5, st.stats.ach_multi_cars},
-      {"FORD CARS", st.stats.ford_cars, 5, st.stats.ach_ford},
-      {"FERRARI CARS", st.stats.ferrari_cars, 3, st.stats.ach_ferrari},
-      {"SHELBY CARS", st.stats.shelby_cars, 2, st.stats.ach_shelby},
-      {"LAMBORGHINI", st.stats.lamborghini_cars, 3, st.stats.ach_lamborghini},
-      {"NISSAN CARS", st.stats.nissan_cars, 3, st.stats.ach_nissan},
-      {"BMW CARS", st.stats.bmw_cars, 3, st.stats.ach_bmw},
-      {"BRITISH CARS", st.stats.british_cars, 5, st.stats.ach_british},
-      {"1,000,000+ CR CAR", st.stats.million_cr_cars, 1, st.stats.ach_million_cr},
-  };
-  float my = body_y + 68.0f * sy;
-  const float mstep = std::min(38.0f * sy, (body_h - 84.0f * sy) / 10.0f);
-  for (const auto& m : lines) {
-    char val[32];
-    std::snprintf(val, sizeof val, "%d/%d", std::min(m.cur, m.target), m.target);
-    draw_text(out, side_x + 14.0f * sx, my, 12.0f * s, m.label, m.done ? kGold : ui4::kDim);
-    draw_text(out, side_x + side_w - 14.0f * sx, my, 12.0f * s, val, m.done ? ui4::kGreen : ui4::kWhite, ui::Font::kB,
-              false, ui::Align::kRight);
-    const float frac = std::clamp(float(m.cur) / float(std::max(1, m.target)), 0.0f, 1.0f);
-    out.rect(side_x + 14.0f * sx, my + 16.0f * sy, side_x + side_w - 14.0f * sx, my + 20.0f * sy,
-             ui::rgba(255, 255, 255, 22));
-    if (frac > 0.0f) {
-      out.rect(side_x + 14.0f * sx, my + 16.0f * sy, side_x + 14.0f * sx + (side_w - 28.0f * sx) * frac,
-               my + 20.0f * sy, m.done ? ui4::kGreen : kGold);
-    }
-    my += mstep;
-  }
-
-  // Authentic BUTTON_BAR_SCENE bottom prompt bar with real controller glyphs.
-  std::vector<ui4::Prompt> prompts;
-  if (!st.challenges_begun) prompts.push_back({"A", "BEGIN CHALLENGES IN THIS CAR"});
-  else prompts.push_back({"A", "CHALLENGES ACTIVE"});
-  prompts.push_back({"DPAD", "INSPECT"});
-  prompts.push_back({"B", "RETURN TO DRIVE"});
-  ui4::button_bar(out, prompts, W, H, 48.0f);
+  if (!st.challenges_begun) spec.prompts.push_back({"A", "BEGIN CHALLENGES IN THIS CAR"});
+  else spec.prompts.push_back({"A", "CHALLENGES ACTIVE"});
+  spec.prompts.push_back({"DPAD", "INSPECT"});
+  spec.prompts.push_back({"B", "RETURN TO DRIVE"});
+  ui4::tilted_blade_screen(out, W, H, spec);
 }
 
 void draw_club_medal_ceremony(ui::List& out, int w, int h, const ClubMedalCeremony& c) {
@@ -238,18 +207,22 @@ void draw_club_medal_ceremony(ui::List& out, int w, int h, const ClubMedalCeremo
   const float bx = c.dock_bottom_right ? (W - bw - 68.0f * sx) : (W - bw) * 0.5f;
   const float by = c.dock_bottom_right ? (H - bh - 56.0f * sy) : 18.0f * sy;
 
-  ui4::panel(out, bx, by, bx + bw, by + bh, s, ui::fade(ui4::kCharcoalDark, alpha), ui::fade(kGold, alpha),
-             ui::fade(ui4::kPink, alpha), true);
-
+  ui4::TiltScope tilt(out, bx + 0.5f * bw, by + 0.5f * bh, ui4::kTiltRad * 0.6f);
+  ui4::panel01(out, bx, by, bx + bw, by + bh, s, ui::fade(ui4::kCharcoalDark, alpha), ui::fade(kGold, alpha));
   draw_medal_badge(out, bx + 48.0f * sx, by + bh * 0.5f, 27.0f * s, true, true);
 
   draw_text(out, bx + 92.0f * sx, by + 11.0f * sy, 13.0f * s, "1000 CLUB MEDAL EARNED!", ui::fade(kGold, alpha),
             ui::Font::kE);
-  draw_text(out, bx + 92.0f * sx, by + 31.0f * sy, 19.5f * s, clip_text(c.challenge_title, 34),
-            ui::fade(ui4::kWhite, alpha), ui::Font::kE);
-  if (!c.challenge_desc.empty())
-    draw_text(out, bx + 92.0f * sx, by + 56.0f * sy, 12.5f * s, clip_text(c.challenge_desc, 54),
-              ui::fade(ui4::kDim, alpha), ui::Font::kB, true);
+  const std::string ctitle = sanitize_club_text(c.challenge_title);
+  ui::TextStyle tts = ui4::style(ui::Font::kE, 18.5f * s, ui::fade(ui4::kWhite, alpha));
+  ui4::fit_text(ctitle, tts, bw - 108.0f * sx, 11.0f * s);
+  out.text(bx + 92.0f * sx, by + 30.0f * sy, ctitle, tts);
+  if (!c.challenge_desc.empty()) {
+    const std::string cdesc = sanitize_club_text(c.challenge_desc);
+    ui::TextStyle dts = ui4::style(ui::Font::kB, 12.0f * s, ui::fade(ui4::kDim, alpha), ui::Align::kLeft, true);
+    ui4::fit_text(cdesc, dts, bw - 108.0f * sx, 9.0f * s);
+    out.text(bx + 92.0f * sx, by + 56.0f * sy, cdesc, dts);
+  }
 
   char foot[128];
   std::snprintf(foot, sizeof foot, "%d / %d IN THIS CAR   |   TOTAL: %d MEDALS (%d CARS)", c.car_medals,
@@ -264,15 +237,20 @@ void draw_club_active_strip(ui::List& out, int w, int h, const ClubActiveStrip& 
   const float s = std::min(sx, sy);
 
   const float bw = 400.0f * sx;
-  const float bh = 48.0f * sy;
+  const float bh = 46.0f * sy;
   const float bx = (W - bw) * 0.5f;
-  const float by = 16.0f * sy;
+  const float by = 18.0f * sy;
 
-  ui4::panel(out, bx, by, bx + bw, by + bh, s, ui4::kCharcoalDark, 0, kGold, true);
-  draw_text(out, bx + 14.0f * sx, by + 7.0f * sy, 12.5f * s, "1000 CLUB  " + clip_text(strip.title, 28), kGold,
-            ui::Font::kE);
-  draw_text(out, bx + 14.0f * sx, by + 25.0f * sy, 11.5f * s, clip_text(strip.status, 40), ui4::kWhite, ui::Font::kB,
-            true);
+  ui4::pill(out, bx, by, bx + bw, by + bh, ui4::kPillGrey, ui4::PillKind::kHud01);
+  out.rect(bx, by, bx + 4.0f * sx, by + bh, kGold);
+  const std::string ttl = "1000 CLUB  " + sanitize_club_text(strip.title);
+  ui::TextStyle ts = ui4::style(ui::Font::kE, 12.5f * s, kGold);
+  ui4::fit_text(ttl, ts, bw - 28.0f * sx, 9.0f * s);
+  out.text(bx + 14.0f * sx, by + 7.0f * sy, ttl, ts);
+  const std::string st_txt = sanitize_club_text(strip.status);
+  ui::TextStyle ss = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+  ui4::fit_text(st_txt, ss, bw - 28.0f * sx, 8.5f * s);
+  out.text(bx + 14.0f * sx, by + 24.0f * sy, st_txt, ss);
   const float p = float(std::clamp(strip.progress, 0.0, 1.0));
   if (p > 0.001f) {
     out.rect(bx + 4.0f * sx, by + bh - 4.0f * sy, bx + 4.0f * sx + (bw - 4.0f * sx) * p, by + bh, ui4::kYellow);

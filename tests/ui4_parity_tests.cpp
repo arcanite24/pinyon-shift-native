@@ -26,8 +26,10 @@
 
 #include "achievements.h"
 #include "autoshow.h"
+#include "camera_editor.h"
 #include "cars/physics.h"
 #include "cars/sources.h"
+#include "club_view.h"
 #include "events_page.h"
 #include "fh1data/archive.h"
 #include "fh1data/spa.h"
@@ -37,8 +39,11 @@
 #include "freeroam/outposts.h"
 #include "freeroam/road_discovery.h"
 #include "game_hud.h"
+#include "mods_page.h"
 #include "replay_view.h"
+#include "save_sync_ui.h"
 #include "touch_controls.h"
+#include "trainer_overlay.h"
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
 #include "hub_scene.h"
@@ -93,6 +98,53 @@ void test_ui4_chrome_primitives() {
   size_t lit = 0;
   for (size_t i = 3; i < fb.size(); i += 4) lit += fb[i] > 0;
   check(lit > 25000, "ui4_chrome primitives rasterize cleanly at 1280x720");
+
+  // Phase 3 & 4 helper verification: EventTickets/*, UI4/Upgrades/*, SponsorLogoTile/*,
+  // OPT_BAR_ARROW, ui4::tilted_blade_screen(), and pretty_car_media_name().
+  std::set<std::string> req_tex;
+  carview::ui4::set_texture_loader([&](const std::string& p, std::array<float, 4>& uv) {
+    req_tex.insert(p);
+    uv = {0.0f, 0.0f, 0.1f, 0.1f};
+    return true;
+  });
+  carview::ui::List l34;
+  check(carview::ui4::event_ticket_art(l34, 40, 40, 300, 360, 101, 2), "event_ticket_art loads StreetRace ticket");
+  check(carview::ui4::event_ticket_art(l34, 40, 40, 300, 360, 201, 10), "event_ticket_art loads PR Stunt ticket");
+  check(carview::ui4::upgrade_part_icon(l34, 40, 40, 120, 120, 2, 2, false), "upgrade_part_icon loads UI4/Upgrades/*");
+  check(carview::ui4::tuning_icon(l34, 40, 40, 120, 120, 0, "Tire Pressure"), "tuning_icon loads UI4/Tuning/*");
+  check(carview::ui4::sponsor_logo_tile(l34, 40, 40, 200, 120, "Oakley"), "sponsor_logo_tile loads SponsorLogoTile/*");
+  check(carview::ui4::opt_arrow(l34, 100, 100, 14, +1), "opt_arrow loads OPTIONS/OPT_BAR_ARROW");
+
+  carview::ui4::TiltedBladeSpec blade;
+  blade.title = "TEST BLADE";
+  blade.eyebrow = "PHASE 4";
+  blade.tabs = {"TAB ONE", "TAB TWO"};
+  blade.list_header = "ITEMS";
+  blade.detail_header = "DETAILS";
+  blade.detail_title = "ACTIVE ITEM";
+  blade.rows.push_back({"ROW ONE", "Subtext", "ON", carview::ui4::kGreen, true, true, true, 0.65f, carview::ui4::kYellow});
+  blade.rows.push_back({"ROW TWO", "Subtext", "OFF", carview::ui4::kDim, false});
+  blade.detail_kvs.push_back({"CAR", carview::ui4::pretty_car_media_name("FER_F40_87"), carview::ui4::kWhite});
+  blade.prompts = {{"A", "SELECT"}, {"B", "BACK"}};
+  carview::ui4::tilted_blade_screen(l34, 1280.0f, 720.0f, blade);
+  carview::ui4::set_texture_loader({});
+
+  auto has_prefix = [&](const std::string& pfx) {
+    for (const auto& t : req_tex)
+      if (t.rfind(pfx, 0) == 0) return true;
+    return false;
+  };
+  check(has_prefix("EVENTTICKETS/"), "Phase 3 EventTickets/* textures requested");
+  check(has_prefix("T:UI4/Upgrades/"), "Phase 3 UI4/Upgrades/* textures requested");
+  check(has_prefix("T:UI4/Tuning/"), "Phase 3 UI4/Tuning/* textures requested");
+  check(has_prefix("SPONSORLOGOTILE/"), "Phase 3 SponsorLogoTile/* textures requested");
+  check(req_tex.count("OPTIONS/OPT_BAR_ARROW") > 0, "Phase 3/4 OPTIONS/OPT_BAR_ARROW requested");
+  check(req_tex.count("DIRTMASKS/PILL02") > 0 && req_tex.count("DIRTMASKS/PANEL01") > 0,
+        "Phase 4 tilted_blade_screen uses PILL02 & PANEL01");
+  check(carview::ui4::pretty_car_media_name("FER_F40_87") == "1987 Ferrari F40",
+        "pretty_car_media_name resolves FER_F40_87");
+  check(carview::ui4::pretty_car_media_name("NIS_SKYLINEGTRVSPECII_02") == "2002 Nissan Skyline GT-R V-Spec II",
+        "pretty_car_media_name resolves NIS_SKYLINEGTRVSPECII_02");
 }
 
 // Loads a backdrop PNG and scales it bilinearly into 1280x720 RGBA8, or builds
@@ -471,6 +523,9 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     car_names->load(game_root, {}, &cn_err, "en", &db);
     carview::set_car_names([car_names](const std::string& media) -> std::string {
       return car_names->short_name(media);
+    });
+    carview::set_game_text([car_names](const std::string& ref) -> std::string {
+      return car_names->text(ref);
     });
   }
 
@@ -1052,6 +1107,348 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     carview::build_drive_hud(l, d, float(W), float(H));
     tc.build_overlay(l, float(W), float(H), 1.0, false);
     save_frame("ui4_re_android_touch.png", l, std::move(bg));
+  }
+
+  // ---------------- PHASE 3 & 4 VERIFICATION SCREENSHOTS (6 COMPOSITES) ----------------
+  auto save_quad = [&](const std::string& filename, const carview::ui::List& tl_l, std::vector<uint8_t> tl_fb,
+                       const carview::ui::List& tr_l, std::vector<uint8_t> tr_fb, const carview::ui::List& bl_l,
+                       std::vector<uint8_t> bl_fb, const carview::ui::List& br_l, std::vector<uint8_t> br_fb) {
+    carview::ui::rasterize(tl_l.items(), tl_fb, W, H);
+    carview::ui::rasterize(tr_l.items(), tr_fb, W, H);
+    carview::ui::rasterize(bl_l.items(), bl_fb, W, H);
+    carview::ui::rasterize(br_l.items(), br_fb, W, H);
+    const uint32_t CW = W * 2, CH = H * 2;
+    std::vector<uint8_t> combined(size_t(CW) * size_t(CH) * 4u, 255);
+    auto blit = [&](const std::vector<uint8_t>& src, uint32_t ox, uint32_t oy) {
+      for (uint32_t y = 0; y < H; ++y) {
+        std::memcpy(&combined[(size_t(oy + y) * CW + ox) * 4u], &src[size_t(y) * W * 4u], size_t(W) * 4u);
+      }
+    };
+    blit(tl_fb, 0, 0);
+    blit(tr_fb, W, 0);
+    blit(bl_fb, 0, H);
+    blit(br_fb, W, H);
+    const auto p = out_dir / filename;
+    check(stbi_write_png(p.string().c_str(), int(CW), int(CH), 4, combined.data(), int(CW * 4)) != 0,
+          filename.c_str());
+  };
+
+  // P3-1: ui4_p3_autoshow_garage.png — 2-up Autoshow (108_C_BUY_CARSELECT +3 deg bottom carousel +
+  //       right stat card + synced 3D Ferrari FXX matching 1006.png!) & Garage (106_C_CAR_LIST)
+  if (have_db) {
+    carview::ui::List l_as, l_gar;
+    carview::Autoshow as;
+    std::string why;
+    if (as.open(db, {}, why, 5000000, false)) {
+      // Match the 3D Ferrari FXX (id=1006) shown in out/play/1006.png!
+      for (size_t mi = 0; mi < as.makes().size(); ++mi) {
+        if (as.makes()[mi].name == "Ferrari" || as.makes()[mi].name == "FER") {
+          as.select_make(mi, 5000000);
+          break;
+        }
+      }
+      as.set_step(carview::AutoshowStep::kCarSelect);
+      for (size_t ci = 0; ci < as.visible_cars().size(); ++ci) {
+        if (as.visible_cars()[ci].dealer.id == 1006) break;
+        as.move(1);
+      }
+      carview::draw_autoshow_hud(l_as, float(W), float(H), as, bands, 2485000);
+    }
+
+    garage::Garage g;
+    int64_t gcred = 8000000;
+    static constexpr int64_t kGarCars[] = {445, 309, 1006, 1323, 1009, 1293};
+    for (int64_t cid : kGarCars) add_dealer_car(g, cid, gcred);
+    if (!g.cars.empty()) g.selected = g.cars[0].id;  // Nissan Skyline GT-R V-spec II matching r34_00000.png!
+    carview::GarageBrowser gb;
+    gb.refresh(g, &db, bands);
+    for (size_t gi = 0; gi < gb.visible().size(); ++gi) {
+      if (gb.selected_entry() && gb.selected_entry()->car_id == 445) break;
+      gb.move(1);
+    }
+    carview::draw_garage_hud(l_gar, float(W), float(H), gb, bands, 248500);
+
+    save_two_up("ui4_p3_autoshow_garage.png", l_as, load_or_build_backdrop(studio_bg_path, true), l_gar,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // P3-2: ui4_p3_upgrades_paint.png — 2-up Upgrade Shop (527_C_UPG_UPGRADES +3 deg bottom blade +
+  //       real UI4/Upgrades/* icons, car unobstructed!) & Paint Shop (501_C_LIV_COLOR bottom ribbon)
+  if (have_db) {
+    carview::ui::List l_upg, l_pnt;
+    garage::Garage g;
+    int64_t gcred = 5000000;
+    const int64_t gid = add_dealer_car(g, 445, gcred);  // Nissan Skyline GT-R V-spec II
+    carview::UpgradeShop shop;
+    std::string why;
+    if (gid > 0 && shop.open(db, g, gid, why, &phys_settings, &pi_cfg, &bands)) {
+      shop.set_category(carview::ShopCategory::kEngine);
+      shop.move_part(+2);
+      carview::draw_upgrade_shop_hud(l_upg, float(W), float(H), shop, bands, 25, 248500,
+                                     "Nissan Skyline GT-R V-spec II");
+    }
+
+    carview::LiveryEditor ed;
+    std::string msg;
+    if (ed.open(&db, game_root, 445, {}, msg)) {
+      ed.move_finish(+1);
+      ed.step_hsv(0.58f, 0.10f, 0.0f);
+      carview::draw_livery_editor_hud(l_pnt, float(W), float(H), ed, "Nissan Skyline GT-R V-spec II");
+    }
+    save_two_up("ui4_p3_upgrades_paint.png", l_upg, load_or_build_backdrop(world_bg_path), l_pnt,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // P3-3: ui4_p3_events_outpost.png — 2-up Street Race / Events Hub (H_STREET_RACE_HUB with real
+  //       EventTickets/* tilted ticket cards!) & Outpost PR Stunts (H_MISSIONS_HUB)
+  {
+    race::CareerCatalog catalog;
+    race::load_career_catalog(game_root, catalog, nullptr);
+    race::CareerRecord crec;
+    crec.wristband_points = 26400;
+    for (const auto& ev : catalog.events) {
+      if (ev.style == 1 && crec.event_places.size() < 4) {
+        crec.event_places[ev.event_id] = 1;
+      }
+    }
+    carview::EventsPage evp;
+    evp.open(catalog, crec, 3, 64, 445, 4, bands, 0);
+    evp.switch_tab(+2);  // Street Races (or all events if street empty)
+    if (evp.entries().empty()) evp.switch_tab(-2);
+
+    carview::ui::List l_ev, l_out;
+    carview::draw_events_ui4(l_ev, float(W), float(H), evp, bands);
+
+    std::vector<carview::OutpostMissionCard> cards = {
+        {"CANYON SPEED TRAP", "SPEED STUNT", 10, 101, "TARGET: 155 MPH", "+12,500 CR  •  +2,500 POP", "COMPLETED", true,
+         true, {"Hit 155 mph past Red Rock Canyon camera."}},
+        {"RED ROCK DRIFT RUN", "SKILL STUNT", 11, 102, "TARGET: 35,000 PTS", "+15,000 CR  •  +3,000 POP", "NEW PR STUNT",
+         false, true, {"Chain 35,000 Skill Points through Red Rock switchbacks."}},
+        {"ARCHWAY PHOTO SHOOT", "PHOTO OP", 12, 103, "SNAP AT RED ROCK ARCH", "+10,000 CR  •  +2,000 POP", "COMPLETED",
+         true, true, {"Photograph your car beneath the Red Rock Arch."}},
+        {"CHANGE CAR", "GARAGE", 1, 0, "INSTANT CAR SWAP", "MY GARAGE", "OUTPOST SERVICE", false, false,
+         {"Swap into any car in your Horizon Garage right here."}},
+    };
+    carview::draw_outpost_hub_ui4(l_out, float(W), float(H), "RED ROCK OUTPOST", cards, 1);
+    save_two_up("ui4_p3_events_outpost.png", l_ev, load_or_build_backdrop(world_bg_path), l_out,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // P3-4: ui4_p3_career_sponsors.png — 2-up My Profile (H_STATISTICS +3 deg floating rows) &
+  //       Sponsor Challenges (H_SPONSOR_CHALLENGE_STATUS with real SponsorLogoTile/* logos!)
+  {
+    carview::CareerBoard cb;
+    cb.band_name = "BLUE WRISTBAND";
+    cb.band_next = "PURPLE WRISTBAND";
+    cb.band_lo = 12500;
+    cb.band_hi = 35000;
+    cb.points = 26400;
+    cb.credits = 264475;
+    cb.races = 28;
+    cb.wins = 21;
+    cb.podiums = 26;
+    cb.winnings = 842500;
+    cb.driver_level = 14;
+    cb.popularity_rank = 64;
+    cb.garage = 18;
+    cb.roads = 189;
+    cb.roads_total = 216;
+    cb.outposts = 7;
+    cb.outposts_total = 8;
+    cb.pr_stunts = 16;
+    cb.pr_stunts_total = 24;
+    cb.speed_traps = 19;
+    cb.speed_traps_total = 24;
+    cb.speed_zones = 6;
+    cb.speed_zones_total = 10;
+    cb.signs = 74;
+    cb.signs_total = 100;
+    cb.barns = 6;
+    cb.barns_total = 9;
+    cb.club_done = 42;
+    cb.club_total = 1145;
+    cb.packs_owned = 4;
+    cb.packs_total = 7;
+
+    carview::DriveHud d;
+    d.driving = false;
+    d.menu_title = "MY PROFILE";
+    d.menu = {"CAREER OVERVIEW", "DRIVER STATS", "SPONSOR CHALLENGES", "1000 CLUB", "BACK"};
+    d.menu_selected = 0;
+    d.career = &cb;
+    carview::ui::List l_car, l_sp;
+    carview::build_drive_hud(l_car, d, float(W), float(H));
+
+    std::vector<carview::SponsorChallengeRow> srows = {
+        {"OAKLEY", "NEAR MISSES IN FREE ROAM", "Oakley", 38, 50, 2, 5, 15000},
+        {"BOSE", "CLEAN BRAKING TURNS", "Bose", 100, 100, 3, 5, 20000},
+        {"ROCKSTAR", "LONG DRIFT COMBOS", "Rockstar", 24, 40, 2, 5, 18000},
+        {"ADIDAS", "BURNOUT & SPEED CHAINS", "Adidas", 18, 25, 1, 5, 16000},
+        {"BONDURANT", "DRAFTING PASSES IN RACES", "Bondurant", 11, 20, 1, 5, 22000},
+        {"GOPRO", "AIRTIME JUMPS ACROSS COLORADO", "GoPro", 15, 15, 3, 5, 25000},
+    };
+    carview::draw_sponsor_challenges_ui4(l_sp, float(W), float(H), srows, 0, 264475);
+    save_two_up("ui4_p3_career_sponsors.png", l_car, load_or_build_backdrop(world_bg_path), l_sp,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // P3-5: ui4_p3_photo_settings.png — 2-up Photo Mode (516_I_EFFECTSMODE right-hand sliders!) &
+  //       Settings (H_FIXED_SETTING_LIST +3 deg floating pills + OPT_BAR_ARROW!)
+  {
+    carview::PhotoModeController pm;
+    pm.enter({0, 1, 0}, 0.0, carview::PhotoLimits::from_settings(false, true));
+    carview::ui::List l_pm;
+    pm.build_hud(l_pm, float(W), float(H));
+
+    carview::SettingsPage sp;
+    sp.load({});
+    sp.open();
+    sp.switch_tab(2);  // GAMEPLAY / ASSISTS
+    sp.move(1);
+    carview::ui::List l_set;
+    carview::draw_settings_ui4(l_set, float(W), float(H), sp, true);
+    save_two_up("ui4_p3_photo_settings.png", l_pm, load_or_build_backdrop(world_bg_path), l_set,
+                load_or_build_backdrop(world_bg_path));
+  }
+
+  // P4-6: ui4_p4_shift_blades.png — 2x2 Phase 4 Shift blades on open +3.0 deg Colorado:
+  //       TL: F6 Mods | TR: Save Backups & Sync (real car names!)
+  //       BL: 1000 Club (real gold medals + clean Red Rock Outpost) | BR: Camera Editor (right-side sliders)
+  {
+    const auto tmp_dir = std::filesystem::temp_directory_path(ec) / "shift_ui4_p4_shot";
+    std::filesystem::remove_all(tmp_dir, ec);
+    std::filesystem::create_directories(tmp_dir / "mods", ec);
+
+    // TL: F6 Mods
+    carview::ModsSession ms;
+    std::vector<cars::modmgr::ModInfo> mods;
+    {
+      cars::modmgr::ModInfo m1;
+      m1.name = "skyline_r34_pack";
+      m1.manifest.title = "R34 Nismo Z-Tune Pack";
+      m1.manifest.author = "Horizon Community";
+      m1.manifest.version = "2.1.0";
+      m1.manifest.description = "Adds Nismo Z-Tune aerodynamics, updated RB26 exhaust notes, and high-res cluster textures.";
+      m1.manifest.touches_save = true;
+      m1.content.db = 2;
+      m1.content.textures = 14;
+      mods.push_back(m1);
+
+      cars::modmgr::ModInfo m2;
+      m2.name = "colorado_golden_hour";
+      m2.manifest.title = "Colorado Golden Hour Lighting";
+      m2.manifest.author = "Shift Visuals";
+      m2.manifest.version = "1.4.2";
+      m2.manifest.description = "Warm sunset grading and sharper road reflections across Red Rock and Beaumont.";
+      m2.manifest.touches_save = false;
+      m2.content.textures = 24;
+      mods.push_back(m2);
+
+      cars::modmgr::ModInfo m3;
+      m3.name = "festival_pacing_plus";
+      m3.manifest.title = "Authentic Festival AI Pacing";
+      m3.manifest.author = "Pinyon Crew";
+      m3.manifest.version = "1.0.5";
+      m3.manifest.description = "Refines wristband AI rubber-banding and increases clean-overtake credits.";
+      m3.manifest.touches_save = false;
+      m3.content.xml = 4;
+      mods.push_back(m3);
+    }
+    cars::modmgr::Config mcfg;
+    mcfg.order = {"skyline_r34_pack", "colorado_golden_hour", "festival_pacing_plus"};
+    mcfg.enabled = {{"skyline_r34_pack", true}, {"colorado_golden_hour", true}, {"festival_pacing_plus", false}};
+    ms.set_state(tmp_dir / "mods", mods, mcfg, cars::modmgr::GameBuild::kV4);
+    carview::ModsPage mp;
+    mp.open(ms);
+    carview::ui::List l_mods;
+    carview::draw_mods_page(l_mods, float(W), float(H), mp);
+
+    // TR: Save Backups & Sync (resolves FER_F40_87 & NIS_SKYLINEGTRVSPECII_02 to real car names!)
+    auto write_txt = [](const std::filesystem::path& p, const std::string& body) {
+      std::error_code wec;
+      std::filesystem::create_directories(p.parent_path(), wec);
+      std::ofstream f(p, std::ios::binary);
+      f << body;
+    };
+    const auto udir = tmp_dir / "user";
+    const auto sdir = tmp_dir / "sync";
+    const auto rdir = tmp_dir / "deck";
+    write_txt(udir / "drive" / "save.txt",
+              "shift-drive-save 1\ncar FER_F40_87\nposition 2002.96 143.84 960.00\nheading 2.2\ncredits 215000 215000\n");
+    write_txt(udir / "drive" / "garage.txt", "shift-garage 1\n");
+    write_txt(rdir / "drive" / "save.txt",
+              "shift-drive-save 1\ncar NIS_SKYLINEGTRVSPECII_02\nposition 2002.96 143.84 960.00\nheading 2.2\ncredits 164500 164500\n");
+    write_txt(rdir / "drive" / "garage.txt", "shift-garage 1\n");
+    {
+      profile::sync::Context rc;
+      rc.save_dir = rdir / "drive";
+      rc.state_file = rdir / "config" / "save_sync.toml";
+      rc.sync_folder = sdir;
+      rc.device_name = "STEAMDECK";
+      rc.platform = "linux";
+      rc.build = "v4";
+      rc.now = 1795365700;
+      profile::sync::boot(rc);
+    }
+    carview::SaveSession ss;
+    carview::SaveSession::BootOptions bo;
+    bo.user_dir = udir;
+    bo.default_save_dir = udir / "drive";
+    bo.sync_folder = sdir;
+    bo.device_name = "DESKTOP-MAIN";
+    bo.v4_available = true;
+    bo.now = 1795365800;
+    ss.boot(bo);
+    std::string serr;
+    ss.profiles().set_gamertag("default", "Neri Horizon", &serr);
+    write_txt(udir / "drive" / "save.txt",
+              "shift-drive-save 1\ncar NIS_SKYLINEGTRVSPECII_02\nposition 2002.96 143.84 960.00\nheading 2.2\ncredits 124500 124500\n");
+    profile::backup::snapshot(ss.backup_config(), "autosave", nullptr, &serr, 1795366400);
+    write_txt(udir / "drive" / "save.txt",
+              "shift-drive-save 1\ncar FER_F40_87\nposition 2002.96 143.84 960.00\nheading 2.2\ncredits 215000 215000\n");
+    profile::backup::snapshot(ss.backup_config(), "manual", nullptr, &serr, 1795367000);
+    carview::SaveProfilePage spg;
+    spg.open(ss, carview::SaveProfilePage::Tab::kBackups);
+    carview::ui::List l_save;
+    carview::draw_save_page(l_save, float(W), float(H), spg, ss);
+
+    // BL: 1000 Club (real gold/medal icons + clean Red Rock Outpost description!)
+    carview::ClubScreenState cst;
+    cst.active = true;
+    cst.challenges_begun = true;
+    cst.car_name = "NIS_SKYLINEGTRVSPECII_02";
+    cst.selected = 1;
+    cst.car_medals = 2;
+    cst.car_total = 5;
+    cst.stats.total_medals = 42;
+    cst.stats.cars_with_medal = 14;
+    cst.stats.achievements_unlocked = 6;
+    cst.rows = {
+        {"TOP SPEED RUN", "Hold 160 mph for 10 seconds on I-70 Highway.", "Use the straight past Red Rock.", "COMPLETED", 1.0, true, false},
+        {"RED ROCK TOUR", "Drive into OUTPOST_REDROCK_NODE without colliding.", "Approach via Canyon Road.", "0.65 KM TO GO", 0.68, false, true},
+        {"AWESOME DRIFT", "Perform 3 Awesome Drift skills in a single chain.", "Mountain switchbacks work best.", "1 / 3 DRIFTS", 0.33, false, true},
+        {"SPEED TRAP BLAST", "Trigger 145 mph through Red Rock Speed Trap.", "Approach from east.", "COMPLETED", 1.0, true, false},
+        {"NIGHT SHOWDOWN", "Win a Street Race at Carson Street Hub.", "Enter Carson Street Hub.", "READY", 0.0, false, false},
+    };
+    carview::ui::List l_club;
+    carview::draw_club_screen(l_club, int(W), int(H), cst);
+
+    // BR: Camera Editor (compact +3.0 deg right-side 516_I_EFFECTSMODE slider column!)
+    carview::CameraEditorOverlay cam_ed;
+    drive::CameraEditorConfig ced{};
+    drive::ImmersiveCameraConfig cim{};
+    drive::HeadTrackingConfig cht{};
+    cam_ed.open(ced, cim, cht);
+    cam_ed.move(+1);
+    drive::HeadPose hp{};
+    carview::ui::List l_cam;
+    carview::draw_camera_editor_ui4(l_cam, float(W), float(H), cam_ed, hp);
+
+    save_quad("ui4_p4_shift_blades.png", l_mods, load_or_build_backdrop(world_bg_path), l_save,
+              load_or_build_backdrop(world_bg_path), l_club, load_or_build_backdrop(world_bg_path), l_cam,
+              load_or_build_backdrop(world_bg_path));
+
+    std::filesystem::remove_all(tmp_dir, ec);
   }
 }
 

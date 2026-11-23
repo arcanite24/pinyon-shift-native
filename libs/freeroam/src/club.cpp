@@ -48,6 +48,38 @@ std::string title_case_words(std::string_view sv) {
   return out;
 }
 
+std::string location_display_name(std::string_view raw) {
+  const std::string lo = lower(raw);
+  static const std::pair<const char*, const char*> kKnown[] = {
+      {"outpost_redrock", "Red Rock Outpost"},       {"outpost_red_rock", "Red Rock Outpost"},
+      {"outpost_beaumont", "Beaumont Outpost"},      {"outpost_carson", "Carson Outpost"},
+      {"outpost_clear_springs", "Clear Springs Outpost"}, {"outpost_clearsprings", "Clear Springs Outpost"},
+      {"outpost_bunkers", "Bunker Outpost"},         {"outpost_dam", "Finley Dam Outpost"},
+      {"outpost_finley", "Finley Dam Outpost"},      {"outpost_golf", "Golf Course Outpost"},
+      {"outpost_montano", "Montano Plains Outpost"}, {"outpost_eagle", "Eagle Ridge Outpost"},
+      {"outpost_dak", "Dak's Outpost"},              {"festival", "Horizon Festival"},
+      {"racecentral", "Race Central"},               {"redrock", "Red Rock"},
+      {"beaumont", "Beaumont"},                      {"carson", "Carson"},
+      {"clearsprings", "Clear Springs"},             {"montano", "Montano Plains"},
+  };
+  for (const auto& [needle, label] : kKnown) {
+    if (lo.find(needle) != std::string::npos) return label;
+  }
+  std::string clean(raw);
+  auto strip_pfx = [&](const char* pfx) {
+    const size_t n = std::strlen(pfx);
+    if (clean.size() > n && lower(clean.substr(0, n)) == pfx) clean.erase(0, n);
+  };
+  strip_pfx("outpost_");
+  strip_pfx("gasstation_");
+  strip_pfx("loc_");
+  for (const char* suf : {"_node", "_trigger", "_zone", "_area", "_loc"}) {
+    const size_t n = std::strlen(suf);
+    if (clean.size() > n && lower(clean.substr(clean.size() - n)) == suf) clean.resize(clean.size() - n);
+  }
+  return title_case_words(clean);
+}
+
 std::string format_number(double v) {
   char buf[64];
   if (std::fabs(v - std::round(v)) < 1e-6) {
@@ -397,7 +429,7 @@ std::string describe(const Node& n) {
       case Cond::kInAir: return "in the air";
       case Cond::kIsDrifting: return "drifting";
       case Cond::kCollided: return "a crash";
-      case Cond::kLocation: return std::string(c.inside ? "in " : "out of ") + c.name;
+      case Cond::kLocation: return std::string(c.inside ? "in " : "out of ") + location_display_name(c.name);
       case Cond::kSkills: return skill_display_name(c.name, c.min_grade, c.max_grade);
       case Cond::kSkillPoints:
         std::snprintf(b, sizeof b, "skill chain %s %g pts", cmp_text(c.cmp), c.value);
@@ -581,10 +613,10 @@ std::string Challenge::format_title(const fh1::StringTables* strings) const {
 std::string Challenge::format_description(const fh1::StringTables* strings,
                                           const std::map<int64_t, std::string>* event_names) const {
   std::string tmpl;
-  if (auto s = lookup_str(strings, "carchallengedescriptions", description); s && !s->empty()) {
-    tmpl = *s;
-  } else if (auto s = lookup_str(strings, "carchallenges", description); s && !s->empty()) {
-    tmpl = *s;
+  if (auto s1 = lookup_str(strings, "carchallengedescriptions", description); s1 && !s1->empty()) {
+    tmpl = *s1;
+  } else if (auto s2 = lookup_str(strings, "carchallenges", description); s2 && !s2->empty()) {
+    tmpl = *s2;
   } else {
     return summary();
   }
@@ -604,7 +636,7 @@ std::string Challenge::format_description(const fh1::StringTables* strings,
       case DescParam::Kind::kLocation: {
         if (auto s = lookup_str(strings, "carchallengetransforms", p.raw); s && !s->empty()) return *s;
         if (auto s = lookup_str(strings, "carchallengetransforms", "IDS_" + p.raw); s && !s->empty()) return *s;
-        return title_case_words(p.raw);
+        return location_display_name(p.raw);
       }
       case DescParam::Kind::kSpeedCamera: {
         if (auto s = lookup_str(strings, "carchallengetransforms", p.raw); s && !s->empty()) return *s;

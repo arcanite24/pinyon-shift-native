@@ -274,8 +274,8 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
   // Top-right LIV_TABS with LBUMPER / RBUMPER (#F90064 active PILL_BIG).
   static const std::vector<std::string> kTabs = {"PAINT & FINISHES", "SPECIAL (102)", "VINYL LAYERS"};
   {
-    ui4::TiltScope tab_rot(list, w - 340.0f * s, 40.0f * s, tilt_rad * 0.6f);
-    ui4::tab_strip(list, s, w - 620.0f * s, 24.0f * s, w - 56.0f * s, kTabs, int(editor.tab()), true, ui4::kPink);
+    ui4::TiltScope tab_rot(list, w - 310.0f * s, 40.0f * s, tilt_rad * 0.6f);
+    ui4::tab_strip(list, s, w - 580.0f * s, 24.0f * s, w - 48.0f * s, kTabs, int(editor.tab()), true, ui4::kPink);
   }
 
   // Top-right 506_C_LIV_LAYER_SELECT LIV_CLIPBOARD ([1040,55..1184,177]) when in Vinyl Editor!
@@ -309,29 +309,29 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Rim",     "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Caliper",
         "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",
     };
-    ui4::TiltScope reg_rot(list, 340.0f * s, 76.0f * s, tilt_rad * 0.6f);
+    ui4::TiltScope reg_rot(list, 310.0f * s, 76.0f * s, tilt_rad * 0.6f);
     float rx = 56.0f * s;
     const float ry = 62.0f * s;
     for (int i = 0; i < int(PaintRegion::kCount); ++i) {
       const bool act = (PaintRegion(i) == editor.region());
       const std::string rname = paint_region_name(PaintRegion(i));
-      const float rw = act ? 132.0f * s : 74.0f * s;
+      const float rw = act ? 104.0f * s : 72.0f * s;
       if (act) {
         ui4::brush(list, rx, ry - 1.0f * s, rx + rw, ry + 29.0f * s, ui4::kPink);
       } else {
         ui4::pill(list, rx, ry, rx + rw, ry + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
       }
       std::array<float, 4> ruv{};
-      float tx = rx + 10.0f * s;
+      float tx = rx + 8.0f * s;
       if (ui4::texture(kRegionIcons[i], ruv)) {
-        list.image(rx + 6.0f * s, ry + 4.0f * s, rx + 26.0f * s, ry + 24.0f * s, ruv,
+        list.image(rx + 5.0f * s, ry + 4.0f * s, rx + 23.0f * s, ry + 22.0f * s, ruv,
                    act ? ui4::kWhite : ui4::kDim);
-        tx = rx + 30.0f * s;
+        tx = rx + 26.0f * s;
       }
-      ui::TextStyle rs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 11.0f * s, act ? ui4::kWhite : ui4::kDim);
-      ui4::fit_text(rname, rs, rx + rw - tx - 6.0f * s, 8.0f * s);
-      list.text(tx, ry + 8.0f * s, rname, rs);
-      rx += rw + 6.0f * s;
+      ui::TextStyle rs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 10.5f * s, act ? ui4::kWhite : ui4::kDim);
+      ui4::fit_text(rname, rs, rx + rw - tx - 5.0f * s, 7.5f * s);
+      list.text(tx, ry + 8.5f * s, rname, rs);
+      rx += rw + 4.0f * s;
     }
   }
 
@@ -352,13 +352,16 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
                       std::string("PAINT  //  ") + paint_region_name(editor.region()), ui4::kBrushBlack, 30.0f, 440.0f);
 
       // Finish selector pill with authentic OPT_BAR_ARROW + live CAR_PAINT_CURRENT_FRAME swatch right of title tape!
-      const float fx0 = w - 420.0f * s, fy0 = 468.0f * s, fx1 = right_x;
+      const float fx0 = w - 456.0f * s, fy0 = 468.0f * s, fx1 = right_x;
       ui4::pill(list, fx0, fy0, fx1, fy0 + 34.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02, false, true);
       list.text(fx0 + 14.0f * s, fy0 + 10.0f * s, "FINISH", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
-      ui4::opt_arrow(list, fx0 + 82.0f * s, fy0 + 17.0f * s, 13.0f * s, -1, ui4::kPinkHi);
-      list.text(fx0 + 168.0f * s, fy0 + 9.0f * s, cars::paint_finish_name(body.finish),
-                ui4::style(ui::Font::kE, 14.5f * s, ui4::kWhite, ui::Align::kCenter));
-      ui4::opt_arrow(list, fx0 + 254.0f * s, fy0 + 17.0f * s, 13.0f * s, +1, ui4::kPinkHi);
+      const float ar_l = fx0 + 78.0f * s, ar_r = fx1 - 78.0f * s;
+      ui4::opt_arrow(list, ar_l, fy0 + 17.0f * s, 13.0f * s, -1, ui4::kPinkHi);
+      const std::string fname = cars::paint_finish_name(body.finish);
+      ui::TextStyle fns = ui4::style(ui::Font::kE, 14.0f * s, ui4::kWhite, ui::Align::kCenter);
+      ui4::fit_text(fname, fns, (ar_r - ar_l) - 24.0f * s, 9.5f * s);
+      list.text(0.5f * (ar_l + ar_r), fy0 + 0.5f * (34.0f * s - fns.size), fname, fns);
+      ui4::opt_arrow(list, ar_r, fy0 + 17.0f * s, 13.0f * s, +1, ui4::kPinkHi);
 
       const float cf_x0 = fx1 - 60.0f * s, cf_y0 = fy0 + 4.0f * s;
       list.rect(cf_x0, cf_y0, cf_x0 + 48.0f * s, cf_y0 + 26.0f * s, cur_col);

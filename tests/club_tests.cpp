@@ -536,6 +536,25 @@ int main() {
     CHECK(mx[9].format_description(&st, &ev_names) ==
           "Wait 5 seconds at the start and finish top 3 in Kettle Hills Circuit");
 
+    // Verify raw internal OUTPOST_* / GASSTATION_* transform tokens clean up into display names (Phase 4).
+    const char* kOutpostXml = R"(<car_challenges>
+      <display title="IDS_OUTPOST_RUN" description="IDS_DriveInto{0}"/>
+      <pass_when><location name="OUTPOST_REDROCK_NODE" desc_param0="name"/></pass_when>
+    </car_challenges>)";
+    std::vector<Challenge> oc;
+    std::string oerr;
+    CHECK(parse_challenges(kOutpostXml, oc, &oerr) && oc.size() == 1);
+    if (oc.size() == 1) {
+      fh1::StringTable d3;
+      put_utf16_entry(d3, "IDS_DriveInto{0}", "Drive into {0}");
+      st.put("carchallengedescriptions", std::move(d3));
+      const std::string formatted = oc[0].format_description(&st);
+      CHECK(formatted.find("OUTPOST_") == std::string::npos);
+      CHECK(formatted.find("Red Rock") != std::string::npos);
+      const std::string fallback = oc[0].summary();
+      CHECK(fallback.find("OUTPOST_") == std::string::npos);
+    }
+
     std::map<int64_t, CarMeta> meta{
         {1, {1, "Ford", "USA", 35000}},       {2, {2, "Ford", "USA", 45000}},
         {3, {3, "Ford", "USA", 55000}},       {4, {4, "Ford", "USA", 65000}},

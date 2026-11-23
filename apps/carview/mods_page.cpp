@@ -414,162 +414,98 @@ std::vector<std::string> wrap_text(const std::string& text, const ui::TextStyle&
 
 void draw_mods_page(ui::List& l, float screen_w, float screen_h, const ModsPage& page) {
   if (!page.is_open()) return;
-  const float s = screen_h / 720.0f;
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.42f);
-  ui4::title_banner(l, s, 56.0f * s, 26.0f * s, "MODS", "PINYON SHIFT // F6 OVERLAY", true, 430.0f);
 
-  // The save indicator (top right): green for the player's own save, amber
-  // for an isolated copy.
-  {
-    const bool iso = page.save_isolated();
-    const float x1 = screen_w - 56.0f * s, x0 = x1 - 360.0f * s, y0 = 30.0f * s, y1 = 92.0f * s;
-    ui4::panel(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, iso ? ui4::kAmber : ui4::kGreen, 0, true);
-    l.circle(x0 + 22.0f * s, y0 + 22.0f * s, 6.0f * s, iso ? ui4::kAmber : ui4::kGreen);
-    l.text(x0 + 36.0f * s, y0 + 14.0f * s, "NEXT START PLAYS", ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
-    ui::TextStyle st = ui4::style(ui::Font::kE, 16.0f * s, iso ? ui4::kAmber : ui4::kGreen);
-    ui4::fit_text(page.save_label(), st, 300.0f * s, 10.0f * s);
-    l.text(x0 + 36.0f * s, y0 + 32.0f * s, page.save_label(), st);
-    ui::TextStyle sm = ui4::style(ui::Font::kB, 9.5f * s, ui4::kWhite, ui::Align::kRight);
-    const std::string tag = iso ? "SAVE ISOLATED" : "SHARED SAVE";
-    l.text(x1 - 14.0f * s, y0 + 14.0f * s, tag, sm);
-  }
-
-  ui4::tab_strip(l, s, 56.0f * s, 108.0f * s, screen_w - 56.0f * s, {"LOAD ORDER", "TEXTURES", "DLC"}, 0, false,
-                 ui4::kPink);
-
-  const float top_y = 152.0f * s, bot_y = screen_h - 82.0f * s;
-  const float lx0 = 56.0f * s, lw = 700.0f * s;
-  const float rx0 = lx0 + lw + 18.0f * s, rx1 = screen_w - 56.0f * s;
-  ui4::panel(l, lx0, top_y, lx0 + lw, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx0 + lw - 12.0f * s, top_y + 34.0f * s, s, false);
   const auto rows = page.rows();
   int active = 0;
   for (const auto& r : rows) active += r.active;
-  l.text(lx0 + 22.0f * s, top_y + 15.0f * s, "LOAD ORDER  •  TOP WINS", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-  l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s,
-         std::to_string(active) + " OF " + std::to_string(rows.size()) + " ACTIVE" + (page.dirty() ? "  •  UNSAVED" : ""),
-         ui4::style(ui::Font::kB, 11.5f * s, page.dirty() ? ui4::kPink : ui4::kInk, ui::Align::kRight));
 
-  const float row_h = 48.0f * s;
-  const float notice_reserve = page.notice().empty() ? 0.0f : 38.0f * s;
-  const int max_vis = std::max(1, int((bot_y - top_y - 48.0f * s - notice_reserve) / row_h));
-  const int n = int(rows.size());
-  const int first = std::clamp(page.selected() - max_vis / 2, 0, std::max(0, n - max_vis));
-  float ry = top_y + 42.0f * s;
-  if (rows.empty()) {
-    ui::TextStyle es = ui4::style(ui::Font::kB, 13.0f * s, ui4::kDim, ui::Align::kLeft, true);
-    l.text(lx0 + 24.0f * s, ry + 12.0f * s, "No mods installed. Put mod folders in <user data>/mods.", es);
-  }
-  for (int i = first; i < std::min(n, first + max_vis); ++i) {
-    const auto& r = rows[size_t(i)];
-    const bool sel = i == page.selected();
-    if (sel) ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
-    else
-      l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-             (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
-    // Position, switch box, title, then status.
-    l.text(lx0 + 24.0f * s, ry + 15.0f * s, std::to_string(i + 1), ui4::style(ui::Font::kE, 13.0f * s, ui4::kDim));
-    const float bx = lx0 + 52.0f * s, by = ry + 11.0f * s, bs = 20.0f * s;
-    l.rect(bx, by, bx + bs, by + bs, r.enabled ? (r.active ? ui4::kGreen : ui4::kAmber) : ui::rgba(255, 255, 255, 30));
-    if (r.enabled) {
-      l.line(bx + 4.0f * s, by + 10.0f * s, bx + 8.5f * s, by + 15.0f * s, 2.4f * s, ui4::kInk);
-      l.line(bx + 8.5f * s, by + 15.0f * s, bx + 16.0f * s, by + 5.0f * s, 2.4f * s, ui4::kInk);
-    }
-    ui::TextStyle ts = ui4::style(sel ? ui::Font::kE : ui::Font::kB, (sel ? 15.0f : 14.0f) * s, ui4::kWhite);
-    ui4::fit_text(r.title, ts, 330.0f * s, 10.0f * s);
-    l.text(lx0 + 84.0f * s, ry + 8.0f * s, r.title, ts);
-    std::string sub = (r.version.empty() ? "" : "V" + r.version + "  •  ") + r.summary;
-    ui::TextStyle subs = ui4::style(ui::Font::kB, 10.0f * s, sel ? ui4::kWhite : ui4::kDim);
-    ui4::fit_text(sub, subs, 380.0f * s, 8.0f * s);
-    l.text(lx0 + 84.0f * s, ry + 28.0f * s, sub, subs);
-    // Tags: save, native.
-    float tx = lx0 + lw - 190.0f * s;
+  const bool iso = page.save_isolated();
+  ui4::TiltedBladeSpec spec;
+  spec.title = "MODS";
+  spec.eyebrow = "PINYON SHIFT // F6 OVERLAY";
+  spec.scene_hint = "H_FIXED_SETTING_LIST";
+  spec.status_kicker = "NEXT START PLAYS";
+  spec.status_value = page.save_label();
+  spec.status_tag = iso ? "SAVE ISOLATED" : "SHARED SAVE";
+  spec.status_color = iso ? ui4::kAmber : ui4::kGreen;
+  spec.tabs = {"LOAD ORDER", "TEXTURES", "DLC"};
+  spec.active_tab = 0;
+  spec.show_tab_bumpers = false;
+  spec.list_header = "LOAD ORDER  •  TOP WINS";
+  spec.list_header_right =
+      std::to_string(active) + " OF " + std::to_string(rows.size()) + " ACTIVE" + (page.dirty() ? "  •  UNSAVED" : "");
+  spec.empty_message = "No mods installed. Put mod folders in <user data>/mods.";
+  spec.selected_index = page.selected();
+  spec.max_visible = 9;
+  spec.notice = page.notice();
+
+  spec.rows.reserve(rows.size());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    const auto& r = rows[i];
+    ui4::BladeRow br;
+    br.index_label = std::to_string(i + 1);
+    br.has_checkbox = true;
+    br.checked = r.enabled;
+    br.checkbox_color = r.active ? ui4::kGreen : ui4::kAmber;
+    br.label = r.title;
+    br.subtitle = (r.version.empty() ? "" : "V" + r.version + "  •  ") + r.summary;
+    br.selected = (int(i) == page.selected());
     if (r.touches_save) {
-      l.rect(tx, ry + 13.0f * s, tx + 44.0f * s, ry + 31.0f * s, ui::fade(ui4::kAmber, 0.85));
-      l.text(tx + 22.0f * s, ry + 17.0f * s, "SAVE", ui4::style(ui::Font::kB, 9.5f * s, ui4::kInk, ui::Align::kCenter));
+      br.badge_tag = "SAVE";
+      br.badge_color = ui4::kAmber;
+    } else if (r.native) {
+      br.badge_tag = "NATIVE";
+      br.badge_color = ui4::kBlue;
     }
-    if (r.native) {
-      l.rect(tx + 50.0f * s, ry + 13.0f * s, tx + 104.0f * s, ry + 31.0f * s, ui::fade(ui4::kBlue, 0.9));
-      l.text(tx + 77.0f * s, ry + 17.0f * s, "NATIVE", ui4::style(ui::Font::kB, 9.5f * s, ui4::kWhite, ui::Align::kCenter));
-    }
-    const uint32_t sc = r.active ? ui4::kGreen : (r.enabled ? ui4::kRed : ui4::kDim);
-    l.text(lx0 + lw - 22.0f * s, ry + 15.0f * s, r.status,
-           ui4::style(ui::Font::kE, 13.0f * s, sel && r.active ? ui4::kYellow : sc, ui::Align::kRight));
-    ry += row_h;
+    br.value = r.status;
+    br.value_color = r.active ? ui4::kGreen : (r.enabled ? ui4::kRed : ui4::kDim);
+    spec.rows.push_back(std::move(br));
   }
 
-  // Details.
-  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, rx0 + 12.0f * s, top_y + 10.0f * s, rx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "MOD DETAILS", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-  const float dw = (rx1 - rx0) - 40.0f * s;
+  spec.detail_header = "MOD DETAILS";
   if (const auto* m = page.selected_mod()) {
     const auto& man = m->manifest;
     const auto& r = rows[size_t(page.selected())];
-    ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-    ui::TextStyle tt = ui4::style(ui::Font::kE, 17.0f * s, ui4::kWhite);
-    ui4::fit_text(man.title, tt, dw, 11.0f * s);
-    l.text(rx0 + 20.0f * s, top_y + 54.0f * s, man.title, tt);
-    float y = top_y + 96.0f * s;
-    std::string by = (man.author.empty() ? std::string("UNKNOWN AUTHOR") : "BY " + man.author) +
-                     (man.version.empty() ? "" : "  •  V" + man.version);
-    ui::TextStyle bs = ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim);
-    ui4::fit_text(by, bs, dw, 8.0f * s);
-    l.text(rx0 + 20.0f * s, y, by, bs);
-    y += 22.0f * s;
-    ui::TextStyle ds = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-    const auto lines = wrap_text(man.description.empty() ? std::string("No description.") : man.description, ds, dw);
-    for (size_t i = 0; i < std::min<size_t>(lines.size(), 4); ++i, y += 18.0f * s) l.text(rx0 + 20.0f * s, y, lines[i], ds);
-    y += 8.0f * s;
-    auto kv = [&](const std::string& k, const std::string& v, uint32_t vc) {
-      l.text(rx0 + 20.0f * s, y, k, ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
-      ui::TextStyle vs = ui4::style(ui::Font::kE, 12.0f * s, vc);
-      ui4::fit_text(v, vs, dw - 110.0f * s, 8.0f * s);
-      l.text(rx0 + 128.0f * s, y - 1.0f * s, v, vs);
-      y += 21.0f * s;
-    };
-    kv("CHANGES", m->content.summary(), ui4::kWhite);
+    spec.detail_title = man.title;
+    spec.detail_title_color = ui4::kPink;
+    const std::string by = (man.author.empty() ? std::string("UNKNOWN AUTHOR") : "BY " + man.author) +
+                           (man.version.empty() ? "" : "  •  V" + man.version);
+    spec.detail_paragraphs.push_back(by);
+    spec.detail_paragraphs.push_back(man.description.empty() ? std::string("No description.") : man.description);
+
     auto join = [](const std::vector<std::string>& v) {
       std::string o;
       for (const auto& x : v) o += (o.empty() ? "" : ", ") + x;
       return o.empty() ? std::string("-") : o;
     };
-    kv("NEEDS", join(man.dependencies), ui4::kWhite);
-    kv("CONFLICTS", join(man.conflicts), ui4::kWhite);
-    kv("SAVE", !man.profile.empty() ? "OWN SAVE (user-" + man.profile + ")" : man.touches_save ? "MODDED COPY" : "KEEPS YOURS",
-       man.touches_save || !man.profile.empty() ? ui4::kAmber : ui4::kGreen);
-    kv("BUILD", man.game_version.empty() ? "ANY" : man.game_version, ui4::kWhite);
+    spec.detail_kvs.push_back({"CHANGES", m->content.summary(), ui4::kWhite});
+    spec.detail_kvs.push_back({"NEEDS", join(man.dependencies), ui4::kWhite});
+    spec.detail_kvs.push_back({"CONFLICTS", join(man.conflicts), ui4::kWhite});
+    spec.detail_kvs.push_back(
+        {"SAVE",
+         !man.profile.empty() ? "OWN SAVE (user-" + man.profile + ")" : man.touches_save ? "MODDED COPY" : "KEEPS YOURS",
+         (man.touches_save || !man.profile.empty()) ? ui4::kAmber : ui4::kGreen});
+    spec.detail_kvs.push_back({"BUILD", man.game_version.empty() ? "ANY" : man.game_version, ui4::kWhite});
     if (!man.options.empty()) {
       const auto& o = man.options.front();
       std::string cur = o.choices[size_t(o.def)];
       if (auto it = page.config().options.find(m->name); it != page.config().options.end())
         if (auto jt = it->second.find(o.key); jt != it->second.end()) cur = jt->second;
-      kv(o.label, "<  " + cur + "  >", ui4::kYellow);
+      spec.detail_kvs.push_back({o.label, cur, ui4::kYellow});
     }
-    if (!r.reason.empty()) kv("NOT LOADED", r.reason, ui4::kRed);
-    if (man.kind == cars::modmgr::ModKind::kXe) kv("XE", "V" + man.xe_version + (man.xe_version == "1.0" ? " (NEEDS 1.01 HOTFIX)" : ""), ui4::kAmber);
+    if (!r.reason.empty()) spec.detail_kvs.push_back({"NOT LOADED", r.reason, ui4::kRed});
+    if (man.kind == cars::modmgr::ModKind::kXe) {
+      spec.detail_kvs.push_back(
+          {"XE", "V" + man.xe_version + (man.xe_version == "1.0" ? " (NEEDS 1.01 HOTFIX)" : ""), ui4::kAmber});
+    }
   }
-  // Status block: the save indicator detail, textures and UDLC.
-  const float sy = bot_y - 112.0f * s;
-  l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 96.0f * s, ui::rgba(255, 255, 255, 14));
-  ui::TextStyle hs = ui4::style(ui::Font::kB, 11.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-  const auto detail = wrap_text(page.save_detail(), hs, dw - 12.0f * s);
-  float y = sy + 10.0f * s;
-  for (size_t i = 0; i < std::min<size_t>(detail.size(), 2); ++i, y += 16.0f * s) l.text(rx0 + 26.0f * s, y, detail[i], hs);
-  l.text(rx0 + 26.0f * s, sy + 50.0f * s, page.textures_line, ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
-  if (!page.udlc_line.empty())
-    l.text(rx0 + 26.0f * s, sy + 70.0f * s, page.udlc_line, ui4::style(ui::Font::kB, 10.5f * s, ui4::kPink));
+  spec.detail_footer = page.save_detail();
+  if (!page.textures_line.empty()) spec.detail_footer += "  " + page.textures_line;
+  if (!page.udlc_line.empty()) spec.detail_footer += "  " + page.udlc_line;
 
-  if (!page.notice().empty()) {
-    l.rect(lx0 + 12.0f * s, bot_y - 34.0f * s, lx0 + lw - 12.0f * s, bot_y - 8.0f * s, ui::rgba(14, 15, 20, 220));
-    ui::TextStyle ns = ui4::style(ui::Font::kE, 12.5f * s, ui4::kYellow, ui::Align::kCenter);
-    ui4::fit_text(page.notice(), ns, lw - 44.0f * s, 9.0f * s);
-    l.text(lx0 + lw * 0.5f, bot_y - 28.0f * s, page.notice(), ns);
-  }
-  ui4::button_bar(l,
-                  {{"A", "SWITCH"}, {"LB", "MOVE UP"}, {"RB", "MOVE DOWN"}, {"DPAD_LR", "OPTION"}, {"X", "RELOAD TEXTURES"},
-                   {"Y", "SAVE"}, {"B", "BACK"}},
-                  screen_w, screen_h, 56.0f);
+  spec.prompts = {{"A", "SWITCH"},      {"LB", "MOVE UP"},        {"RB", "MOVE DOWN"}, {"DPAD_LR", "OPTION"},
+                  {"X", "RELOAD TEXTURES"}, {"Y", "SAVE"},        {"B", "BACK"}};
+  ui4::tilted_blade_screen(l, screen_w, screen_h, spec);
 }
 
 }  // namespace carview

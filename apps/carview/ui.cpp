@@ -177,6 +177,13 @@ void List::rect(float x0, float y0, float x1, float y1, uint32_t color, float ra
 }
 
 void List::frame(float x0, float y0, float x1, float y1, uint32_t color, float width, float radius) {
+  if (turn_a_ != 0 && radius <= 0.0f) {
+    rect(x0, y0, x1, y0 + width, color);
+    rect(x0, y1 - width, x1, y1, color);
+    rect(x0, y0 + width, x0 + width, y1 - width, color);
+    rect(x1 - width, y0 + width, x1, y1 - width, color);
+    return;
+  }
   items_.push_back({{x0, y0, x1, y1}, {radius, width, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color, color,
                     kRoundRect, 0});
 }

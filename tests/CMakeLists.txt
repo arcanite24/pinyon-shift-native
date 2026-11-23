@@ -323,6 +323,11 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/photo_mode.cpp
     ../apps/carview/replay_view.cpp
     ../apps/carview/achievements.cpp
+    ../apps/carview/mods_page.cpp
+    ../apps/carview/save_sync_ui.cpp
+    ../apps/carview/club_view.cpp
+    ../apps/carview/camera_editor.cpp
+    ../apps/carview/trainer_overlay.cpp
     ../apps/carview/settings_page.cpp)
   target_include_directories(ui4_parity_tests PRIVATE ../apps/carview)
   target_link_libraries(ui4_parity_tests PRIVATE carview_render shift_freeroam shift_traffic shift_race shift_garage

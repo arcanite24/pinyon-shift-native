@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <system_error>
 
+#include "game_hud.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -424,336 +425,218 @@ void SaveProfilePage::nav(Nav n, SaveSession& session) {
 
 // ---------------------------------------------------------------- drawing
 
+namespace {
+
+std::string resolve_save_car_name(const std::string& raw) {
+  if (raw.empty()) return "Car Unknown";
+  const std::string looked_up = car_name(raw);
+  if (!looked_up.empty() && looked_up != raw) return looked_up;
+  const std::string pretty = ui4::pretty_car_media_name(raw);
+  return pretty.empty() ? raw : pretty;
+}
+
+}  // namespace
+
 void draw_save_page(ui::List& l, float screen_w, float screen_h, const SaveProfilePage& page,
                     const SaveSession& session) {
   if (!page.is_open()) return;
-  const float s = screen_h / 720.0f;
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.42f);
-  ui4::title_banner(l, s, 56.0f * s, 26.0f * s, "MY PROFILE", "SAVES // BACKUPS & SYNC", true, 430.0f);
 
-  // Top-right Profile + Sync Status badge.
-  {
-    const auto& sr = session.sync_report();
-    const bool conflict = sr.conflict;
-    const uint32_t accent = conflict ? ui4::kAmber : (sr.enabled && sr.reachable ? ui4::kGreen : ui4::kBlue);
-    const float x1 = screen_w - 56.0f * s, x0 = x1 - 390.0f * s, y0 = 30.0f * s, y1 = 92.0f * s;
-    ui4::panel(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, accent, 0, true);
-    l.circle(x0 + 22.0f * s, y0 + 22.0f * s, 6.0f * s, accent);
-    l.text(x0 + 36.0f * s, y0 + 13.0f * s, "ACTIVE GAMERTAG", ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
-    ui::TextStyle gs = ui4::style(ui::Font::kE, 17.0f * s, ui4::kWhite);
-    ui4::fit_text(session.gamertag(), gs, 210.0f * s, 10.0f * s);
-    l.text(x0 + 36.0f * s, y0 + 32.0f * s, session.gamertag(), gs);
+  const auto& sr = session.sync_report();
+  const bool conflict = sr.conflict;
+  const uint32_t sync_accent = conflict ? ui4::kAmber : (sr.enabled && sr.reachable ? ui4::kGreen : ui4::kBlue);
+  const std::string sync_tag = session.isolated_mod_save() ? "MODDED SAVE"
+                               : conflict                  ? "SYNC CONFLICT"
+                               : !sr.enabled               ? "SYNC OFF"
+                               : !sr.reachable             ? "SYNC OFFLINE"
+                                                           : "SYNC READY";
 
-    const std::string sync_tag = session.isolated_mod_save() ? "MODDED SAVE"
-                                 : conflict                  ? "SYNC CONFLICT"
-                                 : !sr.enabled               ? "SYNC OFF"
-                                 : !sr.reachable             ? "SYNC OFFLINE"
-                                                             : "SYNC READY";
-    l.text(x1 - 14.0f * s, y0 + 13.0f * s, sync_tag,
-           ui4::style(ui::Font::kE, 11.0f * s, accent, ui::Align::kRight));
-    const std::string build_tag = std::string("BUILD: ") + (session.v4_available() ? "V4" : "BASE");
-    l.text(x1 - 14.0f * s, y0 + 36.0f * s, build_tag,
-           ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim, ui::Align::kRight));
-  }
-
-  static const std::vector<std::string> kTabs = {"SAVE BACKUPS", "SAVE SYNC", "PROFILES", "IMPORT SAVE"};
-  ui4::tab_strip(l, s, 56.0f * s, 108.0f * s, screen_w - 56.0f * s, kTabs, int(page.tab()), true, ui4::kPink);
-
-  const float top_y = 152.0f * s, bot_y = screen_h - 82.0f * s;
-  const float lx0 = 56.0f * s, lw = 700.0f * s;
-  const float rx0 = lx0 + lw + 18.0f * s, rx1 = screen_w - 56.0f * s;
-  const float dw = (rx1 - rx0) - 40.0f * s;
-
-  ui4::panel(l, lx0, top_y, lx0 + lw, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx0 + lw - 12.0f * s, top_y + 34.0f * s, s, false);
-
-  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, rx0 + 12.0f * s, top_y + 10.0f * s, rx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-
-  const float notice_reserve = page.notice().empty() ? 0.0f : 38.0f * s;
-  const float row_h = 50.0f * s;
-  const int max_vis = std::max(1, int((bot_y - top_y - 48.0f * s - notice_reserve) / row_h));
-  float ry = top_y + 42.0f * s;
-
-  auto kv = [&](float& y, const std::string& k, const std::string& v, uint32_t vc) {
-    l.text(rx0 + 20.0f * s, y, k, ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
-    ui::TextStyle vs = ui4::style(ui::Font::kE, 12.0f * s, vc);
-    ui4::fit_text(v, vs, dw - 110.0f * s, 8.5f * s);
-    l.text(rx0 + 128.0f * s, y - 1.0f * s, v, vs);
-    y += 22.0f * s;
-  };
-
-  std::vector<ui4::Prompt> prompts;
+  ui4::TiltedBladeSpec spec;
+  spec.title = "SAVES & SYNC";
+  spec.eyebrow = "MY PROFILE // BACKUPS & SYNC";
+  spec.scene_hint = "H_FIXED_SETTING_LIST";
+  spec.status_kicker = "GAMERTAG // " + std::string(session.v4_available() ? "V4" : "BASE");
+  spec.status_value = session.gamertag();
+  spec.status_tag = sync_tag;
+  spec.status_color = sync_accent;
+  spec.tabs = {"SAVE BACKUPS", "SAVE SYNC", "PROFILES", "IMPORT SAVE"};
+  spec.active_tab = int(page.tab());
+  spec.show_tab_bumpers = true;
+  spec.selected_index = page.selected();
+  spec.max_visible = 7;
+  spec.notice = page.notice();
 
   if (page.tab() == SaveProfilePage::Tab::kBackups) {
     const auto& list = page.backups();
-    l.text(lx0 + 22.0f * s, top_y + 15.0f * s, "ROLLING SAVE BACKUPS  •  LAST 10 KEPT",
-           ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-    l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s, std::to_string(list.size()) + " / 10 SNAPSHOTS",
-           ui4::style(ui::Font::kB, 11.5f * s, ui4::kInk, ui::Align::kRight));
-    l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "BACKUP DETAILS", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+    spec.list_header = "ROLLING SAVE BACKUPS";
+    spec.list_header_right = std::to_string(list.size()) + " / 10 SNAPSHOTS";
+    spec.detail_header = "BACKUP DETAILS";
+    spec.empty_message = "No backups yet. Snapshots run at start, every 10 min, and on exit.";
 
-    if (list.empty()) {
-      l.text(lx0 + 24.0f * s, ry + 14.0f * s, "No backups yet. Snapshots run at start, every 10 min, and on exit.",
-             ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim, ui::Align::kLeft, true));
-    } else {
-      const int n = int(list.size());
-      const int first = std::clamp(page.selected() - max_vis / 2, 0, std::max(0, n - max_vis));
-      for (int i = first; i < std::min(n, first + max_vis); ++i) {
-        const auto& e = list[size_t(i)];
-        const bool sel = i == page.selected();
-        if (sel) ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
-        else
-          l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-                 (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
-        const std::string stamp = profile::backup::format_time(e.time);
-        l.text(lx0 + 24.0f * s, ry + 8.0f * s, stamp + " UTC",
-               ui4::style(sel ? ui::Font::kE : ui::Font::kB, 14.5f * s, ui4::kWhite));
-        const std::string sub = (e.car.empty() ? std::string("CAR UNKNOWN") : e.car) + "  •  " +
-                                ui4::format_credits(e.credits) + "  •  " + std::to_string(e.files) + " FILES";
-        ui::TextStyle subs = ui4::style(ui::Font::kB, 10.0f * s, sel ? ui4::kWhite : ui4::kDim);
-        ui4::fit_text(sub, subs, 430.0f * s, 8.0f * s);
-        l.text(lx0 + 24.0f * s, ry + 28.0f * s, sub, subs);
-
-        const std::string rl = profile::backup::reason_label(e.reason);
-        const uint32_t rc = (e.reason == "before-restore" || e.reason == "before-sync") ? ui4::kAmber
-                            : e.reason == "manual"                                      ? ui4::kBlue
-                                                                                        : ui4::kGreen;
-        l.text(lx0 + lw - 22.0f * s, ry + 15.0f * s, rl,
-               ui4::style(ui::Font::kE, 12.0f * s, sel ? ui4::kYellow : rc, ui::Align::kRight));
-        ry += row_h;
-      }
-      const auto& sel_e = list[size_t(page.selected())];
-      ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-      l.text(rx0 + 20.0f * s, top_y + 54.0f * s, profile::backup::reason_label(sel_e.reason),
-             ui4::style(ui::Font::kE, 16.5f * s, ui4::kWhite));
-      float y = top_y + 98.0f * s;
-      kv(y, "TIMESTAMP", profile::backup::format_time(sel_e.time) + " UTC", ui4::kWhite);
-      kv(y, "CAR", sel_e.car.empty() ? "-" : sel_e.car, ui4::kWhite);
-      kv(y, "CREDITS", ui4::format_credits(sel_e.credits), ui4::kYellow);
-      kv(y, "PAYLOAD", std::to_string(sel_e.files) + " FILES (" + format_bytes(sel_e.bytes) + ")", ui4::kWhite);
-      kv(y, "SNAPSHOT ID", sel_e.id, ui4::kDim);
+    for (size_t i = 0; i < list.size(); ++i) {
+      const auto& e = list[i];
+      const std::string car_disp = resolve_save_car_name(e.car);
+      const std::string rl = profile::backup::reason_label(e.reason);
+      const uint32_t rc = (e.reason == "before-restore" || e.reason == "before-sync") ? ui4::kAmber
+                          : e.reason == "manual"                                      ? ui4::kBlue
+                                                                                      : ui4::kGreen;
+      ui4::BladeRow row;
+      row.label = profile::backup::format_time(e.time) + " UTC";
+      row.subtitle = car_disp + "  •  " + ui4::format_credits(e.credits) + "  •  " + std::to_string(e.files) + " FILES";
+      row.value = rl;
+      row.value_color = rc;
+      row.selected = int(i) == page.selected();
+      spec.rows.push_back(std::move(row));
     }
-    const float sy = bot_y - 100.0f * s;
-    l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 84.0f * s, ui::rgba(255, 255, 255, 14));
-    ui::TextStyle hs = ui4::style(ui::Font::kB, 11.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-    const auto notes = wrap_text(
-        "Restoring first snapshots your current save as BEFORE RESTORE, so any restore can be undone. "
-        "Automatic backups run at session start, every 10 minutes after saving, and on clean exit.",
-        hs, dw - 12.0f * s);
-    float ny = sy + 10.0f * s;
-    for (size_t i = 0; i < std::min<size_t>(notes.size(), 4); ++i, ny += 16.0f * s) l.text(rx0 + 26.0f * s, ny, notes[i], hs);
 
-    prompts = {{"A", "RESTORE BACKUP"}, {"X", "MANUAL BACKUP"}, {"LB", "PREV TAB"}, {"RB", "NEXT TAB"}, {"B", "BACK"}};
+    if (!list.empty()) {
+      const int idx = std::clamp(page.selected(), 0, int(list.size()) - 1);
+      const auto& sel_e = list[size_t(idx)];
+      const std::string car_disp = resolve_save_car_name(sel_e.car);
+      spec.detail_title = profile::backup::reason_label(sel_e.reason);
+      spec.detail_title_color = ui4::kPink;
+      spec.detail_kvs.push_back({"TIMESTAMP", profile::backup::format_time(sel_e.time) + " UTC", ui4::kWhite});
+      spec.detail_kvs.push_back({"CAR", car_disp, ui4::kWhite});
+      spec.detail_kvs.push_back({"CREDITS", ui4::format_credits(sel_e.credits), ui4::kYellow});
+      spec.detail_kvs.push_back(
+          {"PAYLOAD", std::to_string(sel_e.files) + " FILES (" + format_bytes(sel_e.bytes) + ")", ui4::kWhite});
+      spec.detail_kvs.push_back({"SNAPSHOT ID", sel_e.id, ui4::kDim});
+    }
+    spec.detail_footer =
+        "Restoring first snapshots your current save as BEFORE RESTORE so any restore can be undone. "
+        "Automatic backups run at start, every 10 min, and on clean exit.";
+    spec.prompts = {{"A", "RESTORE BACKUP"}, {"X", "MANUAL BACKUP"}, {"LB", "PREV TAB"}, {"RB", "NEXT TAB"}, {"B", "BACK"}};
   } else if (page.tab() == SaveProfilePage::Tab::kSync) {
-    const auto& sr = session.sync_report();
     const auto& list = page.remotes();
-    l.text(lx0 + 22.0f * s, top_y + 15.0f * s, "CROSS-DEVICE SAVE SYNC  •  LINEAGE TRACKED",
-           ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-    const std::string status_r = sr.conflict ? "CONFLICT DETECTED"
-                                 : !sr.enabled ? "SYNC OFF"
-                                 : !sr.reachable ? "OFFLINE"
-                                                 : std::to_string(list.size()) + " DEVICES";
-    l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s, status_r,
-           ui4::style(ui::Font::kB, 11.5f * s, sr.conflict ? ui4::kPink : ui4::kInk, ui::Align::kRight));
-    l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "DEVICE & CONFLICT RESOLUTION",
-           ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+    spec.list_header = "CROSS-DEVICE SAVE SYNC";
+    spec.list_header_right = sr.conflict     ? "CONFLICT DETECTED"
+                             : !sr.enabled   ? "SYNC OFF"
+                             : !sr.reachable ? "OFFLINE"
+                                             : std::to_string(list.size()) + " DEVICES";
+    spec.detail_header = "DEVICE & CONFLICT RESOLUTION";
+    spec.empty_message =
+        !sr.enabled
+            ? "Save Sync is off. Pass --sync-folder <Syncthing/OneDrive/Dropbox folder> or set sync-folder in settings.txt."
+            : !sr.reachable ? sr.problem
+                            : "No other devices in the sync folder yet. Your save has been published.";
 
-    if (!sr.enabled) {
-      l.text(lx0 + 24.0f * s, ry + 14.0f * s,
-             "Save Sync is off. Pass --sync-folder <Syncthing/OneDrive/Dropbox folder> or set sync-folder in settings.txt.",
-             ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim, ui::Align::kLeft, true));
-    } else if (!sr.reachable) {
-      l.text(lx0 + 24.0f * s, ry + 14.0f * s, sr.problem,
-             ui4::style(ui::Font::kE, 14.0f * s, ui4::kRed));
-    } else if (list.empty()) {
-      l.text(lx0 + 24.0f * s, ry + 14.0f * s, "No other devices in the sync folder yet. Your save has been published.",
-             ui4::style(ui::Font::kB, 12.5f * s, ui4::kDim, ui::Align::kLeft, true));
-    } else {
-      const int n = int(list.size());
-      const int first = std::clamp(page.selected() - max_vis / 2, 0, std::max(0, n - max_vis));
-      for (int i = first; i < std::min(n, first + max_vis); ++i) {
-        const auto& r = list[size_t(i)];
-        const bool sel = i == page.selected();
+    if (sr.enabled && sr.reachable) {
+      for (size_t i = 0; i < list.size(); ++i) {
+        const auto& r = list[i];
         const bool div = r.relation == profile::sync::Relation::kDiverged;
-        if (sel) ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s,
-                            div ? ui4::kAmber : ui4::kPink);
-        else
-          l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-                 (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
-        const uint32_t fg = (sel && div) ? ui4::kInk : ui4::kWhite;
-        l.text(lx0 + 24.0f * s, ry + 8.0f * s, upper_ascii(r.m.device_name) + "  (" + upper_ascii(r.m.platform) + ")",
-               ui4::style(sel ? ui::Font::kE : ui::Font::kB, 14.5f * s, fg));
-        const std::string sub = r.m.written_utc + "  •  " + (r.m.car.empty() ? std::string("-") : r.m.car) + "  •  " +
-                                ui4::format_credits(r.m.credits);
-        ui::TextStyle subs = ui4::style(ui::Font::kB, 10.0f * s, (sel && div) ? ui4::kInk : (sel ? ui4::kWhite : ui4::kDim));
-        ui4::fit_text(sub, subs, 430.0f * s, 8.0f * s);
-        l.text(lx0 + 24.0f * s, ry + 28.0f * s, sub, subs);
-
-        const uint32_t rc = (sel && div) ? ui4::kInk : (sel ? ui4::kYellow : relation_colour(r.relation));
-        l.text(lx0 + lw - 22.0f * s, ry + 15.0f * s, profile::sync::relation_label(r.relation),
-               ui4::style(ui::Font::kE, 12.0f * s, rc, ui::Align::kRight));
-        ry += row_h;
+        const std::string car_disp = r.m.car.empty() ? std::string("-") : resolve_save_car_name(r.m.car);
+        ui4::BladeRow row;
+        row.label = upper_ascii(r.m.device_name) + " (" + upper_ascii(r.m.platform) + ")";
+        row.subtitle = r.m.written_utc + "  •  " + car_disp + "  •  " + ui4::format_credits(r.m.credits);
+        row.value = profile::sync::relation_label(r.relation);
+        row.value_color = relation_colour(r.relation);
+        row.selected = int(i) == page.selected();
+        if (div) row.row_accent = ui4::kAmber;
+        spec.rows.push_back(std::move(row));
       }
-      const auto& rem = list[size_t(page.selected())];
-      const bool div = rem.relation == profile::sync::Relation::kDiverged;
-      ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s,
-                 div ? ui4::kAmber : ui4::kPink);
-      l.text(rx0 + 20.0f * s, top_y + 54.0f * s, upper_ascii(rem.m.device_name),
-             ui4::style(ui::Font::kE, 16.5f * s, div ? ui4::kInk : ui4::kWhite));
-      float y = top_y + 98.0f * s;
-      kv(y, "RELATION", profile::sync::relation_label(rem.relation), relation_colour(rem.relation));
-      kv(y, "PLATFORM", upper_ascii(rem.m.platform) + " (" + upper_ascii(rem.m.version) + ")", ui4::kWhite);
-      kv(y, "WRITTEN", rem.m.written_utc, ui4::kWhite);
-      kv(y, "CAR", rem.m.car.empty() ? "-" : rem.m.car, ui4::kWhite);
-      kv(y, "CREDITS", ui4::format_credits(rem.m.credits), ui4::kYellow);
-      kv(y, "ARCHIVE", format_bytes(rem.m.archive_bytes) + (rem.loadable ? " (VERIFIED)" : " (" + rem.problem + ")"),
-         rem.loadable ? ui4::kGreen : ui4::kRed);
+      if (!list.empty()) {
+        const int idx = std::clamp(page.selected(), 0, int(list.size()) - 1);
+        const auto& rem = list[size_t(idx)];
+        const bool div = rem.relation == profile::sync::Relation::kDiverged;
+        const std::string car_disp = rem.m.car.empty() ? std::string("-") : resolve_save_car_name(rem.m.car);
+        spec.detail_title = upper_ascii(rem.m.device_name);
+        spec.detail_title_color = div ? ui4::kAmber : ui4::kPink;
+        spec.detail_kvs.push_back({"RELATION", profile::sync::relation_label(rem.relation), relation_colour(rem.relation)});
+        spec.detail_kvs.push_back({"PLATFORM", upper_ascii(rem.m.platform) + " (" + upper_ascii(rem.m.version) + ")", ui4::kWhite});
+        spec.detail_kvs.push_back({"WRITTEN", rem.m.written_utc, ui4::kWhite});
+        spec.detail_kvs.push_back({"CAR", car_disp, ui4::kWhite});
+        spec.detail_kvs.push_back({"CREDITS", ui4::format_credits(rem.m.credits), ui4::kYellow});
+        spec.detail_kvs.push_back(
+            {"ARCHIVE", format_bytes(rem.m.archive_bytes) + (rem.loadable ? " (VERIFIED)" : " (" + rem.problem + ")"),
+             rem.loadable ? ui4::kGreen : ui4::kRed});
+      }
     }
-
-    const float sy = bot_y - 116.0f * s;
-    l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 100.0f * s, ui::rgba(255, 255, 255, 14));
-    ui::TextStyle hs = ui4::style(ui::Font::kB, 11.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-    const std::string explain =
+    spec.detail_footer =
         sr.conflict
             ? "Two devices played independently. Press [A] to load the selected device's save at next start (with a "
-              "pre-sync backup), or [X] to keep this device's save so the other device auto-pulls it."
-            : "Clean continuations auto-pull at boot with a BEFORE SYNC backup. Modded profiles never sync. "
-              "Device: " + session.sync_context().device_name;
-    const auto notes = wrap_text(explain, hs, dw - 12.0f * s);
-    float ny = sy + 10.0f * s;
-    for (size_t i = 0; i < std::min<size_t>(notes.size(), 5); ++i, ny += 16.0f * s) l.text(rx0 + 26.0f * s, ny, notes[i], hs);
-
-    prompts = {{"A", "LOAD AT NEXT START"}, {"X", "KEEP THIS DEVICE'S"}, {"Y", "PUBLISH NOW"}, {"LB", "PREV TAB"},
-               {"RB", "NEXT TAB"}, {"B", "BACK"}};
+              "pre-sync backup), or [X] to keep this device's save."
+            : "Clean continuations auto-pull at boot with a BEFORE SYNC backup. Modded profiles never sync. Device: " +
+                  session.sync_context().device_name;
+    spec.prompts = {{"A", "LOAD AT NEXT START"}, {"X", "KEEP THIS DEVICE'S"}, {"Y", "PUBLISH NOW"},
+                    {"LB", "PREV TAB"},          {"RB", "NEXT TAB"},          {"B", "BACK"}};
   } else if (page.tab() == SaveProfilePage::Tab::kProfiles) {
     const auto& list = session.profiles().profiles();
-    l.text(lx0 + 22.0f * s, top_y + 15.0f * s, "SAVE PROFILES & GAMERTAGS",
-           ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-    l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s, std::to_string(list.size()) + " PROFILES",
-           ui4::style(ui::Font::kB, 11.5f * s, ui4::kInk, ui::Align::kRight));
-    l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "PROFILE DETAILS", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+    spec.list_header = "SAVE PROFILES & GAMERTAGS";
+    spec.list_header_right = std::to_string(list.size()) + " PROFILES";
+    spec.detail_header = "PROFILE DETAILS";
+    spec.empty_message = "No profiles found.";
 
-    const int n = int(list.size());
-    const int first = std::clamp(page.selected() - max_vis / 2, 0, std::max(0, n - max_vis));
-    for (int i = first; i < std::min(n, first + max_vis); ++i) {
-      const auto& p = list[size_t(i)];
-      const bool sel = i == page.selected();
+    for (size_t i = 0; i < list.size(); ++i) {
+      const auto& p = list[i];
       const bool act = p.name == session.active_profile_name();
-      if (sel) ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
-      else
-        l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-               (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
-      l.text(lx0 + 24.0f * s, ry + 8.0f * s, p.gamertag,
-             ui4::style(sel ? ui::Font::kE : ui::Font::kB, 15.0f * s, ui4::kWhite));
-      l.text(lx0 + 24.0f * s, ry + 28.0f * s, "SLOT: " + upper_ascii(p.name),
-             ui4::style(ui::Font::kB, 10.0f * s, sel ? ui4::kWhite : ui4::kDim));
-      if (act)
-        l.text(lx0 + lw - 22.0f * s, ry + 15.0f * s, "ACTIVE",
-               ui4::style(ui::Font::kE, 12.5f * s, sel ? ui4::kYellow : ui4::kGreen, ui::Align::kRight));
-      ry += row_h;
+      ui4::BladeRow row;
+      row.label = p.gamertag;
+      row.subtitle = "SLOT: " + upper_ascii(p.name);
+      row.value = act ? "ACTIVE" : "";
+      row.value_color = ui4::kGreen;
+      row.selected = int(i) == page.selected();
+      spec.rows.push_back(std::move(row));
     }
     if (!list.empty()) {
-      const auto& p = list[size_t(page.selected())];
-      ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-      l.text(rx0 + 20.0f * s, top_y + 54.0f * s, p.gamertag, ui4::style(ui::Font::kE, 16.5f * s, ui4::kWhite));
-      float y = top_y + 98.0f * s;
-      kv(y, "PROFILE ID", p.name, ui4::kWhite);
-      kv(y, "GAMERTAG", p.gamertag, ui4::kYellow);
-      kv(y, "STATUS", p.name == session.active_profile_name() ? "ACTIVE PROFILE" : "INACTIVE",
-         p.name == session.active_profile_name() ? ui4::kGreen : ui4::kDim);
-      kv(y, "SAVE PATH", p.save_dir.filename().string(), ui4::kDim);
+      const int idx = std::clamp(page.selected(), 0, int(list.size()) - 1);
+      const auto& p = list[size_t(idx)];
+      const bool act = p.name == session.active_profile_name();
+      spec.detail_title = p.gamertag;
+      spec.detail_title_color = ui4::kPink;
+      spec.detail_kvs.push_back({"PROFILE ID", p.name, ui4::kWhite});
+      spec.detail_kvs.push_back({"GAMERTAG", p.gamertag, ui4::kYellow});
+      spec.detail_kvs.push_back({"STATUS", act ? "ACTIVE PROFILE" : "INACTIVE", act ? ui4::kGreen : ui4::kDim});
+      spec.detail_kvs.push_back({"SAVE PATH", p.save_dir.filename().string(), ui4::kDim});
     }
-    const float sy = bot_y - 96.0f * s;
-    l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 80.0f * s, ui::rgba(255, 255, 255, 14));
-    ui::TextStyle hs = ui4::style(ui::Font::kB, 11.0f * s, ui4::kWhite, ui::Align::kLeft, true);
-    const auto notes = wrap_text(
+    spec.detail_footer =
         "Each profile keeps its own save.txt and garage.txt. Press [X] to edit the Gamertag with the on-screen "
-        "keyboard (1-15 characters), or [Y] to create a new named profile.",
-        hs, dw - 12.0f * s);
-    float ny = sy + 10.0f * s;
-    for (size_t i = 0; i < std::min<size_t>(notes.size(), 4); ++i, ny += 16.0f * s) l.text(rx0 + 26.0f * s, ny, notes[i], hs);
-
-    prompts = {{"A", "SWITCH PROFILE"}, {"X", "EDIT GAMERTAG"}, {"Y", "NEW PROFILE"}, {"LB", "PREV TAB"},
-               {"RB", "NEXT TAB"}, {"B", "BACK"}};
+        "keyboard (1-15 characters), or [Y] to create a new named profile.";
+    spec.prompts = {{"A", "SWITCH PROFILE"}, {"X", "EDIT GAMERTAG"}, {"Y", "NEW PROFILE"},
+                    {"LB", "PREV TAB"},      {"RB", "NEXT TAB"},      {"B", "BACK"}};
   } else {
-    // IMPORT SAVE tab.
     const auto& list = page.import_candidates();
-    l.text(lx0 + 22.0f * s, top_y + 15.0f * s, "PINYON SHIFT & XENIA SAVE IMPORT",
-           ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-    l.text(lx0 + lw - 22.0f * s, top_y + 15.0f * s, "ZERO CONSOLE KEYS",
-           ui4::style(ui::Font::kB, 11.5f * s, ui4::kInk, ui::Align::kRight));
-    l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "IMPORT INSPECTION", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
+    spec.list_header = "PINYON SHIFT & XENIA SAVE IMPORT";
+    spec.list_header_right = "ZERO CONSOLE KEYS";
+    spec.detail_header = "IMPORT INSPECTION";
+    spec.empty_message = "Drop a plaintext export folder or ZIP in <user-data>/import, or press [X].";
 
-    if (list.empty()) {
-      l.text(lx0 + 24.0f * s, ry + 14.0f * s, "Drop a plaintext export folder or ZIP in <user-data>/import, or press [X].",
-             ui4::style(ui::Font::kB, 12.0f * s, ui4::kDim, ui::Align::kLeft, true));
-    } else {
-      const int n = int(list.size());
-      const int first = std::clamp(page.selected() - max_vis / 2, 0, std::max(0, n - max_vis));
-      for (int i = first; i < std::min(n, first + max_vis); ++i) {
-        const auto& c = list[size_t(i)];
-        const bool sel = i == page.selected();
-        const bool ready = c.detection.problem.empty();
-        if (sel) ui4::brush(l, lx0 + 6.0f * s, ry, lx0 + lw - 6.0f * s, ry + row_h - 4.0f * s, ui4::kPink);
-        else
-          l.rect(lx0 + 12.0f * s, ry, lx0 + lw - 12.0f * s, ry + row_h - 6.0f * s,
-                 (i % 2 == 0) ? ui::rgba(32, 34, 42, 220) : ui::rgba(24, 26, 32, 220));
-        l.text(lx0 + 24.0f * s, ry + 8.0f * s, upper_ascii(c.label),
-               ui4::style(sel ? ui::Font::kE : ui::Font::kB, 14.5f * s, ui4::kWhite));
-        ui::TextStyle subs = ui4::style(ui::Font::kB, 10.0f * s, sel ? ui4::kWhite : ui4::kDim);
-        ui4::fit_text(c.path.string(), subs, 430.0f * s, 8.0f * s);
-        l.text(lx0 + 24.0f * s, ry + 28.0f * s, c.path.string(), subs);
-        const char* st_txt = ready ? "READY"
-                             : c.detection.kind == profile::import::SourceKind::kEncryptedProfile ? "NEEDS EXPORT"
-                                                                                                  : "NOT FOUND";
-        const uint32_t sc = ready ? ui4::kGreen
-                            : c.detection.kind == profile::import::SourceKind::kEncryptedProfile ? ui4::kAmber
-                                                                                                 : ui4::kDim;
-        l.text(lx0 + lw - 22.0f * s, ry + 15.0f * s, st_txt,
-               ui4::style(ui::Font::kE, 12.0f * s, sel ? ui4::kYellow : sc, ui::Align::kRight));
-        ry += row_h;
-      }
-      const auto& c = list[size_t(page.selected())];
-      ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-      l.text(rx0 + 20.0f * s, top_y + 54.0f * s, upper_ascii(c.label), ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite));
-      float y = top_y + 98.0f * s;
+    for (size_t i = 0; i < list.size(); ++i) {
+      const auto& c = list[i];
+      const bool ready = c.detection.problem.empty();
+      const char* st_txt = ready ? "READY"
+                           : c.detection.kind == profile::import::SourceKind::kEncryptedProfile ? "NEEDS EXPORT"
+                                                                                                : "NOT FOUND";
+      const uint32_t sc = ready ? ui4::kGreen
+                          : c.detection.kind == profile::import::SourceKind::kEncryptedProfile ? ui4::kAmber
+                                                                                               : ui4::kDim;
+      ui4::BladeRow row;
+      row.label = upper_ascii(c.label);
+      row.subtitle = c.path.string();
+      row.value = st_txt;
+      row.value_color = sc;
+      row.selected = int(i) == page.selected();
+      spec.rows.push_back(std::move(row));
+    }
+    if (!list.empty()) {
+      const int idx = std::clamp(page.selected(), 0, int(list.size()) - 1);
+      const auto& c = list[size_t(idx)];
       const char* kind_s = c.detection.kind == profile::import::SourceKind::kExportZip        ? "EXPORT ZIP"
                            : c.detection.kind == profile::import::SourceKind::kExportFolder   ? "PLAINTEXT EXPORT"
                            : c.detection.kind == profile::import::SourceKind::kEncryptedProfile ? "ENCRYPTED CONSOLE SAVE"
                                                                                                 : "NONE";
-      kv(y, "SOURCE KIND", kind_s, c.detection.problem.empty() ? ui4::kGreen : ui4::kAmber);
-      kv(y, "TARGET BUILD", session.v4_available() ? "V4 (ACCEPTS BASE & V4)" : "BASE (BASE SAVES ONLY)", ui4::kWhite);
-      kv(y, "SAFETY", "PRE-IMPORT BACKUP + .PRE-IMPORT", ui4::kGreen);
-      if (!c.detection.problem.empty()) {
-        y += 6.0f * s;
-        ui::TextStyle ps = ui4::style(ui::Font::kB, 11.0f * s, ui4::kAmber, ui::Align::kLeft, true);
-        const auto plines = wrap_text(c.detection.problem, ps, dw);
-        for (size_t i = 0; i < std::min<size_t>(plines.size(), 5); ++i, y += 16.0f * s)
-          l.text(rx0 + 20.0f * s, y, plines[i], ps);
-      }
+      spec.detail_title = upper_ascii(c.label);
+      spec.detail_title_color = ui4::kPink;
+      spec.detail_kvs.push_back({"SOURCE KIND", kind_s, c.detection.problem.empty() ? ui4::kGreen : ui4::kAmber});
+      spec.detail_kvs.push_back({"TARGET BUILD", session.v4_available() ? "V4 (ACCEPTS BASE & V4)" : "BASE (BASE SAVES ONLY)", ui4::kWhite});
+      spec.detail_kvs.push_back({"SAFETY", "PRE-IMPORT BACKUP + .PRE-IMPORT", ui4::kGreen});
+      if (!c.detection.problem.empty()) spec.detail_paragraphs.push_back(c.detection.problem);
     }
-    const float sy = bot_y - 84.0f * s;
-    l.rect(rx0 + 16.0f * s, sy, rx1 - 16.0f * s, sy + 68.0f * s, ui::rgba(255, 255, 255, 14));
-    ui::TextStyle hs = ui4::style(ui::Font::kB, 10.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-    const auto notes = wrap_text(
+    spec.detail_footer =
         "CLI one-step import: profile-import --install <folder or .zip>. Accepts Pinyon Shift plaintext exports "
-        "and ZIPs; keeps .pre-import copies and checks v4 vs base compatibility.",
-        hs, dw - 12.0f * s);
-    float ny = sy + 10.0f * s;
-    for (size_t i = 0; i < std::min<size_t>(notes.size(), 3); ++i, ny += 16.0f * s) l.text(rx0 + 26.0f * s, ny, notes[i], hs);
-
-    prompts = {{"A", "IMPORT SAVE"}, {"X", "CUSTOM PATH"}, {"LB", "PREV TAB"}, {"RB", "NEXT TAB"}, {"B", "BACK"}};
+        "and ZIPs; keeps .pre-import copies and checks v4 vs base compatibility.";
+    spec.prompts = {{"A", "IMPORT SAVE"}, {"X", "CUSTOM PATH"}, {"LB", "PREV TAB"}, {"RB", "NEXT TAB"}, {"B", "BACK"}};
   }
 
-  if (!page.notice().empty()) {
-    l.rect(lx0 + 12.0f * s, bot_y - 34.0f * s, lx0 + lw - 12.0f * s, bot_y - 8.0f * s, ui::rgba(14, 15, 20, 220));
-    ui::TextStyle ns = ui4::style(ui::Font::kE, 12.0f * s, ui4::kYellow, ui::Align::kCenter);
-    ui4::fit_text(page.notice(), ns, lw - 44.0f * s, 9.0f * s);
-    l.text(lx0 + lw * 0.5f, bot_y - 28.0f * s, page.notice(), ns);
-  }
-
-  ui4::button_bar(l, prompts, screen_w, screen_h, 56.0f);
+  ui4::tilted_blade_screen(l, screen_w, screen_h, spec);
 
   // Slice 9 virtual keyboard on top when editing Gamertag or custom path.
   if (page.osk_open()) page.osk().draw(l, screen_w, screen_h);

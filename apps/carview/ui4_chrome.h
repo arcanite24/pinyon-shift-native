@@ -143,6 +143,80 @@ bool badge_icon(ui::List& l, float x0, float y0, float x1, float y1, BadgeIconKi
 // Clean human-readable car display name resolver for internal media IDs (e.g. FER_F40_87 -> 1987 Ferrari F40).
 std::string pretty_car_media_name(std::string_view raw_media);
 
+// Bottom BUTTON_BAR_SCENE prompt strip entry with authentic CONTROLLER/* glyphs.
+struct Prompt {
+  const char* button = "A";  // A, B, X, Y, LB, RB, LT, RT, START, BACK, DPAD, LS, RS, or key label
+  std::string label;
+};
+
+// ---- Phase 4 Unified +3.0 deg Tilted Blade Chrome (H_FIXED_SETTING_LIST / 300_I_OPT_*) ----
+struct BladeRow {
+  std::string label;
+  std::string subtitle;
+  std::string value;
+  uint32_t value_color = kWhite;
+  bool selected = false;
+  bool arrows = false;            // draws real OPTIONS/OPT_BAR_ARROW left/right
+  bool has_slider = false;        // draws DIRTTEXTURES/STATBARFILL / OPT_SLIDER_FRAME
+  float slider_norm = 0.0f;       // 0..1
+  uint32_t slider_color = kYellow;
+  uint32_t row_accent = 0;        // optional focused-row highlight override
+  bool has_checkbox = false;
+  bool checked = false;
+  uint32_t checkbox_color = kGreen;
+  std::string badge_tag;
+  uint32_t badge_color = kAmber;
+  int badge_icon_kind = -1;       // >= 0 casts to BadgeIconKind
+  std::string index_label;
+};
+
+struct BladeDetailKv {
+  std::string key;
+  std::string value;
+  uint32_t value_color = kWhite;
+};
+
+struct TiltedBladeSpec {
+  std::string title;
+  std::string eyebrow;
+  std::string scene_hint = "H_FIXED_SETTING_LIST";
+  // Compact top-right status strip (NO full-screen dark wall!)
+  std::string status_kicker;
+  std::string status_value;
+  std::string status_tag;
+  uint32_t status_color = kGreen;
+  // Optional tilted LB/RB tab strip
+  std::vector<std::string> tabs;
+  int active_tab = 0;
+  bool show_tab_bumpers = true;
+  // Floating PILL02/PILL03 list column
+  std::string list_header;
+  std::string list_header_right;
+  std::string empty_message;
+  std::vector<BladeRow> rows;
+  int selected_index = 0;
+  int max_visible = 9;
+  // Compact right-hand DIRTMASKS/PANEL01 detail card (tightly sized to content — ZERO empty charcoal void!)
+  std::string detail_header;
+  std::string detail_title;
+  uint32_t detail_title_color = kPink;
+  std::vector<std::string> detail_paragraphs;
+  std::vector<BladeDetailKv> detail_kvs;
+  float detail_progress = -1.0f;
+  std::string detail_progress_label;
+  uint32_t detail_progress_color = kYellow;
+  int detail_icon_kind = -1;      // >= 0 casts to BadgeIconKind
+  std::string detail_footer;
+  std::string notice;
+  std::vector<Prompt> prompts;
+};
+
+// Renders a unified +3.0 deg FH1 tilted blade screen over open Colorado using real
+// H_FIXED_SETTING_LIST / 300_I_OPT_ASSISTS_DIFFICULTY 2-tex textures (TitleTape,
+// floating PILL02/PILL03 rows, OPT_BAR_ARROW, STATBARFILL, SCROLLINDICATOR+SPEC_SHEEN2,
+// compact PANEL01 detail card, and BUTTON_BAR_SCENE).
+void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& spec);
+
 // Distressed off-white strip (Balance, Credits, Results column header).
 void offwhite_strip(ui::List& l, float x0, float y0, float x1, float y1, float s, bool brushed = true);
 
@@ -162,10 +236,6 @@ void set_glyph_set(GlyphSet set);
 GlyphSet glyph_set();
 
 // Bottom BUTTON_BAR_SCENE prompt strip with authentic CONTROLLER/* glyphs.
-struct Prompt {
-  const char* button = "A";  // A, B, X, Y, LB, RB, LT, RT, START, BACK, DPAD, LS, RS, or key label
-  std::string label;
-};
 void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, float screen_h,
                 float left_x_canvas = 70.0f);
 // Draws a single controller button glyph centred at (cx, cy) with radius `r`.

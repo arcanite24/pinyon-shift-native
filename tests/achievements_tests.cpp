@@ -10,12 +10,14 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "achievements.h"
 #include "drive/save.h"
 #include "fh1data/spa.h"
+#include "ui4_chrome.h"
 
 namespace {
 
@@ -327,9 +329,20 @@ void test_achievements_system_and_persistence() {
   // Trigger a fresh toast and verify both screen HUD and overlay HUD render shapes
   assert(sys.unlock(195, 1730000000, true));
   sys.update(0.6);
+  std::set<std::string> requested_tex;
+  carview::ui4::set_texture_loader([&](const std::string& p, std::array<float, 4>& uv) {
+    requested_tex.insert(p);
+    uv = {0.0f, 0.0f, 0.1f, 0.1f};
+    return true;
+  });
   carview::ui::List screen_list;
   sys.build_screen_hud(screen_list, 1280.0f, 720.0f);
+  carview::ui4::set_texture_loader({});
   assert(screen_list.items().size() > 20);
+  assert(requested_tex.count("DIRTMASKS/PILL02") > 0);
+  assert(requested_tex.count("DIRTMASKS/PANEL01") > 0);
+  assert(requested_tex.count("T:UI4/Common/Icon_Gold") > 0 || requested_tex.count("HUD/TROPHY") > 0 ||
+         requested_tex.count("T:A_MAP/A_COL_Collective/A_COL_Padlock") > 0);
 
   carview::ui::List overlay_list;
   sys.build_hud_overlays(overlay_list, 1280.0f, 720.0f, true);

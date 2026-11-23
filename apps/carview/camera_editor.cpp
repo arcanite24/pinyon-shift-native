@@ -233,126 +233,118 @@ std::vector<CameraEditorOverlay::RowView> CameraEditorOverlay::rows() const {
 
 void draw_camera_editor_ui4(ui::List& l, float screen_w, float screen_h, const CameraEditorOverlay& overlay,
                             const drive::HeadPose& live_head_pose) {
+  // Phase 4: compact +3.0 deg right-side 516_I_EFFECTSMODE-style slider column so the live 3D car
+  // and camera remain completely unobstructed while tuning.
   const float s = screen_h / 720.0f;
-  ui4::subtle_vignette(l, screen_w, screen_h, 0.28f);
-
-  ui4::title_banner(l, s, 60.0f * s, 26.0f * s, "CAMERA EDITOR", "F6  /  DISPLAY  /  LIVE CAMERA RIG", true,
-                    580.0f);
-
-  const std::vector<std::string> tabs = {"CAMERA EDITOR", "IMMERSIVE CAMERA", "HEAD TRACKING"};
+  const std::vector<std::string> tabs = {"CAMERA", "IMMERSIVE", "TRACKING"};
   const int cur_tab = int(overlay.active_tab());
-  ui4::tab_strip(l, s, 56.0f * s, 114.0f * s, screen_w - 56.0f * s, tabs, cur_tab, true, ui4::kPink);
-
-  const float top_y = 158.0f * s;
-  const float bot_y = screen_h - 86.0f * s;
-  const float lx0 = 56.0f * s;
-  const float lx1 = screen_w * 0.61f;
-  const float rx0 = lx1 + 18.0f * s;
-  const float rx1 = screen_w - 56.0f * s;
-
-  // Left card: live camera parameters.
-  ui4::panel(l, lx0, top_y, lx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, lx0 + 12.0f * s, top_y + 10.0f * s, lx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(lx0 + 22.0f * s, top_y + 15.0f * s, tabs[size_t(cur_tab)] + "  —  APPLIES LIVE",
-         ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-
-  const auto rows = overlay.rows();
-  const float row_h = 56.0f * s;
-  float ry = top_y + 46.0f * s;
-  const CameraEditorOverlay::RowView* sel_row = nullptr;
-  for (size_t i = 0; i < rows.size(); ++i) {
-    const auto& r = rows[i];
-    if (r.selected) sel_row = &r;
-    if (r.selected) {
-      ui4::brush(l, lx0 + 8.0f * s, ry + 2.0f * s, lx1 - 8.0f * s, ry + row_h - 4.0f * s,
-                 r.is_action ? ui4::kAmber : ui4::kPink);
-    } else {
-      l.rect(lx0 + 12.0f * s, ry + 2.0f * s, lx1 - 12.0f * s, ry + row_h - 4.0f * s,
-             (i % 2 == 0) ? ui4::kRowAlt : ui::rgba(28, 30, 36, 196));
-    }
-
-    ui::TextStyle ns = ui4::style(r.selected ? ui::Font::kE : ui::Font::kB, 15.0f * s,
-                                  r.selected && r.is_action ? ui4::kInk : ui4::kWhite);
-    l.text(lx0 + 24.0f * s, ry + 11.0f * s, r.label, ns);
-
-    // Optional live slider bar under the label.
-    if (r.norm_bar >= 0.0) {
-      const float bx0 = lx0 + 24.0f * s;
-      const float bx1 = lx1 - 210.0f * s;
-      const float by0 = ry + 34.0f * s;
-      const float bh = 7.0f * s;
-      l.rect(bx0, by0, bx1, by0 + bh, ui::rgba(0, 0, 0, 120));
-      const float fill = std::clamp(float(r.norm_bar), 0.0f, 1.0f);
-      l.rect(bx0, by0, bx0 + (bx1 - bx0) * fill, by0 + bh, r.selected ? ui4::kYellow : ui4::kPink);
-    }
-
-    const float vx0 = lx1 - 188.0f * s;
-    const float vx1 = lx1 - 22.0f * s;
-    l.rect(vx0, ry + 10.0f * s, vx1, ry + row_h - 14.0f * s,
-           r.selected ? ui::rgba(14, 16, 20, 185) : ui::rgba(16, 18, 22, 165));
-    const std::string vstr = r.selected && !r.is_action ? ("< " + r.value + " >") : r.value;
-    ui::TextStyle vs = ui4::style(ui::Font::kE, 14.0f * s,
-                                  r.selected ? (r.is_action ? ui4::kAmber : ui4::kYellow) : ui4::kWhite,
-                                  ui::Align::kCenter);
-    ui4::fit_text(vstr, vs, (vx1 - vx0) - 10.0f * s, 9.5f * s);
-    l.text(0.5f * (vx0 + vx1), ry + 18.0f * s, vstr, vs);
-    ry += row_h;
-  }
-
-  // Right card: live summary & telemetry readout.
-  ui4::panel(l, rx0, top_y, rx1, bot_y, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  ui4::offwhite_strip(l, rx0 + 12.0f * s, top_y + 10.0f * s, rx1 - 12.0f * s, top_y + 34.0f * s, s, false);
-  l.text(rx0 + 22.0f * s, top_y + 15.0f * s, "LIVE RIG SUMMARY", ui4::style(ui::Font::kE, 13.0f * s, ui4::kInk));
-
-  if (sel_row) {
-    ui4::brush(l, rx0 + 8.0f * s, top_y + 46.0f * s, rx1 - 8.0f * s, top_y + 82.0f * s, ui4::kPink);
-    ui::TextStyle stt = ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite);
-    ui4::fit_text(sel_row->label, stt, (rx1 - rx0) - 34.0f * s, 11.0f * s);
-    l.text(rx0 + 20.0f * s, top_y + 54.0f * s, sel_row->label, stt);
-
-    ui::TextStyle ds = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
-    ui4::fit_text(sel_row->detail, ds, (rx1 - rx0) - 40.0f * s, 9.5f * s);
-    l.text(rx0 + 20.0f * s, top_y + 98.0f * s, sel_row->detail, ds);
-  }
-
-  // Active state cards (Camera Editor + Immersive + OpenTrack).
   const auto& ed = overlay.editor_config();
   const auto& im = overlay.immersive_config();
   const auto& ht = overlay.head_tracking_config();
-  float sy = top_y + 158.0f * s;
-  auto stat_box = [&](const char* title, const std::string& l1, const std::string& l2, uint32_t accent) {
-    l.rect(rx0 + 14.0f * s, sy, rx1 - 14.0f * s, sy + 76.0f * s, ui::rgba(255, 255, 255, 14));
-    l.rect(rx0 + 14.0f * s, sy, rx0 + 18.0f * s, sy + 76.0f * s, accent);
-    l.text(rx0 + 28.0f * s, sy + 8.0f * s, title, ui4::style(ui::Font::kE, 12.0f * s, accent));
-    l.text(rx0 + 28.0f * s, sy + 28.0f * s, l1, ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
-    l.text(rx0 + 28.0f * s, sy + 48.0f * s, l2, ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
-    sy += 86.0f * s;
-  };
 
-  stat_box("CHASE RIG",
-           "H " + fmt_meters(ed.chase_height_m) + "  |  D " + fmt_meters(ed.chase_distance_m),
-           "FOV " + fmt_pct(ed.chase_fov_scale) + "  |  STIFF " + fmt_pct(ed.chase_stiffness) + "  |  VIEW " +
-               drive::driving_view_name(ed.driving_view),
-           ui4::kPink);
+  // Compact top-left TitleTape + slim live telemetry pill (leaves center 3D car 100% open).
+  {
+    ui4::title_banner(l, s, 42.0f * s, 24.0f * s, "CAMERA EDITOR", "LIVE CAMERA RIG", true, 320.0f);
+    l.turn(192.0f * s, 130.0f * s, ui4::kTiltRad);
+    // Compact live rig telemetry strip tucked under the title tape.
+    const float sx0 = 42.0f * s, sy0 = 104.0f * s, sx1 = 352.0f * s, sy1 = 152.0f * s;
+    ui4::pill(l, sx0, sy0, sx1, sy1, ui::rgba(33, 33, 33, 218), ui4::PillKind::kPill02, true);
+    l.text(sx0 + 14.0f * s, sy0 + 7.0f * s,
+           "VIEW " + std::string(drive::driving_view_name(ed.driving_view)) + "  •  " +
+               std::string(drive::immersive_preset_name(im.detect_preset())),
+           ui4::style(ui::Font::kE, 10.5f * s, ui4::kYellow));
+    char rig_buf[128];
+    if (cur_tab == 2) {
+      std::snprintf(rig_buf, sizeof(rig_buf), "6-DOF %s  Y%+.1f P%+.1f R%+.1f", ht.enabled ? "ON" : "OFF",
+                    live_head_pose.yaw_deg, live_head_pose.pitch_deg, live_head_pose.roll_deg);
+    } else {
+      std::snprintf(rig_buf, sizeof(rig_buf), "H %s  D %s  FOV %s  G %s", fmt_meters(ed.chase_height_m).c_str(),
+                    fmt_meters(ed.chase_distance_m).c_str(), fmt_pct(ed.chase_fov_scale).c_str(),
+                    fmt_pct(im.gforce).c_str());
+    }
+    ui::TextStyle rs = ui4::style(ui::Font::kB, 10.5f * s, ui4::kWhite);
+    ui4::fit_text(rig_buf, rs, (sx1 - sx0) - 24.0f * s, 8.0f * s);
+    l.text(sx0 + 14.0f * s, sy0 + 25.0f * s, rig_buf, rs);
+    l.unturn();
+  }
 
-  stat_box("IMMERSIVE CAMERA",
-           std::string("PRESET: ") + drive::immersive_preset_name(im.detect_preset()),
-           "G " + fmt_pct(im.gforce) + "  LEAN " + fmt_pct(im.lean) + "  SHAKE " + fmt_pct(im.shake) + "  HEAD " +
-               fmt_pct(im.head),
-           ui4::kAmber);
+  // Right-side +3.0 deg 516_I_EFFECTSMODE-style floating slider column (x=880..1246).
+  const float rx0 = screen_w - 400.0f * s;
+  const float rx1 = screen_w - 34.0f * s;
+  const float rw = rx1 - rx0;
+  {
+    l.turn(0.5f * (rx0 + rx1), 350.0f * s, ui4::kTiltRad);
 
-  char pose_buf[96];
-  std::snprintf(pose_buf, sizeof(pose_buf), "YAW %+.1f  PITCH %+.1f  ROLL %+.1f DEG", live_head_pose.yaw_deg,
-                live_head_pose.pitch_deg, live_head_pose.roll_deg);
-  stat_box("OPENTRACK 6-DOF",
-           std::string(ht.enabled ? "LISTENING 127.0.0.1:" : "OFF (PORT ") + std::to_string(ht.port) +
-               (ht.enabled ? "" : ")"),
-           pose_buf, ht.enabled ? ui4::kGreen : ui4::kDim);
+    // Compact LB / RB tab strip across the top of the right drawer.
+    ui4::tab_strip(l, s, rx0, 62.0f * s, rx1, tabs, cur_tab, true, ui4::kPink);
 
-  if (!overlay.status_message().empty()) {
-    ui4::pill(l, rx0 + 14.0f * s, bot_y - 42.0f * s, rx1 - 14.0f * s, bot_y - 12.0f * s, ui4::kGreen);
-    l.text(rx0 + 26.0f * s, bot_y - 34.0f * s, overlay.status_message(),
-           ui4::style(ui::Font::kE, 12.5f * s, ui4::kInk));
+    // Header pill (PILL01 silver/grey like 516_I_EFFECTSMODE).
+    const float hy0 = 104.0f * s, hy1 = 132.0f * s;
+    ui4::pill(l, rx0, hy0, rx1, hy1, ui::rgba(191, 191, 191, 245), ui4::PillKind::kMenu, false, true);
+    l.text(rx0 + 14.0f * s, hy0 + 7.0f * s, tabs[size_t(cur_tab)] + " RIG  •  APPLIES LIVE",
+           ui4::style(ui::Font::kE, 11.5f * s, ui4::kInk));
+
+    const auto rows = overlay.rows();
+    const float row_h = 54.0f * s;
+    const float gap = 5.0f * s;
+    float ry = hy1 + 8.0f * s;
+    const CameraEditorOverlay::RowView* sel_row = nullptr;
+
+    for (size_t i = 0; i < rows.size(); ++i) {
+      const auto& r = rows[i];
+      if (r.selected) sel_row = &r;
+      const uint32_t row_bg = r.selected ? (r.is_action ? ui4::kAmber : ui4::kPink) : ui::rgba(33, 33, 33, 224);
+      const uint32_t fg = (r.selected && r.is_action) ? ui4::kInk : ui4::kWhite;
+      ui4::pill(l, rx0, ry, rx1, ry + row_h, row_bg, ui4::PillKind::kPill02, r.selected);
+
+      // Top line: parameter name + right-aligned value with real OPT_BAR_ARROW glyphs.
+      ui::TextStyle ns = ui4::style(r.selected ? ui::Font::kE : ui::Font::kB, 12.5f * s, fg);
+      ui4::fit_text(r.label, ns, rw * 0.56f, 9.0f * s);
+      l.text(rx0 + 14.0f * s, ry + 7.0f * s, r.label, ns);
+
+      const float arrow_sz = 12.0f * s;
+      const float val_right = rx1 - (r.selected && !r.is_action ? 24.0f * s : 14.0f * s);
+      ui::TextStyle vs = ui4::style(ui::Font::kE, 12.5f * s,
+                                    r.selected ? (r.is_action ? ui4::kInk : ui4::kYellow) : ui4::kWhite,
+                                    ui::Align::kRight);
+      ui4::fit_text(r.value, vs, rw * 0.36f, 9.0f * s);
+      l.text(val_right, ry + 7.0f * s, r.value, vs);
+      if (r.selected && !r.is_action) {
+        const float tw = ui::List::measure(r.value, vs);
+        const float ay = ry + 14.0f * s;
+        ui4::opt_arrow(l, val_right - tw - 11.0f * s, ay, arrow_sz, -1, ui4::kWhite);
+        ui4::opt_arrow(l, rx1 - 13.0f * s, ay, arrow_sz, +1, ui4::kWhite);
+      }
+
+      // Bottom line: real OPT_SLIDER_FRAME + STATBARFILL slider when numeric.
+      if (r.norm_bar >= 0.0) {
+        ui4::opt_slider(l, rx0 + 14.0f * s, ry + 31.0f * s, rx1 - 14.0f * s, ry + 45.0f * s, float(r.norm_bar), s,
+                        r.selected ? ui4::kYellow : ui4::kPink, r.selected);
+      } else {
+        ui::TextStyle ds = ui4::style(ui::Font::kB, 9.5f * s, r.selected && r.is_action ? ui4::kInk : ui4::kDim);
+        ui4::fit_text(r.detail, ds, rw - 38.0f * s, 7.0f * s);
+        l.text(rx0 + 14.0f * s, ry + 31.0f * s, r.detail, ds);
+      }
+      ry += row_h + gap;
+    }
+
+    // Compact PANEL01 detail caption tightly sized right below the sliders (no wasted void).
+    if (sel_row) {
+      const float cy0 = ry + 4.0f * s;
+      const float cy1 = cy0 + 58.0f * s;
+      ui4::panel01(l, rx0, cy0, rx1, cy1, s, ui::rgba(33, 33, 33, 224), ui4::kPink);
+      l.text(rx0 + 14.0f * s, cy0 + 8.0f * s, sel_row->label, ui4::style(ui::Font::kE, 11.5f * s, ui4::kYellow));
+      ui::TextStyle ds = ui4::style(ui::Font::kB, 10.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+      ui4::fit_text(sel_row->detail, ds, rw - 28.0f * s, 8.5f * s);
+      l.text(rx0 + 14.0f * s, cy0 + 28.0f * s, sel_row->detail, ds);
+      ry = cy1 + 6.0f * s;
+    }
+
+    if (!overlay.status_message().empty()) {
+      ui4::pill(l, rx0, ry, rx1, ry + 28.0f * s, ui4::kGreen, ui4::PillKind::kPill26, false);
+      l.text(rx0 + 14.0f * s, ry + 7.0f * s, overlay.status_message(), ui4::style(ui::Font::kE, 11.5f * s, ui4::kInk));
+    }
+    l.unturn();
   }
 
   ui4::button_bar(l,
