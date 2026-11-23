@@ -162,6 +162,9 @@ class RtScene {
     VkBuffer ib_id = VK_NULL_HANDLE;
     BlasHandle body;
     BlasHandle glass;
+    // Per-geometry LampChannel for body.geoms so live braking/headlight/DRL state
+    // updates car lamp emission every frame (matching raster evaluate_lamp_emission).
+    std::vector<uint8_t> body_lamp_channels;
     // One sub-BLAS per distinct (wheel, spins, local_matrix) transform so rims,
     // tyres, rotors, and calipers always sit at their exact per-draw transforms.
     std::vector<WheelSubBlas> wheel_parts;
@@ -189,6 +192,15 @@ class RtScene {
     Renderer::Buffer light_buf;      // RtLightGpu[]
     void* light_mapped = nullptr;
     uint32_t light_cap = 0;
+
+    // Per-frame-slot dynamic actor vertex buffer & BLASes (seated driver, Spectators.zip
+    // festival crowds, and Airborne Showcase aircraft) — zero allocation churn across frames.
+    Renderer::Buffer dyn_vb;
+    void* dyn_vb_mapped = nullptr;
+    uint32_t dyn_vb_cap = 0;
+    BlasHandle driver_blas;
+    BlasHandle spectator_blas;
+    BlasHandle showcase_blas;
   };
 
   struct WorldCellEntry {
@@ -206,6 +218,7 @@ class RtScene {
   bool ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasSet& out);
   void update_world_blases(VkCommandBuffer cmd, const Showroom& host);
   void update_tree_blas(VkCommandBuffer cmd, const Showroom& host);
+  void update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& host, FrameSlot& slot);
   void process_compactions(VkCommandBuffer cmd);
   void destroy_blas(BlasHandle& b, bool defer);
   bool ensure_scratch(VkCommandBuffer cmd, VkDeviceSize needed, VkDeviceAddress& out_addr);
@@ -245,6 +258,13 @@ class RtScene {
 
   // Cached modular car BLASes (keyed by Showroom pointer).
   std::unordered_map<const Showroom*, CarBlasSet> car_blases_;
+
+  // Shared static sequential index buffer (0..kMaxDynActorVerts-1) for dynamic actor BLASes.
+  static constexpr uint32_t kMaxDynActorVerts = 131072;
+  Renderer::Buffer seq_ib_;
+  VkDeviceAddress seq_ib_bda_ = 0;
+  VkImageView registered_spectator_view_ = VK_NULL_HANDLE;
+  VkImageView registered_showcase_view_ = VK_NULL_HANDLE;
 
   FrameSlot slots_[Renderer::kFramesInFlight];
   RtSceneStats stats_{};

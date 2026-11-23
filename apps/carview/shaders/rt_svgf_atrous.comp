@@ -41,9 +41,18 @@ void main() {
     return;
   }
 
+  // Deterministic crisp optical surfaces (transmitted car glass + interior/driver, alpine lake water)
+  // have roughness < 0.035; skip wide multi-pass A-Trous blur so rear windows and water stay razor-sharp.
+  bool crisp_optical = is_pt && (center_norm_r.w < 0.035);
+  if (crisp_optical && step_sz >= 2) {
+    if (ping) imageStore(rt_svgf_tmp, px, center_val);
+    else imageStore(rt_hist_curr, px, center_val);
+    return;
+  }
+
   // 3x3 B3-spline wavelet kernel weights.
   const float kKern[3] = float[3](1.0, 2.0 / 3.0, 1.0 / 6.0);
-  float sigma_l = 4.0 * sqrt(center_var) + 0.06;
+  float sigma_l = crisp_optical ? 0.035 : (4.0 * sqrt(center_var) + 0.06);
   float phi_z = max(d_c * 0.045, 0.08) * float(step_sz);
 
   vec3 sum_col = center_val.rgb;

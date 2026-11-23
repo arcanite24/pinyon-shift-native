@@ -268,10 +268,11 @@ vec3 eval_tod_sky(vec3 dir, bool include_sun_disc) {
   float night = clamp(ubo.sun_color_night.w, 0.0, 1.0);
   float sunset_warmth = clamp(1.0 - max(sun_d.y, 0.0) * 2.4, 0.0, 1.0) * (1.0 - night);
 
-  vec3 zenith = max(ubo.sky_color_exp.rgb * 3.2, vec3(0.04, 0.08, 0.18) * (1.0 - night * 0.85));
-  vec3 horizon = mix(ubo.fog_color_start.rgb * 2.6 + vec3(0.35, 0.42, 0.48) * (1.0 - night),
+  vec3 zenith = max(ubo.sky_color_exp.rgb * mix(3.0, 1.2, night),
+                    vec3(0.04, 0.08, 0.18) * max(1.0 - night * 0.96, 0.02));
+  vec3 horizon = mix(ubo.fog_color_start.rgb * mix(2.4, 1.0, night) + vec3(0.32, 0.40, 0.46) * (1.0 - night),
                      ubo.sun_color_night.rgb * 1.45 + vec3(0.30, 0.14, 0.05), sunset_warmth);
-  vec3 ground = max(ubo.ground_color_revz.rgb * 1.35, vec3(0.06, 0.05, 0.04));
+  vec3 ground = max(ubo.ground_color_revz.rgb * 1.35, vec3(0.05, 0.045, 0.038) * max(1.0 - night * 0.94, 0.04));
 
   vec3 sky = up_dot >= 0.0
                  ? mix(horizon, zenith, pow(clamp(up_dot, 0.0, 1.0), 0.50))
@@ -324,6 +325,7 @@ struct RtSurface {
   uint material_class;
   uint inst_kind;
   uint car_id;
+  uint tex_aux;
   bool hit;
 };
 
@@ -345,6 +347,7 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
   s.material_class = 0u;
   s.inst_kind = 0u;
   s.car_id = 0u;
+  s.tex_aux = 0u;
 
   if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
     return s;
@@ -366,6 +369,7 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
   s.material_class = g.material_class;
   s.inst_kind = inst.kind;
   s.car_id = inst.car_inst_idx;
+  s.tex_aux = g.tex_aux;
 
   mat3 m_rot = mat3(
       vec3(inst.model_row0.x, inst.model_row1.x, inst.model_row2.x),
@@ -487,15 +491,22 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
     s.albedo = g.tint.rgb * pow(max(vcol, vec3(0.0)), vec3(1.8));
   }
 
-  // Water waves normal perturbation for Colorado alpine lakes & rivers.
+  // Smooth multi-octave alpine wave normals for Colorado lakes & rivers (distance-attenuated so never noisy).
   if ((g.flags & kRtGeomFlagWater) != 0u) {
     float t = ubo.env_basis_x.w;
     vec3 wp = s.pos;
-    float w1 = sin(wp.x * 1.4 + t * 1.7) * cos(wp.z * 1.2 - t * 1.3);
-    float w2 = sin(wp.x * 3.1 - wp.z * 2.7 + t * 2.4);
-    s.normal = safe_normalize(s.normal + vec3(w1 * 0.025 + w2 * 0.012, 0.0, w2 * 0.022), s.normal);
-    s.albedo = vec3(0.03, 0.07, 0.10);
-    s.roughness = 0.04;
+    float d_att = 1.0 / (1.0 + s.hit_t * 0.018);
+    float w1 = sin(wp.x * 0.55 + wp.z * 0.35 + t * 0.95) * cos(wp.z * 0.48 - wp.x * 0.25 - t * 0.72);
+    float w2 = sin(wp.x * 1.35 - wp.z * 1.15 + t * 1.55) * 0.65;
+    float w3 = cos(wp.x * 2.65 + wp.z * 2.20 - t * 2.10) * 0.30 / (1.0 + s.hit_t * 0.045);
+    vec3 up_w = safe_normalize(ubo.env_basis_y.xyz, vec3(0.0, 1.0, 0.0));
+    vec3 tx_w = safe_normalize(ubo.env_basis_x.xyz, vec3(1.0, 0.0, 0.0));
+    vec3 tz_w = safe_normalize(ubo.env_basis_z.xyz, vec3(0.0, 0.0, 1.0));
+    vec3 n_pert = (tx_w * (w1 * 0.022 + w2 * 0.014 + w3 * 0.009) +
+                   tz_w * (w2 * 0.018 - w1 * 0.014 + w3 * 0.008)) * d_att;
+    s.normal = safe_normalize(mix(s.normal, up_w, 0.35) + n_pert, up_w);
+    s.albedo = vec3(0.025, 0.085, 0.115);
+    s.roughness = 0.018;
     s.clearcoat = 1.0;
   }
 
@@ -511,16 +522,13 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
     s.normal = normalize(s.normal + (ft * (h1 - 0.5) + fb * (h2 - 0.5)) * (0.045 * dist_fade));
   }
 
-  // Night emissive car lamps & world lightmaps.
+  // Live car lamp emission (evaluated per-frame in RtScene::record_update from LampShaderVectors)
+  // & night world lightmaps.
   if ((g.flags & kRtGeomFlagEmissive) != 0u) {
     float night = clamp(ubo.sun_color_night.w, 0.0, 1.0);
     if ((g.flags & kRtGeomFlagCarVertex) != 0u) {
-      // tex_aux: 1 = active tail/brake red, 2 = active head/DRL xenon white.
-      if (g.tex_aux == 1u) {
-        s.emissive = vec3(5.2, 0.14, 0.04) * max(night, 0.72);
-      } else if (g.tex_aux == 2u) {
-        s.emissive = vec3(5.4, 5.1, 4.5) * max(night, 0.40);
-      }
+      s.emissive = max(g.tint.rgb, vec3(0.0));
+      s.albedo = vec3(0.14);
     } else if (g.tex_aux >= 3u && (g.flags & (kRtGeomFlagVertexBlend | kRtGeomFlagSplat | kRtGeomFlagCutout)) == 0u) {
       vec3 em = textureLod(sampler2D(world_textures[nonuniformEXT(g.tex_aux)], world_sampler),
                            uv0 * g.uv0_xform.xy, ray_cone_lod).rgb;

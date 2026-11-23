@@ -84,16 +84,31 @@ void fill_car_geom_material_raw(const ShowroomPush& push, drive::LampChannel lam
   } else if (klass == 2u) {  // kGlass
     g.flags |= kRtGeomFlagGlass;
     g.tint[3] = 0.03f;
+    // Tag detail_glass_red/amber/clear lamp covers (kFlagCover = 1024u) in tex_aux
+    // so PT applies translucent ruby/amber lens tint instead of window glass tint.
+    if ((dflags & 1024u) != 0u) {
+      const bool is_red = push.tint[0] > 0.15f && push.tint[1] < 0.05f;
+      const bool is_amber = push.tint[0] > 0.35f && push.tint[1] > 0.10f && push.tint[2] < 0.05f;
+      g.tex_aux = is_red ? 1u : (is_amber ? 2u : 3u);
+    } else {
+      g.tex_aux = 0u;
+    }
   } else if (klass == 3u) {  // kLamp
     g.flags |= kRtGeomFlagChrome;
-    // Only emit for active driving lamp channels (tail/brake/head/DRL); passive housings,
-    // reverse lamps, indicators, and license-plate lamps stay reflective unless lit.
+    // Live emission is evaluated per-frame in record_update() from LampShaderVectors
+    // (never baked permanently emissive at BLAS creation time!).
     const bool is_tail_brake = (lamp_channel == drive::LampChannel::kBrake ||
                                 lamp_channel == drive::LampChannel::kTail ||
                                 lamp_channel == drive::LampChannel::kTailBrake2S ||
                                 lamp_channel == drive::LampChannel::kFogRed ||
                                 lamp_channel == drive::LampChannel::kDrlRed ||
                                 lamp_channel == drive::LampChannel::kDrlBrakeRed || brake_lamp);
+    const bool is_amber = (lamp_channel == drive::LampChannel::kIndicatorLeft ||
+                           lamp_channel == drive::LampChannel::kIndicatorRight ||
+                           lamp_channel == drive::LampChannel::kSideLightOrange ||
+                           lamp_channel == drive::LampChannel::kSideIndLeft ||
+                           lamp_channel == drive::LampChannel::kSideIndRight ||
+                           lamp_channel == drive::LampChannel::kDrlOrange);
     const bool is_head_drl = (lamp_channel == drive::LampChannel::kHeadOld ||
                               lamp_channel == drive::LampChannel::kHeadXenon ||
                               lamp_channel == drive::LampChannel::kHeadHid ||
@@ -101,13 +116,21 @@ void fill_car_geom_material_raw(const ShowroomPush& push, drive::LampChannel lam
                               lamp_channel == drive::LampChannel::kFogWhite ||
                               lamp_channel == drive::LampChannel::kDrlWhite ||
                               lamp_channel == drive::LampChannel::kDrlWhiteSwitch);
-    if (is_tail_brake || is_head_drl) {
-      g.flags |= kRtGeomFlagEmissive;
+    if (is_tail_brake) {
+      // Unlit red taillight reflector: dark ruby housing (never glowing orange in daylight).
+      g.tint[0] = 0.24f;
+      g.tint[1] = 0.025f;
+      g.tint[2] = 0.020f;
+    } else if (is_amber) {
+      g.tint[0] = 0.38f;
+      g.tint[1] = 0.18f;
+      g.tint[2] = 0.025f;
+    } else {
+      g.tint[0] = 0.62f;
+      g.tint[1] = 0.64f;
+      g.tint[2] = 0.68f;
     }
-    g.tint[0] = 0.72f;
-    g.tint[1] = 0.74f;
-    g.tint[2] = 0.78f;
-    g.tint[3] = 0.06f;
+    g.tint[3] = 0.08f;
     g.tex_aux = is_tail_brake ? 1u : (is_head_drl ? 2u : 0u);
   } else if (klass == 6u) {  // kTyre
     g.tint[0] = 0.032f;
@@ -139,9 +162,10 @@ void fill_car_geom_material_raw(const ShowroomPush& push, drive::LampChannel lam
     g.tint[2] = 0.08f;
     g.tint[3] = 0.18f;
   } else if (klass == 4u || klass == 5u) {  // kInterior / kGauge
-    g.tint[0] = 0.06f;
-    g.tint[1] = 0.06f;
-    g.tint[2] = 0.065f;
+    // Cool charcoal automotive cabin reflectance so seats, dash, and driver read crisply through rear glass.
+    g.tint[0] = 0.095f;
+    g.tint[1] = 0.098f;
+    g.tint[2] = 0.105f;
     g.tint[3] = 0.72f;
   } else {  // kOpaque (grilles, wheel arches, underbody, rubber trim, diffusers)
     const bool is_grille = (dflags & 256u) != 0u;
@@ -287,6 +311,23 @@ bool RtScene::init(RetireFn retire_fn, std::string& error) {
     return false;
   }
 
+  // Upload shared sequential index buffer (0..kMaxDynActorVerts-1) for dynamic actor BLASes
+  // (seated driver, Spectators.zip festival crowds, and Airborne Showcase aircraft).
+  {
+    std::vector<uint32_t> seq(kMaxDynActorVerts);
+    for (uint32_t i = 0; i < kMaxDynActorVerts; ++i) seq[i] = i;
+    const VkBufferUsageFlags rt_flags =
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (!r_.upload_buffer(seq.data(), seq.size() * sizeof(uint32_t), rt_flags, seq_ib_)) {
+      error = "RT dynamic actor sequential index buffer";
+      shutdown();
+      return false;
+    }
+    seq_ib_bda_ = r_.buffer_device_address(seq_ib_.buffer);
+  }
+
   // Size static world BLAS LRU budget to device VRAM (48 MiB on < 8 GiB GPUs, 160 MiB on 10+ GiB).
   const uint64_t vram_bytes = r_.rt_caps().device_local_bytes;
   world_lru_.set_budget(vram_bytes >= (10ull << 30) ? (160ull << 20) : (64ull << 20));
@@ -309,6 +350,10 @@ void RtScene::shutdown() {
   destroy_blas(tree_blas_, false);
   r_.destroy_buffer(tree_vb_);
   r_.destroy_buffer(tree_ib_);
+  r_.destroy_buffer(seq_ib_);
+  seq_ib_bda_ = 0;
+  registered_spectator_view_ = VK_NULL_HANDLE;
+  registered_showcase_view_ = VK_NULL_HANDLE;
 
   for (auto& [car, set] : car_blases_) {
     destroy_blas(set.body, false);
@@ -319,6 +364,14 @@ void RtScene::shutdown() {
   car_blases_.clear();
 
   for (FrameSlot& s : slots_) {
+    destroy_blas(s.driver_blas, false);
+    destroy_blas(s.spectator_blas, false);
+    destroy_blas(s.showcase_blas, false);
+    if (s.dyn_vb_mapped) vmaUnmapMemory(r_.allocator_, s.dyn_vb.allocation);
+    s.dyn_vb_mapped = nullptr;
+    s.dyn_vb_cap = 0;
+    r_.destroy_buffer(s.dyn_vb);
+
     if (s.tlas) vkDestroyAccelerationStructureKHR(d, s.tlas, nullptr);
     s.tlas = VK_NULL_HANDLE;
     r_.destroy_buffer(s.tlas_buf);
@@ -582,16 +635,20 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
   if (!vb_bda || !ib_bda) return false;
   const uint32_t total_verts = uint32_t(car.vertices_.size());
 
-  auto build_group = [&](const std::vector<int>& draw_indices, bool is_glass, BlasHandle& target) {
+  auto build_group = [&](const std::vector<int>& draw_indices, bool is_glass, BlasHandle& target,
+                         std::vector<uint8_t>* out_lamp_channels = nullptr) {
+    if (out_lamp_channels) out_lamp_channels->clear();
     if (draw_indices.empty()) return;
     std::vector<VkAccelerationStructureGeometryKHR> geoms;
     std::vector<uint32_t> prims;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
     std::vector<RtGeomInfoGpu> meta;
+    std::vector<uint8_t> lamps;
     geoms.reserve(draw_indices.size());
     prims.reserve(draw_indices.size());
     ranges.reserve(draw_indices.size());
     meta.reserve(draw_indices.size());
+    lamps.reserve(draw_indices.size());
 
     for (int idx : draw_indices) {
       const Showroom::Draw& d = car.draws_[size_t(idx)];
@@ -620,10 +677,12 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
       gm.index_bda = g_ib;
       fill_car_geom_material_raw(d.push, d.lamp_channel, d.brake_lamp, car.frame().paint_finish[0], gm);
       meta.push_back(gm);
+      lamps.push_back(uint8_t(d.lamp_channel));
     }
     if (!geoms.empty()) {
       if (build_blas_from_geoms(cmd, geoms, prims, ranges, false, target, nullptr)) {
         target.geoms = std::move(meta);
+        if (out_lamp_channels) *out_lamp_channels = std::move(lamps);
       }
     }
   };
@@ -681,7 +740,7 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
     }
   }
 
-  build_group(body_draws, false, out.body);
+  build_group(body_draws, false, out.body, &out.body_lamp_channels);
   build_group(glass_draws, true, out.glass);
   out.wheel_parts.reserve(wheel_groups.size());
   for (const auto& wg : wheel_groups) {
@@ -1038,6 +1097,173 @@ void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {
   }
 }
 
+void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& host, FrameSlot& slot) {
+  // Destroy this frame-slot's previous dynamic actor BLASes (safe: frame fence already signaled).
+  destroy_blas(slot.driver_blas, false);
+  destroy_blas(slot.spectator_blas, false);
+  destroy_blas(slot.showcase_blas, false);
+  if (!seq_ib_bda_) return;
+
+  // 1. Collect seated driver vertices (car model space).
+  const uint32_t drv_n =
+      (host.vfx_ready_ && host.driver_buf_.ready() && host.driver_count_ >= 3u)
+          ? (std::min(host.driver_count_, kMaxDynActorVerts) / 3u) * 3u
+          : 0u;
+
+  // 2. Collect animated Spectators.zip festival crowd vertices (scenery space, grounded via active Ground).
+  std::vector<WorldVertex> spec_verts;
+  uint32_t spec_tex_slot = 0u;
+  if (host.vfx_ready_ && host.spectator_anim_.catalog().has_3d_spectators()) {
+    const auto eye = host.eye_in_scenery(host.world_transform_);
+    const double eye_gx = host.world_origin_[0] + double(eye[0]);
+    const double eye_gy = double(eye[1]);
+    const double eye_gz = host.world_origin_[1] + double(eye[2]);
+    const drive::Ground* active_ground =
+        host.world_ground_ ? host.world_ground_ : world::AnimatedWorldSystem::last_ground();
+    std::vector<world::SpectatorVertex> cpu_spec;
+    host.spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, host.tod_real_time_, active_ground, cpu_spec);
+    const uint32_t sn = (uint32_t(std::min(cpu_spec.size(), size_t(kMaxDynActorVerts))) / 3u) * 3u;
+    if (sn >= 3u) {
+      constexpr uint32_t kSpectatorTexRecord = 0xFFFFFFF0u;
+      if (host.gpu_world_ && host.spectator_atlas_.view) {
+        if (registered_spectator_view_ != host.spectator_atlas_.view ||
+            !host.gpu_world_->has_texture(kSpectatorTexRecord)) {
+          spec_tex_slot = host.gpu_world_->add_texture(kSpectatorTexRecord, host.spectator_atlas_.view);
+          registered_spectator_view_ = host.spectator_atlas_.view;
+        } else {
+          spec_tex_slot = host.gpu_world_->texture_slot(kSpectatorTexRecord);
+        }
+      }
+      const auto& cat = host.spectator_anim_.catalog();
+      const uint32_t asz = world::SpectatorCatalog::kAtlasSize;
+      auto snorm8 = [](float x) -> int8_t {
+        return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
+      };
+      spec_verts.resize(sn);
+      for (uint32_t i = 0; i < sn; ++i) {
+        const auto& v = cpu_spec[i];
+        WorldVertex& o = spec_verts[i];
+        o = WorldVertex{};
+        o.position[0] = float(double(v.pos[0]) - host.world_origin_[0]);
+        o.position[1] = v.pos[1];
+        o.position[2] = float(double(v.pos[2]) - host.world_origin_[1]);
+        o.normal[0] = snorm8(v.normal[0]);
+        o.normal[1] = snorm8(v.normal[1]);
+        o.normal[2] = snorm8(v.normal[2]);
+        o.uv0[0] = v.uv[0];
+        o.uv0[1] = v.uv[1];
+        // Populate crisp per-vertex atlas color fallback in case bindless texture is absent.
+        if (cat.atlas_rgba.size() >= size_t(asz) * asz * 4u) {
+          const uint32_t tx = uint32_t(std::clamp(v.uv[0], 0.0f, 0.9999f) * float(asz));
+          const uint32_t ty = uint32_t(std::clamp(v.uv[1], 0.0f, 0.9999f) * float(asz));
+          const uint8_t* px = cat.atlas_rgba.data() + (size_t(ty) * asz + tx) * 4u;
+          o.colour[0] = px[0];
+          o.colour[1] = px[1];
+          o.colour[2] = px[2];
+          o.colour[3] = 255;
+        } else {
+          for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+        }
+      }
+    }
+  }
+  const uint32_t spec_n = uint32_t(spec_verts.size());
+
+  // 3. Collect Airborne Showcase aircraft vertices (scenery space).
+  const uint32_t show_n =
+      (host.vfx_ready_ && host.showcase_buf_.ready() && host.showcase_count_ >= 3u)
+          ? (std::min(host.showcase_count_, kMaxDynActorVerts) / 3u) * 3u
+          : 0u;
+  uint32_t show_tex_slot = 0u;
+  if (show_n >= 3u && host.gpu_world_ && host.showcase_tex_.view) {
+    constexpr uint32_t kShowcaseTexRecord = 0xFFFFFFF1u;
+    if (registered_showcase_view_ != host.showcase_tex_.view || !host.gpu_world_->has_texture(kShowcaseTexRecord)) {
+      show_tex_slot = host.gpu_world_->add_texture(kShowcaseTexRecord, host.showcase_tex_.view);
+      registered_showcase_view_ = host.showcase_tex_.view;
+    } else {
+      show_tex_slot = host.gpu_world_->texture_slot(kShowcaseTexRecord);
+    }
+  }
+
+  const uint32_t total_v = drv_n + spec_n + show_n;
+  if (total_v == 0u) return;
+
+  // Ensure persistent per-frame-slot host-visible vertex buffer capacity.
+  if (!slot.dyn_vb.buffer || slot.dyn_vb_cap < total_v) {
+    const uint32_t alloc_n = std::max(total_v, std::max(slot.dyn_vb_cap * 2u, 8192u));
+    if (slot.dyn_vb_mapped) {
+      vmaUnmapMemory(r_.allocator_, slot.dyn_vb.allocation);
+      slot.dyn_vb_mapped = nullptr;
+    }
+    if (slot.dyn_vb.buffer) r_.destroy_buffer(slot.dyn_vb);
+    const VkBufferUsageFlags usage =
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (!r_.create_buffer(VkDeviceSize(alloc_n) * sizeof(WorldVertex), usage,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, slot.dyn_vb)) {
+      slot.dyn_vb_cap = 0;
+      return;
+    }
+    if (vmaMapMemory(r_.allocator_, slot.dyn_vb.allocation, &slot.dyn_vb_mapped) != VK_SUCCESS) {
+      r_.destroy_buffer(slot.dyn_vb);
+      slot.dyn_vb_cap = 0;
+      return;
+    }
+    slot.dyn_vb_cap = alloc_n;
+  }
+
+  auto* dst = static_cast<WorldVertex*>(slot.dyn_vb_mapped);
+  const VkDeviceAddress base_bda = r_.buffer_device_address(slot.dyn_vb.buffer);
+  uint32_t cursor = 0;
+
+  auto build_dyn = [&](const WorldVertex* src_verts, uint32_t count, uint32_t mat_class, uint32_t tex_slot,
+                       float rough, BlasHandle& out_blas) {
+    if (count < 3u) return;
+    std::memcpy(dst + cursor, src_verts, size_t(count) * sizeof(WorldVertex));
+    const VkDeviceAddress v_bda = base_bda + uint64_t(cursor) * sizeof(WorldVertex);
+    cursor += count;
+
+    const uint32_t prim_count = count / 3u;
+    VkAccelerationStructureGeometryKHR ag{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    ag.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    ag.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    auto& tri = ag.geometry.triangles;
+    tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    tri.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    tri.vertexData.deviceAddress = v_bda;
+    tri.vertexStride = sizeof(WorldVertex);
+    tri.maxVertex = count - 1u;
+    tri.indexType = VK_INDEX_TYPE_UINT32;
+    tri.indexData.deviceAddress = seq_ib_bda_;
+
+    if (build_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, false, out_blas, nullptr)) {
+      RtGeomInfoGpu gm{};
+      gm.vertex_bda = v_bda;
+      gm.index_bda = seq_ib_bda_;
+      gm.material_class = mat_class;
+      gm.flags = (tex_slot >= 3u) ? kRtGeomFlagBindlessTex : 0u;
+      gm.tex_albedo = tex_slot;
+      gm.tint[0] = gm.tint[1] = gm.tint[2] = 1.0f;
+      gm.tint[3] = rough;
+      gm.uv0_xform[0] = gm.uv0_xform[1] = gm.uv0_xform[2] = gm.uv0_xform[3] = 1.0f;
+      out_blas.geoms = {gm};
+    }
+  };
+
+  if (drv_n >= 3u) {
+    build_dyn(reinterpret_cast<const WorldVertex*>(host.driver_buf_.cpu.data()), drv_n, 4u, 0u, 0.65f,
+              slot.driver_blas);
+  }
+  if (spec_n >= 3u) {
+    build_dyn(spec_verts.data(), spec_n, 100u, spec_tex_slot, 0.78f, slot.spectator_blas);
+  }
+  if (show_n >= 3u) {
+    build_dyn(reinterpret_cast<const WorldVertex*>(host.showcase_buf_.cpu.data()), show_n, 100u, show_tex_slot, 0.32f,
+              slot.showcase_blas);
+  }
+}
+
 bool RtScene::ensure_slot_buffers(FrameSlot& s, uint32_t inst_n, uint32_t geom_n, uint32_t light_n) {
   auto ensure_mapped = [&](Renderer::Buffer& buf, void*& mapped, uint32_t& cap, uint32_t need, size_t elem_bytes,
                            VkBufferUsageFlags usage) -> bool {
@@ -1098,9 +1324,11 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
     if (inst.car) ensure_car_blas(cmd, *inst.car, car_blases_[inst.car]);
   }
 
-  // 3. Update content-keyed static world BLASes and Colorado tree cross-card BLAS.
+  // 3. Update content-keyed static world BLASes, tree cross-card BLAS, and dynamic actor BLASes
+  //    (seated 3D driver, grounded Spectators.zip crowds, and Airborne Showcase aircraft).
   update_world_blases(cmd, host);
   update_tree_blas(cmd, host);
+  update_dynamic_actor_blases(cmd, host, slots_[active_slot_]);
 
   // Barrier: all BLAS builds & compactions must complete before TLAS build reads them.
   as_barrier(cmd,
@@ -1202,9 +1430,18 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
     push_instance(tree_blas_, tree_world, rt::kMaskFoliageAlpha, rt::InstanceKind::kFoliage, 0u, false);
   }
 
-  // 4c. Player car (body + glass + 4 spinning wheels + 4 calipers).
-  auto emit_car = [&](const Showroom& car, const float* parent_model, uint8_t body_mask, rt::InstanceKind kind,
-                      uint32_t car_id) {
+  // 4b-2. Dynamic actors: Spectators.zip festival crowds & Airborne Showcase aircraft.
+  const FrameSlot& cur_slot = slots_[active_slot_];
+  if (cur_slot.spectator_blas.handle) {
+    push_instance(cur_slot.spectator_blas, wt, rt::kMaskWorldOpaque, rt::InstanceKind::kWorld, 0u, true);
+  }
+  if (cur_slot.showcase_blas.handle) {
+    push_instance(cur_slot.showcase_blas, wt, rt::kMaskWorldOpaque, rt::InstanceKind::kWorld, 0u, true);
+  }
+
+  // 4c. Player car (body + glass + 4 spinning wheels + 4 calipers + live lamp emission + seated driver).
+  auto emit_car = [&](const Showroom& car, const float* parent_model, const drive::LampShaderVectors& active_lamps,
+                      uint8_t body_mask, rt::InstanceKind kind, uint32_t car_id) {
     auto it = car_blases_.find(&car);
     if (it == car_blases_.end()) return;
     const CarBlasSet& cs = it->second;
@@ -1221,7 +1458,33 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
         (cs.glass_draw >= 0 && size_t(cs.glass_draw) < car.draws_.size()) ? car.draws_[size_t(cs.glass_draw)].push.model
                                                                           : body_local;
     combine(body_local, m);
+    const size_t body_g_start = geom_infos.size();
     push_instance(cs.body, m, body_mask, kind, car_id, true);
+    // Gate car lamp emission dynamically on live braking/running-lamp state (matching raster!).
+    if (cs.body_lamp_channels.size() == cs.body.geoms.size() &&
+        body_g_start + cs.body.geoms.size() <= geom_infos.size()) {
+      for (size_t gi = 0; gi < cs.body.geoms.size(); ++gi) {
+        const auto ch = drive::LampChannel(cs.body_lamp_channels[gi]);
+        if (ch == drive::LampChannel::kNone) continue;
+        RtGeomInfoGpu& gm = geom_infos[body_g_start + gi];
+        const auto rgb = drive::evaluate_lamp_emission(ch, active_lamps, car.lamp_colors_);
+        if (rgb[0] > 1e-4f || rgb[1] > 1e-4f || rgb[2] > 1e-4f) {
+          gm.flags |= kRtGeomFlagEmissive;
+          if (gm.tex_aux == 1u) {
+            // Saturated crimson ruby HDR red so tonemapping never shifts taillights to yellow-orange.
+            gm.tint[0] = std::min(rgb[0] * 1.15f, 2.3f);
+            gm.tint[1] = std::min(rgb[1] * 0.12f, 0.022f);
+            gm.tint[2] = std::min(rgb[2] * 0.10f, 0.010f);
+          } else {
+            gm.tint[0] = std::min(rgb[0] * 1.65f, 5.2f);
+            gm.tint[1] = std::min(rgb[1] * 1.65f, 5.0f);
+            gm.tint[2] = std::min(rgb[2] * 1.65f, 4.6f);
+          }
+        } else {
+          gm.flags &= ~kRtGeomFlagEmissive;
+        }
+      }
+    }
     if (cs.glass.handle) {
       combine(glass_local, m);
       push_instance(cs.glass, m, rt::kMaskGlass, rt::InstanceKind::kGlass, car_id, false);
@@ -1234,15 +1497,30 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
     }
   };
 
+  const float kIdentMat[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   if (host.draw_car_) {
-    emit_car(host, nullptr, rt::kMaskPlayerCar, rt::InstanceKind::kPlayerCar, 0u);
+    emit_car(host, nullptr, host.lamp_vectors_, rt::kMaskPlayerCar, rt::InstanceKind::kPlayerCar, 0u);
+    if (!host.cockpit_camera_active_ && cur_slot.driver_blas.handle) {
+      push_instance(cur_slot.driver_blas, kIdentMat, rt::kMaskPlayerCar, rt::InstanceKind::kPlayerCar, 0u, true);
+    }
   }
 
-  // 4d. Traffic / AI guest cars.
+  // 4d. Traffic / AI guest cars (+ seated drivers inside nearby cars).
   uint32_t traffic_id = 1u;
   for (const Showroom::Instance& inst : host.instances_) {
     if (!inst.car) continue;
-    emit_car(*inst.car, inst.model, rt::kMaskTrafficCar, rt::InstanceKind::kTrafficCar, traffic_id++);
+    const drive::LampShaderVectors& glamps = inst.has_lamps ? inst.lamps : inst.car->lamp_vectors_;
+    emit_car(*inst.car, inst.model, glamps, rt::kMaskTrafficCar, rt::InstanceKind::kTrafficCar, traffic_id);
+    if (cur_slot.driver_blas.handle && inst.fade_alpha >= 0.5f) {
+      const float dx = inst.model[12] - host.frame_.eye[0];
+      const float dy = inst.model[13] - host.frame_.eye[1];
+      const float dz = inst.model[14] - host.frame_.eye[2];
+      if (dx * dx + dy * dy + dz * dz <= 95.0f * 95.0f) {
+        push_instance(cur_slot.driver_blas, inst.model, rt::kMaskTrafficCar, rt::InstanceKind::kTrafficCar, traffic_id,
+                      true);
+      }
+    }
+    ++traffic_id;
   }
 
   // 4e. Dynamic Light List (Light 0 = Sun, then headlights, brake/taillights, and world streetlamps/Festival glows).

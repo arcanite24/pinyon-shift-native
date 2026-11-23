@@ -27,7 +27,7 @@
     {
       "name": "rt_common.glsl",
       "kind": "header",
-      "lines": 648,
+      "lines": 656,
       "uses_bda": true,
       "notes": [
         "uses GL_EXT_buffer_reference (64-bit BDA); DX12 SM 6.6 requires bindless buffer-slot migration"
@@ -36,7 +36,7 @@
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 907,
+      "lines": 939,
       "uses_bda": false,
       "notes": []
     },
@@ -1503,7 +1503,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 100208,
+      "spirv_bytes": 124076,
       "local_size": [
         8,
         8,
@@ -1739,7 +1739,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 80232,
+      "spirv_bytes": 82108,
       "local_size": [
         8,
         8,
@@ -2211,7 +2211,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17184,
+      "spirv_bytes": 17876,
       "local_size": [
         8,
         8,
@@ -2716,7 +2716,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 125568,
+      "spirv_bytes": 130088,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3805,7 +3805,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 94776,
+      "spirv_bytes": 99232,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4103,7 +4103,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 99552,
+      "spirv_bytes": 104008,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4295,7 +4295,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 95924,
+      "spirv_bytes": 100380,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4403,7 +4403,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 91292,
+      "spirv_bytes": 95748,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

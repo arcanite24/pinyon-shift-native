@@ -201,15 +201,17 @@ void main() {
     vec3 throughput = vec3(1.0);
     vec3 L_path = vec3(0.0);
     float primary_dist = 0.0;
+    int glass_hops = 0;
 
     for (int bounce = 0; bounce <= max_bounces; ++bounce) {
       uint mask = (bounce == 0) ? kMaskPrimaryHits : kMaskReflectionHits;
       rayQueryEXT rq;
-      rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, mask, ray_origin, bounce == 0 ? 0.05 : 0.015, ray_dir, 1400.0);
+      rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, mask, ray_origin,
+                            (bounce == 0 && glass_hops == 0) ? 0.05 : 0.015, ray_dir, 1400.0);
       PROCEED_ALPHA_TESTED(rq);
 
       if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
-        if (bounce == 0) {
+        if (bounce == 0 && glass_hops == 0) {
           // Primary sky/far-ring miss: preserve rasterized sky, clouds, stars & distant foliage
           // from hdr_img cleanly. Linear HDR shadows on conifers can be ~1e-5, so only fall back
           // to analytical TOD sky when hdr_img is strictly unrendered black (never 1e-4!).
@@ -217,7 +219,7 @@ void main() {
           vec3 ana_sky = eval_tod_sky(ray_dir, true);
           L_path += (raster_sky.r + raster_sky.g + raster_sky.b) > 1e-6 ? raster_sky : ana_sky;
         } else {
-          L_path += throughput * eval_tod_sky(ray_dir, bounce == 1);
+          L_path += throughput * eval_tod_sky(ray_dir, bounce <= 1);
         }
         break;
       }
@@ -226,7 +228,7 @@ void main() {
       RtSurface surf = unpack_hit_surface(rq, ray_origin, ray_dir, cone_lod);
       vec3 V = -ray_dir;
 
-      if (bounce == 0) {
+      if (bounce == 0 && glass_hops == 0) {
         any_hit = true;
         primary_dist = surf.hit_t;
         if (s_idx == 0) {
@@ -246,27 +248,133 @@ void main() {
       // Emissive contribution (car headlights, brake lights, Festival neon, world lightmaps).
       L_path += throughput * surf.emissive;
 
-      // Refractive dielectric automotive glass & headlight covers (IOR = 1.52).
+      // Dedicated crisp Fresnel reflection + Beer-Lambert alpine depth shader for Colorado lake water
+      // (eliminates noisy 1-spp speckled brown water bounces and matches raster alpine lake optics).
+      if ((surf.flags & kRtGeomFlagWater) != 0u) {
+        vec3 up_w = safe_normalize(ubo.env_basis_y.xyz, vec3(0.0, 1.0, 0.0));
+        vec3 sun_dw = safe_normalize(ubo.sun_dir_elev.xyz, vec3(0.38, 0.87, 0.29));
+        float sun_vis_w = clamp(ubo.sun_dir_elev.w, 0.0, 1.0);
+        float sun_el_w = max(dot(up_w, sun_dw), 0.0) * sun_vis_w;
+        float ndv_w = max(dot(surf.normal, V), 0.001);
+        float fresnel_w = clamp(0.02 + 0.98 * pow(1.0 - ndv_w, 5.0), 0.02, 0.95);
+
+        vec3 w_illum = max(ubo.sun_color_night.rgb * (sun_el_w * 0.72) + ubo.sky_color_exp.rgb * 1.55, vec3(0.002));
+        vec3 shallow_w = vec3(0.044, 0.162, 0.172) * w_illum + ubo.ground_color_revz.rgb * 0.06;
+        vec3 deep_w = vec3(0.012, 0.062, 0.106) * w_illum + ubo.sky_color_exp.rgb * 0.12;
+        vec3 body_w = mix(deep_w, shallow_w, clamp(1.0 - ndv_w * 0.72, 0.0, 1.0));
+
+        vec3 R_w = reflect(-V, surf.normal);
+        float r_up = dot(R_w, up_w);
+        if (r_up < 0.03) R_w = normalize(R_w + up_w * (0.03 - r_up));
+
+        vec3 refl_w = eval_tod_sky(R_w, true);
+        if (bounce == 0) {
+          rayQueryEXT wrq;
+          rayQueryInitializeEXT(wrq, tlas, gl_RayFlagsNoneEXT, kMaskReflectionHits & ~kMaskWater,
+                                surf.pos + surf.geom_normal * 0.03, 0.02, R_w, 650.0);
+          PROCEED_ALPHA_TESTED(wrq);
+          if (rayQueryGetIntersectionTypeEXT(wrq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+            RtSurface rs = unpack_hit_surface(wrq, surf.pos + surf.geom_normal * 0.03, R_w, 1.5);
+            vec3 hit_c = shade_hit_fast(rs, -R_w, false);
+            refl_w = apply_rt_haze(hit_c, rs.hit_t, R_w);
+          }
+        }
+
+        // Crisp dual-lobe GGX sun shimmer on lake ripples (zero firefly speckle).
+        vec3 spec_w = vec3(0.0);
+        float ndl_w = max(dot(surf.normal, sun_dw), 0.0);
+        if (ndl_w > 0.005 && sun_vis_w > 0.01) {
+          float vis_w = trace_visibility(surf.pos + surf.geom_normal * 0.04, sun_dw, 0.02, 500.0, kMaskShadowCasters);
+          vec3 H_w = safe_normalize(sun_dw + V, surf.normal);
+          float nh_w = max(dot(surf.normal, H_w), 0.0);
+          float g1 = ggx_d(nh_w, 0.025) * 0.065;
+          float g2 = ggx_d(nh_w, 0.16) * 0.040;
+          spec_w = ubo.sun_color_night.rgb * ((g1 + g2) * ndl_w * vis_w * sun_vis_w * 2.2);
+        }
+
+        L_path += throughput * (mix(body_w, refl_w, clamp(fresnel_w * 0.90 + 0.08, 0.08, 0.94)) + spec_w);
+        break;
+      }
+
+      // Deterministic split Fresnel reflection + clear interior transmission on automotive glass
+      // (zero stochastic sky-vs-cabin noise so rear windows show cabin seats & seated driver crisply!).
       if ((surf.flags & kRtGeomFlagGlass) != 0u) {
-        float ndv = max(dot(surf.normal, V), 0.001);
-        float F_glass = 0.043 + 0.957 * pow(1.0 - ndv, 5.0);
-        if (rand01(rng) < clamp(F_glass * 1.35, 0.08, 0.92)) {
-          // Crisp Fresnel reflection off glass exterior.
-          vec3 R = reflect(-V, surf.normal);
+        float ndv_g = max(dot(surf.normal, V), 0.001);
+        float F_glass = clamp(0.047 + 0.72 * pow(1.0 - ndv_g, 4.35), 0.047, 0.88);
+        vec3 R_g = reflect(-V, surf.normal);
+
+        if (bounce == 0 && glass_hops < 3) {
+          // Trace crisp exterior Fresnel reflection ray deterministically.
+          vec3 glass_refl = eval_tod_sky(R_g, true);
+          rayQueryEXT grq;
+          rayQueryInitializeEXT(grq, tlas, gl_RayFlagsNoneEXT, kMaskReflectionHits & ~kMaskGlass,
+                                surf.pos + surf.geom_normal * 0.015, 0.015, R_g, 450.0);
+          PROCEED_ALPHA_TESTED(grq);
+          if (rayQueryGetIntersectionTypeEXT(grq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+            RtSurface gs = unpack_hit_surface(grq, surf.pos + surf.geom_normal * 0.015, R_g, 1.5);
+            glass_refl = apply_rt_haze(shade_hit_fast(gs, -R_g, false), gs.hit_t, R_g);
+          }
+          // Subtle sun glint on glass exterior.
+          vec3 sun_dg = safe_normalize(ubo.sun_dir_elev.xyz, vec3(0.38, 0.87, 0.29));
+          float sun_vis_g = clamp(ubo.sun_dir_elev.w, 0.0, 1.0);
+          vec3 H_g = safe_normalize(sun_dg + V, surf.normal);
+          float glint_g = pow(max(dot(surf.normal, H_g), 0.0), 140.0) * 1.8 * max(dot(surf.normal, sun_dg), 0.0) * sun_vis_g;
+          L_path += throughput * (F_glass * glass_refl + ubo.sun_color_night.rgb * glint_g);
+
+          // Thin-walled transmittance: cabin windows vs colored taillight/headlight covers.
+          vec3 glass_trans;
+          if (surf.tex_aux == 1u) {
+            // detail_glass_red taillight / rear fog cover: ruby transmittance + subtle red lens sheen.
+            glass_trans = vec3(0.76, 0.08, 0.06);
+            vec3 amb_red = ubo.sky_color_exp.rgb * 0.8 + ubo.sun_color_night.rgb * (0.20 * sun_vis_g);
+            L_path += throughput * (vec3(0.065, 0.002, 0.002) * amb_red);
+          } else if (surf.tex_aux == 2u) {
+            glass_trans = vec3(0.92, 0.52, 0.10);
+          } else if (surf.tex_aux == 3u) {
+            glass_trans = vec3(0.90, 0.92, 0.94);
+          } else {
+            float tint_amt = clamp(ubo.paint_finish.w, 0.0, 0.85);
+            glass_trans = mix(vec3(0.86, 0.91, 0.89), vec3(0.22, 0.24, 0.26), tint_amt);
+          }
+          throughput *= (1.0 - F_glass) * glass_trans;
+          ray_origin = surf.pos + ray_dir * 0.022;
+          ++glass_hops;
+          --bounce;  // Glass transmission does not consume a diffuse/specular bounce!
+          continue;
+        }
+        // Fallback on deeper bounces or exhausted glass hops.
+        if (rand01(rng) < F_glass) {
           ray_origin = surf.pos + surf.geom_normal * 0.012;
-          ray_dir = normalize(R);
+          ray_dir = normalize(R_g);
         } else {
-          // Thin-walled Beer-Lambert tinted transmission revealing interior/headlight housing!
-          float tint_amt = clamp(ubo.paint_finish.w, 0.0, 0.85);
-          vec3 glass_trans = mix(vec3(0.84, 0.90, 0.88), vec3(0.18, 0.20, 0.22), tint_amt);
-          throughput *= glass_trans;
-          ray_origin = surf.pos - surf.geom_normal * 0.025;
+          throughput *= vec3(0.82, 0.86, 0.85);
+          ray_origin = surf.pos + ray_dir * 0.022;
         }
         continue;
       }
 
+      // Record transmitted interior/driver normal & depth into Thin G-Buffer with low roughness tag
+      // so SVGF A-Trous preserves razor-sharp cabin seats, steering wheel, and driver behind rear glass!
+      if (bounce == 0 && glass_hops > 0 && s_idx == 0) {
+        first_norm = surf.normal;
+        first_hit_t = primary_dist + surf.hit_t;
+        first_rough = 0.01;
+        demod_primary = false;
+      }
+
+      // Cabin skylight fill for car interiors & seated 3D driver seen through rear/side glass:
+      // sunlight & sky enter through all 6 cabin windows even though opaque roof/pillars occlude direct rays.
+      if (glass_hops > 0 && (surf.material_class == 4u || surf.material_class == 5u)) {
+        vec3 up_c = safe_normalize(ubo.env_basis_y.xyz, vec3(0.0, 1.0, 0.0));
+        float hemi_c = dot(surf.normal, up_c) * 0.5 + 0.5;
+        float sun_vis_c = clamp(ubo.sun_dir_elev.w, 0.0, 1.0);
+        vec3 cabin_fill = mix(ubo.ground_color_revz.rgb * 0.42, ubo.sky_color_exp.rgb * 1.15, hemi_c) +
+                          ubo.sun_color_night.rgb * (0.14 * sun_vis_c * (0.35 + 0.65 * hemi_c));
+        L_path += throughput * surf.albedo * cabin_fill * surf.occlusion;
+      }
+
       // Direct Illumination: ReSTIR DI at primary hit, fast MIS sun sample on deeper bounces.
-      if (bounce == 0 && s_idx == 0) {
+      if (bounce == 0 && glass_hops == 0 && s_idx == 0) {
         L_path += throughput * eval_restir_di(surf, V, px, sz, pixel_idx, rng, photo_mode);
       } else {
         vec3 sld;
