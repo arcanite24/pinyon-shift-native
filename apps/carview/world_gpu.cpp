@@ -324,16 +324,21 @@ bool WorldGpu::create_pipelines(std::string& error) {
   WG_TRY(module(kTree_cull_comp_spv, sizeof(kTree_cull_comp_spv), tree_comp), "tree_cull.comp");
   WG_TRY(module(kHiz_gen_comp_spv, sizeof(kHiz_gen_comp_spv), hiz_comp), "hiz_gen.comp");
 
-  auto make_comp = [&](VkShaderModule mod, VkPipelineLayout playout, VkPipeline& out) {
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
-                "main", nullptr};
-    ci.layout = playout;
-    return vkCreateComputePipelines(d, r_.pipeline_cache(), 1, &ci, nullptr, &out);
+  std::vector<std::function<VkResult(VkPipelineCache)>> tasks;
+  tasks.reserve(9);
+  auto queue_comp = [&](VkShaderModule mod, VkPipelineLayout playout, VkPipeline& out) {
+    VkPipeline* dst = &out;
+    tasks.emplace_back([d, mod, playout, dst](VkPipelineCache cache) -> VkResult {
+      VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+      ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
+                  "main", nullptr};
+      ci.layout = playout;
+      return vkCreateComputePipelines(d, cache, 1, &ci, nullptr, dst);
+    });
   };
-  VkResult result = make_comp(cull_comp, cull_pipeline_layout_, cull_);
-  if (result == VK_SUCCESS) result = make_comp(tree_comp, cull_pipeline_layout_, tree_cull_);
-  if (result == VK_SUCCESS) result = make_comp(hiz_comp, hiz_pipeline_layout_, hiz_gen_);
+  queue_comp(cull_comp, cull_pipeline_layout_, cull_);
+  queue_comp(tree_comp, cull_pipeline_layout_, tree_cull_);
+  queue_comp(hiz_comp, hiz_pipeline_layout_, hiz_gen_);
 
   const VkBool32 spec_values[2] = {r_.post() ? VK_TRUE : VK_FALSE, r_.reverse_z() ? VK_TRUE : VK_FALSE};
   const VkSpecializationMapEntry spec_entries[2] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)}};
@@ -378,64 +383,67 @@ bool WorldGpu::create_pipelines(std::string& error) {
   blend.pAttachments = &attachment;
 
   const VkFormat color_format = r_.scene_format();
-  auto build = [&](VkShaderModule vs, VkShaderModule fs, const VkPipelineVertexInputStateCreateInfo& vi,
-                   VkCullModeFlags cull, bool coverage, bool depth_write, VkCompareOp depth_op, bool color_out,
-                   VkPipeline& out) {
-    const VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main",
-         &spec},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main",
-         &spec}};
-    VkPipelineRasterizationStateCreateInfo rstate = raster;
-    rstate.cullMode = cull;
-    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = r_.samples_;
-    multisample.alphaToCoverageEnable = (coverage && r_.samples_ != VK_SAMPLE_COUNT_1_BIT) ? VK_TRUE : VK_FALSE;
-    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = depth_write ? VK_TRUE : VK_FALSE;
-    depth.depthCompareOp = depth_op;
-    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = color_out ? 1u : 0u;
-    rendering.pColorAttachmentFormats = color_out ? &color_format : nullptr;
-    rendering.depthAttachmentFormat = r_.depth_format_;
-    VkPipelineColorBlendAttachmentState catt = attachment;
-    if (coverage && r_.post()) {
-      // Alpha-to-coverage consumes fragment .a before colorWriteMask; keeping A_BIT off prevents
-      // matte foliage/trees from stamping gloss into hdr_.a for Hi-Z SSR.
-      catt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
-    }
-    VkPipelineColorBlendStateCreateInfo cblend = blend;
-    cblend.attachmentCount = color_out ? 1u : 0u;
-    cblend.pAttachments = color_out ? &catt : nullptr;
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    info.pNext = &rendering;
-    info.stageCount = fs ? 2u : 1u;
-    info.pStages = stages;
-    info.pVertexInputState = &vi;
-    info.pInputAssemblyState = &assembly;
-    info.pViewportState = &viewport;
-    info.pRasterizationState = &rstate;
-    info.pMultisampleState = &multisample;
-    info.pDepthStencilState = &depth;
-    info.pColorBlendState = &cblend;
-    info.pDynamicState = &dynamic;
-    info.layout = layout_;
-    return vkCreateGraphicsPipelines(d, r_.pipeline_cache(), 1, &info, nullptr, &out);
+  auto queue_gfx = [&](VkShaderModule vs, VkShaderModule fs, const VkPipelineVertexInputStateCreateInfo& vi,
+                       VkCullModeFlags cull, bool coverage, bool depth_write, VkCompareOp depth_op, bool color_out,
+                       VkPipeline& out) {
+    const VkPipelineVertexInputStateCreateInfo* vi_ptr = &vi;
+    VkPipeline* dst = &out;
+    tasks.emplace_back([&, vs, fs, vi_ptr, cull, coverage, depth_write, depth_op, color_out,
+                        dst](VkPipelineCache cache) -> VkResult {
+      const VkPipelineShaderStageCreateInfo stages[2] = {
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main",
+           &spec},
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fs, "main",
+           &spec}};
+      VkPipelineRasterizationStateCreateInfo rstate = raster;
+      rstate.cullMode = cull;
+      VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+      multisample.rasterizationSamples = r_.samples_;
+      multisample.alphaToCoverageEnable = (coverage && r_.samples_ != VK_SAMPLE_COUNT_1_BIT) ? VK_TRUE : VK_FALSE;
+      VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+      depth.depthTestEnable = VK_TRUE;
+      depth.depthWriteEnable = depth_write ? VK_TRUE : VK_FALSE;
+      depth.depthCompareOp = depth_op;
+      VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+      rendering.colorAttachmentCount = color_out ? 1u : 0u;
+      rendering.pColorAttachmentFormats = color_out ? &color_format : nullptr;
+      rendering.depthAttachmentFormat = r_.depth_format_;
+      VkPipelineColorBlendAttachmentState catt = attachment;
+      if (coverage && r_.post()) {
+        // Alpha-to-coverage consumes fragment .a before colorWriteMask; keeping A_BIT off prevents
+        // matte foliage/trees from stamping gloss into hdr_.a for Hi-Z SSR.
+        catt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+      }
+      VkPipelineColorBlendStateCreateInfo cblend = blend;
+      cblend.attachmentCount = color_out ? 1u : 0u;
+      cblend.pAttachments = color_out ? &catt : nullptr;
+      VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+      info.pNext = &rendering;
+      info.stageCount = fs ? 2u : 1u;
+      info.pStages = stages;
+      info.pVertexInputState = vi_ptr;
+      info.pInputAssemblyState = &assembly;
+      info.pViewportState = &viewport;
+      info.pRasterizationState = &rstate;
+      info.pMultisampleState = &multisample;
+      info.pDepthStencilState = &depth;
+      info.pColorBlendState = &cblend;
+      info.pDynamicState = &dynamic;
+      info.layout = layout_;
+      return vkCreateGraphicsPipelines(d, cache, 1, &info, nullptr, dst);
+    });
   };
 
   const VkCullModeFlags opaque_cull = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
   const VkCompareOp less_eq = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
-  if (result == VK_SUCCESS) result = build(vert, frag_opaque, input, opaque_cull, false, true, less_eq, true, opaque_);
-  if (result == VK_SUCCESS)
-    result = build(vert, frag_opaque, input, opaque_cull, false, false, VK_COMPARE_OP_EQUAL, true, opaque_after_z_);
-  if (result == VK_SUCCESS) result = build(vert, frag, input, opaque_cull, false, true, less_eq, true, opaque_dither_);
-  if (result == VK_SUCCESS)
-    result = build(vert, VK_NULL_HANDLE, input, opaque_cull, false, true, less_eq, false, z_prepass_);
-  if (result == VK_SUCCESS)
-    result = build(vert, frag, input, VK_CULL_MODE_NONE, true, true, less_eq, true, coverage_);
-  if (result == VK_SUCCESS)
-    result = build(tree_vert, frag, empty_input, VK_CULL_MODE_NONE, true, true, less_eq, true, tree_coverage_);
+  queue_gfx(vert, frag_opaque, input, opaque_cull, false, true, less_eq, true, opaque_);
+  queue_gfx(vert, frag_opaque, input, opaque_cull, false, false, VK_COMPARE_OP_EQUAL, true, opaque_after_z_);
+  queue_gfx(vert, frag, input, opaque_cull, false, true, less_eq, true, opaque_dither_);
+  queue_gfx(vert, VK_NULL_HANDLE, input, opaque_cull, false, true, less_eq, false, z_prepass_);
+  queue_gfx(vert, frag, input, VK_CULL_MODE_NONE, true, true, less_eq, true, coverage_);
+  queue_gfx(tree_vert, frag, empty_input, VK_CULL_MODE_NONE, true, true, less_eq, true, tree_coverage_);
+
+  const bool pipes_ok = r_.compile_pipelines_parallel(tasks, error);
 
   vkDestroyShaderModule(d, vert, nullptr);
   vkDestroyShaderModule(d, tree_vert, nullptr);
@@ -444,8 +452,7 @@ bool WorldGpu::create_pipelines(std::string& error) {
   vkDestroyShaderModule(d, cull_comp, nullptr);
   vkDestroyShaderModule(d, tree_comp, nullptr);
   vkDestroyShaderModule(d, hiz_comp, nullptr);
-  WG_TRY(result, "world gpu pipelines");
-  return true;
+  return pipes_ok;
 }
 
 bool WorldGpu::create_buffers(std::string& error) {

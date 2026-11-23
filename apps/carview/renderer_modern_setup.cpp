@@ -297,98 +297,103 @@ bool Renderer::create_modern_passes(std::string& error) {
   tmp_alloc.pSetLayouts = temp_layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &tmp_alloc, temporal_sets_), "temporal descriptor sets");
 
-  auto make_fs_pipe = [&](const uint32_t* frag_code, size_t frag_bytes, VkPipelineLayout layout, VkFormat fmt,
-                          VkPipeline& out, const char* what) -> bool {
-    auto make_module = [&](const uint32_t* code, size_t bytes, VkShaderModule& module) {
-      VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-      info.codeSize = bytes;
-      info.pCode = code;
-      return vkCreateShaderModule(device_, &info, nullptr, &module);
-    };
-    VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
-    VK_TRY(make_module(kPost_vert_spv, sizeof(kPost_vert_spv), vert), "modern vert");
-    VK_TRY(make_module(frag_code, frag_bytes, frag), what);
-    const VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main",
-         nullptr},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main",
-         nullptr}};
-    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    vp.viewportCount = vp.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE;
-    rs.lineWidth = 1.0f;
-    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    VkPipelineColorBlendAttachmentState att{};
-    att.colorWriteMask =
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo bl{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    bl.attachmentCount = 1;
-    bl.pAttachments = &att;
-    const VkDynamicState dstates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dy.dynamicStateCount = 2;
-    dy.pDynamicStates = dstates;
-    VkPipelineRenderingCreateInfo rend{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rend.colorAttachmentCount = 1;
-    rend.pColorAttachmentFormats = &fmt;
-    VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    pi.pNext = &rend;
-    pi.stageCount = 2;
-    pi.pStages = stages;
-    pi.pVertexInputState = &vi;
-    pi.pInputAssemblyState = &ia;
-    pi.pViewportState = &vp;
-    pi.pRasterizationState = &rs;
-    pi.pMultisampleState = &ms;
-    pi.pDepthStencilState = &ds;
-    pi.pColorBlendState = &bl;
-    pi.pDynamicState = &dy;
-    pi.layout = layout;
-    const VkResult res = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pi, nullptr, &out);
-    vkDestroyShaderModule(device_, vert, nullptr);
-    vkDestroyShaderModule(device_, frag, nullptr);
-    VK_TRY(res, what);
-    return true;
-  };
-  if (!make_fs_pipe(kSsao_frag_spv, sizeof(kSsao_frag_spv), ssao_layout_, VK_FORMAT_R8G8B8A8_UNORM, ssao_pipe_,
-                    "gtao pipeline") ||
-      !make_fs_pipe(kSscs_frag_spv, sizeof(kSscs_frag_spv), sscs_layout_, VK_FORMAT_R8_UNORM, sscs_pipe_,
-                    "sscs pipeline") ||
-      !make_fs_pipe(kSsr_frag_spv, sizeof(kSsr_frag_spv), ssr_layout_, VK_FORMAT_R16G16B16A16_SFLOAT, ssr_pipe_,
-                    "ssr pipeline") ||
-      !make_fs_pipe(kVolumetric_frag_spv, sizeof(kVolumetric_frag_spv), vol_layout_, VK_FORMAT_R16G16B16A16_SFLOAT,
-                    vol_pipe_, "volumetric pipeline") ||
-      !make_fs_pipe(kMblur_tile_frag_spv, sizeof(kMblur_tile_frag_spv), mblur_tile_layout_, VK_FORMAT_R16G16_SFLOAT,
-                    mblur_tile_pipe_, "mblur tile pipeline") ||
-      !make_fs_pipe(kFxaa_frag_spv, sizeof(kFxaa_frag_spv), fxaa_layout_, VK_FORMAT_R8G8B8A8_UNORM, fxaa_pipe_,
-                    "fxaa pipeline") ||
-      !make_fs_pipe(kUpscale_frag_spv, sizeof(kUpscale_frag_spv), upscale_layout_, VK_FORMAT_R8G8B8A8_UNORM,
-                    upscale_pipe_, "upscale pipeline") ||
-      !make_fs_pipe(kMotion_vectors_frag_spv, sizeof(kMotion_vectors_frag_spv), motion_layout_,
-                    VK_FORMAT_R16G16B16A16_SFLOAT, motion_pipe_, "motion pipeline") ||
-      !make_fs_pipe(kTemporal_upscale_frag_spv, sizeof(kTemporal_upscale_frag_spv), temporal_layout_,
-                    VK_FORMAT_R8G8B8A8_UNORM, temporal_pipe_, "temporal pipeline") ||
-      !make_fs_pipe(kInspector_preview_frag_spv, sizeof(kInspector_preview_frag_spv), inspector_layout_,
-                    VK_FORMAT_R8G8B8A8_UNORM, inspector_pipe_, "inspector preview pipeline") ||
-      !make_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, VK_FORMAT_R8G8B8A8_UNORM,
-                    hdr_pipe_sdr_, "hdr sdr pipeline"))
-    return false;
-  if (color_format_ != VK_FORMAT_R8G8B8A8_UNORM) {
-    if (!make_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, color_format_, hdr_pipe_swap_,
-                      "hdr swap pipeline"))
-      return false;
-    hdr_swap_fmt_ = color_format_;
-  } else {
-    hdr_pipe_swap_ = hdr_pipe_sdr_;
-    hdr_swap_fmt_ = color_format_;
+  VkShaderModule shared_vert = VK_NULL_HANDLE;
+  {
+    VkShaderModuleCreateInfo vinfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    vinfo.codeSize = sizeof(kPost_vert_spv);
+    vinfo.pCode = kPost_vert_spv;
+    VK_TRY(vkCreateShaderModule(device_, &vinfo, nullptr, &shared_vert), "modern vert");
   }
+
+  std::vector<std::function<VkResult(VkPipelineCache)>> tasks;
+  tasks.reserve(12);
+  auto queue_fs_pipe = [&](const uint32_t* frag_code, size_t frag_bytes, VkPipelineLayout layout, VkFormat fmt,
+                           VkPipeline& out) {
+    VkPipeline* dst = &out;
+    tasks.emplace_back([this, shared_vert, frag_code, frag_bytes, layout, fmt, dst](VkPipelineCache cache) -> VkResult {
+      VkShaderModuleCreateInfo finfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+      finfo.codeSize = frag_bytes;
+      finfo.pCode = frag_code;
+      VkShaderModule frag = VK_NULL_HANDLE;
+      VkResult res = vkCreateShaderModule(device_, &finfo, nullptr, &frag);
+      if (res != VK_SUCCESS) return res;
+      const VkPipelineShaderStageCreateInfo stages[2] = {
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, shared_vert,
+           "main", nullptr},
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main",
+           nullptr}};
+      VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+      VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+      ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+      VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+      vp.viewportCount = vp.scissorCount = 1;
+      VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+      rs.polygonMode = VK_POLYGON_MODE_FILL;
+      rs.cullMode = VK_CULL_MODE_NONE;
+      rs.lineWidth = 1.0f;
+      VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+      ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+      VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+      VkPipelineColorBlendAttachmentState att{};
+      att.colorWriteMask =
+          VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+      VkPipelineColorBlendStateCreateInfo bl{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+      bl.attachmentCount = 1;
+      bl.pAttachments = &att;
+      const VkDynamicState dstates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+      VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+      dy.dynamicStateCount = 2;
+      dy.pDynamicStates = dstates;
+      const VkFormat color_fmt = fmt;
+      VkPipelineRenderingCreateInfo rend{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+      rend.colorAttachmentCount = 1;
+      rend.pColorAttachmentFormats = &color_fmt;
+      VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+      pi.pNext = &rend;
+      pi.stageCount = 2;
+      pi.pStages = stages;
+      pi.pVertexInputState = &vi;
+      pi.pInputAssemblyState = &ia;
+      pi.pViewportState = &vp;
+      pi.pRasterizationState = &rs;
+      pi.pMultisampleState = &ms;
+      pi.pDepthStencilState = &ds;
+      pi.pColorBlendState = &bl;
+      pi.pDynamicState = &dy;
+      pi.layout = layout;
+      res = vkCreateGraphicsPipelines(device_, cache, 1, &pi, nullptr, dst);
+      vkDestroyShaderModule(device_, frag, nullptr);
+      return res;
+    });
+  };
+  queue_fs_pipe(kSsao_frag_spv, sizeof(kSsao_frag_spv), ssao_layout_, VK_FORMAT_R8G8B8A8_UNORM, ssao_pipe_);
+  queue_fs_pipe(kSscs_frag_spv, sizeof(kSscs_frag_spv), sscs_layout_, VK_FORMAT_R8_UNORM, sscs_pipe_);
+  queue_fs_pipe(kSsr_frag_spv, sizeof(kSsr_frag_spv), ssr_layout_, VK_FORMAT_R16G16B16A16_SFLOAT, ssr_pipe_);
+  queue_fs_pipe(kVolumetric_frag_spv, sizeof(kVolumetric_frag_spv), vol_layout_, VK_FORMAT_R16G16B16A16_SFLOAT,
+                vol_pipe_);
+  queue_fs_pipe(kMblur_tile_frag_spv, sizeof(kMblur_tile_frag_spv), mblur_tile_layout_, VK_FORMAT_R16G16_SFLOAT,
+                mblur_tile_pipe_);
+  queue_fs_pipe(kFxaa_frag_spv, sizeof(kFxaa_frag_spv), fxaa_layout_, VK_FORMAT_R8G8B8A8_UNORM, fxaa_pipe_);
+  queue_fs_pipe(kUpscale_frag_spv, sizeof(kUpscale_frag_spv), upscale_layout_, VK_FORMAT_R8G8B8A8_UNORM, upscale_pipe_);
+  queue_fs_pipe(kMotion_vectors_frag_spv, sizeof(kMotion_vectors_frag_spv), motion_layout_,
+                VK_FORMAT_R16G16B16A16_SFLOAT, motion_pipe_);
+  queue_fs_pipe(kTemporal_upscale_frag_spv, sizeof(kTemporal_upscale_frag_spv), temporal_layout_,
+                VK_FORMAT_R8G8B8A8_UNORM, temporal_pipe_);
+  queue_fs_pipe(kInspector_preview_frag_spv, sizeof(kInspector_preview_frag_spv), inspector_layout_,
+                VK_FORMAT_R8G8B8A8_UNORM, inspector_pipe_);
+  queue_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, VK_FORMAT_R8G8B8A8_UNORM,
+                hdr_pipe_sdr_);
+  if (color_format_ != VK_FORMAT_R8G8B8A8_UNORM) {
+    queue_fs_pipe(kHdr_output_frag_spv, sizeof(kHdr_output_frag_spv), hdr_layout_, color_format_, hdr_pipe_swap_);
+  }
+
+  const bool pipes_ok = compile_pipelines_parallel(tasks, error);
+  vkDestroyShaderModule(device_, shared_vert, nullptr);
+  if (!pipes_ok) return false;
+  if (color_format_ == VK_FORMAT_R8G8B8A8_UNORM) {
+    hdr_pipe_swap_ = hdr_pipe_sdr_;
+  }
+  hdr_swap_fmt_ = color_format_;
   modern_ready_ = true;
   return true;
 }

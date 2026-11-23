@@ -4,6 +4,7 @@
 #include "renderer_internal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -912,6 +913,81 @@ void Renderer::save_pipeline_cache() const {
   }
   pipeline_cache_loaded_ = true;
   pipeline_cache_loaded_bytes_ = data.size();
+}
+
+bool Renderer::compile_pipelines_parallel(const std::vector<std::function<VkResult(VkPipelineCache)>>& tasks,
+                                          std::string& error) {
+  if (tasks.empty()) return true;
+  if (tasks.size() == 1) {
+    const VkResult r = tasks[0](pipeline_cache_);
+    if (r != VK_SUCCESS) {
+      error = "pipeline creation failed (" + std::to_string(int(r)) + ")";
+      return false;
+    }
+    return true;
+  }
+
+  const uint32_t hw_threads = std::max(2u, std::thread::hardware_concurrency());
+  const size_t num_threads = std::min<size_t>(tasks.size(), size_t(hw_threads));
+  const bool use_private_caches = !pipeline_cache_loaded_ && device_ != VK_NULL_HANDLE &&
+                                  pipeline_cache_ != VK_NULL_HANDLE;
+
+  std::vector<VkPipelineCache> worker_caches;
+  if (use_private_caches) {
+    worker_caches.assign(num_threads, VK_NULL_HANDLE);
+    VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    for (size_t t = 0; t < num_threads; ++t) {
+      if (vkCreatePipelineCache(device_, &pci, nullptr, &worker_caches[t]) != VK_SUCCESS) {
+        worker_caches[t] = VK_NULL_HANDLE;
+      }
+    }
+  }
+
+  std::atomic<size_t> next_task{0};
+  std::atomic<int> first_error{int(VK_SUCCESS)};
+
+  auto worker_fn = [&](size_t tid) {
+    const VkPipelineCache cache =
+        (use_private_caches && worker_caches[tid] != VK_NULL_HANDLE) ? worker_caches[tid] : pipeline_cache_;
+    while (true) {
+      const size_t idx = next_task.fetch_add(1, std::memory_order_relaxed);
+      if (idx >= tasks.size()) break;
+      const VkResult r = tasks[idx](cache);
+      if (r != VK_SUCCESS) {
+        int expected = int(VK_SUCCESS);
+        first_error.compare_exchange_strong(expected, int(r), std::memory_order_relaxed);
+      }
+    }
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(num_threads - 1);
+  for (size_t t = 1; t < num_threads; ++t) {
+    threads.emplace_back(worker_fn, t);
+  }
+  worker_fn(0);
+  for (std::thread& th : threads) th.join();
+
+  if (use_private_caches) {
+    std::vector<VkPipelineCache> valid_caches;
+    valid_caches.reserve(worker_caches.size());
+    for (VkPipelineCache c : worker_caches) {
+      if (c != VK_NULL_HANDLE) valid_caches.push_back(c);
+    }
+    if (!valid_caches.empty()) {
+      vkMergePipelineCaches(device_, pipeline_cache_, uint32_t(valid_caches.size()), valid_caches.data());
+      for (VkPipelineCache c : valid_caches) {
+        vkDestroyPipelineCache(device_, c, nullptr);
+      }
+    }
+  }
+
+  const int err_code = first_error.load(std::memory_order_relaxed);
+  if (err_code != int(VK_SUCCESS)) {
+    error = "parallel pipeline creation failed (" + std::to_string(err_code) + ")";
+    return false;
+  }
+  return true;
 }
 
 bool Renderer::prewarm_targets(uint32_t width, uint32_t height, std::string& error) {
