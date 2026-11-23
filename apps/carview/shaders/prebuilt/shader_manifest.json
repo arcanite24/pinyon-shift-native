@@ -1,0 +1,4603 @@
+{
+  "schema_version": 1,
+  "shader_dir": "apps/carview/shaders",
+  "limits": {
+    "max_push_constant_bytes": 128,
+    "allowed_spec_constant_ids": [
+      0,
+      1
+    ],
+    "point_list_allowed": false
+  },
+  "summary": {
+    "total_shader_files": 56,
+    "entry_shaders": 53,
+    "shared_headers": 3,
+    "max_push_constant_bytes_observed": 128,
+    "point_size_shaders": 0,
+    "point_coord_shaders": 0,
+    "bindless_shaders": 9,
+    "ray_query_shaders": 7,
+    "bda_shaders": 7,
+    "vulkan_1_3_ready": 53,
+    "metal_3_ready": 53,
+    "dx12_sm_6_6_ready": 46
+  },
+  "headers": [
+    {
+      "name": "rt_common.glsl",
+      "kind": "header",
+      "lines": 648,
+      "uses_bda": true,
+      "notes": [
+        "uses GL_EXT_buffer_reference (64-bit BDA); DX12 SM 6.6 requires bindless buffer-slot migration"
+      ]
+    },
+    {
+      "name": "world_frag.glsl",
+      "kind": "header",
+      "lines": 907,
+      "uses_bda": false,
+      "notes": []
+    },
+    {
+      "name": "world_vert.glsl",
+      "kind": "header",
+      "lines": 233,
+      "uses_bda": false,
+      "notes": []
+    }
+  ],
+  "shaders": [
+    {
+      "name": "bloom_down.frag",
+      "source": "apps/carview/shaders/bloom_down.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/bloom_down.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 16016,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "lum_adapt",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "bloom_up.frag",
+      "source": "apps/carview/shaders/bloom_up.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/bloom_up.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 4576,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "aux",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "car.frag",
+      "source": "apps/carview/shaders/car.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/car.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 3948,
+      "local_size": null,
+      "push_constant_bytes": 112,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "atlas",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "car.vert",
+      "source": "apps/carview/shaders/car.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/car.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 1856,
+      "local_size": null,
+      "push_constant_bytes": 112,
+      "spec_constants": [],
+      "bindings": [],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_position"
+        },
+        {
+          "location": 1,
+          "name": "in_normal"
+        },
+        {
+          "location": 2,
+          "name": "in_uv"
+        },
+        {
+          "location": 3,
+          "name": "in_extra"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "contact_shadow.frag",
+      "source": "apps/carview/shaders/contact_shadow.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/contact_shadow.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 5520,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "contact_shadow.vert",
+      "source": "apps/carview/shaders/contact_shadow.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/contact_shadow.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 2368,
+      "local_size": null,
+      "push_constant_bytes": 96,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "env_prefilter.frag",
+      "source": "apps/carview/shaders/env_prefilter.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/env_prefilter.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 8340,
+      "local_size": null,
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_cube",
+          "dim": "Cube"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "fxaa.frag",
+      "source": "apps/carview/shaders/fxaa.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/fxaa.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 16164,
+      "local_size": null,
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "glow.frag",
+      "source": "apps/carview/shaders/glow.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/glow.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 3296,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 7,
+          "name": "glow_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "glow.vert",
+      "source": "apps/carview/shaders/glow.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/glow.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 7072,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        }
+      ],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_pos_radius"
+        },
+        {
+          "location": 1,
+          "name": "in_dir_inner"
+        },
+        {
+          "location": 2,
+          "name": "in_color_outer"
+        },
+        {
+          "location": 3,
+          "name": "in_extra"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "hdr_output.frag",
+      "source": "apps/carview/shaders/hdr_output.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/hdr_output.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 12816,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "stand_in",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "hiz_gen.comp",
+      "source": "apps/carview/shaders/hiz_gen.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/hiz_gen.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 6548,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 24,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_image",
+          "count": 1,
+          "name": "dst_img",
+          "dim": "2D",
+          "readonly": false
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "inspector_preview.frag",
+      "source": "apps/carview/shaders/inspector_preview.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/inspector_preview.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 5000,
+      "local_size": null,
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "mask.frag",
+      "source": "apps/carview/shaders/mask.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/mask.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 760,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "mblur_tile.frag",
+      "source": "apps/carview/shaders/mblur_tile.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/mblur_tile.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 4508,
+      "local_size": null,
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_vel",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "motion_vectors.frag",
+      "source": "apps/carview/shaders/motion_vectors.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/motion_vectors.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 5984,
+      "local_size": null,
+      "push_constant_bytes": 80,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "particle.frag",
+      "source": "apps/carview/shaders/particle.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/particle.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 20164,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 1,
+          "name": "kReverseZ",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "particle_atlas",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "scene_depth",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "particle.vert",
+      "source": "apps/carview/shaders/particle.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/particle.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 8792,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        }
+      ],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_pos_sx"
+        },
+        {
+          "location": 1,
+          "name": "in_vel_sy"
+        },
+        {
+          "location": 2,
+          "name": "in_uv_rect"
+        },
+        {
+          "location": 3,
+          "name": "in_color"
+        },
+        {
+          "location": 4,
+          "name": "in_light"
+        },
+        {
+          "location": 5,
+          "name": "in_extra"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "post.frag",
+      "source": "apps/carview/shaders/post.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/post.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 64688,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "aux",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "lut3d",
+          "dim": "3D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "lum_adapt",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "opt"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "ao_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "sscs_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "mblur_neighbor_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "ssr_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "vol_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "post.vert",
+      "source": "apps/carview/shaders/post.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/post.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 1304,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "rt_ao.comp",
+      "source": "apps/carview/shaders/rt_ao.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_ao.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 17132,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int64",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "rt_composite.comp",
+      "source": "apps/carview/shaders/rt_composite.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_composite.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 22808,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int64",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "rt_pathtrace.comp",
+      "source": "apps/carview/shaders/rt_pathtrace.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_pathtrace.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 100208,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int16",
+        "Int64",
+        "Int8",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader",
+        "ShaderNonUniform"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "rt_reflections.comp",
+      "source": "apps/carview/shaders/rt_reflections.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_reflections.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 80232,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int16",
+        "Int64",
+        "Int8",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader",
+        "ShaderNonUniform"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "rt_shadows.comp",
+      "source": "apps/carview/shaders/rt_shadows.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_shadows.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 29884,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int16",
+        "Int64",
+        "Int8",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader",
+        "ShaderNonUniform"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "rt_svgf_atrous.comp",
+      "source": "apps/carview/shaders/rt_svgf_atrous.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_svgf_atrous.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 17184,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int64",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "rt_svgf_temporal.comp",
+      "source": "apps/carview/shaders/rt_svgf_temporal.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/rt_svgf_temporal.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 17780,
+      "local_size": [
+        8,
+        8,
+        1
+      ],
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "acceleration_structure",
+          "count": 1,
+          "name": "tlas"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "InstInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "GeomInfos",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "LightsBuf",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "ubo"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "dyn_env",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "storage_image",
+          "count": 1,
+          "name": "hdr_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_norm",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_gbuf_albedo",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_refl_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 12,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_shad_ao_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 13,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_pt_img",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 14,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 15,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_hist_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 16,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_svgf_tmp",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 17,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_prev",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 18,
+          "type": "storage_image",
+          "count": 1,
+          "name": "rt_moments_curr",
+          "dim": "2D",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 19,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsPrev",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 20,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "ReservoirsCurr",
+          "readonly": false
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "world_textures",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Int64",
+        "PhysicalStorageBufferAddresses",
+        "RayQueryKHR",
+        "RuntimeDescriptorArray",
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": true,
+      "uses_ray_query": true,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": false
+      },
+      "notes": [
+        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
+      ]
+    },
+    {
+      "name": "shadow.frag",
+      "source": "apps/carview/shaders/shadow.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/shadow.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 1512,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "albedo",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "showroom.frag",
+      "source": "apps/carview/shaders/showroom.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/showroom.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 125568,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "mirror_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "CarInstances",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "static_environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shared_dirt_pattern",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shared_dirt_mask",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shared_glass_crack",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_depth_raw",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "slot0",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "slot1",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "livery",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "normal_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 4,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "damage_map",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "showroom.vert",
+      "source": "apps/carview/shaders/showroom.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/showroom.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 12424,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "CarInstances",
+          "readonly": true
+        }
+      ],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_position"
+        },
+        {
+          "location": 1,
+          "name": "in_frame"
+        },
+        {
+          "location": 2,
+          "name": "in_uv0"
+        },
+        {
+          "location": 3,
+          "name": "in_uv1"
+        },
+        {
+          "location": 4,
+          "name": "in_light"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": true,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "skid.frag",
+      "source": "apps/carview/shaders/skid.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/skid.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 14668,
+      "local_size": null,
+      "push_constant_bytes": 96,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "skid_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "skid.vert",
+      "source": "apps/carview/shaders/skid.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/skid.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 3860,
+      "local_size": null,
+      "push_constant_bytes": 96,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        }
+      ],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_position"
+        },
+        {
+          "location": 1,
+          "name": "in_normal"
+        },
+        {
+          "location": 2,
+          "name": "in_uv"
+        },
+        {
+          "location": 3,
+          "name": "in_color"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "sky.frag",
+      "source": "apps/carview/shaders/sky.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/sky.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 25384,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "sky"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_disc",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_dither",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_far_front",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_far_back",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_far_mask",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_close_ad_f",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_close_ad_b",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_close_am_f",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_close_am_b",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_close_tb_f",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "tex_close_tb_b",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "sky.vert",
+      "source": "apps/carview/shaders/sky.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/sky.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 1560,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [
+        {
+          "id": 1,
+          "name": "kReverseZ",
+          "default": false
+        }
+      ],
+      "bindings": [],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "ssao.frag",
+      "source": "apps/carview/shaders/ssao.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/ssao.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 27932,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "sscs.frag",
+      "source": "apps/carview/shaders/sscs.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/sscs.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 10796,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "ssr.frag",
+      "source": "apps/carview/shaders/ssr.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/ssr.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 25296,
+      "local_size": null,
+      "push_constant_bytes": 64,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "hdr_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "hiz_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "ssr_in",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "stars.frag",
+      "source": "apps/carview/shaders/stars.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/stars.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 1664,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "stars.vert",
+      "source": "apps/carview/shaders/stars.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/stars.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 4600,
+      "local_size": null,
+      "push_constant_bytes": 96,
+      "spec_constants": [
+        {
+          "id": 1,
+          "name": "kReverseZ",
+          "default": false
+        }
+      ],
+      "bindings": [],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_star"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "temporal_upscale.frag",
+      "source": "apps/carview/shaders/temporal_upscale.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/temporal_upscale.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 8068,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "curr_color",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "history_color",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "motion_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "tree_cull.comp",
+      "source": "apps/carview/shaders/tree_cull.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/tree_cull.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 11188,
+      "local_size": [
+        64,
+        1,
+        1
+      ],
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Trees",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "VisibleTrees",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "cmd",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "hiz_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "p"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "ui.frag",
+      "source": "apps/carview/shaders/ui.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/ui.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 17900,
+      "local_size": null,
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Font",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "atlas",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "ui.vert",
+      "source": "apps/carview/shaders/ui.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/ui.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 2608,
+      "local_size": null,
+      "push_constant_bytes": 16,
+      "spec_constants": [],
+      "bindings": [],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_rect"
+        },
+        {
+          "location": 1,
+          "name": "in_p"
+        },
+        {
+          "location": 2,
+          "name": "in_q"
+        },
+        {
+          "location": 3,
+          "name": "in_r"
+        },
+        {
+          "location": 4,
+          "name": "in_m"
+        },
+        {
+          "location": 5,
+          "name": "in_cw"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "upscale.frag",
+      "source": "apps/carview/shaders/upscale.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/upscale.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 34156,
+      "local_size": null,
+      "push_constant_bytes": 48,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "src_tex",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "volumetric.frag",
+      "source": "apps/carview/shaders/volumetric.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/volumetric.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 23760,
+      "local_size": null,
+      "push_constant_bytes": 32,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "depth_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "vol_in",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "vol"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "world.frag",
+      "source": "apps/carview/shaders/world.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 94776,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_depth_raw",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "albedo",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "layer_b",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "splat_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "light_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 4,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "normal_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "ao_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "layer_c",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "spec_map",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "world.vert",
+      "source": "apps/carview/shaders/world.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 16008,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 1,
+          "name": "kReverseZ",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        }
+      ],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_position"
+        },
+        {
+          "location": 1,
+          "name": "in_normal"
+        },
+        {
+          "location": 2,
+          "name": "in_uv0"
+        },
+        {
+          "location": 3,
+          "name": "in_uv1"
+        },
+        {
+          "location": 4,
+          "name": "in_colour"
+        },
+        {
+          "location": 5,
+          "name": "in_centre"
+        },
+        {
+          "location": 6,
+          "name": "in_uv2"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "world_cull.comp",
+      "source": "apps/carview/shaders/world_cull.comp",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world_cull.comp.spv",
+      "stage": "compute",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 13284,
+      "local_size": [
+        64,
+        1,
+        1
+      ],
+      "push_constant_bytes": 0,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Draws",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Commands",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Counts",
+          "readonly": false
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "hiz_tex",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "p"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "Metal 3 uses companion world_cull_icb.metal for MTLIndirectCommandBuffer; DX12 uses 24B indirect record + root constant"
+      ]
+    },
+    {
+      "name": "world_gpu.frag",
+      "source": "apps/carview/shaders/world_gpu.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world_gpu.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 99552,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_depth_raw",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "textures",
+          "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Draws",
+          "readonly": true
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "RuntimeDescriptorArray",
+        "Shader",
+        "ShaderNonUniform"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "world_gpu.vert",
+      "source": "apps/carview/shaders/world_gpu.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world_gpu.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 17668,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 1,
+          "name": "kReverseZ",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Draws",
+          "readonly": true
+        }
+      ],
+      "vertex_inputs": [
+        {
+          "location": 0,
+          "name": "in_position"
+        },
+        {
+          "location": 1,
+          "name": "in_normal"
+        },
+        {
+          "location": 2,
+          "name": "in_uv0"
+        },
+        {
+          "location": 3,
+          "name": "in_uv1"
+        },
+        {
+          "location": 4,
+          "name": "in_colour"
+        },
+        {
+          "location": 5,
+          "name": "in_centre"
+        },
+        {
+          "location": 6,
+          "name": "in_uv2"
+        }
+      ],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": true,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "DX12 SM 6.6 requires 1-DWORD root constant (or SM 6.8 SV_StartInstanceLocation) for StartInstanceLocation",
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    },
+    {
+      "name": "world_gpu_opaque.frag",
+      "source": "apps/carview/shaders/world_gpu_opaque.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world_gpu_opaque.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 95924,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_depth_raw",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "sampler",
+          "count": 1,
+          "name": "world_sampler"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "sampled_image",
+          "count": "unbounded",
+          "name": "textures",
+          "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Draws",
+          "readonly": true
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "RuntimeDescriptorArray",
+        "Shader",
+        "ShaderNonUniform"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": true,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "world_opaque.frag",
+      "source": "apps/carview/shaders/world_opaque.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world_opaque.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 91292,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_depth_raw",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "albedo",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "layer_b",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "splat_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "light_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 4,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "normal_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "ao_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 6,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "layer_c",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "spec_map",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": true,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
+      "name": "world_tree_gpu.vert",
+      "source": "apps/carview/shaders/world_tree_gpu.vert",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/world_tree_gpu.vert.spv",
+      "stage": "vertex",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 7148,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 2,
+          "binding": 1,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "Trees",
+          "readonly": true
+        },
+        {
+          "set": 3,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "VisibleTrees",
+          "readonly": true
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": true,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": [
+        "SPIRV-Cross emits flip_vert_y=true for Metal/DX12 clip-space Y parity"
+      ]
+    }
+  ]
+}
