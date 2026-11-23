@@ -4618,9 +4618,22 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
     const bool arena = p->staged.arena && arena_on();
     std::vector<WorldGpu::Copy> arena_vertex_copies, arena_index_copies;
     if (arena && !place_world_arena(p->staged, arena_vertex_copies, arena_index_copies, error)) {
-      pending_world_ = std::move(p);
-      drop_pending_world();
-      return false;
+      // Long-distance teleports (e.g. New Career / Fast Travel) can temporarily exceed the
+      // resident arena while old cells are still live. Flush old/fading draws and retry once.
+      r_.wait_idle();
+      drop_fading_world(true);
+      for (auto& d : world_draws_) {
+        if (d.resident) gpu_world_->resident().release(d.key, 0);
+      }
+      world_draws_.clear();
+      arena_vertex_copies.clear();
+      arena_index_copies.clear();
+      error.clear();
+      if (!place_world_arena(p->staged, arena_vertex_copies, arena_index_copies, error)) {
+        pending_world_ = std::move(p);
+        drop_pending_world();
+        return false;
+      }
     }
     if ((!arena && (!r_.create_buffer(vb, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p->vertices) ||

@@ -575,6 +575,7 @@ static void start_android_log_bridge() {
 // keeps main's own name on the desktops).
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv) {
   start_android_log_bridge();
+  SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
   const int rc = carview_main(argc, argv);
   __android_log_print(ANDROID_LOG_INFO, "ShiftEngine", "carview_main exited with code %d", rc);
   std::fflush(stdout);
