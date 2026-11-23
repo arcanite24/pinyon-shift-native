@@ -128,11 +128,11 @@ class StoryIntro {
   bool start_sp_ = false;
   bool pending_career_intro_ = false;
 
-  // Viper highway start (~3.4 km east-southeast of the Horizon Festival gate).
-  std::array<double, 3> viper_spawn_ = {1620.0, 128.0, 840.0};
-  double viper_heading_ = -1.92;
+  // Verified Colorado highway asphalt start (COLLISION.md measured free-roam spawn).
+  std::array<double, 3> viper_spawn_ = {2002.96, 143.38, 960.00};
+  double viper_heading_ = 2.20073;
   std::array<double, 3> festival_gate_ = {-1360.0, 2.0, -210.0};
-  double dist_to_festival_ = 3200.0;
+  double dist_to_festival_ = 3560.0;
 
   std::vector<FmvMovieId> splash_queue_;
   int splash_idx_ = 0;

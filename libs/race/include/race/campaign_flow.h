@@ -379,6 +379,9 @@ class CampaignFlow {
   static constexpr const char* kQualifyEventId = "FESTIVAL_SECOND";
   static constexpr int kQualifyRouteId = 16;
   static constexpr double kFestivalArrivalRadiusM = 120.0;
+  // Verified Colorado highway asphalt spawn (COLLISION.md measured free-roam spawn).
+  static constexpr std::array<double, 3> kViperSpawnPos = {2002.96, 143.38, 960.00};
+  static constexpr double kViperSpawnHeading = 2.20073;
   static constexpr std::array<const char*, 2> kViperOpeningPlaylist = {
       "Avicii - Levels (Skrillex Remix)",
       "Porter Robinson - Language",
@@ -468,10 +471,10 @@ class CampaignFlow {
   bool pending_finale_credits_ = false;
   bool pending_darius_showdown_ = false;
 
-  std::array<double, 3> viper_spawn_ = {1620.0, 128.0, 840.0};
-  double viper_heading_ = -1.92;
+  std::array<double, 3> viper_spawn_ = kViperSpawnPos;
+  double viper_heading_ = kViperSpawnHeading;
   std::array<double, 3> festival_gate_ = {-1360.0, 2.0, -210.0};
-  double dist_to_festival_ = 3200.0;
+  double dist_to_festival_ = 3560.0;
 
   DialogQueue dialogs_;
   TransitionState transition_;

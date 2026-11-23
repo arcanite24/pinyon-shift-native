@@ -1,10 +1,14 @@
 #include "drive_session.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include "world/road_follow.h"
 
 namespace carview {
 
@@ -421,6 +425,108 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
           app.smashables.clear_debris();
         }
         prune_world_rewind();
+}
+
+void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_pos, double target_heading) {
+  double px = target_pos[0];
+  double py = target_pos[1];
+  double pz = target_pos[2];
+  double ph = target_heading;
+
+  if (s.host.streamer) {
+    auto sync_prime_at = [&](double cx, double cz) {
+      bool any_changed = false;
+      for (int wait_i = 0; wait_i < 2000 && s.host.streamer->gathering(); ++wait_i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        bool ch = false;
+        s.host.streamer->update(cx, cz, &ch, &s.app.error);
+        any_changed = any_changed || ch;
+      }
+      s.host.streamer->set_async(false);
+      const double dist_centre = std::hypot(cx - s.host.streamer->centre_x(), cz - s.host.streamer->centre_z());
+      if (s.host.streamer->gathers() == 0 || dist_centre > 100.0) {
+        s.host.streamer->set_hidden(s.host.hidden_sent);
+        bool ch = false;
+        s.host.streamer->update(cx, cz, &ch, &s.app.error);
+        any_changed = any_changed || ch;
+      }
+      s.host.streamer->set_async(s.host.streamer_async);
+      if (any_changed) {
+        s.host.ground = &s.host.streamer->ground();
+        s.host.follower.set_ground(&s.host.streamer->ground());
+        s.host.set_staged_world();
+      }
+    };
+
+    auto raycast_ground = [&](double rx, double ry_hint, double rz, double& out_y, drive::Hit& out_hit) -> bool {
+      const double y_from = ry_hint + 25.0;
+      if (s.host.streamer->ground().raycast({rx, y_from, rz}, {0, -1, 0}, 60.0, out_hit)) {
+        out_y = y_from - out_hit.distance;
+        return true;
+      }
+      if (s.host.streamer->ground().raycast({rx, 2000.0, rz}, {0, -1, 0}, 4000.0, out_hit)) {
+        out_y = 2000.0 - out_hit.distance;
+        return true;
+      }
+      return false;
+    };
+
+    auto is_drivable_road = [&](const drive::Hit& hit) -> bool {
+      if (hit.normal.y < 0.7) return false;
+      const auto& surfs = s.host.collision.surfaces();
+      if (hit.surface >= 0 && size_t(hit.surface) < surfs.size()) {
+        return surfs[size_t(hit.surface)].off_roadness < 0.5f;
+      }
+      return hit.surface <= 1;
+    };
+
+    sync_prime_at(px, pz);
+
+    double hit_y = py;
+    drive::Hit hit{};
+    const bool direct_hit = raycast_ground(px, py, pz, hit_y, hit);
+    if (direct_hit && is_drivable_road(hit)) {
+      py = hit_y + 0.03;
+    } else {
+      world::Spawn sp;
+      if (world::find_spawn(s.host.streamer->mesh(), px, pz, sp, &ph)) {
+        px = sp.position[0];
+        pz = sp.position[2];
+        ph = sp.heading;
+        if (std::hypot(px - s.host.streamer->centre_x(), pz - s.host.streamer->centre_z()) > 100.0) {
+          sync_prime_at(px, pz);
+        }
+        double snap_y = sp.position[1];
+        drive::Hit snap_hit{};
+        if (raycast_ground(px, sp.position[1], pz, snap_y, snap_hit)) {
+          py = snap_y + 0.03;
+        } else {
+          py = sp.position[1] + 0.03;
+        }
+        const drive::Vec3 p{px, py, pz};
+        if (world::wall_between(s.host.streamer->ground(), p, p.x + 10.0 * std::sin(ph),
+                                p.z + 10.0 * std::cos(ph))) {
+          ph = std::remainder(ph + 3.14159265358979323846, 2.0 * 3.14159265358979323846);
+        }
+      } else if (direct_hit) {
+        py = hit_y + 0.03;
+      }
+    }
+  }
+
+  s.vehicle.reset(drive::Vec3{px, py, pz}, ph);
+  s.host.start = {px, py, pz};
+  s.host.start_heading = ph;
+  s.have_touch = true;
+  s.last_touch_y = s.vehicle.position().y;
+  s.camera_pull = CameraPull{};
+  if (s.have_rig) s.rig.restart();
+  s.rig_accel.reset();
+  s.drawn_before = s.vehicle.pose();
+  s.rewind_buf.reset_history(s.vehicle.time());
+  s.world_rewind_snaps.clear();
+  s.place_world();
+  std::printf("campaign teleport: primed world at (%.2f, %.2f, %.2f) heading %.4f rad\n", px, py, pz, ph);
 }
 
 }  // namespace carview
