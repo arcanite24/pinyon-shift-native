@@ -439,6 +439,10 @@ class Showroom {
   // Living cockpit animation (steering wheel rotation, RPM/speed/fuel/boost/power
   // gauge needles, and cockpit mirror render pass enable).
   void set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera);
+  // CameraOverrides CockpitWheelPositionOffset{X,Y,Z} (body frame, m) and
+  // CockpitWheelRotationOffset (deg) applied to the drawn steering wheel.
+  void set_cockpit_wheel_offsets(std::array<float, 3> pos_offset_m, float rot_offset_deg);
+  bool has_cockpit_mesh() const { return cockpit_rigs_[0].valid; }
   // Batched/instanced soft particle atlas & skidmark pipelines (SPEC-VFX-AND-PARTICLES).
   bool init_vfx(const world::ParticleLibrary* lib, std::string& error);
   void set_particles(const std::vector<world::ParticleSprite>& alpha,
@@ -1000,6 +1004,8 @@ class Showroom {
     float ang_max = 0.0f;
   };
   CockpitRig cockpit_rigs_[6]{};  // 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
+  std::array<float, 3> cockpit_wheel_pos_offset_{0.0f, 0.0f, 0.0f};
+  float cockpit_wheel_rot_offset_rad_ = 0.0f;
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
   bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
   void evict_world_textures();

@@ -320,6 +320,7 @@ bool parse_camera_physics(std::string_view xml, CameraTuning& out, std::string* 
       else if (output == "CarSpaceYPRImpulse") l.output = CameraLayer::Output::kCarYPRImpulse;
       else if (output == "CameraSpaceYPRImpulse") l.output = CameraLayer::Output::kCameraYPRImpulse;
       else if (output == "FOV") l.output = CameraLayer::Output::kFov;
+      else if (output == "SteeringWheel") l.output = CameraLayer::Output::kSteeringWheel;
       else kept = false;
 
       if (!kept) {
@@ -376,15 +377,22 @@ double CameraCar::override(const std::string& column) const {
 
 void DriveCamera::set_car(const CameraCar& c) {
   car_ = c;
+  if (!car_.has_cockpit_mesh && mode_ == CameraMode::kCockpit) mode_ = CameraMode::kHood;
   started_ = false;
 }
 
 void DriveCamera::set_mode(CameraMode m) {
+  if (!car_.has_cockpit_mesh && m == CameraMode::kCockpit) m = CameraMode::kHood;
   mode_ = m;
   started_ = false;
 }
 
-void DriveCamera::cycle() { set_mode(CameraMode((int(mode_) + 1) % kCameraModes)); }
+void DriveCamera::cycle() {
+  CameraMode next = CameraMode((int(mode_) + 1) % kCameraModes);
+  if (!car_.has_cockpit_mesh && next == CameraMode::kCockpit)
+    next = CameraMode((int(next) + 1) % kCameraModes);
+  set_mode(next);
+}
 
 DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in) {
   const auto& layers = tuning_.layers[size_t(mode_)];
@@ -498,6 +506,7 @@ DriveCamera::LayerOut DriveCamera::step_layers(double dt, const CameraInput& in)
       case CameraLayer::Output::kCameraYPR:
       case CameraLayer::Output::kCameraYPRImpulse: xyz = &out.camera_ypr; break;
       case CameraLayer::Output::kFov: out.fov += l.param[0] * v; break;
+      case CameraLayer::Output::kSteeringWheel: out.steering_wheel += l.param[0] * v * kDeg; break;
     }
     if (xyz)
       for (int k = 0; k < 3; ++k) (*xyz)[size_t(k)] += l.param[size_t(k)] * v;
@@ -535,6 +544,7 @@ void DriveCamera::start(const CameraInput& in) {
     h_ = car_.box_max[1] - car_.com[1] + kEyeLift[i];
     h_rate_ = 0;
     slope_hold_ = 0;  // three or more wheels down
+    wall_pull_ = 1.0;
   }
   if (mode_ == CameraMode::kBumper) bumper_ground_ = in.wheel_ground_y[0];
 }
@@ -668,6 +678,7 @@ CameraView DriveCamera::update(double dt, const CameraInput& in) {
     v = mode_ == CameraMode::kFollowLow || mode_ == CameraMode::kFollowHigh ? chase(dt, in, l) : on_car(in, l);
   }
   v.mode = mode_;
+  v.steering_wheel_kick = l.steering_wheel;
   if (editor_.driving_view == DrivingView::kNormal && !head_pose_.is_zero()) {
     apply_head_tracking(v, head_pose_, mode_);
   }
@@ -755,6 +766,29 @@ CameraView DriveCamera::chase(double dt, const CameraInput& in, const LayerOut& 
     eye = add(eye, add(mul(cam_right, l.camera_xyz[0]),
                        add(mul(cam_up, l.camera_xyz[1]), mul(f, l.camera_xyz[2]))));
   }
+  // Horizontal wall / car-OBB obstacle pull-in (CAMERAS.md:266): raycast from
+  // look_at toward eye; pull in immediately when blocked, ease back smoothly.
+  if (in.obstacle_ray) {
+    const V3 to_eye = add(eye, mul(look_at, -1.0));
+    const double full_dist = std::sqrt(to_eye[0] * to_eye[0] + to_eye[1] * to_eye[1] + to_eye[2] * to_eye[2]);
+    if (full_dist > 0.5) {
+      const V3 dir = mul(to_eye, 1.0 / full_dist);
+      double hit_d = full_dist;
+      double target_pull = 1.0;
+      if (in.obstacle_ray(look_at, dir, full_dist, hit_d) && hit_d < full_dist) {
+        const double safe_d = std::max(0.6, hit_d - 0.35);
+        target_pull = std::clamp(safe_d / full_dist, 0.2, 1.0);
+      }
+      if (dt >= kSettle || target_pull < wall_pull_) {
+        wall_pull_ = target_pull;
+      } else {
+        wall_pull_ += (target_pull - wall_pull_) * (1.0 - std::exp(-dt * 6.0));
+      }
+      if (wall_pull_ < 0.999) {
+        eye = add(look_at, mul(to_eye, wall_pull_));
+      }
+    }
+  }
   // Clearance (probable): 0.3 m above the world under the eye.
   if (in.ground_below) {
     double gy = 0;
@@ -818,7 +852,7 @@ CameraView DriveCamera::on_car(const CameraInput& in, const LayerOut& l) {
       eye = {kHoodAnchor[0], kHoodAnchor[1] + y, kHoodAnchor[2] + z};
       pitch = p;
       fov = tuning_.hood_fov;
-      near_clip = tuning_.hood_near;
+      near_clip = p != 0.0 ? tuning_.hood_near * 0.5 : tuning_.hood_near;
       break;
     }
     default: {  // the bumper
@@ -831,10 +865,24 @@ CameraView DriveCamera::on_car(const CameraInput& in, const LayerOut& l) {
     }
   }
   eye = add(eye, l.car_xyz);
-  // Looking back or to a side moves the eye to the box's rear or side.
+  // Looking back or to a side smoothly blends the eye to the box's rear or side
+  // (exact match at 0, +-pi/2, and +-pi without a discontinuous jump).
   const double look = std::remainder(look_, 2 * kPi);
-  if (std::fabs(look) > 0.75 * kPi) eye[2] = car_.box_min[2] + kBoxInset;
-  else if (std::fabs(look) > 0.25 * kPi) eye[0] = (look > 0 ? 1 : -1) * (car_.box_max[0] - kBoxInset);
+  const double alook = std::fabs(look);
+  auto smoothstep = [](double e0, double e1, double x) {
+    const double t = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+  };
+  const double w_back = smoothstep(0.55 * kPi, 0.85 * kPi, alook);
+  const double w_side = smoothstep(0.15 * kPi, 0.45 * kPi, alook) * (1.0 - w_back);
+  if (w_back > 0.0) {
+    const double back_z = car_.box_min[2] + kBoxInset;
+    eye[2] = eye[2] + (back_z - eye[2]) * w_back;
+  }
+  if (w_side > 0.0) {
+    const double side_x = (look > 0 ? 1.0 : -1.0) * (car_.box_max[0] - kBoxInset);
+    eye[0] = eye[0] + (side_x - eye[0]) * w_side;
+  }
   pitch += l.car_ypr[1] + l.camera_ypr[1];
   const double yaw = look + (l.car_ypr[0] + l.camera_ypr[0]) * kDeg;
   CameraView v;

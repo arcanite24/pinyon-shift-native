@@ -1169,7 +1169,7 @@ race::DifficultyAssists to_difficulty_assists(const drive::AssistSettings& a) {
 // (with a note) when something is missing: the drive keeps the old chase.
 bool load_camera_rig(const std::filesystem::path& game_root, const std::filesystem::path& bake_dir,
                      const cars::bake::CarInfo& info, const drive::Vehicle& v, drive::DriveCamera& rig,
-                     std::string& note, bool camera_effects = true) {
+                     std::string& note, bool camera_effects = true, bool has_cockpit = true) {
   cars::Install install;
   const char* state = std::getenv("SHIFT_STATE_ROOT");
   std::string ini, xml;
@@ -1209,6 +1209,7 @@ bool load_camera_rig(const std::filesystem::path& game_root, const std::filesyst
                    physics.get(std::string(k) + "MaxZ") - shift};
   }
   car.overrides = row.overrides;
+  car.has_cockpit_mesh = has_cockpit;
   // The CoM: the body frame (ground-origin, FORMAT-CARS' pose) to the car
   // frame (the model origin, z forward).
   const drive::Vec3 b = v.params().centre_of_mass;
@@ -1262,7 +1263,9 @@ void compute_clip_from_world(const ShowroomFrame& f, const cars::bake::CarInfo& 
 ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info, const drive::Vehicle& v,
                         const drive::Ground* ground, carview::RigAccelState& accel, double dt, float aspect,
                         bool reverse_z, bool* interior, double* com_distance = nullptr,
-                        drive::CameraView* out_view = nullptr) {
+                        drive::CameraView* out_view = nullptr, const world::Collision* collision = nullptr,
+                        double car_coll_long = 0.0, double car_coll_lat = 0.0,
+                        std::array<double, 4>* prev_wheel_comp = nullptr) {
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(info, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
@@ -1280,13 +1283,37 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
   accel.sample(vel, v.orientation(), dt, in.g_longitudinal, in.g_lateral);
   int down = 0;
   const double c = std::cos(info.pitch), s = std::sin(info.pitch);
+  const drive::Vec3 vpos = v.position();
   double slip_long_sum = 0, slip_lat_sum = 0;
   for (int i = 0; i < 4; ++i) {
     const auto& w = v.wheels()[size_t(i)];
     down += w.contact ? 1 : 0;
     const double y = w.centre.y - v.params().tyre_radius[size_t(i)] - info.lift;
     in.wheel_ground_y[size_t(i)] = c * y + s * w.centre.z;
-    in.surface_bump[size_t(i)] = w.contact ? w.compression : 0.0;
+    // Surface bumpiness from procedural SurfaceType bump height + high-pass
+    // suspension delta (prevents steady cornering lean from leaking into shake).
+    double bump = 0.0;
+    if (w.contact) {
+      if (collision && w.surface >= 0 && size_t(w.surface) < collision->surfaces().size()) {
+        const auto& sf = collision->surfaces()[size_t(w.surface)];
+        drive::SurfaceTyre st{};
+        st.bump_noise_type = sf.bump_noise_type;
+        st.bump_frequency = sf.bump_frequency;
+        st.bump_clamp_min = sf.bump_clamp_min;
+        st.bump_clamp_max = sf.bump_clamp_max;
+        st.bump_scale = sf.bump_scale;
+        st.bump_offset = sf.bump_offset;
+        const drive::Vec3 wp = vpos + drive::rotate(v.orientation(), w.centre);
+        bump = drive::eval_surface_bumpiness(st, wp.x, wp.z).height;
+      }
+      if (prev_wheel_comp) {
+        bump += (w.compression - (*prev_wheel_comp)[size_t(i)]);
+        (*prev_wheel_comp)[size_t(i)] = w.compression;
+      }
+    } else if (prev_wheel_comp) {
+      (*prev_wheel_comp)[size_t(i)] = 0.0;
+    }
+    in.surface_bump[size_t(i)] = bump;
     slip_long_sum += w.slip_ratio;
     slip_lat_sum += w.slip_angle;
   }
@@ -1303,13 +1330,23 @@ ShowroomFrame rig_frame(drive::DriveCamera& rig, const cars::bake::CarInfo& info
     in.world_collision_longitudinal = mag * (bc.normal.x * fwd.x + bc.normal.y * fwd.y + bc.normal.z * fwd.z);
     in.world_collision_lateral = mag * (bc.normal.x * right.x + bc.normal.y * right.y + bc.normal.z * right.z);
   }
-  if (ground)
+  in.car_collision_longitudinal = car_coll_long;
+  in.car_collision_lateral = car_coll_lat;
+  if (ground) {
     in.ground_below = [ground](double x, double y, double z, double& gy) {
       drive::Hit hit;
       if (!ground->raycast({x, y, z}, {0, -1, 0}, 60, hit)) return false;
       gy = y - hit.distance;
       return true;
     };
+    in.obstacle_ray = [ground](const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
+                               double& hit_dist) {
+      drive::Hit hit;
+      if (!ground->raycast({origin[0], origin[1], origin[2]}, {dir[0], dir[1], dir[2]}, max_dist, hit)) return false;
+      hit_dist = hit.distance;
+      return true;
+    };
+  }
   const drive::CameraView view = rig.update(dt, in);
   if (out_view) *out_view = view;
   if (interior) *interior = view.interior;
@@ -5643,6 +5680,12 @@ int run_drive(int argc, char** argv) {
       world::PostZoneBlender zone_blender;
       drive::CarLampState player_lamps;
       drive::CockpitAnimState cockpit_anim;
+      float cockpit_steer_kick_rad = 0.0f;
+      std::array<double, 4> cam_prev_wheel_comp{};
+      double cam_car_coll_long = 0.0, cam_car_coll_lat = 0.0;
+      const float cockpit_dial_max_speed = drive::CockpitAnimState::estimate_dial_max_speed_mps(vehicle.params());
+      const float cockpit_dial_max_boost = drive::CockpitAnimState::gauge_max_boost_psi(vehicle.params());
+      const bool cockpit_has_fi = vehicle.params().has_turbo || vehicle.params().has_supercharger;
       int light_override = 0;  // 0 auto, 1 low beam, 2 full beam, 3 fog
       showroom.set_wind(tod_system.post_config.wind_speed, tod_system.post_config.wind_amplitude);
       auto place_world = [&]() {
@@ -5719,9 +5762,11 @@ int run_drive(int argc, char** argv) {
           showroom.set_lamp_state(player_lamps);
           const float road_steer = float(vehicle.wheels()[0].steer);
           const float spd = float(std::max(0.0, vehicle.speed()));
-          cockpit_anim.update_steering(road_steer, spd, lin.dt);
+          cockpit_anim.update_steering(road_steer, spd, lin.dt, cockpit_steer_kick_rad);
           const float redline = float(std::max(vehicle.params().redline_rpm, 6000.0));
-          cockpit_anim.update_gauges(spd, 95.0f, float(vehicle.rpm()), redline, 0.0f, 20.0f, 0.85f);
+          const float boost_gauge = drive::CockpitAnimState::gauge_boost_psi(vehicle.boost_psi(), cockpit_has_fi);
+          cockpit_anim.update_gauges(spd, cockpit_dial_max_speed, float(vehicle.rpm()), redline, boost_gauge,
+                                     cockpit_dial_max_boost, 0.85f);
           showroom.set_cockpit_anim(cockpit_anim, tod_cockpit_cam);
         }
         const float up_game[3] = {0, 1, 0};
@@ -6024,9 +6069,17 @@ int run_drive(int argc, char** argv) {
       double rig_min_distance = 1e9, rig_max_distance = 0;  // the chase eye from the CoM, over the run
       if (!world_dir.empty()) {
         std::string note;
-        have_rig = load_camera_rig(game_root_of(), bake_dir, info, vehicle, rig, note, loaded_camera_effects);
+        have_rig = load_camera_rig(game_root_of(), bake_dir, info, vehicle, rig, note, loaded_camera_effects,
+                                   showroom.has_cockpit_mesh());
         if (!have_rig) std::fprintf(stderr, "carview: note: the camera spec's rig is off: %s\n", note.c_str());
         else if (!note.empty()) std::fprintf(stderr, "carview: note: camera: %s\n", note.c_str());
+        if (have_rig) {
+          showroom.set_cockpit_wheel_offsets(
+              {float(rig.car().override("CockpitWheelPositionOffsetX")),
+               float(rig.car().override("CockpitWheelPositionOffsetY")),
+               float(rig.car().override("CockpitWheelPositionOffsetZ"))},
+              float(rig.car().override("CockpitWheelRotationOffset")));
+        }
         rig.set_mode(drive::CameraMode(std::clamp(camera_mode, 0, drive::kCameraModes - 1)));
         cars::Install rumble_install;
         const char* rumble_state = std::getenv("SHIFT_STATE_ROOT");
@@ -6063,8 +6116,12 @@ int run_drive(int argc, char** argv) {
           bool interior = false;
           double d = 0;
           ShowroomFrame f = rig_frame(rig, info, vehicle, ground, rig_accel, dt, aspect, renderer.reverse_z(), &interior,
-                                      &d, &last_cam_view);
+                                      &d, &last_cam_view, &collision, cam_car_coll_long, cam_car_coll_lat,
+                                      &cam_prev_wheel_comp);
           have_cam_view = true;
+          cockpit_steer_kick_rad = float(last_cam_view.steering_wheel_kick);
+          cam_car_coll_long *= std::exp(-dt * 12.0);
+          cam_car_coll_lat *= std::exp(-dt * 12.0);
           if (rig.mode() == drive::CameraMode::kFollowLow || rig.mode() == drive::CameraMode::kFollowHigh) {
             rig_min_distance = std::min(rig_min_distance, d);
             rig_max_distance = std::max(rig_max_distance, d);
@@ -6117,6 +6174,7 @@ int run_drive(int argc, char** argv) {
       bool garage_open = false;
       size_t garage_pick = 0;
       bool grid_menu_open = race != nullptr && !headless && !bench && !race_options.autopilot;
+      double pre_race_blend_t = -1.0;  // 0..1.2 s smooth grid-to-drive camera swoop & flash
       int grid_menu_selected = 0;
       double title_orbit_time = 0.0;
       // Active world trigger in free roam (nearest Festival site, Street Hub, or unlocked Event).
@@ -6689,12 +6747,18 @@ int run_drive(int argc, char** argv) {
           title_video.draw(list, float(width), float(height));
         }
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, campaign cinematics, and grid menu.
-        const bool campaign_hide_hud = campaign.is_blocking_gameplay();
+        const bool pre_race_swoop_hide_hud = pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85;
+        const bool campaign_hide_hud = campaign.is_blocking_gameplay() || pre_race_swoop_hide_hud;
         if (mm_size > 0 && !show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
             !grid_menu_open && st.menu.empty() && !career_page.is_open() && !rally_hub_open &&
             !rally_service_open && !rally_results_open && !club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
         if (!campaign_hide_hud) carview::build_drive_hud(list, d, float(width), float(height));
+        // Brief white flash on confirming START RACE (CAMERAS.md:85, UI_LAYOUTS.md:121-125).
+        if (pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.12) {
+          const float fa = float(std::clamp(1.0 - pre_race_blend_t / 0.12, 0.0, 1.0)) * 0.65f;
+          list.rect(0.0f, 0.0f, float(width), float(height), carview::ui::rgba(255, 255, 255, uint8_t(fa * 255.0f)));
+        }
         if (club_open) {
           const auto club_sc = build_club_screen();
           carview::draw_club_screen(list, width, height, club_sc);
@@ -9307,6 +9371,7 @@ int run_drive(int argc, char** argv) {
               auto confirm_grid = [&]() {
                 if (grid_menu_selected == 0) {  // START RACE
                   grid_menu_open = false;
+                  pre_race_blend_t = 0.0;
                 } else if (grid_menu_selected == 1) {  // DIFFICULTY
                   cycle_difficulty(+1);
                 } else {  // QUIT RACE
@@ -12152,6 +12217,11 @@ int run_drive(int argc, char** argv) {
             if (traffic) frame_car_impact = std::max(frame_car_impact, traffic->player_impulse());
             frame_car_impact = std::max(frame_car_impact, step_car_impact_accum);
             frame_object_impact = std::max(frame_object_impact, step_object_impact_accum);
+            if (frame_car_impact > 1.0) {
+              const double dv_imp = frame_car_impact / std::max(500.0, vehicle.params().mass);
+              cam_car_coll_long = std::max(cam_car_coll_long, dv_imp * 0.85);
+              cam_car_coll_lat = std::max(cam_car_coll_lat, dv_imp * 0.55);
+            }
             {
               const double mass = std::max(100.0, vehicle.params().mass);
               const auto& bc = vehicle.strongest_body_contact();
@@ -12480,6 +12550,50 @@ int run_drive(int argc, char** argv) {
             const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
             camp_cam_active = campaign.compute_camera({vp.x, vp.y, vp.z}, std::atan2(vf.x, vf.z), camp_cam);
           }
+          // Smooth pre-race grid-to-drive camera swoop (CAMERAS.md:85, UI_LAYOUTS.md:121-125).
+          drive::CameraView pre_race_cam{};
+          bool pre_race_cam_active = false;
+          if (pre_race_blend_t >= 0.0) {
+            pre_race_blend_t += frame_dt;
+            if (pre_race_blend_t >= 1.2) {
+              pre_race_blend_t = -1.0;
+            } else {
+              // Step driving rig so target chase/cockpit view is live and settled.
+              (void)drive_frame(aspect, frame_dt);
+              if (have_cam_view) {
+                const drive::Vec3 vp = vehicle.position();
+                const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                const double hdg = std::atan2(vf.x, vf.z);
+                const double hero_ang = hdg + 0.52;
+                const std::array<double, 3> hero_eye{
+                    vp.x + std::sin(hero_ang) * 3.9,
+                    vp.y + 0.98,
+                    vp.z + std::cos(hero_ang) * 3.9,
+                };
+                const std::array<double, 3> hero_at{vp.x + vf.x * 0.4, vp.y + 0.72, vp.z + vf.z * 0.4};
+                double hfx = hero_at[0] - hero_eye[0], hfy = hero_at[1] - hero_eye[1], hfz = hero_at[2] - hero_eye[2];
+                const double hfl = std::max(1e-6, std::sqrt(hfx * hfx + hfy * hfy + hfz * hfz));
+                hfx /= hfl;
+                hfy /= hfl;
+                hfz /= hfl;
+                const double u = std::clamp(pre_race_blend_t / 1.15, 0.0, 1.0);
+                const double ease = u * u * (3.0 - 2.0 * u);
+                for (int k = 0; k < 3; ++k) {
+                  pre_race_cam.eye[size_t(k)] = hero_eye[size_t(k)] + (last_cam_view.eye[size_t(k)] - hero_eye[size_t(k)]) * ease;
+                }
+                const double fx = hfx + (last_cam_view.forward[0] - hfx) * ease;
+                const double fy = hfy + (last_cam_view.forward[1] - hfy) * ease;
+                const double fz = hfz + (last_cam_view.forward[2] - hfz) * ease;
+                const double fl = std::max(1e-6, std::sqrt(fx * fx + fy * fy + fz * fz));
+                pre_race_cam.forward = {fx / fl, fy / fl, fz / fl};
+                pre_race_cam.up = last_cam_view.up;
+                pre_race_cam.fov_degrees = 44.0 + (last_cam_view.fov_degrees - 44.0) * ease;
+                pre_race_cam.near_clip = last_cam_view.near_clip;
+                pre_race_cam.mode = last_cam_view.mode;
+                pre_race_cam_active = true;
+              }
+            }
+          }
           ShowroomFrame cam_frame =
               photo_mode.active()
                   ? camera_view_frame(photo_mode.camera().view(), info, vehicle, aspect, renderer.reverse_z())
@@ -12501,6 +12615,8 @@ int run_drive(int argc, char** argv) {
                                                               drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
                                                        0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
                                                    5.6f, 1.35f, renderer.reverse_z(), ground)
+                              : pre_race_cam_active
+                              ? camera_view_frame(pre_race_cam, info, vehicle, aspect, renderer.reverse_z())
                               : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
                                     ? camera_view_frame(rw_cam, info, vehicle, aspect, renderer.reverse_z())
                                     : drive_frame(aspect, frame_dt);

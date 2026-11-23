@@ -1502,6 +1502,11 @@ void Showroom::set_lamp_vectors(const drive::LampShaderVectors& vectors) {
   lamp_state_active_ = true;
 }
 
+void Showroom::set_cockpit_wheel_offsets(std::array<float, 3> pos_offset_m, float rot_offset_deg) {
+  cockpit_wheel_pos_offset_ = pos_offset_m;
+  cockpit_wheel_rot_offset_rad_ = rot_offset_deg * (3.14159265358979323846f / 180.0f);
+}
+
 void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera) {
   mirror_enabled_ = cockpit_camera;
   cockpit_camera_active_ = cockpit_camera;
@@ -1533,6 +1538,19 @@ void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpi
       angle = n <= 0.5f ? (n * 2.0f) * rig.ang_mid : rig.ang_mid + ((n - 0.5f) * 2.0f) * (rig.ang_max - rig.ang_mid);
     }
     make_rot(rig.pivot, rig.axis, angle, d.push.model);
+    if (d.cockpit_role == 0) {
+      // Apply CameraOverrides CockpitWheelRotationOffset (tilt about X at pivot)
+      // and CockpitWheelPositionOffset{X,Y,Z} (body frame -> model frame mirrors Z).
+      if (std::fabs(cockpit_wheel_rot_offset_rad_) > 1e-5f) {
+        float tilt[16], combined[16];
+        make_rot(rig.pivot, {1.0f, 0.0f, 0.0f}, cockpit_wheel_rot_offset_rad_, tilt);
+        multiply(tilt, d.push.model, combined);
+        std::memcpy(d.push.model, combined, sizeof(combined));
+      }
+      d.push.model[12] += cockpit_wheel_pos_offset_[0];
+      d.push.model[13] += cockpit_wheel_pos_offset_[1];
+      d.push.model[14] -= cockpit_wheel_pos_offset_[2];
+    }
   }
 }
 

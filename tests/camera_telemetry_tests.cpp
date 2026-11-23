@@ -320,12 +320,76 @@ void test_udp_telemetry_layouts() {
   std::filesystem::remove(csv, ec);
 }
 
+void test_camera_parity_layers_and_pullin() {
+  // 1) CameraPhysics.xml SteeringWheel layer parsing & output kick.
+  const std::string xml = R"(
+<CameraPhysics>
+  <FollowCam n="0"></FollowCam>
+  <FollowCam2 n="0"></FollowCam2>
+  <DriverCam n="1">
+    <Layer Enabled="1" InputType="SurfaceBumpOffset_FL" OutputType="SteeringWheel"
+           NoiseType="None" InputToParamMapping="Linear"
+           Param.x="15.0" Param.y="0" Param.z="0" Param.w="0" />
+  </DriverCam>
+  <Hood n="0"></Hood>
+  <BumperHigh n="0"></BumperHigh>
+</CameraPhysics>)";
+  drive::CameraTuning t;
+  std::string err;
+  check(drive::parse_camera_physics(xml, t, &err), "parse_camera_physics accepts SteeringWheel layer");
+  check(t.layers[size_t(drive::CameraMode::kCockpit)].size() == 1, "SteeringWheel layer retained on kCockpit");
+  drive::CameraCar car;
+  car.box_min = {-0.9, 0.0, -2.1};
+  car.box_max = {0.9, 1.3, 2.2};
+  car.com = {0.0, 0.5, 0.0};
+  car.steering_wheel = {-0.35, 0.85, 0.30};
+  car.overrides["CamHoodPitchOffset"] = 3.5;
+
+  drive::DriveCamera cam;
+  cam.set_tuning(t);
+  cam.set_car(car);
+  cam.set_mode(drive::CameraMode::kCockpit);
+  drive::CameraInput in;
+  in.surface_bump[0] = 0.2;
+  const auto vc = cam.update(1.0 / 60.0, in);
+  check(std::fabs(vc.steering_wheel_kick) > 0.01, "SteeringWheel layer produces non-zero kick in radians");
+
+  // 2) Hood near_clip halved when CamHoodPitchOffset != 0.
+  cam.set_mode(drive::CameraMode::kHood);
+  const auto vh = cam.update(1.0 / 60.0, in);
+  check(std::fabs(vh.near_clip - t.hood_near * 0.5) < 1e-6, "hood near_clip halves when CamHoodPitchOffset != 0");
+
+  // 3) Chase camera horizontal wall pull-in brings eye closer when blocked.
+  t.chase[0].height = 0.5;
+  t.chase[0].radius = 1.0;
+  t.chase[0].fov = 50.0;
+  cam.set_tuning(t);
+  cam.set_mode(drive::CameraMode::kFollowLow);
+  const auto v_open = cam.update(1.0, in);
+  const double d_open = std::hypot(v_open.eye[0], v_open.eye[2]);
+  in.obstacle_ray = [](const std::array<double, 3>&, const std::array<double, 3>&, double, double& hit_d) {
+    hit_d = 1.8;
+    return true;
+  };
+  const auto v_wall = cam.update(1.0 / 60.0, in);
+  const double d_wall = std::hypot(v_wall.eye[0], v_wall.eye[2]);
+  check(d_wall < d_open - 1.0, "chase camera pulls in horizontally when obstacle_ray hits wall");
+
+  // 4) Car without cockpit mesh skips kCockpit in cycle() and set_mode().
+  car.has_cockpit_mesh = false;
+  cam.set_car(car);
+  cam.set_mode(drive::CameraMode::kFollowHigh);
+  cam.cycle();
+  check(cam.mode() == drive::CameraMode::kHood, "cycle() skips kCockpit when !has_cockpit_mesh");
+}
+
 }  // namespace
 
 int main() {
   test_opentrack_parser_and_timeout();
   test_camera_editor_and_immersive();
   test_udp_telemetry_layouts();
+  test_camera_parity_layers_and_pullin();
   if (g_failures > 0) {
     std::fprintf(stderr, "camera_telemetry_tests: %d failure(s)\n", g_failures);
     return 1;

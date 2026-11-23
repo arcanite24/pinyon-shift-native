@@ -91,6 +91,7 @@ struct CameraLayer {
     kCarYPRImpulse,
     kCameraYPRImpulse,
     kFov,
+    kSteeringWheel,
   };
   enum class Mapping { kConstantOne, kLinear, kPoints };
   enum class Noise { kNone, kPerlin, kSimplex, kHeightGrid, kSin };
@@ -143,6 +144,7 @@ struct CameraCar {
   std::array<double, 3> com{};                 // the centre of mass
   std::array<double, 3> steering_wheel{};      // CarPartPositions PartId 9
   std::map<std::string, double> overrides;     // CameraOverrides columns (missing: 0)
+  bool has_cockpit_mesh = true;                // false skips kCockpit in cycle/set_mode (CAMERAS.md)
   double override(const std::string& column) const;
 };
 
@@ -169,6 +171,11 @@ struct CameraInput {
   double car_collision_longitudinal = 0, car_collision_lateral = 0;
   // The world's height under a point (for the chase clearance); empty: none.
   std::function<bool(double x, double y, double z, double& ground_y)> ground_below;
+  // Horizontal wall / car-OBB obstacle raycast from look_at toward chase eye;
+  // returns true and writes hit_dist in [0, max_dist] if blocked (CAMERAS.md:266).
+  std::function<bool(const std::array<double, 3>& origin, const std::array<double, 3>& dir, double max_dist,
+                     double& hit_dist)>
+      obstacle_ray;
 };
 
 struct CameraView {
@@ -176,6 +183,7 @@ struct CameraView {
   double fov_degrees = 50, near_clip = 0.3;  // vertical
   CameraMode mode = CameraMode::kFollowLow;
   bool interior = false;  // the cockpit: the game draws the interior there
+  double steering_wheel_kick = 0.0;  // CameraPhysics.xml SteeringWheel layer output (rad)
 };
 
 class DriveCamera {
@@ -226,6 +234,7 @@ class DriveCamera {
   struct LayerOut {
     std::array<double, 3> car_xyz{}, car_ypr{}, camera_xyz{}, camera_ypr{};
     double fov = 0;
+    double steering_wheel = 0;  // rad
   };
   LayerOut step_layers(double dt, const CameraInput& in);
   LayerOut step_immersive(double dt, const CameraInput& in);
@@ -251,6 +260,7 @@ class DriveCamera {
   // slope_hold_: seconds since three or more wheels last touched.
   double look_old_ = 0;  // the look angle the eye stood at last frame
   double theta_ = 0, omega_ = 0, h_ = 0, h_rate_ = 0, c_ = 0, slope_hold_ = 0;
+  double wall_pull_ = 1.0;  // damped horizontal obstacle pull-in fraction [0.2, 1.0]
   // The bumper's ground height, taken when it starts.
   double bumper_ground_ = 0;
 };

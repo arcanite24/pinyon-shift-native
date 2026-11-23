@@ -157,9 +157,12 @@ struct ResolvedLampGlow {
 };
 ResolvedLampGlow resolve_lamp_glow(const fh1::CarbinLampPoint& pt);
 
+struct CarParams;
+
 // Cockpit steering wheel and analog gauge needle math (CAR_LAMPS.md §7).
 struct CockpitAnimState {
   static constexpr float kSteeringWheelAngleScale = 0.75f;  // GlobalCarAttribs.xml
+  static constexpr float kCockpitLockRad = 4.712389f;       // 270 deg half-lock
   float wheel_rad = 0.0f;                                   // current cockpit steering wheel angle (rad)
   float speed_norm = 0.0f;                                  // [0..1]
   float tach_norm = 0.0f;                                   // [0..1]
@@ -167,8 +170,15 @@ struct CockpitAnimState {
   float boost_norm = 0.0f;                                  // [0..1]
   float power_norm = 0.0f;                                  // [0..1]
 
-  // Rate-limited steering wheel rotation from road wheel angle & vehicle speed (m/s).
+  // Rate-limited steering wheel rotation from road wheel angle, optional max road lock,
+  // and CameraPhysics.xml SteeringWheel kickback (rad).
   void update_steering(float road_wheel_angle_rad, float speed_mps, float dt, float kick_rad = 0.0f);
+  // Estimates per-car speedometer dial top (m/s) from top-gear redline gearing.
+  static float estimate_dial_max_speed_mps(const CarParams& vp);
+  // Converts absolute boost pressure (psi) to gauge pressure (psi relative to 1 atm).
+  static float gauge_boost_psi(double abs_boost_psi, bool has_forced_induction);
+  // Computes per-car boost gauge dial maximum (gauge psi).
+  static float gauge_max_boost_psi(const CarParams& vp);
   // Piecewise-linear gauge evaluation (CAR_LAMPS.md §7.2).
   static float eval_gauge_norm(float value, float min_val, float max_val,
                                std::span<const std::pair<float, float>> cal_points = {});

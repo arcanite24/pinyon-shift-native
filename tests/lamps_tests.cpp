@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "drive/lamps.h"
+#include "drive/vehicle.h"
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
 #include "fh1data/xds.h"
@@ -157,6 +158,31 @@ void test_cockpit_animation_math() {
   }
   check(std::fabs(anim.speed_norm - 1.0f) < 1e-4f && std::fabs(anim.tach_norm - 1.0f) < 1e-4f,
         "gauge hits 1.0 at max");
+
+  // Pillar 2: per-car dial max speed and live turbo boost gauge math.
+  drive::CarParams hatchback{}, supercar{};
+  hatchback.redline_rpm = 6500.0;
+  hatchback.final_drive = 4.20;
+  hatchback.gears = {3.5, 2.1, 1.4, 1.05, 0.85};
+  hatchback.tyre_radius = {0.30, 0.30, 0.30, 0.30};
+  supercar.redline_rpm = 8500.0;
+  supercar.final_drive = 3.20;
+  supercar.gears = {3.1, 2.2, 1.6, 1.2, 0.95, 0.72};
+  supercar.tyre_radius = {0.34, 0.34, 0.34, 0.34};
+  supercar.has_turbo = true;
+  supercar.boost_max_psi = 32.7;  // +18.0 psi gauge boost
+  const float dial_hatch = drive::CockpitAnimState::estimate_dial_max_speed_mps(hatchback);
+  const float dial_super = drive::CockpitAnimState::estimate_dial_max_speed_mps(supercar);
+  check(dial_super > dial_hatch + 15.0f, "per-car speedometer dial max scales with gearing/redline");
+  const float bmax = drive::CockpitAnimState::gauge_max_boost_psi(supercar);
+  check(std::fabs(bmax - 18.0f) < 0.05f, "turbo gauge max boost converts abs psi to gauge psi");
+  anim.update_gauges(30.0f, dial_super, 2000.0f, 8500.0f,
+                     drive::CockpitAnimState::gauge_boost_psi(3.675, true), bmax);
+  const float boost_vac = anim.boost_norm;
+  anim.update_gauges(60.0f, dial_super, 7000.0f, 8500.0f,
+                     drive::CockpitAnimState::gauge_boost_psi(32.7, true), bmax);
+  const float boost_full = anim.boost_norm;
+  check(boost_vac < 0.25f && boost_full > 0.95f, "live turbo boost needle sweeps from vacuum to full boost");
 }
 
 void test_disc_lamp_points_if_available() {

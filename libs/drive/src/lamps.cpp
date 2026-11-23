@@ -1,4 +1,5 @@
 #include "drive/lamps.h"
+#include "drive/vehicle.h"
 
 #include <algorithm>
 #include <cctype>
@@ -365,14 +366,47 @@ ResolvedLampGlow resolve_lamp_glow(const fh1::CarbinLampPoint& pt) {
   return out;
 }
 
-void CockpitAnimState::update_steering(float road_wheel_angle_rad, float speed_mps, float dt, float kick_rad) {
-  const float speed_t = clamp01(std::fabs(speed_mps) / 50.0f);
-  const float mult = 12.0f + speed_t * (6.0f - 12.0f);
-  const float target = std::clamp(road_wheel_angle_rad * mult * kSteeringWheelAngleScale, -4.712389f, 4.712389f);
+void CockpitAnimState::update_steering(float road_wheel_angle_rad, float /*speed_mps*/, float dt, float kick_rad) {
+  // Direct cockpit wheel lock scaled by GlobalCarAttribs.xml SteeringWheelAngleScale
+  // (authentic ~180..270 deg hand-over-hand lock, plus CameraPhysics SteeringWheel kick).
+  constexpr float kSteeringRackRatio = 6.5f;
+  const float target =
+      std::clamp(road_wheel_angle_rad * kSteeringRackRatio * kSteeringWheelAngleScale + kick_rad, -kCockpitLockRad,
+                 kCockpitLockRad);
   const float max_rate = 720.0f * (3.14159265f / 180.0f);  // 720 deg/s slew limit
-  const float gain = 14.0f;
+  const float gain = 16.0f;
   const float step = std::clamp((target - wheel_rad) * gain * dt, -max_rate * dt, max_rate * dt);
-  wheel_rad = std::clamp(wheel_rad + step + kick_rad, -4.712389f, 4.712389f);
+  wheel_rad = std::clamp(wheel_rad + step, -kCockpitLockRad, kCockpitLockRad);
+}
+
+float CockpitAnimState::estimate_dial_max_speed_mps(const CarParams& vp) {
+  // Estimate theoretical top-gear redline speed and round up to a realistic
+  // speedometer dial top (e.g. 140..300 mph -> 62..135 m/s).
+  double min_gear = 0.82;
+  if (!vp.gears.empty()) {
+    min_gear = vp.gears.back();
+    for (double g : vp.gears)
+      if (g > 0.1) min_gear = std::min(min_gear, g);
+  }
+  const double fd = vp.final_drive > 0.5 ? vp.final_drive : 3.7;
+  const double r = vp.tyre_radius[2] > 0.15 ? vp.tyre_radius[2] : 0.32;
+  const double redline = std::max(4500.0, vp.redline_rpm);
+  const double omega_wheel = (redline * (2.0 * 3.14159265358979323846 / 60.0)) / std::max(0.2, min_gear * fd);
+  const double top_mps = std::clamp(omega_wheel * r * 0.96, 52.0, 128.0);
+  // Snap upward to standard 20 mph dial increments (8.9408 m/s).
+  constexpr double kStep = 20.0 * 0.44704;
+  return float(std::clamp(std::ceil(top_mps / kStep) * kStep, 62.5856, 134.112));
+}
+
+float CockpitAnimState::gauge_boost_psi(double abs_boost_psi, bool has_forced_induction) {
+  if (!has_forced_induction) return 0.0f;
+  return float(abs_boost_psi - 14.7);
+}
+
+float CockpitAnimState::gauge_max_boost_psi(const CarParams& vp) {
+  if (vp.has_turbo) return float(std::max(10.0, vp.boost_max_psi - 14.7));
+  if (vp.has_supercharger) return float(std::max(10.0, vp.sc_redline_psi - 14.7));
+  return 20.0f;
 }
 
 float CockpitAnimState::eval_gauge_norm(float value, float min_val, float max_val,
