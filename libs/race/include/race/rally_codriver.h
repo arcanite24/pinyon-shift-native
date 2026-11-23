@@ -105,6 +105,8 @@ class RallyPaceNoteTracker {
   // Crossed gates enqueue their ordered audio cues & update HUD state.
   // Rewinding (`time_s < last_time_s - 0.05`) un-fires gates crossed after `time_s`.
   int observe(double time_s, double x, double z);
+  // Explicit Rewind rollback: un-fires any gate crossed after `time_s` and clears queued audio.
+  void rewind_to(double time_s);
 
   // Pops the next queued audio cue to play on CoDriverVoPlayer (if any).
   bool pop_audio_cue(CoDriverAudioCue& out);

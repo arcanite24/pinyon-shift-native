@@ -53,6 +53,14 @@ class Session {
     const char* reason = "";  // the last reset's condition
     double distance = 0;      // m driven from the signal to the finish (horizontal)
     bool finish_held = false;  // a checkpoint race's earlier gate not passed yet
+    bool lap_dirty = false;    // current lap invalidated (e.g. by Rewind)
+    bool race_dirty = false;   // any lap in this race invalidated (e.g. by Rewind)
+  };
+  struct Snapshot {
+    std::vector<Car> cars;
+    std::vector<double> progress;
+    std::vector<size_t> resets;
+    double clock = 0.0;
   };
 
   // A circuit counts crossings of `start` (laps + 1 finish); a sprint
@@ -84,6 +92,11 @@ class Session {
   // while held (an earlier checkpoint not passed).
   void hold_finish(size_t i, bool held) { cars_[i].finish_held = held; }
   bool collides(size_t i) const { return clock_ >= cars_[i].no_collide_until; }
+  // Marks car i's current lap & race uncertified (SPEC-REWIND section 5).
+  void mark_lap_dirty(size_t i);
+  // Full state snapshot/restore for Rewind rollback.
+  Snapshot snapshot() const;
+  void restore(const Snapshot& s);
   // Car indices from first to last place.
   std::vector<size_t> order() const;
 

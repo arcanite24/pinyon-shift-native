@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "drive/ai_driver.h"
 #include "drive/rewind.h"
 #include "drive/vehicle.h"
 
@@ -312,6 +313,95 @@ void test_audio_and_hints() {
   CHECK(rb.hints_remaining() == 8);
 }
 
+// P0-4: Monotonic snapshot_id tracking, skill-chain timer preservation,
+// VIEW REPLAY request latch, and AiField snapshot/restore parity.
+void test_world_snapshot_ids_and_view_replay() {
+  drive::Vehicle v(test_car());
+  drive::FlatGround g;
+  drive::RewindBuffer rb;
+  rb.start_session(0.0);
+
+  drive::Input in;
+  in.throttle = 0.65;
+  std::vector<uint64_t> captured_ids;
+  double race_clock = 0.0;
+  // Step for 22.0 s (Vehicle::kStep = 1/360 s -> 7920 steps) to capture >= 5 keyframes.
+  for (int i = 0; i < 7920; ++i) {
+    v.step(in, g);
+    race_clock = v.time();
+    const uint64_t sid = rb.record_step(v.time(), race_clock, v, make_cam(v.position().z), true,
+                                        /*skill_score=*/1500 + static_cast<uint64_t>(i * 10),
+                                        /*skill_mult=*/3, /*skill_timer=*/4.25);
+    if (sid != 0) captured_ids.push_back(sid);
+  }
+  CHECK(captured_ids.size() >= 5);
+  for (size_t i = 1; i < captured_ids.size(); ++i) CHECK(captured_ids[i] > captured_ids[i - 1]);
+  CHECK(!captured_ids.empty() && rb.latest_snapshot_id() == captured_ids.back());
+
+  const auto active = rb.active_snapshot_ids();
+  CHECK(active.size() == rb.keyframe_count());
+
+  // Trigger rewind with live skill-chain timer and verify cancel_snapshot_id is assigned.
+  CHECK(rb.trigger(v.time(), race_clock, v, make_cam(v.position().z), 12000, 5, 3.75));
+  const uint64_t cancel_id = rb.cancel_snapshot_id();
+  CHECK(!captured_ids.empty() && cancel_id > captured_ids.back());
+  CHECK(rb.selected_snapshot_id() != 0);
+
+  // Advance until paused at keyframe, test VIEW REPLAY latch.
+  for (int i = 0; i < 40; ++i) rb.update(0.1);
+  CHECK(rb.is_paused_at_keyframe());
+  CHECK(!rb.consume_view_replay_request());
+  rb.request_view_replay();
+  CHECK(rb.consume_view_replay_request());
+  CHECK(!rb.consume_view_replay_request());
+
+  // Resume returns selected snapshot_id, race clock, and skill-chain timer.
+  const uint64_t expected_resume_id = rb.selected_snapshot_id();
+  double out_rt = 0.0, out_rc = 0.0, out_sk_timer = 0.0;
+  uint64_t out_sk_score = 0, out_sid = 0;
+  int out_sk_mult = 0;
+  CHECK(rb.resume(v, nullptr, &out_rt, &out_rc, &out_sk_score, &out_sk_mult, &out_sid, &out_sk_timer));
+  CHECK(out_sid == expected_resume_id);
+  CHECK(out_sk_score >= 1500);
+  CHECK(out_sk_mult == 3);
+  CHECK(near(out_sk_timer, 4.25, 1e-6));
+  CHECK(out_rc < race_clock);
+  CHECK(rb.lap_uncertified());
+
+  // Finish the 1.0 s post-resume settle phase, then re-trigger and Cancel.
+  rb.update(1.1);
+  CHECK(rb.trigger(v.time(), race_clock, v, make_cam(v.position().z), 9999, 4, 2.5));
+  const uint64_t cancel_id2 = rb.cancel_snapshot_id();
+  for (int i = 0; i < 40; ++i) rb.update(0.1);
+  uint64_t out_cancel_sid = 0;
+  double out_cancel_timer = 0.0;
+  CHECK(rb.cancel(v, nullptr, nullptr, nullptr, &out_sk_score, &out_sk_mult, &out_cancel_sid, &out_cancel_timer));
+  CHECK(out_cancel_sid == cancel_id2);
+  CHECK(out_sk_score == 9999 && out_sk_mult == 4);
+  CHECK(near(out_cancel_timer, 2.5, 1e-6));
+
+  // AiField::snapshot() / restore() restores progress, lane, skill, and caps.
+  drive::RacingLine line;
+  for (int i = 0; i < 40; ++i) {
+    line.x.push_back(0.0f);
+    line.z.push_back(static_cast<float>(i * 10));
+    line.dist.push_back(static_cast<float>(i * 10));
+    line.speed.push_back(30.0f);
+  }
+  drive::AiField field(line, 2);
+  field.place(0, 20.0, -1.5f, 0.9f);
+  field.place(1, 50.0, 1.5f, 1.0f);
+  const auto ai_snap = field.snapshot();
+  field.place(0, 180.0, 2.0f, 1.2f);
+  field.set_speed_cap(0, 5.0f);
+  field.restore(ai_snap);
+  CHECK(near(field.progress(0), 20.0, 1e-6));
+  CHECK(near(field.progress(1), 50.0, 1e-6));
+  CHECK(near(field.lane(0), -1.5, 1e-5));
+  CHECK(near(field.snapshot().skill[0], 0.9, 1e-5));
+  CHECK(near(field.snapshot().cap[0], ai_snap.cap[0], 1e-5));
+}
+
 }  // namespace
 
 int main() {
@@ -321,6 +411,7 @@ int main() {
   test_resume_and_cancel();
   test_clears_and_lockouts();
   test_audio_and_hints();
+  test_world_snapshot_ids_and_view_replay();
   if (failures) {
     std::printf("rewind_tests: %d failure(s)\n", failures);
     return 1;

@@ -89,10 +89,11 @@ void RewindBuffer::prune_stream() {
   }
 }
 
-void RewindBuffer::record_step(double replay_time, double race_clock, const Vehicle& vehicle,
-                               const RewindCameraState& camera, bool capture_allowed,
-                               uint64_t skill_chain_score, int skill_chain_mult) {
-  if (state_ != RewindState::kIdle) return;
+uint64_t RewindBuffer::record_step(double replay_time, double race_clock, const Vehicle& vehicle,
+                                   const RewindCameraState& camera, bool capture_allowed,
+                                   uint64_t skill_chain_score, int skill_chain_mult,
+                                   double skill_chain_timer) {
+  if (state_ != RewindState::kIdle) return 0u;
 
   const double stream_dt = cfg_.stream_record_hz > 0.0 ? 1.0 / cfg_.stream_record_hz : 0.05;
   if (!stream_started_ || replay_time >= next_stream_time_ - 1e-9) {
@@ -109,19 +110,24 @@ void RewindBuffer::record_step(double replay_time, double race_clock, const Vehi
     next_stream_time_ = replay_time + stream_dt;
   }
 
+  uint64_t captured_id = 0u;
   if (capture_allowed && replay_time >= next_capture_time_ - 1e-9) {
     RewindKeyframe kf(vehicle);
+    captured_id = next_snapshot_id_++;
+    kf.snapshot_id = captured_id;
     kf.replay_time = replay_time;
     kf.race_clock = race_clock;
     kf.camera = camera;
     kf.skill_chain_score = skill_chain_score;
     kf.skill_chain_mult = skill_chain_mult;
+    kf.skill_chain_timer = skill_chain_timer;
     push_keyframe(std::move(kf));
     next_capture_time_ = replay_time + cfg_.keyframe_interval_s;
     prune_stream();
   } else if (stream_.size() > 1024) {
     prune_stream();
   }
+  return captured_id;
 }
 
 bool RewindBuffer::can_trigger() const {
@@ -130,16 +136,18 @@ bool RewindBuffer::can_trigger() const {
 
 bool RewindBuffer::trigger(double current_replay_time, double race_clock, const Vehicle& current_vehicle,
                            const RewindCameraState& current_camera, uint64_t skill_chain_score,
-                           int skill_chain_mult) {
+                           int skill_chain_mult, double skill_chain_timer) {
   if (!can_trigger()) return false;
 
   // Capture end-state snapshot so Cancel can return to the exact trigger point.
   cancel_snapshot_.emplace(current_vehicle);
+  cancel_snapshot_->snapshot_id = next_snapshot_id_++;
   cancel_snapshot_->replay_time = current_replay_time;
   cancel_snapshot_->race_clock = race_clock;
   cancel_snapshot_->camera = current_camera;
   cancel_snapshot_->skill_chain_score = skill_chain_score;
   cancel_snapshot_->skill_chain_mult = skill_chain_mult;
+  cancel_snapshot_->skill_chain_timer = skill_chain_timer;
 
   // Append exact trigger-point stream sample so reverse scrub starts seamlessly.
   if (stream_.empty() || current_replay_time > stream_.back().replay_time + 1e-6) {
@@ -247,7 +255,8 @@ bool RewindBuffer::rewind_further() {
 }
 
 bool RewindBuffer::resume(Vehicle& out_vehicle, RewindCameraState* out_camera, double* out_replay_time,
-                          double* out_race_clock, uint64_t* out_skill_score, int* out_skill_mult) {
+                          double* out_race_clock, uint64_t* out_skill_score, int* out_skill_mult,
+                          uint64_t* out_snapshot_id, double* out_skill_timer) {
   if (state_ != RewindState::kPausedAtKeyframe) return false;
   if (selected_slot_ < 0 || selected_slot_ >= int(keyframes_.size())) return false;
 
@@ -258,6 +267,8 @@ bool RewindBuffer::resume(Vehicle& out_vehicle, RewindCameraState* out_camera, d
   if (out_race_clock) *out_race_clock = kf.race_clock;
   if (out_skill_score) *out_skill_score = kf.skill_chain_score;
   if (out_skill_mult) *out_skill_mult = kf.skill_chain_mult;
+  if (out_snapshot_id) *out_snapshot_id = kf.snapshot_id;
+  if (out_skill_timer) *out_skill_timer = kf.skill_chain_timer;
 
   // Truncate future keyframes and stream samples after the restored keyframe.
   const double restored_time = kf.replay_time;
@@ -280,7 +291,8 @@ bool RewindBuffer::resume(Vehicle& out_vehicle, RewindCameraState* out_camera, d
 }
 
 bool RewindBuffer::cancel(Vehicle& out_vehicle, RewindCameraState* out_camera, double* out_replay_time,
-                          double* out_race_clock, uint64_t* out_skill_score, int* out_skill_mult) {
+                          double* out_race_clock, uint64_t* out_skill_score, int* out_skill_mult,
+                          uint64_t* out_snapshot_id, double* out_skill_timer) {
   if (state_ != RewindState::kRewinding && state_ != RewindState::kPausedAtKeyframe) return false;
   if (!cancel_snapshot_.has_value()) return false;
 
@@ -291,6 +303,8 @@ bool RewindBuffer::cancel(Vehicle& out_vehicle, RewindCameraState* out_camera, d
   if (out_race_clock) *out_race_clock = kf.race_clock;
   if (out_skill_score) *out_skill_score = kf.skill_chain_score;
   if (out_skill_mult) *out_skill_mult = kf.skill_chain_mult;
+  if (out_snapshot_id) *out_snapshot_id = kf.snapshot_id;
+  if (out_skill_timer) *out_skill_timer = kf.skill_chain_timer;
 
   playback_time_ = kf.replay_time;
   cancel_snapshot_.reset();
@@ -304,6 +318,14 @@ bool RewindBuffer::cancel(Vehicle& out_vehicle, RewindCameraState* out_camera, d
   audio_.playback_speed = 1.0;
   audio_.vehicle_audio_state = 1;
   return true;
+}
+
+std::vector<uint64_t> RewindBuffer::active_snapshot_ids() const {
+  std::vector<uint64_t> ids;
+  ids.reserve(keyframes_.size() + (cancel_snapshot_ ? 1u : 0u));
+  for (const auto& kf : keyframes_) ids.push_back(kf.snapshot_id);
+  if (cancel_snapshot_) ids.push_back(cancel_snapshot_->snapshot_id);
+  return ids;
 }
 
 bool RewindBuffer::request_view_replay() {

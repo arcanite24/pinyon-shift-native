@@ -23,6 +23,7 @@
 #include "race/difficulty.h"
 #include "race/event.h"
 #include "race/owt.h"
+#include "race/rally_codriver.h"
 #include "race/rally.h"
 #include "race/race_line.h"
 #include "race/rewards.h"
@@ -832,6 +833,56 @@ int main() {
             s2.sponsors[0].claimed == 1);
       CHECK(s2.h2h_races == 4 && s2.h2h_wins == 3 && s2.driver_xp == 18500);
       CHECK(s2.make_affinity.size() == 1 && s2.make_affinity[0].first == 42 && s2.make_affinity[0].second == 9500);
+    }
+
+    // P0-4: Full race Session rewind rollback, clean-lap dirty tracking, Rally co-driver & Showcase rollback.
+    {
+      race::Gate start{0, 0, 0, 1, 20};
+      race::Session sess(2, true, 2, start, std::nullopt, {.countdown = 0.0, .resets = false});
+      std::vector<race::CarSample> cs(2);
+      cs[0] = {0, -5, 0, 5, 30, 1, 0, 10};
+      cs[1] = {0, -5, 0, 5, 25, 1, 0, 8};
+      sess.step(1.0, cs);  // clock = 1.0, both cross start line (crossings = 1)
+      const auto snap_1s = sess.snapshot();
+      CHECK(near(snap_1s.clock, 1.0));
+      CHECK(!sess.car(1).lap_dirty && !sess.car(1).race_dirty);
+
+      // Advance 5 more seconds: AI car 0 drives far ahead.
+      for (int k = 0; k < 5; ++k) {
+        cs[0] = {0, double(10 + k * 40), 0, double(50 + k * 40), 40, 1, 0, double(50 + k * 40)};
+        cs[1] = {0, 10, 0, 10, 0, 1, 0, 10};
+        sess.step(1.0, cs);
+      }
+      CHECK(near(sess.clock(), 6.0));
+      CHECK(sess.car(0).distance > 150.0);
+
+      // Rewind to t = 1.0 s: AI distance, clock, and order roll back; player's lap marked dirty!
+      sess.restore(snap_1s);
+      sess.mark_lap_dirty(1);
+      CHECK(near(sess.clock(), 1.0));
+      CHECK(sess.car(0).distance < 20.0);
+      CHECK(sess.car(1).lap_dirty && sess.car(1).race_dirty);
+
+      // Crossing start line for next lap clears lap_dirty while keeping race_dirty.
+      cs[0] = {0, -5, 0, 5, 30, 1, 0, 200};
+      cs[1] = {0, -5, 0, 5, 30, 1, 0, 200};
+      sess.step(1.0, cs);
+      CHECK(!sess.car(1).lap_dirty && sess.car(1).race_dirty);
+
+      // Rally co-driver explicit rewind_to un-fires gates crossed after target timestamp.
+      race::RallyPaceNoteTracker codriver;
+      race::CoDriverAudioMap cmap;
+      std::vector<race::RallyCallGate> gates(2);
+      gates[0] = {"g0", 0, 0, 20, 0, 1, 30, {"EasyLeft"}};
+      gates[1] = {"g1", 0, 0, 60, 0, 1, 30, {"HardRight"}};
+      codriver.load(gates, cmap);
+      codriver.observe(0.0, 0, 0);
+      codriver.observe(2.0, 0, 30);  // fires g0
+      codriver.observe(5.0, 0, 70);  // fires g1
+      CHECK(codriver.fired_count() == 2);
+      codriver.rewind_to(2.5);
+      CHECK(codriver.fired_count() == 1);
+      CHECK(codriver.pending_audio_cues() == 0);
     }
   }
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) {

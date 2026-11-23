@@ -190,6 +190,14 @@ class SmashableWorld {
   void clear_debris();
   void reset_broken();
 
+  // Rewind snapshot/restore: captures broken prop indices so props broken after
+  // the rewind keyframe are restored (and returns their hidden spheres to unhide).
+  struct RewindSnapshot {
+    std::vector<uint32_t> broken_indices;
+  };
+  RewindSnapshot capture_rewind() const;
+  std::vector<GatherOptions::HiddenSphere> restore_rewind(const RewindSnapshot& s);
+
   // Exports lit 3D triangle mesh for all active flying debris bodies.
   void build_debris_mesh(std::vector<DebrisVertex>& out_tris) const;
 

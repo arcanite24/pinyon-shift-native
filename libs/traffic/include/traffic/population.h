@@ -112,6 +112,31 @@ class Population {
   double despawn_distance(const Car& car) const;
   double time() const { return time_; }
 
+  struct Snapshot {
+    std::vector<Car> cars;
+    uint32_t next_id = 1;
+    bool started = false;
+    double time = 0.0;
+    double smoothed = 0.0, target = 0.0;
+    double next_test = 0.0, next_spawn = 0.0, next_rotation = 0.0, next_overspawn = 0.0;
+  };
+  Snapshot snapshot() const {
+    return {cars_, next_id_, started_, time_, smoothed_, target_, next_test_, next_spawn_, next_rotation_,
+            next_overspawn_};
+  }
+  void restore(const Snapshot& s) {
+    cars_ = s.cars;
+    next_id_ = s.next_id;
+    started_ = s.started;
+    time_ = s.time;
+    smoothed_ = s.smoothed;
+    target_ = s.target;
+    next_test_ = s.next_test;
+    next_spawn_ = s.next_spawn;
+    next_rotation_ = s.next_rotation;
+    next_overspawn_ = s.next_overspawn;
+  }
+
  private:
   const DensityEntry* entry(const Road& r) const { return r.traffic ? config_.density(r.density) : nullptr; }
   bool is_multilane(const Road& r) const;

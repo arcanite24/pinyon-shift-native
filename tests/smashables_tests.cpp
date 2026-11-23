@@ -219,11 +219,47 @@ void test_corpus() {
   }
 }
 
+void test_smashables_rewind_restore() {
+  world::SmashableWorld sw;
+  world::PropPhysicsDef def;
+  def.mass = 0.08f;
+  def.break_speed_mph = 5.0f;
+  def.bounding_radius = 1.0f;
+  def.object_type_index = 0;  // Fence
+  world::CollObjPlacement p;
+  p.physics_type = "CO_Fence.0.rmb";
+  p.stem = "co_fence";
+  p.pos = {0.0f, 0.5f, 10.0f};
+  sw.add_prop(p, &def);
+
+  const auto snap_intact = sw.capture_rewind();
+  CHECK(snap_intact.broken_indices.empty());
+
+  // Smash the prop with a moving vehicle.
+  drive::CarParams cp{};
+  drive::Vehicle veh(cp);
+  veh.launch({0.0, 0.0, 7.5}, 0.0, 15.0);
+  drive::FlatGround fg(0.0);
+  std::vector<world::SmashEvent> evs;
+  for (int i = 0; i < 40 && evs.empty(); ++i) {
+    veh.step({0.0, 0.5, 0.0, false}, fg);
+    sw.step(veh, fg, float(drive::Vehicle::kStep), evs);
+  }
+  CHECK(sw.broken_prop_count() == 1);
+
+  // Rewind restores the smashed prop and returns its HiddenSphere so Showroom un-hides it.
+  const auto unhidden = sw.restore_rewind(snap_intact);
+  CHECK(sw.broken_prop_count() == 0);
+  CHECK(sw.active_dynamic_count() == 0);
+  CHECK(unhidden.size() == 1);
+}
+
 }  // namespace
 
 int main() {
   test_break_rules_and_pool();
   test_barn_door_swap();
+  test_smashables_rewind_restore();
   test_corpus();
   if (g_failures == 0) {
     std::printf("smashables_tests: all checks passed\n");

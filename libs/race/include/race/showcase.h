@@ -64,6 +64,16 @@ class ShowcaseOpponent {
   // 1 if player is ahead (or beat the aircraft to the finish), 2 otherwise.
   int player_place(double player_progress, bool player_finished, double player_finish_time) const;
 
+  struct Snapshot {
+    ShowcasePose pose;
+    double prev_heading = 0.0;
+  };
+  Snapshot snapshot() const { return {pose_, prev_heading_}; }
+  void restore(const Snapshot& s) {
+    pose_ = s.pose;
+    prev_heading_ = s.prev_heading;
+  }
+
  private:
   bool active_ = false;
   ShowcaseSpec spec_;

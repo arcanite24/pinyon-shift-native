@@ -97,6 +97,32 @@ class Bodies {
   // The largest impulse a body gave the player's car in the last step (N s).
   double player_impulse() const { return step_player_; }
 
+  struct BodySnapshot {
+    drive::Vehicle vehicle;
+    double since_contact = 1e9;
+    BodySnapshot(const drive::Vehicle& v, double sc) : vehicle(v), since_contact(sc) {}
+  };
+  struct Snapshot {
+    std::map<uint32_t, BodySnapshot> bodies;
+  };
+  Snapshot snapshot() const {
+    Snapshot s;
+    for (const auto& [id, b] : bodies_) {
+      if (b.v) s.bodies.emplace(id, BodySnapshot(*b.v, b.since_contact));
+    }
+    return s;
+  }
+  void restore(const Snapshot& s) {
+    bodies_.clear();
+    for (const auto& [id, bs] : s.bodies) {
+      Body b;
+      b.v = std::make_unique<drive::Vehicle>(bs.vehicle);
+      b.since_contact = bs.since_contact;
+      bodies_.emplace(id, std::move(b));
+    }
+    step_player_ = 0.0;
+  }
+
  private:
   struct Body {
     std::unique_ptr<drive::Vehicle> v;

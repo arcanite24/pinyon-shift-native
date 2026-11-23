@@ -193,6 +193,25 @@ class AiField {
   double progress(size_t i) const { return progress_[i]; }
   float cross_track(size_t i) const { return cross_[i]; }
   float target_speed(size_t i) const { return target_[i]; }
+  // Rewind snapshot/restore of per-car spline tracking & dynamic targets.
+  struct Snapshot {
+    std::vector<uint32_t> seg;
+    std::vector<double> progress;
+    std::vector<float> lane, skill, cross, corner, decel, target, cap;
+  };
+  Snapshot snapshot() const { return {seg_, progress_, lane_, skill_, cross_, corner_, decel_, target_, cap_}; }
+  void restore(const Snapshot& s) {
+    if (s.seg.size() != seg_.size()) return;
+    seg_ = s.seg;
+    progress_ = s.progress;
+    lane_ = s.lane;
+    skill_ = s.skill;
+    cross_ = s.cross;
+    corner_ = s.corner;
+    decel_ = s.decel;
+    target_ = s.target;
+    cap_ = s.cap;
+  }
   // The speed car i plans at `distance` along the line (m/s).
   double planned_speed(size_t i, double distance) const;
   // The planner's corner speed of car i at line point j (m/s; the corner pass).

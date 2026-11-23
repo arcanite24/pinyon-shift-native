@@ -321,6 +321,29 @@ int main() {
   }
 
   if (failures) return 1;
+  // P0-4: SkillTracker rewind snapshot preserves live chain score, multiplier & timer across crash/rewind.
+  {
+    SkillsData sd;
+    sd.bank_timeout = 3.0;
+    sd.tag_award_interval = 0.0;
+    SkillTracker st(sd, 0.0, 0);
+    st.award_named("Drift", 2, 10.0);
+    st.award_named("NearMiss", 2, 10.5);
+    st.award_named("Pass", 2, 11.0);
+    const auto h_before = st.hud();
+    CHECK(h_before.active && h_before.chain_points > 0 && h_before.multiplier >= 2);
+    CHECK(st.chain_remaining_s(11.5) > 2.0);
+    const auto snap = st.capture_rewind();
+    // Simulate wreck cancelling chain.
+    st.clear_active_chain();
+    CHECK(!st.hud().active && st.hud().chain_points == 0);
+    // Rewind restores the intact skill chain!
+    st.restore_rewind(snap);
+    const auto h_after = st.hud();
+    CHECK(h_after.active && h_after.chain_points == h_before.chain_points && h_after.multiplier == h_before.multiplier);
+    CHECK(st.chain_remaining_s(11.5) > 2.0);
+  }
+  if (failures) return 1;
   std::printf("freeroam_tests: all passed\n");
   return 0;
 }

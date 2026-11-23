@@ -1081,4 +1081,36 @@ void SmashableWorld::build_debris_mesh(std::vector<DebrisVertex>& out_tris) cons
   }
 }
 
+SmashableWorld::RewindSnapshot SmashableWorld::capture_rewind() const {
+  RewindSnapshot snap;
+  for (uint32_t i = 0; i < uint32_t(props_.size()); ++i) {
+    if (props_[i].broken) snap.broken_indices.push_back(i);
+  }
+  return snap;
+}
+
+std::vector<GatherOptions::HiddenSphere> SmashableWorld::restore_rewind(const RewindSnapshot& s) {
+  std::vector<GatherOptions::HiddenSphere> restored;
+  std::vector<uint8_t> want_broken(props_.size(), 0);
+  for (uint32_t idx : s.broken_indices) {
+    if (idx < props_.size()) want_broken[idx] = 1;
+  }
+  auto next_hidden = std::make_shared<std::vector<GatherOptions::HiddenSphere>>();
+  for (size_t i = 0; i < props_.size(); ++i) {
+    auto& pp = props_[i];
+    const float def_r = pp.def ? pp.def->bounding_radius : pp.radius;
+    const float hide_r = std::clamp(std::max(pp.radius, def_r) + 0.65f, 1.5f, 4.5f);
+    if (pp.broken && !want_broken[i]) {
+      pp.broken = false;
+      restored.push_back({pp.place.pos, hide_r});
+    } else if (!pp.broken && want_broken[i]) {
+      pp.broken = true;
+    }
+    if (pp.broken) next_hidden->push_back({pp.place.pos, hide_r});
+  }
+  broken_positions_ = next_hidden->empty() ? nullptr : std::move(next_hidden);
+  dynamic_bodies_.clear();
+  return restored;
+}
+
 }  // namespace world

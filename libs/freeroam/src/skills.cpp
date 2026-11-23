@@ -832,4 +832,101 @@ SkillHudState SkillTracker::hud() const {
   return h;
 }
 
+double SkillTracker::chain_remaining_s(double now_s) const {
+  if (chain_points_ <= 0 || last_award_at_ < -1e8) return 0.0;
+  return std::max(0.0, (last_award_at_ + data_.bank_timeout) - now_s);
+}
+
+SkillTracker::RewindSnapshot SkillTracker::capture_rewind() const {
+  RewindSnapshot s;
+  s.chain_points = chain_points_;
+  s.skill_count = skill_count_;
+  s.last_award_at = last_award_at_;
+  s.last_tag_at = last_tag_at_;
+  s.lockout_until = lockout_until_;
+  s.over9000_paid = over9000_paid_;
+  s.last_skill = last_skill_;
+  s.last_points = last_points_;
+  s.lost_at = lost_at_;
+  s.burnout_t = burnout_t_;
+  s.burnout_cd = burnout_cd_;
+  s.donut_yaw = donut_yaw_;
+  s.donut_dist = donut_dist_;
+  s.donut_cd = donut_cd_;
+  s.turn180_active = turn180_active_;
+  s.turn180_t = turn180_t_;
+  s.turn180_yaw = turn180_yaw_;
+  s.turn180_cd = turn180_cd_;
+  s.jturn_active = jturn_active_;
+  s.jturn_t = jturn_t_;
+  s.jturn_yaw = jturn_yaw_;
+  s.jturn_cd = jturn_cd_;
+  s.air_t = air_t_;
+  s.air_cd = air_cd_;
+  s.two_wheels_t = two_wheels_t_;
+  s.two_wheels_cd = two_wheels_cd_;
+  s.drift_dist = drift_dist_;
+  s.drift_hb_t = drift_hb_t_;
+  s.drift_is_e = drift_is_e_;
+  s.drift_cd = drift_cd_;
+  s.draft_t = draft_t_;
+  s.draft_cd = draft_cd_;
+  s.speed_dist = speed_dist_;
+  s.speed_peak_mph = speed_peak_mph_;
+  s.in_near_miss = in_near_miss_;
+  s.near_miss_cd = near_miss_cd_;
+  s.paint_cd = paint_cd_;
+  s.pass_cd = pass_cd_;
+  s.last_collision_t = last_collision_t_;
+  s.destruct_count = destruct_count_;
+  s.destruct_last_t = destruct_last_t_;
+  return s;
+}
+
+void SkillTracker::restore_rewind(const RewindSnapshot& s) {
+  chain_points_ = s.chain_points;
+  skill_count_ = s.skill_count;
+  last_award_at_ = s.last_award_at;
+  last_tag_at_ = s.last_tag_at;
+  lockout_until_ = s.lockout_until;
+  over9000_paid_ = s.over9000_paid;
+  pending_tags_.clear();
+  last_skill_ = s.last_skill;
+  last_points_ = s.last_points;
+  lost_at_ = s.lost_at;
+  burnout_t_ = s.burnout_t;
+  burnout_cd_ = s.burnout_cd;
+  donut_yaw_ = s.donut_yaw;
+  donut_dist_ = s.donut_dist;
+  donut_cd_ = s.donut_cd;
+  turn180_active_ = s.turn180_active;
+  turn180_t_ = s.turn180_t;
+  turn180_yaw_ = s.turn180_yaw;
+  turn180_cd_ = s.turn180_cd;
+  jturn_active_ = s.jturn_active;
+  jturn_t_ = s.jturn_t;
+  jturn_yaw_ = s.jturn_yaw;
+  jturn_cd_ = s.jturn_cd;
+  air_t_ = s.air_t;
+  air_cd_ = s.air_cd;
+  two_wheels_t_ = s.two_wheels_t;
+  two_wheels_cd_ = s.two_wheels_cd;
+  drift_dist_ = s.drift_dist;
+  drift_hb_t_ = s.drift_hb_t;
+  drift_is_e_ = s.drift_is_e;
+  drift_cd_ = s.drift_cd;
+  draft_t_ = s.draft_t;
+  draft_cd_ = s.draft_cd;
+  speed_dist_ = s.speed_dist;
+  speed_peak_mph_ = s.speed_peak_mph;
+  in_near_miss_ = s.in_near_miss;
+  near_miss_cd_ = s.near_miss_cd;
+  paint_cd_ = s.paint_cd;
+  pass_cd_ = s.pass_cd;
+  last_collision_t_ = s.last_collision_t;
+  destruct_count_ = s.destruct_count;
+  destruct_last_t_ = s.destruct_last_t;
+  recent_.clear();
+}
+
 }  // namespace freeroam

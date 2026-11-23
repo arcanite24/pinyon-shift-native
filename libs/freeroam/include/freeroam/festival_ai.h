@@ -140,6 +140,47 @@ class FestivalManager {
   std::array<double, 3> h2h_finish_pos() const { return h2h_finish_; }
   HeadToHeadHud hud(double time) const;
 
+  struct RewindSnapshot {
+    std::vector<FestivalAiCar> cars;
+    uint32_t next_id = 1;
+    bool started = false;
+    double next_spawn = 0.0;
+    uint32_t prompt_id = 0;
+    double prompt_dist = 1e9;
+    bool h2h_active = false;
+    uint32_t h2h_car_id = 0;
+    int64_t h2h_wager = 2000;
+    double h2h_elapsed = 0.0;
+    double h2h_player_s = 0.0;
+    double h2h_length = 0.0;
+    std::vector<traffic::P3> h2h_pts;
+    std::vector<double> h2h_s;
+    std::vector<std::array<double, 2>> h2h_route_2d;
+    std::array<double, 3> h2h_finish{};
+  };
+  RewindSnapshot capture_rewind() const {
+    return {cars_, next_id_, started_, next_spawn_, prompt_id_, prompt_dist_, h2h_active_, h2h_car_id_, h2h_wager_,
+            h2h_elapsed_, h2h_player_s_, h2h_length_, h2h_pts_, h2h_s_, h2h_route_2d_, h2h_finish_};
+  }
+  void restore_rewind(const RewindSnapshot& s) {
+    cars_ = s.cars;
+    next_id_ = s.next_id;
+    started_ = s.started;
+    next_spawn_ = s.next_spawn;
+    prompt_id_ = s.prompt_id;
+    prompt_dist_ = s.prompt_dist;
+    h2h_active_ = s.h2h_active;
+    h2h_car_id_ = s.h2h_car_id;
+    h2h_wager_ = s.h2h_wager;
+    h2h_elapsed_ = s.h2h_elapsed;
+    h2h_player_s_ = s.h2h_player_s;
+    h2h_length_ = s.h2h_length;
+    h2h_pts_ = s.h2h_pts;
+    h2h_s_ = s.h2h_s;
+    h2h_route_2d_ = s.h2h_route_2d;
+    h2h_finish_ = s.h2h_finish;
+  }
+
  private:
   bool spawn_roaming(const traffic::P3& player, bool initial);
   void advance_roaming(FestivalAiCar& car, double dist) const;

@@ -184,6 +184,45 @@ class SkillTracker {
   const std::map<std::string, SponsorProgress>& sponsor_progress() const { return sponsors_; }
   void set_sponsor_progress(const std::string& id, int count, int claimed);
 
+  // Remaining skill-chain bank timer in seconds at `now_s` (0 if no active chain).
+  double chain_remaining_s(double now_s) const;
+
+  // Full skill-chain & detector snapshot for Rewind rollback (preserves a live
+  // combo across rewind instead of leaving it broken).
+  struct RewindSnapshot {
+    int chain_points = 0;
+    int skill_count = 0;
+    double last_award_at = -1e9;
+    double last_tag_at = -1e9;
+    double lockout_until = -1e9;
+    bool over9000_paid = false;
+    std::string last_skill;
+    int last_points = 0;
+    double lost_at = -1e9;
+    double burnout_t = 0.0, burnout_cd = -1e9;
+    double donut_yaw = 0.0, donut_dist = 0.0, donut_cd = -1e9;
+    bool turn180_active = false;
+    double turn180_t = 0.0, turn180_yaw = 0.0, turn180_cd = -1e9;
+    bool jturn_active = false;
+    double jturn_t = 0.0, jturn_yaw = 0.0, jturn_cd = -1e9;
+    double air_t = 0.0, air_cd = -1e9;
+    double two_wheels_t = 0.0, two_wheels_cd = -1e9;
+    double drift_dist = 0.0, drift_hb_t = 0.0;
+    bool drift_is_e = false;
+    double drift_cd = -1e9;
+    double draft_t = 0.0, draft_cd = -1e9;
+    double speed_dist = 0.0, speed_peak_mph = 0.0;
+    bool in_near_miss = false;
+    double near_miss_cd = -1e9;
+    double paint_cd = -1e9;
+    double pass_cd = -1e9;
+    double last_collision_t = -1e9;
+    int destruct_count = 0;
+    double destruct_last_t = -1e9;
+  };
+  RewindSnapshot capture_rewind() const;
+  void restore_rewind(const RewindSnapshot& s);
+
  private:
   enum SkillId {
     kBurnout,

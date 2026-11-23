@@ -345,19 +345,25 @@ size_t RallyPaceNoteTracker::fired_count() const {
   return n;
 }
 
+void RallyPaceNoteTracker::rewind_to(double time_s) {
+  audio_queue_.clear();
+  for (auto& t : fired_at_)
+    if (t && *t > time_s) t.reset();
+  if (active_since_ > time_s) {
+    active_gate_ = -1;
+    active_since_ = -1e9;
+    active_sample_idx_ = 0;
+  }
+  has_prev_ = false;
+  last_time_ = time_s;
+}
+
 int RallyPaceNoteTracker::observe(double time_s, double x, double z) {
   if (!std::isfinite(time_s) || !std::isfinite(x) || !std::isfinite(z)) return 0;
 
   // Rewind handling: un-fire any gate crossed after `time_s`.
   if (has_prev_ && time_s < last_time_ - 0.05) {
-    audio_queue_.clear();
-    for (auto& t : fired_at_)
-      if (t && *t > time_s) t.reset();
-    if (active_since_ > time_s) {
-      active_gate_ = -1;
-      active_since_ = -1e9;
-    }
-    has_prev_ = false;
+    rewind_to(time_s);
   }
 
   int triggered = 0;

@@ -53,6 +53,24 @@ void Session::reset_done(size_t i) {
   c.no_collide_until = clock_ + 3.0;  // PostResetNonCollideTime
 }
 
+void Session::mark_lap_dirty(size_t i) {
+  if (i >= cars_.size()) return;
+  cars_[i].lap_dirty = true;
+  cars_[i].race_dirty = true;
+}
+
+Session::Snapshot Session::snapshot() const {
+  return {cars_, progress_, resets_, clock_};
+}
+
+void Session::restore(const Snapshot& s) {
+  if (s.cars.size() != cars_.size()) return;
+  cars_ = s.cars;
+  progress_ = s.progress;
+  resets_ = s.resets;
+  clock_ = s.clock;
+}
+
 void Session::step(double dt, std::span<const CarSample> s) {
   const double t0 = clock_;
   clock_ += dt;
@@ -76,6 +94,7 @@ void Session::step(double dt, std::span<const CarSample> s) {
         }
         ++c.crossings;
         c.last_cross = t;
+        c.lap_dirty = false;  // fresh lap starts clean; race_dirty remains set if ever rewound
         if (c.crossings >= laps_ + 1) c.finish = t;
       } else ++c.crossings;
     }

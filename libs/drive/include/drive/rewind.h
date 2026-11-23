@@ -86,12 +86,14 @@ struct RewindCameraState {
 // One keyframe slot: whole drive::Vehicle copy (all physics state) plus camera
 // state, clocks, and optional skill-chain state.
 struct RewindKeyframe {
+  uint64_t snapshot_id = 0;  // unique monotonic id tying external world snapshots to this slot
   double replay_time = 0.0;
   double race_clock = 0.0;
   Vehicle vehicle;
   RewindCameraState camera{};
   uint64_t skill_chain_score = 0;
   int skill_chain_mult = 1;
+  double skill_chain_timer = 0.0;
 
   explicit RewindKeyframe(const Vehicle& v) : vehicle(v) {}
 };
@@ -141,9 +143,12 @@ class RewindBuffer {
 
   // Called during active driving to record 20 Hz stream poses and periodic
   // 2.5 s keyframes (skipped when capture_allowed is false).
-  void record_step(double replay_time, double race_clock, const Vehicle& vehicle,
-                   const RewindCameraState& camera, bool capture_allowed = true,
-                   uint64_t skill_chain_score = 0, int skill_chain_mult = 1);
+  // Returns the newly created keyframe's monotonic snapshot_id, or 0 if no
+  // keyframe was captured on this step.
+  uint64_t record_step(double replay_time, double race_clock, const Vehicle& vehicle,
+                       const RewindCameraState& camera, bool capture_allowed = true,
+                       uint64_t skill_chain_score = 0, int skill_chain_mult = 1,
+                       double skill_chain_timer = 0.0);
 
   // Trigger eligibility (SPEC-REWIND section 2).
   bool can_trigger() const;
@@ -153,7 +158,7 @@ class RewindBuffer {
   // ignore rule (< 1.0 s when count > 2), and starts -1.0x reverse playback.
   bool trigger(double current_replay_time, double race_clock, const Vehicle& current_vehicle,
                const RewindCameraState& current_camera, uint64_t skill_chain_score = 0,
-               int skill_chain_mult = 1);
+               int skill_chain_mult = 1, double skill_chain_timer = 0.0);
 
   // Advance reverse playback, post-resume settle timer, and audio ducking ramp.
   void update(double dt);
@@ -162,12 +167,24 @@ class RewindBuffer {
   bool rewind_further();
   bool resume(Vehicle& out_vehicle, RewindCameraState* out_camera = nullptr,
               double* out_replay_time = nullptr, double* out_race_clock = nullptr,
-              uint64_t* out_skill_score = nullptr, int* out_skill_mult = nullptr);
+              uint64_t* out_skill_score = nullptr, int* out_skill_mult = nullptr,
+              uint64_t* out_snapshot_id = nullptr, double* out_skill_timer = nullptr);
   bool cancel(Vehicle& out_vehicle, RewindCameraState* out_camera = nullptr,
               double* out_replay_time = nullptr, double* out_race_clock = nullptr,
-              uint64_t* out_skill_score = nullptr, int* out_skill_mult = nullptr);
+              uint64_t* out_skill_score = nullptr, int* out_skill_mult = nullptr,
+              uint64_t* out_snapshot_id = nullptr, double* out_skill_timer = nullptr);
   bool request_view_replay();
   bool consume_view_replay_request();
+
+  // Monotonic snapshot ids for external world-state snapshots synchronized to keyframes.
+  uint64_t latest_snapshot_id() const { return keyframes_.empty() ? 0u : keyframes_.back().snapshot_id; }
+  uint64_t cancel_snapshot_id() const { return cancel_snapshot_ ? cancel_snapshot_->snapshot_id : 0u; }
+  uint64_t selected_snapshot_id() const {
+    return (selected_slot_ >= 0 && selected_slot_ < int(keyframes_.size()))
+               ? keyframes_[size_t(selected_slot_)].snapshot_id
+               : 0u;
+  }
+  std::vector<uint64_t> active_snapshot_ids() const;
 
   // State queries.
   RewindState state() const { return state_; }
@@ -217,6 +234,7 @@ class RewindBuffer {
   std::vector<RewindKeyframe> keyframes_;
   std::vector<RewindStreamSample> stream_;
   std::optional<RewindKeyframe> cancel_snapshot_;
+  uint64_t next_snapshot_id_ = 1;
 
   double next_capture_time_ = 10.0;
   double next_stream_time_ = 0.0;
