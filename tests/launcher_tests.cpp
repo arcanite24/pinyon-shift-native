@@ -141,6 +141,7 @@ void test_disc_verifier() {
   assert(ok.valid);
   assert(ok.car_archive_count == 1);
   assert(ok.db_sha256.size() == 64);
+  assert(ok.summary.find("One-Click") == std::string::npos);
 
   // Passing media/ directly also resolves parent disc root
   const auto via_media = launcher::verify_disc_folder(disc / "media");
@@ -186,7 +187,15 @@ void test_hardware_advisor() {
   const auto rec_old = launcher::recommend_preset(old_vk);
   assert(!rec_old.warning.empty());
 
-  std::printf("  [ok] hardware capability advisor\n");
+  // Concise single-line hardware summary with no marketing/slop text
+  const std::string desc = launcher::describe_hardware(hi);
+  assert(desc.find("NVIDIA RTX 4080") != std::string::npos);
+  assert(desc.find("16.0 GB") != std::string::npos);
+  assert(desc.find("120 Hz") != std::string::npos);
+  assert(desc.find("ADVISOR") == std::string::npos);
+  assert(desc.find('\n') == std::string::npos);
+
+  std::printf("  [ok] hardware detection & concise summary\n");
 }
 
 void test_steam_vdf() {

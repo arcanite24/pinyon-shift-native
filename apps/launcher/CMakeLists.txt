@@ -17,6 +17,7 @@ endif()
 if(SHIFT_BUILD_CARVIEW AND NOT ANDROID)
   add_executable(shift-launcher
     main.cpp
+    launcher_font.cpp
     launcher_ui.cpp)
   target_include_directories(shift-launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(shift-launcher PRIVATE shift_launcher_core carview_render shift_stb SDL3::SDL3-static)

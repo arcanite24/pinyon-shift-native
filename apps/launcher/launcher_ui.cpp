@@ -5,13 +5,46 @@
 #include <cmath>
 #include <cstdio>
 
+#include "launcher_font.h"
 #include "ui4_chrome.h"
 
 namespace launcher {
 namespace {
 
 namespace ui = carview::ui;
-namespace ui4 = carview::ui4;
+
+// ---- Calm dark charcoal-slate palette --------------------------------------
+constexpr uint32_t kBgCanvas = ui::rgba(17, 19, 24);
+constexpr uint32_t kBgSidebar = ui::rgba(22, 24, 30);
+constexpr uint32_t kBgCard = ui::rgba(26, 29, 37);
+constexpr uint32_t kBgInset = ui::rgba(19, 22, 28);
+constexpr uint32_t kBgRowAlt = ui::rgba(31, 35, 44);
+constexpr uint32_t kBgHover = ui::rgba(38, 43, 54);
+constexpr uint32_t kBgPressed = ui::rgba(28, 32, 41);
+constexpr uint32_t kBgSelected = ui::rgba(37, 41, 52);
+
+constexpr uint32_t kBorderSubtle = ui::rgba(38, 42, 53);
+constexpr uint32_t kBorderCard = ui::rgba(45, 50, 63);
+constexpr uint32_t kBorderHover = ui::rgba(74, 82, 102);
+
+constexpr uint32_t kTextPrimary = ui::rgba(236, 239, 244);
+constexpr uint32_t kTextSecondary = ui::rgba(155, 163, 180);
+constexpr uint32_t kTextMuted = ui::rgba(108, 116, 134);
+
+// Restrained Horizon magenta (#E8195E) — primary action & active indicator only.
+constexpr uint32_t kAccent = ui::rgba(0xE8, 0x19, 0x5E);
+constexpr uint32_t kAccentHover = ui::rgba(0xF5, 0x2A, 0x6E);
+constexpr uint32_t kAccentPress = ui::rgba(0xC9, 0x13, 0x50);
+constexpr uint32_t kAccentSoft = ui::rgba(0xE8, 0x19, 0x5E, 30);
+
+// Tasteful semantic colors.
+constexpr uint32_t kGreen = ui::rgba(63, 185, 107);
+constexpr uint32_t kGreenSoft = ui::rgba(63, 185, 107, 26);
+constexpr uint32_t kAmber = ui::rgba(217, 155, 38);
+constexpr uint32_t kAmberSoft = ui::rgba(217, 155, 38, 28);
+constexpr uint32_t kRed = ui::rgba(224, 82, 82);
+constexpr uint32_t kRedSoft = ui::rgba(224, 82, 82, 32);
+constexpr uint32_t kBlue = ui::rgba(74, 144, 217);
 
 std::string lower_str(std::string_view s) {
   std::string out(s);
@@ -19,748 +52,1249 @@ std::string lower_str(std::string_view s) {
   return out;
 }
 
-std::string truncate_str(std::string_view s, size_t max_chars) {
-  if (s.size() <= max_chars) return std::string(s);
-  if (max_chars <= 3) return std::string(s.substr(0, max_chars));
-  return std::string(s.substr(0, max_chars - 3)) + "...";
-}
-
-std::string fmt_gb(uint64_t bytes) {
+std::string fmt_size(uint64_t bytes) {
   char buf[32];
   if (bytes >= (1ull << 30)) std::snprintf(buf, sizeof buf, "%.1f GB", double(bytes) / double(1ull << 30));
   else if (bytes >= (1ull << 20)) std::snprintf(buf, sizeof buf, "%.0f MB", double(bytes) / double(1ull << 20));
-  else std::snprintf(buf, sizeof buf, "%llu KB", (unsigned long long)(bytes >> 10));
+  else if (bytes >= (1ull << 10)) std::snprintf(buf, sizeof buf, "%llu KB", (unsigned long long)(bytes >> 10));
+  else std::snprintf(buf, sizeof buf, "%llu B", (unsigned long long)bytes);
   return buf;
 }
 
-void draw_fit_text(ui::List& l, float x, float y, std::string_view text, ui::TextStyle ts, float max_w,
-                   float min_size = 8.5f) {
-  ui4::fit_text(text, ts, max_w, min_size);
-  l.text(x, y, text, ts);
+float text_y_center(float y0, float y1, float px_size) {
+  return 0.5f * (y0 + y1) - 0.52f * px_size;
 }
 
-void draw_card(ui::List& l, float x0, float y0, float x1, float y1, float s, uint32_t top_accent = 0) {
-  // Sharp FH1 distressed charcoal card (zero rounded corners).
-  l.shadow(x0, y0 + 2 * s, x1, y1 + 4 * s, ui::rgba(0, 0, 0, 125), 0.0f, 10 * s);
-  l.rect(x0, y0, x1, y1, ui::rgba(19, 20, 24, 246), 0.0f, ui::rgba(14, 14, 16, 250));
-  std::array<float, 4> uv;
-  if (ui4::texture("DIRTMASKS/BGNOISE01", uv)) {
-    l.image(x0, y0, x1, y1, uv, ui::rgba(255, 255, 255, 16));
-  }
-  l.frame(x0, y0, x1, y1, ui::rgba(68, 72, 82, 165), 1.0f * s);
-  if (top_accent != 0) {
-    l.rect(x0, y0, x1, y0 + 3.5f * s, top_accent);
-  }
+void draw_card(ui::List& l, float x0, float y0, float x1, float y1, float d) {
+  l.rect(x0, y0, x1, y1, kBgCard, 6.0f * d);
+  l.frame(x0, y0, x1, y1, kBorderCard, 1.0f * d, 6.0f * d);
 }
 
-void draw_section_title(ui::List& l, float x, float y, std::string_view title, float s,
-                        uint32_t accent = ui4::kPink) {
-  l.rect(x, y + 2 * s, x + 4 * s, y + 18 * s, accent);
-  ui::TextStyle ts = ui4::style(ui::Font::kE, 16 * s, ui4::kWhite);
-  ts.weight = 0.12f;
-  l.text(x + 12 * s, y + 1 * s, title, ts);
+void draw_inset_box(ui::List& l, float x0, float y0, float x1, float y1, float d, uint32_t border = kBorderSubtle) {
+  l.rect(x0, y0, x1, y1, kBgInset, 5.0f * d);
+  l.frame(x0, y0, x1, y1, border, 1.0f * d, 5.0f * d);
 }
 
-void draw_button(ui::List& l, std::vector<HitBox>& hits, const std::string& id, float x0, float y0, float x1,
-                 float y1, std::string_view label, float s, bool primary, bool hovered, bool active = false) {
-  hits.push_back({id, x0, y0, x1, y1});
-  uint32_t bg = primary ? ui4::kPink : (active ? ui::rgba(52, 54, 62, 245) : ui4::kPillGrey);
-  uint32_t bg2 = primary ? ui::rgba(205, 0, 82, 255) : ui::rgba(22, 23, 27, 248);
-  if (hovered) {
-    bg = primary ? ui4::kPinkHi : ui::rgba(66, 70, 82, 250);
-    bg2 = primary ? ui4::kPink : ui::rgba(46, 49, 58, 250);
-  }
-  if (primary && (x1 - x0) >= 180 * s) {
-    ui4::brush(l, x0, y0, x1, y1, bg, false, 1.0f);
+void draw_divider(ui::List& l, float x0, float y, float x1, float d) {
+  l.rect(x0, std::floor(y), x1, std::floor(y) + std::max(1.0f, std::round(d)), kBorderSubtle);
+}
+
+struct ButtonStyle {
+  bool primary = false;
+  bool selected = false;
+  bool quiet = false;
+};
+
+void draw_button(ui::List& l, std::vector<HitBox>& hits, const LauncherUiState& st, const std::string& id,
+                 float x0, float y0, float x1, float y1, std::string_view label, float d, ButtonStyle bs = {}) {
+  hits.push_back({id, x0, y0, x1, y1, true});
+  const bool hov = st.hovered_id == id;
+  const bool prs = st.pressed_id == id;
+  const bool foc = st.focused_id == id;
+  const float r = 5.0f * d;
+
+  uint32_t fill = kBgRowAlt;
+  uint32_t border = kBorderCard;
+  uint32_t fg = kTextPrimary;
+
+  if (bs.primary) {
+    fill = prs ? kAccentPress : (hov ? kAccentHover : kAccent);
+    border = fill;
+    fg = ui::rgba(255, 255, 255);
+  } else if (bs.selected) {
+    fill = prs ? kBgPressed : (hov ? ui::rgba(46, 52, 66) : kBgSelected);
+    border = kAccent;
+    fg = ui::rgba(255, 255, 255);
+  } else if (bs.quiet) {
+    fill = prs ? kBgPressed : (hov ? kBgHover : ui::rgba(0, 0, 0, 0));
+    border = hov ? kBorderCard : ui::rgba(0, 0, 0, 0);
+    fg = hov ? kTextPrimary : kTextSecondary;
   } else {
-    l.rect(x0, y0, x1, y1, bg, 0.0f, bg2);
-    if (active && !primary) l.rect(x0, y0, x0 + 3.5f * s, y1, ui4::kPink);
-    l.frame(x0, y0, x1, y1, hovered ? ui4::kWhite : (primary ? ui4::kPinkHi : ui::rgba(88, 92, 104, 175)), 1.0f * s);
+    fill = prs ? kBgPressed : (hov ? kBgHover : ui::rgba(33, 37, 47));
+    border = hov ? kBorderHover : kBorderCard;
   }
-  ui::TextStyle ts = ui4::style(ui::Font::kE, 14 * s, ui4::kWhite, ui::Align::kCenter);
-  ts.weight = primary ? 0.13f : 0.11f;
-  ui4::fit_text(label, ts, (x1 - x0) - 16 * s, 9.5f * s);
-  l.text(0.5f * (x0 + x1), 0.5f * (y0 + y1) - 0.5f * ts.size, label, ts);
+
+  if ((fill >> 24) > 0) l.rect(x0, y0, x1, y1, fill, r);
+  if ((border >> 24) > 0) l.frame(x0, y0, x1, y1, border, (bs.selected ? 1.25f : 1.0f) * d, r);
+  if (foc) l.frame(x0 - 2.0f * d, y0 - 2.0f * d, x1 + 2.0f * d, y1 + 2.0f * d, kAccent, 1.5f * d, r + 1.5f * d);
+
+  const float font_px = (bs.primary && (y1 - y0) >= 42.0f * d) ? 15.0f * d : 13.0f * d;
+  const float max_w = std::max(12.0f * d, (x1 - x0) - 16.0f * d);
+  draw_text(l, 0.5f * (x0 + x1), text_y_center(y0, y1, font_px), label,
+            bs.primary || bs.selected ? FontFace::kSemiBold : FontFace::kRegular,
+            font_px, fg, ui::Align::kCenter, max_w);
 }
 
-void draw_pill(ui::List& l, float x, float y, float w, float h, std::string_view label, uint32_t bg,
-               uint32_t fg, float s) {
-  // Sharp FH1 tag strip (zero pill rounding)
-  l.rect(x, y, x + w, y + h, bg);
-  l.rect(x, y, x + 3 * s, y + h, fg == ui4::kInk ? ui4::kWhite : fg);
-  ui::TextStyle ts = ui4::style(ui::Font::kB, 11 * s, fg, ui::Align::kCenter);
-  ts.weight = 0.12f;
-  ui4::fit_text(label, ts, w - 12 * s, 8 * s);
-  l.text(x + w * 0.5f, y + (h - ts.size) * 0.5f, label, ts);
+void draw_checkbox(ui::List& l, std::vector<HitBox>& hits, const LauncherUiState& st, const std::string& id,
+                   float x, float y, float w, float h, std::string_view label, bool checked, float d) {
+  hits.push_back({id, x, y, x + w, y + h, true});
+  const bool hov = st.hovered_id == id;
+  const bool foc = st.focused_id == id;
+
+  if (hov) l.rect(x, y, x + w, y + h, ui::rgba(255, 255, 255, 10), 4.0f * d);
+  if (foc) l.frame(x, y, x + w, y + h, kAccent, 1.2f * d, 4.0f * d);
+
+  const float box = 16.0f * d;
+  const float bx0 = x + 4.0f * d;
+  const float by0 = 0.5f * (y + y + h) - 0.5f * box;
+  l.rect(bx0, by0, bx0 + box, by0 + box, checked ? kAccent : kBgInset, 3.0f * d);
+  l.frame(bx0, by0, bx0 + box, by0 + box, checked ? kAccent : (hov ? kBorderHover : kBorderCard), 1.2f * d, 3.0f * d);
+  if (checked) {
+    // Crisp checkmark
+    l.line(bx0 + 3.8f * d, by0 + 8.4f * d, bx0 + 6.8f * d, by0 + 11.6f * d, 1.8f * d, ui::rgba(255, 255, 255));
+    l.line(bx0 + 6.8f * d, by0 + 11.6f * d, bx0 + 12.4f * d, by0 + 4.8f * d, 1.8f * d, ui::rgba(255, 255, 255));
+  }
+  const float font_px = 13.0f * d;
+  draw_text(l, bx0 + box + 10.0f * d, text_y_center(y, y + h, font_px), label, FontFace::kRegular, font_px,
+            checked ? kTextPrimary : kTextSecondary, ui::Align::kLeft, std::max(10.0f, w - box - 18.0f * d));
 }
 
-void draw_progress_bar(ui::List& l, float x, float y, float w, float h, float frac, uint32_t fill, float s) {
+void draw_segmented(ui::List& l, std::vector<HitBox>& hits, const LauncherUiState& st, float x0, float y0,
+                    float x1, float y1, const char* const* labels, const char* const* ids, int count,
+                    int selected_idx, float d) {
+  draw_inset_box(l, x0, y0, x1, y1, d);
+  if (count <= 0) return;
+  const float pad = 3.0f * d;
+  const float inner_w = (x1 - x0) - 2.0f * pad;
+  const float seg_w = inner_w / float(count);
+  for (int i = 0; i < count; ++i) {
+    const float sx0 = x0 + pad + float(i) * seg_w;
+    const float sx1 = sx0 + seg_w;
+    const float sy0 = y0 + pad;
+    const float sy1 = y1 - pad;
+    const std::string sid(ids[i]);
+    hits.push_back({sid, sx0, sy0, sx1, sy1, true});
+    const bool active = (i == selected_idx);
+    const bool hov = st.hovered_id == sid;
+    const bool foc = st.focused_id == sid;
+    if (active) {
+      l.rect(sx0, sy0, sx1, sy1, kBgSelected, 4.0f * d);
+      l.frame(sx0, sy0, sx1, sy1, kBorderHover, 1.0f * d, 4.0f * d);
+      l.rect(sx0 + 10.0f * d, sy1 - 2.0f * d, sx1 - 10.0f * d, sy1, kAccent, 1.0f * d);
+    } else if (hov) {
+      l.rect(sx0, sy0, sx1, sy1, ui::rgba(255, 255, 255, 10), 4.0f * d);
+    }
+    if (foc) l.frame(sx0, sy0, sx1, sy1, kAccent, 1.3f * d, 4.0f * d);
+    const float font_px = 12.5f * d;
+    draw_text(l, 0.5f * (sx0 + sx1), text_y_center(sy0, sy1, font_px), labels[i],
+              active ? FontFace::kSemiBold : FontFace::kRegular, font_px,
+              active ? kTextPrimary : (hov ? kTextPrimary : kTextSecondary),
+              ui::Align::kCenter, std::max(8.0f, seg_w - 8.0f * d));
+  }
+}
+
+void draw_scrollbar(ui::List& l, float x, float y0, float y1, int first, int visible, int total, float d) {
+  if (total <= visible || visible <= 0) return;
+  const float w = 4.0f * d;
+  const float h = y1 - y0;
+  l.rect(x, y0, x + w, y1, ui::rgba(255, 255, 255, 14), 2.0f * d);
+  const float thumb_h = std::max(24.0f * d, h * (float(visible) / float(total)));
+  const float max_scroll = float(std::max(1, total - visible));
+  const float t = std::clamp(float(first) / max_scroll, 0.0f, 1.0f);
+  const float ty0 = y0 + t * (h - thumb_h);
+  l.rect(x, ty0, x + w, ty0 + thumb_h, ui::rgba(110, 120, 140, 190), 2.0f * d);
+}
+
+void draw_progress_bar(ui::List& l, float x, float y, float w, float h, float frac, uint32_t fill, float d) {
   frac = std::clamp(frac, 0.0f, 1.0f);
-  l.rect(x, y, x + w, y + h, ui4::kBrushBlack);
-  l.frame(x, y, x + w, y + h, ui::rgba(74, 80, 94, 180), 1.0f * s);
+  const float r = h * 0.5f;
+  l.rect(x, y, x + w, y + h, kBgInset, r);
+  l.frame(x, y, x + w, y + h, kBorderSubtle, 1.0f * d, r);
   if (frac > 0.005f) {
-    l.rect(x + 1.5f * s, y + 1.5f * s, x + std::max(4 * s, w * frac) - 1.5f * s, y + h - 1.5f * s, fill);
+    l.rect(x + 1.0f * d, y + 1.0f * d, x + std::max(h, w * frac) - 1.0f * d, y + h - 1.0f * d, fill, r);
   }
 }
 
-void draw_axis_bar(ui::List& l, float x, float y, float w, float h, std::string_view label, float val,
-                   bool centered, uint32_t fill, float dz_in, float s) {
-  ui::TextStyle lbl = ui4::style(ui::Font::kB, 12 * s, ui4::kDim);
-  l.text(x, y, label, lbl);
+void draw_axis_bar(ui::List& l, float x, float y, float w, float bar_h, std::string_view label, float val,
+                   bool centered, uint32_t fill, float dz_in, float d) {
+  const float font_px = 12.5f * d;
+  draw_text(l, x, y, label, FontFace::kRegular, font_px, kTextSecondary);
   char pct[24];
-  std::snprintf(pct, sizeof pct, "%+d%%", int(std::lround(val * 100.0f)));
-  ui::TextStyle val_ts = ui4::style(ui::Font::kB, 12 * s, ui4::kWhite, ui::Align::kRight);
-  l.text(x + w, y, centered ? std::string(pct) : (std::to_string(int(std::lround(val * 100.0f))) + "%"), val_ts);
+  if (centered) std::snprintf(pct, sizeof pct, "%+d%%", int(std::lround(val * 100.0f)));
+  else std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(val * 100.0f)));
+  draw_text(l, x + w, y, pct, FontFace::kMono, font_px, kTextPrimary, ui::Align::kRight);
 
-  const float by = y + 18 * s;
-  const float bh = h;
-  l.rect(x, by, x + w, by + bh, ui4::kBrushBlack);
-  l.frame(x, by, x + w, by + bh, ui::rgba(68, 74, 88, 180), 1.0f * s);
+  const float by = y + 20.0f * d;
+  const float r = 4.0f * d;
+  l.rect(x, by, x + w, by + bar_h, kBgInset, r);
+  l.frame(x, by, x + w, by + bar_h, kBorderSubtle, 1.0f * d, r);
+
   if (centered) {
     const float mid = x + w * 0.5f;
-    // Deadzone band
     const float dz_w = std::clamp(dz_in, 0.0f, 0.45f) * (w * 0.5f);
-    l.rect(mid - dz_w, by + 2 * s, mid + dz_w, by + bh - 2 * s, ui::rgba(255, 255, 255, 26));
-    l.line(mid, by + 1 * s, mid, by + bh - 1 * s, 1.5f * s, ui::rgba(140, 148, 162, 180));
+    if (dz_w > 1.0f) {
+      l.rect(mid - dz_w, by + 2.0f * d, mid + dz_w, by + bar_h - 2.0f * d, ui::rgba(255, 255, 255, 18), 2.0f * d);
+    }
+    l.line(mid, by + 2.0f * d, mid, by + bar_h - 2.0f * d, 1.2f * d, ui::rgba(115, 125, 145, 180));
     const float clamped = std::clamp(val, -1.0f, 1.0f);
-    const float end_x = mid + clamped * (w * 0.5f - 2 * s);
-    if (std::fabs(end_x - mid) > 1.0f) {
-      l.rect(std::min(mid, end_x), by + 3 * s, std::max(mid, end_x), by + bh - 3 * s, fill);
+    const float end_x = mid + clamped * (w * 0.5f - 2.0f * d);
+    if (std::fabs(end_x - mid) > 1.5f) {
+      l.rect(std::min(mid, end_x), by + 2.5f * d, std::max(mid, end_x), by + bar_h - 2.5f * d, fill, 2.5f * d);
     }
   } else {
     const float clamped = std::clamp(val, 0.0f, 1.0f);
     const float dz_w = std::clamp(dz_in, 0.0f, 0.45f) * w;
-    if (dz_w > 1.0f) l.rect(x + 2 * s, by + 2 * s, x + dz_w, by + bh - 2 * s, ui::rgba(255, 255, 255, 22));
+    if (dz_w > 1.0f) {
+      l.rect(x + 2.0f * d, by + 2.0f * d, x + dz_w, by + bar_h - 2.0f * d, ui::rgba(255, 255, 255, 16), 2.0f * d);
+    }
     if (clamped > 0.005f) {
-      l.rect(x + 2 * s, by + 3 * s, x + 2 * s + clamped * (w - 4 * s), by + bh - 3 * s, fill);
+      l.rect(x + 2.0f * d, by + 2.5f * d, x + 2.0f * d + clamped * (w - 4.0f * d), by + bar_h - 2.5f * d, fill, 2.5f * d);
     }
   }
 }
 
-void draw_play_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  // Left Hero Card
-  draw_card(l, 32 * s, 142 * s, 742 * s, 658 * s, s, ui4::kPink);
-  // Hero festival strip (sharp FH1 distressed panel)
-  l.rect(34 * s, 146 * s, 740 * s, 268 * s, ui::rgba(46, 12, 30, 225), 0.0f, ui::rgba(16, 17, 20, 240));
-  draw_pill(l, 52 * s, 166 * s, 196 * s, 24 * s, "COLORADO FESTIVAL", ui4::kPink, ui4::kWhite, s);
-  draw_fit_text(l, 52 * s, 202 * s, "FORZA HORIZON NATIVE DRIVE", ui4::style(ui::Font::kE, 25 * s, ui4::kWhite),
-                668 * s, 14 * s);
-  draw_fit_text(l, 52 * s, 238 * s,
-                st.play_cfg.baked_car_count > 0
-                    ? ("READY: " + std::to_string(st.play_cfg.baked_car_count) + " BAKED CARS  -  COLORADO INDEX " +
-                       (st.play_cfg.has_colorado_index ? "OK" : "MISSING"))
-                    : "NO PLAY FOLDER YET - OPEN SETUP TAB FOR ONE-CLICK DISC BAKE",
-                ui4::style(ui::Font::kB, 13 * s, st.play_cfg.baked_car_count > 0 ? ui4::kGreen : ui4::kAmber),
-                668 * s, 9.5f * s);
-
-  // Graphics Preset selector
-  draw_section_title(l, 52 * s, 288 * s, "GRAPHICS & PLATFORM PRESET", s, ui4::kAmber);
-  static constexpr const char* kPresets[5] = {"HIGH", "LOW-SPEC 60", "SMOOTH 60", "QUALITY 30", "LOW POWER"};
-  for (int i = 0; i < 5; ++i) {
-    const float px = 52 * s + float(i) * 134 * s;
-    const std::string id = "preset:" + std::to_string(i);
-    draw_button(l, hits, id, px, 318 * s, px + 126 * s, 354 * s, kPresets[i], s,
-                st.selected_preset == i, st.hovered_id == id, st.selected_preset == i);
+void draw_sidebar_icon(ui::List& l, LauncherTab tab, float cx, float cy, float d, uint32_t col) {
+  const float r = 6.0f * d;
+  const float t = 1.4f * d;
+  switch (tab) {
+    case LauncherTab::kPlay: {
+      // Crisp play triangle outline
+      l.line(cx - 3.5f * d, cy - 4.8f * d, cx + 4.8f * d, cy, t, col);
+      l.line(cx + 4.8f * d, cy, cx - 3.5f * d, cy + 4.8f * d, t, col);
+      l.line(cx - 3.5f * d, cy + 4.8f * d, cx - 3.5f * d, cy - 4.8f * d, t, col);
+      break;
+    }
+    case LauncherTab::kSetup: {
+      // Disc / setup circle with center hub
+      l.arc(cx, cy, r, t, 0.0f, 6.283f, col);
+      l.circle(cx, cy, 2.0f * d, col);
+      break;
+    }
+    case LauncherTab::kDlc: {
+      // Content package box
+      l.frame(cx - r, cy - r * 0.85f, cx + r, cy + r * 0.85f, col, t, 1.5f * d);
+      l.line(cx - r, cy - 1.5f * d, cx + r, cy - 1.5f * d, t, col);
+      l.line(cx, cy - r * 0.85f, cx, cy - 1.5f * d, t, col);
+      break;
+    }
+    case LauncherTab::kMods: {
+      // Stacked layers / sliders
+      l.line(cx - r, cy - 3.5f * d, cx + r, cy - 3.5f * d, t, col);
+      l.line(cx - r, cy, cx + r, cy, t, col);
+      l.line(cx - r, cy + 3.5f * d, cx + r, cy + 3.5f * d, t, col);
+      l.circle(cx - 2.0f * d, cy - 3.5f * d, 2.0f * d, col);
+      l.circle(cx + 2.5f * d, cy, 2.0f * d, col);
+      l.circle(cx - 1.0f * d, cy + 3.5f * d, 2.0f * d, col);
+      break;
+    }
+    case LauncherTab::kRadio: {
+      // Radio antenna / waves
+      l.circle(cx, cy + 1.5f * d, 2.0f * d, col);
+      l.arc(cx, cy + 1.5f * d, 4.8f * d, t, -0.9f, 0.9f, col);
+      l.arc(cx, cy + 1.5f * d, 4.8f * d, t, 2.24f, 4.04f, col);
+      break;
+    }
+    case LauncherTab::kWheel: {
+      // Steering wheel rim + spokes
+      l.arc(cx, cy, r, t, 0.0f, 6.283f, col);
+      l.line(cx - r + 1.5f * d, cy, cx + r - 1.5f * d, cy, t, col);
+      l.line(cx, cy, cx, cy + r - 1.5f * d, t, col);
+      break;
+    }
+    case LauncherTab::kUpdate: {
+      // Circular update arrow
+      l.arc(cx, cy, r * 0.9f, t, 0.4f, 5.5f, col);
+      l.line(cx + 2.0f * d, cy - r * 0.9f, cx + 5.2f * d, cy - r * 0.6f, t, col);
+      l.line(cx + 5.2f * d, cy - r * 0.6f, cx + 2.4f * d, cy - r * 0.2f, t, col);
+      break;
+    }
+    case LauncherTab::kAndroid: {
+      // Handheld / phone outline
+      l.frame(cx - 4.2f * d, cy - 6.2f * d, cx + 4.2f * d, cy + 6.2f * d, col, t, 1.8f * d);
+      l.line(cx - 1.5f * d, cy + 3.8f * d, cx + 1.5f * d, cy + 3.8f * d, t, col);
+      break;
+    }
+    default: break;
   }
+}
 
-  // Launch summary details
-  draw_section_title(l, 52 * s, 376 * s, "LAUNCH CONFIGURATION", s, ui4::kBlue);
-  ui::TextStyle kts = ui4::style(ui::Font::kB, 13 * s, ui4::kDim);
-  ui::TextStyle vts = ui4::style(ui::Font::kB, 13 * s, ui4::kWhite);
-  l.text(52 * s, 408 * s, "STARTING CAR:", kts);
-  draw_fit_text(l, 224 * s, 408 * s, st.launch_car, vts, 496 * s, 9.5f * s);
-  l.text(52 * s, 434 * s, "PLAY FOLDER:", kts);
-  draw_fit_text(l, 224 * s, 434 * s, truncate_str(st.paths.play_dir.string(), 52), vts, 496 * s, 9.5f * s);
-  l.text(52 * s, 460 * s, "INSTALL MODE:", kts);
-  draw_fit_text(l, 224 * s, 460 * s, st.paths.portable ? "PORTABLE (SELF-CONTAINED DATA/)" : "STANDARD USER FOLDER",
-                ui4::style(ui::Font::kB, 13 * s, st.paths.portable ? ui4::kAmber : ui4::kWhite), 496 * s, 9.5f * s);
-  l.text(52 * s, 486 * s, "SAVE PROFILE:", kts);
-  draw_fit_text(l, 224 * s, 486 * s, st.save_iso.profile + " (" + st.save_iso.kind + ")",
-                ui4::style(ui::Font::kB, 13 * s, st.save_iso.kind == "own" ? ui4::kGreen : ui4::kAmber),
-                496 * s, 9.5f * s);
+void draw_page_header(ui::List& l, float x0, float x1, float y, std::string_view title, float d) {
+  draw_text(l, x0, y, title, FontFace::kSemiBold, 20.0f * d, kTextPrimary);
+  draw_divider(l, x0, y + 36.0f * d, x1, d);
+}
 
-  // Primary Play button + Steam + Portable buttons
-  draw_button(l, hits, "act:play", 52 * s, 532 * s, 410 * s, 594 * s, "PLAY COLORADO NOW", s,
-              true, st.hovered_id == "act:play");
-  draw_button(l, hits, "act:steam", 426 * s, 532 * s, 578 * s, 594 * s, "ADD TO STEAM", s,
-              false, st.hovered_id == "act:steam");
-  draw_button(l, hits, "act:portable", 590 * s, 532 * s, 722 * s, 594 * s,
-              st.paths.portable ? "PORTABLE: ON" : "PORTABLE: OFF", s,
-              false, st.hovered_id == "act:portable", st.paths.portable);
+// ---- Tab 1: Play -----------------------------------------------------------
+
+void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                   std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Play", d);
+
+  const float top_y = y0 + 50.0f * d;
+
+  // 1. Hero Card: Game status, profile, car, and 1-click Play button
+  const float hero_h = 136.0f * d;
+  draw_card(l, x0, top_y, x1, top_y + hero_h, d);
+
+  const bool ready = st.play_cfg.baked_car_count > 0;
+  const float play_w = 160.0f * d;
+  const float play_h = 46.0f * d;
+  const float play_x0 = x1 - 24.0f * d - play_w;
+  const float play_y0 = top_y + 0.5f * (hero_h - play_h);
+  const float text_max_w = std::max(200.0f * d, play_x0 - x0 - 44.0f * d);
+
+  draw_text(l, x0 + 24.0f * d, top_y + 20.0f * d, "Forza Horizon", FontFace::kSemiBold, 23.0f * d, kTextPrimary,
+            ui::Align::kLeft, text_max_w);
+
+  // Readiness line with subtle status dot
+  const float sy = top_y + 56.0f * d;
+  l.circle(x0 + 29.0f * d, sy + 7.5f * d, 4.0f * d, ready ? kGreen : kAmber);
+  const std::string ready_str =
+      ready ? ("Ready  \xC2\xB7  " + std::to_string(st.play_cfg.baked_car_count) + " cars baked  \xC2\xB7  " +
+               (st.play_cfg.has_colorado_index ? "Colorado world index" : "World index missing"))
+            : "Game files not configured yet  \xC2\xB7  Open Setup to select your disc folder";
+  draw_text(l, x0 + 40.0f * d, sy, ready_str, FontFace::kRegular, 13.5f * d, ready ? kTextPrimary : kAmber,
+            ui::Align::kLeft, text_max_w - 16.0f * d);
+
+  // Active profile & car line
+  const std::string car_label = carview::ui4::pretty_car_media_name(st.launch_car);
+  const std::string meta_str = "Profile: " + st.save_iso.profile + "   \xC2\xB7   Car: " + car_label;
+  draw_text(l, x0 + 24.0f * d, top_y + 84.0f * d, meta_str, FontFace::kRegular, 13.0f * d, kTextSecondary,
+            ui::Align::kLeft, text_max_w);
+
+  // Play folder path (quiet monospace)
+  const std::string play_path = st.paths.play_dir.empty() ? "(not set)" : st.paths.play_dir.string();
+  draw_text(l, x0 + 24.0f * d, top_y + 106.0f * d, play_path, FontFace::kMono, 11.5f * d, kTextMuted,
+            ui::Align::kLeft, text_max_w);
+
+  // Primary Play button
+  draw_button(l, hits, st, "act:play", play_x0, play_y0, play_x0 + play_w, play_y0 + play_h, "Play", d,
+              {.primary = true});
+
+  // 2. Display & Performance Card
+  const float cfg_y = top_y + hero_h + 16.0f * d;
+  const float cfg_h = 212.0f * d;
+  draw_card(l, x0, cfg_y, x1, cfg_y + cfg_h, d);
+
+  draw_text(l, x0 + 24.0f * d, cfg_y + 18.0f * d, "Graphics & Display", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+
+  const float lbl_w = 104.0f * d;
+  const float right_btn_w = 156.0f * d;
+  const float seg_x0 = x0 + 24.0f * d + lbl_w;
+  const float seg_x1 = x1 - 24.0f * d - right_btn_w - 12.0f * d;
+
+  // Row 1: Graphics Preset
+  const float r1_y = cfg_y + 50.0f * d;
+  const float row_h = 34.0f * d;
+  draw_text(l, x0 + 24.0f * d, text_y_center(r1_y, r1_y + row_h, 13.0f * d), "Preset", FontFace::kRegular,
+            13.0f * d, kTextSecondary);
+  static constexpr const char* kPresetLabels[5] = {"High", "Low-Spec", "Smooth 60", "Quality 30", "Low Power"};
+  static constexpr const char* kPresetIds[5] = {"preset:0", "preset:1", "preset:2", "preset:3", "preset:4"};
+  draw_segmented(l, hits, st, seg_x0, r1_y, seg_x1, r1_y + row_h, kPresetLabels, kPresetIds, 5,
+                 std::clamp(st.selected_preset, 0, 4), d);
+  draw_button(l, hits, st, "act:apply_rec", seg_x1 + 12.0f * d, r1_y, x1 - 24.0f * d, r1_y + row_h,
+              "Use Recommended", d);
+
+  // Row 2: Resolution & Window mode
+  const float r2_y = r1_y + row_h + 12.0f * d;
+  draw_text(l, x0 + 24.0f * d, text_y_center(r2_y, r2_y + row_h, 13.0f * d), "Resolution", FontFace::kRegular,
+            13.0f * d, kTextSecondary);
+  const char* res_labels[5] = {kResolutionPresets[0].label, kResolutionPresets[1].label, kResolutionPresets[2].label,
+                               kResolutionPresets[3].label, kResolutionPresets[4].label};
+  static constexpr const char* kResIds[5] = {"res:0", "res:1", "res:2", "res:3", "res:4"};
+  draw_segmented(l, hits, st, seg_x0, r2_y, seg_x1, r2_y + row_h, res_labels, kResIds, 5,
+                 std::clamp(st.selected_resolution, 0, 4), d);
+  draw_button(l, hits, st, "act:fullscreen", seg_x1 + 12.0f * d, r2_y, x1 - 24.0f * d, r2_y + row_h,
+              st.launch_fullscreen ? "Mode: Fullscreen" : "Mode: Windowed", d,
+              {.selected = st.launch_fullscreen});
+
+  // Hardware 1-line summary bar
+  const float hw_y = r2_y + row_h + 18.0f * d;
+  const float hw_h = 44.0f * d;
+  draw_inset_box(l, x0 + 24.0f * d, hw_y, x1 - 24.0f * d, hw_y + hw_h, d,
+                 st.hw_rec.warning.empty() ? kBorderSubtle : kAmber);
+  const std::string hw_line = describe_hardware(st.hw_info);
+  const std::string rec_line =
+      st.hw_rec.warning.empty() ? ("Recommended: " + st.hw_rec.label) : "Driver update recommended";
+  const float rec_w = measure_text(FontFace::kSemiBold, 12.5f * d, rec_line) + 24.0f * d;
+  draw_text(l, x0 + 38.0f * d, text_y_center(hw_y, hw_y + hw_h, 12.5f * d), hw_line, FontFace::kRegular,
+            12.5f * d, kTextPrimary, ui::Align::kLeft, std::max(120.0f * d, cw - 76.0f * d - rec_w));
+  draw_text(l, x1 - 38.0f * d, text_y_center(hw_y, hw_y + hw_h, 12.5f * d), rec_line, FontFace::kSemiBold,
+            12.5f * d, st.hw_rec.warning.empty() ? kGreen : kAmber, ui::Align::kRight);
+
+  // 3. Bottom Two-Column Row: Quick Actions + Installed Content Summary
+  const float bot_y = cfg_y + cfg_h + 16.0f * d;
+  const float bot_h = std::max(150.0f * d, y1 - bot_y);
+  const float left_w = std::floor((cw - 16.0f * d) * 0.56f);
+  const float left_x1 = x0 + left_w;
+  const float right_x0 = left_x1 + 16.0f * d;
+
+  // Left: Quick Actions
+  draw_card(l, x0, bot_y, left_x1, bot_y + bot_h, d);
+  draw_text(l, x0 + 24.0f * d, bot_y + 18.0f * d, "Quick Actions", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+
+  const float qb_y = bot_y + 52.0f * d;
+  const float qb_h = 36.0f * d;
+  const float qb_gap = 10.0f * d;
+  const float qb_w = (left_w - 48.0f * d - 2.0f * qb_gap) / 3.0f;
+  draw_button(l, hits, st, "act:open_play", x0 + 24.0f * d, qb_y, x0 + 24.0f * d + qb_w, qb_y + qb_h,
+              "Open Play Folder", d);
+  draw_button(l, hits, st, "act:portable", x0 + 24.0f * d + qb_w + qb_gap, qb_y,
+              x0 + 24.0f * d + 2.0f * qb_w + qb_gap, qb_y + qb_h,
+              st.paths.portable ? "Portable: On" : "Portable: Off", d, {.selected = st.paths.portable});
+  draw_button(l, hits, st, "act:steam", x0 + 24.0f * d + 2.0f * (qb_w + qb_gap), qb_y,
+              left_x1 - 24.0f * d, qb_y + qb_h, "Add to Steam", d);
 
   if (!st.paths.path_length_warning.empty()) {
-    draw_fit_text(l, 52 * s, 616 * s, st.paths.path_length_warning,
-                  ui4::style(ui::Font::kB, 12 * s, ui4::kAmber), 668 * s, 9.0f * s);
+    draw_wrapped_text(l, x0 + 24.0f * d, qb_y + qb_h + 16.0f * d, left_w - 48.0f * d, 18.0f * d, 2,
+                      st.paths.path_length_warning, FontFace::kRegular, 12.0f * d, kAmber);
   } else {
-    draw_fit_text(l, 52 * s, 616 * s, "ZERO PYTHON/QT RUNTIME REQUIRED - NATIVE SDL3 + VULKAN LAUNCHER",
-                  ui4::style(ui::Font::kB, 11 * s, ui4::kDim), 668 * s, 9.0f * s);
+    draw_text(l, x0 + 24.0f * d, qb_y + qb_h + 18.0f * d,
+              st.paths.portable ? "Data is stored in a portable folder beside the launcher."
+                                : "Data is stored in your standard user application folder.",
+              FontFace::kRegular, 12.5f * d, kTextSecondary, ui::Align::kLeft, left_w - 48.0f * d);
+    draw_text(l, x0 + 24.0f * d, qb_y + qb_h + 40.0f * d, st.paths.data_root.string(), FontFace::kMono,
+              11.5f * d, kTextMuted, ui::Align::kLeft, left_w - 48.0f * d);
   }
 
-  // Right Column: Hardware Capability Advisor ("This PC")
-  draw_card(l, 764 * s, 142 * s, 1248 * s, 412 * s, s, ui4::kGreen);
-  draw_section_title(l, 784 * s, 162 * s, "THIS PC - HARDWARE ADVISOR", s, ui4::kGreen);
+  // Right: Installed Content Overview
+  draw_card(l, right_x0, bot_y, x1, bot_y + bot_h, d);
+  draw_text(l, right_x0 + 24.0f * d, bot_y + 18.0f * d, "Library Overview", FontFace::kSemiBold, 14.0f * d,
+            kTextPrimary);
 
-  const std::string gpu_name = st.hw_info.gpu ? st.hw_info.gpu->name : "NO VULKAN GPU DETECTED";
-  const std::string vram_s = st.hw_info.gpu ? fmt_gb(st.hw_info.gpu->vram_bytes) : "N/A";
-  const std::string vk_s = st.hw_info.gpu ? ("VULKAN " + st.hw_info.gpu->vulkan_version_string()) : "UNAVAILABLE";
-  const std::string cpu_s = std::to_string(st.hw_info.physical_cores) + " CORES / " +
-                            std::to_string(st.hw_info.logical_threads) + " THREADS - " +
-                            std::to_string(st.hw_info.refresh_hz) + " HZ";
-
-  l.text(784 * s, 198 * s, "GPU:", kts);
-  draw_fit_text(l, 916 * s, 198 * s, gpu_name, vts, 312 * s, 9.5f * s);
-  l.text(784 * s, 224 * s, "MEMORY:", kts);
-  draw_fit_text(l, 916 * s, 224 * s, vram_s + "  -  " + vk_s, vts, 312 * s, 9.5f * s);
-  l.text(784 * s, 250 * s, "CPU / HZ:", kts);
-  draw_fit_text(l, 916 * s, 250 * s, cpu_s, vts, 312 * s, 9.5f * s);
-
-  // Recommended preset callout box (sharp FH1 strip)
-  l.rect(784 * s, 284 * s, 1228 * s, 352 * s, ui::rgba(14, 30, 22, 235));
-  l.rect(784 * s, 284 * s, 788 * s, 352 * s, ui4::kGreen);
-  l.frame(784 * s, 284 * s, 1228 * s, 352 * s, ui4::kGreen, 1.0f * s);
-  draw_fit_text(l, 798 * s, 294 * s, "RECOMMENDED: " + st.hw_rec.label,
-                ui4::style(ui::Font::kE, 15 * s, ui4::kGreen), 416 * s, 11 * s);
-  draw_fit_text(l, 798 * s, 322 * s, st.hw_rec.reason,
-                ui4::style(ui::Font::kB, 11 * s, ui4::kWhite), 416 * s, 8.5f * s);
-
-  draw_button(l, hits, "act:apply_rec", 784 * s, 364 * s, 1020 * s, 398 * s, "APPLY RECOMMENDED PRESET", s,
-              false, st.hovered_id == "act:apply_rec");
-  if (!st.hw_rec.warning.empty()) {
-    draw_pill(l, 1032 * s, 368 * s, 196 * s, 26 * s, "DRIVER WARNING", ui4::kRed, ui4::kWhite, s);
-  } else {
-    draw_pill(l, 1032 * s, 368 * s, 196 * s, 26 * s, "VULKAN 1.3 READY", ui::rgba(28, 84, 46, 240), ui4::kGreen, s);
-  }
-
-  // Right Bottom Card: Ecosystem Summary
-  draw_card(l, 764 * s, 430 * s, 1248 * s, 658 * s, s, ui4::kAmber);
-  draw_section_title(l, 784 * s, 450 * s, "CONTENT & ECOSYSTEM", s, ui4::kAmber);
   int enabled_mods = 0;
   for (const auto& m : st.mods) {
     if (m.enabled) ++enabled_mods;
   }
-  l.text(784 * s, 486 * s, "TITLE UPDATE V4:", kts);
-  draw_fit_text(l, 986 * s, 486 * s, st.content_status.has_v4 ? "INSTALLED (RALLY + CLUB)" : "NOT INSTALLED",
-                ui4::style(ui::Font::kB, 13 * s, st.content_status.has_v4 ? ui4::kGreen : ui4::kDim),
-                242 * s, 9.5f * s);
-  l.text(784 * s, 514 * s, "DLC / UDLC / XE:", kts);
-  draw_fit_text(l, 986 * s, 514 * s,
-                std::to_string(st.content_status.dlc_installed_count) + " DLC" +
-                    (st.content_status.has_udlc ? " + UDLC V1.2" : "") +
-                    (st.content_status.has_xe ? " + HORIZON XE" : ""),
-                vts, 242 * s, 9.5f * s);
-  l.text(784 * s, 542 * s, "ACTIVE MODS:", kts);
-  draw_fit_text(l, 986 * s, 542 * s, std::to_string(enabled_mods) + " OF " + std::to_string(st.mods.size()) + " ENABLED",
-                vts, 242 * s, 9.5f * s);
-  l.text(784 * s, 570 * s, "ANDROID SYNC:", kts);
-  draw_fit_text(l, 986 * s, 570 * s,
-                st.sync_active ? ("SHARING ON PORT " + std::to_string(st.sync_port)) : "READY OVER LAN WI-FI",
-                ui4::style(ui::Font::kB, 13 * s, st.sync_active ? ui4::kGreen : ui4::kDim), 242 * s, 9.5f * s);
 
-  draw_button(l, hits, "tab:mods", 784 * s, 606 * s, 926 * s, 642 * s, "MOD MANAGER", s, false,
-              st.hovered_id == "tab:mods");
-  draw_button(l, hits, "tab:radio", 936 * s, 606 * s, 1082 * s, 642 * s, "RADIO BUILDER", s, false,
-              st.hovered_id == "tab:radio");
-  draw_button(l, hits, "tab:android", 1092 * s, 606 * s, 1228 * s, 642 * s, "WI-FI SYNC", s, false,
-              st.hovered_id == "tab:android");
+  const float kv_x = right_x0 + 24.0f * d;
+  const float kv_rx = x1 - 24.0f * d;
+  const float kv_y0 = bot_y + 50.0f * d;
+  const float kv_step = 26.0f * d;
+  const float val_max_w = (x1 - right_x0) * 0.55f;
+
+  auto kv_row = [&](int idx, std::string_view k, std::string_view v, uint32_t vc) {
+    const float ry = kv_y0 + float(idx) * kv_step;
+    draw_text(l, kv_x, ry, k, FontFace::kRegular, 12.5f * d, kTextSecondary);
+    draw_text(l, kv_rx, ry, v, FontFace::kSemiBold, 12.5f * d, vc, ui::Align::kRight, val_max_w);
+  };
+
+  kv_row(0, "Title Update v4", st.content_status.has_v4 ? "Installed" : "Not installed",
+         st.content_status.has_v4 ? kGreen : kTextMuted);
+  const std::string dlc_val =
+      std::to_string(st.content_status.dlc_installed_count) + " packs" +
+      (st.content_status.has_udlc ? "  \xC2\xB7  UDLC" : "") +
+      (st.content_status.has_xe ? "  \xC2\xB7  XE" : "");
+  kv_row(1, "DLC & Expansions", dlc_val, kTextPrimary);
+  kv_row(2, "Mods", std::to_string(enabled_mods) + " of " + std::to_string(st.mods.size()) + " enabled",
+         enabled_mods > 0 ? kTextPrimary : kTextMuted);
+  kv_row(3, "Android Wi-Fi Sync",
+         st.sync_active ? ("Active on :" + std::to_string(st.sync_port)) : "Stopped",
+         st.sync_active ? kGreen : kTextMuted);
 }
 
-void draw_setup_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  draw_card(l, 32 * s, 142 * s, 1248 * s, 400 * s, s, ui4::kPink);
-  draw_section_title(l, 52 * s, 162 * s, "ONE-CLICK DISC VERIFICATION & BAKE", s, ui4::kPink);
+// ---- Tab 2: Setup ----------------------------------------------------------
 
-  l.text(52 * s, 196 * s, "EXTRACTED DISC FOLDER (DROP FOLDER ONTO WINDOW OR EDIT PATH):",
-         ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 218 * s, 960 * s, 254 * s, ui4::kBrushBlack);
-  l.frame(52 * s, 218 * s, 960 * s, 254 * s, ui::rgba(80, 86, 100, 200), 1.0f * s);
-  l.text(64 * s, 229 * s,
-         st.disc_path_input.empty() ? "DRAG & DROP YOUR EXTRACTED FH1 DISC FOLDER HERE (HOLDING MEDIA/)"
-                                    : truncate_str(st.disc_path_input, 74),
-         ui4::style(ui::Font::kB, 13 * s, st.disc_path_input.empty() ? ui4::kDim : ui4::kWhite));
-  draw_button(l, hits, "setup:verify", 974 * s, 218 * s, 1110 * s, 254 * s, "VERIFY DISC", s, false,
-              st.hovered_id == "setup:verify");
-  draw_button(l, hits, "setup:run", 1120 * s, 218 * s, 1228 * s, 254 * s,
-              st.setup_progress.running ? "BAKING..." : "RUN SETUP", s, true, st.hovered_id == "setup:run");
+void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                    std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Setup", d);
+  const float top_y = y0 + 50.0f * d;
 
-  // Verification checklist grid (2 columns)
+  // Step 1: Disc Folder
+  const float c1_h = 128.0f * d;
+  draw_card(l, x0, top_y, x1, top_y + c1_h, d);
+  draw_text(l, x0 + 20.0f * d, top_y + 16.0f * d, "1. Game Disc Folder", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_text(l, x0 + 20.0f * d, top_y + 38.0f * d,
+            "Drop your extracted Forza Horizon disc folder (containing media/) onto this window.",
+            FontFace::kRegular, 12.5f * d, kTextSecondary, ui::Align::kLeft, cw - 40.0f * d);
+
+  const float row_y = top_y + 62.0f * d;
+  const float row_h = 34.0f * d;
+  const float btn_run_w = 122.0f * d;
+  const float btn_ver_w = 96.0f * d;
+  const float box_x1 = x1 - 20.0f * d - btn_run_w - btn_ver_w - 18.0f * d;
+
+  draw_inset_box(l, x0 + 20.0f * d, row_y, box_x1, row_y + row_h, d,
+                 st.disc_check.valid ? kGreen : kBorderSubtle);
+  draw_text(l, x0 + 32.0f * d, text_y_center(row_y, row_y + row_h, 12.5f * d),
+            st.disc_path_input.empty() ? "Drop extracted disc folder here..." : st.disc_path_input,
+            st.disc_path_input.empty() ? FontFace::kRegular : FontFace::kMono, 12.5f * d,
+            st.disc_path_input.empty() ? kTextMuted : kTextPrimary,
+            ui::Align::kLeft, std::max(40.0f, box_x1 - x0 - 44.0f * d));
+
+  draw_button(l, hits, st, "setup:verify", box_x1 + 9.0f * d, row_y, box_x1 + 9.0f * d + btn_ver_w, row_y + row_h,
+              "Verify", d);
+  draw_button(l, hits, st, "setup:run", box_x1 + 18.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
+              st.setup_progress.running ? "Running..." : "Run Setup", d, {.primary = true});
+
+  draw_text(l, x0 + 20.0f * d, row_y + row_h + 10.0f * d, st.disc_check.summary, FontFace::kRegular, 12.0f * d,
+            st.disc_check.valid ? kGreen : kAmber, ui::Align::kLeft, cw - 40.0f * d);
+
+  // Step 2: Validation Checklist
+  const float c2_y = top_y + c1_h + 14.0f * d;
+  const float c2_h = 152.0f * d;
+  draw_card(l, x0, c2_y, x1, c2_y + c2_h, d);
+  draw_text(l, x0 + 20.0f * d, c2_y + 16.0f * d, "2. Verification Checklist", FontFace::kSemiBold, 14.0f * d,
+            kTextPrimary);
+
+  const float col_w = (cw - 60.0f * d) * 0.5f;
   for (size_t i = 0; i < st.disc_check.items.size() && i < 6; ++i) {
     const auto& it = st.disc_check.items[i];
-    const float col_x = (i % 2 == 0) ? 52 * s : 650 * s;
-    const float row_y = 272 * s + float(i / 2) * 34 * s;
-    const uint32_t dot = it.present ? ui4::kGreen : (it.required ? ui4::kRed : ui4::kAmber);
-    l.circle(col_x + 8 * s, row_y + 8 * s, 5 * s, dot);
-    std::string desc = it.label;
-    if (!it.sha256_prefix.empty()) desc += " [SHA256 " + it.sha256_prefix + "]";
-    l.text(col_x + 22 * s, row_y + 1 * s, truncate_str(desc, 52), ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
+    const float cx = (i % 2 == 0) ? (x0 + 20.0f * d) : (x0 + 40.0f * d + col_w);
+    const float ry = c2_y + 46.0f * d + float(i / 2) * 32.0f * d;
+    const uint32_t dot = it.present ? kGreen : (it.required ? kRed : kTextMuted);
+    l.circle(cx + 6.0f * d, ry + 8.0f * d, 4.0f * d, dot);
+
+    std::string right_meta;
+    if (!it.sha256_prefix.empty()) right_meta = "SHA-256 " + it.sha256_prefix;
+    else if (it.present && it.bytes > 0) right_meta = fmt_size(it.bytes);
+    else if (it.present) right_meta = "Found";
+    else right_meta = it.required ? "Missing" : "Optional";
+
+    const float meta_w = measure_text(FontFace::kMono, 11.5f * d, right_meta) + 12.0f * d;
+    draw_text(l, cx + 18.0f * d, ry, it.label, FontFace::kRegular, 12.5f * d,
+              it.present ? kTextPrimary : kTextSecondary, ui::Align::kLeft, std::max(60.0f, col_w - 22.0f * d - meta_w));
+    draw_text(l, cx + col_w, ry + 1.0f * d, right_meta, FontFace::kMono, 11.5f * d,
+              it.present ? kTextMuted : (it.required ? kRed : kTextMuted), ui::Align::kRight);
   }
-  l.text(52 * s, 376 * s, truncate_str(st.disc_check.summary, 96),
-         ui4::style(ui::Font::kB, 12 * s, st.disc_check.valid ? ui4::kGreen : ui4::kAmber));
+  if (st.disc_check.items.empty()) {
+    draw_text(l, x0 + 20.0f * d, c2_y + 52.0f * d, "Verify a disc folder to inspect required files.",
+              FontFace::kRegular, 12.5f * d, kTextMuted);
+  }
 
-  // Progress + Log Drawer
-  draw_card(l, 32 * s, 418 * s, 1248 * s, 658 * s, s, ui4::kAmber);
-  draw_section_title(l, 52 * s, 438 * s, "LIVE BAKE PROGRESS & LOG DRAWER", s, ui4::kAmber);
+  // Step 3: Build Options, Progress & Collapsible Log Viewer
+  const float c3_y = c2_y + c2_h + 14.0f * d;
+  const float c3_h = std::max(140.0f * d, y1 - c3_y);
+  draw_card(l, x0, c3_y, x1, c3_y + c3_h, d);
 
-  draw_button(l, hits, "setup:toggle_sounds", 820 * s, 434 * s, 1030 * s, 464 * s,
-              st.setup_all_sounds ? "ALL SOUNDS: ON" : "ALL SOUNDS: DEFAULT CAR", s, false,
-              st.hovered_id == "setup:toggle_sounds", st.setup_all_sounds);
-  draw_button(l, hits, "setup:toggle_index", 1042 * s, 434 * s, 1228 * s, 464 * s,
-              st.setup_build_index ? "COLORADO INDEX: ON" : "COLORADO INDEX: OFF", s, false,
-              st.hovered_id == "setup:toggle_index", st.setup_build_index);
+  draw_text(l, x0 + 20.0f * d, c3_y + 18.0f * d, "3. Build & Log", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
 
-  const std::string stg = st.setup_progress.stage_label.empty() ? "IDLE - VERIFY DISC TO BEGIN" : st.setup_progress.stage_label;
-  l.text(52 * s, 476 * s, stg, ui4::style(ui::Font::kB, 13 * s, ui4::kWhite));
-  draw_progress_bar(l, 52 * s, 500 * s, 1176 * s, 16 * s, st.setup_progress.fraction,
-                    st.setup_progress.success ? ui4::kGreen : ui4::kPink, s);
+  // Right-aligned options & log toggle
+  const float tog_w = 94.0f * d;
+  draw_button(l, hits, st, "setup:toggle_log", x1 - 20.0f * d - tog_w, c3_y + 12.0f * d, x1 - 20.0f * d,
+              c3_y + 40.0f * d, st.setup_log_expanded ? "Hide Log" : "Show Log", d);
+  draw_checkbox(l, hits, st, "setup:toggle_index", x1 - 20.0f * d - tog_w - 176.0f * d, c3_y + 12.0f * d,
+                168.0f * d, 28.0f * d, "Build world index", st.setup_build_index, d);
+  draw_checkbox(l, hits, st, "setup:toggle_sounds", x1 - 20.0f * d - tog_w - 360.0f * d, c3_y + 12.0f * d,
+                176.0f * d, 28.0f * d, "Bake all car sounds", st.setup_all_sounds, d);
 
-  // Log box
-  l.rect(52 * s, 528 * s, 1228 * s, 644 * s, ui4::kBrushBlack);
-  const size_t nlines = st.setup_progress.log_lines.size();
-  const size_t start = nlines > 6 ? nlines - 6 : 0;
-  for (size_t i = start; i < nlines; ++i) {
-    const float ly = 536 * s + float(i - start) * 17 * s;
-    l.text(64 * s, ly, truncate_str(st.setup_progress.log_lines[i], 96),
-           ui4::style(ui::Font::kB, 11 * s, ui4::kDim));
+  const float prog_y = c3_y + 52.0f * d;
+  const std::string stg = st.setup_progress.stage_label.empty() ? "Idle" : st.setup_progress.stage_label;
+  draw_text(l, x0 + 20.0f * d, prog_y, stg, FontFace::kRegular, 12.5f * d, kTextPrimary, ui::Align::kLeft,
+            cw - 110.0f * d);
+  char pct[16];
+  std::snprintf(pct, sizeof pct, "%d%%", int(std::lround(std::clamp(st.setup_progress.fraction, 0.0f, 1.0f) * 100.0f)));
+  draw_text(l, x1 - 20.0f * d, prog_y, pct, FontFace::kMono, 12.5f * d, kTextSecondary, ui::Align::kRight);
+  draw_progress_bar(l, x0 + 20.0f * d, prog_y + 22.0f * d, cw - 40.0f * d, 8.0f * d,
+                    st.setup_progress.fraction, st.setup_progress.success ? kGreen : kAccent, d);
+
+  const float log_y0 = prog_y + 42.0f * d;
+  const float log_y1 = c3_y + c3_h - 16.0f * d;
+  if (st.setup_log_expanded && log_y1 - log_y0 > 36.0f * d) {
+    draw_inset_box(l, x0 + 20.0f * d, log_y0, x1 - 20.0f * d, log_y1, d);
+    const float line_h = 18.0f * d;
+    const int vis = std::max(1, int((log_y1 - log_y0 - 16.0f * d) / line_h));
+    const int total = int(st.setup_progress.log_lines.size());
+    const int max_start = std::max(0, total - vis);
+    const int start = std::clamp(max_start - st.setup_log_scroll, 0, max_start);
+    for (int i = 0; i < vis && start + i < total; ++i) {
+      draw_text(l, x0 + 32.0f * d, log_y0 + 8.0f * d + float(i) * line_h,
+                st.setup_progress.log_lines[size_t(start + i)], FontFace::kMono, 11.5f * d, kTextSecondary,
+                ui::Align::kLeft, cw - 74.0f * d);
+    }
+    if (total == 0) {
+      draw_text(l, x0 + 32.0f * d, log_y0 + 10.0f * d, "No build output yet.", FontFace::kMono, 11.5f * d, kTextMuted);
+    }
+    draw_scrollbar(l, x1 - 30.0f * d, log_y0 + 6.0f * d, log_y1 - 6.0f * d, start, vis, total, d);
+  } else {
+    draw_text(l, x0 + 20.0f * d, log_y0 + 4.0f * d,
+              std::to_string(st.setup_progress.log_lines.size()) + " log lines (click Show Log to expand).",
+              FontFace::kRegular, 12.0f * d, kTextMuted);
   }
 }
 
-void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  draw_card(l, 32 * s, 142 * s, 1248 * s, 240 * s, s, ui4::kAmber);
-  draw_section_title(l, 52 * s, 162 * s, "DLC, TITLE UPDATE V4, UDLC V1.2 & FORZA HORIZON XE", s, ui4::kAmber);
-  l.text(52 * s, 196 * s, truncate_str(st.content_status.notice, 98), ui4::style(ui::Font::kB, 13 * s, ui4::kWhite));
-  draw_button(l, hits, "dlc:rescan", 980 * s, 158 * s, 1110 * s, 192 * s, "RESCAN", s, false,
-              st.hovered_id == "dlc:rescan");
-  draw_button(l, hits, "dlc:import", 1120 * s, 158 * s, 1228 * s, 192 * s, "IMPORT PKG", s, true,
-              st.hovered_id == "dlc:import");
+// ---- Tab 3: Content (DLC & Title Update) -----------------------------------
 
-  draw_card(l, 32 * s, 256 * s, 1248 * s, 658 * s, s, ui4::kPink);
-  draw_section_title(l, 52 * s, 276 * s, "DETECTED PACKAGES & EXPANSIONS", s, ui4::kPink);
+void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                  std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Content", d);
+  draw_button(l, hits, st, "dlc:rescan", x1 - 224.0f * d, y0 - 2.0f * d, x1 - 126.0f * d, y0 + 28.0f * d, "Rescan", d);
+  draw_button(l, hits, st, "dlc:import", x1 - 116.0f * d, y0 - 2.0f * d, x1, y0 + 28.0f * d, "Import", d,
+              {.primary = true});
 
-  for (size_t i = 0; i < st.content_status.packages.size() && i < 8; ++i) {
-    const auto& pkg = st.content_status.packages[i];
-    const float ry = 312 * s + float(i) * 41 * s;
-    l.rect(52 * s, ry, 1228 * s, ry + 34 * s, (i % 2 == 0) ? ui4::kPillGrey : ui::rgba(24, 25, 30, 240));
-    l.circle(70 * s, ry + 17 * s, 5.5f * s, pkg.installed ? (pkg.enabled ? ui4::kGreen : ui4::kAmber) : ui::rgba(90, 96, 108, 220));
-    l.text(88 * s, ry + 10 * s, truncate_str(pkg.title, 38), ui4::style(ui::Font::kE, 13 * s, ui4::kWhite));
-    l.text(560 * s, ry + 11 * s, pkg.installed ? truncate_str(pkg.detail, 42) : "NOT INSTALLED (DROP STFS OR FOLDER)",
-           ui4::style(ui::Font::kB, 12 * s, pkg.installed ? ui4::kDim : ui::rgba(120, 126, 138, 220)));
-    draw_pill(l, 1110 * s, ry + 6 * s, 106 * s, 22 * s,
-              pkg.installed ? (pkg.enabled ? "MOUNTED" : "DISABLED") : "MISSING",
-              pkg.installed ? ui::rgba(28, 76, 44, 240) : ui::rgba(48, 52, 62, 230),
-              pkg.installed ? ui4::kGreen : ui4::kDim, s);
+  const float top_y = y0 + 50.0f * d;
+
+  // Summary banner
+  const float ban_h = 44.0f * d;
+  draw_card(l, x0, top_y, x1, top_y + ban_h, d);
+  draw_text(l, x0 + 18.0f * d, text_y_center(top_y, top_y + ban_h, 13.0f * d), st.content_status.notice,
+            FontFace::kRegular, 13.0f * d, kTextPrimary, ui::Align::kLeft, cw - 36.0f * d);
+
+  // Tabular package list
+  const float tbl_y = top_y + ban_h + 14.0f * d;
+  const float tbl_h = std::max(200.0f * d, y1 - tbl_y);
+  draw_card(l, x0, tbl_y, x1, tbl_y + tbl_h, d);
+
+  const float hdr_h = 34.0f * d;
+  l.rect(x0 + 1.0f * d, tbl_y + 1.0f * d, x1 - 1.0f * d, tbl_y + hdr_h, kBgInset, 5.0f * d);
+  draw_divider(l, x0 + 1.0f * d, tbl_y + hdr_h, x1 - 1.0f * d, d);
+  const float col2_x = x0 + cw * 0.44f;
+  const float col3_x = x1 - 24.0f * d;
+  draw_text(l, x0 + 24.0f * d, text_y_center(tbl_y, tbl_y + hdr_h, 12.0f * d), "Package", FontFace::kSemiBold,
+            12.0f * d, kTextMuted);
+  draw_text(l, col2_x, text_y_center(tbl_y, tbl_y + hdr_h, 12.0f * d), "Details", FontFace::kSemiBold, 12.0f * d,
+            kTextMuted);
+  draw_text(l, col3_x, text_y_center(tbl_y, tbl_y + hdr_h, 12.0f * d), "Status", FontFace::kSemiBold, 12.0f * d,
+            kTextMuted, ui::Align::kRight);
+
+  const float rows_y0 = tbl_y + hdr_h + 4.0f * d;
+  const float rows_y1 = tbl_y + tbl_h - 38.0f * d;
+  const float row_h = 44.0f * d;
+  const int vis = std::max(1, int((rows_y1 - rows_y0) / row_h));
+  const int total = int(st.content_status.packages.size());
+  const int start = std::clamp(st.content_scroll, 0, std::max(0, total - vis));
+
+  for (int i = 0; i < vis && start + i < total; ++i) {
+    const auto& pkg = st.content_status.packages[size_t(start + i)];
+    const float ry = rows_y0 + float(i) * row_h;
+    if (i % 2 == 1) l.rect(x0 + 2.0f * d, ry, x1 - 14.0f * d, ry + row_h, ui::rgba(255, 255, 255, 5));
+
+    const uint32_t dot = pkg.installed ? (pkg.enabled ? kGreen : kAmber) : kTextMuted;
+    l.circle(x0 + 28.0f * d, ry + 0.5f * row_h, 4.0f * d, dot);
+    draw_text(l, x0 + 42.0f * d, text_y_center(ry, ry + row_h, 13.5f * d), pkg.title, FontFace::kSemiBold,
+              13.5f * d, pkg.installed ? kTextPrimary : kTextSecondary, ui::Align::kLeft, col2_x - x0 - 54.0f * d);
+    draw_text(l, col2_x, text_y_center(ry, ry + row_h, 12.5f * d),
+              pkg.installed ? pkg.detail : "Drop STFS container or extracted folder", FontFace::kRegular,
+              12.5f * d, pkg.installed ? kTextSecondary : kTextMuted, ui::Align::kLeft, col3_x - col2_x - 104.0f * d);
+    const char* status_lbl = pkg.installed ? (pkg.enabled ? "Mounted" : "Disabled") : "Not installed";
+    draw_text(l, col3_x, text_y_center(ry, ry + row_h, 12.5f * d), status_lbl, FontFace::kSemiBold, 12.5f * d,
+              pkg.installed ? (pkg.enabled ? kGreen : kAmber) : kTextMuted, ui::Align::kRight);
   }
+  draw_scrollbar(l, x1 - 10.0f * d, rows_y0 + 4.0f * d, rows_y1 - 4.0f * d, start, vis, total, d);
+
+  draw_divider(l, x0 + 1.0f * d, rows_y1 + 2.0f * d, x1 - 1.0f * d, d);
+  draw_text(l, x0 + 20.0f * d, text_y_center(rows_y1 + 2.0f * d, tbl_y + tbl_h, 12.0f * d),
+            "Drag and drop an STFS package (CON / LIVE / PIRS) or extracted DLC, Title Update v4, UDLC, or XE folder onto this window.",
+            FontFace::kRegular, 12.0f * d, kTextMuted, ui::Align::kLeft, cw - 40.0f * d);
 }
 
-void draw_mods_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  // Save-isolation banner
-  const uint32_t iso_col = st.save_iso.kind == "own" ? ui4::kGreen : (st.save_iso.kind == "modded" ? ui4::kAmber : ui4::kPink);
-  l.rect(32 * s, 140 * s, 1248 * s, 180 * s, ui4::kPillGrey);
-  l.frame(32 * s, 140 * s, 1248 * s, 180 * s, iso_col, 1.2f * s);
-  draw_pill(l, 44 * s, 149 * s, 152 * s, 22 * s, "SAVE: " + st.save_iso.profile, iso_col, ui4::kInk, s);
-  l.text(210 * s, 153 * s, truncate_str(st.save_iso.warning_banner, 86), ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
+// ---- Tab 4: Mods -----------------------------------------------------------
 
-  // Left mod list
-  draw_card(l, 32 * s, 194 * s, 680 * s, 658 * s, s, ui4::kPink);
-  draw_section_title(l, 52 * s, 214 * s, "INSTALLED MODS (LOAD ORDER)", s, ui4::kPink);
-  draw_button(l, hits, "mods:rescan", 442 * s, 210 * s, 548 * s, 242 * s, "RESCAN", s, false,
-              st.hovered_id == "mods:rescan");
-  draw_button(l, hits, "mods:install", 556 * s, 210 * s, 662 * s, 242 * s, "INSTALL ZIP", s, true,
-              st.hovered_id == "mods:install");
+void draw_mods_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                   std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Mods", d);
+  draw_button(l, hits, st, "mods:rescan", x1 - 224.0f * d, y0 - 2.0f * d, x1 - 126.0f * d, y0 + 28.0f * d, "Rescan", d);
+  draw_button(l, hits, st, "mods:install", x1 - 116.0f * d, y0 - 2.0f * d, x1, y0 + 28.0f * d, "Install", d,
+              {.primary = true});
 
-  for (size_t i = 0; i < st.mods.size() && i < 8; ++i) {
-    const auto& m = st.mods[i];
-    const float ry = 256 * s + float(i) * 44 * s;
-    const bool sel = int(i) == st.selected_mod;
-    const std::string row_id = "mod:sel:" + std::to_string(i);
-    hits.push_back({row_id, 50 * s, ry, 540 * s, ry + 38 * s});
-    l.rect(50 * s, ry, 662 * s, ry + 38 * s,
-           sel ? ui::rgba(58, 20, 38, 245) : ui4::kPillGrey);
-    if (sel) l.frame(50 * s, ry, 662 * s, ry + 38 * s, ui4::kPink, 1.2f * s);
-    const uint32_t dot = !m.problems.empty() ? ui4::kRed : (m.enabled ? ui4::kGreen : ui::rgba(110, 116, 128, 220));
-    l.circle(68 * s, ry + 19 * s, 5.5f * s, dot);
-    l.text(84 * s, ry + 11 * s, "#" + std::to_string(i + 1) + "  " + truncate_str(m.title, 30),
-           ui4::style(ui::Font::kE, 13 * s, ui4::kWhite));
-    const std::string tog_id = "mod:tog:" + std::to_string(i);
-    draw_button(l, hits, tog_id, 556 * s, ry + 5 * s, 654 * s, ry + 33 * s, m.enabled ? "ON" : "OFF", s,
-                m.enabled, st.hovered_id == tog_id);
+  const float top_y = y0 + 50.0f * d;
+
+  // Calm, clear Save Isolation banner
+  const bool iso_normal = st.save_iso.kind == "own";
+  const bool iso_modded = st.save_iso.kind == "modded";
+  const uint32_t iso_col = iso_normal ? kGreen : (iso_modded ? kAmber : kAccent);
+  const uint32_t iso_bg = iso_normal ? kGreenSoft : (iso_modded ? kAmberSoft : kAccentSoft);
+  const float ban_h = 44.0f * d;
+  l.rect(x0, top_y, x1, top_y + ban_h, iso_bg, 6.0f * d);
+  l.rect(x0, top_y + 6.0f * d, x0 + 3.5f * d, top_y + ban_h - 6.0f * d, iso_col, 1.5f * d);
+  l.frame(x0, top_y, x1, top_y + ban_h, ui::fade(iso_col, 0.45), 1.0f * d, 6.0f * d);
+  const std::string iso_prefix = "Save profile (" + st.save_iso.profile + "):  ";
+  const float pref_w = draw_text(l, x0 + 18.0f * d, text_y_center(top_y, top_y + ban_h, 12.5f * d), iso_prefix,
+                                 FontFace::kSemiBold, 12.5f * d, iso_col);
+  draw_text(l, x0 + 18.0f * d + pref_w, text_y_center(top_y, top_y + ban_h, 12.5f * d), st.save_iso.warning_banner,
+            FontFace::kRegular, 12.5f * d, kTextPrimary, ui::Align::kLeft, std::max(80.0f, cw - 36.0f * d - pref_w));
+
+  // Two-pane layout
+  const float pane_y = top_y + ban_h + 14.0f * d;
+  const float pane_h = std::max(240.0f * d, y1 - pane_y);
+  const float left_w = std::floor((cw - 16.0f * d) * 0.57f);
+  const float left_x1 = x0 + left_w;
+  const float right_x0 = left_x1 + 16.0f * d;
+
+  // Left: Mod Load Order Table
+  draw_card(l, x0, pane_y, left_x1, pane_y + pane_h, d);
+  draw_text(l, x0 + 20.0f * d, pane_y + 16.0f * d, "Load Order", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_button(l, hits, st, "mod:up", left_x1 - 170.0f * d, pane_y + 10.0f * d, left_x1 - 96.0f * d, pane_y + 38.0f * d,
+              "Move Up", d);
+  draw_button(l, hits, st, "mod:down", left_x1 - 88.0f * d, pane_y + 10.0f * d, left_x1 - 14.0f * d, pane_y + 38.0f * d,
+              "Down", d);
+  draw_divider(l, x0 + 1.0f * d, pane_y + 48.0f * d, left_x1 - 1.0f * d, d);
+
+  const float list_y0 = pane_y + 54.0f * d;
+  const float list_y1 = pane_y + pane_h - 36.0f * d;
+  const float row_h = 44.0f * d;
+  const int vis = std::max(1, int((list_y1 - list_y0) / row_h));
+  const int total = int(st.mods.size());
+  const int start = std::clamp(st.mods_scroll, 0, std::max(0, total - vis));
+
+  for (int i = 0; i < vis && start + i < total; ++i) {
+    const size_t idx = size_t(start + i);
+    const auto& m = st.mods[idx];
+    const float ry = list_y0 + float(i) * row_h;
+    const bool sel = int(idx) == st.selected_mod;
+    const std::string row_id = "mod:sel:" + std::to_string(idx);
+    const std::string tog_id = "mod:tog:" + std::to_string(idx);
+    const bool row_hov = st.hovered_id == row_id;
+
+    if (sel) {
+      l.rect(x0 + 6.0f * d, ry + 2.0f * d, left_x1 - 12.0f * d, ry + row_h - 2.0f * d, kBgSelected, 5.0f * d);
+      l.rect(x0 + 6.0f * d, ry + 8.0f * d, x0 + 9.0f * d, ry + row_h - 8.0f * d, kAccent, 1.5f * d);
+    } else if (row_hov) {
+      l.rect(x0 + 6.0f * d, ry + 2.0f * d, left_x1 - 12.0f * d, ry + row_h - 2.0f * d, kBgHover, 5.0f * d);
+    }
+
+    // Checkbox hit zone (left)
+    const float chk_x = x0 + 16.0f * d;
+    const float chk_sz = 16.0f * d;
+    const float chk_y = ry + 0.5f * (row_h - chk_sz);
+    hits.push_back({tog_id, chk_x - 4.0f * d, ry + 4.0f * d, chk_x + chk_sz + 6.0f * d, ry + row_h - 4.0f * d, true});
+    l.rect(chk_x, chk_y, chk_x + chk_sz, chk_y + chk_sz, m.enabled ? kAccent : kBgInset, 3.0f * d);
+    l.frame(chk_x, chk_y, chk_x + chk_sz, chk_y + chk_sz,
+            m.enabled ? kAccent : (st.hovered_id == tog_id ? kBorderHover : kBorderCard), 1.2f * d, 3.0f * d);
+    if (m.enabled) {
+      l.line(chk_x + 3.8f * d, chk_y + 8.4f * d, chk_x + 6.8f * d, chk_y + 11.6f * d, 1.8f * d, ui::rgba(255, 255, 255));
+      l.line(chk_x + 6.8f * d, chk_y + 11.6f * d, chk_x + 12.4f * d, chk_y + 4.8f * d, 1.8f * d, ui::rgba(255, 255, 255));
+    }
+
+    // Row select hit zone (rest of row)
+    hits.push_back({row_id, chk_x + chk_sz + 8.0f * d, ry + 2.0f * d, left_x1 - 12.0f * d, ry + row_h - 2.0f * d, true});
+
+    // Order index + Title + Content tag
+    draw_text(l, chk_x + chk_sz + 14.0f * d, text_y_center(ry, ry + row_h, 12.0f * d),
+              std::to_string(idx + 1), FontFace::kMono, 12.0f * d, kTextMuted);
+
+    std::string tag = !m.problems.empty() ? "Conflict" : (m.contents.empty() ? "Override" : m.contents[0]);
+    const float tag_w = measure_text(FontFace::kRegular, 11.5f * d, tag) + 18.0f * d;
+    draw_text(l, chk_x + chk_sz + 36.0f * d, text_y_center(ry, ry + row_h, 13.5f * d), m.title,
+              sel ? FontFace::kSemiBold : FontFace::kRegular, 13.5f * d,
+              m.enabled ? kTextPrimary : kTextMuted, ui::Align::kLeft,
+              std::max(80.0f, left_w - (chk_sz + 74.0f * d) - tag_w));
+    draw_text(l, left_x1 - 22.0f * d, text_y_center(ry, ry + row_h, 11.5f * d), tag, FontFace::kRegular, 11.5f * d,
+              !m.problems.empty() ? kRed : kTextMuted, ui::Align::kRight);
   }
+
   if (st.mods.empty()) {
-    l.text(52 * s, 280 * s, "NO MODS IN MODS/ FOLDER. DROP A MOD FOLDER OR .ZIP ONTO THE LAUNCHER.",
-           ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
+    draw_text(l, x0 + 20.0f * d, list_y0 + 14.0f * d, "No mods installed.", FontFace::kRegular, 13.0f * d, kTextMuted);
   }
-  draw_button(l, hits, "mod:up", 50 * s, 614 * s, 190 * s, 646 * s, "MOVE UP", s, false, st.hovered_id == "mod:up");
-  draw_button(l, hits, "mod:down", 200 * s, 614 * s, 340 * s, 646 * s, "MOVE DOWN", s, false,
-              st.hovered_id == "mod:down");
+  draw_scrollbar(l, left_x1 - 9.0f * d, list_y0 + 4.0f * d, list_y1 - 4.0f * d, start, vis, total, d);
 
-  // Right inspector
-  draw_card(l, 700 * s, 194 * s, 1248 * s, 658 * s, s, ui4::kAmber);
-  draw_section_title(l, 720 * s, 214 * s, "MOD INSPECTOR & OPTIONS", s, ui4::kAmber);
+  draw_divider(l, x0 + 1.0f * d, list_y1 + 2.0f * d, left_x1 - 1.0f * d, d);
+  draw_text(l, x0 + 18.0f * d, text_y_center(list_y1 + 2.0f * d, pane_y + pane_h, 11.5f * d),
+            "Drag and drop a mod folder or .zip archive onto this window to install.",
+            FontFace::kRegular, 11.5f * d, kTextMuted, ui::Align::kLeft, left_w - 36.0f * d);
+
+  // Right: Mod Inspector
+  const float rw = x1 - right_x0;
+  draw_card(l, right_x0, pane_y, x1, pane_y + pane_h, d);
+  draw_text(l, right_x0 + 20.0f * d, pane_y + 16.0f * d, "Details", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_divider(l, right_x0 + 1.0f * d, pane_y + 48.0f * d, x1 - 1.0f * d, d);
+
   if (st.selected_mod >= 0 && size_t(st.selected_mod) < st.mods.size()) {
     const auto& m = st.mods[size_t(st.selected_mod)];
-    l.text(720 * s, 250 * s, truncate_str(m.title, 36), ui4::style(ui::Font::kE, 20 * s, ui4::kWhite));
-    const std::string byline = "V" + (m.version.empty() ? "1.0" : m.version) + "  |  " +
-                               (m.author.empty() ? "COMMUNITY" : m.author) + "  |  PRIORITY " +
-                               std::to_string(m.priority);
-    l.text(720 * s, 278 * s, truncate_str(byline, 54), ui4::style(ui::Font::kB, 12 * s, ui4::kAmber));
-    l.text(720 * s, 306 * s, truncate_str(m.description.empty() ? "No description provided in mod.toml / mod.txt." : m.description, 56),
-           ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
+    float iy = pane_y + 62.0f * d;
+    draw_text(l, right_x0 + 20.0f * d, iy, m.title, FontFace::kSemiBold, 17.0f * d, kTextPrimary, ui::Align::kLeft,
+              rw - 40.0f * d);
+    iy += 26.0f * d;
+
+    const std::string meta = "v" + (m.version.empty() ? "1.0" : m.version) + "  \xC2\xB7  " +
+                             (m.author.empty() ? "Community" : m.author) + "  \xC2\xB7  Priority " +
+                             std::to_string(m.priority);
+    draw_text(l, right_x0 + 20.0f * d, iy, meta, FontFace::kRegular, 12.0f * d, kTextSecondary, ui::Align::kLeft,
+              rw - 40.0f * d);
+    iy += 26.0f * d;
+
+    const std::string desc = m.description.empty() ? "No description provided." : m.description;
+    iy += draw_wrapped_text(l, right_x0 + 20.0f * d, iy, rw - 40.0f * d, 18.0f * d, 3, desc, FontFace::kRegular,
+                            12.5f * d, kTextPrimary);
+    iy += 12.0f * d;
+    draw_divider(l, right_x0 + 20.0f * d, iy, x1 - 20.0f * d, d);
+    iy += 14.0f * d;
 
     std::string tags;
     for (size_t ti = 0; ti < m.contents.size(); ++ti) {
       if (ti > 0) tags += ", ";
       tags += m.contents[ti];
     }
-    l.text(720 * s, 338 * s, "CONTENTS: " + (tags.empty() ? "OVERRIDE FILES" : tags) + " (" + std::to_string(m.file_count) + " FILES)",
-           ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-    l.text(720 * s, 364 * s,
-           !m.profile.empty() ? ("SAVE ISOLATION: OWN PROFILE (" + m.profile + ")")
-                              : (m.shares_save ? "SAVE ISOLATION: SHARES NORMAL SAVE" : "SAVE ISOLATION: USES USER-MODDED COPY"),
-           ui4::style(ui::Font::kB, 12 * s, m.shares_save ? ui4::kGreen : ui4::kAmber));
+    if (tags.empty()) tags = "Overrides";
+    draw_text(l, right_x0 + 20.0f * d, iy, "Contents", FontFace::kRegular, 12.0f * d, kTextMuted);
+    draw_text(l, x1 - 20.0f * d, iy, tags + " (" + std::to_string(m.file_count) + " files)", FontFace::kRegular,
+              12.0f * d, kTextPrimary, ui::Align::kRight, rw * 0.62f);
+    iy += 24.0f * d;
+
+    const std::string save_s = !m.profile.empty() ? ("Own profile (" + m.profile + ")")
+                                                  : (m.shares_save ? "Shares main save" : "Isolated (user-modded)");
+    draw_text(l, right_x0 + 20.0f * d, iy, "Save behavior", FontFace::kRegular, 12.0f * d, kTextMuted);
+    draw_text(l, x1 - 20.0f * d, iy, save_s, FontFace::kSemiBold, 12.0f * d,
+              m.shares_save && m.profile.empty() ? kGreen : kAmber, ui::Align::kRight, rw * 0.62f);
+    iy += 28.0f * d;
 
     if (!m.problems.empty()) {
-      l.rect(720 * s, 392 * s, 1228 * s, 430 * s, ui::rgba(80, 18, 24, 225));
-      l.text(732 * s, 404 * s, "CONFLICT: " + truncate_str(m.problems[0], 50),
-             ui4::style(ui::Font::kB, 12 * s, ui4::kRed));
+      l.rect(right_x0 + 20.0f * d, iy, x1 - 20.0f * d, iy + 34.0f * d, kRedSoft, 5.0f * d);
+      l.frame(right_x0 + 20.0f * d, iy, x1 - 20.0f * d, iy + 34.0f * d, kRed, 1.0f * d, 5.0f * d);
+      draw_text(l, right_x0 + 30.0f * d, text_y_center(iy, iy + 34.0f * d, 12.0f * d), m.problems[0],
+                FontFace::kRegular, 12.0f * d, kRed, ui::Align::kLeft, rw - 60.0f * d);
+      iy += 44.0f * d;
     }
 
-    // Mod options (mod.toml)
-    float oy = 446 * s;
-    l.text(720 * s, oy, "MOD OPTIONS (MOD.TOML):", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-    oy += 26 * s;
+    draw_divider(l, right_x0 + 20.0f * d, iy, x1 - 20.0f * d, d);
+    iy += 14.0f * d;
+    draw_text(l, right_x0 + 20.0f * d, iy, "Options", FontFace::kSemiBold, 13.0f * d, kTextPrimary);
+    iy += 26.0f * d;
+
     for (size_t oi = 0; oi < m.options.size() && oi < 4; ++oi) {
+      if (iy + 32.0f * d > pane_y + pane_h - 12.0f * d) break;
       const auto& opt = m.options[oi];
-      l.text(720 * s, oy + 6 * s, truncate_str(opt.title, 26), ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
       const std::string oid = "mod:opt:" + std::to_string(oi);
-      draw_button(l, hits, oid, 960 * s, oy, 1228 * s, oy + 30 * s, opt.value.empty() ? "DEFAULT" : opt.value,
-                  s, false, st.hovered_id == oid);
-      oy += 38 * s;
+      draw_text(l, right_x0 + 20.0f * d, text_y_center(iy, iy + 30.0f * d, 12.5f * d), opt.title,
+                FontFace::kRegular, 12.5f * d, kTextSecondary, ui::Align::kLeft, rw * 0.50f);
+      draw_button(l, hits, st, oid, x1 - 156.0f * d, iy, x1 - 20.0f * d, iy + 30.0f * d,
+                  opt.value.empty() ? "Default" : opt.value, d);
+      iy += 38.0f * d;
     }
     if (m.options.empty()) {
-      l.text(720 * s, oy + 4 * s, "NO CONFIGURABLE OPTIONS DECLARED.", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
+      draw_text(l, right_x0 + 20.0f * d, iy, "No configurable options.", FontFace::kRegular, 12.0f * d, kTextMuted);
     }
+  } else {
+    draw_text(l, right_x0 + 20.0f * d, pane_y + 66.0f * d, "Select a mod to view details.", FontFace::kRegular,
+              13.0f * d, kTextMuted);
   }
 }
 
-void draw_radio_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  // Left Builder Configuration Card
-  draw_card(l, 32 * s, 142 * s, 636 * s, 658 * s, s, ui4::kPink);
-  draw_section_title(l, 52 * s, 162 * s, "CUSTOM RADIO STATION BUILDER", s, ui4::kPink);
+// ---- Tab 5: Radio ----------------------------------------------------------
 
-  l.text(52 * s, 196 * s, "TARGET FESTIVAL STATION:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  struct StInfo {
-    const char* slot;
-    const char* label;
-    uint32_t col;
+void draw_radio_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                    std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Radio", d);
+  const float top_y = y0 + 50.0f * d;
+  const float h = std::max(260.0f * d, y1 - top_y);
+  const float left_w = std::floor((cw - 16.0f * d) * 0.49f);
+  const float left_x1 = x0 + left_w;
+  const float right_x0 = left_x1 + 16.0f * d;
+
+  // Left: Builder Form
+  draw_card(l, x0, top_y, left_x1, top_y + h, d);
+  float fy = top_y + 18.0f * d;
+  draw_text(l, x0 + 20.0f * d, fy, "Station Configuration", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  fy += 32.0f * d;
+
+  draw_text(l, x0 + 20.0f * d, fy, "Target station", FontFace::kRegular, 12.0f * d, kTextSecondary);
+  fy += 20.0f * d;
+  static constexpr const char* kStLabels[3] = {"Bass Arena", "Horizon Pulse", "Horizon Rocks"};
+  static constexpr const char* kStIds[3] = {"radio:slot:Radio1", "radio:slot:Radio2", "radio:slot:Radio3"};
+  int st_idx = st.radio_cfg.station_slot == "Radio2" ? 1 : (st.radio_cfg.station_slot == "Radio3" ? 2 : 0);
+  draw_segmented(l, hits, st, x0 + 20.0f * d, fy, left_x1 - 20.0f * d, fy + 34.0f * d, kStLabels, kStIds, 3, st_idx, d);
+  fy += 48.0f * d;
+
+  draw_text(l, x0 + 20.0f * d, fy, "Playlist mode", FontFace::kRegular, 12.0f * d, kTextSecondary);
+  fy += 20.0f * d;
+  static constexpr const char* kModeLabels[2] = {"Replace stock tracks", "Extend stock playlist"};
+  static constexpr const char* kModeIds[2] = {"radio:mode:replace", "radio:mode:extend"};
+  draw_segmented(l, hits, st, x0 + 20.0f * d, fy, left_x1 - 20.0f * d, fy + 34.0f * d, kModeLabels, kModeIds, 2,
+                 st.radio_cfg.replace_playlist ? 0 : 1, d);
+  fy += 48.0f * d;
+
+  auto field_box = [&](std::string_view lbl, std::string_view val, bool mono, uint32_t col, uint32_t border = kBorderSubtle) {
+    draw_text(l, x0 + 20.0f * d, fy, lbl, FontFace::kRegular, 12.0f * d, kTextSecondary);
+    fy += 20.0f * d;
+    draw_inset_box(l, x0 + 20.0f * d, fy, left_x1 - 20.0f * d, fy + 34.0f * d, d, border);
+    draw_text(l, x0 + 32.0f * d, text_y_center(fy, fy + 34.0f * d, 12.5f * d), val,
+              mono ? FontFace::kMono : FontFace::kRegular, 12.5f * d, col, ui::Align::kLeft, left_w - 64.0f * d);
+    fy += 46.0f * d;
   };
-  constexpr StInfo kStations[3] = {
-      {"Radio1", "BASS ARENA", ui::rgba(245, 4, 92, 255)},
-      {"Radio2", "HORIZON PULSE", ui::rgba(255, 184, 28, 255)},
-      {"Radio3", "HORIZON ROCKS", ui::rgba(44, 140, 232, 255)},
-  };
-  for (int i = 0; i < 3; ++i) {
-    const float sx = 52 * s + float(i) * 192 * s;
-    const bool active = st.radio_cfg.station_slot == kStations[i].slot;
-    const std::string sid = std::string("radio:slot:") + kStations[i].slot;
-    draw_button(l, hits, sid, sx, 220 * s, sx + 182 * s, 260 * s, kStations[i].label, s,
-                active, st.hovered_id == sid, active);
-  }
 
-  l.text(52 * s, 278 * s, "PLAYLIST MODE:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  draw_button(l, hits, "radio:mode:replace", 52 * s, 300 * s, 330 * s, 336 * s, "REPLACE STOCK TRACKS", s,
-              st.radio_cfg.replace_playlist, st.hovered_id == "radio:mode:replace", st.radio_cfg.replace_playlist);
-  draw_button(l, hits, "radio:mode:extend", 342 * s, 300 * s, 616 * s, 336 * s, "EXTEND STOCK PLAYLIST", s,
-              !st.radio_cfg.replace_playlist, st.hovered_id == "radio:mode:extend", !st.radio_cfg.replace_playlist);
-
-  // Music folder & station name & logo
-  l.text(52 * s, 356 * s, "USER MUSIC FOLDER (MP3 / WAV / FLAC / OGG):", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 376 * s, 616 * s, 410 * s, ui4::kBrushBlack);
-  l.frame(52 * s, 376 * s, 616 * s, 410 * s, ui::rgba(76, 82, 96, 200), 1.0f * s);
-  l.text(64 * s, 386 * s,
-         st.radio_cfg.music_folder.empty() ? "DROP MUSIC FOLDER HERE"
-                                           : truncate_str(st.radio_cfg.music_folder.string(), 48),
-         ui4::style(ui::Font::kB, 12 * s, ui4::kWhite));
-
-  l.text(52 * s, 426 * s, "CUSTOM STATION NAME STRING:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 446 * s, 616 * s, 480 * s, ui4::kBrushBlack);
-  l.frame(52 * s, 446 * s, 616 * s, 480 * s, ui::rgba(76, 82, 96, 200), 1.0f * s);
-  l.text(64 * s, 456 * s,
-         st.radio_cfg.custom_station_name.empty() ? "(KEEP STOCK NAME)" : st.radio_cfg.custom_station_name,
-         ui4::style(ui::Font::kB, 13 * s, ui4::kAmber));
-
-  l.text(52 * s, 496 * s, "STATION LOGO PNG (210X100 REQUIRED):", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.rect(52 * s, 516 * s, 616 * s, 550 * s, ui4::kBrushBlack);
-  l.frame(52 * s, 516 * s, 616 * s, 550 * s, st.radio_logo_check.valid ? ui4::kGreen : ui::rgba(76, 82, 96, 200),
-          1.2f * s);
-  l.text(64 * s, 526 * s, truncate_str(st.radio_logo_check.message, 48),
-         ui4::style(ui::Font::kB, 12 * s, st.radio_logo_check.valid ? ui4::kGreen : ui4::kDim));
+  field_box("Music folder (MP3, WAV, FLAC, OGG)",
+            st.radio_cfg.music_folder.empty() ? "Drop a music folder onto this window" : st.radio_cfg.music_folder.string(),
+            !st.radio_cfg.music_folder.empty(),
+            st.radio_cfg.music_folder.empty() ? kTextMuted : kTextPrimary);
+  field_box("Station display name",
+            st.radio_cfg.custom_station_name.empty() ? "Keep stock station name" : st.radio_cfg.custom_station_name,
+            false, st.radio_cfg.custom_station_name.empty() ? kTextMuted : kTextPrimary);
+  field_box("Station logo PNG (210\xC3\x97" "100)",
+            st.radio_logo_check.message.empty() ? "Optional: drop a 210x100 PNG" : st.radio_logo_check.message,
+            false, st.radio_logo_check.valid ? kGreen : kTextSecondary,
+            st.radio_logo_check.valid ? kGreen : kBorderSubtle);
 
   const bool has_ff = !st.paths.ffmpeg_bin.empty();
-  draw_pill(l, 52 * s, 566 * s, 210 * s, 26 * s, has_ff ? "FFMPEG: READY (48KHZ CBR)" : "FFMPEG: NOT ON PATH",
-            has_ff ? ui::rgba(28, 76, 44, 240) : ui::rgba(80, 24, 24, 240), has_ff ? ui4::kGreen : ui4::kRed, s);
-  draw_button(l, hits, "radio:build", 52 * s, 602 * s, 616 * s, 646 * s,
-              "ENCODE & PACK CUSTOM RADIO MOD", s, true, st.hovered_id == "radio:build");
+  l.circle(x0 + 26.0f * d, fy + 8.0f * d, 4.0f * d, has_ff ? kGreen : kAmber);
+  draw_text(l, x0 + 38.0f * d, fy,
+            has_ff ? "FFmpeg detected (48 kHz, 160 kbps MP3)" : "FFmpeg not found on PATH",
+            FontFace::kRegular, 12.5f * d, has_ff ? kTextSecondary : kAmber);
 
-  // Right Playlist & Logo Preview Card
-  draw_card(l, 656 * s, 142 * s, 1248 * s, 658 * s, s, ui4::kAmber);
-  draw_section_title(l, 676 * s, 162 * s,
-                     "PLAYLIST PREVIEW (" + std::to_string(st.radio_tracks.size()) + " TRACKS)", s, ui4::kAmber);
+  draw_button(l, hits, st, "radio:build", x0 + 20.0f * d, top_y + h - 56.0f * d, left_x1 - 20.0f * d,
+              top_y + h - 18.0f * d, "Build Radio Mod", d, {.primary = true});
 
-  // 210x100 logo preview box
-  l.rect(676 * s, 198 * s, 886 * s, 298 * s, ui4::kBrushBlack);
-  l.frame(676 * s, 198 * s, 886 * s, 298 * s, ui4::kPink, 1.2f * s);
-  l.rect(682 * s, 204 * s, 880 * s, 232 * s, ui4::kPink);
-  draw_fit_text(l, 781 * s, 211 * s,
-                st.radio_cfg.custom_station_name.empty() ? st.radio_cfg.station_slot : st.radio_cfg.custom_station_name,
-                ui4::style(ui::Font::kE, 13 * s, ui4::kWhite, ui::Align::kCenter), 186 * s, 8.5f * s);
-  l.text(781 * s, 254 * s, "210 X 100 PNG LOGO", ui4::style(ui::Font::kB, 11 * s, ui4::kDim, ui::Align::kCenter));
-  l.text(781 * s, 272 * s, st.radio_logo_check.valid ? "VERIFIED" : "CUSTOM ARTWORK",
-         ui4::style(ui::Font::kB, 10 * s, st.radio_logo_check.valid ? ui4::kGreen : ui4::kAmber, ui::Align::kCenter));
+  // Right: Preview & Playlist
+  const float rw = x1 - right_x0;
+  draw_card(l, right_x0, top_y, x1, top_y + h, d);
+  draw_text(l, right_x0 + 20.0f * d, top_y + 18.0f * d,
+            "Playlist (" + std::to_string(st.radio_tracks.size()) + " tracks)", FontFace::kSemiBold, 14.0f * d,
+            kTextPrimary);
 
-  // Output metadata next to logo
-  draw_fit_text(l, 902 * s, 204 * s, "MOD OUTPUT: MODS/" + st.radio_cfg.mod_name,
-                ui4::style(ui::Font::kB, 12 * s, ui4::kWhite), 328 * s, 9.0f * s);
-  draw_fit_text(l, 902 * s, 228 * s, "BANK: FSB4 / 48 KHZ / 160 KBPS CBR",
-                ui4::style(ui::Font::kB, 12 * s, ui4::kDim), 328 * s, 9.0f * s);
-  draw_fit_text(l, 902 * s, 252 * s, "SYNC POINTS: SONG / EVENT / IDENT",
-                ui4::style(ui::Font::kB, 12 * s, ui4::kDim), 328 * s, 9.0f * s);
-  draw_fit_text(l, 902 * s, 276 * s, "SAVE COMPAT: SHARES NORMAL SAVE",
-                ui4::style(ui::Font::kB, 12 * s, ui4::kGreen), 328 * s, 9.0f * s);
+  // Logo preview box (210x100 scaled cleanly)
+  const float logo_w = 180.0f * d;
+  const float logo_h = 86.0f * d;
+  const float lx = right_x0 + 20.0f * d;
+  const float ly = top_y + 50.0f * d;
+  draw_inset_box(l, lx, ly, lx + logo_w, ly + logo_h, d, st.radio_logo_check.valid ? kGreen : kBorderCard);
+  draw_text(l, lx + 0.5f * logo_w, ly + 22.0f * d,
+            st.radio_cfg.custom_station_name.empty() ? kStLabels[st_idx] : st.radio_cfg.custom_station_name,
+            FontFace::kSemiBold, 13.0f * d, kTextPrimary, ui::Align::kCenter, logo_w - 16.0f * d);
+  draw_text(l, lx + 0.5f * logo_w, ly + 46.0f * d,
+            st.radio_logo_check.valid ? "210\xC3\x97" "100 PNG verified" : "210\xC3\x97" "100 PNG slot",
+            FontFace::kRegular, 11.5f * d, st.radio_logo_check.valid ? kGreen : kTextMuted, ui::Align::kCenter);
+
+  const float mx = lx + logo_w + 16.0f * d;
+  const float mw = std::max(80.0f, x1 - 20.0f * d - mx);
+  draw_text(l, mx, ly + 4.0f * d, "Output: mods/" + st.radio_cfg.mod_name, FontFace::kMono, 12.0f * d, kTextPrimary,
+            ui::Align::kLeft, mw);
+  draw_text(l, mx, ly + 28.0f * d, "Format: FSB4  \xC2\xB7  48 kHz  \xC2\xB7  160 kbps", FontFace::kRegular, 12.0f * d,
+            kTextSecondary, ui::Align::kLeft, mw);
+  draw_text(l, mx, ly + 50.0f * d, "Save: Compatible with main save", FontFace::kRegular, 12.0f * d, kGreen,
+            ui::Align::kLeft, mw);
 
   // Track table
-  for (size_t i = 0; i < st.radio_tracks.size() && i < 8; ++i) {
-    const auto& t = st.radio_tracks[i];
-    const float ry = 316 * s + float(i) * 38 * s;
-    l.rect(676 * s, ry, 1228 * s, ry + 32 * s, (i % 2 == 0) ? ui4::kPillGrey : ui::rgba(22, 24, 28, 240));
-    char idx_s[16];
-    std::snprintf(idx_s, sizeof idx_s, "%02zu", i + 1);
-    l.text(688 * s, ry + 9 * s, idx_s, ui4::style(ui::Font::kB, 12 * s, ui4::kAmber));
-    draw_fit_text(l, 722 * s, ry + 9 * s, t.title, ui4::style(ui::Font::kE, 12 * s, ui4::kWhite), 275 * s, 9.0f * s);
-    draw_fit_text(l, 1010 * s, ry + 9 * s, t.artist.empty() ? "UNKNOWN ARTIST" : t.artist,
-                  ui4::style(ui::Font::kB, 11 * s, ui4::kDim), 205 * s, 8.5f * s);
+  const float ty0 = ly + logo_h + 18.0f * d;
+  const float ty1 = top_y + h - 44.0f * d;
+  draw_divider(l, right_x0 + 20.0f * d, ty0, x1 - 20.0f * d, d);
+  const float tr_h = 34.0f * d;
+  const int vis = std::max(1, int((ty1 - ty0 - 6.0f * d) / tr_h));
+  const int total = int(st.radio_tracks.size());
+  const int start = std::clamp(st.radio_scroll, 0, std::max(0, total - vis));
+
+  for (int i = 0; i < vis && start + i < total; ++i) {
+    const auto& t = st.radio_tracks[size_t(start + i)];
+    const float ry = ty0 + 6.0f * d + float(i) * tr_h;
+    if (i % 2 == 1) l.rect(right_x0 + 16.0f * d, ry, x1 - 16.0f * d, ry + tr_h, ui::rgba(255, 255, 255, 5), 4.0f * d);
+    char nbuf[8];
+    std::snprintf(nbuf, sizeof nbuf, "%02d", start + i + 1);
+    draw_text(l, right_x0 + 24.0f * d, text_y_center(ry, ry + tr_h, 11.5f * d), nbuf, FontFace::kMono, 11.5f * d,
+              kTextMuted);
+    draw_text(l, right_x0 + 52.0f * d, text_y_center(ry, ry + tr_h, 12.5f * d), t.title, FontFace::kRegular,
+              12.5f * d, kTextPrimary, ui::Align::kLeft, rw * 0.48f);
+    draw_text(l, x1 - 24.0f * d, text_y_center(ry, ry + tr_h, 12.0f * d),
+              t.artist.empty() ? "Unknown artist" : t.artist, FontFace::kRegular, 12.0f * d, kTextSecondary,
+              ui::Align::kRight, rw * 0.34f);
   }
+  draw_scrollbar(l, x1 - 10.0f * d, ty0 + 6.0f * d, ty1 - 4.0f * d, start, vis, total, d);
+
   if (!st.radio_status.empty()) {
-    draw_fit_text(l, 676 * s, 628 * s, st.radio_status, ui4::style(ui::Font::kB, 12 * s, ui4::kGreen),
-                  552 * s, 9.0f * s);
+    draw_text(l, right_x0 + 20.0f * d, top_y + h - 30.0f * d, st.radio_status, FontFace::kRegular, 12.0f * d,
+              kTextSecondary, ui::Align::kLeft, rw - 40.0f * d);
   }
 }
 
-void draw_wheel_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  // Left: Devices & FFB Settings
-  draw_card(l, 32 * s, 142 * s, 568 * s, 658 * s, s, ui4::kPink);
-  draw_section_title(l, 52 * s, 162 * s, "CONNECTED SDL3 / USB DEVICES", s, ui4::kPink);
+// ---- Tab 6: Controls (Wheel & Controller) ----------------------------------
 
-  for (size_t i = 0; i < st.devices.size() && i < 4; ++i) {
-    const auto& d = st.devices[i];
-    const float dy = 198 * s + float(i) * 44 * s;
-    const bool sel = int(i) == st.selected_device;
-    const std::string did = "wheel:dev:" + std::to_string(i);
-    hits.push_back({did, 52 * s, dy, 548 * s, dy + 38 * s});
-    l.rect(52 * s, dy, 548 * s, dy + 38 * s, sel ? ui::rgba(56, 20, 38, 245) : ui4::kPillGrey);
-    if (sel) l.frame(52 * s, dy, 548 * s, dy + 38 * s, ui4::kPink, 1.2f * s);
-    l.circle(68 * s, dy + 19 * s, 5 * s, d.has_ffb ? ui4::kGreen : ui4::kBlue);
-    l.text(84 * s, dy + 11 * s, truncate_str(d.name, 28), ui4::style(ui::Font::kE, 12 * s, ui4::kWhite));
-    l.text(538 * s, dy + 12 * s,
-           std::to_string(d.num_axes) + "AX / " + std::to_string(d.num_buttons) + "BTN",
-           ui4::style(ui::Font::kB, 11 * s, ui4::kDim, ui::Align::kRight));
+void draw_wheel_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                    std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Controls", d);
+  const float top_y = y0 + 50.0f * d;
+  const float h = std::max(300.0f * d, y1 - top_y);
+  const float left_w = std::floor((cw - 16.0f * d) * 0.46f);
+  const float left_x1 = x0 + left_w;
+  const float right_x0 = left_x1 + 16.0f * d;
+
+  // Left: Devices & Force Feedback
+  draw_card(l, x0, top_y, left_x1, top_y + h, d);
+  draw_text(l, x0 + 20.0f * d, top_y + 16.0f * d, "Input Devices", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+
+  const float dev_y0 = top_y + 46.0f * d;
+  const float dev_h = 38.0f * d;
+  const int max_devs = 4;
+  const int dev_total = int(st.devices.size());
+  const int dev_start = std::clamp(st.devices_scroll, 0, std::max(0, dev_total - max_devs));
+  for (int i = 0; i < max_devs && dev_start + i < dev_total; ++i) {
+    const size_t idx = size_t(dev_start + i);
+    const auto& dev = st.devices[idx];
+    const float ry = dev_y0 + float(i) * (dev_h + 4.0f * d);
+    const bool sel = int(idx) == st.selected_device;
+    const std::string did = "wheel:dev:" + std::to_string(idx);
+    hits.push_back({did, x0 + 16.0f * d, ry, left_x1 - 16.0f * d, ry + dev_h, true});
+    l.rect(x0 + 16.0f * d, ry, left_x1 - 16.0f * d, ry + dev_h,
+           sel ? kBgSelected : (st.hovered_id == did ? kBgHover : kBgInset), 5.0f * d);
+    if (sel) {
+      l.rect(x0 + 16.0f * d, ry + 6.0f * d, x0 + 19.0f * d, ry + dev_h - 6.0f * d, kAccent, 1.5f * d);
+      l.frame(x0 + 16.0f * d, ry, left_x1 - 16.0f * d, ry + dev_h, kBorderHover, 1.0f * d, 5.0f * d);
+    }
+    l.circle(x0 + 30.0f * d, ry + 0.5f * dev_h, 3.8f * d, dev.has_ffb ? kGreen : kBlue);
+    const std::string spec = std::to_string(dev.num_axes) + " ax \xC2\xB7 " + std::to_string(dev.num_buttons) + " btn";
+    const float spec_w = measure_text(FontFace::kMono, 11.0f * d, spec) + 14.0f * d;
+    draw_text(l, x0 + 42.0f * d, text_y_center(ry, ry + dev_h, 12.5f * d), dev.name,
+              sel ? FontFace::kSemiBold : FontFace::kRegular, 12.5f * d, kTextPrimary, ui::Align::kLeft,
+              std::max(80.0f, left_w - 72.0f * d - spec_w));
+    draw_text(l, left_x1 - 24.0f * d, text_y_center(ry, ry + dev_h, 11.0f * d), spec, FontFace::kMono, 11.0f * d,
+              kTextMuted, ui::Align::kRight);
   }
   if (st.devices.empty()) {
-    l.text(52 * s, 210 * s, "NO WHEEL OR GAMEPAD DETECTED - PLUG IN USB DEVICE.",
-           ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
+    draw_text(l, x0 + 20.0f * d, dev_y0 + 10.0f * d, "No controller or wheel connected.", FontFace::kRegular,
+              12.5f * d, kTextMuted);
   }
 
-  draw_section_title(l, 52 * s, 390 * s, "WHEEL & FORCE FEEDBACK SETTINGS", s, ui4::kAmber);
-  draw_button(l, hits, "wheel:separate", 52 * s, 424 * s, 310 * s, 458 * s,
-              st.wheel_cfg.separate_devices ? "SEPARATE USB: ON" : "SEPARATE USB: OFF", s, false,
-              st.hovered_id == "wheel:separate", st.wheel_cfg.separate_devices);
-  draw_button(l, hits, "wheel:degrees", 322 * s, 424 * s, 548 * s, 458 * s,
-              "LOCK: " + std::to_string(st.wheel_cfg.steering_degrees) + " DEG", s, false,
-              st.hovered_id == "wheel:degrees");
+  float sy = dev_y0 + float(max_devs) * (dev_h + 4.0f * d) + 12.0f * d;
+  draw_divider(l, x0 + 20.0f * d, sy, left_x1 - 20.0f * d, d);
+  sy += 14.0f * d;
+  draw_text(l, x0 + 20.0f * d, sy, "Wheel & Force Feedback", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  sy += 30.0f * d;
 
-  // FFB Gain bar + buttons
-  draw_axis_bar(l, 52 * s, 474 * s, 496 * s, 16 * s, "FORCE FEEDBACK GAIN", st.wheel_cfg.ffb_gain,
-                false, ui4::kPink, 0.0f, s);
-  draw_button(l, hits, "wheel:ffb_minus", 52 * s, 518 * s, 150 * s, 550 * s, "FFB -", s, false,
-              st.hovered_id == "wheel:ffb_minus");
-  draw_button(l, hits, "wheel:ffb_plus", 160 * s, 518 * s, 258 * s, 550 * s, "FFB +", s, false,
-              st.hovered_id == "wheel:ffb_plus");
-  draw_button(l, hits, "wheel:ffb_invert", 268 * s, 518 * s, 416 * s, 550 * s,
-              st.wheel_cfg.ffb_invert ? "INVERT: ON" : "INVERT: OFF", s, false,
-              st.hovered_id == "wheel:ffb_invert", st.wheel_cfg.ffb_invert);
-  draw_button(l, hits, "wheel:ffb_test", 426 * s, 518 * s, 548 * s, 550 * s, "TEST FFB", s, false,
-              st.hovered_id == "wheel:ffb_test");
+  // Separate USB + Steering lock
+  const float lock_w = 138.0f * d;
+  draw_checkbox(l, hits, st, "wheel:separate", x0 + 16.0f * d, sy, left_w - 44.0f * d - lock_w, 32.0f * d,
+                "Separate USB devices", st.wheel_cfg.separate_devices, d);
+  draw_button(l, hits, st, "wheel:degrees", left_x1 - 20.0f * d - lock_w, sy, left_x1 - 20.0f * d, sy + 32.0f * d,
+              "Lock: " + std::to_string(st.wheel_cfg.steering_degrees) + "\xC2\xB0", d);
+  sy += 46.0f * d;
 
-  draw_button(l, hits, "wheel:save", 52 * s, 574 * s, 548 * s, 616 * s, "SAVE TO SETTINGS.TXT", s, true,
-              st.hovered_id == "wheel:save");
+  // FFB gain bar + controls
+  draw_axis_bar(l, x0 + 20.0f * d, sy, left_w - 40.0f * d, 12.0f * d, "Force feedback gain", st.wheel_cfg.ffb_gain,
+                false, kAccent, 0.0f, d);
+  sy += 44.0f * d;
+
+  const float bw = (left_w - 40.0f * d - 24.0f * d) / 4.0f;
+  draw_button(l, hits, st, "wheel:ffb_minus", x0 + 20.0f * d, sy, x0 + 20.0f * d + bw, sy + 30.0f * d, "-5%", d);
+  draw_button(l, hits, st, "wheel:ffb_plus", x0 + 20.0f * d + bw + 8.0f * d, sy, x0 + 20.0f * d + 2.0f * bw + 8.0f * d,
+              sy + 30.0f * d, "+5%", d);
+  draw_button(l, hits, st, "wheel:ffb_invert", x0 + 20.0f * d + 2.0f * (bw + 8.0f * d), sy,
+              x0 + 20.0f * d + 3.0f * bw + 16.0f * d, sy + 30.0f * d,
+              st.wheel_cfg.ffb_invert ? "Invert: On" : "Invert: Off", d, {.selected = st.wheel_cfg.ffb_invert});
+  draw_button(l, hits, st, "wheel:ffb_test", x0 + 20.0f * d + 3.0f * (bw + 8.0f * d), sy, left_x1 - 20.0f * d,
+              sy + 30.0f * d, "Test Pulse", d);
+
+  draw_button(l, hits, st, "wheel:save", x0 + 20.0f * d, top_y + h - 76.0f * d, left_x1 - 20.0f * d,
+              top_y + h - 40.0f * d, "Save Settings", d, {.primary = true});
   if (!st.wheel_status.empty()) {
-    draw_fit_text(l, 52 * s, 628 * s, st.wheel_status, ui4::style(ui::Font::kB, 11 * s, ui4::kGreen),
-                  496 * s, 8.5f * s);
+    draw_text(l, x0 + 20.0f * d, top_y + h - 30.0f * d, st.wheel_status, FontFace::kRegular, 11.5f * d, kTextSecondary,
+              ui::Align::kLeft, left_w - 40.0f * d);
   }
 
-  // Right: Live Axis Bar Preview + Deadzones + H-Shifter
-  draw_card(l, 588 * s, 142 * s, 1248 * s, 658 * s, s, ui4::kGreen);
-  draw_section_title(l, 608 * s, 162 * s, "LIVE AXIS TELEMETRY & BINDINGS", s, ui4::kGreen);
+  // Right: Live Axis Bars + Deadzone + H-Shifter
+  const float rw = x1 - right_x0;
+  draw_card(l, right_x0, top_y, x1, top_y + h, d);
+  draw_text(l, right_x0 + 20.0f * d, top_y + 16.0f * d, "Live Input", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
 
-  draw_axis_bar(l, 608 * s, 200 * s, 620 * s, 18 * s,
-                "STEERING (AXIS " + std::to_string(std::max(0, st.wheel_cfg.steer.axis_index)) + ")",
-                st.live_steer, true, ui4::kPink, st.wheel_cfg.steer.deadzone_in, s);
-  draw_axis_bar(l, 608 * s, 254 * s, 620 * s, 18 * s,
-                "THROTTLE (AXIS " + std::to_string(std::max(0, st.wheel_cfg.throttle.axis_index)) + ")",
-                st.live_throttle, false, ui4::kGreen, st.wheel_cfg.throttle.deadzone_in, s);
-  draw_axis_bar(l, 608 * s, 308 * s, 620 * s, 18 * s,
-                "BRAKE (AXIS " + std::to_string(std::max(0, st.wheel_cfg.brake.axis_index)) + ")",
-                st.live_brake, false, ui4::kRed, st.wheel_cfg.brake.deadzone_in, s);
-  draw_axis_bar(l, 608 * s, 362 * s, 620 * s, 18 * s,
-                "CLUTCH (AXIS " + std::to_string(std::max(0, st.wheel_cfg.clutch.axis_index)) + ")",
-                st.live_clutch, false, ui4::kBlue, st.wheel_cfg.clutch.deadzone_in, s);
-  draw_axis_bar(l, 608 * s, 416 * s, 620 * s, 18 * s,
-                "HANDBRAKE (AXIS " + std::to_string(std::max(0, st.wheel_cfg.handbrake.axis_index)) + ")",
-                st.live_handbrake, false, ui4::kAmber, st.wheel_cfg.handbrake.deadzone_in, s);
+  const float ax_x = right_x0 + 20.0f * d;
+  const float ax_w = rw - 40.0f * d;
+  float ay = top_y + 50.0f * d;
+  const float ax_step = 50.0f * d;
+  draw_axis_bar(l, ax_x, ay, ax_w, 14.0f * d,
+                "Steering  (Axis " + std::to_string(std::max(0, st.wheel_cfg.steer.axis_index)) + ")",
+                st.live_steer, true, kAccent, st.wheel_cfg.steer.deadzone_in, d);
+  ay += ax_step;
+  draw_axis_bar(l, ax_x, ay, ax_w, 14.0f * d,
+                "Throttle  (Axis " + std::to_string(std::max(0, st.wheel_cfg.throttle.axis_index)) + ")",
+                st.live_throttle, false, kGreen, st.wheel_cfg.throttle.deadzone_in, d);
+  ay += ax_step;
+  draw_axis_bar(l, ax_x, ay, ax_w, 14.0f * d,
+                "Brake  (Axis " + std::to_string(std::max(0, st.wheel_cfg.brake.axis_index)) + ")",
+                st.live_brake, false, kRed, st.wheel_cfg.brake.deadzone_in, d);
+  ay += ax_step;
+  draw_axis_bar(l, ax_x, ay, ax_w, 14.0f * d,
+                "Clutch  (Axis " + std::to_string(std::max(0, st.wheel_cfg.clutch.axis_index)) + ")",
+                st.live_clutch, false, kBlue, st.wheel_cfg.clutch.deadzone_in, d);
+  ay += ax_step;
+  draw_axis_bar(l, ax_x, ay, ax_w, 14.0f * d,
+                "Handbrake  (Axis " + std::to_string(std::max(0, st.wheel_cfg.handbrake.axis_index)) + ")",
+                st.live_handbrake, false, kAmber, st.wheel_cfg.handbrake.deadzone_in, d);
+  ay += ax_step + 8.0f * d;
 
-  // Deadzone summary + H-Shifter live gear indicator
-  draw_section_title(l, 608 * s, 476 * s, "H-SHIFTER & DEADZONE TUNING", s, ui4::kAmber);
-  static constexpr const char* kGears[7] = {"R", "1", "2", "3", "4", "5", "6"};
-  for (int g = 0; g < 7; ++g) {
-    const float gx = 608 * s + float(g) * 56 * s;
-    const bool active = (g == 0 && st.live_gear == -1) || (g > 0 && st.live_gear == g);
-    l.rect(gx, 514 * s, gx + 48 * s, 560 * s, active ? ui4::kPink : ui4::kPillGrey);
-    l.frame(gx, 514 * s, gx + 48 * s, 560 * s, active ? ui4::kWhite : ui::rgba(74, 80, 96, 180), 1.0f * s);
-    l.text(gx + 24 * s, 528 * s, kGears[g], ui4::style(ui::Font::kE, 18 * s, ui4::kWhite, ui::Align::kCenter));
-  }
+  draw_divider(l, ax_x, ay, x1 - 20.0f * d, d);
+  ay += 14.0f * d;
 
+  // Deadzone row
   char dz_buf[128];
-  std::snprintf(dz_buf, sizeof dz_buf, "STEER DZ: %.0f%% - %.0f%%   |   PEDAL DZ: %.0f%% - %.0f%%",
+  std::snprintf(dz_buf, sizeof dz_buf, "Steering deadzone: %.0f%% \xE2\x80\x93 %.0f%%   \xC2\xB7   Pedals: %.0f%% \xE2\x80\x93 %.0f%%",
                 st.wheel_cfg.steer.deadzone_in * 100.0f, st.wheel_cfg.steer.deadzone_out * 100.0f,
                 st.wheel_cfg.throttle.deadzone_in * 100.0f, st.wheel_cfg.throttle.deadzone_out * 100.0f);
-  l.text(608 * s, 582 * s, dz_buf, ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  draw_button(l, hits, "wheel:dz_down", 608 * s, 608 * s, 790 * s, 642 * s, "STEER DZ -", s, false,
-              st.hovered_id == "wheel:dz_down");
-  draw_button(l, hits, "wheel:dz_up", 802 * s, 608 * s, 984 * s, 642 * s, "STEER DZ +", s, false,
-              st.hovered_id == "wheel:dz_up");
+  draw_text(l, ax_x, ay + 6.0f * d, dz_buf, FontFace::kRegular, 12.5f * d, kTextSecondary, ui::Align::kLeft,
+            ax_w - 140.0f * d);
+  draw_button(l, hits, st, "wheel:dz_down", x1 - 148.0f * d, ay, x1 - 88.0f * d, ay + 28.0f * d, "DZ -", d);
+  draw_button(l, hits, st, "wheel:dz_up", x1 - 80.0f * d, ay, x1 - 20.0f * d, ay + 28.0f * d, "DZ +", d);
+  ay += 44.0f * d;
+
+  // H-Shifter gear cells
+  draw_text(l, ax_x, ay, "H-Shifter", FontFace::kSemiBold, 13.0f * d, kTextPrimary);
+  ay += 24.0f * d;
+  static constexpr const char* kGears[7] = {"R", "1", "2", "3", "4", "5", "6"};
+  const float cell_w = 46.0f * d;
+  const float cell_h = 40.0f * d;
+  for (int g = 0; g < 7; ++g) {
+    const float gx = ax_x + float(g) * (cell_w + 8.0f * d);
+    const bool active = (g == 0 && st.live_gear == -1) || (g > 0 && st.live_gear == g);
+    l.rect(gx, ay, gx + cell_w, ay + cell_h, active ? kAccent : kBgInset, 5.0f * d);
+    l.frame(gx, ay, gx + cell_w, ay + cell_h, active ? kAccent : kBorderCard, 1.0f * d, 5.0f * d);
+    draw_text(l, gx + 0.5f * cell_w, text_y_center(ay, ay + cell_h, 15.0f * d), kGears[g], FontFace::kSemiBold,
+              15.0f * d, active ? ui::rgba(255, 255, 255) : kTextSecondary, ui::Align::kCenter);
+  }
 }
 
-void draw_update_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  draw_card(l, 32 * s, 142 * s, 1248 * s, 658 * s, s, ui4::kBlue);
-  draw_section_title(l, 52 * s, 162 * s, "SELF-UPDATER (GITHUB RELEASES + SHA-256 VERIFICATION)", s, ui4::kBlue);
+// ---- Tab 7: Updates --------------------------------------------------------
 
-  l.text(52 * s, 206 * s, "INSTALLED VERSION: v" + st.current_version + "  |  CHANNEL: " + st.update_channel,
-         ui4::style(ui::Font::kE, 16 * s, ui4::kWhite));
-  l.text(52 * s, 238 * s, truncate_str(st.update_status, 96), ui4::style(ui::Font::kB, 13 * s, ui4::kDim));
+void draw_update_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                     std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Updates", d);
+  const float top_y = y0 + 50.0f * d;
+  const float card_h = std::min(420.0f * d, std::max(260.0f * d, y1 - top_y));
+  draw_card(l, x0, top_y, x1, top_y + card_h, d);
 
-  draw_button(l, hits, "upd:check", 52 * s, 276 * s, 290 * s, 316 * s, "CHECK FOR UPDATES", s, true,
-              st.hovered_id == "upd:check");
-  draw_button(l, hits, "upd:channel", 304 * s, 276 * s, 510 * s, 316 * s,
-              "CHANNEL: " + st.update_channel, s, false, st.hovered_id == "upd:channel");
+  float cy = top_y + 22.0f * d;
+  draw_text(l, x0 + 24.0f * d, cy, "Installed version", FontFace::kRegular, 12.5f * d, kTextSecondary);
+  draw_text(l, x0 + 180.0f * d, cy, "v" + st.current_version, FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  cy += 34.0f * d;
+
+  draw_text(l, x0 + 24.0f * d, cy + 7.0f * d, "Release channel", FontFace::kRegular, 12.5f * d, kTextSecondary);
+  static constexpr const char* kChLabels[2] = {"Stable", "Preview"};
+  static constexpr const char* kChIds[2] = {"upd:ch:stable", "upd:ch:preview"};
+  draw_segmented(l, hits, st, x0 + 180.0f * d, cy, x0 + 380.0f * d, cy + 34.0f * d, kChLabels, kChIds, 2,
+                 st.update_channel == "preview" ? 1 : 0, d);
+  cy += 50.0f * d;
+
+  draw_text(l, x0 + 24.0f * d, cy, "Status", FontFace::kRegular, 12.5f * d, kTextSecondary);
+  draw_text(l, x0 + 180.0f * d, cy, st.update_status, FontFace::kRegular, 13.0f * d, kTextPrimary, ui::Align::kLeft,
+            cw - 204.0f * d);
+  cy += 36.0f * d;
+
+  draw_button(l, hits, st, "upd:check", x0 + 24.0f * d, cy, x0 + 196.0f * d, cy + 36.0f * d, "Check for Updates", d,
+              {.primary = true});
+  cy += 56.0f * d;
 
   if (st.available_update) {
     const auto& u = *st.available_update;
-    l.rect(52 * s, 344 * s, 1228 * s, 540 * s, ui::rgba(16, 24, 34, 235));
-    l.frame(52 * s, 344 * s, 1228 * s, 540 * s, ui4::kBlue, 1.2f * s);
-    l.text(72 * s, 364 * s, "NEW RELEASE AVAILABLE: " + u.tag + " (" + u.asset_name + ")",
-           ui4::style(ui::Font::kE, 18 * s, ui4::kWhite));
-    l.text(72 * s, 398 * s, "DOWNLOAD SIZE: " + fmt_gb(u.size_bytes), ui4::style(ui::Font::kB, 13 * s, ui4::kDim));
-    l.text(72 * s, 424 * s, "EXPECTED SHA-256: " + u.sha256, ui4::style(ui::Font::kB, 12 * s, ui4::kGreen));
-    l.text(72 * s, 452 * s, "STAGED SWAP: DOWNLOADS TO .SHIFT-UPDATE, VERIFIES SHA-256, ATOMIC ROLLBACK ON ERROR",
-           ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-    draw_button(l, hits, "upd:stage", 72 * s, 484 * s, 360 * s, 524 * s, "STAGE & VERIFY UPDATE", s, true,
-                st.hovered_id == "upd:stage");
+    draw_inset_box(l, x0 + 24.0f * d, cy, x1 - 24.0f * d, cy + 156.0f * d, d, kBlue);
+    draw_text(l, x0 + 40.0f * d, cy + 16.0f * d, "Available: " + u.tag + "  \xC2\xB7  " + u.asset_name,
+              FontFace::kSemiBold, 15.0f * d, kTextPrimary, ui::Align::kLeft, cw - 80.0f * d);
+    draw_text(l, x0 + 40.0f * d, cy + 44.0f * d, "Size: " + fmt_size(u.size_bytes), FontFace::kRegular, 12.5f * d,
+              kTextSecondary);
+    draw_text(l, x0 + 40.0f * d, cy + 68.0f * d, "SHA-256: " + u.sha256, FontFace::kMono, 11.5f * d, kGreen,
+              ui::Align::kLeft, cw - 80.0f * d);
+    draw_button(l, hits, st, "upd:stage", x0 + 40.0f * d, cy + 102.0f * d, x0 + 236.0f * d, cy + 136.0f * d,
+                "Stage & Verify Update", d, {.primary = true});
   }
 }
 
-void draw_android_tab(ui::List& l, const LauncherUiState& st, float s, std::vector<HitBox>& hits) {
-  // Left: Controls & Pairing
-  draw_card(l, 32 * s, 142 * s, 748 * s, 658 * s, s, ui4::kGreen);
-  draw_section_title(l, 52 * s, 162 * s, "ANDROID WI-FI SYNC SERVER (LOCAL LAN ONLY)", s, ui4::kGreen);
+// ---- Tab 8: Android Wi-Fi Sync ---------------------------------------------
 
-  // Pairing code highlight box
-  l.rect(52 * s, 198 * s, 728 * s, 286 * s, ui4::kBrushBlack);
-  l.frame(52 * s, 198 * s, 728 * s, 286 * s, st.sync_active ? ui4::kGreen : ui::rgba(76, 82, 96, 200), 1.2f * s);
-  l.text(70 * s, 210 * s, "6-DIGIT PAIRING CODE:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  const std::string code_disp = st.sync_manifest.pairing_code.size() == 6
-                                    ? (st.sync_manifest.pairing_code.substr(0, 3) + " " + st.sync_manifest.pairing_code.substr(3))
-                                    : "------";
-  l.text(70 * s, 232 * s, code_disp, ui4::style(ui::Font::kE, 36 * s, ui4::kAmber));
-  l.text(360 * s, 214 * s, "LAN ADDRESS:", ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  l.text(360 * s, 236 * s, st.sync_lan_ip + ":" + std::to_string(st.sync_port),
-         ui4::style(ui::Font::kE, 18 * s, ui4::kWhite));
-  draw_fit_text(l, 360 * s, 264 * s,
-                st.sync_active ? "BROADCASTING UDP 47616 + SERVING HTTP" : "SERVER STOPPED",
-                ui4::style(ui::Font::kB, 11 * s, st.sync_active ? ui4::kGreen : ui4::kDim), 356 * s, 8.5f * s);
+void draw_android_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                      std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Android Wi-Fi Sync", d);
+  const float top_y = y0 + 50.0f * d;
+  const float h = std::max(320.0f * d, y1 - top_y);
+  const float left_w = std::floor((cw - 16.0f * d) * 0.59f);
+  const float left_x1 = x0 + left_w;
+  const float right_x0 = left_x1 + 16.0f * d;
 
-  // Share group toggles
-  l.text(52 * s, 304 * s, "CONTENT SHARED TO ANDROID/DATA/NET.SHIFTENGINE.DRIVE/FILES/:",
-         ui4::style(ui::Font::kB, 12 * s, ui4::kDim));
-  draw_button(l, hits, "sync:play", 52 * s, 326 * s, 382 * s, 362 * s,
-              st.sync_include_play ? "[X] BAKED PLAY FOLDER" : "[ ] BAKED PLAY FOLDER", s, false,
-              st.hovered_id == "sync:play", st.sync_include_play);
-  draw_button(l, hits, "sync:dlc", 394 * s, 326 * s, 728 * s, 362 * s,
-              st.sync_include_dlc ? "[X] DLC & TITLE UPDATE V4" : "[ ] DLC & TITLE UPDATE V4", s, false,
-              st.hovered_id == "sync:dlc", st.sync_include_dlc);
-  draw_button(l, hits, "sync:mods", 52 * s, 372 * s, 382 * s, 408 * s,
-              st.sync_include_mods ? "[X] ENABLED MODS" : "[ ] ENABLED MODS", s, false,
-              st.hovered_id == "sync:mods", st.sync_include_mods);
-  draw_button(l, hits, "sync:radio", 394 * s, 372 * s, 728 * s, 408 * s,
-              st.sync_include_radio ? "[X] CUSTOM RADIO STATIONS" : "[ ] CUSTOM RADIO STATIONS", s, false,
-              st.hovered_id == "sync:radio", st.sync_include_radio);
+  // Left: Pairing, Sync Groups, Activity Log
+  draw_card(l, x0, top_y, left_x1, top_y + h, d);
 
-  draw_button(l, hits, "sync:toggle", 52 * s, 426 * s, 728 * s, 474 * s,
-              st.sync_active ? "STOP WI-FI SYNC SERVER" : "START WI-FI SYNC SERVER", s, true,
-              st.hovered_id == "sync:toggle");
+  // Pairing & LAN box
+  const float py = top_y + 18.0f * d;
+  const float ph = 86.0f * d;
+  draw_inset_box(l, x0 + 20.0f * d, py, left_x1 - 20.0f * d, py + ph, d, st.sync_active ? kGreen : kBorderSubtle);
+  draw_text(l, x0 + 36.0f * d, py + 14.0f * d, "Pairing code", FontFace::kRegular, 12.0f * d, kTextSecondary);
+  const std::string code_disp =
+      st.sync_manifest.pairing_code.size() == 6
+          ? (st.sync_manifest.pairing_code.substr(0, 3) + " " + st.sync_manifest.pairing_code.substr(3))
+          : "--- ---";
+  draw_text(l, x0 + 36.0f * d, py + 34.0f * d, code_disp, FontFace::kMono, 30.0f * d, kTextPrimary);
 
-  // Activity log
-  l.rect(52 * s, 492 * s, 728 * s, 642 * s, ui4::kBrushBlack);
-  l.text(64 * s, 502 * s, "TRANSFER LOG:", ui4::style(ui::Font::kB, 11 * s, ui4::kDim));
-  const size_t an = st.sync_activity.size();
-  const size_t as = an > 6 ? an - 6 : 0;
-  for (size_t i = as; i < an; ++i) {
-    l.text(64 * s, 522 * s + float(i - as) * 19 * s, truncate_str(st.sync_activity[i], 64),
-           ui4::style(ui::Font::kB, 11 * s, ui4::kWhite));
+  const float rx = x0 + left_w * 0.48f;
+  draw_text(l, rx, py + 14.0f * d, "Local address", FontFace::kRegular, 12.0f * d, kTextSecondary);
+  draw_text(l, rx, py + 34.0f * d, st.sync_lan_ip + ":" + std::to_string(st.sync_port), FontFace::kMono, 15.5f * d,
+            kTextPrimary, ui::Align::kLeft, left_x1 - rx - 32.0f * d);
+  l.circle(rx + 4.5f * d, py + 65.5f * d, 3.8f * d, st.sync_active ? kGreen : kTextMuted);
+  draw_text(l, rx + 14.0f * d, py + 58.0f * d,
+            st.sync_active ? "Listening on local Wi-Fi" : "Server stopped",
+            FontFace::kRegular, 12.0f * d, st.sync_active ? kGreen : kTextMuted);
+
+  // Sync group checkboxes (2x2)
+  float gy = py + ph + 18.0f * d;
+  draw_text(l, x0 + 20.0f * d, gy, "Sync to Android device", FontFace::kSemiBold, 13.0f * d, kTextPrimary);
+  gy += 24.0f * d;
+  const float chk_w = (left_w - 48.0f * d) * 0.5f;
+  draw_checkbox(l, hits, st, "sync:play", x0 + 16.0f * d, gy, chk_w, 30.0f * d, "Play folder", st.sync_include_play, d);
+  draw_checkbox(l, hits, st, "sync:dlc", x0 + 24.0f * d + chk_w, gy, chk_w, 30.0f * d, "DLC & Title Update v4",
+                st.sync_include_dlc, d);
+  gy += 32.0f * d;
+  draw_checkbox(l, hits, st, "sync:mods", x0 + 16.0f * d, gy, chk_w, 30.0f * d, "Enabled mods", st.sync_include_mods, d);
+  draw_checkbox(l, hits, st, "sync:radio", x0 + 24.0f * d + chk_w, gy, chk_w, 30.0f * d, "Custom radio stations",
+                st.sync_include_radio, d);
+  gy += 44.0f * d;
+
+  draw_button(l, hits, st, "sync:toggle", x0 + 20.0f * d, gy, left_x1 - 20.0f * d, gy + 38.0f * d,
+              st.sync_active ? "Stop Sync Server" : "Start Sync Server", d, {.primary = !st.sync_active});
+  gy += 52.0f * d;
+
+  // Transfer activity log
+  draw_text(l, x0 + 20.0f * d, gy, "Activity Log", FontFace::kSemiBold, 12.5f * d, kTextSecondary);
+  gy += 22.0f * d;
+  const float log_y1 = top_y + h - 18.0f * d;
+  if (log_y1 - gy > 36.0f * d) {
+    draw_inset_box(l, x0 + 20.0f * d, gy, left_x1 - 20.0f * d, log_y1, d);
+    const float line_h = 19.0f * d;
+    const int vis = std::max(1, int((log_y1 - gy - 14.0f * d) / line_h));
+    const int total = int(st.sync_activity.size());
+    const int max_start = std::max(0, total - vis);
+    const int start = std::clamp(max_start - st.sync_log_scroll, 0, max_start);
+    for (int i = 0; i < vis && start + i < total; ++i) {
+      draw_text(l, x0 + 32.0f * d, gy + 8.0f * d + float(i) * line_h, st.sync_activity[size_t(start + i)],
+                FontFace::kMono, 11.5f * d, kTextSecondary, ui::Align::kLeft, left_w - 72.0f * d);
+    }
+    if (total == 0) {
+      draw_text(l, x0 + 32.0f * d, gy + 10.0f * d, "No connections yet.", FontFace::kMono, 11.5f * d, kTextMuted);
+    }
+    draw_scrollbar(l, left_x1 - 30.0f * d, gy + 6.0f * d, log_y1 - 6.0f * d, start, vis, total, d);
   }
 
-  // Right: QR Code Matrix
-  draw_card(l, 768 * s, 142 * s, 1248 * s, 658 * s, s, ui4::kPink);
-  draw_section_title(l, 788 * s, 162 * s, "SCAN ON ANDROID DEVICE", s, ui4::kPink);
+  // Right: QR Code & Steps
+  const float rw = x1 - right_x0;
+  draw_card(l, right_x0, top_y, x1, top_y + h, d);
+  draw_text(l, right_x0 + 20.0f * d, top_y + 18.0f * d, "Scan on Android", FontFace::kSemiBold, 14.0f * d,
+            kTextPrimary);
 
-  const float qr_box = 280 * s;
-  const float qx = 0.5f * (768 * s + 1248 * s) - qr_box * 0.5f;
-  const float qy = 204 * s;
-  l.rect(qx, qy, qx + qr_box, qy + qr_box, ui4::kWhite);
+  const float qr_box = std::min(232.0f * d, rw - 64.0f * d);
+  const float qx = right_x0 + 0.5f * (rw - qr_box);
+  const float qy = top_y + 52.0f * d;
+  l.rect(qx, qy, qx + qr_box, qy + qr_box, ui::rgba(255, 255, 255), 8.0f * d);
   if (st.sync_qr.size > 0) {
-    const float quiet = 18 * s;
+    const float quiet = 16.0f * d;
     const float cell = (qr_box - 2.0f * quiet) / float(st.sync_qr.size);
     for (int r = 0; r < st.sync_qr.size; ++r) {
       for (int c = 0; c < st.sync_qr.size; ++c) {
         if (st.sync_qr.at(c, r)) {
           const float mx = qx + quiet + float(c) * cell;
           const float my = qy + quiet + float(r) * cell;
-          l.rect(mx, my, mx + cell + 0.35f, my + cell + 0.35f, ui::rgba(12, 14, 18, 255));
+          l.rect(mx, my, mx + cell + 0.35f, my + cell + 0.35f, ui::rgba(16, 18, 22));
         }
       }
     }
   }
-  const std::string url = "http://" + st.sync_lan_ip + ":" + std::to_string(st.sync_port) + "/" + st.sync_manifest.token;
-  draw_fit_text(l, 0.5f * (768 * s + 1248 * s), 498 * s, url,
-                ui4::style(ui::Font::kB, 12 * s, ui4::kAmber, ui::Align::kCenter), 444 * s, 8.5f * s);
-  draw_fit_text(l, 790 * s, 534 * s, "1. SCAN QR CODE TO DOWNLOAD SHIFT-DRIVE-ARM64.APK",
-                ui4::style(ui::Font::kB, 11 * s, ui4::kWhite), 440 * s, 8.5f * s);
-  draw_fit_text(l, 790 * s, 560 * s, "2. OPEN SHIFT DRIVE & ENTER THE 6-DIGIT CODE",
-                ui4::style(ui::Font::kB, 11 * s, ui4::kWhite), 440 * s, 8.5f * s);
-  draw_fit_text(l, 790 * s, 586 * s, "3. RESUMABLE HTTP RANGE SYNC OVER PRIVATE WI-FI",
-                ui4::style(ui::Font::kB, 11 * s, ui4::kWhite), 440 * s, 8.5f * s);
-  draw_fit_text(l, 790 * s, 616 * s, "PRIVATE LAN ONLY - ZERO DATA UPLOADED OFF DEVICE",
-                ui4::style(ui::Font::kB, 11 * s, ui4::kDim), 440 * s, 8.5f * s);
+
+  const std::string url =
+      "http://" + st.sync_lan_ip + ":" + std::to_string(st.sync_port) + "/" + st.sync_manifest.token;
+  draw_text(l, right_x0 + 0.5f * rw, qy + qr_box + 16.0f * d, url, FontFace::kMono, 11.5f * d, kTextSecondary,
+            ui::Align::kCenter, rw - 32.0f * d);
+
+  float step_y = qy + qr_box + 48.0f * d;
+  draw_divider(l, right_x0 + 20.0f * d, step_y - 10.0f * d, x1 - 20.0f * d, d);
+  const char* kSteps[3] = {
+      "1. Scan the QR code to download the APK.",
+      "2. Open Shift Drive and enter the 6-digit code.",
+      "3. Files transfer directly over local Wi-Fi.",
+  };
+  for (int i = 0; i < 3; ++i) {
+    draw_text(l, right_x0 + 22.0f * d, step_y + float(i) * 26.0f * d, kSteps[i], FontFace::kRegular, 12.0f * d,
+              kTextSecondary, ui::Align::kLeft, rw - 44.0f * d);
+  }
 }
 
 }  // namespace
 
 const char* tab_name(LauncherTab tab) {
   switch (tab) {
-    case LauncherTab::kPlay: return "PLAY";
-    case LauncherTab::kSetup: return "SETUP";
-    case LauncherTab::kDlc: return "DLC & V4";
-    case LauncherTab::kMods: return "MODS";
-    case LauncherTab::kRadio: return "RADIO";
-    case LauncherTab::kWheel: return "WHEEL";
-    case LauncherTab::kUpdate: return "UPDATE";
-    case LauncherTab::kAndroid: return "ANDROID";
-    default: return "PLAY";
+    case LauncherTab::kPlay: return "Play";
+    case LauncherTab::kSetup: return "Setup";
+    case LauncherTab::kDlc: return "Content";
+    case LauncherTab::kMods: return "Mods";
+    case LauncherTab::kRadio: return "Radio";
+    case LauncherTab::kWheel: return "Controls";
+    case LauncherTab::kUpdate: return "Updates";
+    case LauncherTab::kAndroid: return "Android";
+    default: return "Play";
   }
 }
 
@@ -768,16 +1302,23 @@ bool parse_tab_name(std::string_view name, LauncherTab& out) {
   const std::string l = lower_str(name);
   if (l == "play") { out = LauncherTab::kPlay; return true; }
   if (l == "setup") { out = LauncherTab::kSetup; return true; }
-  if (l == "dlc" || l == "v4") { out = LauncherTab::kDlc; return true; }
+  if (l == "content" || l == "dlc" || l == "v4") { out = LauncherTab::kDlc; return true; }
   if (l == "mods" || l == "mod") { out = LauncherTab::kMods; return true; }
   if (l == "radio") { out = LauncherTab::kRadio; return true; }
-  if (l == "wheel" || l == "controller") { out = LauncherTab::kWheel; return true; }
-  if (l == "update" || l == "updater") { out = LauncherTab::kUpdate; return true; }
+  if (l == "controls" || l == "wheel" || l == "controller") { out = LauncherTab::kWheel; return true; }
+  if (l == "updates" || l == "update" || l == "updater") { out = LauncherTab::kUpdate; return true; }
   if (l == "android" || l == "sync" || l == "wifi") { out = LauncherTab::kAndroid; return true; }
   return false;
 }
 
 void populate_demo_state(LauncherUiState& st) {
+  st.paths.portable = false;
+  st.paths.data_root = "D:/ShiftEngine/data";
+  st.paths.play_dir = "D:/ShiftEngine/data/play";
+  st.paths.mods_dir = "D:/ShiftEngine/data/mods";
+  st.paths.state_dir = "D:/ShiftEngine/data/state";
+  st.paths.path_length_warning.clear();
+
   st.play_cfg.baked_car_count = 240;
   st.play_cfg.has_colorado_index = true;
   st.play_cfg.has_sound_dir = true;
@@ -802,7 +1343,7 @@ void populate_demo_state(LauncherUiState& st) {
   st.disc_check.valid = true;
   st.disc_check.car_archive_count = 240;
   st.disc_check.free_space_bytes = 128ull << 30;
-  st.disc_check.summary = "Verified disc folder (240 car archives, 128.0 GB free). Ready for One-Click Setup.";
+  st.disc_check.summary = "Disc folder verified (240 cars, 128.0 GB free).";
   st.disc_check.items = {
       {"Colorado World Archive", "media/tracks/colorado/bin.zip", true, true, 1200000000ull, ""},
       {"Game Database (gamedb.slt)", "media/db/gamedb.slt", true, true, 18400000ull, "9f42c1a8d0b3e712"},
@@ -813,56 +1354,57 @@ void populate_demo_state(LauncherUiState& st) {
   };
   st.setup_progress.fraction = 1.0f;
   st.setup_progress.success = true;
-  st.setup_progress.stage_label = "Ready to drive (240 cars + Colorado index baked)";
+  st.setup_progress.stage_label = "Complete (240 cars and Colorado index built)";
   st.setup_progress.log_lines = {
       "Disc verified: D:/ForzaHorizon/disc",
       "gamedb.slt SHA-256: 9f42c1a8d0b3e712...",
-      "carbake: 240 cars baked to play/bake/cars",
-      "soundbake: engine loops baked (48 kHz stereo)",
+      "carbake: 240 cars written to play/bake/cars",
+      "soundbake: engine loops written (48 kHz stereo)",
       "colorado.index written (3,201 collision tiles)",
-      "One-Click Setup complete! Ready to drive.",
+      "Setup complete.",
   };
 
-  // Demo DLC/v4/UDLC/XE
+  // Demo Content (DLC/v4/UDLC/XE)
   st.content_status.has_v4 = true;
   st.content_status.v4_enabled = true;
   st.content_status.has_rally = true;
   st.content_status.has_1000_club = true;
   st.content_status.has_udlc = true;
   st.content_status.dlc_installed_count = 21;
-  st.content_status.notice = "Title Update v4 + 21/21 DLC packs + UDLC v1.2 verified and mounted.";
+  st.content_status.notice = "Title Update v4, 21 DLC packs, and UDLC v1.2 detected.";
   st.content_status.packages = {
-      {"title-update-v4", "Title Update v4 (Rally + 1000 Club)", ContentKind::kTitleUpdateV4, {}, true, true, true, 0, "Verified v4 package"},
-      {"rally", "Horizon Rally Expansion Pack", ContentKind::kRallyExpansion, {}, true, true, true, 0, "ColoradoDirt + 7 championships"},
-      {"1000club", "1000 Club Expansion Pack", ContentKind::kClub1000, {}, true, true, true, 0, "1,145 car challenges unlocked"},
-      {"udlc", "UDLC v1.2 Community DLC Pack", ContentKind::kUdlcV12, {}, true, true, true, 0, "Mounted from mods/udlc-v1.2"},
+      {"title-update-v4", "Title Update v4", ContentKind::kTitleUpdateV4, {}, true, true, true, 0, "Rally and 1000 Club support"},
+      {"rally", "Horizon Rally Expansion", ContentKind::kRallyExpansion, {}, true, true, true, 0, "ColoradoDirt + 7 championships"},
+      {"1000club", "1000 Club Expansion", ContentKind::kClub1000, {}, true, true, true, 0, "1,145 car challenges"},
+      {"udlc", "UDLC v1.2 Pack", ContentKind::kUdlcV12, {}, true, true, true, 0, "Mounted from mods/udlc-v1.2"},
       {"xe", "Forza Horizon XE", ContentKind::kHorizonXe, {}, false, false, false, 0, "Not installed"},
   };
 
   // Demo Mods
   st.mods = {
-      {"synthwave_pulse", "Synthwave Pulse FM", "1.2.0", "Shift Radio Builder",
-       "Replaces Horizon Pulse with 14 custom synthwave tracks + 210x100 neon logo.", "", "", {}, {}, true, true,
-       true, false, 50, 4, {"custom radio"}, {}, {}, {}, {}},
+      {"synthwave_pulse", "Synthwave Pulse FM", "1.2.0", "Custom Radio Builder",
+       "Replaces Horizon Pulse with 14 custom synthwave tracks and a 210x100 station logo.", "", "", {}, {}, true,
+       true, true, false, 50, 4, {"custom radio"}, {}, {}, {}, {}},
       {"udlc_v12", "UDLC v1.2 Expanded Roster", "1.2.0", "Community",
-       "Adds restored DLC and hidden vehicles with balanced PI tiers.", "", "", {}, {}, true, false, true, true, 40,
-       18, {"database", "cars/physics"}, {}, {}, {},
+       "Restores DLC and hidden vehicles with balanced PI tiers.", "", "", {}, {}, true, false, true, true, 40, 18,
+       {"database", "cars/physics"}, {}, {}, {},
        {{"traffic_density", "Traffic Density", "", "Normal", {{"Low", "Low"}, {"Normal", "Normal"}, {"Dense", "Dense"}}},
         {"hidden_cars", "Unlock Hidden Cars", "", "Enabled", {{"Enabled", "Enabled"}, {"Disabled", "Disabled"}}}}},
       {"colorado_4k_roads", "Colorado 4K Asphalt Pack", "2.0.1", "HorizonTex",
-       "Hash-replaced road diffuse and normal maps at 4x resolution.", "", "", {}, {}, true, true, true, false, 30,
-       64, {"textures"}, {}, {}, {}, {}},
+       "Replaces road diffuse and normal maps at 4x resolution.", "", "", {}, {}, true, true, true, false, 30, 64,
+       {"textures"}, {}, {}, {}, {}},
   };
+  st.selected_mod = 1;
   st.save_iso = evaluate_save_isolation(st.mods);
 
   // Demo Radio Builder
   st.radio_cfg.station_slot = "Radio2";
   st.radio_cfg.mod_name = "synthwave_pulse";
-  st.radio_cfg.custom_station_name = "SYNTHWAVE PULSE FM";
+  st.radio_cfg.custom_station_name = "Synthwave Pulse FM";
   st.radio_cfg.replace_playlist = true;
   st.radio_cfg.music_folder = "D:/Music/ColoradoSynthwave";
   st.radio_cfg.logo_png_path = "D:/Music/synthwave_logo_210x100.png";
-  st.radio_logo_check = {true, 210, 100, "Valid 210x100 PNG station logo."};
+  st.radio_logo_check = {true, 210, 100, "Valid 210x100 PNG"};
   st.radio_tracks = {
       {"D:/Music/01.flac", "Nightcall Highway", "Kavinsky", 28400000},
       {"D:/Music/02.mp3", "Red Rock Sunset", "The Midnight", 10200000},
@@ -871,9 +1413,9 @@ void populate_demo_state(LauncherUiState& st) {
       {"D:/Music/05.mp3", "Outrun the Festival", "Timecop1983", 9800000},
       {"D:/Music/06.flac", "Pikes Peak Drift", "Gunship", 26500000},
   };
-  st.radio_status = "Ready: 6 tracks queued for 48 kHz 160 kbps FSB4 encode.";
+  st.radio_status = "6 tracks ready for FSB4 encoding.";
 
-  // Demo Wheel Configurator
+  // Demo Controls
   st.devices = {
       {1, "Logitech G29 Driving Force Wheel", 6, 25, false, true, {}},
       {2, "Fanatec ClubSport V3 Pedals (USB)", 3, 0, false, false, {}},
@@ -894,7 +1436,7 @@ void populate_demo_state(LauncherUiState& st) {
   st.live_clutch = 0.0f;
   st.live_handbrake = 0.0f;
   st.live_gear = 3;
-  st.wheel_status = "Separate-USB multi-device rig active (Wheel + Pedals + TH8A + Handbrake).";
+  st.wheel_status = "Multi-device USB rig active.";
 
   // Demo Android Wi-Fi Sync
   st.sync_active = true;
@@ -905,86 +1447,107 @@ void populate_demo_state(LauncherUiState& st) {
   st.sync_manifest.token = "a7c9e204b18f3d56";
   st.sync_qr = generate_qr_matrix("http://192.168.1.42:47615/a7c9e204b18f3d56");
   st.sync_activity = {
-      "Wi-Fi Sync started on 192.168.1.42:47615 (code 482917)",
-      "UDP LAN discovery listening on port 47616",
-      "192.168.1.88 (Odin 2 Portal) paired and fetched manifest",
-      "Streaming play/bake/cars (240 files, resumable HTTP Range)",
+      "Server started on 192.168.1.42:47615 (code 482917)",
+      "UDP discovery listening on port 47616",
+      "192.168.1.88 paired and fetched manifest",
+      "Serving play/bake/cars (240 files)",
   };
 }
 
 void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, float height,
-                       std::vector<HitBox>& hitboxes) {
+                       std::vector<HitBox>& hitboxes, float dpi_scale) {
   hitboxes.clear();
   l.clear();
-  const float s = std::min(width / 1280.0f, height / 720.0f);
+  init_launcher_fonts();
+
+  const float d = std::clamp(dpi_scale > 0.0f ? dpi_scale : 1.0f, 0.75f, 3.0f);
+  const float sidebar_w = std::min(200.0f * d, width * 0.28f);
+  const float footer_h = 28.0f * d;
 
   // Full background canvas
-  l.rect(0, 0, width, height, ui::rgba(15, 17, 22, 255), 0, ui::rgba(10, 12, 16, 255));
-  // Subtle top festival accent gradient strip
-  l.rect(0, 0, width, 74 * s, ui::rgba(22, 24, 30, 255), 0, ui::rgba(16, 18, 24, 255));
-  l.rect(0, 72 * s, width, 74.5f * s, ui4::kPink);
+  l.rect(0.0f, 0.0f, width, height, kBgCanvas);
 
-  // Tilted FH1-styled Brand Header (+3 deg feathered brush + clipon)
-  {
-    ui4::TiltScope tilt(l, 160 * s, 36 * s, ui4::kTiltRad * 0.7f);
-    ui4::brush(l, 24 * s, 10 * s, 306 * s, 62 * s, ui4::kPink, false, 1.0f);
-    l.text(44 * s, 17 * s, "SHIFT ENGINE", ui4::style(ui::Font::kE, 21 * s, ui4::kWhite));
-    l.text(44 * s, 44 * s, "UNIFIED 4-PLATFORM LAUNCHER", ui4::style(ui::Font::kB, 9 * s, ui4::kOffWhite));
-  }
+  // Left Sidebar
+  l.rect(0.0f, 0.0f, sidebar_w, height, kBgSidebar);
+  l.rect(sidebar_w - std::max(1.0f, std::round(d)), 0.0f, sidebar_w, height, kBorderSubtle);
 
-  // Header status pills (right side)
-  draw_pill(l, 830 * s, 23 * s, 134 * s, 26 * s, st.paths.portable ? "PORTABLE MODE" : "STANDARD INSTALL",
-            st.paths.portable ? ui::rgba(76, 56, 16, 240) : ui::rgba(36, 40, 48, 240),
-            st.paths.portable ? ui4::kAmber : ui4::kDim, s);
-  draw_pill(l, 974 * s, 23 * s, 148 * s, 26 * s,
-            st.play_cfg.baked_car_count > 0 ? "PLAY FOLDER READY" : "SETUP REQUIRED",
-            st.play_cfg.baked_car_count > 0 ? ui::rgba(24, 72, 42, 240) : ui::rgba(82, 54, 16, 240),
-            st.play_cfg.baked_car_count > 0 ? ui4::kGreen : ui4::kAmber, s);
-  draw_pill(l, 1132 * s, 23 * s, 116 * s, 26 * s, "V" + st.current_version, ui::rgba(36, 40, 48, 240), ui4::kWhite, s);
+  // Brand header (clean, flat, zero marketing)
+  l.rect(18.0f * d, 21.0f * d, 21.5f * d, 47.0f * d, kAccent, 1.5f * d);
+  draw_text(l, 30.0f * d, 18.0f * d, "Shift Engine", FontFace::kSemiBold, 16.0f * d, kTextPrimary);
+  draw_text(l, 30.0f * d, 38.0f * d, "v" + st.current_version, FontFace::kRegular, 11.5f * d, kTextMuted);
+  draw_divider(l, 16.0f * d, 64.0f * d, sidebar_w - 16.0f * d, d);
 
-  // 8 Navigation Tabs
-  const float tab_w = (1248.0f - 32.0f - 7.0f * 8.0f) / 8.0f;
+  // Sidebar navigation items
+  static constexpr const char* kTabIds[8] = {
+      "tab:play", "tab:setup", "tab:dlc", "tab:mods", "tab:radio", "tab:wheel", "tab:update", "tab:android"};
+  const float nav_y0 = 76.0f * d;
+  const float nav_h = 34.0f * d;
+  const float nav_gap = 4.0f * d;
+
   for (int i = 0; i < int(LauncherTab::kCount); ++i) {
     const LauncherTab t = LauncherTab(i);
-    const float tx = 32 * s + float(i) * (tab_w + 8.0f) * s;
-    const bool active = st.active_tab == t;
-    const std::string tid = "tab:" + lower_str(std::string(tab_name(t)).substr(0, tab_name(t)[0] == 'D' ? 3 : 10));
-    // Canonical tab hit IDs
-    static constexpr const char* kTabIds[8] = {
-        "tab:play", "tab:setup", "tab:dlc", "tab:mods", "tab:radio", "tab:wheel", "tab:update", "tab:android"};
+    const float ny = nav_y0 + float(i) * (nav_h + nav_gap);
     const std::string cid = kTabIds[i];
-    hitboxes.push_back({cid, tx, 84 * s, tx + tab_w * s, 124 * s});
+    const bool active = st.active_tab == t;
     const bool hov = st.hovered_id == cid;
-    l.rect(tx, 84 * s, tx + tab_w * s, 124 * s,
-           active ? ui4::kPink : (hov ? ui::rgba(48, 52, 64, 240) : ui4::kPillGrey));
-    if (active) l.rect(tx, 121 * s, tx + tab_w * s, 124 * s, ui4::kWhite);
-    ui::TextStyle tts = ui4::style(ui::Font::kE, 13 * s, active ? ui4::kWhite : ui4::kDim, ui::Align::kCenter);
-    l.text(tx + tab_w * 0.5f * s, 97 * s, tab_name(t), tts);
+    const bool foc = st.focused_id == cid;
+    hitboxes.push_back({cid, 10.0f * d, ny, sidebar_w - 10.0f * d, ny + nav_h, true});
+
+    if (active) {
+      l.rect(10.0f * d, ny, sidebar_w - 10.0f * d, ny + nav_h, kBgSelected, 5.0f * d);
+      l.rect(10.0f * d, ny + 6.0f * d, 13.0f * d, ny + nav_h - 6.0f * d, kAccent, 1.5f * d);
+    } else if (hov) {
+      l.rect(10.0f * d, ny, sidebar_w - 10.0f * d, ny + nav_h, ui::rgba(255, 255, 255, 10), 5.0f * d);
+    }
+    if (foc) l.frame(10.0f * d, ny, sidebar_w - 10.0f * d, ny + nav_h, kAccent, 1.3f * d, 5.0f * d);
+
+    const uint32_t icon_col = active ? kTextPrimary : (hov ? kTextPrimary : kTextSecondary);
+    draw_sidebar_icon(l, t, 28.0f * d, ny + 0.5f * nav_h, d, icon_col);
+    draw_text(l, 46.0f * d, text_y_center(ny, ny + nav_h, 13.5f * d), tab_name(t),
+              active ? FontFace::kSemiBold : FontFace::kRegular, 13.5f * d,
+              active ? kTextPrimary : (hov ? kTextPrimary : kTextSecondary));
   }
 
-  // Active tab content
+  // Quiet Sidebar Bottom Status
+  const float sb_foot_y = height - 62.0f * d;
+  draw_divider(l, 16.0f * d, sb_foot_y - 10.0f * d, sidebar_w - 16.0f * d, d);
+  const bool ready = st.play_cfg.baked_car_count > 0;
+  l.circle(24.0f * d, sb_foot_y + 9.0f * d, 3.8f * d, ready ? kGreen : kAmber);
+  draw_text(l, 34.0f * d, sb_foot_y + 1.0f * d, ready ? "Game ready" : "Setup required", FontFace::kSemiBold,
+            12.0f * d, kTextPrimary);
+  draw_text(l, 34.0f * d, sb_foot_y + 20.0f * d, st.paths.portable ? "Portable mode" : "Standard install",
+            FontFace::kRegular, 11.5f * d, kTextMuted);
+
+  // Main Canvas Area
+  const float pad_x = 24.0f * d;
+  const float content_x0 = sidebar_w + pad_x;
+  const float content_x1 = width - pad_x;
+  const float content_y0 = 20.0f * d;
+  const float content_y1 = height - footer_h - 14.0f * d;
+
   switch (st.active_tab) {
-    case LauncherTab::kPlay: draw_play_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kSetup: draw_setup_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kDlc: draw_dlc_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kMods: draw_mods_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kRadio: draw_radio_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kWheel: draw_wheel_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kUpdate: draw_update_tab(l, st, s, hitboxes); break;
-    case LauncherTab::kAndroid: draw_android_tab(l, st, s, hitboxes); break;
+    case LauncherTab::kPlay: draw_play_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kSetup: draw_setup_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kDlc: draw_dlc_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kMods: draw_mods_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kRadio: draw_radio_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kWheel: draw_wheel_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kUpdate: draw_update_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kAndroid: draw_android_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
     default: break;
   }
 
-  // Footer status bar
-  l.rect(0, 676 * s, width, height, ui::rgba(12, 14, 18, 255));
-  l.line(0, 676 * s, width, 676 * s, 1.0f * s, ui::rgba(54, 60, 72, 180));
-  const std::string footer_left = st.banner_notice.empty()
-                                      ? "1-8 SWITCH TABS  -  DRAG & DROP DISC OR MOD FOLDER  -  ZERO PYTHON/QT RUNTIME"
-                                      : st.banner_notice;
-  draw_fit_text(l, 32 * s, 691 * s, footer_left,
-                ui4::style(ui::Font::kB, 11 * s, st.banner_notice.empty() ? ui4::kDim : ui4::kAmber), 840 * s, 8.5f * s);
-  l.text(width - 32 * s, 691 * s, "WINDOWS / LINUX / MACOS / ANDROID",
-         ui4::style(ui::Font::kB, 11 * s, ui4::kDim, ui::Align::kRight));
+  // Quiet Bottom Status Strip (main canvas only)
+  const float fy = height - footer_h;
+  l.rect(sidebar_w, fy, width, height, ui::rgba(15, 17, 22));
+  draw_divider(l, sidebar_w, fy, width, d);
+  if (!st.banner_notice.empty()) {
+    draw_text(l, content_x0, text_y_center(fy, height, 11.5f * d), st.banner_notice, FontFace::kRegular,
+              11.5f * d, kTextPrimary, ui::Align::kLeft, (content_x1 - content_x0) * 0.72f);
+  }
+  draw_text(l, content_x1, text_y_center(fy, height, 11.0f * d),
+            "1-8 Tabs  \xC2\xB7  Tab Focus  \xC2\xB7  Enter Activate", FontFace::kRegular, 11.0f * d, kTextMuted,
+            ui::Align::kRight);
 }
 
 }  // namespace launcher

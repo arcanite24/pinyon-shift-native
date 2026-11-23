@@ -1,4 +1,4 @@
-// Shift Engine Unified Cross-Platform GUI Launcher (SDL3 + Vulkan / CPU headless).
+// Shift Engine Launcher (SDL3 + Vulkan / CPU headless screenshot mode).
 #include <SDL3/SDL.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -11,22 +11,20 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <set>
 #include <string>
 #include <vector>
 
 #include <fh1data/archive.h>
-#include <fh1data/xds.h>
 
 #include "launcher_core.h"
+#include "launcher_font.h"
 #include "launcher_ui.h"
 #include "renderer.h"
 #include "ui.h"
-#include "ui4_chrome.h"
 
 namespace {
 
-bool load_launcher_fh1_assets(const std::filesystem::path& game_root) {
+bool load_launcher_fh1_fonts_fallback(const std::filesystem::path& game_root) {
   if (game_root.empty()) return false;
   std::error_code ec;
   const std::filesystem::path fonts_zip = game_root / "media" / "ui" / "Fonts.zip";
@@ -34,32 +32,7 @@ bool load_launcher_fh1_assets(const std::filesystem::path& game_root) {
   std::string why;
   auto zip = fh1::Archive::open(fonts_zip, &why);
   if (!zip) return false;
-  const bool loaded = carview::ui::load_fonts_from_zip(*zip);
-  carview::ui4::set_texture_loader([root = game_root](const std::string& path, std::array<float, 4>& uv) {
-    if (carview::ui::atlas_find(path, uv)) return true;
-    static std::unique_ptr<fh1::Archive> horizon_zip;
-    static std::unique_ptr<fh1::Archive> tex_zip;
-    static std::set<std::string> failed;
-    static bool opened = false;
-    if (failed.count(path)) return false;
-    if (!opened) {
-      opened = true;
-      std::string e;
-      horizon_zip = fh1::Archive::open(root / "media" / "ui" / "textures" / "Horizon.zip", &e);
-      tex_zip = fh1::Archive::open(root / "media" / "ui" / "Textures.zip", &e);
-    }
-    const bool t = path.rfind("T:", 0) == 0;
-    fh1::Archive* a = t ? tex_zip.get() : horizon_zip.get();
-    fh1::ReadResult r = a ? a->read((t ? path.substr(2) : path) + ".xds") : fh1::ReadResult{};
-    const fh1::XdsResult x = a && r.ok() ? fh1::decode_xds(r.data, false) : fh1::XdsResult{};
-    if (x.levels.empty() ||
-        !carview::ui::atlas_image(path, x.levels[0].width, x.levels[0].height, x.levels[0].rgba, uv)) {
-      failed.insert(path);
-      return false;
-    }
-    return true;
-  });
-  return loaded;
+  return carview::ui::load_fonts_from_zip(*zip);
 }
 
 void upload_launcher_ui_atlas(carview::Renderer& renderer, bool full) {
@@ -81,9 +54,27 @@ void upload_launcher_ui_atlas(carview::Renderer& renderer, bool full) {
 
 void print_usage() {
   std::printf(
-      "shift-launcher: Unified Cross-Platform GUI Launcher for Shift Engine\n"
-      "  shift-launcher [--portable] [--game <dir>] [--tab play|setup|dlc|mods|radio|wheel|update|android]\n"
-      "  shift-launcher --screenshot <out.png> [--game <dir>] [--tab <name>] [--width 1280] [--height 720] [--demo]\n");
+      "shift-launcher: Shift Engine launcher\n"
+      "  shift-launcher [--portable] [--game <dir>] [--tab play|setup|content|mods|radio|controls|updates|android]\n"
+      "  shift-launcher --screenshot <out.png> [--game <dir>] [--tab <name>] [--width 1280] [--height 720] [--scale 1.0] [--demo]\n");
+}
+
+void open_folder_in_shell(const std::filesystem::path& dir, std::string& notice) {
+  if (dir.empty()) {
+    notice = "Play folder path is not set.";
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+#ifdef _WIN32
+  std::string cmd = "explorer \"" + dir.string() + "\"";
+#elif defined(__APPLE__)
+  std::string cmd = "open \"" + dir.string() + "\" &";
+#else
+  std::string cmd = "xdg-open \"" + dir.string() + "\" >/dev/null 2>&1 &";
+#endif
+  std::system(cmd.c_str());
+  notice = "Opened " + dir.string();
 }
 
 void refresh_all(launcher::LauncherUiState& st) {
@@ -114,6 +105,11 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
   std::string cmd = "\"" + st.paths.carview_bin.string() + "\" --drive";
   if (!st.paths.play_dir.empty()) cmd += " --play \"" + st.paths.play_dir.string() + "\"";
   cmd += std::string(" --preset ") + kPresetArgs[std::clamp(st.selected_preset, 0, 4)];
+  const auto& res = launcher::kResolutionPresets[std::clamp(st.selected_resolution, 0, 4)];
+  if (res.width > 0 && res.height > 0) {
+    cmd += " --width " + std::to_string(res.width) + " --height " + std::to_string(res.height);
+  }
+  if (st.launch_fullscreen) cmd += " --fullscreen";
   if (!st.launch_car.empty()) cmd += " --car " + st.launch_car;
   if (!st.extra_args.empty()) cmd += " " + st.extra_args;
 #ifdef _WIN32
@@ -126,6 +122,51 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
   return true;
 }
 
+void scroll_active_tab(launcher::LauncherUiState& st, int delta) {
+  if (delta == 0) return;
+  switch (st.active_tab) {
+    case launcher::LauncherTab::kSetup:
+      st.setup_log_scroll = std::max(0, st.setup_log_scroll + delta);
+      break;
+    case launcher::LauncherTab::kDlc:
+      st.content_scroll = std::max(0, st.content_scroll - delta);
+      break;
+    case launcher::LauncherTab::kMods:
+      st.mods_scroll = std::max(0, st.mods_scroll - delta);
+      break;
+    case launcher::LauncherTab::kRadio:
+      st.radio_scroll = std::max(0, st.radio_scroll - delta);
+      break;
+    case launcher::LauncherTab::kWheel:
+      st.devices_scroll = std::max(0, st.devices_scroll - delta);
+      break;
+    case launcher::LauncherTab::kAndroid:
+      st.sync_log_scroll = std::max(0, st.sync_log_scroll + delta);
+      break;
+    default: break;
+  }
+}
+
+void cycle_focus(launcher::LauncherUiState& st, const std::vector<launcher::HitBox>& hitboxes, int dir) {
+  std::vector<std::string> ids;
+  ids.reserve(hitboxes.size());
+  for (const auto& hb : hitboxes) {
+    if (hb.focusable && !hb.id.empty()) ids.push_back(hb.id);
+  }
+  if (ids.empty()) {
+    st.focused_id.clear();
+    return;
+  }
+  auto it = std::find(ids.begin(), ids.end(), st.focused_id);
+  if (it == ids.end()) {
+    st.focused_id = dir >= 0 ? ids.front() : ids.back();
+  } else {
+    const int cur = int(it - ids.begin());
+    const int next = (cur + dir + int(ids.size())) % int(ids.size());
+    st.focused_id = ids[size_t(next)];
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -136,6 +177,7 @@ int main(int argc, char** argv) {
   launcher::LauncherTab start_tab = launcher::LauncherTab::kPlay;
   uint32_t width = 1280;
   uint32_t height = 720;
+  float headless_scale = 1.0f;
 
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
@@ -156,6 +198,8 @@ int main(int argc, char** argv) {
       width = uint32_t(std::max(640, std::atoi(argv[++i])));
     } else if (a == "--height" && i + 1 < argc) {
       height = uint32_t(std::max(360, std::atoi(argv[++i])));
+    } else if (a == "--scale" && i + 1 < argc) {
+      headless_scale = std::clamp(float(std::atof(argv[++i])), 0.75f, 3.0f);
     }
   }
 
@@ -173,8 +217,8 @@ int main(int argc, char** argv) {
   refresh_all(state);
   if (demo_mode) launcher::populate_demo_state(state);
 
-  // Load real FH1 vector fonts & distressed UI textures whenever the game root is available.
-  {
+  // Initialize native system TrueType fonts first; fall back to FH1 Fonts.zip if unavailable.
+  if (!launcher::init_launcher_fonts()) {
     std::vector<std::filesystem::path> candidates;
     if (!game_root_override.empty()) candidates.push_back(game_root_override);
     if (!state.play_cfg.game_root.empty()) candidates.push_back(state.play_cfg.game_root);
@@ -183,7 +227,7 @@ int main(int argc, char** argv) {
       candidates.emplace_back(env_root);
     }
     for (const auto& root : candidates) {
-      if (load_launcher_fh1_assets(root)) break;
+      if (load_launcher_fh1_fonts_fallback(root)) break;
     }
   }
 
@@ -191,7 +235,7 @@ int main(int argc, char** argv) {
   if (!screenshot_out.empty()) {
     carview::ui::List ui_list;
     std::vector<launcher::HitBox> hitboxes;
-    launcher::build_launcher_ui(ui_list, state, float(width), float(height), hitboxes);
+    launcher::build_launcher_ui(ui_list, state, float(width), float(height), hitboxes, headless_scale);
     std::vector<uint8_t> rgba(size_t(width) * size_t(height) * 4u, 255);
     carview::ui::rasterize(ui_list.items(), rgba, width, height);
     for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
@@ -201,9 +245,9 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "shift-launcher: failed to write %s\n", screenshot_out.string().c_str());
       return 1;
     }
-    std::printf("shift-launcher: rendered %s (%ux%u, tab=%s, %zu shapes)\n",
-                screenshot_out.string().c_str(), width, height, launcher::tab_name(state.active_tab),
-                ui_list.items().size());
+    std::printf("shift-launcher: rendered %s (%ux%u, scale=%.2f, tab=%s, %zu shapes)\n",
+                screenshot_out.string().c_str(), width, height, double(headless_scale),
+                launcher::tab_name(state.active_tab), ui_list.items().size());
     return 0;
   }
 
@@ -213,7 +257,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Query display refresh rate for Hardware Advisor.
+  // Query display refresh rate for hardware preset recommendation.
   if (SDL_DisplayID disp = SDL_GetPrimaryDisplay()) {
     if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(disp); mode && mode->refresh_rate > 0) {
       state.hw_info.refresh_hz = int(mode->refresh_rate + 0.5f);
@@ -221,13 +265,14 @@ int main(int argc, char** argv) {
     }
   }
 
-  SDL_Window* window = SDL_CreateWindow("Shift Engine Launcher", int(width), int(height),
-                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+  SDL_Window* window = SDL_CreateWindow("Shift Engine", int(width), int(height),
+                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   if (!window) {
     std::fprintf(stderr, "shift-launcher: SDL_CreateWindow failed: %s\n", SDL_GetError());
     SDL_Quit();
     return 1;
   }
+  SDL_SetWindowMinimumSize(window, 960, 600);
 
   carview::Renderer renderer;
   carview::Renderer::Options ropts;
@@ -275,11 +320,20 @@ int main(int argc, char** argv) {
   auto handle_click = [&](const std::string& id) {
     if (id.rfind("tab:", 0) == 0) {
       launcher::LauncherTab t;
-      if (launcher::parse_tab_name(id.substr(4), t)) state.active_tab = t;
+      if (launcher::parse_tab_name(id.substr(4), t)) {
+        state.active_tab = t;
+        state.focused_id.clear();
+      }
     } else if (id.rfind("preset:", 0) == 0) {
       state.selected_preset = std::clamp(std::atoi(id.c_str() + 7), 0, 4);
+    } else if (id.rfind("res:", 0) == 0) {
+      state.selected_resolution = std::clamp(std::atoi(id.c_str() + 4), 0, 4);
+    } else if (id == "act:fullscreen") {
+      state.launch_fullscreen = !state.launch_fullscreen;
     } else if (id == "act:play") {
       launch_carview(state, state.banner_notice);
+    } else if (id == "act:open_play") {
+      open_folder_in_shell(state.paths.play_dir, state.banner_notice);
     } else if (id == "act:steam") {
       const auto r = launcher::add_to_steam(state.paths);
       state.banner_notice = r.message;
@@ -289,17 +343,17 @@ int main(int argc, char** argv) {
       if (state.paths.portable) {
         std::filesystem::remove(marker, ec);
         state.paths = launcher::resolve_launcher_paths(exe_dir, false);
-        state.banner_notice = "Switched to Standard user-folder mode.";
+        state.banner_notice = "Switched to standard user folder.";
       } else {
         std::ofstream f(marker);
         f << "portable\n";
         state.paths = launcher::resolve_launcher_paths(exe_dir, true);
-        state.banner_notice = "Enabled Portable Mode (data stored beside launcher).";
+        state.banner_notice = "Portable mode enabled.";
       }
       refresh_all(state);
     } else if (id == "act:apply_rec") {
       state.selected_preset = launcher::preset_index_for_name(state.hw_rec.carview_preset);
-      state.banner_notice = "Applied recommended preset: " + state.hw_rec.label;
+      state.banner_notice = "Selected recommended preset: " + state.hw_rec.label;
     } else if (id == "setup:verify") {
       state.disc_check = launcher::verify_disc_folder(state.disc_path_input, state.paths.play_dir);
       state.banner_notice = state.disc_check.summary;
@@ -307,6 +361,8 @@ int main(int argc, char** argv) {
       state.setup_all_sounds = !state.setup_all_sounds;
     } else if (id == "setup:toggle_index") {
       state.setup_build_index = !state.setup_build_index;
+    } else if (id == "setup:toggle_log") {
+      state.setup_log_expanded = !state.setup_log_expanded;
     } else if (id == "setup:run") {
       launcher::SetupOptions sopts;
       sopts.game_root = state.disc_path_input;
@@ -317,10 +373,14 @@ int main(int argc, char** argv) {
       if (!setup_runner.start(state.paths, sopts)) state.banner_notice = "Setup is already running.";
     } else if (id == "dlc:rescan") {
       state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir);
-      state.banner_notice = "Rescanned DLC / v4 / UDLC / XE packages.";
+      state.banner_notice = "Rescanned content packages.";
+    } else if (id == "dlc:import") {
+      state.banner_notice = "Drag and drop an STFS package or extracted DLC/v4/UDLC/XE folder onto the window.";
     } else if (id == "mods:rescan") {
       state.mods = launcher::scan_mods(state.paths.mods_dir);
       state.save_iso = launcher::evaluate_save_isolation(state.mods);
+    } else if (id == "mods:install") {
+      state.banner_notice = "Drag and drop a mod folder or .zip archive onto the window to install.";
     } else if (id.rfind("mod:sel:", 0) == 0) {
       state.selected_mod = std::atoi(id.c_str() + 8);
     } else if (id.rfind("mod:tog:", 0) == 0) {
@@ -379,9 +439,9 @@ int main(int argc, char** argv) {
       if (state.selected_device >= 0 && size_t(state.selected_device) < open_joys.size()) {
         const uint16_t amp = uint16_t(std::clamp(state.wheel_cfg.ffb_gain, 0.1f, 1.0f) * 45000.0f);
         SDL_RumbleJoystick(open_joys[size_t(state.selected_device)], amp, amp, 350);
-        state.wheel_status = "Sent 350 ms FFB/rumble test pulse.";
+        state.wheel_status = "Sent 350 ms rumble test pulse.";
       } else {
-        state.wheel_status = "Connect a controller or wheel to test FFB pulse.";
+        state.wheel_status = "Connect a controller or wheel to test.";
       }
     } else if (id == "wheel:dz_down") {
       state.wheel_cfg.steer.deadzone_in = std::max(0.0f, state.wheel_cfg.steer.deadzone_in - 0.01f);
@@ -390,10 +450,14 @@ int main(int argc, char** argv) {
     } else if (id == "wheel:save") {
       std::string err;
       if (launcher::save_wheel_settings(state.paths.settings_file, state.wheel_cfg, &err)) {
-        state.wheel_status = "Saved wheel & deadzone settings to " + state.paths.settings_file.filename().string();
+        state.wheel_status = "Saved settings to " + state.paths.settings_file.filename().string();
       } else {
         state.wheel_status = err;
       }
+    } else if (id == "upd:ch:stable") {
+      state.update_channel = "stable";
+    } else if (id == "upd:ch:preview") {
+      state.update_channel = "preview";
     } else if (id == "upd:channel") {
       state.update_channel = (state.update_channel == "stable") ? "preview" : "stable";
     } else if (id == "upd:check") {
@@ -405,6 +469,7 @@ int main(int argc, char** argv) {
       constexpr const char* kAssetName = "shift-engine-linux-x64.tar.gz";
 #endif
       const auto ur = launcher::check_github_updates(state.current_version, state.update_channel, kAssetName);
+      state.available_update = ur.update;
       state.update_status = ur.status;
       state.banner_notice = ur.status;
     } else if (id == "sync:play") {
@@ -434,35 +499,104 @@ int main(int argc, char** argv) {
     }
   };
 
+  auto current_pixel_scale = [&]() -> std::pair<float, float> {
+    int win_w = int(width), win_h = int(height);
+    int px_w = int(width), px_h = int(height);
+    SDL_GetWindowSize(window, &win_w, &win_h);
+    SDL_GetWindowSizeInPixels(window, &px_w, &px_h);
+    const float sx = win_w > 0 ? float(px_w) / float(win_w) : 1.0f;
+    const float sy = win_h > 0 ? float(px_h) / float(win_h) : 1.0f;
+    return {sx, sy};
+  };
+
   bool running = true;
   while (running) {
+    const auto [scale_x, scale_y] = current_pixel_scale();
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_EVENT_QUIT) {
         running = false;
       } else if (e.type == SDL_EVENT_KEY_DOWN) {
-        if (e.key.key == SDLK_ESCAPE) running = false;
-        else if (e.key.key >= SDLK_1 && e.key.key <= SDLK_8) {
+        const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
+        const bool ctrl = (e.key.mod & SDL_KMOD_CTRL) != 0;
+        if (e.key.key == SDLK_ESCAPE) {
+          if (!state.focused_id.empty()) state.focused_id.clear();
+          else running = false;
+        } else if (e.key.key >= SDLK_1 && e.key.key <= SDLK_8) {
           state.active_tab = launcher::LauncherTab(e.key.key - SDLK_1);
+          state.focused_id.clear();
         } else if (e.key.key == SDLK_TAB) {
-          state.active_tab = launcher::LauncherTab((int(state.active_tab) + 1) % int(launcher::LauncherTab::kCount));
-        } else if (e.key.key == SDLK_RETURN && state.active_tab == launcher::LauncherTab::kPlay) {
-          launch_carview(state, state.banner_notice);
+          if (ctrl) {
+            const int n = int(launcher::LauncherTab::kCount);
+            state.active_tab = launcher::LauncherTab((int(state.active_tab) + (shift ? n - 1 : 1)) % n);
+            state.focused_id.clear();
+          } else {
+            cycle_focus(state, hitboxes, shift ? -1 : 1);
+          }
+        } else if (e.key.key == SDLK_UP) {
+          if (state.active_tab == launcher::LauncherTab::kMods && !state.mods.empty()) {
+            state.selected_mod = std::max(0, state.selected_mod - 1);
+          } else if (state.active_tab == launcher::LauncherTab::kWheel && !state.devices.empty()) {
+            state.selected_device = std::max(0, state.selected_device - 1);
+          } else {
+            const int n = int(launcher::LauncherTab::kCount);
+            state.active_tab = launcher::LauncherTab((int(state.active_tab) + n - 1) % n);
+          }
+        } else if (e.key.key == SDLK_DOWN) {
+          if (state.active_tab == launcher::LauncherTab::kMods && !state.mods.empty()) {
+            state.selected_mod = std::min(int(state.mods.size()) - 1, state.selected_mod + 1);
+          } else if (state.active_tab == launcher::LauncherTab::kWheel && !state.devices.empty()) {
+            state.selected_device = std::min(int(state.devices.size()) - 1, state.selected_device + 1);
+          } else {
+            const int n = int(launcher::LauncherTab::kCount);
+            state.active_tab = launcher::LauncherTab((int(state.active_tab) + 1) % n);
+          }
+        } else if (e.key.key == SDLK_PAGEUP) {
+          scroll_active_tab(state, 3);
+        } else if (e.key.key == SDLK_PAGEDOWN) {
+          scroll_active_tab(state, -3);
+        } else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE) {
+          if (!state.focused_id.empty()) {
+            handle_click(state.focused_id);
+          } else if (e.key.key == SDLK_RETURN && state.active_tab == launcher::LauncherTab::kPlay) {
+            launch_carview(state, state.banner_notice);
+          }
         }
       } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
-        state.mouse_x = e.motion.x;
-        state.mouse_y = e.motion.y;
+        state.mouse_x = e.motion.x * scale_x;
+        state.mouse_y = e.motion.y * scale_y;
         state.hovered_id.clear();
         for (const auto& hb : hitboxes) {
           if (hb.contains(state.mouse_x, state.mouse_y)) state.hovered_id = hb.id;
         }
       } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
+        const float px = e.button.x * scale_x;
+        const float py = e.button.y * scale_y;
+        state.pressed_id.clear();
         for (const auto& hb : hitboxes) {
-          if (hb.contains(e.button.x, e.button.y)) {
-            handle_click(hb.id);
+          if (hb.contains(px, py)) {
+            state.pressed_id = hb.id;
+            state.focused_id = hb.id;
             break;
           }
         }
+      } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
+        const float px = e.button.x * scale_x;
+        const float py = e.button.y * scale_y;
+        const std::string pressed = state.pressed_id;
+        state.pressed_id.clear();
+        if (!pressed.empty()) {
+          for (const auto& hb : hitboxes) {
+            if (hb.id == pressed && hb.contains(px, py)) {
+              handle_click(hb.id);
+              break;
+            }
+          }
+        }
+      } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+        if (e.wheel.y > 0.0f) scroll_active_tab(state, 2);
+        else if (e.wheel.y < 0.0f) scroll_active_tab(state, -2);
       } else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) {
         const std::filesystem::path dropped(e.drop.data);
         if (state.active_tab == launcher::LauncherTab::kMods) {
@@ -505,8 +639,11 @@ int main(int argc, char** argv) {
     }
 
     int win_w = int(width), win_h = int(height);
+    int px_w = int(width), px_h = int(height);
     SDL_GetWindowSize(window, &win_w, &win_h);
-    launcher::build_launcher_ui(ui_list, state, float(win_w), float(win_h), hitboxes);
+    SDL_GetWindowSizeInPixels(window, &px_w, &px_h);
+    const float dpi = win_w > 0 ? float(px_w) / float(win_w) : 1.0f;
+    launcher::build_launcher_ui(ui_list, state, float(px_w), float(px_h), hitboxes, dpi);
     static bool atlas_synced = false;
     upload_launcher_ui_atlas(renderer, !atlas_synced);
     atlas_synced = true;

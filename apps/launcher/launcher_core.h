@@ -1,6 +1,6 @@
-// Core logic for the Shift Engine Unified Cross-Platform GUI Launcher.
+// Core logic for Shift Engine Launcher.
 // Pure C++20 + optional volk Vulkan probe + POSIX/Winsock LAN sync so every
-// subsystem (disc verification, portable paths, hardware advisor, Steam VDF,
+// subsystem (disc verification, portable paths, hardware detection, Steam VDF,
 // DLC/v4/UDLC/XE scanner, Mod Manager, Custom Radio Builder, Wheel settings,
 // Self-Updater, and Android Wi-Fi Sync server) is deterministic and testable
 // under ctest with zero GUI or network dependency.
@@ -63,7 +63,7 @@ bool read_play_config(const std::filesystem::path& play_dir, PlayConfig& out);
 bool write_play_config(const std::filesystem::path& play_dir, const std::filesystem::path& game_root,
                        const std::filesystem::path& state_root = {}, std::string* error = nullptr);
 
-// ---- 2. One-Click Setup & Disc Verification --------------------------------
+// ---- 2. Setup & Disc Verification ------------------------------------------
 
 struct DiscCheckItem {
   std::string label;
@@ -132,7 +132,7 @@ class SetupRunner {
   std::thread worker_;
 };
 
-// ---- 3. Hardware Capability Advisor ("This PC") ----------------------------
+// ---- 3. Hardware Detection & Preset Recommendation -------------------------
 
 struct GpuInfo {
   std::string name;

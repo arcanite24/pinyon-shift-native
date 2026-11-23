@@ -465,21 +465,21 @@ bool write_play_config(const std::filesystem::path& play_dir, const std::filesys
   return bool(out);
 }
 
-// ---- 2. One-Click Setup & Disc Verification --------------------------------
+// ---- 2. Setup & Disc Verification ------------------------------------------
 
 DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
                                     const std::filesystem::path& target_play_dir) {
   DiscVerification res;
   std::error_code ec;
   if (selected_path.empty()) {
-    res.summary = "Select your extracted Forza Horizon disc folder (holding media/).";
+    res.summary = "Select an extracted Forza Horizon disc folder containing media/.";
     return res;
   }
 
   if (std::filesystem::is_regular_file(selected_path, ec) &&
       lower_ascii(selected_path.extension().string()) == ".iso") {
     res.looks_like_iso = true;
-    res.summary = "ISO image selected. Extract the Xbox 360 ISO (e.g. with extract-xiso) into a folder holding media/, then select that folder.";
+    res.summary = "ISO image selected. Extract the Xbox 360 ISO into a folder containing media/, then select that folder.";
     return res;
   }
 
@@ -549,8 +549,8 @@ DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
 
   res.valid = all_required;
   if (res.valid) {
-    res.summary = "Verified disc folder (" + std::to_string(res.car_archive_count) + " car entries, " +
-                  format_bytes(res.free_space_bytes) + " free). Ready for One-Click Setup.";
+    res.summary = "Disc folder verified (" + std::to_string(res.car_archive_count) + " cars, " +
+                  format_bytes(res.free_space_bytes) + " free).";
   } else {
     res.summary = "Missing required files under " + root.string() + " (need media/tracks/colorado/bin.zip, media/db/gamedb.slt, media/cars/).";
   }
@@ -727,13 +727,13 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       }
     }
 
-    append_log("One-Click Setup complete! Ready to drive.");
+    append_log("Setup complete.");
     std::lock_guard<std::mutex> lk(mu_);
     state_.running = false;
     state_.finished = true;
     state_.success = true;
     state_.fraction = 1.0f;
-    state_.stage_label = "Ready to drive";
+    state_.stage_label = "Complete";
   });
   return true;
 }
@@ -745,7 +745,7 @@ SetupProgress SetupRunner::snapshot() const {
   return state_;
 }
 
-// ---- 3. Hardware Capability Advisor ("This PC") ----------------------------
+// ---- 3. Hardware Detection & Preset Recommendation -------------------------
 
 std::string GpuInfo::vulkan_version_string() const {
   const uint32_t major = (api_version >> 22) & 0x7Fu;
@@ -911,17 +911,14 @@ HardwareRecommendation recommend_preset(const HardwareInfo& info) {
 std::string describe_hardware(const HardwareInfo& info) {
   std::ostringstream os;
   if (info.gpu) {
-    os << info.gpu->name << " | " << format_bytes(info.gpu->vram_bytes)
-       << (info.gpu->discrete ? " VRAM" : " Shared") << " | Vulkan " << info.gpu->vulkan_version_string();
+    os << info.gpu->name << " \xC2\xB7 " << format_bytes(info.gpu->vram_bytes);
   } else {
     os << "No Vulkan GPU detected";
   }
+  if (info.refresh_hz > 0) os << " \xC2\xB7 " << info.refresh_hz << " Hz";
   if (info.physical_cores > 0) {
-    os << " | " << info.physical_cores << "C/" << info.logical_threads << "T";
-  } else if (info.logical_threads > 0) {
-    os << " | " << info.logical_threads << " threads";
+    os << " \xC2\xB7 " << info.physical_cores << "C/" << info.logical_threads << "T";
   }
-  if (info.refresh_hz > 0) os << " | " << info.refresh_hz << " Hz";
   return os.str();
 }
 
@@ -1564,7 +1561,7 @@ ModSaveIsolation evaluate_save_isolation(const std::vector<ModEntry>& mods) {
       iso.kind = "own-mod-save";
       iso.profile = m.profile;
       iso.owning_mod = m.title;
-      iso.warning_banner = m.title + " uses its own isolated save (" + m.profile + "). Your main save stays untouched.";
+      iso.warning_banner = m.title + " uses its own save profile (" + m.profile + "). Your main save stays untouched.";
       return iso;
     }
   }
@@ -1574,13 +1571,13 @@ ModSaveIsolation evaluate_save_isolation(const std::vector<ModEntry>& mods) {
       iso.kind = "modded";
       iso.profile = "user-modded";
       iso.owning_mod = m.title;
-      iso.warning_banner = "Active database/gameplay mod (" + m.title + ") plays an isolated copy (user-modded). Your main save stays untouched.";
+      iso.warning_banner = m.title + " modifies game data and uses an isolated save copy (user-modded). Your main save stays untouched.";
       return iso;
     }
   }
   iso.kind = "own";
   iso.profile = "user";
-  iso.warning_banner = "All enabled mods are save-compatible and share your normal career save.";
+  iso.warning_banner = "Active mods are save-compatible and share your normal save (user).";
   return iso;
 }
 

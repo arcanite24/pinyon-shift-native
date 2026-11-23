@@ -285,7 +285,7 @@ WifiSyncManifest build_wifi_sync_manifest(const LauncherPaths& paths,
   if (include_play) {
     WifiSyncGroup g;
     g.id = "play";
-    g.label = "Baked Play Folder (cars, sounds, Colorado index)";
+    g.label = "Play folder (cars, audio, world index)";
     g.selected = true;
     collect_dir_files(paths.play_dir, "play", g);
     m.groups.push_back(std::move(g));
@@ -293,7 +293,7 @@ WifiSyncManifest build_wifi_sync_manifest(const LauncherPaths& paths,
   if (include_dlc) {
     WifiSyncGroup g;
     g.id = "dlc";
-    g.label = "DLC & Title Update v4";
+    g.label = "DLC and Title Update v4";
     g.selected = true;
     collect_dir_files(paths.state_dir, "state", g);
     m.groups.push_back(std::move(g));
@@ -302,11 +302,11 @@ WifiSyncManifest build_wifi_sync_manifest(const LauncherPaths& paths,
     const auto mods = scan_mods(paths.mods_dir);
     WifiSyncGroup mods_g;
     mods_g.id = "mods";
-    mods_g.label = "Enabled Mods";
+    mods_g.label = "Enabled mods";
     mods_g.selected = include_mods;
     WifiSyncGroup radio_g;
     radio_g.id = "radio";
-    radio_g.label = "Custom Radio Stations";
+    radio_g.label = "Custom radio stations";
     radio_g.selected = include_radio;
 
     for (const auto& mod : mods) {
