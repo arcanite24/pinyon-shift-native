@@ -288,6 +288,7 @@ struct DriveSession {
 
   drive::RewindBuffer rewind_buf;
   std::unordered_map<uint64_t, WorldRewindSnapshot> world_rewind_snaps;
+  uint64_t last_rewind_smash_snap = 0u;
   drive::BrakingTable braking_table;
   drive::DrivingLineMode driving_line_mode = drive::DrivingLineMode::kBrakingOnly;
   int pending_shift = 0;
@@ -414,6 +415,7 @@ struct DriveSession {
   audio::View audio_view();
   void prune_world_rewind();
   void capture_world_rewind(uint64_t snap_id);
+  void apply_world_rewind_scrub();
   void restore_world_rewind(uint64_t snap_id, bool is_resume);
 
   // HUD & minimap sync (drive_hud_sync.cpp)

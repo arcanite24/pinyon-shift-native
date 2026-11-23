@@ -63,36 +63,28 @@ bool category_from_name(std::string_view name, Category& out) {
 
 Bus category_to_bus(Category c) {
   switch (c) {
-    case Category::kFocusCar:
-    case Category::kTransmission:
-    case Category::kSuperCharger:
-    case Category::kTurbo:
-    case Category::kEngineDamage:
-    case Category::kBackfire:
-    case Category::kSuspension:
-      return Bus::kEngine;
-    case Category::kOppCar:
-      return Bus::kOtherCars;
-    case Category::kTire:
-      return Bus::kTyres;
-    case Category::kCarWind:
-      return Bus::kWind;
-    case Category::kCollision:
+    case Category::kFocusCar: return Bus::kEngine;
+    case Category::kTransmission: return Bus::kTransmission;
+    case Category::kSuperCharger: return Bus::kSupercharger;
+    case Category::kTurbo: return Bus::kTurbo;
+    case Category::kEngineDamage: return Bus::kEngineDamage;
+    case Category::kBackfire: return Bus::kBackfire;
+    case Category::kSuspension: return Bus::kSuspension;
+    case Category::kOppCar: return Bus::kOtherCars;
+    case Category::kTire: return Bus::kTyres;
+    case Category::kCarWind: return Bus::kWind;
+    case Category::kCollision: return Bus::kCollision;
     case Category::kAmbientStatic:
     case Category::kAmbientDynamic:
-    case Category::kHomespaceAmbientDynamic:
-      return Bus::kAmbience;
+    case Category::kHomespaceAmbientDynamic: return Bus::kAmbience;
     case Category::kGameMusic:
     case Category::kHomespaceMusic:
-    case Category::kMenuMusic:
-      return Bus::kMusic;
-    case Category::kGameUI:
-      return Bus::kUi;
+    case Category::kMenuMusic: return Bus::kMusic;
+    case Category::kGameUI: return Bus::kUi;
     case Category::kVO:
-    case Category::kSatNav:
-    case Category::kDJModifier:
-    case Category::kRallyCoDriver:
-      return Bus::kVo;
+    case Category::kDJModifier: return Bus::kVo;
+    case Category::kSatNav: return Bus::kSatNav;
+    case Category::kRallyCoDriver: return Bus::kRallyCoDriver;
   }
   return Bus::kAmbience;
 }
@@ -391,6 +383,15 @@ float SnapshotMatrix::bus_gain(Bus b) const {
     case Bus::kMusic: return gain(Category::kGameMusic);
     case Bus::kUi: return gain(Category::kGameUI);
     case Bus::kVo: return gain(Category::kVO);
+    case Bus::kTransmission: return gain(Category::kTransmission);
+    case Bus::kSupercharger: return gain(Category::kSuperCharger);
+    case Bus::kTurbo: return gain(Category::kTurbo);
+    case Bus::kEngineDamage: return gain(Category::kEngineDamage);
+    case Bus::kBackfire: return gain(Category::kBackfire);
+    case Bus::kSuspension: return gain(Category::kSuspension);
+    case Bus::kCollision: return gain(Category::kCollision);
+    case Bus::kSatNav: return gain(Category::kSatNav);
+    case Bus::kRallyCoDriver: return gain(Category::kRallyCoDriver);
   }
   return 1.0f;
 }

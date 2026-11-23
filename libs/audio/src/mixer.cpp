@@ -7,7 +7,11 @@
 namespace audio {
 
 namespace {
-const char* const kBusNames[kBuses] = {"Engine", "OtherCars", "Tyres", "Wind", "Ambience", "Music", "UI", "VO"};
+const char* const kBusNames[kBuses] = {
+    "Engine",       "OtherCars", "Tyres",      "Wind",        "Ambience", "Music",   "UI",
+    "VO",           "Transmission", "Supercharger", "Turbo",  "EngineDamage", "Backfire",
+    "Suspension",   "Collision", "SatNav",     "RallyCoDriver",
+};
 
 bool ieq(std::string_view a, std::string_view b) {
   if (a.size() != b.size()) return false;
@@ -70,9 +74,14 @@ void SnapshotMixer::add_defaults() {
   auto make = [&](const char* name, float world, float music, float vo, float fade, float back) {
     Snapshot s;
     s.name = name;
-    for (Bus b : {Bus::kEngine, Bus::kOtherCars, Bus::kTyres, Bus::kWind, Bus::kAmbience}) s.dest[size_t(b)] = world;
+    for (Bus b : {Bus::kEngine, Bus::kOtherCars, Bus::kTyres, Bus::kWind, Bus::kAmbience, Bus::kTransmission,
+                  Bus::kSupercharger, Bus::kTurbo, Bus::kEngineDamage, Bus::kBackfire, Bus::kSuspension,
+                  Bus::kCollision})
+      s.dest[size_t(b)] = world;
     s.dest[size_t(Bus::kMusic)] = music;
     s.dest[size_t(Bus::kVo)] = vo;
+    s.dest[size_t(Bus::kSatNav)] = vo;
+    s.dest[size_t(Bus::kRallyCoDriver)] = vo;
     s.fade = fade;
     s.return_fade = back;
     add(std::move(s));

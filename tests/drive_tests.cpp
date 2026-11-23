@@ -990,6 +990,32 @@ int main() {
     CHECK(cap_df.lateral[24] > cap_low.lateral[24] + 1.0f);
     CHECK(cap_df.braking[24] > cap_low.braking[24] + 1.0f);
   }
+  // 6) Round 3 P1-2: Strict bumpstop wheel-arch clamp, per-surface wall glide vs dirt bank friction,
+  //    and fractional off-road yaw stabilization.
+  {
+    const auto p = test_car();
+    const drive::FlatGround flat;
+    drive::Vehicle v(p);
+    v.reset({0, 3.0, 0}, 0);
+    for (int i = 0; i < 180; ++i) {
+      v.step({0, 0, 0, false}, flat);
+      for (int w = 0; w < drive::kWheels; ++w) {
+        const int a = drive::axle_of(w);
+        CHECK(v.wheels()[w].centre.y <= p.wheel_centres[w].y + p.bump_travel[a] + 1e-9);
+      }
+    }
+
+    drive::Hit h_wall{};
+    h_wall.tyre.off_roadness = 0.0;
+    const drive::Vec3 wall_n{1.0, 0.0, 0.0};
+    CHECK(drive::body_contact_friction(h_wall, wall_n, 0.30) <= 0.12 + 1e-9);
+    CHECK(drive::body_contact_damping_scale(h_wall, wall_n) < 1.0);
+
+    drive::Hit h_dirt{};
+    h_dirt.tyre.off_roadness = 0.9;
+    CHECK(drive::body_contact_friction(h_dirt, wall_n, 0.30) >= 0.45 - 1e-9);
+    CHECK(drive::body_contact_damping_scale(h_dirt, wall_n) > 1.0);
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

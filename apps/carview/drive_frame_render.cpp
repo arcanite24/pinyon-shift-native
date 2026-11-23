@@ -77,6 +77,28 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             vst.cockpit_view = cur_audio_view == audio::View::kCockpit;
             vst.in_race = app.race != nullptr;
             vst.rewinding = rewind_buf.is_rewinding();
+            {
+              const std::string lc = lower_ascii(app.car);
+              vst.is_electric = (lc.find("leaf") != std::string::npos || lc.find("tesla") != std::string::npos ||
+                                 lc.find("electric") != std::string::npos ||
+                                 (vp.idle_rpm < 300.0 && vp.gears.size() <= 2));
+              // Roadside wall/guardrail proximity for Reflections.fev slap-back bed.
+              float prox = 0.0f;
+              if (host.ground && vst.speed_mph > 15.0f) {
+                const drive::Vec3 ray_origin{vpos.x, vpos.y + 0.9, vpos.z};
+                drive::Hit rh{};
+                if (host.ground->raycast(ray_origin, vright, 12.0, rh) && std::fabs(rh.normal.y) < 0.6)
+                  prox = std::max(prox, float(1.0 - std::clamp(rh.distance / 12.0, 0.0, 1.0)));
+                const drive::Vec3 vleft{-vright.x, -vright.y, -vright.z};
+                if (host.ground->raycast(ray_origin, vleft, 12.0, rh) && std::fabs(rh.normal.y) < 0.6)
+                  prox = std::max(prox, float(1.0 - std::clamp(rh.distance / 12.0, 0.0, 1.0)));
+              }
+              vst.reflection_proximity = prox;
+              const bool aero_car = (vp.aero_df_rear + vp.aero_part_df_rear) > 0.35;
+              vst.active_aero_deploy =
+                  aero_car ? ((vst.speed_mph > 75.0f || (vst.speed_mph > 55.0f && brake_glow(vehicle) > 0.5f)) ? 1.0f : 0.0f)
+                           : 0.0f;
+            }
             if (app.race && app.race->is_showcase()) {
               const auto& sc = app.race->showcase();
               const auto& sp = sc.pose();
@@ -176,11 +198,12 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             }
           } else if (rewind_scrub_view) {
             vehicle.set_pose(rewind_buf.sampled_pose());
+            apply_world_rewind_scrub();
           } else {
             vehicle.set_pose(drive::Vehicle::blend(drawn_before, stepped, accumulator / drive::Vehicle::kStep));
+            if (app.race) app.race->set_blend(accumulator / drive::Vehicle::kStep);
+            if (traffic) traffic->set_blend(accumulator / drive::Vehicle::kStep);
           }
-          if (app.race) app.race->set_blend(accumulator / drive::Vehicle::kStep);
-          if (traffic) traffic->set_blend(accumulator / drive::Vehicle::kStep);
           wheel_poses(vehicle, poses);
           if (photo_mode.active()) {
             const float wb = photo_mode.effects().wheel_blur_omega_boost();

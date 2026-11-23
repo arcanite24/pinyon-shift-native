@@ -162,6 +162,22 @@ double FrictionCurve::at(double slip, double stretch) const {
   return lerp(values[i], values[i + 1], x - double(i));
 }
 
+double body_contact_friction(const Hit& hit, const Vec3& normal, double default_friction) {
+  const bool is_wall = std::fabs(normal.y) < 0.65;
+  const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
+  if (is_dirt_bank) return std::max(default_friction, 0.45);
+  if (is_wall) return std::min(default_friction, 0.12);  // smooth guardrail / concrete wall-glide
+  return default_friction;
+}
+
+double body_contact_damping_scale(const Hit& hit, const Vec3& normal) {
+  const bool is_wall = std::fabs(normal.y) < 0.65;
+  const bool is_dirt_bank = hit.tyre.off_roadness >= 0.5 || hit.tyre.is_springy;
+  if (is_dirt_bank) return 1.25;  // absorb impact energy into soft dirt banks
+  if (is_wall) return 0.90;       // crisp guardrail / concrete glance
+  return 1.0;
+}
+
 double TyreCurves::blend(double load_kgf) const {
   return ramp(std::min(load_kgf, load_clamp_kgf), light_load_kgf, heavy_load_kgf);
 }
@@ -1083,7 +1099,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
         load += p.bumpstop_rate[a] * (compression - p.bump_travel[a]) + p.bumpstop_damping[a] * std::max(0.0, rate[i]);
     }
     w.load = load;
-    w.centre = {p.wheel_centres[i].x, p.wheel_centres[i].y + std::min(compression, p.bump_travel[a] + 0.05),
+    w.centre = {p.wheel_centres[i].x, p.wheel_centres[i].y + std::min(compression, p.bump_travel[a]),
                 p.wheel_centres[i].z};
   }
   spring_ring_pos_ = (spring_ring_pos_ + 1) % 3;
@@ -1537,13 +1553,15 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const double depth = (reach - hit.distance) * -dot(dir, n);
     const Vec3 v = vel_ + cross(ang_, point - pos_);
     const double vn = dot(v, n);
-    const double fn = kShare * std::max(0.0, p.mass * (p.body_stiffness * depth - p.body_damping * vn));
+    const double damp_scale = body_contact_damping_scale(hit, n);
+    const double fn = kShare * std::max(0.0, p.mass * (p.body_stiffness * depth - (p.body_damping * damp_scale) * vn));
     if (fn <= 0) continue;
     Vec3 f = n * fn;
     const Vec3 vt = v - n * vn;
     const double vt_len = length(vt);
     if (vt_len > 1e-6) {
-      const double ft = std::min(p.body_friction * fn, p.mass / kPoints * vt_len / dt);
+      const double mu = body_contact_friction(hit, n, p.body_friction);
+      const double ft = std::min(mu * fn, p.mass / kPoints * vt_len / dt);
       f = f - vt * (ft / vt_len);
     }
     force = force + f;
@@ -1617,7 +1635,8 @@ void Vehicle::substep(double dt, const Ground& ground) {
             if (surf[i].off_roadness >= 0.5) ++n_offroad;
           }
         }
-        const double offroad_mod = (n_grounded > 0 && n_offroad == n_grounded) ? 1.2 : 1.0;
+        const double offroad_frac = n_grounded > 0 ? double(n_offroad) / double(n_grounded) : 0.0;
+        const double offroad_mod = lerp(1.0, 1.2, offroad_frac);
         const double fwd_mod = p.layout == CarParams::Layout::kFront ? 0.9 : 1.0;
         const double clamp_t = base_clamp * assist_gain * offroad_mod;
         const double yaw_damp =

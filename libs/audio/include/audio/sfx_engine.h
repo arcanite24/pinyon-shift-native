@@ -84,6 +84,9 @@ struct VehicleAudioState {
   bool in_race = false;
   bool rewinding = false;
   bool music_active = false;
+  bool is_electric = false;           // drives ElectricEngine.fev EV inverter/motor loop (e.g. NIS_Leaf_11)
+  float reflection_proximity = 0.0f;  // 0..1 proximity to roadside walls/barriers/canyons (Reflections.fev)
+  float active_aero_deploy = 0.0f;    // 0..1 active rear wing / airbrake deployment state (ActiveAero.fev)
   std::array<OtherCarAudio, kMaxOtherCars> other_cars{};
   ShowcaseAudioState showcase{};
 };
@@ -179,6 +182,9 @@ enum class SfxSoundId : int {
   kShowcaseHeli,
   kShowcaseBalloon,
   kShowcaseJet,
+  kElectricMotor,
+  kRoadsideReflection,
+  kActiveAero,
   kCount
 };
 
@@ -286,6 +292,8 @@ class SfxEngine {
   LoopVoice turbo_voice_{};
   LoopVoice sc_voice_{};
   LoopVoice engine_lfe_voice_{};
+  LoopVoice electric_voice_{};
+  LoopVoice reflection_voice_{};
   LoopVoice scrape_voice_{};
   LoopVoice rewind_voice_{};
   std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_voices_{};
@@ -300,6 +308,8 @@ class SfxEngine {
   SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;
   bool prev_shifting_ = false;
   bool prev_bov_open_ = false;
+  float prev_active_aero_ = 0.0f;
+  double aero_cooldown_s_ = -10.0;
   std::array<uint8_t, 4> prev_wheel_surface_{0, 0, 0, 0};
   std::array<double, 4> susp_cooldown_s_{0, 0, 0, 0};
   double time_s_ = 0.0;

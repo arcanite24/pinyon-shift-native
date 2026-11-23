@@ -233,7 +233,7 @@ class AudioEngine {
   bool use_matrix_ = false;
   SnapshotMatrix matrix_;
   GlobalDspConfig global_dsp_{};
-  std::array<CarBusEq, 4> car_eqs_;
+  std::array<CarBusEq, 9> car_eqs_;
   MasterRmsStage rms_stage_;
   std::array<float, kBuses> matrix_bus_smooth_{};
   float matrix_master_smooth_ = 1.0f;

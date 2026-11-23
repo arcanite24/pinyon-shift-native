@@ -410,6 +410,45 @@ bool RewindBuffer::sampled_camera(CameraView& out) const {
   return false;
 }
 
+bool RewindBuffer::sampled_snapshot_bracket(RewindBracket& out) const {
+  out = {};
+  struct Node {
+    double t = 0.0;
+    uint64_t id = 0u;
+  };
+  std::vector<Node> nodes;
+  nodes.reserve(keyframes_.size() + 1);
+  for (const auto& kf : keyframes_) {
+    if (kf.snapshot_id != 0u) nodes.push_back({kf.replay_time, kf.snapshot_id});
+  }
+  if (cancel_snapshot_ && cancel_snapshot_->snapshot_id != 0u) {
+    if (nodes.empty() || cancel_snapshot_->replay_time >= nodes.back().t - 1e-6) {
+      nodes.push_back({cancel_snapshot_->replay_time, cancel_snapshot_->snapshot_id});
+    }
+  }
+  if (nodes.empty()) return false;
+  if (playback_time_ <= nodes.front().t) {
+    out = {nodes.front().id, nodes.front().id, 0.0};
+    return true;
+  }
+  if (playback_time_ >= nodes.back().t) {
+    out = {nodes.back().id, nodes.back().id, 1.0};
+    return true;
+  }
+  for (size_t i = 1; i < nodes.size(); ++i) {
+    if (playback_time_ <= nodes[i].t) {
+      const Node& a = nodes[i - 1];
+      const Node& b = nodes[i];
+      const double span = b.t - a.t;
+      const double alpha = span > 1e-9 ? std::clamp((playback_time_ - a.t) / span, 0.0, 1.0) : 1.0;
+      out = {a.id, b.id, alpha};
+      return true;
+    }
+  }
+  out = {nodes.back().id, nodes.back().id, 1.0};
+  return true;
+}
+
 bool RewindBuffer::request_hint(double now_s) {
   if (!enabled_ || !hint_enabled_ || disabled_ || hints_remaining_ <= 0) return false;
   if (now_s < hint_cooldown_until_) return false;

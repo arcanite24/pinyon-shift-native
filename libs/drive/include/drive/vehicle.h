@@ -79,6 +79,10 @@ struct Hit {
   SurfaceTyre tyre;
   int64_t triangle = -1;  // the ground's triangle index, when it has one
 };
+// Per-surface body-contact friction & damping scale (low-friction wall glide on
+// guardrails/concrete vs heavier drag/absorption on dirt banks).
+double body_contact_friction(const Hit& hit, const Vec3& normal, double default_friction);
+double body_contact_damping_scale(const Hit& hit, const Vec3& normal);
 class Ground {
  public:
   virtual ~Ground() = default;

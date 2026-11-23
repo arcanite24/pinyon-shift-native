@@ -216,6 +216,15 @@ class RewindBuffer {
   Vehicle::Pose sampled_pose() const;
   bool sampled_camera(CameraView& out) const;
 
+  // Adjacent keyframe/cancel snapshot bracket for smooth whole-world visual rewind scrubbing
+  // (AI rivals, traffic, Festival AI, and smashables).
+  struct RewindBracket {
+    uint64_t snap_a = 0u;
+    uint64_t snap_b = 0u;
+    double alpha = 0.0;  // 0 at snap_a, 1 at snap_b
+  };
+  bool sampled_snapshot_bracket(RewindBracket& out) const;
+
   // First-career tutorial hint cooldown (SPEC-REWIND State & section 2).
   bool request_hint(double now_s);
   bool hint_visible(double now_s) const;

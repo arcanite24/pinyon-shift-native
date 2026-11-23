@@ -756,7 +756,11 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   if (sfx_) {
-    constexpr Bus kSfxBuses[] = {Bus::kOtherCars, Bus::kTyres, Bus::kWind, Bus::kAmbience, Bus::kUi};
+    constexpr Bus kSfxBuses[] = {
+        Bus::kOtherCars,  Bus::kTyres,       Bus::kWind,         Bus::kAmbience, Bus::kUi,
+        Bus::kTransmission, Bus::kSupercharger, Bus::kTurbo, Bus::kEngineDamage, Bus::kBackfire,
+        Bus::kSuspension, Bus::kCollision,
+    };
     for (Bus b : kSfxBuses) {
       auto& buf = bus_bufs_[int(b)];
       std::fill(buf.begin(), buf.begin() + ptrdiff_t(samples), 0.0f);
@@ -771,12 +775,26 @@ void AudioEngine::render_block(float* out, int frames) {
   bool satnav_now = false;
   bool vo_now = false;
   if ((satnav_ || vo_ || codriver_) && !on_title) {
-    auto& vbuf = bus_bufs_[int(Bus::kVo)];
-    std::fill(vbuf.begin(), vbuf.begin() + ptrdiff_t(samples), 0.0f);
-    if (satnav_) satnav_now = satnav_->render(vbuf.data(), frames);
-    if (vo_) vo_now = vo_->render(vbuf.data(), frames);
-    if (codriver_ && codriver_->render(vbuf.data(), frames)) vo_now = true;
-    if (satnav_now || vo_now) buses[int(Bus::kVo)] = vbuf.data();
+    if (satnav_) {
+      auto& sbuf = bus_bufs_[int(Bus::kSatNav)];
+      std::fill(sbuf.begin(), sbuf.begin() + ptrdiff_t(samples), 0.0f);
+      satnav_now = satnav_->render(sbuf.data(), frames);
+      if (satnav_now) buses[int(Bus::kSatNav)] = sbuf.data();
+    }
+    if (vo_) {
+      auto& vbuf = bus_bufs_[int(Bus::kVo)];
+      std::fill(vbuf.begin(), vbuf.begin() + ptrdiff_t(samples), 0.0f);
+      vo_now = vo_->render(vbuf.data(), frames);
+      if (vo_now) buses[int(Bus::kVo)] = vbuf.data();
+    }
+    if (codriver_) {
+      auto& cbuf = bus_bufs_[int(Bus::kRallyCoDriver)];
+      std::fill(cbuf.begin(), cbuf.begin() + ptrdiff_t(samples), 0.0f);
+      if (codriver_->render(cbuf.data(), frames)) {
+        vo_now = true;
+        buses[int(Bus::kRallyCoDriver)] = cbuf.data();
+      }
+    }
   }
 
   // World ambience bed (soundscape regional & festival crowd beds) + 3D location radio stations.
@@ -791,19 +809,22 @@ void AudioEngine::render_block(float* out, int frames) {
   }
 
   // Apply GlobalDSPConfig.xml car-bus EQ to active car buses (independent filter state per bus).
-  constexpr Bus kCarBuses[4] = {Bus::kEngine, Bus::kOtherCars, Bus::kTyres, Bus::kWind};
-  for (int i = 0; i < 4; ++i) {
+  constexpr Bus kCarBuses[9] = {Bus::kEngine,       Bus::kOtherCars, Bus::kTyres,
+                                Bus::kWind,         Bus::kTransmission, Bus::kSupercharger,
+                                Bus::kTurbo,        Bus::kEngineDamage, Bus::kBackfire};
+  for (int i = 0; i < 9; ++i) {
     if (buses[int(kCarBuses[i])]) {
       car_eqs_[size_t(i)].process(bus_bufs_[int(kCarBuses[i])].data(), frames);
     }
   }
   // Environmental reverb (colorado_reverb.xml I3DL2 zones) routed across focus
-  // car engine, 3D opponent/traffic cars, and tyres via a shared wet send bus.
+  // car engine, subsystems, 3D opponent/traffic cars, and tyres via a shared wet send bus.
   if (have_acoustics_) {
-    constexpr Bus kRevBuses[3] = {Bus::kEngine, Bus::kOtherCars, Bus::kTyres};
-    constexpr float kRevSend[3] = {1.0f, 0.85f, 0.65f};
+    constexpr Bus kRevBuses[7] = {Bus::kEngine, Bus::kTransmission, Bus::kSupercharger, Bus::kTurbo,
+                                  Bus::kBackfire, Bus::kOtherCars, Bus::kTyres};
+    constexpr float kRevSend[7] = {1.0f, 0.85f, 0.85f, 0.85f, 1.0f, 0.85f, 0.65f};
     float active_w = 0.0f;
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 7; ++i)
       if (buses[int(kRevBuses[i])]) active_w += kRevSend[i];
     if (active_w > 0.0f) {
       if (reverb_send_buf_.size() < samples) {
@@ -811,7 +832,7 @@ void AudioEngine::render_block(float* out, int frames) {
         reverb_wet_buf_.resize(samples, 0.0f);
       }
       std::fill(reverb_send_buf_.begin(), reverb_send_buf_.begin() + ptrdiff_t(samples), 0.0f);
-      for (int i = 0; i < 3; ++i) {
+      for (int i = 0; i < 7; ++i) {
         const float* src = buses[int(kRevBuses[i])];
         if (!src) continue;
         const float sw = kRevSend[i];
@@ -820,7 +841,7 @@ void AudioEngine::render_block(float* out, int frames) {
       if (reverb_.process_wet(reverb_send_buf_.data(), reverb_wet_buf_.data(), frames)) {
         const float dry_g = reverb_.dry_gain();
         const float inv_w = 1.0f / active_w;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 7; ++i) {
           if (!buses[int(kRevBuses[i])]) continue;
           float* dst = bus_bufs_[int(kRevBuses[i])].data();
           const float ret = kRevSend[i] * inv_w;

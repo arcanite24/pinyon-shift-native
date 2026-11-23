@@ -14,8 +14,28 @@
 namespace audio {
 
 // The category buses every sound belongs to.
-enum class Bus : int { kEngine, kOtherCars, kTyres, kWind, kAmbience, kMusic, kUi, kVo };
-inline constexpr int kBuses = 8;
+// First 8 indices preserve the player-facing mix buses; indices 8..16 separate
+// FH1's 22 AudioMixerSnapshots.xml subsystems so per-subsystem ducking works authentically.
+enum class Bus : int {
+  kEngine = 0,
+  kOtherCars,
+  kTyres,
+  kWind,
+  kAmbience,
+  kMusic,
+  kUi,
+  kVo,
+  kTransmission,
+  kSupercharger,
+  kTurbo,
+  kEngineDamage,
+  kBackfire,
+  kSuspension,
+  kCollision,
+  kSatNav,
+  kRallyCoDriver,
+};
+inline constexpr int kBuses = 17;
 
 const char* bus_name(Bus b);
 bool bus_from_name(std::string_view name, Bus& out);  // case-insensitive

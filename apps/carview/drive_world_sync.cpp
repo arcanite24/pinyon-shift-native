@@ -309,7 +309,101 @@ void DriveSession::capture_world_rewind(uint64_t snap_id) {
         prune_world_rewind();
 }
 
+void DriveSession::apply_world_rewind_scrub() {
+        drive::RewindBuffer::RewindBracket br{};
+        if (!rewind_buf.sampled_snapshot_bracket(br)) return;
+        const auto it_a = world_rewind_snaps.find(br.snap_a);
+        const auto it_b = world_rewind_snaps.find(br.snap_b);
+        if (it_a == world_rewind_snaps.end() && it_b == world_rewind_snaps.end()) return;
+        const WorldRewindSnapshot& ws_a = (it_a != world_rewind_snaps.end()) ? it_a->second : it_b->second;
+        const WorldRewindSnapshot& ws_b = (it_b != world_rewind_snaps.end()) ? it_b->second : it_a->second;
+        const double alpha = (it_a != world_rewind_snaps.end() && it_b != world_rewind_snaps.end()) ? br.alpha : 0.0;
+
+        auto lane_quat = [](double heading, double pitch) {
+          const drive::Quat yq{0, std::sin(heading * 0.5), 0, std::cos(heading * 0.5)};
+          const drive::Quat pq{std::sin(-pitch * 0.5), 0, 0, std::cos(-pitch * 0.5)};
+          return drive::Quat{
+              yq.w * pq.x + yq.x * pq.w + yq.y * pq.z - yq.z * pq.y,
+              yq.w * pq.y - yq.x * pq.z + yq.y * pq.w + yq.z * pq.x,
+              yq.w * pq.z + yq.x * pq.y - yq.y * pq.x + yq.z * pq.w,
+              yq.w * pq.w - yq.x * pq.x - yq.y * pq.y - yq.z * pq.z,
+          };
+        };
+        auto lerp_angle = [](double a0, double a1, double t) {
+          double d = a1 - a0;
+          constexpr double kPi = 3.14159265358979323846;
+          while (d > kPi) d -= 2.0 * kPi;
+          while (d < -kPi) d += 2.0 * kPi;
+          return a0 + d * t;
+        };
+
+        // 1. Smoothly scrub AI race rivals between adjacent keyframes.
+        if (app.race && ws_a.has_race && ws_b.has_race) {
+          RaceView::RewindSnapshot blended = ws_b.race;
+          const size_t n = std::min(ws_a.race.cars.size(), blended.cars.size());
+          for (size_t i = 0; i < n; ++i) {
+            blended.cars[i].before = ws_a.race.cars[i].body.pose();
+          }
+          app.race->restore_rewind(blended, false);
+          app.race->set_blend(alpha);
+        }
+
+        // 2. Smoothly scrub open-world & street-race traffic between adjacent keyframes.
+        if (traffic && ws_a.has_traffic && ws_b.has_traffic) {
+          TrafficView::RewindSnapshot blended = ws_b.traffic;
+          blended.before.clear();
+          std::unordered_map<uint32_t, TrafficPose> poses_a;
+          poses_a.reserve(ws_a.traffic.population.cars.size());
+          for (const auto& c : ws_a.traffic.population.cars) {
+            const auto bit = ws_a.traffic.bodies.bodies.find(c.id);
+            if (bit != ws_a.traffic.bodies.bodies.end()) {
+              poses_a.emplace(c.id, TrafficPose{bit->second.vehicle.position(), bit->second.vehicle.orientation()});
+            } else {
+              poses_a.emplace(c.id, TrafficPose{{c.position.x, c.position.y, c.position.z}, lane_quat(c.heading, c.pitch)});
+            }
+          }
+          for (const auto& c : blended.population.cars) {
+            if (const auto ait = poses_a.find(c.id); ait != poses_a.end()) {
+              blended.before.emplace(c.id, ait->second);
+            }
+          }
+          traffic->restore_rewind(blended);
+          traffic->set_blend(alpha);
+        }
+
+        // 3. Smoothly scrub roaming Festival AI & H2H rivals between adjacent keyframes.
+        if (festival_mgr && ws_a.has_festival && ws_b.has_festival) {
+          freeroam::FestivalManager::RewindSnapshot blended = ws_a.festival;
+          std::unordered_map<uint32_t, const freeroam::FestivalAiCar*> map_b;
+          map_b.reserve(ws_b.festival.cars.size());
+          for (const auto& c : ws_b.festival.cars) map_b.emplace(c.id, &c);
+          for (auto& c : blended.cars) {
+            if (const auto bit = map_b.find(c.id); bit != map_b.end()) {
+              const auto& cb = *bit->second;
+              c.position.x += (cb.position.x - c.position.x) * alpha;
+              c.position.y += (cb.position.y - c.position.y) * alpha;
+              c.position.z += (cb.position.z - c.position.z) * alpha;
+              c.heading = lerp_angle(c.heading, cb.heading, alpha);
+              c.pitch = c.pitch + (cb.pitch - c.pitch) * alpha;
+              c.speed = c.speed + (cb.speed - c.speed) * alpha;
+            }
+          }
+          festival_mgr->restore_rewind(blended);
+        }
+
+        // 4. Restore smashable prop states as rewind scrubs past impacts (props pop back intact!).
+        const uint64_t smash_snap = (alpha < 0.5) ? br.snap_a : br.snap_b;
+        if (smash_snap != 0u && smash_snap != last_rewind_smash_snap) {
+          last_rewind_smash_snap = smash_snap;
+          const auto& ws_s = (alpha < 0.5) ? ws_a : ws_b;
+          const auto unhidden = app.smashables.restore_rewind(ws_s.smashables);
+          for (const auto& hs : unhidden) host.showroom.unhide_world_props_near(hs.pos, hs.radius);
+          if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+        }
+}
+
 void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
+        last_rewind_smash_snap = 0u;
         auto it = world_rewind_snaps.find(snap_id);
         if (it != world_rewind_snaps.end()) {
           const auto& ws = it->second;

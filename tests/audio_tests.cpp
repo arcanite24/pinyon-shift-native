@@ -1067,7 +1067,8 @@ void sfx_engine_checks() {
   vs.other_cars[0].rpm = 5500.0f;
 
   // Render enough blocks to cross backfire timer (~500 ms initial timer).
-  double max_wind = 0, max_tyres = 0, max_eng = 0, max_other_l = 0, max_other_r = 0;
+  double max_wind = 0, max_tyres = 0, max_eng = 0, max_trans = 0, max_turbo = 0, max_backfire = 0;
+  double max_other_l = 0, max_other_r = 0;
   double max_exp = 0.0;
   for (int blk = 0; blk < 14; ++blk) {
     clear_bufs();
@@ -1080,12 +1081,18 @@ void sfx_engine_checks() {
     max_wind = std::max(max_wind, bus_rms(bufs[int(audio::Bus::kWind)]));
     max_tyres = std::max(max_tyres, bus_rms(bufs[int(audio::Bus::kTyres)]));
     max_eng = std::max(max_eng, bus_rms(bufs[int(audio::Bus::kEngine)]));
+    max_trans = std::max(max_trans, bus_rms(bufs[int(audio::Bus::kTransmission)]));
+    max_turbo = std::max(max_turbo, bus_rms(bufs[int(audio::Bus::kTurbo)]));
+    max_backfire = std::max(max_backfire, bus_rms(bufs[int(audio::Bus::kBackfire)]));
     max_other_l = std::max(max_other_l, bus_rms(bufs[int(audio::Bus::kOtherCars)], 0));
     max_other_r = std::max(max_other_r, bus_rms(bufs[int(audio::Bus::kOtherCars)], 1));
   }
   CHECK(max_wind > 0.01);
   CHECK(max_tyres > 0.05);
-  CHECK(max_eng > 0.05);
+  CHECK(max_eng > 0.01);
+  CHECK(max_trans > 0.02);
+  CHECK(max_turbo > 0.05);
+  CHECK(max_backfire > 0.05);
   CHECK(max_other_r > max_other_l * 1.3);
   CHECK(max_exp > 0.1);  // Backfire triggered EnginePlayer::Expander!
 
@@ -1175,11 +1182,12 @@ void sfx_engine_checks() {
     psfx.render(st, ptrs, kFrames);
     const double tyre_l = bus_rms(bufs[int(audio::Bus::kTyres)], 0);
     const double tyre_r = bus_rms(bufs[int(audio::Bus::kTyres)], 1);
-    CHECK(tyre_l > tyre_r * 1.25);  // Left-front wheel skid localized to left channel
-    CHECK(bus_rms(bufs[int(audio::Bus::kEngine)]) > 0.02);    // Trans L2 + Turbo L3
-    CHECK(bus_rms(bufs[int(audio::Bus::kAmbience)]) > 0.02);  // Continuous Scrape3D loop
-    CHECK(bus_rms(bufs[int(audio::Bus::kUi)]) > 0.02);        // Continuous Mulligan rewind loop
-    CHECK(bus_rms(bufs[int(audio::Bus::kOtherCars)]) > 0.02); // Variant 2 opponent + Whoosh3D
+    CHECK(tyre_l > tyre_r * 1.25);                                    // Left-front wheel skid localized to left channel
+    CHECK(bus_rms(bufs[int(audio::Bus::kTransmission)]) > 0.02);      // Trans L2 on dedicated Transmission bus
+    CHECK(bus_rms(bufs[int(audio::Bus::kTurbo)]) > 0.02);             // Turbo L3 on dedicated Turbo bus
+    CHECK(bus_rms(bufs[int(audio::Bus::kCollision)]) > 0.02);         // Continuous Scrape3D loop on Collision bus
+    CHECK(bus_rms(bufs[int(audio::Bus::kUi)]) > 0.02);                // Continuous Mulligan rewind loop
+    CHECK(bus_rms(bufs[int(audio::Bus::kOtherCars)]) > 0.02);         // Variant 2 opponent + Whoosh3D
     CHECK(psfx.active_one_shots() >= 1);                      // Whoosh3D spawned on close pass
   }
 
@@ -1479,6 +1487,58 @@ void sfx_engine_checks() {
     CHECK(bus_rms(tyres) > 0.005);
     CHECK(bus_rms(eng) > 0.005);
     CHECK(bus_rms(ui) > 0.005);
+  }
+
+  // Round 3 P1-6: 22-category audio snapshot bus separation + ElectricEngine/Reflections/ActiveAero FEV slots.
+  {
+    CHECK(audio::category_to_bus(audio::Category::kFocusCar) == audio::Bus::kEngine);
+    CHECK(audio::category_to_bus(audio::Category::kTransmission) == audio::Bus::kTransmission);
+    CHECK(audio::category_to_bus(audio::Category::kSuperCharger) == audio::Bus::kSupercharger);
+    CHECK(audio::category_to_bus(audio::Category::kTurbo) == audio::Bus::kTurbo);
+    CHECK(audio::category_to_bus(audio::Category::kBackfire) == audio::Bus::kBackfire);
+    CHECK(audio::category_to_bus(audio::Category::kSuspension) == audio::Bus::kSuspension);
+    CHECK(audio::category_to_bus(audio::Category::kCollision) == audio::Bus::kCollision);
+    CHECK(audio::category_to_bus(audio::Category::kSatNav) == audio::Bus::kSatNav);
+    CHECK(audio::category_to_bus(audio::Category::kRallyCoDriver) == audio::Bus::kRallyCoDriver);
+
+    const char* snap_xml =
+        "<AudioMixerSnapshots>"
+        "  <FreeRoam group=\"Gameplay\">"
+        "    <FocusCar active=\"1\" destvolume=\"1.0\" fadetime=\"0.0\"/>"
+        "    <Transmission active=\"1\" destvolume=\"0.4\" fadetime=\"0.0\"/>"
+        "    <Turbo active=\"1\" destvolume=\"0.8\" fadetime=\"0.0\"/>"
+        "    <Backfire active=\"1\" destvolume=\"0.9\" fadetime=\"0.0\"/>"
+        "    <Suspension active=\"1\" destvolume=\"0.5\" fadetime=\"0.0\"/>"
+        "  </FreeRoam>"
+        "</AudioMixerSnapshots>";
+    audio::SnapshotMatrix mat;
+    CHECK(mat.parse(snap_xml));
+    CHECK(near(mat.bus_gain(audio::Bus::kEngine), 1.0, 1e-4));
+    CHECK(near(mat.bus_gain(audio::Bus::kTransmission), 0.4, 1e-4));
+    CHECK(near(mat.bus_gain(audio::Bus::kTurbo), 0.8, 1e-4));
+    CHECK(near(mat.bus_gain(audio::Bus::kBackfire), 0.9, 1e-4));
+    CHECK(near(mat.bus_gain(audio::Bus::kSuspension), 0.5, 1e-4));
+
+    // Verify EV motor (ElectricEngine.fev), Roadside Reflections (Reflections.fev), and ActiveAero (ActiveAero.fev).
+    audio::SfxEngine ev_sfx(48000);
+    ev_sfx.populate_procedural_fallbacks();
+    std::array<std::vector<float>, audio::kBuses> bufs;
+    float* ptrs[audio::kBuses]{};
+    for (int b = 0; b < audio::kBuses; ++b) {
+      bufs[size_t(b)].assign(2400 * 2, 0.0f);
+      ptrs[b] = bufs[size_t(b)].data();
+    }
+    audio::VehicleAudioState vs{};
+    vs.is_electric = true;
+    vs.speed_mph = 85.0f;
+    vs.rpm = 6000.0f;
+    vs.throttle = 0.85f;
+    vs.reflection_proximity = 0.8f;
+    vs.active_aero_deploy = 1.0f;
+    ev_sfx.render(vs, ptrs, 2400, nullptr);
+    CHECK(bus_rms(bufs[int(audio::Bus::kEngine)]) > 0.01);
+    CHECK(bus_rms(bufs[int(audio::Bus::kAmbience)]) > 0.005);
+    CHECK(bus_rms(bufs[int(audio::Bus::kWind)]) > 0.01);
   }
 
   // Optional disc smoke check when SHIFT_GAME_ROOT is set.

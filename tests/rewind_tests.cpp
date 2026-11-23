@@ -402,6 +402,39 @@ void test_world_snapshot_ids_and_view_replay() {
   CHECK(near(field.snapshot().cap[0], ai_snap.cap[0], 1e-5));
 }
 
+void test_sampled_snapshot_bracket_for_visual_scrub() {
+  const drive::FlatGround flat;
+  drive::Vehicle v(test_car());
+  v.launch({0, 0, 0}, 0, 20.0);
+  drive::RewindBuffer rb;
+  rb.start_session(0.0);
+  double race_clock = 0.0;
+  std::vector<uint64_t> kf_ids;
+  for (int i = 0; i < 120 * 18; ++i) {
+    v.step({0, 0.5, 0, false}, flat);
+    race_clock += drive::Vehicle::kStep;
+    const uint64_t cid = rb.record_step(v.time(), race_clock, v, make_cam(v.position().z), true);
+    if (cid != 0u) kf_ids.push_back(cid);
+  }
+  CHECK(kf_ids.size() >= 3);
+  CHECK(rb.trigger(v.time(), race_clock, v, make_cam(v.position().z)));
+  const uint64_t cancel_id = rb.cancel_snapshot_id();
+  CHECK(cancel_id != 0u);
+
+  // Immediately after trigger, playback_time is at cancel_snapshot (alpha near 1.0).
+  drive::RewindBuffer::RewindBracket br0{};
+  CHECK(rb.sampled_snapshot_bracket(br0));
+  CHECK(br0.snap_b == cancel_id && br0.alpha >= 0.99);
+
+  // Mid-scrub: alpha moves smoothly into (0, 1) between adjacent snapshot ids.
+  rb.update(0.8);
+  drive::RewindBuffer::RewindBracket br_mid{};
+  CHECK(rb.sampled_snapshot_bracket(br_mid));
+  CHECK(br_mid.snap_a != 0u && br_mid.snap_b != 0u);
+  CHECK(br_mid.alpha >= 0.0 && br_mid.alpha <= 1.0);
+  CHECK(br_mid.alpha < br0.alpha || br_mid.snap_b != br0.snap_b);
+}
+
 }  // namespace
 
 int main() {
@@ -412,6 +445,7 @@ int main() {
   test_clears_and_lockouts();
   test_audio_and_hints();
   test_world_snapshot_ids_and_view_replay();
+  test_sampled_snapshot_bracket_for_visual_scrub();
   if (failures) {
     std::printf("rewind_tests: %d failure(s)\n", failures);
     return 1;
