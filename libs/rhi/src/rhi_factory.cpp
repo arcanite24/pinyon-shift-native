@@ -17,6 +17,11 @@ std::unique_ptr<Device> create_metal_device(const DeviceDesc& desc, std::string&
 void enumerate_metal_adapters(std::vector<AdapterInfo>& out);
 #endif
 
+#if defined(_WIN32) && defined(SHIFT_RHI_D3D12)
+std::unique_ptr<Device> create_d3d12_device(const DeviceDesc& desc, std::string& error);
+void enumerate_d3d12_adapters(std::vector<AdapterInfo>& out);
+#endif
+
 // -----------------------------------------------------------------------------
 // Backend kind helpers
 // -----------------------------------------------------------------------------
@@ -273,6 +278,10 @@ std::vector<AdapterInfo> enumerate_adapters(BackendKind filter) {
   const bool want_mtl = (filter == BackendKind::Auto || filter == BackendKind::Metal);
   if (want_mtl) enumerate_metal_adapters(adapters);
 #endif
+#if defined(_WIN32) && defined(SHIFT_RHI_D3D12)
+  const bool want_d3d12 = (filter == BackendKind::Auto || filter == BackendKind::D3D12);
+  if (want_d3d12) enumerate_d3d12_adapters(adapters);
+#endif
   return adapters;
 }
 
@@ -318,7 +327,11 @@ std::unique_ptr<Device> create_device(const DeviceDesc& desc, std::string& error
 #endif
         break;
       case BackendKind::D3D12:
+#if defined(_WIN32) && defined(SHIFT_RHI_D3D12)
+        dev = create_d3d12_device(desc, attempt_err);
+#else
         attempt_err = "d3d12 backend not compiled";
+#endif
         break;
       case BackendKind::Auto:
         break;

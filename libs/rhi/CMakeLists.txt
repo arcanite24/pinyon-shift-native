@@ -24,6 +24,18 @@ if(APPLE)
   endif()
 endif()
 
+set(SHIFT_RHI_USE_D3D12 OFF)
+if(WIN32)
+  option(SHIFT_RHI_D3D12 "Compile the native DirectX 12 RHI backend on Windows" ON)
+  if(SHIFT_RHI_D3D12)
+    set(SHIFT_RHI_USE_D3D12 ON)
+    list(APPEND SHIFT_RHI_SOURCES
+      src/rhi_d3d12_device.cpp
+      src/rhi_d3d12_cmd.cpp
+      src/rhi_d3d12_rt.cpp)
+  endif()
+endif()
+
 add_library(shift_rhi STATIC ${SHIFT_RHI_SOURCES})
 set_target_properties(shift_rhi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(shift_rhi PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -76,6 +88,18 @@ if(APPLE AND SHIFT_RHI_USE_METAL)
   if(SHIFT_METALFX_FRAMEWORK)
     target_link_libraries(shift_rhi PRIVATE ${SHIFT_METALFX_FRAMEWORK})
     target_compile_definitions(shift_rhi PRIVATE SHIFT_RHI_HAS_METALFX=1)
+  endif()
+endif()
+
+if(SHIFT_RHI_USE_D3D12)
+  target_link_libraries(shift_rhi PRIVATE d3d12 dxgi dxguid d3dcompiler)
+  target_compile_definitions(shift_rhi PRIVATE SHIFT_RHI_D3D12=1)
+  if(SHIFT_ENABLE_RAY_TRACING)
+    target_compile_definitions(shift_rhi PRIVATE SHIFT_ENABLE_RAY_TRACING=1)
+  endif()
+  if(TARGET SDL3::SDL3-static)
+    target_link_libraries(shift_rhi PRIVATE SDL3::SDL3-static)
+    target_compile_definitions(shift_rhi PRIVATE SHIFT_RHI_HAS_SDL3=1)
   endif()
 endif()
 
