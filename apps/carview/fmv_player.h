@@ -92,9 +92,14 @@ class FmvPlayer {
   static bool decode_frame_at(const std::filesystem::path& wmv_path, double time_s, int target_w, int target_h,
                               std::vector<uint8_t>& out_rgba, std::string* error = nullptr);
 
-  // Starts streaming video and audio from `wmv_path`.
+  // Starts streaming video and audio from `wmv_path` (or `.bik` movie via FFmpeg).
   bool open(const std::filesystem::path& wmv_path, std::string_view language = "EN", int target_w = 640,
             int target_h = 360, std::string* error = nullptr);
+  // Opens a canonical movie ID from `game_root` (checking `media/movies/*.bik` and
+  // `media/ui/videos/*.wmv`), or falls back gracefully to a stylized synthetic cutscene
+  // when the movie file is absent in minimal fixtures.
+  bool open_or_fallback(const std::filesystem::path& game_root, FmvMovieId id, std::string_view language = "EN",
+                        int target_w = 640, int target_h = 360, double fallback_duration_s = 6.0);
   // Opens a deterministic synthetic video/audio stream (for tests without game
   // assets or when FFmpeg is absent).
   void open_synthetic(int w, int h, double fps, double duration_s, std::string title = "FMV");
@@ -103,6 +108,7 @@ class FmvPlayer {
   bool active() const { return active_; }
   bool finished() const { return finished_; }
   bool paused() const { return paused_; }
+  bool is_synthetic() const { return synthetic_; }
   void set_paused(bool p) { paused_ = p; }
   void skip();
 
@@ -113,6 +119,7 @@ class FmvPlayer {
   double position() const { return clock_s_; }
   const std::string& title() const { return title_; }
   int current_subtitle_index() const;
+  std::string current_subtitle_text() const;
   const std::vector<uint8_t>& current_frame() const { return current_frame_; }
 
   // Advances playback by `dt` seconds (syncing to drained audio clock when
@@ -124,9 +131,9 @@ class FmvPlayer {
   int read_audio(float* out, int frames);
 
   // Draws the current video frame letterboxed over a black backdrop into `l`,
-  // along with optional subtitle text and a skip prompt.
+  // along with fade-in/out, optional subtitle text, and a skip / hold-to-skip prompt.
   void draw(ui::List& l, float screen_w, float screen_h, std::string_view subtitle_text = {},
-            bool show_skip_prompt = true) const;
+            bool show_skip_prompt = true, float hold_skip_progress = 0.0f) const;
 
  private:
   struct VideoFrame {
@@ -147,6 +154,7 @@ class FmvPlayer {
   double fps_ = 24.0;
   double duration_s_ = 0.0;
   double clock_s_ = 0.0;
+  FmvMovieId movie_id_ = FmvMovieId::kFmv01Opening;
   std::string title_;
   std::vector<FmvSubtitleCue> subtitles_;
   std::vector<uint8_t> current_frame_;

@@ -118,6 +118,8 @@ set(carview_sources
   replay_view.cpp
   achievements.cpp
   audio_host.cpp
+  campaign_director.cpp
+  campaign_ui.cpp
   fmv_player.cpp
   story_intro.cpp
   mods_page.cpp

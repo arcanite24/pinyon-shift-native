@@ -189,13 +189,30 @@ std::vector<FmvCatalogEntry> FmvPlayer::discover_movies(const std::filesystem::p
 
 std::filesystem::path FmvPlayer::resolve_movie(const std::filesystem::path& game_root, FmvMovieId id) {
   if (game_root.empty()) return {};
-  const auto dir = game_root / "media" / "ui" / "videos";
-  const auto p = dir / movie_relpath(id);
   std::error_code ec;
-  if (std::filesystem::exists(p, ec)) return p;
+  const auto vid_dir = game_root / "media" / "ui" / "videos";
+  const auto mov_dir = game_root / "media" / "movies";
+  const std::filesystem::path rel = movie_relpath(id);
+  const std::string stem = rel.stem().string();
+  // Prefer authentic disc WMV or BIK movie if present under media/ui/videos or media/movies.
+  const std::filesystem::path candidates[] = {
+      vid_dir / rel,
+      mov_dir / (stem + ".bik"),
+      vid_dir / (stem + ".bik"),
+      mov_dir / rel.filename(),
+  };
+  for (const auto& c : candidates) {
+    if (std::filesystem::exists(c, ec)) return c;
+  }
   if (id == FmvMovieId::kWristbandGet) {
-    const auto fb = dir / "FMV_02.wmv";
-    if (std::filesystem::exists(fb, ec)) return fb;
+    const std::filesystem::path fbs[] = {
+        vid_dir / "FMV_02.wmv",
+        mov_dir / "FMV_02.bik",
+        mov_dir / "WristbandGet.bik",
+    };
+    for (const auto& fb : fbs) {
+      if (std::filesystem::exists(fb, ec)) return fb;
+    }
   }
   return {};
 }
@@ -367,6 +384,20 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
   return true;
 }
 
+bool FmvPlayer::open_or_fallback(const std::filesystem::path& game_root, FmvMovieId id, std::string_view language,
+                                 int target_w, int target_h, double fallback_duration_s) {
+  movie_id_ = id;
+  const auto path = resolve_movie(game_root, id);
+  if (!path.empty() && open(path, language, target_w, target_h, nullptr)) {
+    movie_id_ = id;
+    return true;
+  }
+  open_synthetic(std::max(320, target_w), std::max(180, target_h), 30.0, std::max(1.5, fallback_duration_s),
+                 movie_label(id));
+  movie_id_ = id;
+  return true;
+}
+
 void FmvPlayer::open_synthetic(int w, int h, double fps, double duration_s, std::string title) {
   close();
   width_ = std::max(16, w);
@@ -416,6 +447,39 @@ int FmvPlayer::current_subtitle_index() const {
     if (clock_s_ >= c.start_s && clock_s_ < c.start_s + 5.0) idx = c.index;
   }
   return idx;
+}
+
+std::string FmvPlayer::current_subtitle_text() const {
+  if (!active_) return {};
+  static const char* kFmv01Lines[] = {
+      "SCOTT TYLER: Welcome to Colorado — the Horizon Festival is officially underway!",
+      "ALICE HART: Cars, music, and the greatest open roads in America. Only 250 festival passes remain!",
+      "SCOTT TYLER: Grab your keys and get to the Horizon Festival entrance before the gates close!",
+  };
+  static const char* kFmv02Lines[] = {
+      "ALICE HART: You made it to Horizon — this wristband opens the roads of Colorado.",
+      "ALICE HART: Win races, earn popularity, and climb all the way to Darius Flynt's Horizon Finale!",
+  };
+  static const char* kFmv04Lines[] = {
+      "ALICE HART: Colorado has a new Horizon Champion — thank you for making this the greatest Festival ever!",
+      "SCOTT TYLER: Turn up the radio and keep driving — the roads of Horizon Colorado are yours forever!",
+  };
+
+  int idx = current_subtitle_index();
+  if (idx < 0 && synthetic_) {
+    idx = int(clock_s_ / 3.0);
+  }
+  if (idx < 0) return {};
+  if (movie_id_ == FmvMovieId::kFmv01Opening || title_ == "FMV_01") {
+    return kFmv01Lines[size_t(idx) % std::size(kFmv01Lines)];
+  }
+  if (movie_id_ == FmvMovieId::kFmv02Ceremony || movie_id_ == FmvMovieId::kWristbandGet || title_ == "FMV_02") {
+    return kFmv02Lines[size_t(idx) % std::size(kFmv02Lines)];
+  }
+  if (movie_id_ == FmvMovieId::kFmv04Credits || title_ == "FMV_04") {
+    return kFmv04Lines[size_t(idx) % std::size(kFmv04Lines)];
+  }
+  return {};
 }
 
 void FmvPlayer::video_worker(std::string cmd, int w, int h, double fps) {
@@ -574,7 +638,7 @@ int FmvPlayer::read_audio(float* out, int frames) {
 }
 
 void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_view subtitle_text,
-                     bool show_skip_prompt) const {
+                     bool show_skip_prompt, float hold_skip_progress) const {
   if (!active_ || width_ <= 0 || height_ <= 0 || current_frame_.size() < size_t(width_) * size_t(height_) * 4) return;
   // Letterbox background.
   l.rect(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, 255));
@@ -602,19 +666,50 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
   }
 
   const float s = screen_h / 720.0f;
-  if (!subtitle_text.empty()) {
+  // Cinema letterbox bars & smooth fade-in / fade-out envelope.
+  const float bar_h = 34.0f * s;
+  l.rect(0, 0, screen_w, bar_h, ui::rgba(0, 0, 0, 235));
+  l.rect(0, screen_h - bar_h, screen_w, screen_h, ui::rgba(0, 0, 0, 235));
+
+  if (synthetic_ && !title_.empty()) {
+    ui4::title_banner(l, s, 68.0f * s, 62.0f * s, title_, "HORIZON FESTIVAL CUTSCENE", true, 640.0f * s);
+  }
+
+  const std::string resolved_sub = subtitle_text.empty() ? current_subtitle_text() : std::string(subtitle_text);
+  if (!resolved_sub.empty()) {
     const float pad_y = 602.0f * s;
     ui::TextStyle ts = ui4::style(ui::Font::kA, 17.5f * s, ui4::kWhite, ui::Align::kCenter, true);
-    const float sw = std::clamp(ui::List::measure(subtitle_text, ts) + 56.0f * s, 320.0f * s, screen_w * 0.78f);
+    const float sw = std::clamp(ui::List::measure(resolved_sub, ts) + 56.0f * s, 320.0f * s, screen_w * 0.80f);
     // Sharp FH1 HUDPILL01 subtitle strip (ZERO 4px rounded boxes!).
     ui4::pill(l, 0.5f * (screen_w - sw), pad_y - 6.0f * s, 0.5f * (screen_w + sw), pad_y + 32.0f * s,
               ui4::kCharcoalDark, ui4::PillKind::kHud01);
-    l.text(screen_w * 0.5f, pad_y + 4.0f * s, subtitle_text, ts);
+    l.rect(0.5f * (screen_w - sw), pad_y - 6.0f * s, 0.5f * (screen_w - sw) + 4.0f * s, pad_y + 32.0f * s, ui4::kPink);
+    l.text(screen_w * 0.5f, pad_y + 4.0f * s, resolved_sub, ts);
   }
 
   if (show_skip_prompt) {
-    // Authentic BUTTON_BAR_SCENE skip prompt (ZERO 4px rounded boxes!).
-    ui4::button_bar(l, {{"A", "SKIP"}}, screen_w, screen_h, 70.0f);
+    // Authentic BUTTON_BAR_SCENE skip prompt + optional hold-to-skip progress fill.
+    const float hp = std::clamp(hold_skip_progress, 0.0f, 1.0f);
+    ui4::button_bar(l, {{"A", hp > 0.01f ? "SKIPPING..." : "HOLD / PRESS TO SKIP"}}, screen_w, screen_h, 70.0f);
+    if (hp > 0.01f) {
+      const float bx0 = screen_w - 260.0f * s, bx1 = screen_w - 64.0f * s;
+      const float by0 = screen_h - 36.0f * s, by1 = screen_h - 28.0f * s;
+      l.rect(bx0, by0, bx1, by1, ui::rgba(255, 255, 255, 55));
+      l.rect(bx0, by0, bx0 + (bx1 - bx0) * hp, by1, ui4::kPink);
+    }
+  }
+
+  // Smooth fade-in and fade-out veil on full-length cutscenes (never blacks out t=0 thumbnails/tests).
+  float fade = 0.0f;
+  if (duration_s_ >= 3.0) {
+    if (clock_s_ > 0.001 && clock_s_ < 0.55) fade = std::max(fade, float(1.0 - clock_s_ / 0.55));
+    if (clock_s_ > duration_s_ - 0.55) {
+      fade = std::max(fade, float((clock_s_ - (duration_s_ - 0.55)) / 0.55));
+    }
+  }
+  fade = std::clamp(fade, 0.0f, 1.0f);
+  if (fade > 0.01f) {
+    l.rect(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, uint8_t(std::lround(fade * 255.0f))));
   }
 }
 

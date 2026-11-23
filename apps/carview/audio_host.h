@@ -104,6 +104,7 @@ class AudioHost {
   void set_satnav_enabled(bool on);
   void trigger_vo(std::string_view trigger_id, bool interrupt = false);
   void skip_vo();
+  void set_dialog_ducking(bool active);
   void trigger_codriver(std::string_view cue_path);
   void clear_codriver();
   void radio_set_time_of_day(double hour);
@@ -130,6 +131,8 @@ class AudioHost {
   int snap_menu_ = -1;
   int snap_title_ = -1;
   int snap_loading_ = -1;
+  int snap_dialog_duck_ = -1;
+  bool last_dialog_duck_ = false;
 
   std::unique_ptr<audio::SoundFiles> sound_files_;
   bool sound_files_tried_ = false;

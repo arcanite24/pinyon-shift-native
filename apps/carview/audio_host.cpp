@@ -102,6 +102,17 @@ AudioHost::AudioHost() {
   snap_menu_ = engine_.find_snapshot("Menu");
   snap_title_ = engine_.find_snapshot("Title");
   snap_loading_ = engine_.find_snapshot("Loading");
+  audio::Snapshot dd;
+  dd.name = "DialogDuck";
+  dd.dest[int(audio::Bus::kMusic)] = 0.25f;
+  dd.dest[int(audio::Bus::kEngine)] = 0.50f;
+  dd.dest[int(audio::Bus::kOtherCars)] = 0.50f;
+  dd.dest[int(audio::Bus::kTyres)] = 0.60f;
+  dd.dest[int(audio::Bus::kWind)] = 0.55f;
+  dd.dest[int(audio::Bus::kAmbience)] = 0.45f;
+  dd.fade = 0.18f;
+  dd.return_fade = 0.35f;
+  snap_dialog_duck_ = engine_.register_snapshot(std::move(dd));
 }
 
 AudioHost::~AudioHost() {
@@ -323,6 +334,12 @@ void AudioHost::trigger_vo(std::string_view trigger_id, bool interrupt) {
 
 void AudioHost::skip_vo() {
   if (has_vo_) engine_.skip_vo();
+}
+
+void AudioHost::set_dialog_ducking(bool active) {
+  if (snap_dialog_duck_ < 0 || active == last_dialog_duck_) return;
+  last_dialog_duck_ = active;
+  engine_.set_snapshot(snap_dialog_duck_, active);
 }
 
 void AudioHost::trigger_codriver(std::string_view cue_path) {

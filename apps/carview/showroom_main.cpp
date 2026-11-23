@@ -45,6 +45,8 @@
 #include "audio/radio.h"
 #include "audio/xml.h"
 #include "benchmark.h"
+#include "campaign_director.h"
+#include "campaign_ui.h"
 #include "display_hdr_win.h"
 #include "drive_helpers.h"
 #include "fmv_player.h"
@@ -1876,6 +1878,7 @@ int run_drive(int argc, char** argv) {
   bool start_in_single_player = false;
   bool skip_vo_with_a = true;
   bool story_intro_cli = false;
+  std::string cli_campaign_stage;
   std::filesystem::path cli_fmv_path;
   std::filesystem::path mods_root;
   bool mods_off = false;
@@ -1908,24 +1911,25 @@ int run_drive(int argc, char** argv) {
       bench_warmup_explicit = true;
       continue;
     }
-    if (a == "--save-settings") save_settings = true;
-    else if (a == "--no-title") no_title = true;
-    else if (a == "--skip-intro-movies") skip_intro_movies = true;
-    else if (a == "--no-skip-intro-movies") skip_intro_movies = false;
-    else if (a == "--start-in-single-player") start_in_single_player = true;
-    else if (a == "--no-start-in-single-player") start_in_single_player = false;
-    else if (a == "--skip-vo-with-a") skip_vo_with_a = true;
-    else if (a == "--no-skip-vo-with-a") skip_vo_with_a = false;
-    else if (a == "--story-intro") story_intro_cli = true;
-    else if (a == "--fmv") cli_fmv_path = next();
-    else if (a == "--mods") mods_root = next(), mods_off = false;
-    else if (a == "--no-mods") mods_off = true;
-    else if (a == "--mods-native") mods_native = true;
-    else if (a == "--dev-hints") cli_dev_hints = true;
-    else if (a == "--sync-folder") sync_folder = next();
-    else if (a == "--device-name") device_name = next();
-    else if (a == "--profile") profile_name = next();
-    else if (a == "--headless") headless = true;
+    if (a == "--save-settings") { save_settings = true; continue; }
+    if (a == "--no-title") { no_title = true; continue; }
+    if (a == "--skip-intro-movies") { skip_intro_movies = true; continue; }
+    if (a == "--no-skip-intro-movies") { skip_intro_movies = false; continue; }
+    if (a == "--start-in-single-player") { start_in_single_player = true; continue; }
+    if (a == "--no-start-in-single-player") { start_in_single_player = false; continue; }
+    if (a == "--skip-vo-with-a") { skip_vo_with_a = true; continue; }
+    if (a == "--no-skip-vo-with-a") { skip_vo_with_a = false; continue; }
+    if (a == "--story-intro") { story_intro_cli = true; continue; }
+    if (a == "--campaign-stage") { cli_campaign_stage = next(); continue; }
+    if (a == "--fmv") { cli_fmv_path = next(); continue; }
+    if (a == "--mods") { mods_root = next(); mods_off = false; continue; }
+    if (a == "--no-mods") { mods_off = true; continue; }
+    if (a == "--mods-native") { mods_native = true; continue; }
+    if (a == "--dev-hints") { cli_dev_hints = true; continue; }
+    if (a == "--sync-folder") { sync_folder = next(); continue; }
+    if (a == "--device-name") { device_name = next(); continue; }
+    if (a == "--profile") { profile_name = next(); continue; }
+    if (a == "--headless") headless = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") car = next();
     else if (a == "--bench-car-switch") bench_switch_car = next();
@@ -2720,8 +2724,11 @@ int run_drive(int argc, char** argv) {
   carview::FmvPlayer title_video;
   bool title_video_tried = false;
   carview::StoryIntro story_intro;
+  carview::CampaignDirector campaign;
+  campaign.configure(game_root_of(), language, skip_intro_movies);
+  if (have_saved) campaign.load_from_save(saved);
+  bool campaign_new_career_pending = false;
   bool boot_intro_checked = false;
-  (void)skip_vo_with_a;
   bool title_menu_phase = cli_title_menu;
   bool title_confirm_new = false;
   int title_selected = 0, title_confirm_selected = 1;
@@ -4896,6 +4903,7 @@ int run_drive(int argc, char** argv) {
             std::snprintf(line, sizeof line, "barn find rumour - M for the map");
             popup = {"BARN FIND RUMOUR", "A CLASSIC IS HIDING NEARBY.  M FOR THE MAP", vehicle.time(), -1,
                      carview::ui::rgba(70, 210, 100)};
+            campaign.on_barn_find(false, collectibles.barns[size_t(ev.index)].name, "", &audio_host);
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         collectibles.barns[size_t(ev.index)].name.c_str(), progress.total_distance / 1000);
           } else {
@@ -4916,6 +4924,7 @@ int run_drive(int argc, char** argv) {
             if (named == barn_car_label(b) && !awarded.empty()) named = awarded;
             std::snprintf(line, sizeof line, "barn find! %s is in the garage", named.c_str());
             popup = {"BARN FIND!", named + " IS IN YOUR GARAGE", vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
+            campaign.on_barn_find(true, b.name, named, &audio_host);
             std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id);
           }
@@ -5013,6 +5022,8 @@ int run_drive(int argc, char** argv) {
           bonus_in.assists_pct = race::assist_difficulty_bonus_percent(race->assists());
           bonus_in.skills_points = skill_tracker ? skill_tracker->race_skills_banked() : 0;
           bonus_in.wristband_level = collected_wristband;
+          const int64_t bal_before = career.credits;
+          const int pop_before = current_pop_rank();
           if (const race::RaceAward* a = race->award(career, wristbands, race_top_speed, bonus_in)) {
             if (slice12.trainer.pacing.modifies_economy()) {
               const int64_t scaled_cr = slice12.trainer.pacing.scale_credits(a->credits);
@@ -5070,6 +5081,14 @@ int run_drive(int argc, char** argv) {
                     : (race_options.rubberband ? race_options.ai_mode : race::AiMode::kFair);
             dynamic_ai_skill = race::update_dynamic_ai_skill(
                 dynamic_ai_skill, pl_t, ai_ref, career.num_races, eff_mode, race->event().skill_adjustments);
+            if (!headless) {
+              const race::CareerEvent* cev = have_career_catalog ? career_catalog.find_event(race_event) : nullptr;
+              const int pl = race->session().car(race->player_index()).place;
+              const int ncars = int(race->player_index()) + 1;
+              campaign.on_race_finished(cev, *a, pl, ncars, pop_before, current_pop_rank(), bal_before, career.credits,
+                                        career.wristband_points, collected_wristband, won_car_name,
+                                        have_career_catalog ? &career_catalog : nullptr, fmv_player, &audio_host);
+            }
             save_due = true;  // the window saves the award at once
           }
         }
@@ -5269,6 +5288,7 @@ int run_drive(int argc, char** argv) {
               sponsor_banner_at = vehicle.time();
               save_due = true;
             } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
+              campaign.on_popularity_rank_changed(sev.rank + 1, sev.rank, &audio_host);
               // Notify if a Showcase event unlocked at this rank!
               if (have_career_catalog) {
                 for (const auto& cev : career_catalog.events)
@@ -5803,6 +5823,7 @@ int run_drive(int argc, char** argv) {
         s.owned_garage = have_garage || (have_saved && saved.owned_garage);
         s.career_started = (have_saved && saved.career_started) || s.owned_garage || career.num_races > 0 || career.credits > 0;
         s.intro_completed = have_saved ? saved.intro_completed : true;
+        campaign.save_to_save(s);
         s.tod_sec = tod_clock.tod_sec;
         s.collected_wristband = collected_wristband;
         s.popularity_points = skill_tracker ? skill_tracker->popularity_points() : (have_saved ? saved.popularity_points : 0.0);
@@ -6572,16 +6593,18 @@ int run_drive(int argc, char** argv) {
         if (show_title && !settings_page.is_open() && title_video.active()) {
           title_video.draw(list, float(width), float(height));
         }
-        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, and grid menu.
-        if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
-            !career_page.is_open() && !rally_hub_open && !rally_service_open && !rally_results_open && !club_open)
+        // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, campaign cinematics, and grid menu.
+        const bool campaign_hide_hud = campaign.is_blocking_gameplay();
+        if (mm_size > 0 && !show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
+            !grid_menu_open && st.menu.empty() && !career_page.is_open() && !rally_hub_open &&
+            !rally_service_open && !rally_results_open && !club_open)
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
-        carview::build_drive_hud(list, d, float(width), float(height));
+        if (!campaign_hide_hud) carview::build_drive_hud(list, d, float(width), float(height));
         if (club_open) {
           const auto club_sc = build_club_screen();
           carview::draw_club_screen(list, width, height, club_sc);
-        } else if (!show_title && !ceremony.active && !rally_hub_open && !rally_service_open && !rally_results_open &&
-                   st.menu.empty()) {
+        } else if (!show_title && !ceremony.active && !campaign_hide_hud && !rally_hub_open &&
+                   !rally_service_open && !rally_results_open && st.menu.empty()) {
           const auto cstrip = build_club_active_strip();
           if (cstrip.active) carview::draw_club_active_strip(list, width, height, cstrip);
         }
@@ -6591,12 +6614,24 @@ int run_drive(int argc, char** argv) {
           if (club_ceremony.age > club_ceremony.duration) club_ceremony.active = false;
           else carview::draw_club_medal_ceremony(list, width, height, club_ceremony);
         }
-        if (!show_title && !ceremony.active && radio_popup_gpu.alpha > 0.005f)
+        if (!show_title && !ceremony.active && !campaign_hide_hud && radio_popup_gpu.alpha > 0.005f)
           carview::draw_radio_popup_gpu(list, radio_popup_gpu, float(width), float(height));
         if (story_intro.active()) story_intro.draw_hud(list, float(width), float(height));
+        if (!show_title && !ceremony.active) {
+          carview::campaign_ui::DrawContext cctx;
+          cctx.screen_w = float(width);
+          cctx.screen_h = float(height);
+          cctx.wristband_points = career.wristband_points;
+          cctx.collected_wristband = collected_wristband;
+          cctx.popularity_rank = current_pop_rank();
+          cctx.skip_vo_with_a = skip_vo_with_a;
+          cctx.catalog = have_career_catalog ? &career_catalog : nullptr;
+          carview::campaign_ui::draw(list, campaign.flow(), cctx);
+        }
         if (fmv_player.active()) {
           list.clear();
-          fmv_player.draw(list, float(width), float(height));
+          fmv_player.draw(list, float(width), float(height), {}, true, campaign.skip_hold_progress());
+          carview::campaign_ui::draw_transition(list, campaign.flow().transition(), float(width), float(height));
         }
         if (rewind_buf.active()) {
           // 921_I_REWIND overlay: KITPARTS/REWINDLOGO, KITPARTS/REWINDARROW,
@@ -7970,6 +8005,61 @@ int run_drive(int argc, char** argv) {
           if (!write_png(demo_touch_hud_png.string(), width, height, 4, rgba.data())) status = 1;
           else std::printf("demo touch hud -> %s (%ux%u)\n", demo_touch_hud_png.string().c_str(), width, height);
         }
+      } else if (headless && !cli_campaign_stage.empty()) {
+        // Deterministic headless campaign stage capture (`--campaign-stage <stage> --headless --out <png>`).
+        race::CampaignAction cact;
+        if (!campaign.apply_cli_stage(cli_campaign_stage, fmv_player, nullptr, cact)) {
+          std::fprintf(stderr, "carview: unknown --campaign-stage '%s'\n", cli_campaign_stage.c_str());
+          status = 2;
+        } else {
+          if (cact.set_gps && gps_solver.ready()) {
+            const drive::Vec3 at = vehicle.position();
+            gps_nav.set_destination(cact.gps_xz[0], cact.gps_xz[1], traffic::GpsDestKind::kFestival, cact.gps_label,
+                                    at.x, at.z);
+          }
+          if (fmv_player.active()) {
+            // Advance past initial fade-in so real movie frame & subtitles are crisp.
+            for (int fi = 0; fi < 45 && fmv_player.active(); ++fi) fmv_player.update(0.1, false);
+          } else if (!campaign.is_cinematic_camera_active()) {
+            // Live driving stage (e.g. viper_drive, dialog): roll smoothly on Colorado road for real speed & GPS.
+            const int demo_steps = int(std::lround(2.5 / drive::Vehicle::kStep));
+            for (int ds = 0; ds <= demo_steps; ++ds) {
+              const drive::Input di =
+                  ds == 0 ? drive::Input{} : (cruise ? follower.input(vehicle) : drive::Input{0.0, 0.78, 0.0, false});
+              if (ds > 0 && !step(di)) break;
+            }
+          }
+          wheel_poses(vehicle, poses);
+          showroom.set_wheel_poses(poses);
+          showroom.set_braking(brake_glow(vehicle));
+          showroom.set_draw_car(true);
+          tod_cockpit_cam = false;
+          place_world();
+          const float aspect = float(width) / float(height);
+          const drive::Vec3 vp = vehicle.position();
+          const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const double vhead = std::atan2(vf.x, vf.z);
+          drive::CameraView camp_cam{};
+          ShowroomFrame cframe =
+              campaign.compute_camera({vp.x, vp.y, vp.z}, vhead, camp_cam)
+                  ? camera_view_frame(camp_cam, info, vehicle, aspect, renderer.reverse_z())
+                  : drive_frame(aspect, 0.016);
+          showroom.set_frame(cframe);
+          if (!campaign.is_blocking_gameplay()) set_minimap(int(height), true);
+          set_hud(int(width), int(height), "");
+          std::vector<uint8_t> rgba;
+          renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
+          if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
+            std::fprintf(stderr, "carview: %s\n", error.c_str());
+            status = 1;
+          } else {
+            for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+            if (!write_png(out, width, height, 4, rgba.data())) status = 1;
+            else std::printf("campaign stage '%s' -> %s (%ux%u)\n", cli_campaign_stage.c_str(), out.c_str(), width,
+                             height);
+          }
+          if (fmv_player.active()) fmv_player.close();
+        }
       } else if (headless) {
         const std::filesystem::path prefix(out);
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
@@ -8338,6 +8428,8 @@ int run_drive(int argc, char** argv) {
             ceremony.bonus_car = award_garage_car(wb.reward_car_id, 0, false);
             garage_picker();
           }
+          campaign.on_wristband_collected(pending, ceremony.bonus_car, newly_unlocked, fmv_player, &audio_host);
+          ceremony.active = false;  // presented through campaign director stage fly-in ceremony
           save_due = true;
           return true;
         };
@@ -8385,6 +8477,7 @@ int run_drive(int argc, char** argv) {
             }
           }
           events_page.close();
+          campaign.on_enter_event(ev, fmv_player, &audio_host);
           next_event = ev.horizon_id;
           running = false;
           return true;
@@ -8429,10 +8522,14 @@ int run_drive(int argc, char** argv) {
           race.reset();
           race_event.clear();
           pre_loaner_car.clear();
-          next_car = race::kStarterCarMedia;
-          if (!baked_ids.count(race::kStarterCarId) && !baked_cars.empty()) next_car = baked_cars[0];
+          next_car = race::CampaignFlow::kViperMedia;
+          if (!baked_ids.count(race::CampaignFlow::kViperCarId)) {
+            next_car = race::kStarterCarMedia;
+            if (!baked_ids.count(race::kStarterCarId) && !baked_cars.empty()) next_car = baked_cars[0];
+          }
           skip_end_save = true;
           new_career_save_pending = true;
+          campaign_new_career_pending = true;
           running = false;
         };
         // The pause map: M, or the pause menu's item; the drive waits while
@@ -8826,7 +8923,50 @@ int run_drive(int argc, char** argv) {
                 !fmv_player.active() && audio_host.telemetry().vo_playing) {
               const bool pad_a =
                   e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH;
-              if (pad_a) audio_host.skip_vo();
+              if (pad_a) {
+                audio_host.skip_vo();
+                if (!campaign.is_blocking_gameplay() && campaign.flow().dialogs().active())
+                  campaign.flow().dialogs().skip_current();
+              }
+            }
+            if (campaign.is_blocking_gameplay() && !show_title) {
+              const bool adv_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                                   (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE ||
+                                    e.key.key == SDLK_ESCAPE || e.key.key == SDLK_TAB);
+              const bool adv_pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                                   (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH ||
+                                    e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
+              const bool gps_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_G;
+              if (gps_key && campaign.flow().reward_tally().active && campaign.flow().reward_tally().has_next_gps &&
+                  gps_solver.ready()) {
+                const auto& rt = campaign.flow().reward_tally();
+                const drive::Vec3 at = vehicle.position();
+                fire_satnav_event(gps_nav.set_destination(rt.next_gps_xz[0], rt.next_gps_xz[1],
+                                                          traffic::GpsDestKind::kFestival, rt.next_gps_label, at.x, at.z));
+                notice = "GPS SET TO " + rt.next_gps_label;
+                notice_until = vehicle.time() + 3.0;
+              } else if (adv_key || adv_pad) {
+                const auto ca = campaign.advance_or_skip(fmv_player, &audio_host);
+                if (ca.grant_starter) {
+                  award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
+                  if (career.credits < 15000) career.credits = 15000;
+                }
+                if (ca.intro_completed) saved.intro_completed = true;
+                if (ca.save_requested) save_due = true;
+              }
+              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+            }
+            if (campaign.flow().is_onboarding() && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                e.key.key == SDLK_TAB) {
+              const auto ca = campaign.advance_or_skip(fmv_player, &audio_host);
+              if (ca.swap_car && !ca.car_media.empty() && ca.car_media != car &&
+                  std::find(baked_cars.begin(), baked_cars.end(), ca.car_media) != baked_cars.end()) {
+                next_car = ca.car_media;
+                running = false;
+              }
+              if (ca.intro_completed) saved.intro_completed = true;
+              if (ca.save_requested) save_due = true;
+              continue;
             }
             if (fmv_player.active()) {
               const bool skip_key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
@@ -11055,9 +11195,53 @@ int run_drive(int argc, char** argv) {
             if (sa.open_autoshow) open_shop_or_autoshow(true);
             if (sa.intro_finished) saved.intro_completed = true;
           };
+          auto apply_campaign_action = [&](const race::CampaignAction& ca) {
+            if (ca.swap_car && !ca.car_media.empty() && ca.car_media != car) {
+              if (std::find(baked_cars.begin(), baked_cars.end(), ca.car_media) != baked_cars.end()) {
+                next_car = ca.car_media;
+                running = false;
+              }
+            }
+            if (ca.teleport) {
+              vehicle.reset(drive::Vec3{ca.pos[0], ca.pos[1], ca.pos[2]}, ca.heading);
+            }
+            if (ca.set_gps && gps_solver.ready()) {
+              const drive::Vec3 at = vehicle.position();
+              fire_satnav_event(gps_nav.set_destination(ca.gps_xz[0], ca.gps_xz[1], traffic::GpsDestKind::kFestival,
+                                                        ca.gps_label, at.x, at.z));
+            }
+            if (ca.launch_event && !ca.event_id.empty()) {
+              std::string why;
+              if (start_race(ca.event_id, why) || (ca.route_id > 0 && start_race(std::to_string(ca.route_id), why))) {
+                grid_menu_open = true;
+                grid_menu_selected = 0;
+              }
+            }
+            if (ca.grant_starter) {
+              award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
+              if (career.credits < 15000) career.credits = 15000;
+            }
+            if (ca.collect_yellow_wristband && collected_wristband < 0) collected_wristband = 0;
+            if (ca.open_autoshow) open_shop_or_autoshow(true);
+            if (ca.intro_completed) saved.intro_completed = true;
+            if (ca.save_requested) save_due = true;
+          };
+          if (campaign_new_career_pending && !headless) {
+            campaign_new_career_pending = false;
+            show_title = false;
+            std::array<double, 3> gate = {-1360.0, 2.0, -210.0};
+            if (const auto* rc = have_career_catalog ? career_catalog.find_site(race::FestivalSite::kRaceCentral) : nullptr)
+              gate = rc->pos;
+            apply_campaign_action(campaign.start_new_career(fmv_player, &audio_host, gate));
+          }
           if (!boot_intro_checked && !headless) {
             boot_intro_checked = true;
-            if (!cli_fmv_path.empty()) {
+            if (!cli_campaign_stage.empty()) {
+              show_title = false;
+              race::CampaignAction ca;
+              if (campaign.apply_cli_stage(cli_campaign_stage, fmv_player, &audio_host, ca))
+                apply_campaign_action(ca);
+            } else if (!cli_fmv_path.empty()) {
               if (fmv_player.open(cli_fmv_path, language)) {
                 audio_host.set_fmv_audio(
                     [](void* ctx, float* out, int fr) { return static_cast<carview::FmvPlayer*>(ctx)->read_audio(out, fr); },
@@ -11065,7 +11249,7 @@ int run_drive(int argc, char** argv) {
               }
             } else if (story_intro_cli) {
               show_title = false;
-              apply_story_action(story_intro.begin_new_career(game_root_of(), skip_intro_movies));
+              apply_campaign_action(campaign.start_new_career(fmv_player, &audio_host));
             } else if (!skip_intro_movies && show_title) {
               show_title = false;
               apply_story_action(story_intro.begin_boot(game_root_of(), skip_intro_movies, start_in_single_player,
@@ -11095,6 +11279,15 @@ int run_drive(int argc, char** argv) {
             const bool rf = race && race->player_finished();
             apply_story_action(story_intro.update(frame_dt, {vp.x, vp.z}, fmv_player.active(), rf));
           }
+          if (!show_title && !headless) {
+            const drive::Vec3 vp = vehicle.position();
+            const bool rf = race && race->player_finished();
+            const bool* kb_skip = SDL_GetKeyboardState(nullptr);
+            bool hold_skip = kb_skip && (kb_skip[SDL_SCANCODE_SPACE] || kb_skip[SDL_SCANCODE_RETURN]);
+            for (SDL_Gamepad* pad : pads)
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) hold_skip = true;
+            apply_campaign_action(campaign.update(frame_dt, {vp.x, vp.z}, fmv_player, &audio_host, rf, hold_skip));
+          }
           {
             const drive::Vec3 vp = vehicle.position();
             const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -11102,7 +11295,8 @@ int run_drive(int argc, char** argv) {
             audio_host.radio_set_time_of_day(tod_clock.hour());
           }
           const bool trainer_freecam_active = slice12.trainer.effective_free_camera();
-          const bool menu_paused = show_title || fmv_player.active() || ceremony.active || grid_menu_open || menu.open ||
+          const bool menu_paused = show_title || fmv_player.active() || ceremony.active ||
+                                   campaign.is_blocking_gameplay() || grid_menu_open || menu.open ||
                                    map_open || events_page.is_open() || outpost_hub_open || garage_open ||
                                    shop.is_open() || autoshow.is_open() || career_page.is_open() ||
                                    settings_page.is_open() || paint_open || club_open || rally_hub_open ||
@@ -11663,6 +11857,14 @@ int run_drive(int argc, char** argv) {
             fc_cam.up = {0.0, 1.0, 0.0};
             fc_cam.fov_degrees = 60.0;
           }
+          drive::CameraView camp_cam{};
+          bool camp_cam_active = false;
+          if (!show_title && !photo_mode.active() && !trainer_freecam_active && !replay_viewer.active() &&
+              campaign.is_cinematic_camera_active()) {
+            const drive::Vec3 vp = vehicle.position();
+            const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            camp_cam_active = campaign.compute_camera({vp.x, vp.y, vp.z}, std::atan2(vf.x, vf.z), camp_cam);
+          }
           ShowroomFrame cam_frame =
               photo_mode.active()
                   ? camera_view_frame(photo_mode.camera().view(), info, vehicle, aspect, renderer.reverse_z())
@@ -11676,6 +11878,8 @@ int run_drive(int argc, char** argv) {
                                                         drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
                                                  0.58 + 0.34 * std::sin(title_orbit_time * 0.32),
                                              5.8f, 1.48f, renderer.reverse_z(), ground)
+                        : camp_cam_active
+                        ? camera_view_frame(camp_cam, info, vehicle, aspect, renderer.reverse_z())
                         : (race && grid_menu_open)
                               ? scenic_orbit_frame(info, vehicle, aspect,
                                                    std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
@@ -11701,8 +11905,8 @@ int run_drive(int argc, char** argv) {
             w_jitter_uv_x = j[0] / float(std::max(1u, rex.w));
             w_jitter_uv_y = j[1] / float(std::max(1u, rex.h));
           }
-          if (photo_mode.active() || replay_viewer.active() || show_title || (race && grid_menu_open) ||
-              ceremony.active || rewind_scrub_view)
+          if (photo_mode.active() || replay_viewer.active() || show_title || camp_cam_active ||
+              (race && grid_menu_open) || ceremony.active || rewind_scrub_view)
             showroom.set_draw_car(!replay_viewer.active() || replay_viewer.camera_mode() != carview::ReplayCameraMode::kBumper);
           showroom.set_frame(cam_frame);
 
@@ -11899,7 +12103,8 @@ int run_drive(int argc, char** argv) {
               renderer.set_overlay(std::move(img.rgba), img.width, img.height, 0, 0, 2);
             }
             set_hud(w, h, "", nullptr);  // draws 1:1 H_MAP HUD overlay on UI layer!
-          } else if (show_hud || show_title || ceremony.active) {
+          } else if (show_hud || show_title || ceremony.active || campaign.is_blocking_gameplay() ||
+                     campaign.flow().dialogs().active() || fmv_player.active()) {
             set_minimap(h, false);
             char line[160] = "";
             const bool show_pick_banner = picking && pick < baked_cars.size();
