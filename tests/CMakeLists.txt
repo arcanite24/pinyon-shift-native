@@ -392,3 +392,7 @@ else()
   target_compile_options(rhi_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME rhi_tests COMMAND rhi_tests)
+
+add_executable(android_standalone_tests android_standalone_tests.cpp)
+target_link_libraries(android_standalone_tests PRIVATE shift_setup)
+add_test(NAME android_standalone_tests COMMAND android_standalone_tests)

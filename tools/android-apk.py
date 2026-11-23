@@ -77,13 +77,19 @@ def validate_android_sources() -> int:
     if pkg != "net.shiftengine.drive":
         print(f"android-apk: unexpected package {pkg!r}")
         return 1
+    ns = "{http://schemas.android.com/apk/res/android}"
+    activities = {a.attrib.get(ns + "name", "") for a in root.findall("./application/activity")}
+    for req_act in ("net.shiftengine.drive.DriveActivity", "net.shiftengine.drive.SetupActivity"):
+        if req_act not in activities:
+            print(f"android-apk: manifest missing required activity {req_act}")
+            return 1
     java_files = sorted((ANDROID_DIR / "java").rglob("*.java"))
     names = {p.name for p in java_files}
-    for req in ("DriveActivity.java", "WifiSyncClient.java"):
+    for req in ("DriveActivity.java", "SetupActivity.java", "SetupBridge.java", "WifiSyncClient.java"):
         if req not in names:
             print(f"android-apk: missing required Java source {req}")
             return 1
-    print(f"android-apk: manifest ok ({pkg}), {len(java_files)} Java source(s) verified")
+    print(f"android-apk: manifest ok ({pkg}, {len(activities)} activities), {len(java_files)} Java source(s) verified")
     return 0
 
 
@@ -108,6 +114,15 @@ def main() -> int:
         print(f"android-apk: missing {so} (configure the Android build without SHIFT_ANDROID_EXECUTABLE)")
         return 1
     sdl_java = a.build / "_deps" / "sdl3-src" / "android-project" / "app" / "src" / "main" / "java"
+    if not sdl_java.is_dir():
+        cache = a.build / "CMakeCache.txt"
+        if cache.is_file():
+            for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith(("FETCHCONTENT_SOURCE_DIR_SDL3:", "sdl3_SOURCE_DIR:")):
+                    cand = Path(line.split("=", 1)[1].strip()) / "android-project" / "app" / "src" / "main" / "java"
+                    if cand.is_dir():
+                        sdl_java = cand
+                        break
     if not sdl_java.is_dir():
         print(f"android-apk: missing SDL's Java sources at {sdl_java}")
         return 1
