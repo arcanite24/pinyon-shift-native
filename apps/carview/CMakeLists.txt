@@ -66,7 +66,14 @@ endif()
 
 add_library(carview_render STATIC
   benchmark.cpp
-  renderer.cpp
+  renderer_device.cpp
+  renderer_resources.cpp
+  renderer_modern_setup.cpp
+  renderer_modern_record.cpp
+  renderer_post.cpp
+  renderer_frame.cpp
+  renderer_ui.cpp
+  renderer_swapchain.cpp
   showroom.cpp
   ui.cpp
   ui4_chrome.cpp
