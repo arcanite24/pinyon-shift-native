@@ -145,6 +145,12 @@ void test_ui4_chrome_primitives() {
         "pretty_car_media_name resolves FER_F40_87");
   check(carview::ui4::pretty_car_media_name("NIS_SKYLINEGTRVSPECII_02") == "2002 Nissan Skyline GT-R V-Spec II",
         "pretty_car_media_name resolves NIS_SKYLINEGTRVSPECII_02");
+  check(carview::car_name("FOR_GT_05") == "2005 Ford GT", "car_name resolves FOR_GT_05");
+  check(carview::car_name("SUB_IMPREZA22B_98") == "1998 Subaru Impreza 22B STi",
+        "car_name resolves SUB_IMPREZA22B_98");
+  check(std::string(carview::place_suffix(2)) == "ND" && std::string(carview::place_suffix(3)) == "RD" &&
+            std::string(carview::place_suffix(4)) == "TH",
+        "place_suffix produces crisp ordinals");
 }
 
 // Loads a backdrop PNG and scales it bilinearly into 1280x720 RGBA8, or builds
@@ -751,7 +757,10 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
   // 11. ui4_achievements_settings.png — Authentic FH1/Pinyon Shift F7 Achievements + Tabbed Settings & Photo/Replay
   {
     fh1::SpaDatabase spa;
-    fh1::load_spa_packages(game_root, {}, spa, "EN");
+    const char* spa_state_env = std::getenv("SHIFT_STATE_ROOT");
+    const std::filesystem::path spa_state =
+        (spa_state_env && *spa_state_env) ? std::filesystem::path(spa_state_env) : std::filesystem::path{};
+    fh1::load_spa_packages(game_root, spa_state, spa, "EN");
     if (spa.empty()) {
       // Seed clean English labels when loose spa.bin is not unpacked in game_root.
       static const struct {
@@ -848,15 +857,15 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     carview::MapView mv;
     if (mv.open(game_root, nullptr)) {
       carview::MapScene ms;
-      const auto ctr = mv.roads_centre();
-      ms.x = ctr[0] - 40.0;
-      ms.z = ctr[1] + 20.0;
-      ms.heading = 0.25;
+      // Place at Horizon Festival intersection so the layered multi-road Colorado network fills the minimap.
+      ms.x = 2003.0;
+      ms.z = 960.0;
+      ms.heading = 2.2007;
       ms.speed_mps = 34.0;
-      ms.gps_route = {{ms.x, ms.z}, {ms.x + 80, ms.z + 160}, {ms.x + 210, ms.z + 340}};
+      ms.gps_route = {{ms.x, ms.z}, {ms.x + 110, ms.z - 80}, {ms.x + 240, ms.z - 190}};
       ms.markers = {
-          {carview::MapMarker::kFestivalSite, "racecentral", "fest", "HORIZON FESTIVAL", "", ms.x + 45, ms.z + 110, true, false, true, 0},
-          {carview::MapMarker::kEvent, "race", "FR06", "MEDIA CENTER", "", ms.x - 50, ms.z + 140, true, false, true, 0},
+          {carview::MapMarker::kFestivalSite, "racecentral", "fest", "HORIZON FESTIVAL", "", ms.x + 85, ms.z - 65, true, false, true, 0},
+          {carview::MapMarker::kEvent, "race", "FR06", "MEDIA CENTER", "", ms.x - 65, ms.z - 95, true, false, true, 0},
       };
       const auto mm = mv.minimap(ms, 224);
       composite_rgba(bg, W, H, mm, 76, 412);

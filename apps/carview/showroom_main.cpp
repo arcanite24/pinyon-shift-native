@@ -1799,6 +1799,7 @@ int run_drive(int argc, char** argv) {
   bool mods_off = false;
   // Slice 13: native mods opt-in, save sync folder, device and profile.
   bool mods_native = false;
+  bool cli_dev_hints = (std::getenv("SHIFT_DEV_HINTS") != nullptr && std::string(std::getenv("SHIFT_DEV_HINTS")) == "1");
   std::filesystem::path sync_folder;
   std::string device_name, profile_name;
   for (size_t i = 0; i < args.size(); ++i) {
@@ -1837,6 +1838,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--mods") mods_root = next(), mods_off = false;
     else if (a == "--no-mods") mods_off = true;
     else if (a == "--mods-native") mods_native = true;
+    else if (a == "--dev-hints") cli_dev_hints = true;
     else if (a == "--sync-folder") sync_folder = next();
     else if (a == "--device-name") device_name = next();
     else if (a == "--profile") profile_name = next();
@@ -4533,6 +4535,15 @@ int run_drive(int argc, char** argv) {
               std::snprintf(rb, sizeof rb, "ROAD DISCOVERED  %d / %d", rev.discovered_count, rev.total_count);
               std::string rname = rev.road_name;
               for (char& ch : rname) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+              if (rname.rfind("ROAD_", 0) == 0 && rname.size() > 5) {
+                std::string num = rname.substr(5);
+                while (num.size() > 1 && num.front() == '0') num.erase(num.begin());
+                rname = "COLORADO ROAD #" + num;
+              } else {
+                for (char& ch : rname) {
+                  if (ch == '_') ch = ' ';
+                }
+              }
               popup = {rb, rname, vehicle.time(), double(rev.discovered_count) / double(std::max(1, rev.total_count)),
                        carview::ui::rgba(74, 238, 97)};
               audio_host.trigger_ui(audio::UiCue::kSkillAward);
@@ -5711,10 +5722,11 @@ int run_drive(int argc, char** argv) {
         showroom.set_draw_car(true);
         return chase_frame(info, vehicle, aspect, front, ground, &camera_pull, dt, renderer.reverse_z());
       };
-      // The car's name and the keys, over the HUD for the first seconds.
+      // Legacy dev-hint intro line is hidden by default; opt in via --dev-hints or SHIFT_DEV_HINTS=1.
       constexpr double kIntroSeconds = 6;
-      // (The display name is a string-table key: the media name is shown.)
-      const std::string intro = carview::car_name(car) + " - [ ] pick a car  R back on the road  T time of day  Esc menu";
+      const std::string intro =
+          cli_dev_hints ? (carview::car_name(car) + " - [ ] pick a car  R back on the road  T time of day  Esc menu")
+                        : std::string{};
       // The HUD panel in the bottom-right corner, 16 px in (scaled).
       // The race line on the HUD (RaceView: the count, the lap, place and
       // time, the result).
@@ -8903,18 +8915,35 @@ int run_drive(int argc, char** argv) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE && !e.key.repeat) outpost_hub_open = false;
-                else if (n && (k == SDLK_UP || k == SDLK_W)) outpost_hub_pick = (outpost_hub_pick + n - 1) % n;
-                else if (n && (k == SDLK_DOWN || k == SDLK_S)) outpost_hub_pick = (outpost_hub_pick + 1) % n;
-                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat)
+                if (k == SDLK_ESCAPE && !e.key.repeat) {
+                  outpost_hub_open = false;
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (n && (k == SDLK_UP || k == SDLK_W || k == SDLK_LEFT || k == SDLK_A)) {
+                  outpost_hub_pick = (outpost_hub_pick + n - 1) % n;
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (n && (k == SDLK_DOWN || k == SDLK_S || k == SDLK_RIGHT || k == SDLK_D)) {
+                  outpost_hub_pick = (outpost_hub_pick + 1) % n;
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
                   confirm_outpost_item();
+                }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) outpost_hub_open = false;
-                else if (n && b == SDL_GAMEPAD_BUTTON_DPAD_UP) outpost_hub_pick = (outpost_hub_pick + n - 1) % n;
-                else if (n && b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) outpost_hub_pick = (outpost_hub_pick + 1) % n;
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_outpost_item();
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) {
+                  outpost_hub_open = false;
+                  audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (n && (b == SDL_GAMEPAD_BUTTON_DPAD_UP || b == SDL_GAMEPAD_BUTTON_DPAD_LEFT)) {
+                  outpost_hub_pick = (outpost_hub_pick + n - 1) % n;
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (n && (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN || b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) {
+                  outpost_hub_pick = (outpost_hub_pick + 1) % n;
+                  audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_SOUTH) {
+                  audio_host.trigger_ui(audio::UiCue::kAccept);
+                  confirm_outpost_item();
+                }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -9074,19 +9103,20 @@ int run_drive(int argc, char** argv) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE) leave_shop();
-                if (k == SDLK_UP || k == SDLK_W) shop.move_slot(-1);
-                if (k == SDLK_DOWN || k == SDLK_S) shop.move_slot(1);
-                if (k == SDLK_LEFT || k == SDLK_A) shop.move_part(-1);
-                if (k == SDLK_RIGHT || k == SDLK_D) shop.move_part(1);
-                if (k == SDLK_Q) shop.move_category(-1);
-                if (k == SDLK_E) shop.move_category(1);
+                if (k == SDLK_ESCAPE) { audio_host.trigger_ui(audio::UiCue::kCancel); leave_shop(); }
+                if (k == SDLK_UP || k == SDLK_W) { shop.move_slot(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_DOWN || k == SDLK_S) { shop.move_slot(1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_LEFT || k == SDLK_A) { shop.move_part(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_RIGHT || k == SDLK_D) { shop.move_part(1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_Q) { shop.move_category(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                if (k == SDLK_E) { shop.move_category(1); audio_host.trigger_ui(audio::UiCue::kMove); }
                 if (k == SDLK_X) {
                   std::string smsg;
-                  shop.sell_shown_part(career.credits, smsg);
+                  const bool ok = shop.sell_shown_part(career.credits, smsg);
+                  audio_host.trigger_ui(ok ? audio::UiCue::kAccept : audio::UiCue::kCancel);
                   notice = smsg, notice_until = vehicle.time() + 3;
                 }
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) fit();
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { audio_host.trigger_ui(audio::UiCue::kAccept); fit(); }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
@@ -9139,39 +9169,39 @@ int run_drive(int argc, char** argv) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE) cancel_step();
+                if (k == SDLK_ESCAPE) { audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
                 if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
-                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) autoshow.move_make(-1, career.credits);
-                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) autoshow.move_make(1, career.credits);
+                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move_make(-1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move_make(1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
                 } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
-                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) autoshow.move_colour(-1);
-                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) autoshow.move_colour(1);
+                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move_colour(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move_colour(1); audio_host.trigger_ui(audio::UiCue::kMove); }
                 } else {
-                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) autoshow.move(-1);
-                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) autoshow.move(1);
-                  if (k == SDLK_Q) autoshow.move_make(-1, career.credits);
-                  if (k == SDLK_E) autoshow.move_make(1, career.credits);
-                  if (k == SDLK_C) autoshow.set_step(carview::AutoshowStep::kColorSelect);
+                  if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) { autoshow.move(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) { autoshow.move(1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_Q) { autoshow.move_make(-1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_E) { autoshow.move_make(1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (k == SDLK_C) { autoshow.set_step(carview::AutoshowStep::kColorSelect); audio_host.trigger_ui(audio::UiCue::kAccept); }
                 }
-                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) confirm_step();
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) { audio_host.trigger_ui(audio::UiCue::kAccept); confirm_step(); }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) cancel_step();
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) { audio_host.trigger_ui(audio::UiCue::kCancel); cancel_step(); }
                 if (autoshow.step() == carview::AutoshowStep::kMakeSelect) {
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move_make(-1, career.credits);
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move_make(1, career.credits);
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move_make(-1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move_make(1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
                 } else if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move_colour(-1);
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move_colour(1);
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move_colour(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move_colour(1); audio_host.trigger_ui(audio::UiCue::kMove); }
                 } else {
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) autoshow.move(-1);
-                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) autoshow.move(1);
-                  if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) autoshow.move_make(-1, career.credits);
-                  if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) autoshow.move_make(1, career.credits);
-                  if (b == SDL_GAMEPAD_BUTTON_NORTH) autoshow.set_step(carview::AutoshowStep::kColorSelect);
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) { autoshow.move(-1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { autoshow.move(1); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) { autoshow.move_make(-1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) { autoshow.move_make(1, career.credits); audio_host.trigger_ui(audio::UiCue::kMove); }
+                  if (b == SDL_GAMEPAD_BUTTON_NORTH) { autoshow.set_step(carview::AutoshowStep::kColorSelect); audio_host.trigger_ui(audio::UiCue::kAccept); }
                 }
-                if (b == SDL_GAMEPAD_BUTTON_SOUTH) confirm_step();
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) { audio_host.trigger_ui(audio::UiCue::kAccept); confirm_step(); }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -9219,13 +9249,13 @@ int run_drive(int argc, char** argv) {
                 }
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-                if (e.key.key == SDLK_UP || e.key.key == SDLK_W) rally_service_selected = (rally_service_selected + 3) % 4;
-                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) rally_service_selected = (rally_service_selected + 1) % 4;
-                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) act_service();
+                if (e.key.key == SDLK_UP || e.key.key == SDLK_W) { rally_service_selected = (rally_service_selected + 3) % 4; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) { rally_service_selected = (rally_service_selected + 1) % 4; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) { audio_host.trigger_ui(audio::UiCue::kAccept); act_service(); }
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) rally_service_selected = (rally_service_selected + 3) % 4;
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) rally_service_selected = (rally_service_selected + 1) % 4;
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) act_service();
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) { rally_service_selected = (rally_service_selected + 3) % 4; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { rally_service_selected = (rally_service_selected + 1) % 4; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) { audio_host.trigger_ui(audio::UiCue::kAccept); act_service(); }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -9297,15 +9327,15 @@ int run_drive(int argc, char** argv) {
                 }
               };
               if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-                if (e.key.key == SDLK_ESCAPE) rally_hub_open = false;
-                else if (e.key.key == SDLK_UP || e.key.key == SDLK_W) rally_hub_selected = (rally_hub_selected + n_items - 1) % n_items;
-                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) rally_hub_selected = (rally_hub_selected + 1) % n_items;
-                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) activate_rally();
+                if (e.key.key == SDLK_ESCAPE) { rally_hub_open = false; audio_host.trigger_ui(audio::UiCue::kCancel); }
+                else if (e.key.key == SDLK_UP || e.key.key == SDLK_W) { rally_hub_selected = (rally_hub_selected + n_items - 1) % n_items; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S) { rally_hub_selected = (rally_hub_selected + 1) % n_items; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) { audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST || e.gbutton.button == SDL_GAMEPAD_BUTTON_START) rally_hub_open = false;
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) rally_hub_selected = (rally_hub_selected + n_items - 1) % n_items;
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) rally_hub_selected = (rally_hub_selected + 1) % n_items;
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) activate_rally();
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST || e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { rally_hub_open = false; audio_host.trigger_ui(audio::UiCue::kCancel); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) { rally_hub_selected = (rally_hub_selected + n_items - 1) % n_items; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { rally_hub_selected = (rally_hub_selected + 1) % n_items; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) { audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -9331,17 +9361,17 @@ int run_drive(int argc, char** argv) {
               };
               if (e.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE && !e.key.repeat) club_open = false;
-                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) begin();
-                else if (k == SDLK_UP || k == SDLK_W) club_pick = (club_pick + rows - 1) % rows;
-                else if (k == SDLK_DOWN || k == SDLK_S) club_pick = (club_pick + 1) % rows;
+                if (k == SDLK_ESCAPE && !e.key.repeat) { club_open = false; audio_host.trigger_ui(audio::UiCue::kCancel); }
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) { audio_host.trigger_ui(audio::UiCue::kAccept); begin(); }
+                else if (k == SDLK_UP || k == SDLK_W) { club_pick = (club_pick + rows - 1) % rows; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (k == SDLK_DOWN || k == SDLK_S) { club_pick = (club_pick + 1) % rows; audio_host.trigger_ui(audio::UiCue::kMove); }
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
-                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) club_open = false;
-                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) begin();
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) club_pick = (club_pick + rows - 1) % rows;
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) club_pick = (club_pick + 1) % rows;
+                if (b == SDL_GAMEPAD_BUTTON_START || b == SDL_GAMEPAD_BUTTON_EAST) { club_open = false; audio_host.trigger_ui(audio::UiCue::kCancel); }
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) { audio_host.trigger_ui(audio::UiCue::kAccept); begin(); }
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) { club_pick = (club_pick + rows - 1) % rows; audio_host.trigger_ui(audio::UiCue::kMove); }
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) { club_pick = (club_pick + 1) % rows; audio_host.trigger_ui(audio::UiCue::kMove); }
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
@@ -11021,9 +11051,11 @@ int run_drive(int argc, char** argv) {
             SDL_SetWindowTitle(window, title);
           }
           const audio::View cur_audio_view = audio_view();
+          const bool any_menu_snapshot = menu_paused && !show_title && !fmv_player.active() && !photo_mode.active() &&
+                                         !replay_viewer.active() && !trainer_freecam_active;
           audio_host.update_frame(sound_inputs(cur_audio_view),
                                   menu_paused || rewind_buf.is_rewinding() || rewind_buf.is_paused_at_keyframe(),
-                                  menu.open || settings_page.is_open() || map_open, show_title, false);
+                                  any_menu_snapshot, show_title, false);
           {
             audio::VehicleAudioState vst{};
             const auto& vp = vehicle.params();

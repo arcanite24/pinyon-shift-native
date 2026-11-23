@@ -1141,6 +1141,7 @@ std::string pretty_car_media_name(std::string_view raw_media) {
   else if (model_up == "VIPERGTS" || model_up == "SRTVIPERGTS") model = "SRT Viper GTS";
   else if (model_up == "ENZO") model = "Enzo Ferrari";
   else if (model_up == "F40") model = "F40";
+  else if (model_up == "GT") model = "GT";
   else if (model_up == "GT40") model = "GT40";
   else if (model_up == "LANCEREVO10GSR" || model_up == "LANCEREVOX") model = "Lancer Evo X GSR";
   else {
@@ -1196,15 +1197,17 @@ void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& s
     }
   }
 
-  // Compact top-right status strip (floating PILL01, never an oversized charcoal box).
+  // Compact top-right status strip with opaque dark backing so bright backgrounds never wash out text.
   if (!spec.status_value.empty()) {
     const float sx1 = w - 58.0f * s;
     const float sx0 = sx1 - 356.0f * s;
     const float sy0 = 32.0f * s;
+    l.rect(sx0, sy0, sx1, sy0 + 48.0f * s, ui::rgba(14, 16, 22, 238));
     pill(l, sx0, sy0, sx1, sy0 + 48.0f * s, kCharcoalDark, PillKind::kPillBig, false, true);
+    l.frame(sx0, sy0, sx1, sy0 + 48.0f * s, ui::rgba(255, 255, 255, 36), 1.0f * s);
     l.rect(sx0, sy0, sx0 + 5.0f * s, sy0 + 48.0f * s, spec.status_color);
     if (!spec.status_kicker.empty()) {
-      l.text(sx0 + 16.0f * s, sy0 + 7.0f * s, spec.status_kicker, style(ui::Font::kB, 10.0f * s, kDim));
+      l.text(sx0 + 16.0f * s, sy0 + 7.0f * s, spec.status_kicker, style(ui::Font::kB, 10.0f * s, kOffWhite));
     }
     if (!spec.status_tag.empty()) {
       l.text(sx1 - 14.0f * s, sy0 + 7.0f * s, spec.status_tag,
@@ -1328,7 +1331,15 @@ void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& s
           }
           tx += 26.0f * s;
         }
-        if (r.badge_icon_kind >= 0) {
+        if (r.has_custom_icon) {
+          const float isz = std::min(row_h - 6.0f * s, 32.0f * s);
+          const float iy = ry + 0.5f * (row_h - isz);
+          l.rect(tx - 1.0f * s, iy - 1.0f * s, tx + isz + 1.0f * s, iy + isz + 1.0f * s, ui::rgba(10, 12, 16, 210));
+          l.image(tx, iy, tx + isz, iy + isz, r.custom_icon_uv, kWhite);
+          l.frame(tx - 1.0f * s, iy - 1.0f * s, tx + isz + 1.0f * s, iy + isz + 1.0f * s, ui::rgba(255, 255, 255, 48),
+                  1.0f * s);
+          tx += isz + 10.0f * s;
+        } else if (r.badge_icon_kind >= 0) {
           const float isz = std::min(row_h - 8.0f * s, 30.0f * s);
           const float iy = ry + 0.5f * (row_h - isz);
           if (!badge_icon(l, tx, iy, tx + isz, iy + isz, static_cast<BadgeIconKind>(r.badge_icon_kind))) {
@@ -1442,7 +1453,11 @@ void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& s
         const bool dk = (tbg == kAmber || tbg == kYellow || tbg == kGreen);
         brush(l, rx0 - 4.0f * s, dy, rx1 + 4.0f * s, dy + 34.0f * s, tbg);
         float dtx = rx0 + 16.0f * s;
-        if (spec.detail_icon_kind >= 0) {
+        if (spec.has_detail_icon_uv) {
+          l.rect(rx0 + 11.0f * s, dy + 2.0f * s, rx0 + 41.0f * s, dy + 32.0f * s, ui::rgba(10, 12, 16, 210));
+          l.image(rx0 + 12.0f * s, dy + 3.0f * s, rx0 + 40.0f * s, dy + 31.0f * s, spec.detail_icon_uv, kWhite);
+          dtx = rx0 + 48.0f * s;
+        } else if (spec.detail_icon_kind >= 0) {
           badge_icon(l, rx0 + 12.0f * s, dy + 3.0f * s, rx0 + 40.0f * s, dy + 31.0f * s,
                      static_cast<BadgeIconKind>(spec.detail_icon_kind));
           dtx = rx0 + 46.0f * s;

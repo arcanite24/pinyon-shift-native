@@ -349,8 +349,27 @@ void test_achievements_system_and_persistence() {
   assert(screen_list.items().size() > 20);
   assert(requested_tex.count("DIRTMASKS/PILL02") > 0);
   assert(requested_tex.count("DIRTMASKS/PANEL01") > 0);
-  assert(requested_tex.count("T:UI4/Common/Icon_Gold") > 0 || requested_tex.count("HUD/TROPHY") > 0 ||
-         requested_tex.count("T:A_MAP/A_COL_Collective/A_COL_Padlock") > 0);
+  // P1-7: Verify real SPA PNG icons were uploaded into UI atlas by build_screen_hud().
+  std::array<float, 4> spa_uv{};
+  assert(carview::ui::atlas_find("ach.c.1001", spa_uv) || carview::ui::atlas_find("ach.g.1001", spa_uv) ||
+         requested_tex.count("T:UI4/Common/Icon_Gold") > 0 || requested_tex.count("HUD/TROPHY") > 0);
+
+  // P0-7: Verify DriveSave round-trips intro_completed and tod_sec.
+  {
+    const auto save_tmp = std::filesystem::temp_directory_path() / "shift_save_polish_test.txt";
+    std::error_code sec;
+    std::filesystem::remove(save_tmp, sec);
+    drive::DriveSave ds_out;
+    ds_out.intro_completed = true;
+    ds_out.tod_sec = 7200.0;  // 02:00 midnight
+    std::string serr;
+    assert(drive::write_drive_save(save_tmp, ds_out, &serr));
+    drive::DriveSave ds_in;
+    assert(drive::read_drive_save(save_tmp, ds_in, &serr));
+    assert(ds_in.intro_completed);
+    assert(ds_in.tod_sec > 7199.0 && ds_in.tod_sec < 7201.0);
+    std::filesystem::remove(save_tmp, sec);
+  }
 
   carview::ui::List overlay_list;
   sys.build_hud_overlays(overlay_list, 1280.0f, 720.0f, true);

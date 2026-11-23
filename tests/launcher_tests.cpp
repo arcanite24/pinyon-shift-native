@@ -435,6 +435,25 @@ void test_wifi_sync_server_and_qr() {
   std::printf("  [ok] Wi-Fi Sync LAN HTTP server (auth + manifest + Range 206) & QR matrix\n");
 }
 
+void test_preset_mapping_and_cores() {
+  assert(launcher::preset_index_for_name("high") == 0);
+  assert(launcher::preset_index_for_name("low") == 1);
+  assert(launcher::preset_index_for_name("low-spec-60") == 1);
+  assert(launcher::preset_index_for_name("smooth-60") == 2);
+  assert(launcher::preset_index_for_name("quality-30") == 3);
+  assert(launcher::preset_index_for_name("low-power") == 4);
+
+  const auto hw = launcher::probe_hardware();
+  assert(hw.physical_cores > 0);
+  assert(hw.logical_threads >= hw.physical_cores);
+  // On SMT desktop CPUs (e.g. 8C/16T), verify query_physical_cores() does not drop the last core (7/16).
+  if (hw.logical_threads >= 4 && (hw.logical_threads % 2) == 0) {
+    assert(hw.physical_cores != (hw.logical_threads / 2) - 1);
+  }
+  std::printf("  [ok] preset_index_for_name (all 5) & physical core count (%dC/%dT)\n", hw.physical_cores,
+              hw.logical_threads);
+}
+
 }  // namespace
 
 int main() {
@@ -443,6 +462,7 @@ int main() {
   test_portable_paths();
   test_disc_verifier();
   test_hardware_advisor();
+  test_preset_mapping_and_cores();
   test_steam_vdf();
   test_mods_and_dlc();
   test_radio_wheel_updater();

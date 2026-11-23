@@ -183,8 +183,9 @@ void EventsPage::fill(std::string& title, std::vector<std::string>& lines, int& 
       size_t(sel.wristband_index) < catalog_->wristbands.size()) {
     const auto& wb = catalog_->wristbands[size_t(sel.wristband_index)];
     detail_title = "RACE CENTRAL WRISTBAND CEREMONY";
-    detail_lines.push_back("YOU HAVE EARNED ENOUGH POINTS FOR THE");
-    detail_lines.push_back(wb.colour_key + " WRISTBAND!");
+    std::string wb_up = wb.colour_key;
+    for (char& ch : wb_up) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+    detail_lines.push_back("YOU HAVE EARNED ENOUGH POINTS FOR THE " + wb_up + " WRISTBAND!");
     detail_lines.push_back("PRESS ENTER / [A] TO COLLECT IT NOW");
     detail_lines.push_back("AND UNLOCK NEW FESTIVAL EVENTS.");
     if (wb.reward_car_id > 0) {

@@ -322,8 +322,14 @@ void draw_camera_editor_ui4(ui::List& l, float screen_w, float screen_h, const C
                         r.selected ? ui4::kYellow : ui4::kPink, r.selected);
       } else {
         ui::TextStyle ds = ui4::style(ui::Font::kB, 9.5f * s, r.selected && r.is_action ? ui4::kInk : ui4::kDim);
-        ui4::fit_text(r.detail, ds, rw - 38.0f * s, 7.0f * s);
-        l.text(rx0 + 14.0f * s, ry + 31.0f * s, r.detail, ds);
+        const float max_dw = rw - 32.0f * s;
+        std::string dtxt = r.detail;
+        ui4::fit_text(dtxt, ds, max_dw, 7.5f * s);
+        while (dtxt.size() > 6 && ui::List::measure(dtxt, ds) > max_dw) {
+          dtxt.resize(dtxt.size() - 4);
+          dtxt += "...";
+        }
+        l.text(rx0 + 14.0f * s, ry + 31.0f * s, dtxt, ds);
       }
       ry += row_h + gap;
     }

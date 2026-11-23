@@ -179,7 +179,34 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         const int ev_style = e.event ? int(e.event->style) : (is_hub ? 2 : 1);
         const uint32_t art_tint = !e.unlocked ? ui::rgba(145, 150, 160, 210)
                                               : (act ? ui4::kWhite : ui::rgba(225, 228, 234, 232));
-        if (!ui4::event_ticket_art(l, cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ev_id, ev_style, art_tint)) {
+        if (e.is_collect_wristband) {
+          l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(26, 22, 18, 250));
+          l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y0 + 38.0f * s, ui::rgba(255, 165, 20, 38));
+          l.rect(cx0 + 4.0f * s, art_y1 - 36.0f * s, cx1 - 4.0f * s, art_y1, ui::rgba(239, 36, 147, 46));
+          std::string up = e.display_name;
+          for (char& ch : up) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+          const char* col_key = "ORANGE";
+          static constexpr const char* kCols[] = {"YELLOW", "GREEN", "BLUE", "PINK", "ORANGE", "PURPLE", "GOLD"};
+          for (const char* ck : kCols) {
+            if (up.find(ck) != std::string::npos) {
+              col_key = ck;
+              break;
+            }
+          }
+          std::array<float, 4> wb_uv{};
+          const bool has_wb = ui_texture(std::string("WRISTBANDS/") + col_key + "XL", wb_uv) ||
+                              ui_texture(std::string("WRISTBANDS/") + col_key + "LARGE", wb_uv) ||
+                              ui_texture(std::string("WRISTBANDS/") + col_key, wb_uv) ||
+                              ui_texture("WRISTBANDS/WRISTBAND", wb_uv);
+          if (has_wb) {
+            const float wsz = 148.0f * s;
+            const float wx0 = 0.5f * (cx0 + cx1) - 0.5f * wsz;
+            const float wy0 = 0.5f * (art_y0 + art_y1) - 0.5f * wsz;
+            l.image(wx0, wy0, wx0 + wsz, wy0 + wsz, wb_uv, art_tint);
+          }
+          l.text(0.5f * (cx0 + cx1), art_y1 - 24.0f * s, "HORIZON FESTIVAL STAGE",
+                 ui4::style(ui::Font::kB, 10.5f * s, ui4::kYellow, ui::Align::kCenter));
+        } else if (!ui4::event_ticket_art(l, cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ev_id, ev_style, art_tint)) {
           l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(44, 48, 56, 230));
         }
 
@@ -187,7 +214,7 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         const uint32_t hdr_col = e.is_collect_wristband ? ui4::kYellow
                                  : act                  ? kTicketPink
                                                         : ui4::kPillGrey;
-        if ((ev_style == 2 || is_hub) && has_top_sr) {
+        if (!e.is_collect_wristband && (ev_style == 2 || is_hub) && has_top_sr) {
           l.image(cx0, cy0, cx1, cy0 + 38.0f * s, top_sr_uv, hdr_col);
         } else if (has_top) {
           l.image(cx0, cy0, cx1, cy0 + 38.0f * s, top_uv, hdr_col);
@@ -218,6 +245,8 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
           l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, brz_uv);
         } else if (e.unlocked && e.best_place == 0 && has_new) {
           l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv, kTicketPink);
+          l.text(sx0 + 0.5f * st_sz, sy0 + 0.5f * st_sz - 7.0f * s, "NEW",
+                 ui4::style(ui::Font::kE, 13.5f * s, ui4::kWhite, ui::Align::kCenter));
         }
 
         // 6. LARGETAPE title banner (#EF2493 active / #212121 inactive) + event name
@@ -249,7 +278,8 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         if (e.is_collect_wristband) status = "CEREMONY READY", st_col = ui4::kYellow;
         else if (!e.unlocked) status = "LOCKED", st_col = ui4::kRed;
         else if (e.best_place == 1) status = "1ST PLACE WON", st_col = ui4::kYellow;
-        else if (e.best_place > 0) status = "BEST: " + std::to_string(e.best_place) + "ND/RD", st_col = ui4::kAmber;
+        else if (e.best_place > 0)
+          status = "BEST: " + std::to_string(e.best_place) + place_suffix(e.best_place), st_col = ui4::kAmber;
         else if (!e.eligible) status = "WRONG CAR CLASS", st_col = ui4::kRed;
         ui4::pill(l, cx0 + 10.0f * s, cy1 - 30.0f * s, cx1 - 10.0f * s, cy1 - 8.0f * s,
                   act ? ui4::kBrushBlack : ui::rgba(14, 16, 20, 200), ui4::PillKind::kPill02);
@@ -348,8 +378,32 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
 
         l.rect(cx0, cy0, cx1, cy1, ui::rgba(22, 24, 28, 244));
         const float art_y0 = cy0 + 34.0f * s, art_y1 = cy0 + 216.0f * s;
-        if (!ui4::event_ticket_art(l, cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, c.event_id, c.art_style,
-                                   act ? ui4::kWhite : ui::rgba(224, 228, 235, 232))) {
+        if (!c.is_stunt) {
+          // Dedicated Outpost service card backdrop (Change Car / Fast Travel / Outpost Service — never a race flyer).
+          l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(24, 28, 36, 250));
+          l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y0 + 34.0f * s, ui::rgba(239, 36, 147, 36));
+          l.rect(cx0 + 4.0f * s, art_y1 - 32.0f * s, cx1 - 4.0f * s, art_y1, ui::rgba(218, 255, 0, 26));
+          std::string tup = c.title;
+          for (char& ch : tup) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+          std::array<float, 4> svc_uv{};
+          const bool is_garage = tup.find("CAR") != std::string::npos || tup.find("GARAGE") != std::string::npos;
+          const bool has_svc =
+              is_garage ? (ui_texture("ICONS/CAROUSELICONS/GARAGELARGE", svc_uv) ||
+                           ui_texture("ICONS/CAROUSELICONS/GARAGE", svc_uv) ||
+                           ui_texture("ICONS/ACTIVATIONZONEICONS/GARAGE", svc_uv))
+                        : (ui_texture("ICONS/ACTIVATIONZONEICONS/AUTOSHOW", svc_uv) ||
+                           ui_texture("WRISTBANDS/HEADLINEEVENT", svc_uv) ||
+                           ui_texture("ICONS/CAROUSELICONS/GARAGELARGE", svc_uv));
+          if (has_svc) {
+            const float isz = 112.0f * s;
+            const float ix0 = 0.5f * (cx0 + cx1) - 0.5f * isz;
+            const float iy0 = 0.5f * (art_y0 + art_y1) - 0.5f * isz - 4.0f * s;
+            l.image(ix0, iy0, ix0 + isz, iy0 + isz, svc_uv, act ? ui4::kWhite : ui::rgba(220, 224, 232, 232));
+          }
+          l.text(0.5f * (cx0 + cx1), art_y1 - 22.0f * s, is_garage ? "OUTPOST GARAGE SERVICE" : "OUTPOST SERVICE",
+                 ui4::style(ui::Font::kB, 10.5f * s, ui4::kOffWhite, ui::Align::kCenter));
+        } else if (!ui4::event_ticket_art(l, cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, c.event_id, c.art_style,
+                                          act ? ui4::kWhite : ui::rgba(224, 228, 235, 232))) {
           l.rect(cx0 + 4.0f * s, art_y0, cx1 - 4.0f * s, art_y1, ui::rgba(42, 46, 54, 232));
         }
 
@@ -366,6 +420,8 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
           l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, done_uv);
         } else if (c.is_stunt && !c.completed && has_new) {
           l.image(sx0, sy0, sx0 + st_sz, sy0 + st_sz, new_uv, kTicketPink);
+          l.text(sx0 + 0.5f * st_sz, sy0 + 0.5f * st_sz - 7.0f * s, "NEW",
+                 ui4::style(ui::Font::kE, 13.5f * s, ui4::kWhite, ui::Align::kCenter));
         }
 
         const float tape_y0 = art_y1 + 4.0f * s, tape_y1 = art_y1 + 52.0f * s;
@@ -570,13 +626,54 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
       l.text(rx0 + 16.0f * s, list_y0 + 56.0f * s, "CURRENT VALUE", ui4::style(ui::Font::kB, 10.5f * s, ui4::kDim));
       l.text(rx0 + 16.0f * s, list_y0 + 72.0f * s, sr.value, ui4::style(ui::Font::kE, 21.0f * s, ui4::kYellow));
 
-      const char* hint = sr.is_save      ? "Writes changes to settings.txt and closes Settings."
-                         : sr.is_rebind  ? "Press [A] / Enter then any key to rebind control."
-                         : cur_tab == 0  ? "Display, camera rig, day length & post-FX."
-                         : cur_tab == 1  ? "FMOD master volume, radio DJ & 8-bus mixer."
-                         : cur_tab == 2  ? "Assists, AI difficulty, rubber-band & damage."
-                         : cur_tab == 3  ? "Controller layout, rumble, deadzones & keys."
-                                         : "Pinyon Shift QoL: language, intros & photo.";
+      std::string nm_up = sr.name;
+      for (char& ch : nm_up) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+      const char* hint = nullptr;
+      if (sr.is_save) hint = "Writes changes to settings.txt and closes Settings.";
+      else if (sr.is_rebind) hint = "Press [A] / Enter then press any key to rebind.";
+      else if (nm_up.find("PRESET") != std::string::npos || nm_up.find("QUALITY") != std::string::npos)
+        hint = "Selects graphics profile (resolution, shadows, MSAA & post-FX).";
+      else if (nm_up.find("RESOLUTION") != std::string::npos || nm_up.find("SCALE") != std::string::npos)
+        hint = "Internal 3D render scale before upscaling to display resolution.";
+      else if (nm_up.find("VSYNC") != std::string::npos || nm_up.find("FRAME") != std::string::npos)
+        hint = "Synchronizes presentation with display refresh rate.";
+      else if (nm_up.find("MSAA") != std::string::npos || nm_up.find("ANTI") != std::string::npos)
+        hint = "Smooths jagged geometry edges on cars and Colorado terrain.";
+      else if (nm_up.find("SHADOW") != std::string::npos)
+        hint = "Controls cascaded sun shadow resolution and draw distance.";
+      else if (nm_up.find("SSAO") != std::string::npos || nm_up.find("BLOOM") != std::string::npos ||
+               nm_up.find("HDR") != std::string::npos)
+        hint = "Post-processing lighting, ambient occlusion & dynamic range.";
+      else if (nm_up.find("CAMERA") != std::string::npos || nm_up.find("FOV") != std::string::npos ||
+               nm_up.find("HEAD") != std::string::npos)
+        hint = "Adjusts driving camera rig, FOV & head-tracking response.";
+      else if (nm_up.find("DAY") != std::string::npos || nm_up.find("TIME") != std::string::npos)
+        hint = "Sets Colorado day/night cycle length or fixed time of day.";
+      else if (nm_up.find("VOLUME") != std::string::npos || nm_up.find("AUDIO") != std::string::npos ||
+               nm_up.find("RADIO") != std::string::npos || nm_up.find("DJ") != std::string::npos)
+        hint = "Adjusts FMOD 8-bus audio mix, Horizon radio & DJ chatter.";
+      else if (nm_up.find("ABS") != std::string::npos || nm_up.find("TCS") != std::string::npos ||
+               nm_up.find("STAB") != std::string::npos || nm_up.find("STEER") != std::string::npos)
+        hint = "Driving assist setting (adjusts difficulty credit bonus).";
+      else if (nm_up.find("SHIFT") != std::string::npos || nm_up.find("CLUTCH") != std::string::npos)
+        hint = "Automatic, Manual, or Manual with Clutch transmission.";
+      else if (nm_up.find("REWIND") != std::string::npos)
+        hint = "Enables or disables instant 60-second driving rewind [Y/R].";
+      else if (nm_up.find("DIFFICULTY") != std::string::npos || nm_up.find("AI") != std::string::npos)
+        hint = "Adjusts AI rival pace and festival race credit bonus.";
+      else if (nm_up.find("FFB") != std::string::npos || nm_up.find("WHEEL") != std::string::npos ||
+               nm_up.find("GYRO") != std::string::npos || nm_up.find("RUMBLE") != std::string::npos)
+        hint = "Tunes force feedback, wheel angle, rumble & DualSense gyro.";
+      else if (nm_up.find("DEADZONE") != std::string::npos || nm_up.find("SENSITIV") != std::string::npos)
+        hint = "Shapes analog stick, wheel and pedal deadzones & linearity.";
+      else if (nm_up.find("LANGUAGE") != std::string::npos)
+        hint = "Switches UI text & localization pack (17 FH1 languages).";
+      else
+        hint = cur_tab == 0   ? "Display, camera rig, day length & post-FX."
+               : cur_tab == 1 ? "FMOD master volume, radio DJ & 8-bus mixer."
+               : cur_tab == 2 ? "Assists, AI difficulty, rubber-band & damage."
+               : cur_tab == 3 ? "Controller layout, rumble, deadzones & keys."
+                              : "Pinyon Shift QoL: language, intros & photo.";
       ui::TextStyle hs = ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kLeft, true);
       ui4::fit_text(hint, hs, (rx1 - rx0) - 32.0f * s, 9.0f * s);
       l.text(rx0 + 16.0f * s, list_y0 + 108.0f * s, hint, hs);
@@ -600,10 +697,15 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
     }
   }
 
+  const char* a_prompt = "TOGGLE / CHANGE";
+  if (sel_in_tab >= 0 && sel_in_tab < int(tab_rows.size())) {
+    const auto& sr = tab_rows[size_t(sel_in_tab)];
+    a_prompt = sr.is_save ? "SAVE & APPLY" : sr.is_rebind ? "REBIND KEY" : "TOGGLE / CHANGE";
+  }
   ui4::button_bar(l,
                   {{"DPAD_LR", "CHANGE"},
                    {"LB", "CATEGORY"},
-                   {"A", "REBIND / SAVE"},
+                   {"A", a_prompt},
                    {"X", "MODS"},
                    {"Y", "SAVES / SYNC"},
                    {"B", "BACK"}},
@@ -814,28 +916,20 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
     l.text(hx + 10.0f * s, hy + 2.0f * s, tip_hdr, hts);
   }
 
-  // Tilted TipLayout@(190,280, rot=+3 deg): white PILL_BIG tip lines (A@16px, 26px pitch) — zero rounded boxes!
+  // Tilted TipLayout@(190,280, rot=+3 deg): crisp white text on dark HUDPILL01/charcoal strips for high contrast!
   {
     ui4::TiltScope tilt(l, f.x(410.0f), f.y(295.0f), ui4::kTiltRad);
-    ui::TextStyle line_ts = ui4::style(ui::Font::kA, 16.0f * s, ui4::kInk, ui::Align::kLeft, true);
+    ui::TextStyle line_ts = ui4::style(ui::Font::kB, 16.0f * s, ui4::kWhite, ui::Align::kLeft, true);
     const auto lines = wrap_tip_lines(tip_body, line_ts, 560.0f * s, 6);
-    std::array<float, 4> pill_big{};
-    const bool has_pbig = ui_texture("DIRTMASKS/PILL_BIG", pill_big);
     float ly = f.y(210.0f);
     for (const auto& ln : lines) {
       const float lw = ui::List::measure(ln, line_ts);
-      const float px0 = f.x(122.0f), px1 = px0 + lw + 30.0f * s;
-      const float py0 = ly - 4.0f * s, py1 = ly + 22.0f * s;
-      if (has_pbig) {
-        const float full_w = 640.0f * s;
-        const float off = 1.0f - std::clamp((px1 - px0) / full_w, 0.05f, 1.0f);
-        l.image_masked(px0, py0, px0 + full_w, py1, pill_big, pill_big, ui4::kOffWhite, {1.0f, 1.0f, off, 0.0f},
-                       ui::kMaskBorderTransparent);
-      } else {
-        ui4::offwhite_strip(l, px0, py0, px1, py1, s, false);
-      }
-      l.text(px0 + 14.0f * s, ly + 1.0f * s, ln, line_ts);
-      ly += 27.0f * s;
+      const float px0 = f.x(122.0f), px1 = px0 + lw + 34.0f * s;
+      const float py0 = ly - 4.0f * s, py1 = ly + 23.0f * s;
+      l.rect(px0, py0, px1, py1, ui::rgba(14, 16, 22, 228));
+      l.rect(px0, py0, px0 + 4.0f * s, py1, ui4::kPink);
+      l.text(px0 + 16.0f * s, ly + 1.0f * s, ln, line_ts);
+      ly += 29.0f * s;
     }
   }
 

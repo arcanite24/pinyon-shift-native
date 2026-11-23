@@ -476,11 +476,11 @@ void draw_mods_page(ui::List& l, float screen_w, float screen_h, const ModsPage&
     auto join = [](const std::vector<std::string>& v) {
       std::string o;
       for (const auto& x : v) o += (o.empty() ? "" : ", ") + x;
-      return o.empty() ? std::string("-") : o;
+      return o.empty() ? std::string("NONE") : o;
     };
     spec.detail_kvs.push_back({"CHANGES", m->content.summary(), ui4::kWhite});
-    spec.detail_kvs.push_back({"NEEDS", join(man.dependencies), ui4::kWhite});
-    spec.detail_kvs.push_back({"CONFLICTS", join(man.conflicts), ui4::kWhite});
+    spec.detail_kvs.push_back({"NEEDS", join(man.dependencies), man.dependencies.empty() ? ui4::kDim : ui4::kWhite});
+    spec.detail_kvs.push_back({"CONFLICTS", join(man.conflicts), man.conflicts.empty() ? ui4::kDim : ui4::kWhite});
     spec.detail_kvs.push_back(
         {"SAVE",
          !man.profile.empty() ? "OWN SAVE (user-" + man.profile + ")" : man.touches_save ? "MODDED COPY" : "KEEPS YOURS",

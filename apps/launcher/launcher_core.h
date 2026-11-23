@@ -405,6 +405,24 @@ std::optional<AvailableUpdate> select_github_update(std::string_view releases_js
                                                     std::string_view channel,
                                                     std::string_view platform_asset_name);
 
+// Maps a recommended preset name ("high", "low", "smooth-60", "quality-30", "low-power")
+// to the launcher preset selector index (0..4).
+int preset_index_for_name(std::string_view preset);
+
+struct UpdateCheckResult {
+  bool ok = false;
+  bool update_available = false;
+  std::optional<AvailableUpdate> update;
+  std::string status;
+};
+
+// Queries GitHub Releases API (with short timeout and safe offline fallback) and selects
+// any matching release newer than `current_version`.
+UpdateCheckResult check_github_updates(std::string_view current_version,
+                                       std::string_view channel,
+                                       std::string_view platform_asset_name,
+                                       std::string_view repo = "shift-engine/shift-engine");
+
 struct StagedUpdatePlan {
   std::filesystem::path staging_dir;
   std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moves;  // src -> dst

@@ -398,10 +398,11 @@ bool MapView::sample_high_pixel(int px, int py, uint8_t out_rgb[3]) const {
 }
 
 HudImage MapView::minimap(const MapScene& scene, int size) const {
-  // SPEC-UI-LAYOUTS a: no frame; the roads fade to transparent towards the
-  // edge (ours: over the outer 45 % of the half size, as an ellipse).
-  Canvas cv(size, size, {0, 0, 0, 0});
-  cv.edge_fade = 0.3f;
+  // SPEC-UI-LAYOUTS a: frameless radial minimap with translucent dark backing
+  // fading smoothly to transparent over the outer 34% so layered roads stay
+  // readable over bright sunlit Colorado asphalt.
+  Canvas cv(size, size, {12, 16, 22, 156});
+  cv.edge_fade = 0.34f;
   // Speed-responsive dynamic minimap zoom: pulls higher & further ahead as speed rises.
   const double fx = std::sin(scene.heading), fz = std::cos(scene.heading);
   const double rx = fz, rz = -fx;  // right of the heading (+X when facing +Z)
@@ -485,10 +486,12 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
           driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) ||
                    scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
         }
-        const Rgba road_col = driven ? ls.core : ls.edge;
-        const float under_a = std::max(105.0f, ls.under.a);
-        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.4, px + 3.0), Rgba{ls.under.r, ls.under.g, ls.under.b, under_a});
-        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.2, px), road_col);
+        const Rgba undriven_col{std::max(138.0f, ls.edge.r), std::max(144.0f, ls.edge.g),
+                                std::max(156.0f, ls.edge.b), std::max(210.0f, ls.edge.a)};
+        const Rgba road_col = driven ? ls.core : undriven_col;
+        const float under_a = std::max(170.0f, ls.under.a);
+        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.8, px + 3.2), Rgba{8, 10, 14, under_a});
+        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.5, px), road_col);
       }
     }
 

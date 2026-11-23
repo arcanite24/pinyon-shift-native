@@ -167,6 +167,8 @@ struct BladeRow {
   std::string badge_tag;
   uint32_t badge_color = kAmber;
   int badge_icon_kind = -1;       // >= 0 casts to BadgeIconKind
+  bool has_custom_icon = false;
+  std::array<float, 4> custom_icon_uv{};  // optional atlas UV (e.g. decoded 64x64 SPA PNG icon)
   std::string index_label;
 };
 
@@ -206,6 +208,8 @@ struct TiltedBladeSpec {
   std::string detail_progress_label;
   uint32_t detail_progress_color = kYellow;
   int detail_icon_kind = -1;      // >= 0 casts to BadgeIconKind
+  bool has_detail_icon_uv = false;
+  std::array<float, 4> detail_icon_uv{};
   std::string detail_footer;
   std::string notice;
   std::vector<Prompt> prompts;

@@ -115,15 +115,27 @@ void build_frame_inspector(ui::List& list, const FrameInspectorSnapshot& s, floa
   draw_txt(tx, y, font_h * 0.85f, ui::rgba(235, 238, 245, 240), buf);
   y += line_h * 0.9f;
 
-  std::snprintf(buf, sizeof buf, "DRAWS %u / CULLED %u  (%u TRIS)  SHADOW %u+%uC", s.world_draws, s.world_culled,
+  auto draw_fit = [&](float x, float fy, float sz, uint32_t col, std::string_view text) {
+    ui::TextStyle st;
+    st.font = ui::Font::kB;
+    st.size = sz;
+    st.color = col;
+    st.align = ui::Align::kLeft;
+    st.keep_case = true;
+    const float max_w = panel_w - 2.0f * pad;
+    const float mw = ui::List::measure(text, st);
+    if (mw > max_w && mw > 1.0f) st.size = std::max(7.5f * k, sz * (max_w / mw));
+    list.text(x, fy, text, st);
+  };
+  std::snprintf(buf, sizeof buf, "DRAWS %u / CULLED %u (%u TRIS)  SHADOW %u+%uC", s.world_draws, s.world_culled,
                 s.world_triangles, s.shadow_draws, s.shadow_cars);
-  draw_txt(tx, y, font_h * 0.82f, ui::rgba(195, 210, 235, 235), buf);
+  draw_fit(tx, y, font_h * 0.82f, ui::rgba(195, 210, 235, 235), buf);
   y += line_h * 0.9f;
 
   std::snprintf(buf, sizeof buf, "CELLS %u (%u)  VRAM %s / %s  VRS %s", s.resident_cells, s.resident_draws,
                 format_bytes(s.vram_used).c_str(), format_bytes(s.vram_budget).c_str(),
                 s.vrs_active ? "2x2" : "1x1");
-  draw_txt(tx, y, font_h * 0.82f, ui::rgba(180, 192, 212, 230), buf);
+  draw_fit(tx, y, font_h * 0.82f, ui::rgba(180, 192, 212, 230), buf);
   y += line_h * 1.1f;
 
   // GPU Pass Timings with proportional bars.

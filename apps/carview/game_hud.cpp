@@ -1443,16 +1443,53 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
       TextStyle sp_ts = font(ui::Font::kE, 14.5f * s, kSkillYellow);
       const float snw = ui::List::measure(sk.last_skill, sn_ts);
       const float spw = ui::List::measure(pval, sp_ts);
-      const float icon_sz = ui_texture("HUD/DRIVINGSKILLS/SKILLICONSET", icon_uv) ? 18.0f * s : 0.0f;
-      const float row_w = (icon_sz > 0 ? (icon_sz + 5 * s) : 0.0f) + snw + spw;
+      const float icon_sz = ui_texture("HUD/DRIVINGSKILLS/SKILLICONSET", icon_uv) ? 24.0f * s : 0.0f;
+      const float row_w = (icon_sz > 0 ? (icon_sz + 6 * s) : 0.0f) + snw + spw;
       float rx = cx - 0.5f * row_w;
       if (icon_sz > 0) {
-        // First cell of 4x4 SKILLICONSET atlas tinted yellow-white.
-        const float du = 0.25f * (icon_uv[2] - icon_uv[0]);
-        const float dv = 0.25f * (icon_uv[3] - icon_uv[1]);
-        l.image(rx, g.T(128), rx + icon_sz, g.T(128) + icon_sz,
-                {icon_uv[0], icon_uv[1], icon_uv[0] + du, icon_uv[1] + dv}, kSkillYellow);
-        rx += icon_sz + 5 * s;
+        // Hud/DrivingSkills/SkillIconSet.xds is a 512x256 (8x4 grid of 64x64) white-outlined icon sheet.
+        const float u_span = icon_uv[2] - icon_uv[0];
+        const float v_span = icon_uv[3] - icon_uv[1];
+        const float aspect = (v_span > 1e-6f) ? (u_span / v_span) : 2.0f;
+        const int cols = (aspect >= 1.5f) ? 8 : 4;
+        const int rows = 4;
+        std::string sk_up = sk.last_skill;
+        for (char& ch : sk_up) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+        int col = 0, row = 1;  // default: skill badge (0,1)
+        if (sk_up.find("AIR") != std::string::npos || sk_up.find("JUMP") != std::string::npos) {
+          col = 4;
+          row = 2;  // winged flying car
+        } else if (sk_up.find("SPEED") != std::string::npos) {
+          col = 2;
+          row = 2;  // speeding car
+        } else if (sk_up.find("NEAR MISS") != std::string::npos || sk_up.find("CLEAN") != std::string::npos ||
+                   sk_up.find("PASS") != std::string::npos) {
+          col = 4;
+          row = 0;  // cars passing close
+        } else if (sk_up.find("DRIFT") != std::string::npos || sk_up.find("180") != std::string::npos) {
+          col = 2;
+          row = 0;  // spinning drift arrow
+        } else if (sk_up.find("BURN") != std::string::npos) {
+          col = 5;
+          row = 0;  // burning wheel
+        } else if (sk_up.find("DRAFT") != std::string::npos || sk_up.find("SLIP") != std::string::npos) {
+          col = 2;
+          row = 1;  // slingshot
+        } else if (sk_up.find("WRECK") != std::string::npos || sk_up.find("SMASH") != std::string::npos) {
+          col = 3;
+          row = 1;  // explosion
+        }
+        col = std::clamp(col, 0, cols - 1);
+        row = std::clamp(row, 0, rows - 1);
+        const float du = u_span / float(cols);
+        const float dv = v_span / float(rows);
+        const float pad_u = du * 0.04f;
+        const float pad_v = dv * 0.04f;
+        l.image(rx, g.T(124), rx + icon_sz, g.T(124) + icon_sz,
+                {icon_uv[0] + col * du + pad_u, icon_uv[1] + row * dv + pad_v,
+                 icon_uv[0] + (col + 1) * du - pad_u, icon_uv[1] + (row + 1) * dv - pad_v},
+                ui4::kWhite);
+        rx += icon_sz + 6 * s;
       }
       shadowed(l, rx, g.T(130), sk.last_skill, sn_ts, s);
       shadowed(l, rx + snw, g.T(130), pval, sp_ts, s);
@@ -1649,8 +1686,8 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     ry += 32 * s;
 
     if (mo.treasure_map) {
-      draw_map_row(ry, 24 * s, ui4::kAmber);
-      l.text(px0 + 12 * s, ry + 5 * s, "TREASURE MAP REVEALED", font(ui::Font::kE, 11.5f * s, ui4::kInk));
+      l.rect(px0, ry, px1, ry + 24 * s, ui4::kAmber);
+      l.text(px0 + 14 * s, ry + 5 * s, "TREASURE MAP REVEALED", font(ui::Font::kE, 11.5f * s, ui4::kInk));
     }
   }
 
@@ -2234,7 +2271,15 @@ void set_ui_textures(std::function<bool(const std::string&, std::array<float, 4>
 }
 bool ui_texture(const std::string& path, std::array<float, 4>& uv) { return textures() && textures()(path, uv); }
 std::string game_text(const std::string& value) { return texts() ? texts()(value) : value; }
-std::string car_name(const std::string& media) { return names() ? names()(media) : media; }
+std::string car_name(const std::string& media) {
+  std::string out = names() ? names()(media) : media;
+  if (out.empty()) out = media;
+  if (out.find('_') != std::string::npos) {
+    const std::string pretty = ui4::pretty_car_media_name(out);
+    if (!pretty.empty()) return pretty;
+  }
+  return out;
+}
 
 std::string thousands(int64_t v) {
   std::string d = std::to_string(v < 0 ? -v : v), out;

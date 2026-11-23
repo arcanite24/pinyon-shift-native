@@ -298,7 +298,7 @@ int main(int argc, char** argv) {
       }
       refresh_all(state);
     } else if (id == "act:apply_rec") {
-      state.selected_preset = (state.hw_rec.carview_preset == "high") ? 0 : 1;
+      state.selected_preset = launcher::preset_index_for_name(state.hw_rec.carview_preset);
       state.banner_notice = "Applied recommended preset: " + state.hw_rec.label;
     } else if (id == "setup:verify") {
       state.disc_check = launcher::verify_disc_folder(state.disc_path_input, state.paths.play_dir);
@@ -397,7 +397,16 @@ int main(int argc, char** argv) {
     } else if (id == "upd:channel") {
       state.update_channel = (state.update_channel == "stable") ? "preview" : "stable";
     } else if (id == "upd:check") {
-      state.update_status = "Up to date on v" + state.current_version + " (" + state.update_channel + " channel).";
+#ifdef _WIN32
+      constexpr const char* kAssetName = "shift-engine-windows-x64.zip";
+#elif defined(__APPLE__)
+      constexpr const char* kAssetName = "shift-engine-macos-arm64.dmg";
+#else
+      constexpr const char* kAssetName = "shift-engine-linux-x64.tar.gz";
+#endif
+      const auto ur = launcher::check_github_updates(state.current_version, state.update_channel, kAssetName);
+      state.update_status = ur.status;
+      state.banner_notice = ur.status;
     } else if (id == "sync:play") {
       state.sync_include_play = !state.sync_include_play;
     } else if (id == "sync:dlc") {

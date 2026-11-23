@@ -755,7 +755,12 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
         (!e.unlocked && !e.unachieved_description.empty()) ? e.unachieved_description : e.description;
     r.subtitle = desc;
     r.selected = (int(vi) == focus_index_);
-    // Authentic badge/trophy/padlock icon (NEVER raw "WIN" / "LOCK" text squares!)
+    // Authentic 64x64 SPA PNG icon when available, falling back to badge/trophy/padlock icon!
+    std::array<float, 4> icon_uv{};
+    if (ensure_icon_uv(e.image_id, !e.unlocked, icon_uv)) {
+      r.has_custom_icon = true;
+      r.custom_icon_uv = icon_uv;
+    }
     r.badge_icon_kind = e.is_new     ? int(ui4::BadgeIconKind::kNew)
                         : e.unlocked ? (e.gamerscore >= 30 ? int(ui4::BadgeIconKind::kGoldMedal)
                                                            : int(ui4::BadgeIconKind::kTrophy))
@@ -786,6 +791,11 @@ void AchievementsSystem::build_screen_hud(ui::List& out, float w, float h) const
     spec.detail_title = fe->name;
     spec.detail_title_color = fe->unlocked ? ui4::kPink : ui4::kBrushBlack;
     spec.detail_icon_kind = fe->unlocked ? int(ui4::BadgeIconKind::kTrophy) : int(ui4::BadgeIconKind::kLocked);
+    std::array<float, 4> det_uv{};
+    if (ensure_icon_uv(fe->image_id, !fe->unlocked, det_uv)) {
+      spec.has_detail_icon_uv = true;
+      spec.detail_icon_uv = det_uv;
+    }
     const std::string& desc =
         (!fe->unlocked && !fe->unachieved_description.empty()) ? fe->unachieved_description : fe->description;
     spec.detail_paragraphs.push_back(desc);

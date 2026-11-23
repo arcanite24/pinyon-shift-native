@@ -584,11 +584,42 @@ void maybe_capture_gfx_parity_screenshots() {
   }
 }
 
+void test_polish_tint_and_livery_regions() {
+  // P0-1: ShowroomPush default tint MUST be {1,1,1,1} so untinted rims/interiors never black-multiply.
+  carview::ShowroomPush push{};
+  CHECK(push.tint[0] == 1.0f && push.tint[1] == 1.0f && push.tint[2] == 1.0f && push.tint[3] == 1.0f);
+
+  // P0-2: LiveryEditor::current_region_spec() reflects active paint region independently of body.
+  carview::LiveryEditor ed;
+  std::string msg;
+  ed.open(nullptr, {}, 445, {}, msg);
+  const uint32_t body_before = ed.document().paint.body.rgb;
+  ed.move_region(4);  // kRims
+  CHECK(ed.region() == carview::PaintRegion::kRims);
+  ed.step_hsv(0.15f, 0.05f, 0.05f);
+  CHECK(ed.current_region_spec().active);
+  CHECK(ed.document().paint.rims.active);
+  CHECK(ed.current_region_spec().rgb == ed.document().paint.rims.rgb);
+  CHECK(ed.document().paint.body.rgb == body_before);
+
+  // Verify LiveryEditor HUD renders cleanly across paint regions without crashing or clipping.
+  carview::ui::List l;
+  carview::draw_livery_editor_hud(l, 1280.0f, 720.0f, ed, "2002 Nissan Skyline GT-R V-Spec II");
+  CHECK(!l.items().empty());
+  ed.move_region(2);  // kWindowTint
+  CHECK(ed.region() == carview::PaintRegion::kWindowTint);
+  ed.step_window_tint(0.25f);
+  carview::ui::List l2;
+  carview::draw_livery_editor_hud(l2, 1280.0f, 720.0f, ed, "2002 Nissan Skyline GT-R V-Spec II");
+  CHECK(!l2.items().empty());
+}
+
 }  // namespace
 
 int main() {
   test_shader_settings_and_hsv();
   test_damage_and_settings();
+  test_polish_tint_and_livery_regions();
   test_disc_livery_and_paint();
   maybe_capture_headless_screenshots();
   maybe_capture_gfx_parity_screenshots();

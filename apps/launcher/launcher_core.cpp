@@ -15,11 +15,13 @@
 #include <sstream>
 #include <system_error>
 
+#include <cstddef>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <winhttp.h>
 #else
 #include <sys/wait.h>
 #include <unistd.h>
@@ -142,9 +144,10 @@ int query_physical_cores() {
   }
   int cores = 0;
   DWORD off = 0;
-  while (off + sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) <= len) {
+  constexpr DWORD kHeaderSize = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
+  while (off + kHeaderSize <= len) {
     auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + off);
-    if (info->Size == 0) break;
+    if (info->Size < kHeaderSize || off + info->Size > len) break;
     if (info->Relationship == RelationProcessorCore) ++cores;
     off += info->Size;
   }
@@ -2363,6 +2366,127 @@ bool verify_update_sha256(const std::filesystem::path& file, std::string_view ex
   if (!sha256_file(file, hex)) return false;
   if (actual_hex) *actual_hex = hex;
   return lower_ascii(hex) == lower_ascii(expected_hex);
+}
+
+int preset_index_for_name(std::string_view preset) {
+  const std::string p = lower_ascii(preset);
+  if (p == "high") return 0;
+  if (p == "low" || p == "low-spec-60") return 1;
+  if (p == "smooth-60") return 2;
+  if (p == "quality-30") return 3;
+  if (p == "low-power") return 4;
+  return 0;
+}
+
+namespace {
+bool fetch_github_releases_json(std::string_view repo, std::string& out_json, std::string& err) {
+  out_json.clear();
+  if (repo.empty() || repo.find_first_of(" \t\r\n\"'\\") != std::string_view::npos) {
+    err = "invalid update repository";
+    return false;
+  }
+#ifdef _WIN32
+  std::wstring wpath = L"/repos/";
+  for (char c : repo) wpath.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+  wpath += L"/releases?per_page=10";
+
+  HINTERNET hSession = WinHttpOpen(L"shift-launcher/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                   WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!hSession) {
+    err = "WinHTTP init failed";
+    return false;
+  }
+  WinHttpSetTimeouts(hSession, 2500, 2500, 2500, 3000);
+  HINTERNET hConnect = WinHttpConnect(hSession, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+  if (!hConnect) {
+    WinHttpCloseHandle(hSession);
+    err = "offline or GitHub unreachable";
+    return false;
+  }
+  HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", wpath.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                          WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+  if (!hRequest) {
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    err = "HTTP request creation failed";
+    return false;
+  }
+  WinHttpAddRequestHeaders(hRequest, L"Accept: application/vnd.github+json\r\n", static_cast<DWORD>(-1),
+                           WINHTTP_ADDREQ_FLAG_ADD);
+  bool ok = false;
+  if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+      WinHttpReceiveResponse(hRequest, nullptr)) {
+    DWORD status = 0, slen = sizeof(status);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                        &status, &slen, WINHTTP_NO_HEADER_INDEX);
+    if (status == 200) {
+      constexpr size_t kMaxBytes = 512 * 1024;
+      DWORD avail = 0;
+      while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0 && out_json.size() < kMaxBytes) {
+        const size_t want = std::min<size_t>(avail, kMaxBytes - out_json.size());
+        std::string chunk(want, '\0');
+        DWORD got = 0;
+        if (!WinHttpReadData(hRequest, chunk.data(), static_cast<DWORD>(want), &got) || got == 0) break;
+        chunk.resize(got);
+        out_json += chunk;
+      }
+      ok = !out_json.empty();
+    } else {
+      err = "GitHub API HTTP " + std::to_string(status);
+    }
+  } else {
+    err = "offline or connection timed out";
+  }
+  WinHttpCloseHandle(hRequest);
+  WinHttpCloseHandle(hConnect);
+  WinHttpCloseHandle(hSession);
+  return ok;
+#else
+  std::string cmd = "curl -fsSL --max-time 4 -H \"Accept: application/vnd.github+json\" -A \"shift-launcher/1.0\" "
+                    "\"https://api.github.com/repos/" + std::string(repo) + "/releases?per_page=10\" 2>/dev/null";
+  FILE* fp = popen(cmd.c_str(), "r");
+  if (!fp) {
+    err = "offline or curl unavailable";
+    return false;
+  }
+  char buf[4096];
+  constexpr size_t kMaxBytes = 512 * 1024;
+  while (out_json.size() < kMaxBytes) {
+    const size_t n = std::fread(buf, 1, std::min(sizeof(buf), kMaxBytes - out_json.size()), fp);
+    if (n == 0) break;
+    out_json.append(buf, n);
+  }
+  const int rc = pclose(fp);
+  if (rc != 0 || out_json.empty()) {
+    err = "offline or release feed unreachable";
+    return false;
+  }
+  return true;
+#endif
+}
+}  // namespace
+
+UpdateCheckResult check_github_updates(std::string_view current_version, std::string_view channel,
+                                       std::string_view platform_asset_name, std::string_view repo) {
+  UpdateCheckResult res;
+  std::string use_repo(repo);
+  if (const char* env_repo = std::getenv("SHIFT_UPDATE_REPO"); env_repo && *env_repo) use_repo = env_repo;
+  std::string json, err;
+  if (!fetch_github_releases_json(use_repo, json, err)) {
+    res.ok = false;
+    res.status = "Update check failed (" + err + ") — running v" + std::string(current_version) + ".";
+    return res;
+  }
+  res.ok = true;
+  res.update = select_github_update(json, current_version, channel, platform_asset_name);
+  if (res.update) {
+    res.update_available = true;
+    res.status = "Update available: v" + res.update->version + " (" + res.update->tag + ") — " + res.update->asset_name;
+  } else {
+    res.update_available = false;
+    res.status = "Up to date on v" + std::string(current_version) + " (" + std::string(channel) + " channel).";
+  }
+  return res;
 }
 
 }  // namespace launcher

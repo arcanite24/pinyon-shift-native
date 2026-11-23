@@ -309,9 +309,9 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Rim",     "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Caliper",
         "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",
     };
-    ui4::TiltScope reg_rot(list, 310.0f * s, 76.0f * s, tilt_rad * 0.6f);
+    ui4::TiltScope reg_rot(list, 310.0f * s, 88.0f * s, tilt_rad * 0.6f);
     float rx = 56.0f * s;
-    const float ry = 62.0f * s;
+    const float ry = 74.0f * s;
     // Measure each region tab width dynamically so long labels (REAR WING, BRAKE CALIPERS, WINDOW TINT) never clip.
     std::array<float, int(PaintRegion::kCount)> rwidths{};
     std::array<bool, int(PaintRegion::kCount)> rhas_icon{};
