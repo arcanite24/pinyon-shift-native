@@ -595,6 +595,43 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         d.subtitle_active = !app.campaign.is_cinematic_camera_active() &&
                             app.campaign.flow().dialogs().active() &&
                             !app.campaign.flow().dialogs().current().subtitle.empty();
+        if (d.subtitle_active) {
+          const float sf = float(height) / 720.0f;
+          const float max_box_w = std::min(float(width) - 460.0f * sf, 720.0f * sf);
+          const float max_text_w = std::max(240.0f * sf, max_box_w - 36.0f * sf);
+          const auto sub_ts = carview::ui4::style(carview::ui::Font::kA, 15.5f * sf, carview::ui4::kWhite,
+                                                  carview::ui::Align::kLeft, true);
+          const std::string& raw_sub = app.campaign.flow().dialogs().current().subtitle;
+          std::string wrapped;
+          std::string cur_line;
+          size_t pos = 0;
+          int lines = 1;
+          while (pos < raw_sub.size()) {
+            size_t sp = raw_sub.find(' ', pos);
+            const std::string word = (sp == std::string::npos) ? raw_sub.substr(pos) : raw_sub.substr(pos, sp - pos);
+            const std::string cand = cur_line.empty() ? word : (cur_line + " " + word);
+            if (!cur_line.empty() && carview::ui::List::measure(cand, sub_ts) > max_text_w) {
+              if (!wrapped.empty()) wrapped += '\n';
+              wrapped += cur_line;
+              cur_line = word;
+              ++lines;
+            } else {
+              cur_line = cand;
+            }
+            if (sp == std::string::npos) break;
+            pos = sp + 1;
+          }
+          if (!cur_line.empty()) {
+            if (!wrapped.empty()) wrapped += '\n';
+            wrapped += cur_line;
+          }
+          const float th_px = carview::ui::List::measure_height(wrapped, sub_ts);
+          d.subtitle_lines = lines;
+          d.subtitle_box_h_canvas = std::max(46.0f, (sf > 1e-4f ? th_px / sf : th_px) + 20.0f);
+        } else {
+          d.subtitle_lines = 0;
+          d.subtitle_box_h_canvas = 0.0f;
+        }
         carview::ui::List list;
         if (app.show_title && !settings_page.is_open() && app.title_video.active()) {
           app.title_video.draw(list, float(width), float(height));
@@ -648,48 +685,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           carview::campaign_ui::draw_transition(list, app.campaign.flow().transition(), float(width), float(height));
         }
         if (rewind_buf.active()) {
-          // 921_I_REWIND overlay: KITPARTS/REWINDLOGO, KITPARTS/REWINDARROW,
-          // MASKS/GRADIATEDBAR timeline + BUTTON_BAR_SCENE.
-          const float wf = float(width), hf = float(height), sf = hf / 720.0f;
-          (void)carview::ui_scene("921_I_REWIND");
-          carview::ui4::subtle_vignette(list, wf, hf, 0.35f);
-          const char* rw_title = "REWIND";
-          std::vector<carview::ui4::Prompt> rw_prompts;
-          if (rewind_buf.is_rewinding()) {
-            rw_title = rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind ? "REWINDING FURTHER" : "REWINDING";
-            rw_prompts = {{"B", "CANCEL"}};
-          } else if (rewind_buf.is_paused_at_keyframe()) {
-            rw_title = "REWIND PAUSED";
-            if (rewind_buf.at_oldest_slot()) rw_prompts = {{"A", "RESUME"}, {"X", "VIEW REPLAY"}, {"B", "CANCEL"}};
-            else rw_prompts = {{"A", "RESUME"}, {"Y", "REWIND FURTHER"}, {"X", "VIEW REPLAY"}, {"B", "CANCEL"}};
-          } else if (rewind_buf.is_settling()) {
-            rw_title = "RESUMING";
-          }
-          const float cx = 0.5f * wf;
-          const float logo_y = hf - 190.0f * sf;
-          std::array<float, 4> rw_logo{}, rw_arrow{}, rw_bar{};
-          if (carview::ui_texture("KITPARTS/REWINDLOGO", rw_logo)) {
-            list.image(cx - 120.0f * sf, logo_y, cx + 120.0f * sf, logo_y + 44.0f * sf, rw_logo, carview::ui4::kWhite);
-          }
-          if (carview::ui_texture("KITPARTS/REWINDARROW", rw_arrow)) {
-            list.image(cx - 168.0f * sf, logo_y + 6.0f * sf, cx - 126.0f * sf, logo_y + 38.0f * sf, rw_arrow,
-                       rewind_buf.is_rewinding() ? carview::ui4::kPink : carview::ui4::kWhite);
-          }
-          const float pill_y = logo_y + 52.0f * sf;
-          carview::ui4::brush(list, cx - 180.0f * sf, pill_y, cx + 180.0f * sf, pill_y + 32.0f * sf,
-                              carview::ui4::kPink);
-          list.text(cx, pill_y + 7.0f * sf, rw_title,
-                    carview::ui4::style(carview::ui::Font::kE, 18.0f * sf, carview::ui4::kWhite,
-                                        carview::ui::Align::kCenter));
-          // Gradiated rewind bar beneath badge
-          const float bar_y = pill_y + 40.0f * sf;
-          if (carview::ui_texture("MASKS/GRADIATEDBAR", rw_bar)) {
-            list.image(cx - 220.0f * sf, bar_y, cx + 220.0f * sf, bar_y + 10.0f * sf, rw_bar, carview::ui4::kPink);
-          } else {
-            list.rect(cx - 220.0f * sf, bar_y, cx + 220.0f * sf, bar_y + 8.0f * sf, carview::ui4::kBrushBlack);
-            list.rect(cx - 220.0f * sf, bar_y, cx + 120.0f * sf, bar_y + 8.0f * sf, carview::ui4::kPink);
-          }
-          carview::ui4::button_bar(list, rw_prompts, wf, hf);
+          carview::build_rewind_overlay(list, float(width), float(height), rewind_buf.is_rewinding(),
+                                        rewind_buf.ui_state() == drive::RewindUiState::kLoopRewind,
+                                        rewind_buf.is_paused_at_keyframe(), rewind_buf.at_oldest_slot(),
+                                        rewind_buf.is_settling());
         }
         if (slice12.trainer_overlay.is_open()) {
           list.clear();
@@ -796,12 +795,12 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           }
           list.clear();
           carview::draw_autoshow_hud(list, float(width), float(height), autoshow, app.class_bands, app.career.credits,
-                                     vehicle.time() < notice_until ? notice : std::string());
+                                     vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
         } else if (shop.is_open()) {
           list.clear();
           carview::draw_upgrade_shop_hud(list, float(width), float(height), shop, app.class_bands, discount(),
                                          app.career.credits, carview::car_name(app.car),
-                                         vehicle.time() < notice_until ? notice : std::string());
+                                         vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
         } else if (paint_open && livery_editor.is_open()) {
           list.clear();
           carview::draw_livery_editor_hud(list, float(width), float(height), livery_editor, carview::car_name(app.car),
@@ -826,7 +825,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         const bool show_track_chip = !app.show_title && !app.fmv_player.active() && !barn_card.visible && !ceremony.active && !map_overlay.active && !grid_menu_open &&
                                      st.menu.empty() && !career_page.is_open() && !settings_page.is_open() &&
                                      !shop.is_open() && !autoshow.is_open() && !garage_open &&
-                                     !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open;
+                                     !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open &&
+                                     !rewind_buf.active();
         achievements.build_hud_overlays(list, float(width), float(height), show_track_chip);
         if (show_track_chip) {
           app.touch_controls.build_overlay(list, float(width), float(height), vehicle.time());

@@ -275,7 +275,8 @@ bool DriveSession::run_demo_captures() {
               shop.select_row(0);
               carview::ui::List ulist;
               carview::draw_upgrade_shop_hud(ulist, float(app.width), float(app.height), shop, app.class_bands, 0,
-                                             std::max<int64_t>(app.career.credits, 150000), carview::car_name(app.car));
+                                             std::max<int64_t>(app.career.credits, 150000), carview::car_name(app.car),
+                                             {}, app.metric_units);
               upload_ui_atlas(host.renderer, !ui_atlas_synced);
               ui_atlas_synced = true;
               host.renderer.set_ui(ulist.items());

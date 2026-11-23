@@ -452,6 +452,82 @@ bool should_show_gps_turn_distance(const GpsHud& gps) {
   return gps.dist_to_turn_m >= 5.0;
 }
 
+float compute_subtitle_bottom_lift(bool subtitle_active, int subtitle_lines, float subtitle_box_h_canvas) {
+  if (!subtitle_active) return 0.0f;
+  // Subtitle box bottom sits at y=658 (720p canvas), speaker badge extends 22px above box top
+  // (speaker_top = 636 - box_h). Bottom-center cards sit down to y=663 - lift.
+  // Adding 56px clearance above box_h guarantees >= 29px visible air gap above the speaker pill.
+  if (subtitle_box_h_canvas > 0.0f) return std::max(104.0f, subtitle_box_h_canvas + 56.0f);
+  if (subtitle_lines > 0) {
+    const float est_box_h = std::max(46.0f, float(subtitle_lines) * 20.0f + 20.0f);
+    return std::max(104.0f, est_box_h + 56.0f);
+  }
+  return 136.0f;  // safe 3-line default clearance
+}
+
+RewindOverlayAction rewind_overlay_action_for_button(bool rewinding, bool paused_at_keyframe, bool at_oldest_slot,
+                                                     int button_index) {
+  if (button_index < 0) return RewindOverlayAction::kNone;
+  if (rewinding) {
+    return button_index == 0 ? RewindOverlayAction::kCancel : RewindOverlayAction::kNone;
+  }
+  if (paused_at_keyframe) {
+    if (at_oldest_slot) {
+      if (button_index == 0) return RewindOverlayAction::kResume;
+      if (button_index == 1) return RewindOverlayAction::kViewReplay;
+      if (button_index == 2) return RewindOverlayAction::kCancel;
+      return RewindOverlayAction::kNone;
+    }
+    if (button_index == 0) return RewindOverlayAction::kResume;
+    if (button_index == 1) return RewindOverlayAction::kRewindFurther;
+    if (button_index == 2) return RewindOverlayAction::kViewReplay;
+    if (button_index == 3) return RewindOverlayAction::kCancel;
+  }
+  return RewindOverlayAction::kNone;
+}
+
+void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool loop_rewind, bool paused_at_keyframe,
+                          bool at_oldest_slot, bool settling) {
+  // 921_I_REWIND overlay: KITPARTS/REWINDLOGO, KITPARTS/REWINDARROW,
+  // MASKS/GRADIATEDBAR timeline + clickable BUTTON_BAR_SCENE.
+  const float sf = h / 720.0f;
+  (void)ui_scene("921_I_REWIND");
+  ui4::subtle_vignette(list, w, h, 0.35f);
+  const char* rw_title = "REWIND";
+  std::vector<ui4::Prompt> rw_prompts;
+  if (rewinding) {
+    rw_title = loop_rewind ? "REWINDING FURTHER" : "REWINDING";
+    rw_prompts = {{"B", "CANCEL"}};
+  } else if (paused_at_keyframe) {
+    rw_title = "REWIND PAUSED";
+    if (at_oldest_slot) rw_prompts = {{"A", "RESUME"}, {"X", "VIEW REPLAY"}, {"B", "CANCEL"}};
+    else rw_prompts = {{"A", "RESUME"}, {"Y", "REWIND FURTHER"}, {"X", "VIEW REPLAY"}, {"B", "CANCEL"}};
+  } else if (settling) {
+    rw_title = "RESUMING";
+  }
+  const float cx = 0.5f * w;
+  const float logo_y = h - 190.0f * sf;
+  std::array<float, 4> rw_logo{}, rw_arrow{}, rw_bar{};
+  if (ui_texture("KITPARTS/REWINDLOGO", rw_logo)) {
+    list.image(cx - 120.0f * sf, logo_y, cx + 120.0f * sf, logo_y + 44.0f * sf, rw_logo, ui4::kWhite);
+  }
+  if (ui_texture("KITPARTS/REWINDARROW", rw_arrow)) {
+    list.image(cx - 168.0f * sf, logo_y + 6.0f * sf, cx - 126.0f * sf, logo_y + 38.0f * sf, rw_arrow,
+               rewinding ? ui4::kPink : ui4::kWhite);
+  }
+  const float pill_y = logo_y + 52.0f * sf;
+  ui4::brush(list, cx - 180.0f * sf, pill_y, cx + 180.0f * sf, pill_y + 32.0f * sf, ui4::kPink);
+  list.text(cx, pill_y + 7.0f * sf, rw_title, ui4::style(ui::Font::kE, 18.0f * sf, ui4::kWhite, ui::Align::kCenter));
+  const float bar_y = pill_y + 40.0f * sf;
+  if (ui_texture("MASKS/GRADIATEDBAR", rw_bar)) {
+    list.image(cx - 220.0f * sf, bar_y, cx + 220.0f * sf, bar_y + 10.0f * sf, rw_bar, ui4::kPink);
+  } else {
+    list.rect(cx - 220.0f * sf, bar_y, cx + 220.0f * sf, bar_y + 8.0f * sf, ui4::kBrushBlack);
+    list.rect(cx - 220.0f * sf, bar_y, cx + 120.0f * sf, bar_y + 8.0f * sf, ui4::kPink);
+  }
+  ui4::button_bar(list, rw_prompts, w, h);
+}
+
 float drive_hud_dial_height(float h) { return (720 - 587 + 88) * (h / 720.0f); }
 
 void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
@@ -485,9 +561,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   }
   const bool menu = !st.menu_title.empty() || !st.menu.empty();
   // Bottom-center HUD stack allocator (720p canvas units): when campaign subtitles are
-  // active, lift bottom-center cards cleanly above the subtitle bar + speaker pill, and
+  // active, lift bottom-center cards dynamically above the subtitle box + speaker pill, and
   // stack concurrent cards upward so zero banners ever overlap!
-  float bottom_lift = st.subtitle_active ? 96.0f : 0.0f;
+  float bottom_lift = compute_subtitle_bottom_lift(st.subtitle_active, st.subtitle_lines, st.subtitle_box_h_canvas);
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
     if (!st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing))

@@ -247,6 +247,8 @@ struct DriveHud {
   bool touch_hud_active = false;  // compacts & lifts tach above Android touch pedals
   bool metric_units = true;       // true: km/h & km/m, false: MPH & mi/ft (global Units setting)
   bool subtitle_active = false;   // true when bottom-center campaign subtitles are visible (lifts bottom banners)
+  int subtitle_lines = 0;         // wrapped subtitle line count (0 = default 3-line clearance)
+  float subtitle_box_h_canvas = 0.0f;  // exact subtitle box height in 720p canvas units (0 = derive from lines)
   const RaceHud* race = nullptr;
   std::string toast;
   std::string menu_title;
@@ -292,5 +294,23 @@ std::string format_gap_unit(double meters, bool metric);
 std::string format_unit_label(std::string_view raw, std::string_view fallback);
 bool should_show_gps_turn_banner(const GpsHud& gps);
 bool should_show_gps_turn_distance(const GpsHud& gps);
+// Computes dynamic bottom-center banner lift (720p canvas units) so bottom banners
+// clear multi-line campaign subtitles + speaker badge without overlap.
+float compute_subtitle_bottom_lift(bool subtitle_active, int subtitle_lines = 0, float subtitle_box_h_canvas = 0.0f);
+
+enum class RewindOverlayAction {
+  kNone = 0,
+  kResume,
+  kRewindFurther,
+  kViewReplay,
+  kCancel,
+};
+
+// Draws the 921_I_REWIND overlay with clickable ui4::kHitButton button-bar hit zones.
+void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool loop_rewind, bool paused_at_keyframe,
+                          bool at_oldest_slot, bool settling);
+// Maps a clicked ui4::kHitButton index from build_rewind_overlay to its RewindOverlayAction.
+RewindOverlayAction rewind_overlay_action_for_button(bool rewinding, bool paused_at_keyframe, bool at_oldest_slot,
+                                                     int button_index);
 
 }  // namespace carview

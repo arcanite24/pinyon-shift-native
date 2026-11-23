@@ -732,8 +732,64 @@ void draw_hub_player_bar(ui::List& list, float s, int64_t credits, std::string_v
 
 }  // namespace
 
+UpgradeSpecStrings format_upgrade_spec_strings(const garage::CarStats& cur, const garage::CarStats& prv,
+                                               bool metric_units) {
+  UpgradeSpecStrings out;
+  char b1[96], b2[96], b3[96], b4[128];
+  if (metric_units) {
+    const int kw0 = int(std::lround(cur.peak_power_kw));
+    const int kw1 = int(std::lround(prv.peak_power_kw));
+    const int nm0 = int(std::lround(cur.peak_torque_nm));
+    const int nm1 = int(std::lround(prv.peak_torque_nm));
+    const int kg0 = int(std::lround(cur.curb_weight_kg));
+    const int kg1 = int(std::lround(prv.curb_weight_kg));
+    // 100 km/h = 62.1371 mph -> 0-100 km/h scales linearly from 0-60 mph (x1.03562),
+    // and 100-0 km/h braking distance scales quadratically (x1.0725).
+    const double t_0_100_kmh = prv.time_0_60_s * 1.03562;
+    const double brake_100_0_m = prv.brake_60_0_m * 1.0725;
+    std::snprintf(b1, sizeof b1, "%d kW  ->  %d kW", kw0, kw1);
+    std::snprintf(b2, sizeof b2, "%d NM  ->  %d NM", nm0, nm1);
+    std::snprintf(b3, sizeof b3, "%d KG  ->  %d KG", kg0, kg1);
+    std::snprintf(b4, sizeof b4, "0-100: %.2fs   •   100-0: %.1f M   •   %.2fG", t_0_100_kmh, brake_100_0_m,
+                  prv.lat_g_60);
+  } else {
+    const int hp0 = int(std::lround(cur.peak_power_kw * 1.34102));
+    const int hp1 = int(std::lround(prv.peak_power_kw * 1.34102));
+    const int tq0 = int(std::lround(cur.peak_torque_nm * 0.737562));
+    const int tq1 = int(std::lround(prv.peak_torque_nm * 0.737562));
+    const int lb0 = int(std::lround(cur.curb_weight_kg * 2.20462));
+    const int lb1 = int(std::lround(prv.curb_weight_kg * 2.20462));
+    const double brake_60_0_ft = prv.brake_60_0_m * 3.28084;
+    std::snprintf(b1, sizeof b1, "%d HP  ->  %d HP", hp0, hp1);
+    std::snprintf(b2, sizeof b2, "%d LB-FT  ->  %d LB-FT", tq0, tq1);
+    std::snprintf(b3, sizeof b3, "%d LBS  ->  %d LBS", lb0, lb1);
+    std::snprintf(b4, sizeof b4, "0-60: %.2fs   •   60-0: %.0f FT   •   %.2fG", prv.time_0_60_s, brake_60_0_ft,
+                  prv.lat_g_60);
+  }
+  out.power = b1;
+  out.torque = b2;
+  out.weight = b3;
+  out.perf = b4;
+  return out;
+}
+
+std::string format_autoshow_spec_line(double peak_power_kw, double peak_torque_nm, double curb_weight_kg,
+                                      bool metric_units) {
+  char spec[128];
+  if (metric_units) {
+    std::snprintf(spec, sizeof spec, "%d kW   •   %d NM   •   %d KG", int(std::lround(peak_power_kw)),
+                  int(std::lround(peak_torque_nm)), int(std::lround(curb_weight_kg)));
+  } else {
+    std::snprintf(spec, sizeof spec, "%d HP   •   %d LB-FT   •   %d LBS",
+                  int(std::lround(peak_power_kw * 1.34102)), int(std::lround(peak_torque_nm * 0.737562)),
+                  int(std::lround(curb_weight_kg * 2.20462)));
+  }
+  return spec;
+}
+
 void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autoshow,
-                       const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice) {
+                       const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice,
+                       bool metric_units) {
   const float s = h / 720.0f;
   ui4::subtle_vignette(list, w, h, 0.20f);
 
@@ -937,10 +993,8 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
         cy += 4.0f * s;
 
         // Compact Power / Torque / Weight PILL26PX telemetry row
-        char spec[128];
-        const int hp = int(std::lround(sel_car->peak_power_kw * 1.34102));
-        std::snprintf(spec, sizeof spec, "%d HP   •   %.0f NM   •   %.0f KG", hp, sel_car->peak_torque_nm,
-                      sel_car->curb_weight_kg);
+        const std::string spec =
+            format_autoshow_spec_line(sel_car->peak_power_kw, sel_car->peak_torque_nm, sel_car->curb_weight_kg, metric_units);
         ui4::pill(list, cx0, cy, cx1, cy + 26.0f * s, ui4::kBrushBlack, ui4::PillKind::kPill26);
         list.text(0.5f * (cx0 + cx1), cy + 6.0f * s, spec,
                   ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite, ui::Align::kCenter));
@@ -1049,7 +1103,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
 
 void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& shop,
                            const std::vector<garage::ClassBand>& bands, int discount_percent, int64_t credits,
-                           const std::string& car_title, const std::string& notice) {
+                           const std::string& car_title, const std::string& notice, bool metric_units) {
   const float s = h / 720.0f;
   ui4::subtle_vignette(list, w, h, 0.20f);
 
@@ -1124,39 +1178,41 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
     }
     ry += 4.0f * s;
 
-    // Power / Weight / 0-60 floating PILL02 rows
-    const int hp0 = int(std::lround(cur.stats.peak_power_kw * 1.34102));
-    const int hp1 = int(std::lround(prv.stats.peak_power_kw * 1.34102));
-    char line1[96], line2[96], line3[96];
-    std::snprintf(line1, sizeof line1, "%d HP  ->  %d HP", hp0, hp1);
-    std::snprintf(line2, sizeof line2, "%.0f KG  ->  %.0f KG", cur.stats.curb_weight_kg, prv.stats.curb_weight_kg);
-    std::snprintf(line3, sizeof line3, "0-60: %.2fs   •   60-0: %.1fm   •   %.2fG", prv.stats.time_0_60_s,
-                  prv.stats.brake_60_0_m, prv.stats.lat_g_60);
+    // Power / Torque / Weight / Perf floating PILL02 rows respecting global Metric/Imperial Units
+    const UpgradeSpecStrings specs = format_upgrade_spec_strings(cur.stats, prv.stats, metric_units);
+    const bool power_up = prv.stats.peak_power_kw > cur.stats.peak_power_kw + 0.05;
+    const bool torque_up = prv.stats.peak_torque_nm > cur.stats.peak_torque_nm + 0.05;
+    const bool weight_down = prv.stats.curb_weight_kg < cur.stats.curb_weight_kg - 0.5;
 
     ui4::pill(list, rx0, ry, rx1, ry + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
     list.text(rx0 + 12.0f * s, ry + 6.0f * s, "POWER", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
-    list.text(rx1 - 12.0f * s, ry + 5.0f * s, line1,
-              ui4::style(ui::Font::kE, 12.5f * s, hp1 > hp0 ? ui4::kGreen : ui4::kWhite, ui::Align::kRight));
+    list.text(rx1 - 12.0f * s, ry + 5.0f * s, specs.power,
+              ui4::style(ui::Font::kE, 12.5f * s, power_up ? ui4::kGreen : ui4::kWhite, ui::Align::kRight));
+    ry += 27.0f * s;
+
+    ui4::pill(list, rx0, ry, rx1, ry + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
+    list.text(rx0 + 12.0f * s, ry + 6.0f * s, "TORQUE", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+    list.text(rx1 - 12.0f * s, ry + 5.0f * s, specs.torque,
+              ui4::style(ui::Font::kE, 12.5f * s, torque_up ? ui4::kGreen : ui4::kWhite, ui::Align::kRight));
     ry += 27.0f * s;
 
     ui4::pill(list, rx0, ry, rx1, ry + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
     list.text(rx0 + 12.0f * s, ry + 6.0f * s, "WEIGHT", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
-    list.text(rx1 - 12.0f * s, ry + 5.0f * s, line2,
-              ui4::style(ui::Font::kE, 12.5f * s,
-                         prv.stats.curb_weight_kg < cur.stats.curb_weight_kg ? ui4::kGreen : ui4::kWhite,
-                         ui::Align::kRight));
+    list.text(rx1 - 12.0f * s, ry + 5.0f * s, specs.weight,
+              ui4::style(ui::Font::kE, 12.5f * s, weight_down ? ui4::kGreen : ui4::kWhite, ui::Align::kRight));
     ry += 27.0f * s;
 
     ui4::pill(list, rx0, ry, rx1, ry + 24.0f * s, ui4::kBrushBlack, ui4::PillKind::kPill26);
-    list.text(0.5f * (rx0 + rx1), ry + 6.0f * s, line3,
-              ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter));
+    ui::TextStyle pfs = ui4::style(ui::Font::kB, 11.0f * s, ui4::kOffWhite, ui::Align::kCenter);
+    ui4::fit_text(specs.perf, pfs, rw - 18.0f * s, 8.5f * s);
+    list.text(0.5f * (rx0 + rx1), ry + 6.0f * s, specs.perf, pfs);
 
     // 2. Bottom +3.0 deg Group_BLADE@(640,522): TitleTapeText @(88.7, 435.7) + Horizontal Part/Tuning Blade!
     const std::string cat_title = std::string(shop_category_name(shop.category()));
     ui4::title_tape(list, s, 88.0f * s, 424.0f * s, cat_title, ui4::kBrushBlack, 34.0f, 540.0f);
 
-    const float blade_y = 486.0f * s;
-    const float blade_h = 132.0f * s;
+    const float blade_y = 480.0f * s;
+    const float blade_h = 138.0f * s;
     const float left_x = 68.0f * s, right_x = w - 68.0f * s;
 
     if (shop.category() == ShopCategory::kTuning && !shop.tuning_sliders().empty()) {
@@ -1243,9 +1299,9 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         draw_bigpane_card(list, bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, s, act);
 
         // Real UI4/Upgrades/* part icon centred in upper half of card!
-        const float ic_sz = 64.0f * s;
+        const float ic_sz = 56.0f * s;
         const float ic_x0 = bx + 0.5f * (cw - ic_sz);
-        const float ic_y0 = blade_y + 10.0f * s - lift;
+        const float ic_y0 = blade_y + 8.0f * s - lift;
         if (!ui4::upgrade_part_icon(list, ic_x0, ic_y0, ic_x0 + ic_sz, ic_y0 + ic_sz, r.part_enum, r.level, r.is_stock,
                                     act ? ui4::kWhite : ui::rgba(225, 228, 236, 230))) {
           list.rect(ic_x0, ic_y0, ic_x0 + ic_sz, ic_y0 + ic_sz, ui::rgba(255, 255, 255, 16));
@@ -1266,19 +1322,29 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
           ui4::opt_arrow(list, bx + cw - 16.0f * s, ic_y0 + 0.5f * ic_sz, 14.0f * s, +1, ui4::kPinkHi);
         }
 
-        // Slot name + tier label + price/state strip
+        // Line 1: Slot name (full card width)
         ui::TextStyle ls = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite);
-        ui4::fit_text(r.label, ls, cw - 16.0f * s, 9.0f * s);
-        list.text(bx + 8.0f * s, blade_y + 78.0f * s - lift, r.label, ls);
+        ui4::fit_text(r.label, ls, cw - 16.0f * s, 9.5f * s);
+        list.text(bx + 8.0f * s, blade_y + 68.0f * s - lift, r.label, ls);
 
-        ui::TextStyle ps = ui4::style(ui::Font::kB, 11.0f * s, act ? ui4::kOffWhite : ui4::kDim, ui::Align::kLeft, true);
-        ui4::fit_text(r.part_label, ps, cw - 92.0f * s, 8.0f * s);
-        list.text(bx + 8.0f * s, blade_y + 98.0f * s - lift, r.part_label, ps);
+        // Line 2: Localized part name on its own dedicated full-width row (zero collision with price!)
+        ui::TextStyle ps = ui4::style(ui::Font::kB, 11.5f * s, act ? ui4::kOffWhite : ui4::kDim, ui::Align::kLeft, true);
+        const float part_max_w = std::max(40.0f * s, cw - 16.0f * s);
+        ui4::fit_text(r.part_label, ps, part_max_w, 9.0f * s);
+        std::string part_txt = r.part_label;
+        if (ui::List::measure(part_txt, ps) > part_max_w && part_txt.size() > 4) {
+          while (part_txt.size() > 3 && ui::List::measure(part_txt + "...", ps) > part_max_w) part_txt.pop_back();
+          part_txt += "...";
+        }
+        list.text(bx + 8.0f * s, blade_y + 87.0f * s - lift, part_txt, ps);
 
+        // Line 3: Subtle separator + dedicated bottom-right Price / Status badge row
+        list.rect(bx + 8.0f * s, blade_y + 106.0f * s - lift, bx + cw - 8.0f * s, blade_y + 107.0f * s - lift,
+                  ui::rgba(255, 255, 255, act ? 56 : 28));
         const uint32_t scol = r.fitted ? ui4::kGreen : (r.owned ? ui4::kAmber : ui4::kYellow);
-        ui::TextStyle ss = ui4::style(ui::Font::kE, 11.5f * s, act ? scol : scol, ui::Align::kRight, true);
-        ui4::fit_text(r.state, ss, 86.0f * s, 8.0f * s);
-        list.text(bx + cw - 8.0f * s, blade_y + 98.0f * s - lift, r.state, ss);
+        ui::TextStyle ss = ui4::style(ui::Font::kE, 12.5f * s, scol, ui::Align::kRight, true);
+        ui4::fit_text(r.state, ss, cw - 20.0f * s, 9.0f * s);
+        list.text(bx + cw - 10.0f * s, blade_y + 112.0f * s - lift, r.state, ss);
         bx += cw + gap;
       }
 

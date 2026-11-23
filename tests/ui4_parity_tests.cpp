@@ -1947,6 +1947,145 @@ void test_round2_hud_minimap_gps_and_mouse_ux() {
         "Post-Race Results emits 4 clickable button-bar zones (Continue/Restart/Results/Replay)");
 }
 
+void test_round3_subtitle_lift_upgrade_units_and_rewind_touch() {
+  // 1. Dynamic 3-line subtitle lift clears campaign subtitle box + 22px speaker badge.
+  check(carview::compute_subtitle_bottom_lift(false, 3, 80.0f) == 0.0f,
+        "No subtitle lift when subtitle_active is false");
+  const float lift_1 = carview::compute_subtitle_bottom_lift(true, 1, 0.0f);
+  const float lift_2 = carview::compute_subtitle_bottom_lift(true, 2, 0.0f);
+  const float lift_3 = carview::compute_subtitle_bottom_lift(true, 3, 0.0f);
+  const float lift_4 = carview::compute_subtitle_bottom_lift(true, 4, 0.0f);
+  check(lift_1 >= 104.0f && lift_2 >= 116.0f && lift_3 >= 136.0f && lift_4 >= 156.0f,
+        "Dynamic subtitle bottom_lift grows monotonically for 1..4 wrapped subtitle lines");
+  check(lift_3 > lift_2 && lift_4 > lift_3, "3-line and 4-line subtitles get progressively larger bottom lift");
+  const float lift_measured = carview::compute_subtitle_bottom_lift(true, 3, 84.0f);
+  check(lift_measured >= 140.0f, "Explicit measured subtitle_box_h_canvas computes exact clearance");
+
+  // Verify popup_card bottom Y clears a 3-line subtitle speaker badge (top at y=556 on 720p canvas) by >= 20px.
+  {
+    carview::DriveHud d;
+    d.driving = true;
+    d.time = 2.0;
+    d.popup_title = "ROAD DISCOVERED  1 / 216";
+    d.popup_text = "COLORADO ROAD #88";
+    d.popup_at = 1.0;
+    d.subtitle_active = true;
+    d.subtitle_lines = 3;
+    d.subtitle_box_h_canvas = 80.0f;
+    carview::ui::List l_sub;
+    carview::build_drive_hud(l_sub, d, 1280.0f, 720.0f);
+    // Find lowest geometry in center-bottom popup region (x in [430, 960], y in [420, 620]).
+    float max_popup_y = 0.0f;
+    for (const auto& inst : l_sub.items()) {
+      const float x0 = inst.rect[0], y0 = inst.rect[1], x1 = inst.rect[2], y1 = inst.rect[3];
+      if (x0 >= 420.0f && x1 <= 980.0f && y0 >= 400.0f && y1 <= 620.0f) {
+        max_popup_y = std::max(max_popup_y, y1);
+      }
+    }
+    const float speaker_badge_top_y = 720.0f - 62.0f - 80.0f - 22.0f;  // 556.0f
+    check(max_popup_y > 400.0f && max_popup_y <= speaker_badge_top_y - 20.0f,
+          "3-line subtitle lift keeps ROAD DISCOVERED popup >= 20px above speaker badge");
+  }
+
+  // 2. Upgrade Shop & Autoshow spec unit consistency (Imperial vs Metric).
+  {
+    garage::CarStats cur{}, prv{};
+    cur.peak_power_kw = 112.6;
+    prv.peak_power_kw = 122.3;
+    cur.peak_torque_nm = 235.0;
+    prv.peak_torque_nm = 250.0;
+    cur.curb_weight_kg = 1240.0;
+    prv.curb_weight_kg = 1200.0;
+    prv.time_0_60_s = 7.85;
+    prv.brake_60_0_m = 22.3;
+    prv.lat_g_60 = 1.54;
+
+    const auto imp = carview::format_upgrade_spec_strings(cur, prv, false);
+    check(imp.power.find("HP") != std::string::npos && imp.power.find("kW") == std::string::npos,
+          "Imperial Upgrade Shop power uses HP only");
+    check(imp.torque.find("LB-FT") != std::string::npos && imp.torque.find("NM") == std::string::npos,
+          "Imperial Upgrade Shop torque uses LB-FT only");
+    check(imp.weight.find("LBS") != std::string::npos && imp.weight.find("KG") == std::string::npos,
+          "Imperial Upgrade Shop weight uses LBS only");
+    check(imp.perf.find("0-60:") != std::string::npos && imp.perf.find("60-0:") != std::string::npos &&
+              imp.perf.find("FT") != std::string::npos && imp.perf.find(" M ") == std::string::npos,
+          "Imperial Upgrade Shop accel/braking uses 0-60 and 60-0 FT");
+
+    const auto met = carview::format_upgrade_spec_strings(cur, prv, true);
+    check(met.power.find("kW") != std::string::npos && met.power.find("HP") == std::string::npos,
+          "Metric Upgrade Shop power uses kW only");
+    check(met.torque.find("NM") != std::string::npos && met.torque.find("LB-FT") == std::string::npos,
+          "Metric Upgrade Shop torque uses NM only");
+    check(met.weight.find("KG") != std::string::npos && met.weight.find("LBS") == std::string::npos,
+          "Metric Upgrade Shop weight uses KG only");
+    check(met.perf.find("0-100:") != std::string::npos && met.perf.find("100-0:") != std::string::npos &&
+              met.perf.find(" M ") != std::string::npos && met.perf.find("FT") == std::string::npos,
+          "Metric Upgrade Shop accel/braking uses 0-100 and 100-0 M");
+
+    const std::string as_imp = carview::format_autoshow_spec_line(112.6, 235.0, 1240.0, false);
+    const std::string as_met = carview::format_autoshow_spec_line(112.6, 235.0, 1240.0, true);
+    check(as_imp.find("HP") != std::string::npos && as_imp.find("LB-FT") != std::string::npos &&
+              as_imp.find("LBS") != std::string::npos,
+          "Imperial Autoshow spec uses HP / LB-FT / LBS");
+    check(as_met.find("kW") != std::string::npos && as_met.find("NM") != std::string::npos &&
+              as_met.find("KG") != std::string::npos,
+          "Metric Autoshow spec uses kW / NM / KG");
+  }
+
+  // 3. Rewind overlay mouse/touch hit-testing across all Rewind states (prevents Android softlock).
+  {
+    auto collect_buttons = [](const carview::ui::List& l) {
+      std::vector<carview::ui::HitZone> out;
+      for (const auto& hz : l.hits())
+        if (hz.group == carview::ui4::kHitButton) out.push_back(hz);
+      return out;
+    };
+
+    // State A: Paused at normal keyframe -> RESUME, REWIND FURTHER, VIEW REPLAY, CANCEL.
+    carview::ui::List l_paused;
+    carview::build_rewind_overlay(l_paused, 1280.0f, 720.0f, false, false, true, false, false);
+    const auto btns_paused = collect_buttons(l_paused);
+    check(btns_paused.size() == 4, "Rewind Paused overlay emits 4 touchable button hit zones");
+    const carview::RewindOverlayAction want_paused[4] = {
+        carview::RewindOverlayAction::kResume,
+        carview::RewindOverlayAction::kRewindFurther,
+        carview::RewindOverlayAction::kViewReplay,
+        carview::RewindOverlayAction::kCancel,
+    };
+    for (size_t i = 0; i < btns_paused.size() && i < 4; ++i) {
+      const float cx = 0.5f * (btns_paused[i].x0 + btns_paused[i].x1);
+      const float cy = 0.5f * (btns_paused[i].y0 + btns_paused[i].y1);
+      carview::ui::HitZone hit{};
+      check(l_paused.hit_test(cx, cy, hit) && hit.group == carview::ui4::kHitButton && hit.index == int(i),
+            "Rewind Paused button center hit-tests cleanly");
+      check(carview::rewind_overlay_action_for_button(false, true, false, hit.index) == want_paused[i],
+            "Rewind Paused button index maps to expected RewindOverlayAction");
+    }
+
+    // State B: Paused at oldest slot -> RESUME, VIEW REPLAY, CANCEL (no Rewind Further).
+    carview::ui::List l_oldest;
+    carview::build_rewind_overlay(l_oldest, 1280.0f, 720.0f, false, false, true, true, false);
+    const auto btns_oldest = collect_buttons(l_oldest);
+    check(btns_oldest.size() == 3, "Rewind Paused (oldest slot) emits 3 touchable button hit zones");
+    check(carview::rewind_overlay_action_for_button(false, true, true, 0) == carview::RewindOverlayAction::kResume &&
+              carview::rewind_overlay_action_for_button(false, true, true, 1) ==
+                  carview::RewindOverlayAction::kViewReplay &&
+              carview::rewind_overlay_action_for_button(false, true, true, 2) == carview::RewindOverlayAction::kCancel,
+          "Rewind Paused (oldest slot) indices map to Resume / View Replay / Cancel");
+
+    // State C: Actively rewinding -> CANCEL only.
+    carview::ui::List l_rew;
+    carview::build_rewind_overlay(l_rew, 1280.0f, 720.0f, true, false, false, false, false);
+    const auto btns_rew = collect_buttons(l_rew);
+    check(btns_rew.size() == 1, "Active Rewinding overlay emits 1 touchable Cancel button hit zone");
+    carview::ui::HitZone hit_rew{};
+    check(l_rew.hit_test(0.5f * (btns_rew[0].x0 + btns_rew[0].x1), 0.5f * (btns_rew[0].y0 + btns_rew[0].y1), hit_rew) &&
+              carview::rewind_overlay_action_for_button(true, false, false, hit_rew.index) ==
+                  carview::RewindOverlayAction::kCancel,
+          "Active Rewinding touch tap maps to Cancel");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1954,6 +2093,7 @@ int main() {
   test_map_camera_controller();
   test_units_mouse_and_banner_non_overlap();
   test_round2_hud_minimap_gps_and_mouse_ux();
+  test_round3_subtitle_lift_upgrade_units_and_rewind_touch();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");

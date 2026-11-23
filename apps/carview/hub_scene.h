@@ -141,13 +141,25 @@ struct BarnFindCard {
 
 // --- Forza Horizon 1-styled 3D Festival Hub UI Overlays ---
 
+struct UpgradeSpecStrings {
+  std::string power;   // e.g. "151 HP  ->  164 HP" or "113 kW  ->  122 kW"
+  std::string torque;  // e.g. "173 LB-FT  ->  184 LB-FT" or "235 NM  ->  250 NM"
+  std::string weight;  // e.g. "2,734 LBS  ->  2,734 LBS" or "1,240 KG  ->  1,240 KG"
+  std::string perf;    // e.g. "0-60: 7.85s   •   60-0: 73 FT   •   1.54G" or "0-100: 8.13s   •   100-0: 23.9 M   •   1.54G"
+};
+
+UpgradeSpecStrings format_upgrade_spec_strings(const garage::CarStats& cur, const garage::CarStats& prv,
+                                               bool metric_units);
+std::string format_autoshow_spec_line(double peak_power_kw, double peak_torque_nm, double curb_weight_kg,
+                                      bool metric_units);
+
 void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autoshow,
                        const std::vector<garage::ClassBand>& bands, int64_t credits,
-                       const std::string& notice = {});
+                       const std::string& notice = {}, bool metric_units = false);
 
 void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& shop,
                            const std::vector<garage::ClassBand>& bands, int discount_percent, int64_t credits,
-                           const std::string& car_title, const std::string& notice = {});
+                           const std::string& car_title, const std::string& notice = {}, bool metric_units = false);
 
 void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& browser,
                      const std::vector<garage::ClassBand>& bands, int64_t credits, const std::string& notice = {});

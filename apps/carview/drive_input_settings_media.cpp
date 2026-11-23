@@ -875,6 +875,31 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   rewind_buf.request_view_replay();
                 else if (b == SDL_GAMEPAD_BUTTON_EAST)
                   do_cancel();
+              } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) {
+                  do_cancel();
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                } else if (e.button.button == SDL_BUTTON_LEFT) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui4::kHitButton) {
+                    const auto act = carview::rewind_overlay_action_for_button(
+                        rewind_buf.is_rewinding(), rewind_buf.is_paused_at_keyframe(), rewind_buf.at_oldest_slot(),
+                        hz.index);
+                    if (act == carview::RewindOverlayAction::kResume) {
+                      do_resume();
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    } else if (act == carview::RewindOverlayAction::kRewindFurther) {
+                      rewind_buf.rewind_further();
+                      app.audio_host.trigger_ui(audio::UiCue::kMove);
+                    } else if (act == carview::RewindOverlayAction::kViewReplay) {
+                      rewind_buf.request_view_replay();
+                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    } else if (act == carview::RewindOverlayAction::kCancel) {
+                      do_cancel();
+                      app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                    }
+                  }
+                }
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
