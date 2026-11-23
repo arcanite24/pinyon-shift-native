@@ -191,8 +191,36 @@ float sky_fbm(vec2 p) {
 vec3 sky_colour(vec3 dir, vec3 up, vec3 sun) {
   float h = dot(dir, up);
   float hc = clamp(h, 0.0, 1.0);
-  vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(hc, 0.55));
   float toward = max(dot(dir, sun), 0.0);
+  if (frame.sun_color.w >= 0.0) {
+    // Dynamic Time-of-Day sky reflection & fallback (SPEC-SKY-AND-TOD §§3-4):
+    // scales horizon, zenith, sun scatter, and clouds by actual TOD luminance and sun elevation
+    // so midnight lakes and cockpit rearview mirrors reflect dark starlit night sky instead of noon cyan.
+    float sun_elev = dot(sun, up);
+    float day_vis = smoothstep(-0.08, 0.16, sun_elev);
+    float night_amt = clamp(frame.sky_color.w, 0.0, 1.0);
+    vec3 tod_horizon = mix(frame.fog_color.rgb * 1.45, frame.sky_color.rgb * 0.72, night_amt * 0.55);
+    vec3 tod_zenith = frame.sky_color.rgb * mix(1.25, 0.45, night_amt);
+    vec3 sky = mix(tod_horizon, tod_zenith, pow(hc, 0.55));
+    // Warm horizon in-scattering only while sun is near or above horizon.
+    sky = mix(sky, frame.fog_scatter.rgb, pow(toward, 6.0) * (1.0 - hc) * 0.55 * day_vis);
+    sky += frame.sun_color.rgb * (pow(toward, 64.0) * 0.55 + pow(toward, 900.0) * 5.0) * day_vis;
+    if (h > 0.02) {
+      vec3 side = normalize(abs(up.y) < 0.9 ? cross(up, vec3(0, 1, 0)) : cross(up, vec3(1, 0, 0)));
+      vec3 fwd = cross(side, up);
+      vec2 uv = vec2(dot(dir, side), dot(dir, fwd)) / (h + 0.08);
+      uv = clamp(uv, vec2(-40.0), vec2(40.0));
+      float c = sky_fbm(uv * 1.6);
+      float cover = smoothstep(0.48, 0.78, c) * smoothstep(0.02, 0.22, h);
+      vec3 cloud_lit = frame.sky_color.rgb * mix(1.4, 0.55, night_amt) +
+                       frame.sun_color.rgb * (0.65 * max(sun_elev, 0.0) * day_vis);
+      vec3 cloud = mix(cloud_lit * 0.65, cloud_lit * 1.15, smoothstep(0.5, 0.9, c));
+      cloud += frame.sun_color.rgb * pow(toward, 8.0) * 0.30 * day_vis;
+      sky = mix(sky, cloud, cover * mix(0.82, 0.30, night_amt));
+    }
+    return max(sky, vec3(0.0)) * (h < 0.0 ? 0.65 : 1.0);
+  }
+  vec3 sky = mix(kSkyHorizon, kSkyZenith, pow(hc, 0.55));
   // Haze warms towards the sun, low down.
   sky = mix(sky, vec3(0.80, 0.70, 0.55), pow(toward, 6.0) * (1.0 - hc) * 0.55);
   sky += kSunColour * (pow(toward, 64.0) * 0.6 + pow(toward, 900.0) * 6.0);
@@ -659,15 +687,19 @@ void main() {
     float depth_m = mix(0.25, 6.5, smoothstep(0.02, 0.85, shore_a)) / max(nv, 0.24);
     vec3 extinction = vec3(0.45, 0.15, 0.10);
     vec3 transmittance = exp(-depth_m * extinction);
-    float day_amt = clamp(dot(up, sun) * 2.4 + 0.24, 0.08, 1.0);
-    vec3 shallow_tint = vec3(0.036, 0.128, 0.132) * (0.48 + 0.52 * day_amt) + gnd_col * 0.12;
-    vec3 deep_tint = vec3(0.010, 0.052, 0.084) * (0.40 + 0.60 * day_amt) + sky_col * 0.14;
+    float sun_elev = dot(up, sun);
+    float sun_above = smoothstep(-0.04, 0.14, sun_elev);
+    // Scale lake body scattering by live TOD sun + sky irradiance (no hardcoded daylight floor)
+    // so midnight auto-exposure (+4 EV) keeps lakes dark starlit indigo rather than glowing cyan.
+    vec3 water_illum = max(sun_col * (max(sun_elev, 0.0) * sun_above * 0.72) + sky_col * 1.40, vec3(0.0015));
+    vec3 shallow_tint = vec3(0.046, 0.162, 0.168) * water_illum + gnd_col * 0.08;
+    vec3 deep_tint = vec3(0.012, 0.064, 0.104) * water_illum + sky_col * 0.10;
     vec3 body_col = mix(deep_tint, shallow_tint, transmittance);
 
-    // Subtle subsurface turquoise scatter on sunlit wave crests.
+    // Subtle subsurface turquoise scatter on sunlit wave crests (gated on sun above horizon).
     float sss_ang = pow(clamp(dot(view, -sun + nw * 0.35), 0.0, 1.0), 3.5);
     float crest_mask = clamp(crest * 0.5 + 0.5, 0.0, 1.0);
-    body_col += vec3(0.016, 0.088, 0.092) * sun_col * sss_ang * crest_mask * 0.32;
+    body_col += vec3(0.016, 0.088, 0.092) * sun_col * (sss_ang * crest_mask * 0.32 * sun_above);
 
     // Sparkling dual-lobe GGX sun specular (sharp glints + soft solar reflection trail).
     vec3 h_w = normalize(view + sun);
@@ -680,7 +712,7 @@ void main() {
     float d_g2 = nh * nh * (a2 - 1.0) + 1.0;
     float ggx_sheen = (a2 / max(3.14159265 * d_g2 * d_g2, 1e-5)) * 0.045;
     float shade_w = mix(1.0, sun_shadow(v_position, n_geom), shadow_scale);
-    vec3 spec_col = sun_col * (ggx_glint + ggx_sheen) * nl_w * shade_w;
+    vec3 spec_col = sun_col * (ggx_glint + ggx_sheen) * nl_w * shade_w * sun_above;
 
     // Combine refracted depth body + Fresnel sky/mountain reflection + sparkling sun glints.
     vec3 w_col = mix(body_col, refl, clamp(fresnel * 0.92 + 0.05, 0.05, 0.92)) + spec_col;
@@ -690,7 +722,7 @@ void main() {
     float foam_noise = sky_noise(wp * 2.4 + vec2(t_sec * 0.32, -t_sec * 0.22)) * 0.6 +
                        sky_noise(wp * 5.8 - vec2(t_sec * 0.48, t_sec * 0.36)) * 0.4;
     float foam_band = smoothstep(0.50, 0.80, foam_noise + shore_zone * 0.34 + crest * 0.08) * shore_zone;
-    vec3 foam_col = (sky_col * 0.85 + sun_col * 0.42 * shade_w) * 1.10;
+    vec3 foam_col = (sky_col * 0.85 + sun_col * (0.42 * shade_w * sun_above)) * 1.10;
     w_col = mix(w_col, foam_col, clamp(foam_band * 0.55, 0.0, 0.65));
 
     w_col *= draw.up.w;

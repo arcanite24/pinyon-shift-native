@@ -227,7 +227,7 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &dep);
-    const VkClearColorValue clr{{0.08f, 0.10f, 0.14f, 1.0f}};
+    const VkClearColorValue clr{{0.004f, 0.006f, 0.010f, 1.0f}};
     vkCmdClearColorImage(cmd, dyn_env_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &b.subresourceRange);
     b.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
     b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -287,7 +287,7 @@ bool Showroom::ensure_mirror_targets() {
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &dep);
-    const VkClearColorValue clr{{0.08f, 0.10f, 0.14f, 1.0f}};
+    const VkClearColorValue clr{{0.004f, 0.006f, 0.010f, 1.0f}};
     vkCmdClearColorImage(cmd, mirror_tex_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &b.subresourceRange);
     b.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
     b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -364,7 +364,15 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
   color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   color.loadOp = clear_target ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
   color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  color.clearValue.color = {{0.05f, 0.08f, 0.12f, 1.0f}};
+  // Clear to TOD horizon/fog luminance rather than hardcoded daylight blue so midnight
+  // rearview mirrors and dynamic cubemaps never leak bright cyan under night auto-exposure.
+  if (view_frame.sun_color[3] >= 0.0f) {
+    color.clearValue.color = {{std::max(0.0f, view_frame.fog_color[0] * 0.45f),
+                               std::max(0.0f, view_frame.fog_color[1] * 0.45f),
+                               std::max(0.0f, view_frame.fog_color[2] * 0.45f), 1.0f}};
+  } else {
+    color.clearValue.color = {{0.05f, 0.08f, 0.12f, 1.0f}};
+  }
   VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   depth.imageView = depth_view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
