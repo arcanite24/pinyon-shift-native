@@ -257,11 +257,15 @@ void test_achievements_system_and_persistence() {
   fh1::SpaDatabase db;
   assert(fh1::parse_spa_xdbf(bytes, db, fh1::spa_language_id("EN"), nullptr));
 
+  carview::AchievementsSystem fallback;
+  fallback.init(fh1::SpaDatabase{});
+  assert(fallback.total_count() >= 50);
+
   carview::AchievementsSystem sys;
   int sound_triggers = 0;
   sys.set_unlock_sound_callback([&]() { ++sound_triggers; });
   sys.init(db);
-  assert(sys.total_count() >= 50);
+  assert(sys.total_count() == 5);
   assert(sys.find(155) != nullptr && sys.find(155)->name == "Welcome to Horizon");
   assert(sys.find(206) != nullptr && sys.find(206)->name == "Rally Debut");
   assert(sys.find(216) != nullptr && sys.find(216)->name == "Club Member");
@@ -290,21 +294,25 @@ void test_achievements_system_and_persistence() {
   ags.rally_victories = 1;
 
   const int first_unlocked = sys.evaluate(ags, true);
-  assert(first_unlocked >= 5);
+  assert(first_unlocked == 4);
   assert(sound_triggers == first_unlocked);
   assert(sys.find(155)->unlocked);
   assert(sys.find(175)->unlocked);
   assert(sys.find(206)->unlocked);
   assert(sys.find(216)->unlocked);
-  assert(!sys.find(194)->unlocked);  // 75 / 100 discount signs
-  assert(sys.find(194)->progress.has_value());
-  assert(sys.find(194)->progress->current == 75);
-  assert(sys.find(194)->progress->target == 100);
   assert(!sys.find(195)->unlocked);  // 5 / 9 barn finds
   assert(sys.find(195)->progress.has_value());
   assert(sys.find(195)->progress->current == 5);
   assert(sys.find(195)->progress->target == 9);
   assert(sys.active_toast() != nullptr);
+
+  // Also verify full 50-entry fallback evaluates >=5 unlocks and tracks 194 (75/100 signs)
+  const int fallback_unlocked = fallback.evaluate(ags, false);
+  assert(fallback_unlocked >= 5);
+  assert(fallback.find(194) != nullptr && !fallback.find(194)->unlocked);
+  assert(fallback.find(194)->progress.has_value());
+  assert(fallback.find(194)->progress->current == 75);
+  assert(fallback.find(194)->progress->target == 100);
 
   // Re-evaluating the same state unlocks 0 new achievements
   assert(sys.evaluate(ags, true) == 0);
