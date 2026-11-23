@@ -1,0 +1,284 @@
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "campaign_director.h"
+#include "campaign_ui.h"
+#include "drive/save.h"
+#include "fmv_player.h"
+#include "race/campaign_flow.h"
+#include "ui.h"
+
+namespace {
+
+int g_failures = 0;
+
+void check(bool cond, const char* msg) {
+  if (!cond) {
+    std::fprintf(stderr, "FAIL: %s\n", msg);
+    ++g_failures;
+  }
+}
+
+void test_easing_and_transitions() {
+  check(std::fabs(race::ease_out_cubic(0.0) - 0.0) < 1e-6, "ease_out_cubic(0) == 0");
+  check(std::fabs(race::ease_out_cubic(1.0) - 1.0) < 1e-6, "ease_out_cubic(1) == 1");
+  check(race::ease_out_cubic(0.5) > 0.75, "ease_out_cubic decelerates smoothly");
+  check(std::fabs(race::ease_in_out_cubic(0.5) - 0.5) < 1e-6, "ease_in_out_cubic(0.5) == 0.5");
+  check(race::ease_out_back(0.65) > 1.0, "ease_out_back overshoots cleanly before settling");
+
+  race::TransitionState tr;
+  tr.start(race::TransitionKind::kBrushWipe, 0.6, "HORIZON FESTIVAL");
+  check(tr.active, "transition starts active");
+  check(!tr.update(0.15), "midpoint not reached at 0.15s");
+  check(tr.cover_alpha() > 0.3f && tr.cover_alpha() < 0.99f, "cover_alpha rises before midpoint");
+  check(tr.update(0.20), "midpoint fires once crossing 0.30s");
+  check(!tr.update(0.15), "midpoint does not fire twice");
+  check(tr.cover_alpha() > 0.0f && tr.cover_alpha() < 1.0f, "cover_alpha falls after midpoint");
+  tr.update(0.25);
+  check(!tr.active && tr.cover_alpha() == 0.0f, "transition finishes cleanly");
+}
+
+void test_minute0_to_endgame_state_machine() {
+  race::CampaignFlow flow;
+  // 1. Start New Career (with movies enabled) -> Opening Cutscene.
+  {
+    auto act = flow.start_new_career(false, {-1360.0, 2.0, -210.0});
+    check(flow.stage() == race::CampaignStage::kOpeningCutscene, "New Career enters OpeningCutscene");
+    check(act.play_fmv && act.fmv_cutscene == race::CutsceneKind::kOpeningFmv, "requests FMV_01 opening");
+    check(flow.is_onboarding() && flow.is_blocking_gameplay(), "opening cutscene blocks gameplay");
+  }
+  // 2. Opening FMV ends -> Viper Intro Drive with GPS & progressive HUD reveal.
+  {
+    auto act = flow.update(0.5, {0.0, 0.0}, false, false);
+    check(flow.stage() == race::CampaignStage::kViperIntroDrive, "FMV finish enters ViperIntroDrive");
+    check(act.swap_car && act.car_media == race::CampaignFlow::kViperMedia, "swaps to 2013 SRT Viper GTS");
+    check(act.set_gps, "sets GPS to Horizon Festival entrance");
+    check(flow.completed_cutscenes().count("fmv_01_opening") == 1, "records opening cutscene completed");
+    check(flow.hud_reveal_alpha() < 0.05f, "HUD starts hidden at t=0 of Viper drive");
+  }
+  // 3. Drive along highway -> progressive HUD reveals + Scott Tyler & Alice Hart VO beats trigger.
+  {
+    flow.update(1.5, {1000.0, 500.0}, false, false);
+    check(flow.hud_reveal_alpha() > 0.5f, "HUD reveals progressively during Viper drive");
+    check(flow.dialogs().active(), "Scott Tyler opening radio beat triggers");
+    check(flow.dialogs().current().speaker == race::CharacterId::kScottTyler, "first Viper beat is Scott Tyler");
+    flow.update(0.5, {-200.0, 0.0}, false, false);  // within 2200 m -> triggers Alice Hart beat
+    check(flow.heard_dialogs().count("m0_viper_beat1") == 1, "m0_viper_beat1 recorded in heard_dialogs");
+    check(flow.heard_dialogs().count("m0_viper_beat2") == 1, "m0_viper_beat2 recorded in heard_dialogs");
+  }
+  // 4. Arrive at Festival gate -> Corrado VR6 qualification race.
+  {
+    auto act = flow.update(0.2, {-1340.0, -200.0}, false, false);
+    check(flow.stage() == race::CampaignStage::kQualifyRace, "arrival triggers QualifyRace");
+    check(act.swap_car && act.car_media == race::CampaignFlow::kCorradoMedia, "swaps to 1995 VW Corrado VR6");
+    check(act.launch_event && act.route_id == 16, "launches FESTIVAL_SECOND / route 16");
+  }
+  // 5. Finish qualification race -> Festival Registration & Yellow Wristband + Corrado handoff.
+  {
+    auto act = flow.update(0.2, {-1360.0, -210.0}, false, true);
+    check(flow.stage() == race::CampaignStage::kFestivalRegistration, "qualify finish enters FestivalRegistration");
+    check(act.grant_starter && act.collect_yellow_wristband, "grants Corrado starter & Yellow Wristband");
+    check(flow.dialogs().active(), "Alice/Dak/Holly orientation dialog queued");
+  }
+  // 6. Advance registration -> seamless Free Roam transition with initial objective.
+  {
+    auto act = flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam, "registration advances to FreeRoam");
+    check(act.intro_completed, "marks intro_completed");
+    auto obj = flow.next_objective(0, 0, 250);
+    check(obj.valid && !obj.title.empty(), "FreeRoam has valid next campaign objective");
+  }
+  // 7. Wristband progression (Yellow -> Green -> ... -> Gold) & Boss / Showcase unlocks.
+  {
+    check(race::wristband_milestones().size() == 7, "all 7 wristbands defined");
+    check(race::boss_rivals().size() == 7, "all 7 Star Showdown boss rivals defined");
+    check(race::showcase_milestones().size() == 10, "all 10 Showcases defined");
+
+    flow.on_wristband_points_changed(220, 0);
+    check(flow.unlocked_bosses().count("ramona") == 1, "Ramona Cravache unlocks at 220 pts");
+    flow.on_popularity_rank_changed(250, 175);
+    check(flow.unlocked_showcases().count("PLANE_RACE_001") == 1, "P-51 Mustang Showcase unlocks");
+    check(flow.unlocked_showcases().count("PLANE_RACE_002") == 1, "Hot-Air Balloon Showcase unlocks at rank 175");
+
+    // Collect Green Wristband -> Wristband Ceremony.
+    flow.on_wristband_collected(1, "2012 Ford Mustang Boss 302", 10);
+    check(flow.stage() == race::CampaignStage::kWristbandCeremony, "collecting wristband enters WristbandCeremony");
+    check(flow.cinematic().colour_key == "Green", "ceremony uses Green wristband key");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam, "ceremony returns to FreeRoam");
+  }
+  // 8. Barn Find discovery & Dak restoration handoff.
+  {
+    flow.on_barn_find(false, "barnfind_01", "");
+    check(flow.stage() == race::CampaignStage::kFreeRoam, "barn rumour stays non-blocking in FreeRoam");
+    flow.on_barn_find(true, "barnfind_01", "1956 Ford F-100");
+    check(flow.stage() == race::CampaignStage::kBarnDiscovery, "barn discovery enters BarnDiscovery cinematic");
+    flow.advance_or_skip();
+    flow.on_barn_restored("barnfind_01", "1956 Ford F-100");
+    check(flow.stage() == race::CampaignStage::kBarnRestored, "barn restored enters BarnRestored handoff");
+    flow.advance_or_skip();
+  }
+  // 9. Star Showdown & Darius Flynt Finale -> PostRaceFinish -> RewardTally -> FinaleVictory -> Credits -> FreeRoam!
+  {
+    race::CareerEvent finale_ev;
+    finale_ev.horizon_id = "NEM_FINAL";
+    finale_ev.style = 5;
+    finale_ev.level = 6;
+    flow.on_enter_event(finale_ev);
+    check(flow.stage() == race::CampaignStage::kFinaleIntro, "NEM_FINAL enters FinaleIntro");
+    flow.advance_or_skip();
+
+    race::RaceAward aw;
+    aw.base_credits = 50000;
+    aw.difficulty_pct = 30;
+    aw.difficulty_bonus = 15000;
+    aw.credits = 65000;
+    aw.wristband_points = 0;
+    flow.on_race_finished(&finale_ev, aw, 1, 2, 12, 1, 5000000, 5065000, 10000, 6, "2010 Ferrari 599XX");
+    check(flow.stage() == race::CampaignStage::kPostRaceFinish, "race finish enters PostRaceFinish camera");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kRewardTally, "PostRaceFinish transitions to RewardTally");
+    check(flow.reward_tally().active, "RewardTally active");
+
+    // Step RewardTally partway and verify animated rolling values.
+    flow.update(1.5, {0.0, 0.0}, false, false);
+    check(flow.reward_tally().displayed_credits() > 0 && flow.reward_tally().displayed_credits() < 65000,
+          "credits counter rolls smoothly");
+    check(flow.reward_tally().displayed_pop_rank() < 12 && flow.reward_tally().displayed_pop_rank() >= 1,
+          "popularity rank climbs smoothly");
+
+    // First skip completes tally animation; second skip transitions to FinaleVictory.
+    flow.advance_or_skip();
+    check(flow.reward_tally().animation_done(), "first skip finishes tally animation");
+    check(flow.reward_tally().displayed_credits() == 65000, "tally finishes at full credits");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFinaleVictory, "Finale win enters FinaleVictory");
+    check(flow.finale_complete(), "finale_complete marked true");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kCredits, "FinaleVictory transitions to Credits");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam, "Credits returns cleanly to endless FreeRoam");
+  }
+}
+
+void test_dialog_queue_ducking_and_waveforms() {
+  race::DialogQueue q;
+  std::set<std::string> heard;
+
+  race::DialogCue c1;
+  c1.id = "dlg_one";
+  c1.speaker = race::CharacterId::kAliceHart;
+  c1.vo_trigger = "Welcome";
+  c1.subtitle = "Welcome to Colorado!";
+  c1.duration_s = 3.0;
+  c1.one_shot = true;
+
+  check(q.enqueue(c1, &heard), "first enqueue succeeds");
+  check(!q.enqueue(c1, &heard), "duplicate one-shot dialog is suppressed");
+  check(q.active(), "queue is active");
+
+  std::string vo, radio;
+  check(q.consume_pending_audio(vo, radio) && vo == "Welcome", "consumes pending VO trigger once");
+  check(!q.consume_pending_audio(vo, radio), "audio trigger does not refire");
+
+  q.update(0.4);
+  check(q.duck_factor() > 0.5f, "audio ducking engages quickly during speech");
+  check(q.banner_slide() > 0.8f, "call-in banner slides in smoothly");
+  const auto bars = q.waveform_bars(10);
+  check(bars.size() == 10, "waveform returns requested bar count");
+  bool varied = false;
+  for (size_t i = 1; i < bars.size(); ++i)
+    if (std::fabs(bars[i] - bars[0]) > 0.01f) varied = true;
+  check(varied, "animated waveform bars vary across spectrum");
+
+  q.update(3.5);
+  check(!q.active(), "cue expires after duration");
+  for (int i = 0; i < 10; ++i) q.update(0.15);
+  check(q.duck_factor() < 0.05f, "audio ducking releases smoothly after speech");
+}
+
+void test_save_load_roundtrip() {
+  carview::CampaignDirector dir;
+  dir.configure({}, "EN", true);
+  dir.flow().start_new_career(true);
+  dir.flow().update(1.0, {1000.0, 500.0}, false, false);
+  dir.flow().on_wristband_points_changed(750, 1);
+  dir.flow().on_popularity_rank_changed(250, 100);
+
+  drive::DriveSave sv;
+  sv.car = "VW_Corrado_95";
+  sv.position = {100.0, 20.0, -50.0};
+  sv.heading = 1.25;
+  dir.save_to_save(sv);
+
+  const std::string text = drive::save_to_text(sv);
+  drive::DriveSave sv2;
+  std::string err;
+  check(drive::save_from_text(text, sv2, &err), "DriveSave with campaign state round-trips");
+  check(sv2.campaign_stage == "viper_drive", "campaign_stage preserved");
+  check(!sv2.heard_dialogs.empty(), "heard_dialogs preserved");
+  check(sv2.unlocked_bosses.size() >= 2, "unlocked_bosses preserved");
+  check(sv2.unlocked_showcases.size() >= 4, "unlocked_showcases preserved");
+
+  carview::CampaignDirector dir2;
+  dir2.load_from_save(sv2);
+  check(dir2.flow().stage() == race::CampaignStage::kViperIntroDrive, "director restores stage");
+  check(dir2.flow().unlocked_bosses().count("ali") == 1, "director restores unlocked bosses");
+  check(dir2.flow().unlocked_showcases().count("PLANE_RACE_003") == 1, "director restores unlocked showcases");
+}
+
+void test_director_cameras_cli_stages_and_ui_raster() {
+  // Cubic Bezier endpoints check.
+  const auto b0 = carview::eval_cubic_bezier({0, 0, 0}, {1, 2, 0}, {3, 2, 0}, {4, 0, 0}, 0.0);
+  const auto b1 = carview::eval_cubic_bezier({0, 0, 0}, {1, 2, 0}, {3, 2, 0}, {4, 0, 0}, 1.0);
+  check(std::fabs(b0[0] - 0.0) < 1e-6 && std::fabs(b1[0] - 4.0) < 1e-6, "cubic bezier endpoints exact");
+
+  carview::CampaignDirector dir;
+  dir.configure({}, "EN", false);
+  carview::FmvPlayer fmv;
+
+  const char* stages[] = {"intro", "viper_drive", "dialog", "registration", "wristband_yellow",
+                          "wristband_gold", "reward_tally", "showcase", "boss_ramona", "boss_darius",
+                          "barn_find", "barn_restored", "finale", "credits"};
+  for (const char* st : stages) {
+    race::CampaignAction act;
+    check(dir.apply_cli_stage(st, fmv, nullptr, act), "CLI stage accepted");
+    carview::ui::List list;
+    carview::campaign_ui::DrawContext ctx;
+    ctx.screen_w = 640.0f;
+    ctx.screen_h = 360.0f;
+    if (fmv.active()) {
+      fmv.update(1.0, false);
+      fmv.draw(list, ctx.screen_w, ctx.screen_h, {}, true, 0.4f);
+      fmv.close();
+    } else {
+      carview::campaign_ui::draw(list, dir.flow(), ctx);
+    }
+    check(!list.empty(), "UI4 campaign draw produces visible items");
+
+    if (dir.is_cinematic_camera_active()) {
+      drive::CameraView cam{};
+      check(dir.compute_camera({0.0, 10.0, 0.0}, 0.5, cam), "cinematic camera computes valid pose");
+      check(std::isfinite(cam.eye[0]) && std::isfinite(cam.forward[0]) && cam.fov_degrees > 20.0,
+            "cinematic camera pose is finite and valid");
+    }
+  }
+}
+
+}  // namespace
+
+int main() {
+  test_easing_and_transitions();
+  test_minute0_to_endgame_state_machine();
+  test_dialog_queue_ducking_and_waveforms();
+  test_save_load_roundtrip();
+  test_director_cameras_cli_stages_and_ui_raster();
+  if (g_failures > 0) {
+    std::fprintf(stderr, "campaign_flow_tests: %d failure(s)\n", g_failures);
+    return 1;
+  }
+  std::printf("campaign_flow_tests: all checks passed\n");
+  return 0;
+}
