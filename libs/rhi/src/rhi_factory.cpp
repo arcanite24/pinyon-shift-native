@@ -12,6 +12,10 @@ namespace shift::rhi {
 std::unique_ptr<Device> create_vulkan_device(const DeviceDesc& desc, std::string& error);
 void enumerate_vulkan_adapters(std::vector<AdapterInfo>& out);
 #endif
+#if defined(__APPLE__) && defined(SHIFT_RHI_METAL)
+std::unique_ptr<Device> create_metal_device(const DeviceDesc& desc, std::string& error);
+void enumerate_metal_adapters(std::vector<AdapterInfo>& out);
+#endif
 
 // -----------------------------------------------------------------------------
 // Backend kind helpers
@@ -265,6 +269,10 @@ std::vector<AdapterInfo> enumerate_adapters(BackendKind filter) {
 #else
   (void)want_vk;
 #endif
+#if defined(__APPLE__) && defined(SHIFT_RHI_METAL)
+  const bool want_mtl = (filter == BackendKind::Auto || filter == BackendKind::Metal);
+  if (want_mtl) enumerate_metal_adapters(adapters);
+#endif
   return adapters;
 }
 
@@ -303,7 +311,11 @@ std::unique_ptr<Device> create_device(const DeviceDesc& desc, std::string& error
 #endif
         break;
       case BackendKind::Metal:
+#if defined(__APPLE__) && defined(SHIFT_RHI_METAL)
+        dev = create_metal_device(desc, attempt_err);
+#else
         attempt_err = "metal backend not compiled";
+#endif
         break;
       case BackendKind::D3D12:
         attempt_err = "d3d12 backend not compiled";
