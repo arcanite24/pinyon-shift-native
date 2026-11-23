@@ -74,7 +74,7 @@ std::string describe(const cars::FolderRef& ref) {
   return ref.origin + ":" + ref.path.filename().string() + (ref.prefix.empty() ? "" : "!" + ref.prefix);
 }
 
-void run(const Job& job, const fs::path& out_dir, bool incremental, Result& r) {
+void run(const Job& job, const fs::path& out_dir, bool incremental, bool fast, Result& r) {
   r.file = job.kind == Job::Kind::kShared ? fs::path("shared.shiftbake")
            : job.kind == Job::Kind::kCar  ? fs::path("cars") / (job.key + ".shiftbake")
                                           : fs::path("wheels") / (job.key + ".shiftbake");
@@ -114,16 +114,17 @@ void run(const Job& job, const fs::path& out_dir, bool incremental, Result& r) {
     return;
   }
   const auto bytes = cars::bake::encode(b);
-  r.file = job.kind == Job::Kind::kShared ? fs::path("shared.shiftbake")
-           : job.kind == Job::Kind::kCar  ? fs::path("cars") / (job.key + ".shiftbake")
-                                          : fs::path("wheels") / (job.key + ".shiftbake");
   if (!cars::bake::write_file(out_dir / r.file, bytes, &error)) {
     r.error = error;
     return;
   }
-  cars::Sha256 h;
-  h.update(bytes);
-  r.digest = cars::Sha256::hex(h.finish());
+  if (fast) {
+    r.digest = "fast";
+  } else {
+    cars::Sha256 h;
+    h.update(bytes);
+    r.digest = cars::Sha256::hex(h.finish());
+  }
   r.bytes = bytes.size();
   if (job.kind == Job::Kind::kCar) {
     const auto& c = b.car;
@@ -141,7 +142,7 @@ void run(const Job& job, const fs::path& out_dir, bool incremental, Result& r) {
       << (c.colours.empty() ? std::string("none") : std::to_string(c.colours[0].rgb));
     r.report.push_back(s.str());
     for (const auto& n : c.notes) r.report.push_back("  note: " + n);
-    if (!job.others.empty()) {
+    if (!fast && !job.others.empty()) {
       const std::string mine = folder_digest(job.ref, &error);
       for (const auto& other : job.others) {
         const std::string theirs = folder_digest(other, &error);
@@ -244,6 +245,7 @@ int main(int argc, char** argv) {
   std::set<std::string> only;
   bool physics_only = false;
   bool incremental = false;
+  bool fast = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -254,12 +256,13 @@ int main(int argc, char** argv) {
     else if (a == "--threads") threads = unsigned(std::stoul(next()));
     else if (a == "--physics-only") physics_only = true;
     else if (a == "--incremental") incremental = true;
+    else if (a == "--fast") fast = true;
     else if (a == "--cars") {
       std::stringstream list(next());
       for (std::string n; std::getline(list, n, ',');) only.insert(cars::lower(n));
     } else {
       std::fprintf(stderr, "usage: carbake --game-root <dir> --state-root <dir> --out <dir> "
-                           "[--dlc-extracted <dir>] [--threads N] [--cars a,b] [--physics-only] [--incremental]\n");
+                           "[--dlc-extracted <dir>] [--threads N] [--cars a,b] [--physics-only] [--incremental] [--fast]\n");
       return 2;
     }
   }
@@ -359,11 +362,15 @@ int main(int argc, char** argv) {
     size[i] = jobs[i].ref.kind == cars::FolderRef::Kind::kArchive ? fs::file_size(jobs[i].ref.path, ec) : 1u << 26;
   }
   std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return size[a] > size[b]; });
+  std::error_code dir_ec;
+  fs::create_directories(out_dir / "cars", dir_ec);
+  fs::create_directories(out_dir / "wheels", dir_ec);
   std::vector<Result> results(jobs.size());
-  std::printf("carbake: %zu cars, %zu wheel and tyre archives, shared; %zu Data_Car rows\n", car_jobs,
-              wheels.size() + 2, db.cars.size());
+  std::printf("carbake: %zu cars, %zu wheel and tyre archives, shared; %zu Data_Car rows%s\n", car_jobs,
+              wheels.size() + 2, db.cars.size(), fast ? " (fast)" : "");
   std::fflush(stdout);
-  cars::parallel_for(order.size(), threads, [&](size_t i) { run(jobs[order[i]], out_dir, incremental, results[order[i]]); });
+  cars::parallel_for(order.size(), threads,
+                     [&](size_t i) { run(jobs[order[i]], out_dir, incremental, fast, results[order[i]]); });
 
   // Reports in a fixed order: by output path.
   std::vector<size_t> by_path;

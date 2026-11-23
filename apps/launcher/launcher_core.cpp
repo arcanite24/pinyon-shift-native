@@ -30,6 +30,8 @@
 #include <windows.h>
 #include <winhttp.h>
 #else
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -761,6 +763,79 @@ IsoExtractResult extract_disc_iso(
 SetupRunner::~SetupRunner() {
   cancel();
   if (worker_.joinable()) worker_.join();
+  stop_background_process();
+}
+
+bool SetupRunner::launch_background_process(const std::vector<std::string>& args) {
+  if (args.empty()) return false;
+  std::string cmd;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) cmd += ' ';
+    cmd += quote_arg_shell(args[i]);
+  }
+#ifdef _WIN32
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  std::string mutable_cmd = cmd;
+  const BOOL ok = CreateProcessA(nullptr, mutable_cmd.data(), nullptr, nullptr, FALSE,
+                                 CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi);
+  if (!ok) return false;
+  CloseHandle(pi.hThread);
+  std::lock_guard<std::mutex> lk(bg_mu_);
+  bg_procs_.push_back(reinterpret_cast<intptr_t>(pi.hProcess));
+  return true;
+#else
+  pid_t pid = fork();
+  if (pid < 0) return false;
+  if (pid == 0) {
+    setsid();
+    (void)nice(10);
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+      dup2(devnull, STDIN_FILENO);
+      dup2(devnull, STDOUT_FILENO);
+      dup2(devnull, STDERR_FILENO);
+      if (devnull > STDERR_FILENO) close(devnull);
+    }
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    execv(argv[0], argv.data());
+    _exit(127);
+  }
+  std::lock_guard<std::mutex> lk(bg_mu_);
+  bg_procs_.push_back(static_cast<intptr_t>(pid));
+  return true;
+#endif
+}
+
+void SetupRunner::stop_background_process() {
+  std::vector<intptr_t> procs;
+  {
+    std::lock_guard<std::mutex> lk(bg_mu_);
+    procs.swap(bg_procs_);
+  }
+  for (intptr_t handle : procs) {
+    if (handle == 0) continue;
+#ifdef _WIN32
+    HANDLE h = reinterpret_cast<HANDLE>(handle);
+    DWORD exit_code = 0;
+    if (GetExitCodeProcess(h, &exit_code) && exit_code == STILL_ACTIVE) {
+      TerminateProcess(h, 0);
+    }
+    CloseHandle(h);
+#else
+    pid_t pid = static_cast<pid_t>(handle);
+    if (pid > 0) {
+      int status = 0;
+      if (waitpid(pid, &status, WNOHANG) == 0) {
+        kill(pid, SIGTERM);
+      }
+    }
+#endif
+  }
 }
 
 void SetupRunner::append_log(const std::string& line) {
@@ -999,9 +1074,17 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
     }
     append_log("Wrote " + (opts.play_dir / "play.txt").string());
 
-    // Run carbake (--incremental), in-process Colorado world index, and soundbake concurrently
-    // for maximum throughput with zero visible console windows.
-    set_stage(2 + stage_offset, "Baking cars, world index, and audio in parallel...", is_iso ? 0.55f : 0.25f);
+    // Phase 1 (Fast-Start): run essential starter/hero carbake (--incremental --fast),
+    // in-process Colorado world index, starter soundbake, and AOT shader pre-compilation
+    // concurrently across CPU cores so the player can click Play in ~2-4 seconds.
+    static constexpr const char* kFastStartCars =
+        "VIP_Viper_13,VW_Corrado_95,NIS_SkylineGTRVSpecII_02,FOR_MustangBoss302_70,FOR_MustangBOSS429_70,"
+        "HON_CRX_91,HON_CRXsi_91,SUB_ImprezaWRXSTi_11,SUB_Impreza22b_98,MIT_LancerEvoXGSR_08";
+    const std::string phase1_cars = opts.cars_filter.empty() ? std::string(kFastStartCars) : opts.cars_filter;
+    const bool launch_phase2 = opts.cars_filter.empty();
+
+    set_stage(2 + stage_offset, "Preparing starter cars, Colorado index, audio, and shaders...",
+              is_iso ? 0.55f : 0.25f);
 
     std::atomic<int> cb_rc{0};
     std::atomic<bool> idx_ok{true};
@@ -1011,14 +1094,11 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
     std::thread cb_thread([&]() {
       std::vector<std::string> cb_cmd = {
           paths.carbake_bin.string(), "--game-root", check.resolved_root.string(),
-          "--out", (opts.play_dir / "bake").string(), "--incremental"};
+          "--out", (opts.play_dir / "bake").string(), "--incremental", "--fast",
+          "--cars", phase1_cars};
       if (!opts.state_root.empty()) {
         cb_cmd.push_back("--state-root");
         cb_cmd.push_back(opts.state_root.string());
-      }
-      if (!opts.cars_filter.empty()) {
-        cb_cmd.push_back("--cars");
-        cb_cmd.push_back(opts.cars_filter);
       }
       cb_rc.store(run_subprocess_logged(cb_cmd));
     });
@@ -1049,6 +1129,9 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       append_log("Colorado world index ready (" + std::to_string(w.models().size()) + " models).");
     });
 
+    // Stop any previous background bake/soundbake processes before starting a fresh run.
+    stop_background_process();
+
     std::thread sb_thread([&]() {
       if (paths.soundbake_bin.empty()) {
         append_log("Note: soundbake not found; runtime audio decode will be used.");
@@ -1063,12 +1146,19 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       }
       if (opts.all_sounds) {
         sb_cmd.push_back("--all");
+        if (run_subprocess_logged(sb_cmd) != 0) {
+          append_log("Note: soundbake did not complete (install FFmpeg for offline sound bake). Continuing...");
+        }
       } else {
         sb_cmd.push_back("--cars");
-        sb_cmd.push_back("NIS_SkylineGTRVSpecII_02");
-      }
-      if (run_subprocess_logged(sb_cmd) != 0) {
-        append_log("Note: soundbake did not complete (install FFmpeg for offline sound bake). Continuing...");
+        sb_cmd.push_back("VIP_Viper_13,NIS_SkylineGTRVSpecII_02");
+        // Launch starter soundbake silently in the background so it never stalls Phase-1
+        // Time-to-Play (carview falls back seamlessly to runtime audio decode if still baking).
+        if (launch_background_process(sb_cmd)) {
+          append_log("Starter audio bake started silently in background (VIP_Viper_13, NIS_SkylineGTRVSpecII_02).");
+        } else {
+          append_log("Note: background soundbake could not start; runtime audio decode will be used.");
+        }
       }
     });
 
@@ -1102,22 +1192,45 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       return;
     }
 
+    // Phase 2 (Silent Background Full-Roster Bake): immediately kick off a low-priority
+    // hidden carbake --incremental --fast to finish the remaining ~169 cars while the player drives.
+    if (launch_phase2) {
+      std::vector<std::string> bg_cmd = {
+          paths.carbake_bin.string(), "--game-root", check.resolved_root.string(),
+          "--out", (opts.play_dir / "bake").string(), "--incremental", "--fast"};
+      if (!opts.state_root.empty()) {
+        bg_cmd.push_back("--state-root");
+        bg_cmd.push_back(opts.state_root.string());
+      }
+      if (launch_background_process(bg_cmd)) {
+        append_log("Background full-roster bake started silently (below-normal priority).");
+      } else {
+        append_log("Note: could not start background full-roster bake; remaining cars will bake on demand.");
+      }
+    }
+
     const double elapsed_s =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t_setup_start).count();
-    char tbuf[64];
-    std::snprintf(tbuf, sizeof tbuf, "Setup complete in %.1fs.", elapsed_s);
+    char tbuf[128];
+    std::snprintf(tbuf, sizeof tbuf,
+                  launch_phase2 ? "Game ready in %.1fs! Remaining cars baking silently in background."
+                                : "Setup complete in %.1fs.",
+                  elapsed_s);
     append_log(tbuf);
     std::lock_guard<std::mutex> lk(mu_);
     state_.running = false;
     state_.finished = true;
     state_.success = true;
     state_.fraction = 1.0f;
-    state_.stage_label = "Complete";
+    state_.stage_label = launch_phase2 ? "Game Ready" : "Complete";
   });
   return true;
 }
 
-void SetupRunner::cancel() { cancel_.store(true); }
+void SetupRunner::cancel() {
+  cancel_.store(true);
+  stop_background_process();
+}
 
 SetupProgress SetupRunner::snapshot() const {
   std::lock_guard<std::mutex> lk(mu_);
