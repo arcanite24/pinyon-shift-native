@@ -137,6 +137,8 @@ struct DriveConfig {
   bool metric_units = true;
   bool story_intro_cli = false;
   std::string cli_campaign_stage;
+  std::filesystem::path telemetry_json_path;
+  std::string capture_times_csv;
   std::filesystem::path cli_fmv_path;
   std::filesystem::path mods_root;
   bool mods_off = false;
