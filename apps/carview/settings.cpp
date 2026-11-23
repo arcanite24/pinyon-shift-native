@@ -193,6 +193,12 @@ constexpr Kept kKept[] = {
     {"safe-zone", true, "safe-zone"},
     {"hud-16-9", false, "hud-16-9"},
     {"no-hud-16-9", false, "hud-16-9"},
+    // Hardware Ray Tracing & Path Tracing (RT-1..RT-4).
+    {"rt", true, "rt"},
+    {"rt-bounces", true, "rt-bounces"},
+    {"rt-spp", true, "rt-spp"},
+    {"rt-denoise", false, "rt-denoise"},
+    {"no-rt-denoise", false, "rt-denoise"},
 };
 
 const Kept* kept(const std::string& key) {

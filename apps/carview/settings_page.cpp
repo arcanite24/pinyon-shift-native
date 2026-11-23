@@ -250,6 +250,22 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"quarter-res", {"--volumetric-fog", "quarter"}},
         {"half-res", {"--volumetric-fog", "half"}}}},
       {"car clearcoat detail", {{"off", {}}, {"on", {"--car-detail"}}}},
+      {"ray tracing",
+       {{"off", {}},
+        {"hybrid rt", {"--rt", "hybrid"}},
+        {"path traced", {"--rt", "pt"}},
+        {"photo mode pt", {"--rt", "photo-pt"}}}},
+      {"rt bounces",
+       {{"2 bounces", {}},
+        {"1 bounce", {"--rt-bounces", "1"}},
+        {"3 bounces", {"--rt-bounces", "3"}},
+        {"4 bounces", {"--rt-bounces", "4"}}}},
+      {"rt samples",
+       {{"1 spp", {}},
+        {"2 spp", {"--rt-spp", "2"}},
+        {"4 spp", {"--rt-spp", "4"}},
+        {"8 spp", {"--rt-spp", "8"}}}},
+      {"rt denoiser", {{"on (svgf)", {}}, {"off", {"--no-rt-denoise"}}}},
       {"colour lut", {{"none", {}}}},
       {"lut strength",
        {{"100%", {}},
@@ -505,7 +521,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                    t == "--no-skip-intro-movies" || t == "--no-start-in-single-player" ||
                    t == "--skip-vo-with-a" || t == "--no-scene-540p" || t == "--no-vrs" ||
                    t == "--no-hdr" || t == "--no-auto-hdr" || t == "--no-hdr-compare" ||
-                   t == "--hud-16-9" || t == "--no-hex-tiling")) owned = true;
+                   t == "--hud-16-9" || t == "--no-hex-tiling" || t == "--rt-denoise")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--ai-mode" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -534,7 +550,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--tonemapper" || t == "--velocity-blur" || t == "--lut" ||
                       t == "--lut-strength" || t == "--texture-cap" || t == "--vsync" || t == "--fps-cap" ||
                       t == "--output" || t == "--sharpening" || t == "--frame-gen" || t == "--hdr-paper-white" ||
-                      t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone");
+                      t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone" ||
+                      t == "--rt" || t == "--rt-bounces" || t == "--rt-spp");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -564,6 +581,7 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "render scale" || name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
       name == "ambient occlusion" || name == "contact shadows" || name == "tonemapper" ||
       name == "terrain hex-tiling" || name == "velocity motion blur" ||
+      name == "ray tracing" || name == "rt bounces" || name == "rt samples" || name == "rt denoiser" ||
       name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
       name == "texture size" || name == "vsync" || name == "frame rate" || name == "frame gen" ||
       name == "hdr" || name == "windows auto-hdr" || name == "hdr paper white" || name == "hdr highlights" ||

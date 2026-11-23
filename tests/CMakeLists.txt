@@ -142,7 +142,7 @@ target_link_libraries(garage_tests PRIVATE shift_garage)
 add_test(NAME garage_tests COMMAND garage_tests)
 
 # The pause menu's settings page (plain C++).
-add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp)
+add_executable(settings_tests settings_tests.cpp ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(settings_tests PRIVATE ../apps/carview)
 target_link_libraries(settings_tests PRIVATE shift_drive)
 add_test(NAME settings_tests COMMAND settings_tests)
@@ -154,7 +154,7 @@ target_include_directories(ui_tests PRIVATE ../apps/carview)
 target_link_libraries(ui_tests PRIVATE shift_stb fh1data shift_race shift_garage shift_freeroam)
 add_test(NAME ui_tests COMMAND ui_tests)
 # Slice 11: render scale / HUD / HDR / upscaler fallbacks / .cube reader / frame stats (no Vulkan).
-add_executable(render_modern_tests render_modern_tests.cpp ../apps/carview/render_modern.cpp
+add_executable(render_modern_tests render_modern_tests.cpp ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp
                ../apps/carview/perf_overlay.cpp ../apps/carview/frame_inspector.cpp
                ../apps/carview/upscaler.cpp ../apps/carview/ui.cpp
                ../apps/carview/platform_support.cpp)
@@ -170,6 +170,13 @@ add_test(NAME benchmark_tests COMMAND benchmark_tests)
 add_executable(world_gpu_tests world_gpu_tests.cpp ../apps/carview/world_gpu_logic.cpp)
 target_include_directories(world_gpu_tests PRIVATE ../apps/carview)
 add_test(NAME world_gpu_tests COMMAND world_gpu_tests)
+
+# Hardware Ray Tracing & Path Tracing capability negotiation, tier clamping, BVH masks, BLAS LRU & settings (no Vulkan).
+add_executable(rt_logic_tests rt_logic_tests.cpp ../apps/carview/rt_logic.cpp ../apps/carview/render_modern.cpp
+               ../apps/carview/settings_page.cpp)
+target_include_directories(rt_logic_tests PRIVATE ../apps/carview)
+target_link_libraries(rt_logic_tests PRIVATE shift_drive)
+add_test(NAME rt_logic_tests COMMAND rt_logic_tests)
 
 add_executable(career_tests career_tests.cpp)
 target_link_libraries(career_tests PRIVATE shift_race shift_freeroam shift_drive shift_data)
@@ -197,7 +204,7 @@ target_link_libraries(smashables_tests PRIVATE shift_world)
 add_test(NAME smashables_tests COMMAND smashables_tests)
 
 add_executable(world_polish_tests world_polish_tests.cpp ../apps/carview/settings_page.cpp
-               ../apps/carview/render_modern.cpp)
+               ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(world_polish_tests PRIVATE ../apps/carview)
 target_link_libraries(world_polish_tests PRIVATE shift_world shift_drive)
 add_test(NAME world_polish_tests COMMAND world_polish_tests)
@@ -207,13 +214,13 @@ target_link_libraries(lamps_tests PRIVATE shift_drive fh1data)
 add_test(NAME lamps_tests COMMAND lamps_tests)
 
 add_executable(gps_tests gps_tests.cpp ../apps/carview/settings_page.cpp
-               ../apps/carview/render_modern.cpp)
+               ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(gps_tests PRIVATE ../apps/carview)
 target_link_libraries(gps_tests PRIVATE shift_traffic shift_audio shift_drive)
 add_test(NAME gps_tests COMMAND gps_tests)
 
 add_executable(road_discovery_tests road_discovery_tests.cpp ../apps/carview/map_view.cpp
-               ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp)
+               ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(road_discovery_tests PRIVATE ../apps/carview)
 target_link_libraries(road_discovery_tests PRIVATE shift_freeroam shift_traffic shift_profile shift_drive fh1data shift_audio)
 add_test(NAME road_discovery_tests COMMAND road_discovery_tests)
@@ -352,7 +359,7 @@ endif()
 
 add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.cpp ../apps/carview/ui.cpp
                ../apps/carview/ui4_chrome.cpp ../apps/carview/settings_page.cpp
-               ../apps/carview/render_modern.cpp)
+               ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(photo_mode_tests PRIVATE ../apps/carview)
 target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk)
 add_test(NAME photo_mode_tests COMMAND photo_mode_tests)

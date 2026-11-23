@@ -1725,6 +1725,7 @@ void drive_usage() {
                "           --bench-scenario noon_cruise|midnight_lights|cockpit_mirrors|race_pack|autoshow_studio|ui4_heavy|cold_boot_switch\n"
                "           --bench-json file.json --bench-csv file.csv --bench-full-fx --bench-audio --bench-warmup sec\n"
                "           --menu-png file.png --map-png prefix (the pause map and the minimap at the end)\n"
+               "  ray tracing: --rt off|hybrid|pt|photo-pt --rt-bounces 1..4 --rt-spp 1..16 --rt-denoise|--no-rt-denoise\n"
                "  other modes: carview --bake <dir> --car <media> (showroom), carview --game-root <dir> (disc viewer),\n"
                "           carview --world ... (world viewer), carview --xds-png ...\n");
 }
@@ -7827,10 +7828,18 @@ int run_drive(int argc, char** argv) {
         const double phead = std::atan2(pf.x, pf.z);
         photo_mode.enter({pat.x, pat.y, pat.z}, phead,
                          carview::PhotoLimits::from_settings(live_photo_through_walls, true));
-        photo_mode.effects().apply_preset(carview::PhotoPreset::kHorizonSunset);
-        photo_mode.effects().aperture = 68.0f;
-        photo_mode.effects().vignette = 42.0f;
-        photo_mode.effects().shutter_speed = 45.0f;
+        if (renderer.active_rt_mode() == carview::rt::RtMode::kPhotoModePt) {
+          photo_mode.effects().apply_preset(carview::PhotoPreset::kDefault);
+          photo_mode.effects().aperture = 18.0f;
+          photo_mode.effects().vignette = 10.0f;
+          photo_mode.effects().shutter_speed = 0.0f;
+          photo_mode.effects().exposure = 58.0f;
+        } else {
+          photo_mode.effects().apply_preset(carview::PhotoPreset::kHorizonSunset);
+          photo_mode.effects().aperture = 68.0f;
+          photo_mode.effects().vignette = 42.0f;
+          photo_mode.effects().shutter_speed = 45.0f;
+        }
         photo_mode.autofocus({pat.x, pat.y + 0.65, pat.z});
         wheel_poses(vehicle, poses);
         const float wboost = photo_mode.effects().wheel_blur_omega_boost();
@@ -7849,11 +7858,28 @@ int run_drive(int argc, char** argv) {
         const auto promo_res = promo_tracker.evaluate(cfw, photo_mode.camera().eye(), gather_promo_candidates(), true);
         photo_mode.notify_photo_saved(demo_photo_png, promo_res);
         photo_mode.step(0.4, {});  // let shutter flash settle while keeping the Horizon Promo banner visible
+        const bool photo_rt_on = renderer.active_rt_mode() != carview::rt::RtMode::kOff;
+        if (photo_rt_on && renderer.active_rt_mode() == carview::rt::RtMode::kPhotoModePt) {
+          photo_mode.toggle_ui_hidden();
+        }
         carview::ui::List plist;
         photo_mode.build_hud(plist, float(width), float(height));
         upload_ui_atlas(renderer, !ui_atlas_synced);
         ui_atlas_synced = true;
         renderer.set_ui(plist.items());
+        renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
+        renderer.set_camera_vp(pframe.view_projection, 0.0f, 0.0f);
+        if (photo_rt_on) {
+          renderer.set_photo_pt_accumulate(true, true);
+          const int spp_per_frame = std::max(1, renderer.graphics_settings().rt_spp);
+          const int accum_frames = std::clamp(64 / spp_per_frame, 8, 64);
+          for (int ai = 0; ai < accum_frames - 1; ++ai) {
+            double rec_ms = 0.0, gpu_ms = 0.0;
+            if (!renderer.render_timed(FrameConstants{}, width, height, rec_ms, gpu_ms, error)) break;
+          }
+          std::printf("photo mode PT: accumulated %d frames x %d spp = %d spp\n", accum_frames, spp_per_frame,
+                      accum_frames * spp_per_frame);
+        }
         std::vector<uint8_t> rgba;
         if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
           std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -7864,6 +7890,7 @@ int run_drive(int argc, char** argv) {
           else std::printf("demo photo mode -> %s (spotted %d/%d, +%lld Cr)\n", demo_photo_png.string().c_str(),
                            promo_res.total_spotted, promo_res.total_cars, (long long)promo_res.credits_awarded);
         }
+        if (photo_rt_on) renderer.set_photo_pt_accumulate(false, true);
         photo_mode.exit();
       } else if (!demo_replay_png.empty()) {
         // Headless Slice 10 verification capture: Replay Viewer HUD with timeline scrubber, telemetry & track-side camera.
@@ -8170,6 +8197,15 @@ int run_drive(int argc, char** argv) {
           std::vector<uint8_t> rgba;
           renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
           renderer.set_camera_vp(g_cam_vp_unjittered, h_jitter_uv_x, h_jitter_uv_y);
+          if (renderer.active_rt_mode() != carview::rt::RtMode::kOff) {
+            const int rt_warmup = (renderer.active_rt_mode() == carview::rt::RtMode::kPhotoModePt)
+                                      ? std::clamp(64 / std::max(1, renderer.graphics_settings().rt_spp), 8, 64)
+                                      : 10;
+            for (int wi = 0; wi < rt_warmup; ++wi) {
+              double wrec = 0.0, wgpu = 0.0;
+              if (!renderer.render_timed(FrameConstants{}, width, height, wrec, wgpu, error)) break;
+            }
+          }
           const auto rt0 = std::chrono::steady_clock::now();
           if (!renderer.render_offscreen(FrameConstants{}, width, height, rgba, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
@@ -11924,6 +11960,8 @@ int run_drive(int argc, char** argv) {
           if (photo_mode.active() || replay_viewer.active() || show_title || camp_cam_active ||
               (race && grid_menu_open) || ceremony.active || rewind_scrub_view)
             showroom.set_draw_car(!replay_viewer.active() || replay_viewer.camera_mode() != carview::ReplayCameraMode::kBumper);
+          renderer.set_photo_pt_accumulate(photo_mode.active() &&
+                                           renderer.active_rt_mode() != carview::rt::RtMode::kOff);
           showroom.set_frame(cam_frame);
 
           // Update projected Free-Roam World Event / Festival Marker.
