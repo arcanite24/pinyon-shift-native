@@ -1,0 +1,101 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// RT-2: Primary Thin G-Buffer extraction + 1 spp VNDF GGX Hardware RT Reflections
+// (VK_KHR_ray_query inline traversal over live Colorado + Car TLAS).
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 sz = ivec2(int(ubo.rt_params.z), int(ubo.rt_params.w));
+  if (px.x >= sz.x || px.y >= sz.y) return;
+
+  vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+  float z = textureLod(depth_tex, uv, 0.0).r;
+
+  if (is_sky_depth_val(z)) {
+    imageStore(rt_gbuf_norm, px, vec4(0.0, 0.0, 0.0, 1.0));
+    imageStore(rt_gbuf_albedo, px, vec4(0.0, 0.0, 0.0, 0.0));
+    imageStore(rt_refl_img, px, vec4(0.0, 0.0, 0.0, 0.0));
+    return;
+  }
+
+  vec3 eye = ubo.eye_frame.xyz;
+  vec3 ray_dir = primary_ray_dir(uv);
+  float lin_d = linearize_depth(z);
+
+  // Coherent primary surface query over live TLAS for exact smooth normals + material flags.
+  rayQueryEXT pq;
+  rayQueryInitializeEXT(pq, tlas, gl_RayFlagsNoneEXT, kMaskPrimaryHits, eye, 0.05, ray_dir, lin_d * 1.15 + 4.0);
+  PROCEED_ALPHA_TESTED(pq);
+  RtSurface surf = unpack_hit_surface(pq, eye, ray_dir, 0.5);
+
+  if (!surf.hit) {
+    // Fallback to depth-reconstructed position if rasterized billboard/decal missed BVH.
+    imageStore(rt_gbuf_norm, px, vec4(0.0, 1.0, 0.0, 0.95));
+    imageStore(rt_gbuf_albedo, px, vec4(0.2, 0.2, 0.2, 0.0));
+    imageStore(rt_refl_img, px, vec4(0.0, 0.0, 0.0, 0.0));
+    return;
+  }
+
+  // Pack Thin G-Buffer for RT Shadows, RTAO, SVGF edge-stopping, and Composite.
+  // rt_gbuf_albedo.w encodes reflective material strength / class:
+  //   0.0 = matte terrain, 0.35 = wet/glossy road, 0.70 = glass/water, 1.0 = clearcoat/chrome/rim
+  float refl_weight = 0.0;
+  if ((surf.flags & kRtGeomFlagChrome) != 0u) refl_weight = 1.0;
+  else if ((surf.flags & kRtGeomFlagClearcoat) != 0u) refl_weight = 0.95;
+  else if ((surf.flags & kRtGeomFlagGlass) != 0u) refl_weight = 0.85;
+  else if ((surf.flags & kRtGeomFlagWater) != 0u) refl_weight = 0.90;
+  else if ((surf.flags & kRtGeomFlagMetallic) != 0u) refl_weight = 0.75;
+  else if ((surf.flags & kRtGeomFlagRoad) != 0u) refl_weight = 0.38;
+  else if (surf.roughness < 0.45) refl_weight = 0.25;
+
+  // For clearcoat paint, store clearcoat roughness (0.035) in gbuf_norm.w so reflections stay crisp.
+  float refl_rough = ((surf.flags & kRtGeomFlagClearcoat) != 0u) ? 0.035 : surf.roughness;
+  imageStore(rt_gbuf_norm, px, vec4(surf.normal, refl_rough));
+  imageStore(rt_gbuf_albedo, px, vec4(surf.albedo, refl_weight));
+
+  if (refl_weight < 0.05) {
+    imageStore(rt_refl_img, px, vec4(0.0, 0.0, 0.0, 0.0));
+    return;
+  }
+
+  uint rng = init_rng(uvec2(px), uint(ubo.eye_frame.w), 17u);
+  vec3 V = -ray_dir;
+  // Clamp VNDF tail slightly to suppress grazing-angle horizon fireflies.
+  vec2 u = rand2(rng) * vec2(0.88, 1.0);
+  vec3 H = sample_ggx_vndf(surf.normal, V, refl_rough, u);
+  vec3 R = reflect(-V, H);
+  if (dot(R, surf.geom_normal) <= 0.0) {
+    R = reflect(-V, surf.geom_normal);
+  }
+  R = normalize(R);
+
+  vec3 orig = surf.pos + surf.geom_normal * max(0.015, 0.0005 * surf.hit_t);
+  // Water excludes kMaskWater to avoid self-intersection; car paint includes kMaskPlayerCar for crisp self-reflections!
+  uint mask = ((surf.flags & kRtGeomFlagWater) != 0u) ? (kMaskReflectionHits & ~kMaskWater) : kMaskReflectionHits;
+
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, mask, orig, 0.02, R, 900.0);
+  PROCEED_ALPHA_TESTED(rq);
+
+  vec3 refl_radiance = vec3(0.0);
+  float hit_dist = 900.0;
+  if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+    float cone_lod = clamp(1.0 + refl_rough * 4.0, 0.5, 4.5);
+    RtSurface hit = unpack_hit_surface(rq, orig, R, cone_lod);
+    hit_dist = hit.hit_t;
+    refl_radiance = shade_hit_fast(hit, -R, true);
+    refl_radiance = apply_rt_haze(refl_radiance, hit.hit_t, R);
+  } else {
+    refl_radiance = eval_tod_sky(R, true);
+  }
+
+  // Firefly clamp (preserves HDR sun specular while avoiding single-pixel NaN/spikes).
+  float lum = luma(refl_radiance);
+  if (lum > 18.0) refl_radiance *= (18.0 / lum);
+  if (any(isnan(refl_radiance)) || any(isinf(refl_radiance))) refl_radiance = vec3(0.0);
+
+  imageStore(rt_refl_img, px, vec4(refl_radiance, hit_dist));
+}

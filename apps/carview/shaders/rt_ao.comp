@@ -1,0 +1,52 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// RT-2: Short-Range Cosine-Hemisphere Hardware Ray-Traced Ambient Occlusion (RTAO).
+// Grounds tires, wheel wells, brake calipers, chassis overhangs, and road curbs.
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 sz = ivec2(int(ubo.rt_params.z), int(ubo.rt_params.w));
+  if (px.x >= sz.x || px.y >= sz.y) return;
+
+  vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+  float z = textureLod(depth_tex, uv, 0.0).r;
+  if (is_sky_depth_val(z)) return;
+
+  vec4 gn = imageLoad(rt_gbuf_norm, px);
+  vec3 N = safe_normalize(gn.xyz, vec3(0.0, 1.0, 0.0));
+  vec3 world_pos = world_pos_from_depth(uv, z);
+  float lin_d = linearize_depth(z);
+
+  // Skip RTAO far in the distance where atmospheric haze dominates.
+  float prev_shad = imageLoad(rt_shad_ao_img, px).r;
+  if (lin_d > 140.0) {
+    imageStore(rt_shad_ao_img, px, vec4(prev_shad, 1.0, 0.0, 0.0));
+    return;
+  }
+
+  uint rng = init_rng(uvec2(px), uint(ubo.eye_frame.w), 97u);
+  vec3 orig = world_pos + N * max(0.015, 0.0005 * lin_d);
+  const float kAoRadius = 2.6;
+  float vis_sum = 0.0;
+  for (int s = 0; s < 2; ++s) {
+    vec3 dir = sample_cosine_hemisphere(N, rand2(rng));
+    rayQueryEXT aq;
+    rayQueryInitializeEXT(aq, tlas, gl_RayFlagsOpaqueEXT, kMaskShadowCasters, orig, 0.015, dir, kAoRadius);
+    while (rayQueryProceedEXT(aq)) {}
+    if (rayQueryGetIntersectionTypeEXT(aq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+      float t = rayQueryGetIntersectionTEXT(aq, true);
+      // Distance-weighted falloff so close contact (tire on asphalt) occludes deeply.
+      float atten = clamp(t / kAoRadius, 0.0, 1.0);
+      vis_sum += atten * atten;
+    } else {
+      vis_sum += 1.0;
+    }
+  }
+  float ao = clamp(vis_sum * 0.5, 0.0, 1.0);
+  float dist_fade = smoothstep(140.0, 95.0, lin_d);
+  ao = mix(1.0, ao, dist_fade);
+  imageStore(rt_shad_ao_img, px, vec4(prev_shad, ao, 0.0, 0.0));
+}

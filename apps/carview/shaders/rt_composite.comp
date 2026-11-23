@@ -1,0 +1,99 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// RT-2 / RT-3 / RT-4: Composites Hybrid RT (Reflections + Soft Sun/Headlight Shadows + RTAO),
+// Real-Time Path Tracing (ReSTIR DI + Multi-Bounce GI + SVGF), or Photo Mode Progressive PT
+// directly into Renderer's linear HDR color target (`hdr_img`) prior to bloom & tonemapping!
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 sz = ivec2(int(ubo.rt_params.z), int(ubo.rt_params.w));
+  if (px.x >= sz.x || px.y >= sz.y) return;
+
+  int rt_mode = int(ubo.env_basis_y.w + 0.5);
+  bool denoise_on = (rt_pc.pc.x != 0);
+
+  if (rt_mode == 3) {
+    // Photo Mode Progressive Convergent Path Tracing.
+    vec3 pt = imageLoad(rt_hist_curr, px).rgb;
+    vec4 hdr = imageLoad(hdr_img, px);
+    imageStore(hdr_img, px, vec4(max(pt, vec3(0.0)), hdr.a));
+    return;
+  }
+
+  if (rt_mode == 2) {
+    // Tier 2 Full Real-Time Path Tracing (SVGF denoised irradiance re-modulated with crisp primary albedo, or raw).
+    vec3 pt = denoise_on ? imageLoad(rt_hist_curr, px).rgb : imageLoad(rt_pt_img, px).rgb;
+    if (denoise_on) {
+      vec4 ga = imageLoad(rt_gbuf_albedo, px);
+      if (ga.w > 0.5) pt *= max(ga.rgb, vec3(0.06));
+    }
+    vec4 hdr = imageLoad(hdr_img, px);
+    imageStore(hdr_img, px, vec4(max(pt, vec3(0.0)), hdr.a));
+    return;
+  }
+
+  // Tier 1 Hybrid Hardware RT (rt_mode == 1):
+  // Composite denoised RT Reflections + RT Sun/Headlight Soft Shadows + RTAO onto raster HDR!
+  vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+  float z = textureLod(depth_tex, uv, 0.0).r;
+  if (is_sky_depth_val(z)) return;
+
+  vec4 hdr = imageLoad(hdr_img, px);
+  vec3 col = hdr.rgb;
+
+  vec4 gn = imageLoad(rt_gbuf_norm, px);
+  vec4 ga = imageLoad(rt_gbuf_albedo, px);
+  vec3 N = safe_normalize(gn.xyz, vec3(0.0, 1.0, 0.0));
+  float rough = clamp(gn.w, 0.02, 0.98);
+  float refl_weight = ga.w;
+
+  // Spatial 3x3 edge-aware filter on RT Soft Shadows + RTAO so 1-2 spp penumbras & tire AO are silky smooth!
+  float d_c = linearize_depth(z);
+  float shad_sum = 0.0;
+  float ao_sum = 0.0;
+  float w_sum = 0.0;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      ivec2 q = clamp(px + ivec2(dx, dy), ivec2(0), sz - ivec2(1));
+      vec2 sa = imageLoad(rt_shad_ao_img, q).rg;
+      vec3 qn = imageLoad(rt_gbuf_norm, q).xyz;
+      vec2 quv = (vec2(q) + 0.5) / vec2(sz);
+      float dq = linearize_depth(textureLod(depth_tex, quv, 0.0).r);
+      float wn = pow(max(dot(N, qn), 0.0), 16.0);
+      float wz = exp(-abs(d_c - dq) / max(d_c * 0.06, 0.12));
+      float kw = (dx == 0 && dy == 0) ? 1.0 : ((dx == 0 || dy == 0) ? 0.65 : 0.35);
+      float w = kw * wn * wz;
+      shad_sum += sa.r * w;
+      ao_sum += sa.g * w;
+      w_sum += w;
+    }
+  }
+  float rt_shadow = w_sum > 1e-4 ? (shad_sum / w_sum) : 1.0;
+  float rt_ao = w_sum > 1e-4 ? (ao_sum / w_sum) : 1.0;
+
+  // Apply physically-based RT soft shadow darkening & contact RTAO grounding.
+  float sun_elev = clamp(ubo.sun_dir_elev.w, 0.0, 1.0);
+  float shadow_mul = mix(mix(0.48, 1.0, rt_shadow), 1.0, 1.0 - sun_elev * 0.85);
+  float ao_mul = mix(0.45, 1.0, rt_ao);
+  col *= shadow_mul * ao_mul;
+
+  // Composite SVGF-denoised RT Reflections via Schlick Fresnel (clearcoat paint, chrome, glass, wet road, lakes).
+  if (refl_weight > 0.05) {
+    vec3 V = -primary_ray_dir(uv);
+    float ndv = max(dot(N, V), 0.001);
+    vec3 rt_refl = denoise_on ? imageLoad(rt_hist_curr, px).rgb : imageLoad(rt_refl_img, px).rgb;
+
+    float F_coat = 0.047 + 0.953 * pow(1.0 - ndv, 5.0);
+    float blend = clamp(F_coat * refl_weight * mix(1.0, 0.30, rough), 0.0, 0.88);
+    // Chrome / mirrors get stronger specular reflection weighting.
+    if (refl_weight > 0.97) {
+      blend = clamp(mix(0.55, 0.92, F_coat), 0.0, 0.92);
+    }
+    col = mix(col, max(rt_refl, vec3(0.0)), blend);
+  }
+
+  imageStore(hdr_img, px, vec4(min(max(col, vec3(0.0)), vec3(64.0)), hdr.a));
+}

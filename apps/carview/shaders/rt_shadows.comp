@@ -1,0 +1,74 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// RT-2: Hardware Ray-Traced Area-Light Sun Soft Shadows + Dynamic Night Headlight Shadows.
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 sz = ivec2(int(ubo.rt_params.z), int(ubo.rt_params.w));
+  if (px.x >= sz.x || px.y >= sz.y) return;
+
+  vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+  float z = textureLod(depth_tex, uv, 0.0).r;
+  if (is_sky_depth_val(z)) {
+    imageStore(rt_shad_ao_img, px, vec4(1.0, 1.0, 0.0, 0.0));
+    return;
+  }
+
+  vec4 gn = imageLoad(rt_gbuf_norm, px);
+  vec3 N = safe_normalize(gn.xyz, vec3(0.0, 1.0, 0.0));
+  vec3 world_pos = world_pos_from_depth(uv, z);
+  float lin_d = linearize_depth(z);
+
+  uint rng = init_rng(uvec2(px), uint(ubo.eye_frame.w), 53u);
+  vec3 sun_d = safe_normalize(ubo.sun_dir_elev.xyz, vec3(0.38, 0.87, 0.29));
+  float sun_vis = clamp(ubo.sun_dir_elev.w, 0.0, 1.0);
+
+  float shadow_vis = 1.0;
+  if (sun_vis > 0.01 && dot(N, sun_d) > 0.0) {
+    // Cone-sampled solar area light (wider golden-hour penumbra near low sun elevation).
+    float cone_tan = mix(0.014, 0.0065, clamp(sun_d.y * 2.0, 0.0, 1.0));
+    vec2 u = rand2(rng);
+    float r = sqrt(u.x) * cone_tan;
+    float phi = 2.0 * kPi * u.y;
+    vec3 st, sb;
+    make_onb(sun_d, st, sb);
+    vec3 sample_dir = normalize(sun_d + (st * cos(phi) + sb * sin(phi)) * r);
+
+    vec3 orig = world_pos + N * max(0.022, 0.0007 * lin_d);
+    shadow_vis = trace_visibility(orig, sample_dir, 0.02, 750.0, kMaskShadowCasters);
+  } else if (sun_vis > 0.01) {
+    shadow_vis = 0.0;
+  }
+
+  // Dynamic night headlight shadow visibility (casts sharp moving shadows of guardrails, trees, cars).
+  float night = clamp(ubo.sun_color_night.w, 0.0, 1.0);
+  uint light_cnt = uint(ubo.rt_params.y);
+  if (night > 0.08 && light_cnt > 1u) {
+    float hl_vis_acc = 0.0;
+    float hl_weight = 0.0;
+    vec3 orig = world_pos + N * max(0.02, 0.0006 * lin_d);
+    for (uint li = 1u; li < min(light_cnt, 5u); ++li) {
+      RtLightGpu L = lights[li];
+      if (abs(L.pos_type.w - 1.0) > 0.5) continue;  // headlight spotlight only
+      vec3 to_l = L.pos_type.xyz - world_pos;
+      float dist = length(to_l);
+      if (dist > L.dir_range.w || dist < 0.25) continue;
+      vec3 ldir = to_l / dist;
+      float spot = dot(-ldir, L.dir_range.xyz);
+      if (spot < L.color_power.w || dot(N, ldir) <= 0.0) continue;
+      float w = smoothstep(L.color_power.w, L.extra.x, spot) * (1.0 - dist / L.dir_range.w);
+      float v = trace_visibility(orig, ldir, 0.02, max(dist - 0.35, 0.05), kMaskShadowCasters & ~kMaskPlayerCar);
+      hl_vis_acc += w * v;
+      hl_weight += w;
+    }
+    if (hl_weight > 0.01) {
+      shadow_vis = mix(shadow_vis, hl_vis_acc / hl_weight, night);
+    }
+  }
+
+  // Preserve existing .g (RTAO) or initialize to 1.0 before rt_ao runs.
+  imageStore(rt_shad_ao_img, px, vec4(shadow_vis, 1.0, 0.0, 0.0));
+}
