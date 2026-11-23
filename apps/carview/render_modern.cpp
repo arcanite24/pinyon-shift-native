@@ -825,15 +825,15 @@ ReflectionStep schedule_reflections(uint64_t frame_index, float reflection_rate,
 WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool low_preset, float reflection_rate) {
   WorldMemoryBudget b{};
   if (low_preset) {
-    // 58 MiB vertex + 14.5 MiB index = 72.5 MiB total (down from 200 MiB), sized to hold Colorado's
-    // low-preset gather cleanly while keeping low-power total VRAM under 260 MiB.
-    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 16, 58ULL << 20, 60ULL << 20);
+    // 96-112 MiB vertex + 24-28 MiB index: holds dense Colorado highway gathers and
+    // New Career / Fast Travel teleports cleanly without exhausting the resident arena.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 12, 96ULL << 20, 112ULL << 20);
     b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 8, 96ULL << 20, 128ULL << 20);
     b.texture_lru_count = 768;
   } else {
-    // 96 MiB vertex + 24 MiB index = 120 MiB total (down from 200 MiB), leaving generous
-    // headroom for overlapping fading cells during 240 km/h streaming.
-    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 12, 96ULL << 20, 112ULL << 20);
+    // 128-160 MiB vertex + 32-40 MiB index: generous headroom for overlapping fading
+    // cells during 240 km/h streaming and long-distance teleports.
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 128ULL << 20, 160ULL << 20);
     b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 6, 192ULL << 20, 320ULL << 20);
     b.texture_lru_count = 1536;
   }
