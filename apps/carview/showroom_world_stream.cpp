@@ -373,9 +373,16 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
       geometry.textured ? static_cast<const void*>(geometry.textured_vertices.data()) : geometry.vertices.data();
   const VkDeviceSize vertex_bytes = geometry.textured ? geometry.textured_vertices.size() * sizeof(WorldVertex)
                                                       : geometry.vertices.size() * sizeof(bake::Vertex);
-  if (!r_.upload_buffer(vertex_data, vertex_bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, world_vertices_) ||
+  const VkBufferUsageFlags rt_geom_flags =
+      r_.rt_supported()
+          ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+          : 0;
+  if (!r_.upload_buffer(vertex_data, vertex_bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_geom_flags,
+                        world_vertices_) ||
       !r_.upload_buffer(geometry.indices.data(), geometry.indices.size() * sizeof(uint32_t),
-                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT, world_indices_)) {
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_geom_flags, world_indices_)) {
     error = "world buffers";
     return false;
   }

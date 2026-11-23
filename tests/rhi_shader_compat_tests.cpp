@@ -456,6 +456,7 @@ void test_all_prebuilt_spirv() {
               name + ": push constants " + std::to_string(r.push_constant_bytes) + " B <= 128 B");
     check_str(!r.uses_point_size, name + ": zero BuiltIn PointSize writes");
     check_str(!r.uses_point_coord, name + ": zero BuiltIn PointCoord reads");
+    check_str(!r.uses_bda, name + ": zero PhysicalStorageBufferAddresses (64-bit BDA) for DX12 SM 6.6 parity");
 
     max_pc = std::max(max_pc, r.push_constant_bytes);
 
@@ -619,6 +620,8 @@ void test_manifest_and_host_source() {
   check(text.find("\"point_coord_shaders\": 0") != std::string::npos, "manifest reports 0 PointCoord shaders");
   check(text.find("\"vulkan_1_3_ready\": 53") != std::string::npos, "manifest reports 53/53 Vulkan 1.3 ready");
   check(text.find("\"metal_3_ready\": 53") != std::string::npos, "manifest reports 53/53 Metal 3 ready");
+  check(text.find("\"dx12_sm_6_6_ready\": 53") != std::string::npos, "manifest reports 53/53 DirectX 12 SM 6.6 ready");
+  check(text.find("\"bda_shaders\": 0") != std::string::npos, "manifest reports 0 BDA shaders");
   check(text.find("\"name\": \"stars.vert\"") != std::string::npos, "manifest contains stars.vert entry");
   check(text.find("\"name\": \"stars.frag\"") != std::string::npos, "manifest contains stars.frag entry");
 

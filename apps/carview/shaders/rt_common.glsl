@@ -1,12 +1,7 @@
-// Shared GLSL definitions, BDA vertex fetch, surface unpacking, automotive BSDF,
+// Shared GLSL definitions, bindless geometry fetch, surface unpacking, automotive BSDF,
 // analytical TOD sky, and sampling helpers for RT-2 (Hybrid RT) & RT-3/4 (Path Tracing).
 #extension GL_EXT_ray_query : require
-#extension GL_EXT_buffer_reference : require
-#extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_nonuniform_qualifier : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 
 const float kPi = 3.14159265359;
 const float kInvPi = 0.31830988618;
@@ -45,8 +40,10 @@ const uint kRtGeomFlagDecalNoise  = 1u << 16;
 const uint kRtGeomFlagAoMap       = 1u << 17;
 
 struct RtGeomInfo {
-  uint64_t vertex_bda;
-  uint64_t index_bda;
+  uint vb_slot;
+  uint vb_off;
+  uint ib_slot;
+  uint ib_off;
   uint material_class;
   uint flags;
   uint tex_albedo;
@@ -80,28 +77,23 @@ struct RtReservoir {
   uint M;
 };
 
-// Tightly packed BDA vertex buffers matching C++ WorldVertex (48 B) and cars::bake::Vertex (32 B).
-struct WorldVertRaw {
-  float px, py, pz;
-  int8_t nx, ny, nz, nw;
-  float u0, v0;
-  float u1, v1;
-  uint8_t cr, cg, cb, ca;
-  int16_t cx, cy, cz, cw;
-  uint16_t u2, v2;
+// Unpacked vertex helpers decoded from raw 32-bit bindless storage buffers
+// matching C++ WorldVertex (48 B = 12 uints) and cars::bake::Vertex (32 B = 8 uints).
+struct WorldVertDecoded {
+  vec3 pos;
+  vec3 normal;
+  vec2 uv0;
+  vec2 uv1;
+  vec4 col;
+  uint uv2_word;
 };
 
-struct CarVertRaw {
-  float px, py, pz;
-  int16_t qx, qy, qz, qw;
-  uint16_t u0, v0;
-  uint16_t u1, v1;
-  uint8_t l0, l1, l2, l3;
+struct CarVertDecoded {
+  vec3 pos;
+  vec4 q;
+  vec2 uv0;
+  float l0;
 };
-
-layout(buffer_reference, scalar) readonly buffer WorldVertBuf { WorldVertRaw v[]; };
-layout(buffer_reference, scalar) readonly buffer CarVertBuf   { CarVertRaw v[]; };
-layout(buffer_reference, scalar) readonly buffer IndexBuf     { uint idx[]; };
 
 // Shared descriptor set 0 (all RT/PT compute shaders).
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
@@ -147,9 +139,60 @@ layout(std430, set = 0, binding = 20) writeonly buffer ReservoirsCurr { RtReserv
 layout(set = 1, binding = 0) uniform sampler world_sampler;
 layout(set = 1, binding = 1) uniform texture2D world_textures[];
 
+// Shared descriptor set 2 (Bindless RT geometry vertex/index storage buffers, raw 32-bit words).
+layout(std430, set = 2, binding = 0) readonly buffer RtGeomBuf { uint data[]; } rt_geom_bufs[];
+
 layout(push_constant) uniform RtPush {
   ivec4 pc;  // x = pass_param (step_size / mode), y = ping_pong, z = flags, w = spare
 } rt_pc;
+
+uint rt_fetch_index(uint ib_slot, uint ib_off, uint idx) {
+  return rt_geom_bufs[nonuniformEXT(ib_slot)].data[ib_off + idx];
+}
+
+CarVertDecoded rt_fetch_car_vert(uint vb_slot, uint vb_off, uint idx) {
+  uint base = (vb_off + idx) * 8u;
+  uint w0 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 0u];
+  uint w1 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 1u];
+  uint w2 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 2u];
+  uint w3 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 3u];
+  uint w4 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 4u];
+  uint w5 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 5u];
+  uint w7 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 7u];
+  CarVertDecoded v;
+  v.pos = vec3(uintBitsToFloat(w0), uintBitsToFloat(w1), uintBitsToFloat(w2));
+  v.q = vec4(float(bitfieldExtract(int(w3), 0, 16)),
+             float(bitfieldExtract(int(w3), 16, 16)),
+             float(bitfieldExtract(int(w4), 0, 16)),
+             float(bitfieldExtract(int(w4), 16, 16)));
+  v.uv0 = vec2(float(w5 & 0xFFFFu), float(w5 >> 16u)) * (1.0 / 65535.0);
+  v.l0 = float(w7 & 0xFFu);
+  return v;
+}
+
+WorldVertDecoded rt_fetch_world_vert(uint vb_slot, uint vb_off, uint idx) {
+  uint base = (vb_off + idx) * 12u;
+  uint w0 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 0u];
+  uint w1 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 1u];
+  uint w2 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 2u];
+  uint w3 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 3u];
+  uint w4 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 4u];
+  uint w5 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 5u];
+  uint w6 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 6u];
+  uint w7 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 7u];
+  uint w8 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 8u];
+  uint w11 = rt_geom_bufs[nonuniformEXT(vb_slot)].data[base + 11u];
+  WorldVertDecoded v;
+  v.pos = vec3(uintBitsToFloat(w0), uintBitsToFloat(w1), uintBitsToFloat(w2));
+  v.normal = vec3(float(bitfieldExtract(int(w3), 0, 8)),
+                  float(bitfieldExtract(int(w3), 8, 8)),
+                  float(bitfieldExtract(int(w3), 16, 8))) * (1.0 / 127.0);
+  v.uv0 = vec2(uintBitsToFloat(w4), uintBitsToFloat(w5));
+  v.uv1 = vec2(uintBitsToFloat(w6), uintBitsToFloat(w7));
+  v.col = unpackUnorm4x8(w8);
+  v.uv2_word = w11;
+  return v;
+}
 
 // ---- Fast PCG spatiotemporal RNG ----
 uint pcg_hash(uint v) {
@@ -376,10 +419,9 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
       vec3(inst.model_row0.y, inst.model_row1.y, inst.model_row2.y),
       vec3(inst.model_row0.z, inst.model_row1.z, inst.model_row2.z));
 
-  IndexBuf ib = IndexBuf(g.index_bda);
-  uint i0 = ib.idx[prim_id * 3u + 0u];
-  uint i1 = ib.idx[prim_id * 3u + 1u];
-  uint i2 = ib.idx[prim_id * 3u + 2u];
+  uint i0 = rt_fetch_index(g.ib_slot, g.ib_off, prim_id * 3u + 0u);
+  uint i1 = rt_fetch_index(g.ib_slot, g.ib_off, prim_id * 3u + 1u);
+  uint i2 = rt_fetch_index(g.ib_slot, g.ib_off, prim_id * 3u + 2u);
 
   vec3 p0, p1, p2;
   vec3 n_local = vec3(0.0, 1.0, 0.0);
@@ -391,54 +433,43 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
 
   uint tree_tex_slot = g.tex_albedo;
   if ((g.flags & kRtGeomFlagCarVertex) != 0u) {
-    CarVertBuf vb = CarVertBuf(g.vertex_bda);
-    CarVertRaw v0 = vb.v[i0];
-    CarVertRaw v1 = vb.v[i1];
-    CarVertRaw v2 = vb.v[i2];
-    p0 = vec3(v0.px, v0.py, v0.pz);
-    p1 = vec3(v1.px, v1.py, v1.pz);
-    p2 = vec3(v2.px, v2.py, v2.pz);
+    CarVertDecoded v0 = rt_fetch_car_vert(g.vb_slot, g.vb_off, i0);
+    CarVertDecoded v1 = rt_fetch_car_vert(g.vb_slot, g.vb_off, i1);
+    CarVertDecoded v2 = rt_fetch_car_vert(g.vb_slot, g.vb_off, i2);
+    p0 = v0.pos;
+    p1 = v1.pos;
+    p2 = v2.pos;
 
-    vec4 q0 = normalize(vec4(float(v0.qx), float(v0.qy), float(v0.qz), float(v0.qw)));
-    vec4 q1 = normalize(vec4(float(v1.qx), float(v1.qy), float(v1.qz), float(v1.qw)));
-    vec4 q2 = normalize(vec4(float(v2.qx), float(v2.qy), float(v2.qz), float(v2.qw)));
+    vec4 q0 = normalize(v0.q);
+    vec4 q1 = normalize(v1.q);
+    vec4 q2 = normalize(v2.q);
     vec3 n0 = quat_rotate(q0, vec3(1.0, 0.0, 0.0));
     vec3 n1 = quat_rotate(q1, vec3(1.0, 0.0, 0.0));
     vec3 n2 = quat_rotate(q2, vec3(1.0, 0.0, 0.0));
     n_local = safe_normalize(n0 * w.x + n1 * w.y + n2 * w.z, vec3(0.0, 1.0, 0.0));
 
-    vec2 t0 = vec2(float(v0.u0), float(v0.v0)) * (1.0 / 65535.0);
-    vec2 t1 = vec2(float(v1.u0), float(v1.v0)) * (1.0 / 65535.0);
-    vec2 t2 = vec2(float(v2.u0), float(v2.v0)) * (1.0 / 65535.0);
-    vec2 uvr = t0 * w.x + t1 * w.y + t2 * w.z;
+    vec2 uvr = v0.uv0 * w.x + v1.uv0 * w.y + v2.uv0 * w.z;
     uv0 = vec2(g.uv0_xform.x + g.uv0_xform.y * uvr.x, g.uv0_xform.z + g.uv0_xform.w * uvr.y);
-    occ = clamp((float(v0.l0) * w.x + float(v1.l0) * w.y + float(v2.l0) * w.z) / 100.0, 0.20, 1.0);
+    occ = clamp((v0.l0 * w.x + v1.l0 * w.y + v2.l0 * w.z) / 100.0, 0.20, 1.0);
   } else {
-    WorldVertBuf vb = WorldVertBuf(g.vertex_bda);
-    WorldVertRaw v0 = vb.v[i0];
-    WorldVertRaw v1 = vb.v[i1];
-    WorldVertRaw v2 = vb.v[i2];
-    p0 = vec3(v0.px, v0.py, v0.pz);
-    p1 = vec3(v1.px, v1.py, v1.pz);
-    p2 = vec3(v2.px, v2.py, v2.pz);
+    WorldVertDecoded v0 = rt_fetch_world_vert(g.vb_slot, g.vb_off, i0);
+    WorldVertDecoded v1 = rt_fetch_world_vert(g.vb_slot, g.vb_off, i1);
+    WorldVertDecoded v2 = rt_fetch_world_vert(g.vb_slot, g.vb_off, i2);
+    p0 = v0.pos;
+    p1 = v1.pos;
+    p2 = v2.pos;
 
-    vec3 n0 = vec3(float(v0.nx), float(v0.ny), float(v0.nz)) * (1.0 / 127.0);
-    vec3 n1 = vec3(float(v1.nx), float(v1.ny), float(v1.nz)) * (1.0 / 127.0);
-    vec3 n2 = vec3(float(v2.nx), float(v2.ny), float(v2.nz)) * (1.0 / 127.0);
-    vec3 ns = n0 * w.x + n1 * w.y + n2 * w.z;
+    vec3 ns = v0.normal * w.x + v1.normal * w.y + v2.normal * w.z;
     n_local = dot(ns, ns) > 0.01 ? normalize(ns) : safe_normalize(cross(p1 - p0, p2 - p0), vec3(0.0, 1.0, 0.0));
-    uv0 = vec2(v0.u0, v0.v0) * w.x + vec2(v1.u0, v1.v0) * w.y + vec2(v2.u0, v2.v0) * w.z;
-    uv1 = vec2(v0.u1, v0.v1) * w.x + vec2(v1.u1, v1.v1) * w.y + vec2(v2.u1, v2.v1) * w.z;
-    vec3 c0 = vec3(float(v0.cr), float(v0.cg), float(v0.cb)) * (1.0 / 255.0);
-    vec3 c1 = vec3(float(v1.cr), float(v1.cg), float(v1.cb)) * (1.0 / 255.0);
-    vec3 c2 = vec3(float(v2.cr), float(v2.cg), float(v2.cb)) * (1.0 / 255.0);
-    vcol = c0 * w.x + c1 * w.y + c2 * w.z;
+    uv0 = v0.uv0 * w.x + v1.uv0 * w.y + v2.uv0 * w.z;
+    uv1 = v0.uv1 * w.x + v1.uv1 * w.y + v2.uv1 * w.z;
+    vcol = v0.col.rgb * w.x + v1.col.rgb * w.y + v2.col.rgb * w.z;
     if ((g.flags & kRtGeomFlagTreeCross) != 0u) {
-      tree_tex_slot = uint(v0.u2);
+      tree_tex_slot = v0.uv2_word & 0xFFFFu;
     } else if ((g.flags & kRtGeomFlagAoMap) != 0u && g.extra_tex.w >= 3u) {
-      vec2 a0 = unpackHalf2x16(uint(v0.u2) | (uint(v0.v2) << 16u));
-      vec2 a1 = unpackHalf2x16(uint(v1.u2) | (uint(v1.v2) << 16u));
-      vec2 a2 = unpackHalf2x16(uint(v2.u2) | (uint(v2.v2) << 16u));
+      vec2 a0 = unpackHalf2x16(v0.uv2_word);
+      vec2 a1 = unpackHalf2x16(v1.uv2_word);
+      vec2 a2 = unpackHalf2x16(v2.uv2_word);
       uv2 = a0 * w.x + a1 * w.y + a2 * w.z;
     }
   }
@@ -556,18 +587,19 @@ bool candidate_passes_alpha(rayQueryEXT rq) {
   uint prim_id = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
   vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, false);
   vec3 w = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
-  IndexBuf ib = IndexBuf(g.index_bda);
-  WorldVertBuf vb = WorldVertBuf(g.vertex_bda);
-  WorldVertRaw v0 = vb.v[ib.idx[prim_id * 3u + 0u]];
-  WorldVertRaw v1 = vb.v[ib.idx[prim_id * 3u + 1u]];
-  WorldVertRaw v2 = vb.v[ib.idx[prim_id * 3u + 2u]];
-  vec2 uv0 = vec2(v0.u0, v0.v0) * w.x + vec2(v1.u0, v1.v0) * w.y + vec2(v2.u0, v2.v0) * w.z;
-  uint slot = ((g.flags & kRtGeomFlagTreeCross) != 0u) ? uint(v0.u2) : g.tex_albedo;
+  uint i0 = rt_fetch_index(g.ib_slot, g.ib_off, prim_id * 3u + 0u);
+  uint i1 = rt_fetch_index(g.ib_slot, g.ib_off, prim_id * 3u + 1u);
+  uint i2 = rt_fetch_index(g.ib_slot, g.ib_off, prim_id * 3u + 2u);
+  WorldVertDecoded v0 = rt_fetch_world_vert(g.vb_slot, g.vb_off, i0);
+  WorldVertDecoded v1 = rt_fetch_world_vert(g.vb_slot, g.vb_off, i1);
+  WorldVertDecoded v2 = rt_fetch_world_vert(g.vb_slot, g.vb_off, i2);
+  vec2 uv0 = v0.uv0 * w.x + v1.uv0 * w.y + v2.uv0 * w.z;
+  uint slot = ((g.flags & kRtGeomFlagTreeCross) != 0u) ? (v0.uv2_word & 0xFFFFu) : g.tex_albedo;
   if (slot < 3u) return false;
   float alpha = textureLod(sampler2D(world_textures[nonuniformEXT(slot)], world_sampler), uv0 * g.uv0_xform.xy, 0.0).a;
   if (is_decal) {
-    float vcol_r = (float(v0.cr) * w.x + float(v1.cr) * w.y + float(v2.cr) * w.z) * (1.0 / 255.0);
-    float vcol_a = (float(v0.ca) * w.x + float(v1.ca) * w.y + float(v2.ca) * w.z) * (1.0 / 255.0);
+    float vcol_r = v0.col.r * w.x + v1.col.r * w.y + v2.col.r * w.z;
+    float vcol_a = v0.col.a * w.x + v1.col.a * w.y + v2.col.a * w.z;
     if ((g.flags & kRtGeomFlagDecalNoise) != 0u && g.extra_tex.x >= 3u) {
       vec2 c4 = unpackHalf2x16(g.extra_tex.z);
       float n_a = textureLod(sampler2D(world_textures[nonuniformEXT(g.extra_tex.x)], world_sampler),

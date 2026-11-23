@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include <vk_mem_alloc.h>
 
@@ -253,10 +254,55 @@ bool RtPipeline::init(VkDescriptorSetLayout world_bindless_layout, VkSampler wor
     set1_layout = fallback_bindless_layout_;
   }
 
-  const VkDescriptorSetLayout layouts[2] = {rt_set_layout_, set1_layout};
+  // Set 2: Bindless RT geometry storage buffer array (matching rt_common.glsl set = 2, binding = 0).
+  {
+    const VkDescriptorSetLayoutBinding gb = {
+        0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, RtScene::kMaxRtGeomBuffers, VK_SHADER_STAGE_COMPUTE_BIT, nullptr,
+    };
+    const VkDescriptorBindingFlags gbf = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+    VkDescriptorSetLayoutBindingFlagsCreateInfo bf{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+    bf.bindingCount = 1;
+    bf.pBindingFlags = &gbf;
+    VkDescriptorSetLayoutCreateInfo gli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    gli.pNext = &bf;
+    gli.bindingCount = 1;
+    gli.pBindings = &gb;
+    if (vkCreateDescriptorSetLayout(d, &gli, nullptr, &geom_buf_set_layout_) != VK_SUCCESS) {
+      error = "RT bindless geometry buffer layout";
+      shutdown();
+      return false;
+    }
+    const VkDescriptorPoolSize gps = {
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        Renderer::kFramesInFlight * RtScene::kMaxRtGeomBuffers,
+    };
+    VkDescriptorPoolCreateInfo gpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    gpi.maxSets = Renderer::kFramesInFlight;
+    gpi.poolSizeCount = 1;
+    gpi.pPoolSizes = &gps;
+    if (vkCreateDescriptorPool(d, &gpi, nullptr, &geom_buf_pool_) != VK_SUCCESS) {
+      error = "RT bindless geometry buffer pool";
+      shutdown();
+      return false;
+    }
+    VkDescriptorSetLayout glayouts[Renderer::kFramesInFlight];
+    for (uint32_t i = 0; i < Renderer::kFramesInFlight; ++i) glayouts[i] = geom_buf_set_layout_;
+    VkDescriptorSetAllocateInfo gai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    gai.descriptorPool = geom_buf_pool_;
+    gai.descriptorSetCount = Renderer::kFramesInFlight;
+    gai.pSetLayouts = glayouts;
+    if (vkAllocateDescriptorSets(d, &gai, geom_buf_sets_) != VK_SUCCESS) {
+      error = "RT bindless geometry buffer sets";
+      shutdown();
+      return false;
+    }
+  }
+
+  const VkDescriptorSetLayout layouts[3] = {rt_set_layout_, set1_layout, geom_buf_set_layout_};
   const VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
   VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-  pli.setLayoutCount = 2;
+  pli.setLayoutCount = 3;
   pli.pSetLayouts = layouts;
   pli.pushConstantRangeCount = 1;
   pli.pPushConstantRanges = &pcr;
@@ -357,6 +403,8 @@ void RtPipeline::shutdown() {
   if (pipe_layout_) vkDestroyPipelineLayout(d, pipe_layout_, nullptr);
   if (desc_pool_) vkDestroyDescriptorPool(d, desc_pool_, nullptr);
   if (rt_set_layout_) vkDestroyDescriptorSetLayout(d, rt_set_layout_, nullptr);
+  if (geom_buf_pool_) vkDestroyDescriptorPool(d, geom_buf_pool_, nullptr);
+  if (geom_buf_set_layout_) vkDestroyDescriptorSetLayout(d, geom_buf_set_layout_, nullptr);
   if (fallback_bindless_pool_) vkDestroyDescriptorPool(d, fallback_bindless_pool_, nullptr);
   if (fallback_bindless_layout_) vkDestroyDescriptorSetLayout(d, fallback_bindless_layout_, nullptr);
   if (linear_sampler_) vkDestroySampler(d, linear_sampler_, nullptr);
@@ -364,6 +412,9 @@ void RtPipeline::shutdown() {
   pipe_layout_ = VK_NULL_HANDLE;
   desc_pool_ = VK_NULL_HANDLE;
   rt_set_layout_ = VK_NULL_HANDLE;
+  geom_buf_pool_ = VK_NULL_HANDLE;
+  geom_buf_set_layout_ = VK_NULL_HANDLE;
+  for (uint32_t i = 0; i < Renderer::kFramesInFlight; ++i) geom_buf_sets_[i] = VK_NULL_HANDLE;
   fallback_bindless_pool_ = VK_NULL_HANDLE;
   fallback_bindless_layout_ = VK_NULL_HANDLE;
   fallback_bindless_set_ = VK_NULL_HANDLE;
@@ -596,10 +647,35 @@ void RtPipeline::record(VkCommandBuffer cmd, const Showroom& host, const RtScene
   w[20].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;        w[20].pBufferInfo = &b_res_curr;
   vkUpdateDescriptorSets(r_.device_, 21, w, 0, nullptr);
 
+  // Update Set 2 bindless geometry storage buffers for this frame slot.
+  {
+    const auto& gbufs = scene.geom_buffers();
+    std::vector<VkDescriptorBufferInfo> gb_infos;
+    if (!gbufs.empty()) {
+      const size_t n = std::min<size_t>(gbufs.size(), RtScene::kMaxRtGeomBuffers);
+      gb_infos.resize(n);
+      for (size_t i = 0; i < n; ++i) {
+        gb_infos[i] = {gbufs[i], 0, VK_WHOLE_SIZE};
+      }
+    } else if (scene.fallback_geom_buffer()) {
+      gb_infos.push_back({scene.fallback_geom_buffer(), 0, VK_WHOLE_SIZE});
+    }
+    if (!gb_infos.empty()) {
+      VkWriteDescriptorSet gw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      gw.dstSet = geom_buf_sets_[slot];
+      gw.dstBinding = 0;
+      gw.dstArrayElement = 0;
+      gw.descriptorCount = uint32_t(gb_infos.size());
+      gw.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      gw.pBufferInfo = gb_infos.data();
+      vkUpdateDescriptorSets(r_.device_, 1, &gw, 0, nullptr);
+    }
+  }
+
   VkDescriptorSet set1 =
       (host.gpu_world_ && host.gpu_world_->bindless_set()) ? host.gpu_world_->bindless_set() : fallback_bindless_set_;
-  const VkDescriptorSet bound[2] = {desc_sets_[slot], set1};
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout_, 0, 2, bound, 0, nullptr);
+  const VkDescriptorSet bound[3] = {desc_sets_[slot], set1, geom_buf_sets_[slot]};
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout_, 0, 3, bound, 0, nullptr);
 
   const uint32_t gx = (width + 7u) / 8u;
   const uint32_t gy = (height + 7u) / 8u;

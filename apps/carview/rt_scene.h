@@ -26,8 +26,10 @@ class WorldGpu;
 // Per-geometry (per-draw inside a BLAS) metadata read by RT/PT shaders via SSBO.
 // Matches GLSL `struct RtGeomInfo` in `shaders/rt_common.glsl`.
 struct RtGeomInfoGpu {
-  uint64_t vertex_bda = 0;
-  uint64_t index_bda = 0;
+  uint32_t vb_slot = 0;         // Bindless RT geometry buffer slot (Set 2 binding 0) for vertices
+  uint32_t vb_off = 0;          // Base vertex index offset within vb_slot
+  uint32_t ib_slot = 0;         // Bindless RT geometry buffer slot (Set 2 binding 0) for uint32 indices
+  uint32_t ib_off = 0;          // Base uint32 index offset within ib_slot
   uint32_t material_class = 0;  // Car: 0..10; World: 100=opaque, 101=road, 102=water, 103=foliage, 104=emissive
   uint32_t flags = 0;           // bit0=car_vtx, bit1=metallic, bit2=clearcoat, bit3=glass, bit4=emissive, bit5=water, bit6=road, bit7=bindless_tex
   uint32_t tex_albedo = 0;      // WorldGpu bindless slot (or 0)
@@ -115,10 +117,14 @@ class RtScene {
   // Safe no-op if `!ready_`.
   void record_update(VkCommandBuffer cmd, const Showroom& host);
 
+  static constexpr uint32_t kMaxRtGeomBuffers = 256;
+
   VkAccelerationStructureKHR tlas() const { return slots_[active_slot_].tlas; }
   VkBuffer instance_info_buffer() const { return slots_[active_slot_].inst_info_buf.buffer; }
   VkBuffer geom_info_buffer() const { return slots_[active_slot_].geom_info_buf.buffer; }
   VkBuffer light_buffer() const { return slots_[active_slot_].light_buf.buffer; }
+  const std::vector<VkBuffer>& geom_buffers() const { return slots_[active_slot_].geom_buffers; }
+  VkBuffer fallback_geom_buffer() const { return seq_ib_.buffer; }
   uint32_t light_count() const { return stats_.light_count; }
   uint32_t instance_count() const { return stats_.tlas_instances; }
   const RtSceneStats& stats() const { return stats_; }
@@ -143,6 +149,8 @@ class RtScene {
     bool compaction_pending = false;
     std::vector<RtGeomInfoGpu> geoms;
     std::vector<WorldGeomTexRecords> tex_refs;
+    VkBuffer vb_buf = VK_NULL_HANDLE;
+    VkBuffer ib_buf = VK_NULL_HANDLE;
     bool any_tex_pending = false;
   };
 
@@ -201,6 +209,8 @@ class RtScene {
     BlasHandle driver_blas;
     BlasHandle spectator_blas;
     BlasHandle showcase_blas;
+    // Per-frame-slot deduplicated bindless geometry storage buffers (Set 2 binding 0).
+    std::vector<VkBuffer> geom_buffers;
   };
 
   struct WorldCellEntry {

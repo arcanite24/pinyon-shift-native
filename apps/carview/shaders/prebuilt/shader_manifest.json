@@ -18,20 +18,18 @@
     "point_coord_shaders": 0,
     "bindless_shaders": 9,
     "ray_query_shaders": 7,
-    "bda_shaders": 7,
+    "bda_shaders": 0,
     "vulkan_1_3_ready": 53,
     "metal_3_ready": 53,
-    "dx12_sm_6_6_ready": 46
+    "dx12_sm_6_6_ready": 53
   },
   "headers": [
     {
       "name": "rt_common.glsl",
       "kind": "header",
-      "lines": 656,
-      "uses_bda": true,
-      "notes": [
-        "uses GL_EXT_buffer_reference (64-bit BDA); DX12 SM 6.6 requires bindless buffer-slot migration"
-      ]
+      "lines": 688,
+      "uses_bda": false,
+      "notes": []
     },
     {
       "name": "world_frag.glsl",
@@ -1037,7 +1035,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17132,
+      "spirv_bytes": 17196,
       "local_size": [
         8,
         8,
@@ -1237,12 +1235,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int64",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader"
@@ -1251,17 +1255,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "rt_composite.comp",
@@ -1270,7 +1272,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 22808,
+      "spirv_bytes": 22872,
       "local_size": [
         8,
         8,
@@ -1470,12 +1472,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int64",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader"
@@ -1484,17 +1492,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "rt_pathtrace.comp",
@@ -1503,7 +1509,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 124076,
+      "spirv_bytes": 125436,
       "local_size": [
         8,
         8,
@@ -1703,14 +1709,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int16",
-        "Int64",
-        "Int8",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader",
@@ -1720,17 +1730,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "rt_reflections.comp",
@@ -1739,7 +1747,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 82108,
+      "spirv_bytes": 83500,
       "local_size": [
         8,
         8,
@@ -1939,14 +1947,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int16",
-        "Int64",
-        "Int8",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader",
@@ -1956,17 +1968,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "rt_shadows.comp",
@@ -1975,7 +1985,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 29884,
+      "spirv_bytes": 32428,
       "local_size": [
         8,
         8,
@@ -2175,14 +2185,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int16",
-        "Int64",
-        "Int8",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader",
@@ -2192,17 +2206,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "rt_svgf_atrous.comp",
@@ -2211,7 +2223,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17876,
+      "spirv_bytes": 17940,
       "local_size": [
         8,
         8,
@@ -2411,12 +2423,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int64",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader"
@@ -2425,17 +2443,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "rt_svgf_temporal.comp",
@@ -2444,7 +2460,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17780,
+      "spirv_bytes": 17844,
       "local_size": [
         8,
         8,
@@ -2644,12 +2660,18 @@
           "count": "unbounded",
           "name": "world_textures",
           "dim": "2D"
+        },
+        {
+          "set": 2,
+          "binding": 0,
+          "type": "storage_buffer",
+          "count": "unbounded",
+          "name": "rt_geom_bufs",
+          "readonly": true
         }
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "Int64",
-        "PhysicalStorageBufferAddresses",
         "RayQueryKHR",
         "RuntimeDescriptorArray",
         "Shader"
@@ -2658,17 +2680,15 @@
       "uses_point_coord": false,
       "uses_instance_index": false,
       "uses_frag_coord": false,
-      "uses_bda": true,
+      "uses_bda": false,
       "uses_ray_query": true,
       "uses_bindless": true,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
-        "dx12_hlsl_sm_6_6": false
+        "dx12_hlsl_sm_6_6": true
       },
-      "notes": [
-        "uses PhysicalStorageBufferAddresses (64-bit BDA); migrate to bindless buffer slots for HLSL SM 6.6"
-      ]
+      "notes": []
     },
     {
       "name": "shadow.frag",

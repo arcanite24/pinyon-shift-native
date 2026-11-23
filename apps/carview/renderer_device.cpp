@@ -635,11 +635,16 @@ bool Renderer::create_device(std::string& error) {
 #endif
       vkGetPhysicalDeviceFeatures2(physical_, &qrt);
 
-      if (o12_rt.bufferDeviceAddress && o12_rt.scalarBlockLayout && qrt.features.shaderInt64 &&
+      if (o12_rt.bufferDeviceAddress && o12_rt.descriptorIndexing && o12_rt.runtimeDescriptorArray &&
+          o12_rt.shaderStorageBufferArrayNonUniformIndexing && o12_rt.descriptorBindingPartiallyBound &&
           o_as.accelerationStructure && o_rq.rayQuery) {
         f12.bufferDeviceAddress = VK_TRUE;
-        f12.scalarBlockLayout = VK_TRUE;
-        f2.features.shaderInt64 = VK_TRUE;
+        f12.descriptorIndexing = VK_TRUE;
+        f12.runtimeDescriptorArray = VK_TRUE;
+        f12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+        f12.descriptorBindingPartiallyBound = VK_TRUE;
+        if (o12_rt.scalarBlockLayout) f12.scalarBlockLayout = VK_TRUE;
+        if (qrt.features.shaderInt64) f2.features.shaderInt64 = VK_TRUE;
         as_feat.accelerationStructure = VK_TRUE;
         as_feat.pNext = f2.pNext;
         f2.pNext = &as_feat;
@@ -650,8 +655,8 @@ bool Renderer::create_device(std::string& error) {
         extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
         extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
         rt_caps_.buffer_device_address = true;
-        rt_caps_.scalar_block_layout = true;
-        rt_caps_.shader_int64 = true;
+        rt_caps_.scalar_block_layout = o12_rt.scalarBlockLayout == VK_TRUE;
+        rt_caps_.shader_int64 = qrt.features.shaderInt64 == VK_TRUE;
         rt_caps_.acceleration_structure = true;
         rt_caps_.ray_query = true;
         rt_caps_.deferred_host_operations = true;

@@ -91,6 +91,9 @@ class RtPipeline {
   VkDescriptorSetLayout fallback_bindless_layout_ = VK_NULL_HANDLE;
   VkDescriptorPool fallback_bindless_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet fallback_bindless_set_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout geom_buf_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorPool geom_buf_pool_ = VK_NULL_HANDLE;
+  VkDescriptorSet geom_buf_sets_[Renderer::kFramesInFlight] = {};
   VkPipelineLayout pipe_layout_ = VK_NULL_HANDLE;
 
   VkDescriptorPool desc_pool_ = VK_NULL_HANDLE;

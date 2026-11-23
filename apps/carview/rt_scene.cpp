@@ -385,6 +385,7 @@ void RtScene::shutdown() {
     r_.destroy_buffer(s.inst_info_buf);
     r_.destroy_buffer(s.geom_info_buf);
     r_.destroy_buffer(s.light_buf);
+    s.geom_buffers.clear();
   }
   for (uint32_t i = 0; i < Renderer::kFramesInFlight; ++i) {
     r_.destroy_buffer(blas_scratch_[i]);
@@ -673,8 +674,8 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
       ranges.push_back({prim_count, 0, 0, 0});
 
       RtGeomInfoGpu gm{};
-      gm.vertex_bda = g_vb;
-      gm.index_bda = g_ib;
+      gm.vb_off = uint32_t(d.vertex_offset);
+      gm.ib_off = d.first_index;
       fill_car_geom_material_raw(d.push, d.lamp_channel, d.brake_lamp, car.frame().paint_finish[0], gm);
       meta.push_back(gm);
       lamps.push_back(uint8_t(d.lamp_channel));
@@ -682,6 +683,8 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
     if (!geoms.empty()) {
       if (build_blas_from_geoms(cmd, geoms, prims, ranges, false, target, nullptr)) {
         target.geoms = std::move(meta);
+        target.vb_buf = car.vertex_buffer_.buffer;
+        target.ib_buf = car.index_buffer_.buffer;
         if (out_lamp_channels) *out_lamp_channels = std::move(lamps);
       }
     }
@@ -907,8 +910,8 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
       ranges.push_back({prim_count, 0, 0, 0});
 
       RtGeomInfoGpu gm{};
-      gm.vertex_bda = g_vb;
-      gm.index_bda = g_ib;
+      gm.vb_off = vbase;
+      gm.ib_off = ibase;
       WorldGeomTexRecordsLocal tr_loc{};
       fill_world_geom_material(d, host.gpu_world_.get(), gm, tr_loc);
       meta.push_back(gm);
@@ -934,6 +937,8 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
     if (build_blas_from_geoms(cmd, vk_geoms, prims, ranges, true, entry.blas, &qidx)) {
       entry.blas.geoms = std::move(meta);
       entry.blas.tex_refs = std::move(tex_refs);
+      entry.blas.vb_buf = vb;
+      entry.blas.ib_buf = ib;
       entry.blas.any_tex_pending = any_pending;
       world_lru_.insert(bkey, entry.blas.bytes, frame_counter_);
       if (entry.blas.compaction_pending) {
@@ -1083,8 +1088,8 @@ void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {
 
   if (build_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, false, tree_blas_, nullptr)) {
     RtGeomInfoGpu gm{};
-    gm.vertex_bda = tvb;
-    gm.index_bda = tib;
+    gm.vb_off = 0u;
+    gm.ib_off = 0u;
     gm.material_class = 103u;
     gm.flags = kRtGeomFlagCutout | kRtGeomFlagTreeCross | (first_tex_slot ? kRtGeomFlagBindlessTex : 0u);
     gm.tex_albedo = first_tex_slot;
@@ -1094,6 +1099,8 @@ void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {
     gm.tint[2] = 0.12f;
     gm.tint[3] = 0.88f;
     tree_blas_.geoms = {gm};
+    tree_blas_.vb_buf = tree_vb_.buffer;
+    tree_blas_.ib_buf = tree_ib_.buffer;
   }
 }
 
@@ -1220,6 +1227,7 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
   auto build_dyn = [&](const WorldVertex* src_verts, uint32_t count, uint32_t mat_class, uint32_t tex_slot,
                        float rough, BlasHandle& out_blas) {
     if (count < 3u) return;
+    const uint32_t v_off = cursor;
     std::memcpy(dst + cursor, src_verts, size_t(count) * sizeof(WorldVertex));
     const VkDeviceAddress v_bda = base_bda + uint64_t(cursor) * sizeof(WorldVertex);
     cursor += count;
@@ -1239,8 +1247,8 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
 
     if (build_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, false, out_blas, nullptr)) {
       RtGeomInfoGpu gm{};
-      gm.vertex_bda = v_bda;
-      gm.index_bda = seq_ib_bda_;
+      gm.vb_off = v_off;
+      gm.ib_off = 0u;
       gm.material_class = mat_class;
       gm.flags = (tex_slot >= 3u) ? kRtGeomFlagBindlessTex : 0u;
       gm.tex_albedo = tex_slot;
@@ -1248,6 +1256,8 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
       gm.tint[3] = rough;
       gm.uv0_xform[0] = gm.uv0_xform[1] = gm.uv0_xform[2] = gm.uv0_xform[3] = 1.0f;
       out_blas.geoms = {gm};
+      out_blas.vb_buf = slot.dyn_vb.buffer;
+      out_blas.ib_buf = seq_ib_.buffer;
     }
   };
 
@@ -1338,7 +1348,8 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
              VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
              VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
-  // 4. Assemble per-frame TLAS instances + RtInstanceInfo + RtGeomInfo + RtLightGpu.
+  // 4. Assemble per-frame TLAS instances + RtInstanceInfo + RtGeomInfo + RtLightGpu
+  //    and deduplicated bindless geometry storage buffer table (Set 2 binding 0).
   std::vector<VkAccelerationStructureInstanceKHR> vk_insts;
   std::vector<RtInstanceInfoGpu> inst_infos;
   std::vector<RtGeomInfoGpu> geom_infos;
@@ -1346,14 +1357,35 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
   inst_infos.reserve(512);
   geom_infos.reserve(2048);
 
+  auto& slot_bufs = slots_[active_slot_].geom_buffers;
+  slot_bufs.clear();
+  slot_bufs.reserve(64);
+  auto register_geom_buffer = [&](VkBuffer buf) -> uint32_t {
+    if (!buf) return UINT32_MAX;
+    for (uint32_t i = 0; i < uint32_t(slot_bufs.size()); ++i) {
+      if (slot_bufs[i] == buf) return i;
+    }
+    if (slot_bufs.size() >= kMaxRtGeomBuffers) return UINT32_MAX;
+    const uint32_t idx = uint32_t(slot_bufs.size());
+    slot_bufs.push_back(buf);
+    return idx;
+  };
+
   auto push_instance = [&](const BlasHandle& bh, const float model[16], uint8_t mask, rt::InstanceKind kind,
                            uint32_t car_inst_idx, bool force_opaque) {
-    if (!bh.handle || !bh.address || bh.geoms.empty()) return;
+    if (!bh.handle || !bh.address || bh.geoms.empty() || !bh.vb_buf || !bh.ib_buf) return;
     const uint32_t info_idx = uint32_t(inst_infos.size());
     if (info_idx >= rt::kInstanceInfoIndexMask) return;
+    const uint32_t vb_slot = register_geom_buffer(bh.vb_buf);
+    const uint32_t ib_slot = register_geom_buffer(bh.ib_buf);
+    if (vb_slot == UINT32_MAX || ib_slot == UINT32_MAX) return;
 
     const uint32_t g_off = uint32_t(geom_infos.size());
     geom_infos.insert(geom_infos.end(), bh.geoms.begin(), bh.geoms.end());
+    for (size_t gi = g_off; gi < geom_infos.size(); ++gi) {
+      geom_infos[gi].vb_slot = vb_slot;
+      geom_infos[gi].ib_slot = ib_slot;
+    }
 
     RtInstanceInfoGpu ii{};
     ii.geom_offset = g_off;
