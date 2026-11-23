@@ -530,9 +530,55 @@ static int carview_main(int argc, char** argv) {
 int main(int argc, char** argv) { return carview_main(argc, argv); }
 
 #ifdef SDL_PLATFORM_ANDROID
+#include <android/log.h>
+#include <pthread.h>
+#include <unistd.h>
+
+static void* android_log_bridge(void* arg) {
+  int fd = *static_cast<int*>(arg);
+  delete static_cast<int*>(arg);
+  char buf[1024];
+  std::string line;
+  ssize_t n;
+  while ((n = ::read(fd, buf, sizeof(buf))) > 0) {
+    line.append(buf, size_t(n));
+    size_t pos;
+    while ((pos = line.find('\n')) != std::string::npos) {
+      std::string msg = line.substr(0, pos);
+      if (!msg.empty() && msg.back() == '\r') msg.pop_back();
+      __android_log_print(ANDROID_LOG_INFO, "ShiftEngine", "%s", msg.c_str());
+      line.erase(0, pos + 1);
+    }
+  }
+  if (!line.empty()) __android_log_print(ANDROID_LOG_INFO, "ShiftEngine", "%s", line.c_str());
+  ::close(fd);
+  return nullptr;
+}
+
+static void start_android_log_bridge() {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  int pfd[2];
+  if (::pipe(pfd) == 0) {
+    ::dup2(pfd[1], STDOUT_FILENO);
+    ::dup2(pfd[1], STDERR_FILENO);
+    ::close(pfd[1]);
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    pthread_t th;
+    if (::pthread_create(&th, nullptr, android_log_bridge, new int(pfd[0])) == 0) ::pthread_detach(th);
+  }
+}
+
 // SDL's activity looks SDL_main up in libmain.so (SDL_MAIN_HANDLED above
 // keeps main's own name on the desktops).
 extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** argv) {
-  return carview_main(argc, argv);
+  start_android_log_bridge();
+  const int rc = carview_main(argc, argv);
+  __android_log_print(ANDROID_LOG_INFO, "ShiftEngine", "carview_main exited with code %d", rc);
+  std::fflush(stdout);
+  std::fflush(stderr);
+  return rc;
 }
 #endif
