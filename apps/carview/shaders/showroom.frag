@@ -423,14 +423,43 @@ void main() {
     gloss = 0.85;
     metal = 0.5;
     if ((flags & kFlagLampEmissive) != 0u) {
-      // Linear HDR lamp emission drives authentic FH1 night bloom through outer lens covers.
-      emissive = draw_tint.rgb * (kLinearOut ? 2.6 : 1.0);
+      // Modulate HDR lamp emission by lights_lod0.xds reflector detail and Fresnel angle so
+      // individual rings, housings and bezels read clearly at night instead of flat solid discs.
+      float luma = dot(base, vec3(0.299, 0.587, 0.114));
+      float lens_detail = mix(0.14, 1.38, smoothstep(0.03, 0.72, luma));
+      float ang = 0.36 + 0.64 * pow(nv, 1.15);
+      emissive = draw_tint.rgb * lens_detail * ang * (kLinearOut ? 1.85 : 0.95);
     }
   } else if (klass == kInterior || klass == kGauge) {
     if ((flags & kFlagCutout) != 0u && (flags & kFlagSlot1) != 0u && t1.a < 0.5) discard;
     base = (flags & kFlagSlot1) != 0u ? t1.rgb : t0.rgb;
-    if (klass == kInterior) {
-      base = ((flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.02)) * draw_tint.rgb;
+    if (submat == 15u) {
+      // Illuminated analog gauge needle (speed_min/tach_min/fuel_min/boost_min): crisp backlit orange-red.
+      base = mix(vec3(0.85, 0.14, 0.03), base, 0.25);
+      emissive = vec3(0.95, 0.18, 0.04) * (kLinearOut ? 0.65 : 0.55);
+      gloss = 0.35;
+    } else if (submat == 16u) {
+      // Digital MFD / cockpit LCD screen: dark anti-glare glass with subtle cool backlight instead of flat grey.
+      base = mix(vec3(0.012, 0.018, 0.026), base * 0.18, 0.30);
+      emissive = vec3(0.014, 0.028, 0.042) + ((flags & kFlagLampEmissive) != 0u ? base * draw_tint.rgb * 0.35 : vec3(0.0));
+      gloss = 0.88;
+      reflectivity = 0.06;
+    } else if (submat == 17u) {
+      // Authentic FH1 interior_emissive_LOD0.xds backlit instrument cluster (speedo/tach/oil/fuel markings).
+      vec3 dial_bg = (flags & kFlagNoSlot0) == 0u ? t0.rgb * 0.35 : vec3(0.015, 0.016, 0.018);
+      vec3 mark = (flags & kFlagSlot1) != 0u ? t1.rgb : vec3(0.0);
+      base = max(dial_bg, mark * 0.65);
+      float lamp_boost = (flags & kFlagLampEmissive) != 0u ? max(0.75, max(draw_tint.r, max(draw_tint.g, draw_tint.b))) : 0.72;
+      emissive = mark * lamp_boost * (kLinearOut ? 1.15 : 0.90);
+      gloss = 0.32;
+    } else if (klass == kInterior) {
+      // FH1 interior materials use a dark charcoal cabin base modulated by nodamage AO (t0),
+      // with interior_lod0.xds (t1) composited as crisp alpha-cutout button/badge decals (t1.a).
+      vec3 int_base = (submat == 5u) ? vec3(0.24, 0.25, 0.27) : vec3(0.034, 0.036, 0.040);
+      vec3 ao = (flags & kFlagNoSlot0) == 0u ? mix(vec3(0.45), t0.rgb, 0.72) : vec3(1.0);
+      vec3 mat_base = int_base * ao;
+      if ((flags & kFlagSlot1) != 0u) mat_base = mix(mat_base, t1.rgb * 0.85, t1.a);
+      base = mat_base * draw_tint.rgb;
       if (submat == 5u) {
         // Cockpit brushed metal / metal2 trim.
         metal = 0.60;
@@ -440,10 +469,20 @@ void main() {
         gloss = 0.22;
       }
     } else {
-      if ((flags & kFlagLampEmissive) != 0u) {
+      // Analog gauge face: mask transparent or bright mint-green surround pixels to matte black bezel housing.
+      if ((flags & kFlagSlot1) != 0u) {
+        float surround_a = smoothstep(0.15, 0.55, t1.a);
+        float mint_excess = smoothstep(0.04, 0.16, t1.g - t1.r * 1.08) * smoothstep(0.12, 0.26, t1.g) *
+                            smoothstep(0.08, 0.22, t1.b);
+        float keep_dial = surround_a * (1.0 - mint_excess * 0.94);
+        base = mix(vec3(0.010, 0.012, 0.014), base, keep_dial);
+        if ((flags & kFlagLampEmissive) != 0u) {
+          emissive = base * draw_tint.rgb * keep_dial;
+        }
+      } else if ((flags & kFlagLampEmissive) != 0u) {
         emissive = base * draw_tint.rgb;
       }
-      gloss = 0.25;
+      gloss = 0.28;
     }
   } else if (klass == kTyre) {
     // BC3_SRGB already decodes sidewall/tread textures to linear in hardware (no extra pow(2.2)!).
@@ -457,19 +496,32 @@ void main() {
     reflectivity = 0.035;
     gloss = 0.18;
   } else if (klass == kRim) {
-    // Allow painted aftermarket rims when draw.tint != white.
-    base *= draw_tint.rgb;
+    // FH1 wheel_lod0.xds stores center-cap emblems/badges with t0.a=1 and leaves paintable alloy
+    // spokes transparent (t0.a=0, rgb=0). Composite alloy metal under t0.a so stock & painted rims
+    // render as gleaming metallic alloy instead of black!
+    vec3 rim_default = (submat == 1u) ? vec3(0.76, 0.78, 0.82)
+                     : (submat == 2u) ? vec3(0.055, 0.06, 0.065)
+                     : (submat == 3u) ? vec3(0.36, 0.37, 0.39)
+                     : (submat == 4u) ? vec3(0.46, 0.48, 0.52)
+                                      : vec3(0.56, 0.58, 0.62);
+    vec3 rim_paint = (submat == 2u || submat == 3u) ? rim_default : (rim_default * draw_tint.rgb);
+    if ((flags & kFlagNoSlot0) == 0u) {
+      base = mix(rim_paint, t0.rgb, t0.a);
+    } else {
+      base = rim_paint;
+    }
     float wblur = clamp(draw.params.w, 0.0, 1.0);
     if (wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
       vec2 duv = v_uv0 - vec2(0.5);
-      vec3 acc = t0.rgb * draw_tint.rgb;
+      vec3 acc = base;
       float span = wblur * 0.52;
       for (int k = -3; k <= 3; ++k) {
         if (k == 0) continue;
         float a = float(k) * (span / 3.0);
         float ca = cos(a), sa = sin(a);
         vec2 ruv = vec2(0.5) + vec2(ca * duv.x - sa * duv.y, sa * duv.x + ca * duv.y);
-        acc += texture(slot0, ruv).rgb * draw_tint.rgb;
+        vec4 s0 = texture(slot0, ruv);
+        acc += mix(rim_paint, s0.rgb, s0.a);
       }
       base = mix(base, acc / 7.0, wblur * 0.92);
       base = mix(base, vec3(dot(base, vec3(0.3, 0.59, 0.11))) * 1.08, wblur * 0.22);
@@ -481,7 +533,6 @@ void main() {
       reflectivity = 0.72;
     } else if (submat == 2u) {
       // inner_rim / wheel_black (Tire/Normal.xml: dark matte barrel, CubeScale=0).
-      base *= 0.40;
       metal = 0.12;
       gloss = 0.22;
       reflectivity = 0.03;
@@ -496,10 +547,10 @@ void main() {
       gloss = 0.70;
       reflectivity = 0.35;
     } else {
-      // Standard painted alloy rim (Tire/Normal.xml: PaintScale=0.65, CubeScale=0.20).
-      gloss = mix(0.78, 0.88, clamp(draw.params.w, 0.0, 1.0));
-      metal = 0.38;
-      reflectivity = 0.24;
+      // Standard painted/machined alloy rim spokes (Tire/Normal.xml).
+      gloss = mix(0.80, 0.90, clamp(draw.params.w, 0.0, 1.0));
+      metal = 0.66;
+      reflectivity = 0.42;
     }
   } else if (klass == kChrome) {
     float wblur = clamp(draw.params.w, 0.0, 1.0);
@@ -571,7 +622,7 @@ void main() {
   }
 
   float occlusion = mix(0.35, 1.0, v_occlusion);
-  if (klass == kInterior || klass == kGauge) occlusion *= 0.45;
+  if (klass == kInterior || klass == kGauge) occlusion *= 0.72;
   vec3 key = normalize(frame.key_light.xyz), fill = normalize(frame.fill_light.xyz);
   vec3 h = normalize(view + key);
   float nh = max(dot(n, h), 0.0);
@@ -689,13 +740,14 @@ void main() {
       colour = F_cov * cov_refl + cov_spec;
       alpha = 1.0;
     } else if (submat == 6u) {
-      colour = base * alpha;
+      colour = base * (diffuse_light + vec3(0.02)) * alpha;
     } else {
       // FH1 window glass: strong grazing Fresnel (4.35 / 0.70), sharp mip-0 reflection, clear straight-through.
+      // Lit base tint avoids unlit khaki/tan rear-window glow under high midnight post-exposure.
       float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
       vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
       vec3 glass_spec = direct_col * pow(nh, 140.0) * 2.2 * ndl * lit;
-      colour = base * alpha + F_glass * glass_refl + glass_spec + emissive;
+      colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + emissive;
       alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
     }
   }

@@ -554,6 +554,47 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     return false;
   }
 
+  // On-demand load of car interior_emissive_LOD0.xds (real backlit speedometer/tachometer dials)
+  // when not already stored in pre-baked .shiftbake packs.
+  {
+    bool has_emissive = false;
+    for (const auto& tx : car_.textures) {
+      if (lower(tx.name) == "interior_emissive_lod0.xds") {
+        has_emissive = true;
+        break;
+      }
+    }
+    if (!has_emissive && !options_.game_root.empty()) {
+      const std::filesystem::path cars_dir = options_.game_root / "media" / "cars";
+      std::filesystem::path zip_path;
+      std::error_code ec;
+      const std::string want_zip = lower(info.media_name) + ".zip";
+      if (std::filesystem::is_directory(cars_dir, ec)) {
+        for (const auto& ent : std::filesystem::directory_iterator(cars_dir, ec)) {
+          if (ent.is_regular_file(ec) && lower(ent.path().filename().string()) == want_zip) {
+            zip_path = ent.path();
+            break;
+          }
+        }
+      }
+      if (!zip_path.empty()) {
+        if (auto arch = fh1::Archive::open(zip_path, nullptr)) {
+          auto rd = arch->read("interior_emissive_lod0.xds");
+          if (rd.ok()) {
+            auto xds = fh1::decode_xds(rd.data);
+            if (!xds.levels.empty() && !xds.levels[0].rgba.empty()) {
+              bake::Texture bt;
+              bt.name = "interior_emissive_lod0.xds";
+              bt.format = bake::TextureFormat::kRgba8;
+              bt.levels.push_back({xds.levels[0].width, xds.levels[0].height, std::move(xds.levels[0].rgba)});
+              car_.textures.push_back(std::move(bt));
+            }
+          }
+        }
+      }
+    }
+  }
+
   textures_.push_back({nullptr, "@white"});
   textures_.push_back({nullptr, "@black"});
 
@@ -1157,6 +1198,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
                     s.technique.c_str(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
       }
       indices_.insert(indices_.end(), s.indices.begin(), s.indices.end());
+      d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = d.push.tint[3] = 1.0f;
       std::memcpy(d.push.model, transform, sizeof d.push.model);
       d.wheel = pending_wheel_;
       d.spins = pending_spins_;
@@ -1184,13 +1226,20 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       // Resolve slot 1 (with fallback for existing v3 .shiftbake packs whose slots[1] was empty).
       std::string slot1 = s.slots[1];
       if (slot1.empty()) {
-        if (klass == MaterialClass::kInterior || klass == MaterialClass::kGauge) {
+        if (klass == MaterialClass::kGauge && technique == "gauge_emissive") {
+          slot1 = "car:interior_emissive_lod0.xds";
+        } else if (klass == MaterialClass::kInterior || klass == MaterialClass::kGauge) {
           slot1 = "car:interior_lod0.xds";
         } else if (klass == MaterialClass::kLamp ||
                    (klass == MaterialClass::kGlass && technique.rfind("detail_glass_", 0) == 0)) {
           slot1 = (s.lod == 0) ? "car:lights_lod0.xds" : "car:lights.xds";
         } else if (klass == MaterialClass::kCarbon) {
           slot1 = "shared:carbonfiber.xds";
+        }
+      } else if (klass == MaterialClass::kGauge && technique == "gauge_emissive") {
+        // Prefer real backlit dial texture when available on gauge_emissive cluster faces.
+        if (texture_index("car:interior_emissive_lod0.xds", pack, true) != UINT32_MAX) {
+          slot1 = "car:interior_emissive_lod0.xds";
         }
       }
       // Glass techniques never sample the body atlas (FORMAT-CARS, Paint):
@@ -1201,7 +1250,11 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
                               is_defrost;
       const uint32_t t0 = flat_glass ? UINT32_MAX : texture_index(s.slots[0], pack, s.lod == 0);
       uint32_t t1 = texture_index(slot1, pack, s.lod == 0);
-      if (t1 == UINT32_MAX && slot1 == "car:lights.xds") t1 = texture_index("car:lights_lod0.xds", pack, true);
+      if (t1 == UINT32_MAX && slot1 == "car:interior_emissive_lod0.xds") {
+        t1 = texture_index("car:interior_lod0.xds", pack, s.lod == 0);
+      } else if (t1 == UINT32_MAX && slot1 == "car:lights.xds") {
+        t1 = texture_index("car:lights_lod0.xds", pack, true);
+      }
       if (t0 == UINT32_MAX) flags |= kFlagNoSlot0;
       if (t1 != UINT32_MAX) flags |= kFlagSlot1;
       if (klass == MaterialClass::kPaint) {
@@ -1335,14 +1388,16 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       }
       if (t_dmg != UINT32_MAX) flags |= kFlagDamageMap;
       // Alpha-tested emissive gauge overlays (z_gauge_emissive_alpha, gauge_emissive_alpha):
-      // discard transparent surround so no solid white rectangle blocks the gauge dials.
-      if (klass == MaterialClass::kGauge && ends_with(technique, "_alpha")) {
+      // discard transparent surround so no solid rectangle blocks the gauge dials.
+      if (klass == MaterialClass::kGauge &&
+          (ends_with(technique, "_alpha") || technique.find("alpha") != std::string::npos)) {
         flags |= kFlagCutout;
       }
       d.push.tint[3] = 1;
       // Sub-material variant ID encoded in params[2] for showroom.frag:
       // 1=outer_rim (chrome lip), 2=inner_rim/wheel_black (dark barrel), 3=rotor/brake/drum,
-      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 10=mirrorLeft, 11=mirrorMiddle, 12=mirrorRight.
+      // 4=hub, 5=cockpit metal/metal2, 6=defrost_lines, 10=mirrorLeft, 11=mirrorMiddle, 12=mirrorRight,
+      // 15=cockpit gauge needle, 16=cockpit digital MFD gauge.
       float submat_id = 0.0f;
       if (is_defrost) {
         submat_id = 6.0f;
@@ -1350,6 +1405,12 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         if (technique == "mirrorleft") submat_id = 10.0f;
         else if (technique == "mirrorright") submat_id = 12.0f;
         else submat_id = 11.0f;
+      } else if (d.cockpit_role >= 1 || technique == "gauge_needle" || technique == "cockpit_gauge_needle") {
+        submat_id = 15.0f;
+      } else if (d.lamp_channel == drive::LampChannel::kDigitalGauge) {
+        submat_id = 16.0f;
+      } else if (klass == MaterialClass::kGauge && slot1 == "car:interior_emissive_lod0.xds" && t1 != UINT32_MAX) {
+        submat_id = 17.0f;
       } else if (klass == MaterialClass::kRim) {
         if (technique == "outer_rim") submat_id = 1.0f;
         else if (technique == "inner_rim" || technique == "wheel_black") submat_id = 2.0f;
@@ -1359,11 +1420,10 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         std::string base_name = technique;
         while (!base_name.empty() && std::isdigit(static_cast<unsigned char>(base_name.back()))) base_name.pop_back();
         if (base_name == "metal") submat_id = 5.0f;
-        // The cabin techniques' texel scale (CARS, Cockpit interior and mirrors):
-        // plastic, cloth and solid 0.5, mottled 0.35, bump_plastic 0.3, metal 0.65.
-        const float k = base_name == "mottled" ? 0.35f :
-                        base_name == "bump_plastic" ? 0.3f :
-                        base_name == "metal" ? 0.65f : 0.5f;
+        // Preserve authentic textured interior contrast without crushing dark leather/plastics to pitch black.
+        const float k = base_name == "mottled" ? 0.80f :
+                        base_name == "bump_plastic" ? 0.78f :
+                        base_name == "metal" ? 1.0f : 0.90f;
         d.push.tint[0] = d.push.tint[1] = d.push.tint[2] = k;
       }
       d.push.params[0] = float(uint32_t(klass));
@@ -3693,6 +3753,7 @@ WorldGeometry build_world(const WorldTriangles& world) {
   auto& indices = out.indices;
   vertices.reserve(n * 3);
   indices.reserve(n * 3);
+  const bool has_smooth_normals = (world.normals.size() == world.positions.size());
   for (size_t g = 0; g < by_group.size(); ++g) {
     if (by_group[g].empty()) continue;
     WorldGeometry::Draw d;
@@ -3703,26 +3764,33 @@ WorldGeometry build_world(const WorldTriangles& world) {
       const auto& c = world.positions[size_t(t) * 3 + 2];
       const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
       const float e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-      float nv[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
-      const float len = std::sqrt(nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]);
-      if (!(len > 0)) continue;
-      for (float& k : nv) k /= len;
-      if (nv[1] < 0)
-        for (float& k : nv) k = -k;  // up-facing; the shader faces it to the eye anyway
-      // The rotation taking +x to the normal: (x cross n, 1 + x dot n), normalised.
-      float q[4] = {0, -nv[2], nv[1], 1 + nv[0]};
-      if (q[3] < 1e-4f) {
-        q[0] = 0;
-        q[1] = 1;
-        q[2] = 0;
-        q[3] = 0;
-      }
-      const float ql = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-      bake::Vertex v{};
-      for (int k = 0; k < 4; ++k) v.frame[size_t(k)] = int16_t(std::lround(q[k] / ql * 32767));
-      v.lighting = {100, 0, 0, 0};  // open to the sky
-      for (const auto* p : {&a, &b, &c}) {
-        v.position = *p;
+      float face_n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+      const float flen = std::sqrt(face_n[0] * face_n[0] + face_n[1] * face_n[1] + face_n[2] * face_n[2]);
+      if (!(flen > 0)) continue;
+      for (float& k : face_n) k /= flen;
+      if (face_n[1] < 0)
+        for (float& k : face_n) k = -k;  // up-facing; the shader faces it to the eye anyway
+      const std::array<float, 3>* pts[3] = {&a, &b, &c};
+      for (int vi = 0; vi < 3; ++vi) {
+        float nv[3] = {face_n[0], face_n[1], face_n[2]};
+        if (has_smooth_normals) {
+          const auto& sn = world.normals[size_t(t) * 3 + size_t(vi)];
+          const float sl = std::sqrt(sn[0] * sn[0] + sn[1] * sn[1] + sn[2] * sn[2]);
+          if (sl > 1e-5f) nv[0] = sn[0] / sl, nv[1] = sn[1] / sl, nv[2] = sn[2] / sl;
+        }
+        // The rotation taking +x to the normal: (x cross n, 1 + x dot n), normalised.
+        float q[4] = {0, -nv[2], nv[1], 1 + nv[0]};
+        if (q[3] < 1e-4f) {
+          q[0] = 0;
+          q[1] = 1;
+          q[2] = 0;
+          q[3] = 0;
+        }
+        const float ql = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        bake::Vertex v{};
+        for (int k = 0; k < 4; ++k) v.frame[size_t(k)] = int16_t(std::lround(q[k] / ql * 32767));
+        v.lighting = {100, 0, 0, 0};  // open to the sky
+        v.position = *pts[vi];
         indices.push_back(uint32_t(vertices.size()));
         vertices.push_back(v);
       }
@@ -7330,23 +7398,45 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   const auto l_hand = vadd(pivot, vscale(l_dir, rim_r));
   const auto r_hand = vadd(pivot, vscale(r_dir, rim_r));
 
-  // Seated driver body behind steering wheel (+Z rearward).
+  // Rounded ellipsoid helper for smooth racing helmet & shoulders (no blocky cube helmet!).
+  auto push_ellipsoid = [&](const std::array<float, 3>& c, float rx, float ry, float rz,
+                            const std::array<uint8_t, 4>& col, int stacks = 5, int slices = 10) {
+    constexpr float kPi = 3.14159265358979f;
+    auto pt = [&](int st, int sl) -> std::array<float, 3> {
+      const float phi = -0.5f * kPi + kPi * float(st) / float(stacks);
+      const float th = 2.0f * kPi * float(sl) / float(slices);
+      const float cp = std::cos(phi);
+      return {c[0] + rx * cp * std::cos(th), c[1] + ry * std::sin(phi), c[2] + rz * cp * std::sin(th)};
+    };
+    for (int st = 0; st < stacks; ++st) {
+      for (int sl = 0; sl < slices; ++sl) {
+        const auto p00 = pt(st, sl);
+        const auto p10 = pt(st + 1, sl);
+        const auto p11 = pt(st + 1, sl + 1);
+        const auto p01 = pt(st, sl + 1);
+        if (st > 0) push_tri(p00, p10, p11, col);
+        if (st + 1 < stacks) push_tri(p00, p11, p01, col);
+      }
+    }
+  };
+
+  // Seated driver body behind steering wheel (+Z rearward in model space, lowered inside cabin).
   const float lean = std::clamp(wheel_rad * 0.03f, -0.045f, 0.045f);
-  const std::array<float, 3> chest{pivot[0] + lean * 0.4f, pivot[1] - 0.06f, pivot[2] + 0.42f};
-  const std::array<float, 3> head{pivot[0] + lean, pivot[1] + 0.24f, pivot[2] + 0.44f};
+  const std::array<float, 3> chest{pivot[0] + lean * 0.4f, pivot[1] - 0.12f, pivot[2] + 0.38f};
+  const std::array<float, 3> head{pivot[0] + lean, pivot[1] + 0.15f, pivot[2] + 0.40f};
 
-  const std::array<uint8_t, 4> suit{46, 52, 62, 255};
-  const std::array<uint8_t, 4> stripe{226, 46, 74, 255};
-  const std::array<uint8_t, 4> helmet{236, 238, 242, 255};
-  const std::array<uint8_t, 4> visor{24, 28, 36, 255};
-  const std::array<uint8_t, 4> glove{28, 30, 34, 255};
+  const std::array<uint8_t, 4> suit{34, 38, 46, 255};
+  const std::array<uint8_t, 4> stripe{120, 32, 46, 255};
+  const std::array<uint8_t, 4> helmet{64, 68, 76, 255};
+  const std::array<uint8_t, 4> visor{16, 18, 24, 255};
+  const std::array<uint8_t, 4> glove{22, 24, 28, 255};
 
-  // Torso, shoulder collar, neck, racing helmet + tinted visor.
-  push_box(chest, {0.19f, 0, 0}, {0, 0.22f, 0}, {0, 0, 0.11f}, suit);
-  push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.21f, 0, 0}, {0, 0.055f, 0}, {0, 0, 0.115f}, stripe);
-  push_box({head[0], head[1] - 0.11f, head[2]}, {0.055f, 0, 0}, {0, 0.06f, 0}, {0, 0, 0.055f}, suit);
-  push_box(head, {0.115f, 0, 0}, {0, 0.125f, 0}, {0, 0, 0.135f}, helmet);
-  push_box({head[0], head[1] + 0.01f, head[2] - 0.12f}, {0.095f, 0, 0}, {0, 0.045f, 0}, {0, 0, 0.03f}, visor);
+  // Sculpted torso, collar, neck, rounded dark racing helmet + smoked forward visor.
+  push_box(chest, {0.18f, 0, 0}, {0, 0.20f, 0}, {0, 0, 0.10f}, suit);
+  push_box({chest[0], chest[1] + 0.15f, chest[2] - 0.02f}, {0.195f, 0, 0}, {0, 0.045f, 0}, {0, 0, 0.105f}, stripe);
+  push_box({head[0], head[1] - 0.10f, head[2]}, {0.050f, 0, 0}, {0, 0.055f, 0}, {0, 0, 0.050f}, suit);
+  push_ellipsoid(head, 0.108f, 0.118f, 0.128f, helmet, 5, 10);
+  push_ellipsoid({head[0], head[1] + 0.008f, head[2] - 0.088f}, 0.086f, 0.040f, 0.045f, visor, 3, 8);
 
   // Left & right shoulders -> elbows -> gloved hands gripping the rotating wheel rim.
   const std::array<float, 3> l_sh{chest[0] - 0.20f, chest[1] + 0.13f, chest[2] - 0.02f};
@@ -7380,7 +7470,7 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
     pc.uv1[i] = world_up_[i];
   }
   pc.uv0[3] = 2.0f;  // swap = none
-  pc.uv1[3] = world_up_[3];
+  pc.uv1[3] = world_up_[3] * 0.42f;  // cabin-occluded lighting so driver doesn't glow inside roofed interior
   pc.tint[0] = pc.tint[1] = pc.tint[2] = pc.tint[3] = 1.0f;
   pc.params[0] = 0.0f;      // kOpaque
   pc.params[1] = 65536.0f;  // kFlagVertexLit

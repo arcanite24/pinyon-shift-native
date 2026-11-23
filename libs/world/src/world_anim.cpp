@@ -513,11 +513,14 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
   }
 
   // 4. Festival crowds / cheering spectators driven by TrackSettings <Crowds> tint & Spectators.zip catalog.
-  const std::array<uint8_t, 3> shirt_palette[6] = {
-      {232, 54, 78}, {46, 146, 224}, {244, 198, 48}, {68, 186, 118}, {238, 128, 38}, {225, 225, 232}};
-  const float ct_r = std::clamp(0.5f * (post_cfg_.crowd_dark[0] + post_cfg_.crowd_light[0]), 0.3f, 1.5f);
-  const float ct_g = std::clamp(0.5f * (post_cfg_.crowd_dark[1] + post_cfg_.crowd_light[1]), 0.3f, 1.5f);
-  const float ct_b = std::clamp(0.5f * (post_cfg_.crowd_dark[2] + post_cfg_.crowd_light[2]), 0.3f, 1.5f);
+  // Use realistic muted festival apparel tones (low-to-mid reflectance) so crowds blend naturally
+  // in daylight and darken realistically at night instead of glowing like neon blocks.
+  const std::array<uint8_t, 3> shirt_palette[8] = {
+      {102, 42, 46}, {46, 72, 104}, {116, 98, 54}, {52, 82, 62},
+      {108, 66, 44}, {92, 94, 98},  {64, 56, 72},  {48, 50, 56}};
+  const float ct_r = std::clamp(0.5f * (post_cfg_.crowd_dark[0] + post_cfg_.crowd_light[0]), 0.35f, 1.15f);
+  const float ct_g = std::clamp(0.5f * (post_cfg_.crowd_dark[1] + post_cfg_.crowd_light[1]), 0.35f, 1.15f);
+  const float ct_b = std::clamp(0.5f * (post_cfg_.crowd_dark[2] + post_cfg_.crowd_light[2]), 0.35f, 1.15f);
   for (size_t ci = 0; ci < crowds_.size(); ++ci) {
     const auto& cl = crowds_[ci];
     const double dx = double(cl.origin[0]) - eye_x;
@@ -532,30 +535,32 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
       const float sy = ground_y(sx, sz, cl.origin[1]);
       const float phase = h * 6.283f + float(i) * 0.83f;
       const float cheer = std::max(0.0f, std::sin(time_sec * (3.2f + h * 1.4f) + phase));
-      const float jump = cheer * cheer * 0.14f;
-      const float scale = 0.90f + 0.18f * hash_01(i, int(ci), 29u);
+      const float jump = cheer * cheer * 0.10f;
+      const float scale = 0.88f + 0.16f * hash_01(i, int(ci), 29u);
 
-      const auto& pal = shirt_palette[(size_t(i) + ci * 2) % 6];
+      const auto& pal = shirt_palette[(size_t(i) + ci * 3) % 8];
       const std::array<uint8_t, 4> shirt{clamp_u8(float(pal[0]) * ct_r), clamp_u8(float(pal[1]) * ct_g),
                                          clamp_u8(float(pal[2]) * ct_b), 255};
-      const std::array<uint8_t, 4> jeans{42, 54, 78, 255};
-      const std::array<uint8_t, 4> skin{216, 174, 142, 255};
+      const std::array<uint8_t, 4> jeans{32, 38, 48, 255};
+      const std::array<uint8_t, 4> skin{136, 108, 88, 255};
+      const std::array<uint8_t, 4> hair{36, 30, 26, 255};
 
-      // Legs, torso, head.
-      push_box(out, {sx, sy + 0.42f * scale + jump, sz}, {cl.dir_x * 0.17f, 0, cl.dir_z * 0.17f},
-               {0, 0.42f * scale, 0}, {fx * 0.12f, 0, fz * 0.12f}, jeans);
-      push_box(out, {sx, sy + 1.12f * scale + jump, sz}, {cl.dir_x * 0.22f, 0, cl.dir_z * 0.22f},
-               {0, 0.32f * scale, 0}, {fx * 0.13f, 0, fz * 0.13f}, shirt);
-      push_box(out, {sx, sy + 1.60f * scale + jump, sz}, {0.12f, 0, 0}, {0, 0.14f * scale, 0}, {0, 0, 0.12f}, skin);
+      // Tapered lower legs, torso, shoulders, head + hair cap.
+      push_box(out, {sx, sy + 0.40f * scale + jump, sz}, {cl.dir_x * 0.13f, 0, cl.dir_z * 0.13f},
+               {0, 0.40f * scale, 0}, {fx * 0.09f, 0, fz * 0.09f}, jeans);
+      push_box(out, {sx, sy + 1.06f * scale + jump, sz}, {cl.dir_x * 0.18f, 0, cl.dir_z * 0.18f},
+               {0, 0.29f * scale, 0}, {fx * 0.10f, 0, fz * 0.10f}, shirt);
+      push_box(out, {sx, sy + 1.49f * scale + jump, sz}, {0.095f, 0, 0}, {0, 0.105f * scale, 0}, {0, 0, 0.095f}, skin);
+      push_box(out, {sx, sy + 1.59f * scale + jump, sz}, {0.10f, 0, 0}, {0, 0.045f * scale, 0}, {0, 0, 0.10f}, hair);
 
-      // Animated cheering arms waving up & down!
-      const float arm_lift = 0.18f + 0.48f * cheer;
+      // Animated cheering arms waving up & down.
+      const float arm_lift = 0.14f + 0.42f * cheer;
       for (float side : {-1.0f, 1.0f}) {
-        const float ax = sx + cl.dir_x * (0.29f * side);
-        const float az = sz + cl.dir_z * (0.29f * side);
-        const float ay = sy + (1.28f + arm_lift * 0.5f) * scale + jump;
-        push_box(out, {ax, ay, az}, {cl.dir_x * 0.07f, 0, cl.dir_z * 0.07f},
-                 {0, (0.22f + arm_lift * 0.28f) * scale, 0}, {fx * 0.07f, 0, fz * 0.07f}, shirt);
+        const float ax = sx + cl.dir_x * (0.23f * side);
+        const float az = sz + cl.dir_z * (0.23f * side);
+        const float ay = sy + (1.20f + arm_lift * 0.45f) * scale + jump;
+        push_box(out, {ax, ay, az}, {cl.dir_x * 0.055f, 0, cl.dir_z * 0.055f},
+                 {0, (0.19f + arm_lift * 0.24f) * scale, 0}, {fx * 0.055f, 0, fz * 0.055f}, shirt);
       }
     }
   }

@@ -321,27 +321,42 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
     wt.colours.push_back(col);
     return uint8_t(wt.colours.size() - 1);
   };
-  auto push_tri = [&](std::array<float, 3> a, std::array<float, 3> b, std::array<float, 3> c,
-                      std::array<float, 3> col) {
+  auto push_tri_n = [&](std::array<float, 3> a, std::array<float, 3> b, std::array<float, 3> c,
+                        std::array<float, 3> na, std::array<float, 3> nb, std::array<float, 3> nc,
+                        std::array<float, 3> col) {
     wt.positions.push_back(a);
     wt.positions.push_back(b);
     wt.positions.push_back(c);
+    wt.normals.push_back(na);
+    wt.normals.push_back(nb);
+    wt.normals.push_back(nc);
     wt.group.push_back(add_group(col));
   };
+  const std::array<float, 3> kUp{0.0f, 1.0f, 0.0f};
+  auto push_tri = [&](std::array<float, 3> a, std::array<float, 3> b, std::array<float, 3> c,
+                      std::array<float, 3> col) {
+    push_tri_n(a, b, c, kUp, kUp, kUp, col);
+  };
 
-  // 1. Outer studio floor disc (radius 18 m, 36 segments).
-  constexpr int kSegs = 36;
+  // 1. Outer studio floor disc (radius 18 m, 96 segments with 3 radial vignette bands).
+  constexpr int kSegs = 96;
   const float y_outer = floor_y - 0.025f;
-  for (int i = 0; i < kSegs; ++i) {
-    const float a0 = 2.0f * kPi * float(i) / float(kSegs);
-    const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
-    const float r0 = 3.25f, r1 = 18.0f;
-    std::array<float, 3> p00{r0 * std::cos(a0), y_outer, r0 * std::sin(a0)};
-    std::array<float, 3> p01{r0 * std::cos(a1), y_outer, r0 * std::sin(a1)};
-    std::array<float, 3> p10{r1 * std::cos(a0), y_outer, r1 * std::sin(a0)};
-    std::array<float, 3> p11{r1 * std::cos(a1), y_outer, r1 * std::sin(a1)};
-    push_tri(p00, p10, p11, floor_col);
-    push_tri(p00, p11, p01, floor_col);
+  const float floor_rings[4] = {3.25f, 7.2f, 12.6f, 18.0f};
+  const float floor_shades[3] = {1.00f, 0.78f, 0.56f};
+  for (int ring = 0; ring < 3; ++ring) {
+    const std::array<float, 3> rcol{floor_col[0] * floor_shades[ring], floor_col[1] * floor_shades[ring],
+                                    floor_col[2] * floor_shades[ring]};
+    const float r0 = floor_rings[ring], r1 = floor_rings[ring + 1];
+    for (int i = 0; i < kSegs; ++i) {
+      const float a0 = 2.0f * kPi * float(i) / float(kSegs);
+      const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
+      std::array<float, 3> p00{r0 * std::cos(a0), y_outer, r0 * std::sin(a0)};
+      std::array<float, 3> p01{r0 * std::cos(a1), y_outer, r0 * std::sin(a1)};
+      std::array<float, 3> p10{r1 * std::cos(a0), y_outer, r1 * std::sin(a0)};
+      std::array<float, 3> p11{r1 * std::cos(a1), y_outer, r1 * std::sin(a1)};
+      push_tri(p00, p10, p11, rcol);
+      push_tri(p00, p11, p01, rcol);
+    }
   }
 
   // 2. Turntable plinth disc (radius 3.15 m) + glowing accent rim ring (3.15..3.25 m).
@@ -393,17 +408,47 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
     }
   }
 
-  // 4. Studio cyclorama cylinder wall (radius 17.5 m, height 8 m) for clean horizon framing.
-  for (int i = 0; i < kSegs; ++i) {
-    const float a0 = 2.0f * kPi * float(i) / float(kSegs);
-    const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
-    const float r = 17.5f;
-    std::array<float, 3> b0{r * std::cos(a0), y_outer, r * std::sin(a0)};
-    std::array<float, 3> b1{r * std::cos(a1), y_outer, r * std::sin(a1)};
-    std::array<float, 3> t0{r * std::cos(a0), y_outer + 8.0f, r * std::sin(a0)};
-    std::array<float, 3> t1{r * std::cos(a1), y_outer + 8.0f, r * std::sin(a1)};
-    push_tri(b0, t0, t1, wall_col);
-    push_tri(b0, t1, b1, wall_col);
+  // 4. Smooth 96-segment studio cyclorama wall (radius 17.5 m, height 8.5 m) with inward smooth
+  //    vertex normals and subtle studio light-box gradient bands + horizon accent trim.
+  const float wall_y[5] = {y_outer, y_outer + 0.8f, y_outer + 3.2f, y_outer + 5.8f, y_outer + 8.5f};
+  const float wall_shades[4] = {0.72f, 1.08f, 0.92f, 0.62f};
+  for (int band = 0; band < 4; ++band) {
+    const std::array<float, 3> bcol{wall_col[0] * wall_shades[band], wall_col[1] * wall_shades[band],
+                                    wall_col[2] * wall_shades[band]};
+    const float yb = wall_y[band], yt = wall_y[band + 1];
+    for (int i = 0; i < kSegs; ++i) {
+      const float a0 = 2.0f * kPi * float(i) / float(kSegs);
+      const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
+      const float c0 = std::cos(a0), s0 = std::sin(a0);
+      const float c1 = std::cos(a1), s1 = std::sin(a1);
+      const float r = 17.5f;
+      const std::array<float, 3> n0{-c0, 0.08f, -s0};
+      const std::array<float, 3> n1{-c1, 0.08f, -s1};
+      std::array<float, 3> b0{r * c0, yb, r * s0};
+      std::array<float, 3> b1{r * c1, yb, r * s1};
+      std::array<float, 3> t0{r * c0, yt, r * s0};
+      std::array<float, 3> t1{r * c1, yt, r * s1};
+      push_tri_n(b0, t0, t1, n0, n0, n1, bcol);
+      push_tri_n(b0, t1, b1, n0, n1, n1, bcol);
+    }
+  }
+  // Subtle Horizon studio light-strip band around upper studio truss.
+  {
+    const std::array<float, 3> strip_col{wall_col[0] * 1.45f + ring_col[0] * 0.14f,
+                                         wall_col[1] * 1.45f + ring_col[1] * 0.14f,
+                                         wall_col[2] * 1.45f + ring_col[2] * 0.14f};
+    const float r = 17.38f;
+    const float yb = y_outer + 3.15f, yt = y_outer + 3.30f;
+    for (int i = 0; i < kSegs; ++i) {
+      const float a0 = 2.0f * kPi * float(i) / float(kSegs);
+      const float a1 = 2.0f * kPi * float(i + 1) / float(kSegs);
+      const float c0 = std::cos(a0), s0 = std::sin(a0);
+      const float c1 = std::cos(a1), s1 = std::sin(a1);
+      const std::array<float, 3> n0{-c0, 0.0f, -s0};
+      const std::array<float, 3> n1{-c1, 0.0f, -s1};
+      push_tri_n({r * c0, yb, r * s0}, {r * c0, yt, r * s0}, {r * c1, yt, r * s1}, n0, n0, n1, strip_col);
+      push_tri_n({r * c0, yb, r * s0}, {r * c1, yt, r * s1}, {r * c1, yb, r * s1}, n0, n1, n1, strip_col);
+    }
   }
 
   return wt;
