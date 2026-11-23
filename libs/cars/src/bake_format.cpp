@@ -1,9 +1,20 @@
 #include "cars/bake_format.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <stdexcept>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace cars::bake {
 namespace {
@@ -11,38 +22,119 @@ namespace {
 constexpr char kMagic[8] = {'S', 'H', 'F', 'T', 'B', 'A', 'K', 'E'};
 constexpr char kEnd[8] = {'E', 'N', 'D', 'B', 'A', 'K', 'E', '\0'};
 
+#if defined(_WIN32) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+inline constexpr bool kLittleEndian = true;
+#else
+inline constexpr bool kLittleEndian = false;
+#endif
+
+static_assert(sizeof(Vertex) == 32 && offsetof(Vertex, position) == 0 && offsetof(Vertex, frame) == 12 &&
+                  offsetof(Vertex, uv0) == 20 && offsetof(Vertex, uv1) == 24 && offsetof(Vertex, lighting) == 28,
+              "Vertex layout must be 32 packed bytes");
+static_assert(sizeof(std::array<float, 3>) == 12, "MorphTarget vertex must be 12 packed bytes");
+
 class Writer {
  public:
   std::vector<uint8_t> out;
+  void raw(const void* p, size_t n) {
+    if (n == 0) return;
+    const size_t off = out.size();
+    out.resize(off + n);
+    std::memcpy(out.data() + off, p, n);
+  }
   void u8(uint8_t v) { out.push_back(v); }
   void u16(uint16_t v) {
-    out.push_back(uint8_t(v));
-    out.push_back(uint8_t(v >> 8));
+    if constexpr (kLittleEndian) {
+      raw(&v, 2);
+    } else {
+      out.push_back(uint8_t(v));
+      out.push_back(uint8_t(v >> 8));
+    }
   }
   void u32(uint32_t v) {
-    for (int s = 0; s < 32; s += 8) out.push_back(uint8_t(v >> s));
+    if constexpr (kLittleEndian) {
+      raw(&v, 4);
+    } else {
+      for (int s = 0; s < 32; s += 8) out.push_back(uint8_t(v >> s));
+    }
   }
   void i64(int64_t v) {
-    for (int s = 0; s < 64; s += 8) out.push_back(uint8_t(uint64_t(v) >> s));
+    if constexpr (kLittleEndian) {
+      raw(&v, 8);
+    } else {
+      for (int s = 0; s < 64; s += 8) out.push_back(uint8_t(uint64_t(v) >> s));
+    }
   }
   void f32(float f) {
-    uint32_t b;
-    std::memcpy(&b, &f, 4);
-    u32(b);
+    if constexpr (kLittleEndian) {
+      raw(&f, 4);
+    } else {
+      uint32_t b;
+      std::memcpy(&b, &f, 4);
+      u32(b);
+    }
   }
   void str(const std::string& s) {
     u32(uint32_t(s.size()));
-    out.insert(out.end(), s.begin(), s.end());
+    raw(s.data(), s.size());
   }
   void bytes(const std::vector<uint8_t>& b) {
     u32(uint32_t(b.size()));
-    out.insert(out.end(), b.begin(), b.end());
-  }
-  void raw(const void* p, size_t n) {
-    const auto* b = static_cast<const uint8_t*>(p);
-    out.insert(out.end(), b, b + n);
+    raw(b.data(), b.size());
   }
 };
+
+size_t estimate_encoded_size(const Bake& b) {
+  size_t total = 8 + 4 + 4 + 8;  // magic, version, kind, end
+  if (b.kind == Kind::kCar) {
+    const CarInfo& c = b.car;
+    total += 4 + c.media_name.size() + 4 + c.display_name.size() + 4 + c.origin.size() + 8;
+    total += 4;
+    for (const Colour& col : c.colours) {
+      total += 8 + 8 + 1 + 4 + 4 + col.atlas_lod0.size() + 4 + col.atlas_lod.size() + 1 + 4;
+    }
+    total += 4 + c.wheel_media.size() + 4 + c.tyre_media.size() + 4 + c.tyre_texture_media.size();
+    total += 2 * (8 + 8 + 8 + 4 + 4 + 4);
+    total += 2 * 4 + 4 * 4 + 1 + 1 + 4 * 12 + 4 * 12 + 10 * 12 + 1 + 8;
+    total += 4;
+    for (const auto& s : c.stock_rows) {
+      total += 8 + 1 + 1 + 4 + 4;
+      for (const auto& n : s.parts) total += 4 + n.size();
+      for (const auto& n : s.removed) total += 4 + n.size();
+    }
+    total += 4;
+    for (const auto& n : c.notes) total += 4 + n.size();
+  }
+  total += 4;
+  for (const Model& m : b.models) {
+    total += 4 + m.name.size() + 4 + 4 + 4 + 16 + 4;
+    for (const Part& p : m.parts) {
+      total += 4 + p.name.size() + 36;
+      total += 4 + p.lod_vertices.size() * 32;
+      total += 4 + p.lod0_vertices.size() * 32;
+      for (const auto* morphs : {&p.lod_morphs, &p.lod0_morphs}) {
+        total += 4;
+        for (const MorphTarget& t : *morphs) total += 4 + t.size() * 12;
+      }
+      total += 4;
+      for (const Subsection& s : p.subsections) {
+        total += 4 + s.technique.size() + 4 + 1 + 4 + 32;
+        total += 4 + s.slots[0].size() + 4 + s.slots[1].size();
+        total += 4 + s.indices.size() * 4;
+      }
+    }
+  }
+  total += 4;
+  for (const Texture& t : b.textures) {
+    total += 4 + t.name.size() + 4 + 4 + 4;
+    for (const TextureLevel& l : t.levels) total += 4 + 4 + 4 + l.data.size();
+  }
+  total += 4;
+  for (const LiveryPlane& p : b.livery) {
+    total += 4 + p.name.size() + 1 + 9 * 4 + 4 + p.x_axis.size() + 4 + p.y_axis.size();
+  }
+  return total;
+}
 
 class Reader {
  public:
@@ -113,23 +205,31 @@ class Reader {
 
 void write_vertices(Writer& w, const std::vector<Vertex>& vs) {
   w.u32(uint32_t(vs.size()));
-  for (const Vertex& v : vs) {
-    for (float f : v.position) w.f32(f);
-    for (int16_t c : v.frame) w.u16(uint16_t(c));
-    for (uint16_t c : v.uv0) w.u16(c);
-    for (uint16_t c : v.uv1) w.u16(c);
-    w.raw(v.lighting.data(), 4);
+  if constexpr (kLittleEndian) {
+    w.raw(vs.data(), vs.size() * sizeof(Vertex));
+  } else {
+    for (const Vertex& v : vs) {
+      for (float f : v.position) w.f32(f);
+      for (int16_t c : v.frame) w.u16(uint16_t(c));
+      for (uint16_t c : v.uv0) w.u16(c);
+      for (uint16_t c : v.uv1) w.u16(c);
+      w.raw(v.lighting.data(), 4);
+    }
   }
 }
 
 std::vector<Vertex> read_vertices(Reader& r) {
   std::vector<Vertex> vs(r.count(32));
-  for (Vertex& v : vs) {
-    for (float& f : v.position) f = r.f32();
-    for (int16_t& c : v.frame) c = int16_t(r.u16());
-    for (uint16_t& c : v.uv0) c = r.u16();
-    for (uint16_t& c : v.uv1) c = r.u16();
-    r.raw(v.lighting.data(), 4);
+  if constexpr (kLittleEndian) {
+    if (!vs.empty()) r.raw(vs.data(), vs.size() * sizeof(Vertex));
+  } else {
+    for (Vertex& v : vs) {
+      for (float& f : v.position) f = r.f32();
+      for (int16_t& c : v.frame) c = int16_t(r.u16());
+      for (uint16_t& c : v.uv0) c = r.u16();
+      for (uint16_t& c : v.uv1) c = r.u16();
+      r.raw(v.lighting.data(), 4);
+    }
   }
   return vs;
 }
@@ -156,6 +256,7 @@ const char* material_class_name(MaterialClass c) {
 
 std::vector<uint8_t> encode(const Bake& b) {
   Writer w;
+  w.out.reserve(estimate_encoded_size(b));
   w.raw(kMagic, 8);
   w.u32(kVersion);
   w.u32(uint32_t(b.kind));
@@ -229,8 +330,12 @@ std::vector<uint8_t> encode(const Bake& b) {
         w.u32(uint32_t(morphs->size()));
         for (const MorphTarget& t : *morphs) {
           w.u32(uint32_t(t.size()));
-          for (const auto& v : t)
-            for (float f : v) w.f32(f);
+          if constexpr (kLittleEndian) {
+            w.raw(t.data(), t.size() * 12);
+          } else {
+            for (const auto& v : t)
+              for (float f : v) w.f32(f);
+          }
         }
       }
       w.u32(uint32_t(p.subsections.size()));
@@ -243,7 +348,11 @@ std::vector<uint8_t> encode(const Bake& b) {
         w.str(s.slots[0]);
         w.str(s.slots[1]);
         w.u32(uint32_t(s.indices.size()));
-        for (uint32_t i : s.indices) w.u32(i);
+        if constexpr (kLittleEndian) {
+          w.raw(s.indices.data(), s.indices.size() * sizeof(uint32_t));
+        } else {
+          for (uint32_t i : s.indices) w.u32(i);
+        }
       }
     }
   }
@@ -352,8 +461,12 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
           morphs->resize(r.count(4));
           for (MorphTarget& t : *morphs) {
             t.resize(r.count(12));
-            for (auto& v : t)
-              for (float& f : v) f = r.f32();
+            if constexpr (kLittleEndian) {
+              if (!t.empty()) r.raw(t.data(), t.size() * 12);
+            } else {
+              for (auto& v : t)
+                for (float& f : v) f = r.f32();
+            }
           }
         }
         p.subsections.resize(r.count(4));
@@ -366,7 +479,11 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
           s.slots[0] = r.str();
           s.slots[1] = r.str();
           s.indices.resize(r.count(4));
-          for (uint32_t& i : s.indices) i = r.u32();
+          if constexpr (kLittleEndian) {
+            if (!s.indices.empty()) r.raw(s.indices.data(), s.indices.size() * sizeof(uint32_t));
+          } else {
+            for (uint32_t& i : s.indices) i = r.u32();
+          }
         }
       }
     }
@@ -404,12 +521,52 @@ bool decode(const std::vector<uint8_t>& bytes, Bake& b, std::string* error) {
 
 bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& bytes, std::string* error) {
   std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  const auto temp = path.string() + ".partial";
+  const auto parent = path.parent_path();
+  if (!parent.empty() && !std::filesystem::is_directory(parent, ec)) {
+    std::filesystem::create_directories(parent, ec);
+  }
+  const std::filesystem::path temp = path.string() + ".partial";
+#ifdef _WIN32
+  HANDLE h = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    if (error) *error = "cannot write " + temp.string();
+    return false;
+  }
+  if (!bytes.empty()) {
+    FILE_END_OF_FILE_INFO eof_info{};
+    eof_info.EndOfFile.QuadPart = static_cast<LONGLONG>(bytes.size());
+    SetFileInformationByHandle(h, FileEndOfFileInfo, &eof_info, sizeof(eof_info));
+  }
+  size_t off = 0;
+  constexpr DWORD kChunk = 16u * 1024u * 1024u;
+  bool write_ok = true;
+  while (off < bytes.size()) {
+    const DWORD to_write = DWORD(std::min<size_t>(bytes.size() - off, kChunk));
+    DWORD written = 0;
+    if (!WriteFile(h, bytes.data() + off, to_write, &written, nullptr) || written != to_write) {
+      write_ok = false;
+      break;
+    }
+    off += written;
+  }
+  CloseHandle(h);
+  if (!write_ok) {
+    DeleteFileW(temp.c_str());
+    if (error) *error = "cannot write " + temp.string();
+    return false;
+  }
+  if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    DeleteFileW(temp.c_str());
+    if (error) *error = "cannot rename to " + path.string();
+    return false;
+  }
+  return true;
+#else
   {
     std::ofstream f(temp, std::ios::binary | std::ios::trunc);
     if (!f || !f.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()))) {
-      if (error) *error = "cannot write " + temp;
+      if (error) *error = "cannot write " + temp.string();
       return false;
     }
   }
@@ -419,15 +576,26 @@ bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& b
     return false;
   }
   return true;
+#endif
 }
 
 bool read_file(const std::filesystem::path& path, Bake& out, std::string* error) {
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) {
     if (error) *error = "cannot open " + path.string();
     return false;
   }
-  std::vector<uint8_t> bytes(std::istreambuf_iterator<char>(f), {});
+  const std::streamoff len = f.tellg();
+  if (len < 0) {
+    if (error) *error = "cannot size " + path.string();
+    return false;
+  }
+  f.seekg(0, std::ios::beg);
+  std::vector<uint8_t> bytes(static_cast<size_t>(len));
+  if (!bytes.empty() && !f.read(reinterpret_cast<char*>(bytes.data()), len)) {
+    if (error) *error = "cannot read " + path.string();
+    return false;
+  }
   if (!decode(bytes, out, error)) {
     if (error) *error = path.string() + ": " + *error;
     return false;

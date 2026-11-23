@@ -22,27 +22,34 @@ bool ends_with(const std::string& s, const std::string& t) {
 }
 bool starts_with(const std::string& s, const std::string& t) { return s.rfind(t, 0) == 0; }
 
-bake::Texture texture_from_blocks(const std::string& name, const fh1::XdsBlocks& blocks) {
+bake::Texture texture_from_blocks(const std::string& name, fh1::XdsBlocks&& blocks) {
   bake::Texture t;
   t.name = name;
   t.format = bake::TextureFormat(uint32_t(blocks.format));
   t.swizzle = blocks.swizzle;
-  for (const auto& l : blocks.levels) t.levels.push_back({l.width, l.height, l.blocks});
+  t.levels.reserve(blocks.levels.size());
+  for (auto& l : blocks.levels) t.levels.push_back({l.width, l.height, std::move(l.blocks)});
   return t;
 }
 
 // Every .xds of a folder (sorted by name), as block textures.
 void bake_textures(Folder& folder, bake::Bake& out, std::vector<std::string>* notes) {
+  size_t xds_count = 0;
+  for (const std::string& name : folder.names())
+    if (ends_with(name, ".xds")) ++xds_count;
+  out.textures.reserve(out.textures.size() + xds_count);
+  std::vector<uint8_t> data;
+  std::string error;
   for (const std::string& name : folder.names()) {
     if (!ends_with(name, ".xds")) continue;
-    std::vector<uint8_t> data;
-    std::string error;
+    data.clear();
+    error.clear();
     fh1::XdsBlocks blocks;
     if (!folder.read(name, data, &error) || !fh1::extract_xds_blocks(data, blocks, &error)) {
       if (notes) notes->push_back("texture " + name + ": " + error);
       continue;
     }
-    out.textures.push_back(texture_from_blocks(name, blocks));
+    out.textures.push_back(texture_from_blocks(name, std::move(blocks)));
   }
 }
 
@@ -191,18 +198,22 @@ bool parse_model(Folder& folder, const std::string& name, Role role, bake::Corne
       const uint32_t bits = load_be32(carbin.head.data() + 32 + 4 * k);
       std::memcpy(&out.header_bounds[k], &bits, 4);
     }
+  out.parts.reserve(carbin.parts.size());
   for (size_t p = 0; p < carbin.parts.size(); ++p) {
     const fh1::CarbinPart& part = carbin.parts[p];
     if (part.empty_box()) continue;  // no geometry
     bake::Part bp;
     bp.name = part.name;
     bp.bounds = part.bounds;
+    bp.lod_vertices.reserve(part.lod_pool.vertices.size());
     for (const auto& v : part.lod_pool.vertices) bp.lod_vertices.push_back(bake_vertex(part, v));
+    bp.lod0_vertices.reserve(part.lod0_pool.vertices.size());
     for (const auto& v : part.lod0_pool.vertices) bp.lod0_vertices.push_back(bake_vertex(part, v));
     if ((role == Role::kWheel || role == Role::kTyre) && part.damage.size() == 2) {
       bp.lod_morphs = morph_targets(part, part.damage[0], bp.lod_vertices.size());
       bp.lod0_morphs = morph_targets(part, part.damage[1], bp.lod0_vertices.size());
     }
+    bp.subsections.reserve(part.subsections.size());
     for (size_t i = 0; i < part.subsections.size(); ++i) {
       const fh1::CarbinSubsection& s = part.subsections[i];
       bake::Subsection bs;
@@ -410,10 +421,15 @@ bool decode_tga(const std::vector<uint8_t>& d, uint32_t& width, uint32_t& height
   }
   // Rows are stored bottom first unless descriptor bit 5 is set.
   const bool top_first = (descriptor & 0x20) != 0;
-  rgba.resize(raw.size());
-  for (uint32_t y = 0; y < height; ++y) {
-    const uint32_t src = top_first ? y : height - 1 - y;
-    std::copy_n(&raw[size_t(src) * width * 4], size_t(width) * 4, &rgba[size_t(y) * width * 4]);
+  if (top_first) {
+    rgba = std::move(raw);
+  } else {
+    rgba.resize(raw.size());
+    const size_t row_bytes = size_t(width) * 4;
+    for (uint32_t y = 0; y < height; ++y) {
+      const uint32_t src = height - 1 - y;
+      std::memcpy(&rgba[size_t(y) * row_bytes], &raw[size_t(src) * row_bytes], row_bytes);
+    }
   }
   return true;
 }

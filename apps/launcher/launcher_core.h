@@ -159,11 +159,15 @@ class SetupRunner {
   void append_log(const std::string& line);
   void set_stage(int idx, const std::string& label, float frac);
   int run_subprocess_logged(const std::vector<std::string>& args);
+  bool launch_background_process(const std::vector<std::string>& args);
+  void stop_background_process();
 
   mutable std::mutex mu_;
   SetupProgress state_;
   std::atomic<bool> cancel_{false};
   std::thread worker_;
+  std::mutex bg_mu_;
+  std::vector<intptr_t> bg_procs_;  // Windows HANDLEs or POSIX pid_ts for background bake/soundbake
 };
 
 // ---- 3. Hardware Detection & Preset Recommendation -------------------------
