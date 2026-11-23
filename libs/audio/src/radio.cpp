@@ -124,6 +124,7 @@ bool parse_radio(std::string_view system_xml, std::string_view music_info, std::
     l.duck_down = s->number("duckFadeDownTime", l.duck_down);
     l.duck_up = s->number("duckFadeUpTime", l.duck_up);
     l.change_fade = s->number("stationChangeFadeTimeUser", l.change_fade);
+    l.change_fade_normal = s->number("stationChangeFadeTimeNormal", l.change_fade_normal);
     l.new_track_delay = s->number("HUDNewTrackDisplayDelayFreeRoam", l.new_track_delay);
     l.max_tracks_between_dj = std::max(1, int(s->number("maxTracksBetweenDJ", 1)));
   }
@@ -463,6 +464,7 @@ StationSchedule* Radio::schedule(int station) {
 void Radio::select(int station) {
   for (size_t i = 0; i < data_.cycle.size(); ++i)
     if (data_.cycle[i] == station) pos_ = int(i);
+  last_change_was_user_ = false;
   seen_track_ = ~0ull;
   if (auto* s = schedule(selected()))
     if (const RadioEvent* t = s->track_at(clock_)) seen_track_ = t->id;
@@ -516,6 +518,7 @@ void Radio::press(int dir) {
   const int n = int(data_.cycle.size());
   if (n == 0) return;
   select(data_.cycle[size_t(((pos_ + dir) % n + n) % n)]);
+  last_change_was_user_ = true;
   popup_station_ = selected();
   popup_from_ = popup_clock_ + (on() ? kPopupDelay : 0.0);
 }
@@ -653,7 +656,8 @@ void RadioPlayer::render(float* out, int frames) {
   mix_.resize(4 * size_t(frames));
   float* music = mix_.data();
   float* voice = mix_.data() + 2 * size_t(frames);
-  const double fade_step = 1.0 / (std::max(0.01, lv.change_fade) * rate_);
+  const double fade_s = radio_.last_change_was_user() ? lv.change_fade : lv.change_fade_normal;
+  const double fade_step = 1.0 / (std::max(0.01, fade_s) * rate_);
   const double vol = std::clamp(volume, 0.0, 2.0);
   bool any_sel_dj = false;
   bool any_sel_festival = false;
@@ -738,15 +742,16 @@ void RadioPlayer::render(float* out, int frames) {
     if (int(s) == sel && dj) any_sel_dj = true;
     if (int(s) == sel && fest) any_sel_festival = true;
     const double duck_step = (1 - lv.duck) / (std::max(0.01, duck_target < duck_ ? lv.duck_down : lv.duck_up) * rate_);
+    const double st_vol = s < data.stations.size() ? std::clamp(data.stations[s].volume, 0.0, 2.0) : 1.0;
     double g = station_gain_[s];
     for (int i = 0; i < frames; ++i) {
       g = target > g ? std::min(target, g + fade_step) : std::max(target, g - fade_step);
       if (int(s) == sel) duck_ = duck_target < duck_ ? std::max(duck_target, duck_ - duck_step)
                                                      : std::min(duck_target, duck_ + duck_step);
       const double duck = int(s) == sel ? duck_ : 1.0;
-      const float k = float(g * master * vol);
-      out[2 * i] += k * float(music[2 * i] * duck + voice[2 * i]);
-      out[2 * i + 1] += k * float(music[2 * i + 1] * duck + voice[2 * i + 1]);
+      const float k = float(g * master * vol * st_vol);
+      out[2 * i] += k * float(music[2 * i] * duck + voice[2 * i] * dj_modifier_);
+      out[2 * i + 1] += k * float(music[2 * i + 1] * duck + voice[2 * i + 1] * dj_modifier_);
     }
     station_gain_[s] = g;
   }

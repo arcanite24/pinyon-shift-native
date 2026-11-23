@@ -25,6 +25,7 @@ namespace audio {
 struct OtherCarAudio {
   bool active = false;
   bool is_traffic = false;
+  uint8_t variant = 0;  // selects among distinct LOD1 opponent engine loop banks
   Vec3f pos{};
   Vec3f vel{};
   float rpm = 1000.0f;
@@ -60,7 +61,10 @@ struct VehicleAudioState {
   int trans_level = 0;
   int turbo_level = 0;
   int sc_level = 0;
+  bool sc_is_centrifugal = false;
   int backfire_level = 0;
+  bool scraping = false;
+  float scrape_intensity = 0.0f;
   std::array<WheelAudio, 4> wheels{};
   Vec3f listener_pos{};
   Vec3f listener_vel{};
@@ -90,6 +94,7 @@ enum class UiCue : uint8_t {
   kSignSmash,
   kSkillAward,
   kAchievementReward,
+  kSpeedCamera,
 };
 
 enum class SfxSoundId : int {
@@ -100,20 +105,45 @@ enum class SfxSoundId : int {
   kTireSkidOffRoad,
   kTireRollGrass,
   kTireSkidGrass,
+  kTireRollBrick,
+  kTireSkidBrick,
+  kTireRollTrackway,
+  kTireSkidTrackway,
   kSurfaceHardToHard,
   kSurfaceDirtToHard,
   kTransWhine,
+  kTransWhineL1,
+  kTransWhineL2,
+  kTransWhineL3,
   kShiftStart,
   kShiftComplete,
   kTurboSpool,
+  kTurboSpoolL2,
+  kTurboSpoolL3,
   kTurboBovLo,
   kTurboBovHi,
+  kTurboBovLoL2,
+  kTurboBovHiL2,
+  kTurboBovLoL3,
+  kTurboBovHiL3,
   kScWhine,
+  kScWhineL2,
+  kScWhineL3,
+  kScCscL1,
+  kScCscL2,
+  kScCscL3,
+  kEngineLfeLoop,
   kSuspensionBottom,
   kImpact3d,
   kImpactLfe,
   kBreakProp,
+  kScrapeLoop,
+  kWhoosh3d,
+  kGlassShatter,
   kBackfirePop,
+  kBackfirePop1,
+  kBackfirePop2,
+  kBackfirePop3,
   kBackfireLfe,
   kUiAccept,
   kUiCancel,
@@ -121,10 +151,16 @@ enum class SfxSoundId : int {
   kUiError,
   kUiMenuOpen,
   kRewindTapeStart,
+  kRewindLoop,
   kCountdown321,
   kSignSmash,
+  kUiSkillAward,
   kAchievementReward,
+  kUiSpeedCamera,
   kOtherCarLoop,
+  kOtherCarLoop1,
+  kOtherCarLoop2,
+  kOtherCarLoop3,
   kTrafficCarLoop,
   kCount
 };
@@ -139,6 +175,9 @@ class SfxEngine {
   // `cache_dir` (never blocking the audio thread).
   bool load(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
             const std::string& burble_bank = {}, std::string* note = nullptr);
+  // Asynchronously reloads the 4-subsound exhaust burble bank on car change.
+  void reload_burble_bank(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                          const std::string& burble_bank);
 
   // Injects a PCM sample directly (for unit tests without game data).
   void set_sample(SfxSoundId id, PcmSample sample);
@@ -206,20 +245,27 @@ class SfxEngine {
   RolloffConfig traffic_rolloff_{};
 
   std::array<PcmSample*, int(SfxSoundId::kCount)> samples_{};
-  SpscQueue<LoadedSample> loaded_q_{128};
+  SpscQueue<LoadedSample> loaded_q_{256};
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
+  std::atomic<bool> stop_burble_worker_{false};
+  std::thread burble_worker_;
 
   // Continuous loop voices.
   LoopVoice wind_voice_{};
-  LoopVoice tire_roll_voice_{};
-  LoopVoice tire_skid_voice_{};
+  std::array<LoopVoice, 4> tire_roll_voices_{};
+  std::array<LoopVoice, 4> tire_skid_voices_{};
   LoopVoice trans_voice_{};
   LoopVoice turbo_voice_{};
   LoopVoice sc_voice_{};
+  LoopVoice engine_lfe_voice_{};
+  LoopVoice scrape_voice_{};
+  LoopVoice rewind_voice_{};
   std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_voices_{};
+  std::array<double, VehicleAudioState::kMaxOtherCars> whoosh_cooldown_s_{-10.0, -10.0, -10.0, -10.0, -10.0, -10.0};
 
   // Edge detection & timers (audio thread).
+  SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;
   bool prev_shifting_ = false;
   bool prev_bov_open_ = false;
   std::array<uint8_t, 4> prev_wheel_surface_{0, 0, 0, 0};

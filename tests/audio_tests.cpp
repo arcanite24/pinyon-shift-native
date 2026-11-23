@@ -1130,6 +1130,173 @@ void sfx_engine_checks() {
   eng.render_offline(mixed.data(), kFrames);
   CHECK(bus_rms(mixed) > 0.02);
 
+  // Pillar 5 P0-13: 4-wheel stereo-panned tires (left-only slip pans left,
+  // right-only slip pans right), multi-tier turbo/trans, per-AI variant loops,
+  // continuous scrape & rewind loops, and near-miss Whoosh3D.
+  {
+    audio::SfxEngine psfx(48000);
+    psfx.set_sample(audio::SfxSoundId::kTireSkidOnRoad, make_tone(750.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kTireSkidOffRoad, make_tone(320.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kTransWhineL2, make_tone(920.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kTurboSpoolL3, make_tone(1800.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kOtherCarLoop2, make_tone(190.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kScrapeLoop, make_tone(420.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kRewindLoop, make_tone(520.0, 9600));
+    psfx.set_sample(audio::SfxSoundId::kWhoosh3d, make_tone(260.0, 14400));
+
+    audio::VehicleAudioState st{};
+    st.speed_mph = 70.0f;
+    st.rpm = 5500.0f;
+    st.idle_rpm = 800.0f;
+    st.redline_rpm = 7500.0f;
+    st.trans_level = 2;
+    st.forced_induction = 1;
+    st.turbo_level = 2;
+    st.turbo_norm_rpm = 0.85f;
+    st.scraping = true;
+    st.scrape_intensity = 0.8f;
+    st.rewinding = true;
+    // Left-front wheel slipping heavily on asphalt; right wheels zero slip.
+    st.wheels[0] = {0, 0.9f, 900.0f, 1.0f, 0.0f};
+    st.wheels[1] = {0, 0.0f, 900.0f, 1.0f, 0.0f};
+    st.wheels[2] = {1, 0.0f, 900.0f, 1.0f, 0.0f};
+    st.wheels[3] = {1, 0.0f, 900.0f, 1.0f, 0.0f};
+    // Fast oncoming opponent passing closely on the right -> Whoosh3D + variant 2 loop.
+    st.listener_pos = {0, 0, 0};
+    st.listener_vel = {0, 0, 35.0f};
+    st.listener_right = {1, 0, 0};
+    st.other_cars[0].active = true;
+    st.other_cars[0].variant = 2;
+    st.other_cars[0].pos = {4.0f, 0.0f, 2.0f};
+    st.other_cars[0].vel = {0.0f, 0.0f, -25.0f};
+    st.other_cars[0].rpm = 4800.0f;
+
+    clear_bufs();
+    psfx.render(st, ptrs, kFrames);
+    const double tyre_l = bus_rms(bufs[int(audio::Bus::kTyres)], 0);
+    const double tyre_r = bus_rms(bufs[int(audio::Bus::kTyres)], 1);
+    CHECK(tyre_l > tyre_r * 1.25);  // Left-front wheel skid localized to left channel
+    CHECK(bus_rms(bufs[int(audio::Bus::kEngine)]) > 0.02);    // Trans L2 + Turbo L3
+    CHECK(bus_rms(bufs[int(audio::Bus::kAmbience)]) > 0.02);  // Continuous Scrape3D loop
+    CHECK(bus_rms(bufs[int(audio::Bus::kUi)]) > 0.02);        // Continuous Mulligan rewind loop
+    CHECK(bus_rms(bufs[int(audio::Bus::kOtherCars)]) > 0.02); // Variant 2 opponent + Whoosh3D
+    CHECK(psfx.active_one_shots() >= 1);                      // Whoosh3D spawned on close pass
+  }
+
+  // Pillar 5 P0-14: LoadPEQ parses Active="1" on <LoadPEQ> (not on <PosLoad>/<NegLoad>),
+  // and SurroundPan preserves relative loudness without normalizing max(L,R) to 1.0.
+  {
+    const std::string eng_xml = R"(
+<Engine>
+  <HarmonicTunings>
+    <EmissionGroup2>
+      <LoadPEQ Active="1">
+        <PosLoad>
+          <Gain>
+            <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+            <ThreePointCurve x0="0" y0="1.0" x1="0.5" y1="1.25" x2="1" y2="1.5"/>
+          </Gain>
+          <CenterFrequency>
+            <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+            <ThreePointCurve x0="0" y0="600" x1="0.5" y1="900" x2="1" y2="1200"/>
+          </CenterFrequency>
+          <Bandwidth>
+            <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+            <ThreePointCurve x0="0" y0="1.0" x1="0.5" y1="1.1" x2="1" y2="1.2"/>
+          </Bandwidth>
+        </PosLoad>
+        <NegLoad>
+          <Gain>
+            <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+            <ThreePointCurve x0="0" y0="0.8" x1="0.5" y1="0.85" x2="1" y2="0.9"/>
+          </Gain>
+          <CenterFrequency>
+            <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+            <ThreePointCurve x0="0" y0="400" x1="0.5" y1="550" x2="1" y2="700"/>
+          </CenterFrequency>
+          <Bandwidth>
+            <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+            <ThreePointCurve x0="0" y0="1.0" x1="0.5" y1="1.0" x2="1" y2="1.0"/>
+          </Bandwidth>
+        </NegLoad>
+      </LoadPEQ>
+    </EmissionGroup2>
+  </HarmonicTunings>
+</Engine>)";
+    const std::string ht_xml = R"(
+<Soundbank name="test_exh.fsb">
+  <ExhaustL>
+    <Loop wavebankindex="0" rpm_min="800" rpm_max="7000" rpm_sample="3000" volume="1" pitch="1" pitchMin="0.5" pitchMax="2.0"/>
+  </ExhaustL>
+</Soundbank>)";
+    const std::string model_xml = R"(
+<ModelTuning>
+  <Listener>
+    <Basic>
+      <Follow>
+        <EmissionGroupVolumes ExhaustL="1.0"/>
+        <SurroundPanExhaustL Left="0.4" Right="0.4" Center="0.0" LeftRear="0.0" RightRear="0.0"/>
+      </Follow>
+    </Basic>
+  </Listener>
+</ModelTuning>)";
+    audio::XmlNode eng_n, ht_n, mod_n;
+    std::string xerr;
+    CHECK(audio::parse_xml(eng_xml, eng_n, &xerr));
+    CHECK(audio::parse_xml(ht_xml, ht_n, &xerr));
+    CHECK(audio::parse_xml(model_xml, mod_n, &xerr));
+    audio::EngineSound parsed;
+    CHECK(audio::read_harmonic(eng_n, ht_n, "Exhaust", parsed, &xerr));
+    CHECK(!parsed.groups.empty());
+    CHECK(parsed.groups[0].load_peq.active);
+    CHECK(parsed.groups[0].load_peq.pos_load.active);
+    CHECK(parsed.groups[0].load_peq.neg_load.active);
+    audio::read_model_tuning(mod_n, parsed);
+    CHECK(near(parsed.groups[0].pan_left[int(audio::View::kFollow)], 0.4, 1e-6));
+    CHECK(near(parsed.groups[0].pan_right[int(audio::View::kFollow)], 0.4, 1e-6));
+  }
+
+  // Pillar 5 P0-14: AudioEngine matrix mode does NOT double-stack legacy SnapshotMixer
+  // gains on Paused (music ducks to 0.25, not 0.0625) or Menu (stays audible, not muted to 0).
+  {
+    const std::string snap_xml = R"(
+<MixSnapshots>
+  <FreeRoam group="Gameplay">
+    <FocusCar active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+    <CarWind active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="1.0" fadetime="0" returntime="0" returnfadetime="0"/>
+  </FreeRoam>
+  <Paused group="Gameplay">
+    <FocusCar active="1" destvolume="0.0" fadetime="0" returntime="0" returnfadetime="0"/>
+    <CarWind active="1" destvolume="0.0" fadetime="0" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="0.25" fadetime="0" returntime="0" returnfadetime="0"/>
+  </Paused>
+  <UIExterior group="Gameplay">
+    <FocusCar active="1" destvolume="0.2" fadetime="0" returntime="0" returnfadetime="0"/>
+    <CarWind active="1" destvolume="0.5" fadetime="0" returntime="0" returnfadetime="0"/>
+    <GameMusic active="1" destvolume="0.6" fadetime="0" returntime="0" returnfadetime="0"/>
+  </UIExterior>
+</MixSnapshots>)";
+    audio::AudioEngine meng(48000);
+    std::string serr;
+    CHECK(meng.load_snapshot_matrix_xml(snap_xml, &serr));
+    meng.set_full_dynamic_range(true);
+    // Even if legacy Paused/Menu snapshots were activated, matrix mode must not double-duck/mute.
+    meng.set_snapshot(meng.find_snapshot("Paused"), true);
+    meng.set_snapshot(meng.find_snapshot("Menu"), true);
+    meng.activate_matrix_snapshot("UIExterior");
+    auto sfx_m = std::make_unique<audio::SfxEngine>(48000);
+    sfx_m->set_sample(audio::SfxSoundId::kWind, make_tone(400.0, 9600));
+    meng.set_sfx_engine(std::move(sfx_m));
+    audio::VehicleAudioState mvs{};
+    mvs.speed_mph = 120.0f;
+    meng.set_vehicle_state(mvs);
+    std::vector<float> mout(4800 * 2, 0.0f);
+    for (int i = 0; i < 4; ++i) meng.render_offline(mout.data(), 4800);
+    CHECK(near(meng.matrix_bus_gain(audio::Bus::kMusic), 0.6, 1e-4));
+    CHECK(bus_rms(mout) > 0.01);  // Not hard-muted by legacy Menu/Paused snapshot!
+  }
+
   // Optional disc smoke check when SHIFT_GAME_ROOT is set.
   const char* game_env = std::getenv("SHIFT_GAME_ROOT");
   if (game_env && *game_env) {

@@ -88,6 +88,10 @@ class AudioEngine {
   void set_vo_player(std::unique_ptr<VoPlayer> vo);
   void set_acoustics_sample(const AcousticsSample& sample);
   void set_listener_pose(std::array<float, 3> pos, float heading_rad);
+  int load_ambience_beds(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir);
+  void set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
+  void reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                         const std::string& burble_bank);
   // Attaches `radio` (caller keeps `RadioData` and `Radio` alive until
   // AudioEngine is stopped/destroyed or detached with nullptr) and its player.
   void set_radio(Radio* radio, std::unique_ptr<RadioPlayer> player);
@@ -122,7 +126,9 @@ class AudioEngine {
   // from `game_root` (call before start()). When loaded, the 9x22 SnapshotMatrix,
   // CarBusEq, and MasterRmsStage drive the mix.
   bool load_mixer_configs(const std::filesystem::path& game_root, std::string* note = nullptr);
+  bool load_snapshot_matrix_xml(std::string_view xml, std::string* error = nullptr);
   bool has_snapshot_matrix() const { return use_matrix_; }
+  float matrix_bus_gain(Bus b) const { return matrix_.bus_gain(b); }
   int find_matrix_snapshot(std::string_view name) const { return matrix_.find(name); }
   void activate_matrix_snapshot(std::string_view name);
   void activate_matrix_snapshot_idx(int idx);
@@ -259,7 +265,12 @@ class AudioEngine {
   VehicleAudioState last_veh_state_{};
 
   std::array<std::vector<float>, kBuses> bus_bufs_;
+  std::vector<float> reverb_send_buf_;
+  std::vector<float> reverb_wet_buf_;
   std::vector<float> out_buf_;
+  float music_hp_mix_ = 0.0f;
+  float music_hp_prev_in_[2]{0.0f, 0.0f};
+  float music_hp_prev_out_[2]{0.0f, 0.0f};
 
   TripleBuffer<EnginePlayer::Update> engine_in_;
   TripleBuffer<VehicleAudioState> veh_state_in_;

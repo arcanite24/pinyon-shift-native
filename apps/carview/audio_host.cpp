@@ -175,6 +175,10 @@ bool AudioHost::load_car(const std::filesystem::path& sound_dir, const std::file
     baked_sound_ = std::move(baked);
     engine_.set_engine_player(std::move(ep));
     has_car_ = true;
+    if (has_sfx_ && !sfx_game_root_.empty()) {
+      const std::string bb = car_burble_bank();
+      if (!bb.empty()) engine_.reload_sfx_burble(sfx_game_root_, sfx_cache_dir_, bb);
+    }
     if (note) {
       *note = "engine sound: " + std::to_string(baked_sound_->loaded.sound.groups.size()) + " groups (L" +
               std::to_string(levels.intake) + "/L" + std::to_string(levels.exhaust) + ") from " +
@@ -256,6 +260,8 @@ bool AudioHost::init_sfx(const std::filesystem::path& game_root, const std::file
   }
   if (!sfx_tried_) {
     sfx_tried_ = true;
+    sfx_game_root_ = game_root;
+    sfx_cache_dir_ = cache_dir;
     auto sfx = std::make_unique<audio::SfxEngine>(kAudioRate);
     std::string snote;
     if (sfx->load(game_root, cache_dir, burble_bank, &snote)) {
@@ -315,7 +321,7 @@ bool AudioHost::init_vo(const std::filesystem::path& game_root, std::string_view
   return has_vo_;
 }
 
-bool AudioHost::init_acoustics(const std::filesystem::path& game_root) {
+bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
   if (game_root.empty()) return false;
   if (!acoustics_tried_) {
     acoustics_tried_ = true;
@@ -323,6 +329,24 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root) {
     if (acoustics_.load_configs(game_root, &note)) {
       std::printf("%s\n", note.c_str());
       has_acoustics_ = true;
+    }
+    // Load Colorado .soundscape tiles (tunnels, canyons, regional reverb & ambience zones)
+    // from media/tracks/colorado/bin.zip (Pillar 5 P0-12).
+    std::error_code ec;
+    const auto bin_lower = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "bin.zip");
+    const auto bin_upper = cars::mods::resolve(game_root / "media" / "tracks" / "colorado" / "Bin.zip");
+    const auto& bin_zip = std::filesystem::exists(bin_lower, ec) ? bin_lower : bin_upper;
+    if (std::filesystem::exists(bin_zip, ec)) {
+      const int tiles = acoustics_.load_soundscapes_from_archive(bin_zip);
+      if (tiles > 0) {
+        has_acoustics_ = true;
+        std::printf("world acoustics: loaded %d .soundscape tiles (%zu reverb zones, %zu ambience zones)\n", tiles,
+                    acoustics_.reverb_zone_count(), acoustics_.ambience_zone_count());
+      }
+    }
+    const int beds = engine_.load_ambience_beds(game_root, cache_dir);
+    if (beds > 0) {
+      std::printf("world acoustics: queued %d AMB_*.fev ambience beds for async decode\n", beds);
     }
   }
   return has_acoustics_;
@@ -337,9 +361,13 @@ void AudioHost::skip_vo() {
 }
 
 void AudioHost::set_dialog_ducking(bool active) {
-  if (snap_dialog_duck_ < 0 || active == last_dialog_duck_) return;
+  if (active == last_dialog_duck_) return;
   last_dialog_duck_ = active;
-  engine_.set_snapshot(snap_dialog_duck_, active);
+  if (engine_.has_snapshot_matrix()) {
+    engine_.activate_matrix_snapshot(active ? "VOPlaying" : "VONotPlaying");
+    return;
+  }
+  if (snap_dialog_duck_ >= 0) engine_.set_snapshot(snap_dialog_duck_, active);
 }
 
 void AudioHost::trigger_codriver(std::string_view cue_path) {
@@ -454,10 +482,7 @@ void AudioHost::stop_device() {
 void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, bool menu_open, bool on_title,
                              bool loading) {
   engine_.set_engine_input(u);
-  engine_.set_snapshot(snap_paused_, paused);
-  engine_.set_snapshot(snap_menu_, menu_open);
   engine_.set_snapshot(snap_title_, on_title);
-  engine_.set_snapshot(snap_loading_, loading);
 
   if (engine_.has_snapshot_matrix()) {
     if (loading != last_loading_) {
@@ -475,6 +500,10 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
       if (menu_open && !paused) engine_.activate_matrix_snapshot("UIExterior");
       else if (!menu_open && !paused && !loading && !last_rewinding_) engine_.restore_gameplay_snapshot();
     }
+  } else {
+    engine_.set_snapshot(snap_paused_, paused);
+    engine_.set_snapshot(snap_menu_, menu_open);
+    engine_.set_snapshot(snap_loading_, loading);
   }
 }
 

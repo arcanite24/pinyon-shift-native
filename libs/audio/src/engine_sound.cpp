@@ -197,9 +197,14 @@ bool read_harmonic(const XmlNode& engine, const XmlNode& harmonic, const std::st
       }
     }
   }
-  auto read_peq = [](const XmlNode* node) -> PeqConfig {
+  auto read_peq = [](const XmlNode* node, bool check_active = true) -> PeqConfig {
     PeqConfig p;
-    if (!node || node->number("Active", 0) < 1) return p;
+    if (!node) return p;
+    if (check_active) {
+      if (node->number("Active", 0) < 1) return p;
+    } else if (node->has("Active") && node->number("Active", 1) < 1) {
+      return p;
+    }
     p.gain = read_param(node->child("Gain"));
     p.center_freq = read_param(node->child("CenterFrequency"));
     p.bandwidth = read_param(node->child("Bandwidth"));
@@ -253,8 +258,9 @@ bool read_harmonic(const XmlNode& engine, const XmlNode& harmonic, const std::st
     const XmlNode* lpeq = engine_group ? engine_group->child("LoadPEQ") : nullptr;
     if (!lpeq && dsp) lpeq = dsp->child("LoadPEQ");
     if (lpeq && (!lpeq->has("Active") || lpeq->number("Active", 1) >= 1)) {
-      g.load_peq.pos_load = read_peq(lpeq->child("PosLoad"));
-      g.load_peq.neg_load = read_peq(lpeq->child("NegLoad"));
+      // FH1 places Active="1" on <LoadPEQ>, not on <PosLoad>/<NegLoad>.
+      g.load_peq.pos_load = read_peq(lpeq->child("PosLoad"), false);
+      g.load_peq.neg_load = read_peq(lpeq->child("NegLoad"), false);
       g.load_peq.active = g.load_peq.pos_load.active || g.load_peq.neg_load.active;
     }
 
@@ -289,12 +295,10 @@ void read_model_tuning(const XmlNode& model, EngineSound& out) {
       // L = FL + 0.707*C + 0.707*RL, R = FR + 0.707*C + 0.707*RR (LFE omitted).
       if (const XmlNode* pan = view->child("SurroundPan" + g.name)) {
         const double c = pan->number("Center");
-        double l = pan->number("Left") + 0.70710678 * c + 0.70710678 * pan->number("LeftRear");
-        double r = pan->number("Right") + 0.70710678 * c + 0.70710678 * pan->number("RightRear");
-        const double m = std::max(l, r);
-        if (m > 0) l /= m, r /= m;
-        g.pan_left[size_t(v)] = l;
-        g.pan_right[size_t(v)] = r;
+        const double l = pan->number("Left") + 0.70710678 * c + 0.70710678 * pan->number("LeftRear");
+        const double r = pan->number("Right") + 0.70710678 * c + 0.70710678 * pan->number("RightRear");
+        g.pan_left[size_t(v)] = std::clamp(l, 0.0, 2.0);
+        g.pan_right[size_t(v)] = std::clamp(r, 0.0, 2.0);
       }
     }
   }

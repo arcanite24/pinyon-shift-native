@@ -70,8 +70,9 @@ struct RadioVoxPops {
 struct RadioLevels {
   double master = 1, music = 0.85, ident = 0.3, dialogue = 1;
   double duck = 0.3, duck_down = 0.1, duck_up = 0.5;
-  double change_fade = 0.25;      // stationChangeFadeTimeUser
-  double new_track_delay = 2.0;   // HUDNewTrackDisplayDelayFreeRoam
+  double change_fade = 0.25;         // stationChangeFadeTimeUser
+  double change_fade_normal = 1.0;   // stationChangeFadeTimeNormal
+  double new_track_delay = 2.0;      // HUDNewTrackDisplayDelayFreeRoam
   int max_tracks_between_dj = 1;  // maxTracksBetweenDJ
 };
 
@@ -187,6 +188,7 @@ class Radio {
   void press(int dir);
   // Starts on this station (an index into data().stations), no popup.
   void select(int station);
+  bool last_change_was_user() const { return last_change_was_user_; }
   int find_station(std::string_view name) const;  // -1 if not found
   std::string selected_name() const;
   void set_dj_enabled(bool on);
@@ -225,6 +227,7 @@ class Radio {
   double popup_clock_ = 0, popup_from_ = -1e9;
   int popup_station_ = -1;
   uint64_t seen_track_ = ~0ull;  // the selected station's track last seen
+  bool last_change_was_user_ = true;
 };
 
 // Plays a Radio: decodes the selected station's clips on a background
@@ -242,6 +245,8 @@ class RadioPlayer {
   void set_prefetch_seconds(double s) { prefetch_s_ = std::max(0.0, s); }
   double master = 1;  // ours: the radio against the engine
   double volume = 1;  // SPEC-RADIO: RADIO VOLUME option (0..1)
+  void set_dj_modifier(double g) { dj_modifier_ = std::clamp(g, 0.0, 2.0); }
+  double dj_modifier() const { return dj_modifier_; }
   int decoders() const;
   bool dj_speaking() const { return dj_speaking_; }
   bool festival_update_playing() const { return festival_update_playing_; }
@@ -265,6 +270,7 @@ class RadioPlayer {
   std::vector<Voice> voices_;
   std::vector<double> station_gain_;
   double duck_ = 1;
+  double dj_modifier_ = 1.0;
   bool dj_speaking_ = false;
   bool festival_update_playing_ = false;
   std::vector<LocationRadioEmitter> emitters_;

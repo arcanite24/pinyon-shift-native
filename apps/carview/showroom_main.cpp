@@ -3765,7 +3765,7 @@ int run_drive(int argc, char** argv) {
               audio_host.init_sfx(game_root, sfx_cache, audio_host.car_burble_bank());
               audio_host.init_satnav(game_root, sfx_cache, language, true);
               audio_host.init_vo(game_root, language);
-              audio_host.init_acoustics(game_root);
+              audio_host.init_acoustics(game_root, sfx_cache);
             }
             bench_startup.audio_load_ms +=
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();
@@ -4102,8 +4102,9 @@ int run_drive(int argc, char** argv) {
             const size_t roster_n = roster.size();
             festival_mgr = std::make_unique<freeroam::FestivalManager>(festival_nav, festival_roads, fcfg, traffic_seed + 17);
             std::vector<std::string> ai_names;
-            if (race::load_ai_player_names(game_root, ai_names, have_car_names ? &car_names : nullptr, state_root,
-                                           parts_db.get())) {
+            if (!*car_names_loaded) carview::car_name("");
+            const auto ai_db = parts_db.get();
+            if (race::load_ai_player_names(game_root, ai_names, car_names.get(), state_root, ai_db.get())) {
               festival_mgr->set_driver_names(std::move(ai_names));
             }
             festival_mgr->set_roster(std::move(roster));
@@ -5541,7 +5542,6 @@ int run_drive(int argc, char** argv) {
                 hit.pos = {float(fcol.contact_point[0]), float(fcol.contact_point[1]), float(fcol.contact_point[2])};
                 hit.is_car_on_car = true;
                 audio_host.trigger_collision(hit);
-                car_damage.record_impact(0.0f, 0.5f, 1.2f, float(dv_f));
               }
             }
           }
@@ -5770,7 +5770,7 @@ int run_drive(int argc, char** argv) {
               }
             drive::CarLampState ls;
             ls.headlamps_on = night_lamps;
-            ls.brake_lights = fc.braking ? 1.0f : 0.0f;
+            ls.brake_on = fc.braking;
             inst.lamps = ls.vectors();
             inst.has_lamps = true;
             fmore.push_back(inst);
@@ -7568,6 +7568,9 @@ int run_drive(int argc, char** argv) {
             const drive::Vec3 vfwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
             const drive::Vec3 vright = drive::rotate(vehicle.orientation(), {1, 0, 0});
             vst.speed_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
+            vst.top_speed_mph = float(std::clamp(
+                double(drive::CockpitAnimState::estimate_dial_max_speed_mps(vehicle.params())) * 2.2369363, 90.0,
+                280.0));
             vst.rpm = float(vehicle.rpm());
             vst.redline_rpm = float(std::max(vehicle.params().redline_rpm, 6000.0));
             vst.throttle = float(vehicle.engine_throttle());
@@ -12391,6 +12394,9 @@ int run_drive(int argc, char** argv) {
             const drive::Vec3 vvel = vehicle.velocity();
             const drive::Vec3 vright = drive::rotate(vehicle.orientation(), {1, 0, 0});
             vst.speed_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
+            vst.top_speed_mph = float(std::clamp(
+                double(drive::CockpitAnimState::estimate_dial_max_speed_mps(vehicle.params())) * 2.2369363, 90.0,
+                280.0));
             vst.rpm = float(vehicle.rpm());
             vst.idle_rpm = float(vp.idle_rpm);
             vst.redline_rpm = float(vp.redline_rpm);
@@ -12411,6 +12417,9 @@ int run_drive(int argc, char** argv) {
             vst.turbo_level = audio_turbo_level;
             vst.sc_level = audio_sc_level;
             vst.backfire_level = std::max(audio_upgrades.exhaust, vp.has_turbo ? 1 : 0);
+            const auto& body_c = vehicle.strongest_body_contact();
+            vst.scraping = body_c.force > 150.0 && vst.speed_mph > 4.0f;
+            vst.scrape_intensity = vst.scraping ? float(std::clamp(body_c.force / 20000.0, 0.2, 1.0)) : 0.0f;
             const auto& ws = vehicle.wheels();
             const auto& surfs = collision.surfaces();
             for (int wi = 0; wi < 4; ++wi) {
@@ -12447,13 +12456,15 @@ int run_drive(int argc, char** argv) {
             if (race) {
               std::vector<carview::RaceView::OpponentTag> otags;
               race->opponent_tags(otags);
-              for (const auto& ot : otags) {
+              for (size_t oi = 0; oi < otags.size(); ++oi) {
+                const auto& ot = otags[oi];
                 const double dx = ot.x - vpos.x, dy = ot.y - vpos.y, dz = ot.z - vpos.z;
                 const double d2 = dx * dx + dy * dy + dz * dz;
                 if (d2 > 220.0 * 220.0) continue;
                 audio::OtherCarAudio oc{};
                 oc.active = true;
                 oc.is_traffic = false;
+                oc.variant = uint8_t(oi & 3u);
                 oc.pos = {float(ot.x), float(ot.y), float(ot.z)};
                 oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
                 oc.rpm = float(ot.rpm);
@@ -12477,13 +12488,16 @@ int run_drive(int argc, char** argv) {
               }
             }
             if (festival_mgr && !race) {
-              for (const auto& fc : festival_mgr->cars()) {
+              const auto& fcars = festival_mgr->cars();
+              for (size_t fi = 0; fi < fcars.size(); ++fi) {
+                const auto& fc = fcars[fi];
                 const double dx = fc.position.x - vpos.x, dy = fc.position.y - vpos.y, dz = fc.position.z - vpos.z;
                 const double d2 = dx * dx + dy * dy + dz * dz;
                 if (d2 > 220.0 * 220.0) continue;
                 audio::OtherCarAudio oc{};
                 oc.active = true;
                 oc.is_traffic = false;
+                oc.variant = uint8_t(fc.id & 3u);
                 oc.pos = {float(fc.position.x), float(fc.position.y), float(fc.position.z)};
                 oc.vel = {float(fc.vx), float(fc.vy), float(fc.vz)};
                 oc.rpm = float(fc.rpm);

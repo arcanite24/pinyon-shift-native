@@ -85,7 +85,7 @@ void test_full_radio_depth_and_3d_stations() {
 <RadioSystem>
   <System maxTracksBetweenDJ="2" masterLevel="1.0" musicLevel="0.85" dialogueLevel="1.0" identLevel="0.3"
           duckValue="0.3" duckFadeDownTime="0.1" duckFadeUpTime="0.5" stationChangeFadeTimeUser="0.25"
-          HUDNewTrackDisplayDelayFreeRoam="2.0" />
+          stationChangeFadeTimeNormal="1.25" HUDNewTrackDisplayDelayFreeRoam="2.0" />
   <RadioStation name="Radio1">
     <Playlist noRepeat="1">
       <MusicTrack name="Track Day" artist="Artist A" fmodname="R1_Day" likelihoodDaytime="5" likelihoodMorning="0" likelihoodEvening="0" likelihoodNight="0"/>
@@ -135,6 +135,7 @@ void test_full_radio_depth_and_3d_stations() {
   std::string err;
   check(audio::parse_radio(sys_xml, music_info, vo_info, rd, &err), "parse_radio succeeds");
   check(rd.levels.max_tracks_between_dj == 2, "parsed maxTracksBetweenDJ == 2");
+  check(std::fabs(rd.levels.change_fade_normal - 1.25) < 1e-4, "parsed stationChangeFadeTimeNormal == 1.25");
   check(rd.cycle.size() == 2, "player cycle has Radio1 + Radio4_Silent");
   check(rd.location_stations.size() == 1, "1 3D location station (Radio5_3d_PreRace) parsed");
   check(rd.stations[size_t(rd.location_stations[0])].is_3d, "Radio5_3d_PreRace marked is_3d");
@@ -146,6 +147,11 @@ void test_full_radio_depth_and_3d_stations() {
   check(rd.vox_pops.events.size() == 1 && rd.vox_pops.events[0] == "AnecdoteInterview4", "VoxPop event parsed");
 
   audio::Radio radio(rd, 42, true);
+  radio.select(0);
+  check(!radio.last_change_was_user(), "programmatic select uses normal station fade");
+  radio.press(1);
+  check(radio.last_change_was_user(), "D-pad press uses user station fade");
+  radio.press(-1);
   check(radio.schedule(rd.location_stations[0]) != nullptr, "3D location station has active StationSchedule");
   check(radio.trigger_immediate_dialogue("AliceOpeningInterview1"), "trigger_immediate_dialogue succeeds");
   std::vector<audio::RadioEvent> evs;
@@ -229,7 +235,8 @@ void test_world_acoustics_and_reverb() {
   const auto s_fest = ac.evaluate(-1450.0f, 10.0f, -340.0f);
   check(s_fest.festival_proximity > 0.9f && s_fest.ambience_snapshot == "Festival", "near stage reports Festival");
 
-  // Verify EnvironmentalReverb produces a measurable reverb tail after an impulse.
+  // Verify EnvironmentalReverb produces a measurable reverb tail after an impulse
+  // (both in-place process() and send-bus process_wet() used for multi-bus reverb).
   audio::EnvironmentalReverb rev;
   rev.prepare(48000);
   rev.set_parameters(s_tun.reverb);
@@ -240,6 +247,30 @@ void test_world_acoustics_and_reverb() {
   double tail_e = 0.0;
   for (size_t i = 2000 * 2; i < buf.size(); ++i) tail_e += double(buf[i]) * double(buf[i]);
   check(tail_e > 1e-4, "EnvironmentalReverb produces audible tunnel reverb tail");
+
+  audio::EnvironmentalReverb rev_wet;
+  rev_wet.prepare(48000);
+  rev_wet.set_parameters(s_tun.reverb);
+  std::vector<float> dry_in(4800 * 2, 0.0f), wet_out(4800 * 2, 0.0f);
+  dry_in[0] = 1.0f;
+  dry_in[1] = 1.0f;
+  check(rev_wet.process_wet(dry_in.data(), wet_out.data(), 4800), "process_wet active for tunnel reverb");
+  double wet_tail = 0.0;
+  for (size_t i = 2000 * 2; i < wet_out.size(); ++i) wet_tail += double(wet_out[i]) * double(wet_out[i]);
+  check(wet_tail > 1e-4, "EnvironmentalReverb::process_wet produces stereo wet tail");
+
+  // Verify AmbienceBedPlayer plays real injected PCM regional & crowd loops (Pillar 5 P0-12).
+  {
+    audio::AmbienceBedPlayer amb(48000);
+    amb.set_bed_sample(audio::AmbienceBedSlot::kMountains, make_tone(48000, 0.5, 310.0, 0.6f));
+    amb.set_bed_sample(audio::AmbienceBedSlot::kCrowd, make_tone(48000, 0.5, 190.0, 0.6f));
+    std::vector<float> abuf(4800 * 2, 0.0f);
+    amb.render(s_tun, 10.0f, abuf.data(), 4800);  // s_tun has Mountains ambience
+    check(amb.loaded_bed_count() == 2, "AmbienceBedPlayer drained 2 PCM beds");
+    double amb_e = 0.0;
+    for (float v : abuf) amb_e += double(v) * double(v);
+    check(amb_e > 0.5, "AmbienceBedPlayer renders strong real PCM regional bed");
+  }
 
   // Verify real disc files if available (24 reverb templates, 6 ambience templates, real RadioSystem + DialogueScript).
   const std::filesystem::path game_root = "../horizon1-recomp/.local/game/base";

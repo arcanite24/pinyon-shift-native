@@ -3,10 +3,18 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
+#include <memory>
+#include <span>
 #include <sstream>
 #include <system_error>
 
+#include "audio/bake.h"
+#include "audio/fev.h"
+#include "audio/fsb4.h"
+#include "audio/stream.h"
 #include "audio/xml.h"
 #include "cars/mods.h"
 #include "fh1data/archive.h"
@@ -511,16 +519,402 @@ void EnvironmentalReverb::process(float* io, int frames) {
   }
 }
 
+bool EnvironmentalReverb::process_wet(const float* in_stereo, float* out_wet_stereo, int frames) {
+  if (!in_stereo || !out_wet_stereo || frames <= 0 || comb_l_[0].buf.empty()) return false;
+  if (target_wet_ < 1e-4f && wet_smooth_ < 1e-4f) {
+    std::fill(out_wet_stereo, out_wet_stereo + size_t(frames) * 2, 0.0f);
+    return false;
+  }
+
+  const float sm = 1.0f - std::exp(-1.0f / (0.04f * float(rate_)));
+  const size_t pre_cap = predelay_l_.size();
+  for (int i = 0; i < frames; ++i) {
+    wet_smooth_ += (target_wet_ - wet_smooth_) * sm;
+    dry_smooth_ += (target_dry_ - dry_smooth_) * sm;
+    const float in_l = in_stereo[2 * i];
+    const float in_r = in_stereo[2 * i + 1];
+
+    float pre_l = in_l, pre_r = in_r;
+    if (pre_cap > 0) {
+      predelay_l_[predelay_idx_] = in_l;
+      predelay_r_[predelay_idx_] = in_r;
+      const size_t ridx = (predelay_idx_ + pre_cap - predelay_samples_) % pre_cap;
+      pre_l = predelay_l_[ridx];
+      pre_r = predelay_r_[ridx];
+      if (++predelay_idx_ >= pre_cap) predelay_idx_ = 0;
+    }
+
+    const float mono_in = 0.5f * (pre_l + pre_r);
+    float wl = 0.0f, wr = 0.0f;
+    for (int c = 0; c < 4; ++c) {
+      wl += comb_l_[size_t(c)].tick(mono_in);
+      wr += comb_r_[size_t(c)].tick(mono_in);
+    }
+    wl *= 0.25f;
+    wr *= 0.25f;
+    for (int a = 0; a < 2; ++a) {
+      wl = ap_l_[size_t(a)].tick(wl);
+      wr = ap_r_[size_t(a)].tick(wr);
+    }
+    out_wet_stereo[2 * i] = wl * wet_smooth_;
+    out_wet_stereo[2 * i + 1] = wr * wet_smooth_;
+  }
+  return true;
+}
+
 // ------------------------------------------------ AmbienceBedPlayer
 
-AmbienceBedPlayer::AmbienceBedPlayer(int rate) : rate_(std::max(8000, rate)) {}
+namespace {
+
+bool read_bytes_amb(const std::filesystem::path& p, std::vector<uint8_t>& out) {
+  std::ifstream f(p, std::ios::binary);
+  if (!f) return false;
+  out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  return !out.empty();
+}
+
+bool write_bytes_amb(const std::filesystem::path& p, const void* data, size_t n) {
+  std::ofstream f(p, std::ios::binary);
+  f.write(static_cast<const char*>(data), std::streamsize(n));
+  return bool(f);
+}
+
+bool read_cached_amb(const std::filesystem::path& p, PcmSample& out) {
+  std::ifstream f(p, std::ios::binary);
+  if (!f) return false;
+  int32_t rate = 0;
+  uint32_t frames = 0;
+  f.read(reinterpret_cast<char*>(&rate), 4);
+  f.read(reinterpret_cast<char*>(&frames), 4);
+  if (!f || rate <= 0 || frames == 0 || frames > 48000u * 60u) return false;
+  std::vector<int16_t> s16(frames);
+  f.read(reinterpret_cast<char*>(s16.data()), std::streamsize(frames * 2));
+  if (!f) return false;
+  out.rate = rate;
+  out.data.resize(frames);
+  for (size_t i = 0; i < frames; ++i) out.data[i] = float(s16[i]) / 32768.0f;
+  return true;
+}
+
+void write_cached_amb(const std::filesystem::path& p, const PcmSample& s) {
+  if (p.empty() || s.rate <= 0 || s.data.empty()) return;
+  std::error_code ec;
+  if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+  std::ofstream f(p, std::ios::binary | std::ios::trunc);
+  if (!f) return;
+  const int32_t rate = s.rate;
+  const uint32_t frames = uint32_t(s.data.size());
+  f.write(reinterpret_cast<const char*>(&rate), 4);
+  f.write(reinterpret_cast<const char*>(&frames), 4);
+  std::vector<int16_t> s16(frames);
+  for (size_t i = 0; i < frames; ++i)
+    s16[i] = int16_t(std::clamp(std::lround(double(s.data[i]) * 32767.0), -32768l, 32767l));
+  f.write(reinterpret_cast<char*>(s16.data()), std::streamsize(frames * 2));
+}
+
+bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsound, const std::filesystem::path& ffmpeg,
+                         const std::filesystem::path& temp_dir, PcmSample& out) {
+  std::vector<uint8_t> bank_data;
+  if (!read_bytes_amb(bank_path, bank_data)) return false;
+  std::vector<FsbSample> samples;
+  if (!read_fsb4(bank_data, samples, nullptr) || subsound >= samples.size()) return false;
+  const FsbSample& s = samples[subsound];
+  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
+  const int rate = s.rate > 0 ? s.rate : 48000;
+  constexpr size_t kMaxAmbFrames = 48000u * 25u;  // cap ambient bed decode to 25 s loop
+  if (s.xma()) {
+    if (ffmpeg.empty()) return false;
+    const auto wave = xma2_wave(s, std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes));
+    const auto in_p = temp_dir / ("amb_" + std::to_string(subsound) + ".wav");
+    const auto out_p = temp_dir / ("amb_" + std::to_string(subsound) + ".s16");
+    std::error_code ec;
+    std::filesystem::remove(out_p, ec);
+    if (!write_bytes_amb(in_p, wave.data(), wave.size())) return false;
+    std::string cmd = "\"" + ffmpeg.string() + "\" -hide_banner -nostdin -v error -y -t 25 -i \"" + in_p.string() +
+                      "\" -f s16le -acodec pcm_s16le \"" + out_p.string() + "\"";
+#ifdef _WIN32
+    cmd = "\"" + cmd + "\"";
+#endif
+    if (std::system(cmd.c_str()) != 0) return false;
+    std::vector<uint8_t> raw;
+    if (!read_bytes_amb(out_p, raw) || raw.size() < 2) return false;
+    const size_t ch = std::max<size_t>(1, s.channels);
+    const size_t frames = std::min(kMaxAmbFrames, raw.size() / (2 * ch));
+    if (frames == 0) return false;
+    out.rate = rate;
+    out.data.resize(frames);
+    for (size_t i = 0; i < frames; ++i) {
+      double acc = 0.0;
+      for (size_t c = 0; c < ch; ++c) {
+        const size_t at = (i * ch + c) * 2;
+        acc += double(int16_t(raw[at] | raw[at + 1] << 8)) / 32768.0;
+      }
+      out.data[i] = float(acc / double(ch));
+    }
+    std::filesystem::remove(in_p, ec);
+    std::filesystem::remove(out_p, ec);
+    return true;
+  }
+  auto src = make_fsb_mpeg_source(bank_path, s.offset, s.bytes, rate);
+  if (src && src->open()) {
+    out.rate = src->rate();
+    out.data.clear();
+    float tmp[2048 * 2];
+    while (out.data.size() < kMaxAmbFrames) {
+      const int64_t got = src->read(tmp, 2048);
+      if (got <= 0) break;
+      for (int64_t i = 0; i < got && out.data.size() < kMaxAmbFrames; ++i)
+        out.data.push_back(0.5f * (tmp[2 * i] + tmp[2 * i + 1]));
+    }
+    return !out.data.empty();
+  }
+  return false;
+}
+
+bool pick_first_fev_sample(const FevProject& proj, const FevEvent& ev, std::filesystem::path& bank_out,
+                           uint32_t& sub_out) {
+  auto pick = [&](const std::vector<FevSoundInstance>& insts) -> bool {
+    for (const auto& si : insts) {
+      if (si.sound_def_index >= proj.sound_defs.size()) continue;
+      for (const auto& en : proj.sound_defs[si.sound_def_index].entries) {
+        if (en.entry_type == 0 && !en.wavebank_name.empty()) {
+          bank_out = cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb"));
+          sub_out = en.subsound_index;
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  if (pick(ev.simple_instances)) return true;
+  for (const auto& ly : ev.layers)
+    if (pick(ly.instances)) return true;
+  return false;
+}
+
+}  // namespace
+
+AmbienceBedPlayer::AmbienceBedPlayer(int rate) : rate_(std::max(8000, rate)) {
+  beds_.fill(nullptr);
+  bed_phase_.fill(0.0);
+  bed_gain_.fill(0.0f);
+}
+
+AmbienceBedPlayer::~AmbienceBedPlayer() {
+  stop_worker();
+  drain_loaded();
+  for (PcmSample*& p : beds_) {
+    delete p;
+    p = nullptr;
+  }
+}
+
+void AmbienceBedPlayer::stop_worker() {
+  stop_worker_.store(true, std::memory_order_release);
+  if (worker_.joinable()) worker_.join();
+}
+
+void AmbienceBedPlayer::drain_loaded() {
+  LoadedBed lb;
+  while (loaded_q_.pop(lb)) {
+    const size_t idx = size_t(lb.slot);
+    if (idx < beds_.size()) {
+      delete beds_[idx];
+      beds_[idx] = lb.pcm;
+    } else {
+      delete lb.pcm;
+    }
+  }
+}
+
+void AmbienceBedPlayer::set_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
+  const size_t idx = size_t(slot);
+  if (idx >= beds_.size()) return;
+  auto* p = new PcmSample(std::move(pcm));
+  if (!loaded_q_.push({slot, p})) delete p;
+}
+
+int AmbienceBedPlayer::loaded_bed_count() const {
+  int n = 0;
+  for (const PcmSample* p : beds_)
+    if (p && !p->data.empty()) ++n;
+  return n;
+}
+
+int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
+  stop_worker();
+  if (game_root.empty()) return 0;
+  struct Job {
+    AmbienceBedSlot slot;
+    std::filesystem::path bank;
+    uint32_t sub = 0;
+  };
+  std::vector<Job> jobs;
+  std::array<bool, int(AmbienceBedSlot::kCount)> assigned{};
+  auto assign_slot = [&](AmbienceBedSlot slot, const std::filesystem::path& bank, uint32_t sub) {
+    if (assigned[size_t(slot)]) return;
+    std::error_code ec;
+    if (!std::filesystem::exists(bank, ec)) return;
+    assigned[size_t(slot)] = true;
+    jobs.push_back({slot, bank, sub});
+  };
+
+  const std::filesystem::path amb_dir = game_root / "media" / "audio" / "ambience";
+  const char* kFevCandidates[] = {
+      "AMB_Quads.fev",
+      "AMB_Default.fev",
+      "AMB_Festival_Ambience.fev",
+      "Colorado_Festival.fev",
+      "Colorado_Ambience.fev",
+  };
+  for (const char* fev_name : kFevCandidates) {
+    const auto fev_path = cars::mods::resolve(amb_dir / fev_name);
+    FevProject proj;
+    if (!load_fev(fev_path, proj, nullptr)) continue;
+    for (const auto& ev : proj.events) {
+      std::filesystem::path bank;
+      uint32_t sub = 0;
+      if (!pick_first_fev_sample(proj, ev, bank, sub)) continue;
+      const std::string lp = lower_str(ev.path);
+      if (lp.find("crowd") != std::string::npos || lp.find("cheer") != std::string::npos) {
+        assign_slot(AmbienceBedSlot::kCrowd, bank, sub);
+      } else if (lp.find("festival") != std::string::npos || lp.find("stage") != std::string::npos) {
+        assign_slot(AmbienceBedSlot::kFestival, bank, sub);
+      } else if (lp.find("mountain") != std::string::npos || lp.find("forest") != std::string::npos ||
+                 lp.find("alpine") != std::string::npos) {
+        assign_slot(AmbienceBedSlot::kMountains, bank, sub);
+      } else if (lp.find("redrock") != std::string::npos || lp.find("canyon") != std::string::npos ||
+                 lp.find("desert") != std::string::npos) {
+        assign_slot(AmbienceBedSlot::kRedRock, bank, sub);
+      } else if (lp.find("town") != std::string::npos || lp.find("urban") != std::string::npos ||
+                 lp.find("city") != std::string::npos) {
+        assign_slot(AmbienceBedSlot::kMainTown, bank, sub);
+      } else if (lp.find("default") != std::string::npos || lp.find("plain") != std::string::npos ||
+                 lp.find("quad") != std::string::npos) {
+        assign_slot(AmbienceBedSlot::kDefault, bank, sub);
+      }
+    }
+  }
+  // Fallback: if AMB_Quads_Stream.fsb exists directly under ambience/, queue its subsounds.
+  const auto quad_fsb = cars::mods::resolve(amb_dir / "AMB_Quads_Stream.fsb");
+  std::error_code ec;
+  if (std::filesystem::exists(quad_fsb, ec)) {
+    std::vector<uint8_t> raw;
+    std::vector<FsbSample> fsb_s;
+    if (read_bytes_amb(quad_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+      for (uint32_t i = 0; i < fsb_s.size(); ++i) {
+        const std::string nm = lower_str(fsb_s[i].name);
+        if (nm.find("mountain") != std::string::npos) assign_slot(AmbienceBedSlot::kMountains, quad_fsb, i);
+        else if (nm.find("redrock") != std::string::npos || nm.find("canyon") != std::string::npos)
+          assign_slot(AmbienceBedSlot::kRedRock, quad_fsb, i);
+        else if (nm.find("town") != std::string::npos) assign_slot(AmbienceBedSlot::kMainTown, quad_fsb, i);
+        else if (nm.find("festival") != std::string::npos) assign_slot(AmbienceBedSlot::kFestival, quad_fsb, i);
+        else if (nm.find("crowd") != std::string::npos) assign_slot(AmbienceBedSlot::kCrowd, quad_fsb, i);
+        else if (!assigned[size_t(AmbienceBedSlot::kDefault)]) assign_slot(AmbienceBedSlot::kDefault, quad_fsb, i);
+      }
+    }
+  }
+
+  const int queued = int(jobs.size());
+  if (jobs.empty()) return 0;
+
+  stop_worker_.store(false, std::memory_order_release);
+  worker_ = std::thread([this, jobs = std::move(jobs), cache_dir]() {
+    const std::filesystem::path ffmpeg = find_ffmpeg();
+    std::error_code tec;
+    const std::filesystem::path amb_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "ambience");
+    const std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path(tec) /
+        ("shift-amb-decode-" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+    std::filesystem::create_directories(temp_dir, tec);
+    for (const auto& j : jobs) {
+      if (stop_worker_.load(std::memory_order_acquire)) break;
+      const std::filesystem::path cf =
+          amb_cache.empty()
+              ? std::filesystem::path{}
+              : (amb_cache / (lower_str(j.bank.stem().string()) + "." + std::to_string(j.sub) + ".s16"));
+      auto pcm = std::make_unique<PcmSample>();
+      bool ok = !cf.empty() && read_cached_amb(cf, *pcm);
+      if (!ok) {
+        ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
+        if (ok && !cf.empty()) write_cached_amb(cf, *pcm);
+      }
+      if (ok && !pcm->data.empty()) {
+        PcmSample* raw = pcm.release();
+        if (!loaded_q_.push({j.slot, raw})) delete raw;
+      }
+    }
+    std::filesystem::remove_all(temp_dir, tec);
+  });
+  return queued;
+}
 
 void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames) {
   if (!out_stereo || frames <= 0) return;
+  drain_loaded();
+
   // Background ambient stream fades out smoothly above ~35-40 mph (colorado_ambience.xml).
-  const float speed_target = speed_mph <= 35.0f ? 1.0f : speed_mph >= 55.0f ? 0.15f : 1.0f - 0.85f * ((speed_mph - 35.0f) / 20.0f);
+  const float speed_target =
+      speed_mph <= 35.0f ? 1.0f : speed_mph >= 55.0f ? 0.15f : 1.0f - 0.85f * ((speed_mph - 35.0f) / 20.0f);
   const float fest_target = std::max(sample.festival_proximity, sample.crowd_proximity);
   const float sm = 1.0f - std::exp(-1.0f / (0.15f * float(rate_)));
+
+  // Pick regional bed slot from active ambience snapshot.
+  AmbienceBedSlot region = AmbienceBedSlot::kDefault;
+  if (sample.ambience_snapshot == "Mountains") region = AmbienceBedSlot::kMountains;
+  else if (sample.ambience_snapshot == "RedRock") region = AmbienceBedSlot::kRedRock;
+  else if (sample.ambience_snapshot == "MainTown") region = AmbienceBedSlot::kMainTown;
+  else if (sample.ambience_snapshot == "Festival") region = AmbienceBedSlot::kFestival;
+
+  const PcmSample* active_reg_pcm = beds_[size_t(region)];
+  if (!active_reg_pcm || active_reg_pcm->data.empty()) {
+    region = AmbienceBedSlot::kDefault;
+    active_reg_pcm = beds_[size_t(AmbienceBedSlot::kDefault)];
+  }
+  const bool have_reg_pcm = active_reg_pcm && !active_reg_pcm->data.empty();
+  const PcmSample* crowd_pcm = beds_[size_t(AmbienceBedSlot::kCrowd)];
+  const bool have_crowd_pcm = crowd_pcm && !crowd_pcm->data.empty();
+
+  // Mix any loaded regional/crowd PCM beds with smooth crossfading.
+  if (have_reg_pcm || have_crowd_pcm) {
+    for (int s = 0; s < int(AmbienceBedSlot::kCount); ++s) {
+      const PcmSample* pcm = beds_[size_t(s)];
+      if (!pcm || pcm->data.empty()) {
+        bed_gain_[size_t(s)] = 0.0f;
+        continue;
+      }
+      const float target = (s == int(AmbienceBedSlot::kCrowd))
+                               ? (0.28f * fest_target)
+                               : ((s == int(region)) ? (0.18f * speed_target) : 0.0f);
+      if (target < 1e-4f && bed_gain_[size_t(s)] < 1e-4f) {
+        bed_gain_[size_t(s)] = 0.0f;
+        continue;
+      }
+      const size_t n = pcm->data.size();
+      const double step = double(std::max(1, pcm->rate)) / double(rate_);
+      // Decorrelate stereo slightly by reading R channel offset by ~13 ms within the loop.
+      const size_t r_off = n > 1024 ? size_t(std::min<size_t>(n / 3, size_t(0.013 * pcm->rate))) : 0;
+      double ph = bed_phase_[size_t(s)];
+      float g = bed_gain_[size_t(s)];
+      for (int i = 0; i < frames; ++i) {
+        g += (target - g) * sm;
+        const size_t k = size_t(ph);
+        const float frac = float(ph - double(k));
+        const float sl = pcm->data[k % n] + (pcm->data[(k + 1) % n] - pcm->data[k % n]) * frac;
+        const size_t kr = (k + r_off) % n;
+        const float sr = pcm->data[kr] + (pcm->data[(kr + 1) % n] - pcm->data[kr]) * frac;
+        out_stereo[2 * i] += sl * g;
+        out_stereo[2 * i + 1] += sr * g;
+        ph += step;
+        if (ph >= double(n)) ph = std::fmod(ph, double(n));
+      }
+      bed_phase_[size_t(s)] = ph;
+      bed_gain_[size_t(s)] = g;
+    }
+  }
+
+  // Only synthesize procedural fallback for layers missing real disc PCM beds.
+  if (have_reg_pcm && have_crowd_pcm) return;
 
   // Regional filter cutoff character (Mountains: brisk wind, RedRock: warm desert, Festival: crowd murmur).
   float lp_a = 0.04f;
@@ -532,7 +926,6 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
   for (int i = 0; i < frames; ++i) {
     env_speed_ += (speed_target - env_speed_) * sm;
     env_festival_ += (fest_target - env_festival_) * sm;
-    // Fast xorshift32 white noise for stereo ambient air/crowd bed.
     rng_ ^= rng_ << 13;
     rng_ ^= rng_ >> 17;
     rng_ ^= rng_ << 5;
@@ -549,8 +942,8 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
 
     phase_ += 2.0 * 3.14159265 * 0.18 / double(rate_);
     const float swell = 0.85f + 0.15f * std::sin(float(phase_));
-    const float nature_gain = 0.018f * env_speed_ * swell;
-    const float crowd_gain = 0.045f * env_festival_;
+    const float nature_gain = have_reg_pcm ? 0.0f : (0.018f * env_speed_ * swell);
+    const float crowd_gain = have_crowd_pcm ? 0.0f : (0.045f * env_festival_);
 
     out_stereo[2 * i] += (lp_l_ - bp_l_) * nature_gain + lp_l_ * crowd_gain;
     out_stereo[2 * i + 1] += (lp_r_ - bp_r_) * nature_gain + lp_r_ * crowd_gain;

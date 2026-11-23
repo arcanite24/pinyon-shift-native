@@ -78,7 +78,7 @@ class AudioHost {
   bool init_codriver(const std::filesystem::path& rally_package_dir, const std::filesystem::path& cache_dir,
                      std::string_view language = "EN");
   bool init_vo(const std::filesystem::path& game_root, std::string_view language = "EN");
-  bool init_acoustics(const std::filesystem::path& game_root);
+  bool init_acoustics(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir = {});
   std::string car_burble_bank() const;
 
   // Initializes Your Music from `music_dir` (<state>/music).
@@ -152,6 +152,8 @@ class AudioHost {
   bool mixer_configs_tried_ = false;
   bool sfx_tried_ = false;
   bool has_sfx_ = false;
+  std::filesystem::path sfx_game_root_;
+  std::filesystem::path sfx_cache_dir_;
   bool satnav_tried_ = false;
   bool has_satnav_ = false;
   bool codriver_tried_ = false;

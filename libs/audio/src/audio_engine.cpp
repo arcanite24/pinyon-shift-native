@@ -18,6 +18,8 @@ AudioEngine::AudioEngine(int rate) : rate_(std::max(8000, rate)), ambience_bed_(
   // Pre-allocate stereo bus scratch buffers for up to 4096 frames so the
   // audio thread never allocates in steady state.
   for (auto& b : bus_bufs_) b.resize(4096 * 2, 0.0f);
+  reverb_send_buf_.resize(4096 * 2, 0.0f);
+  reverb_wet_buf_.resize(4096 * 2, 0.0f);
   out_buf_.resize(4096 * 2, 0.0f);
 }
 
@@ -351,6 +353,29 @@ void AudioEngine::set_snapshot(int id, bool active) {
   enqueue(c);
 }
 
+bool AudioEngine::load_snapshot_matrix_xml(std::string_view xml, std::string* error) {
+  if (running_.load(std::memory_order_acquire)) return false;
+  if (!matrix_.parse(xml, error)) return false;
+  use_matrix_ = true;
+  for (int b = 0; b < kBuses; ++b) matrix_bus_smooth_[size_t(b)] = matrix_.bus_gain(Bus(b));
+  return true;
+}
+
+int AudioEngine::load_ambience_beds(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
+  return ambience_bed_.load_from_disc(game_root, cache_dir);
+}
+
+void AudioEngine::set_ambience_bed_sample(AmbienceBedSlot slot, PcmSample pcm) {
+  ambience_bed_.set_bed_sample(slot, std::move(pcm));
+}
+
+void AudioEngine::reload_sfx_burble(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir,
+                                    const std::string& burble_bank) {
+  if (running_.load(std::memory_order_acquire)) return;
+  drain_commands();
+  if (sfx_) sfx_->reload_burble_bank(game_root, cache_dir, burble_bank);
+}
+
 bool AudioEngine::load_mixer_configs(const std::filesystem::path& game_root, std::string* note) {
   if (running_.load(std::memory_order_acquire) || game_root.empty()) return false;
   std::string err;
@@ -504,6 +529,7 @@ void AudioEngine::drain_commands() {
       case Command::kFullDynamicRange:
         mixer_.stage().set_full_dynamic_range(c.b0);
         rms_stage_.set_full_dynamic_range(c.b0);
+        rms_stage_.set_tv_profile(!c.b0);
         break;
       case Command::kSnapshot: mixer_.snapshots().set_active(c.i0, c.b0); break;
       case Command::kMatrixActivate:
@@ -697,7 +723,33 @@ void AudioEngine::render_block(float* out, int frames) {
       // Your Music mutes the game's radio while keeping all other buses.
       user_music_->render(mbuf.data(), frames);
     } else if (radio_player_) {
+      radio_player_->set_dj_modifier(use_matrix_ ? double(matrix_.gain(Category::kDJModifier)) : 1.0);
       radio_player_->render(mbuf.data(), frames);
+    }
+    // DynamicsData MusicHighpass (SPEC-AUDIO-EVENTS Part 3): smooth 1-pole HPF
+    // on Bus::kMusic while AverageSpeedEnter is active in SnapshotGroup::kSpeedZones.
+    if (use_matrix_) {
+      const auto& dyn = matrix_.dynamics();
+      const bool hp_active = matrix_.active_name(SnapshotGroup::kSpeedZones) == "AverageSpeedEnter";
+      const float target_mix = hp_active ? 1.0f : 0.0f;
+      if (target_mix > 1e-4f || music_hp_mix_ > 1e-4f) {
+        const float fade_s = std::max(0.05f, hp_active ? dyn.music_hp_fadein : dyn.music_hp_fadeout);
+        const float mix_step = 1.0f / (fade_s * float(rate_));
+        const float fc = std::clamp(dyn.music_hp_cutoff, 20.0f, 4000.0f);
+        const float rc = 1.0f / (2.0f * 3.14159265f * fc);
+        const float alpha = rc / (rc + 1.0f / float(rate_));
+        for (int i = 0; i < frames; ++i) {
+          music_hp_mix_ = target_mix > music_hp_mix_ ? std::min(target_mix, music_hp_mix_ + mix_step)
+                                                     : std::max(target_mix, music_hp_mix_ - mix_step);
+          for (int ch = 0; ch < 2; ++ch) {
+            const float x = mbuf[2 * size_t(i) + size_t(ch)];
+            const float y = alpha * (music_hp_prev_out_[ch] + x - music_hp_prev_in_[ch]);
+            music_hp_prev_in_[ch] = x;
+            music_hp_prev_out_[ch] = y;
+            mbuf[2 * size_t(i) + size_t(ch)] = x + (y - x) * music_hp_mix_;
+          }
+        }
+      }
     }
     buses[int(Bus::kMusic)] = mbuf.data();
   }
@@ -744,9 +796,37 @@ void AudioEngine::render_block(float* out, int frames) {
       car_eqs_[size_t(i)].process(bus_bufs_[int(kCarBuses[i])].data(), frames);
     }
   }
-  // Environmental reverb (colorado_reverb.xml I3DL2 zones) applied to focus car engine bus.
-  if (have_acoustics_ && buses[int(Bus::kEngine)]) {
-    reverb_.process(bus_bufs_[int(Bus::kEngine)].data(), frames);
+  // Environmental reverb (colorado_reverb.xml I3DL2 zones) routed across focus
+  // car engine, 3D opponent/traffic cars, and tyres via a shared wet send bus.
+  if (have_acoustics_) {
+    constexpr Bus kRevBuses[3] = {Bus::kEngine, Bus::kOtherCars, Bus::kTyres};
+    constexpr float kRevSend[3] = {1.0f, 0.85f, 0.65f};
+    float active_w = 0.0f;
+    for (int i = 0; i < 3; ++i)
+      if (buses[int(kRevBuses[i])]) active_w += kRevSend[i];
+    if (active_w > 0.0f) {
+      if (reverb_send_buf_.size() < samples) {
+        reverb_send_buf_.resize(samples, 0.0f);
+        reverb_wet_buf_.resize(samples, 0.0f);
+      }
+      std::fill(reverb_send_buf_.begin(), reverb_send_buf_.begin() + ptrdiff_t(samples), 0.0f);
+      for (int i = 0; i < 3; ++i) {
+        const float* src = buses[int(kRevBuses[i])];
+        if (!src) continue;
+        const float sw = kRevSend[i];
+        for (size_t s = 0; s < samples; ++s) reverb_send_buf_[s] += src[s] * sw;
+      }
+      if (reverb_.process_wet(reverb_send_buf_.data(), reverb_wet_buf_.data(), frames)) {
+        const float dry_g = reverb_.dry_gain();
+        const float inv_w = 1.0f / active_w;
+        for (int i = 0; i < 3; ++i) {
+          if (!buses[int(kRevBuses[i])]) continue;
+          float* dst = bus_bufs_[int(kRevBuses[i])].data();
+          const float ret = kRevSend[i] * inv_w;
+          for (size_t s = 0; s < samples; ++s) dst[s] = dst[s] * dry_g + reverb_wet_buf_[s] * ret;
+        }
+      }
+    }
   }
 
   if (use_matrix_) {
@@ -780,9 +860,9 @@ void AudioEngine::render_block(float* out, int frames) {
     std::fill(out, out + samples, 0.0f);
     const float a = 1.0f - std::exp(-1.0f / (0.01f * float(rate_)));
     for (int b = 0; b < kBuses; ++b) {
-      // Combine AudioMixerSnapshots.xml matrix gain with the built-in Title/Menu
-      // guards and user Sound Mix level (0..2).
-      const float snap_g = matrix_.bus_gain(Bus(b)) * mixer_.snapshots().level(Bus(b));
+      // AudioMixerSnapshots.xml is the single source of truth in matrix mode;
+      // do not double-stack legacy SnapshotMixer (Paused/Menu) gains on top.
+      const float snap_g = (on_title && Bus(b) != Bus::kUi) ? 0.0f : matrix_.bus_gain(Bus(b));
       const float target = mixer_.bus_level(Bus(b)) * snap_g;
       float& s = matrix_bus_smooth_[size_t(b)];
       const float* in = buses[b];

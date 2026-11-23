@@ -11,11 +11,16 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
+
+#include "audio/engine_player.h"
+#include "audio/rt.h"
 
 namespace audio {
 
@@ -154,7 +159,11 @@ class EnvironmentalReverb {
   void reset();
   // Processes `frames` interleaved stereo frames in place (blends dry + wet).
   void process(float* io, int frames);
+  // Renders only the wet reverb return from `in_stereo` into `out_wet_stereo`
+  // (interleaved stereo, overwritten). Returns false when reverb is silent.
+  bool process_wet(const float* in_stereo, float* out_wet_stereo, int frames);
   float wet_gain() const { return wet_smooth_; }
+  float dry_gain() const { return dry_smooth_; }
   float decay_time() const { return decay_time_; }
 
  private:
@@ -186,15 +195,51 @@ class EnvironmentalReverb {
   std::array<Allpass, 2> ap_l_, ap_r_;
 };
 
+enum class AmbienceBedSlot : int {
+  kDefault = 0,
+  kMainTown,
+  kMountains,
+  kRedRock,
+  kFestival,
+  kCrowd,
+  kCount,
+};
+
 // Renders regional & festival ambient soundscape beds onto Bus::kAmbience
-// based on the active AcousticsSample and vehicle speed.
+// based on the active AcousticsSample and vehicle speed. Decodes real
+// AMB_*.fev / Colorado_Festival.fev loops asynchronously from disc when
+// available, with a gentle filtered procedural fallback when absent.
 class AmbienceBedPlayer {
  public:
   explicit AmbienceBedPlayer(int rate = 48000);
+  ~AmbienceBedPlayer();
+
+  // Scans AMB_Quads.fev, AMB_Default.fev, AMB_Festival_Ambience.fev, and
+  // Colorado_Festival.fev under `game_root` and decodes loops asynchronously
+  // into `cache_dir` (never blocking the audio thread).
+  int load_from_disc(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir);
+  // Injects a mono PCM loop directly (for unit tests without disc files).
+  void set_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
+  int loaded_bed_count() const;
+
   void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames);
 
  private:
+  struct LoadedBed {
+    AmbienceBedSlot slot = AmbienceBedSlot::kDefault;
+    PcmSample* pcm = nullptr;
+  };
+  void stop_worker();
+  void drain_loaded();
+
   int rate_ = 48000;
+  std::array<PcmSample*, int(AmbienceBedSlot::kCount)> beds_{};
+  std::array<double, int(AmbienceBedSlot::kCount)> bed_phase_{};
+  std::array<float, int(AmbienceBedSlot::kCount)> bed_gain_{};
+  SpscQueue<LoadedBed> loaded_q_{32};
+  std::atomic<bool> stop_worker_{false};
+  std::thread worker_;
+
   uint32_t rng_ = 0x12345678u;
   float lp_l_ = 0.0f, lp_r_ = 0.0f;
   float bp_l_ = 0.0f, bp_r_ = 0.0f;
