@@ -209,6 +209,12 @@ struct GatherOptions {
   // The track route whose placements are drawn (WORLD-GEOMETRY, "Which
   // placements free roam draws"): 0 is free roam; -1 draws every one.
   int route = 0;
+  // Spatial spheres (game frame) for smashed/broken props hidden from static gather.
+  struct HiddenSphere {
+    std::array<float, 3> pos{};
+    float radius = 2.0f;
+  };
+  std::shared_ptr<const std::vector<HiddenSphere>> hidden_positions;
 };
 
 struct GatherStats {

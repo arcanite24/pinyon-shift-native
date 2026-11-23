@@ -63,6 +63,37 @@ void test_break_rules_and_pool() {
   std::vector<world::DebrisVertex> mesh;
   sw.build_debris_mesh(mesh);
   CHECK(mesh.size() == world::SmashableWorld::kMaxDynamicBodies * 36);
+
+  // Pillar 4: smashing a placed prop records broken_hidden_positions for static world hiding
+  // and clears on reset_broken().
+  {
+    world::SmashableWorld sw2;
+    world::PropPhysicsDef fence{};
+    fence.object_type_index = 0;
+    fence.break_speed_mph = 5.0f;
+    fence.mass = 0.25f;
+    fence.bounding_radius = 1.2f;
+    world::CollObjPlacement pl{};
+    pl.physics_type = "CO_Fence.0.rmb";
+    pl.stem = "co_fence";
+    pl.pos = {0.0f, 0.0f, 5.0f};
+    sw2.add_prop(pl, &fence);
+    drive::FlatGround g(0.0);
+    drive::CarParams cp{};
+    drive::Vehicle v(cp);
+    v.launch({0.0, 0.0, 2.5}, 0.0, 15.0);
+    std::vector<world::SmashEvent> evs;
+    for (int i = 0; i < 40 && evs.empty(); ++i) {
+      v.step({0.0, 0.5, 0.0, false}, g);
+      sw2.step(v, g, float(drive::Vehicle::kStep), evs);
+    }
+    CHECK(!evs.empty());
+    CHECK(sw2.broken_prop_count() == 1);
+    const auto hp = sw2.broken_hidden_positions();
+    CHECK(hp && hp->size() == 1 && (*hp)[0].radius >= 1.5f);
+    sw2.reset_broken();
+    CHECK(sw2.broken_prop_count() == 0);
+  }
 }
 
 void test_barn_door_swap() {

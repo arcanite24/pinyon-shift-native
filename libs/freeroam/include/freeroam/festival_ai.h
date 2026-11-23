@@ -18,6 +18,7 @@
 
 #include "traffic/config.h"
 #include "traffic/nav.h"
+#include "traffic/population.h"
 #include "traffic/roads.h"
 
 namespace freeroam {
@@ -37,12 +38,25 @@ struct FestivalAiCar {
   int dir = 1;
   double s = 0.0;
   double lateral = 2.2;
+  double target_lateral = 2.2;
   double speed = 0.0;
   double base_speed = 24.0;
   traffic::P3 position{};
+  double vx = 0.0, vy = 0.0, vz = 0.0;
   double heading = 0.0, pitch = 0.0;
+  double rpm = 2200.0;
+  bool braking = false;
+  double knockback_vx = 0.0, knockback_vz = 0.0;
   bool in_h2h = false;
   double h2h_progress = 0.0;
+};
+
+struct FestivalCollisionImpulse {
+  bool hit = false;
+  uint32_t car_id = 0;
+  std::array<double, 3> contact_point{};
+  std::array<double, 3> player_impulse{};  // N*s applied to player body
+  double impulse_magnitude = 0.0;
 };
 
 struct HeadToHeadResult {
@@ -95,13 +109,22 @@ class FestivalManager {
                   uint64_t seed = 42);
   void set_ground(GroundHeight g) { ground_ = std::move(g); }
   void set_roster(std::vector<FestivalRacerSpec> roster);
+  // Populates fallback driver names from gamedb.slt AIPlayers before/after set_roster.
+  void set_driver_names(std::vector<std::string> names);
   void set_hour(double hour) { hour_ = hour; }
   void set_wristband_level(int level) { wristband_level_ = level; }
 
-  // Advances roaming Festival AI cars and any active Head-to-Head race.
+  // Advances roaming Festival AI cars and any active Head-to-Head race with
+  // corner curvature braking, traffic/player overtaking avoidance, and velocity/RPM telemetry.
   // Returns a completed HeadToHeadResult on the exact step the race finishes.
   bool step(double dt, double time, const traffic::P3& player_pos, double player_heading, double player_speed,
-            HeadToHeadResult* finished_out = nullptr);
+            HeadToHeadResult* finished_out = nullptr, const std::vector<traffic::Car>* traffic_cars = nullptr);
+
+  // Resolves OBB/capsule car-to-car collision between the player vehicle and nearby
+  // Festival AI racers, updating AI knockback velocity and returning impulse on player.
+  FestivalCollisionImpulse resolve_player_collision(const traffic::P3& player_pos,
+                                                    const std::array<double, 3>& player_vel,
+                                                    double player_mass_kg, double dt);
 
   // Forces a roaming Festival AI car near the player on the road ahead (for demos/tests).
   uint32_t spawn_ahead(const traffic::P3& player_pos, double player_heading, double distance_m = 22.0);
@@ -130,6 +153,7 @@ class FestivalManager {
   traffic::TrafficConfig config_;
   std::mt19937_64 rng_;
   GroundHeight ground_;
+  std::vector<std::string> driver_names_;
   std::vector<FestivalRacerSpec> roster_;
   std::vector<FestivalAiCar> cars_;
   uint32_t next_id_ = 1;

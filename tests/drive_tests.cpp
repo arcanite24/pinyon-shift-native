@@ -978,6 +978,18 @@ int main() {
     CHECK(max_slip_raw > 1.0);
     CHECK(max_slip_assist <= max_slip_raw + 0.05);
   }
+  // 5) Pillar 4: ai_capacity incorporates aero downforce scaled by ai_aero_factor(v).
+  {
+    auto p_low = test_car();
+    auto p_df = p_low;
+    p_df.aero_df_front = 0.35;
+    p_df.aero_df_rear = 0.55;
+    const auto cap_low = drive::ai_capacity(p_low);
+    const auto cap_df = drive::ai_capacity(p_df);
+    // At 60 m/s (entry 24), high-downforce car has substantially higher lateral & braking capacity.
+    CHECK(cap_df.lateral[24] > cap_low.lateral[24] + 1.0f);
+    CHECK(cap_df.braking[24] > cap_low.braking[24] + 1.0f);
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

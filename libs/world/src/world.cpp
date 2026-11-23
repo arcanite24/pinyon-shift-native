@@ -862,6 +862,21 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         ++st.props_hidden;
         continue;
       }
+      if (options.hidden_positions && !options.hidden_positions->empty()) {
+        const float gx = float(t[0]), gy = float(t[1]), gz = float(-t[2]);
+        bool smashed = false;
+        for (const auto& hs : *options.hidden_positions) {
+          const float hdx = gx - hs.pos[0], hdy = gy - hs.pos[1], hdz = gz - hs.pos[2];
+          if (hdx * hdx + hdz * hdz <= hs.radius * hs.radius && std::fabs(hdy) <= hs.radius + 1.5f) {
+            smashed = true;
+            break;
+          }
+        }
+        if (smashed) {
+          ++st.props_hidden;
+          continue;
+        }
+      }
       if (!p.has_object || p.object_id >= impl_->table.objects.size()) {
         ++st.prop_unresolved;
         continue;

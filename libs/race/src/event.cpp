@@ -382,4 +382,21 @@ std::string CarNames::full_name(const std::string& media) const {
   return it != rows_.end() && it->second.year > 0 ? std::to_string(it->second.year) + " " + s : s;
 }
 
+bool load_ai_player_names(const std::filesystem::path& game_root, std::vector<std::string>& out,
+                          const CarNames* names, const std::filesystem::path& state_root,
+                          const cars::PartsDb* db_in) {
+  out.clear();
+  Db db;
+  if (!db.open(game_root, state_root, db_in, nullptr)) return false;
+  db.each("select coalesce(Name, '') from AIPlayers order by Id", {},
+          [&](sqlite3_stmt* s) {
+            std::string raw = txt(s, 0);
+            if (raw.empty()) return;
+            if (names) raw = names->text(raw);
+            if (!raw.empty() && !fh1::StringTables::is_reference(raw)) out.push_back(std::move(raw));
+          },
+          nullptr);
+  return !out.empty();
+}
+
 }  // namespace race

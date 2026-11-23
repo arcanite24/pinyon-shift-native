@@ -62,6 +62,9 @@ struct TrafficConfig {
   double look_ahead_time = 1, min_look_ahead = 5, traffic_search = 30, player_search = 60;
   double model_rotation_time = 30, overspawn_check_time = 4;
   double high_lod_distance = 30, medium_lod_distance = 120;
+  double fade_in_time = 1.0;              // AI/Spawning/FadeInTime (s)
+  double min_full_alpha_distance = 150.0; // AI/Spawning/MinFullAlphaDistance (m)
+  double max_full_alpha_distance = 320.0; // AI/Spawning/MaxFullAlphaDistance (m)
   double accel_max_input = 0.2, brake_max_input = 0.2;  // AI/Traffic/VehicleControls
   // AI/Traffic/Junctions & Avoidance
   double junction_max_collision_check_distance = 60.0;

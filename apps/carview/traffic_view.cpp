@@ -249,6 +249,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
   std::vector<Showroom::Instance> list;
   for (const auto& c : population_->cars()) {
+    if (c.alpha <= 0.02f) continue;
     const auto it = guests_.find(c.model);
     if (it == guests_.end() || !it->second.showroom) continue;
     const drive::Vehicle* body = bodies_->body(c.id);

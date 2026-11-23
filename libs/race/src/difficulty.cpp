@@ -158,7 +158,7 @@ void DriverAi::draw_mode() {
   }
   mode_ = rows[pick].mode;
   amount_ = rows[pick].amount;
-  mistake_left_ = 1.0;  // interim: the raised scalar for 1 s (measured 0.5 to 2 s)
+  mistake_left_ = 0.5 + 1.5 * uniform();  // SPEC-RACE-AI: randomized 0.5 to 2.0 s
 }
 
 void DriverAi::update(double gap, int places_behind, double dt) {

@@ -4101,6 +4101,11 @@ int run_drive(int argc, char** argv) {
           if (!roster.empty()) {
             const size_t roster_n = roster.size();
             festival_mgr = std::make_unique<freeroam::FestivalManager>(festival_nav, festival_roads, fcfg, traffic_seed + 17);
+            std::vector<std::string> ai_names;
+            if (race::load_ai_player_names(game_root, ai_names, have_car_names ? &car_names : nullptr, state_root,
+                                           parts_db.get())) {
+              festival_mgr->set_driver_names(std::move(ai_names));
+            }
             festival_mgr->set_roster(std::move(roster));
             festival_mgr->set_hour(hour);
             festival_mgr->set_wristband_level(collected_wristband);
@@ -5222,6 +5227,9 @@ int run_drive(int argc, char** argv) {
           for (const auto& sev : sm_events) {
             smashed_prop = true;
             step_object_impact_accum = std::max(step_object_impact_accum, std::max(0.25, std::fabs(vehicle.speed()) / 25.0));
+            // Hide intact static world prop immediately on smash and persist across regathers.
+            showroom.hide_world_props_near(sev.pos, sev.hide_radius);
+            if (streamer) streamer->set_hidden_positions(smashables.broken_hidden_positions());
             club_pending.smashables.push_back(
                 freeroam::club::classify_smashable_type(sev.prop_stem, sev.object_type_index));
             particle_sys.spawn_smashable_burst(sev.prop_stem, sev.pos, sev.impulse_vel);
@@ -5498,7 +5506,7 @@ int run_drive(int argc, char** argv) {
           }
           freeroam::HeadToHeadResult hres;
           if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
-                                 &hres)) {
+                                 &hres, traffic ? traffic->cars() : nullptr)) {
             club_pending.encounter_completed = true;
             club_pending.encounter_finish_place = hres.won ? 1 : 2;
             ++h2h_races;
@@ -5516,6 +5524,26 @@ int run_drive(int argc, char** argv) {
             std::printf("h2h: %s vs %s (+%lld Cr, +%d Fame)\n", hres.won ? "WON" : "LOST",
                         hres.opponent_name.c_str(), (long long)hres.payout_credits, hres.popularity_points);
             save_due = true;
+          }
+          // Car-to-car physics collision between player and nearby Festival AI / H2H cars.
+          {
+            const drive::Vec3 fv = vehicle.velocity();
+            const auto fcol = festival_mgr->resolve_player_collision(
+                {fp.x, fp.y, fp.z}, {fv.x, fv.y, fv.z}, vehicle.params().mass, drive::Vehicle::kStep);
+            if (fcol.hit && fcol.impulse_magnitude > 1.0) {
+              vehicle.apply_impulse({fcol.contact_point[0], fcol.contact_point[1], fcol.contact_point[2]},
+                                    {fcol.player_impulse[0], fcol.player_impulse[1], fcol.player_impulse[2]}, 0.25);
+              step_car_impact_accum = std::max(step_car_impact_accum, fcol.impulse_magnitude);
+              const double dv_f = fcol.impulse_magnitude / std::max(500.0, vehicle.params().mass);
+              if (dv_f > 1.0) {
+                audio::CollisionHit hit{};
+                hit.rel_speed_mps = float(dv_f);
+                hit.pos = {float(fcol.contact_point[0]), float(fcol.contact_point[1]), float(fcol.contact_point[2])};
+                hit.is_car_on_car = true;
+                audio_host.trigger_collision(hit);
+                car_damage.record_impact(0.0f, 0.5f, 1.2f, float(dv_f));
+              }
+            }
           }
         }
         club_step();  // evaluates all active 1000 Club challenges on full step signals
@@ -5742,6 +5770,7 @@ int run_drive(int argc, char** argv) {
               }
             drive::CarLampState ls;
             ls.headlamps_on = night_lamps;
+            ls.brake_lights = fc.braking ? 1.0f : 0.0f;
             inst.lamps = ls.vectors();
             inst.has_lamps = true;
             fmore.push_back(inst);
@@ -12444,6 +12473,21 @@ int run_drive(int argc, char** argv) {
                 oc.vel = {float(std::sin(tc.heading) * tc.speed), 0.0f, float(std::cos(tc.heading) * tc.speed)};
                 oc.rpm = float(1100.0 + std::fabs(tc.speed) * 90.0);
                 oc.speed_mph = float(std::fabs(tc.speed) * 2.2369363);
+                cands.push_back({d2, oc});
+              }
+            }
+            if (festival_mgr && !race) {
+              for (const auto& fc : festival_mgr->cars()) {
+                const double dx = fc.position.x - vpos.x, dy = fc.position.y - vpos.y, dz = fc.position.z - vpos.z;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 > 220.0 * 220.0) continue;
+                audio::OtherCarAudio oc{};
+                oc.active = true;
+                oc.is_traffic = false;
+                oc.pos = {float(fc.position.x), float(fc.position.y), float(fc.position.z)};
+                oc.vel = {float(fc.vx), float(fc.vy), float(fc.vz)};
+                oc.rpm = float(fc.rpm);
+                oc.speed_mph = float(std::fabs(fc.speed) * 2.2369363);
                 cands.push_back({d2, oc});
               }
             }

@@ -23,10 +23,33 @@ uint64_t mix64(uint64_t x) {
   return x;
 }
 
-constexpr const char* kFestivalDrivers[] = {
-    "Marcus Vance",  "Elena Rostova", "Devon Brooks", "Sofia Morales", "Liam Takahashi",
-    "Chloe Bennett", "Mateo Alvarez", "Hannah Cho",   "Lucas Meyer",   "Zoe Carter",
+// Fallback driver labels when gamedb.slt AIPlayers names are not loaded
+// (unit tests without game data). Runtime callers populate real AIPlayers via set_driver_names().
+constexpr const char* kFallbackFestivalDrivers[] = {
+    "Horizon Racer 1", "Horizon Racer 2", "Horizon Racer 3", "Horizon Racer 4", "Horizon Racer 5",
+    "Horizon Racer 6", "Horizon Racer 7", "Horizon Racer 8", "Horizon Racer 9", "Horizon Racer 10",
 };
+
+double wrap_angle(double a) {
+  constexpr double kPi = 3.14159265358979323846;
+  while (a > kPi) a -= 2.0 * kPi;
+  while (a < -kPi) a += 2.0 * kPi;
+  return a;
+}
+
+// Estimates realistic 6-speed gear-stepped engine RPM from vehicle speed (m/s).
+double estimate_rpm_for_speed(double speed_mps, int pi) {
+  const double v = std::fabs(speed_mps);
+  const double top = std::clamp(58.0 + double(pi) * 0.045, 58.0, 105.0);
+  const double redline = std::clamp(6800.0 + double(pi) * 2.2, 6800.0, 8800.0);
+  const double idle = 900.0;
+  if (v < 1.0) return idle;
+  // 6 evenly spaced gear bands.
+  const double u = std::clamp(v / top, 0.0, 1.0);
+  const double band = u * 6.0;
+  const double frac = band - std::floor(band);
+  return std::clamp(idle + (redline - idle) * (0.38 + 0.58 * frac), idle, redline);
+}
 
 }  // namespace
 
@@ -40,11 +63,28 @@ FestivalManager::FestivalManager(const traffic::NavMap& nav, const traffic::Road
                                  const traffic::TrafficConfig& config, uint64_t seed)
     : nav_(nav), roads_(roads), config_(config), rng_(seed) {}
 
+void FestivalManager::set_driver_names(std::vector<std::string> names) {
+  driver_names_ = std::move(names);
+  if (!driver_names_.empty()) {
+    for (size_t i = 0; i < roster_.size(); ++i) {
+      if (roster_[i].driver_name.empty() || roster_[i].driver_name.rfind("Horizon Racer ", 0) == 0) {
+        roster_[i].driver_name = driver_names_[i % driver_names_.size()];
+      }
+    }
+  }
+}
+
 void FestivalManager::set_roster(std::vector<FestivalRacerSpec> roster) {
   roster_ = std::move(roster);
   for (size_t i = 0; i < roster_.size(); ++i) {
-    if (roster_[i].driver_name.empty())
-      roster_[i].driver_name = kFestivalDrivers[i % (sizeof(kFestivalDrivers) / sizeof(kFestivalDrivers[0]))];
+    if (roster_[i].driver_name.empty()) {
+      if (!driver_names_.empty()) {
+        roster_[i].driver_name = driver_names_[i % driver_names_.size()];
+      } else {
+        roster_[i].driver_name =
+            kFallbackFestivalDrivers[i % (sizeof(kFallbackFestivalDrivers) / sizeof(kFallbackFestivalDrivers[0]))];
+      }
+    }
   }
 }
 
@@ -363,7 +403,8 @@ void FestivalManager::cancel_head_to_head() {
 }
 
 bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos, double player_heading,
-                           double player_speed, HeadToHeadResult* finished_out) {
+                           double player_speed, HeadToHeadResult* finished_out,
+                           const std::vector<traffic::Car>* traffic_cars) {
   if (dt <= 0.0) return false;
   if (!started_) {
     started_ = true;
@@ -387,26 +428,111 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
     next_spawn_ = time + 5.0;
   }
 
-  // Update all cars.
+  // Update all cars with corner curvature lookahead braking, traffic/player
+  // overtaking lane selection, knockback damping, and realistic velocity/RPM.
   prompt_id_ = 0;
   prompt_dist_ = 1e9;
   const double pfx = std::sin(player_heading), pfz = std::cos(player_heading);
 
+  auto eval_avoidance = [&](FestivalAiCar& car, double& want_spd, double default_lat) {
+    const double fx = std::sin(car.heading), fz = std::cos(car.heading);
+    const auto rt = traffic::right_of(fx, fz);
+    car.target_lateral = default_lat;
+    bool blocked_right = false, blocked_left = false;
+    auto check_obstacle = [&](const traffic::P3& op, double ospd) {
+      const double rx = op.x - car.position.x, rz = op.z - car.position.z;
+      const double ahead = rx * fx + rz * fz;
+      if (ahead < 2.0 || ahead > 42.0) return;
+      const double lat = rx * rt[0] + rz * rt[1];
+      if (std::fabs(lat) < 2.3) {
+        if (car.lateral >= 0.0) blocked_right = true;
+        else blocked_left = true;
+        if (ahead < 22.0) want_spd = std::min(want_spd, std::max(4.0, ospd + (ahead - 8.0) * 0.4));
+      } else if (lat < -0.5 && lat > -5.0 && ahead < 30.0) {
+        blocked_left = true;
+      } else if (lat > 0.5 && lat < 5.0 && ahead < 30.0) {
+        blocked_right = true;
+      }
+    };
+    if (traffic_cars) {
+      for (const auto& tc : *traffic_cars) check_obstacle(tc.position, tc.speed);
+    }
+    if (!car.in_h2h) check_obstacle(player_pos, player_speed);
+    if (blocked_right && !blocked_left) car.target_lateral = -1.8;
+    else if (blocked_left && !blocked_right) car.target_lateral = default_lat;
+    const double lat_rate = car.in_h2h ? 4.2 : 2.8;
+    car.lateral += std::clamp(car.target_lateral - car.lateral, -lat_rate * dt, lat_rate * dt);
+  };
+
   for (auto& car : cars_) {
+    const traffic::P3 prev_pos = car.position;
+    // Decay any collision knockback velocity via lateral/longitudinal tyre grip.
+    const double kb_decay = std::exp(-dt * 4.5);
+    car.knockback_vx *= kb_decay;
+    car.knockback_vz *= kb_decay;
+    if (std::hypot(car.knockback_vx, car.knockback_vz) < 0.05) car.knockback_vx = car.knockback_vz = 0.0;
+
+    const double max_lat_g = std::clamp(10.5 + double(car.spec.pi) * 0.006, 10.5, 16.0);
     if (car.in_h2h && h2h_active_ && car.id == h2h_car_id_) {
-      // Racing pace along the Head-to-Head nav route (competitive with slight elasticity).
+      // Racing pace along the Head-to-Head nav route with curvature lookahead braking.
       const double base_race_spd = std::clamp(34.0 + double(car.spec.pi) * 0.032, 32.0, 58.0);
       const double gap = car.h2h_progress - h2h_player_s_;
       double want_spd = base_race_spd;
       if (gap > 80.0) want_spd *= 0.88;
       else if (gap < -80.0) want_spd *= 1.10;
-      car.speed += std::clamp(want_spd - car.speed, -10.0 * dt, 8.0 * dt);
+
+      // Sample curvature over [15 m, 60 m] ahead along H2H route to brake into corners.
+      double h_now = car.heading, p_tmp = 0.0;
+      traffic::P3 pos_tmp{};
+      for (double look_d : {15.0, 32.0, 55.0}) {
+        const double s1 = std::min(h2h_length_, car.h2h_progress + look_d);
+        double h1 = h_now;
+        pose_on_h2h(s1, car.lateral, pos_tmp, h1, p_tmp);
+        const double dth = std::fabs(wrap_angle(h1 - h_now));
+        if (dth > 0.06 && look_d > 1.0) {
+          const double kappa = dth / look_d;
+          const double v_corner = std::sqrt(max_lat_g / std::max(kappa, 1e-4));
+          const double v_brake = std::sqrt(v_corner * v_corner + 2.0 * 10.5 * std::max(0.0, look_d - 8.0));
+          want_spd = std::min(want_spd, std::max(11.0, v_brake));
+        }
+      }
+      eval_avoidance(car, want_spd, 1.5);
+      car.braking = want_spd < car.speed - 1.5;
+      car.speed += std::clamp(want_spd - car.speed, -13.0 * dt, 9.5 * dt);
+      car.speed = std::max(0.0, car.speed);
       car.h2h_progress += car.speed * dt;
-      pose_on_h2h(car.h2h_progress, 1.5, car.position, car.heading, car.pitch);
+      pose_on_h2h(car.h2h_progress, car.lateral, car.position, car.heading, car.pitch);
+      car.position.x += car.knockback_vx * dt;
+      car.position.z += car.knockback_vz * dt;
     } else if (car.road >= 0) {
-      car.speed += std::clamp(car.base_speed - car.speed, -6.0 * dt, 5.0 * dt);
+      double want_spd = car.base_speed;
+      // Road curvature lookahead for roaming festival cars so they slow for hairpins.
+      const auto& r = roads_.roads()[size_t(car.road)];
+      std::array<double, 2> t0{};
+      roads_.point_at(car.road, car.s, nullptr, &t0);
+      const double h0 = std::atan2(t0[0] * car.dir, t0[1] * car.dir);
+      for (double look_d : {16.0, 36.0}) {
+        const double s_ahead = std::clamp(car.s + car.dir * look_d, 0.0, r.s.empty() ? 0.0 : r.s.back());
+        if (std::fabs(s_ahead - car.s) > 2.0) {
+          std::array<double, 2> t1{};
+          roads_.point_at(car.road, s_ahead, nullptr, &t1);
+          const double h1 = std::atan2(t1[0] * car.dir, t1[1] * car.dir);
+          const double dth = std::fabs(wrap_angle(h1 - h0));
+          if (dth > 0.08) {
+            const double kappa = dth / std::fabs(s_ahead - car.s);
+            const double v_corner = std::sqrt((max_lat_g * 0.85) / std::max(kappa, 1e-4));
+            want_spd = std::min(want_spd, std::max(9.0, v_corner));
+          }
+        }
+      }
+      eval_avoidance(car, want_spd, kLane);
+      car.braking = want_spd < car.speed - 1.2;
+      car.speed += std::clamp(want_spd - car.speed, -9.5 * dt, 6.0 * dt);
+      car.speed = std::max(0.0, car.speed);
       advance_roaming(car, car.speed * dt);
       pose_roaming(car);
+      car.position.x += car.knockback_vx * dt;
+      car.position.z += car.knockback_vz * dt;
       if (!h2h_active_) {
         const double dx = car.position.x - player_pos.x, dz = car.position.z - player_pos.z;
         const double d = std::hypot(dx, dz);
@@ -417,6 +543,10 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
         }
       }
     }
+    car.vx = (car.position.x - prev_pos.x) / dt;
+    car.vy = (car.position.y - prev_pos.y) / dt;
+    car.vz = (car.position.z - prev_pos.z) / dt;
+    car.rpm = estimate_rpm_for_speed(car.speed, car.spec.pi);
   }
 
   // Active Head-to-Head progress & finish check.
@@ -495,6 +625,80 @@ HeadToHeadHud FestivalManager::hud(double time) const {
     h.finish_at = finish_banner_at_;
   }
   return h;
+}
+
+FestivalCollisionImpulse FestivalManager::resolve_player_collision(const traffic::P3& player_pos,
+                                                                   const std::array<double, 3>& player_vel,
+                                                                   double player_mass_kg, double dt) {
+  FestivalCollisionImpulse out{};
+  if (dt <= 0.0 || cars_.empty()) return out;
+  const double m_player = std::max(500.0, player_mass_kg);
+  constexpr double kAiMass = 1480.0;
+  constexpr double kHalfW = 0.98;
+  constexpr double kHalfL = 2.25;
+  constexpr double kRestitution = 0.15;
+
+  for (auto& car : cars_) {
+    const double dy = std::fabs(player_pos.y - car.position.y);
+    if (dy > 2.2) continue;
+    const double dx = player_pos.x - car.position.x;
+    const double dz = player_pos.z - car.position.z;
+    const double dist = std::hypot(dx, dz);
+    if (dist > 4.8 || dist < 1e-4) continue;
+    // Project separation into the AI car's local XZ frame for tight OBB overlap.
+    const double fx = std::sin(car.heading), fz = std::cos(car.heading);
+    const double rx = fz, rz = -fx;
+    const double loc_f = dx * fx + dz * fz;
+    const double loc_r = dx * rx + dz * rz;
+    const double pen_f = (2.0 * kHalfL) - std::fabs(loc_f);
+    const double pen_r = (2.0 * kHalfW) - std::fabs(loc_r);
+    if (pen_f <= 0.0 || pen_r <= 0.0) continue;
+
+    // Pick minimum-penetration separation normal pointing from AI -> player.
+    double nx = 0.0, nz = 0.0, pen = 0.0;
+    if (pen_r < pen_f) {
+      const double sg = loc_r >= 0.0 ? 1.0 : -1.0;
+      nx = rx * sg;
+      nz = rz * sg;
+      pen = pen_r;
+    } else {
+      const double sg = loc_f >= 0.0 ? 1.0 : -1.0;
+      nx = fx * sg;
+      nz = fz * sg;
+      pen = pen_f;
+    }
+    const double rvx = player_vel[0] - car.vx;
+    const double rvz = player_vel[2] - car.vz;
+    const double vn = rvx * nx + rvz * nz;
+    const double inv_m = 1.0 / m_player + 1.0 / kAiMass;
+    // Push AI laterally/longitudinally out of overlap immediately.
+    const double push_ai = pen * 0.55;
+    car.position.x -= nx * push_ai;
+    car.position.z -= nz * push_ai;
+    car.lateral = std::clamp(car.lateral - (nx * rx + nz * rz) * push_ai, -4.5, 4.5);
+
+    double j_mag = 0.0;
+    if (vn < 0.0) {
+      j_mag = -(1.0 + kRestitution) * vn / inv_m;
+    } else {
+      // Pure positional separation impulse if already separating slowly.
+      j_mag = std::min(pen * 2.5, 4.0) / inv_m;
+    }
+    const double ai_dv_x = -(j_mag / kAiMass) * nx;
+    const double ai_dv_z = -(j_mag / kAiMass) * nz;
+    car.knockback_vx += ai_dv_x;
+    car.knockback_vz += ai_dv_z;
+    car.speed = std::max(0.0, car.speed + ai_dv_x * fx + ai_dv_z * fz);
+    if (j_mag > out.impulse_magnitude) {
+      out.hit = true;
+      out.car_id = car.id;
+      out.contact_point = {0.5 * (player_pos.x + car.position.x), 0.5 * (player_pos.y + car.position.y) + 0.5,
+                           0.5 * (player_pos.z + car.position.z)};
+      out.player_impulse = {j_mag * nx, 0.0, j_mag * nz};
+      out.impulse_magnitude = j_mag;
+    }
+  }
+  return out;
 }
 
 }  // namespace freeroam

@@ -39,12 +39,12 @@ const char* ordinal(int p) {
 // SPEC-RACE-AI, AI car upgrades: the faked PI each AI aims at, with P the
 // player's and C the car's shown points and the class lo..hi: P pulled 5
 // inside the class plus the offset r, else C + 300 when P is further above.
-// SPEC-RACE-AI's steering at speed (the slip rule); opt-in via
-// SHIFT_AI_STEER=slip while front-slip-scaled pure pursuit stays default.
+// SPEC-RACE-AI's steering at speed (the slip rule): enabled by default;
+// set SHIFT_AI_STEER=pursuit to opt out to pure pursuit.
 bool slip_rule() {
   static const bool on = [] {
     const char* e = std::getenv("SHIFT_AI_STEER");
-    return e && std::string(e) == "slip";
+    return !(e && std::string(e) == "pursuit");
   }();
   return on;
 }

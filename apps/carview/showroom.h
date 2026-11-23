@@ -452,6 +452,9 @@ class Showroom {
                      const std::vector<world::SkidVertex>& rut_tris);
   // Dynamic lit 3D smashable debris mesh (game frame, rendered via world_opaque_).
   void set_debris_mesh(const std::vector<world::DebrisVertex>& tris);
+  // Immediately hides intact static world prop draws overlapping a smashed prop's
+  // sphere (game frame) without waiting for the next world regather.
+  size_t hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m);
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no

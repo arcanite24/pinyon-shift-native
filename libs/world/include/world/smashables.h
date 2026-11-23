@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "drive/vehicle.h"
+#include "world/world.h"
 
 namespace world {
 
@@ -143,6 +144,7 @@ struct SmashEvent {
   int8_t object_type_index = -1;  // 0 Fence, 1 Flyer, 2 Mailbox, 3 RaceActivation
   int32_t surface_type_index = -1;
   int debris_spawned = 0;
+  float hide_radius = 2.0f;       // radius (m) to mask out intact static world prop
 };
 
 // Render-ready vertex for dynamic flying smashable debris (game frame).
@@ -198,6 +200,10 @@ class SmashableWorld {
   const std::vector<BarnDoorCollider>& barn_doors() const { return barn_doors_; }
   size_t placed_prop_count() const { return props_.size(); }
   size_t active_dynamic_count() const { return dynamic_bodies_.size(); }
+  size_t broken_prop_count() const { return broken_positions_ ? broken_positions_->size() : 0; }
+  std::shared_ptr<const std::vector<GatherOptions::HiddenSphere>> broken_hidden_positions() const {
+    return broken_positions_;
+  }
   uint64_t total_evictions() const { return evictions_; }
 
   // Evaluates the BreakSpeedMph rule (exposed for unit tests).
@@ -235,6 +241,7 @@ class SmashableWorld {
   std::unordered_map<int64_t, std::vector<uint32_t>> grid_;  // 25 m XZ spatial grid
   std::vector<DynamicBody> dynamic_bodies_;                  // capped at kMaxDynamicBodies (384)
   std::vector<BarnDoorCollider> barn_doors_;
+  std::shared_ptr<std::vector<GatherOptions::HiddenSphere>> broken_positions_;
   uint64_t evictions_ = 0;
   uint32_t rng_ = 0x51C4D3B7u;
 

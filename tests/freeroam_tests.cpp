@@ -259,11 +259,18 @@ int main() {
     roads.build(nm);
     traffic::TrafficConfig cfg;
     FestivalManager fm(nm, roads, cfg, 7);
-    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "Marcus Vance", "A", 540}});
+    fm.set_driver_names({"Darius Flynt", "Ramona Cravache"});
+    fm.set_roster({{1219, "NIS_SkylineGTRVSpecII_02", "", "A", 540}});
     const uint32_t fid = fm.spawn_ahead({0, 0, 100}, 0.0, 20.0);
     CHECK(fid > 0);
     fm.step(0.05, 1.0, {0, 0, 100}, 0.0, 20.0);
-    CHECK(fm.hud(1.0).prompt_visible && fm.hud(1.0).prompt_wager == h2h_wager_credits(540, 0));
+    CHECK(fm.hud(1.0).prompt_visible && fm.hud(1.0).prompt_driver == "Darius Flynt" &&
+          fm.hud(1.0).prompt_wager == h2h_wager_credits(540, 0));
+    // Verify Festival AI velocity/RPM telemetry & player collision impulse.
+    CHECK(!fm.cars().empty() && fm.cars()[0].rpm > 900.0);
+    const auto fpos = fm.cars()[0].position;
+    const auto col = fm.resolve_player_collision({fpos.x + 0.8, fpos.y, fpos.z - 0.5}, {-12.0, 0.0, 20.0}, 1500.0, 1.0 / 120.0);
+    CHECK(col.hit && col.impulse_magnitude > 100.0);
     CHECK(fm.start_head_to_head({0, 0, 100}, 0.0, 1.0, fid));
     CHECK(fm.h2h_active() && fm.h2h_route().size() >= 10);
     const auto fin = fm.h2h_finish_pos();

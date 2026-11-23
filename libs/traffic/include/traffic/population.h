@@ -48,6 +48,7 @@ struct Car {
   bool off_line = false;    // knocked off its lane (stays in physics until back on it)
   bool body = false;        // the host has a body for it (bodies.h): it is not placed on the lane
   double age = 0;           // s since spawning
+  float alpha = 1.0f;       // spawn/despawn fade-in/out opacity [0, 1] (TRAFFIC.md:269)
   // Multi-lane & collision-avoidance state
   double blocked_time = 0;
   double since_lane_change = 10.0;

@@ -726,7 +726,14 @@ void Population::step(double dt, const P3& player, const P3& player_velocity) {
       car.stopped_dead_timer = 0;
       car.hazard_on = false;
     }
-    car.physics = car.off_line || hdist(car.position, player) < config_.high_lod_distance;
+    const double pdist = hdist(car.position, player);
+    const double t_fade = config_.fade_in_time > 1e-3 ? std::clamp(car.age / config_.fade_in_time, 0.0, 1.0) : 1.0;
+    const double d_out = std::max(config_.max_full_alpha_distance + 10.0, despawn_distance(car));
+    const double d_fade = pdist <= config_.max_full_alpha_distance
+                              ? 1.0
+                              : std::clamp((d_out - pdist) / (d_out - config_.max_full_alpha_distance), 0.0, 1.0);
+    car.alpha = float(t_fade * d_fade);
+    car.physics = car.off_line || pdist < config_.high_lod_distance;
     if (car.road >= 0) drive(car, dt, player, player_velocity);
   }
 }

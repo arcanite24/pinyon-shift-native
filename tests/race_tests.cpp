@@ -248,19 +248,29 @@ void test_difficulty() {
   CHECK(off.state() == race::DriverAi::State::kNormal && near(off.torque(), 1));
 }
 
-// SPEC-RACE-AI mode table: over-braking holds 1 + Amount for 1 s, then the
-// rolled value; under-cornering is the minimum less Amount (floor 0.25);
-// the torque cut puts both at the row's minima.
+// SPEC-RACE-AI mode table: over-braking holds 1 + Amount for a randomised
+// 0.5-2.0 s window, then the rolled value; under-cornering is the minimum
+// less Amount (floor 0.25); the torque cut puts both at the row's minima.
 void test_rubberband_modes() {
   auto e = made_up_rows();
   race::RubberbandRow r = e.rubberbands[0];
   r.modes = {{3, 1.0, 6.5}};
   race::DriverAi ai;
   ai.init(e.skills[0], &r, 11);
-  ai.update(20, -1, 0.5);  // 20 m ahead: rubber band, mode 3 drawn
+  ai.update(20, -1, 0.4);  // 20 m ahead: rubber band, mode 3 drawn (< 0.5 s hold)
   CHECK(ai.mode() == 3 && near(ai.braking(), 7.5));
-  ai.update(21, -1, 0.6);  // 1.1 s into the mistake
+  ai.update(21, -1, 1.7);  // 2.1 s into the mistake (> 2.0 s max hold)
   CHECK(ai.mode() == 3 && ai.braking() >= 0.5 && ai.braking() <= 0.6);
+  // Across seeds, mistake durations vary inside [0.5, 2.0] s (not fixed at 1 s).
+  int short_hold = 0, long_hold = 0;
+  for (uint64_t seed = 1; seed <= 40; ++seed) {
+    race::DriverAi m;
+    m.init(e.skills[0], &r, seed);
+    m.update(20, -1, 1.25);
+    if (m.braking() < 1.0) ++short_hold;
+    else ++long_hold;
+  }
+  CHECK(short_hold > 0 && long_hold > 0);
   ai.update(150, -1, 0.1);  // past the torque cut
   CHECK(ai.mode() == 8 && near(ai.braking(), 0.5) && near(ai.cornering(), 0.4));
   r.modes = {{2, 1.0, 0.1}};

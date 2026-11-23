@@ -8538,6 +8538,40 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
 
 // The table the culling pass reads: one row per resident opaque or cut-out draw,
 // plus template rows for hardware-instanced tree sprites.
+size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
+  if (world_draws_.empty() || radius_m <= 0.0f) return 0;
+  // World draw AABBs live in the scenery-relative frame (shifted by world_origin_).
+  const float sx = float(double(game_pos[0]) - world_origin_[0]);
+  const float sy = game_pos[1];
+  const float sz = float(double(game_pos[2]) - world_origin_[1]);
+  const float r = std::max(0.5f, radius_m);
+  size_t hidden = 0;
+  for (auto& d : world_draws_) {
+    if (d.index_count == 0 || !d.cull) continue;
+    // Skip sky dome, terrain, roads, and large buildings (> 12 m extent).
+    const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
+    if ((flags & 2u) != 0) continue;
+    const float ex = d.box_max[0] - d.box_min[0];
+    const float ey = d.box_max[1] - d.box_min[1];
+    const float ez = d.box_max[2] - d.box_min[2];
+    if (ex > 12.0f || ey > 12.0f || ez > 12.0f) continue;
+    // Closest point on draw AABB to smashed prop sphere.
+    const float cx = std::clamp(sx, d.box_min[0], d.box_max[0]);
+    const float cy = std::clamp(sy, d.box_min[1], d.box_max[1]);
+    const float cz = std::clamp(sz, d.box_min[2], d.box_max[2]);
+    const float dx = sx - cx, dy = sy - cy, dz = sz - cz;
+    if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
+      d.index_count = 0;
+      ++hidden;
+    }
+  }
+  if (hidden > 0 && arena_on()) {
+    std::string table_err;
+    (void)build_gpu_table(table_err);
+  }
+  return hidden;
+}
+
 bool Showroom::build_gpu_table(std::string& error) {
   for (auto& d : world_draws_) d.gpu = false;
   gpu_table_white_ = 0;

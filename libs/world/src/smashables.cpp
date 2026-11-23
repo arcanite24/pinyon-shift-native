@@ -874,8 +874,15 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
           continue;
         }
 
-        // Break prop -> spawn child debris pieces into the 384-slot dynamic pool!
+        // Break prop -> record broken position for static prop hiding and spawn fractured child debris.
         pp.broken = true;
+        const float hide_r = std::clamp(std::max(pp.radius, def.bounding_radius) + 0.65f, 1.5f, 4.5f);
+        auto next_hidden = broken_positions_
+                               ? std::make_shared<std::vector<GatherOptions::HiddenSphere>>(*broken_positions_)
+                               : std::make_shared<std::vector<GatherOptions::HiddenSphere>>();
+        next_hidden->push_back({pp.place.pos, hide_r});
+        broken_positions_ = std::move(next_hidden);
+
         const float prop_mass_kg = def.mass_kg();
         const float car_mass = float(std::max(500.0, vehicle.params().mass));
         // Apply clamped momentum exchange (minimal speed loss on lightweight <=30 kg props per spec).
@@ -887,6 +894,15 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
         }
 
         const auto base_col = colour_for_prop(def.surface_type_index, def.object_type_index, pp.place.stem);
+        auto vary_col = [&](std::array<uint8_t, 4> c) {
+          const float shade = 0.82f + 0.30f * rand01();
+          return std::array<uint8_t, 4>{
+              uint8_t(std::clamp(int(float(c[0]) * shade), 0, 255)),
+              uint8_t(std::clamp(int(float(c[1]) * shade), 0, 255)),
+              uint8_t(std::clamp(int(float(c[2]) * shade), 0, 255)),
+              c[3],
+          };
+        };
         int spawned = 0;
         const float impulse_scale = std::clamp(car_speed * 1.15f, 5.5f, 30.0f);
         const float dir_x = (car_speed > 0.5f) ? float(cvel.x) / car_speed : float(cfwd.x);
@@ -907,19 +923,20 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
                 dir_z * impulse_scale * (0.65f + 0.65f * rand01()) + rand_sym() * 3.8f,
             };
             b.omega = {rand_sym() * 12.0f, rand_sym() * 12.0f, rand_sym() * 12.0f};
+            // Preserve authentic fractured plank/panel proportions from child_render_models / child AABBs.
             b.half_extents = {
-                std::clamp(ch.half_extents[0], 0.08f, 0.65f),
-                std::clamp(ch.half_extents[1], 0.06f, 0.65f),
-                std::clamp(ch.half_extents[2], 0.04f, 0.35f),
+                std::clamp(ch.half_extents[0], 0.05f, 0.72f),
+                std::clamp(ch.half_extents[1], 0.04f, 0.72f),
+                std::clamp(ch.half_extents[2], 0.02f, 0.22f),
             };
             b.mass_kg = ch.mass_kg();
-            b.colour = base_col;
+            b.colour = vary_col(base_col);
             spawn_dynamic_body(b);
             ++spawned;
           }
         } else {
-          // Single-piece breakable prop (e.g. cone, post, bin): spawn 3-4 visible flying chunks.
-          const int chunks = (def.object_type_index == 0) ? 4 : 2;
+          // Single-piece breakable prop (e.g. fence plank, sign post, mailbox): spawn proportioned shards.
+          const int chunks = (def.object_type_index == 0) ? 4 : 3;
           for (int ci = 0; ci < chunks; ++ci) {
             DynamicBody b;
             b.pos = {pp.place.pos[0] + rand_sym() * 0.25f, pp.place.pos[1] + 0.45f + float(ci) * 0.2f,
@@ -930,13 +947,21 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
                 dir_z * impulse_scale * (0.7f + 0.5f * rand01()) + rand_sym() * 3.5f,
             };
             b.omega = {rand_sym() * 11.0f, rand_sym() * 11.0f, rand_sym() * 11.0f};
-            b.half_extents = {
-                std::clamp(def.half_extents[0] * 0.5f, 0.12f, 0.55f),
-                std::clamp(def.half_extents[1] * 0.5f, 0.08f, 0.55f),
-                std::clamp(def.half_extents[2] * 0.5f, 0.06f, 0.30f),
-            };
+            if (def.object_type_index == 0) {
+              // Wooden fence slats/rails: elongated thin planks rather than cubes.
+              b.half_extents = {0.42f + 0.18f * rand01(), 0.07f + 0.03f * rand01(), 0.025f};
+            } else if (def.object_type_index == 1) {
+              // Road sign / flyer shards: flat thin panel fragments.
+              b.half_extents = {0.26f + 0.10f * rand01(), 0.22f + 0.08f * rand01(), 0.018f};
+            } else {
+              b.half_extents = {
+                  std::clamp(def.half_extents[0] * 0.45f, 0.09f, 0.48f),
+                  std::clamp(def.half_extents[1] * 0.40f, 0.06f, 0.48f),
+                  std::clamp(def.half_extents[2] * 0.30f, 0.03f, 0.18f),
+              };
+            }
             b.mass_kg = prop_mass_kg / float(chunks);
-            b.colour = base_col;
+            b.colour = vary_col(base_col);
             spawn_dynamic_body(b);
             ++spawned;
           }
@@ -949,6 +974,7 @@ void SmashableWorld::step(drive::Vehicle& vehicle, const drive::Ground& ground, 
         ev.object_type_index = def.object_type_index;
         ev.surface_type_index = def.surface_type_index;
         ev.debris_spawned = spawned;
+        ev.hide_radius = hide_r;
         events.push_back(std::move(ev));
       }
     }
@@ -1000,6 +1026,7 @@ void SmashableWorld::clear_debris() { dynamic_bodies_.clear(); }
 
 void SmashableWorld::reset_broken() {
   dynamic_bodies_.clear();
+  broken_positions_.reset();
   for (auto& pp : props_) pp.broken = false;
 }
 

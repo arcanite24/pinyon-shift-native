@@ -176,4 +176,10 @@ class CarNames {
   std::shared_ptr<const fh1::StringTables> strings_;
 };
 
+// Loads authentic FH1 driver names from gamedb.slt AIPlayers (resolved via
+// CarNames when string-table references are present).
+bool load_ai_player_names(const std::filesystem::path& game_root, std::vector<std::string>& out,
+                          const CarNames* names = nullptr, const std::filesystem::path& state_root = {},
+                          const cars::PartsDb* db = nullptr);
+
 }  // namespace race

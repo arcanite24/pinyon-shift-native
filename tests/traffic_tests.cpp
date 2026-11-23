@@ -345,6 +345,33 @@ void test_traffic_behaviors() {
     pop.step(1.0 / 60.0, {-18, 0, 100}, {12.0, 0, 0});
     CHECK(!pop.cars().empty() && pop.cars()[0].target < 12.0);
   }
+  // 5. Traffic fade-in / distance alpha ramp.
+  {
+    const traffic::NavMap map = straight_road();
+    traffic::Roads roads;
+    roads.build(map);
+    traffic::TrafficConfig c;
+    c.initial_cars = 0;
+    c.fade_in_time = 2.0;
+    c.max_full_alpha_distance = 150.0;
+    c.spawn_out = 250.0;
+    traffic::DensityEntry e;
+    e.id = 5, e.speed_mph = 30;
+    c.traffic[5] = e;
+    c.models = {{282, 0, false, false}};
+    traffic::Population pop(roads, c, 13);
+    traffic::Car car;
+    car.model = 282;
+    car.base_speed = car.speed = car.target = 10.0;
+    pop.add(car, 0, 100, 1);
+    pop.step(0.5, {0, 0, 50}, {0, 0, 10});
+    CHECK(!pop.cars().empty() && pop.cars()[0].alpha > 0.1f && pop.cars()[0].alpha < 0.6f);
+    pop.step(2.0, {0, 0, 70}, {0, 0, 10});
+    CHECK(!pop.cars().empty() && pop.cars()[0].alpha > 0.95f);
+    // Near spawn_out distance (> max_full_alpha_distance), alpha fades down.
+    pop.step(0.1, {0, 0, -100}, {0, 0, 0});
+    CHECK(!pop.cars().empty() && pop.cars()[0].alpha < 0.8f);
+  }
 }
 
 }  // namespace

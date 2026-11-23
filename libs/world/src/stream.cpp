@@ -230,6 +230,10 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
   if (job_.valid()) return true;
   const bool forced = force_ && gathers_ > 0;
   if (force_) options_.hidden = pending_hidden_, force_ = false;
+  if (has_pending_hidden_positions_) {
+    options_.hidden_positions = pending_hidden_positions_;
+    has_pending_hidden_positions_ = false;
+  }
   if (!forced && gathers_ > 0 && std::hypot(x - cx_, z - cz_) <= regather_) return true;
   if (async_ && gathers_ > 0) {
     job_ = std::async(std::launch::async, [this, x, z] { return gather_now(x, z); });

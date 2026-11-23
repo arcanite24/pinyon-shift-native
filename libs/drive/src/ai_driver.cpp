@@ -123,12 +123,18 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
   const double brk_cal = 1.015 + (cal.braking - 1.015) * mass_blend;
   for (int n = 0; n < AiCapacity::kEntries; ++n) {
     const double v = 2.5 * n;
+    // SPEC-RACE-AI: include aerodynamic downforce scaled by ai_aero_factor(v)
+    // so high-downforce cars carry authentic speed through fast sweepers.
+    const double aero_k = ai_aero_factor(v);
+    const double df_f = std::max(0.0, (p.aero_df_front + p.aero_part_df_front) * v * v * aero_k);
+    const double df_r = std::max(0.0, (p.aero_df_rear + p.aero_part_df_rear) * v * v * aero_k);
+    const double axle_v[2] = {axle_w[0] + df_f, axle_w[1] + df_r};
     // Braking: load moves forwards by the deceleration x the height over
     // the wheelbase.
     double a = 0;
     for (int pass = 0; pass < 6; ++pass) {
-      const double t = std::min(m * a * h / wb, axle_w[1]);  // at most the whole rear on the front
-      a = (axle(0, TyrePeak::kBraking, axle_w[0] + t, v) + axle(1, TyrePeak::kBraking, axle_w[1] - t, v)) / m;
+      const double t = std::min(m * a * h / wb, axle_v[1]);  // at most the whole rear on the front
+      a = (axle(0, TyrePeak::kBraking, axle_v[0] + t, v) + axle(1, TyrePeak::kBraking, axle_v[1] - t, v)) / m;
     }
     c.braking[size_t(n)] = float(brk_cal * (a + p.drag_quadratic * v * v / m));
     // Lateral: each axle's force moves load inner to outer by the force x
@@ -139,9 +145,9 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
       for (int ax = 0; ax < 2; ++ax) {
         // At most the whole axle on the outer wheel (the inner lifts): past
         // that the transfer would make load from nothing.
-        const double dn = std::min(force[ax] * h / track, 0.5 * axle_w[ax]);
+        const double dn = std::min(force[ax] * h / track, 0.5 * axle_v[ax]);
         double f = 0;
-        for (double side : {0.5 * axle_w[ax] + dn, 0.5 * axle_w[ax] - dn}) {
+        for (double side : {0.5 * axle_v[ax] + dn, 0.5 * axle_v[ax] - dn}) {
           side = std::max(0.0, side);
           const double kgf = side / kG;
           const double alpha = std::clamp(p.lateral.peak_slip(kgf, p.sidewall_stretch[size_t(ax)]),
@@ -157,11 +163,11 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     if (n == 8 && std::getenv("SHIFT_CAPACITY_DEBUG")) {
       // The lateral terms at 20 m/s (SHIFT_CAPACITY_DEBUG=1).
       for (int ax = 0; ax < 2; ++ax) {
-        const double kgf = 0.5 * axle_w[ax] / kG;
+        const double kgf = 0.5 * axle_v[ax] / kG;
         std::fprintf(stderr,
                      "capacity: axle %d static %.0f kgf mu %.3f width %.4f lat_scale %.3f compound %.3f misc %.3f "
                      "curve scales %.3f %.3f blend %.3f force %.0f N\n",
-                     ax, kgf, tyre_peak_mu(p, ax, TyrePeak::kLateral, 0.5 * axle_w[ax], v), p.width_scale[size_t(ax)],
+                     ax, kgf, tyre_peak_mu(p, ax, TyrePeak::kLateral, 0.5 * axle_v[ax], v), p.width_scale[size_t(ax)],
                      p.lat_scale[size_t(ax)], p.lat_compound_scale, p.long_misc_scale, p.lat_curve_scale[0],
                      p.lat_curve_scale[1], p.lateral.blend(kgf), force[ax]);
       }
@@ -171,10 +177,10 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     // Forward: the driven axles, load moving rearwards (tyre-limited only).
     a = 0;
     for (int pass = 0; pass < 6; ++pass) {
-      const double t = std::min(m * a * h / wb, axle_w[0]);  // at most the whole front on the rear
+      const double t = std::min(m * a * h / wb, axle_v[0]);  // at most the whole front on the rear
       double f = 0;
-      if (driven[0]) f += axle(0, TyrePeak::kDriving, axle_w[0] - t, v);
-      if (driven[1]) f += axle(1, TyrePeak::kDriving, axle_w[1] + t, v);
+      if (driven[0]) f += axle(0, TyrePeak::kDriving, axle_v[0] - t, v);
+      if (driven[1]) f += axle(1, TyrePeak::kDriving, axle_v[1] + t, v);
       a = f / m;
     }
     c.forward[size_t(n)] = float(a);
@@ -477,9 +483,18 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     // responsive bounded look-ahead (so tight hairpins aren't cut across) and
     // generous steering authority so light/fast cars track curves & recover.
     const float speed = std::fabs(c.speed);
-    const double look = progress_[i] + (o_.slip_rule
-                                            ? std::clamp<double>(0.90 * o_.slip_lookahead_s * speed, 3.0, 26.0)
-                                            : std::clamp<double>(o_.lookahead_s * speed, double(o_.min_lookahead), 24.0));
+    double look_dist = 0.0;
+    if (o_.slip_rule) {
+      // SPEC-RACE-AI: T = 1.0 s unbounded speed lookahead + 4x stretch when
+      // drifting (dot(fwd, vel_dir) < 0.98).
+      const float v_mag = std::hypot(c.vel_x, c.vel_z);
+      const float align = v_mag > 2.0f ? (c.vel_x * c.fwd_x + c.vel_z * c.fwd_z) / v_mag : 1.0f;
+      const double drift_mult = (v_mag > 5.0f && align < 0.98f) ? 4.0 : 1.0;
+      look_dist = std::max<double>(3.0, o_.slip_lookahead_s * speed * drift_mult);
+    } else {
+      look_dist = std::clamp<double>(o_.lookahead_s * speed, double(o_.min_lookahead), 24.0);
+    }
+    const double look = progress_[i] + look_dist;
     const size_t ts = L.segment(look, s);
     const float tf = std::clamp(float((look - L.dist[ts]) / std::max(1e-6f, L.dist[ts + 1] - L.dist[ts])), 0.0f, 1.0f);
     const float tex = L.x[ts + 1] - L.x[ts], tez = L.z[ts + 1] - L.z[ts];

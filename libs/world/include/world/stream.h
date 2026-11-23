@@ -53,6 +53,11 @@ class Streamer {
     pending_hidden_ = std::move(hidden);
     force_ = true;
   }
+  // Broken smashable prop positions (game frame) masked out on subsequent gathers.
+  void set_hidden_positions(std::shared_ptr<const std::vector<GatherOptions::HiddenSphere>> hidden_pos) {
+    pending_hidden_positions_ = std::move(hidden_pos);
+    has_pending_hidden_positions_ = true;
+  }
   void set_prepare(Prepare prepare) { prepare_ = std::move(prepare); }
   // The Prepare result of the mesh in use (moved out by the caller).
   std::any& prepared() { return prepared_; }
@@ -94,6 +99,8 @@ class Streamer {
   World& world_;
   GatherOptions options_;
   std::shared_ptr<const std::set<std::string>> pending_hidden_;
+  std::shared_ptr<const std::vector<GatherOptions::HiddenSphere>> pending_hidden_positions_;
+  bool has_pending_hidden_positions_ = false;
   bool force_ = false;
   double regather_;
   Collision* collision_;
