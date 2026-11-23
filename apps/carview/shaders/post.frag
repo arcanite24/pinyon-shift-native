@@ -137,12 +137,14 @@ vec3 gtao_multi_bounce(float visibility, vec3 albedo_approx) {
   return max(vec3(v), ((v * a + b) * v + c) * v);
 }
 
+// Must stay bit-identical to eval_auto_exposure() in bloom_down.frag so bloom bright-pass
+// and final filmic tonemapping share exact exposure math (including negative EVs).
 float eval_auto_exposure() {
   uint flags = uint(p.bloom_p.z + 0.5);
   if ((flags & 4u) == 0u) return p.def.w;
   // Adapted luminance mapped into TrackSettings.xml key domain (0..65) so sunlit Colorado
-  // asphalt and blue sky preserve highlight headroom without crushing shadowed hillsides.
-  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 80.0;
+  // asphalt and cyan-blue sky preserve highlight headroom without crushing shadowed hillsides.
+  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 110.0;
   float ev_curve = p.exp_ev.x;
   if (L <= p.exp_keys.x) {
     ev_curve = p.exp_ev.x;
@@ -158,8 +160,10 @@ float eval_auto_exposure() {
   } else {
     ev_curve = p.exp_ev.w;
   }
-  // Exact SKY_AND_TOD §5.2 EV formula: exp2(clamp(ev_curve + filmic_exposure, -2.0, 6.0)).
-  float ev_total = clamp(ev_curve + p.def.w, -2.0, 6.0);
+  // Exact SKY_AND_TOD §5.2 EV formula with daylight-to-night HDR calibration offset
+  // matching FH1's Colorado sky & asphalt luminance without crushing night headlights.
+  float calib_ev = mix(-0.42, -0.92, smoothstep(1.5, 14.0, L));
+  float ev_total = clamp(ev_curve + p.def.w + calib_ev, -2.0, 6.0);
   return exp2(ev_total);
 }
 
@@ -306,7 +310,7 @@ void main() {
     }
   }
 
-  float pix_dist = ((oflags & 3u) != 0u || opt.phase_b.y > 0.5) ? linear_depth_m(v_uv, rev_z) : 100.0;
+  float pix_dist = ((oflags & 11u) != 0u || opt.phase_b.y > 0.5) ? linear_depth_m(v_uv, rev_z) : 100.0;
 
   // Depth of Field (Poisson bokeh gather driven by TrackSettings focal parameters).
   if ((oflags & 2u) != 0u && opt.dof.z > 0.005) {
@@ -471,39 +475,51 @@ void main() {
     c_lin += shaft;
   }
 
-  // Lens flare (halo + anamorphic streak + chromatic ghosts) & procedural lens dirt.
+  // Subtle physically positioned solar corona, horizontal anamorphic streak & hollow chromatic
+  // iris ghosts — only when the sun disc is visibly unoccluded in the sky (never muddy filled blobs over the car).
   if ((oflags & 8u) != 0u && opt.sun.z > 0.01 && opt.sun_color.w > 0.005) {
     vec2 sun_uv = opt.sun.xy;
-    float unocc = 0.0;
-    vec2 o = opt.texel_size.xy * 6.0;
-    unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv, vec2(0.002), vec2(0.998))).r, rev_z) ? 0.36 : 0.0;
-    unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv + vec2(o.x, 0.0), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.16 : 0.0;
-    unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv - vec2(o.x, 0.0), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.16 : 0.0;
-    unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv + vec2(0.0, o.y), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.16 : 0.0;
-    unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv - vec2(0.0, o.y), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.16 : 0.0;
+    if (sun_uv.x > -0.15 && sun_uv.x < 1.15 && sun_uv.y > -0.15 && sun_uv.y < 1.15) {
+      float unocc = 0.0;
+      vec2 o = opt.texel_size.xy * 5.0;
+      unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv, vec2(0.002), vec2(0.998))).r, rev_z) ? 0.40 : 0.0;
+      unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv + vec2(o.x, 0.0), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.15 : 0.0;
+      unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv - vec2(o.x, 0.0), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.15 : 0.0;
+      unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv + vec2(0.0, o.y), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.15 : 0.0;
+      unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv - vec2(0.0, o.y), vec2(0.002), vec2(0.998))).r, rev_z) ? 0.15 : 0.0;
 
-    float flare_vis = unocc * opt.sun.z * opt.sun_color.w;
-    if (flare_vis > 0.005) {
-      vec2 asp = vec2(1.777, 1.0);
-      vec2 d_sun = (v_uv - sun_uv) * asp;
-      float halo = exp(-length(d_sun) * 5.2) * 0.42;
-      float streak = exp(-abs(d_sun.y) * 52.0) * exp(-abs(d_sun.x) * 2.4) * 0.38;
-      vec3 flare = opt.sun_color.rgb * (halo + streak);
+      // Require clear center/multi-tap sky visibility so tree canopies don't flicker ghosts.
+      float flare_vis = smoothstep(0.35, 0.90, unocc) * opt.sun.z * opt.sun_color.w;
+      if (flare_vis > 0.005) {
+        vec2 asp = vec2(1.777, 1.0);
+        vec2 d_sun = (v_uv - sun_uv) * asp;
+        float r_sun = length(d_sun);
+        float halo = exp(-r_sun * 7.5) * 0.24;
+        float streak = exp(-abs(d_sun.y) * 76.0) * exp(-abs(d_sun.x) * 3.0) * 0.24;
+        vec3 flare = opt.sun_color.rgb * (halo + streak);
 
-      vec2 axis = vec2(0.5) - sun_uv;
-      const float g_pos[3] = float[](0.55, 1.15, 1.72);
-      const float g_rad[3] = float[](0.075, 0.12, 0.055);
-      const vec3 g_col[3] = vec3[3](vec3(1.0, 0.72, 0.45), vec3(0.55, 0.85, 1.0), vec3(1.0, 0.58, 0.82));
-      for (int i = 0; i < 3; ++i) {
-        vec2 gc = vec2(0.5) + axis * g_pos[i];
-        float gd = length((v_uv - gc) * asp);
-        float ring = smoothstep(g_rad[i], g_rad[i] * 0.25, gd) * 0.16;
-        flare += g_col[i] * ring;
+        // Delicate hollow chromatic iris rings attenuated over the foreground player car hull.
+        float fg_atten = smoothstep(2.5, 9.5, pix_dist);
+        if (fg_atten > 0.01) {
+          vec2 axis = vec2(0.5) - sun_uv;
+          const float g_pos[3] = float[](0.45, 0.92, 1.48);
+          const float g_rad[3] = float[](0.032, 0.048, 0.026);
+          const vec3 g_col[3] = vec3[3](vec3(1.0, 0.78, 0.52), vec3(0.62, 0.88, 1.0), vec3(1.0, 0.66, 0.82));
+          for (int i = 0; i < 3; ++i) {
+            vec2 gc = vec2(0.5) + axis * g_pos[i];
+            float gd = length((v_uv - gc) * asp);
+            float w_r = g_rad[i] * 0.20;
+            float ring_r = exp(-pow((gd - g_rad[i] * 0.96) / w_r, 2.0));
+            float ring_g = exp(-pow((gd - g_rad[i]) / w_r, 2.0));
+            float ring_b = exp(-pow((gd - g_rad[i] * 1.04) / w_r, 2.0));
+            flare += g_col[i] * vec3(ring_r, ring_g, ring_b) * (0.045 * fg_atten);
+          }
+
+          float dirt = procedural_lens_dirt(v_uv) * exp(-r_sun * 2.4) * 0.045 * fg_atten;
+          flare += opt.sun_color.rgb * dirt;
+        }
+        c_lin += flare * flare_vis;
       }
-
-      float dirt = procedural_lens_dirt(v_uv) * exp(-length(d_sun) * 1.65) * 0.18;
-      flare += opt.sun_color.rgb * dirt;
-      c_lin += flare * flare_vis;
     }
   }
 

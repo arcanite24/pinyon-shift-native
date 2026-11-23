@@ -35,15 +35,23 @@ std::string lower(std::string s) {
 bool has(const std::string& s, const char* part) { return s.find(part) != std::string::npos; }
 
 // "name_LOD01_x" -> ("name_LOD**_x", 1); no LOD number -> (name, -1).
+// Match the last "lodNN" (not preceded by "uber", e.g. "UberLOD23_LOD00" -> lod 0, not 23!).
 std::string lod_family(const std::string& name, int& lod) {
   std::string n = lower(name);
+  size_t best_at = std::string::npos;
+  int best_lod = -1;
   for (size_t at = n.find("lod"); at != std::string::npos; at = n.find("lod", at + 1)) {
+    if (at >= 4 && n.compare(at - 4, 4, "uber") == 0) continue;
     if (at + 4 < n.size() && std::isdigit(static_cast<unsigned char>(n[at + 3])) &&
         std::isdigit(static_cast<unsigned char>(n[at + 4]))) {
-      lod = (n[at + 3] - '0') * 10 + (n[at + 4] - '0');
-      n[at + 3] = n[at + 4] = '*';
-      return n;
+      best_lod = (n[at + 3] - '0') * 10 + (n[at + 4] - '0');
+      best_at = at;
     }
+  }
+  if (best_at != std::string::npos) {
+    lod = best_lod;
+    n[best_at + 3] = n[best_at + 4] = '*';
+    return n;
   }
   lod = -1;
   return n;
@@ -71,7 +79,9 @@ const char* surface_name(Surface s) {
 
 bool skipped_object(const std::string& object) {
   const std::string o = lower(object);
-  return has(o, "terr_cube") || has(o, "uberlod") || has(o, "middist") || has(o, "occluder");
+  return has(o, "terr_cube") || has(o, "uberlod") || has(o, "middist") || has(o, "occluder") ||
+         has(o, "underground") || has(o, "_cage") || has(o, "shadowmountain") || has(o, "shadowproxy") ||
+         has(o, "shadowcaster");
 }
 
 // The far ring's level of an object: 1 MIDDIST, 2 UberLOD, 0 neither.
@@ -79,12 +89,17 @@ bool skipped_object(const std::string& object) {
 // the terrain's footprint, by their name the cube maps' stand-ins).
 uint8_t far_level(const std::string& object) {
   const std::string o = lower(object);
-  if (has(o, "terr_cube") || has(o, "occluder") || has(o, "cage")) return 0;  // CAGE: walls round a patch
+  if (has(o, "terr_cube") || has(o, "occluder") || has(o, "cage") || has(o, "underground") ||
+      has(o, "shadowmountain") || has(o, "shadowproxy") || has(o, "shadowcaster"))
+    return 0;
   if (has(o, "uberlod")) return 2;
   return has(o, "middist") ? 1 : 0;
 }
 
-bool skipped_material(const std::string& material) { return lower(material) == "occluder"; }
+bool skipped_material(const std::string& material) {
+  const std::string m = lower(material);
+  return m == "occluder" || m == "underground";
+}
 
 bool ground_object(const std::string& object) {
   const std::string o = lower(object);
@@ -451,6 +466,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               return record < impl_->table.textures.size() ? record : kNoTexture;
             };
             mm.albedo = slot_record(0);
+            if (mm.effect == "UNDERGROUND") continue;
             // WORLD-MATERIALS, Placeholder models: slot 0 on the art tools'
             // missing-material marker (_0x00002CA9) is never drawn, in any
             // pass (shadow stand-ins too, interim).

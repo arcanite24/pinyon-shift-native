@@ -38,6 +38,7 @@
 #include "world/tod.h"
 #include "world/vfx.h"
 #include "world/world.h"
+#include "world/world_anim.h"
 #include "world_gpu.h"
 #include "world_texture_lru.h"
 
@@ -107,8 +108,10 @@ struct ShowroomFrame {
   float phase_b_params[4] = {0.0f, 0.0f, 0.0f, 0.0f};   // x car_detail (>0.5), y rotor_glow [0..1], z frame_jitter, w ssr_active
   // World prop AmbientColour from TimeOfDayA.xml (SKY_AND_TOD §2.4).
   float ambient_color[4] = {0.1717f, 0.2079f, 0.2229f, 1.0f};
+  // Live cockpit digital MFD telemetry (x=speed_norm, y=tach_norm, z=fuel_norm, w=boost_norm).
+  float cockpit_mfd[4] = {0.0f, 0.14f, 0.85f, 0.0f};
 };
-static_assert(sizeof(ShowroomFrame) == 816);
+static_assert(sizeof(ShowroomFrame) == 832);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -986,6 +989,13 @@ class Showroom {
   static constexpr uint32_t kMaxDebrisVerts = 65536;  // smashable debris + animated world props/grass
   DynBuffer debris_buf_;
   uint32_t debris_count_ = 0;
+  static constexpr uint32_t kMaxSpectatorVerts = 131072;  // authentic Spectators.zip 3D festival crowds
+  world::AnimatedWorldSystem spectator_anim_;
+  std::vector<world::SpectatorVertex> spectator_cpu_;
+  GpuTexture spectator_atlas_;
+  VkDescriptorSet spectator_set_ = VK_NULL_HANDLE;
+  DynBuffer spectator_buf_;
+  uint32_t spectator_count_ = 0;
   static constexpr uint32_t kMaxDriverVerts = 2048;   // animated 3D seated driver + steering hands
   DynBuffer driver_buf_;
   uint32_t driver_count_ = 0;
@@ -1009,6 +1019,7 @@ class Showroom {
   CockpitRig cockpit_rigs_[6]{};  // 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
   std::array<float, 3> cockpit_wheel_pos_offset_{0.0f, 0.0f, 0.0f};
   float cockpit_wheel_rot_offset_rad_ = 0.0f;
+  float cockpit_mfd_[4] = {0.0f, 0.14f, 0.85f, 0.0f};
   bool allocate_world_set(VkDescriptorSet& out, std::string& error);
   bool create_world_single_set(VkImageView view, VkDescriptorSet& out, std::string& error);
   void evict_world_textures();

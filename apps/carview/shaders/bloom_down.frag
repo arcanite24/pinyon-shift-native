@@ -25,10 +25,12 @@ layout(push_constant) uniform Post {
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
+// Must stay bit-identical to eval_auto_exposure() in post.frag so bloom bright-pass
+// and final filmic tonemapping share exact exposure math (including negative EVs).
 float eval_auto_exposure() {
   uint flags = uint(p.bloom_p.z + 0.5);
   if ((flags & 4u) == 0u) return p.def.w;
-  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 64.0;
+  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 110.0;
   float ev_curve = p.exp_ev.x;
   if (L <= p.exp_keys.x) {
     ev_curve = p.exp_ev.x;
@@ -44,8 +46,11 @@ float eval_auto_exposure() {
   } else {
     ev_curve = p.exp_ev.w;
   }
-  float base_exp = max(p.def.w, 0.05);
-  return clamp(base_exp * exp2(clamp(ev_curve, -2.0, 4.0)), 0.05, 8.0);
+  // Exact SKY_AND_TOD §5.2 EV formula with daylight-to-night HDR calibration offset
+  // matching FH1's Colorado sky & asphalt luminance without crushing night headlights.
+  float calib_ev = mix(-0.42, -0.92, smoothstep(1.5, 14.0, L));
+  float ev_total = clamp(ev_curve + p.def.w + calib_ev, -2.0, 6.0);
+  return exp2(ev_total);
 }
 
 float karis_weight(vec3 c) {

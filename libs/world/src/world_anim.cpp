@@ -1,11 +1,13 @@
 #include "world/world_anim.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 #include "fh1data/archive.h"
+#include "fh1data/xds.h"
 
 namespace world {
 
@@ -111,7 +113,115 @@ void push_box(std::vector<DebrisVertex>& out, const std::array<float, 3>& c, con
 
 uint8_t clamp_u8(float v) { return uint8_t(std::clamp(int(std::lround(v)), 0, 255)); }
 
+uint16_t read_be16(const uint8_t* p) { return uint16_t((uint16_t(p[0]) << 8) | uint16_t(p[1])); }
+
+uint32_t read_be32(const uint8_t* p) {
+  return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+float read_bef32(const uint8_t* p) {
+  const uint32_t bits = read_be32(p);
+  float f = 0.0f;
+  std::memcpy(&f, &bits, sizeof(f));
+  return f;
+}
+
+void blit_atlas_cell(const fh1::RgbaImage& src, uint8_t* dst_atlas, uint32_t atlas_size, uint32_t cell_x,
+                     uint32_t cell_y, uint32_t cell_size) {
+  if (src.width == 0 || src.height == 0 || src.rgba.size() < size_t(src.width) * src.height * 4) return;
+  for (uint32_t y = 0; y < cell_size; ++y) {
+    const float sy = (float(y) + 0.5f) * float(src.height) / float(cell_size) - 0.5f;
+    const uint32_t y0 = uint32_t(std::clamp(int(std::floor(sy)), 0, int(src.height) - 1));
+    const uint32_t y1 = std::min(y0 + 1, src.height - 1);
+    const float fy = std::clamp(sy - float(y0), 0.0f, 1.0f);
+    for (uint32_t x = 0; x < cell_size; ++x) {
+      const float sx = (float(x) + 0.5f) * float(src.width) / float(cell_size) - 0.5f;
+      const uint32_t x0 = uint32_t(std::clamp(int(std::floor(sx)), 0, int(src.width) - 1));
+      const uint32_t x1 = std::min(x0 + 1, src.width - 1);
+      const float fx = std::clamp(sx - float(x0), 0.0f, 1.0f);
+      const uint8_t* p00 = src.rgba.data() + (size_t(y0) * src.width + x0) * 4;
+      const uint8_t* p10 = src.rgba.data() + (size_t(y0) * src.width + x1) * 4;
+      const uint8_t* p01 = src.rgba.data() + (size_t(y1) * src.width + x0) * 4;
+      const uint8_t* p11 = src.rgba.data() + (size_t(y1) * src.width + x1) * 4;
+      uint8_t* o = dst_atlas + (size_t(cell_y * cell_size + y) * atlas_size + (cell_x * cell_size + x)) * 4;
+      for (int c = 0; c < 4; ++c) {
+        const float top = float(p00[c]) * (1.0f - fx) + float(p10[c]) * fx;
+        const float bot = float(p01[c]) * (1.0f - fx) + float(p11[c]) * fx;
+        o[c] = clamp_u8(top * (1.0f - fy) + bot * fy);
+      }
+    }
+  }
+}
+
 }  // namespace
+
+bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int preferred_lod) {
+  out.vertices.clear();
+  out.indices.clear();
+  if (data.size() < 0x48) return false;
+  const uint8_t* p = data.data();
+  const uint32_t num_lods = read_be32(p + 0x04);
+  const uint32_t lod0_cnt = read_be32(p + 0x14);
+  const uint32_t lod_off[4] = {0u, read_be16(p + 0x1c), read_be16(p + 0x24), read_be16(p + 0x2c)};
+  const uint32_t lod_cnt[4] = {lod0_cnt, read_be16(p + 0x1e), read_be16(p + 0x26), read_be16(p + 0x2e)};
+  const uint32_t vert_count = read_be32(p + 0x38);
+  if (vert_count == 0 || vert_count > 32768 || num_lods == 0 || num_lods > 8) return false;
+
+  const size_t idx_base = 0x40 + size_t(vert_count) * 36;
+  if (idx_base + 4 > data.size()) return false;
+  const uint32_t total_idx = read_be32(p + idx_base);
+  if (total_idx < 3 || idx_base + 4 + size_t(total_idx) * 2 > data.size()) return false;
+
+  out.vertices.resize(vert_count);
+  for (uint32_t i = 0; i < vert_count; ++i) {
+    const uint8_t* vp = p + 0x40 + size_t(i) * 36;
+    auto& v = out.vertices[i];
+    v.pos = {read_bef32(vp + 0), read_bef32(vp + 4), read_bef32(vp + 8)};
+    v.normal = vnorm({read_bef32(vp + 12), read_bef32(vp + 16), read_bef32(vp + 20)});
+    v.uv = {float(read_be16(vp + 24)) / 65535.0f, float(read_be16(vp + 26)) / 65535.0f};
+    v.bone0 = vp[28];
+    v.bone1 = vp[29];
+    v.weight0 = vp[30];
+    v.weight1 = vp[31];
+  }
+
+  int chosen = std::clamp(preferred_lod, 0, int(std::min<uint32_t>(num_lods, 4u)) - 1);
+  if (lod_cnt[chosen] < 3 || lod_off[chosen] + lod_cnt[chosen] > total_idx) {
+    chosen = 0;
+  }
+  uint32_t off = lod_off[chosen];
+  uint32_t cnt = lod_cnt[chosen];
+  if (cnt < 3 || off + cnt > total_idx) {
+    off = 0;
+    cnt = total_idx;
+  }
+  cnt -= cnt % 3;
+  out.indices.reserve(cnt);
+  const uint8_t* ip = p + idx_base + 4;
+  for (uint32_t i = 0; i + 2 < cnt; i += 3) {
+    const uint16_t i0 = read_be16(ip + size_t(off + i + 0) * 2);
+    const uint16_t i1 = read_be16(ip + size_t(off + i + 1) * 2);
+    const uint16_t i2 = read_be16(ip + size_t(off + i + 2) * 2);
+    if (i0 >= vert_count || i1 >= vert_count || i2 >= vert_count || i0 == i1 || i1 == i2 || i0 == i2) continue;
+    const auto& v0 = out.vertices[i0];
+    const auto& v1 = out.vertices[i1];
+    const auto& v2 = out.vertices[i2];
+    const auto fn = vcross(vsub(v1.pos, v0.pos), vsub(v2.pos, v0.pos));
+    const float avg_dot = fn[0] * (v0.normal[0] + v1.normal[0] + v2.normal[0]) +
+                          fn[1] * (v0.normal[1] + v1.normal[1] + v2.normal[1]) +
+                          fn[2] * (v0.normal[2] + v1.normal[2] + v2.normal[2]);
+    if (avg_dot < 0.0f) {
+      out.indices.push_back(i0);
+      out.indices.push_back(i2);
+      out.indices.push_back(i1);
+    } else {
+      out.indices.push_back(i0);
+      out.indices.push_back(i1);
+      out.indices.push_back(i2);
+    }
+  }
+  return !out.indices.empty();
+}
 
 bool SpectatorCatalog::load_spectators_xml(const std::string& raw_xml) {
   models.clear();
@@ -246,14 +356,24 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
   spectators_xds = 0;
   animated_pgeos = 0;
   animated_xds = 0;
+  assets.clear();
+  atlas_rgba.clear();
 
   bool loaded_any = false;
   const auto spec_zip = media_dir / "Spectators.zip";
   if (std::filesystem::exists(spec_zip)) {
     std::string err;
     if (auto ar = fh1::Archive::open(spec_zip, &err)) {
-      for (const auto& entry : ar->members()) {
-        const std::string low = lower_ascii(entry.name);
+      std::unordered_map<std::string, size_t> member_by_low;
+      const auto& members = ar->members();
+      member_by_low.reserve(members.size());
+      for (size_t idx = 0; idx < members.size(); ++idx) {
+        const auto& entry = members[idx];
+        std::string low = lower_ascii(entry.name);
+        for (char& c : low) {
+          if (c == '\\') c = '/';
+        }
+        member_by_low[low] = idx;
         if (low.ends_with(".anim.bin")) ++spectators_anim_bins;
         else if (low.ends_with(".skinbin")) ++spectators_skinbins;
         else if (low.ends_with(".xds")) ++spectators_xds;
@@ -263,6 +383,69 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
             loaded_any = load_spectators_xml(std::string(rd.data.begin(), rd.data.end())) || loaded_any;
           }
         }
+      }
+
+      // Decode up to 16 standing 3D spectator meshes (.skinbin) + their textures (.dds.xds)
+      // into a single 1024x1024 (4x4 x 256) RGBA8 atlas for authentic festival crowds.
+      std::unordered_map<std::string, std::string> tex_by_model;
+      for (const auto& m : models) {
+        tex_by_model[lower_ascii(m.name)] = lower_ascii(m.texture);
+      }
+      std::vector<std::string> candidate_names;
+      if (const auto it = modelsets.find("Default"); it != modelsets.end()) {
+        candidate_names = it->second;
+      } else {
+        for (const auto& m : models) candidate_names.push_back(m.name);
+      }
+
+      std::vector<uint8_t> tmp_atlas(size_t(kAtlasSize) * kAtlasSize * 4, 255);
+      std::unordered_map<std::string, uint32_t> tex_slot_map;
+      uint32_t next_slot = 0;
+      const uint32_t max_slots = kAtlasGrid * kAtlasGrid;
+      for (const auto& cname : candidate_names) {
+        if (assets.size() >= max_slots) break;
+        const std::string low_name = lower_ascii(cname);
+        const std::string skin_key = "models/" + low_name + "_stand.skinbin";
+        const auto skin_it = member_by_low.find(skin_key);
+        if (skin_it == member_by_low.end()) continue;
+
+        std::string tex_base = low_name;
+        if (const auto tit = tex_by_model.find(low_name); tit != tex_by_model.end() && !tit->second.empty()) {
+          tex_base = tit->second;
+        }
+        std::string tex_key = "textures/" + tex_base + ".dds.xds";
+        auto tex_it = member_by_low.find(tex_key);
+        if (tex_it == member_by_low.end()) {
+          tex_key = "textures/" + tex_base + ".xds";
+          tex_it = member_by_low.find(tex_key);
+        }
+        if (tex_it == member_by_low.end()) continue;
+
+        uint32_t slot = 0;
+        if (const auto sit = tex_slot_map.find(tex_key); sit != tex_slot_map.end()) {
+          slot = sit->second;
+        } else {
+          if (next_slot >= max_slots) continue;
+          const auto trd = ar->read(members[tex_it->second]);
+          if (!trd.ok()) continue;
+          const auto dec = fh1::decode_xds(trd.data, false);
+          if (dec.levels.empty()) continue;
+          slot = next_slot++;
+          blit_atlas_cell(dec.levels[0], tmp_atlas.data(), kAtlasSize, slot % kAtlasGrid, slot / kAtlasGrid,
+                          kAtlasCell);
+          tex_slot_map[tex_key] = slot;
+        }
+
+        const auto srd = ar->read(members[skin_it->second]);
+        if (!srd.ok()) continue;
+        SpectatorAsset asset;
+        asset.name = cname;
+        asset.atlas_slot = slot;
+        if (!parse_skinbin(srd.data, asset.mesh, 1)) continue;
+        assets.push_back(std::move(asset));
+      }
+      if (!assets.empty()) {
+        atlas_rgba = std::move(tmp_atlas);
       }
     } else if (error) {
       *error = err;
@@ -325,11 +508,12 @@ void AnimatedWorldSystem::populate_default_colorado() {
       {{1968.0f, 145.2f, 964.0f}, 7.2f, 1.75f, 3.4f, 4.4f, {48, 184, 132}, {248, 244, 232}},
   };
 
-  // Cheering festival spectators behind the festival viewing barriers (off-road).
+  // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers
+  // (obj_fest_barriermetal line from (1992.76, 143.73, 960.09) to (2007.43, 142.78, 949.33),
+  // facing (-0.589, +0.808) toward the road).
   crowds_ = {
-      {{2012.0f, 144.2f, 934.0f}, 0.80f, -0.60f, 12, 1.15f, "GigCheer01"},
-      {{1984.0f, 145.0f, 955.0f}, -0.80f, 0.60f, 10, 1.20f, "Barrier"},
-      {{2034.0f, 143.6f, 918.0f}, 0.78f, -0.62f, 10, 1.18f, "GigCheer02"},
+      {{1993.85f, 143.62f, 958.65f}, 0.808f, -0.052f, -0.589f, -0.589f, 0.808f, 10, 1.48f, "Barrier"},
+      {{1995.75f, 143.42f, 956.30f}, 0.808f, -0.052f, -0.589f, -0.589f, 0.808f, 6, 1.95f, "GigCheer01"},
   };
 }
 
@@ -488,6 +672,95 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
     }
   }
   (void)eye_y;
+}
+
+void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec,
+                                               const drive::Ground* ground,
+                                               std::vector<SpectatorVertex>& out) const {
+  if (!catalog_.has_3d_spectators() || crowds_.empty()) return;
+  const float inv_grid = 1.0f / float(SpectatorCatalog::kAtlasGrid);
+  const float uv_pad = 1.5f / float(SpectatorCatalog::kAtlasCell);
+
+  auto sample_ground_y = [&](float x, float z, float fallback) -> float {
+    if (!ground) return fallback;
+    drive::Hit h;
+    const double start_y = std::max(eye_y, double(fallback)) + 12.0;
+    if (ground->raycast({double(x), start_y, double(z)}, {0.0, -1.0, 0.0}, 36.0, h) && h.normal.y > 0.5) {
+      return float(start_y - h.distance);
+    }
+    return fallback;
+  };
+
+  for (size_t ci = 0; ci < crowds_.size(); ++ci) {
+    const auto& cl = crowds_[ci];
+    const double cdx = double(cl.origin[0]) - eye_x;
+    const double cdz = double(cl.origin[2]) - eye_z;
+    if (cdx * cdx + cdz * cdz > 140.0 * 140.0) continue;
+
+    const float base_yaw = std::atan2(cl.face_x, cl.face_z);
+    for (int i = 0; i < cl.count; ++i) {
+      const uint32_t h0 = hash_u32(uint32_t(ci) * 1973u + uint32_t(i) * 9277u + 1337u);
+      const uint32_t h1 = hash_u32(h0 ^ 0x517cc1b7u);
+      const uint32_t h2 = hash_u32(h1 ^ 0x9e3779b9u);
+      const float r0 = float(h0 & 0xFFFFu) / 65535.0f;
+      const float r1 = float(h1 & 0xFFFFu) / 65535.0f;
+      const float r2 = float(h2 & 0xFFFFu) / 65535.0f;
+
+      const float along = (float(i) + (r0 - 0.5f) * 0.32f) * cl.spacing;
+      const float perp = (r1 - 0.5f) * 0.30f;
+      const float px = cl.origin[0] + cl.dir_x * along - cl.face_x * perp;
+      const float pz = cl.origin[2] + cl.dir_z * along - cl.face_z * perp;
+      const float py = sample_ground_y(px, pz, cl.origin[1] + cl.dir_y * along);
+
+      const double dx = double(px) - eye_x;
+      const double dz = double(pz) - eye_z;
+      if (dx * dx + dz * dz > 110.0 * 110.0) continue;
+
+      const auto& asset = catalog_.assets[(ci * 7u + size_t(i)) % catalog_.assets.size()];
+      const uint32_t cx = asset.atlas_slot % SpectatorCatalog::kAtlasGrid;
+      const uint32_t cy = asset.atlas_slot / SpectatorCatalog::kAtlasGrid;
+      const float u_off = float(cx) * inv_grid;
+      const float v_off = float(cy) * inv_grid;
+
+      const float yaw = base_yaw + (r2 - 0.5f) * 0.52f;
+      const float cyaw = std::cos(yaw);
+      const float syaw = std::sin(yaw);
+      const float scale = 0.96f + 0.09f * r0;
+      const float phase = r1 * 6.2831853f;
+      const float freq = 2.6f + 1.4f * r2;
+      const float cheer = std::sin(time_sec * freq + phase);
+      const float sway = std::cos(time_sec * (freq * 0.5f) + phase * 1.3f);
+
+      const auto& verts = asset.mesh.vertices;
+      const auto& inds = asset.mesh.indices;
+      out.reserve(out.size() + inds.size());
+      for (uint16_t idx : inds) {
+        const auto& v = verts[idx];
+        float lx = v.pos[0] * scale;
+        float ly = v.pos[1] * scale;
+        float lz = v.pos[2] * scale;
+
+        // Subtle standing crowd motion (feet stay planted at ly ~ 0).
+        const float upper = std::clamp((ly - 0.85f) / 0.85f, 0.0f, 1.0f);
+        const float mid = std::clamp((ly - 0.12f) / 0.60f, 0.0f, 1.0f);
+        lx += sway * 0.022f * upper;
+        ly += (0.5f + 0.5f * cheer) * 0.018f * mid;
+        lz += cheer * 0.016f * upper;
+
+        const float wx = px + lx * cyaw + lz * syaw;
+        const float wy = py + ly;
+        const float wz = pz - lx * syaw + lz * cyaw;
+
+        const float nx = v.normal[0] * cyaw + v.normal[2] * syaw;
+        const float ny = v.normal[1];
+        const float nz = -v.normal[0] * syaw + v.normal[2] * cyaw;
+
+        const float u = u_off + std::clamp(v.uv[0], uv_pad, 1.0f - uv_pad) * inv_grid;
+        const float tv = v_off + std::clamp(v.uv[1], uv_pad, 1.0f - uv_pad) * inv_grid;
+        out.push_back({{wx, wy, wz}, {nx, ny, nz}, {u, tv}, {255, 255, 255, 255}});
+      }
+    }
+  }
 }
 
 }  // namespace world

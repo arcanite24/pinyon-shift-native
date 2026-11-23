@@ -786,9 +786,15 @@ void main() {
   float shade = mix(1.0, raw_shade, shadow_scale);
   float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
   vec3 hemi_amb = mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb;
-  if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && frame.sun_color.w >= 0.0) {
-    // SKY_AND_TOD §2.4: AmbientColour lifts shadowed world props cleanly in daylight.
-    hemi_amb += frame.ambient_color.rgb * 0.35 * ibl_amb;
+  if (frame.sun_color.w >= 0.0) {
+    if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u) {
+      // SKY_AND_TOD §2.4: AmbientColour lifts shadowed world props cleanly in daylight.
+      hemi_amb += frame.ambient_color.rgb * 0.35 * ibl_amb;
+    } else if ((flags & (kFlagRoad | kFlagSky)) == 0u) {
+      // Subtle ambient lift on distant Colorado forested hillsides so calibrated daylight
+      // exposure preserves warm hillside detail matching FH1 without washing out roads.
+      hemi_amb += frame.ambient_color.rgb * 0.18 * ibl_amb;
+    }
   }
   vec3 light = (sun_col * ndl * shade + hemi_amb) * ao;
   vec3 colour = t.rgb * light * draw.up.w;

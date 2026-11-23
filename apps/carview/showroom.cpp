@@ -417,6 +417,9 @@ Showroom::~Showroom() {
   destroy_dyn_buffer(skid_asphalt_buf_);
   destroy_dyn_buffer(skid_rut_buf_);
   destroy_dyn_buffer(debris_buf_);
+  destroy_dyn_buffer(spectator_buf_);
+  r_.destroy_image(spectator_atlas_);
+  spectator_set_ = VK_NULL_HANDLE;
   destroy_dyn_buffer(driver_buf_);
   r_.destroy_image(particle_atlas_);
   r_.destroy_image(skid_asphalt_tex_);
@@ -1452,6 +1455,23 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         submat_id = 15.0f;
       } else if (d.lamp_channel == drive::LampChannel::kDigitalGauge) {
         submat_id = 16.0f;
+        // Pack the MFD screen's local car-space XY bounds into push.uv1 so showroom.frag
+        // renders right-side-up active backlit telemetry across any car's digital cluster.
+        float dmin_x = 1e9f, dmax_x = -1e9f, dmin_y = 1e9f, dmax_y = -1e9f;
+        for (uint32_t idx : s.indices) {
+          if (idx >= pool.size()) continue;
+          const auto p = transform_point(transform, pool[idx].position);
+          dmin_x = std::min(dmin_x, p[0]);
+          dmax_x = std::max(dmax_x, p[0]);
+          dmin_y = std::min(dmin_y, p[1]);
+          dmax_y = std::max(dmax_y, p[1]);
+        }
+        const float dx = std::max(dmax_x - dmin_x, 1e-3f);
+        const float dy = std::max(dmax_y - dmin_y, 1e-3f);
+        d.push.uv1[0] = dmin_x;
+        d.push.uv1[1] = 1.0f / dx;
+        d.push.uv1[2] = dmin_y;
+        d.push.uv1[3] = 1.0f / dy;
       } else if (klass == MaterialClass::kGauge && slot1 == "car:interior_emissive_lod0.xds" && t1 != UINT32_MAX) {
         submat_id = 17.0f;
       } else if (klass == MaterialClass::kRim) {
@@ -1510,6 +1530,11 @@ void Showroom::set_cockpit_wheel_offsets(std::array<float, 3> pos_offset_m, floa
 void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpit_camera) {
   mirror_enabled_ = cockpit_camera;
   cockpit_camera_active_ = cockpit_camera;
+  cockpit_mfd_[0] = std::clamp(anim.speed_norm, 0.0f, 1.0f);
+  cockpit_mfd_[1] = std::clamp(anim.tach_norm, 0.0f, 1.0f);
+  cockpit_mfd_[2] = std::clamp(anim.fuel_norm, 0.0f, 1.0f);
+  cockpit_mfd_[3] = std::clamp(std::max(anim.boost_norm, anim.power_norm), 0.0f, 1.0f);
+  for (int k = 0; k < 4; ++k) frame_.cockpit_mfd[k] = cockpit_mfd_[k];
   if (cockpit_camera && dyn_env_ready_ && !mirror_tex_.view) ensure_mirror_targets();
   driver_wheel_rad_ = anim.wheel_rad;
   update_driver_mesh(anim.wheel_rad);
@@ -3125,7 +3150,9 @@ void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const Showroo
   dep.bufferMemoryBarrierCount = 1;
   dep.pBufferMemoryBarriers = &b;
   vkCmdPipelineBarrier2(cmd, &dep);
-  vkCmdUpdateBuffer(cmd, buffer, 0, sizeof(ShowroomFrame), &f);
+  ShowroomFrame copy = f;
+  for (int k = 0; k < 4; ++k) copy.cockpit_mfd[k] = cockpit_mfd_[k];
+  vkCmdUpdateBuffer(cmd, buffer, 0, sizeof(ShowroomFrame), &copy);
   b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
   b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -7716,6 +7743,19 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     error = "skidmark/debris/driver vertex buffers";
     return false;
   }
+  if (!options_.game_root.empty()) {
+    std::string spec_err;
+    if (spectator_anim_.init(options_.game_root / "media", world::TrackPostConfig{}, &spec_err) &&
+        spectator_anim_.catalog().has_3d_spectators()) {
+      const auto& cat = spectator_anim_.catalog();
+      if (upload_rgba_image(cat.atlas_rgba.data(), world::SpectatorCatalog::kAtlasSize,
+                            world::SpectatorCatalog::kAtlasSize, true, spectator_atlas_, "spectator atlas") &&
+          create_world_single_set(spectator_atlas_.view, spectator_set_, spec_err) &&
+          create_dyn_buffer(spectator_buf_, VkDeviceSize(kMaxSpectatorVerts) * sizeof(WorldVertex), spec_err)) {
+        // Authentic Spectators.zip 3D crowd atlas + dynamic vertex buffer ready.
+      }
+    }
+  }
   update_driver_mesh(driver_wheel_rad_);
 
   // 4. Descriptor sets & pipeline layouts.
@@ -8331,12 +8371,16 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
 }
 
 void Showroom::record_debris_draw(VkCommandBuffer cmd) {
-  if (!vfx_ready_ || debris_count_ == 0 || !world_opaque_ || !world_white_set_) return;
+  if (!vfx_ready_ || !world_opaque_) return;
+  const bool draw_debris = debris_count_ > 0 && world_white_set_;
+  const bool draw_spectators =
+      spectator_set_ && spectator_buf_.ready() && spectator_anim_.catalog().has_3d_spectators();
+  if (!draw_debris && !draw_spectators) return;
+
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   r_.apply_vrs(cmd);
-  const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+
   ShowroomPush pc{};
   std::memcpy(pc.model, world_transform_, sizeof pc.model);
   for (int i = 0; i < 3; ++i) {
@@ -8346,15 +8390,61 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
   pc.uv0[3] = 2.0f;  // swap = none
   pc.uv1[3] = world_up_[3];
   pc.tint[0] = pc.tint[1] = pc.tint[2] = pc.tint[3] = 1.0f;
-  pc.params[0] = 0.0f;       // kOpaque
-  pc.params[1] = 65536.0f;   // kFlagVertexLit
+  pc.params[0] = 0.0f;  // kOpaque
   pc.params[2] = 0.0f;
   pc.params[3] = 1.0f;
-  vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                     sizeof pc, &pc);
-  VkDeviceSize at = dyn_sync(debris_buf_, VkDeviceSize(debris_count_) * sizeof(WorldVertex));
-  vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buf.buffer, &at);
-  vkCmdDraw(cmd, debris_count_, 1, 0, 0);
+
+  if (draw_debris) {
+    const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+    pc.params[1] = 65536.0f;  // kFlagVertexLit
+    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof pc, &pc);
+    VkDeviceSize at = dyn_sync(debris_buf_, VkDeviceSize(debris_count_) * sizeof(WorldVertex));
+    vkCmdBindVertexBuffers(cmd, 0, 1, &debris_buf_.buf.buffer, &at);
+    vkCmdDraw(cmd, debris_count_, 1, 0, 0);
+  }
+
+  if (draw_spectators) {
+    const auto eye = eye_in_scenery(world_transform_);
+    const double eye_gx = world_origin_[0] + double(eye[0]);
+    const double eye_gy = double(eye[1]);
+    const double eye_gz = world_origin_[1] + double(eye[2]);
+    spectator_cpu_.clear();
+    spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, nullptr, spectator_cpu_);
+    const uint32_t n = uint32_t(std::min(spectator_cpu_.size(), size_t(kMaxSpectatorVerts)));
+    spectator_count_ = n;
+    if (n > 0) {
+      auto* dst = static_cast<WorldVertex*>(spectator_buf_.data());
+      auto snorm8 = [](float x) -> int8_t {
+        return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
+      };
+      for (uint32_t i = 0; i < n; ++i) {
+        const auto& v = spectator_cpu_[i];
+        WorldVertex& o = dst[i];
+        o = WorldVertex{};
+        o.position[0] = float(double(v.pos[0]) - world_origin_[0]);
+        o.position[1] = v.pos[1];
+        o.position[2] = float(double(v.pos[2]) - world_origin_[1]);
+        o.normal[0] = snorm8(v.normal[0]);
+        o.normal[1] = snorm8(v.normal[1]);
+        o.normal[2] = snorm8(v.normal[2]);
+        o.normal[3] = 0;
+        o.uv0[0] = v.uv[0];
+        o.uv0[1] = v.uv[1];
+        for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+      }
+      ++spectator_buf_.ver;
+      const VkDescriptorSet sets[2] = {frame_set_, spectator_set_};
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+      pc.params[1] = 1.0f;  // kFlagTextured
+      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof pc, &pc);
+      VkDeviceSize at = dyn_sync(spectator_buf_, VkDeviceSize(n) * sizeof(WorldVertex));
+      vkCmdBindVertexBuffers(cmd, 0, 1, &spectator_buf_.buf.buffer, &at);
+      vkCmdDraw(cmd, n, 1, 0, 0);
+    }
+  }
 }
 
 void Showroom::record_skidmarks_draw(VkCommandBuffer cmd) {

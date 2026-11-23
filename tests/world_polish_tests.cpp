@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -241,6 +242,73 @@ int main() {
     CHECK(em1.key() != em2.key());
     world::GatherOptions go;
     CHECK(go.far_inner_uberlod >= 800.0);
+    // Verify subterranean catch planes & shadow-only mountain proxies are excluded from color meshes.
+    CHECK(world::skipped_object("ShadowMountainsA3_NOLOD"));
+    CHECK(world::skipped_object("Underground_NOLOD"));
+    CHECK(world::skipped_object("World_Cage_01"));
+    CHECK(!world::skipped_object("Terrain_Road_LOD00"));
+  }
+
+  // 5c. Spectators.zip `.skinbin` big-endian parser (valid mesh + outward winding + truncated rejection).
+  {
+    auto push_be16 = [](std::vector<uint8_t>& buf, uint16_t v) {
+      buf.push_back(uint8_t((v >> 8) & 0xFF));
+      buf.push_back(uint8_t(v & 0xFF));
+    };
+    auto push_be32 = [](std::vector<uint8_t>& buf, uint32_t v) {
+      buf.push_back(uint8_t((v >> 24) & 0xFF));
+      buf.push_back(uint8_t((v >> 16) & 0xFF));
+      buf.push_back(uint8_t((v >> 8) & 0xFF));
+      buf.push_back(uint8_t(v & 0xFF));
+    };
+    auto push_bef32 = [&](std::vector<uint8_t>& buf, float f) {
+      uint32_t bits = 0;
+      std::memcpy(&bits, &f, 4);
+      push_be32(buf, bits);
+    };
+
+    std::vector<uint8_t> bin(0x40, 0);
+    auto set_be32 = [&](size_t off, uint32_t v) {
+      bin[off + 0] = uint8_t((v >> 24) & 0xFF);
+      bin[off + 1] = uint8_t((v >> 16) & 0xFF);
+      bin[off + 2] = uint8_t((v >> 8) & 0xFF);
+      bin[off + 3] = uint8_t(v & 0xFF);
+    };
+    set_be32(0x04, 1);  // num_lods
+    set_be32(0x14, 3);  // lod0_count
+    set_be32(0x38, 3);  // vertex_count
+
+    const float verts[3][3] = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    for (int i = 0; i < 3; ++i) {
+      push_bef32(bin, verts[i][0]);
+      push_bef32(bin, verts[i][1]);
+      push_bef32(bin, verts[i][2]);
+      push_bef32(bin, 0.0f);
+      push_bef32(bin, 0.0f);
+      push_bef32(bin, 1.0f);  // +Z normal
+      push_be16(bin, uint16_t(i * 16384));
+      push_be16(bin, uint16_t(i * 8192));
+      bin.push_back(0);
+      bin.push_back(0);
+      bin.push_back(255);
+      bin.push_back(0);
+      push_be32(bin, 1);
+    }
+    push_be32(bin, 3);  // total_index_count
+    // Intentionally CW relative to +Z normal; parser must flip to outward CCW.
+    push_be16(bin, 0);
+    push_be16(bin, 2);
+    push_be16(bin, 1);
+
+    world::SpectatorMeshLod mesh;
+    CHECK(world::parse_skinbin(bin, mesh, 0));
+    CHECK(mesh.vertices.size() == 3);
+    CHECK(mesh.indices.size() == 3);
+    CHECK(mesh.indices[0] == 0 && mesh.indices[1] == 1 && mesh.indices[2] == 2);
+
+    // Truncated buffer must fail cleanly.
+    std::vector<uint8_t> bad(bin.begin(), bin.begin() + 32);
+    CHECK(!world::parse_skinbin(bad, mesh, 0));
   }
 
   // 6. Retail Colorado corpus checks (when SHIFT_GAME_ROOT is set).
@@ -271,10 +339,13 @@ int main() {
       CHECK(cat.crowdclasses.size() >= 20);
       CHECK(cat.spectators_anim_bins > 50);
       CHECK(cat.animated_pgeos > 200);
+      CHECK(cat.has_3d_spectators());
+      CHECK(cat.assets.size() >= 8);
       std::printf("world_polish_tests corpus: %zu zones, %zu blooms, %zu colors, %zu fogs, %zu vignettes, "
-                  "%zu spectator models, %zu crowdclasses, %zu anim_pgeo\n",
+                  "%zu spectator models (%zu 3D), %zu crowdclasses, %zu anim_pgeo\n",
                   zs.zones.size(), zs.bloom_templates.size(), zs.color_templates.size(), zs.fog_templates.size(),
-                  zs.vignette_templates.size(), cat.models.size(), cat.crowdclasses.size(), cat.animated_pgeos);
+                  zs.vignette_templates.size(), cat.models.size(), cat.assets.size(), cat.crowdclasses.size(),
+                  cat.animated_pgeos);
     }
   }
 

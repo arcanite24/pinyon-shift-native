@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,6 +21,36 @@
 #include "world/tod.h"
 
 namespace world {
+
+struct SpectatorVertex {
+  std::array<float, 3> pos{};
+  std::array<float, 3> normal{};
+  std::array<float, 2> uv{};
+  std::array<uint8_t, 4> rgba{255, 255, 255, 255};
+};
+
+struct SpectatorMeshLod {
+  struct Vertex {
+    std::array<float, 3> pos{};
+    std::array<float, 3> normal{};
+    std::array<float, 2> uv{};
+    uint8_t bone0 = 0;
+    uint8_t bone1 = 0;
+    uint8_t weight0 = 255;
+    uint8_t weight1 = 0;
+  };
+  std::vector<Vertex> vertices;
+  std::vector<uint16_t> indices;  // outward-facing CCW triangles in game frame
+};
+
+struct SpectatorAsset {
+  std::string name;
+  SpectatorMeshLod mesh;
+  uint32_t atlas_slot = 0;  // cell index in 4x4 RGBA8 atlas
+};
+
+// Parses an FH1 Spectators.zip `.skinbin` skeletal mesh (big-endian).
+bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int preferred_lod = 1);
 
 struct SpectatorModelDef {
   std::string name;
@@ -41,12 +72,18 @@ struct SpectatorCrowdClass {
 };
 
 struct SpectatorCatalog {
+  static constexpr uint32_t kAtlasGrid = 4;
+  static constexpr uint32_t kAtlasCell = 256;
+  static constexpr uint32_t kAtlasSize = kAtlasGrid * kAtlasCell;  // 1024
+
   int num_sprite_angles = 10;
   bool sprites_both_sides = false;
   std::vector<SpectatorModelDef> models;
   std::unordered_map<std::string, std::vector<std::string>> modelsets;
   std::vector<SpectatorSkeletonDef> skeletons;
   std::vector<SpectatorCrowdClass> crowdclasses;
+  std::vector<SpectatorAsset> assets;
+  std::vector<uint8_t> atlas_rgba;
 
   // Member counts from retail archives (verification & telemetry).
   size_t spectators_anim_bins = 0;
@@ -55,6 +92,9 @@ struct SpectatorCatalog {
   size_t animated_pgeos = 0;
   size_t animated_xds = 0;
 
+  bool has_3d_spectators() const {
+    return !assets.empty() && atlas_rgba.size() == size_t(kAtlasSize) * kAtlasSize * 4;
+  }
   bool load_spectators_xml(const std::string& xml);
   bool load_from_media(const std::filesystem::path& media_dir, std::string* error = nullptr);
 };
@@ -90,7 +130,10 @@ struct FestivalFlagProp {
 struct CrowdCluster {
   std::array<float, 3> origin{};
   float dir_x = 1.0f;
+  float dir_y = 0.0f;
   float dir_z = 0.0f;
+  float face_x = 0.0f;
+  float face_z = 1.0f;
   int count = 12;
   float spacing = 1.15f;
   std::string crowdclass = "GigCheer01";
@@ -118,11 +161,15 @@ class AnimatedWorldSystem {
   const std::vector<FestivalFlagProp>& flags() const { return flags_; }
   const std::vector<CrowdCluster>& crowds() const { return crowds_; }
 
-  // Appends animated world triangles (hot-air balloons, spinning windmills,
-  // waving Horizon flags, cheering festival spectators, and wind-swaying
+  // Appends animated world triangles (hot-air balloons and wind-swaying
   // roadside grass quads) in game-frame coordinates to `out`.
   void build_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
                   std::vector<DebrisVertex>& out, bool include_grass = true) const;
+
+  // Appends authentic 3D textured Spectators.zip festival crowd triangles
+  // positioned behind festival barriers in game-frame coordinates.
+  void build_spectator_mesh(double eye_x, double eye_y, double eye_z, float time_sec, const drive::Ground* ground,
+                            std::vector<SpectatorVertex>& out) const;
 
  private:
   void populate_default_colorado();

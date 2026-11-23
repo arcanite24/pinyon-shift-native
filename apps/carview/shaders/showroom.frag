@@ -42,6 +42,7 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 shadow_mid_bias;    // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
   vec4 phase_b_params;     // x car_detail, y rotor_glow, z frame_jitter, w ssr_active
   vec4 ambient_color;      // rgb TimeOfDayA AmbientColour, w ibl_ambient_scale
+  vec4 cockpit_mfd;        // x speed_norm, y tach_norm, z fuel_norm, w boost_norm
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -363,6 +364,124 @@ vec3 env(vec3 dir, float lod) {
   return textureLod(static_environment, dir, lod).rgb * frame.options.y;
 }
 
+// Crisp procedural 7-segment digit evaluator (0..9, 10='N') in local cell p in [0,1]^2.
+float mfd_seg_h(vec2 p, vec2 c, float hw, float hh) {
+  vec2 d = abs(p - c);
+  return smoothstep(hh, hh * 0.45, d.y) * smoothstep(hw, hw * 0.72, d.x + d.y * 0.75);
+}
+float mfd_seg_v(vec2 p, vec2 c, float hw, float hh) {
+  vec2 d = abs(p - c);
+  return smoothstep(hw, hw * 0.45, d.x) * smoothstep(hh, hh * 0.72, d.y + d.x * 0.75);
+}
+float mfd_digit(vec2 p, int digit) {
+  // Bit order: 0=top, 1=tr, 2=br, 3=bot, 4=bl, 5=tl, 6=mid
+  const int kMask[11] = int[11](0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F, 0x37);
+  int m = kMask[clamp(digit, 0, 10)];
+  float v = 0.0;
+  if ((m & 0x01) != 0) v = max(v, mfd_seg_h(p, vec2(0.50, 0.88), 0.34, 0.075));
+  if ((m & 0x02) != 0) v = max(v, mfd_seg_v(p, vec2(0.84, 0.69), 0.09, 0.21));
+  if ((m & 0x04) != 0) v = max(v, mfd_seg_v(p, vec2(0.84, 0.31), 0.09, 0.21));
+  if ((m & 0x08) != 0) v = max(v, mfd_seg_h(p, vec2(0.50, 0.12), 0.34, 0.075));
+  if ((m & 0x10) != 0) v = max(v, mfd_seg_v(p, vec2(0.16, 0.31), 0.09, 0.21));
+  if ((m & 0x20) != 0) v = max(v, mfd_seg_v(p, vec2(0.16, 0.69), 0.09, 0.21));
+  if ((m & 0x40) != 0) v = max(v, mfd_seg_h(p, vec2(0.50, 0.50), 0.34, 0.075));
+  return v;
+}
+
+vec3 eval_cockpit_mfd(vec2 muv) {
+  float spd_n = clamp(frame.cockpit_mfd.x, 0.0, 1.0);
+  float rpm_n = clamp(frame.cockpit_mfd.y, 0.08, 1.0);
+  float fuel_n = clamp(frame.cockpit_mfd.z, 0.05, 1.0);
+  float boost_n = clamp(frame.cockpit_mfd.w, 0.0, 1.0);
+
+  // Dark sapphire-charcoal backlit OLED background with subtle radial vignette & horizontal scanlines.
+  vec2 dc = muv - vec2(0.5);
+  float bg_glow = exp(-dot(dc * vec2(1.4, 2.0), dc * vec2(1.4, 2.0)) * 2.2);
+  float scan = 0.92 + 0.08 * sin(muv.y * 140.0);
+  vec3 col = mix(vec3(0.012, 0.020, 0.034), vec3(0.032, 0.068, 0.115), bg_glow) * scan;
+
+  // Thin backlit outer frame border & header divider.
+  float bx = min(muv.x, 1.0 - muv.x);
+  float by = min(muv.y, 1.0 - muv.y);
+  float frame_line = smoothstep(0.028, 0.012, min(bx, by)) * step(0.006, min(bx, by));
+  col += vec3(0.10, 0.34, 0.52) * frame_line * 0.65;
+  float div_top = smoothstep(0.014, 0.004, abs(muv.y - 0.72)) * step(0.05, muv.x) * step(muv.x, 0.95);
+  float div_bot = smoothstep(0.014, 0.004, abs(muv.y - 0.24)) * step(0.05, muv.x) * step(muv.x, 0.95);
+  col += vec3(0.12, 0.32, 0.46) * max(div_top, div_bot) * 0.55;
+
+  // Top zone (y in [0.76, 0.92]): 16-segment LED tachometer & shift-light bar.
+  if (muv.y > 0.75 && muv.y < 0.92 && muv.x > 0.06 && muv.x < 0.94) {
+    float tx = (muv.x - 0.06) / 0.88;
+    float seg_f = tx * 16.0;
+    float seg_idx = floor(seg_f);
+    float seg_loc = fract(seg_f);
+    float in_seg = step(0.12, seg_loc) * step(seg_loc, 0.88);
+    float seg_t = (seg_idx + 0.5) / 16.0;
+    float seg_h = mix(0.38, 1.0, seg_t);
+    float ty = (muv.y - 0.76) / 0.15;
+    if (in_seg > 0.5 && ty >= 0.0 && ty <= seg_h) {
+      bool lit = seg_t <= max(rpm_n, 0.12);
+      vec3 seg_col = seg_t > 0.84 ? vec3(1.15, 0.14, 0.08)
+                     : (seg_t > 0.68 ? vec3(1.05, 0.58, 0.06) : vec3(0.24, 0.86, 1.08));
+      col += lit ? seg_col * 0.95 : vec3(0.04, 0.08, 0.11);
+    }
+  }
+
+  // Center-left zone: 3-digit 7-segment speed readout (0..300 km/h).
+  int spd_val = int(clamp(floor(spd_n * 300.0 + 0.5), 0.0, 399.0));
+  int d_h = (spd_val / 100) % 10;
+  int d_t = (spd_val / 10) % 10;
+  int d_o = spd_val % 10;
+  if (muv.y > 0.28 && muv.y < 0.68 && muv.x > 0.08 && muv.x < 0.65) {
+    float ly = (muv.y - 0.30) / 0.36;
+    if (ly >= 0.0 && ly <= 1.0) {
+      float dig = 0.0;
+      float ghost = 0.0;
+      if (muv.x >= 0.10 && muv.x <= 0.26) {
+        vec2 dp = vec2((muv.x - 0.10) / 0.16, ly);
+        ghost = mfd_digit(dp, 8);
+        if (d_h > 0) dig = mfd_digit(dp, d_h);
+      } else if (muv.x >= 0.28 && muv.x <= 0.44) {
+        vec2 dp = vec2((muv.x - 0.28) / 0.16, ly);
+        ghost = mfd_digit(dp, 8);
+        if (d_h > 0 || d_t > 0) dig = mfd_digit(dp, d_t);
+      } else if (muv.x >= 0.46 && muv.x <= 0.62) {
+        vec2 dp = vec2((muv.x - 0.46) / 0.16, ly);
+        ghost = mfd_digit(dp, 8);
+        dig = mfd_digit(dp, d_o);
+      }
+      col += vec3(0.025, 0.05, 0.07) * ghost;
+      col += vec3(0.76, 0.94, 1.05) * dig * 1.15;
+    }
+  }
+
+  // Center-right zone: framed amber-red gear badge (N / 1..6).
+  if (muv.y > 0.28 && muv.y < 0.68 && muv.x > 0.70 && muv.x < 0.92) {
+    vec2 gp = vec2((muv.x - 0.70) / 0.22, (muv.y - 0.28) / 0.40);
+    float g_box = smoothstep(0.09, 0.04, min(min(gp.x, 1.0 - gp.x), min(gp.y, 1.0 - gp.y)));
+    col += vec3(0.85, 0.20, 0.08) * g_box * 0.55;
+    int gear = spd_val < 2 ? 10 : clamp(1 + int(spd_n * 5.4), 1, 6);
+    vec2 dp = clamp((gp - vec2(0.16, 0.12)) / vec2(0.68, 0.76), vec2(0.0), vec2(1.0));
+    if (gp.x > 0.16 && gp.x < 0.84 && gp.y > 0.12 && gp.y < 0.88) {
+      float gd = mfd_digit(dp, gear);
+      col += vec3(1.15, 0.34, 0.10) * gd * 1.25;
+    }
+  }
+
+  // Bottom zone (y in [0.08, 0.20]): dual telemetry bars (left = fuel, right = boost/throttle).
+  if (muv.y > 0.09 && muv.y < 0.19) {
+    if (muv.x > 0.08 && muv.x < 0.46) {
+      float fx = (muv.x - 0.08) / 0.38;
+      col += fx <= fuel_n ? vec3(0.18, 0.78, 0.42) * 0.75 : vec3(0.03, 0.06, 0.08);
+    } else if (muv.x > 0.54 && muv.x < 0.92) {
+      float px = (muv.x - 0.54) / 0.38;
+      float bar = max(boost_n, rpm_n * 0.75);
+      col += px <= bar ? vec3(0.98, 0.62, 0.14) * 0.80 : vec3(0.03, 0.06, 0.08);
+    }
+  }
+  return col;
+}
+
 void main() {
   uint klass = uint(draw.params.x + 0.5);
   uint flags = uint(draw.params.y + 0.5);
@@ -606,9 +725,14 @@ void main() {
       emissive = vec3(0.95, 0.18, 0.04) * (kLinearOut ? 0.65 : 0.55);
       gloss = 0.35;
     } else if (submat == 16u) {
-      // Digital MFD / cockpit LCD screen: dark anti-glare glass with subtle cool backlight instead of flat grey.
-      base = mix(vec3(0.012, 0.018, 0.026), base * 0.18, 0.30);
-      emissive = vec3(0.014, 0.028, 0.042) + ((flags & kFlagLampEmissive) != 0u ? base * draw_tint.rgb * 0.35 : vec3(0.0));
+      // Active backlit digital cockpit MFD / cluster TFT display (RPM bar, speed, gear, telemetry).
+      vec2 muv = (draw.uv1.y > 0.01 && draw.uv1.w > 0.01)
+                     ? clamp((v_local_pos.xy - draw.uv1.xz) * draw.uv1.yw, vec2(0.0), vec2(1.0))
+                     : clamp(v_uv0, vec2(0.0), vec2(1.0));
+      vec3 mfd_lit = eval_cockpit_mfd(muv);
+      base = vec3(0.015, 0.022, 0.032) + mfd_lit * 0.15;
+      float mfd_gain = kLinearOut ? 0.72 : 0.65;
+      emissive = mfd_lit * mfd_gain;
       gloss = 0.88;
       reflectivity = 0.06;
     } else if (submat == 17u) {
