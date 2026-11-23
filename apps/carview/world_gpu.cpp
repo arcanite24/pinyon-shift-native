@@ -391,8 +391,15 @@ bool WorldGpu::create_pipelines(std::string& error) {
     rendering.colorAttachmentCount = color_out ? 1u : 0u;
     rendering.pColorAttachmentFormats = color_out ? &color_format : nullptr;
     rendering.depthAttachmentFormat = r_.depth_format_;
+    VkPipelineColorBlendAttachmentState catt = attachment;
+    if (coverage && r_.post()) {
+      // Alpha-to-coverage consumes fragment .a before colorWriteMask; keeping A_BIT off prevents
+      // matte foliage/trees from stamping gloss into hdr_.a for Hi-Z SSR.
+      catt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+    }
     VkPipelineColorBlendStateCreateInfo cblend = blend;
     cblend.attachmentCount = color_out ? 1u : 0u;
+    cblend.pAttachments = color_out ? &catt : nullptr;
     VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     info.pNext = &rendering;
     info.stageCount = fs ? 2u : 1u;
@@ -909,7 +916,8 @@ void WorldGpu::record_hiz(VkCommandBuffer cmd, VkImageView depth_view, uint32_t 
   if (!ready_ || !hiz_gen_ || !depth_view || !depth_w || !depth_h) return;
   SlotBuffers& s = slots_[recorded_slot_];
   img_barrier(cmd, hiz_image_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, 0, kHizMips);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_gen_);
 
@@ -952,7 +960,8 @@ void WorldGpu::record_hiz(VkCommandBuffer cmd, VkImageView depth_view, uint32_t 
 
     img_barrier(cmd, hiz_image_.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, m, 1);
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, m, 1);
     sw = dw;
     sh = dh;
     dw = std::max(1u, dw / 2u);

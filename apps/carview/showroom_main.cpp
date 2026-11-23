@@ -1840,6 +1840,10 @@ int run_drive(int argc, char** argv) {
   bool cli_sscs_explicit = false;
   bool cli_hextile_explicit = false;
   bool cli_velblur_explicit = false;
+  bool cli_pcss_explicit = false;
+  bool cli_ssr_explicit = false;
+  bool cli_volfog_explicit = false;
+  bool cli_cardetail_explicit = false;
   uint32_t cli_hdr_pattern = 0;
   float cli_hdr_pattern_nits = 1000.0f;
   bool cli_perf_overlay = false;
@@ -2120,6 +2124,10 @@ int run_drive(int argc, char** argv) {
       else if (a == "--contact-shadows") cli_sscs_explicit = true;
       else if (a == "--hex-tiling" || a == "--no-hex-tiling") cli_hextile_explicit = true;
       else if (a == "--velocity-blur") cli_velblur_explicit = true;
+      else if (a == "--shadow-pcss") cli_pcss_explicit = true;
+      else if (a == "--ssr") cli_ssr_explicit = true;
+      else if (a == "--volumetric-fog") cli_volfog_explicit = true;
+      else if (a == "--car-detail" || a == "--no-car-detail") cli_cardetail_explicit = true;
     } else if (a == "--hdr-pattern") {
       cli_hdr_pattern = uint32_t(std::clamp(std::atoi(next()), 0, 3));
     } else if (a == "--hdr-pattern-nits") {
@@ -2139,7 +2147,7 @@ int run_drive(int argc, char** argv) {
       return 2;
     }
   }
-  // Apply scalable Phase A SOTA defaults per graphics preset unless explicitly overridden via CLI/settings.
+  // Apply scalable Phase A + B SOTA defaults per graphics preset unless explicitly overridden via CLI/settings.
   {
     carview::GraphicsPresetSpec pspec;
     if (carview::resolve_graphics_preset(preset_name, pspec)) {
@@ -2147,6 +2155,10 @@ int run_drive(int argc, char** argv) {
       if (!cli_sscs_explicit) cli_graphics.contact_shadows = pspec.contact_shadows;
       if (!cli_hextile_explicit) cli_graphics.hex_tiling = pspec.hex_tiling;
       if (!cli_velblur_explicit) cli_graphics.velocity_blur = pspec.velocity_blur;
+      if (!cli_pcss_explicit) cli_graphics.shadow_pcss = pspec.shadow_pcss;
+      if (!cli_ssr_explicit) cli_graphics.ssr = pspec.ssr;
+      if (!cli_volfog_explicit) cli_graphics.volumetric_fog = pspec.volumetric_fog;
+      if (!cli_cardetail_explicit) cli_graphics.car_detail = pspec.car_detail;
     }
   }
   // Apply deterministic defaults for named benchmark scenarios (--bench-scenario).
@@ -3345,8 +3357,12 @@ int run_drive(int argc, char** argv) {
     {
       const std::string level = !shadows_flag.empty() ? shadows_flag : low_preset ? "low" : "high";
       ShadowSettings& shadow = render_options.shadow;
-      if (level == "low") shadow.size = 1024, shadow.radius = 40, shadow.taps = 1;
-      else if (level == "high") shadow.size = 2048, shadow.radius = 60, shadow.taps = 4;
+      if (level == "low") {
+        shadow.size = 1024, shadow.radius = 40, shadow.taps = 1, shadow.cascades = 2;
+      } else if (level == "high") {
+        shadow.size = 2048, shadow.radius = 60, shadow.taps = 4;
+        shadow.cascades = uint32_t(carview::modern::shadow_cascade_count(cli_graphics.shadow_pcss));
+      }
     }
     // The shadow pass casts from the track's shadow light when it overrides
     // the sun (towards the light: the travel direction negated).

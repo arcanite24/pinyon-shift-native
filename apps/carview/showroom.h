@@ -99,8 +99,12 @@ struct ShowroomFrame {
   float damage_zones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   // Car-specific direct sun color scaled by IBLDirectScaleCar (0.6238 vs env 1.30).
   float car_sun_color[4] = {0.464f, 0.400f, 0.280f, -1.0f};
+  // Phase B SOTA: 3-cascade stabilized D32 CSM mid cascade, PCSS mode & automotive detail flags.
+  float shadow_matrix_mid[16] = {};
+  float shadow_mid_bias[4] = {0.0f, 0.0f, 0.0f, 2.0f};  // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
+  float phase_b_params[4] = {0.0f, 0.0f, 0.0f, 0.0f};   // x car_detail (>0.5), y rotor_glow [0..1], z frame_jitter, w ssr_active
 };
-static_assert(sizeof(ShowroomFrame) == 704);
+static_assert(sizeof(ShowroomFrame) == 800);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -600,7 +604,7 @@ class Showroom {
   bool shadows_on() const;
   void place_shadow();
   void record_shadow(VkCommandBuffer cmd);
-  void record_shadow_car(VkCommandBuffer cmd, const float* m);
+  void record_shadow_car(VkCommandBuffer cmd, const float* m, VkDescriptorSet cascade_set = VK_NULL_HANDLE);
   // The opaque and glass draws once more, each model matrix first taken by
   // `m` (a guest's instance; glass unsorted).
   void record_instance(VkCommandBuffer cmd, const float m[16], const drive::LampShaderVectors* lamps = nullptr);
@@ -654,13 +658,19 @@ class Showroom {
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
   VkDescriptorPool material_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
-  // The sun shadow pass: Near + Far cascades in a 2x1 atlas.
+  // The sun shadow pass: 2-cascade (Near/Far) or 3-cascade (Near/Mid/Far) D32_SFLOAT stabilized CSM atlas.
   Renderer::Buffer shadow_frame_buffer_;
+  Renderer::Buffer shadow_frame_mid_buffer_;
   Renderer::Buffer shadow_frame_far_buffer_;
   VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
+  VkDescriptorSet shadow_set_mid_ = VK_NULL_HANDLE;
   VkDescriptorSet shadow_set_far_ = VK_NULL_HANDLE;
   ShowroomFrame shadow_frame_{};
+  ShowroomFrame shadow_frame_mid_{};
   ShowroomFrame shadow_frame_far_{};
+  float rotor_glow_ = 0.0f;
+  WheelPose wheel_poses_[4]{};
+  bool have_wheel_poses_ = false;
   VkPipeline shadow_world_ = VK_NULL_HANDLE, shadow_cutout_ = VK_NULL_HANDLE, shadow_car_ = VK_NULL_HANDLE;
   size_t shadow_drawn_ = 0, shadow_cars_ = 0;
   float shadow_direction_[3] = {0, 1, 0};
@@ -722,7 +732,7 @@ class Showroom {
   bool draw_car_ = true;
   VkPipeline world_opaque_ = VK_NULL_HANDLE, world_opaque_after_z_ = VK_NULL_HANDLE,
              world_opaque_dither_ = VK_NULL_HANDLE, world_z_prepass_ = VK_NULL_HANDLE,
-             world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
+             world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE, world_water_ = VK_NULL_HANDLE;
   float current_world_swap_ = 2.0f;
   std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
   // Held for writes to world_textures_ and for the worker's reads.
@@ -823,6 +833,9 @@ class Showroom {
   std::vector<world::WorldGlow> world_glows_;
   GpuTexture headlight_cookie_;
   Renderer::Buffer headlights_ubo_;
+  Renderer::VolumetricBeam vol_beams_[8]{};
+  uint32_t vol_beam_count_ = 0;
+  float vol_night_factor_ = 0.0f;
   GpuTexture glow_tex_[7];
   VkDescriptorSetLayout glow_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout glow_pipe_layout_ = VK_NULL_HANDLE;

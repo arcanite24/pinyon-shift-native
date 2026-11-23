@@ -46,10 +46,12 @@
 #include "post_vert_spv.h"
 #include "ssao_frag_spv.h"
 #include "sscs_frag_spv.h"
+#include "ssr_frag_spv.h"
 #include "temporal_upscale_frag_spv.h"
 #include "ui_frag_spv.h"
 #include "ui_vert_spv.h"
 #include "upscale_frag_spv.h"
+#include "volumetric_frag_spv.h"
 
 namespace carview {
 
@@ -203,6 +205,7 @@ Renderer::~Renderer() {
     destroy_image(lum_adapt_[1]);
     destroy_image(shadow_map_);
     if (shadow_sampler_) vkDestroySampler(device_, shadow_sampler_, nullptr);
+    if (shadow_raw_sampler_) vkDestroySampler(device_, shadow_raw_sampler_, nullptr);
     if (timestamps_) vkDestroyQueryPool(device_, timestamps_, nullptr);
     if (sampler_) vkDestroySampler(device_, sampler_, nullptr);
     if (descriptor_pool_) vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
@@ -1286,6 +1289,30 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         return false;
       }
     }
+    if (plan.ssr) {
+      const bool full_ssr = modern::ssr_full_res(graphics_.ssr);
+      ssr_width_ = full_ssr ? rw : std::max(1u, rw / 2);
+      ssr_height_ = full_ssr ? rh : std::max(1u, rh / 2);
+      if (!create_image(ssr_width_, ssr_height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, ssr_raw_) ||
+          !create_image(ssr_width_, ssr_height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, ssr_blur_)) {
+        error = "post ssr targets";
+        return false;
+      }
+    }
+    if (plan.volumetric) {
+      const uint32_t div = std::max(2u, modern::volumetric_scale_div(graphics_.volumetric_fog));
+      vol_width_ = std::max(1u, rw / div);
+      vol_height_ = std::max(1u, rh / div);
+      if (!create_image(vol_width_, vol_height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, vol_raw_) ||
+          !create_image(vol_width_, vol_height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, vol_blur_)) {
+        error = "post volumetric targets";
+        return false;
+      }
+    }
     const VkImageUsageFlags sdr_usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -1380,23 +1407,28 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     sources[12][0] = bv(bloom_a_[0]); sources[12][1] = bv(bloom_b_[1]);
     sources[13][0] = hdr_.view;       sources[13][1] = bv(bloom_b_[0]);
 
-    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 9);
+    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 11);
     std::vector<VkDescriptorBufferInfo> buf_infos(kPostSetCount);
-    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 10);
+    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 12);
     const VkImageView ao_view = (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view
                                                                                                : ao_white_.view;
     const VkImageView sscs_view =
         (graphics_.contact_shadows != modern::ContactShadows::kOff && sscs_.view) ? sscs_.view : ao_white_.view;
     const VkImageView motion_view = motion_vec_.view ? motion_vec_.view : vel_fb;
     const VkImageView neighbor_view = mblur_neighbor_.view ? mblur_neighbor_.view : vel_fb;
+    const VkImageView ssr_view =
+        (graphics_.ssr != modern::SsrQuality::kOff && ssr_blur_.view) ? ssr_blur_.view : ssr_zero_.view;
+    const VkImageView vol_view =
+        (graphics_.volumetric_fog != modern::VolumetricFog::kOff && vol_blur_.view) ? vol_blur_.view
+                                                                                    : vol_identity_.view;
     for (uint32_t s = 0; s < kPostSetCount; ++s) {
       // Only the final composite (s == 13) samples lum_adapt_[0]; pass 1 renders into lum_adapt_[0],
       // so earlier sets bind lum_adapt_[1] (already SHADER_READ_ONLY_OPTIMAL) to avoid a layout conflict.
       const VkImageView adapt_view = (s == 13) ? lum_adapt_[0].view : lum_adapt_[1].view;
       const VkImageView views[4] = {sources[s][0], sources[s][1], lut3d_.view, adapt_view};
       for (uint32_t b = 0; b < 4; ++b) {
-        const size_t iidx = size_t(s) * 9 + b;
-        const size_t widx = size_t(s) * 10 + b;
+        const size_t iidx = size_t(s) * 11 + b;
+        const size_t widx = size_t(s) * 12 + b;
         images[iidx] = {post_sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1407,8 +1439,8 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         w.pImageInfo = &images[iidx];
       }
       {
-        const size_t iidx = size_t(s) * 9 + 4;
-        const size_t widx = size_t(s) * 10 + 4;
+        const size_t iidx = size_t(s) * 11 + 4;
+        const size_t widx = size_t(s) * 12 + 4;
         images[iidx] = {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1419,7 +1451,7 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         w.pImageInfo = &images[iidx];
       }
       {
-        const size_t widx = size_t(s) * 10 + 5;
+        const size_t widx = size_t(s) * 12 + 5;
         buf_infos[s] = {post_optical_buf_.buffer, 0, VK_WHOLE_SIZE};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1429,10 +1461,10 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         w.pBufferInfo = &buf_infos[s];
       }
-      const VkImageView extra_views[4] = {ao_view, sscs_view, motion_view, neighbor_view};
-      for (uint32_t e = 0; e < 4; ++e) {
-        const size_t iidx = size_t(s) * 9 + 5 + e;
-        const size_t widx = size_t(s) * 10 + 6 + e;
+      const VkImageView extra_views[6] = {ao_view, sscs_view, motion_view, neighbor_view, ssr_view, vol_view};
+      for (uint32_t e = 0; e < 6; ++e) {
+        const size_t iidx = size_t(s) * 11 + 5 + e;
+        const size_t widx = size_t(s) * 12 + 6 + e;
         images[iidx] = {post_sampler_, extra_views[e], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1458,8 +1490,15 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
 
 bool Renderer::ensure_shadow_map(std::string& error) {
   if (shadow_map_.view) return true;
-  const uint32_t size = options_.shadow.size ? options_.shadow.size : 1;
-  const uint32_t width = size > 1 ? size * 2 : 1;
+  uint32_t size = options_.shadow.size ? options_.shadow.size : 1;
+  const uint32_t cascades = (size > 1 && options_.shadow.cascades >= 3) ? 3u : 2u;
+  if (size > 1 && physical_) {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physical_, &props);
+    const uint32_t max_side = std::max(512u, props.limits.maxImageDimension2D / cascades);
+    if (size > max_side) size = max_side;
+  }
+  const uint32_t width = size > 1 ? size * cascades : 1;
   if (!create_image(width, size, 1, kShadowFormat, VK_SAMPLE_COUNT_1_BIT,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -1468,6 +1507,7 @@ bool Renderer::ensure_shadow_map(std::string& error) {
     return false;
   }
   shadow_size_ = size;
+  shadow_cascades_ = size > 1 ? cascades : 1u;
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter = VK_FILTER_LINEAR;
   sampler.minFilter = VK_FILTER_LINEAR;
@@ -1479,6 +1519,14 @@ bool Renderer::ensure_shadow_map(std::string& error) {
   sampler.maxLod = 0.0f;
   if (vkCreateSampler(device_, &sampler, nullptr, &shadow_sampler_) != VK_SUCCESS) {
     error = "shadow sampler";
+    return false;
+  }
+  VkSamplerCreateInfo raw_sampler = sampler;
+  raw_sampler.magFilter = VK_FILTER_NEAREST;
+  raw_sampler.minFilter = VK_FILTER_NEAREST;
+  raw_sampler.compareEnable = VK_FALSE;
+  if (vkCreateSampler(device_, &raw_sampler, nullptr, &shadow_raw_sampler_) != VK_SUCCESS) {
+    error = "shadow raw sampler";
     return false;
   }
   // Cleared to the far plane (lit) and left ready to sample.
@@ -1524,6 +1572,7 @@ void Renderer::set_graphics_settings(const modern::GraphicsSettings& g) {
   const bool need_targets =
       clamped.scale != graphics_.scale || clamped.base_540p != graphics_.base_540p ||
       clamped.ssao != graphics_.ssao || clamped.contact_shadows != graphics_.contact_shadows ||
+      clamped.ssr != graphics_.ssr || clamped.volumetric_fog != graphics_.volumetric_fog ||
       clamped.velocity_blur != graphics_.velocity_blur || clamped.hdr != graphics_.hdr ||
       clamped.hdr_compare != graphics_.hdr_compare ||
       clamped.aa != graphics_.aa || clamped.upscaler != graphics_.upscaler;
@@ -1566,13 +1615,30 @@ void Renderer::set_hiz_preview_view(VkImageView view) {
       hiz_preview_view_ ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
                         : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
                                                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  w.dstSet = inspector_sets_[5];
-  w.dstBinding = 0;
-  w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  w.pImageInfo = &info;
-  vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
+  const VkDescriptorImageInfo hiz_nearest =
+      hiz_preview_view_ ? VkDescriptorImageInfo{post_depth_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+                        : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+                                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet writes[3]{};
+  uint32_t count = 0;
+  writes[count] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  writes[count].dstSet = inspector_sets_[5];
+  writes[count].dstBinding = 0;
+  writes[count].descriptorCount = 1;
+  writes[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  writes[count].pImageInfo = &info;
+  ++count;
+  for (int i = 0; i < 2; ++i) {
+    if (!ssr_sets_[i]) continue;
+    writes[count] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[count].dstSet = ssr_sets_[i];
+    writes[count].dstBinding = 2;
+    writes[count].descriptorCount = 1;
+    writes[count].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[count].pImageInfo = &hiz_nearest;
+    ++count;
+  }
+  vkUpdateDescriptorSets(device_, count, writes, 0, nullptr);
 }
 
 bool Renderer::take_inspector_preview(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height) {
@@ -1744,15 +1810,17 @@ bool Renderer::create_post(std::string& error) {
   VK_TRY(vkCreateSampler(device_, &sampler, nullptr, &post_sampler_), "post sampler");
   VkSamplerCreateInfo dsampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   dsampler.magFilter = dsampler.minFilter = VK_FILTER_NEAREST;
+  dsampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
   dsampler.addressModeU = dsampler.addressModeV = dsampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  dsampler.maxLod = VK_LOD_CLAMP_NONE;
   VK_TRY(vkCreateSampler(device_, &dsampler, nullptr, &post_depth_sampler_), "post depth sampler");
-  constexpr VkDeviceSize kOpticalUboBytes = 14 * 16;  // 14 vec4s = 224 bytes
+  constexpr VkDeviceSize kOpticalUboBytes = 15 * 16;  // 15 vec4s = 240 bytes
   if (!create_buffer(kOpticalUboBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, post_optical_buf_)) {
     error = "post optical UBO";
     return false;
   }
-  const VkDescriptorSetLayoutBinding bindings[10] = {
+  const VkDescriptorSetLayoutBinding bindings[12] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1762,9 +1830,11 @@ bool Renderer::create_post(std::string& error) {
       {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 10;
+  set.bindingCount = 12;
   set.pBindings = bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
   VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
@@ -1775,7 +1845,7 @@ bool Renderer::create_post(std::string& error) {
   layout.pPushConstantRanges = &push;
   VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
   const VkDescriptorPoolSize pool_sizes[2] = {
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 9},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 11},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPostSetCount}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = kPostSetCount;
@@ -1862,16 +1932,25 @@ bool Renderer::create_post(std::string& error) {
 
 bool Renderer::create_modern_passes(std::string& error) {
   if (modern_ready_) return true;
+  if (!shadow_map_.view && !ensure_shadow_map(error)) return false;
   // 1x1 neutral fallback textures:
-  //   ao_white_: RGBA8 {1.0, 0.5, 0.5, 1.0} (full visibility + neutral +Z view bent normal)
-  //   vel_zero_: RGBA16F {0, 0, 0, 1000} (zero motion vector, 0 reactive, far depth)
+  //   ao_white_:     RGBA8 {1.0, 0.5, 0.5, 1.0} (full visibility + neutral +Z view bent normal)
+  //   vel_zero_:     RGBA16F {0, 0, 0, 1000} (zero motion vector, 0 reactive, far depth)
+  //   ssr_zero_:     RGBA16F {0, 0, 0, 0} (no screen-space reflection)
+  //   vol_identity_: RGBA16F {0, 0, 0, 1} (zero in-scatter, 1.0 transmittance)
   if (!ao_white_.image) {
     if (!create_image(1, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                       ao_white_) ||
         !create_image(1, 1, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                      vel_zero_)) {
+                      vel_zero_) ||
+        !create_image(1, 1, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                      ssr_zero_) ||
+        !create_image(1, 1, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                      vol_identity_)) {
       error = "modern fallback targets";
       return false;
     }
@@ -1879,27 +1958,33 @@ bool Renderer::create_modern_passes(std::string& error) {
       const VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
       const VkClearColorValue neutral_ao{{1.0f, 0.5f, 0.5f, 1.0f}};
       const VkClearColorValue zero_vel{{0.0f, 0.0f, 0.0f, 1000.0f}};
-      image_barrier(cmd, ao_white_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-                    VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-      image_barrier(cmd, vel_zero_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-                    VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-      vkCmdClearColorImage(cmd, ao_white_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &neutral_ao, 1, &rng);
-      vkCmdClearColorImage(cmd, vel_zero_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero_vel, 1, &rng);
-      image_barrier(cmd, ao_white_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-      image_barrier(cmd, vel_zero_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      const VkClearColorValue zero_ssr{{0.0f, 0.0f, 0.0f, 0.0f}};
+      const VkClearColorValue ident_vol{{0.0f, 0.0f, 0.0f, 1.0f}};
+      auto init_clear = [&](const Image& img, const VkClearColorValue& cv) {
+        image_barrier(cmd, img.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        vkCmdClearColorImage(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &rng);
+        image_barrier(cmd, img.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      };
+      init_clear(ao_white_, neutral_ao);
+      init_clear(vel_zero_, zero_vel);
+      init_clear(ssr_zero_, zero_ssr);
+      init_clear(vol_identity_, ident_vol);
     });
     if (!ok) {
       error = "modern fallback clear";
       return false;
     }
+  }
+  if (!vol_ubo_.buffer &&
+      !create_buffer(sizeof(VolumetricState), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vol_ubo_)) {
+    error = "volumetric UBO";
+    return false;
   }
   const VkDescriptorSetLayoutBinding ssao_bindings[2] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -1926,6 +2011,26 @@ bool Renderer::create_modern_passes(std::string& error) {
   temp_set_info.pBindings = temporal_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &temp_set_info, nullptr, &temporal_set_layout_), "temporal set layout");
 
+  const VkDescriptorSetLayoutBinding ssr_bindings[4] = {
+      {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+  VkDescriptorSetLayoutCreateInfo ssr_set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  ssr_set_info.bindingCount = 4;
+  ssr_set_info.pBindings = ssr_bindings;
+  VK_TRY(vkCreateDescriptorSetLayout(device_, &ssr_set_info, nullptr, &ssr_set_layout_), "ssr set layout");
+
+  const VkDescriptorSetLayoutBinding vol_bindings[4] = {
+      {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+  VkDescriptorSetLayoutCreateInfo vol_set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  vol_set_info.bindingCount = 4;
+  vol_set_info.pBindings = vol_bindings;
+  VK_TRY(vkCreateDescriptorSetLayout(device_, &vol_set_info, nullptr, &vol_set_layout_), "volumetric set layout");
+
   auto make_layout = [&](VkDescriptorSetLayout set_layout, uint32_t push_bytes, VkPipelineLayout& out,
                          const char* what) -> bool {
     VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, push_bytes};
@@ -1939,6 +2044,8 @@ bool Renderer::create_modern_passes(std::string& error) {
   };
   if (!make_layout(ssao_set_layout_, 48, ssao_layout_, "ssao layout") ||
       !make_layout(single_tex_set_layout_, 48, sscs_layout_, "sscs layout") ||
+      !make_layout(ssr_set_layout_, 64, ssr_layout_, "ssr layout") ||
+      !make_layout(vol_set_layout_, 32, vol_layout_, "volumetric layout") ||
       !make_layout(single_tex_set_layout_, 16, mblur_tile_layout_, "mblur tile layout") ||
       !make_layout(single_tex_set_layout_, 16, fxaa_layout_, "fxaa layout") ||
       !make_layout(single_tex_set_layout_, 48, upscale_layout_, "upscale layout") ||
@@ -1948,11 +2055,13 @@ bool Renderer::create_modern_passes(std::string& error) {
       !make_layout(single_tex_set_layout_, 16, inspector_layout_, "inspector layout"))
     return false;
 
-  const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64};
+  const VkDescriptorPoolSize pool_sizes[2] = {
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 96},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4}};
   VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool_info.maxSets = 32;
-  pool_info.poolSizeCount = 1;
-  pool_info.pPoolSizes = &pool_size;
+  pool_info.maxSets = 40;
+  pool_info.poolSizeCount = 2;
+  pool_info.pPoolSizes = pool_sizes;
   VK_TRY(vkCreateDescriptorPool(device_, &pool_info, nullptr, &modern_pool_), "modern descriptor pool");
 
   VkDescriptorSetLayout ssao_layouts[3] = {ssao_set_layout_, ssao_set_layout_, ssao_set_layout_};
@@ -1961,6 +2070,20 @@ bool Renderer::create_modern_passes(std::string& error) {
   salloc.descriptorSetCount = 3;
   salloc.pSetLayouts = ssao_layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &salloc, ssao_sets_), "ssao descriptor sets");
+
+  VkDescriptorSetLayout ssr_layouts[2] = {ssr_set_layout_, ssr_set_layout_};
+  VkDescriptorSetAllocateInfo ssr_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ssr_alloc.descriptorPool = modern_pool_;
+  ssr_alloc.descriptorSetCount = 2;
+  ssr_alloc.pSetLayouts = ssr_layouts;
+  VK_TRY(vkAllocateDescriptorSets(device_, &ssr_alloc, ssr_sets_), "ssr descriptor sets");
+
+  VkDescriptorSetLayout vol_layouts[2] = {vol_set_layout_, vol_set_layout_};
+  VkDescriptorSetAllocateInfo vol_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  vol_alloc.descriptorPool = modern_pool_;
+  vol_alloc.descriptorSetCount = 2;
+  vol_alloc.pSetLayouts = vol_layouts;
+  VK_TRY(vkAllocateDescriptorSets(device_, &vol_alloc, vol_sets_), "volumetric descriptor sets");
 
   VkDescriptorSetLayout tex_layouts[19];
   for (int i = 0; i < 19; ++i) tex_layouts[i] = single_tex_set_layout_;
@@ -2057,6 +2180,10 @@ bool Renderer::create_modern_passes(std::string& error) {
                     "gtao pipeline") ||
       !make_fs_pipe(kSscs_frag_spv, sizeof(kSscs_frag_spv), sscs_layout_, VK_FORMAT_R8_UNORM, sscs_pipe_,
                     "sscs pipeline") ||
+      !make_fs_pipe(kSsr_frag_spv, sizeof(kSsr_frag_spv), ssr_layout_, VK_FORMAT_R16G16B16A16_SFLOAT, ssr_pipe_,
+                    "ssr pipeline") ||
+      !make_fs_pipe(kVolumetric_frag_spv, sizeof(kVolumetric_frag_spv), vol_layout_, VK_FORMAT_R16G16B16A16_SFLOAT,
+                    vol_pipe_, "volumetric pipeline") ||
       !make_fs_pipe(kMblur_tile_frag_spv, sizeof(kMblur_tile_frag_spv), mblur_tile_layout_, VK_FORMAT_R16G16_SFLOAT,
                     mblur_tile_pipe_, "mblur tile pipeline") ||
       !make_fs_pipe(kFxaa_frag_spv, sizeof(kFxaa_frag_spv), fxaa_layout_, VK_FORMAT_R8G8B8A8_UNORM, fxaa_pipe_,
@@ -2097,6 +2224,8 @@ void Renderer::destroy_modern_passes() {
   if (mblur_tile_pipe_) vkDestroyPipeline(device_, mblur_tile_pipe_, nullptr), mblur_tile_pipe_ = VK_NULL_HANDLE;
   if (upscale_pipe_) vkDestroyPipeline(device_, upscale_pipe_, nullptr), upscale_pipe_ = VK_NULL_HANDLE;
   if (fxaa_pipe_) vkDestroyPipeline(device_, fxaa_pipe_, nullptr), fxaa_pipe_ = VK_NULL_HANDLE;
+  if (vol_pipe_) vkDestroyPipeline(device_, vol_pipe_, nullptr), vol_pipe_ = VK_NULL_HANDLE;
+  if (ssr_pipe_) vkDestroyPipeline(device_, ssr_pipe_, nullptr), ssr_pipe_ = VK_NULL_HANDLE;
   if (sscs_pipe_) vkDestroyPipeline(device_, sscs_pipe_, nullptr), sscs_pipe_ = VK_NULL_HANDLE;
   if (ssao_pipe_) vkDestroyPipeline(device_, ssao_pipe_, nullptr), ssao_pipe_ = VK_NULL_HANDLE;
   if (inspector_layout_) vkDestroyPipelineLayout(device_, inspector_layout_, nullptr), inspector_layout_ = VK_NULL_HANDLE;
@@ -2106,16 +2235,25 @@ void Renderer::destroy_modern_passes() {
   if (hdr_layout_) vkDestroyPipelineLayout(device_, hdr_layout_, nullptr), hdr_layout_ = VK_NULL_HANDLE;
   if (upscale_layout_) vkDestroyPipelineLayout(device_, upscale_layout_, nullptr), upscale_layout_ = VK_NULL_HANDLE;
   if (fxaa_layout_) vkDestroyPipelineLayout(device_, fxaa_layout_, nullptr), fxaa_layout_ = VK_NULL_HANDLE;
+  if (vol_layout_) vkDestroyPipelineLayout(device_, vol_layout_, nullptr), vol_layout_ = VK_NULL_HANDLE;
+  if (ssr_layout_) vkDestroyPipelineLayout(device_, ssr_layout_, nullptr), ssr_layout_ = VK_NULL_HANDLE;
   if (sscs_layout_) vkDestroyPipelineLayout(device_, sscs_layout_, nullptr), sscs_layout_ = VK_NULL_HANDLE;
   if (ssao_layout_) vkDestroyPipelineLayout(device_, ssao_layout_, nullptr), ssao_layout_ = VK_NULL_HANDLE;
   if (modern_pool_) vkDestroyDescriptorPool(device_, modern_pool_, nullptr), modern_pool_ = VK_NULL_HANDLE;
+  if (vol_set_layout_)
+    vkDestroyDescriptorSetLayout(device_, vol_set_layout_, nullptr), vol_set_layout_ = VK_NULL_HANDLE;
+  if (ssr_set_layout_)
+    vkDestroyDescriptorSetLayout(device_, ssr_set_layout_, nullptr), ssr_set_layout_ = VK_NULL_HANDLE;
   if (temporal_set_layout_)
     vkDestroyDescriptorSetLayout(device_, temporal_set_layout_, nullptr), temporal_set_layout_ = VK_NULL_HANDLE;
   if (single_tex_set_layout_)
     vkDestroyDescriptorSetLayout(device_, single_tex_set_layout_, nullptr), single_tex_set_layout_ = VK_NULL_HANDLE;
   if (ssao_set_layout_)
     vkDestroyDescriptorSetLayout(device_, ssao_set_layout_, nullptr), ssao_set_layout_ = VK_NULL_HANDLE;
+  destroy_buffer(vol_ubo_);
   destroy_image(inspector_thumb_);
+  destroy_image(vol_identity_);
+  destroy_image(ssr_zero_);
   destroy_image(vel_zero_);
   destroy_image(ao_white_);
   modern_ready_ = false;
@@ -2207,6 +2345,65 @@ void Renderer::update_modern_descriptors() {
     writes[25 + i].pImageInfo = &temp_imgs[i];
   }
   vkUpdateDescriptorSets(device_, 37, writes, 0, nullptr);
+
+  // Phase B SSR & Volumetric Scattering descriptor sets.
+  const VkImageView hdr_view = hdr_.view ? hdr_.view : fb;
+  const VkImageView ssr_fb = ssr_zero_.view ? ssr_zero_.view : fb;
+  const VkImageView vol_fb = vol_identity_.view ? vol_identity_.view : fb;
+  const VkDescriptorImageInfo hiz_nearest =
+      hiz_preview_view_
+          ? VkDescriptorImageInfo{post_depth_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
+          : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo ssr_imgs[8] = {
+      {post_sampler_, hdr_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      hiz_nearest,
+      {post_sampler_, ssr_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, hdr_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      hiz_nearest,
+      {post_sampler_, ssr_raw_.view ? ssr_raw_.view : ssr_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+  };
+  const VkImageView vol_sh_view = (shadow_map_.view && shadow_sampler_) ? shadow_map_.view : depth_resolved_.view;
+  const VkSampler vol_sh_samp = shadow_sampler_ ? shadow_sampler_ : post_depth_sampler_;
+  VkDescriptorImageInfo vol_imgs[6] = {
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {vol_sh_samp, vol_sh_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_sampler_, vol_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {vol_sh_samp, vol_sh_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_sampler_, vol_raw_.view ? vol_raw_.view : vol_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+  };
+  VkDescriptorBufferInfo vol_buf_info{vol_ubo_.buffer, 0, sizeof(VolumetricState)};
+  VkWriteDescriptorSet b_writes[16]{};
+  for (int i = 0; i < 8; ++i) {
+    b_writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    b_writes[i].dstSet = ssr_sets_[i / 4];
+    b_writes[i].dstBinding = uint32_t(i % 4);
+    b_writes[i].descriptorCount = 1;
+    b_writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    b_writes[i].pImageInfo = &ssr_imgs[i];
+  }
+  for (int s = 0; s < 2; ++s) {
+    for (int b = 0; b < 3; ++b) {
+      const int idx = 8 + s * 4 + b;
+      b_writes[idx] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      b_writes[idx].dstSet = vol_sets_[s];
+      b_writes[idx].dstBinding = uint32_t(b);
+      b_writes[idx].descriptorCount = 1;
+      b_writes[idx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      b_writes[idx].pImageInfo = &vol_imgs[s * 3 + b];
+    }
+    const int uidx = 8 + s * 4 + 3;
+    b_writes[uidx] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    b_writes[uidx].dstSet = vol_sets_[s];
+    b_writes[uidx].dstBinding = 3;
+    b_writes[uidx].descriptorCount = 1;
+    b_writes[uidx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b_writes[uidx].pBufferInfo = &vol_buf_info;
+  }
+  vkUpdateDescriptorSets(device_, 16, b_writes, 0, nullptr);
 }
 
 void Renderer::record_ssao(VkCommandBuffer cmd) {
@@ -2297,6 +2494,122 @@ void Renderer::record_sscs(VkCommandBuffer cmd) {
   image_barrier(cmd, sscs_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
   mark(cmd, "sscs");
+}
+
+void Renderer::record_ssr(VkCommandBuffer cmd) {
+  if (!modern_ready_ || graphics_.ssr == modern::SsrQuality::kOff || !ssr_pipe_ || !ssr_raw_.view || !ssr_blur_.view)
+    return;
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  const float frame_jitter = float(frames_submitted_ & 63u) / 64.0f;
+  const float strength = (graphics_.ssr == modern::SsrQuality::kFull) ? 0.90f : 0.80f;
+  const float max_steps = float(modern::ssr_steps(graphics_.ssr));
+  const float has_hiz = (hiz_preview_view_ != VK_NULL_HANDLE) ? 1.0f : 0.0f;
+  auto draw_ssr = [&](const Image& dst, VkDescriptorSet set, float mode) {
+    image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+    VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    col.imageView = dst.view;
+    col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rend.renderArea = {{0, 0}, {ssr_width_, ssr_height_}};
+    rend.layerCount = 1;
+    rend.colorAttachmentCount = 1;
+    rend.pColorAttachments = &col;
+    vkCmdBeginRendering(cmd, &rend);
+    VkViewport vp{0, 0, float(ssr_width_), float(ssr_height_), 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {ssr_width_, ssr_height_}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssr_pipe_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssr_layout_, 0, 1, &set, 0, nullptr);
+    struct {
+      float proj_params[4], ssr_params[4], texel_mode[4], hiz_params[4];
+    } pc = {{cam_proj00_, cam_proj11_, cam_near_, cam_far_},
+            {max_steps, options_.reverse_z ? 1.0f : 0.0f, has_hiz, frame_jitter},
+            {1.0f / float(std::max(1u, ssr_width_)), 1.0f / float(std::max(1u, ssr_height_)), mode, strength},
+            {512.0f, 256.0f, 9.0f, 0.0f}};
+    vkCmdPushConstants(cmd, ssr_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+    image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+  };
+  draw_ssr(ssr_raw_, ssr_sets_[0], 0.0f);
+  draw_ssr(ssr_blur_, ssr_sets_[1], 1.0f);
+  mark(cmd, "ssr");
+}
+
+void Renderer::record_volumetric(VkCommandBuffer cmd) {
+  if (!modern_ready_ || graphics_.volumetric_fog == modern::VolumetricFog::kOff || !vol_pipe_ || !vol_raw_.view ||
+      !vol_blur_.view || !vol_ubo_.buffer)
+    return;
+  if (!vol_state_valid_) {
+    vol_state_ = {};
+  }
+  vol_state_.height_p[3] = float(frames_submitted_ & 63u) / 64.0f;
+  {
+    VkBufferMemoryBarrier2 ub{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    ub.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    ub.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    ub.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    ub.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    ub.srcQueueFamilyIndex = ub.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    ub.buffer = vol_ubo_.buffer;
+    ub.size = VK_WHOLE_SIZE;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &ub;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    vkCmdUpdateBuffer(cmd, vol_ubo_.buffer, 0, sizeof(VolumetricState), &vol_state_);
+    ub.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+    ub.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    ub.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    ub.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier2(cmd, &dep);
+  }
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  const float steps = float(modern::volumetric_steps(graphics_.volumetric_fog));
+  auto draw_vol = [&](const Image& dst, VkDescriptorSet set, float mode) {
+    image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+    VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    col.imageView = dst.view;
+    col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rend.renderArea = {{0, 0}, {vol_width_, vol_height_}};
+    rend.layerCount = 1;
+    rend.colorAttachmentCount = 1;
+    rend.pColorAttachments = &col;
+    vkCmdBeginRendering(cmd, &rend);
+    VkViewport vp{0, 0, float(vol_width_), float(vol_height_), 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {vol_width_, vol_height_}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vol_pipe_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vol_layout_, 0, 1, &set, 0, nullptr);
+    struct {
+      float proj_params[4], vol_params[4];
+    } pc = {{cam_near_, cam_far_, options_.reverse_z ? 1.0f : 0.0f, 0.0f},
+            {steps, 1.0f / float(std::max(1u, vol_width_)), mode, 1.0f / float(std::max(1u, vol_height_))}};
+    vkCmdPushConstants(cmd, vol_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+    image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+  };
+  draw_vol(vol_raw_, vol_sets_[0], 0.0f);
+  draw_vol(vol_blur_, vol_sets_[1], 1.0f);
+  mark(cmd, "volumetric");
 }
 
 void Renderer::record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst_img, VkImageView dst_view, uint32_t w,
@@ -2644,8 +2957,9 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       float texel_size[4];
       float modern_p[4];
       float sota_p[4];
+      float phase_b[4];
     };
-    static_assert(sizeof(PostOpticalUbo) == 224);
+    static_assert(sizeof(PostOpticalUbo) == 240);
     const uint32_t oflags = (s.motion_blur ? 1u : 0u) | (s.dof ? 2u : 0u) | (s.god_rays ? 4u : 0u) |
                             (s.lens_flare ? 8u : 0u) | (options_.reverse_z ? 16u : 0u) |
                             (s.paired_vignette ? 32u : 0u);
@@ -2717,6 +3031,12 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.sota_p[3] = (graphics_.ssao == modern::SsaoQuality::kHigh || graphics_.ssao == modern::SsaoQuality::kUltra)
                       ? 1.0f
                       : (graphics_.ssao != modern::SsaoQuality::kOff ? 0.55f : 0.0f);
+    const bool ssr_on = (graphics_.ssr != modern::SsrQuality::kOff) && ssr_blur_.view;
+    const bool vol_on = (graphics_.volumetric_fog != modern::VolumetricFog::kOff) && vol_blur_.view && vol_state_valid_;
+    u.phase_b[0] = ssr_on ? (graphics_.ssr == modern::SsrQuality::kFull ? 0.90f : 0.80f) : 0.0f;
+    u.phase_b[1] = vol_on ? 1.0f : 0.0f;
+    u.phase_b[2] = vol_width_ ? 1.0f / float(vol_width_) : 0.0f;
+    u.phase_b[3] = vol_height_ ? 1.0f / float(vol_height_) : 0.0f;
     VkBufferMemoryBarrier2 ub{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     ub.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     ub.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
@@ -2816,7 +3136,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     vkCmdEndRendering(cmd);
   };
 
-  to_read(hdr_);
+  // hdr_ was transitioned to SHADER_READ_ONLY_OPTIMAL in record_scene before SSR/Volumetrics.
 
   // 1. Adaptive auto-exposure: 16x16 centre-weighted reduction -> 1x1 temporal adaptation.
   if (s.auto_exposure) {
@@ -2906,6 +3226,10 @@ void Renderer::destroy_targets() {
   destroy_image(ao_tmp_);
   destroy_image(ao_blur_);
   destroy_image(sscs_);
+  destroy_image(ssr_raw_);
+  destroy_image(ssr_blur_);
+  destroy_image(vol_raw_);
+  destroy_image(vol_blur_);
   destroy_image(scene_sdr_);
   destroy_image(scene_fxaa_);
   destroy_image(upscale_tmp_);
@@ -2922,6 +3246,8 @@ void Renderer::destroy_targets() {
   prev_cam_vp_valid_ = false;
   ao_width_ = ao_height_ = 0;
   sscs_width_ = sscs_height_ = 0;
+  ssr_width_ = ssr_height_ = 0;
+  vol_width_ = vol_height_ = 0;
   mblur_tile_w_ = mblur_tile_h_ = 0;
   for (uint32_t k = 0; k < kBloomLevels; ++k) {
     destroy_image(bloom_a_[k]);
@@ -3022,12 +3348,15 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   color.storeOp = (msaa && !two_pass) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color = {{scene_.clear[0], scene_.clear[1], scene_.clear[2], scene_.clear[3]}};
-  if (post)
+  if (post) {
     for (int k = 0; k < 3; ++k) {
       // The clear colour is display (sRGB) encoded: linear for the HDR scene.
       const float c = scene_.clear[k];
       color.clearValue.color.float32[k] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
     }
+    // Clear HDR alpha (surface gloss channel for Hi-Z SSR) to 0.0 so sky/matte areas stay reflection-free.
+    color.clearValue.color.float32[3] = 0.0f;
+  }
   if (msaa && !two_pass) {
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
     color.resolveImageView = scene_view;
@@ -3138,8 +3467,13 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   }
 
   if (post) {
+    image_barrier(cmd, hdr_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     record_ssao(cmd);
     record_sscs(cmd);
+    record_ssr(cmd);
+    record_volumetric(cmd);
   }
   const bool need_mblur_tiles =
       post && options_.post.motion_blur && graphics_.velocity_blur != modern::VelocityBlur::kOff &&

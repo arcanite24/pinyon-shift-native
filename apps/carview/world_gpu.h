@@ -93,6 +93,7 @@ class WorldGpu {
   uint32_t last_trees_drawn() const { return last_trees_drawn_; }
   uint32_t resident_draws() const { return uint32_t(resident_.count()); }
   VkImageView hiz_image_view() const { return hiz_valid_ ? hiz_image_.view : VK_NULL_HANDLE; }
+  VkImageView hiz_raw_view() const { return hiz_image_.view; }
   VkDeviceSize arena_bytes() const;
 
  private:

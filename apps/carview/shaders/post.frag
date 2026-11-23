@@ -26,6 +26,8 @@ layout(set = 0, binding = 6) uniform sampler2D ao_tex;
 layout(set = 0, binding = 7) uniform sampler2D sscs_tex;
 layout(set = 0, binding = 8) uniform sampler2D motion_tex;
 layout(set = 0, binding = 9) uniform sampler2D mblur_neighbor_tex;
+layout(set = 0, binding = 10) uniform sampler2D ssr_tex;
+layout(set = 0, binding = 11) uniform sampler2D vol_tex;
 
 layout(set = 0, binding = 5) uniform Optical {
   vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig), y near, z contrast, w brightness
@@ -42,6 +44,7 @@ layout(set = 0, binding = 5) uniform Optical {
   vec4 texel_size;    // xy 1/w, 1/h, z time_sec, w frame_jitter [0..1]
   vec4 modern_p;      // x ao_strength, y lut_size, z lut_strength, w out_alpha
   vec4 sota_p;        // x tonemapper (0=Hable, 1=AgX, 2=GT, 3=PBRNeutral), y sscs_strength, z mblur_taps (0/9/13), w gtao_bent_strength
+  vec4 phase_b;       // x ssr_strength, y volumetric_active (>0.5), z vol_inv_w, w vol_inv_h
 } opt;
 
 layout(push_constant) uniform Post {
@@ -290,7 +293,18 @@ void main() {
   float exp_scale = eval_auto_exposure();
   vec3 scene_raw = raw_scene(v_uv);
 
-  float pix_dist = ((oflags & 3u) != 0u) ? linear_depth_m(v_uv, rev_z) : 100.0;
+  // Phase B Hi-Z Stochastic SSR composite: seamlessly blends crisp screen-space reflections
+  // over the underlying GGX dynamic cubemap fallback on glossy car clearcoat, wet roads, and lakes.
+  if (opt.phase_b.x > 0.001) {
+    vec4 ssr = texture(ssr_tex, clamp(v_uv, vec2(0.001), vec2(0.999)));
+    if (ssr.a > 0.002) {
+      float w_ssr = clamp(ssr.a * opt.phase_b.x, 0.0, 0.85);
+      // Preserve existing specular/emissive energy while injecting screen-space reflection color.
+      scene_raw = mix(scene_raw, max(ssr.rgb, scene_raw * 0.30), w_ssr);
+    }
+  }
+
+  float pix_dist = ((oflags & 3u) != 0u || opt.phase_b.y > 0.5) ? linear_depth_m(v_uv, rev_z) : 100.0;
 
   // Depth of Field (Poisson bokeh gather driven by TrackSettings focal parameters).
   if ((oflags & 2u) != 0u && opt.dof.z > 0.005) {
@@ -414,8 +428,24 @@ void main() {
     c_lin *= mix(1.0, sscs, clamp(opt.sota_p.y, 0.0, 1.0) * emissive_keep);
   }
 
-  // God rays / volumetric sun shafts (radial sky occlusion march toward sun_screen_uv).
-  if ((oflags & 4u) != 0u && opt.sun.z > 0.01 && opt.sun.w > 0.005) {
+  // Phase B Volumetric Sun Shafts, Aerial Perspective & Night Headlight Cones (bilateral upsample).
+  if (opt.phase_b.y > 0.5) {
+    vec2 vstep = max(opt.phase_b.zw, opt.texel_size.xy * 2.0);
+    const vec2 boffs[4] = vec2[4](vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(-0.5, 0.5), vec2(0.5, 0.5));
+    vec4 vol_acc = vec4(0.0);
+    float w_sum = 0.0;
+    float z_tol = max(pix_dist * 0.12, 2.0);
+    for (int i = 0; i < 4; ++i) {
+      vec2 suv = clamp(v_uv + boffs[i] * vstep, vec2(0.001), vec2(0.999));
+      float sd = linear_depth_m(suv, rev_z);
+      float w = exp(-abs(sd - pix_dist) / z_tol);
+      vol_acc += texture(vol_tex, suv) * w;
+      w_sum += w;
+    }
+    vec4 vol_s = w_sum > 1e-4 ? (vol_acc / w_sum) : texture(vol_tex, v_uv);
+    c_lin = c_lin * clamp(vol_s.a, 0.55, 1.0) + max(vol_s.rgb, vec3(0.0)) * exp_scale;
+  } else if ((oflags & 4u) != 0u && opt.sun.z > 0.01 && opt.sun.w > 0.005) {
+    // Legacy Tier-0/1 2D screen-space radial god rays fallback when 3D volumetric scattering is off.
     vec2 sun_uv = opt.sun.xy;
     vec2 delta = (sun_uv - v_uv) * (1.0 / 12.0);
     float step_len = length(delta);

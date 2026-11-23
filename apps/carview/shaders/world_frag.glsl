@@ -42,10 +42,19 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 env_basis_x;        // xyz game X in render space, w real_time_sec
   vec4 env_basis_y;        // xyz game Y in render space
   vec4 env_basis_z;        // xyz game Z in render space
+  vec4 paint_two_tone;
+  vec4 paint_finish;
+  vec4 damage_dirt;
+  vec4 damage_zones;
+  vec4 car_sun_color;
+  mat4 shadow_matrix_mid;  // Mid cascade orthographic sun shadow matrix (~90m)
+  vec4 shadow_mid_bias;    // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
+  vec4 phase_b_params;     // x car_detail, y rotor_glow, z frame_jitter, w ssr_active
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
 layout(set = 0, binding = 3) uniform sampler2D headlight_cookie;
+layout(set = 0, binding = 11) uniform sampler2D shadow_depth_raw;
 
 struct HeadlightBeam {
   mat4 proj;          // render-space pos -> headlight clip space
@@ -253,26 +262,120 @@ vec3 encode_srgb(vec3 c) {
 
 vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : encode_srgb(c); }
 
-// Multi-cascade sun shadow (2x1 atlas: left half Near ~28 m, right half Far ~185 m).
-float sample_cascade(vec4 s, float x_off) {
-  vec2 uv = vec2((s.x * 0.5 + 0.5) * 0.5 + x_off, s.y * 0.5 + 0.5);
+// 3-cascade stabilized D32 CSM + Contact-Hardening PCSS (Near ~20m, Mid ~90m, Far ~320m)
+// with fast 2-cascade PCF fallback on low/low-power presets.
+const vec2 kPcssDisk[16] = vec2[16](
+    vec2(-0.613392,  0.617481), vec2( 0.170019, -0.040254),
+    vec2(-0.299417,  0.791925), vec2( 0.645680,  0.493210),
+    vec2(-0.651784,  0.717887), vec2( 0.421003,  0.027070),
+    vec2(-0.817194, -0.271096), vec2(-0.705374, -0.668203),
+    vec2( 0.977050, -0.108615), vec2( 0.063326,  0.142369),
+    vec2( 0.203528,  0.214331), vec2(-0.667531,  0.326090),
+    vec2(-0.098422, -0.295755), vec2(-0.885922,  0.215369),
+    vec2( 0.566637,  0.605213), vec2( 0.039766, -0.396100));
+
+float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades) {
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
+  float u_lo = x_off + frame.shadow.y * inv_cascades;
+  float u_hi = x_off + inv_cascades - frame.shadow.y * inv_cascades;
   if (frame.shadow.w > 1.5) {
-    float tx = frame.shadow.y * 0.25;
+    float tx = frame.shadow.y * inv_cascades * 0.5;
     float ty = frame.shadow.y * 0.5;
-    return 0.25 * (texture(shadow_map, vec3(uv + vec2(-tx, -ty), s.z)) +
-                   texture(shadow_map, vec3(uv + vec2(tx, -ty), s.z)) +
-                   texture(shadow_map, vec3(uv + vec2(-tx, ty), s.z)) +
-                   texture(shadow_map, vec3(uv + vec2(tx, ty), s.z)));
+    vec2 uv0 = vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995));
+    vec2 uv1 = vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995));
+    vec2 uv2 = vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995));
+    vec2 uv3 = vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995));
+    return 0.25 * (texture(shadow_map, vec3(uv0, s.z)) + texture(shadow_map, vec3(uv1, s.z)) +
+                   texture(shadow_map, vec3(uv2, s.z)) + texture(shadow_map, vec3(uv3, s.z)));
   }
-  return texture(shadow_map, vec3(uv, s.z));
+  return texture(shadow_map, vec3(vec2(clamp(uv.x, u_lo, u_hi), uv.y), s.z));
+}
+
+float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mode, float cascade_scale) {
+  if (pcss_mode < 0.5) return sample_cascade_pcf(s, x_off, inv_cascades);
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
+  float texel_x = frame.shadow.y * inv_cascades;
+  float texel_y = frame.shadow.y;
+  float u_lo = x_off + texel_x;
+  float u_hi = x_off + inv_cascades - texel_x;
+
+  // IGN-rotated Poisson disk eliminates banding without temporal flicker.
+  float ang = 6.2831853 * fract(dither_threshold() + frame.phase_b_params.z * 0.61803399);
+  float ca = cos(ang), sa = sin(ang);
+  mat2 rot = mat2(ca, -sa, sa, ca);
+
+  // 1. Blocker search on raw D32 shadow depth (center + 8 rotated Poisson taps).
+  float search_r = (pcss_mode > 1.5 ? 6.5 : 5.0) * cascade_scale;
+  vec2 search_uv = vec2(texel_x, texel_y) * search_r;
+  float blocker_sum = 0.0;
+  int blockers = 0;
+  float d_center = texture(shadow_depth_raw, vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995))).r;
+  if (d_center < s.z - 0.00020) {
+    blocker_sum += d_center;
+    ++blockers;
+  }
+  for (int i = 0; i < 8; ++i) {
+    vec2 o = (rot * kPcssDisk[i * 2]) * search_uv;
+    vec2 suv = vec2(clamp(uv.x + o.x, u_lo, u_hi), clamp(uv.y + o.y, 0.0005, 0.9995));
+    float d = texture(shadow_depth_raw, suv).r;
+    if (d < s.z - 0.00025) {
+      blocker_sum += d;
+      ++blockers;
+    }
+  }
+  if (blockers == 0) {
+    return texture(shadow_map, vec3(vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995)), s.z));
+  }
+
+  // 2. Contact-hardening penumbra radius (orthographic depth span = 2 * 520 m = 1040 m).
+  float avg_blocker = blocker_sum / float(blockers);
+  float blocker_dist_m = max(s.z - avg_blocker, 0.0) * 1040.0;
+  float max_r = pcss_mode > 1.5 ? 8.5 : 6.0;
+  float penumbra = clamp(blocker_dist_m * 0.62 * cascade_scale, 0.85, max_r);
+  vec2 filter_uv = vec2(texel_x, texel_y) * penumbra;
+
+  // 3. Variable-radius IGN-rotated Poisson PCF (12-tap High / 16-tap Ultra).
+  int taps = pcss_mode > 1.5 ? 16 : 12;
+  float lit = 0.0;
+  for (int i = 0; i < taps; ++i) {
+    vec2 o = (rot * kPcssDisk[i]) * filter_uv;
+    vec2 suv = vec2(clamp(uv.x + o.x, u_lo, u_hi), clamp(uv.y + o.y, 0.0005, 0.9995));
+    lit += texture(shadow_map, vec3(suv, s.z));
+  }
+  return lit / float(taps);
 }
 
 float sun_shadow(vec3 p, vec3 n) {
   if (frame.shadow.x < 0.5) return 1.0;
+  bool three_c = frame.shadow_mid_bias.y > 0.5;
+  float inv_c = three_c ? (1.0 / 3.0) : 0.5;
+  float pcss_mode = frame.shadow_mid_bias.z;
+
   vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x, 1.0);
   float edge_n = max(abs(sn.x), abs(sn.y));
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
-  float lit_n = near_ok ? sample_cascade(sn, 0.0) : 1.0;
+  float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0) : 1.0;
+
+  if (three_c) {
+    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
+    float edge_m = max(abs(sm.x), abs(sm.y));
+    bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
+    float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35) : 1.0;
+    if (near_ok) {
+      float bn = smoothstep(0.80, 0.98, edge_n);
+      return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, bn));
+    }
+    if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
+    vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
+    float edge_f = max(abs(sf.x), abs(sf.y));
+    float lit_f = 1.0;
+    if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
+      lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f));
+    }
+    float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
+    return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
+  }
 
   if (frame.shadow_far_bias.y > 0.5) {
     if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
@@ -280,7 +383,7 @@ float sun_shadow(vec3 p, vec3 n) {
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
-      lit_f = mix(sample_cascade(sf, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+      lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
     }
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
     return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
@@ -682,10 +785,19 @@ void main() {
   vec3 colour = t.rgb * light * draw.up.w;
 
   // Per-material Blinn-Phong sun specular: H_ROAD asphalt glossiness & SpecularMap modulation.
+  float surf_gloss = 0.0;
+  float spec_mask = 1.0;
+  if ((flags & kFlagSpecMap) != 0u && (flags & kFlagBillboard) == 0u) {
+    spec_mask = dot(texture(spec_map, v_uv0 * draw.tint.xy).rgb, vec3(0.3333));
+  }
+  if ((flags & kFlagRoad) != 0u && (flags & kFlagBillboard) == 0u) {
+    surf_gloss = clamp(0.20 + 0.28 * spec_mask, 0.18, 0.48);
+  } else if ((flags & kFlagSpecMap) != 0u && (flags & kFlagBillboard) == 0u) {
+    surf_gloss = clamp(0.10 + 0.22 * spec_mask, 0.0, 0.34);
+  }
   if (ndl > 0.0 && (flags & kFlagBillboard) == 0u) {
     vec3 h_v = normalize(view + sun);
     float nv_s = clamp(dot(n, view), 0.0, 1.0);
-    float spec_mask = (flags & kFlagSpecMap) != 0u ? dot(texture(spec_map, v_uv0 * draw.tint.xy).rgb, vec3(0.3333)) : 1.0;
     if ((flags & kFlagRoad) != 0u) {
       // FH1 H_ROAD asphalt specular (TrackSettings.xml RoadSpecular / RoadGlossiness).
       float fres_r = 0.04 + 0.30 * pow(1.0 - nv_s, 4.0);
@@ -758,6 +870,12 @@ void main() {
   }
 #endif
   vec3 encoded = out_rgb(colour);
-  // Blended draws are premultiplied (ONE, ONE_MINUS_SRC_ALPHA).
-  out_color = blend == kAlpha ? vec4(encoded * alpha, alpha) : vec4(encoded, alpha);
+  // Blended draws are premultiplied (ONE, ONE_MINUS_SRC_ALPHA); opaque HDR encodes surface gloss in .a for Hi-Z SSR.
+  if (blend == kAlpha) {
+    out_color = vec4(encoded * alpha, alpha);
+  } else if (blend == kOpaque && kLinearOut) {
+    out_color = vec4(encoded, surf_gloss);
+  } else {
+    out_color = vec4(encoded, alpha);
+  }
 }

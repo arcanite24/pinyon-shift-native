@@ -122,10 +122,11 @@ struct PostSettings {
 // The drive's sun shadow (ours): one orthographic cascade around the car,
 // drawn from the sun each frame. size 0: none (a 1x1 map stays bound).
 struct ShadowSettings {
-  uint32_t size = 0;      // the map's side in texels
-  float radius = 60.0f;   // half the box's side, metres
-  uint32_t taps = 4;      // 1: one filtered compare; 4: four
-  float strength = 0.35f;  // the sun's share left in shadow (TrackSettings ShadowColor, read as ours)
+  uint32_t size = 0;      // the map's side in texels per cascade
+  float radius = 60.0f;   // half the near/base box's side, metres
+  uint32_t taps = 4;      // 1: one filtered compare; 4: four; 12/16 via PCSS
+  float strength = 0.35f; // the sun's share left in shadow (TrackSettings ShadowColor, read as ours)
+  uint32_t cascades = 2;  // 2 (low/fast PCF) or 3 (Near ~20m / Mid ~90m / Far ~320m stabilized D32 CSM)
 };
 
 class Renderer {
@@ -280,6 +281,31 @@ class Renderer {
   const modern::GraphicsSettings& graphics_settings() const { return graphics_; }
   void set_camera_projection(float near_plane, float far_plane, float proj00, float proj11);
   void set_camera_vp(const float vp[16], float jitter_uv_x = 0.0f, float jitter_uv_y = 0.0f);
+  // Phase B Volumetric Sun Shafts / Aerial Perspective / Night Headlight Cones UBO state.
+  struct VolumetricBeam {
+    float origin_range[4] = {0, 0, 0, 1};
+    float dir_power[4] = {0, 0, 1, 0};
+    float color_cos[4] = {1, 1, 1, 0.7f};
+  };
+  struct VolumetricState {
+    float inv_view_proj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float shadow_matrix[16] = {};
+    float shadow_matrix_mid[16] = {};
+    float shadow_matrix_far[16] = {};
+    float eye_time[4] = {0, 0, 0, 0};
+    float sun_dir_vis[4] = {0, 1, 0, 0};
+    float sun_col_str[4] = {1, 0.85f, 0.6f, 0.45f};
+    float fog_col_dens[4] = {0.1f, 0.14f, 0.16f, 0.001f};
+    float shadow_p[4] = {0, 0, 0, 0};  // shadows_on, three_cascades, night_factor, beam_count
+    float up_eyey[4] = {0, 1, 0, 150.0f};
+    float height_p[4] = {200.0f, 4000.0f, 0.9f, 0.0f};
+    VolumetricBeam beams[8];
+  };
+  static_assert(sizeof(VolumetricState) == 256 + 7 * 16 + 8 * 48);
+  void set_volumetric_state(const VolumetricState& state) {
+    vol_state_ = state;
+    vol_state_valid_ = true;
+  }
   void set_hud_layout(const modern::HudLayout& layout) { hud_layout_ = layout; }
   void set_hdr_pattern(uint32_t pattern, float pattern_nits = 1000.0f) {
     if ((pattern != 0) != (hdr_pattern_ != 0)) targets_dirty_ = true;
@@ -398,6 +424,8 @@ class Renderer {
   void record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeline pipe, float out_alpha);
   void record_ssao(VkCommandBuffer cmd);
   void record_sscs(VkCommandBuffer cmd);
+  void record_ssr(VkCommandBuffer cmd);
+  void record_volumetric(VkCommandBuffer cmd);
   void record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst_img, VkImageView dst_view, uint32_t w,
                    uint32_t h);
   void record_upscale(VkCommandBuffer cmd, VkImage src_img, VkDescriptorSet src_set, bool src_is_fxaa,
@@ -539,11 +567,17 @@ class Renderer {
   VkSampler post_sampler_ = VK_NULL_HANDLE;
   VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
   Buffer post_optical_buf_;  // device-local, filled by vkCmdUpdateBuffer in the frame's commands
-  // Modern post-FX & HDR targets (XeGTAO + Bent Normals, SSCS, McGuire motion blur, FXAA, upscale, HDR10/scRGB).
+  // Modern post-FX & HDR targets (XeGTAO + Bent Normals, SSCS, Hi-Z SSR, Volumetric Scattering, McGuire motion blur, FXAA, upscale, HDR10/scRGB).
   modern::ModernTargetPlan allocated_targets_{};
-  Image ao_white_, vel_zero_, ao_raw_, ao_tmp_, ao_blur_, sscs_;
+  Image ao_white_, vel_zero_, ssr_zero_, vol_identity_, ao_raw_, ao_tmp_, ao_blur_, sscs_;
+  Image ssr_raw_, ssr_blur_, vol_raw_, vol_blur_;
   uint32_t ao_width_ = 0, ao_height_ = 0;
   uint32_t sscs_width_ = 0, sscs_height_ = 0;
+  uint32_t ssr_width_ = 0, ssr_height_ = 0;
+  uint32_t vol_width_ = 0, vol_height_ = 0;
+  Buffer vol_ubo_;
+  VolumetricState vol_state_{};
+  bool vol_state_valid_ = false;
   Image scene_sdr_, scene_fxaa_, upscale_tmp_, stand_in_, stand_in_fxaa_;
   Image motion_vec_, mblur_tile_, mblur_neighbor_, temporal_hist_[2], inspector_thumb_;
   uint32_t mblur_tile_w_ = 0, mblur_tile_h_ = 0;
@@ -552,18 +586,24 @@ class Renderer {
   VkDescriptorSetLayout ssao_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout single_tex_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout temporal_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout ssr_set_layout_ = VK_NULL_HANDLE;
+  VkDescriptorSetLayout vol_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorPool modern_pool_ = VK_NULL_HANDLE;
   VkPipelineLayout ssao_layout_ = VK_NULL_HANDLE, sscs_layout_ = VK_NULL_HANDLE,
+                   ssr_layout_ = VK_NULL_HANDLE, vol_layout_ = VK_NULL_HANDLE,
                    mblur_tile_layout_ = VK_NULL_HANDLE, fxaa_layout_ = VK_NULL_HANDLE,
                    upscale_layout_ = VK_NULL_HANDLE, hdr_layout_ = VK_NULL_HANDLE,
                    motion_layout_ = VK_NULL_HANDLE, temporal_layout_ = VK_NULL_HANDLE,
                    inspector_layout_ = VK_NULL_HANDLE;
-  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, sscs_pipe_ = VK_NULL_HANDLE, mblur_tile_pipe_ = VK_NULL_HANDLE,
+  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, sscs_pipe_ = VK_NULL_HANDLE, ssr_pipe_ = VK_NULL_HANDLE,
+             vol_pipe_ = VK_NULL_HANDLE, mblur_tile_pipe_ = VK_NULL_HANDLE,
              fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE,
              motion_pipe_ = VK_NULL_HANDLE, temporal_pipe_ = VK_NULL_HANDLE, inspector_pipe_ = VK_NULL_HANDLE;
   VkPipeline hdr_pipe_sdr_ = VK_NULL_HANDLE, hdr_pipe_swap_ = VK_NULL_HANDLE;
   VkFormat hdr_swap_fmt_ = VK_FORMAT_UNDEFINED;
   VkDescriptorSet ssao_sets_[3] = {};
+  VkDescriptorSet ssr_sets_[2] = {};
+  VkDescriptorSet vol_sets_[2] = {};
   VkDescriptorSet sscs_set_ = VK_NULL_HANDLE, mblur_tile_set_ = VK_NULL_HANDLE,
                   mblur_neighbor_set_ = VK_NULL_HANDLE;
   VkDescriptorSet fxaa_set_scene_ = VK_NULL_HANDLE, fxaa_set_standin_ = VK_NULL_HANDLE;
@@ -574,11 +614,13 @@ class Renderer {
   VkDescriptorSet temporal_sets_[4] = {};
   VkDescriptorSet inspector_sets_[6] = {};
   bool modern_ready_ = false;
-  // The sun shadow map (D16).
+  // The sun shadow map (D32_SFLOAT 2x1 or 3x1 stabilized CSM atlas + raw depth sampler for PCSS/volumetrics).
   Image shadow_map_;
   VkSampler shadow_sampler_ = VK_NULL_HANDLE;
+  VkSampler shadow_raw_sampler_ = VK_NULL_HANDLE;
   uint32_t shadow_size_ = 0;
-  static constexpr VkFormat kShadowFormat = VK_FORMAT_D16_UNORM;
+  uint32_t shadow_cascades_ = 2;
+  static constexpr VkFormat kShadowFormat = VK_FORMAT_D32_SFLOAT;
 
   // Windowed.
   VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;

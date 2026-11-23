@@ -43,6 +43,14 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 env_basis_x;  // xyz game X in render space, w real_time_sec
   vec4 env_basis_y;  // xyz game Y in render space, w wind_speed
   vec4 env_basis_z;  // xyz game Z in render space, w wind_amplitude
+  vec4 paint_two_tone;
+  vec4 paint_finish;
+  vec4 damage_dirt;
+  vec4 damage_zones;
+  vec4 car_sun_color;
+  mat4 shadow_matrix_mid;
+  vec4 shadow_mid_bias;
+  vec4 phase_b_params;
 } frame;
 
 #ifdef GPU_DRIVEN

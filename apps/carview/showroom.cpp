@@ -344,6 +344,7 @@ Showroom::~Showroom() {
   r_.destroy_buffer(index_buffer_);
   r_.destroy_buffer(frame_buffer_);
   r_.destroy_buffer(shadow_frame_buffer_);
+  r_.destroy_buffer(shadow_frame_mid_buffer_);
   r_.destroy_buffer(shadow_frame_far_buffer_);
   r_.destroy_buffer(env_frame_buffer_);
   r_.destroy_buffer(env_sky_ubo_[0]);
@@ -377,7 +378,7 @@ Showroom::~Showroom() {
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
   for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
                        contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_opaque_dither_,
-                       world_z_prepass_, world_coverage_, world_alpha_, shadow_world_, shadow_cutout_, shadow_car_,
+                       world_z_prepass_, world_coverage_, world_alpha_, world_water_, shadow_world_, shadow_cutout_, shadow_car_,
                        sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
     if (p) vkDestroyPipeline(d, p, nullptr);
   if (contact_shadow_pipe_layout_) vkDestroyPipelineLayout(d, contact_shadow_pipe_layout_, nullptr);
@@ -1481,8 +1482,9 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
 }
 
 void Showroom::set_braking(float glow) {
+  rotor_glow_ = std::clamp(glow, 0.0f, 1.0f);
   if (!lamp_state_active_) {
-    lamp_vectors_.dynamic_lights_amount[0] = std::clamp(glow, 0.0f, 1.0f);
+    lamp_vectors_.dynamic_lights_amount[0] = rotor_glow_;
   }
   for (Draw& d : draws_)
     if (d.brake_lamp) d.push.params[2] = glow;
@@ -1533,6 +1535,8 @@ void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpi
 }
 
 void Showroom::set_wheel_poses(const WheelPose poses[4]) {
+  for (int i = 0; i < 4; ++i) wheel_poses_[i] = poses[i];
+  have_wheel_poses_ = true;
   for (Draw& d : draws_) {
     if (d.wheel < 0) continue;
     const WheelPose& p = poses[d.wheel];
@@ -2025,10 +2029,10 @@ bool Showroom::upload_environment(std::string& error) {
 }
 
 bool Showroom::create_pipelines(std::string& error) {
-  // Set 0: frame UBO, dynamic/active environment cube, sun shadow map, headlight cookie,
+  // Set 0: frame UBO, dynamic/active environment cube, sun shadow map (PCF compare), headlight cookie,
   // headlights UBO, mirror map, car instances SSBO (6), static studio cube (7, staticcarcubemap.xpr),
-  // and shared dirt pattern (8), dirt mask (9) & cracked glass (10) atlases.
-  const VkDescriptorSetLayoutBinding frame_bindings[11] = {
+  // shared dirt pattern (8), dirt mask (9), cracked glass (10), and raw D32 shadow depth (11, PCSS blocker search).
+  const VkDescriptorSetLayoutBinding frame_bindings[12] = {
       {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
        nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -2040,9 +2044,10 @@ bool Showroom::create_pipelines(std::string& error) {
       {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 11;
+  set.bindingCount = 12;
   set.pBindings = frame_bindings;
   VK_TRY(vkCreateDescriptorSetLayout(r_.device_, &set, nullptr, &frame_layout_), "frame set layout");
   VkDescriptorSetLayoutBinding material_bindings[5];
@@ -2171,16 +2176,18 @@ bool Showroom::create_pipelines(std::string& error) {
     depth.depthCompareOp = depth_equal ? VK_COMPARE_OP_EQUAL
                                        : (r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL);
     VkPipelineColorBlendAttachmentState attachment{};
-    attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    if (blend_mode == 1) {
-      // Premultiplied colour over what is behind.
+    attachment.colorWriteMask = (coverage && r_.post())
+                                    ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT)
+                                    : (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                                       VK_COLOR_COMPONENT_A_BIT);
+    if (blend_mode == 1 || blend_mode == 4) {
+      // Premultiplied colour over what is behind; blend_mode == 4 (water) also writes surface gloss alpha for SSR.
       attachment.blendEnable = VK_TRUE;
       attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
       attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
       attachment.colorBlendOp = VK_BLEND_OP_ADD;
-      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      attachment.srcAlphaBlendFactor = (blend_mode == 4) ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+      attachment.dstAlphaBlendFactor = (blend_mode == 4) ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE;
       attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     } else if (blend_mode == 2) {
       // Multiply blend (dst = src * dst): FH1 detail_glass_* Pass 1 & under-car contact shadow.
@@ -2244,7 +2251,7 @@ bool Showroom::create_pipelines(std::string& error) {
     result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
   // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).
   if (result == VK_SUCCESS && !guest_) {
-    VkPushConstantRange cs_push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80};
+    VkPushConstantRange cs_push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96};
     VkPipelineLayoutCreateInfo cs_pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     cs_pl.setLayoutCount = 1;
     cs_pl.pSetLayouts = &frame_layout_;
@@ -2345,6 +2352,9 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS)
     result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 1, world_alpha_, world_vert,
                    &world_input, false, world_pipeline_layout_);
+  if (result == VK_SUCCESS)
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 4, world_water_, world_vert,
+                   &world_input, false, world_pipeline_layout_);
   if (result == VK_SUCCESS && !guest_)
     result = build(world_opaque_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
                    env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
@@ -2438,6 +2448,9 @@ bool Showroom::upload(std::string& error) {
   if (shadows && (!r_.create_buffer(sizeof(ShowroomFrame),
                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_buffer_) ||
+                  !r_.create_buffer(sizeof(ShowroomFrame),
+                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_mid_buffer_) ||
                   !r_.create_buffer(sizeof(ShowroomFrame),
                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_far_buffer_))) {
@@ -2544,11 +2557,11 @@ bool Showroom::upload(std::string& error) {
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
   // Frame/offscreen pool (kept alive across car hot-swaps, with spare sets for zero-stall rebinding).
-  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 24},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12}};
+  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 36},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 208},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = 12;
+  pool.maxSets = 16;
   pool.poolSizeCount = 3;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
@@ -2565,6 +2578,7 @@ bool Showroom::upload(std::string& error) {
   VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &frame_set_), "frame set");
   if (shadows) {
     VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_), "shadow frame set");
+    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_mid_), "shadow mid frame set");
     VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_far_), "shadow far frame set");
   }
   if (!guest_ && dyn_env_ready_) {
@@ -2585,11 +2599,12 @@ bool Showroom::upload(std::string& error) {
       vkUpdateDescriptorSets(r_.device_, 1, &pw, 0, nullptr);
     }
   }
-  // Frame sets: main, shadow near, shadow far, and offscreen env/mirror.
-  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_far_, env_frame_set_}) {
+  // Frame sets: main, shadow near, shadow mid, shadow far, and offscreen env/mirror.
+  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_mid_, shadow_set_far_, env_frame_set_}) {
     if (!target) continue;
     VkBuffer ubo = frame_buffer_.buffer;
     if (target == shadow_set_) ubo = shadow_frame_buffer_.buffer;
+    else if (target == shadow_set_mid_) ubo = shadow_frame_mid_buffer_.buffer;
     else if (target == shadow_set_far_) ubo = shadow_frame_far_buffer_.buffer;
     else if (target == env_frame_set_) ubo = env_frame_buffer_.buffer;
     VkDescriptorBufferInfo buffer{ubo, 0, sizeof(ShowroomFrame)};
@@ -2613,6 +2628,8 @@ bool Showroom::upload(std::string& error) {
     VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
                               VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
+                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
     VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -2620,73 +2637,38 @@ bool Showroom::upload(std::string& error) {
     VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo dirt_m{sampler_, shared_dirt_mask_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet writes[11] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET},
-                                       {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
-    writes[0].dstSet = target;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
+    VkWriteDescriptorSet writes[12]{};
+    for (int wi = 0; wi < 12; ++wi) {
+      writes[wi] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[wi].dstSet = target;
+      writes[wi].dstBinding = uint32_t(wi);
+      writes[wi].descriptorCount = 1;
+    }
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[0].pBufferInfo = &buffer;
-    writes[1].dstSet = target;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo = &cube;
-    writes[2].dstSet = target;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].pImageInfo = &map;
-    writes[3].dstSet = target;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[3].pImageInfo = &cookie;
-    writes[4].dstSet = target;
-    writes[4].dstBinding = 4;
-    writes[4].descriptorCount = 1;
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[4].pBufferInfo = &hl_buf;
-    writes[5].dstSet = target;
-    writes[5].dstBinding = 5;
-    writes[5].descriptorCount = 1;
     writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[5].pImageInfo = &mir;
-    writes[6].dstSet = target;
-    writes[6].dstBinding = 6;
-    writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[6].pBufferInfo = &inst_buf;
-    writes[7].dstSet = target;
-    writes[7].dstBinding = 7;
-    writes[7].descriptorCount = 1;
     writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[7].pImageInfo = &static_cube;
-    writes[8].dstSet = target;
-    writes[8].dstBinding = 8;
-    writes[8].descriptorCount = 1;
     writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[8].pImageInfo = &dirt_p;
-    writes[9].dstSet = target;
-    writes[9].dstBinding = 9;
-    writes[9].descriptorCount = 1;
     writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[9].pImageInfo = &dirt_m;
-    writes[10].dstSet = target;
-    writes[10].dstBinding = 10;
-    writes[10].descriptorCount = 1;
     writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[10].pImageInfo = &gcrack;
-    vkUpdateDescriptorSets(r_.device_, 11, writes, 0, nullptr);
+    writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[11].pImageInfo = &map_raw;
+    vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -2740,6 +2722,7 @@ bool Showroom::upload(std::string& error) {
     std::string gerr;
     if (gw->init(gs, gerr)) {
       gpu_world_ = std::move(gw);
+      if (auto hv = gpu_world_->hiz_raw_view()) r_.set_hiz_preview_view(hv);
     } else {
       notes_.push_back("GPU-driven world off: " + gerr);
     }
@@ -2777,16 +2760,24 @@ bool Showroom::upload(std::string& error) {
       place_shadow();
     } else {
       std::memset(frame_.shadow_matrix, 0, sizeof frame_.shadow_matrix);
+      std::memset(frame_.shadow_matrix_mid, 0, sizeof frame_.shadow_matrix_mid);
       std::memset(frame_.shadow_matrix_far, 0, sizeof frame_.shadow_matrix_far);
       std::memset(frame_.shadow, 0, sizeof frame_.shadow);
       std::memset(frame_.shadow_bias, 0, sizeof frame_.shadow_bias);
       frame_.shadow_far_bias[0] = frame_.shadow_far_bias[1] = 0.0f;
+      frame_.shadow_mid_bias[0] = frame_.shadow_mid_bias[1] = frame_.shadow_mid_bias[2] = 0.0f;
+      frame_.shadow_mid_bias[3] = 2.0f;
       shadow_drawn_ = shadow_cars_ = 0;
     }
     // Cockpit near-clip distance in shadow_bias.y prevents exterior lamp/streetlamp glows bleeding into cockpit.
     frame_.shadow_bias[1] = cockpit_camera_active_ ? 2.1f : 0.0f;
     // Mikkelsen Hex-Tiling toggle in shadow_bias.z (organic Colorado terrain breakup on high/ultra).
     frame_.shadow_bias[2] = r_.graphics_settings().hex_tiling ? 1.0f : 0.0f;
+    // Phase B SOTA frame params: car detail, brake rotor thermal glow, temporal jitter, SSR active.
+    frame_.phase_b_params[0] = r_.graphics_settings().car_detail ? 1.0f : 0.0f;
+    frame_.phase_b_params[1] = rotor_glow_;
+    frame_.phase_b_params[2] = float(r_.frames_submitted() & 63u) / 64.0f;
+    frame_.phase_b_params[3] = (r_.graphics_settings().ssr != modern::SsrQuality::kOff) ? 1.0f : 0.0f;
     // Frame-exact sun screen-space projection for optical god rays & lens flare in post.frag
     // plus view-space sun direction (valid at all camera angles) for Screen-Space Contact Shadows (SSCS).
     if (world_lit_ && r_.options_.post.enabled) {
@@ -2826,6 +2817,68 @@ bool Showroom::upload(std::string& error) {
           r_.options_.post.sun_visibility = elev_fade * edge_fade;
         } else {
           r_.options_.post.sun_visibility = 0.0f;
+        }
+        // Populate Phase B Volumetric Sun Shafts / Aerial Perspective / Night Headlight Cones state.
+        if (r_.graphics_settings().volumetric_fog != modern::VolumetricFog::kOff) {
+          Renderer::VolumetricState vs{};
+          // General 4x4 matrix inverse for column-major frame_.view_projection.
+          const float* m = frame_.view_projection;
+          float inv[16];
+          inv[0] = m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+          inv[4] = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+          inv[8] = m[4]*m[9]*m[15] - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+          inv[12] = -m[4]*m[9]*m[14] + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+          inv[1] = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+          inv[5] = m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+          inv[9] = -m[0]*m[9]*m[15] + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+          inv[13] = m[0]*m[9]*m[14] - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+          inv[2] = m[1]*m[6]*m[15] - m[1]*m[7]*m[14] - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7] - m[13]*m[3]*m[6];
+          inv[6] = -m[0]*m[6]*m[15] + m[0]*m[7]*m[14] + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7] + m[12]*m[3]*m[6];
+          inv[10] = m[0]*m[5]*m[15] - m[0]*m[7]*m[13] - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7] - m[12]*m[3]*m[5];
+          inv[14] = -m[0]*m[5]*m[14] + m[0]*m[6]*m[13] + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6] + m[12]*m[2]*m[5];
+          inv[3] = -m[1]*m[6]*m[11] + m[1]*m[7]*m[10] + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7] + m[9]*m[3]*m[6];
+          inv[7] = m[0]*m[6]*m[11] - m[0]*m[7]*m[10] - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7] - m[8]*m[3]*m[6];
+          inv[11] = -m[0]*m[5]*m[11] + m[0]*m[7]*m[9] + m[4]*m[1]*m[11] - m[4]*m[3]*m[9] - m[8]*m[1]*m[7] + m[8]*m[3]*m[5];
+          inv[15] = m[0]*m[5]*m[10] - m[0]*m[6]*m[9] - m[4]*m[1]*m[10] + m[4]*m[2]*m[9] + m[8]*m[1]*m[6] - m[8]*m[2]*m[5];
+          const float det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+          if (std::fabs(det) > 1e-12f) {
+            const float inv_det = 1.0f / det;
+            for (int k = 0; k < 16; ++k) vs.inv_view_proj[k] = inv[k] * inv_det;
+          }
+          std::memcpy(vs.shadow_matrix, frame_.shadow_matrix, sizeof vs.shadow_matrix);
+          std::memcpy(vs.shadow_matrix_mid, frame_.shadow_matrix_mid, sizeof vs.shadow_matrix_mid);
+          std::memcpy(vs.shadow_matrix_far, frame_.shadow_matrix_far, sizeof vs.shadow_matrix_far);
+          vs.eye_time[0] = frame_.eye[0];
+          vs.eye_time[1] = frame_.eye[1];
+          vs.eye_time[2] = frame_.eye[2];
+          vs.eye_time[3] = tod_real_time_;
+          vs.sun_dir_vis[0] = dx;
+          vs.sun_dir_vis[1] = dy;
+          vs.sun_dir_vis[2] = dz;
+          vs.sun_dir_vis[3] = elev_fade;
+          const bool has_tod = frame_.sun_color[3] >= 0.0f;
+          vs.sun_col_str[0] = has_tod ? std::max(frame_.fog_scatter[0], frame_.sun_color[0] * 0.75f) : 1.0f;
+          vs.sun_col_str[1] = has_tod ? std::max(frame_.fog_scatter[1], frame_.sun_color[1] * 0.65f) : 0.80f;
+          vs.sun_col_str[2] = has_tod ? std::max(frame_.fog_scatter[2], frame_.sun_color[2] * 0.50f) : 0.50f;
+          vs.sun_col_str[3] = std::max(r_.options_.post.god_ray_strength, 0.42f);
+          vs.fog_col_dens[0] = has_tod ? frame_.fog_color[0] : 0.09f;
+          vs.fog_col_dens[1] = has_tod ? frame_.fog_color[1] : 0.14f;
+          vs.fog_col_dens[2] = has_tod ? frame_.fog_color[2] : 0.15f;
+          vs.fog_col_dens[3] = has_tod ? std::clamp(frame_.fog_params[0] * 2.2f, 0.0005f, 0.006f) : 0.0012f;
+          vs.shadow_p[0] = frame_.shadow[0];
+          vs.shadow_p[1] = frame_.shadow_mid_bias[1];
+          vs.shadow_p[2] = vol_night_factor_;
+          vs.shadow_p[3] = float(vol_beam_count_);
+          vs.up_eyey[0] = world_up_[0];
+          vs.up_eyey[1] = world_up_[1];
+          vs.up_eyey[2] = world_up_[2];
+          vs.up_eyey[3] = tod_eye_game_y_;
+          vs.height_p[0] = frame_.fog_params[1];
+          vs.height_p[1] = frame_.fog_params[2];
+          vs.height_p[2] = frame_.fog_params[3];
+          vs.height_p[3] = 0.0f;
+          for (uint32_t bi = 0; bi < vol_beam_count_ && bi < 8u; ++bi) vs.beams[bi] = vol_beams_[bi];
+          r_.set_volumetric_state(vs);
         }
       }
     }
@@ -2881,6 +2934,10 @@ bool Showroom::upload(std::string& error) {
         if (shadows && in.car->shadow_set_) {
           in.car->shadow_frame_ = shadow_frame_;
           in.car->update_buffer(cmd, in.car->shadow_frame_buffer_.buffer, in.car->shadow_frame_);
+          if (in.car->shadow_set_mid_) {
+            in.car->shadow_frame_mid_ = shadow_frame_mid_;
+            in.car->update_buffer(cmd, in.car->shadow_frame_mid_buffer_.buffer, in.car->shadow_frame_mid_);
+          }
           if (in.car->shadow_set_far_) {
             in.car->shadow_frame_far_ = shadow_frame_far_;
             in.car->update_buffer(cmd, in.car->shadow_frame_far_buffer_.buffer, in.car->shadow_frame_far_);
@@ -2890,6 +2947,8 @@ bool Showroom::upload(std::string& error) {
     }
     if (shadows) {
       update_buffer(cmd, shadow_frame_buffer_.buffer, shadow_frame_);
+      if (shadow_frame_mid_buffer_.buffer)
+        update_buffer(cmd, shadow_frame_mid_buffer_.buffer, shadow_frame_mid_);
       if (shadow_frame_far_buffer_.buffer)
         update_buffer(cmd, shadow_frame_far_buffer_.buffer, shadow_frame_far_);
       record_shadow(cmd);
@@ -3241,6 +3300,8 @@ void Showroom::bind_dynamic_env(VkImageView cube_view, VkSampler sampler) {
     VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
                               VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
+                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
     const VkImageView mirror_view = (dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
@@ -3249,8 +3310,8 @@ void Showroom::bind_dynamic_env(VkImageView cube_view, VkSampler sampler) {
     VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo dirt_m{sampler_, shared_dirt_mask_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet writes[11]{};
-    for (int i = 0; i < 11; ++i) {
+    VkWriteDescriptorSet writes[12]{};
+    for (int i = 0; i < 12; ++i) {
       writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
       writes[i].dstSet = fresh;
       writes[i].dstBinding = uint32_t(i);
@@ -3267,7 +3328,8 @@ void Showroom::bind_dynamic_env(VkImageView cube_view, VkSampler sampler) {
     writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[8].pImageInfo = &dirt_p;
     writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[9].pImageInfo = &dirt_m;
     writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[10].pImageInfo = &gcrack;
-    vkUpdateDescriptorSets(r_.device_, 11, writes, 0, nullptr);
+    writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
+    vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
     frame_set_ = fresh;
     bound_dyn_env_view_ = cube_view;
     return;
@@ -3461,20 +3523,53 @@ void Showroom::record_contact_shadows(VkCommandBuffer cmd) {
   struct ContactPush {
     float model[16];
     float params[4];
+    float wheels_uv[4];
   };
+  static_assert(sizeof(ContactPush) == 96);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, contact_shadow_pipe_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, contact_shadow_pipe_layout_, 0, 1, &frame_set_, 0,
                           nullptr);
   const float sign = r_.reverse_z() ? 1.0f : -1.0f;
   vkCmdSetDepthBias(cmd, sign * 96.0f, 0.0f, sign * 1.5f);
+  const float night_amt = tod_active_ ? std::clamp(tod_state_.switch_on_lights, 0.0f, 1.0f) : 0.0f;
+  // Keep cars grounded cleanly across bright sun, shade, overcast, and night on all 4 hardware tiers.
+  const float min_dark = 0.14f + 0.10f * night_amt;
 
-  auto draw_one = [&](const float* car_model, const std::array<float, 3>& bmin, const std::array<float, 3>& bmax,
-                      float strength) {
+  auto draw_one = [&](const Showroom* car_sr, const float* car_model, const std::array<float, 3>& bmin,
+                      const std::array<float, 3>& bmax, float strength) {
     const float hx = std::max(0.75f, 0.5f * (bmax[0] - bmin[0])) * 1.18f;
     const float hz = std::max(1.65f, 0.5f * (bmax[2] - bmin[2])) * 1.10f;
     const float cx = 0.5f * (bmin[0] + bmax[0]);
     const float cz = 0.5f * (bmin[2] + bmax[2]);
     const float cy = bmin[1] + 0.025f;
+
+    // Derive per-car normalized wheel contact patch coordinates & suspension clearance from live poses/rest hubs.
+    float f_u = 0.58f, f_v = -0.54f, r_u = 0.58f, r_v = 0.54f;
+    float clearance = 0.25f;
+    if (car_sr) {
+      const auto& rest_w = car_sr->car_.car.wheel_centres;
+      const auto& rest_b = car_sr->car_.car.wheel_centres_body;
+      float fl_x = std::fabs(rest_w[0][0]), fr_x = std::fabs(rest_w[1][0]);
+      float rl_x = std::fabs(rest_w[2][0]), rr_x = std::fabs(rest_w[3][0]);
+      if (fl_x + fr_x > 0.2f && rl_x + rr_x > 0.2f) {
+        f_u = std::clamp(0.5f * (fl_x + fr_x) / hx, 0.35f, 0.84f);
+        r_u = std::clamp(0.5f * (rl_x + rr_x) / hx, 0.35f, 0.84f);
+        const float fz = 0.5f * (rest_w[0][2] + rest_w[1][2]);
+        const float rz = 0.5f * (rest_w[2][2] + rest_w[3][2]);
+        f_v = std::clamp((fz - cz) / hz, -0.82f, 0.82f);
+        r_v = std::clamp((rz - cz) / hz, -0.82f, 0.82f);
+      }
+      if (car_sr->have_wheel_poses_) {
+        float avg_drop = 0.0f;
+        for (int w = 0; w < 4; ++w) {
+          // Lower wheel hub relative to rest body frame => chassis lifted higher off the road.
+          avg_drop += (rest_b[size_t(w)][1] - car_sr->wheel_poses_[w].centre[1]);
+        }
+        avg_drop *= 0.25f;
+        clearance = std::clamp(0.25f + avg_drop * 2.4f, 0.0f, 1.0f);
+      }
+    }
+
     float local[16] = {hx, 0, 0, 0,  0, 1, 0, 0,  0, 0, hz, 0,  cx, cy, cz, 1};
     ContactPush push{};
     if (car_model) {
@@ -3483,20 +3578,24 @@ void Showroom::record_contact_shadows(VkCommandBuffer cmd) {
       std::memcpy(push.model, local, sizeof push.model);
     }
     push.params[0] = strength;
-    push.params[1] = 0.14f;  // deep AO under chassis center
+    push.params[1] = min_dark;
     push.params[2] = 0.24f;  // rounded body footprint corner radius
-    push.params[3] = 0.0f;
+    push.params[3] = clearance;
+    push.wheels_uv[0] = f_u;
+    push.wheels_uv[1] = f_v;
+    push.wheels_uv[2] = r_u;
+    push.wheels_uv[3] = r_v;
     vkCmdPushConstants(cmd, contact_shadow_pipe_layout_,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ContactPush), &push);
     vkCmdDraw(cmd, 6, 1, 0, 0);
   };
 
   if (draw_car_ && !cockpit_camera_active_ && have_bounds_) {
-    draw_one(nullptr, bounds_min_, bounds_max_, 0.92f);
+    draw_one(this, nullptr, bounds_min_, bounds_max_, 0.92f);
   }
   for (const auto& in : instances_) {
     if (!in.car || !in.car->have_bounds_) continue;
-    draw_one(in.model, in.car->bounds_min_, in.car->bounds_max_, 0.88f);
+    draw_one(in.car, in.model, in.car->bounds_min_, in.car->bounds_max_, 0.88f);
   }
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
 }
@@ -3615,11 +3714,15 @@ bool Showroom::shadows_on() const {
 
 void Showroom::place_shadow() {
   const ShadowSettings& s = r_.options_.shadow;
-  // Multi-cascade sun shadow radii matching Colorado TrackSettings.xml ShadowEnds:
-  // Near cascade (~28 m) keeps car & road shadows razor sharp; Far cascade (~185 m) covers hills/buildings/trees.
-  const float near_radius = std::min(s.radius, 30.0f);
-  const float far_radius = std::max(s.radius * 3.0f, 185.0f);
-  constexpr float kDepth = 450.0f;
+  const auto pcss_q = r_.graphics_settings().shadow_pcss;
+  const bool three_cascades = (r_.shadow_cascades_ >= 3u) && (shadow_set_mid_ != VK_NULL_HANDLE) &&
+                              (shadow_set_far_ != VK_NULL_HANDLE);
+  // Phase B 3-cascade stabilized D32 CSM radii (Near ~20m, Mid ~90m, Far ~320m) on high/ultra;
+  // falls back to fast 2-cascade (Near ~30m, Far ~185m) on low/low-power.
+  const float near_radius = three_cascades ? 20.0f : std::min(s.radius, 30.0f);
+  const float mid_radius = 90.0f;
+  const float far_radius = three_cascades ? 320.0f : std::max(s.radius * 3.0f, 185.0f);
+  constexpr float kDepth = 520.0f;
   auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
   auto normalise = [&](float* v) {
     const float l = std::sqrt(dot3(v, v));
@@ -3651,11 +3754,17 @@ void Showroom::place_shadow() {
     normalise(right);
   }
   cross(right, forward, across);
-  const float origin[3] = {world_transform_[12], world_transform_[13], world_transform_[14]};
-  const float ox = dot3(origin, right), oy = dot3(origin, across);
+  // Anchor texel grid to absolute world origin (folding scenery origin shift) so camera
+  // movement AND cell regathers produce zero shadow-edge shimmer!
+  const float world_zero[3] = {
+      world_transform_[12] - world_transform_[0] * float(world_origin_[0]) - world_transform_[8] * float(world_origin_[1]),
+      world_transform_[13] - world_transform_[1] * float(world_origin_[0]) - world_transform_[9] * float(world_origin_[1]),
+      world_transform_[14] - world_transform_[2] * float(world_origin_[0]) - world_transform_[10] * float(world_origin_[1]),
+  };
+  const float ox = dot3(world_zero, right), oy = dot3(world_zero, across);
 
-  auto build_cascade = [&](float radius, float m[16], float& texel_out, float centre_out[3]) {
-    for (int k = 0; k < 3; ++k) centre_out[k] = frame_.eye[k] + ahead[k] * radius * 0.45f;
+  auto build_cascade = [&](float radius, float ahead_bias, float m[16], float& texel_out, float centre_out[3]) {
+    for (int k = 0; k < 3; ++k) centre_out[k] = frame_.eye[k] + ahead[k] * radius * ahead_bias;
     const float texel = 2.0f * radius / float(r_.shadow_size_);
     texel_out = texel;
     float cx = dot3(centre_out, right), cy = dot3(centre_out, across);
@@ -3674,40 +3783,53 @@ void Showroom::place_shadow() {
     m[15] = 1.0f;
   };
 
-  float m_near[16], m_far[16], texel_near = 0.0f, texel_far = 0.0f;
-  float centre_near[3], centre_far[3];
-  build_cascade(near_radius, m_near, texel_near, centre_near);
-  build_cascade(far_radius, m_far, texel_far, centre_far);
+  float m_near[16], m_mid[16], m_far[16];
+  float texel_near = 0.0f, texel_mid = 0.0f, texel_far = 0.0f;
+  float centre_near[3], centre_mid[3], centre_far[3];
+  build_cascade(near_radius, 0.42f, m_near, texel_near, centre_near);
+  if (three_cascades) {
+    build_cascade(mid_radius, 0.50f, m_mid, texel_mid, centre_mid);
+  } else {
+    std::memset(m_mid, 0, sizeof m_mid);
+    centre_mid[0] = centre_mid[1] = centre_mid[2] = 0.0f;
+  }
+  build_cascade(far_radius, 0.52f, m_far, texel_far, centre_far);
 
   std::memcpy(frame_.shadow_matrix, m_near, sizeof m_near);
+  std::memcpy(frame_.shadow_matrix_mid, m_mid, sizeof m_mid);
   std::memcpy(frame_.shadow_matrix_far, m_far, sizeof m_far);
   frame_.shadow[0] = 1.0f;
   frame_.shadow[1] = 1.0f / float(r_.shadow_size_);
   frame_.shadow[2] = s.strength;
   frame_.shadow[3] = float(s.taps);
-  frame_.shadow_bias[0] = 1.5f * texel_near;
+  frame_.shadow_bias[0] = 1.35f * texel_near;
   frame_.shadow_bias[1] = frame_.shadow_bias[2] = frame_.shadow_bias[3] = 0.0f;
-  frame_.shadow_far_bias[0] = 1.6f * texel_far;
+  frame_.shadow_mid_bias[0] = 1.45f * texel_mid;
+  frame_.shadow_mid_bias[1] = three_cascades ? 1.0f : 0.0f;
+  frame_.shadow_mid_bias[2] = (pcss_q == modern::ShadowPcss::kUltra) ? 2.0f
+                            : (pcss_q == modern::ShadowPcss::kHigh)  ? 1.0f
+                                                                     : 0.0f;
+  frame_.shadow_mid_bias[3] = float(r_.shadow_cascades_);
+  frame_.shadow_far_bias[0] = 1.55f * texel_far;
   frame_.shadow_far_bias[1] = shadow_set_far_ ? 1.0f : 0.0f;
 
-  shadow_frame_ = frame_;
-  std::memcpy(shadow_frame_.view_projection, m_near, sizeof m_near);
-  std::memcpy(shadow_frame_.transparent_view_projection, m_near, sizeof m_near);
-  for (int k = 0; k < 3; ++k) shadow_frame_.eye[k] = centre_near[k] + sun[k] * 1000.0f;
-  shadow_frame_.eye[3] = 1.0f;
-  shadow_frame_.world_fade[1] = 0.0f;
-
-  shadow_frame_far_ = frame_;
-  std::memcpy(shadow_frame_far_.view_projection, m_far, sizeof m_far);
-  std::memcpy(shadow_frame_far_.transparent_view_projection, m_far, sizeof m_far);
-  for (int k = 0; k < 3; ++k) shadow_frame_far_.eye[k] = centre_far[k] + sun[k] * 1000.0f;
-  shadow_frame_far_.eye[3] = 1.0f;
-  shadow_frame_far_.world_fade[1] = 0.0f;
+  auto fill_shadow_frame = [&](ShowroomFrame& dst, const float m[16], const float c[3]) {
+    dst = frame_;
+    std::memcpy(dst.view_projection, m, 16 * sizeof(float));
+    std::memcpy(dst.transparent_view_projection, m, 16 * sizeof(float));
+    for (int k = 0; k < 3; ++k) dst.eye[k] = c[k] + sun[k] * 1000.0f;
+    dst.eye[3] = 1.0f;
+    dst.world_fade[1] = 0.0f;
+  };
+  fill_shadow_frame(shadow_frame_, m_near, centre_near);
+  if (three_cascades) fill_shadow_frame(shadow_frame_mid_, m_mid, centre_mid);
+  fill_shadow_frame(shadow_frame_far_, m_far, centre_far);
 }
 
 void Showroom::record_shadow(VkCommandBuffer cmd) {
   const uint32_t size = r_.shadow_size_;
-  const uint32_t atlas_w = size > 1 ? size * 2 : size;
+  const uint32_t cascades = std::max(1u, r_.shadow_cascades_);
+  const uint32_t atlas_w = size > 1 ? size * cascades : size;
   VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
   b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
@@ -3737,8 +3859,10 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
 
   shadow_drawn_ = shadow_cars_ = 0;
   const auto eye = eye_in_scenery(world_transform_);
+  const bool ultra_pcss = r_.graphics_settings().shadow_pcss == modern::ShadowPcss::kUltra;
 
-  auto draw_cascade = [&](uint32_t x_offset, VkDescriptorSet cascade_set, const ShowroomFrame& sf, bool is_far) {
+  auto draw_cascade = [&](uint32_t x_offset, VkDescriptorSet cascade_set, const ShowroomFrame& sf, bool is_far,
+                          bool draw_cars) {
     const VkViewport viewport{float(x_offset), 0, float(size), float(size), 0, 1};
     const VkRect2D scissor{{int32_t(x_offset), 0}, {size, size}};
     vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -3774,8 +3898,8 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     for (const auto& d : world_draws_) {
       if (!d.cull || d.blend >= 2 || outside(d) || near_lod_beyond(d, eye)) continue;
-      // Far cascade skips tiny billboard/cutout draws on low preset for speed.
-      if (is_far && d.blend == 1 && r_.options_.shadow.taps <= 1) continue;
+      // Far cascade skips tiny billboard/cutout draws unless Ultra PCSS is active for fast 4K framing.
+      if (is_far && d.blend == 1 && !ultra_pcss) continue;
       ++shadow_drawn_;
       const VkPipeline pipeline = d.blend == 1 ? shadow_cutout_ : shadow_world_;
       if (pipeline != bound) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
@@ -3802,9 +3926,9 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
     }
-    // Player & traffic cars cast crisp shadows in Near cascade (and Far if close).
-    if (!is_far) {
-      if (draw_car_) record_shadow_car(cmd, nullptr);
+    // Player & traffic cars cast crisp shadows in Near (~20m) and Mid (~90m) cascades.
+    if (draw_cars) {
+      if (draw_car_) record_shadow_car(cmd, nullptr, cascade_set);
       if (!instances_.empty() && car_inst_buf_.ready() && shadow_car_) {
         std::vector<Showroom*> groups;
         for (const auto& in : instances_) {
@@ -3813,7 +3937,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
         const uint32_t slot_base = r_.frame_slot() * kMaxCarInstances;
         uint32_t offset = 0;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_car_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &cascade_set, 0, nullptr);
         for (Showroom* g : groups) {
           uint32_t count = 0;
           for (const auto& in : instances_)
@@ -3838,9 +3962,12 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     }
   };
 
-  draw_cascade(0, shadow_set_, shadow_frame_, false);
-  if (shadow_set_far_ && atlas_w >= size * 2) {
-    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true);
+  draw_cascade(0, shadow_set_, shadow_frame_, false, true);
+  if (cascades >= 3u && shadow_set_mid_ && shadow_set_far_ && atlas_w >= size * 3u) {
+    draw_cascade(size, shadow_set_mid_, shadow_frame_mid_, false, true);
+    draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, false);
+  } else if (shadow_set_far_ && atlas_w >= size * 2u) {
+    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, false);
   }
   vkCmdEndRendering(cmd);
 
@@ -3853,13 +3980,14 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-void Showroom::record_shadow_car(VkCommandBuffer cmd, const float* m) {
-  if (draws_.empty() || !shadow_car_ || !shadow_set_) return;
+void Showroom::record_shadow_car(VkCommandBuffer cmd, const float* m, VkDescriptorSet cascade_set) {
+  VkDescriptorSet set = cascade_set ? cascade_set : shadow_set_;
+  if (draws_.empty() || !shadow_car_ || !set) return;
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_car_);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &shadow_set_, 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &set, 0, nullptr);
   for (const auto& d : draws_) {
     if (d.glass) continue;  // glass and lamp covers cast none (ours)
     ShowroomPush push = d.push;
@@ -5354,7 +5482,10 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       const VkPipeline op_pipe = (needs_dither && world_opaque_dither_)
                                      ? world_opaque_dither_
                                      : ((r_.z_prepass() && world_opaque_after_z_) ? world_opaque_after_z_ : world_opaque_);
-      const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : op_pipe;
+      const VkPipeline pipeline =
+          d.blend >= 2 ? (((draw_fl & 32768u) != 0u && world_water_) ? world_water_ : world_alpha_)
+                       : d.blend == 1 ? world_coverage_
+                                      : op_pipe;
       if (pipeline != bound) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
         if (d.blend < 2) r_.apply_vrs(cmd);
@@ -6129,7 +6260,7 @@ void Showroom::load_car_lamps(const std::filesystem::path& game_root, const std:
 
 void Showroom::update_frame_cookie_descriptor() {
   if (!r_.device_ || !headlight_cookie_.view) return;
-  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_far_, env_frame_set_}) {
+  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_mid_, shadow_set_far_, env_frame_set_}) {
     if (!target) continue;
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -6444,6 +6575,21 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   hl.count_night[1] = beam_gate;
   hl.count_night[2] = tod_real_time_;
   hl.count_night[3] = 0.0f;
+  // Mirror nearest up to 8 active headlight cones for Phase B 3D volumetric headlight scattering.
+  vol_beam_count_ = uint32_t(std::min(beam_count, 8));
+  vol_night_factor_ = beam_gate;
+  for (uint32_t bi = 0; bi < vol_beam_count_; ++bi) {
+    const auto& src_b = hl.beams[bi];
+    auto& dst_b = vol_beams_[bi];
+    for (int k = 0; k < 4; ++k) {
+      dst_b.origin_range[k] = src_b.origin_range[k];
+      dst_b.dir_power[k] = src_b.dir_power[k];
+    }
+    dst_b.color_cos[0] = src_b.color[0];
+    dst_b.color_cos[1] = src_b.color[1];
+    dst_b.color_cos[2] = src_b.color[2];
+    dst_b.color_cos[3] = 0.72f;  // ~44 deg volumetric cone half-angle matching automotive low/high beam
+  }
 
   {
     VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
@@ -6972,10 +7118,10 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
                          world_transform_[c * 4 + 2] * e[2];
       return out;
     }();
-    const float max_dist = include_cars ? 200.0f : 160.0f;
+    const float max_dist = include_cars ? (low_memory_mode_ ? 200.0f : 320.0f) : 160.0f;
     const float max_dist2 = max_dist * max_dist;
-    const float cutout_dist2 = include_cars ? (110.0f * 110.0f) : (75.0f * 75.0f);
-    const float layer_dist2 = 80.0f * 80.0f;
+    const float cutout_dist2 = include_cars ? (low_memory_mode_ ? 110.0f * 110.0f : 165.0f * 165.0f) : (75.0f * 75.0f);
+    const float layer_dist2 = include_cars ? 120.0f * 120.0f : 80.0f * 80.0f;
     world_bind_buffers(cmd, false);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &env_frame_set_, 0,
                             nullptr);
