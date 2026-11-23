@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -298,17 +300,272 @@ bool DriveSession::run_demo_captures() {
           }
         }
       } else if (app.headless && !app.cli_campaign_stage.empty()) {
-        // Deterministic headless campaign stage capture (`--campaign-stage <stage> --headless --out <png>`).
-        race::CampaignAction cact;
-        if (!app.campaign.apply_cli_stage(app.cli_campaign_stage, app.fmv_player, nullptr, cact)) {
-          std::fprintf(stderr, "carview: unknown --campaign-stage '%s'\n", app.cli_campaign_stage.c_str());
-          app.status = 2;
-        } else {
-          if (cact.set_gps && app.gps_solver.ready()) {
-            const drive::Vec3 at = vehicle.position();
-            app.gps_nav.set_destination(cact.gps_xz[0], cact.gps_xz[1], traffic::GpsDestKind::kFestival, cact.gps_label,
-                                    at.x, at.z);
+        // Deterministic headless campaign stage capture & scripted E2E verification
+        // (`--campaign-stage <stage> --headless --out <png> [--telemetry-json <json>]`).
+        if (!app.boot_intro_checked) {
+          app.boot_intro_checked = true;
+          race::CampaignAction cact;
+          if (!app.campaign.apply_cli_stage(app.cli_campaign_stage, app.fmv_player, nullptr, cact)) {
+            std::fprintf(stderr, "carview: unknown --campaign-stage '%s'\n", app.cli_campaign_stage.c_str());
+            app.status = 2;
+            return true;
           }
+          apply_campaign_action(cact);
+          if (!app.next_car.empty() || !app.next_event.empty()) {
+            // Hot-reload session with the stage's car/event before running captures.
+            return true;
+          }
+        }
+        if (app.pending_handoff.active) {
+          const DriveApp::PendingCampaignHandoff h = app.pending_handoff;
+          app.pending_handoff = {};
+          if (h.has_teleport) {
+            vehicle.reset({h.pos[0], h.pos[1], h.pos[2]}, h.heading);
+          }
+          if (h.has_gps && app.gps_solver.ready()) {
+            const drive::Vec3 at = vehicle.position();
+            app.gps_nav.set_destination(h.gps_xz[0], h.gps_xz[1], traffic::GpsDestKind::kFestival, h.gps_label,
+                                        at.x, at.z);
+          }
+          if (h.has_event && !app.race) {
+            app.next_event = !h.event_id.empty() ? h.event_id : std::to_string(h.route_id);
+            app.next_event_fallback =
+                (!h.event_id.empty() && h.route_id > 0) ? std::to_string(h.route_id) : std::string{};
+            return true;
+          }
+        }
+
+        if (!app.telemetry_json_path.empty()) {
+          // Scripted multi-frame headless campaign drive with per-frame JSON telemetry.
+          std::vector<double> capture_times;
+          if (!app.capture_times_csv.empty()) {
+            std::stringstream ss(app.capture_times_csv);
+            std::string tok;
+            while (std::getline(ss, tok, ',')) {
+              if (!tok.empty()) capture_times.push_back(std::max(0.0, std::atof(tok.c_str())));
+            }
+          } else {
+            capture_times = {0.0, 1.0, 3.0, 6.0, 10.0};
+          }
+          std::sort(capture_times.begin(), capture_times.end());
+
+          const double duration = std::max(0.0, app.seconds);
+          constexpr double kFrameDt = 1.0 / 60.0;
+          const int total_frames = int(std::lround(duration / kFrameDt));
+          const int substeps_per_frame = std::max(1, int(std::lround(kFrameDt / drive::Vehicle::kStep)));
+
+          const std::filesystem::path out_prefix(app.out.empty() ? "out/campaign-e2e/campaign.png" : app.out);
+          if (out_prefix.has_parent_path()) {
+            std::error_code ec;
+            std::filesystem::create_directories(out_prefix.parent_path(), ec);
+          }
+          if (app.telemetry_json_path.has_parent_path()) {
+            std::error_code ec;
+            std::filesystem::create_directories(app.telemetry_json_path.parent_path(), ec);
+          }
+
+          struct TelemetrySample {
+            int frame = 0;
+            double t = 0.0;
+            double x = 0.0, y = 0.0, z = 0.0;
+            bool has_road_y = false;
+            double road_y = 0.0;
+            double speed_kmh = 0.0;
+            int chunks_loaded = 0;
+            int streamer_world_models = 0;
+            double streamer_dist_m = 0.0;
+            int streamer_gathers = 0;
+            double frame_ms = 0.0;
+            double sim_ms = 0.0;
+            double render_cpu_ms = 0.0;
+            double render_gpu_ms = 0.0;
+            std::string captured_png;
+          };
+          std::vector<TelemetrySample> samples;
+          samples.reserve(size_t(total_frames) + 1);
+
+          size_t next_cap_idx = 0;
+          for (int fi = 0; fi <= total_frames && app.status == 0; ++fi) {
+            const double frame_t = double(fi) * kFrameDt;
+            const auto frame_t0 = std::chrono::steady_clock::now();
+            if (fi > 0) {
+              for (int sub = 0; sub < substeps_per_frame; ++sub) {
+                const double cur_t = vehicle.time();
+                drive::Input di{};
+                if (!app.script_path.empty()) {
+                  di = drive::script_input(app.script, cur_t);
+                } else if (app.cruise) {
+                  di = host.follower.input(vehicle);
+                } else {
+                  di = drive::Input{0.03 * std::sin(cur_t * 0.7), 1.0, 0.0, false};
+                }
+                if (!step(di)) {
+                  std::fprintf(stderr, "carview: %s\n", app.error.c_str());
+                  app.status = 1;
+                  break;
+                }
+              }
+              if (app.status != 0) break;
+            }
+            const auto sim_t1 = std::chrono::steady_clock::now();
+
+            wheel_poses(vehicle, poses);
+            host.showroom.set_wheel_poses(poses);
+            host.showroom.set_braking(brake_glow(vehicle));
+            host.showroom.set_draw_car(true);
+            tod_cockpit_cam = false;
+            place_world();
+            const float aspect = float(app.width) / float(app.height);
+            const drive::Vec3 vp = vehicle.position();
+            const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            const double vhead = std::atan2(vf.x, vf.z);
+            drive::CameraView camp_cam{};
+            ShowroomFrame cframe =
+                app.campaign.compute_camera({vp.x, vp.y, vp.z}, vhead, camp_cam)
+                    ? camera_view_frame(camp_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
+                    : drive_frame(aspect, kFrameDt);
+            host.showroom.set_frame(cframe);
+            if (!app.campaign.is_blocking_gameplay()) set_minimap(int(app.height), true);
+            set_hud(int(app.width), int(app.height), "");
+            host.renderer.set_camera_projection(host.cam_proj.near_z, host.cam_proj.far_z, host.cam_proj.proj00,
+                                                host.cam_proj.proj11);
+            host.renderer.set_camera_vp(host.cam_proj.vp_unjittered, 0.0f, 0.0f);
+
+            const bool should_capture =
+                (next_cap_idx < capture_times.size() && frame_t + 0.5 * kFrameDt >= capture_times[next_cap_idx]);
+            double rec_ms = 0.0, gpu_ms = 0.0;
+            std::vector<uint8_t> rgba;
+            const auto ren_t0 = std::chrono::steady_clock::now();
+            if (should_capture) {
+              if (!host.renderer.render_offscreen(FrameConstants{}, app.width, app.height, rgba, app.error)) {
+                std::fprintf(stderr, "carview: %s\n", app.error.c_str());
+                app.status = 1;
+                break;
+              }
+              rec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ren_t0).count();
+            } else {
+              if (!host.renderer.render_timed(FrameConstants{}, app.width, app.height, rec_ms, gpu_ms, app.error)) {
+                std::fprintf(stderr, "carview: %s\n", app.error.c_str());
+                app.status = 1;
+                break;
+              }
+            }
+            const auto frame_t1 = std::chrono::steady_clock::now();
+
+            std::string png_path;
+            if (should_capture) {
+              const double cap_t = capture_times[next_cap_idx];
+              ++next_cap_idx;
+              for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+              const int tenths = int(std::lround(cap_t * 10.0));
+              char suffix[32];
+              std::snprintf(suffix, sizeof suffix, "_t%02d_%ds.png", tenths / 10, tenths % 10);
+              png_path = (out_prefix.parent_path() / (out_prefix.stem().string() + suffix)).string();
+              if (!write_png(png_path, app.width, app.height, 4, rgba.data())) {
+                std::fprintf(stderr, "carview: cannot write %s\n", png_path.c_str());
+                app.status = 1;
+                break;
+              }
+            }
+
+            TelemetrySample s{};
+            s.frame = fi;
+            s.t = frame_t;
+            s.x = vp.x;
+            s.y = vp.y;
+            s.z = vp.z;
+            if (host.ground) {
+              drive::Hit gh;
+              if (host.ground->raycast({vp.x, 2000.0, vp.z}, {0, -1, 0}, 4000.0, gh)) {
+                s.has_road_y = true;
+                s.road_y = 2000.0 - gh.distance;
+              }
+            }
+            s.speed_kmh = vehicle.speed() * 3.6;
+            if (host.streamer) {
+              s.streamer_world_models = int(host.streamer->stats().world_models);
+              s.streamer_dist_m = std::hypot(vp.x - host.streamer->centre_x(), vp.z - host.streamer->centre_z());
+              s.streamer_gathers = host.streamer->gathers();
+              s.chunks_loaded =
+                  (s.streamer_dist_m <= host.streamer->collision_radius()) ? s.streamer_world_models : 0;
+            }
+            s.frame_ms = std::chrono::duration<double, std::milli>(frame_t1 - frame_t0).count();
+            s.sim_ms = std::chrono::duration<double, std::milli>(sim_t1 - frame_t0).count();
+            s.render_cpu_ms = rec_ms;
+            s.render_gpu_ms = gpu_ms;
+            s.captured_png = png_path;
+            samples.push_back(std::move(s));
+
+            if (!png_path.empty()) {
+              const auto& back = samples.back();
+              std::printf("campaign-e2e [%s] t=%.2fs: pos=(%.2f, %.2f, %.2f) road_y=%s speed=%.1f km/h "
+                          "chunks=%d (world_models=%d dist=%.1fm) frame=%.2fms -> %s\n",
+                          app.cli_campaign_stage.c_str(), back.t, back.x, back.y, back.z,
+                          back.has_road_y ? std::to_string(back.road_y).c_str() : "null", back.speed_kmh,
+                          back.chunks_loaded, back.streamer_world_models, back.streamer_dist_m, back.frame_ms,
+                          png_path.c_str());
+            }
+          }
+
+          auto json_escape = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (char c : in) {
+              if (c == '\\') out += "\\\\";
+              else if (c == '"') out += "\\\"";
+              else if (c == '\n') out += "\\n";
+              else if (c == '\r') out += "\\r";
+              else if (c == '\t') out += "\\t";
+              else out.push_back(c);
+            }
+            return out;
+          };
+
+          std::ofstream jf(app.telemetry_json_path);
+          if (!jf) {
+            std::fprintf(stderr, "carview: cannot write telemetry JSON %s\n",
+                         app.telemetry_json_path.string().c_str());
+            app.status = 1;
+          } else {
+            jf << "{\n";
+            jf << "  \"stage\": \"" << json_escape(app.cli_campaign_stage) << "\",\n";
+            jf << "  \"car\": \"" << json_escape(app.car) << "\",\n";
+            jf << "  \"width\": " << app.width << ",\n";
+            jf << "  \"height\": " << app.height << ",\n";
+            jf << "  \"duration_s\": " << duration << ",\n";
+            jf << "  \"frames\": [\n";
+            for (size_t idx = 0; idx < samples.size(); ++idx) {
+              const auto& s = samples[idx];
+              jf << "    {\"frame\": " << s.frame
+                 << ", \"t\": " << s.t
+                 << ", \"x\": " << s.x
+                 << ", \"y\": " << s.y
+                 << ", \"z\": " << s.z
+                 << ", \"road_y\": ";
+              if (s.has_road_y) jf << s.road_y;
+              else jf << "null";
+              jf << ", \"speed_kmh\": " << s.speed_kmh
+                 << ", \"chunks_loaded\": " << s.chunks_loaded
+                 << ", \"streamer_world_models\": " << s.streamer_world_models
+                 << ", \"streamer_dist_m\": " << s.streamer_dist_m
+                 << ", \"streamer_gathers\": " << s.streamer_gathers
+                 << ", \"frame_ms\": " << s.frame_ms
+                 << ", \"sim_ms\": " << s.sim_ms
+                 << ", \"render_cpu_ms\": " << s.render_cpu_ms
+                 << ", \"render_gpu_ms\": " << s.render_gpu_ms
+                 << ", \"captured_png\": ";
+              if (!s.captured_png.empty()) jf << "\"" << json_escape(s.captured_png) << "\"";
+              else jf << "null";
+              jf << "}" << (idx + 1 < samples.size() ? "," : "") << "\n";
+            }
+            jf << "  ]\n";
+            jf << "}\n";
+            jf.close();
+            std::printf("campaign-e2e: wrote %zu frames of telemetry -> %s\n", samples.size(),
+                        app.telemetry_json_path.string().c_str());
+          }
+          if (app.fmv_player.active()) app.fmv_player.close();
+        } else {
           if (app.fmv_player.active()) {
             // Advance past initial fade-in so real movie frame & subtitles are crisp.
             for (int fi = 0; fi < 45 && app.fmv_player.active(); ++fi) app.fmv_player.update(0.1, false);

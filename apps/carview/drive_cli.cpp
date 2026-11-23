@@ -143,6 +143,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     if (a == "--story-intro") { story_intro_cli = true; continue; }
     if (a == "--campaign-stage") { cli_campaign_stage = next(); continue; }
+    if (a == "--telemetry-json") { telemetry_json_path = next(); continue; }
+    if (a == "--capture-times") { capture_times_csv = next(); continue; }
     if (a == "--fmv") { cli_fmv_path = next(); continue; }
     if (a == "--mods") { mods_root = next(); mods_off = false; continue; }
     if (a == "--no-mods") { mods_off = true; continue; }
