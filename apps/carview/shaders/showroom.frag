@@ -219,15 +219,16 @@ vec3 drive_env(vec3 dir, float lod) {
   vec3 up = normalize(frame.drive.xyz), sun = normalize(frame.key_light.xyz);
   float rough = lod / 7.0;
   float h = dot(dir, up);
+  float sun_vis = frame.sun_color.w >= 0.0 ? smoothstep(-0.08, 0.14, dot(sun, up)) : 1.0;
   vec3 sun_col = frame.sun_color.w >= 0.0 ? frame.sun_color.rgb : kSunColour;
-  vec3 hor_col = frame.sun_color.w >= 0.0 ? max(frame.fog_color.rgb * 2.4, frame.sky_color.rgb * 1.4) : kSkyHorizon;
+  vec3 hor_col = frame.sun_color.w >= 0.0 ? max(frame.fog_color.rgb * 2.0, frame.sky_color.rgb * 1.2) : kSkyHorizon;
   vec3 zen_col = frame.sun_color.w >= 0.0 ? frame.sky_color.rgb * 0.75 : kSkyZenith;
   vec3 gnd_col = frame.sun_color.w >= 0.0 ? frame.ground_color.rgb * 1.6 : kDirtReflect;
   vec3 sky = mix(hor_col, zen_col, pow(clamp(h, 0.0, 1.0), 0.55));
   float toward = max(dot(dir, sun), 0.0);
   vec3 haze_c = frame.sun_color.w >= 0.0 ? frame.fog_scatter.rgb : vec3(0.80, 0.70, 0.55);
-  sky = mix(sky, haze_c, pow(toward, 6.0) * (1.0 - clamp(h, 0.0, 1.0)) * 0.55);
-  sky += sun_col * pow(toward, mix(48.0, 6.0, rough)) * mix(0.9, 0.25, rough);
+  sky = mix(sky, haze_c, pow(toward, 6.0) * (1.0 - clamp(h, 0.0, 1.0)) * 0.55 * sun_vis);
+  sky += sun_col * pow(toward, mix(48.0, 6.0, rough)) * mix(0.9, 0.25, rough) * sun_vis;
   float edge = mix(0.02, 0.5, rough);
   return mix(gnd_col * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
 }
@@ -246,20 +247,37 @@ float ign_shadow() {
   return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
 }
 
-float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades) {
+// Receiver-plane depth gradient (dZ/dU, dZ/dV) computed in uniform control flow so wide PCSS
+// and PCF Poisson kernels track curved car body panels (decklids, fenders) without acne striping.
+vec2 receiver_plane_depth_gradient(vec2 uv, float z) {
+  vec3 dsdx = dFdx(vec3(uv, z));
+  vec3 dsdy = dFdy(vec3(uv, z));
+  float det = dsdx.x * dsdy.y - dsdy.x * dsdx.y;
+  if (abs(det) <= 1e-10) return vec2(0.0);
+  float inv_det = 1.0 / det;
+  vec2 g = vec2(dsdy.y * dsdx.z - dsdx.y * dsdy.z,
+                dsdx.x * dsdy.z - dsdy.x * dsdx.z) * inv_det;
+  return clamp(g, vec2(-0.5), vec2(0.5));
+}
+
+float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades, vec2 dz_duv) {
   vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
   float tx = frame.shadow.y * inv_cascades * 0.5;
   float ty = frame.shadow.y * 0.5;
   float u_lo = x_off + frame.shadow.y * inv_cascades;
   float u_hi = x_off + inv_cascades - frame.shadow.y * inv_cascades;
-  return 0.25 * (texture(shadow_map, vec3(vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995)), s.z)) +
-                 texture(shadow_map, vec3(vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995)), s.z)) +
-                 texture(shadow_map, vec3(vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995)), s.z)) +
-                 texture(shadow_map, vec3(vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995)), s.z)));
+  const vec2 offs[4] = vec2[4](vec2(-tx, -ty), vec2(tx, -ty), vec2(-tx, ty), vec2(tx, ty));
+  float lit = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    vec2 suv = vec2(clamp(uv.x + offs[i].x, u_lo, u_hi), clamp(uv.y + offs[i].y, 0.0005, 0.9995));
+    float tz = s.z + clamp(dot(dz_duv, suv - uv), -0.004, 0.004);
+    lit += texture(shadow_map, vec3(suv, tz));
+  }
+  return 0.25 * lit;
 }
 
-float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mode, float cascade_scale) {
-  if (pcss_mode < 0.5) return sample_cascade_pcf(s, x_off, inv_cascades);
+float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mode, float cascade_scale, vec2 dz_duv) {
+  if (pcss_mode < 0.5) return sample_cascade_pcf(s, x_off, inv_cascades, dz_duv);
   vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
   float texel_x = frame.shadow.y * inv_cascades;
   float texel_y = frame.shadow.y;
@@ -269,37 +287,40 @@ float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mo
   float ca = cos(ang), sa = sin(ang);
   mat2 rot = mat2(ca, -sa, sa, ca);
 
-  float search_r = (pcss_mode > 1.5 ? 5.5 : 4.2) * cascade_scale;
+  float search_r = (pcss_mode > 1.5 ? 5.2 : 4.0) * cascade_scale;
   vec2 search_uv = vec2(texel_x, texel_y) * search_r;
   float blocker_sum = 0.0;
   int blockers = 0;
-  float d_center = texture(shadow_depth_raw, vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995))).r;
-  if (d_center < s.z - 0.00020) {
-    blocker_sum += d_center;
+  vec2 cuv = vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995));
+  float d_center = texture(shadow_depth_raw, cuv).r;
+  if (d_center < s.z - 0.00024) {
+    blocker_sum += (s.z - d_center);
     ++blockers;
   }
   for (int i = 0; i < 8; ++i) {
     vec2 o = (rot * kPcssDisk[i * 2]) * search_uv;
     vec2 suv = vec2(clamp(uv.x + o.x, u_lo, u_hi), clamp(uv.y + o.y, 0.0005, 0.9995));
+    float ref_z = s.z + clamp(dot(dz_duv, suv - uv), -0.004, 0.004);
     float d = texture(shadow_depth_raw, suv).r;
-    if (d < s.z - 0.00025) {
-      blocker_sum += d;
+    if (d < ref_z - 0.00028) {
+      blocker_sum += (ref_z - d);
       ++blockers;
     }
   }
   if (blockers == 0) {
-    return texture(shadow_map, vec3(vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995)), s.z));
+    return texture(shadow_map, vec3(cuv, s.z));
   }
-  float avg_blocker = blocker_sum / float(blockers);
-  float blocker_dist_m = max(s.z - avg_blocker, 0.0) * 1040.0;
-  float penumbra = clamp(blocker_dist_m * 0.58 * cascade_scale, 0.80, pcss_mode > 1.5 ? 7.5 : 5.5);
+  float avg_dz = blocker_sum / float(blockers);
+  float blocker_dist_m = max(avg_dz, 0.0) * 1040.0;
+  float penumbra = clamp(blocker_dist_m * 0.52 * cascade_scale, 0.75, pcss_mode > 1.5 ? 6.5 : 5.0);
   vec2 filter_uv = vec2(texel_x, texel_y) * penumbra;
   int taps = pcss_mode > 1.5 ? 16 : 12;
   float lit = 0.0;
   for (int i = 0; i < taps; ++i) {
     vec2 o = (rot * kPcssDisk[i]) * filter_uv;
     vec2 suv = vec2(clamp(uv.x + o.x, u_lo, u_hi), clamp(uv.y + o.y, 0.0005, 0.9995));
-    lit += texture(shadow_map, vec3(suv, s.z));
+    float tap_z = s.z + clamp(dot(dz_duv, suv - uv), -0.004, 0.004);
+    lit += texture(shadow_map, vec3(suv, tap_z));
   }
   return lit / float(taps);
 }
@@ -310,27 +331,42 @@ float drive_shadow(vec3 p, vec3 n) {
   float inv_c = three_c ? (1.0 / 3.0) : 0.5;
   float pcss_mode = frame.shadow_mid_bias.z;
 
-  vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x * 1.8, 1.0);
+  // Slope-scaled normal offset + uniform-flow receiver-plane gradients prevent curved-panel
+  // PCSS shadow-acne striping (e.g., R34 rear trunk lid under spoiler) while keeping crisp contact shadows.
+  vec3 sun_dir = normalize(frame.key_light.xyz);
+  float slope_mul = 2.1 + 2.5 * (1.0 - max(dot(n, sun_dir), 0.0));
+
+  vec4 sn = frame.shadow_matrix * vec4(p + n * (frame.shadow_bias.x * slope_mul), 1.0);
+  vec2 uvn = vec2((sn.x * 0.5 + 0.5) * inv_c, sn.y * 0.5 + 0.5);
+  vec2 g_near = receiver_plane_depth_gradient(uvn, sn.z);
+
+  vec4 sm = frame.shadow_matrix_mid * vec4(p + n * (frame.shadow_mid_bias.x * slope_mul), 1.0);
+  vec2 uvm = vec2((sm.x * 0.5 + 0.5) * inv_c + inv_c, sm.y * 0.5 + 0.5);
+  vec2 g_mid = receiver_plane_depth_gradient(uvm, sm.z);
+
+  float far_off = three_c ? (2.0 * inv_c) : 0.5;
+  vec4 sf = frame.shadow_matrix_far * vec4(p + n * (frame.shadow_far_bias.x * slope_mul), 1.0);
+  vec2 uvf = vec2((sf.x * 0.5 + 0.5) * inv_c + far_off, sf.y * 0.5 + 0.5);
+  vec2 g_far = receiver_plane_depth_gradient(uvf, sf.z);
+
   float edge_n = max(abs(sn.x), abs(sn.y));
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
-  float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0) : 1.0;
+  float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0, g_near) : 1.0;
 
   if (three_c) {
     if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
-    vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x * 1.8, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
     bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
-    float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35) : 1.0;
+    float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35, g_mid) : 1.0;
     if (near_ok) {
       float bn = smoothstep(0.80, 0.98, edge_n);
       return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, bn));
     }
     if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
-    vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x * 1.8, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
-      lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f));
+      lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c, g_far), 1.0, smoothstep(0.84, 1.0, edge_f));
     }
     float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
     return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
@@ -338,11 +374,10 @@ float drive_shadow(vec3 p, vec3 n) {
 
   if (frame.shadow_far_bias.y > 0.5) {
     if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
-    vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x * 2.0, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
-      lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+      lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5, g_far), 1.0, smoothstep(0.82, 1.0, edge_f));
     }
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
     return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
@@ -1066,7 +1101,12 @@ void main() {
       float F_cov = clamp(0.05 + f_scl * pow(1.0 - nv, f_idx), 0.05, 0.95);
       vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
       vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit;
-      colour = F_cov * cov_refl + cov_spec;
+      // Subtle translucent plastic diffuse scattering on red/amber lamp lenses (P1-3)
+      // so unlit daylight rear fog/tail lenses read deep ruby-red instead of dull grey-brown.
+      vec3 lens_diff = is_red ? (vec3(0.065, 0.002, 0.002) * diffuse_light)
+                     : is_amber ? (vec3(0.14, 0.055, 0.004) * diffuse_light)
+                     : vec3(0.0);
+      colour = lens_diff + F_cov * cov_refl + cov_spec;
       alpha = 1.0;
     } else if (submat == 6u) {
       colour = base * (diffuse_light + vec3(0.02)) * alpha;

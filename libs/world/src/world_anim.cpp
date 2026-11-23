@@ -1,10 +1,13 @@
 #include "world/world_anim.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 #include "fh1data/archive.h"
 #include "fh1data/xds.h"
@@ -173,6 +176,14 @@ bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int pre
   if (total_idx < 3 || idx_base + 4 + size_t(total_idx) * 2 > data.size()) return false;
 
   out.vertices.resize(vert_count);
+  out.bone_role.fill(SpectatorMeshLod::kBoneLower);
+  out.bone_centroid.fill({0.0f, 0.0f, 0.0f});
+  out.min_y = 1e9f;
+  out.has_arm_bones = false;
+
+  std::array<std::array<double, 3>, SpectatorMeshLod::kMaxBones> b_sum{};
+  std::array<uint32_t, SpectatorMeshLod::kMaxBones> b_cnt{};
+
   for (uint32_t i = 0; i < vert_count; ++i) {
     const uint8_t* vp = p + 0x40 + size_t(i) * 36;
     auto& v = out.vertices[i];
@@ -183,6 +194,43 @@ bool parse_skinbin(std::span<const uint8_t> data, SpectatorMeshLod& out, int pre
     v.bone1 = vp[29];
     v.weight0 = vp[30];
     v.weight1 = vp[31];
+    out.min_y = std::min(out.min_y, v.pos[1]);
+    if (v.bone0 < SpectatorMeshLod::kMaxBones && v.weight0 >= 128) {
+      b_sum[v.bone0][0] += double(v.pos[0]);
+      b_sum[v.bone0][1] += double(v.pos[1]);
+      b_sum[v.bone0][2] += double(v.pos[2]);
+      ++b_cnt[v.bone0];
+    }
+  }
+  if (out.min_y > 1e8f) out.min_y = 0.0f;
+
+  // Classify each skeleton bone from its bind-pose vertex centroid so cheering, clapping,
+  // pointing, and relaxed idle animations bend real shoulders/elbows/head without tearing.
+  for (size_t b = 0; b < SpectatorMeshLod::kMaxBones; ++b) {
+    if (b_cnt[b] == 0) continue;
+    const float cx = float(b_sum[b][0] / double(b_cnt[b]));
+    const float cy = float(b_sum[b][1] / double(b_cnt[b])) - out.min_y;
+    const float cz = float(b_sum[b][2] / double(b_cnt[b]));
+    out.bone_centroid[b] = {cx, cy, cz};
+    if (cy > 1.48f && std::fabs(cx) <= 0.16f) {
+      out.bone_role[b] = SpectatorMeshLod::kBoneHead;
+    } else if (cx < -0.15f && cy >= 1.05f && cy <= 1.54f) {
+      out.bone_role[b] = SpectatorMeshLod::kBoneUpperArmL;
+      out.has_arm_bones = true;
+    } else if (cx < -0.16f && cy >= 0.55f && cy < 1.05f) {
+      out.bone_role[b] = SpectatorMeshLod::kBoneForearmL;
+      out.has_arm_bones = true;
+    } else if (cx > 0.15f && cy >= 1.05f && cy <= 1.54f) {
+      out.bone_role[b] = SpectatorMeshLod::kBoneUpperArmR;
+      out.has_arm_bones = true;
+    } else if (cx > 0.16f && cy >= 0.55f && cy < 1.05f) {
+      out.bone_role[b] = SpectatorMeshLod::kBoneForearmR;
+      out.has_arm_bones = true;
+    } else if (cy >= 0.85f && cy <= 1.48f) {
+      out.bone_role[b] = SpectatorMeshLod::kBoneTorso;
+    } else {
+      out.bone_role[b] = SpectatorMeshLod::kBoneLower;
+    }
   }
 
   int chosen = std::clamp(preferred_lod, 0, int(std::min<uint32_t>(num_lods, 4u)) - 1);
@@ -466,12 +514,68 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
   return loaded_any;
 }
 
+namespace {
+
+std::atomic<const drive::Ground*> g_last_ground{nullptr};
+std::atomic<const AnimatedWorldSystem*> g_last_ground_owner{nullptr};
+
+// 3x3 rotation + translation about a pivot for smooth per-bone spectator posing.
+struct BoneXform {
+  float r[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  float t[3] = {0, 0, 0};
+};
+
+BoneXform make_bone_rot_pivot(float rx, float ry, float rz, const std::array<float, 3>& pivot,
+                              const std::array<float, 3>& shift = {0.0f, 0.0f, 0.0f}) {
+  const float cx = std::cos(rx), sx = std::sin(rx);
+  const float cy = std::cos(ry), sy = std::sin(ry);
+  const float cz = std::cos(rz), sz = std::sin(rz);
+  // R = Ry * Rz * Rx
+  BoneXform out;
+  out.r[0][0] = cy * cz;
+  out.r[0][1] = cy * (-sz) * cx + sy * sx;
+  out.r[0][2] = cy * (-sz) * (-sx) + sy * cx;
+  out.r[1][0] = sz;
+  out.r[1][1] = cz * cx;
+  out.r[1][2] = -cz * sx;
+  out.r[2][0] = -sy * cz;
+  out.r[2][1] = sy * sz * cx + cy * sx;
+  out.r[2][2] = -sy * sz * sx + cy * cx;
+  for (int i = 0; i < 3; ++i) {
+    const float rp = out.r[i][0] * pivot[0] + out.r[i][1] * pivot[1] + out.r[i][2] * pivot[2];
+    out.t[i] = pivot[i] - rp + shift[i];
+  }
+  return out;
+}
+
+void apply_bone_xform(const BoneXform& x, const std::array<float, 3>& p, const std::array<float, 3>& n,
+                      std::array<float, 3>& out_p, std::array<float, 3>& out_n) {
+  for (int i = 0; i < 3; ++i) {
+    out_p[i] = x.r[i][0] * p[0] + x.r[i][1] * p[1] + x.r[i][2] * p[2] + x.t[i];
+    out_n[i] = x.r[i][0] * n[0] + x.r[i][1] * n[1] + x.r[i][2] * n[2];
+  }
+}
+
+}  // namespace
+
 AnimatedWorldSystem::AnimatedWorldSystem() { populate_default_colorado(); }
+
+AnimatedWorldSystem::~AnimatedWorldSystem() {
+  if (g_last_ground_owner.load(std::memory_order_relaxed) == this) {
+    g_last_ground.store(nullptr, std::memory_order_relaxed);
+    g_last_ground_owner.store(nullptr, std::memory_order_relaxed);
+  }
+}
+
+const drive::Ground* AnimatedWorldSystem::last_ground() {
+  return g_last_ground.load(std::memory_order_relaxed);
+}
 
 bool AnimatedWorldSystem::init(const std::filesystem::path& media_dir, const TrackPostConfig& post_cfg,
                                std::string* error) {
   post_cfg_ = post_cfg;
   populate_default_colorado();
+  populate_gameobjs_crowds(media_dir);
   return catalog_.load_from_media(media_dir, error);
 }
 
@@ -508,18 +612,154 @@ void AnimatedWorldSystem::populate_default_colorado() {
       {{1968.0f, 145.2f, 964.0f}, 7.2f, 1.75f, 3.4f, 4.4f, {48, 184, 132}, {248, 244, 232}},
   };
 
-  // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers
-  // (obj_fest_barriermetal line from (1992.76, 143.73, 960.09) to (2007.43, 142.78, 949.33),
-  // facing (-0.589, +0.808) toward the road).
+  // Cheering festival spectators positioned strictly behind real Colorado metal festival barriers:
+  // obj_fest_barriermetal line from (1992.76, 143.73, 960.09) to (2007.43, 142.78, 949.33),
+  // tangent dir = (+0.808, -0.052, -0.589), true orthogonal road-facing normal face = (+0.589, +0.808).
+  // Row 1 sits ~1.18 m behind the barrier rail, Row 2 staggered ~1.05 m further back so legs never
+  // clip barrier rails and rows never overlap.
   crowds_ = {
-      {{1993.85f, 143.62f, 958.65f}, 0.808f, -0.052f, -0.589f, -0.589f, 0.808f, 10, 1.48f, "Barrier"},
-      {{1995.75f, 143.42f, 956.30f}, 0.808f, -0.052f, -0.589f, -0.589f, 0.808f, 6, 1.95f, "GigCheer01"},
+      {{1998.80f, 143.40f, 954.25f}, 0.808f, -0.052f, -0.589f, 0.589f, 0.808f, 7, 1.75f, "Barrier", false},
+      {{1998.97f, 143.25f, 952.95f}, 0.808f, -0.052f, -0.589f, 0.589f, 0.808f, 5, 2.10f, "GigCheer01", false},
+      // Canonical Horizon Festival Hub baseline clusters (Main Stage, Race Central, Autoshow, Dak's Garage).
+      {{-1458.0f, 26.0f, -340.0f}, 0.85f, 0.0f, -0.52f, 0.52f, 0.85f, 10, 1.75f, "GigCheer01", true},
+      {{-1388.0f, 1.0f, -18.0f}, 0.72f, 0.0f, 0.69f, -0.69f, 0.72f, 10, 1.75f, "Barrier", true},
+      {{-1012.0f, 0.0f, -252.0f}, 0.92f, 0.0f, 0.39f, -0.39f, 0.92f, 8, 1.80f, "Barrier", true},
+      {{-952.0f, 0.0f, -172.0f}, 0.60f, 0.0f, -0.80f, 0.80f, 0.60f, 8, 1.80f, "Barrier", true},
   };
+}
+
+void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& media_dir) {
+  // Auto-populate grounded festival crowd clusters along real Colorado Festival Hub,
+  // Outpost, Exhibition, Showcase, and Race start/finish sites from Ribbon_00/GameObjs.xml.
+  const auto objs_path = media_dir / "Tracks" / "Colorado" / "Ribbon_00" / "GameObjs.xml";
+  std::error_code ec;
+  if (!std::filesystem::exists(objs_path, ec)) return;
+  std::ifstream f(objs_path, std::ios::binary);
+  if (!f) return;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  const std::string xml = ss.str();
+
+  auto parse_attr_float = [](const std::string& tag, const char* name, float fallback) -> float {
+    const std::string v = attr_value(tag, name);
+    return v.empty() ? fallback : float(std::atof(v.c_str()));
+  };
+
+  auto too_close = [&](float x, float z, float min_d) -> bool {
+    const float min_d2 = min_d * min_d;
+    for (const auto& c : crowds_) {
+      const float dx = c.origin[0] - x;
+      const float dz = c.origin[2] - z;
+      if (dx * dx + dz * dz < min_d2) return true;
+    }
+    return false;
+  };
+
+  size_t pos = 0;
+  constexpr size_t kMaxAutoClusters = 96;
+  size_t added = 0;
+  while (pos < xml.size() && added < kMaxAutoClusters) {
+    const size_t gid_pos = xml.find("GameplayID=\"", pos);
+    if (gid_pos == std::string::npos) break;
+    const size_t gid_end = xml.find('"', gid_pos + 12);
+    if (gid_end == std::string::npos) break;
+    const std::string gid = xml.substr(gid_pos + 12, gid_end - (gid_pos + 12));
+    const std::string low = lower_ascii(gid);
+    pos = gid_end + 1;
+
+    const bool is_festival = low.rfind("festival_", 0) == 0 || low.rfind("workshop_", 0) == 0;
+    const bool is_outpost = low.rfind("outpost_", 0) == 0;
+    const bool is_race_node = (low.size() >= 8 && low[0] == 'f' && low[1] == 'r' &&
+                               std::isdigit(static_cast<unsigned char>(low[2])) &&
+                               low.find("_node") != std::string::npos);
+    const bool is_exhibition = low.rfind("exhibition_fest", 0) == 0 || low.rfind("plane_race_", 0) == 0;
+    if (!is_festival && !is_outpost && !is_race_node && !is_exhibition) continue;
+
+    const size_t block_end = xml.find("</Obj", pos);
+    if (block_end == std::string::npos) break;
+    const size_t pos_tag = xml.find("<Pos ", pos);
+    if (pos_tag == std::string::npos || pos_tag > block_end) continue;
+    const size_t pos_gt = xml.find('>', pos_tag);
+    if (pos_gt == std::string::npos || pos_gt > block_end) continue;
+    const std::string pstr = xml.substr(pos_tag, pos_gt - pos_tag + 1);
+    const float ox = parse_attr_float(pstr, "x", 0.0f);
+    const float oy = parse_attr_float(pstr, "y", 0.0f);
+    const float oz = parse_attr_float(pstr, "z", 0.0f);
+
+    // Extract horizontal orientation axes (XAxis = lateral off-road, ZAxis = along road/site).
+    float xx = 1.0f, xz = 0.0f;
+    float zx = 0.0f, zz = 1.0f;
+    const size_t x_tag = xml.find("<XAxis ", pos);
+    if (x_tag != std::string::npos && x_tag < block_end) {
+      const size_t x_gt = xml.find('>', x_tag);
+      if (x_gt != std::string::npos && x_gt < block_end) {
+        const std::string xstr = xml.substr(x_tag, x_gt - x_tag + 1);
+        xx = parse_attr_float(xstr, "x", 1.0f);
+        xz = parse_attr_float(xstr, "z", 0.0f);
+      }
+    }
+    const size_t z_tag = xml.find("<ZAxis ", pos);
+    if (z_tag != std::string::npos && z_tag < block_end) {
+      const size_t z_gt = xml.find('>', z_tag);
+      if (z_gt != std::string::npos && z_gt < block_end) {
+        const std::string zstr = xml.substr(z_tag, z_gt - z_tag + 1);
+        zx = parse_attr_float(zstr, "x", 0.0f);
+        zz = parse_attr_float(zstr, "z", 1.0f);
+      }
+    }
+    const float zl = std::hypot(zx, zz);
+    if (zl > 1e-4f) {
+      zx /= zl;
+      zz /= zl;
+    } else {
+      zx = 0.0f;
+      zz = 1.0f;
+    }
+    // Guarantee strict orthogonality between along-line `dir` and inward-facing `face`.
+    const float dot_xz = xx * zx + xz * zz;
+    xx -= dot_xz * zx;
+    xz -= dot_xz * zz;
+    const float xl = std::hypot(xx, xz);
+    if (xl > 1e-4f) {
+      xx /= xl;
+      xz /= xl;
+    } else {
+      xx = zz;
+      xz = -zx;
+    }
+
+    // Offset crowd cluster cleanly off the asphalt shoulder (~9.5 m laterally), facing inward toward the site.
+    const float lateral = is_festival ? 10.5f : 9.2f;
+    const int count = is_festival ? 8 : 6;
+    const float spacing = 1.80f;
+    const float half_span = 0.5f * float(count - 1) * spacing;
+    const float cx = ox + xx * lateral - zx * half_span;
+    const float cz = oz + xz * lateral - zz * half_span;
+    if (too_close(cx, cz, 26.0f)) continue;
+
+    CrowdCluster cl;
+    cl.origin = {cx, oy, cz};
+    cl.dir_x = zx;
+    cl.dir_y = 0.0f;
+    cl.dir_z = zz;
+    cl.face_x = -xx;
+    cl.face_z = -xz;
+    cl.count = count;
+    cl.spacing = spacing;
+    cl.crowdclass = is_festival ? "GigCheer01" : "Barrier";
+    cl.require_offroad = true;
+    crowds_.push_back(std::move(cl));
+    ++added;
+  }
 }
 
 void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, float time_sec,
                                      const drive::Ground* ground, std::vector<DebrisVertex>& out,
                                      bool include_grass) const {
+  if (ground) {
+    g_last_ground.store(ground, std::memory_order_relaxed);
+    g_last_ground_owner.store(this, std::memory_order_relaxed);
+  }
   const float wind_spd = std::clamp(post_cfg_.wind_speed, 0.25f, 5.0f);
   const float wind_amp = std::clamp(post_cfg_.wind_amplitude, 0.04f, 0.85f);
   float wx = post_cfg_.wind_dir[0], wz = post_cfg_.wind_dir[2];
@@ -681,14 +921,24 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
   const float inv_grid = 1.0f / float(SpectatorCatalog::kAtlasGrid);
   const float uv_pad = 1.5f / float(SpectatorCatalog::kAtlasCell);
 
-  auto sample_ground_y = [&](float x, float z, float fallback) -> float {
-    if (!ground) return fallback;
+  struct GroundSample {
+    float y = 0.0f;
+    bool hit = false;
+    bool on_road = false;
+    bool steep = false;
+  };
+  auto sample_ground = [&](float x, float z, float fallback) -> GroundSample {
+    GroundSample gs{fallback, false, false, false};
+    if (!ground) return gs;
     drive::Hit h;
-    const double start_y = std::max(eye_y, double(fallback)) + 12.0;
-    if (ground->raycast({double(x), start_y, double(z)}, {0.0, -1.0, 0.0}, 36.0, h) && h.normal.y > 0.5) {
-      return float(start_y - h.distance);
+    const double start_y = std::max(eye_y, double(fallback)) + 16.0;
+    if (ground->raycast({double(x), start_y, double(z)}, {0.0, -1.0, 0.0}, 48.0, h)) {
+      gs.hit = true;
+      gs.y = float(start_y - h.distance);
+      gs.on_road = (h.surface == 0);
+      gs.steep = (h.normal.y < 0.72);
     }
-    return fallback;
+    return gs;
   };
 
   for (size_t ci = 0; ci < crowds_.size(); ++ci) {
@@ -706,11 +956,15 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       const float r1 = float(h1 & 0xFFFFu) / 65535.0f;
       const float r2 = float(h2 & 0xFFFFu) / 65535.0f;
 
-      const float along = (float(i) + (r0 - 0.5f) * 0.32f) * cl.spacing;
-      const float perp = (r1 - 0.5f) * 0.30f;
+      const float along = (float(i) + (r0 - 0.5f) * 0.22f) * cl.spacing;
+      // Non-negative perpendicular offset pushes slightly further back behind the barrier rail,
+      // never forward into the metal railing or into adjacent rows.
+      const float perp = r1 * 0.22f;
       const float px = cl.origin[0] + cl.dir_x * along - cl.face_x * perp;
       const float pz = cl.origin[2] + cl.dir_z * along - cl.face_z * perp;
-      const float py = sample_ground_y(px, pz, cl.origin[1] + cl.dir_y * along);
+      const GroundSample gs = sample_ground(px, pz, cl.origin[1] + cl.dir_y * along);
+      if (cl.require_offroad && gs.hit && (gs.on_road || gs.steep)) continue;
+      const float py = gs.y;
 
       const double dx = double(px) - eye_x;
       const double dz = double(pz) - eye_z;
@@ -722,38 +976,148 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
       const float u_off = float(cx) * inv_grid;
       const float v_off = float(cy) * inv_grid;
 
-      const float yaw = base_yaw + (r2 - 0.5f) * 0.52f;
+      const float yaw = base_yaw + (r2 - 0.5f) * 0.34f;
       const float cyaw = std::cos(yaw);
       const float syaw = std::sin(yaw);
-      const float scale = 0.96f + 0.09f * r0;
+      const float scale = 0.96f + 0.08f * r0;
       const float phase = r1 * 6.2831853f;
-      const float freq = 2.6f + 1.4f * r2;
+      const float freq = 2.4f + 1.3f * r2;
       const float cheer = std::sin(time_sec * freq + phase);
       const float sway = std::cos(time_sec * (freq * 0.5f) + phase * 1.3f);
+      const float head_turn = std::sin(time_sec * 0.75f + phase * 1.7f) * 0.24f;
+      const uint32_t style = (h0 >> 16) & 3u;
+
+      // Build per-bone rigid transforms from each bone's bind-pose role so spectators stand in
+      // natural cheering, clapping, pointing, and relaxed festival poses instead of rigid A-poses.
+      std::array<BoneXform, SpectatorMeshLod::kMaxBones> bone_xf{};
+      const std::array<float, 3> torso_piv{0.0f, 0.92f, 0.0f};
+      const std::array<float, 3> head_piv{0.0f, 1.48f, 0.0f};
+      const std::array<float, 3> sh_l{-0.17f, 1.38f, 0.0f};
+      const std::array<float, 3> sh_r{0.17f, 1.38f, 0.0f};
+
+      float torso_rx = 0.03f * cheer;
+      float torso_ry = 0.08f * sway;
+      float torso_rz = 0.035f * sway;
+      float l_arm_rx = -0.18f, l_arm_rz = 0.22f;   // relaxed out of A-pose by default
+      float r_arm_rx = -0.18f, r_arm_rz = -0.22f;
+      float l_fore_rx = -0.35f, r_fore_rx = -0.35f;
+
+      if (style == 0u) {
+        // Enthusiastic one-arm fist-pump cheer toward the road.
+        r_arm_rx = -1.75f + 0.24f * cheer;
+        r_arm_rz = -0.12f + 0.06f * sway;
+        r_fore_rx = -2.05f + 0.28f * cheer;
+        l_arm_rx = -0.22f;
+        l_arm_rz = 0.24f;
+        l_fore_rx = -0.45f;
+        torso_rx = -0.05f + 0.04f * cheer;
+      } else if (style == 1u) {
+        // Double-arm festival wave / cheer.
+        l_arm_rx = -1.85f + 0.26f * cheer;
+        l_arm_rz = 0.14f + 0.08f * sway;
+        l_fore_rx = -2.10f + 0.30f * cheer;
+        r_arm_rx = -1.80f - 0.24f * cheer;
+        r_arm_rz = -0.14f - 0.08f * sway;
+        r_fore_rx = -2.05f - 0.26f * cheer;
+        torso_rx = -0.04f + 0.03f * cheer;
+      } else if (style == 2u) {
+        // Pointing / gesturing toward passing cars on the highway.
+        l_arm_rx = -1.08f + 0.12f * cheer;
+        l_arm_rz = 0.08f;
+        l_fore_rx = -1.22f + 0.14f * cheer;
+        r_arm_rx = -0.16f;
+        r_arm_rz = -0.24f;
+        r_fore_rx = -0.32f;
+        torso_ry = 0.14f * sway;
+      } else {
+        // Relaxed festival stance + rhythmic waist-level clapping / swaying.
+        const float clap = 0.18f * std::fabs(cheer);
+        l_arm_rx = -0.42f - 0.08f * cheer;
+        l_arm_rz = 0.26f - clap;
+        l_fore_rx = -1.15f - 0.15f * cheer;
+        r_arm_rx = -0.42f - 0.08f * cheer;
+        r_arm_rz = -0.26f + clap;
+        r_fore_rx = -1.15f - 0.15f * cheer;
+      }
+
+      const BoneXform xf_torso = make_bone_rot_pivot(torso_rx, torso_ry, torso_rz, torso_piv,
+                                                     {sway * 0.014f, (0.5f + 0.5f * cheer) * 0.015f, 0.0f});
+      const BoneXform xf_head = make_bone_rot_pivot(torso_rx * 0.6f + 0.05f * cheer, torso_ry + head_turn,
+                                                    torso_rz * 0.5f, head_piv,
+                                                    {sway * 0.018f, (0.5f + 0.5f * cheer) * 0.018f, 0.0f});
+      const BoneXform xf_arm_l = make_bone_rot_pivot(l_arm_rx, torso_ry * 0.6f, l_arm_rz, sh_l,
+                                                     {sway * 0.014f, (0.5f + 0.5f * cheer) * 0.015f, 0.0f});
+      const BoneXform xf_fore_l = make_bone_rot_pivot(l_fore_rx, torso_ry * 0.6f, l_arm_rz * 0.85f, sh_l,
+                                                      {sway * 0.014f, (0.5f + 0.5f * cheer) * 0.016f, 0.0f});
+      const BoneXform xf_arm_r = make_bone_rot_pivot(r_arm_rx, torso_ry * 0.6f, r_arm_rz, sh_r,
+                                                     {sway * 0.014f, (0.5f + 0.5f * cheer) * 0.015f, 0.0f});
+      const BoneXform xf_fore_r = make_bone_rot_pivot(r_fore_rx, torso_ry * 0.6f, r_arm_rz * 0.85f, sh_r,
+                                                      {sway * 0.014f, (0.5f + 0.5f * cheer) * 0.016f, 0.0f});
+
+      for (size_t b = 0; b < SpectatorMeshLod::kMaxBones; ++b) {
+        switch (asset.mesh.bone_role[b]) {
+          case SpectatorMeshLod::kBoneTorso: bone_xf[b] = xf_torso; break;
+          case SpectatorMeshLod::kBoneHead: bone_xf[b] = xf_head; break;
+          case SpectatorMeshLod::kBoneUpperArmL: bone_xf[b] = xf_arm_l; break;
+          case SpectatorMeshLod::kBoneForearmL: bone_xf[b] = xf_fore_l; break;
+          case SpectatorMeshLod::kBoneUpperArmR: bone_xf[b] = xf_arm_r; break;
+          case SpectatorMeshLod::kBoneForearmR: bone_xf[b] = xf_fore_r; break;
+          default: break;
+        }
+      }
 
       const auto& verts = asset.mesh.vertices;
       const auto& inds = asset.mesh.indices;
       out.reserve(out.size() + inds.size());
       for (uint16_t idx : inds) {
         const auto& v = verts[idx];
-        float lx = v.pos[0] * scale;
-        float ly = v.pos[1] * scale;
-        float lz = v.pos[2] * scale;
+        // Normalize feet strictly to y=0 so every spectator stands flush on the terrain surface.
+        const std::array<float, 3> bp{v.pos[0], v.pos[1] - asset.mesh.min_y, v.pos[2]};
+        std::array<float, 3> posed_p = bp;
+        std::array<float, 3> posed_n = v.normal;
 
-        // Subtle standing crowd motion (feet stay planted at ly ~ 0).
-        const float upper = std::clamp((ly - 0.85f) / 0.85f, 0.0f, 1.0f);
-        const float mid = std::clamp((ly - 0.12f) / 0.60f, 0.0f, 1.0f);
-        lx += sway * 0.022f * upper;
-        ly += (0.5f + 0.5f * cheer) * 0.018f * mid;
-        lz += cheer * 0.016f * upper;
+        if (asset.mesh.has_arm_bones && v.bone0 < SpectatorMeshLod::kMaxBones) {
+          const float w0 = float(v.weight0);
+          const float w1 = (v.bone1 < SpectatorMeshLod::kMaxBones) ? float(v.weight1) : 0.0f;
+          const float wsum = w0 + w1;
+          if (wsum > 1e-3f) {
+            const float a0 = w0 / wsum;
+            const float a1 = w1 / wsum;
+            std::array<float, 3> p0{}, n0{};
+            apply_bone_xform(bone_xf[v.bone0], bp, v.normal, p0, n0);
+            if (a1 > 0.004f) {
+              std::array<float, 3> p1{}, n1{};
+              apply_bone_xform(bone_xf[v.bone1], bp, v.normal, p1, n1);
+              for (int k = 0; k < 3; ++k) {
+                posed_p[k] = p0[k] * a0 + p1[k] * a1;
+                posed_n[k] = n0[k] * a0 + n1[k] * a1;
+              }
+              posed_n = vnorm(posed_n);
+            } else {
+              posed_p = p0;
+              posed_n = n0;
+            }
+          }
+        } else {
+          // Fallback upper-body sway for meshes without explicit arm bone indices.
+          const float upper = std::clamp((bp[1] - 0.85f) / 0.85f, 0.0f, 1.0f);
+          const float mid = std::clamp((bp[1] - 0.12f) / 0.60f, 0.0f, 1.0f);
+          posed_p[0] += sway * 0.028f * upper;
+          posed_p[1] += (0.5f + 0.5f * cheer) * 0.020f * mid;
+          posed_p[2] += cheer * 0.022f * upper;
+        }
+
+        const float lx = posed_p[0] * scale;
+        const float ly = posed_p[1] * scale;
+        const float lz = posed_p[2] * scale;
 
         const float wx = px + lx * cyaw + lz * syaw;
         const float wy = py + ly;
         const float wz = pz - lx * syaw + lz * cyaw;
 
-        const float nx = v.normal[0] * cyaw + v.normal[2] * syaw;
-        const float ny = v.normal[1];
-        const float nz = -v.normal[0] * syaw + v.normal[2] * cyaw;
+        const float nx = posed_n[0] * cyaw + posed_n[2] * syaw;
+        const float ny = posed_n[1];
+        const float nz = -posed_n[0] * syaw + posed_n[2] * cyaw;
 
         const float u = u_off + std::clamp(v.uv[0], uv_pad, 1.0f - uv_pad) * inv_grid;
         const float tv = v_off + std::clamp(v.uv[1], uv_pad, 1.0f - uv_pad) * inv_grid;

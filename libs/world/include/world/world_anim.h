@@ -30,6 +30,16 @@ struct SpectatorVertex {
 };
 
 struct SpectatorMeshLod {
+  enum BoneRole : uint8_t {
+    kBoneLower = 0,
+    kBoneTorso = 1,
+    kBoneHead = 2,
+    kBoneUpperArmL = 3,
+    kBoneForearmL = 4,
+    kBoneUpperArmR = 5,
+    kBoneForearmR = 6,
+  };
+  static constexpr size_t kMaxBones = 64;
   struct Vertex {
     std::array<float, 3> pos{};
     std::array<float, 3> normal{};
@@ -41,6 +51,10 @@ struct SpectatorMeshLod {
   };
   std::vector<Vertex> vertices;
   std::vector<uint16_t> indices;  // outward-facing CCW triangles in game frame
+  std::array<uint8_t, kMaxBones> bone_role{};
+  std::array<std::array<float, 3>, kMaxBones> bone_centroid{};
+  float min_y = 0.0f;
+  bool has_arm_bones = false;
 };
 
 struct SpectatorAsset {
@@ -135,8 +149,9 @@ struct CrowdCluster {
   float face_x = 0.0f;
   float face_z = 1.0f;
   int count = 12;
-  float spacing = 1.15f;
+  float spacing = 1.75f;
   std::string crowdclass = "GigCheer01";
+  bool require_offroad = false;
 };
 
 // Wheel angular velocity (rad/s) -> rim/spoke motion blur blend [0..1].
@@ -150,6 +165,7 @@ inline float wheel_blur_factor(float omega_rad_s) {
 class AnimatedWorldSystem {
  public:
   AnimatedWorldSystem();
+  ~AnimatedWorldSystem();
 
   bool init(const std::filesystem::path& media_dir, const TrackPostConfig& post_cfg, std::string* error = nullptr);
   void set_post_config(const TrackPostConfig& post_cfg) { post_cfg_ = post_cfg; }
@@ -160,6 +176,10 @@ class AnimatedWorldSystem {
   const std::vector<WindmillProp>& windmills() const { return windmills_; }
   const std::vector<FestivalFlagProp>& flags() const { return flags_; }
   const std::vector<CrowdCluster>& crowds() const { return crowds_; }
+
+  // Active terrain height sampler observed during build_mesh() so spectator
+  // grounding in Showroom::record_debris_draw() always has real terrain elevation.
+  static const drive::Ground* last_ground();
 
   // Appends animated world triangles (hot-air balloons and wind-swaying
   // roadside grass quads) in game-frame coordinates to `out`.
@@ -173,6 +193,7 @@ class AnimatedWorldSystem {
 
  private:
   void populate_default_colorado();
+  void populate_gameobjs_crowds(const std::filesystem::path& media_dir);
 
   SpectatorCatalog catalog_;
   TrackPostConfig post_cfg_;

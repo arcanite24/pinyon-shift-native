@@ -690,8 +690,9 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
     const double eye_gx = world_origin_[0] + double(eye[0]);
     const double eye_gy = double(eye[1]);
     const double eye_gz = world_origin_[1] + double(eye[2]);
+    const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
     spectator_cpu_.clear();
-    spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, nullptr, spectator_cpu_);
+    spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, active_ground, spectator_cpu_);
     const uint32_t n = uint32_t(std::min(spectator_cpu_.size(), size_t(kMaxSpectatorVerts)));
     spectator_count_ = n;
     if (n > 0) {

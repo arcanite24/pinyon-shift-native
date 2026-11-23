@@ -456,6 +456,8 @@ class Showroom {
                      const std::vector<world::SkidVertex>& rut_tris);
   // Dynamic lit 3D smashable debris mesh (game frame, rendered via world_opaque_).
   void set_debris_mesh(const std::vector<world::DebrisVertex>& tris);
+  // Optional terrain height sampler for grounding dynamic Spectators.zip festival crowds.
+  void set_world_ground(const drive::Ground* ground) { world_ground_ = ground; }
   // Textured, smoothly shaded 3D Airborne Showcase aircraft mesh (P0-6).
   struct ShowcaseVertex {
     std::array<float, 3> pos{};
@@ -1009,6 +1011,7 @@ class Showroom {
   uint32_t debris_count_ = 0;
   static constexpr uint32_t kMaxSpectatorVerts = 131072;  // authentic Spectators.zip 3D festival crowds
   world::AnimatedWorldSystem spectator_anim_;
+  const drive::Ground* world_ground_ = nullptr;
   std::vector<world::SpectatorVertex> spectator_cpu_;
   GpuTexture spectator_atlas_;
   VkDescriptorSet spectator_set_ = VK_NULL_HANDLE;
