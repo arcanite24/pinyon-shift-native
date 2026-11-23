@@ -285,6 +285,25 @@ class Renderer {
   void ui_atlas_put(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::span<const uint8_t> rgba);
 
   const std::string& device_name() const { return device_name_; }
+  struct DeviceInfo {
+    std::string device_name;
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+    std::string device_type = "unknown";
+    uint32_t api_version = 0;
+    uint32_t driver_version = 0;
+    std::string driver_name;
+    std::string driver_info;
+    bool portability_subset = false;
+    bool is_moltenvk = false;
+    bool is_turnip = false;
+    bool has_timestamps = false;
+  };
+  const DeviceInfo& device_info() const { return device_info_; }
+  double pipeline_compile_ms() const { return pipeline_compile_ms_; }
+  double last_submit_wait_ms() const { return last_submit_wait_ms_; }
+  uint32_t last_ui_shape_count() const { return uint32_t(ui_items_.size()); }
+  uint64_t staging_upload_bytes() const { return staging_upload_bytes_; }
   uint32_t target_width() const { return target_width_; }
   uint32_t target_height() const { return target_height_; }
   uint32_t render_width() const { return render_width_ ? render_width_ : target_width_; }
@@ -374,6 +393,10 @@ class Renderer {
   Options options_;
   std::string device_name_;
   uint32_t device_vendor_id_ = 0;
+  DeviceInfo device_info_;
+  double pipeline_compile_ms_ = 0.0;
+  double last_submit_wait_ms_ = 0.0;
+  uint64_t staging_upload_bytes_ = 0;
   UpscalerRuntimeInfo upscaler_runtime_;
   VkInstance instance_ = VK_NULL_HANDLE;
   VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
@@ -431,7 +454,7 @@ class Renderer {
   Image bench_output_;
   VkQueryPool timestamps_ = VK_NULL_HANDLE;
   double timestamp_ns_ = 0;  // ns per tick; 0 without timestamps
-  static constexpr uint32_t kTimestamps = 32;
+  static constexpr uint32_t kTimestamps = 64;
   bool timing_ = false;
   uint32_t mark_end_ = 1;
   std::vector<const char*> mark_labels_;

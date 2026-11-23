@@ -46,7 +46,22 @@ else()
   message(STATUS "carview shaders: no GLSL compiler found, using shaders/prebuilt")
 endif()
 
+set(SHIFT_GIT_COMMIT "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    OUTPUT_VARIABLE _shift_git_rev
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+  if(_shift_git_rev)
+    set(SHIFT_GIT_COMMIT "${_shift_git_rev}")
+  endif()
+endif()
+
 add_library(carview_render STATIC
+  benchmark.cpp
   renderer.cpp
   showroom.cpp
   ui.cpp
@@ -62,6 +77,9 @@ add_library(carview_render STATIC
   ${shader_headers})
 set_target_properties(carview_render PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${generated}")
+target_compile_definitions(carview_render PUBLIC
+  SHIFT_GIT_COMMIT="${SHIFT_GIT_COMMIT}"
+  SHIFT_BUILD_CONFIG="$<IF:$<BOOL:$<CONFIG>>,$<CONFIG>,${CMAKE_BUILD_TYPE}>")
 target_link_libraries(carview_render PUBLIC fh1data shift_cars shift_drive shift_world shift_volk shift_vma SDL3::SDL3-static)
 if(NOT WIN32)
   find_package(Threads REQUIRED)

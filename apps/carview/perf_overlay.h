@@ -31,6 +31,7 @@ class FrameStats {
   // Over the kept frame times (ms between presented frames).
   double ms_avg() const;
   double ms_percentile(double q) const;  // 0..1
+  double ms_low_fps(double fraction) const;  // e.g. 0.01 for 1% low FPS
   double ms_max() const;
   size_t frames() const { return total_; }
   uint64_t generated_total() const { return generated_total_; }
@@ -52,6 +53,8 @@ class FrameStats {
 // What the panel shows. Filled by the caller from the renderer and the loop.
 struct PerfInfo {
   double fps = 0.0, generated_fps = 0.0;
+  double fps_1pct_low = 0.0;                              // optional; shown when > 0
+  double rss_mib = 0.0;                                   // optional; shown when > 0
   uint32_t render_w = 0, render_h = 0, output_w = 0, output_h = 0;
   double cpu_ms = -1.0;                                   // the loop's CPU time per frame
   double gpu_ms = -1.0;                                   // negative: no timestamps on this queue

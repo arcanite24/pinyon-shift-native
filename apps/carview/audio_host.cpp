@@ -392,6 +392,23 @@ void AudioHost::start_device() {
   engine_.start(std::move(sink));
 }
 
+void AudioHost::start_benchmark_device() {
+  if (engine_.running() || !cfg_.sound || !has_audio()) return;
+  auto start_tp = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+  auto written = std::make_shared<int64_t>(0);
+  audio::AudioEngine::Sink sink;
+  sink.target_buffer_frames = int(0.04 * kAudioRate);  // 40 ms virtual queue
+  sink.block_frames = 480;                             // 10 ms render blocks
+  sink.queued_frames = [start_tp, written]() {
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - *start_tp).count();
+    const int64_t played = int64_t(elapsed * double(kAudioRate));
+    const int64_t queued = *written - played;
+    return queued > 0 ? int(std::min<int64_t>(queued, kAudioRate)) : 0;
+  };
+  sink.write = [written](const float* /*stereo*/, int frames) { *written += frames; };
+  engine_.start(std::move(sink));
+}
+
 void AudioHost::stop_device() {
   engine_.stop();
   if (stream_) {

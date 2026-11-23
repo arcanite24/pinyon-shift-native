@@ -118,6 +118,18 @@ bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<cons
 uint64_t atlas_transient_evictions();
 void atlas_clear_transient();
 
+struct AtlasStats {
+  uint32_t atlas_size = kAtlasSize;
+  uint32_t glyph_rows_used = 0;
+  uint32_t persistent_rows_used = 0;
+  uint32_t transient_rows_used = 0;
+  double utilization_pct = 0.0;
+  uint64_t transient_evictions = 0;
+  uint32_t glyph_count = 0;
+  uint32_t image_count = 0;
+};
+AtlasStats atlas_stats();
+
 struct TextStyle {
   float size = 20;        // cap height, px
   float weight = 0.11f;   // stroke radius over the cap height

@@ -2161,7 +2161,9 @@ bool Showroom::upload(std::string& error) {
       world_lru_.set_budget(max_bytes, max_count);
     }
   }
+  const auto pipe_t0 = std::chrono::steady_clock::now();
   if (!r_.ensure_shadow_map(error) || !create_pipelines(error)) return false;
+  pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipe_t0).count();
   const bool shadows = r_.options_.shadow.size > 0;
   if (shadows && (!r_.create_buffer(sizeof(ShowroomFrame),
                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -2608,17 +2610,19 @@ bool Showroom::upload(std::string& error) {
     record_z_prepass(cmd);
   };
   hooks.draw = [this](VkCommandBuffer cmd) {
+    car_draws_ = 0;
     r_.mark(cmd, "setup");
     record_world(cmd);
     record_skidmarks_draw(cmd);
     record_contact_shadows(cmd);
+    r_.mark(cmd, "contact_shadow");
     record_debris_draw(cmd);
     if (draw_car_ && !cockpit_camera_active_) record_driver_draw(cmd);
     const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
     if (draw_car_) record_draws(cmd, car_op, glass_);
     record_all_instances(cmd, r_.z_prepass());
     record_glows_draw(cmd);
-    r_.mark(cmd, "car");
+    r_.mark(cmd, "car_glass");
   };
   hooks.draw_particles = [this](VkCommandBuffer cmd) {
     record_particles_draw(cmd);
@@ -2849,8 +2853,12 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
   r_.apply_vrs(cmd);
   for (const auto& d : draws_)
-    if (!d.glass || opaque == glass) draw(d);
+    if (!d.glass || opaque == glass) {
+      draw(d);
+      ++car_draws_;
+    }
   if (opaque == glass) return;
+  if (!guest_) r_.mark(cmd, "car_opaque");
   // Glass last, far to near from the eye.
   std::vector<const Draw*> sorted;
   for (const auto& d : draws_)
@@ -2885,9 +2893,11 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
       vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d->index_count, 1, d->first_index, d->vertex_offset, 0);
+      car_draws_ += 2;
     } else {
       if (bound_glass != glass) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_glass = glass);
       draw(*d);
+      ++car_draws_;
     }
   }
 }
@@ -3867,6 +3877,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     if (vmaMapMemory(r.allocator_, buffer->allocation, &mapped) != VK_SUCCESS) return false;
     std::memcpy(mapped, data, size_t(size));
     vmaUnmapMemory(r.allocator_, buffer->allocation);
+    world_staging_bytes_.fetch_add(uint64_t(size), std::memory_order_relaxed);
     return true;
   };
   const bool staged_vertices =
@@ -6245,7 +6256,8 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
 
 void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
                                      uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars,
-                                     uint32_t vx, uint32_t vy, uint32_t vw, uint32_t vh, bool clear_target) {
+                                     uint32_t vx, uint32_t vy, uint32_t vw, uint32_t vh, bool clear_target,
+                                     uint32_t* draw_counter) {
   if (vw == 0) vw = w;
   if (vh == 0) vh = h;
   // Upload view UBO and sky UBOs outside render pass.
@@ -6374,6 +6386,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+      if (draw_counter) ++(*draw_counter);
     }
   }
   // 3. Trailing AI / traffic cars in cockpit mirrors (when include_cars is set).
@@ -6386,12 +6399,15 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       if (dx * dx + dy * dy + dz * dz > 220.0f * 220.0f) continue;
       in.car->record_instance_offscreen(cmd, env_car_opaque_, env_frame_set_, in.model,
                                         in.has_lamps ? &in.lamps : nullptr);
+      if (draw_counter) *draw_counter += uint32_t(in.car->draw_count());
     }
   }
   vkCmdEndRendering(cmd);
 }
 
 void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
+  env_draws_ = 0;
+  mirror_draws_ = 0;
   if (!dyn_env_ready_ || !env_frame_set_) return;
   auto make_view_proj = [&](const std::array<float, 3>& eye, const std::array<float, 3>& right,
                             const std::array<float, 3>& up, const std::array<float, 3>& fwd,
@@ -6459,7 +6475,8 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
                    1.0f, 1.0f, vf.view_projection);
     std::memcpy(vf.transparent_view_projection, vf.view_projection, sizeof vf.view_projection);
 
-    record_offscreen_view(cmd, dyn_env_faces_[f], dyn_env_depth_.view, kDynEnvSize, kDynEnvSize, vf, false);
+    record_offscreen_view(cmd, dyn_env_faces_[f], dyn_env_depth_.view, kDynEnvSize, kDynEnvSize, vf, false,
+                          0u, 0u, 0u, 0u, true, &env_draws_);
 
     b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -6469,6 +6486,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
     b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     vkCmdPipelineBarrier2(cmd, &dep);
   }
+  r_.mark(cmd, "env_cubemap");
 
   // Pass B: Cross-face GGX prefilter mips 1..kDynEnvMips-1 sampling mip 0 across all 6 faces
   // seamlessly (eliminating cube seams on rough/metallic car paint).
@@ -6526,6 +6544,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
         vkCmdPipelineBarrier2(cmd, &mdep);
       }
     }
+    r_.mark(cmd, "env_prefilter");
   }
   dyn_env_initialized_ = true;
 
@@ -6572,7 +6591,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
       make_view_proj(mb.eye, mright, {0.0f, 1.0f, 0.0f}, mb.fwd, mb.tx, mb.ty, mf.view_projection);
       std::memcpy(mf.transparent_view_projection, mf.view_projection, sizeof mf.view_projection);
       record_offscreen_view(cmd, mirror_tex_.view, mirror_depth_.view, kMirrorWidth, kMirrorHeight, mf, true,
-                            mb.x, 0u, mb.w, kMirrorHeight, true);
+                            mb.x, 0u, mb.w, kMirrorHeight, true, &mirror_draws_);
     }
 
     b.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -6583,6 +6602,7 @@ void Showroom::record_env_and_mirror(VkCommandBuffer cmd) {
     b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     vkCmdPipelineBarrier2(cmd, &dep);
     mirror_valid_ = true;
+    r_.mark(cmd, "cockpit_mirrors");
   } else {
     mirror_valid_ = false;
   }
@@ -7704,6 +7724,7 @@ void Showroom::record_world_cull(VkCommandBuffer cmd) {
   view.hiz_height = WorldGpu::kHizHeight;
   std::memcpy(view.prev_vp, prev_vp_, sizeof prev_vp_);
   gpu_world_->record_cull(cmd, view);
+  r_.mark(cmd, "hiz_cull");
   std::memcpy(prev_vp_, clip, sizeof prev_vp_);
   have_prev_vp_ = true;
 }

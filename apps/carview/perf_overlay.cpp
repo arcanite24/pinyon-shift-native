@@ -49,6 +49,17 @@ double FrameStats::ms_percentile(double q) const {
   return v[k];
 }
 
+double FrameStats::ms_low_fps(double fraction) const {
+  if (deltas_.empty()) return 0.0;
+  std::vector<double> v(deltas_.begin(), deltas_.end());
+  std::sort(v.begin(), v.end(), std::greater<double>());
+  const size_t n = std::max<size_t>(1, size_t(std::ceil(double(v.size()) * std::clamp(fraction, 1e-6, 1.0))));
+  double s = 0.0;
+  for (size_t i = 0; i < std::min(n, v.size()); ++i) s += v[i];
+  const double avg_ms = s / double(std::min(n, v.size()));
+  return avg_ms > 1e-6 ? 1000.0 / avg_ms : 0.0;
+}
+
 double FrameStats::ms_max() const {
   double m = 0.0;
   for (double d : deltas_) m = std::max(m, d);
@@ -82,7 +93,13 @@ std::vector<std::string> perf_overlay_lines(const PerfInfo& p) {
                   p.generated_fps);
   else
     std::snprintf(buf, sizeof buf, "FPS %.0f   real %.0f + generated 0", p.fps, p.fps);
-  out.push_back(buf);
+  if (p.fps_1pct_low > 0.5) {
+    char low_buf[48];
+    std::snprintf(low_buf, sizeof low_buf, "   1%% low %.0f", p.fps_1pct_low);
+    out.push_back(std::string(buf) + low_buf);
+  } else {
+    out.push_back(buf);
+  }
   std::snprintf(buf, sizeof buf, "RENDER %ux%u   OUTPUT %ux%u", p.render_w, p.render_h, p.output_w, p.output_h);
   out.push_back(buf);
   if (p.cpu_ms >= 0.0 || p.gpu_ms >= 0.0) {
@@ -113,6 +130,10 @@ std::vector<std::string> perf_overlay_lines(const PerfInfo& p) {
   if (p.vram_budget > 0 || p.vram_used > 0) {
     std::string line = "VRAM " + format_bytes(p.vram_used);
     if (p.vram_budget > 0) line += " / " + format_bytes(p.vram_budget);
+    if (p.rss_mib > 0.5) {
+      std::snprintf(buf, sizeof buf, "   RAM %.0f MiB", p.rss_mib);
+      line += buf;
+    }
     if (p.resident_cells || p.resident_draws) {
       std::snprintf(buf, sizeof buf, "   CELLS %u   DRAWS %u (drawn %u, culled %u)", p.resident_cells,
                     p.resident_draws, p.draws_drawn, p.draws_culled);

@@ -820,8 +820,20 @@ void AudioEngine::render_block(float* out, int frames) {
 
 void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   ++blocks_rendered_;
+  total_block_ms_ += block_ms;
   worst_block_ms_ = std::max(worst_block_ms_, block_ms);
   if (block_ms > budget_ms) ++stalls_;
+  recent_block_ms_[recent_block_pos_] = block_ms;
+  recent_block_pos_ = (recent_block_pos_ + 1) % recent_block_ms_.size();
+  if (recent_block_count_ < recent_block_ms_.size()) ++recent_block_count_;
+  double p95_ms = block_ms;
+  if (recent_block_count_ > 0) {
+    std::array<double, 256> sorted{};
+    std::copy_n(recent_block_ms_.begin(), recent_block_count_, sorted.begin());
+    std::sort(sorted.begin(), sorted.begin() + ptrdiff_t(recent_block_count_));
+    const size_t idx = std::min(recent_block_count_ - 1, size_t(0.95 * double(recent_block_count_ - 1) + 0.5));
+    p95_ms = sorted[idx];
+  }
 
   AudioTelemetry t{};
   if (radio_) {
@@ -840,6 +852,8 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   t.peak = use_matrix_ ? rms_stage_.peak() : mixer_.stage().peak();
   t.gain_reduction_db = use_matrix_ ? rms_stage_.gain_reduction_db() : mixer_.stage().gain_reduction_db();
   t.blocks_rendered = blocks_rendered_;
+  t.avg_block_ms = blocks_rendered_ > 0 ? (total_block_ms_ / double(blocks_rendered_)) : 0.0;
+  t.p95_block_ms = p95_ms;
   t.worst_block_ms = worst_block_ms_;
   t.stalls = stalls_;
   t.backfire_count = sfx_ ? sfx_->backfire_count() : 0u;

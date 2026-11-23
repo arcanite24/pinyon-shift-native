@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -343,6 +344,15 @@ class Showroom {
   };
   WorldDrawStats world_draw_stats() const { return world_stats_; }
   uint32_t gpu_resident_draws() const { return gpu_world_ ? gpu_world_->resident_draws() : 0u; }
+  uint32_t gpu_hiz_culled() const { return gpu_world_ ? gpu_world_->last_hiz_culled() : 0u; }
+  uint32_t gpu_trees_drawn() const { return gpu_world_ ? gpu_world_->last_trees_drawn() : 0u; }
+  double pipeline_compile_ms() const { return pipeline_compile_ms_; }
+  uint32_t last_env_draws() const { return env_draws_; }
+  uint32_t last_mirror_draws() const { return mirror_draws_; }
+  uint32_t last_car_draws() const { return car_draws_; }
+  uint32_t last_particle_sprites() const { return particle_alpha_count_ + particle_add_count_; }
+  uint32_t last_skid_tris() const { return (skid_asphalt_count_ + skid_rut_count_) / 3u; }
+  uint64_t world_staging_bytes() const { return world_staging_bytes_.load(std::memory_order_relaxed); }
   VkImageView hiz_image_view() const { return gpu_world_ ? gpu_world_->hiz_image_view() : VK_NULL_HANDLE; }
   // Frustum culling of the world's draws (on by default).
   void set_world_culling(bool on) { world_cull_ = on; }
@@ -829,7 +839,7 @@ class Showroom {
   void record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view, VkImageView depth_view,
                              uint32_t w, uint32_t h, const ShowroomFrame& view_frame, bool include_cars,
                              uint32_t vx = 0, uint32_t vy = 0, uint32_t vw = 0, uint32_t vh = 0,
-                             bool clear_target = true);
+                             bool clear_target = true, uint32_t* draw_counter = nullptr);
   void fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u) const;
   // Batched soft particles + terrain-conforming skidmarks (SPEC-VFX-AND-PARTICLES).
   struct ParticleGpu {
@@ -951,6 +961,12 @@ class Showroom {
   float damage_zones_[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   bool custom_livery_active_ = false;
   GpuTexture custom_livery_img_;
+  // Benchmark telemetry counters.
+  double pipeline_compile_ms_ = 0.0;
+  uint32_t env_draws_ = 0;
+  uint32_t mirror_draws_ = 0;
+  uint32_t car_draws_ = 0;
+  std::atomic<uint64_t> world_staging_bytes_{0};
 };
 
 }  // namespace carview

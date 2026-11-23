@@ -315,7 +315,10 @@ bool Renderer::init(const Options& options, std::string& error) {
   } else {
     color_format_ = VK_FORMAT_R8G8B8A8_UNORM;
   }
-  return create_pipeline(scene_format(), error);
+  const auto pipe_t0 = std::chrono::steady_clock::now();
+  const bool pipe_ok = create_pipeline(scene_format(), error);
+  pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipe_t0).count();
+  return pipe_ok;
 }
 
 bool Renderer::create_instance(std::string& error) {
@@ -481,10 +484,41 @@ bool Renderer::pick_device(std::string& error) {
   }
   VkPhysicalDeviceDepthStencilResolveProperties ds_resolve{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
+  VkPhysicalDeviceDriverProperties drv_props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+  ds_resolve.pNext = &drv_props;
   VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
   props2.pNext = &ds_resolve;
   vkGetPhysicalDeviceProperties2(physical_, &props2);
   depth_resolve_supported_ = (ds_resolve.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
+  device_info_.device_name = props.deviceName;
+  device_info_.vendor_id = props.vendorID;
+  device_info_.device_id = props.deviceID;
+  switch (props.deviceType) {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: device_info_.device_type = "discrete"; break;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: device_info_.device_type = "integrated"; break;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: device_info_.device_type = "virtual"; break;
+    case VK_PHYSICAL_DEVICE_TYPE_CPU: device_info_.device_type = "cpu"; break;
+    default: device_info_.device_type = "other"; break;
+  }
+  device_info_.api_version = props.apiVersion;
+  device_info_.driver_version = props.driverVersion;
+  device_info_.driver_name = drv_props.driverName;
+  device_info_.driver_info = drv_props.driverInfo;
+  device_info_.has_timestamps = timestamp_ns_ > 0.0;
+  {
+    auto contains_ci = [](const std::string& hay, const char* needle) {
+      std::string h = hay, n = needle;
+      for (char& c : h) c = char(std::tolower(static_cast<unsigned char>(c)));
+      for (char& c : n) c = char(std::tolower(static_cast<unsigned char>(c)));
+      return h.find(n) != std::string::npos;
+    };
+    device_info_.is_moltenvk = (drv_props.driverID == VK_DRIVER_ID_MOLTENVK) ||
+                               contains_ci(device_info_.driver_name, "moltenvk") ||
+                               contains_ci(device_info_.driver_info, "moltenvk");
+    device_info_.is_turnip = (drv_props.driverID == VK_DRIVER_ID_MESA_TURNIP) ||
+                             contains_ci(device_info_.driver_name, "turnip") ||
+                             contains_ci(device_info_.driver_info, "turnip");
+  }
   VkFormatProperties format_props;
   vkGetPhysicalDeviceFormatProperties(physical_, VK_FORMAT_D32_SFLOAT, &format_props);
   depth_format_ = (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
@@ -584,6 +618,7 @@ bool Renderer::create_device(std::string& error) {
       if (std::strcmp(e.extensionName, "VK_KHR_portability_subset") == 0) {
         extensions.push_back("VK_KHR_portability_subset");
         has_portability_subset = true;
+        device_info_.portability_subset = true;
       } else if (std::strcmp(e.extensionName, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) == 0) {
         has_vrs_ext = true;
       }
@@ -823,6 +858,7 @@ void Renderer::wait_idle() {
 
 bool Renderer::upload_buffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
                              Buffer& out) {
+  staging_upload_bytes_ += uint64_t(size);
   Buffer staging;
   if (!create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -1146,8 +1182,10 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     }
     temporal_reset_ = true;
     temporal_idx_ = 0;
+    const auto post_t0 = std::chrono::steady_clock::now();
     if (!create_post(error)) return false;
     if (!create_modern_passes(error)) return false;
+    pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - post_t0).count();
     // Wire the 22 post descriptor sets:
     //   0: lum16 (hdr, hdr)
     //   1: lum_adapt (lum_16, lum_adapt[1])
@@ -2747,7 +2785,10 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stages,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
-    if (need_hiz) scene_.build_hiz(cmd, depth_resolved_.view, rw, rh, options_.reverse_z);
+    if (need_hiz) {
+      scene_.build_hiz(cmd, depth_resolved_.view, rw, rh, options_.reverse_z);
+      mark(cmd, "hiz_build");
+    }
   }
 
   if (two_pass) {
@@ -2768,6 +2809,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     set_vrs(1, 1);
     scene_.draw_particles(cmd);
     vkCmdEndRendering(cmd);
+    mark(cmd, "particles");
   }
 
   if (post) record_ssao(cmd);
@@ -3440,6 +3482,7 @@ bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uin
   }
   stage_overlay();
   double recorded = 0;
+  const auto submit_t0 = std::chrono::steady_clock::now();
   const bool ok = submit_once([&](VkCommandBuffer cmd) {
     const auto t0 = std::chrono::steady_clock::now();
     mark_labels_.clear();
@@ -3473,6 +3516,9 @@ bool Renderer::render_timed(const FrameConstants& constants, uint32_t width, uin
     gpu_frame_ms_ = gpu_ms;
     slot_stages_ = stage_ms_;
   }
+  const double total_submit_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - submit_t0).count();
+  last_submit_wait_ms_ = std::max(0.0, total_submit_ms - recorded);
   return true;
 }
 

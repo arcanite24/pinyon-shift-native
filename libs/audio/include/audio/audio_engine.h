@@ -45,6 +45,8 @@ struct AudioTelemetry {
   float peak = 0.0f;
   float gain_reduction_db = 0.0f;
   uint64_t blocks_rendered = 0;
+  double avg_block_ms = 0.0;
+  double p95_block_ms = 0.0;
   double worst_block_ms = 0.0;
   uint64_t stalls = 0;  // blocks that exceeded their real-time duration
   uint32_t backfire_count = 0;  // monotonic exhaust backfire pop counter (coupled to visual flames)
@@ -267,8 +269,12 @@ class AudioEngine {
   SpscQueue<Retired> retired_{64};
 
   uint64_t blocks_rendered_ = 0;
+  double total_block_ms_ = 0.0;
   double worst_block_ms_ = 0.0;
   uint64_t stalls_ = 0;
+  std::array<double, 256> recent_block_ms_{};
+  size_t recent_block_pos_ = 0;
+  size_t recent_block_count_ = 0;
 
   Sink sink_;
   std::atomic<bool> stop_{false};

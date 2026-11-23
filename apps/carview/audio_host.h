@@ -86,7 +86,10 @@ class AudioHost {
 
   // Opens SDL_AudioStream and starts the dedicated audio render thread.
   void start_device();
+  // Starts the dedicated audio render thread against a paced null sink for headless benchmarks.
+  void start_benchmark_device();
   void stop_device();
+  bool running() const { return engine_.running(); }
   void set_fmv_audio(audio::AudioEngine::FmvAudioFn fn, void* ctx) { engine_.set_fmv_audio(fn, ctx); }
   bool has_audio() const { return has_car_ || has_sfx_ || has_satnav_ || radio_ != nullptr || user_music_ready_; }
 

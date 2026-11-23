@@ -160,6 +160,11 @@ add_executable(render_modern_tests render_modern_tests.cpp ../apps/carview/rende
 target_include_directories(render_modern_tests PRIVATE ../apps/carview)
 target_link_libraries(render_modern_tests PRIVATE shift_stb fh1data)
 add_test(NAME render_modern_tests COMMAND render_modern_tests)
+add_executable(benchmark_tests benchmark_tests.cpp ../apps/carview/benchmark.cpp
+               ../apps/carview/perf_overlay.cpp ../apps/carview/ui.cpp)
+target_include_directories(benchmark_tests PRIVATE ../apps/carview)
+target_link_libraries(benchmark_tests PRIVATE shift_stb fh1data)
+add_test(NAME benchmark_tests COMMAND benchmark_tests)
 # Slice 11: the GPU-driven world's arena allocator, resident set, draw table and culling rule (no Vulkan).
 add_executable(world_gpu_tests world_gpu_tests.cpp ../apps/carview/world_gpu_logic.cpp)
 target_include_directories(world_gpu_tests PRIVATE ../apps/carview)

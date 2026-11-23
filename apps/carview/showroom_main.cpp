@@ -42,6 +42,7 @@
 #include "audio/bake.h"
 #include "audio/radio.h"
 #include "audio/xml.h"
+#include "benchmark.h"
 #include "display_hdr_win.h"
 #include "drive_helpers.h"
 #include "fmv_player.h"
@@ -1643,12 +1644,16 @@ void drive_usage() {
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
+               "           --bench-scenario noon_cruise|midnight_lights|cockpit_mirrors|race_pack|autoshow_studio|ui4_heavy|cold_boot_switch\n"
+               "           --bench-json file.json --bench-csv file.csv --bench-full-fx --bench-audio --bench-warmup sec\n"
                "           --menu-png file.png --map-png prefix (the pause map and the minimap at the end)\n"
                "  other modes: carview --bake <dir> --car <media> (showroom), carview --game-root <dir> (disc viewer),\n"
                "           carview --world ... (world viewer), carview --xds-png ...\n");
 }
 
 int run_drive(int argc, char** argv) {
+  const auto drive_start_tp = std::chrono::steady_clock::now();
+  carview::bench::StartupMetrics bench_startup{};
   // The post chain (on unless --no-post); --exposure overrides ours,
   // --bloom / --no-bloom the preset's choice.
   bool post_on = true;
@@ -1671,6 +1676,15 @@ int run_drive(int argc, char** argv) {
   bool near_given = false, have_spawn = false, fast_travel = false, render_ground = false, async_stream = false,
        flat_world = false, no_props = false, no_far = false, no_trees = false;
   bool bench = false;     // headless: render every frame, timed, no images
+  carview::bench::Scenario bench_scenario = carview::bench::Scenario::kCustom;
+  bool bench_scenario_set = false;
+  std::filesystem::path bench_json_path, bench_csv_path;
+  bool bench_full_fx = false;
+  bool bench_audio = false;
+  double bench_warmup_sec = 0.0;
+  bool bench_warmup_explicit = false;
+  std::string preset_name = "high";
+  bool cruise_kmh_explicit = false;
   uint32_t window_frames_limit = 0;  // --window-frames N: the window closes after N presented frames (soaks, perf)
   carview::FrameStats frame_stats;   // presented-frame times of the window
   uint32_t msaa = 4;
@@ -1754,7 +1768,7 @@ int run_drive(int argc, char** argv) {
     bool window = true, use_settings = true;
     for (int i = 1; i < argc; ++i) {
       const std::string a = argv[i];
-      if (a == "--headless" || a == "--bench" || a == "--menu-png" || a == "--help" || a == "-h") window = false;
+      if (a == "--headless" || a == "--bench" || a == "--bench-scenario" || a == "--menu-png" || a == "--help" || a == "-h") window = false;
       if (a == "--no-settings") use_settings = false;
     }
     if ((window || std::getenv("SHIFT_SETTINGS")) && use_settings) {
@@ -1790,6 +1804,25 @@ int run_drive(int argc, char** argv) {
     const std::string a = args[i];
     auto next = [&]() -> const char* { return i + 1 < args.size() ? args[++i].c_str() : ""; };
     if (a == "--drive" || a == "--no-settings") continue;
+    if (a == "--bench-scenario") {
+      const std::string sc_name = next();
+      if (!carview::bench::parse_scenario(sc_name, bench_scenario)) {
+        std::fprintf(stderr, "carview: unknown --bench-scenario '%s'\n", sc_name.c_str());
+        return 2;
+      }
+      bench_scenario_set = true;
+      bench = headless = async_stream = true;
+      continue;
+    }
+    if (a == "--bench-json") { bench_json_path = next(); continue; }
+    if (a == "--bench-csv") { bench_csv_path = next(); continue; }
+    if (a == "--bench-full-fx") { bench_full_fx = true; continue; }
+    if (a == "--bench-audio") { bench_audio = true; continue; }
+    if (a == "--bench-warmup") {
+      bench_warmup_sec = std::max(0.0, std::atof(next()));
+      bench_warmup_explicit = true;
+      continue;
+    }
     if (a == "--save-settings") save_settings = true;
     else if (a == "--no-title") no_title = true;
     else if (a == "--skip-intro-movies") skip_intro_movies = true;
@@ -1819,7 +1852,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--world") world_dir = next();
     else if (a == "--game") game_root_given = next();
     else if (a == "--cache") cache_path = next();
-    else if (a == "--speed") cruise_kmh = std::atof(next());
+    else if (a == "--speed") cruise_kmh = std::atof(next()), cruise_kmh_explicit = true;
     else if (a == "--render-ground") render_ground = true;
     else if (a == "--flat-world") flat_world = true;
     else if (a == "--no-props") no_props = true;
@@ -1829,6 +1862,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--msaa") msaa = uint32_t(std::atoi(next()));
     else if (a == "--preset") {
       const std::string p = next();
+      preset_name = p;
       carview::GraphicsPresetSpec pspec;
       if (carview::resolve_graphics_preset(p, pspec)) {
         msaa = pspec.msaa;
@@ -1999,6 +2033,69 @@ int run_drive(int argc, char** argv) {
       drive_usage();
       return 2;
     }
+  }
+  // Apply deterministic defaults for named benchmark scenarios (--bench-scenario).
+  if (bench_scenario_set) {
+    using S = carview::bench::Scenario;
+    switch (bench_scenario) {
+      case S::kNoonCruise:
+        if (!hour_explicit) hour = 12.0;
+        bench_full_fx = true;
+        hud = true;
+        if (traffic_flag < 0) traffic_flag = 1;
+        if (!cruise_kmh_explicit) cruise_kmh = 85.0;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(1.0, seconds * 0.25);
+        break;
+      case S::kMidnightLights:
+        if (!hour_explicit) hour = 2.0;
+        bench_full_fx = true;
+        hud = true;
+        if (traffic_flag < 0) traffic_flag = 1;
+        if (!cruise_kmh_explicit) cruise_kmh = 80.0;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(1.0, seconds * 0.25);
+        break;
+      case S::kCockpitMirrors:
+        if (!hour_explicit) hour = 12.0;
+        camera_mode = int(drive::CameraMode::kCockpit);
+        bench_full_fx = true;
+        hud = true;
+        if (traffic_flag < 0) traffic_flag = 1;
+        if (!cruise_kmh_explicit) cruise_kmh = 80.0;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(1.0, seconds * 0.25);
+        break;
+      case S::kRacePack:
+        if (race_event.empty()) race_event = "FR22";
+        if (race_auto < 0) race_auto = 1;
+        bench_full_fx = true;
+        hud = true;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(1.0, seconds * 0.25);
+        break;
+      case S::kAutoshowStudio:
+        bench_full_fx = true;
+        hud = true;
+        if (traffic_flag < 0) traffic_flag = 0;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(0.5, seconds * 0.2);
+        break;
+      case S::kUi4Heavy:
+        bench_full_fx = true;
+        hud = true;
+        if (traffic_flag < 0) traffic_flag = 0;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(0.5, seconds * 0.2);
+        break;
+      case S::kColdBootSwitch:
+        bench_full_fx = true;
+        hud = true;
+        if (traffic_flag < 0) traffic_flag = 1;
+        if (!bench_warmup_explicit) bench_warmup_sec = std::min(0.5, seconds * 0.2);
+        break;
+      case S::kCustom:
+        break;
+    }
+    if (!size_given) width = 1280, height = 720;
+  }
+  if (bench && bench_full_fx) {
+    hud = true;
+    bench_audio = true;
   }
   if (save_settings) {
     std::string e;
@@ -2387,6 +2484,7 @@ int run_drive(int argc, char** argv) {
                }).share();
   }
   // The career page's PNGs and the HUD: the game's fonts.
+  const auto db_cat_t0 = std::chrono::steady_clock::now();
   if (!world_dir.empty() || !game_root_given.empty()) load_ui_fonts(game_root_of());
   // The screen's car names (FORMAT-STRINGTABLES), loaded on first use.
   auto car_names = std::make_shared<race::CarNames>();
@@ -2498,6 +2596,8 @@ int run_drive(int argc, char** argv) {
     have_skills_data = freeroam::load_skills_data(game_root_of(), skills_data, &e);
     if (!have_skills_data && !e.empty()) std::fprintf(stderr, "carview: note: no skills data: %s\n", e.c_str());
   }
+  bench_startup.db_catalog_load_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - db_cat_t0).count();
   // Title screen shown on windowed launch unless bypassed (--no-title, --start-in-single-player, --event, --import-profile).
   bool show_title = !headless && !no_title && !start_in_single_player && race_event.empty() && import_dir.empty();
   carview::FmvPlayer fmv_player;
@@ -3100,8 +3200,21 @@ int run_drive(int argc, char** argv) {
       const auto xpr = groot / "media" / "tracks" / "uiautoshow" / "staticcarcubemap.xpr";
       if (std::filesystem::exists(xpr)) showroom.set_environment_xpr(xpr);
     }
-    if (!showroom.load(bake_dir, car, options, error) || !renderer.init(render_options, error) ||
-        !showroom.upload(error)) {
+    const auto car_load_t0 = std::chrono::steady_clock::now();
+    const bool car_loaded_ok = showroom.load(bake_dir, car, options, error);
+    const auto vk_init_t0 = std::chrono::steady_clock::now();
+    const bool vk_init_ok = car_loaded_ok && renderer.init(render_options, error);
+    const auto car_up_t0 = std::chrono::steady_clock::now();
+    const bool car_up_ok = vk_init_ok && showroom.upload(error);
+    const auto car_up_t1 = std::chrono::steady_clock::now();
+    if (car_up_ok) {
+      const double load_ms = std::chrono::duration<double, std::milli>(vk_init_t0 - car_load_t0).count();
+      const double vk_ms = std::chrono::duration<double, std::milli>(car_up_t0 - vk_init_t0).count();
+      const double up_ms = std::chrono::duration<double, std::milli>(car_up_t1 - car_up_t0).count();
+      bench_startup.vulkan_init_ms = std::max(0.0, vk_ms - renderer.pipeline_compile_ms());
+      bench_startup.car_bake_load_ms = load_ms + std::max(0.0, up_ms - showroom.pipeline_compile_ms());
+    }
+    if (!car_up_ok) {
       std::fprintf(stderr, "carview: %s\n", error.c_str());
       status = 1;
     } else {
@@ -3192,13 +3305,16 @@ int run_drive(int argc, char** argv) {
       for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
       // Engine audio (dedicated render thread, runtime XMA2 decode fallback, L0-L3 upgrades).
       constexpr int kAudioRate = carview::AudioHost::kAudioRate;
-      if (sound && (!headless || !audio_out.empty())) {
+      if (sound && (!headless || !audio_out.empty() || bench_audio || bench_full_fx)) {
+        const auto aud_t0 = std::chrono::steady_clock::now();
         std::string sound_note;
         if (audio_host.load_car(sound_dir, game_root_of(), state_root, car, audio_upgrades, vehicle.params().idle_rpm,
                                 vehicle.params().redline_rpm, &sound_note))
           std::printf("%s\n", sound_note.c_str());
         else
           std::fprintf(stderr, "carview: no engine sound (%s)\n", sound_note.c_str());
+        bench_startup.audio_load_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_t0).count();
       } else {
         audio_host.clear_car();
       }
@@ -3258,6 +3374,7 @@ int run_drive(int argc, char** argv) {
                                                          : showroom.set_world(std::move(*staged), error);
       };
       if (!world_dir.empty()) {
+        const auto world_load_t0 = std::chrono::steady_clock::now();
         if (cache_path.empty()) cache_path = std::filesystem::path("out") / "world" / (world::model_prefix(world_dir).substr(0, world::model_prefix(world_dir).size() - 3) + ".index");
         world::Spawn sp;
         std::string warning;
@@ -3309,7 +3426,7 @@ int run_drive(int argc, char** argv) {
           }
           // Free roam: found signs and each barn's other door variant are
           // left out of the gathers from the first one on.
-          if (collectibles_on && !bench && !flat_world && colorado_world()) {
+          if (collectibles_on && (!bench || bench_full_fx) && !flat_world && colorado_world()) {
             const auto game_root = game_root_of();
             if (collectibles.signs.empty()) {
               std::string why;
@@ -3424,7 +3541,8 @@ int run_drive(int argc, char** argv) {
             }
           }
           // The radio and Your Music: initialized once, streamed off-thread.
-          if (sound && !bench && (!headless || !audio_out.empty())) {
+          if (sound && (!bench || bench_audio || bench_full_fx) && (!headless || !audio_out.empty() || bench_audio || bench_full_fx)) {
+            const auto aud_world_t0 = std::chrono::steady_clock::now();
             const auto game_root = game_root_of();
             if (radio_on && audio_host.init_radio(game_root, language, have_saved ? saved.radio_station : "", !headless) &&
                 !radio_logos_tried) {
@@ -3443,7 +3561,7 @@ int run_drive(int argc, char** argv) {
                 }
               }
             }
-            if (!headless) {
+            if (!headless || bench_audio || bench_full_fx) {
               audio_host.init_user_music(user_music_dir, true);
               const auto sfx_cache = !sound_dir.empty() ? sound_dir : (state_root / "sound-cache");
               audio_host.init_sfx(game_root, sfx_cache, audio_host.car_burble_bank());
@@ -3451,6 +3569,8 @@ int run_drive(int argc, char** argv) {
               audio_host.init_vo(game_root, language);
               audio_host.init_acoustics(game_root);
             }
+            bench_startup.audio_load_ms +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();
           }
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        render_ground ? nullptr : &collision);
@@ -3530,6 +3650,9 @@ int run_drive(int argc, char** argv) {
             showroom.set_background(0.42f, 0.55f, 0.72f);
         }
         if (status != 0) std::fprintf(stderr, "carview: %s\n", error.c_str());
+        bench_startup.world_load_ms = std::max(
+            0.0, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - world_load_t0).count() -
+                     bench_startup.audio_load_ms);
       }
       std::unique_ptr<TrafficView> traffic;
       // The race's models go with this scope (before the renderer).
@@ -4517,7 +4640,11 @@ int run_drive(int argc, char** argv) {
         }
         return 0;
       };
+      double step_physics_ms = 0.0;
+      double step_ai_traffic_ms = 0.0;
+      double step_world_stream_ms = 0.0;
       auto step = [&](const drive::Input& user_in) {
+        const auto ph_t0 = std::chrono::steady_clock::now();
         const drive::Input in = race ? race->player_input(vehicle, user_in, traffic.get()) : user_in;
         vehicle.step(in, *ground);
         if (race) race->replay_player(vehicle);
@@ -4535,6 +4662,8 @@ int run_drive(int argc, char** argv) {
           last_finite_kmh = vehicle.speed() * 3.6;
         }
         log_contacts();
+        const auto ai_t0 = std::chrono::steady_clock::now();
+        step_physics_ms += std::chrono::duration<double, std::milli>(ai_t0 - ph_t0).count();
         if (traffic) traffic->step(vehicle);
         if (race && streamer) {
           race->after_step(vehicle, *ground, streamer->centre_x(), streamer->centre_z(),
@@ -4638,7 +4767,7 @@ int run_drive(int argc, char** argv) {
         if (free_roam && free_roam->hidden()) smashables.sync_barns_from_hidden(*free_roam->hidden());
         bool smashed_prop = smashed_sign;
         // FORMAT-PHYSICS-DEFINITIONS: step 384-body smashable prop pool & barn doors.
-        if (!bench) {
+        if (!bench || bench_full_fx) {
           std::vector<world::SmashEvent> sm_events;
           smashables.step(vehicle, *ground, float(drive::Vehicle::kStep), sm_events);
           for (const auto& sev : sm_events) {
@@ -4656,7 +4785,7 @@ int run_drive(int argc, char** argv) {
         }
         // SPEC-VFX-AND-PARTICLES: step tyre smoke/dust/gravel/sparks/backfire,
         // world ambient emitters, and persistent/fading skidmarks & ruts.
-        if (!bench) {
+        if (!bench || bench_full_fx) {
           const drive::Vec3 vpos = vehicle.position();
           const drive::Vec3 vvel = vehicle.velocity();
           const drive::Quat vrot = vehicle.orientation();
@@ -4970,6 +5099,8 @@ int run_drive(int argc, char** argv) {
             last_touch_y = vehicle.position().y;
           }
         }
+        const auto st_t0 = std::chrono::steady_clock::now();
+        step_ai_traffic_ms += std::chrono::duration<double, std::milli>(st_t0 - ai_t0).count();
         bool changed = false;
         const drive::Vec3 at = vehicle.position();
         if (!streamer->update(at.x, at.z, &changed, &error)) return false;
@@ -4994,6 +5125,7 @@ int run_drive(int argc, char** argv) {
           std::printf("t %.2f s: scenery around %.1f %.1f uploaded (swap %.1f ms)\n", vehicle.time(),
                       showroom.world_origin_x(), showroom.world_origin_z(),
                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count());
+        step_world_stream_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - st_t0).count();
         return true;
       };
       int last_lut_zone = -2;
@@ -5221,19 +5353,19 @@ int run_drive(int argc, char** argv) {
             const float mph = float(std::max(0.0, vehicle.speed()) * 2.23693629);
             const float mph_max = std::max(cfg.detail_blur_mph_max, 40.0f);
             const float spd_t = std::clamp((mph - 18.0f) / mph_max, 0.0f, 1.0f);
-            ps.motion_blur = live_motion_blur && !bench;
+            ps.motion_blur = live_motion_blur && (!bench || bench_full_fx);
             ps.motion_blur_strength = std::clamp(spd_t * std::max(cfg.motion_blur_amount, 0.55f), 0.0f, 0.95f);
             ps.motion_blur_center[0] = 0.5f;
             ps.motion_blur_center[1] = 0.44f;
             ps.motion_blur_car_protect = tod_cockpit_cam ? 2.2f : 6.8f;
-            ps.dof = live_dof && !bench;
+            ps.dof = live_dof && (!bench || bench_full_fx);
             ps.dof_focal_distance = std::clamp(cfg.dof_focal_distance, 5.0f, 40.0f);
             ps.dof_focal_range = 42.0f;
             ps.dof_max_blur = std::clamp(cfg.dof_focal_max_blur > 0.05f ? cfg.dof_focal_max_blur * 0.55f : 0.35f,
                                          0.15f, 0.65f);
             ps.near_plane = 0.25f;
-            ps.god_rays = !low_preset && !bench;
-            ps.lens_flare = !low_preset && !bench;
+            ps.god_rays = !low_preset && (!bench || bench_full_fx);
+            ps.lens_flare = !low_preset && (!bench || bench_full_fx);
             ps.god_ray_strength = 0.48f;
             ps.lens_flare_strength = 0.36f;
             ps.time_sec = float(vehicle.time());
@@ -5282,7 +5414,7 @@ int run_drive(int argc, char** argv) {
             showroom.set_shadow_direction(towards);
           }
         }
-        if (!bench) {
+        if (!bench || bench_full_fx) {
           std::vector<world::SkidVertex> asph_tris, rut_tris;
           skid_sys.build_geometry(asph_tris, rut_tris);
           showroom.set_skidmarks(asph_tris, rut_tris);
@@ -6320,6 +6452,8 @@ int run_drive(int argc, char** argv) {
             const uint32_t out_w = renderer.target_width() ? renderer.target_width() : uint32_t(width);
             const uint32_t out_h = renderer.target_height() ? renderer.target_height() : uint32_t(height);
             pinfo.fps = frame_stats.fps();
+            pinfo.fps_1pct_low = frame_stats.ms_low_fps(0.01);
+            pinfo.rss_mib = double(carview::bench::query_process_memory().rss_bytes) / (1024.0 * 1024.0);
             pinfo.cpu_ms = last_frame_cpu_ms >= 0.0 ? last_frame_cpu_ms : frame_stats.ms_avg();
             if (headless && pinfo.fps < 0.5 && pinfo.cpu_ms > 0.1) pinfo.fps = 1000.0 / pinfo.cpu_ms;
             pinfo.generated_fps = frame_stats.generated_fps();
@@ -6784,131 +6918,487 @@ int run_drive(int argc, char** argv) {
           if (ref) stbi_image_free(ref);
         }
       } else if (bench) {
-        // The benchmark (M2 performance): the cruise along the free-roam
-        // road from the spawn, a frame every second step (60 Hz of game
-        // time), each rendered and timed without reading it back. Per
-        // frame: the CPU time of the steps since the last frame (with the
-        // streaming's hand-over), of posing the scene and of recording the
-        // commands; the GPU time between timestamps. Process CPU time over
-        // the whole run counts every thread (the gather worker, the
-        // driver's).
+        // Comprehensive cross-device benchmark suite (JSON schema v1 + per-frame CSV).
+        // Backward-compatible with legacy --bench, and supports deterministic
+        // --bench-scenario modes, --bench-full-fx, --bench-audio, and --bench-warmup.
+        using S = carview::bench::Scenario;
+        const bool audio_bench_on = sound && (bench_audio || bench_full_fx) && audio_host.has_audio();
+        if (audio_bench_on) audio_host.start_benchmark_device();
+
+        // Scenario-specific initialization.
+        PauseMenu bench_pause_menu;
+        bool autoshow_opened = false;
+        if (bench_scenario == S::kAutoshowStudio) {
+          if (parts_db.valid()) {
+            if (const auto db = parts_db.get()) {
+              std::string why;
+              autoshow_opened = autoshow.open(*db, all_baked, why, 100000000, false, false, 1.0);
+              if (autoshow_opened) autoshow.set_step(carview::AutoshowStep::kCarSelect);
+            }
+          }
+          // Studio lighting: use staticcarcubemap.xpr (loaded before upload) rather than outdoor sky.
+          showroom.set_draw_car(true);
+        }
+
         const int steps = int(std::lround(seconds / drive::Vehicle::kStep));
-        std::vector<double> cpu_ms, gpu_ms, sim_ms, record_ms, pose_ms;
-        // The world's draws per frame: recorded, culled, indices drawn.
+        carview::bench::BenchmarkRecorder recorder;
+        recorder.reserve(size_t(steps / 2 + 16));
+
+        double step_total_accum = 0.0;
+        step_physics_ms = 0.0;
+        step_ai_traffic_ms = 0.0;
+        step_world_stream_ms = 0.0;
+
+        bool ttff_recorded = false;
+        bool measured_started = false;
+        double measured_cpu0 = process_cpu_seconds();
+        auto measured_wall0 = std::chrono::steady_clock::now();
+        const auto run_wall0 = measured_wall0;
+        const uint64_t staging_bytes0 = renderer.staging_upload_bytes() + showroom.world_staging_bytes();
+        uint32_t frame_idx = 0;
+
+        // Legacy summary accumulators (for backward-compatible stdout lines).
+        std::vector<double> legacy_cpu_ms, legacy_gpu_ms, legacy_sim_ms, legacy_record_ms, legacy_pose_ms;
         double draws_sum = 0, culled_sum = 0, indices_sum = 0, shadow_sum = 0, shadow_cars_sum = 0;
         std::vector<std::string> stage_names;
-        std::vector<std::vector<double>> stage_ms;  // per stage, per frame
-        double sim = 0;
-        const double cpu0 = process_cpu_seconds();
-        const auto wall0 = std::chrono::steady_clock::now();
+        std::vector<std::vector<double>> stage_ms;
+
         for (int s = 0; s <= steps && status == 0; ++s) {
           const auto t0 = std::chrono::steady_clock::now();
-          if (s > 0 && !step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()))) {
-            std::fprintf(stderr, "carview: %s\n", error.c_str());
-            status = 1;
-            break;
+          if (s > 0 && bench_scenario != S::kAutoshowStudio) {
+            if (!step(cruise ? follower.input(vehicle) : drive::script_input(script, vehicle.time()))) {
+              std::fprintf(stderr, "carview: %s\n", error.c_str());
+              status = 1;
+              break;
+            }
           }
-          sim += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+          step_total_accum += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
           if (s % 2 != 0) continue;
-          const auto p0 = std::chrono::steady_clock::now();
-          wheel_poses(vehicle, poses);
-          if (photo_mode.active()) {
-            const float wb = photo_mode.effects().wheel_blur_omega_boost();
-            for (int wi = 0; wi < 4; ++wi) poses[wi].omega += wb;
+
+          const auto frame_t0 = std::chrono::steady_clock::now();
+          const double sim_sec = double(frame_idx) * 2.0 * drive::Vehicle::kStep;
+          const bool is_warmup = (bench_warmup_sec > 0.0) && (sim_sec < bench_warmup_sec);
+          if (!is_warmup && !measured_started) {
+            measured_started = true;
+            measured_cpu0 = process_cpu_seconds();
+            measured_wall0 = frame_t0;
           }
-          showroom.set_wheel_poses(poses);
-          showroom.set_braking(brake_glow(vehicle));
-          tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
-          place_world();
-          showroom.set_frame(drive_frame(float(width) / float(height), 2 * drive::Vehicle::kStep));
-          // --hud: the HUD's cost (its build on the CPU, the UI pass on the GPU).
-          if (hud) set_hud(int(width), int(height), race ? race_banner() : intro);
-          const double pose = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
-          double rec = 0, gpu = 0;
+
+          // Audio push phase.
+          double audio_push_ms = 0.0;
+          if (audio_bench_on) {
+            const auto a0 = std::chrono::steady_clock::now();
+            const audio::View aview = audio_view();
+            audio_host.update_frame(sound_inputs(aview), false, autoshow.is_open() || events_page.is_open() || settings_page.is_open(), false, false);
+            audio::VehicleAudioState vst{};
+            const drive::Vec3 vpos = vehicle.position();
+            const drive::Vec3 vvel = vehicle.velocity();
+            const drive::Vec3 vfwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            const drive::Vec3 vright = drive::rotate(vehicle.orientation(), {1, 0, 0});
+            vst.speed_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
+            vst.rpm = float(vehicle.rpm());
+            vst.redline_rpm = float(std::max(vehicle.params().redline_rpm, 6000.0));
+            vst.throttle = float(vehicle.engine_throttle());
+            vst.gear = vehicle.gear();
+            vst.listener_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
+            vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
+            vst.listener_right = {float(vright.x), float(vright.y), float(vright.z)};
+            vst.cockpit_view = (aview == audio::View::kCockpit);
+            vst.in_race = (race != nullptr);
+            audio_host.update_vehicle(vst, race != nullptr, false, false, 0);
+            audio_host.update_world_acoustics(float(vpos.x), float(vpos.y), float(vpos.z),
+                                              float(std::atan2(vfwd.x, vfwd.z)));
+            audio_push_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0).count();
+          }
+
+          // Pose / camera / TOD / cull prep phase.
+          const auto p0 = std::chrono::steady_clock::now();
+          if (bench_scenario == S::kAutoshowStudio) {
+            if (autoshow_opened && frame_idx > 0 && frame_idx % 15 == 0) {
+              autoshow.move(1);
+              autoshow.move_colour(1);
+            }
+            Orbit o;
+            o.yaw = 145.0f + float(frame_idx) * 1.2f;
+            o.pitch = 10.0f;
+            o.distance = 0.0f;
+            showroom.set_frame(orbit_frame(showroom, o, float(width) / float(height), false));
+          } else {
+            wheel_poses(vehicle, poses);
+            if (photo_mode.active()) {
+              const float wb = photo_mode.effects().wheel_blur_omega_boost();
+              for (int wi = 0; wi < 4; ++wi) poses[wi].omega += wb;
+            }
+            showroom.set_wheel_poses(poses);
+            showroom.set_braking(brake_glow(vehicle));
+            tod_cockpit_cam = (bench_scenario == S::kCockpitMirrors) ||
+                              (have_rig && rig.mode() == drive::CameraMode::kCockpit);
+            place_world();
+            showroom.set_frame(drive_frame(float(width) / float(height), 2 * drive::Vehicle::kStep));
+          }
+          const double pose_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
+
+          // UI4 build phase (including ui4_heavy multi-screen cycling & autoshow carousel).
+          double ui_build_ms = 0.0;
+          const bool need_hud = hud || bench_scenario == S::kUi4Heavy || bench_scenario == S::kAutoshowStudio;
+          if (need_hud) {
+            const auto u0 = std::chrono::steady_clock::now();
+            const PauseMenu* active_menu = nullptr;
+            if (bench_scenario == S::kUi4Heavy) {
+              const uint32_t ui_phase = (frame_idx / 10u) % 4u;
+              map_overlay.active = false;
+              events_page.close();
+              settings_page.close();
+              if (ui_phase == 0) {
+                map_overlay.active = true;
+                map_overlay.title = "COLORADO HORIZON FESTIVAL";
+                map_overlay.subtitle = "RED ROCK CANYON  •  FESTIVAL CENTRAL";
+                map_overlay.action_hint = "ENTER EVENT";
+                map_overlay.gps_hint = "SET GPS ROUTE";
+                map_overlay.filter_tabs = {"ALL", "EVENTS", "OUTPOSTS", "SIGNS", "SPEED TRAPS"};
+                map_overlay.active_filter = int(frame_idx % 5u);
+                map_overlay.zoom = 1.0 + 0.25 * double(frame_idx % 6u);
+                map_overlay.roads_discovered = 142;
+                map_overlay.roads_total = 216;
+              } else if (ui_phase == 1) {
+                bench_pause_menu.show();
+                bench_pause_menu.move(1);
+                active_menu = &bench_pause_menu;
+              } else if (ui_phase == 2) {
+                if (have_career_catalog) {
+                  int64_t cid = 0;
+                  int clid = 2;
+                  current_car_info(cid, clid);
+                  events_page.open(career_catalog, career, collected_wristband, current_pop_rank(), cid, clid,
+                                   class_bands, int((frame_idx / 40u) % 3u));
+                  for (uint32_t mv = 0; mv < (frame_idx % 8u); ++mv) events_page.move(1);
+                } else {
+                  bench_pause_menu.show();
+                  active_menu = &bench_pause_menu;
+                }
+              } else {
+                settings_page.open();
+                for (uint32_t mv = 0; mv < (frame_idx % 5u); ++mv) settings_page.switch_tab(1);
+                for (uint32_t mv = 0; mv < (frame_idx % 6u); ++mv) settings_page.move(1);
+              }
+            }
+            set_hud(int(width), int(height), race ? race_banner() : intro, active_menu);
+            ui_build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - u0).count();
+          }
+
+          double rec_ms = 0.0, gpu_ms = -1.0;
           renderer.set_camera_projection(g_cam_near, g_cam_far, g_cam_proj00, g_cam_proj11);
           renderer.set_camera_vp(g_cam_vp_unjittered, 0.0f, 0.0f);
-          if (!renderer.render_timed(FrameConstants{}, width, height, rec, gpu, error)) {
+          if (!renderer.render_timed(FrameConstants{}, width, height, rec_ms, gpu_ms, error)) {
             std::fprintf(stderr, "carview: %s\n", error.c_str());
             status = 1;
             break;
           }
-          sim_ms.push_back(sim);
-          pose_ms.push_back(pose);
-          record_ms.push_back(rec);
-          {
-            const auto ws = showroom.world_draw_stats();
-            draws_sum += double(ws.drawn), culled_sum += double(ws.culled), indices_sum += double(ws.indices);
+          const double submit_wait_ms = renderer.last_submit_wait_ms();
+          const auto frame_t1 = std::chrono::steady_clock::now();
+          if (!ttff_recorded) {
+            ttff_recorded = true;
+            bench_startup.ttff_ms =
+                std::chrono::duration<double, std::milli>(frame_t1 - drive_start_tp).count();
+          }
+
+          const double active_cpu_ms = step_physics_ms + step_ai_traffic_ms + step_world_stream_ms +
+                                       audio_push_ms + pose_ms + ui_build_ms + rec_ms;
+          const double total_frame_ms =
+              step_total_accum + std::chrono::duration<double, std::milli>(frame_t1 - frame_t0).count();
+
+          carview::bench::FrameSample fs{};
+          fs.frame_index = frame_idx;
+          fs.is_warmup = is_warmup;
+          fs.sim_sec = sim_sec;
+          fs.wall_sec = std::chrono::duration<double>(frame_t1 - run_wall0).count();
+          fs.frame_ms = total_frame_ms;
+          fs.cpu_ms = active_cpu_ms;
+          fs.gpu_ms = gpu_ms;
+          fs.physics_ms = step_physics_ms;
+          fs.ai_traffic_ms = step_ai_traffic_ms;
+          fs.world_stream_ms = step_world_stream_ms;
+          fs.audio_push_ms = audio_push_ms;
+          fs.ui_build_ms = ui_build_ms;
+          fs.pose_cull_ms = pose_ms;
+          fs.cmd_record_ms = rec_ms;
+          fs.submit_wait_ms = submit_wait_ms;
+          fs.gpu_passes = renderer.stage_ms();
+
+          const auto ws = showroom.world_draw_stats();
+          fs.world_draws = uint32_t(ws.drawn);
+          fs.world_culled = uint32_t(ws.culled);
+          fs.world_hiz_culled = showroom.gpu_hiz_culled();
+          fs.trees_drawn = showroom.gpu_trees_drawn();
+          fs.shadow_world_draws = uint32_t(showroom.shadow_draw_count());
+          fs.shadow_cars = uint32_t(showroom.shadow_car_count());
+          fs.env_draws = showroom.last_env_draws();
+          fs.mirror_draws = showroom.last_mirror_draws();
+          fs.car_draws = showroom.last_car_draws();
+          fs.car_instances = uint32_t(showroom.instance_count());
+          fs.particle_sprites = showroom.last_particle_sprites();
+          fs.skid_tris = showroom.last_skid_tris();
+          fs.ui4_shapes = renderer.last_ui_shape_count();
+          fs.triangles_drawn = uint64_t(ws.indices / 3u) + uint64_t(showroom.triangle_count());
+          fs.triangles_total = uint64_t(showroom.world_triangle_count()) + uint64_t(showroom.triangle_count());
+          fs.rss_mib = double(carview::bench::query_process_memory().rss_bytes) / (1024.0 * 1024.0);
+          recorder.add_frame(fs);
+
+          if (!is_warmup) {
+            legacy_sim_ms.push_back(step_total_accum);
+            legacy_pose_ms.push_back(pose_ms + ui_build_ms);
+            legacy_record_ms.push_back(rec_ms);
+            legacy_cpu_ms.push_back(step_total_accum + pose_ms + ui_build_ms + rec_ms);
+            legacy_gpu_ms.push_back(gpu_ms);
+            draws_sum += double(ws.drawn);
+            culled_sum += double(ws.culled);
+            indices_sum += double(ws.indices);
             shadow_sum += double(showroom.shadow_draw_count());
             shadow_cars_sum += double(showroom.shadow_car_count());
-          }
-          for (const auto& [name, ms] : renderer.stage_ms()) {
-            size_t k = 0;
-            while (k < stage_names.size() && stage_names[k] != name) ++k;
-            if (k == stage_names.size()) {
-              stage_names.push_back(name);
-              stage_ms.emplace_back();
+            for (const auto& [name, ms] : renderer.stage_ms()) {
+              size_t k = 0;
+              while (k < stage_names.size() && stage_names[k] != name) ++k;
+              if (k == stage_names.size()) {
+                stage_names.push_back(name);
+                stage_ms.emplace_back();
+              }
+              stage_ms[k].push_back(ms);
             }
-            stage_ms[k].push_back(ms);
           }
-          cpu_ms.push_back(sim + pose + rec);
-          gpu_ms.push_back(gpu);
-          sim = 0;
+
+          step_total_accum = 0.0;
+          step_physics_ms = 0.0;
+          step_ai_traffic_ms = 0.0;
+          step_world_stream_ms = 0.0;
+          ++frame_idx;
         }
-        const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
-        const double cpu = process_cpu_seconds() - cpu0;
+
+        // Clean up temporary UI4/Autoshow state before finalizing.
+        if (bench_scenario == S::kUi4Heavy) {
+          map_overlay.active = false;
+          events_page.close();
+          settings_page.close();
+        }
+        if (autoshow_opened) {
+          autoshow.close();
+          showroom.set_instances({});
+          showroom.set_draw_car(true);
+        }
+
+        const double measured_wall =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - measured_wall0).count();
+        const double measured_cpu = process_cpu_seconds() - measured_cpu0;
+
+        // cold_boot_switch: 5 deterministic car hot-switches measuring load + GPU upload + first frame.
+        if (status == 0 && bench_scenario == S::kColdBootSwitch) {
+          std::vector<std::string> switch_targets;
+          for (const auto& c : baked_cars) {
+            if (lower_ascii(c) != lower_ascii(car)) switch_targets.push_back(c);
+            if (switch_targets.size() >= 5) break;
+          }
+          if (switch_targets.empty() && !car.empty()) switch_targets.push_back(car);
+          for (const auto& sw_car : switch_targets) {
+            carview::bench::CarSwitchSample sw{};
+            sw.car = sw_car;
+            auto gs = std::make_unique<Showroom>(renderer);
+            gs->set_guest();
+            std::string ge;
+            const auto sw_t0 = std::chrono::steady_clock::now();
+            const bool loaded = gs->load(bake_dir, sw_car, ShowroomOptions{}, ge);
+            const auto sw_t1 = std::chrono::steady_clock::now();
+            const bool uploaded = loaded && gs->upload(ge);
+            const auto sw_t2 = std::chrono::steady_clock::now();
+            if (uploaded) {
+              gs->load_car_lamps(game_root_of(), sw_car);
+              showroom.set_draw_car(false);
+              Showroom::Instance inst{};
+              inst.car = gs.get();
+              inst.model[0] = inst.model[5] = inst.model[10] = inst.model[15] = 1.0f;
+              showroom.set_instances({inst});
+              double srec = 0.0, sgpu = -1.0;
+              renderer.render_timed(FrameConstants{}, width, height, srec, sgpu, ge);
+              showroom.set_instances({});
+              showroom.set_draw_car(true);
+              renderer.wait_idle();
+            }
+            const auto sw_t3 = std::chrono::steady_clock::now();
+            sw.load_ms = std::chrono::duration<double, std::milli>(sw_t1 - sw_t0).count();
+            sw.upload_ms = std::chrono::duration<double, std::milli>(sw_t2 - sw_t1).count();
+            sw.total_ms = std::chrono::duration<double, std::milli>(sw_t3 - sw_t0).count();
+            bench_startup.car_switches.push_back(std::move(sw));
+          }
+        }
+
+        // Gather final audio telemetry before stopping the benchmark audio thread.
+        carview::bench::AudioMetrics audio_metrics{};
+        audio_metrics.enabled = audio_bench_on;
+        if (audio_bench_on) {
+          const auto atel = audio_host.telemetry();
+          audio_metrics.blocks_rendered = atel.blocks_rendered;
+          audio_metrics.avg_block_ms = atel.avg_block_ms;
+          audio_metrics.p95_block_ms = atel.p95_block_ms;
+          audio_metrics.worst_block_ms = atel.worst_block_ms;
+          audio_metrics.stalls = atel.stalls;
+          audio_host.stop_device();
+        }
+
+        // Assemble hardware, GPU, features, build, memory, streaming, and UI4 atlas reports.
+        const auto sys_hw = carview::bench::probe_system_hardware();
+        const auto& rdev = renderer.device_info();
+        const auto vram = renderer.vram_stats();
+        const double vram_total_mib = double(renderer.device_local_bytes()) / (1024.0 * 1024.0);
+        const double vram_budget_mib = double(vram.device_local_budget) / (1024.0 * 1024.0);
+
+        carview::bench::GpuInfo gpu_info{};
+        gpu_info.device_name = rdev.device_name.empty() ? renderer.device_name() : rdev.device_name;
+        gpu_info.vendor_id = rdev.vendor_id;
+        gpu_info.device_id = rdev.device_id;
+        gpu_info.device_type = rdev.device_type;
+        gpu_info.api_version_raw = rdev.api_version;
+        gpu_info.api_version = carview::bench::format_vulkan_version(rdev.api_version);
+        gpu_info.driver_version_raw = rdev.driver_version;
+        gpu_info.driver_name = rdev.driver_name;
+        gpu_info.driver_info = rdev.driver_info;
+        gpu_info.is_moltenvk = rdev.is_moltenvk;
+        gpu_info.is_turnip = rdev.is_turnip;
+        gpu_info.portability_subset = rdev.portability_subset;
+        gpu_info.has_timestamps = rdev.has_timestamps;
+        gpu_info.vram_total_mib = vram_total_mib;
+        gpu_info.vram_budget_mib = vram_budget_mib;
+
+        carview::bench::FeatureFlags feat{};
+        feat.gpu_driven = renderer.gpu_driven_supported();
+        feat.hiz = renderer.gpu_driven_supported() && showroom.hiz_image_view() != VK_NULL_HANDLE;
+        feat.bindless = renderer.gpu_driven_supported();
+        feat.vrs_supported = renderer.vrs_supported();
+        feat.vrs_active = renderer.vrs_active();
+        feat.hdr10_supported = renderer.hdr10_supported();
+        feat.scrgb_supported = renderer.scrgb_supported();
+        feat.hdr_mode = renderer.hdr_active() == carview::modern::HdrMode::kHdr10   ? "hdr10"
+                        : renderer.hdr_active() == carview::modern::HdrMode::kScRgb ? "scrgb"
+                                                                                    : "off";
+        feat.upscaler = carview::modern::upscaler_name(renderer.active_upscaler().active);
+        feat.frame_gen = carview::modern::frame_gen_name(renderer.active_frame_gen());
+        feat.aa_mode = active_graphics.aa == carview::modern::AaMode::kFxaaAll     ? "fxaa_all"
+                       : active_graphics.aa == carview::modern::AaMode::kFxaaWorld ? "fxaa_world"
+                                                                                   : "msaa";
+        feat.ssao = active_graphics.ssao == carview::modern::SsaoQuality::kHigh     ? "high"
+                    : active_graphics.ssao == carview::modern::SsaoQuality::kMedium ? "medium"
+                    : active_graphics.ssao == carview::modern::SsaoQuality::kLow    ? "low"
+                                                                                    : "off";
+        feat.shadows = !shadows_flag.empty() ? shadows_flag : (low_preset ? "low" : "high");
+        feat.vsync = active_graphics.vsync == carview::modern::VSync::kImmediate ? "immediate"
+                     : active_graphics.vsync == carview::modern::VSync::kMailbox ? "mailbox"
+                                                                                 : "fifo";
+        feat.msaa = renderer.sample_count();
+        feat.anisotropy = renderer.sampler_anisotropy();
+        feat.render_scale = active_graphics.scale;
+        feat.base_540p = active_graphics.base_540p;
+        feat.z_prepass = z_prepass;
+        feat.reverse_z = reverse_z;
+        feat.bloom = bloom_flag >= 0 ? (bloom_flag == 1) : !low_preset;
+        feat.full_fx = bench_full_fx;
+        feat.bench_audio = audio_bench_on;
+
+        carview::bench::BuildInfo binfo{};
+#ifdef SHIFT_GIT_COMMIT
+        binfo.git_commit = SHIFT_GIT_COMMIT;
+#else
+        binfo.git_commit = "unknown";
+#endif
+#ifdef SHIFT_BUILD_CONFIG
+        binfo.build_config = SHIFT_BUILD_CONFIG;
+#else
+        binfo.build_config = "Release";
+#endif
+        binfo.preset = preset_name;
+        binfo.device_label = device_name.empty() ? gpu_info.device_name : device_name;
+        binfo.scenario = std::string(carview::bench::scenario_name(bench_scenario));
+        binfo.output_width = width;
+        binfo.output_height = height;
+        binfo.render_width = renderer.render_width();
+        binfo.render_height = renderer.render_height();
+        binfo.target_seconds = seconds;
+        binfo.warmup_seconds = bench_warmup_sec;
+
+        bench_startup.pipeline_compile_ms = renderer.pipeline_compile_ms() + showroom.pipeline_compile_ms();
+
+        const auto pmem = carview::bench::query_process_memory();
+        carview::bench::MemoryMetrics mem_m{};
+        mem_m.rss_current_mib = double(pmem.rss_bytes) / (1024.0 * 1024.0);
+        mem_m.rss_peak_mib = double(pmem.peak_rss_bytes) / (1024.0 * 1024.0);
+        mem_m.vma_blocks = vram.block_count;
+        mem_m.vma_allocs = vram.allocation_count;
+        mem_m.vma_used_mib = double(vram.allocation_bytes) / (1024.0 * 1024.0);
+        mem_m.vma_reserved_mib = double(vram.block_bytes) / (1024.0 * 1024.0);
+        mem_m.vram_usage_mib = double(vram.device_local_usage) / (1024.0 * 1024.0);
+        mem_m.vram_budget_mib = vram_budget_mib;
+        mem_m.vram_total_mib = vram_total_mib;
+
+        const auto wts = showroom.world_texture_stats();
+        const uint64_t staging_bytes1 = renderer.staging_upload_bytes() + showroom.world_staging_bytes();
+        carview::bench::StreamingMetrics st_m{};
+        st_m.resident_textures = wts.resident_count;
+        st_m.resident_textures_mib = double(wts.resident_bytes) / (1024.0 * 1024.0);
+        st_m.texture_uploads = wts.uploads;
+        st_m.texture_evictions = wts.evictions;
+        st_m.texture_reuploads = wts.reuploads;
+        st_m.retired_pending = wts.retired_pending;
+        st_m.descriptor_pools = wts.descriptor_pools;
+        st_m.staging_upload_bytes = staging_bytes1 >= staging_bytes0 ? (staging_bytes1 - staging_bytes0) : 0;
+
+        const auto astats = carview::ui::atlas_stats();
+        carview::bench::Ui4AtlasMetrics ui_m{};
+        ui_m.atlas_size = astats.atlas_size;
+        ui_m.glyph_rows_used = astats.glyph_rows_used;
+        ui_m.persistent_rows_used = astats.persistent_rows_used;
+        ui_m.transient_rows_used = astats.transient_rows_used;
+        ui_m.utilization_pct = astats.utilization_pct;
+        ui_m.transient_evictions = astats.transient_evictions;
+        ui_m.glyph_count = astats.glyph_count;
+        ui_m.image_count = astats.image_count;
+
+        const auto report = recorder.finalize(sys_hw, gpu_info, feat, binfo, bench_startup, audio_metrics,
+                                              ui_m, mem_m, st_m, measured_wall, measured_cpu);
+
+        // Emit comprehensive summary + legacy-compatible lines.
+        std::printf("%s", carview::bench::format_console_summary(report).c_str());
+
         auto pct = [](std::vector<double> v, double q) {
           if (v.empty()) return 0.0;
           std::sort(v.begin(), v.end());
           return v[std::min(v.size() - 1, size_t(q * double(v.size() - 1) + 0.5))];
         };
-        const size_t n = cpu_ms.size();
-        std::printf("bench: %s, %ux%u, MSAA %u, %zu frames over %.1f s of game time (%.1f s wall)\n",
-                    renderer.device_name().c_str(), width, height, renderer.sample_count(), n, seconds, wall);
-        std::printf("bench: frame CPU ms p50 %.2f p95 %.2f p99 %.2f max %.2f (steps p50 %.2f max %.2f; recording "
-                    "p50 %.2f)\n",
-                    pct(cpu_ms, 0.5), pct(cpu_ms, 0.95), pct(cpu_ms, 0.99), pct(cpu_ms, 1.0), pct(sim_ms, 0.5),
-                    pct(sim_ms, 1.0), pct(record_ms, 0.5));
-        {
-          // The slowest frames, by game time (a hitch shows which event).
-          std::vector<size_t> order(n);
-          for (size_t k = 0; k < n; ++k) order[k] = k;
-          std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return cpu_ms[a] > cpu_ms[b]; });
-          std::printf("bench: slowest frames (CPU ms at game time: steps + posing + recording):");
-          for (size_t k = 0; k < std::min<size_t>(5, n); ++k) {
-            const size_t f = order[k];
-            std::printf(" %.2f at %.2f s (%.2f + %.2f + %.2f);", cpu_ms[f], double(f) * 2 * drive::Vehicle::kStep,
-                        sim_ms[f], pose_ms[f], record_ms[f]);
-          }
-          std::printf("\n");
-        }
-        if (n && gpu_ms[0] >= 0)
-          std::printf("bench: frame GPU ms p50 %.2f p95 %.2f p99 %.2f max %.2f\n", pct(gpu_ms, 0.5),
-                      pct(gpu_ms, 0.95), pct(gpu_ms, 0.99), pct(gpu_ms, 1.0));
-        else
-          std::printf("bench: no GPU timestamps on this queue\n");
-        if (!stage_names.empty()) {
-          std::printf("bench: GPU by stage, p50 ms:");
-          for (size_t k = 0; k < stage_names.size(); ++k)
-            std::printf(" %s %.2f;", stage_names[k].c_str(), pct(stage_ms[k], 0.5));
-          std::printf("\n");
-        }
-        if (n)
+        const size_t n = legacy_cpu_ms.size();
+        if (n) {
           std::printf("bench: world draws per frame %.0f drawn, %.0f culled, %.0fk of %.0fk triangles drawn\n",
                       draws_sum / double(n), culled_sum / double(n), indices_sum / double(n) / 3000.0,
                       double(showroom.world_triangle_count()) / 1000.0);
-        if (n && shadow_sum > 0)
-          std::printf("bench: shadow casters per frame %.0f world draws, %.2f traffic cars\n", shadow_sum / double(n),
-                      shadow_cars_sum / double(n));
-        std::printf("bench: process CPU %.2f s over %.2f s wall: %.2f ms per frame, %.0f%% of one core\n", cpu, wall,
-                    n ? cpu * 1000 / double(n) : 0.0, wall > 0 ? cpu / wall * 100 : 0.0);
-        const auto vram = renderer.vram_stats();
-        const auto wts = showroom.world_texture_stats();
-        std::printf("bench: vram %u blocks, %u allocs (%.1f/%.1f MiB); world textures: resident %zu (%.1f MiB), uploads %llu, evictions %llu, reuploads %llu, pools %zu\n",
-                    vram.block_count, vram.allocation_count,
-                    double(vram.allocation_bytes) / (1024.0 * 1024.0), double(vram.block_bytes) / (1024.0 * 1024.0),
-                    wts.resident_count, double(wts.resident_bytes) / (1024.0 * 1024.0),
-                    (unsigned long long)wts.uploads, (unsigned long long)wts.evictions,
-                    (unsigned long long)wts.reuploads, wts.descriptor_pools);
+          if (shadow_sum > 0)
+            std::printf("bench: shadow casters per frame %.0f world draws, %.2f traffic cars\n",
+                        shadow_sum / double(n), shadow_cars_sum / double(n));
+        }
+
+        if (!bench_json_path.empty()) {
+          std::string jerr;
+          if (!carview::bench::write_json(bench_json_path, report, jerr)) {
+            std::fprintf(stderr, "carview: %s\n", jerr.c_str());
+            status = 1;
+          } else {
+            std::printf("bench: wrote JSON -> %s\n", bench_json_path.string().c_str());
+          }
+        }
+        if (!bench_csv_path.empty()) {
+          std::string cerr;
+          if (!carview::bench::write_csv(bench_csv_path, recorder.frames(), cerr)) {
+            std::fprintf(stderr, "carview: %s\n", cerr.c_str());
+            status = 1;
+          } else {
+            std::printf("bench: wrote CSV  -> %s (%zu frames)\n", bench_csv_path.string().c_str(),
+                        recorder.frames().size());
+          }
+        }
+        (void)pct;
       } else if (!demo_photo_png.empty()) {
         // Headless Slice 10 verification capture: Photo Mode UI + DoF/vignette + Horizon Promo.
         const drive::Vec3 pat = vehicle.position();

@@ -530,6 +530,23 @@ bool atlas_find(const std::string& key, std::array<float, 4>& uv) {
 uint64_t atlas_transient_evictions() { return vf().transient_evictions; }
 void atlas_clear_transient() { vf().clear_transient(); }
 
+AtlasStats atlas_stats() {
+  const VectorFonts& v = vf();
+  AtlasStats s{};
+  s.atlas_size = kAtlasSize;
+  s.glyph_rows_used = std::min<uint32_t>(kGlyphRows, v.shelf_y + v.shelf_h);
+  const uint32_t pers_end = std::max<uint32_t>(kGlyphRows, v.image_y + v.image_h);
+  s.persistent_rows_used = std::min<uint32_t>(kTransientY0 - kGlyphRows, pers_end - kGlyphRows);
+  s.transient_rows_used = std::min<uint32_t>(kAtlasSize - kTransientY0,
+                                             v.trans_y_next > kTransientY0 ? v.trans_y_next - kTransientY0 : 0u);
+  const uint32_t total_rows = s.glyph_rows_used + s.persistent_rows_used + s.transient_rows_used;
+  s.utilization_pct = 100.0 * double(total_rows) / double(kAtlasSize);
+  s.transient_evictions = v.transient_evictions;
+  s.glyph_count = uint32_t(v.cache.size());
+  s.image_count = uint32_t(v.images.size());
+  return s;
+}
+
 namespace {
 
 int font_slot(ui::Font role) {
