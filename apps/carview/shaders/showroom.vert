@@ -41,6 +41,9 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 damage_dirt;
   vec4 damage_zones;  // x front, y rear, z left, w right (0..1)
   vec4 car_sun_color; // rgb sun scaled by IBLDirectScaleCar, w ibl_direct_car (<0 fallback)
+  mat4 shadow_matrix_mid;
+  vec4 shadow_mid_bias;
+  vec4 phase_b_params;
 } frame;
 
 layout(push_constant) uniform Draw {
@@ -67,6 +70,8 @@ layout(location = 4) out float v_occlusion;
 layout(location = 5) flat out uint v_instance;
 layout(location = 6) out vec3 v_tangent;
 layout(location = 7) out vec3 v_bitangent;
+layout(location = 8) out vec3 v_local_pos;
+layout(location = 9) out vec3 v_hub_radial;
 
 const uint kFlagInstanced = 8192u;
 
@@ -113,6 +118,8 @@ void main() {
   v_normal = wn;
   v_tangent = wt;
   v_bitangent = wb;
+  v_local_pos = p;
+  v_hub_radial = mat3(model_mat) * vec3(0.0, p.y, p.z);
   v_uv0 = vec2(draw.uv0.x + draw.uv0.y * in_uv0.x, draw.uv0.z + draw.uv0.w * in_uv0.y);
   v_uv1 = vec2(draw.uv1.x + draw.uv1.y * in_uv1.x, draw.uv1.z + draw.uv1.w * in_uv1.y);
   // The first lighting byte behaves as occlusion: about 100 open to the sky.

@@ -38,6 +38,9 @@ layout(set = 0, binding = 0) uniform Frame {
   vec4 damage_dirt;        // x body_dirt, y tyre_dirt, z glass_crack, w scratch_amount
   vec4 damage_zones;       // x front, y rear, z left, w right (0..1)
   vec4 car_sun_color;      // rgb sun scaled by IBLDirectScaleCar, w ibl_direct_car (<0 fallback)
+  mat4 shadow_matrix_mid;  // Mid cascade orthographic sun shadow matrix (~90m)
+  vec4 shadow_mid_bias;    // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
+  vec4 phase_b_params;     // x car_detail, y rotor_glow, z frame_jitter, w ssr_active
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -53,6 +56,7 @@ layout(set = 0, binding = 7) uniform samplerCube static_environment;
 layout(set = 0, binding = 8) uniform sampler2D shared_dirt_pattern;
 layout(set = 0, binding = 9) uniform sampler2D shared_dirt_mask;
 layout(set = 0, binding = 10) uniform sampler2D shared_glass_crack;
+layout(set = 0, binding = 11) uniform sampler2D shadow_depth_raw;
 
 layout(set = 1, binding = 0) uniform sampler2D slot0;
 layout(set = 1, binding = 1) uniform sampler2D slot1;
@@ -76,6 +80,8 @@ layout(location = 4) in float v_occlusion;
 layout(location = 5) flat in uint v_instance;
 layout(location = 6) in vec3 v_tangent;
 layout(location = 7) in vec3 v_bitangent;
+layout(location = 8) in vec3 v_local_pos;
+layout(location = 9) in vec3 v_hub_radial;
 
 layout(location = 0) out vec4 out_color;
 
@@ -138,6 +144,75 @@ float fbm(vec2 p) {
   return v;
 }
 
+vec2 hash22(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+// Isotropic GGX normal distribution function.
+float ggx_d(float nh, float alpha) {
+  float a2 = alpha * alpha;
+  float denom = nh * nh * (a2 - 1.0) + 1.0;
+  return a2 / max(3.14159265 * denom * denom, 1e-5);
+}
+
+// Burley / Heitz Anisotropic GGX NDF for radial brushed-iron brake rotors.
+float aniso_ggx_d(vec3 n, vec3 h, vec3 t, vec3 b, float at, float ab) {
+  float th = dot(t, h);
+  float bh = dot(b, h);
+  float nh = max(dot(n, h), 0.0);
+  float a2 = at * ab;
+  vec3 d = vec3(ab * th, at * bh, a2 * nh);
+  float d2 = dot(d, d);
+  float s = a2 / max(d2, 1e-6);
+  return (a2 * s * s) / 3.14159265;
+}
+
+// Multiscale anti-aliased stochastic metallic flake glint (Deliot & Belcour 2023):
+// projects pixel footprint into continuous pyramid mip levels so flakes sparkle crisply up close
+// and converge smoothly into broad metallic GGX at speed/distance (zero shimmer at 150+ mph).
+float eval_multiscale_flake(vec3 local_pos, vec3 n, vec3 h, vec3 T, vec3 B, float freq, float detail_on) {
+  // Triplanar dominant-plane projection in car-local space (locked to body panels, never swims).
+  vec3 an = abs(n);
+  vec2 fuv = (an.y >= an.x && an.y >= an.z) ? local_pos.xz
+           : (an.x >= an.z)                 ? local_pos.zy
+                                            : local_pos.xy;
+  vec2 duv = max(abs(dFdx(fuv)), abs(dFdy(fuv)));
+  float fp = max(duv.x, duv.y);
+  float lod = log2(max(fp * freq, 1.0));
+  // Smooth convergence to zero discrete shimmer when pixel footprint spans many flakes.
+  float vis = smoothstep(3.2, 0.25, lod);
+  if (vis <= 0.002) return 0.0;
+
+  float l0 = floor(clamp(lod, 0.0, 3.0));
+  float l1 = min(l0 + 1.0, 3.0);
+  float frac_l = clamp(lod - l0, 0.0, 1.0);
+
+  float s0 = freq / exp2(l0);
+  float s1 = freq / exp2(l1);
+  vec2 h0 = hash22(floor(fuv * s0)) * 2.0 - 1.0;
+  vec3 nf0 = normalize(n + (T * h0.x + B * h0.y) * 0.22);
+  float g0 = min(ggx_d(max(dot(nf0, h), 0.0), 0.24) * 0.016, 1.25);
+  if (detail_on < 0.5) return g0 * vis;
+  vec2 h1 = hash22(floor(fuv * s1) + vec2(37.1, 91.7)) * 2.0 - 1.0;
+  vec3 nf1 = normalize(n + (T * h1.x + B * h1.y) * 0.18);
+  float g1 = min(ggx_d(max(dot(nf1, h), 0.0), 0.28) * 0.016, 1.15);
+  return mix(g0, g1, frac_l) * vis;
+}
+
+// Planckian blackbody thermal ramp (900 K -> 1450 K) for glowing brake rotors under hard braking.
+vec3 blackbody_rotor_rgb(float heat) {
+  float h = clamp(heat, 0.0, 1.0);
+  if (h <= 0.02) return vec3(0.0);
+  float t = (h - 0.02) / 0.98;
+  float radiance = t * t * (kLinearOut ? 11.5 : 3.2);
+  vec3 tint = vec3(clamp(0.85 + 0.15 * t, 0.0, 1.0),
+                   clamp(0.06 + 0.54 * t * t, 0.0, 1.0),
+                   clamp(0.01 + 0.22 * t * t * t, 0.0, 1.0));
+  return tint * radiance;
+}
+
 vec3 drive_env(vec3 dir, float lod) {
   vec3 up = normalize(frame.drive.xyz), sun = normalize(frame.key_light.xyz);
   float rough = lod / 7.0;
@@ -155,29 +230,117 @@ vec3 drive_env(vec3 dir, float lod) {
   return mix(gnd_col * (0.85 + 0.15 * clamp(-h * 3.0, 0.0, 1.0)), sky, smoothstep(-edge, edge, h));
 }
 
-float sample_cascade(vec4 s, float x_off) {
-  vec2 uv = vec2((s.x * 0.5 + 0.5) * 0.5 + x_off, s.y * 0.5 + 0.5);
-  float tx = frame.shadow.y * 0.25;
+const vec2 kPcssDisk[16] = vec2[16](
+    vec2(-0.613392,  0.617481), vec2( 0.170019, -0.040254),
+    vec2(-0.299417,  0.791925), vec2( 0.645680,  0.493210),
+    vec2(-0.651784,  0.717887), vec2( 0.421003,  0.027070),
+    vec2(-0.817194, -0.271096), vec2(-0.705374, -0.668203),
+    vec2( 0.977050, -0.108615), vec2( 0.063326,  0.142369),
+    vec2( 0.203528,  0.214331), vec2(-0.667531,  0.326090),
+    vec2(-0.098422, -0.295755), vec2(-0.885922,  0.215369),
+    vec2( 0.566637,  0.605213), vec2( 0.039766, -0.396100));
+
+float ign_shadow() {
+  return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+}
+
+float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades) {
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
+  float tx = frame.shadow.y * inv_cascades * 0.5;
   float ty = frame.shadow.y * 0.5;
-  return 0.25 * (texture(shadow_map, vec3(uv + vec2(-tx, -ty), s.z)) +
-                 texture(shadow_map, vec3(uv + vec2(tx, -ty), s.z)) +
-                 texture(shadow_map, vec3(uv + vec2(-tx, ty), s.z)) +
-                 texture(shadow_map, vec3(uv + vec2(tx, ty), s.z)));
+  float u_lo = x_off + frame.shadow.y * inv_cascades;
+  float u_hi = x_off + inv_cascades - frame.shadow.y * inv_cascades;
+  return 0.25 * (texture(shadow_map, vec3(vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995)), s.z)) +
+                 texture(shadow_map, vec3(vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995)), s.z)) +
+                 texture(shadow_map, vec3(vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995)), s.z)) +
+                 texture(shadow_map, vec3(vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995)), s.z)));
+}
+
+float sample_cascade_pcss(vec4 s, float x_off, float inv_cascades, float pcss_mode, float cascade_scale) {
+  if (pcss_mode < 0.5) return sample_cascade_pcf(s, x_off, inv_cascades);
+  vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
+  float texel_x = frame.shadow.y * inv_cascades;
+  float texel_y = frame.shadow.y;
+  float u_lo = x_off + texel_x;
+  float u_hi = x_off + inv_cascades - texel_x;
+  float ang = 6.2831853 * fract(ign_shadow() + frame.phase_b_params.z * 0.61803399);
+  float ca = cos(ang), sa = sin(ang);
+  mat2 rot = mat2(ca, -sa, sa, ca);
+
+  float search_r = (pcss_mode > 1.5 ? 5.5 : 4.2) * cascade_scale;
+  vec2 search_uv = vec2(texel_x, texel_y) * search_r;
+  float blocker_sum = 0.0;
+  int blockers = 0;
+  float d_center = texture(shadow_depth_raw, vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995))).r;
+  if (d_center < s.z - 0.00020) {
+    blocker_sum += d_center;
+    ++blockers;
+  }
+  for (int i = 0; i < 8; ++i) {
+    vec2 o = (rot * kPcssDisk[i * 2]) * search_uv;
+    vec2 suv = vec2(clamp(uv.x + o.x, u_lo, u_hi), clamp(uv.y + o.y, 0.0005, 0.9995));
+    float d = texture(shadow_depth_raw, suv).r;
+    if (d < s.z - 0.00025) {
+      blocker_sum += d;
+      ++blockers;
+    }
+  }
+  if (blockers == 0) {
+    return texture(shadow_map, vec3(vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995)), s.z));
+  }
+  float avg_blocker = blocker_sum / float(blockers);
+  float blocker_dist_m = max(s.z - avg_blocker, 0.0) * 1040.0;
+  float penumbra = clamp(blocker_dist_m * 0.58 * cascade_scale, 0.80, pcss_mode > 1.5 ? 7.5 : 5.5);
+  vec2 filter_uv = vec2(texel_x, texel_y) * penumbra;
+  int taps = pcss_mode > 1.5 ? 16 : 12;
+  float lit = 0.0;
+  for (int i = 0; i < taps; ++i) {
+    vec2 o = (rot * kPcssDisk[i]) * filter_uv;
+    vec2 suv = vec2(clamp(uv.x + o.x, u_lo, u_hi), clamp(uv.y + o.y, 0.0005, 0.9995));
+    lit += texture(shadow_map, vec3(suv, s.z));
+  }
+  return lit / float(taps);
 }
 
 float drive_shadow(vec3 p, vec3 n) {
   if (frame.shadow.x < 0.5) return 1.0;
-  vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x * 2.0, 1.0);
+  bool three_c = frame.shadow_mid_bias.y > 0.5;
+  float inv_c = three_c ? (1.0 / 3.0) : 0.5;
+  float pcss_mode = frame.shadow_mid_bias.z;
+
+  vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x * 1.8, 1.0);
   float edge_n = max(abs(sn.x), abs(sn.y));
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
-  float lit_n = near_ok ? sample_cascade(sn, 0.0) : 1.0;
+  float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0) : 1.0;
+
+  if (three_c) {
+    if (near_ok && edge_n < 0.80) return mix(frame.shadow.z, 1.0, lit_n);
+    vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x * 1.8, 1.0);
+    float edge_m = max(abs(sm.x), abs(sm.y));
+    bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
+    float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35) : 1.0;
+    if (near_ok) {
+      float bn = smoothstep(0.80, 0.98, edge_n);
+      return mix(frame.shadow.z, 1.0, mix(lit_n, lit_m, bn));
+    }
+    if (mid_ok && edge_m < 0.80) return mix(frame.shadow.z, 1.0, lit_m);
+    vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x * 1.8, 1.0);
+    float edge_f = max(abs(sf.x), abs(sf.y));
+    float lit_f = 1.0;
+    if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
+      lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f));
+    }
+    float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
+    return mix(frame.shadow.z, 1.0, mix(lit_m, lit_f, bm));
+  }
+
   if (frame.shadow_far_bias.y > 0.5) {
     if (near_ok && edge_n < 0.78) return mix(frame.shadow.z, 1.0, lit_n);
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x * 2.0, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
     float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
-      lit_f = mix(sample_cascade(sf, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+      lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
     }
     float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
     return mix(frame.shadow.z, 1.0, mix(lit_n, lit_f, blend));
@@ -224,9 +387,21 @@ void main() {
   }
 
   vec3 view = normalize(frame.eye.xyz - v_position);
+  float eye_dist = length(frame.eye.xyz - v_position);
   vec3 n_geom = normalize(v_normal);
   float flip_n = dot(n_geom, view) < 0.0 ? -1.0 : 1.0;
   vec3 n = n_geom * flip_n;
+  // Construct orthonormal tangent frame for normal maps, multiscale flakes, and close-up clearcoat orange-peel.
+  vec3 T_frame = v_tangent;
+  vec3 B_frame = v_bitangent;
+  if (length(T_frame) > 1e-4 && length(B_frame) > 1e-4) {
+    T_frame = normalize(T_frame - n * dot(T_frame, n));
+    B_frame = normalize(B_frame - n * dot(B_frame, n));
+  } else {
+    vec3 up_ref = abs(n.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    T_frame = normalize(cross(up_ref, n));
+    B_frame = cross(n, T_frame);
+  }
   // Tangent-space normal map perturbation (carbonFiberNormal, sidewall/tread NRM, leather/plastic/stitches NRM).
   if ((flags & kFlagNormalMap) != 0u) {
     vec2 nm_uv = (klass == kCarbon) ? (v_uv1 * 1.5) : ((flags & kFlagNormalUv1) != 0u ? v_uv1 : v_uv0);
@@ -234,15 +409,7 @@ void main() {
     float nm_strength = (klass == kInterior) ? 1.35 : (klass == kTyre ? 1.15 : 1.0);
     nm_xy *= nm_strength;
     float nz = sqrt(max(1.0 - dot(nm_xy, nm_xy), 0.04));
-    vec3 T = v_tangent;
-    vec3 B = v_bitangent;
-    float tlen = length(T);
-    float blen = length(B);
-    if (tlen > 1e-4 && blen > 1e-4) {
-      T = normalize(T - n * dot(T, n));
-      B = normalize(B - n * dot(B, n));
-      n = normalize(T * nm_xy.x + B * nm_xy.y + n * nz);
-    }
+    n = normalize(T_frame * nm_xy.x + B_frame * nm_xy.y + n * nz);
   }
   vec3 r = reflect(-view, n);
   float nv = clamp(dot(n, view), 0.0, 1.0);
@@ -268,33 +435,33 @@ void main() {
     vec3 paint_col = draw_tint.rgb;
     int finish = int(frame.paint_finish.x + 0.5);
     if (finish == 1) {
-      // Metallic Flake (ShaderSettings/Metallic.xml): crisp sparkle & dual-lobe metallic depth.
-      float flake = hash21(floor(v_position.xz * 260.0 + v_position.y * 260.0));
-      flake_boost = smoothstep(0.76, 0.99, flake) * 0.55;
+      // Metallic Flake (ShaderSettings/Metallic.xml): multiscale anti-aliased sparkle + dual-lobe metallic depth.
+      flake_boost = 1.0;
       is_clearcoat = true;
       paint_metallic = 1.0;
       paint_scale = 0.50;
       gloss = 0.94;
-      reflectivity = 0.047;
+      reflectivity = 0.0465;
     } else if (finish == 2) {
       // Matte (ShaderSettings/Matte.xml): satin sheen, low environment mirror.
       metal = 0.04;
       gloss = 0.22;
       reflectivity = 0.025;
     } else if (finish == 3) {
-      // Two-Tone Pearlescent (List_SpecialColors: TwoToneScale/Bias/Power).
+      // Two-Tone Pearlescent (List_SpecialColors): refracted viewing angle inside clearcoat (IOR=1.55).
+      float sin2_t = max(1.0 - nv * nv, 0.0) / (1.55 * 1.55);
+      float cos_t = sqrt(max(1.0 - sin2_t, 0.0));
       float tt_scale = max(frame.paint_finish.y, 0.15);
       float tt_bias = frame.paint_finish.z;
       float tt_pow = max(frame.paint_two_tone.w, 1.0);
-      float fres = clamp(pow(1.0 - nv, clamp(tt_pow * 0.25, 0.8, 5.0)) * (1.2 + tt_scale * 2.0) + tt_bias, 0.0, 1.0);
+      float fres = clamp(pow(1.0 - cos_t, clamp(tt_pow * 0.25, 0.8, 5.0)) * (1.35 + tt_scale * 2.2) + tt_bias, 0.0, 1.0);
       paint_col = mix(paint_col, frame.paint_two_tone.rgb, fres);
-      float flake = hash21(floor(v_position.xz * 240.0 + v_position.y * 240.0));
-      flake_boost = smoothstep(0.74, 0.99, flake) * 0.60;
+      flake_boost = 1.15;
       is_clearcoat = true;
       paint_metallic = 1.0;
       paint_scale = 0.50;
       gloss = 0.95;
-      reflectivity = 0.047;
+      reflectivity = 0.0465;
     } else if (finish == 4) {
       // Chrome special finish.
       metal = 0.94;
@@ -338,8 +505,7 @@ void main() {
       if ((flags & kFlagMetallic) != 0u) {
         paint_metallic = 1.0;
         paint_scale = 0.50;
-        float flake = hash21(floor(v_position.xz * 260.0 + v_position.y * 260.0));
-        flake_boost = smoothstep(0.80, 0.99, flake) * 0.30;
+        flake_boost = 0.72;
       }
     }
 
@@ -673,27 +839,65 @@ void main() {
 
   vec3 colour;
   if (is_clearcoat) {
-    // True FH1 Two-Layer Car Paint BRDF (Normal.xml + Metallic.xml):
-    // Layer 1 (Clearcoat): neutral dielectric Fresnel (IOR=1.55, F0=0.047, FresnelScalar=0.90)
-    //   sampling sharp mip-0 cubemap + tight white sun highlight.
-    // Layer 2 (Basecoat, attenuated by 1 - F_coat): diffuse * PaintScale + (when metallic)
-    //   base-tinted blurred glossy cubemap + dual broad metallic flake lobes (Power2=6, Power3=4).
-    float F_coat = clamp(0.047 + 0.90 * pow(1.0 - nv, 4.2), 0.047, 0.95) * coat_mask;
-    vec3 coat_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
-    vec3 coat_spec = direct_col * pow(nh, 110.0) * 2.2 * ndl * lit * coat_mask;
+    // Phase B Energy-Conserving 2-Layer Clearcoat + Multiscale Anti-Aliased Metallic Flake BRDF:
+    // Close-up (< 6 m) clearcoat-only orange-peel micro-normal on high/ultra gives authentic painted-panel realism.
+    vec3 n_coat = n;
+    if (frame.phase_b_params.x > 0.5 && eye_dist < 6.0 && coat_mask > 0.05) {
+      float peel_fade = smoothstep(6.0, 2.0, eye_dist) * coat_mask;
+      vec3 an_p = abs(n);
+      vec2 puv = (an_p.y >= an_p.x && an_p.y >= an_p.z) ? v_local_pos.xz
+               : (an_p.x >= an_p.z)                     ? v_local_pos.zy
+                                                        : v_local_pos.xy;
+      vec2 gp = puv * 115.0;
+      float p0 = vnoise(gp);
+      vec2 g_peel = vec2(vnoise(gp + vec2(0.35, 0.0)) - p0, vnoise(gp + vec2(0.0, 0.35)) - p0);
+      n_coat = normalize(n + (T_frame * g_peel.x + B_frame * g_peel.y) * (0.045 * peel_fade));
+    }
+    vec3 r_coat = reflect(-view, n_coat);
+    float nv_c = clamp(dot(n_coat, view), 0.0, 1.0);
+    float nl_c = max(dot(n_coat, key), 0.0);
+    float nh_c = max(dot(n_coat, h), 0.0);
 
-    vec3 basecoat = base * paint_scale * diffuse_light;
+    // Layer 1 (Clearcoat): dielectric IOR=1.55 (F0=0.0465) with GGX tight clearcoat lobe.
+    float F_coat_v = clamp(0.0465 + 0.9035 * pow(1.0 - nv_c, 4.4), 0.0465, 0.95) * coat_mask;
+    float F_coat_l = clamp(0.0465 + 0.9035 * pow(1.0 - nl_c, 4.4), 0.0465, 0.95) * coat_mask;
+    vec3 coat_refl = env(r_coat, 0.0) * frame.reflect_tint.rgb * occ_refl;
+    float coat_ggx = ggx_d(nh_c, 0.042) * 0.038;
+    vec3 coat_spec = direct_col * coat_ggx * nl_c * lit * coat_mask;
+
+    // Layer 2 (Basecoat + Multiscale Anti-Aliased Metallic Flakes, energy-conserved by (1 - F_coat)).
+    float base_atten_direct = (1.0 - F_coat_v) * (1.0 - F_coat_l);
+    float base_atten_ibl = 1.0 - F_coat_v;
+    vec3 basecoat = base * paint_scale * diffuse_light * base_atten_ibl;
     if (paint_metallic > 0.01) {
       vec3 met_cube = env(r, 3.2) * frame.reflect_tint.rgb * occ_refl;
-      float broad2 = pow(nh, 6.0) * 0.52;
-      float broad3 = pow(nh, 4.0) * 0.28;
-      basecoat += base * met_cube * 0.55 * paint_metallic;
-      basecoat += base * direct_col * (broad2 + broad3) * ndl * lit * paint_metallic;
-      if (flake_boost > 0.0) {
-        basecoat += base * direct_col * flake_boost * pow(nh, 22.0) * ndl * lit;
+      // Continuous dual-lobe metallic GGX sheen (converged baseline at all speeds & distances).
+      float lobe_mid = ggx_d(nh, 0.24) * 0.22;
+      float lobe_broad = ggx_d(nh, 0.48) * 0.34;
+      vec3 flake_tint = mix(base, vec3(0.95), 0.38);
+      basecoat += base * met_cube * 0.56 * paint_metallic * base_atten_ibl;
+      basecoat += base * direct_col * (lobe_mid + lobe_broad) * ndl * lit * paint_metallic * base_atten_direct;
+      if (flake_boost > 0.01) {
+        float glint = eval_multiscale_flake(v_local_pos, n, h, T_frame, B_frame, 220.0, frame.phase_b_params.x);
+        basecoat += flake_tint * direct_col * glint * flake_boost * ndl * lit * paint_metallic * base_atten_direct;
       }
     }
-    colour = basecoat * (1.0 - F_coat) + F_coat * coat_refl + coat_spec + emissive;
+    colour = basecoat + F_coat_v * coat_refl + coat_spec + emissive;
+  } else if (klass == kRim && submat == 3u) {
+    // Phase B Radial Anisotropic GGX Brake Rotors + Planckian Blackbody Thermal Glow under hard braking.
+    vec3 rad_v = v_hub_radial - n * dot(v_hub_radial, n);
+    float rlen = length(rad_v);
+    vec3 R_axis = rlen > 1e-4 ? (rad_v / rlen) : T_frame;
+    vec3 T_axis = normalize(cross(n, R_axis));
+    float d_aniso = aniso_ggx_d(n, h, T_axis, R_axis, 0.09, 0.45);
+    vec3 rotor_f0 = mix(vec3(0.04), base * 1.15, metal);
+    vec3 rotor_f = rotor_f0 + (vec3(1.0) - rotor_f0) * pow(1.0 - nv, 5.0);
+    vec3 aniso_spec = direct_col * rotor_f * (d_aniso * 0.18) * ndl * lit;
+    // Planckian thermal glow across the swept brake-pad friction ring (900 K -> 1450 K).
+    float disc_r = length(v_local_pos.yz);
+    float pad_ring = smoothstep(0.065, 0.115, disc_r) * smoothstep(0.24, 0.165, disc_r);
+    vec3 thermal_glow = blackbody_rotor_rgb(frame.phase_b_params.y) * pad_ring;
+    colour = base * (1.0 - metal) * diffuse_light + rotor_f * reflection * 0.85 + aniso_spec + thermal_glow + emissive;
   } else {
     colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
     if (klass == kTyre) {
@@ -752,5 +956,18 @@ void main() {
     }
   }
   colour *= frame.options.x;
-  out_color = vec4(out_rgb(colour), alpha);
+  float out_a = alpha;
+  if (kLinearOut && klass != kGlass && (flags & kFlagMirror) == 0u) {
+    // Encode automotive surface gloss into HDR alpha for Phase B Hi-Z SSR (0 on matte/tyre/interior).
+    if (is_clearcoat) {
+      out_a = clamp(0.86 * coat_mask, 0.0, 0.92);
+    } else if (klass == kChrome) {
+      out_a = 0.95;
+    } else if (klass == kRim) {
+      out_a = (submat == 1u) ? 0.85 : (submat == 2u ? 0.0 : 0.45);
+    } else {
+      out_a = 0.0;
+    }
+  }
+  out_color = vec4(out_rgb(colour), out_a);
 }
