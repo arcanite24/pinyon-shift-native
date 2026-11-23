@@ -327,8 +327,23 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.straighten_rate = get("Data_Car.SteerMaxAngVelStraighten", 105) * kDeg;
   p.steer_countersteer_rate =
       get("Data_Car.SteerAngVelCountersteer", s.get("SteerDefCountersteerRate", 105)) * kDeg;
+  p.steer_dyn_find_peak_rate =
+      get("Data_Car.SteerAngVelDynFindPeak", s.get("SteerDefDynSteerFindPeakRate", 105)) * kDeg;
+  p.steer_accel_time = std::max(0.0, get("Data_Car.SteerAccelTimeToMaxRate", p.steer_accel_time));
   p.steer_max_gees = get("Data_Car.SteerSpeedSensitiveMaxGees", 1);
   p.steer_min_lock = get("Data_Car.SteerSpeedSensitiveMinMaxAngle", 5) * kDeg;
+  p.steer_slow_speed = get("Data_Car.SteerSpeedSensitiveSlowSpeed", p.steer_slow_speed);
+  p.steer_fast_speed = get("Data_Car.SteerSpeedSensitiveFastSpeed", p.steer_fast_speed);
+  p.steer_fast_rate_scale = std::clamp(get("Data_Car.SteerSpeedSensitiveFastRateScale", p.steer_fast_rate_scale), 0.1, 1.0);
+  p.sw_filter_speed0 = s.get("SteeringWheelFilter\\Speed0", p.sw_filter_speed0);
+  p.sw_filter_scale0 = s.get("SteeringWheelFilter\\ControlScale0", p.sw_filter_scale0);
+  p.sw_filter_speed1 = s.get("SteeringWheelFilter\\Speed1", p.sw_filter_speed1);
+  p.sw_filter_scale1 = s.get("SteeringWheelFilter\\ControlScale1", p.sw_filter_scale1);
+  p.sw_filter_corr_speed0 = s.get("SteeringWheelFilter\\CorrectSpeed0", p.sw_filter_corr_speed0);
+  p.sw_filter_corr_scale0 = s.get("SteeringWheelFilter\\CorrectControlScale0", p.sw_filter_corr_scale0);
+  p.sw_filter_corr_speed1 = s.get("SteeringWheelFilter\\CorrectSpeed1", p.sw_filter_corr_speed1);
+  p.sw_filter_corr_scale1 = s.get("SteeringWheelFilter\\CorrectControlScale1", p.sw_filter_corr_scale1);
+  p.enable_rwd_launch_assist = s.get("EnableRWDLaunchAssist", 1.0) >= 0.5;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): DB BodyAero* and
   // List_AeroPhysics columns are in kgf at 150 mph (67.056 m/s).

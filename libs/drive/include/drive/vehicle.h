@@ -339,10 +339,23 @@ struct CarParams {
   double steer_rate = 1.83;          // rad/s towards the target
   double straighten_rate = 1.83;     // rad/s back towards centre
   double steer_countersteer_rate = 1.83;  // rad/s (SteerAngVelCountersteer)
-  double steer_max_gees = 1.0;       // SteerSpeedSensitiveMaxGees
+  double steer_dyn_find_peak_rate = 1.83; // rad/s (Data_Car.SteerAngVelDynFindPeak)
+  double steer_accel_time = 0.08;         // s (Data_Car.SteerAccelTimeToMaxRate)
+  double steer_max_gees = 1.0;            // SteerSpeedSensitiveMaxGees
   double steer_gees_fit = 1.61;
-  double steer_min_lock = 0.087;     // rad, the narrowest lock
+  double steer_min_lock = 0.087;          // rad, the narrowest lock
+  double steer_slow_speed = 13.4112;      // m/s (Data_Car.SteerSpeedSensitiveSlowSpeed, 30 mph)
+  double steer_fast_speed = 67.056;       // m/s (Data_Car.SteerSpeedSensitiveFastSpeed, 150 mph)
+  double steer_fast_rate_scale = 0.45;    // Data_Car.SteerSpeedSensitiveFastRateScale
   double steer_rate_min_share = 0.25;
+  // SteeringWheelFilter (PhysicsSettings.ini): default (Assisted/Normal) and
+  // corrected (Simulation) speed-dependent stick/wheel shaping ramps.
+  double sw_filter_speed0 = 10.0, sw_filter_scale0 = 1.5;
+  double sw_filter_speed1 = 50.0, sw_filter_scale1 = 3.0;
+  double sw_filter_corr_speed0 = 5.0, sw_filter_corr_scale0 = 1.0;
+  double sw_filter_corr_speed1 = 25.0, sw_filter_corr_scale1 = 2.5;
+  // RWD Launch Assist (PhysicsSettings.ini EnableRWDLaunchAssist).
+  bool enable_rwd_launch_assist = true;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): all force coefficients in
   // N/(m/s)^2 (DB kgf @ 150 mph x K_aero, K_aero = 9.80665 / 67.056^2).
@@ -612,6 +625,7 @@ class Vehicle {
   double prev_compression_[kWheels]{};
   Input raw_{}, shaped_{};
   double steer_angle_ = 0;
+  double steer_ang_vel_ = 0;
   int gear_ = 1, target_gear_ = 1;
   int gear_before_ = 1;        // the gear a shift started from
   GearState state_ = GearState::kOpen;
@@ -637,6 +651,7 @@ class Vehicle {
   bool locked_ = false;        // the clutch is not slipping
   double engine_omega_ = 0;    // rad/s
   double abs_timer_[kWheels]{};
+  double abs_scale_[kWheels]{1, 1, 1, 1};
   double vel_dep_long_[kWheels]{};
   double vel_dep_lat_[kWheels]{};
   double spring_defl_[kWheels]{};

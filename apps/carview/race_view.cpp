@@ -836,6 +836,70 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   const double grid_cars = double(n + 1);
   const bool is_nemesis = event_.career_type == 11 || event_.style == 5;
   const double player_prog = field_->progress(n);
+  // SPEC-CAR-PHYSICS, Aerodynamic drafting: evaluate pairwise follower & leader
+  // slipstream multipliers across player, AI opponents, and nearby traffic.
+  if (session_->started()) {
+    auto to_draft_car = [](const drive::Vehicle& v) {
+      drive::DraftCar dc;
+      dc.position = v.position();
+      dc.forward = drive::rotate(v.orientation(), {0, 0, 1});
+      dc.speed = v.speed();
+      dc.width = v.params().size.x > 0.5 ? v.params().size.x : 1.9;
+      dc.front_df_coeff = v.params().aero_df_front + v.params().aero_part_df_front;
+      dc.rear_df_coeff = v.params().aero_df_rear + v.params().aero_part_df_rear;
+      return dc;
+    };
+    std::vector<drive::DraftCar> pool;
+    pool.reserve(n + 1 + (traffic && traffic->cars() ? traffic->cars()->size() : 0));
+    for (size_t k = 0; k < n; ++k) pool.push_back(to_draft_car(*cars_[k].body));
+    pool.push_back(to_draft_car(player));
+    if (traffic && traffic->cars()) {
+      for (const auto& tc : *traffic->cars()) {
+        if (tc.speed < 8.0) continue;
+        drive::DraftCar dc;
+        dc.position = {tc.position.x, tc.position.y, tc.position.z};
+        dc.forward = {std::sin(tc.heading), 0.0, std::cos(tc.heading)};
+        dc.speed = tc.speed;
+        dc.width = 1.9;
+        pool.push_back(dc);
+      }
+    }
+    std::vector<drive::DraftCar> leaders;
+    leaders.reserve(pool.size());
+    std::vector<double> leader_strength(n + 1, 0.0);
+    std::vector<drive::DraftState> follower_states(n + 1);
+    for (size_t i = 0; i <= n; ++i) {
+      leaders.clear();
+      for (size_t j = 0; j < pool.size(); ++j) {
+        if (j == i) continue;
+        leaders.push_back(pool[j]);
+        if (j <= n) {
+          const double d_pair = drive::compute_follower_draft(pool[i], &pool[j], 1).strength;
+          if (d_pair > leader_strength[j]) leader_strength[j] = d_pair;
+        }
+      }
+      follower_states[i] = drive::compute_follower_draft(pool[i], leaders.data(), leaders.size());
+    }
+    auto combine_draft = [](const drive::DraftState& f, const drive::DraftState& l) {
+      drive::DraftState out = f;
+      out.strength = std::max(f.strength, l.strength);
+      out.body_drag = f.body_drag * l.body_drag;
+      out.front_drag = f.front_drag * l.front_drag;
+      out.rear_drag = f.rear_drag * l.rear_drag;
+      out.front_df = f.front_df * l.front_df;
+      out.rear_df = f.rear_df * l.rear_df;
+      return out;
+    };
+    for (size_t k = 0; k < n; ++k) {
+      const auto ld = drive::compute_leader_draft(leader_strength[k], pool[k].speed);
+      cars_[k].body->set_draft(combine_draft(follower_states[k], ld));
+    }
+    const auto pld = drive::compute_leader_draft(leader_strength[n], pool[n].speed);
+    player.set_draft(combine_draft(follower_states[n], pld));
+  } else {
+    player.set_draft(drive::DraftState{});
+    for (size_t k = 0; k < n; ++k) cars_[k].body->set_draft(drive::DraftState{});
+  }
   if (n >= 2 && !step_pool_) {
     const size_t hw = std::max<size_t>(1, std::thread::hardware_concurrency());
     const size_t workers = std::min<size_t>(n - 1, hw > 1 ? hw - 1 : 0);

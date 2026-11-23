@@ -4999,8 +4999,40 @@ int run_drive(int argc, char** argv) {
       double step_physics_ms = 0.0;
       double step_ai_traffic_ms = 0.0;
       double step_world_stream_ms = 0.0;
+      double step_object_impact_accum = 0.0;
+      double step_car_impact_accum = 0.0;
       auto step = [&](const drive::Input& user_in) {
         const auto ph_t0 = std::chrono::steady_clock::now();
+        // SPEC-CAR-PHYSICS, Aerodynamic drafting in free roam (behind traffic & festival AI).
+        if (!race) {
+          std::vector<drive::DraftCar> leaders;
+          if (traffic && traffic->cars()) {
+            for (const auto& tc : *traffic->cars()) {
+              if (tc.speed < 8.0) continue;
+              leaders.push_back({{tc.position.x, tc.position.y, tc.position.z},
+                                 {std::sin(tc.heading), 0.0, std::cos(tc.heading)},
+                                 tc.speed,
+                                 1.9,
+                                 0.0,
+                                 0.0});
+            }
+          }
+          if (festival_mgr) {
+            for (const auto& fc : festival_mgr->cars()) {
+              if (fc.speed < 8.0) continue;
+              leaders.push_back(
+                  {{fc.position.x, fc.position.y, fc.position.z}, {std::sin(fc.heading), 0.0, std::cos(fc.heading)}, fc.speed, 1.9, 0.0, 0.0});
+            }
+          }
+          drive::DraftCar me{};
+          me.position = vehicle.position();
+          me.forward = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          me.speed = vehicle.speed();
+          me.width = vehicle.params().size.x > 0.5 ? vehicle.params().size.x : 1.9;
+          me.front_df_coeff = vehicle.params().aero_df_front + vehicle.params().aero_part_df_front;
+          me.rear_df_coeff = vehicle.params().aero_df_rear + vehicle.params().aero_part_df_rear;
+          vehicle.set_draft(drive::compute_follower_draft(me, leaders.data(), leaders.size()));
+        }
         const drive::Input in = race ? race->player_input(vehicle, user_in, traffic.get()) : user_in;
         vehicle.step(in, *ground);
         if (race) race->replay_player(vehicle);
@@ -5152,6 +5184,7 @@ int run_drive(int argc, char** argv) {
           smashables.step(vehicle, *ground, float(drive::Vehicle::kStep), sm_events);
           for (const auto& sev : sm_events) {
             smashed_prop = true;
+            step_object_impact_accum = std::max(step_object_impact_accum, std::max(0.25, std::fabs(vehicle.speed()) / 25.0));
             club_pending.smashables.push_back(
                 freeroam::club::classify_smashable_type(sev.prop_stem, sev.object_type_index));
             particle_sys.spawn_smashable_burst(sev.prop_stem, sev.pos, sev.impulse_vel);
@@ -5298,6 +5331,9 @@ int run_drive(int argc, char** argv) {
           };
           if (traffic && traffic->cars())
             for (const auto& tc : *traffic->cars()) check_other(tc.position.x, tc.position.z, tc.speed);
+          if (festival_mgr)
+            for (const auto& fc : festival_mgr->cars()) check_other(fc.position.x, fc.position.z, fc.speed);
+          si.draft_factor = std::max(si.draft_factor, vehicle.draft().strength);
           if (race) {
             std::vector<carview::RaceView::OpponentTag> otags;
             race->opponent_tags(otags);
@@ -5984,6 +6020,7 @@ int run_drive(int argc, char** argv) {
       bool rumble_enabled = live_controls.rumble_enabled;
       double rumble_scale = live_controls.rumble_scale;
       int prev_rumble_gear = vehicle.gear();
+      uint32_t prev_rumble_backfire = 0;
       double rig_min_distance = 1e9, rig_max_distance = 0;  // the chase eye from the CoM, over the run
       if (!world_dir.empty()) {
         std::string note;
@@ -12027,6 +12064,10 @@ int run_drive(int argc, char** argv) {
             next_achievement_eval = vehicle.time() + 1.0;
           }
           double frame_world_impact = 0.0;
+          double frame_car_impact = 0.0;
+          double frame_object_impact = 0.0;
+          step_object_impact_accum = 0.0;
+          step_car_impact_accum = 0.0;
           while (!sim_paused && accumulator >= drive::Vehicle::kStep) {
             drawn_before = vehicle.pose();
             drive::Input step_in = cruise ? follower.input(vehicle) : in;
@@ -12108,6 +12149,9 @@ int run_drive(int argc, char** argv) {
               }
             }
             frame_world_impact = std::max(frame_world_impact, vehicle.body_contact_force());
+            if (traffic) frame_car_impact = std::max(frame_car_impact, traffic->player_impulse());
+            frame_car_impact = std::max(frame_car_impact, step_car_impact_accum);
+            frame_object_impact = std::max(frame_object_impact, step_object_impact_accum);
             {
               const double mass = std::max(100.0, vehicle.params().mass);
               const auto& bc = vehicle.strongest_body_contact();
@@ -12147,6 +12191,7 @@ int run_drive(int argc, char** argv) {
             const auto& vp = vehicle.params();
             const double rpm_span = std::max(1.0, vp.redline_rpm - vp.idle_rpm);
             ri.engine_norm_rpm = std::clamp((vehicle.rpm() - vp.idle_rpm) / rpm_span, 0.0, 1.0);
+            ri.transmission_rpm = std::clamp(std::fabs(vehicle.clutch_output_rpm()) / std::max(1.0, vp.redline_rpm), 0.0, 1.5);
             const auto& ws = vehicle.wheels();
             double fl_load = 0, fl_slip = 0, rl_load = 0, rl_slip = 0;
             for (int wi = 0; wi < 4; ++wi) {
@@ -12158,6 +12203,7 @@ int run_drive(int argc, char** argv) {
             ri.tire_traction_front = fl_load > 1e-3 ? fl_slip / fl_load : 0.0;
             ri.tire_traction_rear = rl_load > 1e-3 ? rl_slip / rl_load : 0.0;
             ri.tire_traction = (fl_load + rl_load) > 1e-3 ? (fl_slip + rl_slip) / (fl_load + rl_load) : 0.0;
+            ri.air_friction = std::clamp((vehicle.speed() * vehicle.speed()) / (80.0 * 80.0), 0.0, 1.0);
             // Surface bumpiness: use exact 2 * Bumpiness.Rumble from Vehicle
             // when available, else fallback to off-roadness estimate, scaled by speed.
             double bump_2x = vehicle.surface_bump_rumble();
@@ -12178,14 +12224,35 @@ int run_drive(int argc, char** argv) {
               bump_2x = 2.0 * max_bump;
             }
             ri.surface_bumpiness = bump_2x * (std::fabs(vehicle.speed()) / 22.352);
+            ri.car_to_car_impulse = frame_car_impact / 500.0;
             ri.car_to_world_impulse = frame_world_impact / 500.0;
+            ri.car_to_object_impulse = frame_object_impact;
             ri.on_shift = vehicle.gear() != prev_rumble_gear;
             prev_rumble_gear = vehicle.gear();
+            ri.on_engine_sputter = (vehicle.rpm() >= vp.redline_rpm * 0.985 && vehicle.engine_throttle() > 0.5);
+            const uint32_t cur_bf_rumble = audio_host.telemetry().backfire_count;
+            ri.on_backfire = cur_bf_rumble > prev_rumble_backfire;
+            prev_rumble_backfire = cur_bf_rumble;
             ri.paused = sim_paused;
             ri.enabled = rumble_enabled;
             ri.scale = rumble_scale;
             const auto ro = gamepad_rumble.update(frame_dt, ri);
-            for (SDL_Gamepad* pad : pads) SDL_RumbleGamepad(pad, ro.left_u16(), ro.right_u16(), 100);
+            // Xbox One / Series Impulse Triggers: LT = front brake lock / ABS pulse,
+            // RT = rear traction loss / wheelspin.
+            uint16_t lt_trig = 0, rt_trig = 0;
+            if (!sim_paused && rumble_enabled && rumble_scale > 0.0) {
+              const double front_lock = std::max({0.0, -ws[0].slip_ratio - 0.7, -ws[1].slip_ratio - 0.7});
+              const double lt_f = std::clamp(
+                  ((in.brake > 0.05 ? front_lock * 0.75 : 0.0) + (vehicle.abs_active() ? 0.55 : 0.0)) * rumble_scale,
+                  0.0, 1.0);
+              const double rt_f = std::clamp((ri.tire_traction_rear - 0.85) * 0.55 * rumble_scale, 0.0, 1.0);
+              lt_trig = uint16_t(lt_f * 65535.0);
+              rt_trig = uint16_t(rt_f * 65535.0);
+            }
+            for (SDL_Gamepad* pad : pads) {
+              SDL_RumbleGamepad(pad, ro.left_u16(), ro.right_u16(), 100);
+              SDL_RumbleGamepadTriggers(pad, lt_trig, rt_trig, 100);
+            }
             rumble_low_f = ro.left_u16() / 65535.0;
             rumble_high_f = ro.right_u16() / 65535.0;
           }

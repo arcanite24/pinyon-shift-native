@@ -847,6 +847,137 @@ int main() {
   }
   test_per_car_physics();
   test_assists_and_transmission();
+  // Pillar 1 deep behavioral parity tests:
+  // 1) HandbrakeGripMultiplier scales rear k_x/k_y on surface with handbrake_grip < 1.
+  {
+    class HandbrakeGround : public drive::Ground {
+     public:
+      explicit HandbrakeGround(double hb_grip) : hb_(hb_grip) {}
+      bool raycast(const drive::Vec3& o, const drive::Vec3& d, double max_d, drive::Hit& hit) const override {
+        if (d.y >= -1e-9) return false;
+        const double t = -o.y / d.y;
+        if (t < 0 || t > max_d) return false;
+        hit.distance = t;
+        hit.normal = {0, 1, 0};
+        hit.grip = 1.0;
+        hit.tyre.handbrake_grip = hb_;
+        return true;
+      }
+     private:
+      double hb_;
+    };
+    const auto p = test_car();
+    const HandbrakeGround g_full(1.0), g_slick(0.35);
+    drive::Vehicle v_full(p), v_slick(p);
+    v_full.launch({0, 0, 0}, 0, 22.0);
+    v_slick.launch({0, 0, 0}, 0, 22.0);
+    for (int i = 0; i < 60; ++i) {
+      v_full.step({0.35, 0.0, 0.0, true}, g_full);
+      v_slick.step({0.35, 0.0, 0.0, true}, g_slick);
+    }
+    const auto f_full = drive::rotate(v_full.orientation(), {0, 0, 1});
+    const auto f_slick = drive::rotate(v_slick.orientation(), {0, 0, 1});
+    const double yaw_full = std::fabs(std::atan2(f_full.x, f_full.z));
+    const double yaw_slick = std::fabs(std::atan2(f_slick.x, f_slick.z));
+    CHECK(yaw_slick > yaw_full * 1.15);
+  }
+  // 2) Forza dynamic pad steering: SteerAccelTimeToMaxRate ramps angular velocity
+  //    smoothly and SteerSpeedSensitiveFastRateScale slows turn-in at highway speed.
+  {
+    auto p = test_car();
+    p.steer_accel_time = 0.20;
+    p.steer_slow_speed = 10.0;
+    p.steer_fast_speed = 60.0;
+    p.steer_fast_rate_scale = 0.35;
+    const drive::FlatGround flat;
+    drive::Vehicle v_slow(p), v_fast(p);
+    v_slow.launch({0, 0, 0}, 0, 8.0);
+    v_fast.launch({0, 0, 0}, 0, 55.0);
+    // First step: acceleration ramp limits initial step below instant full steer_rate * dt.
+    v_slow.step({1.0, 0.0, 0.0, false}, flat);
+    const double first_step_angle = v_slow.steer_angle();
+    CHECK(first_step_angle > 0.0);
+    CHECK(first_step_angle < p.steer_rate * drive::Vehicle::kStep * 0.95);
+    // Over 0.15 s at 55 m/s vs 8 m/s, fast speed steers less aggressively.
+    for (int i = 0; i < 18; ++i) {
+      v_slow.step({1.0, 0.0, 0.0, false}, flat);
+      v_fast.step({1.0, 0.0, 0.0, false}, flat);
+    }
+    CHECK(v_fast.steer_angle() < v_slow.steer_angle());
+  }
+  // 3) Aerodynamic drafting: follower behind leader at 50 m/s accelerates faster with set_draft.
+  {
+    auto p = test_car();
+    p.aero_drag_long = 0.55;
+    p.aero_df_front = 0.25;
+    p.aero_df_rear = 0.35;
+    p.drag_quadratic = 0.55;
+    p.drag_constant = 0.0;
+    const drive::FlatGround flat;
+    drive::Vehicle v_clean(p), v_draft(p);
+    v_clean.launch({0, 0, 0}, 0, 48.0);
+    v_draft.launch({0, 0, 0}, 0, 48.0);
+    drive::DraftCar leader{{0, 0, 12.0}, {0, 0, 1}, 48.0, 1.9, 0.25, 0.35};
+    drive::DraftCar follower{{0, 0, 0}, {0, 0, 1}, 48.0, 1.9, 0.25, 0.35};
+    const auto ds = drive::compute_follower_draft(follower, &leader, 1);
+    CHECK(ds.strength > 0.8 && ds.body_drag < 0.85 && ds.front_df < 0.70);
+    v_draft.set_draft(ds);
+    for (int i = 0; i < 360; ++i) {
+      v_clean.step({0, 1.0, 0, false}, flat);
+      v_draft.step({0, 1.0, 0, false}, flat);
+    }
+    CHECK(v_draft.speed() > v_clean.speed() + 0.35);
+  }
+  // 4) LSD reverse lock uses signed T_drive (T_decel = 0 in reverse, not T_accel)
+  //    and RWD launch assist reduces low-speed excessive rear slip.
+  {
+    class SplitMuGround : public drive::Ground {
+     public:
+      bool raycast(const drive::Vec3& o, const drive::Vec3& d, double max_d, drive::Hit& hit) const override {
+        if (d.y >= -1e-9) return false;
+        const double t = -o.y / d.y;
+        if (t < 0 || t > max_d) return false;
+        hit.distance = t;
+        hit.normal = {0, 1, 0};
+        hit.grip = o.x < 0 ? 0.25 : 1.0;  // left wheels on ice, right wheels on dry asphalt
+        return true;
+      }
+    };
+    auto p_lsd = test_car();
+    p_lsd.layout = drive::CarParams::Layout::kRear;
+    p_lsd.rear_lsd = {600.0, 0.0, 50.0, 50.0};  // high accel lock, zero decel lock
+    auto p_open = p_lsd;
+    p_open.rear_lsd = {0.0, 0.0, 50.0, 50.0};
+    const SplitMuGround split_g;
+    drive::Vehicle v_lsd_rev(p_lsd), v_open_rev(p_open);
+    // Drive in reverse on split-mu: signed T_drive <= 0 selects decel=0 so LSD matches open diff.
+    for (int i = 0; i < 180; ++i) {
+      v_lsd_rev.step({0, 0, 1.0, false}, split_g);
+      v_open_rev.step({0, 0, 1.0, false}, split_g);
+    }
+    CHECK(v_lsd_rev.gear() == -1);
+    const double dw_lsd = std::fabs(v_lsd_rev.wheels()[2].omega - v_lsd_rev.wheels()[3].omega);
+    const double dw_open = std::fabs(v_open_rev.wheels()[2].omega - v_open_rev.wheels()[3].omega);
+    CHECK(std::fabs(dw_lsd - dw_open) < 1.0);
+
+    auto p = test_car();
+    p.layout = drive::CarParams::Layout::kRear;
+    p.torque_scale = 750.0;
+    p.enable_rwd_launch_assist = true;
+    auto p_no_assist = p;
+    p_no_assist.enable_rwd_launch_assist = false;
+    const drive::FlatGround flat;
+    drive::Vehicle v_assist(p), v_raw(p_no_assist);
+    double max_slip_assist = 0.0, max_slip_raw = 0.0;
+    for (int i = 0; i < 90; ++i) {
+      v_assist.step({0, 1.0, 0, false}, flat);
+      v_raw.step({0, 1.0, 0, false}, flat);
+      max_slip_assist = std::max(max_slip_assist, std::fabs(v_assist.wheels()[2].slip_ratio));
+      max_slip_raw = std::max(max_slip_raw, std::fabs(v_raw.wheels()[2].slip_ratio));
+    }
+    CHECK(max_slip_raw > 1.0);
+    CHECK(max_slip_assist <= max_slip_raw + 0.05);
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;
