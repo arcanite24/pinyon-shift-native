@@ -1819,6 +1819,10 @@ int run_drive(int argc, char** argv) {
   float preset_reflection_rate = 1.0f;
   float preset_anisotropy = -1.0f;
   carview::modern::GraphicsSettings cli_graphics;
+  bool cli_ssao_explicit = false;
+  bool cli_sscs_explicit = false;
+  bool cli_hextile_explicit = false;
+  bool cli_velblur_explicit = false;
   uint32_t cli_hdr_pattern = 0;
   float cli_hdr_pattern_nits = 1000.0f;
   bool cli_perf_overlay = false;
@@ -2087,6 +2091,10 @@ int run_drive(int argc, char** argv) {
       if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) return 2;
       size_given = true;
     } else if (carview::modern::apply_graphics_option(cli_graphics, args, i)) {
+      if (a == "--ssao") cli_ssao_explicit = true;
+      else if (a == "--contact-shadows") cli_sscs_explicit = true;
+      else if (a == "--hex-tiling" || a == "--no-hex-tiling") cli_hextile_explicit = true;
+      else if (a == "--velocity-blur") cli_velblur_explicit = true;
     } else if (a == "--hdr-pattern") {
       cli_hdr_pattern = uint32_t(std::clamp(std::atoi(next()), 0, 3));
     } else if (a == "--hdr-pattern-nits") {
@@ -2104,6 +2112,16 @@ int run_drive(int argc, char** argv) {
       std::fprintf(stderr, "carview: unknown option %s\n", a.c_str());
       drive_usage();
       return 2;
+    }
+  }
+  // Apply scalable Phase A SOTA defaults per graphics preset unless explicitly overridden via CLI/settings.
+  {
+    carview::GraphicsPresetSpec pspec;
+    if (carview::resolve_graphics_preset(preset_name, pspec)) {
+      if (!cli_ssao_explicit) cli_graphics.ssao = pspec.gtao;
+      if (!cli_sscs_explicit) cli_graphics.contact_shadows = pspec.contact_shadows;
+      if (!cli_hextile_explicit) cli_graphics.hex_tiling = pspec.hex_tiling;
+      if (!cli_velblur_explicit) cli_graphics.velocity_blur = pspec.velocity_blur;
     }
   }
   // Apply deterministic defaults for named benchmark scenarios (--bench-scenario).
@@ -7564,7 +7582,8 @@ int run_drive(int argc, char** argv) {
         feat.aa_mode = active_graphics.aa == carview::modern::AaMode::kFxaaAll     ? "fxaa_all"
                        : active_graphics.aa == carview::modern::AaMode::kFxaaWorld ? "fxaa_world"
                                                                                    : "msaa";
-        feat.ssao = active_graphics.ssao == carview::modern::SsaoQuality::kHigh     ? "high"
+        feat.ssao = active_graphics.ssao == carview::modern::SsaoQuality::kUltra    ? "ultra"
+                    : active_graphics.ssao == carview::modern::SsaoQuality::kHigh   ? "high"
                     : active_graphics.ssao == carview::modern::SsaoQuality::kMedium ? "medium"
                     : active_graphics.ssao == carview::modern::SsaoQuality::kLow    ? "low"
                                                                                     : "off";

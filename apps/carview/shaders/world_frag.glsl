@@ -311,6 +311,90 @@ vec3 render_to_game_dir(vec3 d) {
   return normalize(vec3(dot(d, frame.env_basis_x.xyz), dot(d, frame.env_basis_y.xyz), dot(d, frame.env_basis_z.xyz)));
 }
 
+// Mikkelsen (JCGT 2022) Practical Real-Time Hex-Tiling with analytical derivative rotation
+// (preserves 16x anisotropic filtering at grazing angles while breaking up macro terrain repetition).
+vec2 hex_hash22(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+mat2 hex_rot(float a) {
+  float c = cos(a), s = sin(a);
+  return mat2(c, -s, s, c);
+}
+
+struct HexTileSample {
+  vec2 uv1, uv2, uv3;
+  vec2 dx1, dy1, dx2, dy2, dx3, dy3;
+  vec3 w;
+};
+
+HexTileSample hex_tile_setup(vec2 uv) {
+  vec2 ddx = dFdx(uv);
+  vec2 ddy = dFdy(uv);
+
+  // Skew UV onto simplex/hexagonal lattice (side length ~1.0 in UV tile space).
+  const float kScale = 0.65;
+  vec2 st = uv * kScale;
+  mat2 to_grid = mat2(1.0, 0.0, -0.57735027, 1.15470054);
+  vec2 g = to_grid * st;
+  vec2 gi = floor(g);
+  vec2 gf = fract(g);
+
+  vec2 v1, v2, v3;
+  float w1, w2, w3;
+  if (gf.x > gf.y) {
+    v1 = gi;
+    v2 = gi + vec2(1.0, 0.0);
+    v3 = gi + vec2(1.0, 1.0);
+    w1 = 1.0 - gf.x;
+    w2 = gf.x - gf.y;
+    w3 = gf.y;
+  } else {
+    v1 = gi;
+    v2 = gi + vec2(0.0, 1.0);
+    v3 = gi + vec2(1.0, 1.0);
+    w1 = 1.0 - gf.y;
+    w2 = gf.y - gf.x;
+    w3 = gf.x;
+  }
+
+  vec2 h1 = hex_hash22(v1);
+  vec2 h2 = hex_hash22(v2);
+  vec2 h3 = hex_hash22(v3);
+
+  mat2 r1 = hex_rot(h1.x * 6.2831853);
+  mat2 r2 = hex_rot(h2.x * 6.2831853);
+  mat2 r3 = hex_rot(h3.x * 6.2831853);
+
+  HexTileSample s;
+  s.uv1 = r1 * uv + h1; s.dx1 = r1 * ddx; s.dy1 = r1 * ddy;
+  s.uv2 = r2 * uv + h2; s.dx2 = r2 * ddx; s.dy2 = r2 * ddy;
+  s.uv3 = r3 * uv + h3; s.dx3 = r3 * ddx; s.dy3 = r3 * ddy;
+  s.w = pow(max(vec3(w1, w2, w3), vec3(0.0)), vec3(5.0));
+  return s;
+}
+
+vec4 hex_tile_combine(vec4 c1, vec4 c2, vec4 c3, vec3 base_w) {
+  // Contrast-preserving soft-max weights prevent muddy grey blending across hex borders.
+  vec3 lum = vec3(dot(c1.rgb, vec3(0.299, 0.587, 0.114)),
+                  dot(c2.rgb, vec3(0.299, 0.587, 0.114)),
+                  dot(c3.rgb, vec3(0.299, 0.587, 0.114)));
+  vec3 w = base_w * exp2(lum * 2.0);
+  w /= max(w.x + w.y + w.z, 1e-5);
+  return c1 * w.x + c2 * w.y + c3 * w.z;
+}
+
+#define SAMPLE_HEX_TILE(TEX, UV, DST)                                                                       \
+  do {                                                                                                      \
+    HexTileSample _hs = hex_tile_setup(UV);                                                                 \
+    vec4 _c1 = textureGrad(TEX, _hs.uv1, _hs.dx1, _hs.dy1);                                                 \
+    vec4 _c2 = textureGrad(TEX, _hs.uv2, _hs.dx2, _hs.dy2);                                                 \
+    vec4 _c3 = textureGrad(TEX, _hs.uv3, _hs.dx3, _hs.dy3);                                                 \
+    DST = hex_tile_combine(_c1, _c2, _c3, _hs.w);                                                           \
+  } while (false)
+
 void main() {
 #ifdef GPU_DRIVEN
   draw.model = push.model;
@@ -414,9 +498,25 @@ void main() {
 
   vec4 t;
   if ((flags & kFlagTextured) != 0u) {
-    t = texture(albedo, v_uv0 * draw.tint.xy);
+    // Mikkelsen Hex-Tiling on organic multi-layer terrain blends (never on directional roads or billboards).
+    bool use_hex = frame.shadow_bias.z > 0.5 &&
+                   (flags & (kFlagVertexBlend | kFlagSplat)) != 0u &&
+                   (flags & (kFlagRoad | kFlagBillboard)) == 0u &&
+                   eye_dist < 1100.0;
+    vec2 uv_a = v_uv0 * draw.tint.xy;
+    if (use_hex) {
+      SAMPLE_HEX_TILE(albedo, uv_a, t);
+    } else {
+      t = texture(albedo, uv_a);
+    }
     if ((flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
-      vec4 b = texture(layer_b, v_uv0 * draw.tint.zw);
+      vec2 uv_b = v_uv0 * draw.tint.zw;
+      vec4 b;
+      if (use_hex) {
+        SAMPLE_HEX_TILE(layer_b, uv_b, b);
+      } else {
+        b = texture(layer_b, uv_b);
+      }
       if ((flags & kFlagSplat) != 0u) {
         vec4 sp = texture(splat_map, v_uv1);
         t = mix(t, b, sp.r);
@@ -424,7 +524,13 @@ void main() {
           vec2 tc = unpackHalf2x16(floatBitsToUint(draw.params.w));
           if (abs(tc.x) < 1e-4) tc.x = draw.tint.z;
           if (abs(tc.y) < 1e-4) tc.y = draw.tint.w;
-          vec4 c = texture(layer_c, v_uv0 * tc);
+          vec2 uv_c = v_uv0 * tc;
+          vec4 c;
+          if (use_hex) {
+            SAMPLE_HEX_TILE(layer_c, uv_c, c);
+          } else {
+            c = texture(layer_c, uv_c);
+          }
           // FH1 H_BLND3 modulates Blend_C weight by Blend_C alpha (WORLD_MATERIALS.md:735).
           float wc = clamp(sp.g * mix(0.45, 1.0, c.a), 0.0, 1.0);
           t = mix(t, c, wc);

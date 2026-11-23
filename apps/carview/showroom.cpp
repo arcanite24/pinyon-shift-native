@@ -2785,7 +2785,10 @@ bool Showroom::upload(std::string& error) {
     }
     // Cockpit near-clip distance in shadow_bias.y prevents exterior lamp/streetlamp glows bleeding into cockpit.
     frame_.shadow_bias[1] = cockpit_camera_active_ ? 2.1f : 0.0f;
-    // Frame-exact sun screen-space projection for optical god rays & lens flare in post.frag.
+    // Mikkelsen Hex-Tiling toggle in shadow_bias.z (organic Colorado terrain breakup on high/ultra).
+    frame_.shadow_bias[2] = r_.graphics_settings().hex_tiling ? 1.0f : 0.0f;
+    // Frame-exact sun screen-space projection for optical god rays & lens flare in post.frag
+    // plus view-space sun direction (valid at all camera angles) for Screen-Space Contact Shadows (SSCS).
     if (world_lit_ && r_.options_.post.enabled) {
       const float sx = world_sun_[0], sy = world_sun_[1], sz = world_sun_[2];
       const float slen = std::sqrt(sx * sx + sy * sy + sz * sz);
@@ -2800,6 +2803,20 @@ bool Showroom::upload(std::string& error) {
         const float cw = vp[3] * px + vp[7] * py + vp[11] * pz + vp[15];
         const float sun_up = dx * world_up_[0] + dy * world_up_[1] + dz * world_up_[2];
         const float elev_fade = std::clamp((sun_up + 0.02f) / 0.10f, 0.0f, 1.0f);
+        // Reconstruct unit view-space sun direction from P * (V * dir).
+        const float cdx = vp[0] * dx + vp[4] * dy + vp[8] * dz;
+        const float cdy = vp[1] * dx + vp[5] * dy + vp[9] * dz;
+        const float cdw = vp[3] * dx + vp[7] * dy + vp[11] * dz;
+        const float p00 = std::fabs(r_.cam_proj00_) > 1e-4f ? r_.cam_proj00_ : 1.0f;
+        const float p11 = std::fabs(r_.cam_proj11_) > 1e-4f ? r_.cam_proj11_ : -1.0f;
+        const float svx = cdx / p00, svy = cdy / p11, svz = -cdw;
+        const float svlen = std::sqrt(svx * svx + svy * svy + svz * svz);
+        if (svlen > 1e-5f) {
+          r_.options_.post.sun_view_dir[0] = svx / svlen;
+          r_.options_.post.sun_view_dir[1] = svy / svlen;
+          r_.options_.post.sun_view_dir[2] = svz / svlen;
+        }
+        r_.options_.post.sun_elev_vis = elev_fade;
         if (cw > 1e-4f && elev_fade > 0.001f) {
           const float nx = cx / cw, ny = cy / cw;
           r_.options_.post.sun_screen_uv[0] = nx * 0.5f + 0.5f;
