@@ -119,6 +119,7 @@ constexpr Kept kKept[] = {
     {"gyro-sensitivity", true, "gyro-sensitivity"},
     // Slice 12: OpenTrack Head Tracking, Camera Editor & Immersive Camera.
     {"head-tracking", false, "head-tracking"},
+    {"no-head-tracking", false, "head-tracking"},
     {"head-tracking-port", true, "head-tracking-port"},
     {"head-tracking-invert", true, "head-tracking-invert"},
     {"chase-height", true, "chase-height"},

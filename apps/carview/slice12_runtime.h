@@ -5,7 +5,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -55,6 +57,85 @@ struct Slice12Runtime {
   drive::TrainerState trainer;
   TrainerOverlay trainer_overlay;
   std::string save_tree_label = "user";
+  void* native_hwnd_ = nullptr;
+  std::vector<SDL_Joystick*> wheel_joysticks_;
+  std::string ffb_device_match_;
+
+  void set_window(SDL_Window* window) {
+    native_hwnd_ = nullptr;
+    if (!window) return;
+#ifdef _WIN32
+    native_hwnd_ =
+        SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+#endif
+  }
+
+  void ensure_ffb_open() {
+    if (ffb_cfg.mode == drive::WheelFfbMode::kOff) {
+      if (ffb_device.is_open()) {
+        ffb_device.stop_all();
+        ffb_device.close();
+      }
+      return;
+    }
+    if (!ffb_device.is_open() && native_hwnd_) {
+      ffb_device.open(native_hwnd_, ffb_device_match_);
+    }
+  }
+
+  void sync_wheel_devices() {
+    for (SDL_Joystick* j : wheel_joysticks_) {
+      if (j) SDL_CloseJoystick(j);
+    }
+    wheel_joysticks_.clear();
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+    if (ids) {
+      for (int i = 0; i < count; ++i) {
+        if (SDL_IsGamepad(ids[i])) continue;
+        if (SDL_Joystick* j = SDL_OpenJoystick(ids[i])) {
+          wheel_joysticks_.push_back(j);
+        }
+      }
+      SDL_free(ids);
+    }
+    ensure_ffb_open();
+  }
+
+  // Applies single-device wheel shaping (for raw wheel joysticks) and DualSense/DS4/SwitchPro
+  // gyro tilt steering into the live driving Input struct.
+  void apply_wheel_and_gyro_input(drive::Input& in, bool pad_has_input) const {
+    if (!pad_has_input) {
+      for (SDL_Joystick* j : wheel_joysticks_) {
+        if (!j) continue;
+        const int n_axes = SDL_GetNumJoystickAxes(j);
+        if (n_axes <= 0) continue;
+        const double raw_s = std::clamp(SDL_GetJoystickAxis(j, 0) / 32767.0, -1.0, 1.0);
+        const double shaped_s = drive::shape_wheel_steering(raw_s, wheel_shaping);
+        double shaped_t = 0.0, shaped_b = 0.0;
+        if (n_axes >= 2) {
+          const double raw_t = std::clamp((32767.0 - double(SDL_GetJoystickAxis(j, 1))) / 65535.0, 0.0, 1.0);
+          shaped_t = drive::shape_wheel_pedal(raw_t, wheel_shaping);
+        }
+        if (n_axes >= 3) {
+          const double raw_b = std::clamp((32767.0 - double(SDL_GetJoystickAxis(j, 2))) / 65535.0, 0.0, 1.0);
+          shaped_b = drive::shape_wheel_pedal(raw_b, wheel_shaping);
+        }
+        if (std::fabs(shaped_s) > 1e-3 || shaped_t > 1e-3 || shaped_b > 1e-3) {
+          in.steer = shaped_s;
+          if (shaped_t > in.throttle) in.throttle = shaped_t;
+          if (shaped_b > in.brake) in.brake = shaped_b;
+          break;
+        }
+      }
+    }
+    if (ds_cfg.gyro_steering && gyro_steer.valid()) {
+      const double gsteer = double(gyro_steer.steering(ds_cfg.gyro_sensitivity_pct));
+      if (std::fabs(gsteer) > 1e-4) {
+        in.steer = std::clamp(in.steer + gsteer, -1.0, 1.0);
+      }
+    }
+  }
 
   void apply_live_settings(const LiveSettings& ls, drive::DriveCamera& rig, const std::filesystem::path& log_dir) {
     wheel_shaping = ls.wheel_shaping;
@@ -70,8 +151,11 @@ struct Slice12Runtime {
 
     tel_cfg = ls.telemetry_udp;
     trainer.config.cheats_enabled = ls.trainer_cheats;
+    if (ls.trainer_saved_road.has_value()) trainer.config.saved_map_road = ls.trainer_saved_road;
     trainer.pacing = ls.festival_pacing;
     trainer.hidden_cars = ls.hidden_cars;
+
+    ensure_ffb_open();
 
     if (trainer.config.debug_ffb_trace && !ffb_trace.is_recording()) {
       ffb_trace.start(log_dir);
@@ -187,6 +271,10 @@ struct Slice12Runtime {
   void shutdown(const std::vector<SDL_Gamepad*>& pads) {
     release_all(pads);
     ffb_device.close();
+    for (SDL_Joystick* j : wheel_joysticks_) {
+      if (j) SDL_CloseJoystick(j);
+    }
+    wheel_joysticks_.clear();
     ffb_trace.stop();
     ht_receiver.stop();
     tel_sender.close();

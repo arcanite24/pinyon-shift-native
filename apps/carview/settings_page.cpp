@@ -747,9 +747,41 @@ LiveSettings SettingsPage::live_settings() const {
   ls.festival_pacing.price_multiplier = num_or("pacing prices", 0.5);
   ls.festival_pacing.reward_multiplier = num_or("pacing rewards", 2.0);
   ls.hidden_cars = pick_label("hidden cars (autoshow)") != "off";
+  // Apply fine-grained overrides written by Camera Editor / Trainer overlays in settings.txt.
   {
     const std::vector<std::string> toks = tokens();
-    for (size_t i = 0; i < toks.size(); ++i) modern::apply_graphics_option(ls.graphics, toks, i);
+    for (size_t i = 0; i < toks.size(); ++i) {
+      const std::string& t = toks[i];
+      auto next_v = [&]() -> std::string { return (i + 1 < toks.size()) ? toks[++i] : std::string{}; };
+      if (t == "--chase-height") ls.camera_editor.chase_height_m = std::atof(next_v().c_str());
+      else if (t == "--chase-distance") ls.camera_editor.chase_distance_m = std::atof(next_v().c_str());
+      else if (t == "--chase-fov") ls.camera_editor.chase_fov_scale = std::atof(next_v().c_str());
+      else if (t == "--chase-stiffness") ls.camera_editor.chase_stiffness = std::atof(next_v().c_str());
+      else if (t == "--driving-view") {
+        const std::string dv = next_v();
+        if (dv == "wheel") ls.camera_editor.driving_view = drive::DrivingView::kWheel;
+        else if (dv == "replay") ls.camera_editor.driving_view = drive::DrivingView::kReplay;
+        else ls.camera_editor.driving_view = drive::DrivingView::kNormal;
+      } else if (t == "--immersive-gforce") ls.immersive_camera.gforce = std::atof(next_v().c_str());
+      else if (t == "--immersive-lean") ls.immersive_camera.lean = std::atof(next_v().c_str());
+      else if (t == "--immersive-shake") ls.immersive_camera.shake = std::atof(next_v().c_str());
+      else if (t == "--immersive-head") ls.immersive_camera.head = std::atof(next_v().c_str());
+      else if (t == "--head-tracking") ls.head_tracking.enabled = true;
+      else if (t == "--no-head-tracking") ls.head_tracking.enabled = false;
+      else if (t == "--head-tracking-port") ls.head_tracking.port = std::max(1, std::atoi(next_v().c_str()));
+      else if (t == "--head-tracking-invert") {
+        const std::string inv = next_v();
+        if (inv.size() >= 3) {
+          ls.head_tracking.invert[0] = (inv[0] == '1');
+          ls.head_tracking.invert[1] = (inv[1] == '1');
+          ls.head_tracking.invert[2] = (inv[2] == '1');
+        }
+      } else if (t == "--trainer-saved-road") {
+        ls.trainer_saved_road = drive::parse_road_point(next_v());
+      } else {
+        modern::apply_graphics_option(ls.graphics, toks, i);
+      }
+    }
     ls.graphics = modern::clamp_graphics(ls.graphics);
   }
   return ls;

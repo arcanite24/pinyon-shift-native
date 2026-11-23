@@ -312,26 +312,43 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
     ui4::TiltScope reg_rot(list, 310.0f * s, 76.0f * s, tilt_rad * 0.6f);
     float rx = 56.0f * s;
     const float ry = 62.0f * s;
+    // Measure each region tab width dynamically so long labels (REAR WING, BRAKE CALIPERS, WINDOW TINT) never clip.
+    std::array<float, int(PaintRegion::kCount)> rwidths{};
+    std::array<bool, int(PaintRegion::kCount)> rhas_icon{};
+    std::array<std::array<float, 4>, int(PaintRegion::kCount)> ruvs{};
+    float total_w = 0.0f;
+    const float tab_gap = 5.0f * s;
     for (int i = 0; i < int(PaintRegion::kCount); ++i) {
       const bool act = (PaintRegion(i) == editor.region());
       const std::string rname = paint_region_name(PaintRegion(i));
-      const float rw = act ? 104.0f * s : 72.0f * s;
+      rhas_icon[size_t(i)] = ui4::texture(kRegionIcons[i], ruvs[size_t(i)]);
+      const ui::TextStyle rs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 10.5f * s, ui4::kWhite);
+      const float tw = ui::List::measure(rname, rs);
+      const float icon_pad = rhas_icon[size_t(i)] ? 28.0f * s : 10.0f * s;
+      rwidths[size_t(i)] = std::max(act ? 92.0f * s : 74.0f * s, icon_pad + tw + 14.0f * s);
+      total_w += rwidths[size_t(i)] + (i > 0 ? tab_gap : 0.0f);
+    }
+    const float max_strip_w = std::max(320.0f * s, w - 112.0f * s);
+    const float w_scale = (total_w > max_strip_w) ? (max_strip_w / total_w) : 1.0f;
+    for (int i = 0; i < int(PaintRegion::kCount); ++i) {
+      const bool act = (PaintRegion(i) == editor.region());
+      const std::string rname = paint_region_name(PaintRegion(i));
+      const float rw = rwidths[size_t(i)] * w_scale;
       if (act) {
         ui4::brush(list, rx, ry - 1.0f * s, rx + rw, ry + 29.0f * s, ui4::kPink);
       } else {
         ui4::pill(list, rx, ry, rx + rw, ry + 28.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02);
       }
-      std::array<float, 4> ruv{};
       float tx = rx + 8.0f * s;
-      if (ui4::texture(kRegionIcons[i], ruv)) {
-        list.image(rx + 5.0f * s, ry + 4.0f * s, rx + 23.0f * s, ry + 22.0f * s, ruv,
+      if (rhas_icon[size_t(i)]) {
+        list.image(rx + 5.0f * s, ry + 4.0f * s, rx + 23.0f * s, ry + 22.0f * s, ruvs[size_t(i)],
                    act ? ui4::kWhite : ui4::kDim);
         tx = rx + 26.0f * s;
       }
       ui::TextStyle rs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 10.5f * s, act ? ui4::kWhite : ui4::kDim);
-      ui4::fit_text(rname, rs, rx + rw - tx - 5.0f * s, 7.5f * s);
+      ui4::fit_text(rname, rs, std::max(24.0f * s, rx + rw - tx - 6.0f * s), 7.5f * s);
       list.text(tx, ry + 8.5f * s, rname, rs);
-      rx += rw + 4.0f * s;
+      rx += rw + tab_gap * w_scale;
     }
   }
 
@@ -343,8 +360,13 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
 
     if (editor.tab() == EditorTab::kPaint) {
       // 501_C_LIV_COLOR: TitleTapeText@(87.4, 466) + Finish selector + Bottom +3.0 deg Swatch Ribbon (y=518..636)
-      const auto& body = editor.document().paint.body;
-      const uint32_t cur_rgb = body.rgb;
+      const bool is_tint = (editor.region() == PaintRegion::kWindowTint);
+      const cars::PaintRegionSpec& active_spec = editor.current_region_spec();
+      const uint8_t tint_shade =
+          uint8_t(std::clamp(std::lround((1.0f - editor.document().paint.window_tint) * 190.0f + 18.0f), 18L, 208L));
+      const uint32_t cur_rgb = is_tint
+                                   ? ((uint32_t(tint_shade) << 16) | (uint32_t(tint_shade) << 8) | uint32_t(tint_shade))
+                                   : active_spec.rgb;
       const uint32_t cur_col =
           ui::rgba(uint8_t((cur_rgb >> 16) & 0xFF), uint8_t((cur_rgb >> 8) & 0xFF), uint8_t(cur_rgb & 0xFF), 255);
 
@@ -354,10 +376,14 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       // Finish selector pill with authentic OPT_BAR_ARROW + live CAR_PAINT_CURRENT_FRAME swatch right of title tape!
       const float fx0 = w - 456.0f * s, fy0 = 468.0f * s, fx1 = right_x;
       ui4::pill(list, fx0, fy0, fx1, fy0 + 34.0f * s, ui4::kPillGrey, ui4::PillKind::kPill02, false, true);
-      list.text(fx0 + 14.0f * s, fy0 + 10.0f * s, "FINISH", ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+      list.text(fx0 + 14.0f * s, fy0 + 10.0f * s, is_tint ? "TINT" : "FINISH",
+                ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
       const float ar_l = fx0 + 78.0f * s, ar_r = fx1 - 78.0f * s;
       ui4::opt_arrow(list, ar_l, fy0 + 17.0f * s, 13.0f * s, -1, ui4::kPinkHi);
-      const std::string fname = cars::paint_finish_name(body.finish);
+      char tint_buf[32];
+      std::snprintf(tint_buf, sizeof tint_buf, "%d%% DARKNESS",
+                    int(std::lround(editor.document().paint.window_tint * 100.0f)));
+      const std::string fname = is_tint ? std::string(tint_buf) : std::string(cars::paint_finish_name(active_spec.finish));
       ui::TextStyle fns = ui4::style(ui::Font::kE, 14.0f * s, ui4::kWhite, ui::Align::kCenter);
       ui4::fit_text(fname, fns, (ar_r - ar_l) - 24.0f * s, 9.5f * s);
       list.text(0.5f * (ar_l + ar_r), fy0 + 0.5f * (34.0f * s - fns.size), fname, fns);
@@ -381,8 +407,9 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       const bool has_mat = ui4::texture("LIVERY/CAR_PAINT_GRID_MATTE", mat_uv);
       const bool has_foc = ui4::texture("LIVERY/CAR_PAINT_GRID_FOCUS", foc_uv) ||
                            ui4::texture("LIVERY/CAR_PAINT_CURRENT_FOCUS", foc_uv);
-      const bool use_met = (body.finish == cars::PaintFinish::kMetallic || body.finish == cars::PaintFinish::kTwoTone);
-      const bool use_mat = (body.finish == cars::PaintFinish::kMatte);
+      const bool use_met = !is_tint && (active_spec.finish == cars::PaintFinish::kMetallic ||
+                                        active_spec.finish == cars::PaintFinish::kTwoTone);
+      const bool use_mat = !is_tint && (active_spec.finish == cars::PaintFinish::kMatte);
 
       ui4::panel01(list, left_x - 8.0f * s, gy - 6.0f * s, right_x + 8.0f * s, gy + gh + 6.0f * s, s,
                    ui::rgba(16, 18, 22, 218), ui4::kPink);

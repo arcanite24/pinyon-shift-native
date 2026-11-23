@@ -73,6 +73,7 @@ class LiveryEditor {
 
   const cars::LiveryDocument& document() const { return doc_; }
   cars::LiveryDocument& document() { return doc_; }
+  const cars::PaintRegionSpec& current_region_spec() const { return active_region_spec(); }
   const std::vector<cars::SpecialColorRow>& special_colors() const { return specials_; }
   size_t selected_special() const { return special_idx_; }
   size_t selected_layer() const { return layer_idx_; }

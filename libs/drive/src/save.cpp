@@ -66,6 +66,7 @@ std::string save_to_text(const DriveSave& s) {
            (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
   if (!s.satnav_enabled) out += "satnav 0\n";
   if (s.treasure_map) out += "treasure_map 1\n";
+  if (s.tod_sec >= 0.0 && std::isfinite(s.tod_sec)) out += "tod_sec " + num(std::fmod(s.tod_sec, 86400.0)) + "\n";
   if (!s.intro_completed) out += "intro_completed 0\n";
   if (s.road_discovery_nodes > 0 && !s.road_discovery_words.empty()) {
     size_t last = s.road_discovery_words.size();
@@ -256,6 +257,9 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "treasure_map") {
       int v = 0;
       if (l >> v) out.treasure_map = (v != 0);
+    } else if (key == "tod_sec") {
+      double v = -1.0;
+      if (l >> v && std::isfinite(v) && v >= 0.0 && v < 86400.0) out.tod_sec = v;
     } else if (key == "intro_completed") {
       int v = 1;
       if (l >> v) out.intro_completed = (v != 0);

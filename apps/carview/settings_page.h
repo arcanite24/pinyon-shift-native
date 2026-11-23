@@ -50,6 +50,7 @@ struct LiveSettings {
   drive::ImmersiveCameraConfig immersive_camera;
   drive::telemetry::Config telemetry_udp;
   bool trainer_cheats = false;
+  std::optional<std::array<double, 3>> trainer_saved_road;
   drive::FestivalPacingConfig festival_pacing;
   bool hidden_cars = false;
   modern::GraphicsSettings graphics;

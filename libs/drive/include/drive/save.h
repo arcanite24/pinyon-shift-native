@@ -99,6 +99,7 @@ struct DriveSave {
   double radio_volume = 1.0;
   bool satnav_enabled = true;
   bool treasure_map = false;
+  double tod_sec = -1.0;  // <0: unset/default; [0, 86400): persisted Colorado time-of-day seconds
   // Roads Discovered (CRoadDiscovery bitset: node_count + ceil(node_count/32) words).
   uint32_t road_discovery_nodes = 0;
   std::vector<uint32_t> road_discovery_words;

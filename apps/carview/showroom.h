@@ -107,7 +107,7 @@ struct ShowroomPush {
   float model[16];
   float uv0[4];
   float uv1[4];
-  float tint[4];
+  float tint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   float params[4];  // material class, flags, tyre rim radius, tyre outer radius
 };
 static_assert(sizeof(ShowroomPush) == 128);
@@ -486,6 +486,7 @@ class Showroom {
                    bool fraction = false);
 
   const cars::bake::CarInfo& car() const { return car_.car; }
+  const std::vector<cars::bake::LiveryPlane>& livery_planes() const { return car_.livery; }
   const std::array<float, 3>& bounds_min() const { return bounds_min_; }
   const std::array<float, 3>& bounds_max() const { return bounds_max_; }
   size_t draw_count() const { return draws_.size(); }
