@@ -306,7 +306,7 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
       const auto& it = st.items[size_t(idx)];
       const bool sel = (idx == st.selected);
       const float cx0 = row_x0 + float(k) * (card_w + gap);
-      const float cy0 = sel ? (row_y0 - 14.0f * u) : row_y0;
+      const float cy0 = row_y0;
       const float cx1 = cx0 + card_w;
       const float cy1 = cy0 + card_h;
 

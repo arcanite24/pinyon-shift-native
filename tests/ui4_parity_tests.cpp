@@ -40,6 +40,7 @@
 #include "freeroam/road_discovery.h"
 #include "game_hud.h"
 #include "mods_page.h"
+#include "perf_overlay.h"
 #include "replay_view.h"
 #include "save_sync_ui.h"
 #include "touch_controls.h"
@@ -228,7 +229,7 @@ void composite_rgba(std::vector<uint8_t>& dst, uint32_t dw, uint32_t dh, const c
 }
 
 void generate_screenshots(const std::filesystem::path& game_root, const std::filesystem::path& out_dir,
-                          const std::filesystem::path& repo_root) {
+                          const std::filesystem::path& repo_root, bool only_uifix = false) {
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
 
@@ -321,6 +322,183 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
     const auto p = out_dir / filename;
     check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, filename.c_str());
   };
+
+  if (only_uifix) {
+    auto save_two_up_uifix = [&](const std::string& filename, const carview::ui::List& top_l, std::vector<uint8_t> top_bg,
+                                 const carview::ui::List& bot_l, std::vector<uint8_t> bot_bg) {
+      carview::ui::rasterize(top_l.items(), top_bg, W, H);
+      carview::ui::rasterize(bot_l.items(), bot_bg, W, H);
+      std::vector<uint8_t> out(size_t(W) * (2 * H) * 4, 255);
+      std::memcpy(out.data(), top_bg.data(), size_t(W) * H * 4);
+      std::memcpy(out.data() + size_t(W) * H * 4, bot_bg.data(), size_t(W) * H * 4);
+      for (size_t i = 3; i < out.size(); i += 4) out[i] = 255;
+      const auto p = out_dir / filename;
+      check(stbi_write_png(p.string().c_str(), int(W), int(2 * H), 4, out.data(), int(W * 4)) != 0, filename.c_str());
+    };
+    const auto oracle_free = repo_root / "out/oracle/ui/hud-freeroam-event-marker.png";
+    const auto oracle_race = repo_root / "out/oracle/ui/race-hud.png";
+    const auto bg_path = std::filesystem::exists(world_bg_path) ? world_bg_path : oracle_free;
+
+    // 1. uifix_settings_f3.png: Settings + compact F3 overlay after 100-frame glyph stability soak!
+    {
+      carview::SettingsPage sp;
+      sp.load({});
+      sp.open();
+      carview::PerfInfo pinfo;
+      pinfo.fps = 60.0;
+      pinfo.fps_1pct_low = 58.0;
+      pinfo.render_w = 1280;
+      pinfo.render_h = 720;
+      pinfo.output_w = 3200;
+      pinfo.output_h = 1800;
+      pinfo.cpu_ms = 1.63;
+      pinfo.gpu_ms = 2.27;
+      pinfo.gpu_stages = {{"shadows", 0.57},      {"setup", 1.28},      {"world opaque", 0.0},
+                          {"world cut-outs", 0.0},{"car_opaque", 0.0},  {"sky", 0.0},
+                          {"hiz_build", 0.01},    {"post", 0.13},       {"upscale", 0.08},
+                          {"ui", 0.18},           {"rest", 0.0}};
+      pinfo.vram_used = uint64_t(558.8 * 1024 * 1024);
+      pinfo.vram_budget = uint64_t(19.2 * 1024 * 1024 * 1024);
+      pinfo.rss_mib = 1700.0;
+      pinfo.hdr = false;
+      pinfo.vsync = "FIFO";
+      pinfo.upscaler = "BILINEAR";
+      pinfo.frame_generation = "OFF";
+      pinfo.device = "Apple M4 Pro";
+      pinfo.build = std::string("shift-engine ") + SHIFT_GIT_COMMIT + " (" + SHIFT_BUILD_CONFIG + ")";
+
+      carview::ui::List l;
+      for (int f = 0; f < 100; ++f) {
+        l.clear();
+        carview::draw_settings_ui4(l, float(W), float(H), sp, true);
+        carview::build_perf_overlay(l, pinfo, float(W), float(H), 1.0f);
+        carview::ui::atlas_take_dirty();
+      }
+      save_frame("uifix_settings_f3.png", l, load_or_build_backdrop(bg_path));
+    }
+
+    // 2. uifix_speedo_hud.png: 2-up 1:1 FH1 Speedometer/Tachometer on real driving frames
+    //    (top: 131 km/h @ 4850 rpm revving up with glowing pink trail; bottom: 000 km/h @ 850 rpm faint leading zeros)
+    {
+      carview::DriveHud d_race;
+      d_race.driving = true;
+      d_race.kmh = 131.0;
+      d_race.redline_rpm = 8000.0;
+      d_race.gear = 4;
+      carview::ui::List l_race;
+      for (int step = 0; step < 6; ++step) {
+        l_race.clear();
+        d_race.rpm = 3850.0 + double(step) * 200.0;
+        d_race.time = 10.0 + double(step) * 0.033;
+        carview::build_drive_hud(l_race, d_race, float(W), float(H));
+      }
+
+      carview::DriveHud d_idle;
+      d_idle.driving = true;
+      d_idle.kmh = 0.0;
+      d_idle.rpm = 850.0;
+      d_idle.redline_rpm = 8000.0;
+      d_idle.gear = 1;
+      d_idle.time = 20.0;
+      carview::ui::List l_idle;
+      carview::build_drive_hud(l_idle, d_idle, float(W), float(H));
+
+      save_two_up_uifix("uifix_speedo_hud.png", l_race, load_or_build_backdrop(bg_path), l_idle,
+                        load_or_build_backdrop(bg_path));
+    }
+
+    // 3. uifix_world_map.png: 100% Fullscreen edge-to-edge World Map with authentic Colorado colors & 1:1 H_MAP chrome
+    {
+      std::vector<uint8_t> bg = load_or_build_backdrop({});
+      carview::MapView mv;
+      std::string merr;
+      if (mv.open(game_root, &merr)) {
+        carview::MapScene ms;
+        const auto ctr = mv.roads_centre();
+        ms.x = ctr[0] + 150.0;
+        ms.z = ctr[1] - 120.0;
+        ms.heading = 0.65;
+        ms.reveal = true;
+        ms.markers = {
+            {carview::MapMarker::kFestivalSite, "racecentral", "festival", "HORIZON FESTIVAL", "RACE CENTRAL", ctr[0], ctr[1], true, false, true, 0},
+            {carview::MapMarker::kOutpost, "gas_station", "redrock", "RED ROCK OUTPOST", "HORIZON OUTPOST  •  PR STUNTS 2/3", ctr[0] - 850, ctr[1] + 500, false, false, true, 1},
+            {carview::MapMarker::kEvent, "race", "FR06", "RED ROCK RAMPAGE", "FESTIVAL RACE  •  CLASS B", ctr[0] + 420, ctr[1] - 320, true, false, true, 0},
+            {carview::MapMarker::kStreetHub, "streetrace", "hub1", "CARSON STREET HUB", "STREET RACES", ctr[0] - 420, ctr[1] - 640, false, false, true, 1},
+        };
+        ms.selected_marker = 1;
+        ms.gps_route = {{ms.x, ms.z}, {ctr[0] - 250, ctr[1] + 180}, {ctr[0] - 850, ctr[1] + 500}};
+        ms.has_gps_dest = true;
+        ms.gps_dest_x = ctr[0] - 850;
+        ms.gps_dest_z = ctr[1] + 500;
+        const auto map_img = mv.pause_map(ms, int(W), int(H), 2.0, ctr[0] - 350, ctr[1] + 220);
+        check(map_img.width == W && map_img.height == H, "fullscreen world map exact viewport bounds");
+        if (map_img.width == W && map_img.height == H) {
+          double sum_r = 0, sum_g = 0, sum_b = 0;
+          const size_t npix = size_t(W) * H;
+          for (size_t i = 0; i < npix; ++i) {
+            sum_r += map_img.rgba[i * 4 + 0];
+            sum_g += map_img.rgba[i * 4 + 1];
+            sum_b += map_img.rgba[i * 4 + 2];
+          }
+          check(sum_g > sum_b * 1.02 || sum_r > sum_b * 1.02, "world map terrain colors not cyan-swapped");
+          bg = map_img.rgba;
+        }
+      }
+      carview::MapOverlayHud mo;
+      mo.active = true;
+      mo.title = "RED ROCK OUTPOST";
+      mo.subtitle = "HORIZON OUTPOST  •  PR STUNTS 2 / 3";
+      mo.action_hint = "FAST TRAVEL";
+      mo.gps_hint = "CLEAR GPS ROUTE";
+      mo.gps_active = true;
+      mo.distance_m = 1480.0;
+      mo.active_filter = 0;
+      mo.filter_tabs = {"ALL", "EVENTS", "STREET", "OUTPOSTS", "COLLECTIBLES", "PR STUNTS"};
+      mo.roads_discovered = 142;
+      mo.roads_total = 216;
+      mo.zoom = 2.0;
+      carview::DriveHud d;
+      d.driving = false;
+      d.map_overlay = &mo;
+      d.band_name = "BLUE WRISTBAND";
+      d.band_next = "BLUE";
+      d.band_level = 3;
+      d.band_collect_ready = true;
+      d.car_name = "Nissan Skyline GT-R V-spec II";
+      d.car_class = "B";
+      d.car_pi = 461;
+      d.credits = 117700;
+      carview::ui::List l;
+      carview::build_drive_hud(l, d, float(W), float(H));
+      save_frame("uifix_world_map.png", l, std::move(bg));
+    }
+
+    // 4. uifix_list_stability.png: 2-up pause menu before/after moving selection (0 -> 3)
+    {
+      auto make_pause = [&](int sel) {
+        carview::DriveHud d;
+        d.driving = false;
+        d.pause = true;
+        d.menu_title = "paused";
+        d.menu = {"MAP", "SETTINGS", "PHOTO MODE", "MESSAGE CENTER", "SPONSOR CHALLENGES", "MY PROFILE", "QUIT"};
+        d.menu_selected = sel;
+        d.band_name = "BLUE WRISTBAND";
+        d.band_next = "BLUE";
+        d.band_level = 3;
+        d.band_collect_ready = true;
+        d.car_name = "Nissan Skyline GT-R V-spec II";
+        d.car_class = "B";
+        d.car_pi = 461;
+        d.credits = 117700;
+        carview::ui::List l;
+        carview::build_drive_hud(l, d, float(W), float(H));
+        return l;
+      };
+      save_two_up_uifix("uifix_list_stability.png", make_pause(0), load_or_build_backdrop(bg_path), make_pause(3),
+                        load_or_build_backdrop(bg_path));
+    }
+    return;
+  }
 
   // ---------------- GROUP 1 SCREENSHOTS ----------------
 
@@ -1461,16 +1639,55 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
   }
 }
 
+// Smooth MapCameraController velocity, exponential zoom & magnetic snap checks.
+void test_map_camera_controller() {
+  carview::MapCameraController cam;
+  cam.reset(0.0, 0.0, 2.0);
+  std::vector<carview::MapMarker> markers;
+  carview::MapMarker mk;
+  mk.title = "TEST OUTPOST";
+  mk.x = 260.0;
+  mk.z = 0.0;
+  markers.push_back(mk);
+
+  double prev_x = cam.cx();
+  for (int f = 0; f < 10; ++f) {
+    const bool moved = cam.step(1.0 / 60.0, 1.0, 0.0, 0.0, markers);
+    check(moved, "map camera moves smoothly under continuous input");
+    check(cam.cx() > prev_x, "map camera advances east smoothly");
+    check(cam.cx() - prev_x < 60.0, "map camera step is continuous, not a discrete jump");
+    prev_x = cam.cx();
+  }
+  check(cam.vx() > 200.0, "map camera accelerates smoothly");
+
+  cam.nudge_target_zoom(1.5);
+  check(cam.target_zoom() > 2.9 && cam.zoom() < 2.1, "map zoom interpolates smoothly instead of snapping");
+  for (int f = 0; f < 30; ++f) cam.step(1.0 / 60.0, 0.0, 0.0, 0.0, markers);
+  check(std::fabs(cam.zoom() - cam.target_zoom()) < 0.05, "map zoom converges smoothly to target");
+
+  cam.reset(220.0, 15.0, 2.0);
+  for (int f = 0; f < 45; ++f) cam.step(1.0 / 60.0, 0.0, 0.0, 0.0, markers);
+  check(cam.snapped_marker() == 0, "map camera magnetically locks onto nearby marker");
+  check(std::hypot(cam.cx() - mk.x, cam.cz() - mk.z) < 5.0, "map camera pulls smoothly onto marker center");
+}
+
 }  // namespace
 
 int main() {
   test_ui4_chrome_primitives();
+  test_map_camera_controller();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");
+  const char* uifix_env = std::getenv("SHIFT_UIFIX_SCREENSHOT_DIR");
   const char* repo_env = std::getenv("SHIFT_REPO_ROOT");
   if (root_env && *root_env && shot_env && *shot_env) {
-    generate_screenshots(root_env, shot_env, repo_env ? std::filesystem::path(repo_env) : std::filesystem::current_path());
+    generate_screenshots(root_env, shot_env, repo_env ? std::filesystem::path(repo_env) : std::filesystem::current_path(),
+                         false);
+  }
+  if (root_env && *root_env && uifix_env && *uifix_env) {
+    generate_screenshots(root_env, uifix_env, repo_env ? std::filesystem::path(repo_env) : std::filesystem::current_path(),
+                         true);
   }
 
   if (g_failures > 0) {

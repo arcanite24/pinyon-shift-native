@@ -6819,7 +6819,7 @@ int run_drive(int argc, char** argv) {
             pinfo.upscaler = up.label;
             pinfo.frame_generation = carview::modern::frame_gen_name(fg);
             pinfo.device = renderer.device_name();
-            pinfo.build = "shift-engine slice11";
+            pinfo.build = std::string("shift-engine ") + SHIFT_GIT_COMMIT + " (" + SHIFT_BUILD_CONFIG + ")";
             carview::build_perf_overlay(target_list, pinfo, float(width), float(height), 1.0f);
           }
           if (inspector_open) {
@@ -8439,6 +8439,7 @@ int run_drive(int argc, char** argv) {
         // it is open.
         bool map_open = false, map_dirty = false, map_dragging = false;
         double map_zoom = 2, map_cx = 0, map_cz = 0;
+        MapCameraController map_cam;
         MapFilter map_filter = MapFilter::kAll;
         int map_w = 0, map_h = 0;
         auto map_marker_visible = [&](const MapMarker& m) -> bool {
@@ -8506,6 +8507,7 @@ int run_drive(int argc, char** argv) {
           map_zoom = 2;
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
+          map_cam.reset(map_cx, map_cz, map_zoom);
           for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
           mm_size = 0;
           radio_popup_gpu = {};
@@ -9015,17 +9017,17 @@ int run_drive(int argc, char** argv) {
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
-            // 4. Interactive Pause Map (pan, zoom, and Enter/A to Enter Event or Fast Travel!).
+            // 4. Interactive Pause Map (smooth continuous pan/zoom, magnetic snap & Enter/A to Fast Travel!).
             if (map_open) {
               bool close = false;
-              const double pan = 1200 / map_zoom;
               auto zoom_by = [&](double f) {
-                map_zoom = std::clamp(map_zoom * f, 1.0, 24.0);
+                map_cam.nudge_target_zoom(f);
                 map_dirty = true;
-                update_map_selection();
               };
               auto pan_by = [&](double dx, double dz) {
-                map_cx += dx, map_cz += dz;
+                map_cam.pan_direct(dx, dz);
+                map_cx = map_cam.cx();
+                map_cz = map_cam.cz();
                 map_dirty = true;
                 update_map_selection();
               };
@@ -9154,10 +9156,7 @@ int run_drive(int argc, char** argv) {
                   map_dirty = true;
                   update_map_selection();
                 }
-                if (k == SDLK_LEFT || k == SDLK_A) pan_by(-pan * 0.45, 0);
-                if (k == SDLK_RIGHT || k == SDLK_D) pan_by(pan * 0.45, 0);
-                if (k == SDLK_UP || k == SDLK_W) pan_by(0, pan * 0.45);
-                if (k == SDLK_DOWN || k == SDLK_S) pan_by(0, -pan * 0.45);
+                // WASD / arrow panning is polled continuously each frame via MapCameraController (no discrete jumps!).
               }
               if (e.type == SDL_EVENT_MOUSE_WHEEL) {
                 if (e.wheel.y > 0) zoom_by(1.22);
@@ -9170,7 +9169,7 @@ int run_drive(int argc, char** argv) {
                 map_dragging = false;
               }
               if (e.type == SDL_EVENT_MOUSE_MOTION && map_dragging && map_w > 64 && map_h > 64) {
-                const double mpp = std::max(freeroam::kMapWidth / map_w, freeroam::kMapHeight / map_h) / map_zoom;
+                const double mpp = map_view.map_scale(map_w, map_h, map_zoom);
                 pan_by(-double(e.motion.xrel) * mpp, double(e.motion.yrel) * mpp);
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -9195,10 +9194,7 @@ int run_drive(int argc, char** argv) {
                   map_dirty = true;
                   update_map_selection();
                 }
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) pan_by(-pan * 0.45, 0);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) pan_by(pan * 0.45, 0);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) pan_by(0, pan * 0.45);
-                if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) pan_by(0, -pan * 0.45);
+                // D-pad panning is polled continuously each frame via MapCameraController (no discrete jumps!).
               }
               if (close) {
                 map_dragging = false;
@@ -11853,38 +11849,56 @@ int run_drive(int argc, char** argv) {
             renderer.set_ui(alist.items());
             for (int layer : {0, 1, 2, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
           } else if (map_open) {
-            // Smooth analog-stick panning and trigger zooming on the fullscreen map.
+            // Smooth dt-integrated velocity panning, exponential zoom interpolation, and gentle magnetic snap
+            // for keyboard arrows/WASD, gamepad D-pad, analog stick, and triggers.
+            double pan_x = 0.0, pan_z = 0.0, zoom_rate = 0.0;
+            const bool* ks = SDL_GetKeyboardState(nullptr);
+            if (ks) {
+              if (ks[SDL_SCANCODE_LEFT] || ks[SDL_SCANCODE_A]) pan_x -= 1.0;
+              if (ks[SDL_SCANCODE_RIGHT] || ks[SDL_SCANCODE_D]) pan_x += 1.0;
+              if (ks[SDL_SCANCODE_UP] || ks[SDL_SCANCODE_W]) pan_z += 1.0;
+              if (ks[SDL_SCANCODE_DOWN] || ks[SDL_SCANCODE_S]) pan_z -= 1.0;
+              if (ks[SDL_SCANCODE_EQUALS] || ks[SDL_SCANCODE_KP_PLUS]) zoom_rate += 0.85;
+              if (ks[SDL_SCANCODE_MINUS] || ks[SDL_SCANCODE_KP_MINUS]) zoom_rate -= 0.85;
+            }
             for (SDL_Gamepad* pad : pads) {
-              const double sx = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0, 0.18, 0.95);
-              const double sy = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0, 0.18, 0.95);
+              const double sx = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0, 0.16, 0.96);
+              const double sy = drive::apply_deadzone_signed(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0, 0.16, 0.96);
               const double z_in = std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / 32767.0);
               const double z_out = std::max(0.0, SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / 32767.0);
-              if (std::fabs(sx) > 0.01 || std::fabs(sy) > 0.01) {
-                const double speed = (3600.0 / map_zoom) * std::clamp(frame_dt, 0.001, 0.05);
-                map_cx += sx * speed;
-                map_cz -= sy * speed;
-                map_dirty = true;
-              }
-              if (z_in > 0.08 || z_out > 0.08) {
-                const double zf = std::pow(2.4, (z_in - z_out) * std::clamp(frame_dt, 0.001, 0.05));
-                map_zoom = std::clamp(map_zoom * zf, 1.0, 24.0);
-                map_dirty = true;
-              }
+              pan_x += sx;
+              pan_z -= sy;
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) pan_x -= 1.0;
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) pan_x += 1.0;
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP)) pan_z += 1.0;
+              if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) pan_z -= 1.0;
+              if (z_in > 0.06 || z_out > 0.06) zoom_rate += (z_in - z_out);
+            }
+            std::vector<MapMarker> vis_markers;
+            vis_markers.reserve(cached_map_markers.size());
+            for (const auto& cm : cached_map_markers) {
+              if (map_marker_visible(cm)) vis_markers.push_back(cm);
+            }
+            if (!map_dragging && map_cam.step(frame_dt, pan_x, pan_z, zoom_rate, vis_markers)) {
+              map_cx = map_cam.cx();
+              map_cz = map_cam.cz();
+              map_zoom = map_cam.zoom();
+              map_dirty = true;
             }
             if (w != map_w || h != map_h) map_dirty = true;
             if (map_dirty && w > 64 && h > 64) {
               map_dirty = false;
               map_w = w, map_h = h;
-              const int m = std::max(16, h / 30);
               MapScene ms = map_scene();
               ms.filter = map_filter;
               cached_map_markers = ms.markers;
               update_map_selection();
               ms.selected_marker = map_selected_marker;
-              HudImage img = map_view.pause_map(ms, w - 2 * m, h - 2 * m, map_zoom, map_cx, map_cz);
-              renderer.set_overlay(std::move(img.rgba), img.width, img.height, m, m, 2);
+              // 100% edge-to-edge fullscreen viewport (0, 0, w, h) — zero outer borders!
+              HudImage img = map_view.pause_map(ms, w, h, map_zoom, map_cx, map_cz);
+              renderer.set_overlay(std::move(img.rgba), img.width, img.height, 0, 0, 2);
             }
-            set_hud(w, h, "", nullptr);  // draws MapOverlayHud (hovered card, filters, roads counter & help bar) on UI layer!
+            set_hud(w, h, "", nullptr);  // draws 1:1 H_MAP HUD overlay on UI layer!
           } else if (show_hud || show_title || ceremony.active) {
             set_minimap(h, false);
             char line[160] = "";
@@ -12005,7 +12019,6 @@ int run_drive(int argc, char** argv) {
         if (!map_view.ready()) {
           std::fprintf(stderr, "carview: no map to write\n");
         } else {
-          const int m = std::max(16, int(height) / 30);
           MapScene sc = map_scene();
           // Select an Outpost marker near the viewport centre if available so the card shows real Outpost metadata.
           int best_idx = -1;
@@ -12019,10 +12032,11 @@ int run_drive(int argc, char** argv) {
           const double cx = best_idx >= 0 ? 0.5 * (sc.x + sc.markers[size_t(best_idx)].x) : sc.x;
           const double cz = best_idx >= 0 ? 0.5 * (sc.z + sc.markers[size_t(best_idx)].z) : sc.z;
           sc.selected_marker = best_idx;
-          HudImage img = map_view.pause_map(sc, int(width) - 2 * m, int(height) - 2 * m, cli_map_zoom, cx, cz);
+          // 100% edge-to-edge fullscreen viewport (0, 0, width, height) — zero outer margins!
+          HudImage img = map_view.pause_map(sc, int(width), int(height), cli_map_zoom, cx, cz);
           for (int layer : {0, 1, 3}) renderer.set_overlay({}, 0, 0, 0, 0, layer);
           mm_size = 0;
-          renderer.set_overlay(std::move(img.rgba), img.width, img.height, m, m, 2);
+          renderer.set_overlay(std::move(img.rgba), img.width, img.height, 0, 0, 2);
           map_overlay = carview::MapOverlayHud{};
           map_overlay.active = true;
           map_overlay.active_filter = 0;

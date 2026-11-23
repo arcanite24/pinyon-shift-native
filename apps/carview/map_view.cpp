@@ -583,11 +583,18 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   return cv.image();
 }
 
+double MapView::map_scale(int width, int height, double zoom) const {
+  zoom = std::max(zoom, 0.25);
+  const double span_x = max_x_ > min_x_ ? (max_x_ - min_x_) : freeroam::kMapWidth;
+  const double span_z = max_z_ > min_z_ ? (max_z_ - min_z_) : freeroam::kMapHeight;
+  return std::max(span_x / std::max(1, width), span_z / std::max(1, height)) * 1.04 / zoom;
+}
+
 HudImage MapView::pause_map(const MapScene& scene, int width, int height, double zoom, double cx, double cz) const {
   Canvas cv(width, height, {12, 12, 14, 255});
   zoom = std::max(zoom, 0.25);
   // Metres per pixel: zoom 1 fits the road network.
-  const double scale = std::max((max_x_ - min_x_) / width, (max_z_ - min_z_) / height) * 1.04 / zoom;
+  const double scale = map_scale(width, height, zoom);
   auto to_screen = [&](double x, double z) {
     return std::array<double, 2>{width / 2.0 + (x - cx) / scale, height / 2.0 - (z - cz) / scale};
   };
@@ -694,8 +701,11 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
               driven = scene.road_discovery->is_node_discovered(road.nodes[k - 1]) ||
                        scene.road_discovery->is_node_discovered(road.nodes[k]);
             }
-            const Rgba seg_col = driven ? ls.core : Rgba{94, 96, 102, 235};
-            if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], line + 1.5, Rgba{ls.under.r, ls.under.g, ls.under.b, 125});
+            // Driven roads: crisp bright white-warm gold; undriven roads: clean muted slate-grey.
+            const Rgba driven_col{std::max(238.0f, ls.core.r), std::max(232.0f, ls.core.g),
+                                  std::max(210.0f, ls.core.b), 252.0f};
+            const Rgba seg_col = driven ? driven_col : Rgba{106, 110, 120, 236};
+            if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], line + 1.8, Rgba{14, 16, 20, 155});
             else cv.line(prev[0], prev[1], cur[0], cur[1], line, seg_col);
           }
           prev = cur;
@@ -799,16 +809,99 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
         cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], std::max(28.0, ic.size * unit), scene.heading, ic.colour);
     }
   }
-  // Central map cursor crosshair (subtle white reticle).
-  {
-    const double mx = width / 2.0, my = height / 2.0, g = 7.0, l = 16.0;
-    const Rgba ret{255, 255, 255, 210};
-    cv.line(mx - l, my, mx - g, my, 2.0, ret);
-    cv.line(mx + g, my, mx + l, my, 2.0, ret);
-    cv.line(mx, my - l, mx, my - g, 2.0, ret);
-    cv.line(mx, my + g, mx, my + l, 2.0, ret);
-  }
   return cv.image();
+}
+
+void MapCameraController::reset(double cx, double cz, double zoom) {
+  cx_ = cx;
+  cz_ = cz;
+  vx_ = 0.0;
+  vz_ = 0.0;
+  zoom_ = target_zoom_ = std::clamp(zoom, 1.0, 24.0);
+  snapped_marker_ = -1;
+  clamp_bounds();
+}
+
+void MapCameraController::nudge_target_zoom(double factor) {
+  target_zoom_ = std::clamp(target_zoom_ * factor, 1.0, 24.0);
+}
+
+void MapCameraController::pan_direct(double dx, double dz) {
+  cx_ += dx;
+  cz_ += dz;
+  vx_ = 0.0;
+  vz_ = 0.0;
+  clamp_bounds();
+}
+
+void MapCameraController::clamp_bounds() {
+  const double west = freeroam::kMapWest;
+  const double east = freeroam::kMapWest + freeroam::kMapWidth;
+  const double south = freeroam::kMapNorth - freeroam::kMapHeight;
+  const double north = freeroam::kMapNorth;
+  cx_ = std::clamp(cx_, west, east);
+  cz_ = std::clamp(cz_, south, north);
+}
+
+bool MapCameraController::step(double dt, double pan_x, double pan_z, double zoom_rate,
+                               const std::vector<MapMarker>& visible_markers) {
+  dt = std::clamp(dt, 0.0005, 0.05);
+  const double prev_cx = cx_, prev_cz = cz_, prev_zoom = zoom_;
+
+  // Smooth continuous zoom (analog triggers / held +/-) + exponential interpolation to target_zoom.
+  if (std::fabs(zoom_rate) > 1e-3) {
+    target_zoom_ = std::clamp(target_zoom_ * std::pow(2.8, zoom_rate * dt), 1.0, 24.0);
+  }
+  const double zoom_alpha = 1.0 - std::exp(-14.0 * dt);
+  if (std::fabs(target_zoom_ - zoom_) > 1e-4) {
+    zoom_ *= std::pow(target_zoom_ / zoom_, zoom_alpha);
+    zoom_ = std::clamp(zoom_, 1.0, 24.0);
+  } else {
+    zoom_ = target_zoom_;
+  }
+
+  // Clamp diagonal input vector to unit circle so diagonal movement matches cardinal speed.
+  double ix = std::clamp(pan_x, -1.0, 1.0);
+  double iz = std::clamp(pan_z, -1.0, 1.0);
+  const double mag = std::hypot(ix, iz);
+  if (mag > 1.0) ix /= mag, iz /= mag;
+
+  // Smooth dt-integrated velocity with crisp acceleration and exponential braking.
+  const double max_speed = 4200.0 / std::max(0.5, zoom_);
+  const double target_vx = ix * max_speed;
+  const double target_vz = iz * max_speed;
+  const double vel_rate = (mag > 0.02) ? 14.0 : 18.0;
+  const double vel_alpha = 1.0 - std::exp(-vel_rate * dt);
+  vx_ += (target_vx - vx_) * vel_alpha;
+  vz_ += (target_vz - vz_) * vel_alpha;
+  if (mag <= 0.02 && std::hypot(vx_, vz_) < 4.0 / std::max(0.5, zoom_)) {
+    vx_ = vz_ = 0.0;
+  }
+
+  cx_ += vx_ * dt;
+  cz_ += vz_ * dt;
+
+  // Gentle magnetic snap to nearest visible marker when cursor settles near an icon.
+  snapped_marker_ = -1;
+  const double snap_r = 250.0 / std::max(0.5, zoom_);
+  double best_d = snap_r;
+  for (size_t i = 0; i < visible_markers.size(); ++i) {
+    const double d = std::hypot(visible_markers[i].x - cx_, visible_markers[i].z - cz_);
+    if (d < best_d) {
+      best_d = d;
+      snapped_marker_ = int(i);
+    }
+  }
+  if (snapped_marker_ >= 0 && mag < 0.05 && std::hypot(vx_, vz_) < 220.0 / std::max(0.5, zoom_)) {
+    const auto& m = visible_markers[size_t(snapped_marker_)];
+    const double pull = 1.0 - std::exp(-10.0 * dt);
+    cx_ += (m.x - cx_) * pull;
+    cz_ += (m.z - cz_) * pull;
+  }
+
+  clamp_bounds();
+  const double pos_eps = 0.25 / std::max(0.5, zoom_);
+  return std::hypot(cx_ - prev_cx, cz_ - prev_cz) > pos_eps || std::fabs(zoom_ - prev_zoom) > 1e-4;
 }
 
 }  // namespace carview

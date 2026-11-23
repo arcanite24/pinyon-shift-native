@@ -3162,14 +3162,10 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
   }
 
-  const bool need_scale = (rw != target_width_ || rh != target_height_);
-  const bool need_upscaler = need_scale || graphics_.upscaler != modern::Upscaler::kBilinear;
   const bool need_hdr_stage = (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
   const bool need_fxaa_world = (graphics_.aa == modern::AaMode::kFxaaWorld) && fxaa_pipe_ != VK_NULL_HANDLE;
   const bool need_fxaa_all = (graphics_.aa == modern::AaMode::kFxaaAll) && fxaa_pipe_ != VK_NULL_HANDLE;
-  const bool use_modern_chain = post && modern_ready_ && scene_sdr_.view && stand_in_.view &&
-                                (need_upscaler || need_hdr_stage || need_fxaa_world || need_fxaa_all ||
-                                 inspector_active_);
+  const bool use_modern_chain = uses_modern_chain();
 
   if (depth_readable_) {
     image_barrier(cmd, depth_.image, VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -3628,10 +3624,24 @@ void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t h
   ++l.version;
 }
 
-bool Renderer::stage_overlay() {
+bool Renderer::uses_modern_chain() const {
+  const bool post = options_.post.enabled && hdr_.view != VK_NULL_HANDLE;
+  if (!post || !modern_ready_ || !scene_sdr_.view || !stand_in_.view) return false;
+  const uint32_t rw = render_width();
+  const uint32_t rh = render_height();
+  const bool need_scale = (rw != target_width_ || rh != target_height_);
+  const bool need_upscaler = need_scale || graphics_.upscaler != modern::Upscaler::kBilinear;
+  const bool need_hdr_stage = (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
+  const bool need_fxaa_world = (graphics_.aa == modern::AaMode::kFxaaWorld) && fxaa_pipe_ != VK_NULL_HANDLE;
+  const bool need_fxaa_all = (graphics_.aa == modern::AaMode::kFxaaAll) && fxaa_pipe_ != VK_NULL_HANDLE;
+  return need_upscaler || need_hdr_stage || need_fxaa_world || need_fxaa_all || inspector_active_;
+}
+
+bool Renderer::stage_overlay(VkFormat final_format) {
   overlay_staged_ = false;
   for (auto& l : overlays_) l.staged = false;
-  if (!overlay_supported_) return false;
+  const bool modern_chain = uses_modern_chain();
+  if (!overlay_supported_ && !modern_chain) return false;
   // Where each layer that fits goes, packed one after another (16-byte
   // aligned offsets, as copies want a multiple of the texel size).
   VkDeviceSize bytes = 0, offsets[kOverlayLayers]{};
@@ -3662,14 +3672,20 @@ bool Renderer::stage_overlay() {
     }
     all = true;
   }
-  const bool bgra = color_format_ == VK_FORMAT_B8G8R8A8_UNORM || color_format_ == VK_FORMAT_B8G8R8A8_SRGB;
+  // Overlays copy into stand_in_ (VK_FORMAT_R8G8B8A8_UNORM) when the modern
+  // chain is active, and directly into final_image otherwise. Match the exact
+  // destination format so R/B channels are never double-swapped!
+  const VkFormat eff_final = (final_format == VK_FORMAT_UNDEFINED) ? color_format_ : final_format;
+  const VkFormat dst_fmt = modern_chain ? VK_FORMAT_R8G8B8A8_UNORM : eff_final;
+  const bool bgra = dst_fmt == VK_FORMAT_B8G8R8A8_UNORM || dst_fmt == VK_FORMAT_B8G8R8A8_SRGB;
   for (int i = 0; i < kOverlayLayers; ++i) {
     OverlayLayer& l = overlays_[i];
     if (!l.staged) continue;
-    // Each slot's buffer remembers which version of a layer it holds.
-    if (!all && os.overlay_ver[i] == l.version && os.overlay_off[i] == offsets[i]) continue;
+    // Each slot's buffer remembers which version & channel order of a layer it holds.
+    if (!all && os.overlay_ver[i] == l.version && os.overlay_off[i] == offsets[i] && os.overlay_bgra[i] == bgra) continue;
     os.overlay_off[i] = offsets[i];
     os.overlay_ver[i] = l.version;
+    os.overlay_bgra[i] = bgra;
     auto* out = static_cast<uint8_t*>(os.overlay_mapped) + os.overlay_off[i];
     for (size_t k = 0; k < l.pixels.size(); k += 4) {
       out[k + 0] = l.pixels[k + (bgra ? 2 : 0)];
@@ -3731,7 +3747,7 @@ bool Renderer::render_offscreen(const FrameConstants& constants, uint32_t width,
     info.queryCount = kTimestamps;
     if (vkCreateQueryPool(device_, &info, nullptr, &timestamps_) != VK_SUCCESS) timestamp_ns_ = 0;
   }
-  stage_overlay();  // submit_once waits for the queue: no frame is using the buffer
+  stage_overlay(out_fmt);  // submit_once waits for the queue: no frame is using the buffer
   const bool ok = submit_once([&](VkCommandBuffer cmd) {
     mark_labels_.clear();
     ts_pool_ = timestamps_;

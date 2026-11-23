@@ -11,10 +11,12 @@
 #include "stb_image_write.h"
 #include "events_page.h"
 #include "fh1data/ui_scene.h"
+#include "fh1data/vfont.h"
 #include "game_hud.h"
 #include "hud.h"
 #include "hud_scene.h"
 #include "ui.h"
+#include "ui4_chrome.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                        \
@@ -576,6 +578,172 @@ int main() {
   test_pause_menu();
   test_hud_overlays();
   test_world_trigger();
+
+  // 1. Multi-frame-safe glyph atlas: never emits full glyph-band zero-alpha wipes
+  //    mid-frame and never evicts active glyphs when transient images churn.
+  {
+    auto vf = std::make_shared<fh1::VFont>();
+    vf->space_width = 0.35f;
+    for (uint32_t cp = 33; cp < 127; ++cp) {
+      fh1::VFontGlyph g;
+      g.code_point = cp;
+      g.advance = 0.62f;
+      g.min_x = 0.05f;
+      g.max_x = 0.57f;
+      g.min_y = 0.0f;
+      g.max_y = 0.78f;
+      g.vertices = {{0.08f, 0.02f, 0.0f, 1.0f, 1.0f},
+                    {0.54f, 0.02f, 0.0f, 1.0f, 1.0f},
+                    {0.54f, 0.74f, 0.0f, 1.0f, 1.0f},
+                    {0.08f, 0.74f, 0.0f, 1.0f, 1.0f}};
+      g.indices = {0, 1, 2, 0, 2, 3};
+      vf->glyphs[cp] = std::move(g);
+    }
+    set_atlas_size(2048);
+    set_gpu_atlas_mode(true);
+    set_vector_fonts(vf, vf, vf, vf);
+    atlas_take_dirty_patches();
+
+    std::vector<uint8_t> tile(128 * 128 * 4, 200);
+    uint64_t wipe_patches = 0;
+    for (int frame = 0; frame < 100; ++frame) {
+      List l;
+      for (int row = 0; row < 14; ++row) {
+        const float sz = 24.0f + float((row % 5) * 6);
+        TextStyle ts{.size = sz, .color = rgba(255, 255, 255), .font = (row % 2 == 0) ? Font::kD : Font::kE};
+        l.text(40.0f, 40.0f + float(row) * 38.0f,
+               "GRAPHICS PRESET RESOLUTION SHADOWS MSAA VSYNC AUDIO RADIO " + std::to_string(row), ts);
+      }
+      std::array<float, 4> tuv{};
+      atlas_image("EventTickets/Stress/" + std::to_string(frame), 128, 128, tile, tuv, true);
+      CHECK(tuv[1] * float(atlas_size()) >= 1280.0f);
+
+      const auto patches = atlas_take_dirty_patches();
+      for (const auto& p : patches) {
+        if (p.x == 0 && p.y == 0 && p.w == atlas_size() && p.h >= 64) ++wipe_patches;
+      }
+    }
+    CHECK(wipe_patches == 0);
+    CHECK(atlas_glyph_evictions() == 0);
+    CHECK(atlas_stats().glyph_count > 30);
+
+    set_vector_fonts(nullptr, nullptr, nullptr, nullptr);
+    set_gpu_atlas_mode(false);
+    set_atlas_size(kAtlasSize);
+    atlas_take_dirty();
+  }
+
+  // 2. List row heights & Y positions stay strictly invariant under selection change.
+  {
+    auto item_box = [](const Instance& it, float& cx, float& cy, float& w, float& h) -> bool {
+      if (it.kind == kRoundRect) {
+        cx = 0.5f * (it.rect[0] + it.rect[2]);
+        cy = 0.5f * (it.rect[1] + it.rect[3]);
+        w = it.rect[2] - it.rect[0];
+        h = it.rect[3] - it.rect[1];
+        return true;
+      }
+      if (it.kind == kImage && it.p[1] > 0.0f) {
+        cx = 0.5f * (it.rect[0] + it.rect[2]);
+        cy = 0.5f * (it.rect[1] + it.rect[3]);
+        w = 2.0f * it.p[1];
+        h = 2.0f * it.p[2];
+        return true;
+      }
+      return false;
+    };
+    auto pause_row_rects = [&](int sel) {
+      carview::DriveHud d;
+      d.driving = false;
+      d.pause = true;
+      d.menu_title = "paused";
+      d.menu = {"MAP", "SETTINGS", "PHOTO MODE", "MESSAGE CENTER", "SPONSOR CHALLENGES", "MY PROFILE", "QUIT"};
+      d.menu_selected = sel;
+      List l;
+      carview::build_drive_hud(l, d, 1280, 720);
+      std::vector<std::array<float, 4>> rects;
+      for (const auto& it : l.items()) {
+        float cx = 0, cy = 0, w = 0, h = 0;
+        if (!item_box(it, cx, cy, w, h)) continue;
+        if (cx > 160.0f && cx < 750.0f && w > 120.0f && w < 1050.0f && h > 40.0f && h < 60.0f) {
+          rects.push_back({cx, cy, w, h});
+        }
+      }
+      return rects;
+    };
+    const auto r0 = pause_row_rects(0);
+    const auto r1 = pause_row_rects(1);
+    const auto r4 = pause_row_rects(4);
+    CHECK(r0.size() == 7 && r1.size() == 7 && r4.size() == 7);
+    for (size_t i = 0; i < std::min({r0.size(), r1.size(), r4.size()}); ++i) {
+      CHECK(std::fabs(r0[i][1] - r1[i][1]) < 0.05f);
+      CHECK(std::fabs(r0[i][3] - r1[i][3]) < 0.05f);
+      CHECK(std::fabs(r0[i][1] - r4[i][1]) < 0.05f);
+      CHECK(std::fabs(r0[i][3] - r4[i][3]) < 0.05f);
+    }
+
+    auto blade_row_rects = [&](int sel) {
+      carview::ui4::TiltedBladeSpec spec;
+      spec.title = "TEST BLADE";
+      spec.list_header = "ITEMS";
+      spec.selected_index = sel;
+      for (int i = 0; i < 6; ++i) {
+        carview::ui4::BladeRow r;
+        r.label = "ROW " + std::to_string(i);
+        r.value = "VAL " + std::to_string(i);
+        r.selected = (i == sel);
+        spec.rows.push_back(r);
+      }
+      List l;
+      carview::ui4::tilted_blade_screen(l, 1280, 720, spec);
+      std::vector<std::array<float, 4>> rects;
+      for (const auto& it : l.items()) {
+        float cx = 0, cy = 0, w = 0, h = 0;
+        if (!item_box(it, cx, cy, w, h)) continue;
+        // Row pills are 696x34; list header pill is 696x28.
+        if (w > 680.0f && w < 710.0f && h > 32.0f && h < 36.0f) {
+          rects.push_back({cx, cy, w, h});
+        }
+      }
+      return rects;
+    };
+    const auto b0 = blade_row_rects(0);
+    const auto b3 = blade_row_rects(3);
+    CHECK(b0.size() == 6 && b3.size() == 6);
+    for (size_t i = 0; i < std::min(b0.size(), b3.size()); ++i) {
+      CHECK(std::fabs(b0[i][1] - b3[i][1]) < 0.05f);
+      CHECK(std::fabs(b0[i][3] - b3[i][3]) < 0.05f);
+    }
+  }
+
+  // 3. Speedometer 1:1 checks: glowing trailing arc sweep, multi-layer redline, and faint leading zeros.
+  {
+    carview::DriveHud d;
+    d.driving = true;
+    d.kmh = 0.0;
+    d.rpm = 4800.0;
+    d.redline_rpm = 8000.0;
+    d.gear = 4;
+    List l;
+    carview::build_drive_hud(l, d, 1280, 720);
+    int pink_arcs = 0;
+    int faint_digits = 0;
+    int bright_digits = 0;
+    for (const auto& it : l.items()) {
+      const uint8_t cr = uint8_t((it.color >> 16) & 0xFF);
+      const uint8_t cg = uint8_t((it.color >> 8) & 0xFF);
+      const uint8_t cb = uint8_t(it.color & 0xFF);
+      const uint8_t ca = uint8_t((it.color >> 24) & 0xFF);
+      if (it.kind == kArc && cr > 220 && cg < 140 && cb > 80) ++pink_arcs;
+      if (it.kind == kGlyph && it.p[2] > 2.5f) {
+        if (ca > 40 && ca <= 80) ++faint_digits;
+        if (ca >= 245 && cr > 240) ++bright_digits;
+      }
+    }
+    CHECK(pink_arcs >= 12);
+    CHECK(faint_digits >= 2);
+    CHECK(bright_digits >= 1);
+  }
 
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {
     const uint32_t W = 1280, H = 720;

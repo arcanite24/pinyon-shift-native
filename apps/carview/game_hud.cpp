@@ -179,92 +179,203 @@ void help_item(ui::List& l, const Layout& g, float x0, float x1, float y0, float
   l.text(cx + 16 * s, cy - 7 * s, text, font(ui::Font::kB, 14 * s, kText));
 }
 
-// (a) The free-roam dial: centre 1122,587, ±137° from 12 o'clock.
+// Shared 1:1 FH1 gauge renderer matching out/oracle/ui/race-hud.png and
+// out/oracle/ui/hud-freeroam-event-marker.png: translucent smoky dial backing,
+// radial-gradient segmented pink redline band, always-visible glowing pink
+// trailing arc sweep + crisp white-cored magenta needle, clean white ticks and
+// numerals (0 2 4 6 8 10), sleek italicized speed digits with faint leading
+// zeros, gear indicator, and etched ABS/TCS indicators.
+void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float s,
+                     const SceneDraw* sc, const SceneFrame* sf, int gauge_node, int ring_node) {
+  constexpr float kSweep = 2.339f;  // +/-134 deg matching 947_HUD GAUGE_ANALOG
+  constexpr uint32_t kNeedlePink = rgba(249, 0, 100);
+  constexpr uint32_t kNeedleHot = rgba(255, 36, 126);
+  constexpr uint32_t kNeedleCore = rgba(255, 232, 244, 245);
+
+  // 1. Translucent smoky dial backing (never solid opaque black — lets road softly show through).
+  std::array<float, 4> ring_uv{};
+  if (sc && sf && ring_node >= 0) {
+    sc->model(l, *sf, ring_node, std::clamp(sc->alpha(ring_node) * 0.78f, 0.56f, 0.78f));
+  } else if (ui_texture("HUD/DIALS/MAINBACKRING", ring_uv)) {
+    l.image(cx - 128 * s, cy - 128 * s, cx + 128 * s, cy + 128 * s, ring_uv, rgba(255, 255, 255, 198));
+  } else {
+    l.circle(cx, cy, 88 * s, rgba(16, 18, 22, 152));
+    l.circle(cx, cy, 86 * s, rgba(32, 34, 40, 72));
+    l.arc(cx, cy, 86.5f * s, 1.5f * s, -kSweep, kSweep, rgba(255, 255, 255, 115));
+  }
+
+  const double red = std::max(1000.0, st.redline_rpm);
+  const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000.0) * 2000.0);
+  auto angle = [&](double rpm) { return -kSweep + 2.0f * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
+
+  // 2. Smooth radial-gradient redline zone with bright outer rim + subtle hatch segments.
+  const float a_red = angle(red);
+  if (kSweep > a_red + 0.01f) {
+    l.arc(cx, cy, 65.5f * s, 9.0f * s, a_red, kSweep, ui::fade(kNeedlePink, 0.16), true);
+    l.arc(cx, cy, 73.0f * s, 8.5f * s, a_red, kSweep, ui::fade(kNeedlePink, 0.34), true);
+    l.arc(cx, cy, 80.0f * s, 8.0f * s, a_red, kSweep, ui::fade(kNeedlePink, 0.58), true);
+    l.arc(cx, cy, 84.8f * s, 3.2f * s, a_red, kSweep, ui::fade(kNeedleHot, 0.94), true);
+    l.arc(cx, cy, 86.5f * s, 1.3f * s, a_red, kSweep, rgba(255, 130, 186, 235), true);
+    // Crisp segmented hatch cuts across redline band (every 250 RPM).
+    for (double k = std::ceil(red / 250.0) * 250.0; k < top - 1.0; k += 250.0) {
+      const float ha = angle(k), sa = std::sin(ha), ca = std::cos(ha);
+      l.line(cx + 64 * s * sa, cy - 64 * s * ca, cx + 84.5f * s * sa, cy - 84.5f * s * ca, 1.1f * s,
+             rgba(18, 12, 18, 85));
+    }
+  }
+
+  // 3. Glowing translucent Horizon pink trailing arc sweep behind the needle
+  //    (always softly visible behind the needle, expanding smoothly under rev acceleration).
+  const float a = angle(st.rpm);
+  const float sa = std::sin(a), ca = std::cos(a);
+  {
+    static double last_rpm = 0.0, last_t = -1.0, rate = 0.0;
+    const double dt = st.time - last_t;
+    if (last_t >= 0.0 && dt > 1e-4 && dt < 0.5) {
+      rate += (((st.rpm - last_rpm) / dt) - rate) * std::min(1.0, dt * 10.0);
+    } else if (dt < 0.0 || dt >= 0.5) {
+      rate = 0.0;
+    }
+    last_rpm = st.rpm;
+    last_t = st.time;
+    const float accel_boost = clamp01(rate / 5000.0);
+    const float base_span = std::min(a - (-kSweep), 0.46f + 0.30f * accel_boost);
+    if (base_span > 0.02f) {
+      constexpr int kSteps = 10;
+      for (int i = 0; i < kSteps; ++i) {
+        const float t0 = float(i) / float(kSteps);
+        const float t1 = float(i + 1) / float(kSteps);
+        const float seg_a0 = a - base_span * (1.0f - t0);
+        const float seg_a1 = a - base_span * (1.0f - t1);
+        const float strength = t1 * t1;  // smooth quadratic ramp up to the needle
+        l.arc(cx, cy, 69.5f * s, 19.0f * s, seg_a0, seg_a1, ui::fade(kNeedlePink, 0.34 * strength), true);
+        l.arc(cx, cy, 80.0f * s, 11.5f * s, seg_a0, seg_a1, ui::fade(kNeedleHot, 0.58 * strength), true);
+        l.arc(cx, cy, 85.4f * s, 2.6f * s, seg_a0, seg_a1, ui::fade(rgba(255, 134, 188), 0.84 * strength), true);
+      }
+    }
+  }
+
+  // 4. Crisp white major/half ticks and numerals (0, 2, 4, 6, 8, 10) OVER redline & trail.
+  std::array<float, 4> large_uv{}, small_uv{};
+  const bool have_hatches =
+      ui_texture("HUD/DIALS/HATCHLARGE", large_uv) && ui_texture("HUD/DIALS/HATCHSMALL", small_uv);
+  const TextStyle num_ts = font(ui::Font::kB, 11.2f * s, rgba(245, 246, 250, 245), Align::kCenter);
+  const TextStyle num_sh = font(ui::Font::kB, 11.2f * s, rgba(0, 0, 0, 145), Align::kCenter);
+  for (double k = 0; k <= top + 1.0; k += 500.0) {
+    const int q = int(std::lround(k / 250.0));
+    const bool is_large = (q % 4 == 0);
+    const float ta = angle(k), tsa = std::sin(ta), tca = std::cos(ta);
+    if (have_hatches) {
+      const float hw = (is_large ? 5.8f : 5.2f) * s;
+      const float hh = (is_large ? 4.4f : 3.6f) * s;
+      l.image_rotated(cx + 82.0f * s * tsa, cy - 82.0f * s * tca, hw, hh, ta, is_large ? large_uv : small_uv,
+                      rgba(255, 255, 255, uint8_t(is_large ? 245 : 168)));
+    } else {
+      const float r0 = (is_large ? 78.5f : 81.0f) * s;
+      const float r1 = 86.2f * s;
+      l.line(cx + r0 * tsa, cy - r0 * tca, cx + r1 * tsa, cy - r1 * tca, (is_large ? 2.2f : 1.4f) * s,
+             rgba(255, 255, 255, uint8_t(is_large ? 245 : 175)));
+    }
+    if (!is_large || (q / 4) % 2 != 0) continue;
+    char d[8];
+    std::snprintf(d, sizeof d, "%d", q / 4);
+    const float nx = cx + 68.5f * s * tsa;
+    const float ny = cy - 68.5f * s * tca - 0.5f * num_ts.size;
+    l.text(nx + 0.8f * s, ny + 1.0f * s, d, num_sh);
+    l.text(nx, ny, d, num_ts);
+  }
+
+  // 5. High-visibility glowing Horizon pink needle bar with crisp white-pink core
+  //    (always legible even when pegged deep in the redline zone!).
+  std::array<float, 4> nuv{};
+  if (ui_texture("HUD/DIALS/NEEDLE", nuv)) {
+    l.image_rotated(cx + 66 * s * sa, cy - 66 * s * ca, 13 * s, 54 * s, a, nuv, kNeedleHot);
+  }
+  l.line(cx + 61.0f * s * sa, cy - 61.0f * s * ca, cx + 87.2f * s * sa, cy - 87.2f * s * ca, 5.2f * s,
+         rgba(249, 0, 100, 135));
+  l.line(cx + 61.5f * s * sa, cy - 61.5f * s * ca, cx + 87.0f * s * sa, cy - 87.0f * s * ca, 2.8f * s, kNeedleHot);
+  l.line(cx + 63.0f * s * sa, cy - 63.0f * s * ca, cx + 86.5f * s * sa, cy - 86.5f * s * ca, 1.25f * s, kNeedleCore);
+
+  // 6. Unit label ("km/h"), sleek italicized 3-digit speedo (faint translucent leading zeros),
+  //    gear digit, and etched ABS / TCS indicators matching race-hud.png & hud-freeroam-event-marker.png.
+  TextStyle unit_ts = font(ui::Font::kA, 9.5f * s, rgba(218, 222, 230, 175), Align::kCenter);
+  unit_ts.keep_case = true;
+  l.text(cx, cy - 31.5f * s, str("UnitStrings", "IDS_Units_KMH", "km/h"), unit_ts);
+
+  const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
+  char digits[8];
+  std::snprintf(digits, sizeof digits, "%03d", v);
+  const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  const float slot_w = 21.5f * s;
+  const float speed_y = cy - 16.5f * s;
+  for (int i = 0; i < 3; ++i) {
+    const float slot_cx = cx + float(i - 1) * slot_w;
+    const bool is_lead = size_t(i) < lead;
+    TextStyle dts = font(ui::Font::kE, 30.5f * s, is_lead ? rgba(235, 238, 244, 68) : rgba(250, 251, 255, 255),
+                         Align::kCenter);
+    dts.stretch = 0.86f;
+    const std::string ch(1, digits[i]);
+    if (!is_lead) {
+      TextStyle sh = dts;
+      sh.color = rgba(0, 0, 0, 155);
+      l.text(slot_cx + 1.2f * s, speed_y + 1.5f * s, ch, sh);
+    }
+    l.text(slot_cx, speed_y, ch, dts);
+  }
+
+  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
+  char gb[8];
+  if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
+  TextStyle gts = font(ui::Font::kE, 18.5f * s, rgba(238, 240, 245, 245), Align::kCenter);
+  gts.stretch = 0.92f;
+  TextStyle gsh = gts;
+  gsh.color = rgba(0, 0, 0, 145);
+  l.text(cx - 21.0f * s + 1.0f * s, cy + 19.5f * s + 1.2f * s, gear, gsh);
+  l.text(cx - 21.0f * s, cy + 19.5f * s, gear, gts);
+
+  bool drew_assists = false;
+  if (sc && sf && gauge_node >= 0) {
+    const int assists = sc->find("ASSIST_ICONS", gauge_node);
+    if (assists >= 0) {
+      for (const auto& [name, active] : {std::pair{"HUD_ABS", st.abs}, std::pair{"HUD_TCS", st.tcs}}) {
+        const int on = sc->find("Rectangle_ON", sc->find(name, assists));
+        if (on >= 0 && sc->model(l, *sf, on, active ? 0.92f : 0.36f, 0, 0, 0,
+                                 active ? rgba(232, 236, 244) : rgba(110, 114, 122))) {
+          drew_assists = true;
+        }
+      }
+    }
+  }
+  if (!drew_assists) {
+    const uint32_t abs_col = st.abs ? ui::fade(rgba(232, 236, 244), 0.92f) : ui::fade(rgba(110, 114, 122), 0.36f);
+    const uint32_t tcs_col = st.tcs ? ui::fade(rgba(232, 236, 244), 0.92f) : ui::fade(rgba(110, 114, 122), 0.36f);
+    TextStyle ats = font(ui::Font::kB, 9.2f * s, abs_col, Align::kCenter);
+    l.text(cx + 3.0f * s, cy + 23.0f * s, "ABS", ats);
+    ats.color = tcs_col;
+    l.text(cx + 25.5f * s, cy + 23.0f * s, "TCS", ats);
+  }
+}
+
+// (a) The free-roam dial fallback when 947_HUD is absent.
 void dial_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
   float s = g.s;
-  float cx = g.R(1123), cy = g.B(593.3f);
-  float nx = g.R(1122), ny = g.B(587);
+  float cx = g.R(1122), cy = g.B(587);
   if (st.touch_hud_active) {
     TouchRect mm_r, tach_r;
     TouchControls::hud_safe_rects(g.w, g.h, mm_r, tach_r);
     s = std::min(g.s, (tach_r.h() * g.h) / 184.0f);
     cx = tach_r.cx() * g.w;
     cy = tach_r.cy() * g.h;
-    nx = cx - 1.0f * s;
-    ny = cy - 6.3f * s;
   }
-  const float ox = cx - 1123 * s, oy = cy - 593.3f * s;
-  constexpr float kSweep = 2.391f;  // 137°
-  std::array<float, 4> ring;
-  const bool textured = ui_texture("HUD/DIALS/MAINBACKRING", ring);
-  if (textured) l.image(ox + 995 * s, oy + 465 * s, ox + 1251 * s, oy + 721 * s, ring, rgba(255, 255, 255, 242));
-  else l.circle(cx, cy, 88 * s, rgba(0, 0, 0, 140));
-  const double red = std::max(1000.0, st.redline_rpm);
-  // The scale: whole thousands, at least 10, numerals every second one.
-  const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000) * 2000);
-  auto angle = [&](double rpm) { return -kSweep + 2 * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
-  if (!textured) l.arc(cx, cy, 87 * s, 2 * s, -kSweep, kSweep, rgba(255, 255, 255, 230));
-  l.arc(cx, cy, 84 * s, 6 * s, angle(red), kSweep, kPink);  // the redline (REDLINE's mask is ours)
-  const TextStyle num = font(ui::Font::kB, 15 * s, kText, Align::kCenter);
-  // Hatches: large at the thousands, mid between, small at the quarters.
-  for (double k = 0; k <= top + 1; k += 250) {
-    const int q = int(std::lround(k / 250));
-    const bool large = q % 4 == 0, mid = q % 2 == 0;
-    const float a = angle(k), sa = std::sin(a), ca = -std::cos(a);
-    const float w = (large ? 3.0f : mid ? 2.0f : 1.5f) * s;
-    const uint32_t c = large ? rgba(255, 255, 255) : mid ? rgba(255, 255, 255, 230) : rgba(255, 255, 255, 122);
-    l.line(cx + 80 * s * sa, cy + 80 * s * ca, cx + 87.5f * s * sa, cy + 87.5f * s * ca, w, c);  // ours: 2.5 px out, off the numerals
-    if (!large || (q / 4) % 2) continue;
-    char d[8];
-    std::snprintf(d, sizeof d, "%d", q / 4);
-    l.text(nx + 78.5f * s * sa, ny + 78.5f * s * ca - 7.5f * s, d, num);
-  }
-  // The needle: NEEDLE's bar.
-  const float a = angle(st.rpm), sa = std::sin(a), ca = -std::cos(a);
-  l.line(cx + 44 * s * sa, cy + 44 * s * ca, cx + 72 * s * sa, cy + 72 * s * ca, 3 * s, kPink);
-  // The speed: three digits, the leading zeros at half white.
-  const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
-  char digits[8];
-  std::snprintf(digits, sizeof digits, "%03d", v);
-  const std::string all = digits;
-  const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
-  const TextStyle sp = font(ui::Font::kE, 28 * s, kText, Align::kRight);
-  const float x1 = ox + 1162 * s, y = oy + 571 * s;
-  const float tail = l.text(x1, y, all.substr(lead), sp);
-  if (lead) {
-    TextStyle z = sp;
-    z.color = rgba(255, 255, 255, 128);
-    l.text(x1 - tail, y, all.substr(0, lead), z);
-  }
-  TextStyle unit = font(ui::Font::kA, 10 * s, kDim);
-  unit.keep_case = true;
-  l.text(ox + 1112 * s, oy + 553 * s, str("UnitStrings", "IDS_Units_KMH", "km/h"), unit);
-  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
-  char gb[8];
-  if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
-  l.text(ox + 1093 * s, oy + 607 * s, gear, font(ui::Font::kE, 17 * s, kGear));
+  render_fh1_dial(l, st, cx, cy, s, nullptr, nullptr, -1, -1);
 }
 
-// The dial from 947_HUD's GAUGE_ANALOG: MainBackRing, the hatches
-// (HATCHLARGE / MID / SMALL quads at radius 82, turned to their angle),
-// the numerals (B 10 at radius 70), the NEEDLE quad (32 x 128, centred 50
-// out) with its NEEDLETRAIL swooshes, the speed's three E 17 x 1.6 digit
-// slots, the gear and the unit. The sweep is the numerals' rotation, 2.339
-// rad either side of 12 o'clock. Ours: the scale's top (whole thousands
-// past the redline), the trails' fade by the rev rate, and the redline
-// band, which follows REDLINE's look (a pink band brightening outward to a
-// rim at radius 85) as arcs, as how the scene turns its half ring isn't
-// known. Without the scene: the drawn dial above.
+// The dial anchored from 947_HUD's GAUGE_ANALOG (with 1:1 FH1 visual styling).
 void dial(ui::List& l, const DriveHud& st, const Layout& g) {
   static const SceneDraw sc(ui_scene("947_HUD"));
   const int gauge = sc.find("GAUGE_ANALOG");
-  const int ring = sc.find("MainBackRing", gauge), needle = sc.find("Rectangle", sc.find("_P_Tach_Needle", gauge));
-  std::array<float, 4> large, mid, small, nuv, trail;
-  if (gauge < 0 || ring < 0 || needle < 0 || !ui_texture("HUD/DIALS/HATCHLARGE", large) ||
-      !ui_texture("HUD/DIALS/HATCHMID", mid) || !ui_texture("HUD/DIALS/HATCHSMALL", small) ||
-      !ui_texture("HUD/DIALS/NEEDLE", nuv))
-    return dial_drawn(l, st, g);
-  const bool trails = ui_texture("HUD/DIALS/NEEDLETRAIL", trail);
+  const int ring = sc.find("MainBackRing", gauge);
+  if (gauge < 0 || ring < 0) return dial_drawn(l, st, g);
   const auto [gx, gy] = sc.at(gauge);
   float s = g.s;
   SceneFrame f{g.w - 1280 * s, g.h - 720 * s, s};  // bottom-right anchored
@@ -275,82 +386,7 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
     f = SceneFrame{tach_r.cx() * g.w - gx * s, tach_r.cy() * g.h - gy * s, s};
   }
   const float cx = f.x(gx), cy = f.y(gy);
-  constexpr float kSweep = 2.339f;
-  constexpr uint32_t kNeedle = rgba(250, 0, 99);  // the needle's material, 0.98 0 0.39
-  sc.model(l, f, ring, sc.alpha(ring));
-  const double red = std::max(1000.0, st.redline_rpm);
-  const double top = std::max(10000.0, std::ceil(red * 1.1 / 2000) * 2000);
-  auto angle = [&](double rpm) { return -kSweep + 2 * kSweep * float(std::clamp(rpm / top, 0.0, 1.0)); };
-  // The redline band.
-  const float a_red = angle(red);
-  // (Measured on the original's race frame: a solid band from radius 61
-  // to 86, deepening outward, with a bright rim.)
-  l.arc(cx, cy, 73.5f * s, 25 * s, a_red, kSweep, ui::fade(kNeedle, 0.5), true);
-  l.arc(cx, cy, 81.5f * s, 9 * s, a_red, kSweep, ui::fade(kNeedle, 0.3), true);
-  l.arc(cx, cy, 85.5f * s, 2 * s, a_red, kSweep, kNeedle, true);
-  // Hatches and numerals.
-  const TextStyle num = [&] {
-    TextStyle t = font(ui::Font::kB, 10 * s, kText, Align::kCenter);
-    return t;
-  }();
-  // A hatch every 500 (the original's frames), large at the thousands.
-  for (double k = 0; k <= top + 1; k += 500) {
-    const int q = int(std::lround(k / 250));
-    const bool is_large = q % 4 == 0, is_mid = false;
-    const float a = angle(k), sa = std::sin(a), ca = std::cos(a);
-    const float hw = (is_large || is_mid ? 6.5f : 7.0f) * s, hh = 4.5f * s;
-    l.image_rotated(cx + 82 * s * sa, cy - 82 * s * ca, hw, hh, a, is_large ? large : is_mid ? mid : small,
-                    rgba(255, 255, 255, uint8_t(is_large ? 255 : is_mid ? 230 : 122)));
-    if (!is_large || (q / 4) % 2) continue;
-    char d[8];
-    std::snprintf(d, sizeof d, "%d", q / 4);
-    l.text(cx + 70 * s * sa, cy - 70 * s * ca - 0.5f * num.size, d, num);
-  }
-  // The needle and its trails (the trail behind the needle's travel).
-  const float a = angle(st.rpm), sa = std::sin(a), ca = std::cos(a);
-  if (trails) {
-    static double last_rpm = 0, last_t = -1, rate = 0;
-    const double dt = st.time - last_t;
-    if (last_t >= 0 && dt > 1e-4 && dt < 0.5) rate += (((st.rpm - last_rpm) / dt) - rate) * std::min(1.0, dt * 10);
-    last_rpm = st.rpm, last_t = st.time;
-    const float up = clamp01(rate / 6000), down = clamp01(-rate / 6000);
-    // Up: 50 left of the needle and 65 out; Down mirrored to the right.
-    for (int side : {-1, 1}) {
-      const float k = side < 0 ? up : down;
-      if (k <= 0.02f) continue;
-      const float ox = 50.0f * side, oy = -65.0f;
-      const float px = cx + s * (ox * ca - oy * sa), py = cy + s * (ox * sa + oy * ca);
-      std::array<float, 4> uv = trail;
-      if (side > 0) std::swap(uv[0], uv[2]);
-      l.image_rotated(px, py, 32 * s, 32 * s, a, uv, ui::fade(kNeedle, k));
-    }
-  }
-  // The needle's bar runs from radius 60 to 86 in the original's frames:
-  // the quad's centre 65 out (the scene's static 50 is moved by code).
-  l.image_rotated(cx + 65 * s * sa, cy - 65 * s * ca, 16 * s, 64 * s, a, nuv, kNeedle);
-  // The assists' labels (ASSIST_ICONS: ABSON and TCS ON; 947_HUD Material17
-  // is white/neutral grey, matching hud-freeroam-event-marker.png & race-hud.png).
-  const int assists = sc.find("ASSIST_ICONS", gauge);
-  for (const auto& [name, active] : {std::pair{"HUD_ABS", st.abs}, std::pair{"HUD_TCS", st.tcs}}) {
-    const int on = sc.find("Rectangle_ON", sc.find(name, assists));
-    sc.model(l, f, on, active ? 0.92f : 0.36f, 0, 0, 0, active ? rgba(232, 236, 244) : rgba(110, 114, 122));
-  }
-  // The speed: three digit slots, the leading zeros at half white (ours).
-  const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
-  char digits[8];
-  std::snprintf(digits, sizeof digits, "%03d", v);
-  const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
-  const int speedo = sc.find("Speedo", gauge);
-  for (int i = 0; i < 3; ++i) {
-    const int node = sc.find("digit" + std::to_string(i), speedo);
-    sc.text(l, f, node, std::string(1, digits[i]), size_t(i) < lead ? rgba(255, 255, 255, 128) : kText, 0, 0, false);
-  }
-  const int unit = sc.find("TEXT_SPEED_UNIT_ANALOG", gauge);
-  sc.text(l, f, unit, str("UnitStrings", "IDS_Units_KMH", "km/h"), ui::fade(kText, sc.alpha(unit)), 0, 0, false);
-  const char* gear = st.gear < 0 ? "R" : st.gear == 0 ? "N" : nullptr;
-  char gb[8];
-  if (!gear) std::snprintf(gb, sizeof gb, "%d", st.gear), gear = gb;
-  sc.text(l, f, sc.find("TEXT_GEAR_ANALOG", gauge), gear, kGear, 0, 0, false);
+  render_fh1_dial(l, st, cx, cy, s, &sc, &f, gauge, ring);
 }
 
 // The discovery card (the interim of SPEC-UI-LAYOUTS: an E line on a pink
@@ -470,28 +506,29 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
     l.unturn();
   }
   if (!r.grid_menu_open || r.grid_menu.empty()) return;
-  // Tilted left-side Grid Menu (PRE_AND_POST_RACE MENU / race-grid.png: clean open view, no extra car box).
+  // Tilted left-side Grid Menu (PRE_AND_POST_RACE MENU / race-grid.png: strictly fixed row pitch & dimensions).
   l.turn(g.L(226), g.T(195), tilt_rad);
   for (size_t i = 0; i < r.grid_menu.size(); ++i) {
     const bool sel = int(i) == r.grid_selected;
-    const float bottom = g.T(210 + 52.0f * float(i) + (int(i) >= r.grid_selected && r.grid_selected > 0 ? 10.0f : 0.0f));
+    const float bottom = g.T(210 + 52.0f * float(i));
     const std::string& item = r.grid_menu[i];
-    TextStyle it = font(ui::Font::kE, (sel ? 38 : 34) * s, kText);
+    TextStyle it = font(ui::Font::kE, 35 * s, kText);
     fit(item, it, g.L(680), 14 * s);
     const float tw = ui::List::measure(item, it);
+    const float bx0 = g.L(152);
+    const float by0 = bottom - it.size - 7 * s;
+    const float bx1 = std::max(g.L(340), g.L(184) + tw + 32 * s);
+    const float by1 = bottom + 6 * s;
     if (sel) {
       std::array<float, 4> clip_uv{};
       if (ui_texture("DIRTMASKS/TAPECLIPON02", clip_uv)) {
-        l.image(g.L(122), bottom - 50 * s, g.L(164), bottom + 4 * s, clip_uv, ui4::kPink);
+        l.image(bx0 - 24 * s, by0 + 3 * s, bx0 + 18 * s, by1 - 2 * s, clip_uv, ui4::kPink);
       }
-      ui4::brush(l, g.L(145), bottom - 56 * s, std::max(g.L(380), g.L(184) + tw + 38 * s), bottom + 8 * s, ui4::kPink,
-                 true);
-      l.text(g.L(184), bottom - it.size, item, it);
+      ui4::brush(l, bx0, by0, bx1, by1, ui4::kPink, true);
     } else {
-      ui4::brush(l, g.L(158), bottom - it.size - 5 * s, g.L(186) + tw + 24 * s, bottom + 5 * s, ui4::kBrushBlack,
-                 false);
-      l.text(g.L(186), bottom - it.size, item, it);
+      ui4::brush(l, bx0, by0, bx1, by1, ui4::kBrushBlack, false);
     }
+    l.text(g.L(184), bottom - it.size, item, it);
   }
   l.unturn();
   ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_Select", "SELECT")}, {"B", "QUIT RACE"}}, g.w, g.h);
@@ -1058,23 +1095,25 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
   }
   for (int i = first; i < n && i < first + fit_rows; ++i) {
     const bool sel = i == st.menu_selected;
-    const float extra = (i > st.menu_selected ? 6.0f : 0.0f);
-    const float bottom = g.T(stack_ys[size_t(i - first)] + extra);
+    // Strictly fixed row pitch, font size, and strip bounds matching real FH1
+    // pause-freeroam.png vs pause-freeroam-settings.png: moving focus swaps the
+    // brush highlight & clip-on ONLY, never resizing or shifting neighbor rows.
+    const float bottom = g.T(stack_ys[size_t(i - first)]);
     const std::string& item = st.menu[size_t(i)];
-    const float base_sz = pause ? (sel ? 41.0f : 35.0f) : (sel ? 29.0f : 24.0f);
+    const float base_sz = pause ? 36.0f : 25.0f;
     TextStyle it = font(ui::Font::kE, base_sz * s, kText);
     fit(item, it, max_item_w, 13 * s);
     const float tw = ui::List::measure(item, it);
-    const float bx0 = (sel ? g.L(147) : g.L(158)) + left_shift;
-    const float by0 = bottom - it.size - (sel ? (pause ? 15 : 11) : 6) * s;
-    const float bx1 = std::max((sel ? g.L(362) : g.L(270)) + left_shift,
-                               (sel ? g.L(185) : g.L(188)) + left_shift + tw + (sel ? 38 : 28) * s);
-    const float by1 = bottom + (sel ? 8 : 5) * s;
+    const float tx = g.L(186) + left_shift;
+    const float bx0 = g.L(156) + left_shift;
+    const float by0 = bottom - it.size - 7 * s;
+    const float bx1 = std::max(g.L(300) + left_shift, tx + tw + 30 * s);
+    const float by1 = bottom + 6 * s;
 
     if (sel) {
       // 925_PAUSE_MENU active item: 4 deg Smudge_Tape + 3 deg Crisp_Tape + Dirt_Tile + Clipon_2.
       if (has_clip) {
-        l.image(bx0 - 24 * s, by0 + 4 * s, bx0 + 18 * s, by1 - 2 * s, clip_uv, ui4::kPink);
+        l.image(bx0 - 24 * s, by0 + 3 * s, bx0 + 18 * s, by1 - 2 * s, clip_uv, ui4::kPink);
       }
       if (has_smudge && has_crisp) {
         const float px = 0.03f * (by1 - by0), py = 0.14f * (by1 - by0);
@@ -1091,14 +1130,14 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
       } else {
         ui4::brush(l, bx0, by0, bx1, by1, ui4::kPink, true);
       }
-      l.text(g.L(185) + left_shift, bottom - it.size, item, it);
+      l.text(tx, bottom - it.size, item, it);
     } else {
       ui4::brush(l, bx0, by0, bx1, by1, ui4::kBrushBlack, false);
       if (has_dirt && has_crisp) {
         l.image_masked(bx0, by0, bx1, by1, dirt_uv, crisp_uv, ui::rgba(255, 255, 255, 36),
                        {2.5f, 1.0f, 0.0f, 0.0f}, ui::kMaskRepeat);
       }
-      l.text(g.L(188) + left_shift, bottom - it.size, item, it);
+      l.text(tx, bottom - it.size, item, it);
     }
   }
   if (first + fit_rows < n) {
@@ -1222,7 +1261,7 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
     l.text(g.R(1029), g.T(81), "HORIZON", font(ui::Font::kE, 35 * s, kText, Align::kCenter));
   }
 
-  // Left tilted brush menu (120_P_PRE_SPLASH SPLASH_MENU): rock-solid fixed row pitch & size.
+  // Left tilted brush menu (120_P_PRE_SPLASH SPLASH_MENU): rock-solid fixed row pitch & dimensions.
   Turn mt(l, g.L(226), g.T(195));
   for (size_t i = 0; i < ts.menu.size(); ++i) {
     const bool sel = !ts.confirm_new_career && int(i) == ts.selected;
@@ -1231,15 +1270,12 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
     TextStyle it = font(ui::Font::kE, 34 * s, kText);
     fit(item, it, g.L(480), 16 * s);
     const float tw = ui::List::measure(item, it);
-    const float box_top = bottom - 34 * s - 6 * s;
-    const float box_bot = bottom + 6 * s;
-    if (sel) {
-      brush(l, g.L(148), box_top, std::max(g.L(380), g.L(184) + tw + 36 * s), box_bot, kPink);
-      l.text(g.L(184), bottom - it.size, item, it);
-    } else {
-      brush(l, g.L(162), box_top, g.L(184) + tw + 26 * s, box_bot, kBrush);
-      l.text(g.L(184), bottom - it.size, item, it);
-    }
+    const float bx0 = g.L(156);
+    const float by0 = bottom - 34 * s - 6 * s;
+    const float bx1 = std::max(g.L(340), g.L(184) + tw + 30 * s);
+    const float by1 = bottom + 6 * s;
+    brush(l, bx0, by0, bx1, by1, sel ? kPink : kBrush);
+    l.text(g.L(184), bottom - it.size, item, it);
   }
   l.unturn();
 
@@ -1567,133 +1603,138 @@ void ceremony_overlay(ui::List& l, const CeremonyHud& c, const Layout& g) {
   ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
 }
 
-// (j) Interactive Pause Map HUD overlay driven directly from H_MAP:
-// Center MAP_CROSSHAIR + #CF2169 MAP_LOCKON, right-hand PILL26PX location/filter card
-// (with FESTIVALMAPICON header + 27 px rows + Roads Discovered), hover MAPPILLSMALL
-// next to crosshair, and BUTTON_BAR_SCENE.
+// (j) Interactive 1:1 FH1 H_MAP HUD overlay:
+// Center MAP_CROSSHAIR + #CF2169 MAP_LOCKON, clean hover MAPPILLSMALL pill,
+// compact non-intrusive top-left filter bar & roads counter (NEVER a giant
+// permanent list blocking the right third of Colorado!), PlayerBar top-right,
+// and BUTTON_BAR_SCENE + road legend at bottom.
 void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool has_player_bar) {
   const float s = g.s;
-  static const SceneDraw map_sc(ui_scene("H_MAP"), true);
   constexpr uint32_t kMapPink = rgba(0xCF, 0x21, 0x69);
+  const bool hovering_marker = !mo.title.empty() && mo.title != "COLORADO MAP";
 
-  // 1. Center H_MAP crosshair reticle: MAP/MASKS/MAP_CROSSHAIR [575,298..703,426]
-  //    + #CF2169 MAP/MASKS/MAP_LOCKON [594,316..684,406].
+  // 1. Center H_MAP crosshair reticle: MAP/MASKS/MAP_CROSSHAIR + #CF2169 MAP_LOCKON.
   {
     const float cx = 0.5f * g.w, cy = 0.5f * g.h;
     std::array<float, 4> ch_uv{}, lo_uv{};
     if (ui_texture("MAP/MASKS/MAP_CROSSHAIR", ch_uv)) {
-      l.image(cx - 64 * s, cy - 64 * s, cx + 64 * s, cy + 64 * s, ch_uv, rgba(255, 255, 255, 225));
+      l.image(cx - 56 * s, cy - 56 * s, cx + 56 * s, cy + 56 * s, ch_uv, rgba(255, 255, 255, 235));
     } else {
-      l.arc(cx, cy, 34 * s, 2.0f * s, 0.0f, 6.28318f, rgba(255, 255, 255, 210));
-      l.line(cx - 48 * s, cy, cx - 22 * s, cy, 2.0f * s, ui4::kWhite);
-      l.line(cx + 22 * s, cy, cx + 48 * s, cy, 2.0f * s, ui4::kWhite);
-      l.line(cx, cy - 48 * s, cx, cy - 22 * s, 2.0f * s, ui4::kWhite);
-      l.line(cx, cy + 22 * s, cx, cy + 48 * s, 2.0f * s, ui4::kWhite);
+      l.arc(cx, cy, 30 * s, 2.0f * s, 0.0f, 6.28318f, rgba(255, 255, 255, 220));
+      l.line(cx - 44 * s, cy, cx - 18 * s, cy, 2.0f * s, ui4::kWhite);
+      l.line(cx + 18 * s, cy, cx + 44 * s, cy, 2.0f * s, ui4::kWhite);
+      l.line(cx, cy - 44 * s, cx, cy - 18 * s, 2.0f * s, ui4::kWhite);
+      l.line(cx, cy + 18 * s, cx, cy + 44 * s, 2.0f * s, ui4::kWhite);
     }
-    if (!mo.title.empty()) {
+    if (hovering_marker) {
       if (ui_texture("MAP/MASKS/MAP_LOCKON", lo_uv)) {
-        l.image(cx - 45 * s, cy - 45 * s, cx + 45 * s, cy + 45 * s, lo_uv, kMapPink);
+        l.image(cx - 42 * s, cy - 42 * s, cx + 42 * s, cy + 42 * s, lo_uv, kMapPink);
       } else {
         l.arc(cx, cy, 22 * s, 2.5f * s, 0.0f, 6.28318f, kMapPink);
       }
-      // Compact hover MAPPILLSMALL label placed to the LEFT of crosshair (never collides with right panel!).
+      // Compact hover MAPPILLSMALL tooltip placed cleanly to the left of the reticle.
       TextStyle hts = font(ui::Font::kE, 14 * s, ui4::kWhite);
-      const float hw = std::clamp(ui::List::measure(mo.title, hts) + 28 * s, 120 * s, 280 * s);
-      const float hx0 = cx - 54 * s - hw, hy0 = cy - 16 * s;
-      ui4::pill(l, hx0, hy0, hx0 + hw, hy0 + 28 * s, ui4::kBrushBlack, ui4::PillKind::kMapSmall);
-      l.rect(hx0 + hw - 4 * s, hy0, hx0 + hw, hy0 + 28 * s, kMapPink);
-      l.text(hx0 + 12 * s, hy0 + 7 * s, mo.title, hts);
+      fit(mo.title, hts, 260 * s, 10 * s);
+      const float hw = std::clamp(ui::List::measure(mo.title, hts) + 32 * s, 128 * s, 292 * s);
+      const float hx0 = cx - 48 * s - hw, hy0 = cy - 15 * s;
+      ui4::pill(l, hx0, hy0, hx0 + hw, hy0 + 30 * s, ui4::kBrushBlack, ui4::PillKind::kMapSmall);
+      l.rect(hx0 + hw - 4 * s, hy0, hx0 + hw, hy0 + 30 * s, kMapPink);
+      l.text(hx0 + 12 * s, hy0 + 0.5f * (30 * s - hts.size), mo.title, hts);
+    } else if (mo.distance_m >= 0.0) {
+      // Subtle compact distance pill beside crosshair when panning over open road.
+      char db[32];
+      if (mo.distance_m >= 1000.0) std::snprintf(db, sizeof db, "%.1f KM", mo.distance_m / 1000.0);
+      else std::snprintf(db, sizeof db, "%.0f M", mo.distance_m);
+      TextStyle dts = font(ui::Font::kB, 11.5f * s, ui4::kWhite);
+      const float dw = ui::List::measure(db, dts) + 22 * s;
+      const float dx0 = cx + 36 * s, dy0 = cy - 12 * s;
+      ui4::pill(l, dx0, dy0, dx0 + dw, dy0 + 24 * s, ui::rgba(14, 16, 20, 205), ui4::PillKind::kMapSmall);
+      l.text(dx0 + 11 * s, dy0 + 6 * s, db, dts);
     }
   }
 
-  // 2. Right-hand H_MAP PILL26PX Location & Filter Card (x=885..1197, y=85..340):
-  //    #CF2169 header with KITPARTS/FESTIVALMAPICON + #212121 27px PILL26PX rows!
+  // 2. Compact non-intrusive top-left H_MAP filter bar & roads discovery pill
+  //    (cycles cleanly via LB / RB without covering the right third of Colorado!).
   {
-    const float px0 = g.R(885), px1 = g.R(1212);
-    float ry = has_player_bar ? g.T(128) : g.T(84);
+    const float fx0 = g.L(48);
+    const float fy0 = g.T(32);
+    const std::string active_name =
+        (!mo.filter_tabs.empty() && mo.active_filter >= 0 && mo.active_filter < int(mo.filter_tabs.size()))
+            ? mo.filter_tabs[size_t(mo.active_filter)]
+            : std::string("ALL");
+    const std::string f_txt = "FILTER: " + active_name;
+    TextStyle fts = font(ui::Font::kE, 13.0f * s, ui4::kWhite);
+    const float f_pill_w = std::max(180 * s, ui::List::measure(f_txt, fts) + 92 * s);
+    ui4::pill(l, fx0, fy0, fx0 + f_pill_w, fy0 + 28 * s, ui4::kBrushBlack, ui4::PillKind::kHud01);
+    l.rect(fx0, fy0, fx0 + 4 * s, fy0 + 28 * s, kMapPink);
+    ui4::button_glyph(l, fx0 + 24 * s, fy0 + 14 * s, 9.5f * s, "LB");
+    l.text(fx0 + 46 * s, fy0 + 7.5f * s, f_txt, fts);
+    ui4::button_glyph(l, fx0 + f_pill_w - 22 * s, fy0 + 14 * s, 9.5f * s, "RB");
+
+    // Compact Roads Discovered pill right beside filter bar.
+    char rb[64];
+    std::snprintf(rb, sizeof rb, "ROADS %d / %d", mo.roads_discovered, mo.roads_total);
+    TextStyle rts = font(ui::Font::kB, 12.0f * s, ui4::kWhite);
+    const float rx0 = fx0 + f_pill_w + 10 * s;
+    const float rw = std::max(134 * s, ui::List::measure(rb, rts) + 26 * s);
+    ui4::pill(l, rx0, fy0, rx0 + rw, fy0 + 28 * s, ui4::kPillGrey, ui4::PillKind::kHud01);
+    l.text(rx0 + 12 * s, fy0 + 6.5f * s, rb, rts);
+    const float rfrac = mo.roads_total > 0 ? float(std::clamp(double(mo.roads_discovered) / mo.roads_total, 0.0, 1.0)) : 0.0f;
+    l.rect(rx0 + 4 * s, fy0 + 23 * s, rx0 + rw - 4 * s, fy0 + 26.5f * s, rgba(255, 255, 255, 32));
+    if (rfrac > 0.0f) l.rect(rx0 + 4 * s, fy0 + 23 * s, rx0 + 4 * s + (rw - 8 * s) * rfrac, fy0 + 26.5f * s, ui4::kGreen);
+
+    if (mo.treasure_map) {
+      const float tx0 = rx0 + rw + 10 * s;
+      ui4::pill(l, tx0, fy0, tx0 + 150 * s, fy0 + 28 * s, ui4::kAmber, ui4::PillKind::kHud01);
+      l.text(tx0 + 75 * s, fy0 + 7.5f * s, "TREASURE MAP", font(ui::Font::kE, 11.5f * s, ui4::kInk, Align::kCenter));
+    }
+  }
+
+  // 3. Compact contextual right-hand PILL26PX detail card ONLY when hovering an icon/location
+  //    (zero permanent wall blocking the map when browsing roads!).
+  if (hovering_marker) {
+    const float px0 = g.R(908), px1 = g.R(1214);
+    float ry = has_player_bar ? g.T(130) : g.T(36);
     std::array<float, 4> pill26_uv{}, fest_uv{};
     const bool has_pill26 = ui_texture("KITPARTS/PILL26PX", pill26_uv);
     auto draw_map_row = [&](float y, float h_px, uint32_t col) {
-      if (has_pill26) {
-        l.image(px0, y, px1, y + h_px, pill26_uv, col);
-      } else {
-        ui4::pill(l, px0, y, px1, y + h_px, col, ui4::PillKind::kHud01);
-      }
+      if (has_pill26) l.image(px0, y, px1, y + h_px, pill26_uv, col);
+      else ui4::pill(l, px0, y, px1, y + h_px, col, ui4::PillKind::kHud01);
     };
-
-    // #CF2169 Header row with FESTIVALMAPICON + hovered title (or "COLORADO MAP")
     draw_map_row(ry, 32 * s, kMapPink);
     float hdr_tx = px0 + 12 * s;
     if (ui_texture("KITPARTS/FESTIVALMAPICON", fest_uv)) {
       l.image(px0 + 8 * s, ry + 3 * s, px0 + 34 * s, ry + 29 * s, fest_uv, ui4::kWhite);
       hdr_tx = px0 + 40 * s;
     }
-    const std::string hdr_title = mo.title.empty() ? std::string("COLORADO FESTIVAL MAP") : mo.title;
-    TextStyle hts = font(ui::Font::kE, 16 * s, ui4::kWhite);
-    fit(hdr_title, hts, px1 - hdr_tx - 12 * s, 10 * s);
-    l.text(hdr_tx, ry + 8 * s, hdr_title, hts);
+    TextStyle hts = font(ui::Font::kE, 15.5f * s, ui4::kWhite);
+    fit(mo.title, hts, px1 - hdr_tx - 12 * s, 10 * s);
+    l.text(hdr_tx, ry + 0.5f * (32 * s - hts.size), mo.title, hts);
     ry += 34 * s;
 
-    // Subtitle + distance + GPS row (when hovering a location)
     if (!mo.subtitle.empty()) {
       draw_map_row(ry, 26 * s, ui4::kPillGrey);
-      TextStyle ss = font(ui::Font::kB, 12.5f * s, ui4::kWhite);
+      TextStyle ss = font(ui::Font::kB, 12.0f * s, ui4::kWhite);
       fit(mo.subtitle, ss, (px1 - px0) - 24 * s, 9 * s);
-      l.text(px0 + 12 * s, ry + 6 * s, mo.subtitle, ss);
+      l.text(px0 + 12 * s, ry + 6.5f * s, mo.subtitle, ss);
       ry += 28 * s;
     }
-    if (mo.distance_m >= 0 || mo.gps_active) {
+    if (mo.distance_m >= 0.0 || mo.gps_active) {
       draw_map_row(ry, 26 * s, ui4::kPillGrey);
-      if (mo.distance_m >= 0) {
+      if (mo.distance_m >= 0.0) {
         char db[48];
         if (mo.distance_m >= 1000.0) std::snprintf(db, sizeof db, "DISTANCE  %.1f KM", mo.distance_m / 1000.0);
         else std::snprintf(db, sizeof db, "DISTANCE  %.0f M", mo.distance_m);
-        l.text(px0 + 12 * s, ry + 6 * s, db, font(ui::Font::kB, 12.0f * s, ui4::kYellow));
+        l.text(px0 + 12 * s, ry + 6.5f * s, db, font(ui::Font::kB, 12.0f * s, ui4::kYellow));
       }
       if (mo.gps_active) {
-        l.rect(px1 - 92 * s, ry + 3 * s, px1 - 6 * s, ry + 23 * s, ui4::kGreen);
-        l.text(px1 - 49 * s, ry + 7 * s, "GPS SET", font(ui::Font::kE, 11 * s, ui4::kInk, Align::kCenter));
+        l.rect(px1 - 86 * s, ry + 3 * s, px1 - 6 * s, ry + 23 * s, ui4::kGreen);
+        l.text(px1 - 46 * s, ry + 7 * s, "GPS SET", font(ui::Font::kE, 10.5f * s, ui4::kInk, Align::kCenter));
       }
-      ry += 28 * s;
-    }
-
-    // Active Filter selector rows (PILL26PX stacked rows, highlighted row in #CF2169)
-    if (!mo.filter_tabs.empty()) {
-      ry += 6 * s;
-      draw_map_row(ry, 24 * s, ui4::kBrushBlack);
-      l.text(px0 + 12 * s, ry + 5 * s, "MAP FILTER  [LB / RB]", font(ui::Font::kB, 11 * s, ui4::kDim));
-      ry += 26 * s;
-      const int ntabs = int(mo.filter_tabs.size());
-      const int max_vis = std::min(ntabs, 6);
-      const int start = std::clamp(mo.active_filter - 2, 0, std::max(0, ntabs - max_vis));
-      for (int i = start; i < start + max_vis && i < ntabs; ++i) {
-        const bool active = (i == mo.active_filter);
-        draw_map_row(ry, 26 * s, active ? kMapPink : ui4::kPillGrey);
-        if (active) l.rect(px0, ry, px0 + 4 * s, ry + 26 * s, ui4::kWhite);
-        TextStyle fts = font(active ? ui::Font::kE : ui::Font::kB, 13 * s, active ? ui4::kWhite : ui4::kDim);
-        l.text(px0 + 14 * s, ry + 6 * s, mo.filter_tabs[size_t(i)], fts);
-        ry += 28 * s;
-      }
-    }
-
-    // Roads Discovered PILL26PX counter + thin green fill strip
-    ry += 6 * s;
-    draw_map_row(ry, 28 * s, ui4::kPillGrey);
-    char rb[96];
-    std::snprintf(rb, sizeof rb, "ROADS DISCOVERED   %d / %d", mo.roads_discovered, mo.roads_total);
-    l.text(px0 + 12 * s, ry + 6 * s, rb, font(ui::Font::kB, 12.5f * s, ui4::kWhite));
-    const float rfrac = mo.roads_total > 0 ? float(std::clamp(double(mo.roads_discovered) / mo.roads_total, 0.0, 1.0)) : 0.0f;
-    l.rect(px0, ry + 24 * s, px1, ry + 28 * s, rgba(255, 255, 255, 28));
-    if (rfrac > 0.0f) l.rect(px0, ry + 24 * s, px0 + (px1 - px0) * rfrac, ry + 28 * s, ui4::kGreen);
-    ry += 32 * s;
-
-    if (mo.treasure_map) {
-      l.rect(px0, ry, px1, ry + 24 * s, ui4::kAmber);
-      l.text(px0 + 14 * s, ry + 5 * s, "TREASURE MAP REVEALED", font(ui::Font::kE, 11.5f * s, ui4::kInk));
     }
   }
 
-  // 3. Authentic BUTTON_BAR_SCENE bottom help strip + road shading legend pill.
+  // 4. Authentic BUTTON_BAR_SCENE bottom help strip + driven/undriven legend pill.
   ui4::button_bar(
       l,
       {{"A", mo.action_hint.empty() ? "FAST TRAVEL" : mo.action_hint},
@@ -1701,14 +1742,14 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
        {"LB", "FILTER"},
        {"LT", "ZOOM"},
        {"B", str("HelpButtons", "IDS_Back", "BACK")}},
-      g.w, g.h, 52.0f);
+      g.w, g.h, 48.0f);
 
   const float ly0 = g.B(654), ly1 = g.B(682);
-  ui4::pill(l, g.R(984), ly0, g.R(1232), ly1, ui4::kPillGrey, ui4::PillKind::kMenu);
-  l.rect(g.R(1002), ly0 + 11 * s, g.R(1024), ly0 + 17 * s, rgba(235, 238, 244));
-  l.text(g.R(1030), ly0 + 8 * s, "DRIVEN", font(ui::Font::kB, 11.5f * s, ui4::kWhite));
-  l.rect(g.R(1106), ly0 + 11 * s, g.R(1128), ly0 + 17 * s, rgba(98, 102, 110));
-  l.text(g.R(1134), ly0 + 8 * s, "UNDRIVEN", font(ui::Font::kB, 11.5f * s, ui4::kDim));
+  ui4::pill(l, g.R(992), ly0, g.R(1232), ly1, ui4::kPillGrey, ui4::PillKind::kMenu);
+  l.rect(g.R(1008), ly0 + 11 * s, g.R(1030), ly0 + 17 * s, rgba(252, 244, 214));
+  l.text(g.R(1036), ly0 + 8 * s, "DRIVEN", font(ui::Font::kB, 11.5f * s, ui4::kWhite));
+  l.rect(g.R(1110), ly0 + 11 * s, g.R(1132), ly0 + 17 * s, rgba(108, 112, 122));
+  l.text(g.R(1138), ly0 + 8 * s, "UNDRIVEN", font(ui::Font::kB, 11.5f * s, ui4::kDim));
 }
 
 // (j2) 947_HUD/MiniMap/SatNavCommands: slim HUDPILL01 turn-by-turn strip above minimap.

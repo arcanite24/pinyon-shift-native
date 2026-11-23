@@ -157,7 +157,7 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
       for (int i = first; i < first + count; ++i) {
         const auto& e = entries[size_t(i)];
         const bool act = (i == sel);
-        const float lift = act ? 14.0f * s : 0.0f;
+        const float lift = 0.0f;
         const float cx0 = start_x + float(i - first) * pitch;
         const float cy0 = card_y0 - lift;
         const float cx1 = cx0 + cw;
@@ -363,7 +363,7 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
       for (int i = first; i < first + count; ++i) {
         const auto& c = cards[size_t(i)];
         const bool act = (i == sel);
-        const float lift = act ? 14.0f * s : 0.0f;
+        const float lift = 0.0f;
         const float cx0 = start_x + float(i - first) * pitch;
         const float cy0 = card_y0 - lift;
         const float cx1 = cx0 + cw;
@@ -571,7 +571,8 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
                 (i % 2 == 0) ? ui4::PillKind::kPill02 : ui4::PillKind::kPill03, false, act);
 
       const uint32_t fg = (act && r.is_save) ? ui4::kInk : ui4::kWhite;
-      ui::TextStyle ls = ui4::style(act ? ui::Font::kE : ui::Font::kD, (act ? 15.0f : 14.0f) * s, fg);
+      // Fixed font family & size across focus changes so rows never jump or resize.
+      ui::TextStyle ls = ui4::style(ui::Font::kD, 14.0f * s, fg);
       ui4::fit_text(r.name, ls, lw - 310.0f * s, 9.5f * s);
       l.text(lx0 + 18.0f * s, ry + 0.5f * (row_h - ls.size), r.name, ls);
 
@@ -600,7 +601,7 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
         const uint32_t arr_col = act ? ui4::kWhite : ui::rgba(190, 196, 208, 175);
         ui4::opt_arrow(l, vx0 + 10.0f * s, vcy, 15.0f * s, -1, arr_col);
         ui4::opt_arrow(l, vx1 - 10.0f * s, vcy, 15.0f * s, +1, arr_col);
-        ui::TextStyle vs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 14.0f * s,
+        ui::TextStyle vs = ui4::style(ui::Font::kB, 14.0f * s,
                                       act ? ui4::kYellow : ui4::kWhite, ui::Align::kCenter);
         ui4::fit_text(r.value, vs, (vx1 - vx0) - 44.0f * s, 9.0f * s);
         l.text(0.5f * (vx0 + vx1), ry + 0.5f * (row_h - vs.size), r.value, vs);

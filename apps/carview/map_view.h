@@ -104,6 +104,8 @@ class MapView {
   // The pause map panel; `zoom` 1 shows every road, larger zooms in on
   // (cx, cz).
   HudImage pause_map(const MapScene& scene, int width, int height, double zoom, double cx, double cz) const;
+  // Metres per pixel at the given viewport size and zoom (matches pause_map).
+  double map_scale(int width, int height, double zoom) const;
   // The middle of the road network (the pause map's first centre at zoom 1).
   std::array<double, 2> roads_centre() const { return {(min_x_ + max_x_) / 2, (min_z_ + max_z_) / 2}; }
 
@@ -152,6 +154,36 @@ class MapView {
   static constexpr int kHighCols = 5, kHighRows = 3, kHighTileSize = 1024;
   mutable std::array<Atlas, 15> high_tiles_{};
   mutable std::array<uint8_t, 15> high_tile_state_{};  // 0 unloaded, 1 loaded, 2 failed
+};
+
+// Smooth, dt-integrated fullscreen map camera controller: continuous
+// velocity with smooth acceleration/deceleration, exponential zoom
+// interpolation, and gentle magnetic snap to nearby visible markers.
+class MapCameraController {
+ public:
+  void reset(double cx, double cz, double zoom = 2.0);
+  void nudge_target_zoom(double factor);
+  void pan_direct(double dx, double dz);
+  // Advances cursor position and zoom smoothly by `dt` seconds.
+  // `pan_x` (+east), `pan_z` (+north) in [-1, 1], `zoom_rate` in [-1, 1].
+  // Returns true if position or zoom changed noticeably (needing redraw).
+  bool step(double dt, double pan_x, double pan_z, double zoom_rate,
+            const std::vector<MapMarker>& visible_markers);
+
+  double cx() const { return cx_; }
+  double cz() const { return cz_; }
+  double vx() const { return vx_; }
+  double vz() const { return vz_; }
+  double zoom() const { return zoom_; }
+  double target_zoom() const { return target_zoom_; }
+  int snapped_marker() const { return snapped_marker_; }
+
+ private:
+  void clamp_bounds();
+  double cx_ = 0.0, cz_ = 0.0;
+  double vx_ = 0.0, vz_ = 0.0;
+  double zoom_ = 2.0, target_zoom_ = 2.0;
+  int snapped_marker_ = -1;
 };
 
 }  // namespace carview

@@ -410,6 +410,39 @@ void test_frame_stats() {
   carview::ui::List list;
   carview::build_perf_overlay(list, info, 1920, 1080);
   CHECK(!list.empty());
+
+  // Rolling 2-second / 120-frame 1% low window: an early 500ms load spike must age out!
+  {
+    carview::FrameStats rfs(1.0, 4096);
+    double t = 0.0;
+    rfs.frame(t);
+    t += 0.500;  // 500 ms startup hitch (2 FPS)
+    rfs.frame(t);
+    for (int i = 0; i < 150; ++i) {
+      t += 1.0 / 60.0;  // 2.5 seconds of rock-steady 60 FPS
+      rfs.frame(t);
+    }
+    CHECK(rfs.ms_low_fps(0.01) > 55.0);
+  }
+
+  // Compact F3 overlay bounds: even with 16 GPU passes (many 0.00ms), width stays <= 420 px at 1080p!
+  {
+    carview::PerfInfo big = info;
+    big.gpu_stages = {
+        {"shadows", 0.57},      {"setup", 1.28},      {"world opaque", 0.0}, {"world cut-outs", 0.0},
+        {"contact_shadow", 0.0},{"car_opaque", 0.0},  {"sky", 0.0},          {"world blended", 0.0},
+        {"car_glass", 0.0},     {"hiz_build", 0.01},  {"particles", 0.0},    {"post", 0.13},
+        {"upscale", 0.08},      {"ui", 0.18},         {"rest", 0.0},         {"env_cubemap", 0.24},
+    };
+    const auto rect = carview::perf_overlay_rect(big, 1920, 1080, 1.0f);
+    const float panel_w = rect[2] - rect[0];
+    CHECK(panel_w >= 300.0f && panel_w <= 420.0f);
+    const auto blines = carview::perf_overlay_lines(big);
+    for (const auto& ln : blines) {
+      CHECK(ln.size() < 80);  // no unwrapped 200-char GPU stage line!
+      CHECK(ln.find("0.00") == std::string::npos);
+    }
+  }
 }
 
 void test_upscaler_runtime_and_inspector() {

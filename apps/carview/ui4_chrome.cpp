@@ -582,12 +582,11 @@ void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std:
     const float tw = widths[size_t(i)] * compress;
     const bool act = (i == active_idx);
     if (act) {
-      brush(l, cx, y0 - 2.0f * s, cx + tw, y0 + h + 2.0f * s, active_colour);
+      brush(l, cx, y0, cx + tw, y0 + h, active_colour);
     } else {
       pill(l, cx, y0, cx + tw, y0 + h, kPillGrey, PillKind::kMenu);
     }
-    ui::TextStyle ts = style(act ? ui::Font::kE : ui::Font::kB, (act ? 13.5f : 12.0f) * s, act ? kWhite : kDim,
-                             ui::Align::kCenter);
+    ui::TextStyle ts = style(ui::Font::kE, 12.5f * s, act ? kWhite : kDim, ui::Align::kCenter);
     fit_text(tabs[size_t(i)], ts, tw - 10.0f * s, 8.0f * s);
     l.text(cx + 0.5f * tw, y0 + 0.5f * (h - ts.size), tabs[size_t(i)], ts);
     cx += tw + gap;
@@ -1350,7 +1349,8 @@ void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& s
 
         const float right_zone_w = r.arrows ? 228.0f * s : 210.0f * s;
         const float label_max_w = std::max(100.0f * s, (lx0 + lw - right_zone_w) - tx);
-        ui::TextStyle lts = style(act ? ui::Font::kE : ui::Font::kD, (act ? 14.5f : 13.5f) * s, primary_fg);
+        // Strictly fixed font family & size so moving selection never shifts or resizes rows.
+        ui::TextStyle lts = style(ui::Font::kD, 14.0f * s, primary_fg);
         fit_text(r.label, lts, label_max_w, 9.5f * s);
         if (!r.subtitle.empty()) {
           l.text(tx, ry + 6.0f * s, r.label, lts);
@@ -1374,7 +1374,7 @@ void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& s
           const uint32_t arr_col = dark_ink_row ? kInk : (act ? kWhite : ui::rgba(190, 196, 208, 175));
           opt_arrow(l, vx0 + 10.0f * s, vcy, 14.0f * s, -1, arr_col);
           opt_arrow(l, vx1 - 10.0f * s, vcy, 14.0f * s, +1, arr_col);
-          ui::TextStyle vs = style(act ? ui::Font::kE : ui::Font::kB, 13.5f * s,
+          ui::TextStyle vs = style(ui::Font::kB, 13.5f * s,
                                    dark_ink_row ? kInk : (act ? kYellow : r.value_color), ui::Align::kCenter);
           fit_text(r.value, vs, (vx1 - vx0) - 42.0f * s, 9.0f * s);
           l.text(0.5f * (vx0 + vx1), ry + 0.5f * (row_h - vs.size), r.value, vs);

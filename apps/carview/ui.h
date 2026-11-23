@@ -116,6 +116,10 @@ size_t atlas_cpu_bytes();
 const std::vector<uint8_t>& atlas_pixels();
 std::vector<std::array<uint32_t, 4>> atlas_take_dirty();  // x, y, w, h
 std::vector<AtlasPatch> atlas_take_dirty_patches();
+// Advances the atlas frame counter (also auto-advanced on atlas_take_dirty*).
+// Glyphs and transient shelves used within the last 4 frames are protected
+// against eviction so in-flight GPU frames never sample overwritten texels.
+void atlas_begin_frame();
 // An image (straight-alpha RGBA, sRGB) in the atlas under `key`, once; its
 // uv rectangle (0..1). Transient artwork keys automatically route to the LRU
 // transient cache (never failing on overflow).
@@ -128,6 +132,7 @@ bool atlas_find(const std::string& key, std::array<float, 4>& uv);
 bool atlas_update(const std::string& key, uint32_t w, uint32_t h, std::span<const uint8_t> rgba,
                   std::array<float, 4>& uv);
 uint64_t atlas_transient_evictions();
+uint64_t atlas_glyph_evictions();
 void atlas_clear_transient();
 
 struct AtlasStats {
@@ -137,6 +142,7 @@ struct AtlasStats {
   uint32_t transient_rows_used = 0;
   double utilization_pct = 0.0;
   uint64_t transient_evictions = 0;
+  uint64_t glyph_evictions = 0;
   uint32_t glyph_count = 0;
   uint32_t image_count = 0;
 };

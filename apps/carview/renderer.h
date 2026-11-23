@@ -429,9 +429,14 @@ class Renderer {
                     VkImageLayout final_layout, const FrameConstants& constants,
                     VkBuffer capture_dst = VK_NULL_HANDLE, bool capture_before_ui = false,
                     VkFormat final_format = VK_FORMAT_UNDEFINED, VkBuffer inspector_dst = VK_NULL_HANDLE);
+  // True when record_scene routes post -> stand_in_ (VK_FORMAT_R8G8B8A8_UNORM)
+  // before blitting/tonemapping to final_image.
+  bool uses_modern_chain() const;
   // Copies the changed overlay layers into their buffer (none of the GPU's
-  // frames may be using it); false when none is staged.
-  bool stage_overlay();
+  // frames may be using it); false when none is staged. `final_format` is the
+  // non-modern-chain target format (ignored when uses_modern_chain() is true,
+  // since overlays copy into R8G8B8A8_UNORM stand_in_).
+  bool stage_overlay(VkFormat final_format = VK_FORMAT_UNDEFINED);
 
   Options options_;
   std::string device_name_;
@@ -600,6 +605,7 @@ class Renderer {
     bool inspector_ready = false;
     uint64_t overlay_ver[4] = {};        // the version of each overlay layer this slot's buffer holds
     VkDeviceSize overlay_off[4] = {};    // and where
+    bool overlay_bgra[4] = {};           // channel order currently staged in this slot's buffer
   };
   FrameSlot slots_[kFramesInFlight];
   uint32_t slot_ = 0;

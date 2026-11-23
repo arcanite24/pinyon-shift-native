@@ -774,7 +774,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
         for (int i = first; i < first + count; ++i) {
           const auto& mk = makes[size_t(i)];
           const bool act = (i == sel);
-          const float lift = act ? 10.0f * s : 0.0f;
+          const float lift = 0.0f;
           draw_bigpane_card(list, bx, strip_y - lift, bx + cw, strip_y + card_h - lift, s, act);
 
           const float lh = 64.0f * s;
@@ -788,7 +788,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
             list.text(bx + 0.5f * cw, strip_y + 36.0f * s - lift, mk.name, ms);
           }
 
-          ui::TextStyle nm = ui4::style(act ? ui::Font::kE : ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kCenter);
+          ui::TextStyle nm = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kCenter);
           ui4::fit_text(mk.name, nm, cw - 14.0f * s, 8.5f * s);
           list.text(bx + 0.5f * cw, strip_y + 84.0f * s - lift, mk.name, nm);
 
@@ -987,7 +987,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
         for (int i = first; i < first + count; ++i) {
           const auto& c = vis[size_t(i)];
           const bool act = (i == sel);
-          const float lift = act ? 8.0f * s : 0.0f;
+          const float lift = 0.0f;
           draw_bigpane_card(list, bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, s, act);
 
           const float th_h = 60.0f * s;
@@ -1008,7 +1008,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
 
           std::string bname = car_name(c.dealer.media_name);
           if (bname.empty()) bname = c.display_name;
-          ui::TextStyle cs = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+          ui::TextStyle cs = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
           ui4::fit_text(bname, cs, cw - 16.0f * s, 8.5f * s);
           list.text(bx + 8.0f * s, bot_y + 72.0f * s - lift, bname, cs);
 
@@ -1171,7 +1171,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
       for (int i = first; i < first + count; ++i) {
         const auto& sl = sliders[size_t(i)];
         const bool act = (i == sel);
-        const float lift = act ? 8.0f * s : 0.0f;
+        const float lift = 0.0f;
         draw_bigpane_card(list, bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, s, act);
 
         // Real UI4/Tuning/I_TUN_* icon top-left of card
@@ -1184,7 +1184,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         list.text(bx + 62.0f * s, blade_y + 12.0f * s - lift, subcat,
                   ui4::style(ui::Font::kB, 10.5f * s, act ? ui4::kPinkHi : ui4::kDim));
 
-        ui::TextStyle lt = ui4::style(act ? ui::Font::kE : ui::Font::kB, 13.5f * s,
+        ui::TextStyle lt = ui4::style(ui::Font::kB, 13.5f * s,
                                       sl.unlocked ? ui4::kWhite : ui4::kDim);
         ui4::fit_text(sl.label, lt, cw - 72.0f * s, 9.0f * s);
         list.text(bx + 62.0f * s, blade_y + 28.0f * s - lift, sl.label, lt);
@@ -1235,7 +1235,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
       for (int i = first; i < first + count; ++i) {
         const auto& r = rows[size_t(i)];
         const bool act = (i == sel);
-        const float lift = act ? 9.0f * s : 0.0f;
+        const float lift = 0.0f;
         draw_bigpane_card(list, bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, s, act);
 
         // Real UI4/Upgrades/* part icon centred in upper half of card!
@@ -1263,7 +1263,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         }
 
         // Slot name + tier label + price/state strip
-        ui::TextStyle ls = ui4::style(act ? ui::Font::kE : ui::Font::kB, 13.0f * s, ui4::kWhite);
+        ui::TextStyle ls = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite);
         ui4::fit_text(r.label, ls, cw - 16.0f * s, 9.0f * s);
         list.text(bx + 8.0f * s, blade_y + 78.0f * s - lift, r.label, ls);
 
@@ -1408,7 +1408,7 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
       for (int i = first; i < first + count; ++i) {
         const auto& e = vis[size_t(i)];
         const bool act = (i == sel);
-        const float lift = act ? 9.0f * s : 0.0f;
+        const float lift = 0.0f;
         draw_bigpane_card(list, bx, bot_y - lift, bx + cw, bot_y + card_h - lift, s, act);
 
         const float th_h = 62.0f * s;
@@ -1432,7 +1432,7 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
 
         std::string card_label = car_name(e.media_name);
         if (card_label.empty() || card_label.rfind("_&", 0) == 0) card_label = e.display_name;
-        ui::TextStyle ns = ui4::style(act ? ui::Font::kE : ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
+        ui::TextStyle ns = ui4::style(ui::Font::kB, 12.5f * s, ui4::kWhite, ui::Align::kLeft, true);
         ui4::fit_text(card_label, ns, cw - 16.0f * s, 8.5f * s);
         list.text(bx + 8.0f * s, bot_y + 76.0f * s - lift, card_label, ns);
 
