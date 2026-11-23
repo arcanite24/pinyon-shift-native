@@ -2748,6 +2748,30 @@ int run_drive(int argc, char** argv) {
   campaign.configure(game_root_of(), language, skip_intro_movies);
   if (have_saved) campaign.load_from_save(saved);
   bool campaign_new_career_pending = false;
+  struct PendingCampaignHandoff {
+    bool active = false;
+    bool has_teleport = false;
+    std::array<double, 3> pos{};
+    double heading = 0.0;
+    bool has_gps = false;
+    std::string gps_label;
+    std::array<double, 2> gps_xz{};
+    bool has_event = false;
+    std::string event_id;
+    int route_id = 0;
+    bool open_autoshow = false;
+    bool lock_viper_radio = false;
+  };
+  PendingCampaignHandoff pending_handoff;
+  struct PendingBarnRestore {
+    std::string barn_id;
+    std::string car_name;
+    double ready_after_s = 45.0;
+    double elapsed_s = 0.0;
+  };
+  std::vector<PendingBarnRestore> pending_barn_restorations;
+  bool pending_autoshow_open = false;
+  bool campaign_owns_post_race = false;
   bool boot_intro_checked = false;
   bool title_menu_phase = cli_title_menu;
   bool title_confirm_new = false;
@@ -4949,6 +4973,7 @@ int run_drive(int argc, char** argv) {
             std::snprintf(line, sizeof line, "barn find! %s is in the garage", named.c_str());
             popup = {"BARN FIND!", named + " IS IN YOUR GARAGE", vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
             campaign.on_barn_find(true, b.name, named, &audio_host);
+            pending_barn_restorations.push_back({b.name, named, 45.0, 0.0});
             std::printf("t %.2f s: %s found: %s (Data_Car %d) to the garage\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id);
           }
@@ -5112,6 +5137,7 @@ int run_drive(int argc, char** argv) {
               campaign.on_race_finished(cev, *a, pl, ncars, pop_before, current_pop_rank(), bal_before, career.credits,
                                         career.wristband_points, collected_wristband, won_car_name,
                                         have_career_catalog ? &career_catalog : nullptr, fmv_player, &audio_host);
+              campaign_owns_post_race = true;
             }
             save_due = true;  // the window saves the award at once
           }
@@ -6095,6 +6121,10 @@ int run_drive(int argc, char** argv) {
       int results_page = 0;
       bool results_table = false;  // the RACE RESULTS table over the banner (X opens, B closes)
       bool results_points = false;  // a wristband points page follows the cash reward
+      std::string pending_event_launch;
+      campaign_owns_post_race = false;
+      bool handoff_applied = false;
+      std::vector<race::CampaignAction> queued_campaign_actions;
       // The minimap in the UI atlas, blended by the UI pass (lower left;
       // mm_size 0: none).
       std::array<float, 4> mm_uv{};
@@ -6644,7 +6674,8 @@ int run_drive(int argc, char** argv) {
         }
         if (!show_title && !ceremony.active && !campaign_hide_hud && radio_popup_gpu.alpha > 0.005f)
           carview::draw_radio_popup_gpu(list, radio_popup_gpu, float(width), float(height));
-        if (story_intro.active()) story_intro.draw_hud(list, float(width), float(height));
+        if (story_intro.stage() == carview::StoryStage::kBootSplash)
+          story_intro.draw_hud(list, float(width), float(height));
         if (!show_title && !ceremony.active) {
           carview::campaign_ui::DrawContext cctx;
           cctx.screen_w = float(width);
@@ -8545,8 +8576,12 @@ int run_drive(int argc, char** argv) {
           }
           events_page.close();
           campaign.on_enter_event(ev, fmv_player, &audio_host);
-          next_event = ev.horizon_id;
-          running = false;
+          if (campaign.is_blocking_gameplay() && !headless) {
+            pending_event_launch = ev.horizon_id;
+          } else {
+            next_event = ev.horizon_id;
+            running = false;
+          }
           return true;
         };
         auto start_new_career = [&]() {
@@ -8589,10 +8624,17 @@ int run_drive(int argc, char** argv) {
           race.reset();
           race_event.clear();
           pre_loaner_car.clear();
-          next_car = race::CampaignFlow::kViperMedia;
-          if (!baked_ids.count(race::CampaignFlow::kViperCarId)) {
-            next_car = race::kStarterCarMedia;
-            if (!baked_ids.count(race::kStarterCarId) && !baked_cars.empty()) next_car = baked_cars[0];
+          story_intro.reset();
+          pending_handoff = {};
+          pending_autoshow_open = false;
+          if (auto vit = baked_ids.find(race::CampaignFlow::kViperCarId); vit != baked_ids.end()) {
+            next_car = vit->second;
+          } else if (auto sit = baked_ids.find(race::kStarterCarId); sit != baked_ids.end()) {
+            next_car = sit->second;
+          } else if (!baked_cars.empty()) {
+            next_car = baked_cars[0];
+          } else {
+            next_car = race::CampaignFlow::kViperMedia;
           }
           skip_end_save = true;
           new_career_save_pending = true;
@@ -9020,26 +9062,13 @@ int run_drive(int argc, char** argv) {
                 notice = "GPS SET TO " + rt.next_gps_label;
                 notice_until = vehicle.time() + 3.0;
               } else if (adv_key || adv_pad) {
-                const auto ca = campaign.advance_or_skip(fmv_player, &audio_host);
-                if (ca.grant_starter) {
-                  award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
-                  if (career.credits < 15000) career.credits = 15000;
-                }
-                if (ca.intro_completed) saved.intro_completed = true;
-                if (ca.save_requested) save_due = true;
+                queued_campaign_actions.push_back(campaign.advance_or_skip(fmv_player, &audio_host));
               }
               if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
             }
             if (campaign.flow().is_onboarding() && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
                 e.key.key == SDLK_TAB) {
-              const auto ca = campaign.advance_or_skip(fmv_player, &audio_host);
-              if (ca.swap_car && !ca.car_media.empty() && ca.car_media != car &&
-                  std::find(baked_cars.begin(), baked_cars.end(), ca.car_media) != baked_cars.end()) {
-                next_car = ca.car_media;
-                running = false;
-              }
-              if (ca.intro_completed) saved.intro_completed = true;
-              if (ca.save_requested) save_due = true;
+              queued_campaign_actions.push_back(campaign.advance_or_skip(fmv_player, &audio_host));
               continue;
             }
             if (fmv_player.active()) {
@@ -9054,7 +9083,8 @@ int run_drive(int argc, char** argv) {
               }
               continue;
             }
-            if (story_intro.active() && e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_TAB) {
+            if (story_intro.stage() == carview::StoryStage::kBootSplash && e.type == SDL_EVENT_KEY_DOWN &&
+                !e.key.repeat && e.key.key == SDLK_TAB) {
               const auto sa = story_intro.skip_stage();
               if (sa.play_fmv) {
                 const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), sa.fmv_id);
@@ -9064,8 +9094,7 @@ int run_drive(int argc, char** argv) {
                       &fmv_player);
                 }
               }
-              if (sa.open_autoshow) open_shop_or_autoshow(true);
-              if (sa.intro_finished) saved.intro_completed = true;
+              if (sa.enter_title_screen && !no_title) show_title = true;
               continue;
             }
             // 1. Title Screen input (when settings isn't open on top of it).
@@ -11593,13 +11622,63 @@ int run_drive(int argc, char** argv) {
             if (sa.open_autoshow) open_shop_or_autoshow(true);
             if (sa.intro_finished) saved.intro_completed = true;
           };
-          auto apply_campaign_action = [&](const race::CampaignAction& ca) {
-            if (ca.swap_car && !ca.car_media.empty() && ca.car_media != car) {
-              if (std::find(baked_cars.begin(), baked_cars.end(), ca.car_media) != baked_cars.end()) {
-                next_car = ca.car_media;
-                running = false;
-              }
+          auto find_baked_car = [&](const std::string& media, int64_t car_id) -> std::string {
+            if (car_id > 0) {
+              if (auto it = baked_ids.find(car_id); it != baked_ids.end()) return it->second;
             }
+            const std::string want = lower_ascii(media);
+            for (const auto& bc : baked_cars) {
+              if (lower_ascii(bc) == want) return bc;
+            }
+            return {};
+          };
+          auto apply_campaign_action = [&](const race::CampaignAction& ca) {
+            if (ca.grant_starter) {
+              award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
+              if (career.credits < 15000) career.credits = 15000;
+            }
+            if (ca.collect_yellow_wristband && collected_wristband < 0) collected_wristband = 0;
+            if (ca.intro_completed) saved.intro_completed = true;
+            if (ca.save_requested) save_due = true;
+
+            // Check whether a car swap requires restarting the session loop.
+            std::string swap_target;
+            if (ca.swap_car && !ca.car_media.empty()) {
+              swap_target = find_baked_car(ca.car_media, ca.car_id);
+            }
+            const bool needs_swap = !swap_target.empty() && lower_ascii(swap_target) != lower_ascii(car);
+            if (needs_swap) {
+              // Persist teleport, GPS, qualify-race launch, Autoshow, and Viper radio lock across the car swap!
+              pending_handoff = PendingCampaignHandoff{};
+              pending_handoff.active = true;
+              if (ca.teleport) {
+                pending_handoff.has_teleport = true;
+                pending_handoff.pos = ca.pos;
+                pending_handoff.heading = ca.heading;
+                spawn[0] = ca.pos[0];
+                spawn[1] = ca.pos[1];
+                spawn[2] = ca.pos[2];
+                spawn[3] = ca.heading;
+                have_spawn = true;
+              }
+              if (ca.set_gps) {
+                pending_handoff.has_gps = true;
+                pending_handoff.gps_label = ca.gps_label;
+                pending_handoff.gps_xz = ca.gps_xz;
+              }
+              if (ca.launch_event && !ca.event_id.empty()) {
+                pending_handoff.has_event = true;
+                pending_handoff.event_id = ca.event_id;
+                pending_handoff.route_id = ca.route_id;
+              }
+              pending_handoff.open_autoshow = ca.open_autoshow;
+              pending_handoff.lock_viper_radio = ca.lock_viper_radio;
+              campaign.save_to_save(saved);
+              next_car = swap_target;
+              running = false;
+              return;
+            }
+
             if (ca.teleport) {
               vehicle.reset(drive::Vec3{ca.pos[0], ca.pos[1], ca.pos[2]}, ca.heading);
             }
@@ -11615,18 +11694,50 @@ int run_drive(int argc, char** argv) {
                 grid_menu_selected = 0;
               }
             }
-            if (ca.grant_starter) {
-              award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
-              if (career.credits < 15000) career.credits = 15000;
+            if (ca.lock_viper_radio) {
+              if (!audio_host.radio_select_station_by_name("Bass Arena")) {
+                audio_host.radio_select_station_by_name("Bass");
+              }
+              audio_host.radio_trigger_immediate("AliceOpeningInterview1");
             }
-            if (ca.collect_yellow_wristband && collected_wristband < 0) collected_wristband = 0;
-            if (ca.open_autoshow) open_shop_or_autoshow(true);
-            if (ca.intro_completed) saved.intro_completed = true;
-            if (ca.save_requested) save_due = true;
+            if (ca.open_autoshow) pending_autoshow_open = true;
           };
+          if (!handoff_applied && pending_handoff.active && !headless) {
+            handoff_applied = true;
+            const PendingCampaignHandoff h = pending_handoff;
+            pending_handoff = {};
+            if (h.has_teleport) {
+              vehicle.reset(drive::Vec3{h.pos[0], h.pos[1], h.pos[2]}, h.heading);
+            }
+            if (h.has_gps && gps_solver.ready()) {
+              const drive::Vec3 at = vehicle.position();
+              fire_satnav_event(gps_nav.set_destination(h.gps_xz[0], h.gps_xz[1], traffic::GpsDestKind::kFestival,
+                                                        h.gps_label, at.x, at.z));
+            }
+            if (h.has_event && !h.event_id.empty()) {
+              std::string why;
+              if (start_race(h.event_id, why) || (h.route_id > 0 && start_race(std::to_string(h.route_id), why))) {
+                grid_menu_open = true;
+                grid_menu_selected = 0;
+              }
+            }
+            if (h.lock_viper_radio) {
+              if (!audio_host.radio_select_station_by_name("Bass Arena")) {
+                audio_host.radio_select_station_by_name("Bass");
+              }
+              audio_host.radio_trigger_immediate("AliceOpeningInterview1");
+            }
+            if (h.open_autoshow) pending_autoshow_open = true;
+          }
+          if (!queued_campaign_actions.empty()) {
+            auto batch = std::move(queued_campaign_actions);
+            queued_campaign_actions.clear();
+            for (const auto& ca : batch) apply_campaign_action(ca);
+          }
           if (campaign_new_career_pending && !headless) {
             campaign_new_career_pending = false;
             show_title = false;
+            story_intro.reset();
             std::array<double, 3> gate = {-1360.0, 2.0, -210.0};
             if (const auto* rc = have_career_catalog ? career_catalog.find_site(race::FestivalSite::kRaceCentral) : nullptr)
               gate = rc->pos;
@@ -11636,6 +11747,7 @@ int run_drive(int argc, char** argv) {
             boot_intro_checked = true;
             if (!cli_campaign_stage.empty()) {
               show_title = false;
+              story_intro.reset();
               race::CampaignAction ca;
               if (campaign.apply_cli_stage(cli_campaign_stage, fmv_player, &audio_host, ca))
                 apply_campaign_action(ca);
@@ -11647,32 +11759,34 @@ int run_drive(int argc, char** argv) {
               }
             } else if (story_intro_cli) {
               show_title = false;
+              story_intro.reset();
               apply_campaign_action(campaign.start_new_career(fmv_player, &audio_host));
             } else if (!skip_intro_movies && show_title) {
+              // StoryIntro strictly owns pre-Title boot-splash FMV playback ONLY;
+              // CampaignDirector owns 100% of Minute-0 -> Endgame career onboarding.
               show_title = false;
               apply_story_action(story_intro.begin_boot(game_root_of(), skip_intro_movies, start_in_single_player,
-                                                        have_saved && !saved.intro_completed));
+                                                        false));
             }
           }
           if (fmv_player.active()) {
             if (!fmv_player.update(frame_dt, true)) audio_host.set_fmv_audio(nullptr, nullptr);
           }
-          // Authentic PressStart.wmv animated title screen backdrop when present & decodable;
+          // Authentic PressStart.wmv seamless looping animated title screen backdrop when present & decodable;
           // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.
           if (show_title && !fmv_player.active() && !headless) {
             if (!title_video_tried) {
               title_video_tried = true;
               const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), carview::FmvMovieId::kPressStart);
-              if (!mp.empty()) title_video.open(mp, language, 960, 540);
+              if (!mp.empty()) title_video.open(mp, language, 960, 540, nullptr, true);
             }
-            if (title_video.active() && !title_video.update(frame_dt, false)) {
-              const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), carview::FmvMovieId::kPressStart);
-              if (!mp.empty()) title_video.open(mp, language, 960, 540);
+            if (title_video.active()) {
+              title_video.update(frame_dt, false);
             }
           } else if (title_video.active()) {
             title_video.close();
           }
-          if (story_intro.active()) {
+          if (story_intro.stage() == carview::StoryStage::kBootSplash) {
             const drive::Vec3 vp = vehicle.position();
             const bool rf = race && race->player_finished();
             apply_story_action(story_intro.update(frame_dt, {vp.x, vp.z}, fmv_player.active(), rf));
@@ -11685,6 +11799,42 @@ int run_drive(int argc, char** argv) {
             for (SDL_Gamepad* pad : pads)
               if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) hold_skip = true;
             apply_campaign_action(campaign.update(frame_dt, {vp.x, vp.z}, fmv_player, &audio_host, rf, hold_skip));
+            // Deferred event launch: once a Boss/Showcase/Finale/Pre-Race intro finishes or is skipped, enter the race!
+            if (!pending_event_launch.empty() && !campaign.is_blocking_gameplay() && running) {
+              next_event = pending_event_launch;
+              pending_event_launch.clear();
+              running = false;
+            }
+            // Deduplicated post-race handoff: once CampaignDirector's RewardTally/Victory/Credits finishes, exit race cleanly.
+            if (campaign_owns_post_race && race && race->player_finished() &&
+                campaign.flow().stage() == race::CampaignStage::kFreeRoam && running) {
+              campaign_owns_post_race = false;
+              results_page = 0;
+              if (!race->post_race_spawn(spawn)) {
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                spawn[0] = at.x, spawn[1] = at.y, spawn[2] = at.z, spawn[3] = std::atan2(f.x, f.z);
+              }
+              have_spawn = true;
+              leave_race = true;
+              running = false;
+            }
+            // Tutorial 2-car Autoshow handoff once parts_db is ready in Free Roam.
+            if (pending_autoshow_open && !campaign.is_blocking_gameplay() && !autoshow.is_open() && !race &&
+                parts_db.valid() && parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+              pending_autoshow_open = false;
+              open_shop_or_autoshow(true);
+            }
+            // Barn find restoration completion timer -> triggers Dak Stewart's on_barn_restored cinematic!
+            if (!pending_barn_restorations.empty() && !race && !campaign.is_blocking_gameplay() && !menu.open &&
+                !map_open && !autoshow.is_open() && !shop.is_open() && !garage_open && !events_page.is_open()) {
+              pending_barn_restorations.front().elapsed_s += frame_dt;
+              if (pending_barn_restorations.front().elapsed_s >= pending_barn_restorations.front().ready_after_s) {
+                const auto br = pending_barn_restorations.front();
+                pending_barn_restorations.erase(pending_barn_restorations.begin());
+                apply_campaign_action(campaign.on_barn_restored(br.barn_id, br.car_name, &audio_host));
+              }
+            }
           }
           {
             const drive::Vec3 vp = vehicle.position();

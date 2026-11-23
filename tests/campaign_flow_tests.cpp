@@ -55,6 +55,8 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.stage() == race::CampaignStage::kViperIntroDrive, "FMV finish enters ViperIntroDrive");
     check(act.swap_car && act.car_media == race::CampaignFlow::kViperMedia, "swaps to 2013 SRT Viper GTS");
     check(act.set_gps, "sets GPS to Horizon Festival entrance");
+    check(act.lock_viper_radio, "locks Bass Arena 2-track opening playlist during Viper drive");
+    check(race::CampaignFlow::kViperOpeningPlaylist.size() == 2, "Viper opening playlist has 2 tracks");
     check(flow.completed_cutscenes().count("fmv_01_opening") == 1, "records opening cutscene completed");
     check(flow.hud_reveal_alpha() < 0.05f, "HUD starts hidden at t=0 of Viper drive");
   }
@@ -82,11 +84,13 @@ void test_minute0_to_endgame_state_machine() {
     check(act.grant_starter && act.collect_yellow_wristband, "grants Corrado starter & Yellow Wristband");
     check(flow.dialogs().active(), "Alice/Dak/Holly orientation dialog queued");
   }
-  // 6. Advance registration -> seamless Free Roam transition with initial objective.
+  // 6. Advance registration -> seamless Free Roam transition with tutorial Autoshow handoff & initial objective.
   {
     auto act = flow.advance_or_skip();
     check(flow.stage() == race::CampaignStage::kFreeRoam, "registration advances to FreeRoam");
     check(act.intro_completed, "marks intro_completed");
+    check(act.open_autoshow && act.grant_starter && act.collect_yellow_wristband,
+          "registration triggers tutorial 2-car Autoshow handoff");
     auto obj = flow.next_objective(0, 0, 250);
     check(obj.valid && !obj.title.empty(), "FreeRoam has valid next campaign objective");
   }
@@ -120,14 +124,55 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.stage() == race::CampaignStage::kBarnRestored, "barn restored enters BarnRestored handoff");
     flow.advance_or_skip();
   }
-  // 9. Star Showdown & Darius Flynt Finale -> PostRaceFinish -> RewardTally -> FinaleVictory -> Credits -> FreeRoam!
+  // 8b. Winning HEADLINE_EVENT unlocks Darius Flynt NEM_FINAL showdown (never skips straight to Credits!).
+  {
+    race::CareerEvent headline_ev;
+    headline_ev.horizon_id = "HEADLINE_EVENT";
+    headline_ev.style = 6;
+    headline_ev.level = 6;
+    flow.on_enter_event(headline_ev);
+    check(flow.stage() == race::CampaignStage::kFinaleIntro && flow.is_blocking_gameplay(),
+          "HEADLINE_EVENT enters blocking FinaleIntro before launch");
+    flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kFreeRoam, "HEADLINE_EVENT intro exits cleanly for deferred launch");
+
+    race::RaceAward haw;
+    haw.base_credits = 50000;
+    haw.credits = 50000;
+    flow.on_race_finished(&headline_ev, haw, 1, 8, 15, 5, 250000, 300000, 10000, 6, "");
+    check(!flow.finale_complete(), "HEADLINE_EVENT win does NOT prematurely mark finale_complete");
+    check(flow.pending_darius_showdown(), "HEADLINE_EVENT win unlocks pending_darius_showdown");
+    check(!flow.reward_tally().is_finale, "HEADLINE_EVENT tally does NOT skip to Credits");
+    check(flow.reward_tally().next_unlock_headline.find("DARIUS FLYNT") != std::string::npos,
+          "HEADLINE_EVENT tally announces Darius Flynt Showdown unlock");
+
+    // Advance PostRaceFinish -> RewardTally -> FreeRoam (must NOT enter FinaleVictory/Credits yet!).
+    flow.advance_or_skip();  // -> RewardTally
+    flow.advance_or_skip();  // finish tally animation
+    flow.advance_or_skip();  // -> FreeRoam
+    check(flow.stage() == race::CampaignStage::kFreeRoam,
+          "HEADLINE_EVENT win returns to FreeRoam so player can race Darius Flynt");
+    const auto obj = flow.next_objective(10000, 6, 5);
+    check(obj.valid && obj.title.find("DARIUS FLYNT") != std::string::npos,
+          "next_objective routes directly to Darius Flynt NEM_FINAL showdown");
+
+    // Verify pending_darius_showdown persists across save/load round-trip.
+    race::CampaignSaveState saved_mid;
+    flow.save_to(saved_mid);
+    race::CampaignFlow restored_mid;
+    restored_mid.load_from(saved_mid);
+    check(restored_mid.pending_darius_showdown() && !restored_mid.finale_complete(),
+          "pending_darius_showdown persists cleanly across save/load");
+  }
+  // 9. Star Showdown & Darius Flynt Finale (NEM_FINAL) -> PostRaceFinish -> RewardTally -> FinaleVictory -> Credits -> FreeRoam!
   {
     race::CareerEvent finale_ev;
     finale_ev.horizon_id = "NEM_FINAL";
     finale_ev.style = 5;
     finale_ev.level = 6;
     flow.on_enter_event(finale_ev);
-    check(flow.stage() == race::CampaignStage::kFinaleIntro, "NEM_FINAL enters FinaleIntro");
+    check(flow.stage() == race::CampaignStage::kFinaleIntro && flow.is_blocking_gameplay(),
+          "NEM_FINAL enters blocking FinaleIntro");
     flow.advance_or_skip();
 
     race::RaceAward aw;
@@ -136,7 +181,7 @@ void test_minute0_to_endgame_state_machine() {
     aw.difficulty_bonus = 15000;
     aw.credits = 65000;
     aw.wristband_points = 0;
-    flow.on_race_finished(&finale_ev, aw, 1, 2, 12, 1, 5000000, 5065000, 10000, 6, "2010 Ferrari 599XX");
+    flow.on_race_finished(&finale_ev, aw, 1, 2, 5, 1, 300000, 365000, 10000, 6, "2010 Ferrari 599XX");
     check(flow.stage() == race::CampaignStage::kPostRaceFinish, "race finish enters PostRaceFinish camera");
     flow.advance_or_skip();
     check(flow.stage() == race::CampaignStage::kRewardTally, "PostRaceFinish transitions to RewardTally");
@@ -146,7 +191,7 @@ void test_minute0_to_endgame_state_machine() {
     flow.update(1.5, {0.0, 0.0}, false, false);
     check(flow.reward_tally().displayed_credits() > 0 && flow.reward_tally().displayed_credits() < 65000,
           "credits counter rolls smoothly");
-    check(flow.reward_tally().displayed_pop_rank() < 12 && flow.reward_tally().displayed_pop_rank() >= 1,
+    check(flow.reward_tally().displayed_pop_rank() < 5 && flow.reward_tally().displayed_pop_rank() >= 1,
           "popularity rank climbs smoothly");
 
     // First skip completes tally animation; second skip transitions to FinaleVictory.
@@ -155,7 +200,11 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.reward_tally().displayed_credits() == 65000, "tally finishes at full credits");
     flow.advance_or_skip();
     check(flow.stage() == race::CampaignStage::kFinaleVictory, "Finale win enters FinaleVictory");
-    check(flow.finale_complete(), "finale_complete marked true");
+    check(flow.finale_complete() && !flow.pending_darius_showdown(),
+          "NEM_FINAL win marks finale_complete and clears pending_darius_showdown");
+    check(flow.cinematic().subheadline.find("50,000 CR") != std::string::npos &&
+              flow.cinematic().subheadline.find("5,000,000") == std::string::npos,
+          "FinaleVictory displays authentic 50,000 CR reward (no fake 5,000,000 CR)");
     flow.advance_or_skip();
     check(flow.stage() == race::CampaignStage::kCredits, "FinaleVictory transitions to Credits");
     flow.advance_or_skip();
@@ -241,7 +290,7 @@ void test_director_cameras_cli_stages_and_ui_raster() {
 
   const char* stages[] = {"intro", "viper_drive", "dialog", "registration", "wristband_yellow",
                           "wristband_gold", "reward_tally", "showcase", "boss_ramona", "boss_darius",
-                          "barn_find", "barn_restored", "finale", "credits"};
+                          "finale_intro", "barn_find", "barn_restored", "finale", "credits"};
   for (const char* st : stages) {
     race::CampaignAction act;
     check(dir.apply_cli_stage(st, fmv, nullptr, act), "CLI stage accepted");

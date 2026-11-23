@@ -94,7 +94,7 @@ bool parse_campaign_stage(std::string_view name, CampaignStage& out) {
   if (k == "pre_race" || k == "grid") { out = CampaignStage::kPreRaceGrid; return true; }
   if (k == "post_race" || k == "finish") { out = CampaignStage::kPostRaceFinish; return true; }
   if (k == "reward_tally" || k == "tally") { out = CampaignStage::kRewardTally; return true; }
-  if (k == "finale_intro") { out = CampaignStage::kFinaleIntro; return true; }
+  if (k == "finale_intro" || k == "darius_showdown") { out = CampaignStage::kFinaleIntro; return true; }
   if (k == "finale" || k == "finale_victory") { out = CampaignStage::kFinaleVictory; return true; }
   if (k == "credits") { out = CampaignStage::kCredits; return true; }
   return false;
@@ -603,6 +603,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       act.set_gps = true;
       act.gps_label = "HORIZON FESTIVAL MAIN GATE";
       act.gps_xz = {festival_gate_[0], festival_gate_[2]};
+      act.lock_viper_radio = true;
       dist_to_festival_ = std::hypot(festival_gate_[0] - viper_spawn_[0], festival_gate_[2] - viper_spawn_[2]);
       act.save_requested = true;
       break;
@@ -837,12 +838,13 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
 
     case CampaignStage::kFinaleVictory:
       finale_complete_ = true;
+      pending_darius_showdown_ = false;
       cinematic_.kind = CutsceneKind::kFinaleVictoryCinematic;
       cinematic_.duration_s = 8.5;
       cinematic_.letterbox_amount = 1.0f;
       cinematic_.eyebrow = "HORIZON FESTIVAL CHAMPION  •  COLORADO";
       cinematic_.headline = "DARIUS FLYNT DETHRONED!";
-      cinematic_.subheadline = "YOU ARE THE NEW FORZA HORIZON CHAMPION  •  5,000,000 CR + FERRARI 599XX";
+      cinematic_.subheadline = "YOU ARE THE NEW FORZA HORIZON CHAMPION  •  50,000 CR + FERRARI 599XX";
       cinematic_.reward_car = "2010 Ferrari 599XX";
       cinematic_.detail_line = "Congratulations! From rookie #250 to undisputed Horizon Champion across Colorado.";
       cinematic_.badge_text = "FESTIVAL CHAMPION";
@@ -943,7 +945,9 @@ CampaignAction CampaignFlow::update(double dt, std::array<double, 2> player_xz, 
         mark_cutscene_done(CutsceneKind::kWristbandStageCinematic);
         auto out = enter_stage(CampaignStage::kFreeRoam, TransitionKind::kBrushWipe);
         out.intro_completed = true;
-        out.open_autoshow = false;
+        out.grant_starter = true;
+        out.collect_yellow_wristband = true;
+        out.open_autoshow = true;
         out.set_gps = true;
         out.gps_label = "RACE CENTRAL  •  YELLOW WRISTBAND EVENTS";
         out.gps_xz = {festival_gate_[0], festival_gate_[2]};
@@ -1020,6 +1024,11 @@ CampaignAction CampaignFlow::advance_or_skip() {
       auto out = enter_stage(CampaignStage::kFreeRoam, TransitionKind::kBrushWipe);
       out.intro_completed = true;
       out.grant_starter = true;
+      out.collect_yellow_wristband = true;
+      out.open_autoshow = true;
+      out.set_gps = true;
+      out.gps_label = "RACE CENTRAL  •  YELLOW WRISTBAND EVENTS";
+      out.gps_xz = {festival_gate_[0], festival_gate_[2]};
       return out;
     }
     case CampaignStage::kPostRaceFinish:
@@ -1079,10 +1088,19 @@ CampaignAction CampaignFlow::skip_onboarding_all() {
 }
 
 CampaignAction CampaignFlow::on_enter_event(const CareerEvent& ev) {
-  if (ev.style == 6 || upper_ascii(ev.horizon_id) == "HEADLINE_EVENT" || upper_ascii(ev.horizon_id) == "NEM_FINAL") {
+  const std::string up_id = upper_ascii(ev.horizon_id);
+  if (ev.style == 6 || up_id == "HEADLINE_EVENT" || up_id == "NEM_FINAL") {
     active_boss_idx_ = int(boss_rivals().size()) - 1;
     auto act = enter_stage(CampaignStage::kFinaleIntro, TransitionKind::kBrushWipe);
-    cinematic_.headline = upper_ascii(ev.horizon_id) == "HEADLINE_EVENT" ? "HORIZON FESTIVAL FINALE" : "DARIUS FLYNT";
+    if (up_id == "HEADLINE_EVENT" || (ev.style == 6 && up_id != "NEM_FINAL")) {
+      cinematic_.eyebrow = "HORIZON FESTIVAL FINALE  •  CHAMPIONSHIP QUALIFIER";
+      cinematic_.headline = "HORIZON FESTIVAL FINALE";
+      cinematic_.subheadline = "DEFEAT THE TOP FINALISTS TO CHALLENGE DARIUS FLYNT";
+      cinematic_.detail_line = "WIN THE FINALE TO UNLOCK THE CHAMPION VS CHAMPION SHOWDOWN (NEM_FINAL)";
+      cinematic_.badge_text = "FESTIVAL FINALE";
+    } else {
+      cinematic_.headline = "DARIUS FLYNT";
+    }
     return act;
   }
   if (const BossRivalSpec* boss = find_boss_by_event(ev.horizon_id)) {
@@ -1150,6 +1168,7 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
     tally_.wb_tier_up = false;
   }
 
+  bool triggered_darius_unlock = false;
   if (ev) {
     if (const BossRivalSpec* b = find_boss_by_event(ev->horizon_id)) {
       tally_.is_boss = true;
@@ -1157,12 +1176,16 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
       if (b->is_finale_champion && place == 1) {
         tally_.is_finale = true;
         finale_complete_ = true;
+        pending_darius_showdown_ = false;
       }
     } else if (ev->style == 6 || upper_ascii(ev->horizon_id) == "HEADLINE_EVENT") {
-      tally_.is_finale = true;
+      // Winning the Horizon Festival Finale unlocks Darius Flynt's 1-on-1 Champion vs Champion
+      // Showdown (NEM_FINAL) rather than skipping straight to Credits!
       if (place == 1) {
-        finale_complete_ = true;
+        pending_darius_showdown_ = true;
+        triggered_darius_unlock = true;
         unlocked_bosses_.insert("darius");
+        completed_cutscenes_.insert("headline_event_won");
       }
     } else if (const ShowcaseMilestoneSpec* sc = find_showcase_by_event(ev->horizon_id)) {
       tally_.is_showcase = true;
@@ -1170,12 +1193,15 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
     }
   }
 
-  if (tally_.wb_tier_up) {
+  if (triggered_darius_unlock) {
+    tally_.next_unlock_headline = "DARIUS FLYNT SHOWDOWN UNLOCKED!";
+    tally_.next_unlock_detail = "FACE DARIUS FLYNT IN THE CHAMPION VS CHAMPION SHOWDOWN (NEM_FINAL)";
+  } else if (tally_.wb_tier_up) {
     tally_.next_unlock_headline = tally_.wb_next_name + " READY!";
     tally_.next_unlock_detail = "RETURN TO RACE CENTRAL TO COLLECT YOUR WRISTBAND";
   } else if (tally_.is_finale && place == 1) {
     tally_.next_unlock_headline = "HORIZON FESTIVAL CHAMPION!";
-    tally_.next_unlock_detail = "PROCEED TO CHAMPIONSHIP CELEBRATION & CREDITS";
+    tally_.next_unlock_detail = "50,000 CR + 2010 FERRARI 599XX  •  PROCEED TO CHAMPIONSHIP CELEBRATION";
   } else if (!prize_car_name.empty()) {
     tally_.next_unlock_headline = "NEW PRIZE CAR WON!";
     tally_.next_unlock_detail = prize_car_name + " DELIVERED TO YOUR GARAGE";
@@ -1189,7 +1215,12 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
   }
 
   // Trigger post-race voice line.
-  if (place == 1) {
+  if (triggered_darius_unlock) {
+    dialogs_.enqueue(
+        {"darius_challenge_headline", CharacterId::kDariusFlynt, "", "", "PostFinalRace", "",
+         "Not bad, rookie. You took the Horizon Finale — now meet me one-on-one in NEM_FINAL for the crown and my Ferrari 599XX.",
+         6.5, 10, false, true});
+  } else if (place == 1) {
     dialogs_.enqueue(
         {"post_race_win_" + tally_.event_title, CharacterId::kAliceHart, "", "", "FirstPostRaceWinner", "",
          "Brilliant win! The crowd at the Festival is loving it — check your rewards and next unlocked events.",
@@ -1417,6 +1448,17 @@ bool CampaignFlow::jump_to_cli_stage(std::string_view cli_stage, CampaignAction&
     dialogs_.update(1.2);
     return true;
   }
+  if (k == "finale_intro" || k == "darius_showdown") {
+    active_boss_idx_ = int(boss_rivals().size()) - 1;
+    const auto& spec = boss_rivals()[size_t(active_boss_idx_)];
+    out_action = enter_stage(CampaignStage::kFinaleIntro, TransitionKind::kNone);
+    out_action.swap_car = true;
+    out_action.car_media = spec.car_media;
+    out_action.car_id = spec.car_id;
+    stage_time_ = 1.8;
+    dialogs_.update(1.3);
+    return true;
+  }
   if (k == "finale" || k == "finale_victory") {
     out_action = enter_stage(CampaignStage::kFinaleVictory, TransitionKind::kNone);
     out_action.swap_car = true;
@@ -1474,6 +1516,9 @@ void CampaignFlow::load_from(const CampaignSaveState& in) {
   unlocked_showcases_.clear();
   unlocked_showcases_.insert(in.unlocked_showcases.begin(), in.unlocked_showcases.end());
   finale_complete_ = in.finale_complete;
+  pending_darius_showdown_ =
+      !finale_complete_ &&
+      (completed_cutscenes_.count("headline_event_won") > 0 || unlocked_bosses_.count("darius") > 0);
 }
 
 CampaignObjective CampaignFlow::next_objective(int wristband_points, int collected_wristband, int pop_rank,
@@ -1517,12 +1562,27 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
     return obj;
   }
 
-  // 2. Horizon Finale / Darius Flynt when Gold Wristband + 10,000 pts reached!
+  // 2. Champion vs Champion Showdown (Darius Flynt, NEM_FINAL) after winning HEADLINE_EVENT!
+  if (!finale_complete_ && pending_darius_showdown_) {
+    obj.valid = true;
+    obj.title = "CHAMPION VS CHAMPION: DARIUS FLYNT";
+    obj.detail = "BEAT DARIUS FLYNT IN NEM_FINAL FOR THE HORIZON CROWN & FERRARI 599XX";
+    obj.gps_label = "DARIUS FLYNT SHOWDOWN  •  NEM_FINAL";
+    obj.is_urgent = true;
+    if (catalog) {
+      if (const CareerEvent* dev = catalog->find_event("NEM_FINAL"); dev && dev->has_trigger) {
+        obj.gps_xz = {dev->trigger_pos[0], dev->trigger_pos[2]};
+      }
+    }
+    return obj;
+  }
+
+  // 2b. Horizon Finale (HEADLINE_EVENT) when Gold Wristband + 10,000 pts reached!
   if (!finale_complete_ && collected_wristband >= 6 && wristband_points >= 10000) {
     obj.valid = true;
     obj.title = "HORIZON FESTIVAL FINALE";
-    obj.detail = "CHALLENGE DARIUS FLYNT FOR THE HORIZON CHAMPIONSHIP";
-    obj.gps_label = "HORIZON FINALE  •  DARIUS FLYNT";
+    obj.detail = "WIN THE FINALE TO CHALLENGE DARIUS FLYNT FOR THE HORIZON CROWN";
+    obj.gps_label = "HORIZON FINALE  •  HEADLINE EVENT";
     obj.is_urgent = true;
     if (catalog) {
       if (const CareerEvent* fev = catalog->find_event("HEADLINE_EVENT"); fev && fev->has_trigger) {

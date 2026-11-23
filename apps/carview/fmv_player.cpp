@@ -313,7 +313,7 @@ bool FmvPlayer::decode_frame_at(const std::filesystem::path& wmv_path, double ti
 }
 
 bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view language, int target_w, int target_h,
-                     std::string* error) {
+                     std::string* error, bool loop) {
   close();
   std::error_code ec;
   if (wmv_path.empty() || !std::filesystem::exists(wmv_path, ec)) {
@@ -368,12 +368,13 @@ bool FmvPlayer::open(const std::filesystem::path& wmv_path, std::string_view lan
   frame_serial_ = 1;
   uploaded_serial_ = 0;
 
-  const std::string vcmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error -i " +
+  const std::string loop_flag = loop ? " -stream_loop -1" : "";
+  const std::string vcmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error" + loop_flag + " -i " +
                            quote_arg(wmv_path.string()) + " -map 0:v:0 -vf scale=" + std::to_string(width_) + ":" +
                            std::to_string(height_) + " -pix_fmt rgba -f rawvideo pipe:1";
   video_thread_ = std::thread(&FmvPlayer::video_worker, this, vcmd, width_, height_, fps_);
 
-  if (!probed || info.has_audio) {
+  if (!loop && (!probed || info.has_audio)) {
     const std::string acmd = quote_arg(ffmpeg.string()) + " -hide_banner -nostdin -v error -i " +
                              quote_arg(wmv_path.string()) + " -map 0:a:" + std::to_string(std::max(0, audio_idx)) +
                              "? -ac 2 -ar " + std::to_string(kAudioRate) + " -f f32le pipe:1";

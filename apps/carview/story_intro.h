@@ -92,6 +92,14 @@ class StoryIntro {
   StoryAction skip_all();
   // Advances directly to a target stage (for tests and headless capture).
   StoryAction advance_to(StoryStage stage);
+  void reset() {
+    stage_ = StoryStage::kInactive;
+    splash_queue_.clear();
+    beats_.clear();
+    active_speaker_.clear();
+    active_caption_.clear();
+    caption_timer_ = 0.0;
+  }
 
   StoryStage stage() const { return stage_; }
   bool active() const { return stage_ != StoryStage::kInactive && stage_ != StoryStage::kCompleted; }

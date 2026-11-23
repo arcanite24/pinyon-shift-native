@@ -338,8 +338,8 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
               : (st == race::CampaignStage::kFinaleIntro
                      ? "STAKES: HORIZON CROWN  •  50,000 CR + FERRARI 599XX"
                      : "STAKES: 1-ON-1 PINK SLIP  •  RIVAL CAR KEYS");
-      ui::TextStyle st_ts = ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk);
-      ui4::fit_text(stakes, st_ts, card_w - 54.0f * s, 10.5f * s);
+      ui::TextStyle st_ts = ui4::style(ui::Font::kE, 12.5f * s, ui4::kInk);
+      ui4::fit_text(stakes, st_ts, card_w - 64.0f * s, 8.5f * s);
       l.text(x0 + 28.0f * s, py0 + 57.0f * s, stakes, st_ts);
 
       if (!cin.detail_line.empty()) {

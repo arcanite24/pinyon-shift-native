@@ -94,7 +94,7 @@ class FmvPlayer {
 
   // Starts streaming video and audio from `wmv_path` (or `.bik` movie via FFmpeg).
   bool open(const std::filesystem::path& wmv_path, std::string_view language = "EN", int target_w = 640,
-            int target_h = 360, std::string* error = nullptr);
+            int target_h = 360, std::string* error = nullptr, bool loop = false);
   // Opens a canonical movie ID from `game_root` (checking `media/movies/*.bik` and
   // `media/ui/videos/*.wmv`), or falls back gracefully to a stylized synthetic cutscene
   // when the movie file is absent in minimal fixtures.

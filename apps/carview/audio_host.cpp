@@ -366,6 +366,23 @@ void AudioHost::radio_trigger_festival_update(std::string_view gameplay_event) {
   if (radio_) engine_.radio_trigger_festival_update(gameplay_event);
 }
 
+bool AudioHost::radio_select_station_by_name(std::string_view substr) {
+  if (!radio_ || substr.empty()) return false;
+  auto lower = [](std::string_view sv) {
+    std::string out(sv);
+    for (char& c : out) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+  };
+  const std::string want = lower(substr);
+  for (size_t i = 0; i < radio_data_.stations.size(); ++i) {
+    if (lower(radio_data_.stations[i].name).find(want) != std::string::npos) {
+      engine_.radio_select(int(i));
+      return true;
+    }
+  }
+  return false;
+}
+
 void AudioHost::update_world_acoustics(float x, float y, float z, float heading_rad) {
   if (radio_) engine_.set_listener_pose({x, y, z}, heading_rad);
   if (has_acoustics_) engine_.set_acoustics_sample(acoustics_.evaluate(x, y, z));

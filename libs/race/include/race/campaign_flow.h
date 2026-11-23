@@ -356,6 +356,7 @@ struct CampaignAction {
   bool save_requested = false;
   bool intro_completed = false;
   bool enter_free_roam = false;
+  bool lock_viper_radio = false;
 };
 
 // ---- Serializable Campaign Save Mirror ----
@@ -378,6 +379,10 @@ class CampaignFlow {
   static constexpr const char* kQualifyEventId = "FESTIVAL_SECOND";
   static constexpr int kQualifyRouteId = 16;
   static constexpr double kFestivalArrivalRadiusM = 120.0;
+  static constexpr std::array<const char*, 2> kViperOpeningPlaylist = {
+      "Avicii - Levels (Skrillex Remix)",
+      "Porter Robinson - Language",
+  };
 
   // Starts a fresh Minute-0 New Career sequence.
   CampaignAction start_new_career(bool skip_movies,
@@ -438,6 +443,7 @@ class CampaignFlow {
   const std::set<std::string>& unlocked_bosses() const { return unlocked_bosses_; }
   const std::set<std::string>& unlocked_showcases() const { return unlocked_showcases_; }
   bool finale_complete() const { return finale_complete_; }
+  bool pending_darius_showdown() const { return pending_darius_showdown_; }
   int credits_scroll_line_count() const;
 
   CampaignObjective next_objective(int wristband_points, int collected_wristband, int pop_rank,

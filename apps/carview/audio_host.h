@@ -111,6 +111,7 @@ class AudioHost {
   void radio_trigger_special(std::string_view gameplay_event);
   void radio_trigger_immediate(std::string_view gameplay_event);
   void radio_trigger_festival_update(std::string_view gameplay_event);
+  bool radio_select_station_by_name(std::string_view substr);
   void update_world_acoustics(float x, float y, float z, float heading_rad);
   void radio_press(int dir);
   bool handle_key(SDL_Keycode key, SDL_Keymod mod, std::string& notice);

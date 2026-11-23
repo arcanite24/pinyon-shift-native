@@ -95,6 +95,14 @@ void CampaignDirector::dispatch_action_media(const race::CampaignAction& act, Fm
           &fmv);
     }
   }
+  if (act.lock_viper_radio && audio) {
+    // Authentic FH1 Minute-0 Viper opening: tune to Horizon Bass Arena for the
+    // 2-track festival drive playlist ("Levels (Skrillex Remix)" -> "Language").
+    if (!audio->radio_select_station_by_name("Bass Arena")) {
+      audio->radio_select_station_by_name("Bass");
+    }
+    audio->radio_trigger_immediate("AliceOpeningInterview1");
+  }
   pump_audio(audio);
 }
 
