@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include "render_modern.h"
+
 namespace carview {
 
 // ---- Graphics Presets (Desktop + Android) ----------------------------------
@@ -24,6 +26,10 @@ struct GraphicsPresetSpec {
   float anisotropy = 16.0f;
   int target_fps = 60;
   float env_map_rate = 1.0f;     // 0.25 on Android presets
+  modern::SsaoQuality gtao = modern::SsaoQuality::kHigh;
+  modern::ContactShadows contact_shadows = modern::ContactShadows::kHigh;
+  bool hex_tiling = true;
+  modern::VelocityBlur velocity_blur = modern::VelocityBlur::kLow;
 };
 
 bool resolve_graphics_preset(std::string_view name, GraphicsPresetSpec& out);

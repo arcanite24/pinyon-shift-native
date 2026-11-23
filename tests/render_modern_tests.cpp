@@ -97,7 +97,62 @@ void test_textures_and_ao() {
   CHECK(ssao_taps(SsaoQuality::kOff) == 0);
   CHECK(ssao_taps(SsaoQuality::kLow) < ssao_taps(SsaoQuality::kMedium));
   CHECK(ssao_taps(SsaoQuality::kMedium) < ssao_taps(SsaoQuality::kHigh));
+  CHECK(ssao_taps(SsaoQuality::kHigh) < ssao_taps(SsaoQuality::kUltra));
   CHECK(ssao_radius_m(SsaoQuality::kHigh) > ssao_radius_m(SsaoQuality::kLow));
+  CHECK(ssao_radius_m(SsaoQuality::kUltra) > ssao_radius_m(SsaoQuality::kHigh));
+  // XeGTAO slice/step/resolution scaling across tiers.
+  CHECK(gtao_slices(SsaoQuality::kOff) == 0 && gtao_steps(SsaoQuality::kOff) == 0);
+  CHECK(gtao_slices(SsaoQuality::kLow) == 2 && gtao_steps(SsaoQuality::kLow) == 2 && !gtao_full_res(SsaoQuality::kLow));
+  CHECK(gtao_slices(SsaoQuality::kHigh) == 3 && gtao_steps(SsaoQuality::kHigh) == 3 && !gtao_full_res(SsaoQuality::kHigh));
+  CHECK(gtao_slices(SsaoQuality::kUltra) == 3 && gtao_steps(SsaoQuality::kUltra) == 4 && gtao_full_res(SsaoQuality::kUltra));
+  // Screen-Space Contact Shadows (SSCS) scaling.
+  CHECK(contact_shadow_steps(ContactShadows::kOff) == 0);
+  CHECK(contact_shadow_steps(ContactShadows::kLow) == 8 && !contact_shadow_full_res(ContactShadows::kLow));
+  CHECK(contact_shadow_steps(ContactShadows::kHigh) == 10 && !contact_shadow_full_res(ContactShadows::kHigh));
+  CHECK(contact_shadow_steps(ContactShadows::kUltra) == 12 && contact_shadow_full_res(ContactShadows::kUltra));
+  CHECK(parse_contact_shadows("ultra") == ContactShadows::kUltra);
+  CHECK(std::string(contact_shadows_name(ContactShadows::kHigh)) == "high");
+  // McGuire Velocity Motion Blur taps.
+  CHECK(velocity_blur_taps(VelocityBlur::kOff) == 0);
+  CHECK(velocity_blur_taps(VelocityBlur::kLow) == 9);
+  CHECK(velocity_blur_taps(VelocityBlur::kHigh) == 13);
+  CHECK(parse_velocity_blur("high") == VelocityBlur::kHigh);
+}
+
+void test_sota_tonemappers() {
+  // Default tonemapper preserves authentic FH1 Hable.
+  GraphicsSettings def;
+  CHECK(def.tonemapper == Tonemapper::kHable);
+  CHECK(std::string(tonemapper_name(Tonemapper::kHable)) == "hable");
+  CHECK(parse_tonemapper("agx") == Tonemapper::kAgX);
+  CHECK(parse_tonemapper("gt") == Tonemapper::kGtFilmic);
+  CHECK(parse_tonemapper("pbr-neutral") == Tonemapper::kPbrNeutral);
+  CHECK(parse_tonemapper("unknown") == Tonemapper::kHable);
+
+  // All 3 SOTA curves must map 0 -> ~0, be strictly monotonic on grey ramp, stay bounded <= 1.0 at HDR 50.0,
+  // and desaturate/compress bright highlights smoothly without negative values.
+  auto verify_curve = [](auto fn, float mid_lo, float mid_hi) {
+    const auto z = fn({0.0f, 0.0f, 0.0f});
+    CHECK(z[0] >= 0.0f && z[0] < 0.01f);
+    float prev = -1.0f;
+    for (float x : {0.0f, 0.05f, 0.18f, 0.5f, 1.0f, 2.5f, 8.0f, 32.0f, 50.0f}) {
+      const auto y = fn({x, x, x});
+      CHECK(y[0] >= prev - 1e-4f && y[0] <= 1.0f);
+      CHECK(near(y[0], y[1], 2e-3f) && near(y[1], y[2], 2e-3f));
+      prev = y[0];
+    }
+    const auto mid = fn({0.18f, 0.18f, 0.18f});
+    CHECK(mid[0] >= mid_lo && mid[0] <= mid_hi);
+    // Bright saturated red headlight/taillight stays valid and hue-ordered (R >= G, R >= B).
+    const auto red_hdr = fn({20.0f, 0.4f, 0.1f});
+    CHECK(red_hdr[0] > 0.75f && red_hdr[0] <= 1.0f && red_hdr[0] >= red_hdr[1] && red_hdr[0] >= red_hdr[2]);
+  };
+  verify_curve(tonemap_agx, 0.12f, 0.25f);
+  verify_curve(tonemap_gt_filmic, 0.12f, 0.24f);
+  verify_curve(tonemap_pbr_neutral, 0.10f, 0.20f);
+  // AgX highlight desaturation pulls extreme red gently toward white (G/B rise above 0.2 at HDR 20.0).
+  const auto agx_red = tonemap_agx({20.0f, 0.2f, 0.1f});
+  CHECK(agx_red[1] > 0.20f && agx_red[2] > 0.20f);
 }
 
 void test_presentation() {
@@ -290,7 +345,9 @@ void test_settings_tokens() {
   GraphicsSettings d;
   CHECK(graphics_tokens(d).empty());
   GraphicsSettings s;
-  s.scale = 2, s.base_540p = true, s.aa = AaMode::kFxaaAll, s.ssao = SsaoQuality::kHigh;
+  s.scale = 2, s.base_540p = true, s.aa = AaMode::kFxaaAll, s.ssao = SsaoQuality::kUltra;
+  s.contact_shadows = ContactShadows::kHigh, s.tonemapper = Tonemapper::kAgX, s.hex_tiling = true;
+  s.velocity_blur = VelocityBlur::kHigh;
   s.lut = "film.cube", s.lut_strength = 40, s.vrs = true, s.texture_cap = TextureCap::k512;
   s.vsync = VSync::kMailbox, s.fps_cap = 0, s.upscaler = Upscaler::kFsr3, s.sharpening = 70;
   s.frame_gen = FrameGen::kFsr3, s.hdr = true, s.auto_hdr = true, s.paper_white = 250, s.hdr_highlights = 80;
@@ -469,6 +526,19 @@ void test_lazy_targets_and_reflection_schedule() {
       plan_modern_targets(ts, {1280, 720}, {1920, 1080}, true, HdrMode::kOff, 0, false, false, fsr2);
   CHECK(fsr2_plan.modern_chain && fsr2_plan.temporal_hist && fsr2_plan.motion_vec && !fsr2_plan.upscale_tmp);
 
+  // Phase A SOTA: SSCS + McGuire Velocity Motion Blur allocate sscs, mblur_tiles, and motion_vec lazily.
+  GraphicsSettings sota;
+  sota.ssao = SsaoQuality::kUltra;
+  sota.contact_shadows = ContactShadows::kUltra;
+  sota.velocity_blur = VelocityBlur::kHigh;
+  const auto sota_plan =
+      plan_modern_targets(sota, {1920, 1080}, {1920, 1080}, true, HdrMode::kOff, 0, false, false, bil, true);
+  CHECK(sota_plan.bloom && sota_plan.ssao && sota_plan.sscs && sota_plan.mblur_tiles && sota_plan.motion_vec);
+  // Without post_motion_blur active, mblur_tiles and motion_vec stay unallocated.
+  const auto sota_no_mb =
+      plan_modern_targets(sota, {1920, 1080}, {1920, 1080}, true, HdrMode::kOff, 0, false, false, bil, false);
+  CHECK(sota_no_mb.sscs && !sota_no_mb.mblur_tiles && !sota_no_mb.motion_vec);
+
   // Reflection rate staggering & mirror gating.
   const auto init_step = schedule_reflections(0, 0.25f, false, false, false);
   CHECK(init_step.render_cubemap && init_step.face_count == 6 && !init_step.render_mirror);
@@ -506,6 +576,7 @@ int main() {
   test_scene_extent();
   test_fov_and_hud();
   test_textures_and_ao();
+  test_sota_tonemappers();
   test_presentation();
   test_hdr();
   test_upscaler_fallbacks();

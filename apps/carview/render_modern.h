@@ -57,12 +57,35 @@ struct HudLayout {
 HudLayout hud_layout(float window_w, float window_h, bool lock_16_9, float hud_scale_percent, float safe_zone_percent);
 constexpr float kMinHudScale = 80.0f, kMaxHudScale = 120.0f, kMaxSafeZone = 10.0f;
 
-// ---- Anti-aliasing, AO, shading, textures ---------------------------------------
+// ---- Anti-aliasing, AO, contact shadows, tonemapper, velocity blur, textures ----
 enum class AaMode : int { kOff = 0, kFxaaWorld = 1, kFxaaAll = 2 };
-enum class SsaoQuality : int { kOff = 0, kLow = 1, kMedium = 2, kHigh = 3 };
-// Taps per pixel and the world radius (m) of each level.
+enum class SsaoQuality : int { kOff = 0, kLow = 1, kMedium = 2, kHigh = 3, kUltra = 4 };
+// Taps per pixel, XeGTAO slices/steps, resolution tier, and world radius (m).
 int ssao_taps(SsaoQuality q);
 float ssao_radius_m(SsaoQuality q);
+int gtao_slices(SsaoQuality q);
+int gtao_steps(SsaoQuality q);
+bool gtao_full_res(SsaoQuality q);
+
+enum class ContactShadows : int { kOff = 0, kLow = 1, kHigh = 2, kUltra = 3 };
+int contact_shadow_steps(ContactShadows q);
+bool contact_shadow_full_res(ContactShadows q);
+const char* contact_shadows_name(ContactShadows q);
+ContactShadows parse_contact_shadows(std::string_view name);
+
+enum class Tonemapper : int { kHable = 0, kAgX = 1, kGtFilmic = 2, kPbrNeutral = 3 };
+const char* tonemapper_name(Tonemapper t);
+Tonemapper parse_tonemapper(std::string_view name);
+// Pure C++ reference curves matching post.frag (for unit tests & calibration).
+std::array<float, 3> tonemap_agx(const std::array<float, 3>& rgb);
+std::array<float, 3> tonemap_gt_filmic(const std::array<float, 3>& rgb);
+std::array<float, 3> tonemap_pbr_neutral(const std::array<float, 3>& rgb);
+
+enum class VelocityBlur : int { kOff = 0, kLow = 1, kHigh = 2 };
+int velocity_blur_taps(VelocityBlur q);
+const char* velocity_blur_name(VelocityBlur q);
+VelocityBlur parse_velocity_blur(std::string_view name);
+
 enum class TextureCap : int { kFull = 0, k1024 = 1024, k512 = 512, k256 = 256 };
 // Mip levels to skip so the largest side is at most `cap` (never past the last level).
 uint32_t texture_levels_to_skip(uint32_t width, uint32_t height, uint32_t level_count, TextureCap cap);
@@ -159,6 +182,10 @@ struct GraphicsSettings {
   bool base_540p = false;
   AaMode aa = AaMode::kOff;
   SsaoQuality ssao = SsaoQuality::kOff;
+  ContactShadows contact_shadows = ContactShadows::kOff;
+  Tonemapper tonemapper = Tonemapper::kHable;
+  bool hex_tiling = false;
+  VelocityBlur velocity_blur = VelocityBlur::kOff;
   std::string lut;             // file name in the luts folder, empty: none
   float lut_strength = 100.0f; // percent
   bool vrs = false;
@@ -214,6 +241,8 @@ bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t textur
 struct ModernTargetPlan {
   bool bloom = false;
   bool ssao = false;
+  bool sscs = false;
+  bool mblur_tiles = false;
   bool modern_chain = false;
   bool fxaa_scene = false;
   bool fxaa_standin = false;
@@ -225,7 +254,8 @@ struct ModernTargetPlan {
 };
 ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,
                                      HdrMode hdr_mode, uint32_t hdr_pattern, bool inspector_active,
-                                     bool inspector_needs_motion, const UpscalerChoice& up_choice);
+                                     bool inspector_needs_motion, const UpscalerChoice& up_choice,
+                                     bool post_motion_blur = false);
 
 // ---- Dynamic cubemap & 3-band cockpit mirror scheduling ------------------------------------
 struct ReflectionStep {

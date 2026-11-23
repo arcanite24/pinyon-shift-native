@@ -20,27 +20,42 @@ std::string lower_ascii(std::string_view s) {
 
 bool resolve_graphics_preset(std::string_view name, GraphicsPresetSpec& out) {
   const std::string p = lower_ascii(name);
+  if (p == "ultra") {
+    // Tier 3 Enthusiast 4K: 4x MSAA, Full-Res XeGTAO + Bent Normals, Full-Res 12-tap SSCS,
+    // Hex-Tiling terrain, 13-tap McGuire Velocity Motion Blur.
+    out = {"ultra", 4, false, "high", true, 16.0f, 120, 1.0f,
+           modern::SsaoQuality::kUltra, modern::ContactShadows::kUltra, true, modern::VelocityBlur::kHigh};
+    return true;
+  }
   if (p == "high" || p == "quality-60" || p == "performance-120") {
-    out = {p, 4, false, "high", true, 16.0f, p == "performance-120" ? 120 : 60, 1.0f};
+    // Tier 2 Mainstream: 4x MSAA, Half-Res 3-slice XeGTAO + Bent Normals, Half-Res 10-tap SSCS,
+    // Hex-Tiling terrain, 9-tap McGuire Velocity Motion Blur.
+    out = {p, 4, false, "high", true, 16.0f, p == "performance-120" ? 120 : 60, 1.0f,
+           modern::SsaoQuality::kHigh, modern::ContactShadows::kHigh, true, modern::VelocityBlur::kLow};
     return true;
   }
   if (p == "low" || p == "low-spec-60" || p == "balanced-40") {
-    out = {p, 1, true, "low", false, 2.0f, p == "balanced-40" ? 40 : 60, 0.5f};
+    // Tier 1 Deck / iGPU / Low: 1x MSAA, Half-Res 2-slice XeGTAO, Half-Res 8-tap SSCS, Hex-Tiling off.
+    out = {p, 1, true, "low", false, 2.0f, p == "balanced-40" ? 40 : 60, 0.5f,
+           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff};
     return true;
   }
   if (p == "smooth-60" || p == "smooth_60") {
-    // Android Smooth 60: 2x MSAA, shadows off, quarter-rate reflections, 60 fps.
-    out = {"smooth-60", 2, true, "off", false, 4.0f, 60, 0.25f};
+    // Android Smooth 60: 2x MSAA, shadows off, quarter-rate reflections, Half-Res 2-slice XeGTAO & 8-tap SSCS.
+    out = {"smooth-60", 2, true, "off", false, 4.0f, 60, 0.25f,
+           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff};
     return true;
   }
   if (p == "quality-30" || p == "quality_30") {
-    // Android Quality 30: 4x MSAA, shadows low, bloom on, quarter-rate reflections, 30 fps.
-    out = {"quality-30", 4, false, "low", true, 8.0f, 30, 0.25f};
+    // Android Quality 30: 4x MSAA, shadows low, bloom on, quarter-rate reflections, Half-Res 2-slice XeGTAO & 8-tap SSCS.
+    out = {"quality-30", 4, false, "low", true, 8.0f, 30, 0.25f,
+           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kLow};
     return true;
   }
   if (p == "low-power" || p == "low_power" || p == "ultra-low-30") {
-    // Android Low Power / Ultra Low 30: 1x MSAA, shadows off, bloom off, 30 fps.
-    out = {"low-power", 1, true, "off", false, 2.0f, 30, 0.25f};
+    // Tier 0 Mobile / Deck Low Power: 1x MSAA, shadows off, bloom off, GTAO/SSCS/Hex-Tiling/VelBlur off.
+    out = {"low-power", 1, true, "off", false, 2.0f, 30, 0.25f,
+           modern::SsaoQuality::kOff, modern::ContactShadows::kOff, false, modern::VelocityBlur::kOff};
     return true;
   }
   return false;

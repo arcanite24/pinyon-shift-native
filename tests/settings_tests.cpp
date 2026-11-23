@@ -185,6 +185,36 @@ int main() {
   CHECK(has(gt, {"--render-scale", "2"}) && has(gt, {"--output", "fsr1"}) && has(gt, {"--ssao", "high"}));
   CHECK(has(gt, {"--lut", "warm_desert.cube"}) && has(gt, {"--vrs"}) && has(gt, {"--hdr-compare"}));
 
+  // Phase A SOTA Display settings (XeGTAO Ultra, SSCS, AgX/GT/PBR Neutral tonemappers, Hex-Tiling, Velocity Blur).
+  carview::SettingsPage sota_page;
+  sota_page.load({"--preset", "ultra", "--ssao", "ultra", "--contact-shadows", "ultra",
+                  "--tonemapper", "agx", "--hex-tiling", "--velocity-blur", "high"});
+  CHECK(sota_page.value("preset") == "ultra");
+  CHECK(sota_page.value("ambient occlusion") == "ultra");
+  CHECK(sota_page.value("contact shadows") == "ultra");
+  CHECK(sota_page.value("tonemapper") == "agx");
+  CHECK(sota_page.value("terrain hex-tiling") == "on");
+  CHECK(sota_page.value("velocity motion blur") == "high");
+  const auto sls = sota_page.live_settings();
+  CHECK(sls.graphics.ssao == carview::modern::SsaoQuality::kUltra);
+  CHECK(sls.graphics.contact_shadows == carview::modern::ContactShadows::kUltra);
+  CHECK(sls.graphics.tonemapper == carview::modern::Tonemapper::kAgX);
+  CHECK(sls.graphics.hex_tiling);
+  CHECK(sls.graphics.velocity_blur == carview::modern::VelocityBlur::kHigh);
+  const auto st = sota_page.tokens();
+  CHECK(has(st, {"--preset", "ultra"}) && has(st, {"--ssao", "ultra"}) && has(st, {"--contact-shadows", "ultra"}));
+  CHECK(has(st, {"--tonemapper", "agx"}) && has(st, {"--hex-tiling"}) && has(st, {"--velocity-blur", "high"}));
+
+  carview::SettingsPage gt_page;
+  gt_page.load({"--tonemapper", "gt"});
+  CHECK(gt_page.value("tonemapper") == "gt filmic");
+  CHECK(gt_page.live_settings().graphics.tonemapper == carview::modern::Tonemapper::kGtFilmic);
+
+  carview::SettingsPage pbr_page;
+  pbr_page.load({"--tonemapper", "pbr-neutral"});
+  CHECK(pbr_page.value("tonemapper") == "pbr neutral");
+  CHECK(pbr_page.live_settings().graphics.tonemapper == carview::modern::Tonemapper::kPbrNeutral);
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

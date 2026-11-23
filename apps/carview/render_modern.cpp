@@ -66,23 +66,186 @@ HudLayout hud_layout(float window_w, float window_h, bool lock_16_9, float hud_s
   return l;
 }
 
-// ---- AA, AO, textures --------------------------------------------------------------------
+// ---- AA, AO, contact shadows, tonemapper, velocity blur, textures -------------------------
 int ssao_taps(SsaoQuality q) {
   switch (q) {
     case SsaoQuality::kLow: return 6;
     case SsaoQuality::kMedium: return 10;
     case SsaoQuality::kHigh: return 16;
+    case SsaoQuality::kUltra: return 24;
     default: return 0;
   }
 }
 
 float ssao_radius_m(SsaoQuality q) {
   switch (q) {
-    case SsaoQuality::kLow: return 0.6f;
-    case SsaoQuality::kMedium: return 0.9f;
-    case SsaoQuality::kHigh: return 1.2f;
+    case SsaoQuality::kLow: return 0.65f;
+    case SsaoQuality::kMedium: return 0.95f;
+    case SsaoQuality::kHigh: return 1.25f;
+    case SsaoQuality::kUltra: return 1.50f;
     default: return 0.0f;
   }
+}
+
+int gtao_slices(SsaoQuality q) {
+  switch (q) {
+    case SsaoQuality::kLow: return 2;
+    case SsaoQuality::kMedium: return 2;
+    case SsaoQuality::kHigh: return 3;
+    case SsaoQuality::kUltra: return 3;
+    default: return 0;
+  }
+}
+
+int gtao_steps(SsaoQuality q) {
+  switch (q) {
+    case SsaoQuality::kLow: return 2;
+    case SsaoQuality::kMedium: return 3;
+    case SsaoQuality::kHigh: return 3;
+    case SsaoQuality::kUltra: return 4;
+    default: return 0;
+  }
+}
+
+bool gtao_full_res(SsaoQuality q) { return q == SsaoQuality::kUltra; }
+
+int contact_shadow_steps(ContactShadows q) {
+  switch (q) {
+    case ContactShadows::kLow: return 8;
+    case ContactShadows::kHigh: return 10;
+    case ContactShadows::kUltra: return 12;
+    default: return 0;
+  }
+}
+
+bool contact_shadow_full_res(ContactShadows q) { return q == ContactShadows::kUltra; }
+
+const char* contact_shadows_name(ContactShadows q) {
+  switch (q) {
+    case ContactShadows::kLow: return "low";
+    case ContactShadows::kHigh: return "high";
+    case ContactShadows::kUltra: return "ultra";
+    default: return "off";
+  }
+}
+
+ContactShadows parse_contact_shadows(std::string_view name) {
+  if (name == "low") return ContactShadows::kLow;
+  if (name == "high" || name == "on") return ContactShadows::kHigh;
+  if (name == "ultra") return ContactShadows::kUltra;
+  return ContactShadows::kOff;
+}
+
+const char* tonemapper_name(Tonemapper t) {
+  switch (t) {
+    case Tonemapper::kAgX: return "agx";
+    case Tonemapper::kGtFilmic: return "gt";
+    case Tonemapper::kPbrNeutral: return "pbr-neutral";
+    default: return "hable";
+  }
+}
+
+Tonemapper parse_tonemapper(std::string_view name) {
+  if (name == "agx") return Tonemapper::kAgX;
+  if (name == "gt" || name == "gt-filmic" || name == "uchimura") return Tonemapper::kGtFilmic;
+  if (name == "pbr-neutral" || name == "pbr" || name == "neutral") return Tonemapper::kPbrNeutral;
+  return Tonemapper::kHable;
+}
+
+std::array<float, 3> tonemap_agx(const std::array<float, 3>& rgb) {
+  const float r0 = std::max(rgb[0], 0.0f), g0 = std::max(rgb[1], 0.0f), b0 = std::max(rgb[2], 0.0f);
+  float v[3] = {
+      0.842479062253094f * r0 + 0.0784335999999992f * g0 + 0.0792237451477643f * b0,
+      0.0423282422610123f * r0 + 0.878468636469772f * g0 + 0.0791661274605434f * b0,
+      0.0423756549057051f * r0 + 0.0784336f * g0 + 0.879142973793104f * b0,
+  };
+  constexpr float kMinEv = -12.47393f;
+  constexpr float kMaxEv = 4.026069f;
+  for (int i = 0; i < 3; ++i) {
+    float x = std::clamp(std::log2(std::max(v[i], 1e-10f)), kMinEv, kMaxEv);
+    x = (x - kMinEv) / (kMaxEv - kMinEv);
+    const float x2 = x * x;
+    const float x4 = x2 * x2;
+    v[i] = +15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4 - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x -
+           0.00232f;
+  }
+  const float out[3] = {
+      1.19687900512017f * v[0] - 0.0980208811401368f * v[1] - 0.0990297440797205f * v[2],
+      -0.0528968517574562f * v[0] + 1.15190312990417f * v[1] - 0.0989611768448433f * v[2],
+      -0.0529716355144438f * v[0] - 0.0980434501171241f * v[1] + 1.15107367264116f * v[2],
+  };
+  return {std::pow(std::clamp(out[0], 0.0f, 1.0f), 2.2f), std::pow(std::clamp(out[1], 0.0f, 1.0f), 2.2f),
+          std::pow(std::clamp(out[2], 0.0f, 1.0f), 2.2f)};
+}
+
+std::array<float, 3> tonemap_gt_filmic(const std::array<float, 3>& rgb) {
+  constexpr float P = 1.0f, a = 1.0f, m = 0.22f, l = 0.4f, c = 1.33f, b = 0.0f;
+  constexpr float l0 = ((P - m) * l) / a;
+  constexpr float S0 = m + l0;
+  constexpr float S1 = m + a * l0;
+  constexpr float C2 = (a * P) / (P - S1);
+  constexpr float CP = -C2 / P;
+  auto smoothstep = [](float e0, float e1, float x) {
+    const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+  };
+  auto curve = [&](float x) {
+    x = std::max(x, 0.0f);
+    const float w0 = 1.0f - smoothstep(0.0f, m, x);
+    const float w2 = (x >= m + l0) ? 1.0f : 0.0f;
+    const float w1 = 1.0f - w0 - w2;
+    const float T = m * std::pow(x / m, c) + b;
+    const float S = P - (P - S1) * std::exp(CP * (x - S0));
+    const float L = m + a * (x - m);
+    return std::clamp(T * w0 + L * w1 + S * w2, 0.0f, 1.0f);
+  };
+  return {curve(rgb[0]), curve(rgb[1]), curve(rgb[2])};
+}
+
+std::array<float, 3> tonemap_pbr_neutral(const std::array<float, 3>& rgb) {
+  constexpr float startCompression = 0.8f - 0.04f;
+  constexpr float desaturation = 0.15f;
+  float r = std::max(rgb[0], 0.0f), g = std::max(rgb[1], 0.0f), b = std::max(rgb[2], 0.0f);
+  const float x = std::min(r, std::min(g, b));
+  const float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+  r -= offset;
+  g -= offset;
+  b -= offset;
+  const float peak = std::max(r, std::max(g, b));
+  if (peak < startCompression) {
+    return {std::clamp(r, 0.0f, 1.0f), std::clamp(g, 0.0f, 1.0f), std::clamp(b, 0.0f, 1.0f)};
+  }
+  const float d = 1.0f - startCompression;
+  const float newPeak = 1.0f - d * d / (peak + d - startCompression);
+  const float scale = newPeak / std::max(peak, 1e-6f);
+  r *= scale;
+  g *= scale;
+  b *= scale;
+  const float mix_g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
+  return {std::clamp(r + (newPeak - r) * mix_g, 0.0f, 1.0f), std::clamp(g + (newPeak - g) * mix_g, 0.0f, 1.0f),
+          std::clamp(b + (newPeak - b) * mix_g, 0.0f, 1.0f)};
+}
+
+int velocity_blur_taps(VelocityBlur q) {
+  switch (q) {
+    case VelocityBlur::kLow: return 9;
+    case VelocityBlur::kHigh: return 13;
+    default: return 0;
+  }
+}
+
+const char* velocity_blur_name(VelocityBlur q) {
+  switch (q) {
+    case VelocityBlur::kLow: return "low";
+    case VelocityBlur::kHigh: return "high";
+    default: return "off";
+  }
+}
+
+VelocityBlur parse_velocity_blur(std::string_view name) {
+  if (name == "low" || name == "on" || name == "medium") return VelocityBlur::kLow;
+  if (name == "high" || name == "ultra") return VelocityBlur::kHigh;
+  return VelocityBlur::kOff;
 }
 
 uint32_t texture_levels_to_skip(uint32_t width, uint32_t height, uint32_t level_count, TextureCap cap) {
@@ -398,7 +561,11 @@ const char* aa_name(AaMode m) {
   return m == AaMode::kFxaaWorld ? "fxaa" : m == AaMode::kFxaaAll ? "fxaa-hud" : "off";
 }
 const char* ssao_name(SsaoQuality q) {
-  return q == SsaoQuality::kLow ? "low" : q == SsaoQuality::kMedium ? "medium" : q == SsaoQuality::kHigh ? "high" : "off";
+  return q == SsaoQuality::kLow      ? "low"
+         : q == SsaoQuality::kMedium ? "medium"
+         : q == SsaoQuality::kHigh   ? "high"
+         : q == SsaoQuality::kUltra  ? "ultra"
+                                     : "off";
 }
 const char* vsync_name(VSync v) { return v == VSync::kMailbox ? "mailbox" : v == VSync::kImmediate ? "immediate" : "fifo"; }
 const char* output_name(Upscaler u) {
@@ -420,10 +587,11 @@ std::string num(float v) {
 
 const std::vector<std::string>& graphics_option_names() {
   static const std::vector<std::string> names = {
-      "--render-scale", "--scene-540p", "--no-scene-540p", "--aa", "--ssao", "--lut", "--lut-strength", "--vrs",
-      "--no-vrs", "--texture-cap", "--vsync", "--fps-cap", "--output", "--sharpening", "--frame-gen", "--hdr",
-      "--no-hdr", "--auto-hdr", "--no-auto-hdr", "--hdr-paper-white", "--hdr-highlights", "--hdr-peak",
-      "--hdr-compare", "--no-hdr-compare", "--hud-scale", "--safe-zone", "--hud-16-9", "--no-hud-16-9"};
+      "--render-scale", "--scene-540p", "--no-scene-540p", "--aa", "--ssao", "--contact-shadows", "--tonemapper",
+      "--hex-tiling", "--no-hex-tiling", "--velocity-blur", "--lut", "--lut-strength", "--vrs", "--no-vrs",
+      "--texture-cap", "--vsync", "--fps-cap", "--output", "--sharpening", "--frame-gen", "--hdr", "--no-hdr",
+      "--auto-hdr", "--no-auto-hdr", "--hdr-paper-white", "--hdr-highlights", "--hdr-peak", "--hdr-compare",
+      "--no-hdr-compare", "--hud-scale", "--safe-zone", "--hud-16-9", "--no-hud-16-9"};
   return names;
 }
 
@@ -438,6 +606,10 @@ std::vector<std::string> graphics_tokens(const GraphicsSettings& s) {
   if (s.base_540p) t.push_back("--scene-540p");
   if (s.aa != d.aa) add("--aa", aa_name(s.aa));
   if (s.ssao != d.ssao) add("--ssao", ssao_name(s.ssao));
+  if (s.contact_shadows != d.contact_shadows) add("--contact-shadows", contact_shadows_name(s.contact_shadows));
+  if (s.tonemapper != d.tonemapper) add("--tonemapper", tonemapper_name(s.tonemapper));
+  if (s.hex_tiling) t.push_back("--hex-tiling");
+  if (s.velocity_blur != d.velocity_blur) add("--velocity-blur", velocity_blur_name(s.velocity_blur));
   if (!s.lut.empty()) add("--lut", s.lut);
   if (s.lut_strength != d.lut_strength) add("--lut-strength", num(s.lut_strength));
   if (s.vrs) t.push_back("--vrs");
@@ -474,7 +646,21 @@ bool apply_graphics_option(GraphicsSettings& s, const std::vector<std::string>& 
     s.aa = v == "fxaa" ? AaMode::kFxaaWorld : v == "fxaa-hud" ? AaMode::kFxaaAll : AaMode::kOff;
   } else if (a == "--ssao") {
     const std::string v = value();
-    s.ssao = v == "low" ? SsaoQuality::kLow : v == "medium" ? SsaoQuality::kMedium : v == "high" ? SsaoQuality::kHigh : SsaoQuality::kOff;
+    s.ssao = v == "low"      ? SsaoQuality::kLow
+             : v == "medium" ? SsaoQuality::kMedium
+             : v == "high"   ? SsaoQuality::kHigh
+             : v == "ultra"  ? SsaoQuality::kUltra
+                             : SsaoQuality::kOff;
+  } else if (a == "--contact-shadows") {
+    s.contact_shadows = parse_contact_shadows(value());
+  } else if (a == "--tonemapper") {
+    s.tonemapper = parse_tonemapper(value());
+  } else if (a == "--hex-tiling") {
+    s.hex_tiling = true;
+  } else if (a == "--no-hex-tiling") {
+    s.hex_tiling = false;
+  } else if (a == "--velocity-blur") {
+    s.velocity_blur = parse_velocity_blur(value());
   } else if (a == "--lut") s.lut = value();
   else if (a == "--lut-strength") s.lut_strength = std::clamp(number(100), 0.0f, 100.0f);
   else if (a == "--vrs") s.vrs = true;
@@ -581,10 +767,13 @@ bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t textur
 
 ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,
                                      HdrMode hdr_mode, uint32_t hdr_pattern, bool inspector_active,
-                                     bool inspector_needs_motion, const UpscalerChoice& up_choice) {
+                                     bool inspector_needs_motion, const UpscalerChoice& up_choice,
+                                     bool post_motion_blur) {
   ModernTargetPlan p{};
   p.bloom = post_bloom;
   p.ssao = (g.ssao != SsaoQuality::kOff);
+  p.sscs = (g.contact_shadows != ContactShadows::kOff);
+  p.mblur_tiles = post_motion_blur && (g.velocity_blur != VelocityBlur::kOff);
   const bool need_scale = (render.w != output.w || render.h != output.h);
   const bool need_upscaler = need_scale || g.upscaler != Upscaler::kBilinear;
   const bool need_hdr_stage = (hdr_mode != HdrMode::kOff) || g.hdr_compare || (hdr_pattern != 0);
@@ -593,7 +782,7 @@ ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, E
   p.modern_chain = need_upscaler || need_hdr_stage || p.fxaa_scene || p.fxaa_standin || inspector_active;
   p.upscale_tmp = p.modern_chain && !up_choice.temporal && up_choice.active == Upscaler::kFsr1;
   p.temporal_hist = p.modern_chain && up_choice.temporal;
-  p.motion_vec = p.temporal_hist || (inspector_active && inspector_needs_motion);
+  p.motion_vec = p.temporal_hist || p.mblur_tiles || (inspector_active && inspector_needs_motion);
   p.inspector = inspector_active;
   return p;
 }

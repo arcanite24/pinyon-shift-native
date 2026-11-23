@@ -27,7 +27,12 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
              {"75%", {flag, "75"}}}};
   };
   return {
-      {"preset", {{"default", {}}, {"low", {"--preset", "low"}}, {"high", {"--preset", "high"}}}},
+      {"preset",
+       {{"default", {}},
+        {"low", {"--preset", "low"}},
+        {"high", {"--preset", "high"}},
+        {"ultra", {"--preset", "ultra"}},
+        {"low-power", {"--preset", "low-power"}}}},
       {"shadows",
        {{"default", {}}, {"off", {"--shadows", "off"}}, {"low", {"--shadows", "low"}}, {"high", {"--shadows", "high"}}}},
       {"bloom", {{"default", {}}, {"on", {"--bloom"}}, {"off", {"--no-bloom"}}}},
@@ -214,7 +219,23 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
        {{"off", {}},
         {"low", {"--ssao", "low"}},
         {"medium", {"--ssao", "medium"}},
-        {"high", {"--ssao", "high"}}}},
+        {"high", {"--ssao", "high"}},
+        {"ultra", {"--ssao", "ultra"}}}},
+      {"contact shadows",
+       {{"off", {}},
+        {"low", {"--contact-shadows", "low"}},
+        {"high", {"--contact-shadows", "high"}},
+        {"ultra", {"--contact-shadows", "ultra"}}}},
+      {"tonemapper",
+       {{"hable fh1", {}},
+        {"agx", {"--tonemapper", "agx"}},
+        {"gt filmic", {"--tonemapper", "gt"}},
+        {"pbr neutral", {"--tonemapper", "pbr-neutral"}}}},
+      {"terrain hex-tiling", {{"off", {}}, {"on", {"--hex-tiling"}}}},
+      {"velocity motion blur",
+       {{"off", {}},
+        {"low", {"--velocity-blur", "low"}},
+        {"high", {"--velocity-blur", "high"}}}},
       {"colour lut", {{"none", {}}}},
       {"lut strength",
        {{"100%", {}},
@@ -470,7 +491,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                    t == "--no-skip-intro-movies" || t == "--no-start-in-single-player" ||
                    t == "--skip-vo-with-a" || t == "--no-scene-540p" || t == "--no-vrs" ||
                    t == "--no-hdr" || t == "--no-auto-hdr" || t == "--no-hdr-compare" ||
-                   t == "--hud-16-9")) owned = true;
+                   t == "--hud-16-9" || t == "--no-hex-tiling")) owned = true;
     const bool takes_value =
         has_value && (t == "--preset" || t == "--shadows" || t == "--difficulty" || t == "--ai-mode" || t == "--camera" ||
                       t == "--size" || t == "--msaa" || t == "--exposure" || t == "--hour" || t == "--play" ||
@@ -495,7 +516,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--immersive-shake" || t == "--immersive-head" || t == "--telemetry-udp-format" ||
                       t == "--telemetry-udp-target" || t == "--trainer-saved-road" || t == "--pacing-prices" ||
                       t == "--pacing-rewards" ||
-                      t == "--render-scale" || t == "--aa" || t == "--ssao" || t == "--lut" ||
+                      t == "--render-scale" || t == "--aa" || t == "--ssao" || t == "--contact-shadows" ||
+                      t == "--tonemapper" || t == "--velocity-blur" || t == "--lut" ||
                       t == "--lut-strength" || t == "--texture-cap" || t == "--vsync" || t == "--fps-cap" ||
                       t == "--output" || t == "--sharpening" || t == "--frame-gen" || t == "--hdr-paper-white" ||
                       t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone");
@@ -526,7 +548,9 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day" ||
       name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera" ||
       name == "render scale" || name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
-      name == "ambient occlusion" || name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
+      name == "ambient occlusion" || name == "contact shadows" || name == "tonemapper" ||
+      name == "terrain hex-tiling" || name == "velocity motion blur" ||
+      name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
       name == "texture size" || name == "vsync" || name == "frame rate" || name == "frame gen" ||
       name == "hdr" || name == "windows auto-hdr" || name == "hdr paper white" || name == "hdr highlights" ||
       name == "hdr peak" || name == "hdr compare" || name == "hud 16:9 lock" || name == "hud scale" ||
