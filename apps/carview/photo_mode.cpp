@@ -680,20 +680,27 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
       const bool sel = (i == selected_row_);
 
       // Floating PILL01 row (#212121, focused #F90064) — NO giant enclosing dark wall!
+      out.add_hit(dx0, ry0, dx1, ry1, ui::kHitRow, i);
       ui4::pill(out, dx0, ry0, dx1, ry1, sel ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, sel);
 
       out.text(dx0 + 12.0f * s, ry0 + 6.0f * s, rows[i].name,
                ui4::style(sel ? Font::kD : Font::kB, 12.0f * s, sel ? ui4::kWhite : ui4::kOffWhite));
       if (!rows[i].is_bar) {
+        out.add_hit(dx0 + 96.0f * s, ry0, dx0 + 132.0f * s, ry1, ui::kHitStepLeft, i);
+        out.add_hit(dx1 - 32.0f * s, ry0, dx1, ry1, ui::kHitStepRight, i);
         ui4::opt_arrow(out, dx0 + 112.0f * s, ry0 + 28.0f * s, 12.0f * s, -1, sel ? ui4::kWhite : ui4::kDim);
         ui4::opt_arrow(out, dx1 - 14.0f * s, ry0 + 28.0f * s, 12.0f * s, +1, sel ? ui4::kWhite : ui4::kDim);
         ui::TextStyle vs = ui4::style(Font::kD, 12.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kCenter);
         ui4::fit_text(rows[i].value, vs, (dx1 - dx0) - 134.0f * s, 8.5f * s);
         out.text(0.5f * (dx0 + 112.0f * s + dx1 - 14.0f * s), ry0 + 22.0f * s, rows[i].value, vs);
       } else {
+        const float sl_x0 = dx0 + 12.0f * s, sl_x1 = dx1 - 12.0f * s;
+        const float sl_mid = 0.5f * (sl_x0 + sl_x1);
+        out.add_hit(sl_x0, ry1 - 18.0f * s, sl_mid, ry1, ui::kHitStepLeft, i);
+        out.add_hit(sl_mid, ry1 - 18.0f * s, sl_x1, ry1, ui::kHitStepRight, i);
         out.text(dx1 - 12.0f * s, ry0 + 6.0f * s, rows[i].value,
                  ui4::style(Font::kD, 12.5f * s, sel ? ui4::kYellow : ui4::kWhite, Align::kRight));
-        ui4::opt_slider(out, dx0 + 12.0f * s, ry1 - 13.0f * s, dx1 - 12.0f * s, ry1 - 5.0f * s, rows[i].norm, s,
+        ui4::opt_slider(out, sl_x0, ry1 - 13.0f * s, sl_x1, ry1 - 5.0f * s, rows[i].norm, s,
                         sel ? ui4::kYellow : ui4::kPink, sel);
       }
     }

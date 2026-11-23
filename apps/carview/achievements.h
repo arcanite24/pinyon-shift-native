@@ -157,6 +157,14 @@ class AchievementsSystem {
   void switch_tab(int delta);
   void select_tab(AchievementCategory cat);
   void move_focus(int dx, int dy);
+  int focus_index() const { return focus_index_; }
+  void select_focus_index(int idx) {
+    if (visible_.empty()) {
+      focus_index_ = 0;
+      return;
+    }
+    focus_index_ = std::clamp(idx, 0, int(visible_.size()) - 1);
+  }
   void cycle_sort();
   bool toggle_track_focused();
   void set_tracked_id(uint16_t id);

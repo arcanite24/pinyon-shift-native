@@ -82,6 +82,8 @@ class ReplayViewer {
   void close_browser() { browser_open_ = false; }
   bool browser_open() const { return browser_open_; }
   void browser_move(int delta);
+  void browser_select(int idx);
+  void seek_fraction(double frac);
   bool browser_load_selected(std::string* error = nullptr);
   const std::vector<drive::ReplayFileEntry>& browser_entries() const { return browser_entries_; }
   int browser_selected() const { return browser_selected_; }

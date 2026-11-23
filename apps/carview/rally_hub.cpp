@@ -309,6 +309,7 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
       const float cy0 = row_y0;
       const float cx1 = cx0 + card_w;
       const float cy1 = cy0 + card_h;
+      out.add_hit(cx0, cy0, cx1, cy1, ui::kHitRow, idx);
 
       if (has_shadow) {
         out.image(cx0 - 8.0f * u, cy0 + 8.0f * u, cx1 + 10.0f * u, cy1 + 14.0f * u, shadow_uv,
@@ -483,6 +484,7 @@ void build_rally_service_area_screen(ui::List& out, const RallyServiceAreaState&
   for (int i = 0; i < 4; ++i) {
     const float y = my0 + float(i) * 44.0f * u;
     const bool sel = st.selected == i;
+    out.add_hit(lx0, y, lx0 + lw, y + 36.0f * u, ui::kHitRow, i);
     ui4::brush(out, lx0, y, lx0 + lw, y + 36.0f * u, sel ? ui4::kPink : ui4::kBrushBlack, false);
     ui::TextStyle as = ui4::style(ui::Font::kE, 15.0f * u, sel ? ui4::kWhite : ui::rgba(220, 224, 234, 255));
     out.text(lx0 + 18.0f * u, y + 9.0f * u, actions[i], as);

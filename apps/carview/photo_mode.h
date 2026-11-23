@@ -225,6 +225,9 @@ class PhotoModeController {
   bool ui_hidden() const { return ui_hidden_; }
   void toggle_ui_hidden() { ui_hidden_ = !ui_hidden_; }
   int selected_row() const { return selected_row_; }
+  void select_row(int row) {
+    if (row >= 0 && row < kRowCount) selected_row_ = row;
+  }
 
   void move_row(int delta);
   void adjust_row(int delta);

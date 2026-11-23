@@ -77,12 +77,18 @@ void LiveryEditor::move_tab(int by) {
   tab_ = EditorTab(((int(tab_) + by) % n + n) % n);
 }
 
-void LiveryEditor::move_region(int by) {
+void LiveryEditor::set_region(PaintRegion r) {
   const int n = int(PaintRegion::kCount);
-  region_ = PaintRegion(((int(region_) + by) % n + n) % n);
+  const int idx = std::clamp(int(r), 0, n - 1);
+  region_ = PaintRegion(idx);
   if (region_ != PaintRegion::kWindowTint) {
     cars::rgb_to_hsv(active_region_spec().rgb, cur_h_, cur_s_, cur_v_);
   }
+}
+
+void LiveryEditor::move_region(int by) {
+  const int n = int(PaintRegion::kCount);
+  set_region(PaintRegion(((int(region_) + by) % n + n) % n));
 }
 
 void LiveryEditor::move_finish(int by) {
@@ -113,6 +119,31 @@ void LiveryEditor::step_hsv(float dh, float ds, float dv) {
 void LiveryEditor::step_window_tint(float delta) {
   doc_.paint.window_tint = std::clamp(doc_.paint.window_tint + delta, 0.0f, 1.0f);
   dirty_ = true;
+}
+
+void LiveryEditor::set_swatch(int row, int col, int rows, int cols) {
+  if (rows <= 0 || cols <= 0) return;
+  row = std::clamp(row, 0, rows - 1);
+  col = std::clamp(col, 0, cols - 1);
+  if (region_ == PaintRegion::kWindowTint) {
+    const float t = (cols > 1) ? float(col) / float(cols - 1) : 0.5f;
+    doc_.paint.window_tint = std::clamp(1.0f - t, 0.0f, 1.0f);
+    dirty_ = true;
+    return;
+  }
+  if (region_ == PaintRegion::kRims && wheel_is_chrome_) return;
+  cur_h_ = float(col) / float(cols);
+  cur_s_ = (row == 0) ? 0.0f : (0.35f + 0.21f * float(row));
+  cur_v_ = (row == 0) ? ((cols > 1) ? float(col) / float(cols - 1) : 1.0f) : (1.0f - 0.16f * float(row - 1));
+  auto& spec = active_region_spec();
+  spec.rgb = cars::hsv_to_rgb(cur_h_, cur_s_, cur_v_);
+  spec.active = true;
+  dirty_ = true;
+}
+
+void LiveryEditor::select_special_index(size_t idx) {
+  if (specials_.empty()) return;
+  special_idx_ = std::min(idx, specials_.size() - 1);
 }
 
 void LiveryEditor::move_special_color(int by) {
@@ -170,6 +201,11 @@ void LiveryEditor::select_layer(int by) {
   if (doc_.layers.empty()) return;
   const int n = int(doc_.layers.size());
   layer_idx_ = size_t(((int(layer_idx_) + by) % n + n) % n);
+}
+
+void LiveryEditor::select_layer_index(size_t idx) {
+  if (doc_.layers.empty()) return;
+  layer_idx_ = std::min(idx, doc_.layers.size() - 1);
 }
 
 void LiveryEditor::move_layer_order(int by) {
@@ -334,6 +370,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       const bool act = (PaintRegion(i) == editor.region());
       const std::string rname = paint_region_name(PaintRegion(i));
       const float rw = rwidths[size_t(i)] * w_scale;
+      list.add_hit(rx, ry - 1.0f * s, rx + rw, ry + 29.0f * s, ui4::kHitRegion, i);
       if (act) {
         ui4::brush(list, rx, ry - 1.0f * s, rx + rw, ry + 29.0f * s, ui4::kPink);
       } else {
@@ -379,6 +416,8 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       list.text(fx0 + 14.0f * s, fy0 + 10.0f * s, is_tint ? "TINT" : "FINISH",
                 ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
       const float ar_l = fx0 + 78.0f * s, ar_r = fx1 - 78.0f * s;
+      list.add_hit(ar_l - 18.0f * s, fy0, ar_l + 18.0f * s, fy0 + 34.0f * s, ui::kHitStepLeft, 0);
+      list.add_hit(ar_r - 18.0f * s, fy0, ar_r + 18.0f * s, fy0 + 34.0f * s, ui::kHitStepRight, 0);
       ui4::opt_arrow(list, ar_l, fy0 + 17.0f * s, 13.0f * s, -1, ui4::kPinkHi);
       char tint_buf[32];
       std::snprintf(tint_buf, sizeof tint_buf, "%d%% DARKNESS",
@@ -438,6 +477,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
           const float y0 = gy + float(r) * ch + 1.5f * s;
           const float x1 = x0 + cw - 3.0f * s;
           const float y1 = y0 + ch - 3.0f * s;
+          list.add_hit(x0, y0, x1, y1, ui4::kHitSwatch, r * kCols + c);
           list.rect(x0, y0, x1, y1, rgba_col);
           if (use_met && has_met) list.image(x0, y0, x1, y1, met_uv, ui::rgba(255, 255, 255, 92));
           else if (use_mat && has_mat) list.image(x0, y0, x1, y1, mat_uv, ui::rgba(255, 255, 255, 72));
@@ -475,6 +515,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         const auto& sc = sp[size_t(i)];
         const bool act = (i == sel);
         const float lift = act ? 8.0f * s : 0.0f;
+        list.add_hit(bx, by - lift, bx + cw, by + bh - lift, ui::kHitRow, i);
         ui4::panel01(list, bx, by - lift, bx + cw, by + bh - lift, s,
                      act ? ui::rgba(36, 16, 30, 240) : ui4::kCharcoalDark, act ? ui4::kPink : 0u);
         if (act) list.frame(bx, by - lift, bx + cw, by + bh - lift, ui4::kPink, 2.0f * s);
@@ -519,6 +560,7 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
         const bool is_layer = (idx < n);
         const bool act = is_layer ? (idx == sel) : (n == 0 && s_i == 0);
         const float lift = act ? 8.0f * s : 0.0f;
+        list.add_hit(bx, by - lift, bx + cw, by + bh - lift, ui::kHitRow, idx);
 
         if (has_bg) {
           list.image(bx, by - lift, bx + cw, by + bh - lift, bg_uv,

@@ -31,9 +31,21 @@ struct CareerSummary {
 class CareerPage {
  public:
   void open(const CareerSummary& s, std::vector<cars::PackInfo> packs);
-  void close() { open_ = false; }
+  void close() {
+    open_ = false;
+    show_sponsors_ = false;
+  }
   bool is_open() const { return open_; }
   void move(int by);
+  void select_visible(int vis_idx);
+  size_t selected_index() const { return selected_; }
+  int visible_selected() const;
+  bool show_sponsors() const { return show_sponsors_; }
+  void set_show_sponsors(bool show) { show_sponsors_ = show; }
+  void toggle_sponsors() { show_sponsors_ = !show_sponsors_; }
+  int sponsor_selected() const { return sponsor_selected_; }
+  void move_sponsor(int by, int count);
+  void select_sponsor(int idx, int count);
   void fill(std::string& title, std::vector<std::string>& lines, int& selected) const;
   const CareerSummary& summary() const { return summary_; }
   int packs_owned() const { return owned_; }
@@ -45,6 +57,8 @@ class CareerPage {
   int owned_ = 0, packs_ = 0;
   size_t selected_ = 0;
   bool open_ = false;
+  bool show_sponsors_ = false;
+  int sponsor_selected_ = 0;
 };
 
 // Keeps the characters the HUD font draws (letters, digits and a few

@@ -111,6 +111,13 @@ class ModsPage {
   };
   std::vector<Row> rows() const;
   int selected() const { return selected_; }
+  void select_row(int idx) {
+    if (mods_.empty()) {
+      selected_ = 0;
+      return;
+    }
+    selected_ = std::clamp(idx, 0, int(mods_.size()) - 1);
+  }
   bool dirty() const { return dirty_; }
   const cars::modmgr::Resolution& preview() const { return preview_; }
   const cars::modmgr::Config& config() const { return cfg_; }

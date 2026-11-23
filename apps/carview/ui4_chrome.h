@@ -40,6 +40,12 @@ inline constexpr uint32_t kRed = ui::rgba(0xEC, 0x34, 0x2C);          // negativ
 inline constexpr uint32_t kBlue = ui::rgba(0x2C, 0x8C, 0xE8);         // X button / blue badge
 inline constexpr uint32_t kSoftShadow = ui::rgba(0, 0, 0, 145);
 
+// Extended UI4 hit-zone groups (non-overlapping with ui::kHitRow..kHitCancel 1..6).
+inline constexpr uint32_t kHitButton = 7;    // bottom button_bar prompt pill (index = visible prompt index)
+inline constexpr uint32_t kHitRegion = 8;    // paint region tab pill
+inline constexpr uint32_t kHitSwatch = 9;    // paint palette grid swatch (index = row * cols + col)
+inline constexpr uint32_t kHitTimeline = 10; // replay scrubber timeline bar
+
 // Signature FH1 UI4 panel & brush tilt: +3.0 deg in BSG y-up = -0.05236 rad clockwise in screen y-down.
 inline constexpr float kTiltRad = -0.05236f;
 

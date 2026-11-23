@@ -350,6 +350,18 @@ void ReplayViewer::browser_move(int delta) {
   browser_selected_ = ((browser_selected_ + delta) % n + n) % n;
 }
 
+void ReplayViewer::browser_select(int idx) {
+  if (browser_entries_.empty()) return;
+  browser_selected_ = std::clamp(idx, 0, int(browser_entries_.size()) - 1);
+}
+
+void ReplayViewer::seek_fraction(double frac) {
+  const double dur = rec_.duration();
+  if (dur <= 0.0) return;
+  t_ = std::clamp(frac, 0.0, 1.0) * dur;
+  refresh_samples();
+}
+
 bool ReplayViewer::browser_load_selected(std::string* error) {
   if (browser_entries_.empty() || browser_selected_ < 0 || size_t(browser_selected_) >= browser_entries_.size())
     return false;
@@ -395,6 +407,7 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
         const float ry0 = by0 + 44.0f * s + float(i - start) * row_h;
         const float ry1 = ry0 + row_h - 6.0f * s;
         const bool sel = (i == browser_selected_);
+        out.add_hit(bx0 + 8.0f * s, ry0, bx1 - 8.0f * s, ry1, ui::kHitRow, i);
         if (sel) ui4::brush(out, bx0 + 8.0f * s, ry0, bx1 - 8.0f * s, ry1, ui4::kPink);
         else out.rect(bx0 + 14.0f * s, ry0, bx1 - 14.0f * s, ry1,
                       (i % 2 == 0) ? rgba(32, 34, 42, 220) : rgba(24, 26, 32, 220));
@@ -522,9 +535,11 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     }
 
     float bx = bar_x0 + 14.0f * s;
-    for (const auto& b : btns) {
+    for (int bi = 0; bi < 7; ++bi) {
+      const auto& b = btns[bi];
       std::array<float, 4> buv{};
       const uint32_t col = b.active ? ui4::kPink : ui4::kWhite;
+      out.add_hit(bx - 3.0f * s, foot_y + 3.0f * s, bx + 31.0f * s, foot_y + 35.0f * s, ui::kHitRow, bi);
       if (b.active) {
         out.rect(bx - 3.0f * s, foot_y + 3.0f * s, bx + 31.0f * s, foot_y + 35.0f * s, ui::fade(ui4::kPink, 0.35));
       }
@@ -551,6 +566,7 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
 
     // Clean sharp timeline scrubber strip (PILL_BIG / BARBASE8PX, ZERO rounded box!).
     const float sy0 = foot_y + 44.0f * s, sy1 = sy0 + 10.0f * s;
+    out.add_hit(bar_x0, sy0 - 6.0f * s, bar_x1, sy1 + 6.0f * s, ui4::kHitTimeline, 0);
     out.rect(bar_x0, sy0, bar_x1, sy1, ui::rgba(14, 14, 14, 215));
     const float frac = float(std::clamp(progress(), 0.0, 1.0));
     const float head_x = bar_x0 + (bar_x1 - bar_x0) * frac;

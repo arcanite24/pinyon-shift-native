@@ -1752,12 +1752,208 @@ void test_units_mouse_and_banner_non_overlap() {
   check(bot_with_sub < bot_no_sub - 60.0f, "bottom popup lifts cleanly above active subtitle lane");
 }
 
+void test_round2_hud_minimap_gps_and_mouse_ux() {
+  // 1. P0-3: Imperial/Metric/Credits unit label placeholder stripping (zero literal "{0}"!).
+  check(carview::format_unit_label("{0} mph", "mph") == "mph", "strip {0} from '{0} mph'");
+  check(carview::format_unit_label("{0} km/h", "km/h") == "km/h", "strip {0} from '{0} km/h'");
+  check(carview::format_unit_label("{0} Cr", "Cr") == "Cr", "strip {0} from '{0} Cr'");
+  check(carview::format_unit_label("%d MPH", "mph") == "MPH", "strip %d from '%d MPH'");
+  check(carview::format_unit_label("%.1f km/h", "km/h") == "km/h", "strip %.1f from '%.1f km/h'");
+  check(carview::format_unit_label("{0}", "mph") == "mph", "placeholder-only falls back cleanly");
+  check(carview::format_unit_label("_&123456", "km/h") == "km/h", "unresolved _& key falls back cleanly");
+  check(carview::format_unit_label("", "mph") == "mph", "empty unit label falls back cleanly");
+
+  // Verify live Imperial HUD dial strips "{0}" when game_text returns "{0} mph".
+  carview::set_game_text([](const std::string& ref) -> std::string {
+    if (ref.rfind("_&", 0) == 0) return "{0} mph";
+    return ref;
+  });
+  carview::DriveHud d_imp;
+  d_imp.driving = true;
+  d_imp.metric_units = false;
+  d_imp.kmh = 100.0;
+  d_imp.rpm = 4000.0;
+  d_imp.redline_rpm = 7000.0;
+  d_imp.gear = 3;
+  carview::ui::List l_imp;
+  carview::build_drive_hud(l_imp, d_imp, 1280.0f, 720.0f);
+  check(!l_imp.items().empty(), "Imperial HUD renders cleanly with stubbed '{0} mph' stringtable");
+  carview::set_game_text({});
+
+  // 2. P1: Transparent FH1 minimap canvas alpha (zero murky dark circle backdrop!).
+  carview::MapView mv;
+  carview::MapScene msc;
+  const carview::HudImage mm = mv.minimap(msc, 128);
+  check(mm.width == 128 && mm.height == 128 && mm.rgba.size() == 128u * 128u * 4u, "minimap image dimensions valid");
+  const size_t center_idx = (64u * 128u + 64u) * 4u;
+  const size_t corner_idx = (4u * 128u + 4u) * 4u;
+  check(mm.rgba[center_idx + 3] == 0, "empty minimap center alpha is 0 (100% transparent, no dark disc)");
+  check(mm.rgba[corner_idx + 3] == 0, "empty minimap corner alpha is 0");
+  // When a route is present, road pixels are visible while unpopulated background stays alpha == 0.
+  msc.gps_route = {{0.0, 0.0}, {0.0, 120.0}};
+  const carview::HudImage mm_route = mv.minimap(msc, 128);
+  size_t opaque_px = 0, transparent_px = 0;
+  for (size_t i = 3; i < mm_route.rgba.size(); i += 4) {
+    if (mm_route.rgba[i] == 0) ++transparent_px;
+    else if (mm_route.rgba[i] > 100) ++opaque_px;
+  }
+  check(opaque_px > 20 && transparent_px > 10000,
+        "transparent minimap draws crisp route strokes over 100% transparent backdrop");
+
+  // 3. P1: Suppress ghost "U TURN AROUND 0 FT" GPS prompt and zero-distance labels.
+  carview::GpsHud gps_ghost;
+  gps_ghost.active = true;
+  gps_ghost.turn_kind = 8;  // kUTurn
+  gps_ghost.turn_text = "TURN AROUND";
+  gps_ghost.dist_to_turn_m = 0.0;
+  gps_ghost.dist_to_dest_m = 500.0;
+  gps_ghost.confirmed_uturn = false;
+  check(!carview::should_show_gps_turn_banner(gps_ghost), "unconfirmed 0m U-turn ghost prompt is suppressed");
+  check(!carview::should_show_gps_turn_distance(gps_ghost), "U-turn never prints 0 FT / 0 M distance");
+
+  carview::GpsHud gps_near_dest = gps_ghost;
+  gps_near_dest.confirmed_uturn = true;
+  gps_near_dest.dist_to_dest_m = 10.0;
+  check(!carview::should_show_gps_turn_banner(gps_near_dest), "U-turn near destination (<30m) is suppressed");
+
+  carview::GpsHud gps_real_uturn = gps_ghost;
+  gps_real_uturn.confirmed_uturn = true;
+  gps_real_uturn.dist_to_dest_m = 600.0;
+  check(carview::should_show_gps_turn_banner(gps_real_uturn), "confirmed sustained U-turn on active route displays");
+  check(!carview::should_show_gps_turn_distance(gps_real_uturn), "confirmed U-turn still omits 0 FT / 0 M");
+
+  carview::GpsHud gps_right;
+  gps_right.active = true;
+  gps_right.turn_kind = 6;  // kRight
+  gps_right.turn_text = "TURN RIGHT";
+  gps_right.dist_to_turn_m = 2.0;
+  gps_right.dist_to_dest_m = 400.0;
+  check(carview::should_show_gps_turn_banner(gps_right), "imminent right turn banner stays visible");
+  check(!carview::should_show_gps_turn_distance(gps_right), "sub-5m turn omits 0 FT / 0 M");
+  gps_right.dist_to_turn_m = 120.0;
+  check(carview::should_show_gps_turn_distance(gps_right), "upcoming 120m turn shows distance");
+
+  carview::DriveHud d_ghost;
+  d_ghost.driving = true;
+  d_ghost.gps = &gps_ghost;
+  carview::ui::List l_with_ghost, l_no_gps;
+  carview::build_drive_hud(l_with_ghost, d_ghost, 1280.0f, 720.0f);
+  d_ghost.gps = nullptr;
+  carview::build_drive_hud(l_no_gps, d_ghost, 1280.0f, 720.0f);
+  check(l_with_ghost.items().size() == l_no_gps.items().size(),
+        "ghost 'U TURN AROUND 0 FT' emits zero HUD primitives");
+
+  // 4. P1: Mouse hit-zones across remaining 10 screens.
+  auto count_group = [](const carview::ui::List& l, uint32_t grp) {
+    int c = 0;
+    for (const auto& z : l.hits())
+      if (z.group == grp) ++c;
+    return c;
+  };
+
+  // Photo Mode: rows, left/right step arrows/sliders, and bottom button bar.
+  carview::PhotoModeController pm;
+  pm.enter({0.0, 0.0, 0.0}, 0.0, carview::PhotoLimits{});
+  carview::ui::List l_pm;
+  pm.build_hud(l_pm, 1280.0f, 720.0f);
+  check(count_group(l_pm, carview::ui::kHitRow) == carview::PhotoModeController::kRowCount,
+        "Photo Mode emits hit zones for all 12 effects rows");
+  check(count_group(l_pm, carview::ui::kHitStepLeft) == carview::PhotoModeController::kRowCount &&
+            count_group(l_pm, carview::ui::kHitStepRight) == carview::PhotoModeController::kRowCount,
+        "Photo Mode emits left/right adjustment hit zones");
+  check(count_group(l_pm, carview::ui4::kHitButton) >= 4, "Photo Mode emits clickable button bar");
+
+  // Replay Viewer: 7 DVR transport buttons + timeline scrubber + button bar.
+  drive::ReplayRecording rec;
+  rec.meta.event_name = "COLORADO TEST";
+  drive::ReplayFrame rf;
+  rf.time_s = 0.0;
+  rf.cars.push_back(drive::ReplayCarSample{});
+  rec.frames.push_back(rf);
+  rf.time_s = 10.0;
+  rec.frames.push_back(rf);
+  carview::ReplayViewer rv;
+  rv.open(std::move(rec), true);
+  carview::ui::List l_rv;
+  rv.build_hud(l_rv, 1280.0f, 720.0f);
+  check(count_group(l_rv, carview::ui::kHitRow) == 7, "Replay Viewer emits 7 DVR transport hit zones");
+  check(count_group(l_rv, carview::ui4::kHitTimeline) == 1, "Replay Viewer emits timeline scrubber hit zone");
+  check(count_group(l_rv, carview::ui4::kHitButton) >= 4, "Replay Viewer emits clickable button bar");
+  rv.seek_fraction(0.5);
+  check(std::fabs(rv.progress() - 0.5) < 0.02, "ReplayViewer::seek_fraction scrubs accurately");
+
+  // Livery / Paint Editor: tabs, regions, finish arrows, 72 swatches, vinyl slots.
+  carview::LiveryEditor liv;
+  std::string liv_msg;
+  liv.open(nullptr, {}, 0, {}, liv_msg);
+  carview::ui::List l_liv_paint, l_liv_vinyl;
+  carview::draw_livery_editor_hud(l_liv_paint, 1280.0f, 720.0f, liv, "1995 VW Corrado VR6");
+  check(count_group(l_liv_paint, carview::ui::kHitTab) == 3, "Livery Editor emits 3 tab hit zones");
+  check(count_group(l_liv_paint, carview::ui4::kHitRegion) == int(carview::PaintRegion::kCount),
+        "Livery Editor emits all paint region hit zones");
+  check(count_group(l_liv_paint, carview::ui4::kHitSwatch) == 72, "Livery Editor emits 72 color swatch hit zones");
+  check(count_group(l_liv_paint, carview::ui::kHitStepLeft) == 1 &&
+            count_group(l_liv_paint, carview::ui::kHitStepRight) == 1,
+        "Livery Editor emits finish step arrows");
+  liv.set_tab(carview::EditorTab::kVinylLayers);
+  carview::draw_livery_editor_hud(l_liv_vinyl, 1280.0f, 720.0f, liv, "1995 VW Corrado VR6");
+  check(count_group(l_liv_vinyl, carview::ui::kHitRow) >= 5, "Livery Vinyl tab emits layer slot hit zones");
+
+  // Rally Hub & Service Area.
+  carview::RallyHubState rhub;
+  rhub.active = true;
+  rhub.items.resize(4);
+  for (int i = 0; i < 4; ++i) rhub.items[size_t(i)].title = "RALLY " + std::to_string(i + 1);
+  carview::ui::List l_rhub, l_rsvc;
+  carview::build_rally_hub_screen(l_rhub, rhub, 1280.0f, 720.0f);
+  check(count_group(l_rhub, carview::ui::kHitRow) == 4, "Rally Hub emits ticket card hit zones");
+  carview::RallyServiceAreaState rsvc;
+  rsvc.active = true;
+  carview::build_rally_service_area_screen(l_rsvc, rsvc, 1280.0f, 720.0f);
+  check(count_group(l_rsvc, carview::ui::kHitRow) == 4, "Rally Service Area emits 4 action hit zones");
+
+  // Sponsors Challenges & 1000 Club & Achievements & Post-Race Results.
+  std::vector<carview::SponsorChallengeRow> srows(3);
+  for (int i = 0; i < 3; ++i) {
+    srows[size_t(i)].sponsor_name = "OAKLEY";
+    srows[size_t(i)].challenge_title = "NEAR MISS";
+    srows[size_t(i)].target = 10;
+  }
+  carview::ui::List l_sp;
+  carview::draw_sponsor_challenges_ui4(l_sp, 1280.0f, 720.0f, srows, 0, 50000);
+  check(count_group(l_sp, carview::ui::kHitRow) == 3, "Sponsor Challenges emits row hit zones");
+
+  carview::ClubScreenState club_st;
+  club_st.active = true;
+  club_st.car_name = "1995 VW Corrado VR6";
+  club_st.rows.resize(3);
+  for (int i = 0; i < 3; ++i) club_st.rows[size_t(i)].title = "CHALLENGE " + std::to_string(i + 1);
+  carview::ui::List l_club;
+  carview::draw_club_screen(l_club, 1280, 720, club_st);
+  check(count_group(l_club, carview::ui::kHitRow) == 3, "1000 Club emits challenge row hit zones");
+
+  carview::RaceHud rfin;
+  rfin.phase = carview::RaceHud::kFinished;
+  rfin.results_page = 0;
+  rfin.place = 1;
+  rfin.clock = 10.0;
+  rfin.finish_time = 9.0;
+  carview::DriveHud d_rfin;
+  d_rfin.driving = true;
+  d_rfin.race = &rfin;
+  carview::ui::List l_rfin;
+  carview::build_drive_hud(l_rfin, d_rfin, 1280.0f, 720.0f);
+  check(count_group(l_rfin, carview::ui4::kHitButton) == 4,
+        "Post-Race Results emits 4 clickable button-bar zones (Continue/Restart/Results/Replay)");
+}
+
 }  // namespace
 
 int main() {
   test_ui4_chrome_primitives();
   test_map_camera_controller();
   test_units_mouse_and_banner_non_overlap();
+  test_round2_hud_minimap_gps_and_mouse_ux();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");

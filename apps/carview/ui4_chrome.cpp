@@ -645,6 +645,7 @@ void button_bar(ui::List& l, const std::vector<Prompt>& items, float screen_w, f
     const float tilt = slot_tilts[idx % 7];
     const float gy = base_y + 0.5f * h;
     TiltScope slot_tilt(l, cx + 0.5f * pw, gy, tilt);
+    l.add_hit(cx, base_y, cx + pw, base_y + h, kHitButton, idx);
     pill(l, cx, base_y, cx + pw, base_y + h, kPillGrey, PillKind::kMenu, true);
     const float gx = cx + (wide_btn ? 20.0f : 16.0f) * s;
     button_glyph(l, gx, gy, 10.5f * s, btn.c_str());

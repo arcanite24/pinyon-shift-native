@@ -123,6 +123,10 @@ class SaveProfilePage {
   const OnScreenKeyboard& osk() const { return osk_; }
 
   int selected() const { return selected_; }
+  void select_row(int idx, const SaveSession& session) {
+    selected_ = idx;
+    clamp_selection(session);
+  }
   const std::vector<profile::backup::Entry>& backups() const { return backups_; }
   const std::vector<profile::sync::Remote>& remotes() const { return remotes_; }
   const std::vector<ImportCandidate>& import_candidates() const { return imports_; }

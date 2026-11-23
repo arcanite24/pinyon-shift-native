@@ -27,6 +27,8 @@ void CareerPage::open(const CareerSummary& s, std::vector<cars::PackInfo> packs)
     lines_.push_back("  " + font_text(p.name) +
                      (p.owned() ? "" : !p.installed ? "  (not installed)" : !p.enabled ? "  (disabled)" : "  (no header)"));
   selected_ = 0;
+  show_sponsors_ = false;
+  sponsor_selected_ = 0;
   open_ = true;
 }
 
@@ -34,6 +36,38 @@ void CareerPage::move(int by) {
   if (lines_.empty()) return;
   const int n = int(lines_.size());
   selected_ = size_t(std::clamp(int(selected_) + by, 0, n - 1));
+}
+
+void CareerPage::select_visible(int vis_idx) {
+  if (lines_.empty()) return;
+  constexpr int kRows = 7;
+  const int n = int(lines_.size());
+  const int first = std::clamp(int(selected_) - kRows / 2, 0, std::max(0, n - kRows));
+  selected_ = size_t(std::clamp(first + vis_idx, 0, n - 1));
+}
+
+int CareerPage::visible_selected() const {
+  if (lines_.empty()) return 0;
+  constexpr int kRows = 7;
+  const int n = int(lines_.size());
+  const int first = std::clamp(int(selected_) - kRows / 2, 0, std::max(0, n - kRows));
+  return int(selected_) - first;
+}
+
+void CareerPage::move_sponsor(int by, int count) {
+  if (count <= 0) {
+    sponsor_selected_ = 0;
+    return;
+  }
+  sponsor_selected_ = ((sponsor_selected_ + by) % count + count) % count;
+}
+
+void CareerPage::select_sponsor(int idx, int count) {
+  if (count <= 0) {
+    sponsor_selected_ = 0;
+    return;
+  }
+  sponsor_selected_ = std::clamp(idx, 0, count - 1);
 }
 
 void CareerPage::fill(std::string& title, std::vector<std::string>& lines, int& selected) const {

@@ -47,11 +47,14 @@ class LiveryEditor {
   EditorTab tab() const { return tab_; }
 
   // Paint Shop controls.
+  void set_region(PaintRegion r);
   void move_region(int by);
   PaintRegion region() const { return region_; }
   void move_finish(int by);
   void step_hsv(float dh, float ds, float dv);
+  void set_swatch(int row, int col, int rows = 4, int cols = 18);
   void step_window_tint(float delta);
+  void select_special_index(size_t idx);
   void move_special_color(int by);
   void apply_special_color();
 
@@ -59,6 +62,7 @@ class LiveryEditor {
   void add_vinyl_layer(const std::string& shape_path = {}, uint32_t rgb = 0xFFFFFFu);
   void delete_selected_layer();
   void select_layer(int by);
+  void select_layer_index(size_t idx);
   void move_layer_order(int by);
   void transform_layer(float dx, float dy, float dsx, float dsy, float drot);
   void cycle_layer_shape(int by);
