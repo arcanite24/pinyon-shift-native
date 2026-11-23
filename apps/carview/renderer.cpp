@@ -31,17 +31,21 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include "bloom_down_frag_spv.h"
+#include "bloom_up_frag_spv.h"
 #include "car_frag_spv.h"
 #include "car_model.h"
 #include "car_vert_spv.h"
 #include "fxaa_frag_spv.h"
 #include "hdr_output_frag_spv.h"
 #include "inspector_preview_frag_spv.h"
+#include "mblur_tile_frag_spv.h"
 #include "motion_vectors_frag_spv.h"
 #include "platform_support.h"
 #include "post_frag_spv.h"
 #include "post_vert_spv.h"
 #include "ssao_frag_spv.h"
+#include "sscs_frag_spv.h"
 #include "temporal_upscale_frag_spv.h"
 #include "ui_frag_spv.h"
 #include "ui_vert_spv.h"
@@ -183,6 +187,8 @@ Renderer::~Renderer() {
     destroy_image(bench_output_);
     destroy_modern_passes();
     if (post_quarter_) vkDestroyPipeline(device_, post_quarter_, nullptr);
+    if (post_bloom_down_) vkDestroyPipeline(device_, post_bloom_down_, nullptr);
+    if (post_bloom_up_) vkDestroyPipeline(device_, post_bloom_up_, nullptr);
     if (post_final_) vkDestroyPipeline(device_, post_final_, nullptr);
     if (post_final_sdr_) vkDestroyPipeline(device_, post_final_sdr_, nullptr);
     if (post_layout_) vkDestroyPipelineLayout(device_, post_layout_, nullptr);
@@ -1234,11 +1240,12 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
                                                     {width, height});
     const modern::ModernTargetPlan plan = modern::plan_modern_targets(
         graphics_, {rw, rh}, {width, height}, options_.post.bloom, hdr_mode_, hdr_pattern_, inspector_active_,
-        inspector_view_ == InspectorView::kMotion, up_choice);
+        inspector_view_ == InspectorView::kMotion, up_choice, options_.post.motion_blur);
     allocated_targets_ = plan;
 
     if (plan.bloom) {
-      uint32_t bw = std::max(1u, rw / 4), bh = std::max(1u, rh / 4);
+      // 6-level Jimenez / Dual-Kawase pyramid starting at half-resolution (rw/2 x rh/2).
+      uint32_t bw = std::max(1u, rw / 2), bh = std::max(1u, rh / 2);
       for (uint32_t k = 0; k < kBloomLevels; ++k) {
         bloom_w_[k] = bw;
         bloom_h_[k] = bh;
@@ -1254,16 +1261,28 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
       }
     }
     if (plan.ssao) {
-      const uint32_t aow = std::max(1u, rw / 2), aoh = std::max(1u, rh / 2);
+      const bool full_ao = modern::gtao_full_res(graphics_.ssao);
+      const uint32_t aow = full_ao ? rw : std::max(1u, rw / 2);
+      const uint32_t aoh = full_ao ? rh : std::max(1u, rh / 2);
       ao_width_ = aow;
       ao_height_ = aoh;
-      if (!create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                        ao_raw_) ||
-          !create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                        ao_tmp_) ||
-          !create_image(aow, aoh, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
-                        ao_blur_)) {
-        error = "post ssao targets";
+      if (!create_image(aow, aoh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, ao_raw_) ||
+          !create_image(aow, aoh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, ao_tmp_) ||
+          !create_image(aow, aoh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, ao_blur_)) {
+        error = "post gtao targets";
+        return false;
+      }
+    }
+    if (plan.sscs) {
+      const bool full_cs = modern::contact_shadow_full_res(graphics_.contact_shadows);
+      sscs_width_ = full_cs ? rw : std::max(1u, rw / 2);
+      sscs_height_ = full_cs ? rh : std::max(1u, rh / 2);
+      if (!create_image(sscs_width_, sscs_height_, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, sscs_)) {
+        error = "post sscs target";
         return false;
       }
     }
@@ -1298,11 +1317,22 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
       return false;
     }
     if (plan.motion_vec &&
-        !create_image(rw, rh, 1, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+        !create_image(rw, rh, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                       motion_vec_)) {
       error = "post motion target";
       return false;
+    }
+    if (plan.mblur_tiles) {
+      mblur_tile_w_ = std::max(1u, (rw + 15u) / 16u);
+      mblur_tile_h_ = std::max(1u, (rh + 15u) / 16u);
+      if (!create_image(mblur_tile_w_, mblur_tile_h_, 1, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, mblur_tile_) ||
+          !create_image(mblur_tile_w_, mblur_tile_h_, 1, VK_FORMAT_R16G16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, usage,
+                        VK_IMAGE_ASPECT_COLOR_BIT, mblur_neighbor_)) {
+        error = "post mblur tile targets";
+        return false;
+      }
     }
     if (plan.temporal_hist &&
         (!create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
@@ -1322,50 +1352,51 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     }
     temporal_reset_ = true;
     temporal_idx_ = 0;
-    // Wire the 22 post descriptor sets (falling back to ao_white_ when bloom is disabled):
+    // Wire the 14 post descriptor sets:
     //   0: lum16 (hdr, hdr)
     //   1: lum_adapt (lum_16, lum_adapt[1])
-    //   2: bright (hdr, hdr)
-    //   3..7: blurH[0..4] (bloom_a[k], bloom_a[k])
-    //   8..12: blurV[0..4] (bloom_b[k], bloom_b[k])
-    //   13..16: down[0..3] (bloom_a[k], bloom_a[k])
-    //   17: up3 (bloom_a[3], bloom_a[4])
-    //   18: up2 (bloom_a[2], bloom_b[3])
-    //   19: up1 (bloom_a[1], bloom_b[2])
-    //   20: up0 (bloom_a[0], bloom_b[1])
-    //   21: composite (hdr, bloom_b[0])
+    //   2: bloom_down[0] (hdr, hdr) -> bloom_a[0] (Karis prefilter)
+    //   3..7: bloom_down[1..5] (bloom_a[k-1], bloom_a[k-1]) -> bloom_a[k]
+    //   8: bloom_up[4] (bloom_a[4], bloom_a[5]) -> bloom_b[4]
+    //   9: bloom_up[3] (bloom_a[3], bloom_b[4]) -> bloom_b[3]
+    //   10: bloom_up[2] (bloom_a[2], bloom_b[3]) -> bloom_b[2]
+    //   11: bloom_up[1] (bloom_a[1], bloom_b[2]) -> bloom_b[1]
+    //   12: bloom_up[0] (bloom_a[0], bloom_b[1]) -> bloom_b[0]
+    //   13: composite (hdr, bloom_b[0])
     const VkImageView fallback_v = ao_white_.view;
+    const VkImageView vel_fb = vel_zero_.view ? vel_zero_.view : fallback_v;
     auto bv = [&](const Image& img) { return img.view ? img.view : fallback_v; };
     VkImageView sources[kPostSetCount][2] = {};
     sources[0][0] = hdr_.view; sources[0][1] = hdr_.view;
     sources[1][0] = lum_16_.view; sources[1][1] = lum_adapt_[1].view;
     sources[2][0] = hdr_.view; sources[2][1] = hdr_.view;
-    for (uint32_t k = 0; k < kBloomLevels; ++k) {
-      sources[3 + k][0] = bv(bloom_a_[k]); sources[3 + k][1] = bv(bloom_a_[k]);
-      sources[8 + k][0] = bv(bloom_b_[k]); sources[8 + k][1] = bv(bloom_b_[k]);
+    for (uint32_t k = 1; k < kBloomLevels; ++k) {
+      sources[2 + k][0] = bv(bloom_a_[k - 1]); sources[2 + k][1] = bv(bloom_a_[k - 1]);
     }
-    for (uint32_t k = 0; k < kBloomLevels - 1; ++k) {
-      sources[13 + k][0] = bv(bloom_a_[k]); sources[13 + k][1] = bv(bloom_a_[k]);
-    }
-    sources[17][0] = bv(bloom_a_[3]); sources[17][1] = bv(bloom_a_[4]);
-    sources[18][0] = bv(bloom_a_[2]); sources[18][1] = bv(bloom_b_[3]);
-    sources[19][0] = bv(bloom_a_[1]); sources[19][1] = bv(bloom_b_[2]);
-    sources[20][0] = bv(bloom_a_[0]); sources[20][1] = bv(bloom_b_[1]);
-    sources[21][0] = hdr_.view;       sources[21][1] = bv(bloom_b_[0]);
+    sources[8][0] = bv(bloom_a_[4]);  sources[8][1] = bv(bloom_a_[5]);
+    sources[9][0] = bv(bloom_a_[3]);  sources[9][1] = bv(bloom_b_[4]);
+    sources[10][0] = bv(bloom_a_[2]); sources[10][1] = bv(bloom_b_[3]);
+    sources[11][0] = bv(bloom_a_[1]); sources[11][1] = bv(bloom_b_[2]);
+    sources[12][0] = bv(bloom_a_[0]); sources[12][1] = bv(bloom_b_[1]);
+    sources[13][0] = hdr_.view;       sources[13][1] = bv(bloom_b_[0]);
 
-    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 6);
+    std::vector<VkDescriptorImageInfo> images(kPostSetCount * 9);
     std::vector<VkDescriptorBufferInfo> buf_infos(kPostSetCount);
-    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 7);
+    std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 10);
     const VkImageView ao_view = (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view
                                                                                                : ao_white_.view;
+    const VkImageView sscs_view =
+        (graphics_.contact_shadows != modern::ContactShadows::kOff && sscs_.view) ? sscs_.view : ao_white_.view;
+    const VkImageView motion_view = motion_vec_.view ? motion_vec_.view : vel_fb;
+    const VkImageView neighbor_view = mblur_neighbor_.view ? mblur_neighbor_.view : vel_fb;
     for (uint32_t s = 0; s < kPostSetCount; ++s) {
-      // Only the final composite (s == 21) samples lum_adapt_[0]; pass 1 renders into lum_adapt_[0],
+      // Only the final composite (s == 13) samples lum_adapt_[0]; pass 1 renders into lum_adapt_[0],
       // so earlier sets bind lum_adapt_[1] (already SHADER_READ_ONLY_OPTIMAL) to avoid a layout conflict.
-      const VkImageView adapt_view = (s == 21) ? lum_adapt_[0].view : lum_adapt_[1].view;
+      const VkImageView adapt_view = (s == 13) ? lum_adapt_[0].view : lum_adapt_[1].view;
       const VkImageView views[4] = {sources[s][0], sources[s][1], lut3d_.view, adapt_view};
       for (uint32_t b = 0; b < 4; ++b) {
-        const size_t iidx = size_t(s) * 6 + b;
-        const size_t widx = size_t(s) * 7 + b;
+        const size_t iidx = size_t(s) * 9 + b;
+        const size_t widx = size_t(s) * 10 + b;
         images[iidx] = {post_sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1376,8 +1407,8 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         w.pImageInfo = &images[iidx];
       }
       {
-        const size_t iidx = size_t(s) * 6 + 4;
-        const size_t widx = size_t(s) * 7 + 4;
+        const size_t iidx = size_t(s) * 9 + 4;
+        const size_t widx = size_t(s) * 10 + 4;
         images[iidx] = {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1388,7 +1419,7 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         w.pImageInfo = &images[iidx];
       }
       {
-        const size_t widx = size_t(s) * 7 + 5;
+        const size_t widx = size_t(s) * 10 + 5;
         buf_infos[s] = {post_optical_buf_.buffer, 0, VK_WHOLE_SIZE};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1398,14 +1429,15 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         w.pBufferInfo = &buf_infos[s];
       }
-      {
-        const size_t iidx = size_t(s) * 6 + 5;
-        const size_t widx = size_t(s) * 7 + 6;
-        images[iidx] = {post_sampler_, ao_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      const VkImageView extra_views[4] = {ao_view, sscs_view, motion_view, neighbor_view};
+      for (uint32_t e = 0; e < 4; ++e) {
+        const size_t iidx = size_t(s) * 9 + 5 + e;
+        const size_t widx = size_t(s) * 10 + 6 + e;
+        images[iidx] = {post_sampler_, extra_views[e], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = post_sets_[s];
-        w.dstBinding = 6;
+        w.dstBinding = 6 + e;
         w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w.pImageInfo = &images[iidx];
@@ -1489,7 +1521,8 @@ void Renderer::set_graphics_settings(const modern::GraphicsSettings& g) {
   const modern::GraphicsSettings clamped = modern::clamp_graphics(g);
   const bool need_targets =
       clamped.scale != graphics_.scale || clamped.base_540p != graphics_.base_540p ||
-      clamped.ssao != graphics_.ssao || clamped.hdr != graphics_.hdr ||
+      clamped.ssao != graphics_.ssao || clamped.contact_shadows != graphics_.contact_shadows ||
+      clamped.velocity_blur != graphics_.velocity_blur || clamped.hdr != graphics_.hdr ||
       clamped.hdr_compare != graphics_.hdr_compare ||
       clamped.aa != graphics_.aa || clamped.upscaler != graphics_.upscaler;
   const bool hdr_changed = clamped.hdr != graphics_.hdr;
@@ -1711,22 +1744,25 @@ bool Renderer::create_post(std::string& error) {
   dsampler.magFilter = dsampler.minFilter = VK_FILTER_NEAREST;
   dsampler.addressModeU = dsampler.addressModeV = dsampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   VK_TRY(vkCreateSampler(device_, &dsampler, nullptr, &post_depth_sampler_), "post depth sampler");
-  constexpr VkDeviceSize kOpticalUboBytes = 13 * 16;  // 13 vec4s = 208 bytes
+  constexpr VkDeviceSize kOpticalUboBytes = 14 * 16;  // 14 vec4s = 224 bytes
   if (!create_buffer(kOpticalUboBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, post_optical_buf_)) {
     error = "post optical UBO";
     return false;
   }
-  const VkDescriptorSetLayoutBinding bindings[7] = {
+  const VkDescriptorSetLayoutBinding bindings[10] = {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set.bindingCount = 7;
+  set.bindingCount = 10;
   set.pBindings = bindings;
   VK_TRY(vkCreateDescriptorSetLayout(device_, &set, nullptr, &post_set_layout_), "post set layout");
   VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
@@ -1737,7 +1773,7 @@ bool Renderer::create_post(std::string& error) {
   layout.pPushConstantRanges = &push;
   VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
   const VkDescriptorPoolSize pool_sizes[2] = {
-      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 6},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 9},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPostSetCount}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = kPostSetCount;
@@ -1758,14 +1794,11 @@ bool Renderer::create_post(std::string& error) {
     info.pCode = code;
     return vkCreateShaderModule(device_, &info, nullptr, &module);
   };
-  VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+  VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE, frag_bdown = VK_NULL_HANDLE, frag_bup = VK_NULL_HANDLE;
   VK_TRY(make_module(kPost_vert_spv, sizeof(kPost_vert_spv), vert), "post vertex shader");
   VK_TRY(make_module(kPost_frag_spv, sizeof(kPost_frag_spv), frag), "post fragment shader");
-  const VkPipelineShaderStageCreateInfo stages[2] = {
-      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main",
-       nullptr},
-      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main",
-       nullptr}};
+  VK_TRY(make_module(kBloom_down_frag_spv, sizeof(kBloom_down_frag_spv), frag_bdown), "bloom down shader");
+  VK_TRY(make_module(kBloom_up_frag_spv, sizeof(kBloom_up_frag_spv), frag_bup), "bloom up shader");
   VkPipelineVertexInputStateCreateInfo vertex_input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
   assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1788,9 +1821,12 @@ bool Renderer::create_post(std::string& error) {
   VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dynamic.dynamicStateCount = 2;
   dynamic.pDynamicStates = dynamic_states;
-  VkResult result = VK_SUCCESS;
-  for (int k = 0; k < 3 && result == VK_SUCCESS; ++k) {
-    const VkFormat format = k == 0 ? scene_format() : (k == 1 ? color_format_ : VK_FORMAT_R8G8B8A8_UNORM);
+  auto build_post_pipe = [&](VkShaderModule fmod, VkFormat format, VkPipeline& dst) -> VkResult {
+    const VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main",
+         nullptr},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fmod, "main",
+         nullptr}};
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
@@ -1807,39 +1843,59 @@ bool Renderer::create_post(std::string& error) {
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic;
     info.layout = post_layout_;
-    VkPipeline* dst = k == 0 ? &post_quarter_ : (k == 1 ? &post_final_ : &post_final_sdr_);
-    result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, dst);
-  }
+    return vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &dst);
+  };
+  VkResult result = build_post_pipe(frag, scene_format(), post_quarter_);
+  if (result == VK_SUCCESS) result = build_post_pipe(frag_bdown, scene_format(), post_bloom_down_);
+  if (result == VK_SUCCESS) result = build_post_pipe(frag_bup, scene_format(), post_bloom_up_);
+  if (result == VK_SUCCESS) result = build_post_pipe(frag, color_format_, post_final_);
+  if (result == VK_SUCCESS) result = build_post_pipe(frag, VK_FORMAT_R8G8B8A8_UNORM, post_final_sdr_);
   vkDestroyShaderModule(device_, vert, nullptr);
   vkDestroyShaderModule(device_, frag, nullptr);
+  vkDestroyShaderModule(device_, frag_bdown, nullptr);
+  vkDestroyShaderModule(device_, frag_bup, nullptr);
   VK_TRY(result, "post pipelines");
   return true;
 }
 
 bool Renderer::create_modern_passes(std::string& error) {
   if (modern_ready_) return true;
-  // 1x1 white AO fallback when SSAO is off.
+  // 1x1 neutral fallback textures:
+  //   ao_white_: RGBA8 {1.0, 0.5, 0.5, 1.0} (full visibility + neutral +Z view bent normal)
+  //   vel_zero_: RGBA16F {0, 0, 0, 1000} (zero motion vector, 0 reactive, far depth)
   if (!ao_white_.image) {
-    if (!create_image(1, 1, 1, VK_FORMAT_R8_UNORM, VK_SAMPLE_COUNT_1_BIT,
+    if (!create_image(1, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT,
                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                      ao_white_)) {
-      error = "ao white fallback";
+                      ao_white_) ||
+        !create_image(1, 1, 1, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                      vel_zero_)) {
+      error = "modern fallback targets";
       return false;
     }
     const bool ok = submit_once([&](VkCommandBuffer cmd) {
+      const VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      const VkClearColorValue neutral_ao{{1.0f, 0.5f, 0.5f, 1.0f}};
+      const VkClearColorValue zero_vel{{0.0f, 0.0f, 0.0f, 1000.0f}};
       image_barrier(cmd, ao_white_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
                     VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-      const VkClearColorValue white{{1.0f, 1.0f, 1.0f, 1.0f}};
-      const VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      vkCmdClearColorImage(cmd, ao_white_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &rng);
+      image_barrier(cmd, vel_zero_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                    VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      vkCmdClearColorImage(cmd, ao_white_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &neutral_ao, 1, &rng);
+      vkCmdClearColorImage(cmd, vel_zero_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero_vel, 1, &rng);
       image_barrier(cmd, ao_white_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      image_barrier(cmd, vel_zero_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     });
     if (!ok) {
-      error = "ao white clear";
+      error = "modern fallback clear";
       return false;
     }
   }
@@ -1880,6 +1936,8 @@ bool Renderer::create_modern_passes(std::string& error) {
     return true;
   };
   if (!make_layout(ssao_set_layout_, 48, ssao_layout_, "ssao layout") ||
+      !make_layout(single_tex_set_layout_, 48, sscs_layout_, "sscs layout") ||
+      !make_layout(single_tex_set_layout_, 16, mblur_tile_layout_, "mblur tile layout") ||
       !make_layout(single_tex_set_layout_, 16, fxaa_layout_, "fxaa layout") ||
       !make_layout(single_tex_set_layout_, 48, upscale_layout_, "upscale layout") ||
       !make_layout(single_tex_set_layout_, 48, hdr_layout_, "hdr layout") ||
@@ -1888,9 +1946,9 @@ bool Renderer::create_modern_passes(std::string& error) {
       !make_layout(single_tex_set_layout_, 16, inspector_layout_, "inspector layout"))
     return false;
 
-  const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 40};
+  const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64};
   VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool_info.maxSets = 24;
+  pool_info.maxSets = 32;
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &pool_size;
   VK_TRY(vkCreateDescriptorPool(device_, &pool_info, nullptr, &modern_pool_), "modern descriptor pool");
@@ -1902,12 +1960,12 @@ bool Renderer::create_modern_passes(std::string& error) {
   salloc.pSetLayouts = ssao_layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &salloc, ssao_sets_), "ssao descriptor sets");
 
-  VkDescriptorSetLayout tex_layouts[16];
-  for (int i = 0; i < 16; ++i) tex_layouts[i] = single_tex_set_layout_;
-  VkDescriptorSet tex_sets[16] = {};
+  VkDescriptorSetLayout tex_layouts[19];
+  for (int i = 0; i < 19; ++i) tex_layouts[i] = single_tex_set_layout_;
+  VkDescriptorSet tex_sets[19] = {};
   VkDescriptorSetAllocateInfo talloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   talloc.descriptorPool = modern_pool_;
-  talloc.descriptorSetCount = 16;
+  talloc.descriptorSetCount = 19;
   talloc.pSetLayouts = tex_layouts;
   VK_TRY(vkAllocateDescriptorSets(device_, &talloc, tex_sets), "modern tex descriptor sets");
   fxaa_set_scene_ = tex_sets[0];
@@ -1921,6 +1979,9 @@ bool Renderer::create_modern_passes(std::string& error) {
   upscale_set_hist_[0] = tex_sets[8];
   upscale_set_hist_[1] = tex_sets[9];
   for (int i = 0; i < 6; ++i) inspector_sets_[i] = tex_sets[10 + i];
+  sscs_set_ = tex_sets[16];
+  mblur_tile_set_ = tex_sets[17];
+  mblur_neighbor_set_ = tex_sets[18];
 
   VkDescriptorSetLayout temp_layouts[4] = {temporal_set_layout_, temporal_set_layout_, temporal_set_layout_,
                                            temporal_set_layout_};
@@ -1990,14 +2051,18 @@ bool Renderer::create_modern_passes(std::string& error) {
     VK_TRY(res, what);
     return true;
   };
-  if (!make_fs_pipe(kSsao_frag_spv, sizeof(kSsao_frag_spv), ssao_layout_, VK_FORMAT_R8_UNORM, ssao_pipe_,
-                    "ssao pipeline") ||
+  if (!make_fs_pipe(kSsao_frag_spv, sizeof(kSsao_frag_spv), ssao_layout_, VK_FORMAT_R8G8B8A8_UNORM, ssao_pipe_,
+                    "gtao pipeline") ||
+      !make_fs_pipe(kSscs_frag_spv, sizeof(kSscs_frag_spv), sscs_layout_, VK_FORMAT_R8_UNORM, sscs_pipe_,
+                    "sscs pipeline") ||
+      !make_fs_pipe(kMblur_tile_frag_spv, sizeof(kMblur_tile_frag_spv), mblur_tile_layout_, VK_FORMAT_R16G16_SFLOAT,
+                    mblur_tile_pipe_, "mblur tile pipeline") ||
       !make_fs_pipe(kFxaa_frag_spv, sizeof(kFxaa_frag_spv), fxaa_layout_, VK_FORMAT_R8G8B8A8_UNORM, fxaa_pipe_,
                     "fxaa pipeline") ||
       !make_fs_pipe(kUpscale_frag_spv, sizeof(kUpscale_frag_spv), upscale_layout_, VK_FORMAT_R8G8B8A8_UNORM,
                     upscale_pipe_, "upscale pipeline") ||
       !make_fs_pipe(kMotion_vectors_frag_spv, sizeof(kMotion_vectors_frag_spv), motion_layout_,
-                    VK_FORMAT_R16G16_SFLOAT, motion_pipe_, "motion pipeline") ||
+                    VK_FORMAT_R16G16B16A16_SFLOAT, motion_pipe_, "motion pipeline") ||
       !make_fs_pipe(kTemporal_upscale_frag_spv, sizeof(kTemporal_upscale_frag_spv), temporal_layout_,
                     VK_FORMAT_R8G8B8A8_UNORM, temporal_pipe_, "temporal pipeline") ||
       !make_fs_pipe(kInspector_preview_frag_spv, sizeof(kInspector_preview_frag_spv), inspector_layout_,
@@ -2027,15 +2092,19 @@ void Renderer::destroy_modern_passes() {
   if (inspector_pipe_) vkDestroyPipeline(device_, inspector_pipe_, nullptr), inspector_pipe_ = VK_NULL_HANDLE;
   if (temporal_pipe_) vkDestroyPipeline(device_, temporal_pipe_, nullptr), temporal_pipe_ = VK_NULL_HANDLE;
   if (motion_pipe_) vkDestroyPipeline(device_, motion_pipe_, nullptr), motion_pipe_ = VK_NULL_HANDLE;
+  if (mblur_tile_pipe_) vkDestroyPipeline(device_, mblur_tile_pipe_, nullptr), mblur_tile_pipe_ = VK_NULL_HANDLE;
   if (upscale_pipe_) vkDestroyPipeline(device_, upscale_pipe_, nullptr), upscale_pipe_ = VK_NULL_HANDLE;
   if (fxaa_pipe_) vkDestroyPipeline(device_, fxaa_pipe_, nullptr), fxaa_pipe_ = VK_NULL_HANDLE;
+  if (sscs_pipe_) vkDestroyPipeline(device_, sscs_pipe_, nullptr), sscs_pipe_ = VK_NULL_HANDLE;
   if (ssao_pipe_) vkDestroyPipeline(device_, ssao_pipe_, nullptr), ssao_pipe_ = VK_NULL_HANDLE;
   if (inspector_layout_) vkDestroyPipelineLayout(device_, inspector_layout_, nullptr), inspector_layout_ = VK_NULL_HANDLE;
   if (temporal_layout_) vkDestroyPipelineLayout(device_, temporal_layout_, nullptr), temporal_layout_ = VK_NULL_HANDLE;
   if (motion_layout_) vkDestroyPipelineLayout(device_, motion_layout_, nullptr), motion_layout_ = VK_NULL_HANDLE;
+  if (mblur_tile_layout_) vkDestroyPipelineLayout(device_, mblur_tile_layout_, nullptr), mblur_tile_layout_ = VK_NULL_HANDLE;
   if (hdr_layout_) vkDestroyPipelineLayout(device_, hdr_layout_, nullptr), hdr_layout_ = VK_NULL_HANDLE;
   if (upscale_layout_) vkDestroyPipelineLayout(device_, upscale_layout_, nullptr), upscale_layout_ = VK_NULL_HANDLE;
   if (fxaa_layout_) vkDestroyPipelineLayout(device_, fxaa_layout_, nullptr), fxaa_layout_ = VK_NULL_HANDLE;
+  if (sscs_layout_) vkDestroyPipelineLayout(device_, sscs_layout_, nullptr), sscs_layout_ = VK_NULL_HANDLE;
   if (ssao_layout_) vkDestroyPipelineLayout(device_, ssao_layout_, nullptr), ssao_layout_ = VK_NULL_HANDLE;
   if (modern_pool_) vkDestroyDescriptorPool(device_, modern_pool_, nullptr), modern_pool_ = VK_NULL_HANDLE;
   if (temporal_set_layout_)
@@ -2045,6 +2114,7 @@ void Renderer::destroy_modern_passes() {
   if (ssao_set_layout_)
     vkDestroyDescriptorSetLayout(device_, ssao_set_layout_, nullptr), ssao_set_layout_ = VK_NULL_HANDLE;
   destroy_image(inspector_thumb_);
+  destroy_image(vel_zero_);
   destroy_image(ao_white_);
   modern_ready_ = false;
 }
@@ -2052,7 +2122,9 @@ void Renderer::destroy_modern_passes() {
 void Renderer::update_modern_descriptors() {
   if (!modern_ready_ || !depth_resolved_.view) return;
   const VkImageView fb = ao_white_.view;
+  const VkImageView vel_fb = vel_zero_.view ? vel_zero_.view : fb;
   auto vv = [&](const Image& img) { return img.view ? img.view : fb; };
+  auto vvel = [&](const Image& img) { return img.view ? img.view : vel_fb; };
   const VkImageView ao_view =
       (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view : ao_white_.view;
   const VkImageView shadow_view = shadow_map_.view ? shadow_map_.view : depth_resolved_.view;
@@ -2064,7 +2136,7 @@ void Renderer::update_modern_descriptors() {
       {post_sampler_, vv(ao_tmp_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
   };
-  VkDescriptorImageInfo tex_imgs[16] = {
+  VkDescriptorImageInfo tex_imgs[19] = {
       {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(stand_in_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -2079,31 +2151,35 @@ void Renderer::update_modern_descriptors() {
       {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, ao_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, shadow_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       hiz_preview_view_
           ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
           : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(mblur_tile_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
   };
-  VkDescriptorSet tex_sets[16] = {fxaa_set_scene_,    fxaa_set_standin_,  upscale_set_scene_,   upscale_set_fxaa_,
-                                  upscale_set_tmp_,   hdr_set_standin_,   hdr_set_fxaa_,      motion_set_,
+  VkDescriptorSet tex_sets[19] = {fxaa_set_scene_,      fxaa_set_standin_,  upscale_set_scene_,   upscale_set_fxaa_,
+                                  upscale_set_tmp_,     hdr_set_standin_,   hdr_set_fxaa_,        motion_set_,
                                   upscale_set_hist_[0], upscale_set_hist_[1], inspector_sets_[0], inspector_sets_[1],
-                                  inspector_sets_[2], inspector_sets_[3], inspector_sets_[4], inspector_sets_[5]};
+                                  inspector_sets_[2],   inspector_sets_[3], inspector_sets_[4],   inspector_sets_[5],
+                                  sscs_set_,            mblur_tile_set_,    mblur_neighbor_set_};
   VkDescriptorImageInfo temp_imgs[12] = {
       {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(temporal_hist_[1]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(temporal_hist_[0]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(scene_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(temporal_hist_[1]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(scene_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(temporal_hist_[0]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_sampler_, vv(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
   };
-  VkWriteDescriptorSet writes[34]{};
+  VkWriteDescriptorSet writes[37]{};
   for (int i = 0; i < 6; ++i) {
     writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[i].dstSet = ssao_sets_[i / 2];
@@ -2112,7 +2188,7 @@ void Renderer::update_modern_descriptors() {
     writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[i].pImageInfo = &ssao_imgs[i];
   }
-  for (int i = 0; i < 16; ++i) {
+  for (int i = 0; i < 19; ++i) {
     writes[6 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[6 + i].dstSet = tex_sets[i];
     writes[6 + i].dstBinding = 0;
@@ -2121,14 +2197,14 @@ void Renderer::update_modern_descriptors() {
     writes[6 + i].pImageInfo = &tex_imgs[i];
   }
   for (int i = 0; i < 12; ++i) {
-    writes[22 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[22 + i].dstSet = temporal_sets_[i / 3];
-    writes[22 + i].dstBinding = uint32_t(i % 3);
-    writes[22 + i].descriptorCount = 1;
-    writes[22 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[22 + i].pImageInfo = &temp_imgs[i];
+    writes[25 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[25 + i].dstSet = temporal_sets_[i / 3];
+    writes[25 + i].dstBinding = uint32_t(i % 3);
+    writes[25 + i].descriptorCount = 1;
+    writes[25 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[25 + i].pImageInfo = &temp_imgs[i];
   }
-  vkUpdateDescriptorSets(device_, 34, writes, 0, nullptr);
+  vkUpdateDescriptorSets(device_, 37, writes, 0, nullptr);
 }
 
 void Renderer::record_ssao(VkCommandBuffer cmd) {
@@ -2137,6 +2213,7 @@ void Renderer::record_ssao(VkCommandBuffer cmd) {
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  const float frame_jitter = float(frames_submitted_ & 63u) / 64.0f;
   auto draw_ao = [&](const Image& dst, VkDescriptorSet set, float mode) {
     image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
@@ -2160,9 +2237,10 @@ void Renderer::record_ssao(VkCommandBuffer cmd) {
     struct {
       float proj_params[4], ao_params[4], texel_step[4];
     } pc = {{cam_proj00_, cam_proj11_, cam_near_, cam_far_},
-            {modern::ssao_radius_m(graphics_.ssao), 0.03f, float(modern::ssao_taps(graphics_.ssao)), mode},
+            {modern::ssao_radius_m(graphics_.ssao), float(modern::gtao_slices(graphics_.ssao)),
+             float(modern::gtao_steps(graphics_.ssao)), mode},
             {1.0f / float(std::max(1u, ao_width_)), 1.0f / float(std::max(1u, ao_height_)),
-             options_.reverse_z ? 1.0f : 0.0f, 1.0f}};
+             options_.reverse_z ? 1.0f : 0.0f, frame_jitter}};
     vkCmdPushConstants(cmd, ssao_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
@@ -2172,7 +2250,51 @@ void Renderer::record_ssao(VkCommandBuffer cmd) {
   draw_ao(ao_raw_, ssao_sets_[0], 0.0f);
   draw_ao(ao_tmp_, ssao_sets_[1], 1.0f);
   draw_ao(ao_blur_, ssao_sets_[2], 2.0f);
-  mark(cmd, "ssao");
+  mark(cmd, "gtao");
+}
+
+void Renderer::record_sscs(VkCommandBuffer cmd) {
+  if (!modern_ready_ || graphics_.contact_shadows == modern::ContactShadows::kOff || !sscs_pipe_ || !sscs_.view) return;
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  image_barrier(cmd, sscs_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+  VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  col.imageView = sscs_.view;
+  col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  rend.renderArea = {{0, 0}, {sscs_width_, sscs_height_}};
+  rend.layerCount = 1;
+  rend.colorAttachmentCount = 1;
+  rend.pColorAttachments = &col;
+  vkCmdBeginRendering(cmd, &rend);
+  VkViewport vp{0, 0, float(sscs_width_), float(sscs_height_), 0.0f, 1.0f};
+  VkRect2D sc{{0, 0}, {sscs_width_, sscs_height_}};
+  vkCmdSetViewport(cmd, 0, 1, &vp);
+  vkCmdSetScissor(cmd, 0, 1, &sc);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sscs_pipe_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sscs_layout_, 0, 1, &sscs_set_, 0, nullptr);
+  const PostSettings& s = options_.post;
+  const float strength = graphics_.contact_shadows == modern::ContactShadows::kLow     ? 0.55f
+                         : graphics_.contact_shadows == modern::ContactShadows::kHigh  ? 0.72f
+                         : graphics_.contact_shadows == modern::ContactShadows::kUltra ? 0.80f
+                                                                                       : 0.0f;
+  struct {
+    float proj_params[4], sun_view[4], sscs_params[4];
+  } pc = {{cam_proj00_, cam_proj11_, cam_near_, cam_far_},
+          {s.sun_view_dir[0], s.sun_view_dir[1], s.sun_view_dir[2], s.sun_elev_vis},
+          {float(modern::contact_shadow_steps(graphics_.contact_shadows)), strength,
+           options_.reverse_z ? 1.0f : 0.0f, float(frames_submitted_ & 63u) / 64.0f}};
+  vkCmdPushConstants(cmd, sscs_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+  vkCmdEndRendering(cmd);
+  image_barrier(cmd, sscs_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+  mark(cmd, "sscs");
 }
 
 void Renderer::record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst_img, VkImageView dst_view, uint32_t w,
@@ -2249,6 +2371,7 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
   pc.params[0] = cam_jitter_uv_x_ - prev_jitter_uv_x_;
   pc.params[1] = cam_jitter_uv_y_ - prev_jitter_uv_y_;
   pc.params[2] = options_.reverse_z ? 1.0f : 0.0f;
+  pc.params[3] = cam_near_;
   vkCmdPushConstants(cmd, motion_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
   vkCmdDraw(cmd, 3, 1, 0, 0);
   vkCmdEndRendering(cmd);
@@ -2261,6 +2384,47 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
     prev_cam_vp_valid_ = true;
   }
   mark(cmd, "motion");
+}
+
+void Renderer::record_mblur_tiles(VkCommandBuffer cmd) {
+  if (!modern_ready_ || !mblur_tile_pipe_ || !mblur_tile_.view || !mblur_neighbor_.view || !motion_vec_.view) return;
+  const uint32_t rw = render_width(), rh = render_height();
+  const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+
+  auto draw_tile = [&](const Image& dst, VkDescriptorSet set, float inv_w, float inv_h, float mode) {
+    image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
+    VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    col.imageView = dst.view;
+    col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    col.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rend.renderArea = {{0, 0}, {mblur_tile_w_, mblur_tile_h_}};
+    rend.layerCount = 1;
+    rend.colorAttachmentCount = 1;
+    rend.pColorAttachments = &col;
+    vkCmdBeginRendering(cmd, &rend);
+    VkViewport vp{0, 0, float(mblur_tile_w_), float(mblur_tile_h_), 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {mblur_tile_w_, mblur_tile_h_}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mblur_tile_pipe_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mblur_tile_layout_, 0, 1, &set, 0, nullptr);
+    const float pc[4] = {inv_w, inv_h, mode, options_.post.motion_blur_car_protect};
+    vkCmdPushConstants(cmd, mblur_tile_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+    image_barrier(cmd, dst.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+  };
+  draw_tile(mblur_tile_, mblur_tile_set_, 1.0f / float(std::max(1u, rw)), 1.0f / float(std::max(1u, rh)), 0.0f);
+  draw_tile(mblur_neighbor_, mblur_neighbor_set_, 1.0f / float(std::max(1u, mblur_tile_w_)),
+            1.0f / float(std::max(1u, mblur_tile_h_)), 1.0f);
+  mark(cmd, "mblur_tiles");
 }
 
 void Renderer::record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_dst) {
@@ -2477,8 +2641,9 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       float vig_bot_rot[4];
       float texel_size[4];
       float modern_p[4];
+      float sota_p[4];
     };
-    static_assert(sizeof(PostOpticalUbo) == 208);
+    static_assert(sizeof(PostOpticalUbo) == 224);
     const uint32_t oflags = (s.motion_blur ? 1u : 0u) | (s.dof ? 2u : 0u) | (s.god_rays ? 4u : 0u) |
                             (s.lens_flare ? 8u : 0u) | (options_.reverse_z ? 16u : 0u) |
                             (s.paired_vignette ? 32u : 0u);
@@ -2528,14 +2693,28 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.texel_size[0] = render_width_ ? 1.0f / float(render_width_) : 1.0f / 1280.0f;
     u.texel_size[1] = render_height_ ? 1.0f / float(render_height_) : 1.0f / 720.0f;
     u.texel_size[2] = s.time_sec;
-    const float ao_strength = graphics_.ssao == modern::SsaoQuality::kLow      ? 0.40f
-                              : graphics_.ssao == modern::SsaoQuality::kMedium ? 0.70f
-                              : graphics_.ssao == modern::SsaoQuality::kHigh   ? 1.00f
+    u.texel_size[3] = float(frames_submitted_ & 63u) / 64.0f;
+    const float ao_strength = graphics_.ssao == modern::SsaoQuality::kLow      ? 0.50f
+                              : graphics_.ssao == modern::SsaoQuality::kMedium ? 0.72f
+                              : graphics_.ssao == modern::SsaoQuality::kHigh   ? 0.88f
+                              : graphics_.ssao == modern::SsaoQuality::kUltra  ? 0.96f
                                                                                : 0.0f;
     u.modern_p[0] = ao_strength;
     u.modern_p[1] = float(lut_image_size_);
     u.modern_p[2] = lut_strength_;
     u.modern_p[3] = out_alpha;
+    const float sscs_strength = graphics_.contact_shadows == modern::ContactShadows::kLow     ? 0.70f
+                                : graphics_.contact_shadows == modern::ContactShadows::kHigh  ? 0.85f
+                                : graphics_.contact_shadows == modern::ContactShadows::kUltra ? 0.95f
+                                                                                              : 0.0f;
+    const bool vel_mblur_ready =
+        (graphics_.velocity_blur != modern::VelocityBlur::kOff) && mblur_neighbor_.view && motion_vec_.view;
+    u.sota_p[0] = float(int(graphics_.tonemapper));
+    u.sota_p[1] = sscs_.view ? sscs_strength : 0.0f;
+    u.sota_p[2] = vel_mblur_ready ? float(modern::velocity_blur_taps(graphics_.velocity_blur)) : 0.0f;
+    u.sota_p[3] = (graphics_.ssao == modern::SsaoQuality::kHigh || graphics_.ssao == modern::SsaoQuality::kUltra)
+                      ? 1.0f
+                      : (graphics_.ssao != modern::SsaoQuality::kOff ? 0.55f : 0.0f);
     VkBufferMemoryBarrier2 ub{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     ub.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     ub.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
@@ -2667,51 +2846,52 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
                   VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
   }
 
-  // 2. 5-level multi-mip bloom pyramid (bright pass -> downsample + Gaussian blur -> weighted upsample).
-  if (s.bloom && bloom_a_[0].image && bloom_b_[0].image) {
+  // 2. Physically-Based 6-level Jimenez / Dual-Kawase bloom pyramid:
+  //    Mip 0: 13-tap Karis-averaged anti-firefly prefilter -> Mips 1..5: 13-tap progressive downsample
+  //    Mips 5->0: 9-tap 3x3 tent-filter progressive upsample combine (11 passes vs 19 Gaussian passes).
+  if (s.bloom && bloom_a_[0].image && bloom_b_[0].image && post_bloom_down_ && post_bloom_up_) {
+    // Downsample mip 0 (Karis average + soft-knee prefilter from full HDR scene).
     to_write(bloom_a_[0]);
-    pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_quarter_, post_sets_[2], 0,
-         1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)));
+    pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_bloom_down_, post_sets_[2], 0.0f,
+         1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)), 0.45f);
     to_read(bloom_a_[0]);
 
-    for (uint32_t k = 0; k < kBloomLevels; ++k) {
-      if (k > 0) {
-        to_write(bloom_a_[k]);
-        // Downsample from bloom_a_[k-1] with light blur kernel.
-        pass(bloom_a_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[13 + k - 1], 1,
-             0.5f / float(bloom_w_[k - 1]), 0.5f / float(bloom_h_[k - 1]));
-        to_read(bloom_a_[k]);
-      }
-      to_write(bloom_b_[k]);
-      pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[3 + k], 1,
-           1.0f / float(bloom_w_[k]), 0);
-      to_read(bloom_b_[k]);
-      image_barrier(cmd, bloom_a_[k].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read, color_stage, color_write);
-      pass(bloom_a_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[8 + k], 1,
-           0, 1.0f / float(bloom_h_[k]));
+    // Progressive 13-tap downsamples mips 1..5.
+    for (uint32_t k = 1; k < kBloomLevels; ++k) {
+      to_write(bloom_a_[k]);
+      pass(bloom_a_[k].view, bloom_w_[k], bloom_h_[k], post_bloom_down_, post_sets_[2 + k], float(k),
+           1.0f / float(std::max(1u, bloom_w_[k - 1])), 1.0f / float(std::max(1u, bloom_h_[k - 1])), 0.0f);
       to_read(bloom_a_[k]);
     }
-    // Upsample combine: 4+3 -> b[3], b[3]+2 -> b[2], b[2]+1 -> b[1], b[1]+0 -> b[0].
+
+    // Progressive 3x3 tent-filter upsample mips 5->4->3->2->1->0 into bloom_b_[4..0].
+    // Map FH1's 5 bloom_weights onto our 6 mips cleanly (mip 5 extends the widest halation tail).
+    float mip_w[kBloomLevels];
     float w_sum = 0.0f;
-    for (uint32_t k = 0; k < kBloomLevels; ++k) w_sum += std::max(s.bloom_weights[k], 0.0f);
-    const float w_norm = w_sum > 1e-4f ? 1.0f / w_sum : 0.2f;
+    for (uint32_t k = 0; k < kBloomLevels; ++k) {
+      mip_w[k] = std::max(k < 5 ? s.bloom_weights[k] : s.bloom_weights[4] * 0.85f, 0.0f);
+      w_sum += mip_w[k];
+    }
+    const float w_norm = w_sum > 1e-4f ? 1.0f / w_sum : (1.0f / float(kBloomLevels));
+    constexpr float kTentRadius = 1.15f;
     for (int k = int(kBloomLevels) - 2; k >= 0; --k) {
-      const uint32_t set_idx = 17u + uint32_t(3 - k);
-      const float w_cur = std::max(s.bloom_weights[k], 0.0f) * w_norm;
-      const float w_prev = (k == int(kBloomLevels) - 2) ? (std::max(s.bloom_weights[k + 1], 0.0f) * w_norm) : 1.0f;
-      image_barrier(cmd, bloom_b_[k].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, read, color_stage, color_write);
-      pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_quarter_, post_sets_[set_idx], 5, w_cur, w_prev);
+      const uint32_t set_idx = 8u + uint32_t((int(kBloomLevels) - 2) - k);
+      const float w_cur = mip_w[k] * w_norm;
+      const float w_prev = (k == int(kBloomLevels) - 2) ? (mip_w[k + 1] * w_norm) : 1.0f;
+      to_write(bloom_b_[k]);
+      pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_bloom_up_, post_sets_[set_idx], w_cur,
+           kTentRadius / float(std::max(1u, bloom_w_[k + 1])), kTentRadius / float(std::max(1u, bloom_h_[k + 1])),
+           w_prev);
       to_read(bloom_b_[k]);
     }
+    mark(cmd, "bloom");
   } else if (bloom_b_[0].image) {
     to_write(bloom_b_[0]);
     to_read(bloom_b_[0]);
   }
 
-  // 3. Final composite (scene + AO + bloom -> exposure -> Hable -> N^3 LUT -> vignette -> desat -> sRGB).
-  pass(final_view, render_width_, render_height_, pipe, post_sets_[21], 2, 0, 0, s.vignette_amount);
+  // 3. Final composite (scene + McGuire MBlur + XeGTAO + SSCS + bloom -> exposure -> selected tonemapper -> LUT -> display).
+  pass(final_view, render_width_, render_height_, pipe, post_sets_[13], 2, 0, 0, s.vignette_amount);
   mark(cmd, "post");
 }
 
@@ -2723,12 +2903,15 @@ void Renderer::destroy_targets() {
   destroy_image(ao_raw_);
   destroy_image(ao_tmp_);
   destroy_image(ao_blur_);
+  destroy_image(sscs_);
   destroy_image(scene_sdr_);
   destroy_image(scene_fxaa_);
   destroy_image(upscale_tmp_);
   destroy_image(stand_in_);
   destroy_image(stand_in_fxaa_);
   destroy_image(motion_vec_);
+  destroy_image(mblur_tile_);
+  destroy_image(mblur_neighbor_);
   destroy_image(temporal_hist_[0]);
   destroy_image(temporal_hist_[1]);
   destroy_image(inspector_thumb_);
@@ -2736,6 +2919,8 @@ void Renderer::destroy_targets() {
   temporal_reset_ = true;
   prev_cam_vp_valid_ = false;
   ao_width_ = ao_height_ = 0;
+  sscs_width_ = sscs_height_ = 0;
+  mblur_tile_w_ = mblur_tile_h_ = 0;
   for (uint32_t k = 0; k < kBloomLevels; ++k) {
     destroy_image(bloom_a_[k]);
     destroy_image(bloom_b_[k]);
@@ -2950,10 +3135,30 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     mark(cmd, "particles");
   }
 
-  if (post) record_ssao(cmd);
+  if (post) {
+    record_ssao(cmd);
+    record_sscs(cmd);
+  }
+  const bool need_mblur_tiles =
+      post && options_.post.motion_blur && graphics_.velocity_blur != modern::VelocityBlur::kOff &&
+      mblur_tile_.view != VK_NULL_HANDLE && mblur_neighbor_.view != VK_NULL_HANDLE;
   const bool need_motion =
-      post && (active_upscaler().temporal || (inspector_active_ && inspector_view_ == InspectorView::kMotion));
-  if (need_motion) record_motion_vectors(cmd);
+      post && (active_upscaler().temporal || need_mblur_tiles ||
+               (inspector_active_ && inspector_view_ == InspectorView::kMotion));
+  if (need_motion) {
+    record_motion_vectors(cmd);
+  } else if (post && motion_vec_.image) {
+    image_barrier(cmd, motion_vec_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  }
+  if (need_mblur_tiles) {
+    record_mblur_tiles(cmd);
+  } else if (post && mblur_neighbor_.image) {
+    image_barrier(cmd, mblur_neighbor_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  }
 
   const bool need_scale = (rw != target_width_ || rh != target_height_);
   const bool need_upscaler = need_scale || graphics_.upscaler != modern::Upscaler::kBilinear;

@@ -96,6 +96,8 @@ struct PostSettings {
   float near_plane = 0.25f;
   float sun_screen_uv[2] = {0.5f, 0.2f};
   float sun_visibility = 0.0f;           // 0..1 when sun is in front & above horizon
+  float sun_view_dir[3] = {0.0f, 0.7f, -0.7f};  // unit sun direction in camera view space (for SSCS)
+  float sun_elev_vis = 0.0f;             // 0..1 sun elevation visibility (valid at all camera angles)
   float god_ray_strength = 0.48f;
   float sun_scatter_color[3] = {1.0f, 0.80f, 0.50f};
   float lens_flare_strength = 0.36f;
@@ -239,9 +241,12 @@ class Renderer {
   void set_post_settings(const PostSettings& post) {
     const bool was_enabled = options_.post.enabled;
     const bool bloom_changed = post.bloom != options_.post.bloom;
+    const bool mblur_changed = post.motion_blur != options_.post.motion_blur;
     options_.post = post;
     options_.post.enabled = was_enabled;
-    if (was_enabled && bloom_changed) targets_dirty_ = true;
+    if (was_enabled && (bloom_changed || (mblur_changed && graphics_.velocity_blur != modern::VelocityBlur::kOff))) {
+      targets_dirty_ = true;
+    }
   }
   const PostSettings& post_settings() const { return options_.post; }
   // Queues an updated N^3 RGBA8 3D colour-grading LUT (default 16^3, supports 16/17/33) for upload before post.
@@ -371,12 +376,14 @@ class Renderer {
   bool ensure_shadow_map(std::string& error);
   void record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeline pipe, float out_alpha);
   void record_ssao(VkCommandBuffer cmd);
+  void record_sscs(VkCommandBuffer cmd);
   void record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst_img, VkImageView dst_view, uint32_t w,
                    uint32_t h);
   void record_upscale(VkCommandBuffer cmd, VkImage src_img, VkDescriptorSet src_set, bool src_is_fxaa,
                       uint32_t src_w, uint32_t src_h, VkImage dst_img, VkImageView dst_view, uint32_t dst_w,
                       uint32_t dst_h);
   void record_motion_vectors(VkCommandBuffer cmd);
+  void record_mblur_tiles(VkCommandBuffer cmd);
   void record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_dst);
   void record_hdr_output(VkCommandBuffer cmd, VkDescriptorSet src_set, VkImage dst_img, VkImageView dst_view,
                          VkFormat dst_format, uint32_t w, uint32_t h);
@@ -482,9 +489,9 @@ class Renderer {
   bool depth_readable_ = false;
   bool depth_resolve_supported_ = false;
   Image msaa_color_, depth_, depth_resolved_;
-  // The post chain: resolved HDR scene, 5-level bloom pyramid, auto-exposure, 16^3 3D LUT.
-  static constexpr uint32_t kBloomLevels = 5;
-  static constexpr uint32_t kPostSetCount = 22;
+  // The post chain: resolved HDR scene, 6-level Jimenez/Dual-Kawase bloom pyramid, auto-exposure, N^3 3D LUT.
+  static constexpr uint32_t kBloomLevels = 6;
+  static constexpr uint32_t kPostSetCount = 14;
   Image hdr_;
   Image bloom_a_[kBloomLevels], bloom_b_[kBloomLevels];
   uint32_t bloom_w_[kBloomLevels] = {}, bloom_h_[kBloomLevels] = {};
@@ -495,33 +502,40 @@ class Renderer {
   bool lum_reset_ = true;
   VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
-  VkPipeline post_quarter_ = VK_NULL_HANDLE, post_final_ = VK_NULL_HANDLE, post_final_sdr_ = VK_NULL_HANDLE;
+  VkPipeline post_quarter_ = VK_NULL_HANDLE, post_bloom_down_ = VK_NULL_HANDLE, post_bloom_up_ = VK_NULL_HANDLE,
+             post_final_ = VK_NULL_HANDLE, post_final_sdr_ = VK_NULL_HANDLE;
   VkDescriptorPool post_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet post_sets_[kPostSetCount] = {};
   VkSampler post_sampler_ = VK_NULL_HANDLE;
   VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
   Buffer post_optical_buf_;  // device-local, filled by vkCmdUpdateBuffer in the frame's commands
-  // Modern post-FX & HDR targets (SSAO, FXAA, spatial upscale, HDR10/scRGB).
+  // Modern post-FX & HDR targets (XeGTAO + Bent Normals, SSCS, McGuire motion blur, FXAA, upscale, HDR10/scRGB).
   modern::ModernTargetPlan allocated_targets_{};
-  Image ao_white_, ao_raw_, ao_tmp_, ao_blur_;
+  Image ao_white_, vel_zero_, ao_raw_, ao_tmp_, ao_blur_, sscs_;
   uint32_t ao_width_ = 0, ao_height_ = 0;
+  uint32_t sscs_width_ = 0, sscs_height_ = 0;
   Image scene_sdr_, scene_fxaa_, upscale_tmp_, stand_in_, stand_in_fxaa_;
-  Image motion_vec_, temporal_hist_[2], inspector_thumb_;
+  Image motion_vec_, mblur_tile_, mblur_neighbor_, temporal_hist_[2], inspector_thumb_;
+  uint32_t mblur_tile_w_ = 0, mblur_tile_h_ = 0;
   uint32_t temporal_idx_ = 0;
   bool temporal_reset_ = true;
   VkDescriptorSetLayout ssao_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout single_tex_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout temporal_set_layout_ = VK_NULL_HANDLE;
   VkDescriptorPool modern_pool_ = VK_NULL_HANDLE;
-  VkPipelineLayout ssao_layout_ = VK_NULL_HANDLE, fxaa_layout_ = VK_NULL_HANDLE,
+  VkPipelineLayout ssao_layout_ = VK_NULL_HANDLE, sscs_layout_ = VK_NULL_HANDLE,
+                   mblur_tile_layout_ = VK_NULL_HANDLE, fxaa_layout_ = VK_NULL_HANDLE,
                    upscale_layout_ = VK_NULL_HANDLE, hdr_layout_ = VK_NULL_HANDLE,
                    motion_layout_ = VK_NULL_HANDLE, temporal_layout_ = VK_NULL_HANDLE,
                    inspector_layout_ = VK_NULL_HANDLE;
-  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE,
+  VkPipeline ssao_pipe_ = VK_NULL_HANDLE, sscs_pipe_ = VK_NULL_HANDLE, mblur_tile_pipe_ = VK_NULL_HANDLE,
+             fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE,
              motion_pipe_ = VK_NULL_HANDLE, temporal_pipe_ = VK_NULL_HANDLE, inspector_pipe_ = VK_NULL_HANDLE;
   VkPipeline hdr_pipe_sdr_ = VK_NULL_HANDLE, hdr_pipe_swap_ = VK_NULL_HANDLE;
   VkFormat hdr_swap_fmt_ = VK_FORMAT_UNDEFINED;
   VkDescriptorSet ssao_sets_[3] = {};
+  VkDescriptorSet sscs_set_ = VK_NULL_HANDLE, mblur_tile_set_ = VK_NULL_HANDLE,
+                  mblur_neighbor_set_ = VK_NULL_HANDLE;
   VkDescriptorSet fxaa_set_scene_ = VK_NULL_HANDLE, fxaa_set_standin_ = VK_NULL_HANDLE;
   VkDescriptorSet upscale_set_scene_ = VK_NULL_HANDLE, upscale_set_fxaa_ = VK_NULL_HANDLE,
                   upscale_set_tmp_ = VK_NULL_HANDLE, upscale_set_hist_[2] = {};

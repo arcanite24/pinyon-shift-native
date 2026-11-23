@@ -1,15 +1,21 @@
 #version 450
-// carview: the drive's HDR post-processing chain (SPEC-SKY-AND-TOD §5, SPEC-VFX-AND-PARTICLES).
+// carview: the drive's HDR post-processing chain (SPEC-SKY-AND-TOD §5, SPEC-VFX-AND-PARTICLES)
+// + Phase A SOTA upgrades:
+//   - XeGTAO multi-bounce + Bent Normal directional occlusion (ao_tex RGBA8)
+//   - Screen-Space Contact Shadows (sscs_tex R8)
+//   - Physically-based Jimenez / Dual-Kawase 6-mip bloom (aux)
+//   - McGuire Tile-Max / Neighbor-Max depth-aware velocity motion blur (motion_tex, mblur_neighbor_tex)
+//   - Selectable SOTA Filmic Tonemapper suite: FH1 Hable (default), AgX, GT Filmic, Khronos PBR Neutral
+//
 // Modes (p.mode.x):
-//   0 bright pass: exposed HDR scene above bloom cutoff with lower/upper gradient curve
-//   1 blur: separable Gaussian blur along p.mode.yz (5 bilinear taps)
-//   2 composite: HDR scene + Depth of Field + radial motion blur + god rays / sun shafts +
-//                lens flare & lens dirt + bloom -> exposure (4-key adaptive EV or fixed) ->
-//                Hable filmic curve -> 16^3 3D LUT -> paired rotated elliptical vignettes ->
-//                contrast/brightness + desat/post-mod -> sRGB
+//   0 bright pass (legacy fallback; primary bloom uses bloom_down.frag / bloom_up.frag)
+//   1 blur (legacy fallback)
+//   2 composite: HDR scene + DoF + McGuire/radial motion blur + XeGTAO + SSCS + god rays +
+//                lens flare + Jimenez bloom -> exposure -> selected filmic tonemapper ->
+//                N^3 3D LUT -> paired vignettes -> contrast/brightness + desat -> display transfer
 //   3 lum_16: 16x16 centre-weighted Rec.709 luminance reduction from HDR scene
 //   4 lum_adapt: 1x1 temporal adaptation from 16x16 lum grid + previous 1x1 lum
-//   5 upsample_add: bilinear upsample of aux * p.mode.w added to src (bloom pyramid)
+//   5 upsample_add (legacy fallback)
 
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(set = 0, binding = 1) uniform sampler2D aux;
@@ -17,6 +23,9 @@ layout(set = 0, binding = 2) uniform sampler3D lut3d;
 layout(set = 0, binding = 3) uniform sampler2D lum_adapt;
 layout(set = 0, binding = 4) uniform sampler2D depth_tex;
 layout(set = 0, binding = 6) uniform sampler2D ao_tex;
+layout(set = 0, binding = 7) uniform sampler2D sscs_tex;
+layout(set = 0, binding = 8) uniform sampler2D motion_tex;
+layout(set = 0, binding = 9) uniform sampler2D mblur_neighbor_tex;
 
 layout(set = 0, binding = 5) uniform Optical {
   vec4 flags_near;    // x flags (1=mblur, 2=dof, 4=god_rays, 8=lens_flare, 16=reverse_z, 32=paired_vig), y near, z contrast, w brightness
@@ -30,8 +39,9 @@ layout(set = 0, binding = 5) uniform Optical {
   vec4 vig_bot_col;   // rgb color, w opacity
   vec4 vig_bot_geom;  // xy center, zw radius
   vec4 vig_bot_rot;   // x cos(rot), y sin(rot), z feather, w unused
-  vec4 texel_size;    // xy 1/w, 1/h, z time_sec, w unused
+  vec4 texel_size;    // xy 1/w, 1/h, z time_sec, w frame_jitter [0..1]
   vec4 modern_p;      // x ao_strength, y lut_size, z lut_strength, w out_alpha
+  vec4 sota_p;        // x tonemapper (0=Hable, 1=AgX, 2=GT, 3=PBRNeutral), y sscs_strength, z mblur_taps (0/9/13), w gtao_bent_strength
 } opt;
 
 layout(push_constant) uniform Post {
@@ -53,9 +63,75 @@ vec3 hable(vec3 x) {
   return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
 }
 
-vec3 encode_srgb(vec3 c) {
-  c = clamp(c, vec3(0.0), vec3(1.0));
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+// Troy Sobotka AgX (hue-preserving highlight desaturation, calibrated to 18% mid-grey).
+vec3 tonemap_agx(vec3 color) {
+  color = max(color, vec3(0.0));
+  const mat3 kAgxInset = mat3(
+      0.842479062253094,  0.0423282422610123, 0.0423756549057051,
+      0.0784335999999992, 0.878468636469772,  0.0784336,
+      0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+  const mat3 kAgxOutset = mat3(
+       1.19687900512017,  -0.0528968517574562, -0.0529716355144438,
+      -0.0980208811401368, 1.15190312990417,   -0.0980434501171241,
+      -0.0990297440797205,-0.0989611768448433,  1.15107367264116);
+  vec3 v = kAgxInset * color;
+  const float kMinEv = -12.47393;
+  const float kMaxEv = 4.026069;
+  v = clamp(log2(max(v, vec3(1e-10))), vec3(kMinEv), vec3(kMaxEv));
+  v = (v - kMinEv) / (kMaxEv - kMinEv);
+  vec3 v2 = v * v;
+  vec3 v4 = v2 * v2;
+  v = +15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v + 0.4298 * v2 + 0.1191 * v - 0.00232;
+  vec3 out_srgb = clamp(kAgxOutset * v, vec3(0.0), vec3(1.0));
+  return pow(out_srgb, vec3(2.2));
+}
+
+// Gran Turismo / Uchimura Filmic (Hajime Uchimura, Polyphony Digital CEDEC 2017).
+float gt_filmic_channel(float x) {
+  const float P = 1.0, a = 1.0, m = 0.22, l = 0.4, c = 1.33, b = 0.0;
+  const float l0 = ((P - m) * l) / a;
+  const float S0 = m + l0;
+  const float S1 = m + a * l0;
+  const float C2 = (a * P) / (P - S1);
+  const float CP = -C2 / P;
+  x = max(x, 0.0);
+  float w0 = 1.0 - smoothstep(0.0, m, x);
+  float w2 = step(m + l0, x);
+  float w1 = 1.0 - w0 - w2;
+  float T = m * pow(x / m, c) + b;
+  float S = P - (P - S1) * exp(CP * (x - S0));
+  float L = m + a * (x - m);
+  return clamp(T * w0 + L * w1 + S * w2, 0.0, 1.0);
+}
+
+vec3 tonemap_gt_filmic(vec3 color) {
+  return vec3(gt_filmic_channel(color.r), gt_filmic_channel(color.g), gt_filmic_channel(color.b));
+}
+
+// Khronos PBR Neutral Tone Mapper (2024 spec, exact hue fidelity for paint & liveries).
+vec3 tonemap_pbr_neutral(vec3 color) {
+  color = max(color, vec3(0.0));
+  const float startCompression = 0.8 - 0.04;
+  const float desaturation = 0.15;
+  float x = min(color.r, min(color.g, color.b));
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  color -= offset;
+  float peak = max(color.r, max(color.g, color.b));
+  if (peak < startCompression) return clamp(color, vec3(0.0), vec3(1.0));
+  const float d = 1.0 - startCompression;
+  float newPeak = 1.0 - d * d / (peak + d - startCompression);
+  color *= newPeak / max(peak, 1e-6);
+  float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return clamp(mix(color, vec3(newPeak), g), vec3(0.0), vec3(1.0));
+}
+
+// Jimenez et al. GTAO multi-bounce diffuse albedo approximation (restores warm colored crevice bounce).
+vec3 gtao_multi_bounce(float visibility, vec3 albedo_approx) {
+  vec3 a =  2.0404 * albedo_approx - 0.3324;
+  vec3 b = -4.7951 * albedo_approx + 0.6417;
+  vec3 c =  2.7552 * albedo_approx + 0.6903;
+  float v = clamp(visibility, 0.0, 1.0);
+  return max(vec3(v), ((v * a + b) * v + c) * v);
 }
 
 float eval_auto_exposure() {
@@ -78,8 +154,6 @@ float eval_auto_exposure() {
   } else {
     ev_curve = p.exp_ev.w;
   }
-  // p.def.w holds linear base filmic exposure (TrackSettings filmicTone.exposure = 0.31),
-  // modulated by the 4-key adaptive EV curve so midday ~0.31 and midnight ~0.68..0.78.
   float base_exp = max(p.def.w, 0.05);
   return clamp(base_exp * exp2(clamp(ev_curve, -2.0, 4.0)), 0.05, 8.0);
 }
@@ -98,6 +172,24 @@ float linear_depth_m(vec2 uv, bool rev_z) {
   }
   float far_p = 4000.0;
   return (near_p * far_p) / max(far_p - z * (far_p - near_p), 1e-4);
+}
+
+float ign_noise(vec2 px) {
+  return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
+// McGuire et al. (2012) depth-aware velocity motion blur helpers.
+float soft_depth_compare(float za, float zb) {
+  float soft_z = max(0.06 * min(za, zb), 0.25);
+  return clamp(1.0 - (za - zb) / soft_z, 0.0, 1.0);
+}
+
+float cone_weight(float d, float v) {
+  return clamp(1.0 - d / max(v, 1e-5), 0.0, 1.0);
+}
+
+float cylinder_weight(float d, float v) {
+  return 1.0 - smoothstep(0.95 * v, 1.05 * v, d);
 }
 
 float eval_rotated_vignette(vec2 uv, vec4 geom, vec4 rot) {
@@ -136,7 +228,6 @@ void main() {
     vec3 c = 0.25 * (raw_scene(v_uv + vec2(-t.x, -t.y)) + raw_scene(v_uv + vec2(t.x, -t.y)) +
                      raw_scene(v_uv + vec2(-t.x, t.y)) + raw_scene(v_uv + vec2(t.x, t.y)));
     float lum = dot(c, vec3(0.2125, 0.7154, 0.0721));
-    // Smooth radial centre weight emphasizing the road ahead (SPEC-SKY-AND-TOD §5.2).
     float r = length((v_uv - vec2(0.5, 0.55)) * 2.0);
     float w = mix(1.0, 0.2, smoothstep(0.25, 1.15, r));
     out_color = vec4(lum * w, w, 0.0, 1.0);
@@ -161,7 +252,6 @@ void main() {
     return;
   }
   if (mode == 0) {
-    // Bright pass on exposed linear HDR scene (SPEC-SKY-AND-TOD §5.3).
     float exp_scale = eval_auto_exposure();
     vec2 t = p.mode.yz;
     vec3 c = 0.25 * (raw_scene(v_uv + vec2(-t.x, -t.y)) + raw_scene(v_uv + vec2(t.x, -t.y)) +
@@ -176,7 +266,6 @@ void main() {
     return;
   }
   if (mode == 1) {
-    // Separable Gaussian blur (sigma ~2 texels, 5 bilinear taps).
     const float w[3] = float[](0.2270270, 0.3162162, 0.0702703);
     const float o[3] = float[](0.0, 1.3846154, 3.2307692);
     vec3 c = texture(src, v_uv).rgb * w[0];
@@ -188,14 +277,13 @@ void main() {
     return;
   }
   if (mode == 5) {
-    // Multi-mip bloom upsample combine: src * weight_cur + aux * weight_prev.
     vec3 cur = texture(src, v_uv).rgb * p.mode.y;
     vec3 prev = texture(aux, v_uv).rgb * p.mode.z;
     out_color = vec4(cur + prev, 1.0);
     return;
   }
 
-  // Mode 2: Final composite (SPEC-SKY-AND-TOD §5.5 + SPEC-VFX-AND-PARTICLES optical post-FX).
+  // Mode 2: Final composite.
   uint flags = uint(p.bloom_p.z + 0.5);
   uint oflags = uint(opt.flags_near.x + 0.5);
   bool rev_z = (oflags & 16u) != 0u;
@@ -219,7 +307,6 @@ void main() {
       for (int i = 0; i < 8; ++i) {
         vec2 suv = clamp(v_uv + poisson[i] * rad, vec2(0.001), vec2(0.999));
         float sd = linear_depth_m(suv, rev_z);
-        // Reject sharp foreground car pixels leaking onto distant background blur.
         float w = (sd + 1.5 < pix_dist && pix_dist > focal_d) ? 0.15 : 1.0;
         acc += raw_scene(suv) * w;
         wsum += w;
@@ -228,37 +315,109 @@ void main() {
     }
   }
 
-  // Speed / camera radial motion blur (keeps player car crisp via depth mask).
+  // Motion Blur: McGuire Tile-Max / Neighbor-Max velocity reconstruction (Tier 1-3)
+  // with crisp car-silhouette preservation, or lightweight radial fallback on Tier 0.
   if ((oflags & 1u) != 0u && opt.mblur.z > 0.005) {
-    vec2 to_edge = v_uv - opt.mblur.xy;
-    float r = length(to_edge);
-    float car_mask = smoothstep(opt.mblur.w * 0.75, opt.mblur.w * 1.45, pix_dist);
-    float blur_w = smoothstep(0.10, 0.85, r) * opt.mblur.z * car_mask;
-    if (blur_w > 0.005) {
-      vec2 step_uv = to_edge * (blur_w * 0.032);
-      vec3 acc = scene_raw * 0.28;
-      float wsum = 0.28;
-      for (int k = 1; k <= 5; ++k) {
-        float fk = float(k) / 5.0;
-        float wt = 0.18 * (1.0 - 0.55 * fk);
-        acc += raw_scene(v_uv - step_uv * fk) * wt;
-        wsum += wt;
+    int mcguire_taps = int(opt.sota_p.z + 0.5);
+    if (mcguire_taps >= 7) {
+      float car_mask = smoothstep(opt.mblur.w * 0.75, opt.mblur.w * 1.40, pix_dist);
+      vec2 vn = texture(mblur_neighbor_tex, clamp(v_uv, vec2(0.001), vec2(0.999))).rg;
+      // Scale velocity by shutter strength; cap blur span to 24 pixels to stay artifact-free.
+      float shutter = clamp(opt.mblur.z * 0.85 + 0.20, 0.15, 1.15);
+      vn *= shutter;
+      vec2 texel = opt.texel_size.xy;
+      float max_uv = length(texel) * 24.0;
+      float vn_len = length(vn);
+      if (vn_len > max_uv) {
+        vn *= (max_uv / vn_len);
+        vn_len = max_uv;
       }
-      scene_raw = acc / wsum;
+      // Only run gather when the tile neighborhood actually has visible motion (> 0.6 px)
+      // and we are outside the protected player-car hull.
+      if (vn_len > length(texel) * 0.6 && car_mask > 0.02) {
+        vec4 mv_c = texture(motion_tex, v_uv);
+        vec2 vc = mv_c.rg * shutter * car_mask;
+        float vc_len = max(length(vc), length(texel) * 0.5);
+        float jitter = fract(ign_noise(gl_FragCoord.xy) + opt.texel_size.w * 0.61803399) - 0.5;
+        // Center sample weighted inversely by center velocity (McGuire eq. 1).
+        float wsum = 1.0 / max(vc_len, 1e-4);
+        vec3 acc = scene_raw * wsum;
+        int n_taps = clamp(mcguire_taps, 7, 15);
+        for (int i = 0; i < n_taps; ++i) {
+          float t = ((float(i) + 0.5 + jitter) / float(n_taps) - 0.5) * 2.0;
+          vec2 suv = clamp(v_uv + vn * t, vec2(0.001), vec2(0.999));
+          vec4 mv_s = texture(motion_tex, suv);
+          float ds = mv_s.a;
+          // Reject foreground player-car samples from smearing onto background road/sky.
+          float s_car_mask = smoothstep(opt.mblur.w * 0.72, opt.mblur.w * 1.35, ds);
+          vec2 vs = mv_s.rg * shutter * s_car_mask;
+          float vs_len = length(vs);
+          float sample_d = abs(t) * vn_len;
+          float f = soft_depth_compare(pix_dist, ds);
+          float b = soft_depth_compare(ds, pix_dist);
+          float ay = f * cone_weight(sample_d, vs_len) +
+                     b * cone_weight(sample_d, vc_len) +
+                     cylinder_weight(sample_d, vs_len) * cylinder_weight(sample_d, vc_len) * 2.0;
+          ay *= s_car_mask;
+          acc += raw_scene(suv) * ay;
+          wsum += ay;
+        }
+        scene_raw = mix(scene_raw, acc / max(wsum, 1e-4), car_mask);
+      }
+    } else {
+      // Lightweight Tier-0 radial speed blur fallback.
+      vec2 to_edge = v_uv - opt.mblur.xy;
+      float r = length(to_edge);
+      float car_mask = smoothstep(opt.mblur.w * 0.75, opt.mblur.w * 1.45, pix_dist);
+      float blur_w = smoothstep(0.10, 0.85, r) * opt.mblur.z * car_mask;
+      if (blur_w > 0.005) {
+        vec2 step_uv = to_edge * (blur_w * 0.032);
+        vec3 acc = scene_raw * 0.28;
+        float wsum = 0.28;
+        for (int k = 1; k <= 5; ++k) {
+          float fk = float(k) / 5.0;
+          float wt = 0.18 * (1.0 - 0.55 * fk);
+          acc += raw_scene(v_uv - step_uv * fk) * wt;
+          wsum += wt;
+        }
+        scene_raw = acc / wsum;
+      }
     }
   }
 
   vec3 c_lin = scene_raw * exp_scale;
+
+  // XeGTAO multi-bounce diffuse occlusion + Bent-Normal directional darkening.
   if (opt.modern_p.x > 0.001) {
-    float ao = texture(ao_tex, clamp(v_uv, vec2(0.001), vec2(0.999))).r;
-    c_lin *= mix(1.0, ao, clamp(opt.modern_p.x, 0.0, 1.0));
+    vec4 gtao = texture(ao_tex, clamp(v_uv, vec2(0.001), vec2(0.999)));
+    float ao_vis = clamp(gtao.r, 0.0, 1.0);
+    // Estimate local diffuse reflectance for Jimenez multi-bounce colored AO restoration.
+    vec3 albedo_est = clamp(c_lin / (c_lin + vec3(0.45)), vec3(0.02), vec3(0.92));
+    vec3 ao_mb = gtao_multi_bounce(ao_vis, albedo_est);
+    // Bent-normal crevice specular/sky occlusion: when bent normal tilts sharply from view Z
+    // inside wheel wells / under fenders, add subtle directional grounding.
+    vec3 bent_n = normalize(gtao.gba * 2.0 - 1.0);
+    float bn_open = clamp(bent_n.z * 0.5 + 0.5, 0.25, 1.0);
+    float bn_mod = mix(1.0, mix(bn_open, 1.0, ao_vis), clamp(opt.sota_p.w, 0.0, 1.0) * 0.35);
+    // Preserve bright emissives (headlights, brake lights, sun disc) from AO darkening.
+    float lum_lin = dot(c_lin, vec3(0.2126, 0.7152, 0.0722));
+    float emissive_keep = 1.0 / (1.0 + max(lum_lin - 1.5, 0.0) * 1.4);
+    float ao_amt = clamp(opt.modern_p.x, 0.0, 1.0) * emissive_keep;
+    c_lin *= mix(vec3(1.0), ao_mb * bn_mod, ao_amt);
+  }
+
+  // Screen-Space Contact Shadows (SSCS): micro-scale sun contact grounding on tires, curbs & rocks.
+  if (opt.sota_p.y > 0.001) {
+    float sscs = clamp(texture(sscs_tex, clamp(v_uv, vec2(0.001), vec2(0.999))).r, 0.0, 1.0);
+    float lum_lin = dot(c_lin, vec3(0.2126, 0.7152, 0.0722));
+    float emissive_keep = 1.0 / (1.0 + max(lum_lin - 1.4, 0.0) * 1.2);
+    c_lin *= mix(1.0, sscs, clamp(opt.sota_p.y, 0.0, 1.0) * emissive_keep);
   }
 
   // God rays / volumetric sun shafts (radial sky occlusion march toward sun_screen_uv).
   if ((oflags & 4u) != 0u && opt.sun.z > 0.01 && opt.sun.w > 0.005) {
     vec2 sun_uv = opt.sun.xy;
     vec2 delta = (sun_uv - v_uv) * (1.0 / 12.0);
-    // Clamp max march step so rays stay coherent when sun is near screen edge.
     float step_len = length(delta);
     if (step_len > 0.065) delta *= (0.065 / step_len);
     vec2 sample_uv = v_uv;
@@ -283,7 +442,6 @@ void main() {
   // Lens flare (halo + anamorphic streak + chromatic ghosts) & procedural lens dirt.
   if ((oflags & 8u) != 0u && opt.sun.z > 0.01 && opt.sun_color.w > 0.005) {
     vec2 sun_uv = opt.sun.xy;
-    // 5-tap depth occlusion check around the sun disk so mountains/buildings block lens flare.
     float unocc = 0.0;
     vec2 o = opt.texel_size.xy * 6.0;
     unocc += is_sky_depth(texture(depth_tex, clamp(sun_uv, vec2(0.002), vec2(0.998))).r, rev_z) ? 0.36 : 0.0;
@@ -296,12 +454,10 @@ void main() {
     if (flare_vis > 0.005) {
       vec2 asp = vec2(1.777, 1.0);
       vec2 d_sun = (v_uv - sun_uv) * asp;
-      // Soft warm sun halo + crisp horizontal anamorphic streak.
       float halo = exp(-length(d_sun) * 5.2) * 0.42;
       float streak = exp(-abs(d_sun.y) * 52.0) * exp(-abs(d_sun.x) * 2.4) * 0.38;
       vec3 flare = opt.sun_color.rgb * (halo + streak);
 
-      // Three chromatic lens ghosts reflected through screen centre (0.5, 0.5).
       vec2 axis = vec2(0.5) - sun_uv;
       const float g_pos[3] = float[](0.55, 1.15, 1.72);
       const float g_rad[3] = float[](0.075, 0.12, 0.055);
@@ -313,18 +469,33 @@ void main() {
         flare += g_col[i] * ring;
       }
 
-      // Subtle lens dirt illuminated around the sun.
       float dirt = procedural_lens_dirt(v_uv) * exp(-length(d_sun) * 1.65) * 0.18;
       flare += opt.sun_color.rgb * dirt;
       c_lin += flare * flare_vis;
     }
   }
 
+  // Physically-based Jimenez / Dual-Kawase bloom composite (energy-conserving blend).
   if ((flags & 1u) != 0u) {
-    c_lin += texture(aux, v_uv).rgb * p.bloom_p.y;
+    vec3 bloom_rgb = max(texture(aux, clamp(v_uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0));
+    c_lin += bloom_rgb * p.bloom_p.y;
   }
-  vec3 denom = max(hable(vec3(max(p.abc.w, 0.05))), vec3(1e-4));
-  vec3 t = clamp(hable(c_lin) / denom, vec3(0.0), vec3(1.0));
+
+  // Selectable SOTA Filmic Tonemapper (0 = FH1 Hable default, 1 = AgX, 2 = GT Filmic, 3 = Khronos PBR Neutral).
+  // FH1's TrackSettings exposure (~0.31) is calibrated for Hable's ~2.4x mid-tone shoulder gain;
+  // matching the exposure pivot keeps AgX / GT Filmic / PBR Neutral luminance-matched at mid-grey.
+  int tm_mode = int(opt.sota_p.x + 0.5);
+  vec3 t;
+  if (tm_mode == 1) {
+    t = tonemap_agx(c_lin * 2.5);
+  } else if (tm_mode == 2) {
+    t = tonemap_gt_filmic(c_lin * 2.3);
+  } else if (tm_mode == 3) {
+    t = tonemap_pbr_neutral(c_lin * 2.2);
+  } else {
+    vec3 denom = max(hable(vec3(max(p.abc.w, 0.05))), vec3(1e-4));
+    t = clamp(hable(c_lin) / denom, vec3(0.0), vec3(1.0));
+  }
 
   // N^3 3D colour-grading volume LUT (texel-centre addressing (N-1)/N + 0.5/N).
   if ((flags & 2u) != 0u && opt.modern_p.z > 0.001) {
@@ -365,7 +536,6 @@ void main() {
 
   float l = dot(t, p.desat.rgb);
   t = mix(vec3(l), t, p.desat.w);
-  // Photo Mode sepia tone blend (opt.dof.w in [0..1]).
   if (opt.dof.w > 0.001) {
     vec3 sep = clamp(vec3(dot(t, vec3(0.393, 0.769, 0.189)),
                           dot(t, vec3(0.349, 0.686, 0.168)),
