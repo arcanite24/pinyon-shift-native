@@ -1,12 +1,17 @@
 #include "race_view.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <mutex>
 #include <numbers>
+#include <thread>
 
 #include "drive/from_physics.h"
 #include "garage/garage.h"
@@ -59,6 +64,80 @@ bool flagged_participant(const std::string& event, int64_t car) {
 }
 
 }  // namespace
+
+struct RaceView::PhysicsStepPool {
+  std::vector<std::thread> workers;
+  std::mutex mu;
+  std::condition_variable cv_work;
+  std::condition_variable cv_done;
+  std::function<void(size_t)> fn;
+  size_t count = 0;
+  std::atomic<size_t> next{0};
+  size_t active = 0;
+  uint64_t generation = 0;
+  bool stop = false;
+
+  explicit PhysicsStepPool(size_t num_workers) {
+    workers.reserve(num_workers);
+    for (size_t i = 0; i < num_workers; ++i) {
+      workers.emplace_back([this]() {
+        uint64_t seen = 0;
+        for (;;) {
+          {
+            std::unique_lock<std::mutex> lock(mu);
+            cv_work.wait(lock, [&]() { return stop || generation != seen; });
+            if (stop) return;
+            seen = generation;
+          }
+          for (;;) {
+            const size_t k = next.fetch_add(1, std::memory_order_relaxed);
+            if (k >= count) break;
+            fn(k);
+          }
+          {
+            std::lock_guard<std::mutex> lock(mu);
+            if (--active == 0) cv_done.notify_one();
+          }
+        }
+      });
+    }
+  }
+
+  ~PhysicsStepPool() {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      stop = true;
+    }
+    cv_work.notify_all();
+    for (auto& w : workers)
+      if (w.joinable()) w.join();
+  }
+
+  void run(size_t n, std::function<void(size_t)> task) {
+    if (n <= 1 || workers.empty()) {
+      for (size_t k = 0; k < n; ++k) task(k);
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      fn = std::move(task);
+      count = n;
+      next.store(0, std::memory_order_relaxed);
+      active = workers.size();
+      ++generation;
+    }
+    cv_work.notify_all();
+    // Main thread participates too so zero thread sits idle while waiting.
+    for (;;) {
+      const size_t k = next.fetch_add(1, std::memory_order_relaxed);
+      if (k >= count) break;
+      fn(k);
+    }
+    std::unique_lock<std::mutex> lock(mu);
+    cv_done.wait(lock, [&]() { return active == 0; });
+    fn = nullptr;
+  }
+};
 
 RaceView::RaceView(std::filesystem::path bake_dir) : bake_dir_(std::move(bake_dir)) {}
 RaceView::~RaceView() = default;
@@ -401,28 +480,74 @@ bool RaceView::post_race_spawn(double out[4]) const {
 }
 
 bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error) {
-  for (auto& c : cars_) {
-    // One model per car and paint: the row's ColorSequence picks the colour.
+  // Identify unique opponent (car_media, color_sequence) pairs and CPU-load them in parallel.
+  struct ModelSpec {
+    std::string key;
+    std::string media;
+    int64_t color_seq = 0;
+  };
+  std::vector<ModelSpec> specs;
+  for (const auto& c : cars_) {
     const std::string key = c.who.car_media + "#" + std::to_string(c.who.color_sequence);
-    auto it = models_.find(key);
-    if (it == models_.end()) {
+    if (models_.count(key)) continue;
+    bool dup = false;
+    for (const auto& s : specs)
+      if (s.key == key) { dup = true; break; }
+    if (!dup) specs.push_back({key, c.who.car_media, c.who.color_sequence});
+  }
+  if (!specs.empty()) {
+    struct LoadedSpec {
+      std::unique_ptr<Showroom> m;
+      std::string err;
+    };
+    std::vector<LoadedSpec> loaded(specs.size());
+    const size_t threads = std::min<size_t>(specs.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
+    auto load_one = [&](size_t i) {
       auto m = std::make_unique<Showroom>(renderer);
       m->set_guest();
       ShowroomOptions options;
-      if (c.who.color_sequence > 0) options.match_sequence = c.who.color_sequence;
+      if (specs[i].color_seq > 0) options.match_sequence = specs[i].color_seq;
       std::string e;
-      if (!m->load(bake_dir_, c.who.car_media, options, e)) {
-        error = c.who.car_media + ": " + e;
-        return false;
+      if (!m->load(bake_dir_, specs[i].media, options, e)) {
+        loaded[i].err = specs[i].media + ": " + e;
+        return;
       }
-      m->load_car_lamps(game_root_, c.who.car_media);
-      if (!m->upload(e)) {
-        error = c.who.car_media + ": " + e;
-        return false;
+      m->load_car_lamps(game_root_, specs[i].media);
+      loaded[i].m = std::move(m);
+    };
+    if (threads > 1 && specs.size() >= 2) {
+      std::atomic<size_t> next{0};
+      std::vector<std::thread> workers;
+      workers.reserve(threads);
+      for (size_t t = 0; t < threads; ++t) {
+        workers.emplace_back([&]() {
+          for (;;) {
+            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= specs.size()) break;
+            load_one(i);
+          }
+        });
       }
-      it = models_.emplace(key, std::move(m)).first;
+      for (auto& w : workers) w.join();
+    } else {
+      for (size_t i = 0; i < specs.size(); ++i) load_one(i);
     }
-    c.model = it->second.get();
+    for (size_t i = 0; i < specs.size(); ++i) {
+      if (!loaded[i].err.empty() || !loaded[i].m) {
+        error = loaded[i].err;
+        return false;
+      }
+      std::string e;
+      if (!loaded[i].m->upload(e)) {
+        error = specs[i].media + ": " + e;
+        return false;
+      }
+      models_.emplace(specs[i].key, std::move(loaded[i].m));
+    }
+  }
+  for (auto& c : cars_) {
+    const std::string key = c.who.car_media + "#" + std::to_string(c.who.color_sequence);
+    c.model = models_[key].get();
     std::vector<std::string> notes;
     drive::CarParams params = drive::params_for_baked_car(c.model->car(), bake_dir_, &notes);
     if (event_.upgrade_ai) {
@@ -711,7 +836,13 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   const double grid_cars = double(n + 1);
   const bool is_nemesis = event_.career_type == 11 || event_.style == 5;
   const double player_prog = field_->progress(n);
-  for (size_t k = 0; k < n; ++k) {
+  if (n >= 2 && !step_pool_) {
+    const size_t hw = std::max<size_t>(1, std::thread::hardware_concurrency());
+    const size_t workers = std::min<size_t>(n - 1, hw > 1 ? hw - 1 : 0);
+    if (workers > 0) step_pool_ = std::make_unique<PhysicsStepPool>(workers);
+  }
+  std::vector<uint8_t> step_ribbon(n, 0), step_hole(n, 0), step_bad(n, 0);
+  auto step_ai_car = [&](size_t k) {
     Car& c = cars_[k];
     const drive::Vec3 at = c.body->position();
     c.px = at.x, c.pz = at.z;
@@ -732,10 +863,6 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
                        .torque_add;
     }
     c.body->set_torque_factor(c.ai.torque() * (1 + boost + nem_torque));
-    // SPEC-RACE-AI, AI-only grip terms: cornering grip scales with the AI's
-    // catch-up / boost cornering scalar above 1.0, switched off during
-    // rubber-band mode 4 (over-cornering) and capped by static rollover margin
-    // so tall/narrow cars (e.g. 1965 Mini) never flip on corner entry.
     const bool over_corner = c.ai.state() == race::DriverAi::State::kRubberband && c.ai.mode() == 4;
     const auto& bp = c.body->params();
     const double half_track = 0.5 * std::fabs(bp.wheel_centres[1].x - bp.wheel_centres[0].x);
@@ -743,27 +870,33 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     const double max_grip = (half_track > 0.3 && (half_track / com_h) < 1.45) ? 1.0 : 1.25;
     const double ai_corner_grip = over_corner ? 1.0 : std::clamp(c.ai.cornering(), 1.0, max_grip);
     c.body->set_ai_grip(ai_corner_grip, ai_corner_grip);
-    // The gathered collision covers `radius` round (cx, cz); outside it
-    // (with a margin for the car and some hysteresis) the ribbon.
     const double d = std::hypot(at.x - cx, at.z - cz);
     if (c.far && d < radius - 80) c.far = false;
     else if (!c.far && d > radius - 40) c.far = true;
-    // Near but with no collision under the car (a hole in the strips, or
-    // a gather still on its way): the ribbon for this step.
     bool ribbon = c.far;
     if (!ribbon) {
       double gy = 0;
       ribbon = !world::ground_height(near, at.x, at.z, at.y + 3, gy) || gy < at.y - 10;
-      hole_steps_ += ribbon;
+      step_hole[k] = ribbon ? 1 : 0;
     }
-    far_steps_ += ribbon;
+    step_ribbon[k] = ribbon ? 1 : 0;
     c.before = c.body->pose();
     c.body->step(in, ribbon ? static_cast<const drive::Ground&>(*ribbon_) : near);
     const drive::Vec3 np = c.body->position(), nv = c.body->velocity();
     if (!std::isfinite(np.x) || !std::isfinite(np.y) || !std::isfinite(np.z) || !std::isfinite(nv.x) ||
         !std::isfinite(nv.y) || !std::isfinite(nv.z)) {
-      reset_car(*c.body, k, near, cx, cz, radius);
+      step_bad[k] = 1;
     }
+  };
+  if (step_pool_ && n >= 2) {
+    step_pool_->run(n, step_ai_car);
+  } else {
+    for (size_t k = 0; k < n; ++k) step_ai_car(k);
+  }
+  for (size_t k = 0; k < n; ++k) {
+    hole_steps_ += step_hole[k];
+    far_steps_ += step_ribbon[k];
+    if (step_bad[k]) reset_car(*cars_[k].body, k, near, cx, cz, radius);
   }
   // Contacts (PhysicsSettings.ini [Collision], SPEC-RACE-AI Q55):
   // PlayerTorqueScale = 0.0, RaceCarTorqueScaleInRace = 0.2,

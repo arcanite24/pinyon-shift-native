@@ -102,6 +102,9 @@ class PropModels {
   // The parsed model, or null (missing or failing; `error` says which).
   const RenderModel* model(uint32_t member, std::string* error = nullptr);
 
+  // Pre-reads and parses a batch of uncached member models in parallel.
+  void preload(const std::vector<uint32_t>& members);
+
   // The set's member at `level` (0 = LOD00); past the set's last member,
   // its last. Returns -1 when `member` itself is unavailable.
   int64_t lod_member(uint32_t member, int level);

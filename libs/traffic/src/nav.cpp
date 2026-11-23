@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <mutex>
+#include <unordered_map>
 
 namespace traffic {
 namespace {
@@ -125,13 +127,38 @@ bool parse_nav(const std::vector<uint8_t>& bytes, NavMap& out, std::string* erro
 }
 
 bool read_nav(const std::filesystem::path& path, NavMap& out, std::string* error) {
+  struct CachedNav {
+    uint64_t size = 0;
+    std::filesystem::file_time_type mtime{};
+    NavMap map;
+  };
+  static std::mutex cache_mu;
+  static std::unordered_map<std::string, CachedNav> cache;
+
+  std::error_code ec;
+  const std::string key = std::filesystem::weakly_canonical(path, ec).string();
+  const auto sz = std::filesystem::file_size(path, ec);
+  const auto mt = std::filesystem::last_write_time(path, ec);
+  const bool have_stat = !ec && !key.empty();
+  if (have_stat) {
+    std::lock_guard<std::mutex> lock(cache_mu);
+    if (const auto it = cache.find(key); it != cache.end() && it->second.size == sz && it->second.mtime == mt) {
+      out = it->second.map;
+      return true;
+    }
+  }
   std::ifstream f(path, std::ios::binary);
   if (!f) {
     if (error) *error = "nav: cannot open " + path.string();
     return false;
   }
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  return parse_nav(bytes, out, error);
+  if (!parse_nav(bytes, out, error)) return false;
+  if (have_stat) {
+    std::lock_guard<std::mutex> lock(cache_mu);
+    cache[key] = CachedNav{uint64_t(sz), mt, out};
+  }
+  return true;
 }
 
 }  // namespace traffic

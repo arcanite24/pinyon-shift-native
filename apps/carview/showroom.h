@@ -259,6 +259,11 @@ class Showroom {
   // Creates the pipelines and uploads geometry and textures; the renderer
   // must be initialised. Installs itself as the renderer's scene.
   bool upload(std::string& error);
+  // Hot-swaps the player car's bake, geometry, textures, material sets and
+  // bounds in-place while keeping Renderer, pipelines, WorldGpu, world
+  // textures/draws, sky, VFX, carlights and dynamic reflections alive.
+  bool reload_car(const std::filesystem::path& bake_dir, const std::string& car,
+                  const ShowroomOptions& options, std::string& error);
   void set_reflection_rate(float rate) { reflection_rate_ = std::clamp(rate, 0.0f, 1.0f); }
   float reflection_rate() const { return reflection_rate_; }
   void set_low_memory_mode(bool on) { low_memory_mode_ = on; }
@@ -441,6 +446,14 @@ class Showroom {
   // matrix takes the guest's model frame to this car's. A guest must be
   // taken out of the instances before it is destroyed.
   void set_guest() { guest_ = true; }
+  void set_shared_dynamic_env(VkImageView cube_view, VkSampler sampler) {
+    shared_dyn_env_view_ = cube_view;
+    shared_dyn_env_sampler_ = sampler;
+  }
+  VkImageView dynamic_env_view() const { return dyn_env_ready_ ? dyn_env_.view : VK_NULL_HANDLE; }
+  VkSampler dynamic_env_sampler() const { return dyn_env_ready_ ? sampler_ : VK_NULL_HANDLE; }
+  void skip_wait_idle_on_destroy() { skip_wait_idle_on_destroy_ = true; }
+  void retire_deferred(std::function<void()> fn) { retire(std::move(fn)); }
   struct Instance {
     Showroom* car = nullptr;
     float model[16];
@@ -532,6 +545,13 @@ class Showroom {
                  const float transform[16], const cars::bake::Bake& pack, int axle);
   uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0);
   bool upload_texture(const cars::bake::Texture* texture, bool srgb, GpuTexture& out, std::string& error);
+  struct TextureUploadItem {
+    const cars::bake::Texture* texture = nullptr;
+    bool srgb = true;
+    GpuTexture* dst = nullptr;
+    bool fallback_white = false;
+  };
+  bool upload_textures_batch(const std::vector<TextureUploadItem>& items, std::string& error);
   bool create_texture_image(const cars::bake::Texture& texture, bool srgb, uint32_t levels, GpuTexture& out,
                             std::string& error, uint32_t skip = 0);
   // Makes the image, view and set of a world texture staged in `texels`
@@ -588,10 +608,14 @@ class Showroom {
                                  const float m[16], const drive::LampShaderVectors* lamps = nullptr);
 
   bool guest_ = false;
+  bool skip_wait_idle_on_destroy_ = false;
+  VkImageView shared_dyn_env_view_ = VK_NULL_HANDLE;
+  VkSampler shared_dyn_env_sampler_ = VK_NULL_HANDLE;
   modern::TextureCap texture_cap_ = modern::TextureCap::kFull;
   std::vector<Instance> instances_;
   Renderer& r_;
   cars::bake::Bake car_, wheel_, tyre_, tyre_textures_, shared_;
+  std::filesystem::path shared_bake_dir_;
   ShowroomOptions options_;
   ShowroomFrame frame_{};
   float stripe_[4] = {1, 1, 1, 1};
@@ -628,6 +652,7 @@ class Showroom {
   VkPipeline contact_shadow_pipe_ = VK_NULL_HANDLE;
   void record_contact_shadows(VkCommandBuffer cmd);
   VkDescriptorPool pool_ = VK_NULL_HANDLE;
+  VkDescriptorPool material_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
   // The sun shadow pass: Near + Far cascades in a 2x1 atlas.
   Renderer::Buffer shadow_frame_buffer_;

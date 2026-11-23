@@ -230,6 +230,22 @@ void test_hiz() {
   CHECK(sizeof(TreeInstanceGpu) == 64);
 }
 
+void test_early_z_batch_routing() {
+  // Opaque draws (blend 0) must stay cleanly segregated from alpha-tested cutout draws (blend 1)
+  // so discard-free early_fragment_tests pipelines never receive alpha-tested geometry.
+  CHECK(batch_of(0, false) != batch_of(1, false));
+  CHECK(batch_of(0, true) != batch_of(1, true));
+  std::vector<DrawGpu> mixed = {
+      make_draw(-1, 1, kOpaque, 120, 0, 0),
+      make_draw(-1, 1, kCutout, 60, 120, 0),
+      make_draw(-1, 1, kOpaqueDecal, 30, 180, 0),
+      make_draw(-1, 1, kCutoutDecal, 15, 210, 0),
+  };
+  const IndirectBatches b = build_indirect(mixed, forward_view(), 16);
+  CHECK(b.commands[kOpaque].size() == 1 && b.commands[kCutout].size() == 1);
+  CHECK(b.commands[kOpaqueDecal].size() == 1 && b.commands[kCutoutDecal].size() == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -240,6 +256,7 @@ int main() {
   test_culling();
   test_indirect();
   test_hiz();
+  test_early_z_batch_routing();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

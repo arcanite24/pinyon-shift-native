@@ -328,7 +328,7 @@ std::array<float, 3> studio(float x, float y, float z) {
 Showroom::~Showroom() {
   VkDevice d = r_.device_;
   if (!d) return;
-  r_.wait_idle();
+  if (!skip_wait_idle_on_destroy_) r_.wait_idle();
   drop_pending_world();
   drop_fading_world(true);
   stop_reaper();
@@ -373,6 +373,7 @@ Showroom::~Showroom() {
   for (auto& [record, t] : world_textures_) r_.destroy_image(t);
   for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
+  if (material_pool_) vkDestroyDescriptorPool(d, material_pool_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
   for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
                        contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_opaque_dither_,
@@ -438,6 +439,41 @@ Showroom::~Showroom() {
 
 bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& car,
                     const ShowroomOptions& options, std::string& error) {
+  car_ = {};
+  wheel_ = {};
+  tyre_ = {};
+  tyre_textures_ = {};
+  // Keep shared_ loaded across hot car reloads when bake_dir hasn't changed.
+  if (shared_bake_dir_ != bake_dir) {
+    shared_ = {};
+    shared_bake_dir_.clear();
+  }
+  vertices_.clear();
+  indices_.clear();
+  draws_.clear();
+  textures_.clear();
+  texture_by_key_.clear();
+  descriptor_by_textures_.clear();
+  drawn_parts_.clear();
+  skipped_parts_.clear();
+  notes_.clear();
+  have_bounds_ = false;
+  bounds_min_ = {};
+  bounds_max_ = {};
+  for (auto& rig : cockpit_rigs_) rig = {};
+  stock_ = nullptr;
+  pending_wheel_ = -1;
+  pending_spins_ = false;
+  for (int i = 0; i < 4; ++i) {
+    stripe_[i] = 1.0f;
+    paint_two_tone_[i] = 0.0f;
+    damage_dirt_[i] = 0.0f;
+    damage_zones_[i] = 0.0f;
+  }
+  paint_finish_[0] = 0.0f;
+  paint_finish_[1] = 0.25f;
+  paint_finish_[2] = 0.0f;
+  paint_finish_[3] = 0.0f;
   options_ = options;
   std::string err;
   const std::string car_name = lower(car);
@@ -550,9 +586,12 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
       }
     }
   }
-  if (!bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
-    error = err;
-    return false;
+  if (shared_.textures.empty()) {
+    if (!bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
+      error = err;
+      return false;
+    }
+    shared_bake_dir_ = bake_dir;
   }
 
   // On-demand load of car interior_emissive_LOD0.xds (real backlit speedometer/tachometer dials)
@@ -1673,6 +1712,165 @@ bool Showroom::upload_texture(const bake::Texture* texture, bool srgb, GpuTextur
   return true;
 }
 
+bool Showroom::upload_textures_batch(const std::vector<TextureUploadItem>& items, std::string& error) {
+  if (items.empty()) return true;
+  bake::Texture builtin_white;
+  builtin_white.format = bake::TextureFormat::kRgba8;
+  builtin_white.levels.push_back({1, 1, {255, 255, 255, 255}});
+
+  struct PreparedTex {
+    bake::Texture owned_copy;
+    const bake::Texture* tex = nullptr;
+    GpuTexture* dst = nullptr;
+    uint32_t levels = 0;
+    uint32_t skip = 0;
+    VkDeviceSize offset = 0;
+    VkDeviceSize bytes = 0;
+  };
+  std::vector<PreparedTex> prepared;
+  prepared.reserve(items.size());
+  VkDeviceSize total_bytes = 0;
+  constexpr VkDeviceSize kAlign = 16;
+
+  auto cleanup_all = [&]() {
+    for (auto& p : prepared) {
+      if (p.dst) r_.destroy_image(*p.dst);
+    }
+  };
+
+  for (const auto& item : items) {
+    if (!item.dst) continue;
+    PreparedTex p;
+    p.dst = item.dst;
+    const bake::Texture* src = item.texture ? item.texture : &builtin_white;
+    bool srgb = item.srgb;
+    if (src != &builtin_white && cars::texture_mods::any()) {
+      std::string why;
+      if (cars::texture_mods::substitute(*src, p.owned_copy, &why)) src = &p.owned_copy;
+      else if (!why.empty()) notes_.push_back("replacement texture " + why);
+    }
+    VkDeviceSize total = 0;
+    uint32_t levels = texture_chain(*src, total);
+    uint32_t skip = levels ? modern::texture_levels_to_skip(src->levels[0].width, src->levels[0].height, levels,
+                                                            texture_cap_)
+                           : 0;
+    std::string local_err;
+    if (!levels || !create_texture_image(*src, srgb, levels, *p.dst, local_err, skip)) {
+      if (!item.fallback_white) {
+        error = levels ? local_err : ("texture " + src->name + ": level 0 has the wrong size");
+        cleanup_all();
+        return false;
+      }
+      notes_.push_back(levels ? local_err : ("texture " + src->name + ": level 0 has the wrong size"));
+      r_.destroy_image(*p.dst);
+      src = &builtin_white;
+      srgb = true;
+      levels = 1;
+      skip = 0;
+      if (!create_texture_image(*src, srgb, levels, *p.dst, error, 0)) {
+        cleanup_all();
+        return false;
+      }
+    }
+    VkDeviceSize kept_bytes = 0;
+    for (uint32_t i = skip; i < levels; ++i) kept_bytes += src->levels[i].data.size();
+    total_bytes = (total_bytes + kAlign - 1) & ~(kAlign - 1);
+    p.tex = src;
+    p.levels = levels;
+    p.skip = skip;
+    p.offset = total_bytes;
+    p.bytes = kept_bytes;
+    total_bytes += kept_bytes;
+    prepared.push_back(std::move(p));
+  }
+  if (prepared.empty() || total_bytes == 0) return true;
+
+  Renderer::Buffer staging;
+  if (!r_.create_buffer(total_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging)) {
+    cleanup_all();
+    error = "batched texture staging buffer";
+    return false;
+  }
+  uint8_t* mapped = nullptr;
+  if (vmaMapMemory(r_.allocator_, staging.allocation, reinterpret_cast<void**>(&mapped)) != VK_SUCCESS) {
+    r_.destroy_buffer(staging);
+    cleanup_all();
+    error = "batched texture staging map";
+    return false;
+  }
+  for (const auto& p : prepared) {
+    VkDeviceSize off = p.offset;
+    for (uint32_t i = p.skip; i < p.levels; ++i) {
+      std::memcpy(mapped + off, p.tex->levels[i].data.data(), p.tex->levels[i].data.size());
+      off += p.tex->levels[i].data.size();
+    }
+  }
+  vmaUnmapMemory(r_.allocator_, staging.allocation);
+
+  const bool ok = r_.submit_once([&](VkCommandBuffer cmd) {
+    std::vector<VkImageMemoryBarrier2> pre_barriers;
+    std::vector<VkImageMemoryBarrier2> post_barriers;
+    pre_barriers.reserve(prepared.size());
+    post_barriers.reserve(prepared.size());
+    for (const auto& p : prepared) {
+      const uint32_t kept = p.levels - p.skip;
+      VkImageMemoryBarrier2 pre{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+      pre.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+      pre.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+      pre.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      pre.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      pre.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      pre.srcQueueFamilyIndex = pre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      pre.image = p.dst->image;
+      pre.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kept, 0, 1};
+      pre_barriers.push_back(pre);
+
+      VkImageMemoryBarrier2 post = pre;
+      post.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+      post.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+      post.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+      post.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+      post.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      post.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      post_barriers.push_back(post);
+    }
+    VkDependencyInfo pre_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    pre_dep.imageMemoryBarrierCount = uint32_t(pre_barriers.size());
+    pre_dep.pImageMemoryBarriers = pre_barriers.data();
+    vkCmdPipelineBarrier2(cmd, &pre_dep);
+
+    std::vector<VkBufferImageCopy> copies;
+    for (const auto& p : prepared) {
+      copies.clear();
+      VkDeviceSize off = p.offset;
+      for (uint32_t i = p.skip; i < p.levels; ++i) {
+        const auto& lvl = p.tex->levels[i];
+        VkBufferImageCopy c{};
+        c.bufferOffset = off;
+        c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - p.skip, 0, 1};
+        c.imageExtent = {lvl.width, lvl.height, 1};
+        copies.push_back(c);
+        off += lvl.data.size();
+      }
+      vkCmdCopyBufferToImage(cmd, staging.buffer, p.dst->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             uint32_t(copies.size()), copies.data());
+    }
+
+    VkDependencyInfo post_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    post_dep.imageMemoryBarrierCount = uint32_t(post_barriers.size());
+    post_dep.pImageMemoryBarriers = post_barriers.data();
+    vkCmdPipelineBarrier2(cmd, &post_dep);
+  });
+  r_.destroy_buffer(staging);
+  if (!ok) {
+    cleanup_all();
+    error = "batched texture upload";
+    return false;
+  }
+  return true;
+}
+
 bool Showroom::upload_environment(std::string& error) {
   uint32_t kSize = 64, kLevels = 7;
   std::vector<std::vector<std::vector<std::array<float, 3>>>> faces;
@@ -2270,64 +2468,59 @@ bool Showroom::upload(std::string& error) {
     bake::Texture flat_n;
     flat_n.format = bake::TextureFormat::kRgba8;
     flat_n.levels.push_back({1, 1, {128, 128, 255, 255}});
-    if (!upload_texture(&flat_n, false, flat_normal_tex_, error)) return false;
     bake::Texture def_cookie;
     def_cookie.format = bake::TextureFormat::kRgba8;
     def_cookie.levels.push_back({1, 1, {255, 255, 255, 255}});
-    if (!upload_texture(&def_cookie, false, headlight_cookie_, error)) return false;
-  }
-  gpu_textures_.resize(textures_.size());
-  for (size_t i = 0; i < textures_.size(); ++i) {
-    const auto* t = textures_[i].texture;
-    bool srgb = true;
-    if (t) {
-      if (t->format == bake::TextureFormat::kBc4 || t->format == bake::TextureFormat::kBc5 ||
-          t->format == bake::TextureFormat::kR8) {
-        srgb = false;
-      } else {
-        const std::string tn = lower(t->name);
-        if (tn.find("_nrm") != std::string::npos || tn.find("normal") != std::string::npos ||
-            tn.find("_bump") != std::string::npos || tn.find("dirt_mask") != std::string::npos ||
-            tn.find("sparkle") != std::string::npos || tn.find("_occ") != std::string::npos ||
-            tn == "livery_mask") {
+    bake::Texture black;
+    black.name = "@black";
+    black.levels.push_back({1, 1, {0, 0, 0, 255}});
+    bake::Texture fb_dirt_p, fb_dirt_m, fb_glass;
+    fb_dirt_p.format = fb_dirt_m.format = fb_glass.format = bake::TextureFormat::kRgba8;
+    fb_dirt_p.levels.push_back({1, 1, {96, 74, 52, 255}});
+    fb_dirt_m.levels.push_back({1, 1, {180, 180, 180, 255}});
+    fb_glass.levels.push_back({1, 1, {0, 0, 0, 0}});
+
+    auto find_shared = [&](const char* name) -> const bake::Texture* {
+      for (const auto& st : shared_.textures)
+        if (st.name == name) return &st;
+      return nullptr;
+    };
+
+    gpu_textures_.resize(textures_.size());
+    std::vector<TextureUploadItem> batch;
+    batch.reserve(textures_.size() + 5);
+    batch.push_back({&flat_n, false, &flat_normal_tex_, false});
+    batch.push_back({&def_cookie, false, &headlight_cookie_, false});
+    for (size_t i = 0; i < textures_.size(); ++i) {
+      if (i == 1) {
+        batch.push_back({&black, false, &gpu_textures_[i], false});
+        continue;
+      }
+      const auto* t = textures_[i].texture;
+      bool srgb = true;
+      if (t) {
+        if (t->format == bake::TextureFormat::kBc4 || t->format == bake::TextureFormat::kBc5 ||
+            t->format == bake::TextureFormat::kR8) {
           srgb = false;
+        } else {
+          const std::string tn = lower(t->name);
+          if (tn.find("_nrm") != std::string::npos || tn.find("normal") != std::string::npos ||
+              tn.find("_bump") != std::string::npos || tn.find("dirt_mask") != std::string::npos ||
+              tn.find("sparkle") != std::string::npos || tn.find("_occ") != std::string::npos ||
+              tn == "livery_mask") {
+            srgb = false;
+          }
         }
       }
+      batch.push_back({t, srgb, &gpu_textures_[i], true});
     }
-    if (i == 1) {
-      // Built-in black (no livery).
-      bake::Texture black;
-      black.name = "@black";
-      black.levels.push_back({1, 1, {0, 0, 0, 255}});
-      if (!upload_texture(&black, false, gpu_textures_[i], error)) return false;
-      continue;
-    }
-    if (!upload_texture(t, srgb, gpu_textures_[i], error)) {
-      // A texture we cannot use: fall back to white and note it.
-      notes_.push_back(error);
-      error.clear();
-      r_.destroy_image(gpu_textures_[i]);
-      if (!upload_texture(nullptr, true, gpu_textures_[i], error)) return false;
-    }
-  }
-  // Upload FH1 Shared dirt_pattern, dirt_mask, and glass_texture atlases (fall back to neutral 1x1).
-  auto upload_shared_opt = [&](const char* name, bool srgb, uint8_t fb_r, uint8_t fb_g, uint8_t fb_b, uint8_t fb_a,
-                               GpuTexture& dst) -> bool {
-    const bake::Texture* found = nullptr;
-    for (const auto& st : shared_.textures)
-      if (st.name == name) { found = &st; break; }
-    if (found && upload_texture(found, srgb, dst, error)) return true;
-    error.clear();
-    r_.destroy_image(dst);
-    bake::Texture fb;
-    fb.format = bake::TextureFormat::kRgba8;
-    fb.levels.push_back({1, 1, {fb_r, fb_g, fb_b, fb_a}});
-    return upload_texture(&fb, false, dst, error);
-  };
-  if (!upload_shared_opt("dirt_pattern.xds", true, 96, 74, 52, 255, shared_dirt_pattern_) ||
-      !upload_shared_opt("dirt_mask.xds", false, 180, 180, 180, 255, shared_dirt_mask_) ||
-      !upload_shared_opt("glass_texture.xds", false, 0, 0, 0, 0, shared_glass_crack_)) {
-    return false;
+    const bake::Texture* sd_p = find_shared("dirt_pattern.xds");
+    const bake::Texture* sd_m = find_shared("dirt_mask.xds");
+    const bake::Texture* sd_g = find_shared("glass_texture.xds");
+    batch.push_back({sd_p ? sd_p : &fb_dirt_p, sd_p != nullptr, &shared_dirt_pattern_, true});
+    batch.push_back({sd_m ? sd_m : &fb_dirt_m, false, &shared_dirt_mask_, true});
+    batch.push_back({sd_g ? sd_g : &fb_glass, false, &shared_glass_crack_, true});
+    if (!upload_textures_batch(batch, error)) return false;
   }
   if (!upload_environment(error)) return false;
   if (!guest_ && !init_dynamic_reflections(error)) return false;
@@ -2350,14 +2543,21 @@ bool Showroom::upload(std::string& error) {
     d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
-  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sets * 5 + 64},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}};
+  // Frame/offscreen pool (kept alive across car hot-swaps, with spare sets for zero-stall rebinding).
+  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 24},
+                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = sets + 6;
+  pool.maxSets = 12;
   pool.poolSizeCount = 3;
   pool.pPoolSizes = sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
+  const VkDescriptorPoolSize mat_sizes[1] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(1u, sets) * 5}};
+  VkDescriptorPoolCreateInfo mat_pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  mat_pool.maxSets = std::max(1u, sets);
+  mat_pool.poolSizeCount = 1;
+  mat_pool.pPoolSizes = mat_sizes;
+  VK_TRY(vkCreateDescriptorPool(r_.device_, &mat_pool, nullptr, &material_pool_), "material descriptor pool");
   VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   alloc.descriptorPool = pool_;
   alloc.descriptorSetCount = 1;
@@ -2393,13 +2593,23 @@ bool Showroom::upload(std::string& error) {
     else if (target == shadow_set_far_) ubo = shadow_frame_far_buffer_.buffer;
     else if (target == env_frame_set_) ubo = env_frame_buffer_.buffer;
     VkDescriptorBufferInfo buffer{ubo, 0, sizeof(ShowroomFrame)};
-    // Main frame binds live dyn_env_ & mirror_tex_ once active; env/mirror passes use static fallbacks to avoid hazards.
-    const VkImageView cube_view =
-        (target == frame_set_ && dyn_env_ready_ && r_.post()) ? dyn_env_.view : environment_.view;
+    // Main frame binds live dyn_env_ & mirror_tex_ once active; guests inherit host's dyn_env_ at upload time
+    // to avoid any post-upload vkDeviceWaitIdle stall.
+    VkImageView cube_view = environment_.view;
+    VkSampler cube_sampler = sampler_;
+    if (target == frame_set_) {
+      if (guest_ && shared_dyn_env_view_ && shared_dyn_env_sampler_) {
+        cube_view = shared_dyn_env_view_;
+        cube_sampler = shared_dyn_env_sampler_;
+        bound_dyn_env_view_ = shared_dyn_env_view_;
+      } else if (dyn_env_ready_ && r_.post()) {
+        cube_view = dyn_env_.view;
+        dyn_env_bound_ = true;
+      }
+    }
     const VkImageView mirror_view =
         (target == frame_set_ && dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
-    if (target == frame_set_ && cube_view == dyn_env_.view) dyn_env_bound_ = true;
-    VkDescriptorImageInfo cube{sampler_, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cube{cube_sampler, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
                               VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
@@ -2480,9 +2690,12 @@ bool Showroom::upload(std::string& error) {
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
+  alloc.descriptorPool = material_pool_;
   alloc.descriptorSetCount = sets;
   alloc.pSetLayouts = layouts.data();
-  VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, material_sets_.data()), "material sets");
+  if (sets > 0) {
+    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, material_sets_.data()), "material sets");
+  }
   for (const auto& [textures, index] : descriptor_by_textures_) {
     VkDescriptorImageInfo images[5];
     VkWriteDescriptorSet writes[5];
@@ -2998,16 +3211,210 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
 
 void Showroom::bind_dynamic_env(VkImageView cube_view, VkSampler sampler) {
   if (!r_.device_ || !frame_set_ || !cube_view || !sampler || bound_dyn_env_view_ == cube_view) return;
-  vkDeviceWaitIdle(r_.device_);
-  VkDescriptorImageInfo info{sampler, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  w.dstSet = frame_set_;
-  w.dstBinding = 1;
-  w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  w.pImageInfo = &info;
-  vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+  // Allocate a fresh frame descriptor set from pool_ so we NEVER mutate an in-flight set
+  // or call vkDeviceWaitIdle() on traffic/race car spawn!
+  VkDescriptorSet fresh = VK_NULL_HANDLE;
+  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ai.descriptorPool = pool_;
+  ai.descriptorSetCount = 1;
+  ai.pSetLayouts = &frame_layout_;
+  if (vkAllocateDescriptorSets(r_.device_, &ai, &fresh) == VK_SUCCESS && fresh) {
+    VkDescriptorBufferInfo buffer{frame_buffer_.buffer, 0, sizeof(ShowroomFrame)};
+    VkDescriptorImageInfo cube{sampler, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
+                              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
+    const VkImageView mirror_view = (dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
+    VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
+    VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo dirt_m{sampler_, shared_dirt_mask_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet writes[11]{};
+    for (int i = 0; i < 11; ++i) {
+      writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[i].dstSet = fresh;
+      writes[i].dstBinding = uint32_t(i);
+      writes[i].descriptorCount = 1;
+    }
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[0].pBufferInfo = &buffer;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[1].pImageInfo = &cube;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[2].pImageInfo = &map;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[3].pImageInfo = &cookie;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[4].pBufferInfo = &hl_buf;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[5].pImageInfo = &mir;
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writes[6].pBufferInfo = &inst_buf;
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[7].pImageInfo = &static_cube;
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[8].pImageInfo = &dirt_p;
+    writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[9].pImageInfo = &dirt_m;
+    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[10].pImageInfo = &gcrack;
+    vkUpdateDescriptorSets(r_.device_, 11, writes, 0, nullptr);
+    frame_set_ = fresh;
+    bound_dyn_env_view_ = cube_view;
+    return;
+  }
   bound_dyn_env_view_ = cube_view;
+}
+
+bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::string& car,
+                          const ShowroomOptions& options, std::string& error) {
+  if (!r_.device_ || !sampler_ || !material_layout_) {
+    error = "showroom not uploaded";
+    return false;
+  }
+  // Load new car bake on CPU first.
+  if (!load(bake_dir, car, options, error)) return false;
+
+  // Upload new car vertex & index buffers.
+  Renderer::Buffer new_vb, new_ib;
+  if (!r_.upload_buffer(vertices_.data(), vertices_.size() * sizeof(bake::Vertex),
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, new_vb) ||
+      !r_.upload_buffer(indices_.data(), indices_.size() * sizeof(uint32_t),
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT, new_ib)) {
+    r_.destroy_buffer(new_vb);
+    r_.destroy_buffer(new_ib);
+    error = "reload_car geometry buffers";
+    return false;
+  }
+
+  // Upload new car textures [2..N] in one single batch; preserve [0] (@white) and [1] (@black)
+  // because WorldGpu bindless slots 0/1 and frame_set_ mirror fallback reference their views.
+  std::vector<GpuTexture> new_gpu_textures(textures_.size());
+  std::vector<TextureUploadItem> batch;
+  if (textures_.size() > 2) batch.reserve(textures_.size() - 2);
+  for (size_t i = 2; i < textures_.size(); ++i) {
+    const auto* t = textures_[i].texture;
+    bool srgb = true;
+    if (t) {
+      if (t->format == bake::TextureFormat::kBc4 || t->format == bake::TextureFormat::kBc5 ||
+          t->format == bake::TextureFormat::kR8) {
+        srgb = false;
+      } else {
+        const std::string tn = lower(t->name);
+        if (tn.find("_nrm") != std::string::npos || tn.find("normal") != std::string::npos ||
+            tn.find("_bump") != std::string::npos || tn.find("dirt_mask") != std::string::npos ||
+            tn.find("sparkle") != std::string::npos || tn.find("_occ") != std::string::npos ||
+            tn == "livery_mask") {
+          srgb = false;
+        }
+      }
+    }
+    batch.push_back({t, srgb, &new_gpu_textures[i], true});
+  }
+  if (!upload_textures_batch(batch, error)) {
+    r_.destroy_buffer(new_vb);
+    r_.destroy_buffer(new_ib);
+    return false;
+  }
+  if (gpu_textures_.size() >= 2 && new_gpu_textures.size() >= 2) {
+    new_gpu_textures[0] = gpu_textures_[0];
+    new_gpu_textures[1] = gpu_textures_[1];
+  }
+
+  // Create fresh material descriptor pool & sets for the new car draws.
+  for (auto& d : draws_) {
+    auto [it, inserted] = descriptor_by_textures_.emplace(d.textures, uint32_t(descriptor_by_textures_.size()));
+    d.descriptor = it->second;
+  }
+  const uint32_t sets = uint32_t(descriptor_by_textures_.size());
+  const VkDescriptorPoolSize mat_sizes[1] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(1u, sets) * 5}};
+  VkDescriptorPoolCreateInfo mat_pool_ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  mat_pool_ci.maxSets = std::max(1u, sets);
+  mat_pool_ci.poolSizeCount = 1;
+  mat_pool_ci.pPoolSizes = mat_sizes;
+  VkDescriptorPool new_mat_pool = VK_NULL_HANDLE;
+  if (vkCreateDescriptorPool(r_.device_, &mat_pool_ci, nullptr, &new_mat_pool) != VK_SUCCESS) {
+    for (size_t i = 2; i < new_gpu_textures.size(); ++i) r_.destroy_image(new_gpu_textures[i]);
+    r_.destroy_buffer(new_vb);
+    r_.destroy_buffer(new_ib);
+    error = "reload_car material pool";
+    return false;
+  }
+  std::vector<VkDescriptorSet> new_mat_sets(sets);
+  if (sets > 0) {
+    std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = new_mat_pool;
+    alloc.descriptorSetCount = sets;
+    alloc.pSetLayouts = layouts.data();
+    if (vkAllocateDescriptorSets(r_.device_, &alloc, new_mat_sets.data()) != VK_SUCCESS) {
+      vkDestroyDescriptorPool(r_.device_, new_mat_pool, nullptr);
+      for (size_t i = 2; i < new_gpu_textures.size(); ++i) r_.destroy_image(new_gpu_textures[i]);
+      r_.destroy_buffer(new_vb);
+      r_.destroy_buffer(new_ib);
+      error = "reload_car material sets";
+      return false;
+    }
+  }
+  for (const auto& [textures, index] : descriptor_by_textures_) {
+    VkDescriptorImageInfo images[5];
+    VkWriteDescriptorSet writes[5];
+    for (uint32_t b = 0; b < 5; ++b) {
+      VkImageView view = VK_NULL_HANDLE;
+      if (b < 3) {
+        view = new_gpu_textures[textures[b]].view;
+      } else if (b == 3) {
+        view = (textures[3] != UINT32_MAX && textures[3] < new_gpu_textures.size())
+                   ? new_gpu_textures[textures[3]].view
+                   : flat_normal_tex_.view;
+      } else {
+        view = (textures[4] != UINT32_MAX && textures[4] < new_gpu_textures.size())
+                   ? new_gpu_textures[textures[4]].view
+                   : new_gpu_textures[textures[0]].view;
+      }
+      images[b] = {sampler_, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[b].dstSet = new_mat_sets[index];
+      writes[b].dstBinding = b;
+      writes[b].descriptorCount = 1;
+      writes[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[b].pImageInfo = &images[b];
+    }
+    vkUpdateDescriptorSets(r_.device_, 5, writes, 0, nullptr);
+  }
+
+  // Swap live car GPU resources and retire the previous car's GPU objects off-thread (zero vkDeviceWaitIdle!).
+  Renderer::Buffer old_vb = vertex_buffer_;
+  Renderer::Buffer old_ib = index_buffer_;
+  VkDescriptorPool old_mat_pool = material_pool_;
+  GpuTexture old_livery = custom_livery_img_;
+  std::vector<GpuTexture> old_car_textures;
+  if (gpu_textures_.size() > 2) {
+    old_car_textures.assign(gpu_textures_.begin() + 2, gpu_textures_.end());
+  }
+
+  vertex_buffer_ = new_vb;
+  index_buffer_ = new_ib;
+  material_pool_ = new_mat_pool;
+  material_sets_ = std::move(new_mat_sets);
+  gpu_textures_ = std::move(new_gpu_textures);
+  custom_livery_img_ = {};
+  custom_livery_active_ = false;
+  lamp_points_.clear();
+  lamp_state_active_ = false;
+  lamp_vectors_ = {};
+  driver_wheel_rad_ = 0.0f;
+  // Reset per-frame car-derived uniforms so the new car's stripe/paint finish take effect immediately.
+  for (int i = 0; i < 4; ++i) {
+    frame_.stripe[i] = stripe_[i];
+    frame_.paint_two_tone[i] = paint_two_tone_[i];
+    frame_.paint_finish[i] = paint_finish_[i];
+    frame_.damage_dirt[i] = damage_dirt_[i];
+    frame_.damage_zones[i] = damage_zones_[i];
+  }
+  frame_.options[2] = 0.0f;
+
+  retire([this, old_vb, old_ib, old_mat_pool, old_livery,
+          old_tex = std::move(old_car_textures)]() mutable {
+    if (old_mat_pool) vkDestroyDescriptorPool(r_.device_, old_mat_pool, nullptr);
+    for (auto& t : old_tex) r_.destroy_image(t);
+    r_.destroy_image(old_livery);
+    r_.destroy_buffer(old_vb);
+    r_.destroy_buffer(old_ib);
+  });
+  return true;
 }
 
 void Showroom::set_instances(std::vector<Instance> list) {
@@ -6440,7 +6847,7 @@ bool Showroom::ensure_mirror_targets() {
     VkDescriptorImageInfo info{sampler_, mirror_tex_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = frame_set_;
-    w.dstBinding = 6;
+    w.dstBinding = 5;
     w.descriptorCount = 1;
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.pImageInfo = &info;

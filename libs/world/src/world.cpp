@@ -1,6 +1,7 @@
 #include "world/world.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 
@@ -124,11 +126,40 @@ struct World::Impl {
     if (small_read) return;
     small_read = true;
     const auto start = std::chrono::steady_clock::now();
-    std::vector<uint8_t> data;
-    std::vector<fh1::BundleEntry> entries;
-    for (const auto& name : source.with_suffix(".bundle")) {
-      if (!source.read(name, data, nullptr) || !fh1::parse_bundle(data, entries, nullptr)) continue;
-      for (const auto& e : entries)
+    const auto names = source.with_suffix(".bundle");
+    struct BundleResult {
+      std::vector<uint8_t> data;
+      std::vector<fh1::BundleEntry> entries;
+      bool ok = false;
+    };
+    std::vector<BundleResult> results(names.size());
+    const size_t threads = std::min<size_t>(names.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
+    if (threads > 1 && names.size() >= 4) {
+      std::atomic<size_t> next{0};
+      std::vector<std::thread> workers;
+      workers.reserve(threads);
+      for (size_t t = 0; t < threads; ++t) {
+        workers.emplace_back([&]() {
+          for (;;) {
+            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= names.size()) break;
+            auto& r = results[i];
+            if (source.read(names[i], r.data, nullptr) && fh1::parse_bundle(r.data, r.entries, nullptr)) {
+              r.ok = true;
+            }
+          }
+        });
+      }
+      for (auto& w : workers) w.join();
+    } else {
+      for (size_t i = 0; i < names.size(); ++i) {
+        auto& r = results[i];
+        if (source.read(names[i], r.data, nullptr) && fh1::parse_bundle(r.data, r.entries, nullptr)) r.ok = true;
+      }
+    }
+    for (auto& r : results) {
+      if (!r.ok) continue;
+      for (const auto& e : r.entries)
         if (!small.count(e.record))
           small[e.record] = {e.width, e.height, e.levels, e.format_word, {e.payload.begin(), e.payload.end()}};
     }
@@ -600,9 +631,69 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
 
   // The point in the file frame, where the boxes and placements are.
   z = -z;
+  // Helper: read and parse a list of model indices in parallel, preserving exact order.
+  auto load_models_parallel = [&](const std::vector<uint32_t>& ids, bool parse_materials,
+                                  std::vector<std::pair<uint32_t, fh1::RenderModel>>& dst) -> bool {
+    dst.resize(ids.size());
+    if (ids.empty()) return true;
+    std::vector<std::string> errs(ids.size());
+    std::atomic<bool> failed{false};
+    const size_t threads = std::min<size_t>(ids.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
+    auto run_one = [&](size_t slot, std::vector<uint8_t>& buf) {
+      const uint32_t idx = ids[slot];
+      const ModelInfo& m = models_[idx];
+      fh1::RenderModel model;
+      std::string e;
+      if (!impl_->source.read(m.name, buf, &e) || !fh1::parse_render_model(buf, model, &e)) {
+        errs[slot] = m.name + ": " + e;
+        failed.store(true, std::memory_order_relaxed);
+        return;
+      }
+      if (parse_materials) {
+        std::string ignored;
+        fh1::parse_render_materials(buf, model, &ignored);  // without them the model draws flat
+      }
+      dst[slot] = {idx, std::move(model)};
+    };
+    if (threads > 1 && ids.size() >= 4) {
+      std::atomic<size_t> next{0};
+      std::vector<std::thread> workers;
+      workers.reserve(threads);
+      for (size_t t = 0; t < threads; ++t) {
+        workers.emplace_back([&]() {
+          std::vector<uint8_t> buf;
+          for (;;) {
+            if (failed.load(std::memory_order_relaxed)) break;
+            const size_t slot = next.fetch_add(1, std::memory_order_relaxed);
+            if (slot >= ids.size()) break;
+            run_one(slot, buf);
+          }
+        });
+      }
+      for (auto& w : workers) w.join();
+    } else {
+      std::vector<uint8_t> buf;
+      for (size_t slot = 0; slot < ids.size(); ++slot) {
+        run_one(slot, buf);
+        if (failed.load(std::memory_order_relaxed)) break;
+      }
+    }
+    if (failed.load(std::memory_order_relaxed)) {
+      if (error) {
+        for (const auto& e : errs) {
+          if (!e.empty()) {
+            *error = e;
+            break;
+          }
+        }
+      }
+      return false;
+    }
+    return true;
+  };
+
   // World-space models whose header box comes within the radius.
-  std::vector<std::pair<uint32_t, fh1::RenderModel>> selected;
-  std::vector<uint8_t> bytes;
+  std::vector<uint32_t> near_ids;
   const double r = options.radius;
   for (uint32_t i = 0; i < models_.size(); ++i) {
     const ModelInfo& m = models_[i];
@@ -610,18 +701,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     const double dx = std::max({0.0, double(m.box_min[0]) - x, x - double(m.box_max[0])});
     const double dz = std::max({0.0, double(m.box_min[2]) - z, z - double(m.box_max[2])});
     if (dx * dx + dz * dz > r * r) continue;
-    fh1::RenderModel model;
-    std::string e;
-    if (!impl_->source.read(m.name, bytes, &e) || !fh1::parse_render_model(bytes, model, &e)) {
-      if (error) *error = m.name + ": " + e;
-      return false;
-    }
-    if (options.render_data) {
-      std::string ignored;
-      fh1::parse_render_materials(bytes, model, &ignored);  // without them the model draws flat
-    }
-    selected.emplace_back(i, std::move(model));
+    near_ids.push_back(i);
   }
+  std::vector<std::pair<uint32_t, fh1::RenderModel>> selected;
+  if (!load_models_parallel(near_ids, options.render_data, selected)) return false;
   std::map<std::string, int> lowest;
   for (const auto& [i, model] : selected)
     for (const auto& o : model.objects) {
@@ -637,7 +720,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   // The far ring: MIDDIST and UberLOD objects of the models within
   // far_radius, the finest LOD present per family.
   if (options.render_data && options.far_radius > 0) {
-    std::vector<std::pair<uint32_t, fh1::RenderModel>> far_models;
+    std::vector<uint32_t> far_ids;
     const double fr = options.far_radius;
     for (uint32_t i = 0; i < models_.size(); ++i) {
       const ModelInfo& m = models_[i];
@@ -645,16 +728,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       const double dx = std::max({0.0, double(m.box_min[0]) - x, x - double(m.box_max[0])});
       const double dz = std::max({0.0, double(m.box_min[2]) - z, z - double(m.box_max[2])});
       if (dx * dx + dz * dz > fr * fr) continue;
-      fh1::RenderModel model;
-      std::string e;
-      if (!impl_->source.read(m.name, bytes, &e) || !fh1::parse_render_model(bytes, model, &e)) {
-        if (error) *error = m.name + ": " + e;
-        return false;
-      }
-      std::string ignored;
-      fh1::parse_render_materials(bytes, model, &ignored);
-      far_models.emplace_back(i, std::move(model));
+      far_ids.push_back(i);
     }
+    std::vector<std::pair<uint32_t, fh1::RenderModel>> far_models;
+    if (!load_models_parallel(far_ids, true, far_models)) return false;
     std::map<std::string, int> far_lowest;
     for (const auto& [i, model] : far_models)
       for (const auto& o : model.objects) {
@@ -732,6 +809,24 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     const double tree_r2 = (options.render_data && options.tree_radius > options.prop_radius)
                                ? (options.tree_radius * options.tree_radius)
                                : prop_r2;
+    // Pre-decode all unique prop models (and their immediate LOD neighbors) in parallel
+    // before the sequential triangle assembly loop so PropModels::model() hits cache.
+    {
+      std::vector<uint32_t> preload_members;
+      for (const auto& p : impl_->props.placements) {
+        if (!p.has_object || p.object_id >= impl_->table.objects.size()) continue;
+        const auto& t = p.placement.offset;
+        const double dx = t[0] - x, dz = t[2] - z;
+        if (dx * dx + dz * dz > tree_r2) continue;
+        if (options.route >= 0 && !fh1::shown_on_route(p.routes, options.route)) continue;
+        const uint32_t m = impl_->table.objects[p.object_id].member;
+        preload_members.push_back(m);
+        if (m > 0) preload_members.push_back(m - 1);
+        preload_members.push_back(m + 1);
+        preload_members.push_back(m + 2);
+      }
+      impl_->prop_models->preload(preload_members);
+    }
     std::map<uint32_t, uint32_t> distant_tree_mat;
     for (const auto& p : impl_->props.placements) {
       const auto& t = p.placement.offset;

@@ -496,7 +496,11 @@ void WorldGpu::destroy_generation(Generation& g) {
   g.set = VK_NULL_HANDLE;
   r_.destroy_buffer(g.table);
   r_.destroy_buffer(g.trees);
+  r_.destroy_buffer(g.table_staging);
+  r_.destroy_buffer(g.trees_staging);
+  g.table_bytes = g.trees_bytes = 0;
   g.rows = g.trees_count = 0;
+  g.pending_upload = false;
 }
 
 void WorldGpu::record_copies(VkCommandBuffer cmd, VkBuffer staged_vertices, const std::vector<Copy>& vertex_copies,
@@ -574,20 +578,47 @@ void WorldGpu::remove_texture(uint32_t record) {
 
 bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string& error,
                          const std::vector<gpuworld::TreeInstanceGpu>& trees) {
+  // Non-blocking table swap: stage rows/trees into host-visible buffers on CPU (<0.1 ms)
+  // and record the GPU-side transfer into the next frame's record_cull() command buffer
+  // before compute culling runs (zero submit_once / vkWaitForFences stall on streaming swap).
+  auto stage_device_buffer = [&](const void* data, VkDeviceSize bytes, Renderer::Buffer& device_buf,
+                                 Renderer::Buffer& staging_buf) -> bool {
+    if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device_buf)) {
+      return false;
+    }
+    if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging_buf)) {
+      r_.destroy_buffer(device_buf);
+      return false;
+    }
+    void* mapped = nullptr;
+    if (vmaMapMemory(r_.allocator_, staging_buf.allocation, &mapped) != VK_SUCCESS) {
+      r_.destroy_buffer(staging_buf);
+      r_.destroy_buffer(device_buf);
+      return false;
+    }
+    std::memcpy(mapped, data, size_t(bytes));
+    vmaUnmapMemory(r_.allocator_, staging_buf.allocation);
+    return true;
+  };
+
   Generation next;
   const uint32_t n = uint32_t(std::min<size_t>(rows.size(), size_t(kMaxPerBatch) * 2));
   const uint32_t tn = uint32_t(std::min<size_t>(trees.size(), size_t(kMaxTrees)));
   if (n > 0) {
-    if (!r_.upload_buffer(rows.data(), VkDeviceSize(n) * sizeof(gpuworld::DrawGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                          next.table)) {
+    next.table_bytes = VkDeviceSize(n) * sizeof(gpuworld::DrawGpu);
+    if (!stage_device_buffer(rows.data(), next.table_bytes, next.table, next.table_staging)) {
       error = "world draw table";
       return false;
     }
-    if (tn > 0 && !r_.upload_buffer(trees.data(), VkDeviceSize(tn) * sizeof(gpuworld::TreeInstanceGpu),
-                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, next.trees)) {
-      r_.destroy_buffer(next.table);
-      error = "world tree instances";
-      return false;
+    if (tn > 0) {
+      next.trees_bytes = VkDeviceSize(tn) * sizeof(gpuworld::TreeInstanceGpu);
+      if (!stage_device_buffer(trees.data(), next.trees_bytes, next.trees, next.trees_staging)) {
+        destroy_generation(next);
+        error = "world tree instances";
+        return false;
+      }
     }
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = table_pool_;
@@ -599,8 +630,7 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
       res = vkAllocateDescriptorSets(r_.device_, &ai, &next.set);
     }
     if (res != VK_SUCCESS) {
-      r_.destroy_buffer(next.table);
-      r_.destroy_buffer(next.trees);
+      destroy_generation(next);
       error = "world table set";
       return false;
     }
@@ -619,10 +649,11 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
     vkUpdateDescriptorSets(r_.device_, 2, ws, 0, nullptr);
     next.rows = n;
     next.trees_count = tn;
+    next.pending_upload = true;
   }
   Generation old = generation_;
   generation_ = next;
-  if (old.table.buffer || old.trees.buffer || old.set) {
+  if (old.table.buffer || old.trees.buffer || old.table_staging.buffer || old.trees_staging.buffer || old.set) {
     setup_.retire([this, old]() mutable {
       std::lock_guard<std::mutex> lock(mutex_);
       destroy_generation(old);
@@ -652,6 +683,35 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
   }
   vkResetDescriptorPool(r_.device_, s.pool, 0);
   if (generation_.rows == 0) return;
+
+  if (generation_.pending_upload) {
+    generation_.pending_upload = false;
+    if (generation_.table_staging.buffer && generation_.table.buffer && generation_.table_bytes > 0) {
+      const VkBufferCopy copy{0, 0, generation_.table_bytes};
+      vkCmdCopyBuffer(cmd, generation_.table_staging.buffer, generation_.table.buffer, 1, &copy);
+      buffer_barrier(cmd, generation_.table.buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    }
+    if (generation_.trees_staging.buffer && generation_.trees.buffer && generation_.trees_bytes > 0) {
+      const VkBufferCopy copy{0, 0, generation_.trees_bytes};
+      vkCmdCopyBuffer(cmd, generation_.trees_staging.buffer, generation_.trees.buffer, 1, &copy);
+      buffer_barrier(cmd, generation_.trees.buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    }
+    Renderer::Buffer st_table = generation_.table_staging;
+    Renderer::Buffer st_trees = generation_.trees_staging;
+    generation_.table_staging = {};
+    generation_.trees_staging = {};
+    if (st_table.buffer || st_trees.buffer) {
+      setup_.retire([this, st_table, st_trees]() mutable {
+        r_.destroy_buffer(st_table);
+        r_.destroy_buffer(st_trees);
+      });
+    }
+  }
 
   CullUniformsGpu u{};
   std::memcpy(u.planes, view.planes, sizeof u.planes);

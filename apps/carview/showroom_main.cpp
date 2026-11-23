@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <any>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -31,6 +32,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -1398,51 +1400,103 @@ struct WorldTextureLoader {
   std::set<uint32_t> failed;
   std::set<uint32_t> cutout;  // textures whose base level has alpha under one half
   size_t decoded = 0;
-  // Decodes the textures `w` names that are not already resident in `showroom`;
-  // resident records are pinned in `pin_records` until the staged world is
-  // consumed or dropped. A texture that does not decode leaves its materials flat.
+  // Decodes the textures `w` names that are not already resident in `showroom`
+  // in parallel across CPU cores; resident records are pinned in `pin_records`
+  // until the staged world is consumed or dropped.
   void load(world::World& colorado, WorldTriangles& w, Showroom& showroom,
             std::vector<uint32_t>& pin_records) {
     std::unordered_set<uint32_t> batch_seen;
-    for (auto& m : w.materials)
+    std::vector<uint32_t> to_decode;
+    for (auto& m : w.materials) {
       for (uint32_t* slot :
-           {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c, &m.spec_map})
-        load_one(colorado, w, showroom, batch_seen, pin_records, *slot);
-  }
-  void load_one(world::World& colorado, WorldTriangles& w, Showroom& showroom,
-                std::unordered_set<uint32_t>& batch_seen, std::vector<uint32_t>& pin_records,
-                uint32_t& record) {
-    if (record == kNoWorldTexture) return;
-    if (failed.count(record)) {
-      record = kNoWorldTexture;
-      return;
+           {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c, &m.spec_map}) {
+        uint32_t& record = *slot;
+        if (record == kNoWorldTexture) continue;
+        if (failed.count(record)) {
+          record = kNoWorldTexture;
+          continue;
+        }
+        if (!batch_seen.insert(record).second) continue;
+        if (showroom.reserve_world_texture(record)) {
+          pin_records.push_back(record);
+          continue;
+        }
+        to_decode.push_back(record);
+      }
     }
-    if (!batch_seen.insert(record).second) return;
-    if (showroom.reserve_world_texture(record)) {
-      pin_records.push_back(record);
-      return;
+    if (to_decode.empty()) return;
+
+    struct DecodedTex {
+      bool ok = false;
+      bool is_cutout = false;
+      std::string err;
+      std::shared_ptr<WorldTextureData> data;
+    };
+    std::vector<DecodedTex> results(to_decode.size());
+    const size_t threads =
+        std::min<size_t>(to_decode.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
+    auto decode_one = [&](size_t i) {
+      const uint32_t record = to_decode[i];
+      fh1::WorldTexture t;
+      std::string e;
+      if (!colorado.read_texture(record, t, &e)) {
+        results[i].err = std::move(e);
+        return;
+      }
+      results[i].ok = true;
+      results[i].is_cutout = fh1::world_texture_has_cutout(t);
+      auto d = std::make_shared<WorldTextureData>();
+      d->record = record;
+      d->srgb = t.format.gamma;
+      char name[40];
+      std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[record].id);
+      d->texture.name = name;
+      d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
+      d->texture.swizzle = t.blocks.swizzle;
+      for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
+      results[i].data = std::move(d);
+    };
+    if (threads > 1 && to_decode.size() >= 4) {
+      std::atomic<size_t> next{0};
+      std::vector<std::thread> workers;
+      workers.reserve(threads);
+      for (size_t t = 0; t < threads; ++t) {
+        workers.emplace_back([&]() {
+          for (;;) {
+            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= to_decode.size()) break;
+            decode_one(i);
+          }
+        });
+      }
+      for (auto& wk : workers) wk.join();
+    } else {
+      for (size_t i = 0; i < to_decode.size(); ++i) decode_one(i);
     }
-    fh1::WorldTexture t;
-    std::string e;
-    if (!colorado.read_texture(record, t, &e)) {
-      std::fprintf(stderr, "carview: texture record %u: %s\n", record, e.c_str());
-      failed.insert(record);
-      record = kNoWorldTexture;
-      return;
+
+    bool any_failed = false;
+    for (size_t i = 0; i < to_decode.size(); ++i) {
+      const uint32_t record = to_decode[i];
+      auto& r = results[i];
+      if (!r.ok || !r.data) {
+        std::fprintf(stderr, "carview: texture record %u: %s\n", record, r.err.c_str());
+        failed.insert(record);
+        any_failed = true;
+        continue;
+      }
+      if (r.is_cutout) cutout.insert(record);
+      carview::world_texture_hook(record, r.data->srgb, r.data->texture);
+      w.textures.push_back(std::move(r.data));
+      ++decoded;
     }
-    if (fh1::world_texture_has_cutout(t)) cutout.insert(record);
-    auto d = std::make_shared<WorldTextureData>();
-    d->record = record;
-    d->srgb = t.format.gamma;
-    char name[40];
-    std::snprintf(name, sizeof name, "colorado:_0x%08x", colorado.textures()[record].id);
-    d->texture.name = name;
-    d->texture.format = cars::bake::TextureFormat(uint32_t(t.blocks.format));
-    d->texture.swizzle = t.blocks.swizzle;
-    for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
-    carview::world_texture_hook(record, d->srgb, d->texture);  // mods' replacement textures (mods_page.h)
-    w.textures.push_back(std::move(d));
-    ++decoded;
+    if (any_failed) {
+      for (auto& m : w.materials) {
+        for (uint32_t* slot :
+             {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c, &m.spec_map}) {
+          if (*slot != kNoWorldTexture && failed.count(*slot)) *slot = kNoWorldTexture;
+        }
+      }
+    }
   }
 };
 
@@ -1811,6 +1865,7 @@ int run_drive(int argc, char** argv) {
   bool cli_dev_hints = (std::getenv("SHIFT_DEV_HINTS") != nullptr && std::string(std::getenv("SHIFT_DEV_HINTS")) == "1");
   std::filesystem::path sync_folder;
   std::string device_name, profile_name;
+  std::string bench_switch_car;
   for (size_t i = 0; i < args.size(); ++i) {
     const std::string a = args[i];
     auto next = [&]() -> const char* { return i + 1 < args.size() ? args[++i].c_str() : ""; };
@@ -1854,6 +1909,7 @@ int run_drive(int argc, char** argv) {
     else if (a == "--headless") headless = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") car = next();
+    else if (a == "--bench-car-switch") bench_switch_car = next();
     else if (a == "--out") out = next();
     else if (a == "--run") run = next();
     else if (a == "--view") view = next();
@@ -3093,41 +3149,40 @@ int run_drive(int argc, char** argv) {
     tod_clock.set_hour(hour);
   }
   tod_clock.speed_scale = day_length_scale;
-  if (!world_dir.empty()) {
-    std::string tod_err;
-    if (tod_system.load(world_dir, &tod_err)) {
-      std::printf("tod: TimeOfDayA (%zu curves), zones %zu, LUTs %zu, sky %s (%zu stars)\n",
-                  tod_system.preset_a.curves.size(), tod_system.zones.zones.size(), tod_system.zones.luts.size(),
-                  tod_system.loaded_sky ? "realtimesky.zip" : "procedural", tod_system.sky_assets.stars.size());
-    }
-  }
-  // Particle effects (media/effects.zip, Ribbon_00/ParticleEmitters.xml,
-  // SmashableEffects.xml, audio/BackfireTimerConfig.xml), loaded once.
   world::ParticleLibrary vfx_lib;
   world::SmashableWorld smashables;
   world::AnimatedWorldSystem world_anim;
   {
     const auto groot = game_root_of();
+    std::future<bool> fut_vfx, fut_sm;
+    std::string vfx_err, sm_err, tod_err, anim_err;
     if (!groot.empty()) {
-      std::string vfx_err;
-      if (vfx_lib.load(groot / "media", world_dir, &vfx_err)) {
-        std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
-                    vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
-                    vfx_lib.smashable_effects().size());
-      }
-      std::string sm_err;
-      if (smashables.load(groot / "media", world_dir, &sm_err)) {
-        const auto c = smashables.definitions().counts();
-        std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
-                    c.top_level, c.total_children, smashables.coll_object_types().size(),
-                    smashables.placed_prop_count());
-      }
-      std::string anim_err;
+      const auto media = groot / "media";
+      fut_vfx = std::async(std::launch::async, [&, media]() { return vfx_lib.load(media, world_dir, &vfx_err); });
+      fut_sm = std::async(std::launch::async, [&, media]() { return smashables.load(media, world_dir, &sm_err); });
+    }
+    if (!world_dir.empty() && tod_system.load(world_dir, &tod_err)) {
+      std::printf("tod: TimeOfDayA (%zu curves), zones %zu, LUTs %zu, sky %s (%zu stars)\n",
+                  tod_system.preset_a.curves.size(), tod_system.zones.zones.size(), tod_system.zones.luts.size(),
+                  tod_system.loaded_sky ? "realtimesky.zip" : "procedural", tod_system.sky_assets.stars.size());
+    }
+    if (!groot.empty()) {
       if (world_anim.init(groot / "media", tod_system.post_config, &anim_err)) {
         const auto& cat = world_anim.catalog();
         std::printf("world_anim: %zu spectator models (%d angles), %zu crowdclasses, %zu animated pgeo / %zu xds\n",
                     cat.models.size(), cat.num_sprite_angles, cat.crowdclasses.size(), cat.animated_pgeos,
                     cat.animated_xds);
+      }
+      if (fut_vfx.valid() && fut_vfx.get()) {
+        std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
+                    vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
+                    vfx_lib.smashable_effects().size());
+      }
+      if (fut_sm.valid() && fut_sm.get()) {
+        const auto c = smashables.definitions().counts();
+        std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
+                    c.top_level, c.total_children, smashables.coll_object_types().size(),
+                    smashables.placed_prop_count());
       }
     }
   }
@@ -3160,27 +3215,31 @@ int run_drive(int argc, char** argv) {
     Showroom showroom(renderer);
     // SHIFT_NO_CULL=1: every world draw, for comparison with the culled frame.
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
-    ShowroomOptions options;
-    options.game_root = game_root_of();
-    // The garage car's paint & fitted visual upgrades (body kits, wing, rims, brakes, stance).
-    if (have_garage)
-      if (const garage::Car* gc = career_garage.selected_car())
-        if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car)) {
-          options.match_sequence = gc->colour;
-          options.car_id = gc->car_id;
-          if (parts_db.valid()) {
-            if (const auto db = parts_db.get()) {
-              const float rh_f = float(gc->tune.front_ride_height);
-              const float rh_r = float(gc->tune.rear_ride_height);
-              const float cam_f = float(gc->tune.front_camber_deg);
-              const float cam_r = float(gc->tune.rear_camber_deg);
-              cars::resolve_visual_setup(*db, gc->car_id, garage::fitted(*gc), options.visual, nullptr, rh_f, rh_r,
-                                         cam_f, cam_r);
+    auto build_car_options = [&]() {
+      ShowroomOptions opts;
+      opts.game_root = game_root_of();
+      // The garage car's paint & fitted visual upgrades (body kits, wing, rims, brakes, stance).
+      if (have_garage)
+        if (const garage::Car* gc = career_garage.selected_car())
+          if (auto it = baked_ids.find(gc->car_id); it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car)) {
+            opts.match_sequence = gc->colour;
+            opts.car_id = gc->car_id;
+            if (parts_db.valid()) {
+              if (const auto db = parts_db.get()) {
+                const float rh_f = float(gc->tune.front_ride_height);
+                const float rh_r = float(gc->tune.rear_ride_height);
+                const float cam_f = float(gc->tune.front_camber_deg);
+                const float cam_r = float(gc->tune.rear_camber_deg);
+                cars::resolve_visual_setup(*db, gc->car_id, garage::fitted(*gc), opts.visual, nullptr, rh_f, rh_r,
+                                           cam_f, cam_r);
+              }
             }
           }
-        }
-    // A colour picked in the pause menu's paint page for this car.
-    if (paint_sequence >= 0 && lower_ascii(paint_car) == lower_ascii(car)) options.match_sequence = paint_sequence;
+      // A colour picked in the pause menu's paint page for this car.
+      if (paint_sequence >= 0 && lower_ascii(paint_car) == lower_ascii(car)) opts.match_sequence = paint_sequence;
+      return opts;
+    };
+    ShowroomOptions options = build_car_options();
     Renderer::Options render_options{window, validation, msaa};
     render_options.reverse_z = reverse_z;
     render_options.backface_cull = backface_cull;
@@ -3308,100 +3367,13 @@ int run_drive(int argc, char** argv) {
       // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of
       // colour row i, as left and right show it.
       if (const char* pp = std::getenv("SHIFT_PAINT_PREVIEW")) showroom.preview_colour(size_t(std::atoi(pp)));
-      const auto& info = showroom.car();
-      // Apply any custom Paint Shop / Vinyl Livery (.liv) saved on the active garage car.
-      if (have_garage) {
-        if (const garage::Car* gc = career_garage.selected_car()) {
-          if (!gc->livery_file.empty() && baked_ids.count(gc->car_id) &&
-              lower_ascii(baked_ids.at(gc->car_id)) == lower_ascii(car)) {
-            std::filesystem::path liv_p(gc->livery_file);
-            if (liv_p.is_relative() && !save_path.empty()) liv_p = save_path.parent_path() / liv_p;
-            cars::LiveryDocument ldoc;
-            if (cars::load_livery_file(liv_p, ldoc, nullptr)) {
-              showroom.set_paint_spec(ldoc.paint);
-              if (!ldoc.layers.empty()) {
-                cars::LiveryLibrary llib;
-                const auto gr = game_root_of();
-                if (!gr.empty()) {
-                  const auto lzip = gr / "media" / "Livery.zip";
-                  if (std::filesystem::exists(lzip)) llib.open(lzip, nullptr);
-                }
-                std::vector<uint8_t> liv_rgba;
-                if (cars::composite_livery(ldoc, llib.is_open() ? &llib : nullptr,
-                                           showroom.livery_planes().empty() ? nullptr : &showroom.livery_planes(),
-                                           liv_rgba, 1024)) {
-                  std::string lerr;
-                  showroom.set_custom_livery(liv_rgba.data(), 1024, 1024, lerr);
-                }
-              }
-            }
-          }
-        }
-      }
-      std::vector<std::string> physics_notes;
-      audio::UpgradeLevels audio_upgrades{};
-      int audio_trans_level = 0, audio_turbo_level = 0, audio_sc_level = 0;
-      drive::Vehicle vehicle([&] {
-        // The selected garage car with its fitted parts (SPEC-GARAGE-UPGRADES,
-        // What a part changes).
-        if (have_garage && parts_db.valid())
-          if (const garage::Car* gc = career_garage.selected_car())
-            if (auto it = baked_ids.find(gc->car_id);
-                it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car)) {
-              const auto t0 = std::chrono::steady_clock::now();
-              const auto db = parts_db.get();
-              cars::CarPhysics rows;
-              std::string e = "no parts database";
-              if (db && db->physics(gc->car_id, garage::fitted(*gc), rows, &e)) {
-                audio_upgrades.intake = int(rows.get("List_UpgradeEngineIntake.Level", 0));
-                audio_upgrades.exhaust = int(rows.get("List_UpgradeEngineExhaust.Level", 0));
-                audio_trans_level = int(rows.get("List_UpgradeDrivetrainTransmission.Level", 0));
-                audio_turbo_level = int(rows.get("List_UpgradeEngineTurboSingle.Level", 0));
-                audio_sc_level = int(rows.get("List_UpgradeEngineCSC.Level", 0));
-                std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
-                            it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
-                            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-                return drive::params_for_fitted_car(info, bake_dir, rows, &physics_notes, &gc->tune);
-              }
-              physics_notes.push_back("garage parts not applied: " + e);
-            }
-        return drive::params_for_baked_car(info, bake_dir, &physics_notes);
-      }());
-      for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
-      // Engine audio (dedicated render thread, runtime XMA2 decode fallback, L0-L3 upgrades).
       constexpr int kAudioRate = carview::AudioHost::kAudioRate;
-      if (sound && (!headless || !audio_out.empty() || bench_audio || bench_full_fx)) {
-        const auto aud_t0 = std::chrono::steady_clock::now();
-        std::string sound_note;
-        if (audio_host.load_car(sound_dir, game_root_of(), state_root, car, audio_upgrades, vehicle.params().idle_rpm,
-                                vehicle.params().redline_rpm, &sound_note))
-          std::printf("%s\n", sound_note.c_str());
-        else
-          std::fprintf(stderr, "carview: no engine sound (%s)\n", sound_note.c_str());
-        bench_startup.audio_load_ms +=
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_t0).count();
-      } else {
-        audio_host.clear_car();
-      }
-      // The sound's inputs from the engine: its throttle, and its torque as
-      // a fraction of full throttle (driving) or of closed throttle (braking).
-      auto sound_inputs = [&](audio::View audio_view) {
-        audio::EnginePlayer::Update u;
-        const double rpm = vehicle.rpm(), thr = vehicle.engine_throttle();
-        const double torque = vehicle.engine_torque(rpm, thr);
-        const double full = vehicle.engine_torque(rpm, 1), closed = vehicle.engine_torque(rpm, 0);
-        u.rpm = rpm;
-        u.throttle = thr;
-        u.pos_torque = torque > 0 && full > 0 ? torque / full : 0;
-        u.neg_torque = torque < 0 && closed < 0 ? torque / closed : 0;
-        u.view = audio_view;
-        return u;
-      };
-      std::vector<float> audio_track;  // headless --audio-out
       const drive::FlatGround flat;
       const drive::Ground* ground = &flat;
       world::World colorado;
       world::Collision collision;
+      world::GatherOptions world_gather_options;
+      int loaded_world_route = 0;
       std::unique_ptr<world::Streamer> streamer;
       std::unique_ptr<freeroam::FreeRoam> free_roam;
       std::shared_ptr<const std::set<std::string>> hidden_sent;
@@ -3444,10 +3416,21 @@ int run_drive(int argc, char** argv) {
         world::Spawn sp;
         std::string warning;
         const char* how = "";
-        if (!colorado.open(world_dir, cache_path, &error)) {
+        std::string col_err;
+        std::future<bool> fut_col;
+        if (!render_ground) {
+          const auto phys_zip =
+              (game_root_given.empty() ? world_dir.parent_path().parent_path() : game_root_of() / "media") / "physics.zip";
+          fut_col = std::async(std::launch::async, [&, phys_zip]() {
+            return collision.open(world_dir, phys_zip, &col_err, &warning);
+          });
+        }
+        const bool world_ok = colorado.open(world_dir, cache_path, &error);
+        const bool col_ok = render_ground ? true : fut_col.get();
+        if (!world_ok) {
           status = 1;
-        } else if (!render_ground && !collision.open(world_dir, (game_root_given.empty() ? world_dir.parent_path().parent_path() : game_root_of() / "media") / "physics.zip",
-                                                     &error, &warning)) {
+        } else if (!col_ok) {
+          error = col_err;
           status = 1;
         } else {
           if (!error.empty()) std::fprintf(stderr, "carview: note: %s\n", error.c_str());
@@ -3637,6 +3620,8 @@ int run_drive(int argc, char** argv) {
             bench_startup.audio_load_ms +=
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();
           }
+          loaded_world_route = active_route;
+          world_gather_options = gather_options;
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        render_ground ? nullptr : &collision);
           // Gathers after the first run on a worker in the window (and with
@@ -3701,7 +3686,6 @@ int run_drive(int argc, char** argv) {
                       sp.position[2], sp.heading);
           start = {sp.position[0], sp.position[1], sp.position[2]};
           start_heading = sp.heading;
-          vehicle.reset(start, start_heading);
           // "Back to the start" keeps the saved spawn, not where the save left the car.
           if (have_saved && saved.has_spawn) {
             start = {saved.spawn[0], saved.spawn[1], saved.spawn[2]};
@@ -3719,6 +3703,183 @@ int run_drive(int argc, char** argv) {
             0.0, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - world_load_t0).count() -
                      bench_startup.audio_load_ms);
       }
+      // Hot-reload inner loop: car switches, paint changes, upgrades, rally kits, and race
+      // starts/leaves swap car & session state in-place while keeping Renderer, pipelines,
+      // WorldGpu, world textures, World, Collision, and Streamer alive (~12 s -> <0.25 s).
+      bool first_session = true;
+      for (bool session_again = true; session_again && status == 0;) {
+      session_again = false;
+      bool hot_reload_car = false;
+      if (!first_session) {
+        const auto t_hot0 = std::chrono::steady_clock::now();
+        showroom.set_instances({});
+        const ShowroomOptions hot_opts = build_car_options();
+        if (!showroom.reload_car(bake_dir, car, hot_opts, error)) {
+          std::fprintf(stderr, "carview: hot car switch %s: %s\n", car.c_str(), error.c_str());
+          status = 1;
+          break;
+        }
+        if (const auto groot = game_root_of(); !groot.empty()) showroom.load_car_lamps(groot, car);
+        // Re-gather only if the route changed or spawn teleported far from the resident world origin.
+        if (streamer && !world_dir.empty()) {
+          const int want_route = gather_route_given ? gather_route : (race ? race->event().route_id : 0);
+          const double sx = have_spawn ? spawn[0] : start.x;
+          const double sz = have_spawn ? spawn[2] : start.z;
+          const double dist_origin = std::hypot(sx - showroom.world_origin_x(), sz - showroom.world_origin_z());
+          if (want_route != loaded_world_route || dist_origin > 120.0 || fast_travel) {
+            loaded_world_route = want_route;
+            world_gather_options.route = want_route;
+            if (!render_ground) collision.set_active_route(want_route);
+            streamer = std::make_unique<world::Streamer>(colorado, world_gather_options, kRegather,
+                                                         render_ground ? nullptr : &collision);
+            streamer->set_async(streamer_async);
+            streamer->set_prepare([&showroom, &colorado, &texture_loader](const world::Mesh& mesh, double cx,
+                                                                          double cz) {
+              auto staged = std::make_shared<Showroom::StagedWorld>();
+              std::string e;
+              std::vector<uint32_t> pin_records;
+              WorldTriangles triangles = scenery(mesh, cx, cz);
+              texture_loader.load(colorado, triangles, showroom, pin_records);
+              std::shared_ptr<const void> pin_guard(
+                  reinterpret_cast<const void*>(1),
+                  [&showroom, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
+              if (!showroom.stage_world(build_world(triangles), *staged, e, cx, cz)) staged.reset();
+              if (staged) {
+                staged->origin_x = cx;
+                staged->origin_z = cz;
+                staged->pin_guard = std::move(pin_guard);
+              }
+              auto prepared = std::make_shared<Prepared>();
+              prepared->staged = std::move(staged);
+              prepared->road = world::RoadFollower::road_points(mesh);
+              prepared->glows.reserve(mesh.world_glows.size());
+              for (const auto& g : mesh.world_glows) {
+                world::WorldGlow sg = g;
+                sg.position[0] = float(double(g.position[0]) - cx);
+                sg.position[2] = float(double(g.position[2]) - cz);
+                prepared->glows.push_back(sg);
+              }
+              return std::any(prepared);
+            });
+            if (!streamer->update(sx, sz, nullptr, &error)) {
+              std::fprintf(stderr, "carview: hot regather: %s\n", error.c_str());
+              status = 1;
+              break;
+            }
+            if (fast_travel) {
+              fast_travel = false;
+              drive::Hit h;
+              if (streamer->ground().raycast({spawn[0], 2000.0, spawn[2]}, {0, -1, 0}, 4000.0, h))
+                spawn[1] = 2000.0 - h.distance;
+            }
+            ground = &streamer->ground();
+            follower.set_ground(&streamer->ground());
+            if (!set_staged_world()) {
+              std::fprintf(stderr, "carview: hot stage world: %s\n", error.c_str());
+              status = 1;
+              break;
+            }
+          }
+          if (have_spawn) {
+            start = {spawn[0], spawn[1], spawn[2]};
+            start_heading = spawn[3];
+          }
+        }
+        const double hot_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_hot0).count();
+        std::printf("carview: hot swap to %s in %.1f ms (world textures kept: %zu, gpu draws: %u)\n", car.c_str(),
+                    hot_ms, showroom.world_texture_count(), showroom.gpu_resident_draws());
+      }
+      first_session = false;
+      const auto& info = showroom.car();
+      // Apply any custom Paint Shop / Vinyl Livery (.liv) saved on the active garage car.
+      if (have_garage) {
+        if (const garage::Car* gc = career_garage.selected_car()) {
+          if (!gc->livery_file.empty() && baked_ids.count(gc->car_id) &&
+              lower_ascii(baked_ids.at(gc->car_id)) == lower_ascii(car)) {
+            std::filesystem::path liv_p(gc->livery_file);
+            if (liv_p.is_relative() && !save_path.empty()) liv_p = save_path.parent_path() / liv_p;
+            cars::LiveryDocument ldoc;
+            if (cars::load_livery_file(liv_p, ldoc, nullptr)) {
+              showroom.set_paint_spec(ldoc.paint);
+              if (!ldoc.layers.empty()) {
+                cars::LiveryLibrary llib;
+                const auto gr = game_root_of();
+                if (!gr.empty()) {
+                  const auto lzip = gr / "media" / "Livery.zip";
+                  if (std::filesystem::exists(lzip)) llib.open(lzip, nullptr);
+                }
+                std::vector<uint8_t> liv_rgba;
+                if (cars::composite_livery(ldoc, llib.is_open() ? &llib : nullptr,
+                                           showroom.livery_planes().empty() ? nullptr : &showroom.livery_planes(),
+                                           liv_rgba, 1024)) {
+                  std::string lerr;
+                  showroom.set_custom_livery(liv_rgba.data(), 1024, 1024, lerr);
+                }
+              }
+            }
+          }
+        }
+      }
+      std::vector<std::string> physics_notes;
+      audio::UpgradeLevels audio_upgrades{};
+      int audio_trans_level = 0, audio_turbo_level = 0, audio_sc_level = 0;
+      drive::Vehicle vehicle([&] {
+        if (have_garage && parts_db.valid())
+          if (const garage::Car* gc = career_garage.selected_car())
+            if (auto it = baked_ids.find(gc->car_id);
+                it != baked_ids.end() && lower_ascii(it->second) == lower_ascii(car)) {
+              const auto t0 = std::chrono::steady_clock::now();
+              const auto db = parts_db.get();
+              cars::CarPhysics rows;
+              std::string e = "no parts database";
+              if (db && db->physics(gc->car_id, garage::fitted(*gc), rows, &e)) {
+                audio_upgrades.intake = int(rows.get("List_UpgradeEngineIntake.Level", 0));
+                audio_upgrades.exhaust = int(rows.get("List_UpgradeEngineExhaust.Level", 0));
+                audio_trans_level = int(rows.get("List_UpgradeDrivetrainTransmission.Level", 0));
+                audio_turbo_level = int(rows.get("List_UpgradeEngineTurboSingle.Level", 0));
+                audio_sc_level = int(rows.get("List_UpgradeEngineCSC.Level", 0));
+                std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
+                            it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
+                            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+                return drive::params_for_fitted_car(info, bake_dir, rows, &physics_notes, &gc->tune);
+              }
+              physics_notes.push_back("garage parts not applied: " + e);
+            }
+        return drive::params_for_baked_car(info, bake_dir, &physics_notes);
+      }());
+      for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
+      if (!world_dir.empty()) {
+        if (have_spawn) vehicle.reset({spawn[0], spawn[1], spawn[2]}, spawn[3]);
+        else vehicle.reset(start, start_heading);
+      }
+      if (sound && (!headless || !audio_out.empty() || bench_audio || bench_full_fx)) {
+        const auto aud_t0 = std::chrono::steady_clock::now();
+        std::string sound_note;
+        if (audio_host.load_car(sound_dir, game_root_of(), state_root, car, audio_upgrades, vehicle.params().idle_rpm,
+                                vehicle.params().redline_rpm, &sound_note))
+          std::printf("%s\n", sound_note.c_str());
+        else
+          std::fprintf(stderr, "carview: no engine sound (%s)\n", sound_note.c_str());
+        bench_startup.audio_load_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_t0).count();
+      } else {
+        audio_host.clear_car();
+      }
+      auto sound_inputs = [&](audio::View audio_view) {
+        audio::EnginePlayer::Update u;
+        const double rpm = vehicle.rpm(), thr = vehicle.engine_throttle();
+        const double torque = vehicle.engine_torque(rpm, thr);
+        const double full = vehicle.engine_torque(rpm, 1), closed = vehicle.engine_torque(rpm, 0);
+        u.rpm = rpm;
+        u.throttle = thr;
+        u.pos_torque = torque > 0 && full > 0 ? torque / full : 0;
+        u.neg_torque = torque < 0 && closed < 0 ? torque / closed : 0;
+        u.view = audio_view;
+        return u;
+      };
+      std::vector<float> audio_track;  // headless --audio-out
+      if (skill_tracker) skill_tracker->reset_session_clock();
       std::unique_ptr<TrafficView> traffic;
       // The race's models go with this scope (before the renderer).
       struct RaceModels {
@@ -7519,6 +7680,31 @@ int run_drive(int argc, char** argv) {
                         recorder.frames().size());
           }
         }
+        if (!bench_switch_car.empty()) {
+          const auto t_sw0 = std::chrono::steady_clock::now();
+          std::string sw_err;
+          ShowroomOptions sw_opts;
+          sw_opts.game_root = game_root_of();
+          const bool sw_ok = showroom.reload_car(bake_dir, bench_switch_car, sw_opts, sw_err);
+          if (sw_ok) {
+            std::vector<std::string> sw_notes;
+            const auto sw_params = drive::params_for_baked_car(showroom.car(), bake_dir, &sw_notes);
+            drive::Vehicle sw_veh(sw_params);
+            sw_veh.reset(vehicle.position(), start_heading);
+            showroom.set_wheel_poses(poses);
+            double sw_rec_ms = 0, sw_gpu_ms = 0;
+            renderer.render_timed(FrameConstants{}, width, height, sw_rec_ms, sw_gpu_ms, sw_err);
+          }
+          const double sw_ms =
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_sw0).count();
+          if (sw_ok) {
+            std::printf("bench: hot car switch (%s -> %s): %.2f ms (world_textures_kept=%zu, gpu_draws_kept=%u)\n",
+                        car.c_str(), bench_switch_car.c_str(), sw_ms, showroom.world_texture_count(),
+                        showroom.gpu_resident_draws());
+          } else {
+            std::fprintf(stderr, "bench: hot car switch failed: %s\n", sw_err.c_str());
+          }
+        }
         (void)pct;
       } else if (!demo_photo_png.empty()) {
         // Headless Slice 10 verification capture: Photo Mode UI + DoF/vignette + Horizon Promo.
@@ -9340,7 +9526,7 @@ int run_drive(int argc, char** argv) {
                         saved.credits = career.credits;
                         save_now("rally kit");
                         rally_notice = msg;
-                        again = true;
+                        hot_reload_car = true;
                         running = false;
                       } else {
                         rally_notice = msg;
@@ -11665,9 +11851,81 @@ int run_drive(int argc, char** argv) {
                     free_roam->signs_found(), collectibles.signs.size(),
                     freeroam::upgrade_discount(free_roam->signs_found()), free_roam->barns_found(),
                     collectibles.barns.size(), progress.total_distance / 1000);
+      const bool will_hot_reload =
+          (status == 0 && rally_world_switch == 0 && (leave_race || !next_event.empty() || !next_car.empty() || hot_reload_car));
       if (!skip_end_save) save_now("end");
-      if (!skip_end_save && !again) save_session.on_exit(vehicle.time());
+      if (!skip_end_save && !again && !will_hot_reload && rally_world_switch == 0) save_session.on_exit(vehicle.time());
       if (traffic) std::printf("%s\n", traffic->summary().c_str());
+      // Handle car switch / paint / upgrades / race start & leave in-place without tearing down
+      // Renderer, pipelines, WorldGpu, world textures, or World (~12 s -> <0.25 s).
+      if (status == 0 && rally_world_switch == 0) {
+        if (hot_reload_car) {
+          const drive::Vec3 cur_p = vehicle.position();
+          const drive::Vec3 cur_f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          spawn[0] = cur_p.x, spawn[1] = cur_p.y, spawn[2] = cur_p.z, spawn[3] = std::atan2(cur_f.x, cur_f.z);
+          have_spawn = true;
+          session_again = true;
+        }
+        if (leave_race) {
+          leave_race = false;
+          if (race) {
+            race->release_models();
+            race.reset();
+            race_event.clear();
+            std::printf("race: left for free roam\n");
+          }
+          if (!pre_loaner_car.empty()) {
+            car = pre_loaner_car;
+            if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
+            pre_loaner_car.clear();
+            pre_loaner_garage_id = 0;
+          }
+          session_again = true;
+        }
+        if (!next_event.empty()) {
+          std::string why;
+          const std::string id = next_event;
+          next_event.clear();
+          if (race) race->release_models();
+          race.reset();
+          if (start_race(id, why)) {
+            race_event = id;
+            std::printf("race: %s from the pause menu\n", id.c_str());
+          } else {
+            std::fprintf(stderr, "carview: event %s: %s\n", id.c_str(), why.c_str());
+            race_event.clear();
+            if (!pre_loaner_car.empty()) {
+              car = pre_loaner_car;
+              if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
+              pre_loaner_car.clear();
+              pre_loaner_garage_id = 0;
+            }
+          }
+          session_again = true;
+          SDL_SetWindowTitle(window, ("carview drive - loading " + id).c_str());
+        }
+        if (!next_car.empty()) {
+          if (race) {
+            std::printf("race: left for a car change\n");
+            race->release_models();
+            race.reset();
+            race_event.clear();
+            pre_loaner_car.clear();
+            pre_loaner_garage_id = 0;
+          }
+          const drive::Vec3 cur_p = vehicle.position();
+          const drive::Vec3 cur_f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          if (!have_spawn) {
+            spawn[0] = cur_p.x, spawn[1] = cur_p.y, spawn[2] = cur_p.z, spawn[3] = std::atan2(cur_f.x, cur_f.z);
+            have_spawn = true;
+          }
+          car = next_car;
+          next_car.clear();
+          session_again = true;
+          SDL_SetWindowTitle(window, ("carview drive - loading " + car).c_str());
+        }
+      }
+      }  // end hot-reload inner loop
       if (validation) std::printf("validation messages: %u\n", renderer.validation_messages());
       if (status == 0 && renderer.validation_messages()) status = 3;
     }
@@ -11705,55 +11963,6 @@ int run_drive(int argc, char** argv) {
       std::printf("rally: returned to Colorado (%s)\n", world_dir.string().c_str());
     }
     again = true;
-  }
-  if (status == 0 && leave_race) {
-    leave_race = false;
-    if (race) {
-      race.reset();
-      race_event.clear();
-      std::printf("race: left for free roam\n");
-    }
-    if (!pre_loaner_car.empty()) {
-      car = pre_loaner_car;
-      if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
-      pre_loaner_car.clear();
-      pre_loaner_garage_id = 0;
-    }
-    again = true;
-  }
-  if (status == 0 && !next_event.empty()) {
-    std::string why;
-    const std::string id = next_event;
-    next_event.clear();
-    race.reset();
-    if (start_race(id, why)) {
-      race_event = id;
-      std::printf("race: %s from the pause menu\n", id.c_str());
-    } else {
-      std::fprintf(stderr, "carview: event %s: %s\n", id.c_str(), why.c_str());
-      race_event.clear();
-      if (!pre_loaner_car.empty()) {
-        car = pre_loaner_car;
-        if (pre_loaner_garage_id > 0) career_garage.selected = pre_loaner_garage_id;
-        pre_loaner_car.clear();
-        pre_loaner_garage_id = 0;
-      }
-    }
-    again = true;
-    SDL_SetWindowTitle(window, ("carview drive - loading " + id).c_str());
-  }
-  if (status == 0 && !next_car.empty()) {
-    if (race) {
-      std::printf("race: left for a car change\n");
-      race.reset();
-      race_event.clear();
-      pre_loaner_car.clear();
-      pre_loaner_garage_id = 0;
-    }
-    car = next_car;
-    next_car.clear();
-    again = true;
-    SDL_SetWindowTitle(window, ("carview drive - loading " + car).c_str());
   }
   }
   carview::set_world_texture_session(nullptr);

@@ -407,6 +407,99 @@ void test_upscaler_runtime_and_inspector() {
   CHECK(!ilist.empty());
 }
 
+void test_split_bindless_and_pipeline_cache() {
+  // Split bindless: 1 immutable sampler + SAMPLED_IMAGE[4096] unlocks Apple Silicon (16 samplers)
+  // and Android Turnip/Adreno (16 samplers, >=16k sampled images).
+  SplitBindlessLimits apple_silicon{16, 500000, 500000};
+  CHECK(split_bindless_supported(apple_silicon));
+  SplitBindlessLimits turnip{16, 16384, 16384};
+  CHECK(split_bindless_supported(turnip));
+  SplitBindlessLimits too_few_samplers{8, 16384, 16384};
+  CHECK(!split_bindless_supported(too_few_samplers));
+  SplitBindlessLimits too_few_images{64, 1024, 16384};
+  CHECK(!split_bindless_supported(too_few_images));
+
+  // Persistent VkPipelineCache header validation.
+  PipelineCacheKey key{};
+  key.vendor_id = 0x10DEu;
+  key.device_id = 0x2704u;
+  for (size_t i = 0; i < 16; ++i) key.uuid[i] = uint8_t(i + 1);
+  const std::vector<uint8_t> payload = {0x11, 0x22, 0x33, 0x44, 0x55};
+  const auto encoded = encode_pipeline_cache_file(key, payload.data(), payload.size());
+  std::vector<uint8_t> decoded;
+  CHECK(decode_pipeline_cache_file(encoded.data(), encoded.size(), key, decoded));
+  CHECK(decoded == payload);
+
+  // Mismatched vendor / device / UUID / truncated blob must be rejected.
+  PipelineCacheKey wrong_vendor = key;
+  wrong_vendor.vendor_id = 0x1002u;
+  CHECK(!decode_pipeline_cache_file(encoded.data(), encoded.size(), wrong_vendor, decoded));
+  PipelineCacheKey wrong_uuid = key;
+  wrong_uuid.uuid[3] ^= 0xFFu;
+  CHECK(!decode_pipeline_cache_file(encoded.data(), encoded.size(), wrong_uuid, decoded));
+  CHECK(!decode_pipeline_cache_file(encoded.data(), 12, key, decoded));
+}
+
+void test_lazy_targets_and_reflection_schedule() {
+  // Low-power default: no bloom, no SSAO, no FXAA, no upscale/HDR -> zero optional targets.
+  GraphicsSettings g;
+  UpscalerChoice bil{};
+  const auto low_plan =
+      plan_modern_targets(g, {1920, 1080}, {1920, 1080}, false, HdrMode::kOff, 0, false, false, bil);
+  CHECK(!low_plan.bloom && !low_plan.ssao && !low_plan.fxaa_scene && !low_plan.fxaa_standin &&
+        !low_plan.modern_chain && !low_plan.upscale_tmp && !low_plan.temporal_hist && !low_plan.motion_vec &&
+        !low_plan.inspector);
+
+  // 4K Ultra SSAO + FXAA: allocates bloom, SSAO, FXAA scene, and modern chain, NOT temporal/motion.
+  GraphicsSettings ultra;
+  ultra.ssao = SsaoQuality::kHigh;
+  ultra.aa = AaMode::kFxaaWorld;
+  const auto ultra_plan =
+      plan_modern_targets(ultra, {3840, 2160}, {3840, 2160}, true, HdrMode::kOff, 0, false, false, bil);
+  CHECK(ultra_plan.bloom && ultra_plan.ssao && ultra_plan.fxaa_scene && ultra_plan.modern_chain &&
+        !ultra_plan.temporal_hist && !ultra_plan.motion_vec);
+
+  // Temporal upscaler (FSR2): enables temporal_hist and motion_vec.
+  UpscalerChoice fsr2{};
+  fsr2.active = Upscaler::kFsr2;
+  fsr2.temporal = true;
+  GraphicsSettings ts;
+  ts.upscaler = Upscaler::kFsr2;
+  const auto fsr2_plan =
+      plan_modern_targets(ts, {1280, 720}, {1920, 1080}, true, HdrMode::kOff, 0, false, false, fsr2);
+  CHECK(fsr2_plan.modern_chain && fsr2_plan.temporal_hist && fsr2_plan.motion_vec && !fsr2_plan.upscale_tmp);
+
+  // Reflection rate staggering & mirror gating.
+  const auto init_step = schedule_reflections(0, 0.25f, false, false, false);
+  CHECK(init_step.render_cubemap && init_step.face_count == 6 && !init_step.render_mirror);
+  int low_hits = 0;
+  for (uint64_t f = 1; f <= 8; ++f) {
+    const auto st = schedule_reflections(f, 0.25f, true, false, false);
+    if (st.render_cubemap) ++low_hits;
+    CHECK(!st.render_mirror);
+  }
+  CHECK(low_hits == 2);  // quarter-rate: 1 face every 4 frames
+
+  const auto zero_step = schedule_reflections(1, 0.0f, true, false, false);
+  CHECK(!zero_step.render_cubemap);
+
+  // Cockpit mirror: full 3 bands on first frame, then staggered 1 band/frame cycling 0, 1, 2.
+  const auto m0 = schedule_reflections(1, 1.0f, true, true, false);
+  CHECK(m0.render_mirror && m0.mirror_band_begin == 0 && m0.mirror_band_count == 3);
+  const auto m1 = schedule_reflections(1, 1.0f, true, true, true);
+  const auto m2 = schedule_reflections(2, 1.0f, true, true, true);
+  const auto m3 = schedule_reflections(3, 1.0f, true, true, true);
+  CHECK(m1.mirror_band_count == 1 && m2.mirror_band_count == 1 && m3.mirror_band_count == 1);
+  CHECK(m1.mirror_band_begin == 0 && m2.mirror_band_begin == 1 && m3.mirror_band_begin == 2);
+
+  // World memory budgets per preset.
+  const auto mb_low = choose_world_memory_budget(16ULL << 30, true, 0.25f);
+  const auto mb_high = choose_world_memory_budget(16ULL << 30, false, 1.0f);
+  CHECK(mb_low.vertex_arena_bytes < mb_high.vertex_arena_bytes);
+  CHECK(mb_low.dyn_env_size == 128 && mb_low.dyn_env_mips == 8);
+  CHECK(mb_high.dyn_env_size == 256 && mb_high.dyn_env_mips == 9);
+}
+
 }  // namespace
 
 int main() {
@@ -420,6 +513,8 @@ int main() {
   test_settings_tokens();
   test_frame_stats();
   test_upscaler_runtime_and_inspector();
+  test_split_bindless_and_pipeline_cache();
+  test_lazy_targets_and_reflection_schedule();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

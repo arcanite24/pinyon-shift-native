@@ -13,6 +13,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -55,7 +56,8 @@ class Archive {
   // within an archive; this returns the first member with the name.
   const ArchiveMember* find(std::string_view name) const;
 
-  // Reads, decompresses and CRC-checks one member. Not thread-safe.
+  // Reads, decompresses and CRC-checks one member. Thread-safe: disk range reads
+  // are serialized internally while decompression and CRC checks run concurrently.
   ReadResult read(const ArchiveMember& member);
   ReadResult read(std::string_view name);
 
@@ -72,6 +74,7 @@ class Archive {
   bool read_range(uint64_t offset, size_t size, std::vector<uint8_t>& out);
 
   std::filesystem::path path_;
+  mutable std::mutex io_mutex_;
   std::ifstream stream_;
   uint64_t file_size_ = 0;
   std::vector<ArchiveMember> members_;

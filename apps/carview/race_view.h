@@ -254,6 +254,9 @@ class RaceView {
   std::vector<ReplayRow> replay_;
   std::optional<race::RaceAward> award_;
   race::ShowcaseOpponent showcase_;
+  // Persistent worker pool for parallel multi-car AI physics steps (zero per-step spawn cost).
+  struct PhysicsStepPool;
+  std::unique_ptr<PhysicsStepPool> step_pool_;
   // The player's credits for place p (the spec's share; before the award).
   int64_t credits_for(int place) const;
 };

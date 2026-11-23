@@ -333,6 +333,85 @@ int main() {
     }
   }
 
+  // Persistent VkPipelineCache, lazy render targets, lazy cockpit mirrors, hot car reload_car(),
+  // and zero-stall deferred guest retirement end-to-end checks.
+  const std::filesystem::path cache_file = temp.path / "vk_pipeline_cache.bin";
+  {
+    carview::Renderer renderer;
+    carview::Renderer::Options opts;
+    opts.validation = true;
+    opts.msaa = 1;
+    opts.post.enabled = true;
+    opts.post.bloom = false;
+    opts.pipeline_cache_path = cache_file;
+    if (renderer.init(opts, err)) {
+      CHECK(!renderer.pipeline_cache_loaded());
+      carview::Showroom showroom(renderer);
+      showroom.set_reflection_rate(0.25f);
+      CHECK(showroom.load(temp.path, "testcar", {}, err));
+      CHECK(showroom.upload(err));
+      showroom.set_frame(test_frame());
+
+      // Lazy targets: bloom=off, ssao=off, fxaa=off -> none of the optional targets allocated.
+      std::vector<uint8_t> rgba;
+      CHECK(renderer.render_offscreen(carview::FrameConstants{}, 64, 64, rgba, err));
+      const auto plan0 = renderer.allocated_modern_targets();
+      CHECK(!plan0.bloom && !plan0.ssao && !plan0.fxaa_scene && !plan0.temporal_hist && !plan0.motion_vec);
+      // Mirror target stays unallocated when not in cockpit camera.
+      CHECK(!showroom.mirror_targets_allocated());
+
+      // Enabling SSAO + FXAA lazily allocates only those passes on next frame.
+      carview::modern::GraphicsSettings gs;
+      gs.ssao = carview::modern::SsaoQuality::kLow;
+      gs.aa = carview::modern::AaMode::kFxaaWorld;
+      renderer.set_graphics_settings(gs);
+      CHECK(renderer.render_offscreen(carview::FrameConstants{}, 64, 64, rgba, err));
+      const auto plan1 = renderer.allocated_modern_targets();
+      CHECK(plan1.ssao && plan1.fxaa_scene && plan1.modern_chain && !plan1.temporal_hist);
+
+      // Stream world, then hot-swap car via reload_car(): world textures & triangles MUST stay intact!
+      CHECK(showroom.set_world(make_gather(40, 41, 42, 43), err));
+      const size_t wtex_before = showroom.world_texture_stats().resident_count;
+      const size_t wtris_before = showroom.world_triangle_count();
+      CHECK(wtex_before >= 4 && wtris_before > 0);
+      CHECK(showroom.reload_car(temp.path, "testcar", {}, err));
+      CHECK(showroom.world_texture_stats().resident_count == wtex_before);
+      CHECK(showroom.world_triangle_count() == wtris_before);
+      CHECK(renderer.render_offscreen(carview::FrameConstants{}, 64, 64, rgba, err));
+
+      // Zero-stall guest spawn (inheriting host dyn env) + deferred retirement.
+      auto guest = std::make_shared<carview::Showroom>(renderer);
+      guest->set_guest();
+      guest->set_shared_dynamic_env(showroom.dynamic_env_view(), showroom.dynamic_env_sampler());
+      CHECK(guest->load(temp.path, "testcar", {}, err));
+      CHECK(guest->upload(err));
+      carview::Showroom::Instance inst{};
+      inst.car = guest.get();
+      inst.model[0] = inst.model[5] = inst.model[10] = inst.model[15] = 1.0f;
+      showroom.set_instances({inst});
+      CHECK(renderer.render_offscreen(carview::FrameConstants{}, 64, 64, rgba, err));
+      showroom.set_instances({});
+      guest->skip_wait_idle_on_destroy();
+      showroom.retire_deferred([g = std::move(guest)]() mutable { g.reset(); });
+      for (int k = 0; k < 3; ++k) CHECK(renderer.render_offscreen(carview::FrameConstants{}, 64, 64, rgba, err));
+
+      CHECK(renderer.validation_messages() == 0);
+    }
+  }
+  // Second Renderer instance must reload the persisted VkPipelineCache from disk.
+  CHECK(std::filesystem::exists(cache_file) && std::filesystem::file_size(cache_file) > 32);
+  {
+    carview::Renderer renderer2;
+    carview::Renderer::Options opts2;
+    opts2.validation = true;
+    opts2.msaa = 1;
+    opts2.pipeline_cache_path = cache_file;
+    if (renderer2.init(opts2, err)) {
+      CHECK(renderer2.pipeline_cache_loaded());
+      CHECK(renderer2.validation_messages() == 0);
+    }
+  }
+
   std::printf("showroom_vram_tests: %d failure(s)\n", failures);
   return failures ? 1 : 0;
 }

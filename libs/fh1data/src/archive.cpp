@@ -68,6 +68,7 @@ uint32_t crc32(std::span<const uint8_t> data) {
 bool Archive::read_range(uint64_t offset, size_t size, std::vector<uint8_t>& out) {
   if (offset > file_size_ || size > file_size_ - offset) return false;
   out.resize(size);
+  std::lock_guard<std::mutex> lock(io_mutex_);
   stream_.clear();
   stream_.seekg(std::streamoff(offset));
   return bool(stream_.read(reinterpret_cast<char*>(out.data()), std::streamsize(size)));

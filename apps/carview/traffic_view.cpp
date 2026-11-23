@@ -58,7 +58,10 @@ TrafficView::~TrafficView() {
   host_.set_instances({});
   for (auto& [id, g] : guests_)
     if (g.loading.valid()) g.loading.wait();
-  guests_.clear();  // each guest idles the GPU before it frees anything
+  r_.wait_idle();  // one single device idle on shutdown instead of one per guest
+  for (auto& [id, g] : guests_)
+    if (g.showroom) g.showroom->skip_wait_idle_on_destroy();
+  guests_.clear();
 }
 
 bool TrafficView::open(const std::filesystem::path& game_root, const drive::Ground* const* ground, double hour,
@@ -150,11 +153,14 @@ void TrafficView::update_guests() {
       const std::filesystem::path root = game_root_;
       const std::string media = media_[id];
       Renderer* r = &r_;
+      const VkImageView host_env_view = host_.dynamic_env_view();
+      const VkSampler host_env_sampler = host_.dynamic_env_sampler();
       const bool upload_on_worker = !sync_;
-      g.loading = std::async(std::launch::async, [r, bake, root, media, upload_on_worker]() {
+      g.loading = std::async(std::launch::async, [r, bake, root, media, upload_on_worker, host_env_view, host_env_sampler]() {
         Loaded out;
         auto s = std::make_unique<Showroom>(*r);
         s->set_guest();
+        if (host_env_view && host_env_sampler) s->set_shared_dynamic_env(host_env_view, host_env_sampler);
         std::string e;
         if (!s->load(bake, media, ShowroomOptions{}, e)) {
           std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
@@ -215,6 +221,13 @@ void TrafficView::update_guests() {
     params_.erase(it->first);
     std::printf("traffic: t %.1f s: model %lld (%s) dropped\n", population_->time(), (long long)it->first,
                 media_[it->first].c_str());
+    // Retire dropped traffic GPU resources through the host's multi-frame retirement ring
+    // instead of calling vkDeviceWaitIdle() on the render thread (eliminates 4.5-13.1 ms hitches).
+    if (it->second.showroom) {
+      std::shared_ptr<Showroom> retired = std::move(it->second.showroom);
+      retired->skip_wait_idle_on_destroy();
+      host_.retire_deferred([g = std::move(retired)]() mutable { g.reset(); });
+    }
     it = guests_.erase(it);
   }
 }

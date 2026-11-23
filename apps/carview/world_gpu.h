@@ -103,9 +103,14 @@ class WorldGpu {
   struct Generation {
     Renderer::Buffer table;
     Renderer::Buffer trees;
+    Renderer::Buffer table_staging;
+    Renderer::Buffer trees_staging;
+    VkDeviceSize table_bytes = 0;
+    VkDeviceSize trees_bytes = 0;
     VkDescriptorSet set = VK_NULL_HANDLE;
     uint32_t rows = 0;
     uint32_t trees_count = 0;
+    bool pending_upload = false;
   };
   void destroy_generation(Generation& g);
   struct SlotBuffers {
