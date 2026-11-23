@@ -74,7 +74,21 @@ std::string describe(const cars::FolderRef& ref) {
   return ref.origin + ":" + ref.path.filename().string() + (ref.prefix.empty() ? "" : "!" + ref.prefix);
 }
 
-void run(const Job& job, const fs::path& out_dir, Result& r) {
+void run(const Job& job, const fs::path& out_dir, bool incremental, Result& r) {
+  r.file = job.kind == Job::Kind::kShared ? fs::path("shared.shiftbake")
+           : job.kind == Job::Kind::kCar  ? fs::path("cars") / (job.key + ".shiftbake")
+                                          : fs::path("wheels") / (job.key + ".shiftbake");
+  if (incremental) {
+    std::error_code ec;
+    const auto existing = out_dir / r.file;
+    const auto fsz = fs::is_regular_file(existing, ec) ? fs::file_size(existing, ec) : 0;
+    if (!ec && fsz > 0) {
+      r.ok = true;
+      r.bytes = fsz;
+      r.digest = "cached";
+      return;
+    }
+  }
   cars::bake::Bake b;
   std::string error;
   bool ok = false;
@@ -229,6 +243,7 @@ int main(int argc, char** argv) {
   unsigned threads = 0;
   std::set<std::string> only;
   bool physics_only = false;
+  bool incremental = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -238,12 +253,13 @@ int main(int argc, char** argv) {
     else if (a == "--out") out_dir = next();
     else if (a == "--threads") threads = unsigned(std::stoul(next()));
     else if (a == "--physics-only") physics_only = true;
+    else if (a == "--incremental") incremental = true;
     else if (a == "--cars") {
       std::stringstream list(next());
       for (std::string n; std::getline(list, n, ',');) only.insert(cars::lower(n));
     } else {
       std::fprintf(stderr, "usage: carbake --game-root <dir> --state-root <dir> --out <dir> "
-                           "[--dlc-extracted <dir>] [--threads N] [--cars a,b] [--physics-only]\n");
+                           "[--dlc-extracted <dir>] [--threads N] [--cars a,b] [--physics-only] [--incremental]\n");
       return 2;
     }
   }
@@ -347,7 +363,7 @@ int main(int argc, char** argv) {
   std::printf("carbake: %zu cars, %zu wheel and tyre archives, shared; %zu Data_Car rows\n", car_jobs,
               wheels.size() + 2, db.cars.size());
   std::fflush(stdout);
-  cars::parallel_for(order.size(), threads, [&](size_t i) { run(jobs[order[i]], out_dir, results[order[i]]); });
+  cars::parallel_for(order.size(), threads, [&](size_t i) { run(jobs[order[i]], out_dir, incremental, results[order[i]]); });
 
   // Reports in a fixed order: by output path.
   std::vector<size_t> by_path;

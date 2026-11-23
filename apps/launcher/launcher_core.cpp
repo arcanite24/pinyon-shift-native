@@ -16,6 +16,13 @@
 #include <system_error>
 
 #include <cstddef>
+
+#include "setup/stfs.h"
+#include "setup/stream_reader.h"
+#include "setup/xiso.h"
+#include "sha256.h"
+#include "world/world.h"
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -31,13 +38,29 @@
 #include <volk.h>
 #endif
 
-#include "setup/stfs.h"
-#include "setup/stream_reader.h"
-#include "setup/xiso.h"
-#include "sha256.h"
-
 namespace launcher {
 namespace {
+
+int run_hidden_cmd_simple(const std::string& cmd) {
+#ifdef _WIN32
+  std::string mutable_cmd = cmd;
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(nullptr, mutable_cmd.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    return -1;
+  }
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return int(exit_code);
+#else
+  return std::system(cmd.c_str());
+#endif
+}
 
 std::string lower_ascii(std::string_view s) {
   std::string out(s);
@@ -764,12 +787,68 @@ int SetupRunner::run_subprocess_logged(const std::vector<std::string>& args) {
   }
   append_log("$ " + cmd);
 #ifdef _WIN32
-  std::string wrapped = cmd + " 2>&1";
-  FILE* pipe = _popen(wrapped.c_str(), "r");
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+  HANDLE rd_pipe = nullptr;
+  HANDLE wr_pipe = nullptr;
+  if (!CreatePipe(&rd_pipe, &wr_pipe, &sa, 0)) {
+    append_log("ERROR: failed to create output pipe");
+    return -1;
+  }
+  SetHandleInformation(rd_pipe, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = wr_pipe;
+  si.hStdError = wr_pipe;
+  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+  PROCESS_INFORMATION pi{};
+  std::string mutable_cmd = cmd;
+  const BOOL ok = CreateProcessA(nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
+                                 CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+  CloseHandle(wr_pipe);
+  if (!ok) {
+    CloseHandle(rd_pipe);
+    append_log("ERROR: failed to launch subprocess");
+    return -1;
+  }
+
+  std::string pending;
+  char buf[1024];
+  DWORD nread = 0;
+  while (ReadFile(rd_pipe, buf, sizeof(buf), &nread, nullptr) && nread > 0) {
+    pending.append(buf, nread);
+    size_t pos = 0;
+    while (true) {
+      const size_t nl = pending.find('\n', pos);
+      if (nl == std::string::npos) break;
+      std::string line = pending.substr(pos, nl - pos);
+      while (!line.empty() && line.back() == '\r') line.pop_back();
+      if (!line.empty()) append_log(line);
+      pos = nl + 1;
+    }
+    if (pos > 0) pending.erase(0, pos);
+    if (cancel_.load()) {
+      TerminateProcess(pi.hProcess, 1);
+      break;
+    }
+  }
+  while (!pending.empty() && (pending.back() == '\r' || pending.back() == '\n')) pending.pop_back();
+  if (!pending.empty()) append_log(pending);
+  CloseHandle(rd_pipe);
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return int(exit_code);
 #else
   std::string wrapped = cmd + " 2>&1";
   FILE* pipe = popen(wrapped.c_str(), "r");
-#endif
   if (!pipe) {
     append_log("ERROR: failed to launch subprocess");
     return -1;
@@ -781,9 +860,6 @@ int SetupRunner::run_subprocess_logged(const std::vector<std::string>& args) {
     if (!s.empty()) append_log(s);
     if (cancel_.load()) break;
   }
-#ifdef _WIN32
-  return _pclose(pipe);
-#else
   int status = pclose(pipe);
   return WIFEXITED(status) ? WEXITSTATUS(status) : status;
 #endif
@@ -912,30 +988,10 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       return;
     }
 
-    // Stage 1 (+offset): carbake
-    set_stage(1 + stage_offset, "Baking cars with carbake...", is_iso ? 0.50f : 0.15f);
-    std::vector<std::string> cb_cmd = {
-        paths.carbake_bin.string(), "--game-root", check.resolved_root.string(),
-        "--out", (opts.play_dir / "bake").string()};
-    if (!opts.state_root.empty()) {
-      cb_cmd.push_back("--state-root");
-      cb_cmd.push_back(opts.state_root.string());
-    }
-    if (!opts.cars_filter.empty()) {
-      cb_cmd.push_back("--cars");
-      cb_cmd.push_back(opts.cars_filter);
-    }
-    if (run_subprocess_logged(cb_cmd) != 0) {
-      fail("carbake returned a non-zero exit code.");
-      return;
-    }
-    if (cancel_.load()) {
-      fail("Cancelled by user.");
-      return;
-    }
+    const auto t_setup_start = std::chrono::steady_clock::now();
 
-    // Stage 2 (+offset): play.txt
-    set_stage(2 + stage_offset, "Persisting play.txt...", is_iso ? 0.72f : 0.55f);
+    // Persist play.txt immediately so carbake, soundbake, and world index can run in parallel.
+    set_stage(1 + stage_offset, "Persisting play.txt...", is_iso ? 0.48f : 0.10f);
     std::string werr;
     if (!write_play_config(opts.play_dir, check.resolved_root, opts.state_root, &werr)) {
       fail(werr);
@@ -943,9 +999,61 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
     }
     append_log("Wrote " + (opts.play_dir / "play.txt").string());
 
-    // Stage 3 (+offset): soundbake (optional if FFmpeg is missing)
-    set_stage(3 + stage_offset, "Baking engine sounds (soundbake)...", is_iso ? 0.80f : 0.70f);
-    if (!paths.soundbake_bin.empty()) {
+    // Run carbake (--incremental), in-process Colorado world index, and soundbake concurrently
+    // for maximum throughput with zero visible console windows.
+    set_stage(2 + stage_offset, "Baking cars, world index, and audio in parallel...", is_iso ? 0.55f : 0.25f);
+
+    std::atomic<int> cb_rc{0};
+    std::atomic<bool> idx_ok{true};
+    std::string idx_err;
+    std::mutex idx_mu;
+
+    std::thread cb_thread([&]() {
+      std::vector<std::string> cb_cmd = {
+          paths.carbake_bin.string(), "--game-root", check.resolved_root.string(),
+          "--out", (opts.play_dir / "bake").string(), "--incremental"};
+      if (!opts.state_root.empty()) {
+        cb_cmd.push_back("--state-root");
+        cb_cmd.push_back(opts.state_root.string());
+      }
+      if (!opts.cars_filter.empty()) {
+        cb_cmd.push_back("--cars");
+        cb_cmd.push_back(opts.cars_filter);
+      }
+      cb_rc.store(run_subprocess_logged(cb_cmd));
+    });
+
+    std::thread idx_thread([&]() {
+      if (!opts.build_index) return;
+      std::error_code lec;
+      std::filesystem::path colorado_dir = check.resolved_root / "media" / "tracks" / "Colorado";
+      if (!std::filesystem::is_regular_file(colorado_dir / "bin.zip", lec)) {
+        colorado_dir = check.resolved_root / "media" / "tracks" / "colorado";
+      }
+      if (!std::filesystem::is_regular_file(colorado_dir / "bin.zip", lec)) {
+        std::lock_guard<std::mutex> lk(idx_mu);
+        idx_err = "Colorado bin.zip not found under media/tracks/Colorado.";
+        idx_ok.store(false);
+        return;
+      }
+      const auto index_path = opts.play_dir / "world" / "colorado.index";
+      append_log("Building Colorado world index -> " + index_path.string());
+      world::World w;
+      std::string err;
+      if (!w.open(colorado_dir, index_path, &err)) {
+        std::lock_guard<std::mutex> lk(idx_mu);
+        idx_err = err.empty() ? "Colorado index build failed." : ("Colorado index build failed: " + err);
+        idx_ok.store(false);
+        return;
+      }
+      append_log("Colorado world index ready (" + std::to_string(w.models().size()) + " models).");
+    });
+
+    std::thread sb_thread([&]() {
+      if (paths.soundbake_bin.empty()) {
+        append_log("Note: soundbake not found; runtime audio decode will be used.");
+        return;
+      }
       std::vector<std::string> sb_cmd = {
           paths.soundbake_bin.string(), "--game-root", check.resolved_root.string(),
           "--out", (opts.play_dir / "sound").string()};
@@ -962,34 +1070,32 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       if (run_subprocess_logged(sb_cmd) != 0) {
         append_log("Note: soundbake did not complete (install FFmpeg for offline sound bake). Continuing...");
       }
-    } else {
-      append_log("Note: soundbake not found; runtime audio decode will be used.");
-    }
+    });
+
+    cb_thread.join();
+    set_stage(3 + stage_offset, "Finalizing world index and audio...", is_iso ? 0.85f : 0.80f);
+    idx_thread.join();
+    sb_thread.join();
+
     if (cancel_.load()) {
       fail("Cancelled by user.");
       return;
     }
-
-    // Stage 4 (+offset): Colorado index
-    if (opts.build_index && !paths.carview_bin.empty()) {
-      set_stage(4 + stage_offset, "Building Colorado world index...", is_iso ? 0.90f : 0.88f);
-      const auto probe_png = opts.play_dir / "world" / "setup-check.png";
-      std::vector<std::string> idx_cmd = {
-          paths.carview_bin.string(), "--drive", "--headless", "--play", opts.play_dir.string(),
-          "--run", "cruise", "--seconds", "0.2", "--every", "1", "--no-sound",
-          "--out", probe_png.string()};
-      if (run_subprocess_logged(idx_cmd) != 0) {
-        fail("Colorado index build failed.");
-        return;
-      }
-      for (const auto& f : std::filesystem::directory_iterator(opts.play_dir / "world", ec)) {
-        if (f.path().filename().string().rfind("setup-check", 0) == 0) {
-          std::filesystem::remove(f.path(), ec);
-        }
-      }
+    if (cb_rc.load() != 0) {
+      fail("carbake returned a non-zero exit code.");
+      return;
+    }
+    if (!idx_ok.load()) {
+      std::lock_guard<std::mutex> lk(idx_mu);
+      fail(idx_err.empty() ? "Colorado index build failed." : idx_err);
+      return;
     }
 
-    append_log("Setup complete.");
+    const double elapsed_s =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_setup_start).count();
+    char tbuf[64];
+    std::snprintf(tbuf, sizeof tbuf, "Setup complete in %.1fs.", elapsed_s);
+    append_log(tbuf);
     std::lock_guard<std::mutex> lk(mu_);
     state_.running = false;
     state_.finished = true;
@@ -2075,7 +2181,7 @@ bool install_mod_source(const std::filesystem::path& source_folder_or_zip,
     const std::string cmd = "unzip -oq " + quote_arg_shell(source_folder_or_zip.string()) + " -d " +
                             quote_arg_shell(dest.string());
 #endif
-    if (std::system(cmd.c_str()) != 0) {
+    if (run_hidden_cmd_simple(cmd) != 0) {
       out_message = "Failed to extract mod ZIP: " + source_folder_or_zip.string();
       return false;
     }
@@ -2408,7 +2514,7 @@ RadioBuildResult build_custom_radio_mod(const RadioBuilderConfig& cfg,
                             " -write_xing 0 -id3v2_version 0 -write_id3v1 0 -f mp3 " +
                             quote_arg_shell(mp3_out.string());
     log("Encoding " + tr.title + " -> " + sample_id);
-    if (std::system(cmd.c_str()) != 0 || !std::filesystem::is_regular_file(mp3_out, ec)) {
+    if (run_hidden_cmd_simple(cmd) != 0 || !std::filesystem::is_regular_file(mp3_out, ec)) {
       std::filesystem::remove_all(temp_dir, ec);
       res.message = "FFmpeg failed to encode: " + tr.path.filename().string();
       return res;

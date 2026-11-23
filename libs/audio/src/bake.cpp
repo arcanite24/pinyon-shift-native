@@ -14,8 +14,39 @@
 #include <system_error>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace audio {
 namespace {
+
+int run_hidden_command(const std::string& command) {
+#ifdef _WIN32
+  std::string mutable_cmd = command;
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(nullptr, mutable_cmd.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    return -1;
+  }
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return int(exit_code);
+#else
+  return std::system(command.c_str());
+#endif
+}
 
 bool read_file(const std::filesystem::path& p, std::vector<uint8_t>& out) {
   std::ifstream in(p, std::ios::binary);
@@ -188,10 +219,7 @@ bool bake_engine_sound(SoundFiles& files, const std::string& media, const std::f
       }
       std::string command = quoted(ffmpeg) + " -hide_banner -nostdin -v error -y -i " + quoted(in_path) +
                             " -f s16le -acodec pcm_s16le " + quoted(out_path);
-#ifdef _WIN32
-      command = "\"" + command + "\"";  // cmd.exe strips one pair of outer quotes
-#endif
-      if (std::system(command.c_str()) != 0) {
+      if (run_hidden_command(command) != 0) {
         std::lock_guard<std::mutex> lk(err_mu);
         if (first_err.empty()) first_err = "ffmpeg failed on " + job.bank + " " + std::to_string(job.sample);
         break;
