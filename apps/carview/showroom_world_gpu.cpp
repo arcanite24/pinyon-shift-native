@@ -540,7 +540,12 @@ bool Showroom::build_gpu_table(std::string& error) {
     const gpuworld::Batch batch = gpuworld::batch_of((d.blend == 0 && lod_dither) ? 1 : d.blend, d.decal != 0);
     if (per_batch[batch] >= WorldGpu::kMaxPerBatch) continue;  // left to the CPU loop
     // A texture that did not upload: the draw falls back as the per-draw sets did.
+    // Never draw a billboard without its cutout texture (would render as a solid opaque card).
     if (!have(d.texture)) {
+      if ((flags & 32u) != 0u) {
+        d.gpu = true;  // suppress fallback CPU draw as well
+        continue;
+      }
       if (d.texture != kNoWorldTexture) ++gpu_table_white_;
       if (flags == 1) flags = 0;
     } else if ((flags & 32768u) == 0u && d.texture_b != kNoWorldTexture && !(have(d.texture_b) && have(d.splat))) {
@@ -581,10 +586,11 @@ bool Showroom::build_gpu_table(std::string& error) {
     std::unordered_map<uint32_t, uint32_t> tmpl_by_tex;
     gpu_trees.reserve(world_trees_.size());
     for (const auto& t : world_trees_) {
+      if (t.texture == kNoWorldTexture || !have(t.texture)) continue;
       auto [it, added] = tmpl_by_tex.emplace(t.texture, uint32_t(rows.size()));
       if (added) {
         gpuworld::DrawGpu row{};
-        uint32_t fl = have(t.texture) ? (1u | 32u) : 32u;
+        uint32_t fl = 1u | 32u;
         if (single_sample) fl |= 64u;
         row.tint[0] = row.tint[1] = row.tint[2] = row.tint[3] = 1.0f;
         row.params[0] = 1.0f;  // coverage

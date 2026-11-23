@@ -41,7 +41,7 @@
     {
       "name": "world_vert.glsl",
       "kind": "header",
-      "lines": 233,
+      "lines": 238,
       "uses_bda": false,
       "notes": []
     }
@@ -3971,8 +3971,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/world.vert.spv",
       "stage": "vertex",
       "entry_point": "main",
-      "spirv_version": "1.6",
-      "spirv_bytes": 16008,
+      "spirv_version": "1.5",
+      "spirv_bytes": 16480,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4230,8 +4230,8 @@
       "prebuilt_spv": "apps/carview/shaders/prebuilt/world_gpu.vert.spv",
       "stage": "vertex",
       "entry_point": "main",
-      "spirv_version": "1.6",
-      "spirv_bytes": 17668,
+      "spirv_version": "1.5",
+      "spirv_bytes": 18140,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

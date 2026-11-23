@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 
 namespace carview {
@@ -13,6 +14,66 @@ namespace carview {
 namespace {
 
 int8_t snorm8(float v) { return int8_t(std::lround(std::clamp(v, -1.0f, 1.0f) * 127.0f)); }
+
+// Returns true if the top mip of `tex` contains any transparent texels (alpha < 0.5).
+// Used to reject non-cutout textures (e.g. opaque tree bark / rock textures) that
+// would otherwise render as solid opaque rectangular billboard cards.
+bool texture_has_cutout_alpha(const bake::Texture& tex) {
+  if (tex.levels.empty()) return false;
+  const auto& lvl = tex.levels[0];
+  const uint8_t* p = lvl.data.data();
+  const size_t n = lvl.data.size();
+  switch (tex.format) {
+    case bake::TextureFormat::kRgba8:
+      for (size_t i = 3; i < n; i += 4)
+        if (p[i] < 128u) return true;
+      return false;
+    case bake::TextureFormat::kBc1: {
+      // 8 bytes per 4x4 block: u16 c0, u16 c1, u32 indices.
+      // 1-bit alpha exists iff c0 <= c1 and at least one 2-bit index == 3.
+      for (size_t i = 0; i + 8 <= n; i += 8) {
+        const uint16_t c0 = uint16_t(p[i]) | (uint16_t(p[i + 1]) << 8);
+        const uint16_t c1 = uint16_t(p[i + 2]) | (uint16_t(p[i + 3]) << 8);
+        if (c0 > c1) continue;
+        uint32_t idx = uint32_t(p[i + 4]) | (uint32_t(p[i + 5]) << 8) |
+                       (uint32_t(p[i + 6]) << 16) | (uint32_t(p[i + 7]) << 24);
+        for (int k = 0; k < 16; ++k, idx >>= 2)
+          if ((idx & 3u) == 3u) return true;
+      }
+      return false;
+    }
+    case bake::TextureFormat::kBc2: {
+      // 16 bytes per 4x4 block: first 8 bytes are 16x 4-bit alpha values.
+      for (size_t i = 0; i + 16 <= n; i += 16) {
+        for (size_t b = 0; b < 8; ++b) {
+          if ((p[i + b] & 0x0Fu) < 8u || (p[i + b] >> 4) < 8u) return true;
+        }
+      }
+      return false;
+    }
+    case bake::TextureFormat::kBc3: {
+      // 16 bytes per 4x4 block: first 8 bytes are alpha (a0, a1, 48-bit 3-bit indices).
+      for (size_t i = 0; i + 16 <= n; i += 16) {
+        const uint8_t a0 = p[i];
+        const uint8_t a1 = p[i + 1];
+        if (a0 < 128u || a1 < 128u) return true;
+        if (a0 <= a1) {
+          // 6-interpolated mode: index 6 = 0 (transparent), index 7 = 255.
+          uint64_t bits = 0;
+          for (int b = 0; b < 6; ++b) bits |= uint64_t(p[i + 2 + b]) << (8 * b);
+          for (int k = 0; k < 16; ++k, bits >>= 3)
+            if ((bits & 7u) == 6u) return true;
+        }
+      }
+      return false;
+    }
+    case bake::TextureFormat::kBc4:
+    case bake::TextureFormat::kBc5:
+    case bake::TextureFormat::kR8:
+      return false;
+  }
+  return false;
+}
 
 // The textured world: one vertex per corner, one draw per material, the
 // the sky dome first, then opaque materials, then the cut-outs, then the
@@ -88,11 +149,29 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
   std::unordered_map<VertexKey, uint32_t, VertexHash> shared;
   const char* share_env = std::getenv("SHIFT_WORLD_SHARE");
   const bool share = !(share_env && *share_env == '0');
+  // Cache cutout-alpha status per texture record across streaming regathers so
+  // distant-tree billboards whose model_textures[0] is an opaque bark/rock texture
+  // (0% transparent texels) are never emitted as solid rectangular billboard cards.
+  static std::mutex cutout_cache_mutex;
+  static std::unordered_map<uint32_t, bool> cutout_cache;
+  {
+    std::lock_guard<std::mutex> lock(cutout_cache_mutex);
+    for (const auto& wt : world.textures) {
+      if (wt) cutout_cache[wt->record] = texture_has_cutout_alpha(wt->texture);
+    }
+  }
+  auto billboard_has_cutout = [&](uint32_t record) -> bool {
+    if (record == kNoWorldTexture) return false;
+    std::lock_guard<std::mutex> lock(cutout_cache_mutex);
+    const auto it = cutout_cache.find(record);
+    return it == cutout_cache.end() ? true : it->second;
+  };
   std::vector<std::pair<int64_t, uint32_t>> cells;  // (cell, triangle), sorted by cell
   for (uint32_t m : order) {
     if (by_material[m].empty()) continue;
     const auto& mat = world.materials[m];
     const bool billboard = mat.layers == 4;
+    if (billboard && !billboard_has_cutout(mat.texture)) continue;
     const bool fade_class = mat.fade != 0;
     // A prop's LOD00 copies (fade class 1) in small cells, so the ones past
     // the LOD band are left out whole on the CPU (near_lod_beyond).
@@ -260,6 +339,17 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
       d.push.params[3] = pack_half2x16_float(mat.decal_noise_c4[0], mat.decal_noise_c4[1]);
     } else {
       d.push.params[3] = 1.0f;
+    }
+    // Skip bogus paper-thin giant vertical opaque planes (e.g. FH1's 500m-tall X=0
+    // _0x00002c81 light/horizon wall) that would otherwise slice across the sky.
+    const float box_dx = d.box_max[0] - d.box_min[0];
+    const float box_dy = d.box_max[1] - d.box_min[1];
+    const float box_dz = d.box_max[2] - d.box_min[2];
+    if (mat.blend == 0 && !mat.far && mat.layers == 0 && box_dy >= 200.0f &&
+        (box_dx < 0.5f || box_dz < 0.5f)) {
+      out.triangles -= (d.index_count / 3);
+      out.indices.resize(d.first_index);
+      continue;
     }
     out.draws.push_back(d);
     }
