@@ -425,7 +425,7 @@ bool DriveSession::run_demo_captures() {
                     ? camera_view_frame(camp_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
                     : drive_frame(aspect, kFrameDt);
             host.showroom.set_frame(cframe);
-            if (!app.campaign.is_blocking_gameplay()) set_minimap(int(app.height), true);
+            if (!app.campaign.is_blocking_gameplay()) set_minimap(int(app.height), fi == 0);
             set_hud(int(app.width), int(app.height), "");
             host.renderer.set_camera_projection(host.cam_proj.near_z, host.cam_proj.far_z, host.cam_proj.proj00,
                                                 host.cam_proj.proj11);

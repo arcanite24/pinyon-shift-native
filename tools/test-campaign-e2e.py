@@ -445,21 +445,25 @@ def evaluate_telemetry(
         "frames": image_reports,
     }
 
-    # Gate E: Frame-time hitch gate
-    frame_times = [float(fr.get("frame_ms", 0.0)) for fr in frames]
+    # Gate E: Frame-time hitch gate (evaluated on steady-state frames 1..N; frame 0
+    # includes synchronous offscreen PNG readback and first-frame font atlas init).
+    steady_frames = frames[1:] if len(frames) > 1 else frames
+    frame_times = [float(fr.get("frame_ms", 0.0)) for fr in steady_frames]
+    frame0_ms = float(frames[0].get("frame_ms", 0.0)) if frames else 0.0
     p50 = percentile(frame_times, 50.0)
     p95 = percentile(frame_times, 95.0)
     p99 = percentile(frame_times, 99.0)
     max_ms = max(frame_times) if frame_times else 0.0
     hitches = [
         {"frame": fr["frame"], "t": round(float(fr["t"]), 3), "frame_ms": round(float(fr["frame_ms"]), 2)}
-        for fr in frames
+        for fr in steady_frames
         if float(fr.get("frame_ms", 0.0)) > hitch_threshold_ms
     ]
     gate_e_pass = (len(hitches) <= max_hitch_count) and (p95 <= hitch_threshold_ms)
     gate_e = {
         "pass": gate_e_pass,
         "frame_count": len(frame_times),
+        "frame0_ms": round(frame0_ms, 2),
         "p50_ms": round(p50, 2),
         "p95_ms": round(p95, 2),
         "p99_ms": round(p99, 2),
@@ -498,17 +502,15 @@ def _first_existing(candidates: list[Path]) -> Path | None:
 
 def resolve_paths(args: argparse.Namespace) -> dict[str, Path | None]:
     repo_root = Path(__file__).resolve().parent.parent
-    main_shift = Path(r"C:\Users\neri\code\shift-engine")
-    main_h1 = Path(r"C:\Users\neri\code\horizon1-recomp")
+    sibling_h1 = repo_root.parent / "horizon1-recomp"
 
     bin_candidates: list[Path] = []
     if args.bin:
         bin_candidates.append(Path(args.bin))
     else:
-        for base in (repo_root, main_shift):
-            for bdir in ("build-campaign-e2e", "build-dev", "build", "build-play"):
-                bin_candidates.append(base / bdir / "apps" / "carview" / "carview.exe")
-                bin_candidates.append(base / bdir / "apps" / "carview" / "carview")
+        for bdir in ("build", "build-release", "build-dev", "build-play"):
+            bin_candidates.append(repo_root / bdir / "apps" / "carview" / "carview.exe")
+            bin_candidates.append(repo_root / bdir / "apps" / "carview" / "carview")
 
     game_candidates: list[Path] = []
     if args.game:
@@ -516,7 +518,7 @@ def resolve_paths(args: argparse.Namespace) -> dict[str, Path | None]:
     else:
         if os.environ.get("SHIFT_GAME_ROOT"):
             game_candidates.append(Path(os.environ["SHIFT_GAME_ROOT"]))
-        game_candidates.append(main_h1 / ".local" / "game" / "base")
+        game_candidates.append(sibling_h1 / ".local" / "game" / "base")
 
     game_path = _first_existing(game_candidates)
 
@@ -533,21 +535,18 @@ def resolve_paths(args: argparse.Namespace) -> dict[str, Path | None]:
         bake_candidates.append(Path(args.bake))
     else:
         bake_candidates.append(repo_root / "out" / "bake")
-        bake_candidates.append(main_shift / "out" / "bake")
 
     cache_candidates: list[Path] = []
     if args.cache:
         cache_candidates.append(Path(args.cache))
     else:
         cache_candidates.append(repo_root / "out" / "world" / "colorado.index")
-        cache_candidates.append(main_shift / "out" / "world" / "colorado.index")
 
     sound_candidates: list[Path] = []
     if args.sound:
         sound_candidates.append(Path(args.sound))
     else:
         sound_candidates.append(repo_root / "out" / "sound")
-        sound_candidates.append(main_shift / "out" / "sound")
 
     return {
         "bin": _first_existing(bin_candidates),

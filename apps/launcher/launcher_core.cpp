@@ -1072,10 +1072,21 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       }
     });
 
+    std::thread aot_thread([&]() {
+      if (paths.carview_bin.empty()) return;
+      append_log("Pre-compiling AOT shader pipelines -> " + (opts.play_dir / "cache" / "vk_pipeline_cache.bin").string());
+      std::vector<std::string> aot_cmd = {
+          paths.carview_bin.string(), "--precompile-shaders", "--play", opts.play_dir.string(), "--msaa", "4"};
+      if (run_subprocess_logged(aot_cmd) != 0) {
+        append_log("Note: AOT shader pre-compilation skipped (will compile on first launch).");
+      }
+    });
+
     cb_thread.join();
-    set_stage(3 + stage_offset, "Finalizing world index and audio...", is_iso ? 0.85f : 0.80f);
+    set_stage(3 + stage_offset, "Finalizing world index, audio, and AOT shaders...", is_iso ? 0.85f : 0.80f);
     idx_thread.join();
     sb_thread.join();
+    aot_thread.join();
 
     if (cancel_.load()) {
       fail("Cancelled by user.");
