@@ -108,6 +108,9 @@ def main() -> int:
                 print(f"package: missing --moltenvk file {a.moltenvk}")
                 return 1
             shutil.copy2(a.moltenvk, fw_dir / a.moltenvk.name)
+        gcdb = ROOT / "config" / "gamecontrollerdb.txt"
+        if gcdb.is_file():
+            shutil.copy2(gcdb, res_dir / gcdb.name)
     elif a.platform == "android":
         apk = a.out / "shift-drive-arm64.apk"
         if apk.is_file():
@@ -127,8 +130,11 @@ def main() -> int:
                 return 1
             shutil.copy2(src, stage / src.name)
 
-    for f in ["tools/setup.py", "tools/setup.sh", "tools/setup.ps1", "LICENSE", "THIRD_PARTY_NOTICES.md"]:
-        shutil.copy2(ROOT / f, stage / Path(f).name)
+    for f in ["tools/setup.py", "tools/setup.sh", "tools/setup.ps1", "LICENSE", "THIRD_PARTY_NOTICES.md",
+              "config/gamecontrollerdb.txt"]:
+        p = ROOT / f
+        if p.is_file():
+            shutil.copy2(p, stage / p.name)
     player = ROOT / "docs" / "player"
     if player.is_dir():
         for f in sorted(player.glob("*.md")):

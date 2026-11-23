@@ -67,6 +67,7 @@ add_library(carview_render STATIC
   ui.cpp
   ui4_chrome.cpp
   platform_support.cpp
+  gamepad_db.cpp
   touch_controls.cpp
   render_modern.cpp
   upscaler.cpp
@@ -139,3 +140,9 @@ else()
   endif()
 endif()
 target_link_libraries(carview PRIVATE carview_render shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb shift_sqlite3)
+if(EXISTS "${PROJECT_SOURCE_DIR}/config/gamecontrollerdb.txt" AND NOT (ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE))
+  add_custom_command(TARGET carview POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${PROJECT_SOURCE_DIR}/config/gamecontrollerdb.txt"
+      "$<TARGET_FILE_DIR:carview>/gamecontrollerdb.txt")
+endif()

@@ -41,6 +41,7 @@
 #include "fh1data/archive.h"
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
+#include "gamepad_db.h"
 #include "renderer.h"
 #include "world_view.h"
 
@@ -427,10 +428,12 @@ static int carview_main(int argc, char** argv) {
   }
 
   SDL_SetMainReady();
-  if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+  carview::apply_sdl_gamepad_hints();
+  if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
     std::fprintf(stderr, "carview: SDL_Init: %s\n", SDL_GetError());
     return 1;
   }
+  carview::load_gamepad_mappings();
   SDL_Window* window = SDL_CreateWindow(("carview - " + car).c_str(), int(width), int(height),
                                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
                                             SDL_WINDOW_HIGH_PIXEL_DENSITY);

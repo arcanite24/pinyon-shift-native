@@ -199,6 +199,27 @@ class Renderer {
   void set_vsync(modern::VSync v) {
     if (v != vsync_) vsync_ = v, swapchain_dirty_ = true;
   }
+  // Focus state (alt-tab fast path): never triggers wait_idle or swapchain
+  // rebuild; only trims vkAcquireNextImageKHR timeout while unfocused so the
+  // event loop stays instantly responsive on macOS MoltenVK and Windows.
+  void set_window_focused(bool focused) { window_focused_ = focused; }
+  bool window_focused() const { return window_focused_; }
+  uint32_t swapchain_recreate_count() const { return swapchain_recreate_count_; }
+  uint32_t target_recreate_count() const { return target_recreate_count_; }
+  static bool needs_swapchain_recreate(bool swapchain_dirty, bool has_swapchain, uint32_t cur_w, uint32_t cur_h,
+                                       uint32_t ext_w, uint32_t ext_h) {
+    return swapchain_dirty || !has_swapchain || cur_w != ext_w || cur_h != ext_h;
+  }
+  static bool needs_target_recreate(bool targets_dirty, bool has_targets, uint32_t cur_w, uint32_t cur_h,
+                                    uint32_t target_w, uint32_t target_h, bool format_changed) {
+    return targets_dirty || !has_targets || cur_w != target_w || cur_h != target_h || format_changed;
+  }
+  static bool should_mark_dirty_on_present(VkResult result, uint32_t cur_w, uint32_t cur_h, uint32_t ext_w,
+                                           uint32_t ext_h) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) return true;
+    if (result == VK_SUBOPTIMAL_KHR) return cur_w != ext_w || cur_h != ext_h;
+    return false;
+  }
   modern::VSync vsync_requested() const { return vsync_; }
   modern::VSync vsync_active() const { return vsync_active_; }
   uint32_t frame_slot() const { return slot_; }
@@ -477,6 +498,10 @@ class Renderer {
   modern::HdrMode hdr_mode_ = modern::HdrMode::kOff;
   VkColorSpaceKHR swapchain_colorspace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
   bool targets_dirty_ = false;
+  VkFormat target_color_format_ = VK_FORMAT_UNDEFINED;
+  bool window_focused_ = true;
+  uint32_t swapchain_recreate_count_ = 0;
+  uint32_t target_recreate_count_ = 0;
   // render_timed: the kept target and the timestamp queries.
   Image bench_output_;
   VkQueryPool timestamps_ = VK_NULL_HANDLE;

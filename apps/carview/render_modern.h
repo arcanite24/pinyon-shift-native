@@ -106,6 +106,7 @@ class FramePacer {
  public:
   void set_interval(double seconds) { interval_ = seconds; }
   double interval() const { return interval_; }
+  void reset() { next_ = -1; }
   // `now` in seconds on a monotonic clock; returns the seconds to sleep (0: go).
   double wait_for(double now);
  private:

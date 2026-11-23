@@ -1450,7 +1450,9 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
   render_height_ = rh;
   target_width_ = width;
   target_height_ = height;
+  target_color_format_ = color_format_;
   targets_dirty_ = false;
+  ++target_recreate_count_;
   return true;
 }
 
@@ -4002,7 +4004,15 @@ bool Renderer::create_swapchain(std::string& error) {
     render_done_.push_back(done);
   }
   swapchain_dirty_ = false;
-  return create_targets(extent.width, extent.height, error);
+  ++swapchain_recreate_count_;
+  // Skip rebuilding offscreen render targets and post descriptors when swapchain
+  // pixel dimensions and color format are unchanged (fast alt-tab / focus recovery).
+  const bool has_targets = depth_.image != VK_NULL_HANDLE && (!options_.post.enabled || hdr_.image != VK_NULL_HANDLE);
+  if (needs_target_recreate(targets_dirty_, has_targets, extent.width, extent.height, target_width_, target_height_,
+                            color_format_ != target_color_format_)) {
+    return create_targets(extent.width, extent.height, error);
+  }
+  return true;
 }
 
 void Renderer::destroy_swapchain(bool keep_handle) {
@@ -4067,14 +4077,15 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   int w = 0, h = 0;
   SDL_GetWindowSizeInPixels(options_.window, &w, &h);
   if (w <= 0 || h <= 0) return true;  // minimised
-  if (swapchain_dirty_ || !swapchain_ || uint32_t(w) != swapchain_extent_.width ||
-      uint32_t(h) != swapchain_extent_.height) {
+  if (needs_swapchain_recreate(swapchain_dirty_, swapchain_ != VK_NULL_HANDLE, uint32_t(w), uint32_t(h),
+                               swapchain_extent_.width, swapchain_extent_.height)) {
     wait_idle();
     if (!create_swapchain(error)) return false;
     if (!swapchain_) return true;
   }
-  if (targets_dirty_ || target_width_ != swapchain_extent_.width ||
-      target_height_ != swapchain_extent_.height) {
+  const bool has_targets = depth_.image != VK_NULL_HANDLE && (!options_.post.enabled || hdr_.image != VK_NULL_HANDLE);
+  if (needs_target_recreate(targets_dirty_, has_targets, swapchain_extent_.width, swapchain_extent_.height,
+                            target_width_, target_height_, color_format_ != target_color_format_)) {
     wait_idle();
     if (!create_targets(swapchain_extent_.width, swapchain_extent_.height, error)) return false;
   }
@@ -4082,8 +4093,14 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
     if (!ensure_lut_image(lut_pending_size_, error)) return false;
   }
   uint32_t index = 0;
+  // Use a finite acquire timeout so occluded/unfocused MoltenVK or DXGI surfaces
+  // never stall the SDL event loop for 1+ seconds during alt-tab / Cmd-Tab.
+  const uint64_t acquire_timeout_ns = window_focused_ ? 50'000'000ULL : 16'000'000ULL;
   VkResult result =
-      vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, fs.image_ready, VK_NULL_HANDLE, &index);
+      vkAcquireNextImageKHR(device_, swapchain_, acquire_timeout_ns, fs.image_ready, VK_NULL_HANDLE, &index);
+  if (result == VK_TIMEOUT || result == VK_NOT_READY) {
+    return true;
+  }
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     swapchain_dirty_ = true;
     return true;
@@ -4208,9 +4225,12 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
     if (!capture_include_ui_) ui_items_ = saved_ui;
     capture_requested_ = false;
   }
-  if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+  int cur_w = 0, cur_h = 0;
+  SDL_GetWindowSizeInPixels(options_.window, &cur_w, &cur_h);
+  if (should_mark_dirty_on_present(result, uint32_t(std::max(0, cur_w)), uint32_t(std::max(0, cur_h)),
+                                   swapchain_extent_.width, swapchain_extent_.height)) {
     swapchain_dirty_ = true;
-  } else if (result != VK_SUCCESS) {
+  } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
     error = "vkQueuePresentKHR failed (" + std::to_string(int(result)) + ")";
     return false;
   }

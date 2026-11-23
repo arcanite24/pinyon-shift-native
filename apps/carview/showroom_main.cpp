@@ -51,6 +51,7 @@
 #include "frame_inspector.h"
 #include "fh1data/cjk_font.h"
 #include "game_hud.h"
+#include "gamepad_db.h"
 #include "rally_hub.h"
 #include "story_intro.h"
 #include "ui_widgets.h"
@@ -564,10 +565,12 @@ int run_showroom(int argc, char** argv) {
   // The headless renders are drawn and written the same way every run.
   SDL_Window* window = nullptr;
   if (!headless) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    carview::apply_sdl_gamepad_hints();
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
       std::fprintf(stderr, "carview: SDL_Init: %s\n", SDL_GetError());
       return 1;
     }
+    carview::load_gamepad_mappings();
     window = SDL_CreateWindow(("carview - " + car).c_str(), int(width), int(height),
                               SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
@@ -1007,15 +1010,26 @@ ShowroomFrame chase_frame(const cars::bake::CarInfo& car, const drive::Vehicle& 
 }
 
 // Scenic orbiting camera around the car (Title Screen backdrop & Pre-Race Grid showcase).
+// Raycasts against `ground` when supplied so the camera never clips inside a building or wall.
 ShowroomFrame scenic_orbit_frame(const cars::bake::CarInfo& car, const drive::Vehicle& v, float aspect, double yaw_rad,
-                                 float dist, float height, bool reverse_z) {
+                                 float dist, float height, bool reverse_z, const drive::Ground* ground = nullptr) {
   float model_to_world[16], world_to_model[16];
   drive::model_to_world(car, v, model_to_world);
   invert_affine(model_to_world, world_to_model);
   const drive::Vec3 p = v.position();
   const V3 base{float(p.x), float(p.y), float(p.z)};
-  const V3 eye{base.x + dist * float(std::sin(yaw_rad)), base.y + height, base.z + dist * float(std::cos(yaw_rad))};
   const V3 target{base.x, base.y + 0.65f, base.z};
+  V3 eye{base.x + dist * float(std::sin(yaw_rad)), base.y + height, base.z + dist * float(std::cos(yaw_rad))};
+  if (ground) {
+    const drive::Vec3 from{target.x, target.y, target.z};
+    const drive::Vec3 ray{double(eye.x) - target.x, double(eye.y) - target.y, double(eye.z) - target.z};
+    const double reach = std::sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
+    drive::Hit hit;
+    if (reach > 1e-6 && ground->raycast(from, ray * (1.0 / reach), reach, hit)) {
+      const float frac = float(std::clamp((hit.distance - 0.35) / reach, 0.25, 1.0));
+      eye = add(target, mul(V3{eye.x - target.x, eye.y - target.y, eye.z - target.z}, frac));
+    }
+  }
   return look_frame(transform(world_to_model, eye, 1), transform(world_to_model, target, 1),
                     norm(transform(world_to_model, {0, 1, 0}, 0)), aspect, false, reverse_z, 45.0f);
 }
@@ -1735,8 +1749,9 @@ int run_drive(int argc, char** argv) {
   // from --world (media/tracks/<world>). A world staged elsewhere (the
   // Rally package's ColoradoDirt) needs --game.
   std::filesystem::path game_root_given;
-  bool near_given = false, have_spawn = false, fast_travel = false, render_ground = false, async_stream = false,
+  bool near_given = false, have_spawn = false, cli_spawn_given = false, fast_travel = false, render_ground = false, async_stream = false,
        flat_world = false, no_props = false, no_far = false, no_trees = false;
+  bool cli_title_screen = false, cli_title_menu = false;
   bool bench = false;     // headless: render every frame, timed, no images
   carview::bench::Scenario bench_scenario = carview::bench::Scenario::kCustom;
   bool bench_scenario_set = false;
@@ -2049,6 +2064,12 @@ int run_drive(int argc, char** argv) {
     } else if (a == "--spawn") {
       for (double& v : spawn) v = std::atof(next());
       have_spawn = true;
+      cli_spawn_given = true;
+    } else if (a == "--title-screen") {
+      cli_title_screen = true;
+    } else if (a == "--title-menu") {
+      cli_title_screen = true;
+      cli_title_menu = true;
     } else if (a == "--save") {
       save_path = next();
     } else if (a == "--no-save") {
@@ -2693,12 +2714,15 @@ int run_drive(int argc, char** argv) {
   bench_startup.db_catalog_load_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - db_cat_t0).count();
   // Title screen shown on windowed launch unless bypassed (--no-title, --start-in-single-player, --event, --import-profile).
-  bool show_title = !headless && !no_title && !start_in_single_player && race_event.empty() && import_dir.empty();
+  bool show_title =
+      cli_title_screen || (!headless && !no_title && !start_in_single_player && race_event.empty() && import_dir.empty());
   carview::FmvPlayer fmv_player;
+  carview::FmvPlayer title_video;
+  bool title_video_tried = false;
   carview::StoryIntro story_intro;
   bool boot_intro_checked = false;
   (void)skip_vo_with_a;
-  bool title_menu_phase = false;
+  bool title_menu_phase = cli_title_menu;
   bool title_confirm_new = false;
   int title_selected = 0, title_confirm_selected = 1;
   bool new_career_save_pending = false;
@@ -2952,12 +2976,24 @@ int run_drive(int argc, char** argv) {
     }
     return 0;
   }
+  bool title_saved_resume_pending = false;
+  double saved_resume_spawn[4] = {0, 0, 0, 0};
   if (have_saved && !imported && !have_spawn && (!car_given || lower_ascii(saved.car) == lower_ascii(car))) {
-    spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
-    spawn[3] = saved.heading;
-    have_spawn = true;
-    std::printf("save: %s, %s at %.1f %.1f %.1f\n", save_path.string().c_str(), saved.car.c_str(), spawn[0],
-                spawn[1], spawn[2]);
+    saved_resume_spawn[0] = saved.position[0];
+    saved_resume_spawn[1] = saved.position[1];
+    saved_resume_spawn[2] = saved.position[2];
+    saved_resume_spawn[3] = saved.heading;
+    if (show_title && !cli_spawn_given && !world_dir.empty() && colorado_world()) {
+      // Showcase the title screen on the wide-open scenic Colorado Festival highway
+      // rather than inside a saved tent/building; CONTINUE CAREER restores the save spot.
+      title_saved_resume_pending = true;
+    } else {
+      spawn[0] = saved.position[0], spawn[1] = saved.position[1], spawn[2] = saved.position[2];
+      spawn[3] = saved.heading;
+      have_spawn = true;
+    }
+    std::printf("save: %s, %s at %.1f %.1f %.1f\n", save_path.string().c_str(), saved.car.c_str(),
+                saved.position[0], saved.position[1], saved.position[2]);
   }
   if (bake_dir.empty() || car.empty()) {
     std::fprintf(stderr, "carview: no bake and car (no play folder found; see --play)\n");
@@ -3016,10 +3052,12 @@ int run_drive(int argc, char** argv) {
 
   SDL_Window* window = nullptr;
   if (!headless) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+    carview::apply_sdl_gamepad_hints();
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK)) {
       std::fprintf(stderr, "carview: SDL_Init: %s\n", SDL_GetError());
       return 1;
     }
+    carview::load_gamepad_mappings();
     // Audio apart: without it the drive goes on silent.
     if (sound && !SDL_InitSubSystem(SDL_INIT_AUDIO))
       std::fprintf(stderr, "carview: no audio (%s); driving without sound\n", SDL_GetError());
@@ -3030,6 +3068,8 @@ int run_drive(int argc, char** argv) {
       SDL_Quit();
       return 1;
     }
+    SDL_ShowWindow(window);
+    SDL_PumpEvents();
   }
   int status = 0;
   // The car picker (ours): the baked cars by key; picking one restarts the
@@ -6529,6 +6569,9 @@ int run_drive(int argc, char** argv) {
         if (rally_results_open) d.rally_results = &rally_results_state;
         d.touch_hud_active = touch_controls.visible(vehicle.time());
         carview::ui::List list;
+        if (show_title && !settings_page.is_open() && title_video.active()) {
+          title_video.draw(list, float(width), float(height));
+        }
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, and grid menu.
         if (mm_size > 0 && !show_title && !ceremony.active && !map_overlay.active && !grid_menu_open && st.menu.empty() &&
             !career_page.is_open() && !rally_hub_open && !rally_service_open && !rally_results_open && !club_open)
@@ -7078,6 +7121,7 @@ int run_drive(int argc, char** argv) {
         std::map<std::string, size_t> flat;
         for (size_t t = 0; t < mesh.material.size(); ++t) {
           const auto& m = mesh.materials[mesh.material[t]];
+          if (m.is_water) continue;  // water uses environment cubemap + normal maps, not slot 0 diffuse
           if (m.albedo == world::kNoTexture || texture_loader.failed.count(m.albedo)) ++flat[m.effect];
         }
         for (const auto& [effect, n] : flat)
@@ -7968,7 +8012,15 @@ int run_drive(int argc, char** argv) {
           showroom.set_braking(brake_glow(vehicle));
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
-          ShowroomFrame hframe = drive_frame(float(width) / float(height), every);
+          const auto title_cam_yaw = [&]() {
+            const drive::Vec3 fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+            return std::atan2(fwd.x, fwd.z) + 0.58 + 0.34 * std::sin(title_orbit_time * 0.32);
+          };
+          ShowroomFrame hframe =
+              show_title
+                  ? scenic_orbit_frame(info, vehicle, float(width) / float(height), title_cam_yaw(), 5.8f, 1.48f,
+                                       renderer.reverse_z(), ground)
+                  : drive_frame(float(width) / float(height), every);
           float h_jitter_uv_x = 0.0f, h_jitter_uv_y = 0.0f;
           if (renderer.active_upscaler().temporal) {
             const auto rex = renderer.render_width()
@@ -8001,8 +8053,8 @@ int run_drive(int argc, char** argv) {
                                      fc.in_h2h});
             }
           }
-          if (hud || perf_overlay_open || inspector_open) {
-            if (hud) set_minimap(int(height), true);
+          if (hud || show_title || perf_overlay_open || inspector_open) {
+            if (hud && !show_title) set_minimap(int(height), true);
             set_hud(int(width), int(height), vehicle.time() < notice_until  ? notice
                                  : race ? race_banner()
                                  : vehicle.time() < kIntroSeconds ? intro
@@ -8088,6 +8140,11 @@ int run_drive(int argc, char** argv) {
         slice12.set_window(window);
         slice12.sync_pad_capabilities(pads);
         slice12.sync_wheel_devices();
+        if (window) {
+          SDL_ShowWindow(window);
+          SDL_RaiseWindow(window);
+          SDL_PumpEvents();
+        }
         uint64_t last = SDL_GetTicksNS(), title_at = 0;
         double accumulator = 0;
         bool was_sim_paused = false;
@@ -8634,12 +8691,66 @@ int run_drive(int argc, char** argv) {
           }
           return false;
         };
+        bool window_minimized = false;
+        bool window_occluded = false;
         while (running) {
           // The points page auto-advances after 4 s (Enter/A also advances early).
           if (race && results_page == 2 && vehicle.time() - points_at > 4.0) race_continue();
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) running = false;
+            // Instant alt-tab / focus / occlusion fast path (handled before any overlay
+            // continue guards; ZERO wait_idle and ZERO swapchain recreate on focus gain).
+            if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+              renderer.set_window_focused(false);
+              slice12.on_sdl_event(e, pads);
+            } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+              window_minimized = false;
+              window_occluded = false;
+              renderer.set_window_focused(true);
+              slice12.on_sdl_event(e, pads);
+              last = SDL_GetTicksNS();
+              frame_pacer.reset();
+            } else if (e.type == SDL_EVENT_WINDOW_MINIMIZED) {
+              window_minimized = true;
+            } else if (e.type == SDL_EVENT_WINDOW_RESTORED || e.type == SDL_EVENT_WINDOW_EXPOSED) {
+              window_minimized = false;
+              window_occluded = false;
+              last = SDL_GetTicksNS();
+              frame_pacer.reset();
+            } else if (e.type == SDL_EVENT_WINDOW_OCCLUDED) {
+              window_occluded = true;
+            }
+            // Universal controller hot-plug (works on title screen, every menu, and driving).
+            if (e.type == SDL_EVENT_GAMEPAD_ADDED) {
+              bool dup = false;
+              for (SDL_Gamepad* p : pads)
+                if (SDL_GetGamepadID(p) == e.gdevice.which) dup = true;
+              if (!dup) {
+                if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) {
+                  pads.push_back(pad);
+                  std::printf("gamepad: %s\n", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "(unnamed)");
+                  slice12.sync_pad_capabilities(pads);
+                  slice12.sync_wheel_devices();
+                }
+              }
+              continue;
+            }
+            if (e.type == SDL_EVENT_GAMEPAD_REMOVED) {
+              for (size_t k = 0; k < pads.size(); ++k)
+                if (SDL_GetGamepadID(pads[k]) == e.gdevice.which) {
+                  SDL_CloseGamepad(pads[k]);
+                  pads.erase(pads.begin() + long(k));
+                  slice12.sync_pad_capabilities(pads);
+                  slice12.sync_wheel_devices();
+                  break;
+                }
+              continue;
+            }
+            if (e.type == SDL_EVENT_JOYSTICK_ADDED || e.type == SDL_EVENT_JOYSTICK_REMOVED) {
+              slice12.sync_wheel_devices();
+              continue;
+            }
             // macOS Command shortcuts (Cmd+,, Ctrl+Cmd+F, Cmd+Shift+P, Cmd+T, Cmd+Q).
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
 #if defined(__APPLE__)
@@ -8760,15 +8871,46 @@ int run_drive(int argc, char** argv) {
                 const int idx = has_save_opt ? title_selected : (title_selected + 1);
                 if (idx == 0) {  // CONTINUE CAREER
                   show_title = false;
+                  if (title_video.active()) title_video.close();
+                  if (title_saved_resume_pending) {
+                    title_saved_resume_pending = false;
+                    if (streamer) {
+                      std::string rerr;
+                      if (streamer->update(saved_resume_spawn[0], saved_resume_spawn[2], nullptr, &rerr)) {
+                        set_staged_world();
+                      }
+                      world::Spawn rsp;
+                      const char* rhow = nullptr;
+                      if (world::choose_spawn(*streamer, saved_resume_spawn, nullptr, nullptr, rsp, &rhow)) {
+                        vehicle.place({rsp.position[0], rsp.position[1] + 0.03, rsp.position[2]}, rsp.heading);
+                        // If the saved point sits inside an enclosure/wall, recover cleanly onto the nearest road.
+                        const drive::Vec3 vp = vehicle.position();
+                        const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                        drive::Hit wh;
+                        if (streamer->ground().raycast({vp.x, vp.y + 0.8, vp.z}, {0, 1, 0}, 3.5, wh) ||
+                            streamer->ground().raycast({vp.x, vp.y + 0.7, vp.z}, vf, 2.5, wh)) {
+                          world::recover(*streamer, vehicle);
+                        }
+                      }
+                    } else {
+                      vehicle.place({saved_resume_spawn[0], saved_resume_spawn[1], saved_resume_spawn[2]},
+                                    saved_resume_spawn[3]);
+                    }
+                    drawn_before = vehicle.pose();
+                  }
                 } else if (idx == 1) {  // NEW CAREER
                   if (has_save_opt) {
                     title_confirm_new = true;
                     title_confirm_selected = 1;
                   } else {
+                    if (title_video.active()) title_video.close();
+                    title_saved_resume_pending = false;
                     start_new_career();
                   }
                 } else if (idx == 2) {  // FREE ROAM
                   show_title = false;
+                  title_saved_resume_pending = false;
+                  if (title_video.active()) title_video.close();
                 } else if (idx == 3) {  // SETTINGS
                   settings_page.load(read_settings(settings_path(), nullptr));
                   settings_page.open();
@@ -8803,7 +8945,21 @@ int run_drive(int argc, char** argv) {
                 else if (title_menu_phase && b == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
                   title_selected = (title_selected + 1) % item_count;
               }
-              if (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED) continue;
+              // Raw SDL_Joystick fallback navigation on title screen (for unmapped USB/BT pads).
+              if (e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN && !SDL_IsGamepad(e.jbutton.which)) {
+                const Uint8 b = e.jbutton.button;
+                if (b == 0 || b == 7 || b == 9 || b == 11) confirm_title();
+                else if (b == 1) back_title();
+              }
+              if (e.type == SDL_EVENT_JOYSTICK_HAT_MOTION && !SDL_IsGamepad(e.jhat.which)) {
+                if (title_confirm_new && (e.jhat.value == SDL_HAT_UP || e.jhat.value == SDL_HAT_DOWN))
+                  title_confirm_selected = 1 - title_confirm_selected;
+                else if (title_menu_phase && e.jhat.value == SDL_HAT_UP)
+                  title_selected = (title_selected + item_count - 1) % item_count;
+                else if (title_menu_phase && e.jhat.value == SDL_HAT_DOWN)
+                  title_selected = (title_selected + 1) % item_count;
+              }
+              continue;
             }
             // 2. Wristband Collection Ceremony overlay.
             if (ceremony.active) {
@@ -10745,16 +10901,24 @@ int run_drive(int argc, char** argv) {
             }
           }
           if (!running) break;
-          // Keyboard (rebindable), then the first gamepad with any input
-          // (using the active ControllerLayouts preset and inside/outside deadzones).
+          // While minimized or fully occluded, idle lightly on SDL events instead of
+          // blocking in Vulkan/MoltenVK present queues (makes alt-tab back <50 ms).
+          if (window_minimized || window_occluded) {
+            SDL_WaitEventTimeout(nullptr, 16);
+            last = SDL_GetTicksNS();
+            continue;
+          }
+          // Keyboard (rebindable), merged cleanly with gamepad, raw SDL_Joystick
+          // fallback, and calibrated racing wheels so an idle/uncalibrated device
+          // NEVER overrides keyboard W/Up or injects phantom brakes.
           const bool* keys = SDL_GetKeyboardState(nullptr);
-          drive::Input in;
-          in.steer = (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerRight) ? 1.0 : 0.0) -
-                     (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerLeft) ? 1.0 : 0.0);
-          in.throttle = action_key_down(keys, live_controls.keys, drive::ControlAction::kThrottle) ? 1.0 : 0.0;
-          in.brake = action_key_down(keys, live_controls.keys, drive::ControlAction::kBrake) ? 1.0 : 0.0;
-          in.handbrake = action_key_down(keys, live_controls.keys, drive::ControlAction::kHandbrake);
-          in.clutch = action_key_down(keys, live_controls.keys, drive::ControlAction::kClutch) ? 1.0 : 0.0;
+          drive::Input kb_in;
+          kb_in.steer = (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerRight) ? 1.0 : 0.0) -
+                        (action_key_down(keys, live_controls.keys, drive::ControlAction::kSteerLeft) ? 1.0 : 0.0);
+          kb_in.throttle = action_key_down(keys, live_controls.keys, drive::ControlAction::kThrottle) ? 1.0 : 0.0;
+          kb_in.brake = action_key_down(keys, live_controls.keys, drive::ControlAction::kBrake) ? 1.0 : 0.0;
+          kb_in.handbrake = action_key_down(keys, live_controls.keys, drive::ControlAction::kHandbrake);
+          kb_in.clutch = action_key_down(keys, live_controls.keys, drive::ControlAction::kClutch) ? 1.0 : 0.0;
           // Look around: the right stick turns the chase camera up to half a
           // turn, LookBack key held looks back.
           camera_pull.look_target =
@@ -10766,10 +10930,13 @@ int run_drive(int argc, char** argv) {
           const drive::PadControl brake_ctrl = pad_layout.control_for("Brake");
           const drive::PadControl hb_ctrl = pad_layout.control_for("Handbrake");
           const drive::PadControl clutch_ctrl = pad_layout.control_for("Clutch");
+          drive::Input pad_in;
           bool pad_used = false;
           for (SDL_Gamepad* pad : pads) {
             auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a) / 32767.0; };
-            const bool is_wheel_pad = drive::is_known_wheel_vendor(SDL_GetGamepadVendor(pad));
+            const char* pname = SDL_GetGamepadName(pad);
+            const bool is_wheel_pad = carview::is_racing_wheel_device(
+                SDL_GetGamepadVendor(pad), SDL_GetGamepadProduct(pad), pname ? pname : "");
             const double raw_steer = axis(SDL_GAMEPAD_AXIS_LEFTX);
             const double steer =
                 is_wheel_pad
@@ -10791,19 +10958,27 @@ int run_drive(int argc, char** argv) {
             else if (std::fabs(lx) > 0.5 && std::fabs(lx) >= std::fabs(ly))
               rig_look = (lx > 0 ? 0.5 : -0.5) * 3.14159265358979;
             if (steer != 0 || throttle > 0 || brake > 0 || handbrake || clutch > 0) {
-              in.steer = steer;
-              in.throttle = throttle;
-              in.brake = brake;
-              in.handbrake = handbrake;
-              in.clutch = clutch;
+              pad_in.steer = steer;
+              pad_in.throttle = throttle;
+              pad_in.brake = brake;
+              pad_in.handbrake = handbrake;
+              pad_in.clutch = clutch;
               pad_used = true;
               touch_controls.notify_gamepad_input(vehicle.time());
               break;
             }
           }
-          slice12.apply_wheel_and_gyro_input(in, pad_used);
+          const carview::RawJoystickDriveOutput raw_joy = slice12.sample_raw_joystick_input(dz);
+          if (!pad_used && raw_joy.any_active) {
+            if (raw_joy.look_x != 0.0) camera_pull.look_target = -raw_joy.look_x * 3.14159265358979;
+            touch_controls.notify_gamepad_input(vehicle.time());
+          }
+          const carview::RawJoystickDriveOutput wheel_joy = slice12.sample_wheel_input();
+          drive::Input in = carview::merge_driving_inputs(kb_in, pad_in, pad_used, raw_joy.input, raw_joy.any_active,
+                                                          wheel_joy.input, wheel_joy.any_active);
+          slice12.apply_gyro_input(in);
           // Apply Android multi-touch controls & edge-triggered HUD actions.
-          touch_controls.set_gamepad_connected(!pads.empty());
+          touch_controls.set_gamepad_connected(!pads.empty() || slice12.has_any_raw_controller());
           touch_controls.update(vehicle.time());
           {
             const carview::TouchActions ta = touch_controls.consume_actions();
@@ -10903,6 +11078,21 @@ int run_drive(int argc, char** argv) {
           }
           if (fmv_player.active()) {
             if (!fmv_player.update(frame_dt, true)) audio_host.set_fmv_audio(nullptr, nullptr);
+          }
+          // Authentic PressStart.wmv animated title screen backdrop when present & decodable;
+          // otherwise falls back seamlessly to the live 3D Colorado Festival scenic overlook.
+          if (show_title && !fmv_player.active() && !headless) {
+            if (!title_video_tried) {
+              title_video_tried = true;
+              const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), carview::FmvMovieId::kPressStart);
+              if (!mp.empty()) title_video.open(mp, language, 960, 540);
+            }
+            if (title_video.active() && !title_video.update(frame_dt, false)) {
+              const auto mp = carview::FmvPlayer::resolve_movie(game_root_of(), carview::FmvMovieId::kPressStart);
+              if (!mp.empty()) title_video.open(mp, language, 960, 540);
+            }
+          } else if (title_video.active()) {
+            title_video.close();
           }
           if (story_intro.active()) {
             const drive::Vec3 vp = vehicle.position();
@@ -11485,13 +11675,17 @@ int run_drive(int argc, char** argv) {
                         : replay_viewer.active()
                         ? camera_view_frame(rv_cam, info, vehicle, aspect, renderer.reverse_z())
                         : show_title
-                        ? scenic_orbit_frame(info, vehicle, aspect, title_orbit_time * 0.22, 6.2f, 1.65f, renderer.reverse_z())
+                        ? scenic_orbit_frame(info, vehicle, aspect,
+                                             std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
+                                                        drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
+                                                 0.58 + 0.34 * std::sin(title_orbit_time * 0.32),
+                                             5.8f, 1.48f, renderer.reverse_z(), ground)
                         : (race && grid_menu_open)
                               ? scenic_orbit_frame(info, vehicle, aspect,
                                                    std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
                                                               drive::rotate(vehicle.orientation(), {0, 0, 1}).z) +
                                                        0.58 + 0.12 * std::sin(title_orbit_time * 0.4),
-                                                   5.6f, 1.35f, renderer.reverse_z())
+                                                   5.6f, 1.35f, renderer.reverse_z(), ground)
                               : (rewind_scrub_view && rewind_buf.sampled_camera(rw_cam))
                                     ? camera_view_frame(rw_cam, info, vehicle, aspect, renderer.reverse_z())
                                     : drive_frame(aspect, frame_dt);

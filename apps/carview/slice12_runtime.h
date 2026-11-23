@@ -20,6 +20,7 @@
 #include "drive/trainer.h"
 #include "drive/vehicle.h"
 #include "drive/wheel_ffb.h"
+#include "gamepad_db.h"
 #include "settings_page.h"
 #include "trainer_overlay.h"
 #include "ui4_chrome.h"
@@ -58,7 +59,8 @@ struct Slice12Runtime {
   TrainerOverlay trainer_overlay;
   std::string save_tree_label = "user";
   void* native_hwnd_ = nullptr;
-  std::vector<SDL_Joystick*> wheel_joysticks_;
+  std::vector<RawJoystickEntry> wheel_joysticks_;
+  std::vector<RawJoystickEntry> raw_joysticks_;
   std::string ffb_device_match_;
 
   void set_window(SDL_Window* window) {
@@ -71,7 +73,7 @@ struct Slice12Runtime {
   }
 
   void ensure_ffb_open() {
-    if (ffb_cfg.mode == drive::WheelFfbMode::kOff) {
+    if (ffb_cfg.mode == drive::WheelFfbMode::kOff || wheel_joysticks_.empty()) {
       if (ffb_device.is_open()) {
         ffb_device.stop_all();
         ffb_device.close();
@@ -83,18 +85,47 @@ struct Slice12Runtime {
     }
   }
 
-  void sync_wheel_devices() {
-    for (SDL_Joystick* j : wheel_joysticks_) {
-      if (j) SDL_CloseJoystick(j);
+  void close_non_gamepad_joysticks() {
+    for (auto& w : wheel_joysticks_) {
+      if (w.joy) SDL_CloseJoystick(w.joy);
     }
     wheel_joysticks_.clear();
+    for (auto& r : raw_joysticks_) {
+      if (r.joy) SDL_CloseJoystick(r.joy);
+    }
+    raw_joysticks_.clear();
+  }
+
+  void sync_wheel_devices() {
+    close_non_gamepad_joysticks();
     int count = 0;
     SDL_JoystickID* ids = SDL_GetJoysticks(&count);
     if (ids) {
+      SDL_UpdateJoysticks();
       for (int i = 0; i < count; ++i) {
         if (SDL_IsGamepad(ids[i])) continue;
         if (SDL_Joystick* j = SDL_OpenJoystick(ids[i])) {
-          wheel_joysticks_.push_back(j);
+          RawJoystickEntry entry;
+          entry.joy = j;
+          entry.id = ids[i];
+          const int n_axes = std::max(0, SDL_GetNumJoystickAxes(j));
+          entry.rest_axes.resize(size_t(n_axes));
+          for (int a = 0; a < n_axes; ++a) entry.rest_axes[size_t(a)] = SDL_GetJoystickAxis(j, a);
+          const int n_btns = std::max(0, SDL_GetNumJoystickButtons(j));
+          entry.prev_buttons.assign(size_t(n_btns), 0u);
+          if (SDL_GetNumJoystickHats(j) > 0) entry.prev_hat = SDL_GetJoystickHat(j, 0);
+          const uint16_t vid = SDL_GetJoystickVendor(j);
+          const uint16_t pid = SDL_GetJoystickProduct(j);
+          const char* raw_name = SDL_GetJoystickName(j);
+          const std::string_view jname = raw_name ? std::string_view(raw_name) : std::string_view{};
+          entry.is_wheel = is_racing_wheel_device(vid, pid, jname);
+          if (entry.is_wheel) {
+            wheel_joysticks_.push_back(std::move(entry));
+          } else {
+            raw_joysticks_.push_back(std::move(entry));
+            std::printf("joystick fallback: %s (vid=%04x pid=%04x, %d axes, %d buttons)\n",
+                        raw_name ? raw_name : "(unnamed)", unsigned(vid), unsigned(pid), n_axes, n_btns);
+          }
         }
       }
       SDL_free(ids);
@@ -102,33 +133,32 @@ struct Slice12Runtime {
     ensure_ffb_open();
   }
 
-  // Applies single-device wheel shaping (for raw wheel joysticks) and DualSense/DS4/SwitchPro
-  // gyro tilt steering into the live driving Input struct.
-  void apply_wheel_and_gyro_input(drive::Input& in, bool pad_has_input) const {
-    if (!pad_has_input) {
-      for (SDL_Joystick* j : wheel_joysticks_) {
-        if (!j) continue;
-        const int n_axes = SDL_GetNumJoystickAxes(j);
-        if (n_axes <= 0) continue;
-        const double raw_s = std::clamp(SDL_GetJoystickAxis(j, 0) / 32767.0, -1.0, 1.0);
-        const double shaped_s = drive::shape_wheel_steering(raw_s, wheel_shaping);
-        double shaped_t = 0.0, shaped_b = 0.0;
-        if (n_axes >= 2) {
-          const double raw_t = std::clamp((32767.0 - double(SDL_GetJoystickAxis(j, 1))) / 65535.0, 0.0, 1.0);
-          shaped_t = drive::shape_wheel_pedal(raw_t, wheel_shaping);
-        }
-        if (n_axes >= 3) {
-          const double raw_b = std::clamp((32767.0 - double(SDL_GetJoystickAxis(j, 2))) / 65535.0, 0.0, 1.0);
-          shaped_b = drive::shape_wheel_pedal(raw_b, wheel_shaping);
-        }
-        if (std::fabs(shaped_s) > 1e-3 || shaped_t > 1e-3 || shaped_b > 1e-3) {
-          in.steer = shaped_s;
-          if (shaped_t > in.throttle) in.throttle = shaped_t;
-          if (shaped_b > in.brake) in.brake = shaped_b;
-          break;
-        }
-      }
+  bool has_any_raw_controller() const { return !raw_joysticks_.empty() || !wheel_joysticks_.empty(); }
+
+  // Samples the first active unmapped (non-SDL_Gamepad) USB/BT controller.
+  RawJoystickDriveOutput sample_raw_joystick_input(const drive::ControlDeadzones& dz) const {
+    for (const auto& entry : raw_joysticks_) {
+      if (!entry.joy) continue;
+      const auto snap = snapshot_raw_joystick(entry);
+      const auto sampled = sample_raw_joystick_pad(snap, dz);
+      if (sampled.any_active) return sampled;
     }
+    return {};
+  }
+
+  // Samples the first active genuine racing wheel (calibrated resting pedals).
+  RawJoystickDriveOutput sample_wheel_input() const {
+    for (const auto& entry : wheel_joysticks_) {
+      if (!entry.joy) continue;
+      const auto snap = snapshot_raw_joystick(entry);
+      const auto sampled = sample_wheel_joystick(snap, wheel_shaping);
+      if (sampled.any_active) return sampled;
+    }
+    return {};
+  }
+
+  // Applies DualSense/DS4/SwitchPro gyro tilt steering into the live driving Input struct.
+  void apply_gyro_input(drive::Input& in) const {
     if (ds_cfg.gyro_steering && gyro_steer.valid()) {
       const double gsteer = double(gyro_steer.steering(ds_cfg.gyro_sensitivity_pct));
       if (std::fabs(gsteer) > 1e-4) {
@@ -271,10 +301,7 @@ struct Slice12Runtime {
   void shutdown(const std::vector<SDL_Gamepad*>& pads) {
     release_all(pads);
     ffb_device.close();
-    for (SDL_Joystick* j : wheel_joysticks_) {
-      if (j) SDL_CloseJoystick(j);
-    }
-    wheel_joysticks_.clear();
+    close_non_gamepad_joysticks();
     ffb_trace.stop();
     ht_receiver.stop();
     tel_sender.close();
