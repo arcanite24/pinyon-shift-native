@@ -141,6 +141,7 @@ struct GpsHud {
   std::string dest_label;
   double dist_to_turn_m = 0;
   double dist_to_dest_m = 0;
+  bool confirmed_uturn = false;  // true only when sustained wrong-way driving on an active route
 };
 
 // Interactive Pause Map overlay card (hovered destination info, filter tabs,
@@ -285,5 +286,10 @@ std::string race_clock(double seconds);
 std::string format_speed_unit(double mph, bool metric, bool decimals = true);
 std::string format_distance_unit(double meters, bool metric);
 std::string format_gap_unit(double meters, bool metric);
+// Strips format placeholders (e.g. "{0} mph" -> "mph", "%s km/h" -> "km/h")
+// and falls back cleanly when the string table entry is empty or unresolved.
+std::string format_unit_label(std::string_view raw, std::string_view fallback);
+bool should_show_gps_turn_banner(const GpsHud& gps);
+bool should_show_gps_turn_distance(const GpsHud& gps);
 
 }  // namespace carview

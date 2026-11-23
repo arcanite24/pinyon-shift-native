@@ -1,15 +1,99 @@
 #include "upgrade_shop.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <utility>
+
+#include <sqlite3.h>
 
 #include "drive/trainer.h"
+#include "game_hud.h"
 
 namespace carview {
 namespace {
 
-std::string slot_name(const std::string& column) {
+std::string resolve_localized_str(const std::string& raw) {
+  if (raw.empty()) return {};
+  if (raw.rfind("_&", 0) == 0) {
+    const std::string resolved = game_text(raw);
+    if (resolved.empty() || resolved == raw || resolved.rfind("_&", 0) == 0) return {};
+    return resolved;
+  }
+  return raw;
+}
+
+std::string collapse_spaces(std::string_view sv) {
+  std::string out;
+  out.reserve(sv.size());
+  bool prev_sp = true;
+  for (char c : sv) {
+    const bool sp = std::isspace(static_cast<unsigned char>(c)) != 0;
+    if (sp) {
+      if (!prev_sp) out += ' ';
+      prev_sp = true;
+    } else {
+      out += c;
+      prev_sp = false;
+    }
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
+std::string col_text(sqlite3_stmt* st, int col) {
+  const unsigned char* p = sqlite3_column_text(st, col);
+  return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+}
+
+std::string fallback_slot_name(int part_enum, const std::string& column) {
+  switch (part_enum) {
+    case 0: return "Engine Swap";
+    case 1: return "Drivetrain Swap";
+    case 2: return "Body Conversion";
+    case 4: return "Brakes";
+    case 5: return "Springs & Dampers";
+    case 6: return "Front Anti-Roll Bar";
+    case 7: return "Rear Anti-Roll Bar";
+    case 8: return "Tire Compound";
+    case 9: return "Rear Wing";
+    case 10: return "Front Rim Size";
+    case 11: return "Rear Rim Size";
+    case 12: return "Camshaft";
+    case 13: return "Valves";
+    case 14: return "Displacement";
+    case 15: return "Pistons & Compression";
+    case 16: return "Fuel System";
+    case 17: return "Ignition";
+    case 18: return "Exhaust";
+    case 19: return "Intake";
+    case 20: return "Flywheel";
+    case 21: return "Manifold";
+    case 22: return "Restrictor Plate";
+    case 23: return "Oil & Cooling";
+    case 24: return "Single Turbo";
+    case 25: return "Twin Turbo";
+    case 26: return "Quad Turbo";
+    case 27: return "Centrifugal Supercharger";
+    case 28: return "Positive-Displacement Supercharger";
+    case 29: return "Intercooler";
+    case 30: return "Clutch";
+    case 31: return "Transmission";
+    case 32: return "Driveline";
+    case 33: return "Differential";
+    case 34: return "Front Bumper";
+    case 35: return "Rear Bumper";
+    case 36: return "Hood";
+    case 37: return "Side Skirts";
+    case 38: return "Front Tire Width";
+    case 39: return "Rear Tire Width";
+    case 40: return "Weight Reduction";
+    case 41: return "Roll Cage";
+    case 43: return "Aftermarket Rims";
+    default: break;
+  }
   if (column == "WheelStyle") return "Aftermarket Rims";
   std::string out;
   for (size_t i = 0; i < column.size(); ++i) {
@@ -20,21 +104,53 @@ std::string slot_name(const std::string& column) {
   return out;
 }
 
+std::string slot_name(const std::string& column) { return fallback_slot_name(-1, column); }
+
 std::string credits_text(int64_t v) {
   std::string s = std::to_string(v < 0 ? -v : v);
   for (int k = int(s.size()) - 3; k > 0; k -= 3) s.insert(size_t(k), ",");
   return (v < 0 ? "-" : "") + s;
 }
 
-const char* level_name(int part_enum, int level, bool is_stock) {
+const char* tier_prefix(int part_enum, int level, bool is_stock) {
   if (is_stock || level <= 0) return "Stock";
-  if (garage::is_rally_part(part_enum, level)) return "Rally";
+  if (garage::is_rally_part(part_enum, level)) return "Horizon Rally";
   switch (level) {
     case 1: return "Street";
     case 2: return "Sport";
     case 3: return "Race";
     default: return "Pro";
   }
+}
+
+bool starts_with_icase(std::string_view s, std::string_view prefix) {
+  if (prefix.empty() || s.size() < prefix.size()) return false;
+  for (size_t i = 0; i < prefix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(s[i])) != std::tolower(static_cast<unsigned char>(prefix[i])))
+      return false;
+  }
+  return true;
+}
+
+std::string format_engine_swap_label(const std::string& raw_engine_name, const std::string& media_name,
+                                     double disp_cc, const std::string& config) {
+  const std::string cleaned = collapse_spaces(raw_engine_name);
+  char disp_buf[24] = {};
+  if (disp_cc >= 500.0) {
+    std::snprintf(disp_buf, sizeof disp_buf, "%.1fL ", disp_cc / 1000.0);
+  }
+  if (!cleaned.empty()) {
+    const bool has_liters = cleaned.find("L ") != std::string::npos || cleaned.find("l ") != std::string::npos;
+    return has_liters ? cleaned : (std::string(disp_buf) + cleaned);
+  }
+  const std::string donor = media_name.empty() ? std::string() : car_name(media_name);
+  if (!donor.empty() && donor != media_name) {
+    return std::string(disp_buf) + (config.empty() ? "" : (config + " ")) + donor;
+  }
+  if (disp_buf[0] != '\0' || !config.empty()) {
+    return collapse_spaces(std::string(disp_buf) + config + " Engine Swap");
+  }
+  return "Performance Engine Swap";
 }
 
 ShopCategory category_of(int part_enum) {
@@ -127,26 +243,178 @@ bool UpgradeShop::reload_slots(std::string& why) {
   pacing.enabled = std::fabs(price_multiplier_ - 1.0) > 1e-4;
   pacing.price_multiplier = price_multiplier_;
 
+  // Load authentic localized FH1 upgrade slot & part/tier/brand names from gamedb.slt + stringtables.
+  std::map<int, std::string> db_slot_names;
+  std::map<std::pair<int, int>, std::string> db_upgrade_names;
+  std::map<int64_t, std::string> db_manuf_names;
+  std::map<int64_t, std::string> db_engine_swap_names;
+  std::map<int64_t, std::string> db_drive_swap_names;
+  std::map<int64_t, int> db_front_tire_w, db_rear_tire_w, db_front_rim_in, db_rear_rim_in;
+
+  db_->each(
+      "SELECT PartEnum, Name FROM UpgradeTypes WHERE IsException = 0", {},
+      [&](sqlite3_stmt* st) {
+        const int pe = sqlite3_column_int(st, 0);
+        const std::string nm = resolve_localized_str(col_text(st, 1));
+        if (!nm.empty() && !db_slot_names.count(pe)) db_slot_names[pe] = nm;
+      },
+      nullptr);
+  db_->each(
+      "SELECT ut.PartEnum, u.Level, u.Name FROM Upgrades u "
+      "JOIN UpgradeTypes ut ON CAST(u.TypeId AS INTEGER) = ut.id "
+      "WHERE ut.IsException = 0 AND u.IsException = 0",
+      {},
+      [&](sqlite3_stmt* st) {
+        const int pe = sqlite3_column_int(st, 0);
+        const int lv = sqlite3_column_int(st, 1);
+        const std::string nm = resolve_localized_str(col_text(st, 2));
+        if (!nm.empty()) db_upgrade_names[{pe, lv}] = nm;
+      },
+      nullptr);
+  db_->each(
+      "SELECT Id, PartManufacturer FROM List_PartManufacturer", {},
+      [&](sqlite3_stmt* st) {
+        const int64_t mid = sqlite3_column_int64(st, 0);
+        const std::string nm = resolve_localized_str(col_text(st, 1));
+        if (mid > 0 && !nm.empty()) db_manuf_names[mid] = nm;
+      },
+      nullptr);
+  const std::string car_id_str = std::to_string(car->car_id);
+  db_->each(
+      "SELECT ue.Id, de.EngineName, de.MediaName, "
+      "COALESCE((SELECT d.Disp FROM List_UpgradeEngineDisplacement d "
+      "          WHERE d.EngineID = ue.EngineID AND d.IsStock = 1 LIMIT 1), 0), "
+      "COALESCE(ec.EngineConfig, '') "
+      "FROM List_UpgradeEngine ue "
+      "JOIN Data_Engine de ON de.EngineID = ue.EngineID "
+      "LEFT JOIN List_EngineConfig ec ON ec.ConfigID = de.ConfigID "
+      "WHERE ue.Ordinal = ?",
+      {car_id_str},
+      [&](sqlite3_stmt* st) {
+        const int64_t id = sqlite3_column_int64(st, 0);
+        db_engine_swap_names[id] =
+            format_engine_swap_label(col_text(st, 1), col_text(st, 2), sqlite3_column_double(st, 3), col_text(st, 4));
+      },
+      nullptr);
+  db_->each(
+      "SELECT ud.Id, dt.DisplayName, dt.DriveType "
+      "FROM List_UpgradeDrivetrain ud "
+      "JOIN Data_Drivetrain dd ON dd.DrivetrainID = ud.DrivetrainID "
+      "JOIN List_DriveType dt ON dt.ID = dd.DrivetypeID "
+      "WHERE ud.Ordinal = ?",
+      {car_id_str},
+      [&](sqlite3_stmt* st) {
+        const int64_t id = sqlite3_column_int64(st, 0);
+        std::string dt = resolve_localized_str(col_text(st, 1));
+        if (dt.empty()) dt = collapse_spaces(col_text(st, 2));
+        if (!dt.empty()) db_drive_swap_names[id] = dt + " Drivetrain";
+      },
+      nullptr);
+  db_->each(
+      "SELECT Id, FrontWheelDiameter FROM List_UpgradeRimSizeFront WHERE Ordinal = ?", {car_id_str},
+      [&](sqlite3_stmt* st) { db_front_rim_in[sqlite3_column_int64(st, 0)] = sqlite3_column_int(st, 1); }, nullptr);
+  db_->each(
+      "SELECT Id, RearWheelDiameter FROM List_UpgradeRimSizeRear WHERE Ordinal = ?", {car_id_str},
+      [&](sqlite3_stmt* st) { db_rear_rim_in[sqlite3_column_int64(st, 0)] = sqlite3_column_int(st, 1); }, nullptr);
+
+  int64_t body_id = 0;
+  {
+    cars::CarPhysics cphys;
+    if (db_->physics(car->car_id, garage::fitted(*car), cphys, nullptr)) {
+      body_id = int64_t(std::llround(cphys.get("List_UpgradeCarBody.CarBodyID", 0.0)));
+    }
+  }
+  if (body_id > 0) {
+    const std::string body_str = std::to_string(body_id);
+    db_->each(
+        "SELECT Id, FrontTireWidth FROM List_UpgradeCarBodyTireWidthFront WHERE CarBodyId = ?", {body_str},
+        [&](sqlite3_stmt* st) { db_front_tire_w[sqlite3_column_int64(st, 0)] = sqlite3_column_int(st, 1); }, nullptr);
+    db_->each(
+        "SELECT Id, RearTireWidth FROM List_UpgradeCarBodyTireWidthRear WHERE CarBodyId = ?", {body_str},
+        [&](sqlite3_stmt* st) { db_rear_tire_w[sqlite3_column_int64(st, 0)] = sqlite3_column_int(st, 1); }, nullptr);
+  }
+
   for (const auto& s : cars::upgrade_slots()) {
     Slot slot;
     slot.part_enum = s.part_enum;
     slot.column = s.column;
     slot.table = s.table;
+    slot.display_label = db_slot_names.count(s.part_enum) ? db_slot_names.at(s.part_enum)
+                                                          : fallback_slot_name(s.part_enum, s.column);
     slot.category = category_of(s.part_enum);
+    std::map<std::string, int> name_counts;
     for (auto r : rows) {
       if (r.part_enum == s.part_enum) {
         if (!r.is_stock && r.price > 0) r.price = pacing.scale_price(r.price, false);
         slot.parts.push_back(r);
+
+        std::string pname;
+        const int lookup_level = r.is_stock ? 0 : r.level;
+        const auto uit = db_upgrade_names.find({s.part_enum, lookup_level});
+        const std::string db_upg = (uit != db_upgrade_names.end()) ? uit->second : std::string();
+        const auto mit = (r.manufacturer > 0) ? db_manuf_names.find(r.manufacturer) : db_manuf_names.end();
+        const std::string brand = (mit != db_manuf_names.end()) ? mit->second : std::string();
+
         if (s.part_enum == 0) {
-          slot.part_names.push_back(r.is_stock ? "Stock Engine" : ("Engine Swap #" + std::to_string(r.level)));
+          if (r.is_stock) {
+            pname = !db_upg.empty() ? db_upg : "Stock Engine";
+          } else if (auto eit = db_engine_swap_names.find(r.id); eit != db_engine_swap_names.end()) {
+            pname = eit->second;
+          } else {
+            pname = "Performance Engine Swap";
+          }
         } else if (s.part_enum == 1) {
-          slot.part_names.push_back(r.is_stock ? "Stock Drivetrain" : ("Drivetrain Swap #" + std::to_string(r.level)));
+          if (r.is_stock) {
+            pname = !db_upg.empty() ? db_upg : "Stock Drivetrain";
+          } else if (auto dit = db_drive_swap_names.find(r.id); dit != db_drive_swap_names.end()) {
+            pname = dit->second;
+          } else {
+            pname = "Drivetrain Conversion";
+          }
         } else if (s.part_enum == 2) {
-          slot.part_names.push_back(r.is_stock ? "Stock Body" : ("Body Conversion #" + std::to_string(r.level)));
+          pname = !db_upg.empty() ? db_upg : (r.is_stock ? "Stock Body" : "Widebody Conversion");
+        } else if (s.part_enum == 38 || s.part_enum == 39) {
+          const auto& wmap = (s.part_enum == 38) ? db_front_tire_w : db_rear_tire_w;
+          const int mm = wmap.count(r.id) ? wmap.at(r.id) : 0;
+          if (mm > 0) {
+            pname = r.is_stock ? ("Stock (" + std::to_string(mm) + " mm)") : (std::to_string(mm) + " mm");
+          } else if (!db_upg.empty()) {
+            pname = db_upg;
+          } else {
+            pname = std::string(tier_prefix(s.part_enum, r.level, r.is_stock)) + " Width";
+          }
+        } else if (s.part_enum == 10 || s.part_enum == 11) {
+          const auto& rmap = (s.part_enum == 10) ? db_front_rim_in : db_rear_rim_in;
+          const int inch = rmap.count(r.id) ? rmap.at(r.id) : 0;
+          if (inch > 0) {
+            pname = r.is_stock ? ("Stock (" + std::to_string(inch) + " in)") : (std::to_string(inch) + " in");
+          } else if (!db_upg.empty()) {
+            pname = db_upg;
+          } else {
+            pname = std::string(tier_prefix(s.part_enum, r.level, r.is_stock)) + " Rim Size";
+          }
         } else {
-          slot.part_names.push_back(std::string(level_name(s.part_enum, r.level, r.is_stock)) + " (L" +
-                                    std::to_string(r.level) + ")");
+          const bool is_aero_body =
+              (s.part_enum == 9 || s.part_enum == 34 || s.part_enum == 35 || s.part_enum == 36 || s.part_enum == 37);
+          if (!db_upg.empty()) {
+            pname = db_upg;
+          } else if (r.is_stock) {
+            pname = "Stock " + slot.display_label;
+          } else if (garage::is_rally_part(s.part_enum, r.level)) {
+            pname = "Horizon Rally " + slot.display_label;
+          } else if (s.part_enum == 24 || s.part_enum == 25 || s.part_enum == 27 || s.part_enum == 28) {
+            pname = (r.level <= 1) ? slot.display_label
+                                   : (std::string(tier_prefix(s.part_enum, r.level, false)) + " " + slot.display_label);
+          } else {
+            pname = std::string(tier_prefix(s.part_enum, r.level, false)) + " " + slot.display_label;
+          }
+          if (!r.is_stock && !brand.empty() && is_aero_body && !starts_with_icase(pname, brand)) {
+            pname = brand + " " + pname;
+          }
         }
+        const int dup = ++name_counts[pname];
+        if (dup > 1) pname += " Style " + std::to_string(dup);
+        slot.part_names.push_back(std::move(pname));
       }
     }
     if (slot.parts.empty()) continue;
@@ -176,6 +444,7 @@ bool UpgradeShop::reload_slots(std::string& why) {
     wslot.part_enum = 43;
     wslot.column = "WheelStyle";
     wslot.table = "List_Wheels";
+    wslot.display_label = db_slot_names.count(43) ? db_slot_names.at(43) : fallback_slot_name(43, "WheelStyle");
     wslot.category = ShopCategory::kTiresRims;
     if (stock_wid > 0) {
       cars::PartRow sr;
@@ -389,8 +658,9 @@ bool UpgradeShop::fit(int discount_percent, int64_t& credits, std::string& messa
 
   changed_ = true;
   visual_dirty_ = true;
-  const std::string pname = s.shown < s.part_names.size() ? s.part_names[s.shown] : slot_name(s.column);
-  message = slot_name(s.column) + " [" + pname + "]" +
+  const std::string sname = s.display_label.empty() ? slot_name(s.column) : s.display_label;
+  const std::string pname = s.shown < s.part_names.size() ? s.part_names[s.shown] : sname;
+  message = sname + " [" + pname + "]" +
             (r.refit ? " refitted" : " bought for " + credits_text(r.charged) + " CR");
 
   if (r.rekeyed) {
@@ -437,7 +707,8 @@ bool UpgradeShop::sell_shown_part(int64_t& credits, std::string& message) {
       garage::refresh_car_pi(*car, *db_, *phys_settings_, *pi_cfg_, *bands_, nullptr, nullptr);
   }
   refresh_current_and_preview();
-  message = "sold " + slot_name(s.column) + " part for +" + credits_text(sr.payout) + " CR";
+  const std::string sname = s.display_label.empty() ? slot_name(s.column) : s.display_label;
+  message = "sold " + sname + " part for +" + credits_text(sr.payout) + " CR";
   return true;
 }
 
@@ -533,8 +804,10 @@ std::vector<UpgradeShop::SlotView> UpgradeShop::visible_rows(int discount_percen
     const bool is_own = garage_ && garage_->owns_part(garage_id_, p.part_enum, p.id);
     const int64_t disc_p = garage::discounted_price(p.price, discount_percent);
     SlotView v;
-    v.label = slot_name(s.column);
-    v.part_label = s.shown < s.part_names.size() ? s.part_names[s.shown] : ("Level " + std::to_string(p.level));
+    v.label = s.display_label.empty() ? slot_name(s.column) : s.display_label;
+    v.part_label = s.shown < s.part_names.size()
+                       ? s.part_names[s.shown]
+                       : (std::string(tier_prefix(s.part_enum, p.level, p.is_stock)) + " " + v.label);
     v.level = p.level;
     v.price = disc_p;
     v.fitted = is_fit;

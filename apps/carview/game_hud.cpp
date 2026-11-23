@@ -296,12 +296,13 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
   l.line(cx + 61.5f * s * sa, cy - 61.5f * s * ca, cx + 87.0f * s * sa, cy - 87.0f * s * ca, 2.8f * s, kNeedleHot);
   l.line(cx + 63.0f * s * sa, cy - 63.0f * s * ca, cx + 86.5f * s * sa, cy - 86.5f * s * ca, 1.25f * s, kNeedleCore);
 
-  // 6. Unit label ("km/h" or "MPH" per global Units setting), sleek italicized 3-digit speedo,
+  // 6. Unit label ("km/h" or "mph" per global Units setting), sleek italicized 3-digit speedo,
   //    gear digit, and etched ABS / TCS indicators matching race-hud.png & hud-freeroam-event-marker.png.
   TextStyle unit_ts = font(ui::Font::kA, 9.5f * s, rgba(218, 222, 230, 175), Align::kCenter);
   unit_ts.keep_case = true;
-  const std::string unit_lbl = st.metric_units ? str("UnitStrings", "IDS_Units_KMH", "km/h")
-                                               : str("UnitStrings", "IDS_Units_MPH", "MPH");
+  const std::string unit_lbl = st.metric_units
+                                   ? format_unit_label(str("UnitStrings", "IDS_Units_KMH", "km/h"), "km/h")
+                                   : format_unit_label(str("UnitStrings", "IDS_Units_MPH", "mph"), "mph");
   l.text(cx, cy - 31.5f * s, unit_lbl, unit_ts);
 
   const double disp_spd = st.metric_units ? std::fabs(st.kmh) : (std::fabs(st.kmh) * 0.62137119);
@@ -938,7 +939,7 @@ void results(ui::List& l, const RaceHud& r, const Layout& g) {
     fit(title, ts, g.L(519) - g.L(108), 24 * s);
     l.text(g.L(108), g.T(151), title, ts);
   }
-  const std::string cr = str("UnitStrings", "IDS_Units_Credits", "Cr");
+  const std::string cr = format_unit_label(str("UnitStrings", "IDS_Units_Credits", "Cr"), "Cr");
   char line[64], diff_buf[32], assist_buf[32], xp_buf[64];
   const int place = r.stage ? r.stage_place : r.place;
   std::snprintf(line, sizeof line, "%s %d%s", str("InGame", "IDS_Finished", "FINISHED").c_str(), place, place_suffix(place));
@@ -1752,7 +1753,7 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
 
 // (j2) 947_HUD/MiniMap/SatNavCommands: slim HUDPILL01 turn-by-turn strip above minimap.
 void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_units) {
-  if (!gps.active) return;
+  if (!should_show_gps_turn_banner(gps)) return;
   const float s = g.s;
   const float x0 = g.L(64), y0 = g.B(376), x1 = g.L(296), y1 = g.B(408);
   ui4::pill(l, x0, y0, x1, y1, ui4::kPillGrey, ui4::PillKind::kHud01);
@@ -1771,14 +1772,17 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_u
   }
   l.text(x0 + 14 * s, y0 + 6 * s, glyph, font(ui::Font::kE, 18 * s, ui4::kInk, Align::kCenter));
 
-  const double rounded_m = gps.dist_to_turn_m >= 1000.0 ? gps.dist_to_turn_m : std::round(gps.dist_to_turn_m / 10.0) * 10.0;
-  const std::string dt_buf = format_distance_unit(rounded_m, metric_units);
-
+  const bool show_dist = should_show_gps_turn_distance(gps);
   const std::string line1 = gps.turn_text.empty() ? std::string("FOLLOW ROUTE") : gps.turn_text;
   TextStyle ts = font(ui::Font::kE, 13.5f * s, ui4::kWhite);
-  fit(line1, ts, (x1 - x0) - 96 * s, 9.5f * s);
+  fit(line1, ts, (x1 - x0) - (show_dist ? 96.0f : 48.0f) * s, 9.5f * s);
   l.text(x0 + 36 * s, y0 + 9 * s, line1, ts);
-  l.text(x1 - 10 * s, y0 + 9 * s, dt_buf, font(ui::Font::kB, 12.5f * s, ui4::kGreen, Align::kRight));
+  if (show_dist) {
+    const double rounded_m =
+        gps.dist_to_turn_m >= 1000.0 ? gps.dist_to_turn_m : std::max(10.0, std::round(gps.dist_to_turn_m / 10.0) * 10.0);
+    const std::string dt_buf = format_distance_unit(rounded_m, metric_units);
+    l.text(x1 - 10 * s, y0 + 9 * s, dt_buf, font(ui::Font::kB, 12.5f * s, ui4::kGreen, Align::kRight));
+  }
 }
 
 // (j3) 947_HUD/Missions (top-right, [956,30..1214,126]): slim HUDPILL01 rows for active
@@ -2048,6 +2052,7 @@ void draw_sponsor_challenges_ui4(ui::List& l, float w, float h, const std::vecto
       const bool act = (i == sel);
 
       // Floating row pill (NO full-screen charcoal wall!)
+      l.add_hit(row_x0, ry, row_x1, ry + row_h, ui::kHitRow, i);
       ui4::pill(l, row_x0, ry, row_x1, ry + row_h, act ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kPillBig, false,
                 act);
 
@@ -2395,6 +2400,70 @@ std::string format_gap_unit(double meters, bool metric) {
     else std::snprintf(buf, sizeof buf, "%+.0f FT", ft);
   }
   return buf;
+}
+
+std::string format_unit_label(std::string_view raw, std::string_view fallback) {
+  if (raw.empty() || raw.rfind("_&", 0) == 0) return std::string(fallback);
+  std::string out;
+  out.reserve(raw.size());
+  for (size_t i = 0; i < raw.size();) {
+    if (raw[i] == '{') {
+      const size_t close = raw.find('}', i + 1);
+      if (close != std::string_view::npos && close > i + 1) {
+        i = close + 1;
+        continue;
+      }
+    }
+    if (raw[i] == '%' && i + 1 < raw.size()) {
+      size_t j = i + 1;
+      if (raw[j] == '%') {
+        out += '%';
+        i += 2;
+        continue;
+      }
+      while (j < raw.size() && (std::isdigit(static_cast<unsigned char>(raw[j])) || raw[j] == '.' || raw[j] == '-' ||
+                                raw[j] == '+' || raw[j] == '#')) {
+        ++j;
+      }
+      if (j < raw.size() && std::strchr("sdifuxXoegG", raw[j]) != nullptr) {
+        i = j + 1;
+        continue;
+      }
+    }
+    out += raw[i++];
+  }
+  // Collapse whitespace and trim ends.
+  std::string clean;
+  clean.reserve(out.size());
+  bool prev_space = true;
+  for (char c : out) {
+    const bool sp = std::isspace(static_cast<unsigned char>(c)) != 0;
+    if (sp) {
+      if (!prev_space) clean += ' ';
+      prev_space = true;
+    } else {
+      clean += c;
+      prev_space = false;
+    }
+  }
+  while (!clean.empty() && std::isspace(static_cast<unsigned char>(clean.back()))) clean.pop_back();
+  return clean.empty() ? std::string(fallback) : clean;
+}
+
+bool should_show_gps_turn_banner(const GpsHud& gps) {
+  if (!gps.active) return false;
+  if (gps.turn_kind == 8) {
+    // Suppress ghost "U TURN AROUND 0 FT" prompts when near 0 distance or not a sustained active-route wrong-way turn.
+    if (gps.dist_to_dest_m < 30.0) return false;
+    if (!gps.confirmed_uturn && gps.dist_to_turn_m < 5.0) return false;
+  }
+  if (gps.turn_kind == 0 && gps.turn_text.empty() && gps.dist_to_turn_m < 5.0) return false;
+  return true;
+}
+
+bool should_show_gps_turn_distance(const GpsHud& gps) {
+  if (gps.turn_kind == 8) return false;  // U-Turn never displays "0 FT" / "0 M"
+  return gps.dist_to_turn_m >= 5.0;
 }
 
 float drive_hud_dial_height(float h) { return (720 - 587 + 88) * (h / 720.0f); }

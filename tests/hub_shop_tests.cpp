@@ -5,6 +5,7 @@
 // studio plinth + drop-shadow stage, and Barn Find restoration card HUD).
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -13,6 +14,7 @@
 #include "autoshow.h"
 #include "cars/physics.h"
 #include "cars/sources.h"
+#include "game_hud.h"
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
 #include "hub_scene.h"
@@ -35,6 +37,9 @@ int g_failed = 0;
 namespace fs = std::filesystem;
 
 fs::path find_game_root() {
+  if (const char* env = std::getenv("SHIFT_GAME_ROOT"); env && *env) {
+    if (fs::exists(fs::path(env) / "media" / "db" / "gamedb.slt")) return env;
+  }
   for (const char* p : {R"(../horizon1-recomp/.local\game\base)",
                         R"(.local\game\base)"}) {
     if (fs::exists(fs::path(p) / "media" / "db" / "gamedb.slt")) return p;
@@ -164,10 +169,52 @@ void test_disc_hub_shops_and_garage() {
     if (r.part_enum == 43) has_rims = true;
   CHECK(has_rims);
 
-  // Check Conversions contains engine swaps (part_enum 0).
+  // Check Conversions contains engine swaps (part_enum 0) with real donor engine names (no "Engine Swap #1"!).
   shop.set_category(carview::ShopCategory::kConversions);
   const auto conv_rows = shop.visible_rows(0);
   CHECK(!conv_rows.empty());
+  shop.move_part(1);
+  const auto conv_swap_rows = shop.visible_rows(0);
+  bool saw_real_engine_swap = false;
+  for (const auto& r : conv_swap_rows) {
+    CHECK(r.part_label.find("Engine Swap #") == std::string::npos);
+    CHECK(r.part_label.find("Drivetrain Swap #") == std::string::npos);
+    CHECK(r.part_label.find("Body Conversion #") == std::string::npos);
+    if (r.part_enum == 0 && !r.is_stock) {
+      saw_real_engine_swap = (r.part_label.find("Scirocco") != std::string::npos ||
+                              r.part_label.find("I4T") != std::string::npos);
+    }
+  }
+  CHECK(saw_real_engine_swap);
+  shop.move_part(-1);
+
+  // Check ALL performance/handling/drivetrain/tires/aero categories have zero "(L1)"/"(L2)"/"(L3)" placeholders.
+  for (auto cat : {carview::ShopCategory::kEngine, carview::ShopCategory::kPlatform,
+                   carview::ShopCategory::kDrivetrain, carview::ShopCategory::kTiresRims,
+                   carview::ShopCategory::kAero}) {
+    shop.set_category(cat);
+    const size_t n_slots = shop.visible_rows(0).size();
+    for (size_t si = 0; si < n_slots; ++si) {
+      shop.select_row(si);
+      shop.move_part(1);
+      const auto rows_now = shop.visible_rows(0);
+      if (si < rows_now.size()) {
+        const auto& pl = rows_now[si].part_label;
+        CHECK(!pl.empty());
+        CHECK(pl.find("(L1)") == std::string::npos);
+        CHECK(pl.find("(L2)") == std::string::npos);
+        CHECK(pl.find("(L3)") == std::string::npos);
+        CHECK(pl.find("_&") == std::string::npos);
+        if (rows_now[si].part_enum == 38 || rows_now[si].part_enum == 39) {
+          CHECK(pl.find("mm") != std::string::npos);
+        }
+        if (rows_now[si].part_enum == 10 || rows_now[si].part_enum == 11) {
+          CHECK(pl.find("in") != std::string::npos);
+        }
+      }
+      shop.move_part(-1);
+    }
+  }
 
   // Fit a non-stock engine upgrade, check PI increases, then refit stock and Sell Part (50%).
   shop.set_category(carview::ShopCategory::kEngine);

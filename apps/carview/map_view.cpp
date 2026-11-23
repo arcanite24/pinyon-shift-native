@@ -398,10 +398,10 @@ bool MapView::sample_high_pixel(int px, int py, uint8_t out_rgb[3]) const {
 }
 
 HudImage MapView::minimap(const MapScene& scene, int size) const {
-  // SPEC-UI-LAYOUTS a: frameless radial minimap with translucent dark backing
-  // fading smoothly to transparent over the outer 34% so layered roads stay
-  // readable over bright sunlit Colorado asphalt.
-  Canvas cv(size, size, {12, 16, 22, 156});
+  // SPEC-UI-LAYOUTS a (out/oracle/ui/hud-freeroam.png): authentic frameless
+  // transparent circular FH1 radar with crisp road ribbons, dark road outlines,
+  // player arrow, and smooth outer edge fade (zero dark backdrop disc!).
+  Canvas cv(size, size, {0, 0, 0, 0});
   cv.edge_fade = 0.34f;
   // Speed-responsive dynamic minimap zoom: pulls higher & further ahead as speed rises.
   const double fx = std::sin(scene.heading), fz = std::cos(scene.heading);

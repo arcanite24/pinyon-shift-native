@@ -109,9 +109,10 @@ class UpgradeShop {
     int part_enum = 0;
     std::string column;
     std::string table;
+    std::string display_label;
     ShopCategory category = ShopCategory::kEngine;
     std::vector<cars::PartRow> parts;
-    std::vector<std::string> part_names;  // e.g. aftermarket rim names or Stock/Street/Sport/Race
+    std::vector<std::string> part_names;  // authentic localized FH1 part/swap/rim names
     size_t shown = 0;
   };
 
