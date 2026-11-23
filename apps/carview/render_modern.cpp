@@ -248,6 +248,104 @@ VelocityBlur parse_velocity_blur(std::string_view name) {
   return VelocityBlur::kOff;
 }
 
+int shadow_cascade_count(ShadowPcss q) {
+  return (q == ShadowPcss::kHigh || q == ShadowPcss::kUltra) ? 3 : 2;
+}
+
+bool shadow_pcss_enabled(ShadowPcss q) {
+  return q == ShadowPcss::kHigh || q == ShadowPcss::kUltra;
+}
+
+int shadow_pcss_taps(ShadowPcss q) {
+  switch (q) {
+    case ShadowPcss::kHigh: return 12;
+    case ShadowPcss::kUltra: return 16;
+    default: return 4;
+  }
+}
+
+const char* shadow_pcss_name(ShadowPcss q) {
+  switch (q) {
+    case ShadowPcss::kLow: return "low";
+    case ShadowPcss::kHigh: return "high";
+    case ShadowPcss::kUltra: return "ultra";
+    default: return "off";
+  }
+}
+
+ShadowPcss parse_shadow_pcss(std::string_view name) {
+  if (name == "low") return ShadowPcss::kLow;
+  if (name == "high" || name == "on") return ShadowPcss::kHigh;
+  if (name == "ultra") return ShadowPcss::kUltra;
+  return ShadowPcss::kOff;
+}
+
+int ssr_steps(SsrQuality q) {
+  switch (q) {
+    case SsrQuality::kHalf: return 24;
+    case SsrQuality::kFull: return 36;
+    default: return 0;
+  }
+}
+
+bool ssr_full_res(SsrQuality q) { return q == SsrQuality::kFull; }
+
+const char* ssr_name(SsrQuality q) {
+  switch (q) {
+    case SsrQuality::kHalf: return "half";
+    case SsrQuality::kFull: return "full";
+    default: return "off";
+  }
+}
+
+SsrQuality parse_ssr(std::string_view name) {
+  if (name == "half" || name == "high" || name == "on") return SsrQuality::kHalf;
+  if (name == "full" || name == "ultra") return SsrQuality::kFull;
+  return SsrQuality::kOff;
+}
+
+int volumetric_steps(VolumetricFog q) {
+  switch (q) {
+    case VolumetricFog::kQuarter: return 16;
+    case VolumetricFog::kHalf: return 24;
+    default: return 0;
+  }
+}
+
+uint32_t volumetric_scale_div(VolumetricFog q) {
+  switch (q) {
+    case VolumetricFog::kQuarter: return 4u;
+    case VolumetricFog::kHalf: return 2u;
+    default: return 0u;
+  }
+}
+
+const char* volumetric_fog_name(VolumetricFog q) {
+  switch (q) {
+    case VolumetricFog::kQuarter: return "quarter";
+    case VolumetricFog::kHalf: return "half";
+    default: return "off";
+  }
+}
+
+VolumetricFog parse_volumetric_fog(std::string_view name) {
+  if (name == "quarter" || name == "high" || name == "on") return VolumetricFog::kQuarter;
+  if (name == "half" || name == "ultra") return VolumetricFog::kHalf;
+  return VolumetricFog::kOff;
+}
+
+std::array<float, 3> blackbody_rotor_rgb(float heat_0_1) {
+  const float h = std::clamp(heat_0_1, 0.0f, 1.0f);
+  if (h <= 0.02f) return {0.0f, 0.0f, 0.0f};
+  // Planckian thermal ramp 900 K (deep cherry red) -> 1450 K (bright incandescent orange-yellow).
+  const float t = (h - 0.02f) / 0.98f;
+  const float radiance = t * t * 11.5f;
+  const float r = std::clamp(0.85f + 0.15f * t, 0.0f, 1.0f);
+  const float g = std::clamp(0.06f + 0.54f * t * t, 0.0f, 1.0f);
+  const float b = std::clamp(0.01f + 0.22f * t * t * t, 0.0f, 1.0f);
+  return {r * radiance, g * radiance, b * radiance};
+}
+
 uint32_t texture_levels_to_skip(uint32_t width, uint32_t height, uint32_t level_count, TextureCap cap) {
   if (cap == TextureCap::kFull || level_count <= 1) return 0;
   uint32_t skip = 0;
@@ -588,7 +686,8 @@ std::string num(float v) {
 const std::vector<std::string>& graphics_option_names() {
   static const std::vector<std::string> names = {
       "--render-scale", "--scene-540p", "--no-scene-540p", "--aa", "--ssao", "--contact-shadows", "--tonemapper",
-      "--hex-tiling", "--no-hex-tiling", "--velocity-blur", "--lut", "--lut-strength", "--vrs", "--no-vrs",
+      "--hex-tiling", "--no-hex-tiling", "--velocity-blur", "--shadow-pcss", "--ssr", "--volumetric-fog",
+      "--car-detail", "--no-car-detail", "--lut", "--lut-strength", "--vrs", "--no-vrs",
       "--texture-cap", "--vsync", "--fps-cap", "--output", "--sharpening", "--frame-gen", "--hdr", "--no-hdr",
       "--auto-hdr", "--no-auto-hdr", "--hdr-paper-white", "--hdr-highlights", "--hdr-peak", "--hdr-compare",
       "--no-hdr-compare", "--hud-scale", "--safe-zone", "--hud-16-9", "--no-hud-16-9"};
@@ -610,6 +709,10 @@ std::vector<std::string> graphics_tokens(const GraphicsSettings& s) {
   if (s.tonemapper != d.tonemapper) add("--tonemapper", tonemapper_name(s.tonemapper));
   if (s.hex_tiling) t.push_back("--hex-tiling");
   if (s.velocity_blur != d.velocity_blur) add("--velocity-blur", velocity_blur_name(s.velocity_blur));
+  if (s.shadow_pcss != d.shadow_pcss) add("--shadow-pcss", shadow_pcss_name(s.shadow_pcss));
+  if (s.ssr != d.ssr) add("--ssr", ssr_name(s.ssr));
+  if (s.volumetric_fog != d.volumetric_fog) add("--volumetric-fog", volumetric_fog_name(s.volumetric_fog));
+  if (s.car_detail) t.push_back("--car-detail");
   if (!s.lut.empty()) add("--lut", s.lut);
   if (s.lut_strength != d.lut_strength) add("--lut-strength", num(s.lut_strength));
   if (s.vrs) t.push_back("--vrs");
@@ -661,6 +764,16 @@ bool apply_graphics_option(GraphicsSettings& s, const std::vector<std::string>& 
     s.hex_tiling = false;
   } else if (a == "--velocity-blur") {
     s.velocity_blur = parse_velocity_blur(value());
+  } else if (a == "--shadow-pcss") {
+    s.shadow_pcss = parse_shadow_pcss(value());
+  } else if (a == "--ssr") {
+    s.ssr = parse_ssr(value());
+  } else if (a == "--volumetric-fog") {
+    s.volumetric_fog = parse_volumetric_fog(value());
+  } else if (a == "--car-detail") {
+    s.car_detail = true;
+  } else if (a == "--no-car-detail") {
+    s.car_detail = false;
   } else if (a == "--lut") s.lut = value();
   else if (a == "--lut-strength") s.lut_strength = std::clamp(number(100), 0.0f, 100.0f);
   else if (a == "--vrs") s.vrs = true;
@@ -773,6 +886,8 @@ ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, E
   p.bloom = post_bloom;
   p.ssao = (g.ssao != SsaoQuality::kOff);
   p.sscs = (g.contact_shadows != ContactShadows::kOff);
+  p.ssr = (g.ssr != SsrQuality::kOff);
+  p.volumetric = (g.volumetric_fog != VolumetricFog::kOff);
   p.mblur_tiles = post_motion_blur && (g.velocity_blur != VelocityBlur::kOff);
   const bool need_scale = (render.w != output.w || render.h != output.h);
   const bool need_upscaler = need_scale || g.upscaler != Upscaler::kBilinear;

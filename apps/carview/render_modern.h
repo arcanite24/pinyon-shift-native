@@ -86,6 +86,29 @@ int velocity_blur_taps(VelocityBlur q);
 const char* velocity_blur_name(VelocityBlur q);
 VelocityBlur parse_velocity_blur(std::string_view name);
 
+// Phase B SOTA scalable controls: 3-cascade D32 CSM + PCSS, Hi-Z SSR, Volumetric Sun/Headlight Fog, Car Detail.
+enum class ShadowPcss : int { kOff = 0, kLow = 1, kHigh = 2, kUltra = 3 };
+int shadow_cascade_count(ShadowPcss q);
+bool shadow_pcss_enabled(ShadowPcss q);
+int shadow_pcss_taps(ShadowPcss q);
+const char* shadow_pcss_name(ShadowPcss q);
+ShadowPcss parse_shadow_pcss(std::string_view name);
+
+enum class SsrQuality : int { kOff = 0, kHalf = 1, kFull = 2 };
+int ssr_steps(SsrQuality q);
+bool ssr_full_res(SsrQuality q);
+const char* ssr_name(SsrQuality q);
+SsrQuality parse_ssr(std::string_view name);
+
+enum class VolumetricFog : int { kOff = 0, kQuarter = 1, kHalf = 2 };
+int volumetric_steps(VolumetricFog q);
+uint32_t volumetric_scale_div(VolumetricFog q);
+const char* volumetric_fog_name(VolumetricFog q);
+VolumetricFog parse_volumetric_fog(std::string_view name);
+
+// Pure C++ Planckian blackbody reference (900 K -> 1450 K) matching showroom.frag brake rotor thermal glow.
+std::array<float, 3> blackbody_rotor_rgb(float heat_0_1);
+
 enum class TextureCap : int { kFull = 0, k1024 = 1024, k512 = 512, k256 = 256 };
 // Mip levels to skip so the largest side is at most `cap` (never past the last level).
 uint32_t texture_levels_to_skip(uint32_t width, uint32_t height, uint32_t level_count, TextureCap cap);
@@ -187,6 +210,10 @@ struct GraphicsSettings {
   Tonemapper tonemapper = Tonemapper::kHable;
   bool hex_tiling = false;
   VelocityBlur velocity_blur = VelocityBlur::kOff;
+  ShadowPcss shadow_pcss = ShadowPcss::kOff;
+  SsrQuality ssr = SsrQuality::kOff;
+  VolumetricFog volumetric_fog = VolumetricFog::kOff;
+  bool car_detail = false;
   std::string lut;             // file name in the luts folder, empty: none
   float lut_strength = 100.0f; // percent
   bool vrs = false;
@@ -243,6 +270,8 @@ struct ModernTargetPlan {
   bool bloom = false;
   bool ssao = false;
   bool sscs = false;
+  bool ssr = false;
+  bool volumetric = false;
   bool mblur_tiles = false;
   bool modern_chain = false;
   bool fxaa_scene = false;

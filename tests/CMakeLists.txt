@@ -156,9 +156,10 @@ add_test(NAME ui_tests COMMAND ui_tests)
 # Slice 11: render scale / HUD / HDR / upscaler fallbacks / .cube reader / frame stats (no Vulkan).
 add_executable(render_modern_tests render_modern_tests.cpp ../apps/carview/render_modern.cpp
                ../apps/carview/perf_overlay.cpp ../apps/carview/frame_inspector.cpp
-               ../apps/carview/upscaler.cpp ../apps/carview/ui.cpp)
+               ../apps/carview/upscaler.cpp ../apps/carview/ui.cpp
+               ../apps/carview/platform_support.cpp)
 target_include_directories(render_modern_tests PRIVATE ../apps/carview)
-target_link_libraries(render_modern_tests PRIVATE shift_stb fh1data)
+target_link_libraries(render_modern_tests PRIVATE shift_stb fh1data SDL3::SDL3-static)
 add_test(NAME render_modern_tests COMMAND render_modern_tests)
 add_executable(benchmark_tests benchmark_tests.cpp ../apps/carview/benchmark.cpp
                ../apps/carview/perf_overlay.cpp ../apps/carview/ui.cpp)

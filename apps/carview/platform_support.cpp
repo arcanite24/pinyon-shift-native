@@ -22,40 +22,49 @@ bool resolve_graphics_preset(std::string_view name, GraphicsPresetSpec& out) {
   const std::string p = lower_ascii(name);
   if (p == "ultra") {
     // Tier 3 Enthusiast 4K: 4x MSAA, Full-Res XeGTAO + Bent Normals, Full-Res 12-tap SSCS,
-    // Hex-Tiling terrain, 13-tap McGuire Velocity Motion Blur.
+    // Hex-Tiling terrain, 13-tap McGuire Velocity Motion Blur, 3-Cascade D32 PCSS Ultra,
+    // Full-Res Hi-Z SSR, Half-Res Volumetric Scattering, Close-Up Car Detail.
     out = {"ultra", 4, false, "high", true, 16.0f, 120, 1.0f,
-           modern::SsaoQuality::kUltra, modern::ContactShadows::kUltra, true, modern::VelocityBlur::kHigh};
+           modern::SsaoQuality::kUltra, modern::ContactShadows::kUltra, true, modern::VelocityBlur::kHigh,
+           modern::ShadowPcss::kUltra, modern::SsrQuality::kFull, modern::VolumetricFog::kHalf, true};
     return true;
   }
   if (p == "high" || p == "quality-60" || p == "performance-120") {
     // Tier 2 Mainstream: 4x MSAA, Half-Res 3-slice XeGTAO + Bent Normals, Half-Res 10-tap SSCS,
-    // Hex-Tiling terrain, 9-tap McGuire Velocity Motion Blur.
+    // Hex-Tiling terrain, 9-tap McGuire Velocity Motion Blur, 3-Cascade D32 PCSS High,
+    // Half-Res Hi-Z SSR, Quarter-Res Volumetric Scattering, Close-Up Car Detail.
     out = {p, 4, false, "high", true, 16.0f, p == "performance-120" ? 120 : 60, 1.0f,
-           modern::SsaoQuality::kHigh, modern::ContactShadows::kHigh, true, modern::VelocityBlur::kLow};
+           modern::SsaoQuality::kHigh, modern::ContactShadows::kHigh, true, modern::VelocityBlur::kLow,
+           modern::ShadowPcss::kHigh, modern::SsrQuality::kHalf, modern::VolumetricFog::kQuarter, true};
     return true;
   }
   if (p == "low" || p == "low-spec-60" || p == "balanced-40") {
-    // Tier 1 Deck / iGPU / Low: 1x MSAA, Half-Res 2-slice XeGTAO, Half-Res 8-tap SSCS, Hex-Tiling off.
+    // Tier 1 Deck / iGPU / Low: 1x MSAA, Half-Res 2-slice XeGTAO, Half-Res 8-tap SSCS,
+    // fast 2-cascade PCF shadows, SSR/Volumetric/Hex-Tiling/VelBlur off.
     out = {p, 1, true, "low", false, 2.0f, p == "balanced-40" ? 40 : 60, 0.5f,
-           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff};
+           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff,
+           modern::ShadowPcss::kLow, modern::SsrQuality::kOff, modern::VolumetricFog::kOff, false};
     return true;
   }
   if (p == "smooth-60" || p == "smooth_60") {
     // Android Smooth 60: 2x MSAA, shadows off, quarter-rate reflections, Half-Res 2-slice XeGTAO & 8-tap SSCS.
     out = {"smooth-60", 2, true, "off", false, 4.0f, 60, 0.25f,
-           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff};
+           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kOff,
+           modern::ShadowPcss::kOff, modern::SsrQuality::kOff, modern::VolumetricFog::kOff, false};
     return true;
   }
   if (p == "quality-30" || p == "quality_30") {
-    // Android Quality 30: 4x MSAA, shadows low, bloom on, quarter-rate reflections, Half-Res 2-slice XeGTAO & 8-tap SSCS.
+    // Android Quality 30: 4x MSAA, shadows low, bloom on, quarter-rate reflections, Quarter-Res Volumetrics.
     out = {"quality-30", 4, false, "low", true, 8.0f, 30, 0.25f,
-           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kLow};
+           modern::SsaoQuality::kLow, modern::ContactShadows::kLow, false, modern::VelocityBlur::kLow,
+           modern::ShadowPcss::kLow, modern::SsrQuality::kOff, modern::VolumetricFog::kQuarter, false};
     return true;
   }
   if (p == "low-power" || p == "low_power" || p == "ultra-low-30") {
-    // Tier 0 Mobile / Deck Low Power: 1x MSAA, shadows off, bloom off, GTAO/SSCS/Hex-Tiling/VelBlur off.
+    // Tier 0 Mobile / Deck Low Power: 1x MSAA, shadows off, bloom off, all Phase A/B heavy passes off.
     out = {"low-power", 1, true, "off", false, 2.0f, 30, 0.25f,
-           modern::SsaoQuality::kOff, modern::ContactShadows::kOff, false, modern::VelocityBlur::kOff};
+           modern::SsaoQuality::kOff, modern::ContactShadows::kOff, false, modern::VelocityBlur::kOff,
+           modern::ShadowPcss::kOff, modern::SsrQuality::kOff, modern::VolumetricFog::kOff, false};
     return true;
   }
   return false;

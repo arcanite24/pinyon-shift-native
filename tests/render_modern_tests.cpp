@@ -6,6 +6,7 @@
 
 #include "frame_inspector.h"
 #include "perf_overlay.h"
+#include "platform_support.h"
 #include "render_modern.h"
 #include "upscaler.h"
 
@@ -571,6 +572,66 @@ void test_lazy_targets_and_reflection_schedule() {
   const auto sota_no_mb =
       plan_modern_targets(sota, {1920, 1080}, {1920, 1080}, true, HdrMode::kOff, 0, false, false, bil, false);
   CHECK(sota_no_mb.sscs && !sota_no_mb.mblur_tiles && !sota_no_mb.motion_vec);
+
+  // Phase B SOTA: Hi-Z SSR + Volumetric Scattering allocate ssr and volumetric lazily (off on low-power).
+  CHECK(!low_plan.ssr && !low_plan.volumetric);
+  GraphicsSettings phase_b;
+  phase_b.shadow_pcss = ShadowPcss::kUltra;
+  phase_b.ssr = SsrQuality::kFull;
+  phase_b.volumetric_fog = VolumetricFog::kHalf;
+  phase_b.car_detail = true;
+  const auto pb_plan =
+      plan_modern_targets(phase_b, {3840, 2160}, {3840, 2160}, true, HdrMode::kOff, 0, false, false, bil, true);
+  CHECK(pb_plan.ssr && pb_plan.volumetric);
+  // 3-cascade CSM & PCSS tap scaling across tiers.
+  CHECK(shadow_cascade_count(ShadowPcss::kOff) == 2 && !shadow_pcss_enabled(ShadowPcss::kOff));
+  CHECK(shadow_cascade_count(ShadowPcss::kLow) == 2 && shadow_pcss_taps(ShadowPcss::kLow) == 4);
+  CHECK(shadow_cascade_count(ShadowPcss::kHigh) == 3 && shadow_pcss_enabled(ShadowPcss::kHigh) &&
+        shadow_pcss_taps(ShadowPcss::kHigh) == 12);
+  CHECK(shadow_cascade_count(ShadowPcss::kUltra) == 3 && shadow_pcss_enabled(ShadowPcss::kUltra) &&
+        shadow_pcss_taps(ShadowPcss::kUltra) == 16);
+  CHECK(parse_shadow_pcss("high") == ShadowPcss::kHigh && parse_shadow_pcss("ultra") == ShadowPcss::kUltra);
+  CHECK(std::string(shadow_pcss_name(ShadowPcss::kHigh)) == "high");
+  // Hi-Z SSR & Volumetric Fog scaling across tiers.
+  CHECK(ssr_steps(SsrQuality::kOff) == 0 && !ssr_full_res(SsrQuality::kOff));
+  CHECK(ssr_steps(SsrQuality::kHalf) == 24 && !ssr_full_res(SsrQuality::kHalf));
+  CHECK(ssr_steps(SsrQuality::kFull) == 36 && ssr_full_res(SsrQuality::kFull));
+  CHECK(parse_ssr("half") == SsrQuality::kHalf && parse_ssr("full") == SsrQuality::kFull);
+  CHECK(volumetric_steps(VolumetricFog::kOff) == 0 && volumetric_scale_div(VolumetricFog::kOff) == 0u);
+  CHECK(volumetric_steps(VolumetricFog::kQuarter) == 16 && volumetric_scale_div(VolumetricFog::kQuarter) == 4u);
+  CHECK(volumetric_steps(VolumetricFog::kHalf) == 24 && volumetric_scale_div(VolumetricFog::kHalf) == 2u);
+  CHECK(parse_volumetric_fog("quarter") == VolumetricFog::kQuarter &&
+        parse_volumetric_fog("half") == VolumetricFog::kHalf);
+  // Planckian blackbody brake rotor thermal ramp (900 K -> 1450 K): cold = 0, hot = HDR bloom > 8.0, R > G > B.
+  const auto cold = blackbody_rotor_rgb(0.0f);
+  const auto warm = blackbody_rotor_rgb(0.45f);
+  const auto hot = blackbody_rotor_rgb(1.0f);
+  CHECK(cold[0] == 0.0f && cold[1] == 0.0f && cold[2] == 0.0f);
+  CHECK(warm[0] > warm[1] && warm[1] > warm[2] && warm[0] > 0.5f);
+  CHECK(hot[0] > 9.0f && hot[0] > hot[1] && hot[1] > hot[2] && hot[1] > 4.0f);
+  // Graphics presets map all 4 hardware tiers cleanly for Phase B.
+  {
+    carview::GraphicsPresetSpec lp, lo, hi, ul;
+    CHECK(carview::resolve_graphics_preset("low-power", lp));
+    CHECK(carview::resolve_graphics_preset("low", lo));
+    CHECK(carview::resolve_graphics_preset("high", hi));
+    CHECK(carview::resolve_graphics_preset("ultra", ul));
+    CHECK(lp.shadow_pcss == ShadowPcss::kOff && lp.ssr == SsrQuality::kOff &&
+          lp.volumetric_fog == VolumetricFog::kOff && !lp.car_detail);
+    CHECK(lo.shadow_pcss == ShadowPcss::kLow && lo.ssr == SsrQuality::kOff &&
+          lo.volumetric_fog == VolumetricFog::kOff && !lo.car_detail);
+    CHECK(hi.shadow_pcss == ShadowPcss::kHigh && hi.ssr == SsrQuality::kHalf &&
+          hi.volumetric_fog == VolumetricFog::kQuarter && hi.car_detail);
+    CHECK(ul.shadow_pcss == ShadowPcss::kUltra && ul.ssr == SsrQuality::kFull &&
+          ul.volumetric_fog == VolumetricFog::kHalf && ul.car_detail);
+  }
+  // Phase B token round-trip.
+  {
+    const auto toks = graphics_tokens(phase_b);
+    GraphicsSettings parsed;
+    for (size_t i = 0; i < toks.size(); ++i) CHECK(apply_graphics_option(parsed, toks, i));
+    CHECK(parsed == phase_b);
+  }
 
   // Reflection rate staggering & mirror gating.
   const auto init_step = schedule_reflections(0, 0.25f, false, false, false);

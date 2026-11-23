@@ -215,6 +215,31 @@ int main() {
   CHECK(pbr_page.value("tonemapper") == "pbr neutral");
   CHECK(pbr_page.live_settings().graphics.tonemapper == carview::modern::Tonemapper::kPbrNeutral);
 
+  // Phase B SOTA Display settings (3-cascade PCSS, Hi-Z SSR, Volumetric Fog & Headlight Beams, Car Clearcoat Detail).
+  carview::SettingsPage pb_page;
+  pb_page.load({"--shadow-pcss", "ultra", "--ssr", "full", "--volumetric-fog", "half", "--car-detail"});
+  CHECK(pb_page.value("shadow softness (pcss)") == "ultra");
+  CHECK(pb_page.value("screen-space reflections") == "full-res");
+  CHECK(pb_page.value("volumetric fog & beams") == "half-res");
+  CHECK(pb_page.value("car clearcoat detail") == "on");
+  const auto pbls = pb_page.live_settings();
+  CHECK(pbls.graphics.shadow_pcss == carview::modern::ShadowPcss::kUltra);
+  CHECK(pbls.graphics.ssr == carview::modern::SsrQuality::kFull);
+  CHECK(pbls.graphics.volumetric_fog == carview::modern::VolumetricFog::kHalf);
+  CHECK(pbls.graphics.car_detail);
+  const auto pbt = pb_page.tokens();
+  CHECK(has(pbt, {"--shadow-pcss", "ultra"}) && has(pbt, {"--ssr", "full"}) &&
+        has(pbt, {"--volumetric-fog", "half"}) && has(pbt, {"--car-detail"}));
+
+  carview::SettingsPage pb_high;
+  pb_high.load({"--shadow-pcss", "high", "--ssr", "half", "--volumetric-fog", "quarter"});
+  CHECK(pb_high.value("shadow softness (pcss)") == "high");
+  CHECK(pb_high.value("screen-space reflections") == "half-res");
+  CHECK(pb_high.value("volumetric fog & beams") == "quarter-res");
+  CHECK(pb_high.live_settings().graphics.shadow_pcss == carview::modern::ShadowPcss::kHigh);
+  CHECK(pb_high.live_settings().graphics.ssr == carview::modern::SsrQuality::kHalf);
+  CHECK(pb_high.live_settings().graphics.volumetric_fog == carview::modern::VolumetricFog::kQuarter);
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

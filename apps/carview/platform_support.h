@@ -30,6 +30,10 @@ struct GraphicsPresetSpec {
   modern::ContactShadows contact_shadows = modern::ContactShadows::kHigh;
   bool hex_tiling = true;
   modern::VelocityBlur velocity_blur = modern::VelocityBlur::kLow;
+  modern::ShadowPcss shadow_pcss = modern::ShadowPcss::kHigh;
+  modern::SsrQuality ssr = modern::SsrQuality::kHalf;
+  modern::VolumetricFog volumetric_fog = modern::VolumetricFog::kQuarter;
+  bool car_detail = true;
 };
 
 bool resolve_graphics_preset(std::string_view name, GraphicsPresetSpec& out);
