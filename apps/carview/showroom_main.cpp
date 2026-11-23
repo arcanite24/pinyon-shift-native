@@ -2824,11 +2824,26 @@ int run_drive(int argc, char** argv) {
   race::CareerRecord career;
   race::WristbandTables wristbands;
   double race_top_speed = 0;
+  cars::PhysicsSettings race_phys_settings;
+  garage::PiConfig race_pi_cfg = garage::synthetic_pi_config();
+  bool race_pi_cfg_loaded = false;
   // Opens event `id`'s race and puts the player on its slot; false with
   // `why` (the drive goes on in free roam).
   auto start_race = [&](const std::string& id, std::string& why) {
+    if (!race_pi_cfg_loaded && !world_dir.empty()) {
+      race_pi_cfg_loaded = true;
+      const auto pzip = cars::mods::resolve(game_root_of() / "media" / "physics.zip");
+      std::error_code pec;
+      if (std::filesystem::exists(pzip, pec)) {
+        cars::load_physics_settings(pzip, race_phys_settings, nullptr);
+        garage::load_pi_config(pzip, race_pi_cfg, nullptr);
+      }
+    }
     race_options.autopilot = race_auto < 0 ? headless : race_auto == 1;
-    race_options.player_car = car;  // its stock PI for the AI upgrades (interim: not the garage row)
+    race_options.player_car = car;
+    race_options.player_pi = carview::resolve_player_race_pi(
+        have_garage ? career_garage.selected_car() : nullptr, car, baked_ids, shared_db, &race_phys_settings,
+        &race_pi_cfg, &class_bands);
     race_options.stage_world = world_dir;  // a Rally stage's route and line (--event stage:<route>)
     race_options.state_root = state_root;
     race_options.parts_db = shared_db;
@@ -3767,7 +3782,7 @@ int run_drive(int argc, char** argv) {
               audio_host.init_sfx(game_root, sfx_cache, audio_host.car_burble_bank());
               audio_host.init_satnav(game_root, sfx_cache, language, true);
               audio_host.init_vo(game_root, language);
-              audio_host.init_acoustics(game_root, sfx_cache);
+              audio_host.init_acoustics(game_root, sfx_cache, world_dir, rally_catalog.package_dir);
             }
             bench_startup.audio_load_ms +=
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - aud_world_t0).count();
@@ -5930,7 +5945,13 @@ int run_drive(int argc, char** argv) {
           showroom.set_skidmarks(asph_tris, rut_tris);
           std::vector<world::DebrisVertex> debris_tris;
           smashables.build_debris_mesh(debris_tris);
-          if (race && race->is_showcase()) race->append_showcase_mesh(debris_tris);
+          std::vector<carview::Showroom::ShowcaseVertex> showcase_tris;
+          if (race && race->is_showcase()) {
+            std::string sc_err;
+            showroom.load_showcase_texture(game_root_of(), int(race->showcase().spec().kind), sc_err);
+            race->build_showcase_mesh(showcase_tris);
+          }
+          showroom.set_showcase_mesh(showcase_tris);
           const drive::Vec3 vpos = vehicle.position();
           world_anim.build_mesh(vpos.x, vpos.y + 1.5, vpos.z, float(vehicle.time()), ground, debris_tris, !low_preset);
           showroom.set_debris_mesh(debris_tris);
@@ -6130,6 +6151,67 @@ int run_drive(int argc, char** argv) {
       drive::RewindBuffer rewind_buf;
       rewind_buf.set_enabled(live_controls.assists.rewind);
       rewind_buf.start_session(vehicle.time());
+      struct WorldRewindSnapshot {
+        bool has_race = false;
+        carview::RaceView::RewindSnapshot race;
+        bool has_traffic = false;
+        carview::TrafficView::RewindSnapshot traffic;
+        bool has_festival = false;
+        freeroam::FestivalManager::RewindSnapshot festival;
+        bool has_skills = false;
+        freeroam::SkillTracker::RewindSnapshot skills;
+        world::SmashableWorld::RewindSnapshot smashables;
+      };
+      std::unordered_map<uint64_t, WorldRewindSnapshot> world_rewind_snaps;
+      auto prune_world_rewind = [&]() {
+        const auto keep = rewind_buf.active_snapshot_ids();
+        for (auto it = world_rewind_snaps.begin(); it != world_rewind_snaps.end();) {
+          if (std::find(keep.begin(), keep.end(), it->first) == keep.end()) it = world_rewind_snaps.erase(it);
+          else ++it;
+        }
+      };
+      auto capture_world_rewind = [&](uint64_t snap_id) {
+        if (snap_id == 0u) return;
+        WorldRewindSnapshot ws;
+        if (race) {
+          ws.has_race = true;
+          ws.race = race->capture_rewind();
+        }
+        if (traffic) {
+          ws.has_traffic = true;
+          ws.traffic = traffic->capture_rewind();
+        }
+        if (festival_mgr) {
+          ws.has_festival = true;
+          ws.festival = festival_mgr->capture_rewind();
+        }
+        if (skill_tracker) {
+          ws.has_skills = true;
+          ws.skills = skill_tracker->capture_rewind();
+        }
+        ws.smashables = smashables.capture_rewind();
+        world_rewind_snaps[snap_id] = std::move(ws);
+        prune_world_rewind();
+      };
+      auto restore_world_rewind = [&](uint64_t snap_id, bool is_resume) {
+        auto it = world_rewind_snaps.find(snap_id);
+        if (it != world_rewind_snaps.end()) {
+          const auto& ws = it->second;
+          if (race && ws.has_race) {
+            race->restore_rewind(ws.race, is_resume && rewind_buf.lap_uncertified());
+            audio_host.clear_codriver();
+          }
+          if (traffic && ws.has_traffic) traffic->restore_rewind(ws.traffic);
+          if (festival_mgr && ws.has_festival) festival_mgr->restore_rewind(ws.festival);
+          if (skill_tracker && ws.has_skills) skill_tracker->restore_rewind(ws.skills);
+          const auto unhidden = smashables.restore_rewind(ws.smashables);
+          for (const auto& hs : unhidden) showroom.unhide_world_props_near(hs.pos, hs.radius);
+          if (streamer) streamer->set_hidden_positions(smashables.broken_hidden_positions());
+        } else {
+          smashables.clear_debris();
+        }
+        prune_world_rewind();
+      };
       apply_vehicle_assists(vehicle, live_controls.assists);
       race_options.assists = to_difficulty_assists(live_controls.assists);
       drive::BrakingTable braking_table = drive::BrakingTable::build(vehicle.params());
@@ -6851,8 +6933,8 @@ int run_drive(int argc, char** argv) {
             rw_prompts = {{"B", "CANCEL"}};
           } else if (rewind_buf.is_paused_at_keyframe()) {
             rw_title = "REWIND PAUSED";
-            if (rewind_buf.at_oldest_slot()) rw_prompts = {{"A", "RESUME"}, {"B", "CANCEL"}};
-            else rw_prompts = {{"A", "RESUME"}, {"Y", "REWIND FURTHER"}, {"B", "CANCEL"}};
+            if (rewind_buf.at_oldest_slot()) rw_prompts = {{"A", "RESUME"}, {"X", "VIEW REPLAY"}, {"B", "CANCEL"}};
+            else rw_prompts = {{"A", "RESUME"}, {"Y", "REWIND FURTHER"}, {"X", "VIEW REPLAY"}, {"B", "CANCEL"}};
           } else if (rewind_buf.is_settling()) {
             rw_title = "RESUMING";
           }
@@ -8606,6 +8688,7 @@ int run_drive(int argc, char** argv) {
           rig.restart();
           rig_accel.reset();
           rewind_buf.reset_history(vehicle.time());
+          world_rewind_snaps.clear();
         };
         // Helpers for career progression actions (wristband collection, events, shops, new career).
         auto open_garage_browser = [&]() {
@@ -9105,12 +9188,32 @@ int run_drive(int argc, char** argv) {
         };
         bool window_minimized = false;
         bool window_occluded = false;
+        carview::AppLifecycleState app_lifecycle;
         while (running) {
           // The points page auto-advances after 4 s (Enter/A also advances early).
           if (race && results_page == 2 && vehicle.time() - points_at > 4.0) race_continue();
           SDL_Event e;
           while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT) running = false;
+            if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_TERMINATING) running = false;
+            // Android / mobile lifecycle (WILL/DID_ENTER_BACKGROUND, FOREGROUND, LOW_MEMORY).
+            if (const auto lc = app_lifecycle.handle_event(e.type, audio_host.running()); lc.handled) {
+              if (lc.pause_audio) audio_host.stop_device();
+              if (lc.flush_save) save_now("background");
+              if (lc.wait_gpu_idle) renderer.wait_idle();
+              if (lc.recreate_swapchain) renderer.invalidate_swapchain();
+              if (lc.resume_audio) audio_host.start_device();
+              if (lc.reset_frame_clock) {
+                window_minimized = false;
+                window_occluded = false;
+                last = SDL_GetTicksNS();
+                frame_pacer.reset();
+              }
+              if (lc.trim_memory) {
+                showroom.set_low_memory_mode(true);
+                showroom.set_world_texture_budget({96u * 1024u * 1024u, 256u});
+              }
+              continue;
+            }
             // Instant alt-tab / focus / occlusion fast path (handled before any overlay
             // continue guards; ZERO wait_idle and ZERO swapchain recreate on focus gain).
             if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -9198,10 +9301,49 @@ int run_drive(int argc, char** argv) {
                 continue;
               }
             }
-            // Android / touchscreen multi-touch driving controls.
+            // Android / touchscreen multi-touch driving controls & menu tap routing (P0-8).
             if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_FINGER_MOTION ||
                 e.type == SDL_EVENT_FINGER_UP || e.type == SDL_EVENT_FINGER_CANCELED) {
-              touch_controls.handle_sdl_event(e, float(width), float(height), vehicle.time());
+              int live_px_w = width, live_px_h = height;
+              int live_win_w = width, live_win_h = height;
+              if (window) {
+                SDL_GetWindowSizeInPixels(window, &live_px_w, &live_px_h);
+                SDL_GetWindowSize(window, &live_win_w, &live_win_h);
+              }
+              const bool touch_menu_open =
+                  show_title || title_menu_phase || fmv_player.active() || ceremony.active || grid_menu_open ||
+                  menu.open || map_open || picking || events_page.is_open() || outpost_hub_open || garage_open ||
+                  shop.is_open() || autoshow.is_open() || career_page.is_open() || settings_page.is_open() ||
+                  paint_open || club_open || rally_hub_open || rally_service_open || rally_results_open ||
+                  photo_mode.active() || replay_viewer.active() || replay_viewer.browser_open() ||
+                  achievements.screen_open() || mods_page.is_open() || save_page.is_open() ||
+                  slice12.trainer_overlay.is_open() || rewind_buf.active() || (race && race->player_finished());
+              if (touch_menu_open && e.type != SDL_EVENT_FINGER_CANCELED) {
+                const auto pt = carview::touch_norm_to_coords(e.tfinger.x, e.tfinger.y,
+                                                              live_win_w > 0 ? live_win_w : live_px_w,
+                                                              live_win_h > 0 ? live_win_h : live_px_h);
+                if (e.type == SDL_EVENT_FINGER_DOWN) {
+                  e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+                  e.button.button = SDL_BUTTON_LEFT;
+                  e.button.down = true;
+                  e.button.clicks = 1;
+                  e.button.x = pt.x;
+                  e.button.y = pt.y;
+                } else if (e.type == SDL_EVENT_FINGER_MOTION) {
+                  e.type = SDL_EVENT_MOUSE_MOTION;
+                  e.motion.x = pt.x;
+                  e.motion.y = pt.y;
+                } else if (e.type == SDL_EVENT_FINGER_UP) {
+                  e.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                  e.button.button = SDL_BUTTON_LEFT;
+                  e.button.down = false;
+                  e.button.x = pt.x;
+                  e.button.y = pt.y;
+                }
+              } else {
+                touch_controls.handle_sdl_event(e, float(std::max(1, live_px_w)), float(std::max(1, live_px_h)),
+                                                vehicle.time());
+              }
             }
             auto ui_mouse_hit = [&](float mx, float my, carview::ui::HitZone& out) -> bool {
               int win_w = 0, win_h = 0;
@@ -11961,9 +12103,11 @@ int run_drive(int argc, char** argv) {
               };
               auto do_resume = [&]() {
                 drive::RewindCameraState cs;
-                if (rewind_buf.resume(vehicle, &cs)) {
+                double restored_race_clock = 0.0;
+                uint64_t snap_id = 0u;
+                if (rewind_buf.resume(vehicle, &cs, nullptr, &restored_race_clock, nullptr, nullptr, &snap_id)) {
                   particle_sys.clear();
-                  smashables.clear_debris();
+                  restore_world_rewind(snap_id, true);
                   skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();
@@ -11972,7 +12116,9 @@ int run_drive(int argc, char** argv) {
               };
               auto do_cancel = [&]() {
                 drive::RewindCameraState cs;
-                if (rewind_buf.cancel(vehicle, &cs)) {
+                uint64_t snap_id = 0u;
+                if (rewind_buf.cancel(vehicle, &cs, nullptr, nullptr, nullptr, nullptr, &snap_id)) {
+                  restore_world_rewind(snap_id, false);
                   skid_sys.break_all();
                   restore_camera(cs);
                   drawn_before = vehicle.pose();
@@ -11986,6 +12132,8 @@ int run_drive(int argc, char** argv) {
                   do_resume();
                 else if (rewind_buf.is_paused_at_keyframe() && (k == SDLK_BACKSPACE || k == SDLK_Y))
                   rewind_buf.rewind_further();
+                else if (rewind_buf.is_paused_at_keyframe() && (k == SDLK_V || k == SDLK_X))
+                  rewind_buf.request_view_replay();
                 else if (k == SDLK_ESCAPE || k == SDLK_B)
                   do_cancel();
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
@@ -11996,6 +12144,8 @@ int run_drive(int argc, char** argv) {
                          (b == SDL_GAMEPAD_BUTTON_NORTH ||
                           (rewind_buf.rewind_on_back() && b == SDL_GAMEPAD_BUTTON_BACK)))
                   rewind_buf.rewind_further();
+                else if (rewind_buf.is_paused_at_keyframe() && b == SDL_GAMEPAD_BUTTON_WEST)
+                  rewind_buf.request_view_replay();
                 else if (b == SDL_GAMEPAD_BUTTON_EAST)
                   do_cancel();
               }
@@ -12008,7 +12158,12 @@ int run_drive(int argc, char** argv) {
               cs.has_view = have_cam_view;
               cs.front_view = front;
               const double rc = race ? race->session().clock() : vehicle.time();
-              if (!rewind_buf.trigger(vehicle.time(), rc, vehicle, cs)) {
+              const auto sh = skill_tracker ? skill_tracker->hud() : freeroam::SkillHudState{};
+              const double sk_timer = skill_tracker ? skill_tracker->chain_remaining_s(vehicle.time()) : 0.0;
+              if (rewind_buf.trigger(vehicle.time(), rc, vehicle, cs, uint64_t(std::max(0, sh.chain_points)),
+                                     std::max(1, sh.multiplier), sk_timer)) {
+                capture_world_rewind(rewind_buf.cancel_snapshot_id());
+              } else {
                 if (!rewind_buf.enabled()) notice = "rewind is off", notice_until = vehicle.time() + 2;
               }
             };
@@ -12252,10 +12407,10 @@ int run_drive(int argc, char** argv) {
             }
           }
           if (!running) break;
-          // While minimized or fully occluded, idle lightly on SDL events instead of
-          // blocking in Vulkan/MoltenVK present queues (makes alt-tab back <50 ms).
-          if (window_minimized || window_occluded) {
-            SDL_WaitEventTimeout(nullptr, 16);
+          // While backgrounded (Android), minimized, or fully occluded, idle lightly on SDL
+          // events and skip all Vulkan submission (prevents VK_ERROR_SURFACE_LOST_KHR on Android).
+          if (app_lifecycle.backgrounded || window_minimized || window_occluded) {
+            SDL_WaitEventTimeout(nullptr, app_lifecycle.backgrounded ? 50 : 16);
             last = SDL_GetTicksNS();
             continue;
           }
@@ -12349,7 +12504,12 @@ int run_drive(int argc, char** argv) {
               cs.has_view = have_cam_view;
               cs.front_view = front;
               const double rc = race ? race->session().clock() : vehicle.time();
-              rewind_buf.trigger(vehicle.time(), rc, vehicle, cs);
+              const auto sh = skill_tracker ? skill_tracker->hud() : freeroam::SkillHudState{};
+              const double sk_timer = skill_tracker ? skill_tracker->chain_remaining_s(vehicle.time()) : 0.0;
+              if (rewind_buf.trigger(vehicle.time(), rc, vehicle, cs, uint64_t(std::max(0, sh.chain_points)),
+                                     std::max(1, sh.multiplier), sk_timer)) {
+                capture_world_rewind(rewind_buf.cancel_snapshot_id());
+              }
             }
             const carview::TouchDriveOutput to = touch_controls.output();
             if (to.active) {
@@ -12697,7 +12857,15 @@ int run_drive(int argc, char** argv) {
           }
           if (!menu_paused) rewind_buf.update(frame_dt);
           if (rewind_buf.consume_view_replay_request()) {
-            rewind_buf.cancel(vehicle);
+            drive::RewindCameraState cs;
+            uint64_t snap_id = 0u;
+            if (rewind_buf.cancel(vehicle, &cs, nullptr, nullptr, nullptr, nullptr, &snap_id)) {
+              restore_world_rewind(snap_id, false);
+              if (have_rig && cs.rig.has_value()) rig = *cs.rig;
+              if (cs.has_view) last_cam_view = cs.view, have_cam_view = true;
+              front = cs.front_view;
+              rig_accel.reset();
+            }
             open_replay_viewer(false);
           }
           if (replay_viewer.active() && !photo_mode.active()) {
@@ -12844,7 +13012,12 @@ int run_drive(int argc, char** argv) {
               cs.front_view = front;
               const double rc = race ? race->session().clock() : vehicle.time();
               const bool cap_ok = !race || (race->session().clock() >= 0.0 && !race->player_finished());
-              rewind_buf.record_step(vehicle.time(), rc, vehicle, cs, cap_ok);
+              const auto sh = skill_tracker ? skill_tracker->hud() : freeroam::SkillHudState{};
+              const double sk_timer = skill_tracker ? skill_tracker->chain_remaining_s(vehicle.time()) : 0.0;
+              const uint64_t captured_id = rewind_buf.record_step(
+                  vehicle.time(), rc, vehicle, cs, cap_ok, uint64_t(std::max(0, sh.chain_points)),
+                  std::max(1, sh.multiplier), sk_timer);
+              if (captured_id != 0u) capture_world_rewind(captured_id);
               // 60 Hz gameplay replay ring-buffer recording (player + opponents + nearby traffic).
               if (replay_rec.active()) {
                 uint8_t pl_place = 0;
@@ -13100,6 +13273,20 @@ int run_drive(int argc, char** argv) {
             vst.cockpit_view = cur_audio_view == audio::View::kCockpit;
             vst.in_race = race != nullptr;
             vst.rewinding = rewind_buf.is_rewinding();
+            if (race && race->is_showcase()) {
+              const auto& sc = race->showcase();
+              const auto& sp = sc.pose();
+              vst.showcase.active = true;
+              vst.showcase.kind = uint8_t(sc.spec().kind);
+              vst.showcase.pos = {float(sp.position[0]), float(sp.position[1]), float(sp.position[2])};
+              const double cp = std::cos(sp.pitch);
+              vst.showcase.vel = {float(std::sin(sp.heading) * cp * sp.speed_mps),
+                                  float(std::sin(sp.pitch) * sp.speed_mps),
+                                  float(std::cos(sp.heading) * cp * sp.speed_mps)};
+              vst.showcase.speed_mps = float(sp.speed_mps);
+              vst.showcase.bank = float(sp.roll);
+              vst.showcase.pitch = float(sp.pitch);
+            }
 
             // Gather up to kMaxOtherCars nearest race opponents and traffic cars for 3D audio.
             struct Cand {

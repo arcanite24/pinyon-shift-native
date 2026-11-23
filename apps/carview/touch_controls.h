@@ -225,4 +225,38 @@ const char* touch_steer_mode_name(TouchSteerMode m);
 bool parse_touch_visibility(const std::string& s, TouchVisibility& out);
 bool parse_touch_steer_mode(const std::string& s, TouchSteerMode& out);
 
+// Android / mobile SDL3 app lifecycle state machine (P0-8): cleanly pauses audio
+// & GPU submission on WILL/DID_ENTER_BACKGROUND, flushes saves, trims caches on
+// LOW_MEMORY, and schedules swapchain recreation + audio resume on foreground.
+struct AppLifecycleActions {
+  bool pause_audio = false;
+  bool resume_audio = false;
+  bool flush_save = false;
+  bool wait_gpu_idle = false;
+  bool recreate_swapchain = false;
+  bool reset_frame_clock = false;
+  bool trim_memory = false;
+  bool handled = false;
+};
+
+struct AppLifecycleState {
+  bool backgrounded = false;
+  bool audio_paused_by_bg = false;
+  uint32_t background_count = 0;
+  uint32_t foreground_count = 0;
+  uint32_t low_memory_count = 0;
+
+  AppLifecycleActions handle_event(uint32_t sdl_event_type, bool audio_was_running);
+};
+
+// Maps normalized SDL3 finger coordinates [0..1] to live window/pixel coordinates.
+struct TouchPixelPoint {
+  float x = 0.0f;
+  float y = 0.0f;
+};
+inline TouchPixelPoint touch_norm_to_coords(float nx, float ny, int live_w, int live_h) {
+  return {std::clamp(nx, 0.0f, 1.0f) * float(std::max(1, live_w)),
+          std::clamp(ny, 0.0f, 1.0f) * float(std::max(1, live_h))};
+}
+
 }  // namespace carview

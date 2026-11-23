@@ -212,6 +212,8 @@ class Renderer {
   // event loop stays instantly responsive on macOS MoltenVK and Windows.
   void set_window_focused(bool focused) { window_focused_ = focused; }
   bool window_focused() const { return window_focused_; }
+  // Marks the swapchain dirty for clean rebuild on the next draw (e.g. Android foreground resume).
+  void invalidate_swapchain() { swapchain_dirty_ = true; }
   uint32_t swapchain_recreate_count() const { return swapchain_recreate_count_; }
   uint32_t target_recreate_count() const { return target_recreate_count_; }
   static bool needs_swapchain_recreate(bool swapchain_dirty, bool has_swapchain, uint32_t cur_w, uint32_t cur_h,

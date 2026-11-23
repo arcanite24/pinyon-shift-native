@@ -322,4 +322,52 @@ void TouchControls::build_overlay(ui::List& l, float screen_w, float screen_h, d
   draw_touch_chip(l, lay.btn_pause, screen_w, screen_h, "II", false, ui4::kWhite, s);
 }
 
+AppLifecycleActions AppLifecycleState::handle_event(uint32_t sdl_event_type, bool audio_was_running) {
+  AppLifecycleActions act{};
+  switch (sdl_event_type) {
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+      act.handled = true;
+      if (!backgrounded) {
+        backgrounded = true;
+        ++background_count;
+        act.flush_save = true;
+        act.wait_gpu_idle = true;
+        if (audio_was_running) {
+          audio_paused_by_bg = true;
+          act.pause_audio = true;
+        }
+      }
+      break;
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+      act.handled = true;
+      backgrounded = true;
+      break;
+    case SDL_EVENT_WILL_ENTER_FOREGROUND:
+      act.handled = true;
+      act.recreate_swapchain = true;
+      break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+      act.handled = true;
+      if (backgrounded) {
+        backgrounded = false;
+        ++foreground_count;
+      }
+      act.recreate_swapchain = true;
+      act.reset_frame_clock = true;
+      if (audio_paused_by_bg) {
+        audio_paused_by_bg = false;
+        act.resume_audio = true;
+      }
+      break;
+    case SDL_EVENT_LOW_MEMORY:
+      act.handled = true;
+      ++low_memory_count;
+      act.trim_memory = true;
+      break;
+    default:
+      break;
+  }
+  return act;
+}
+
 }  // namespace carview

@@ -8,6 +8,7 @@
 #include <string>
 
 #include "platform_support.h"
+#include "showroom.h"
 #include "touch_controls.h"
 
 namespace {
@@ -193,6 +194,50 @@ void test_macos_shortcuts_and_portable() {
   std::printf("  [ok] macOS Cmd shortcuts & portable-path resolution\n");
 }
 
+void test_android_lifecycle_and_world_polish() {
+  // P0-8: Android WILL/DID_ENTER_BACKGROUND, FOREGROUND, LOW_MEMORY lifecycle state machine.
+  carview::AppLifecycleState lc;
+  assert(!lc.backgrounded);
+
+  auto a1 = lc.handle_event(SDL_EVENT_WILL_ENTER_BACKGROUND, /*audio_was_running=*/true);
+  assert(a1.handled && lc.backgrounded && lc.background_count == 1);
+  assert(a1.pause_audio && a1.flush_save && a1.wait_gpu_idle && !a1.resume_audio);
+
+  auto a2 = lc.handle_event(SDL_EVENT_DID_ENTER_BACKGROUND, /*audio_was_running=*/false);
+  assert(a2.handled && lc.backgrounded && !a2.pause_audio);
+
+  auto a3 = lc.handle_event(SDL_EVENT_LOW_MEMORY, /*audio_was_running=*/false);
+  assert(a3.handled && a3.trim_memory && lc.low_memory_count == 1);
+
+  auto a4 = lc.handle_event(SDL_EVENT_WILL_ENTER_FOREGROUND, /*audio_was_running=*/false);
+  assert(a4.handled && a4.recreate_swapchain);
+
+  auto a5 = lc.handle_event(SDL_EVENT_DID_ENTER_FOREGROUND, /*audio_was_running=*/false);
+  assert(a5.handled && !lc.backgrounded && lc.foreground_count == 1);
+  assert(a5.recreate_swapchain && a5.resume_audio && a5.reset_frame_clock);
+
+  // Touch normalized -> live window/pixel coordinates helper.
+  const auto pt = carview::touch_norm_to_coords(0.5f, 0.25f, 1920, 1080);
+  assert(std::fabs(pt.x - 960.0f) < 0.01f && std::fabs(pt.y - 270.0f) < 0.01f);
+
+  // P1: Smashed fence batch > 12 m is eligible for hiding; buildings/roads/terrain/sky are protected.
+  assert(carview::Showroom::is_smashable_prop_draw(1u, 0u, 3.0f, 2.0f, 1.0f));      // small sign
+  assert(carview::Showroom::is_smashable_prop_draw(1u, 0u, 36.0f, 2.2f, 0.8f));     // 36 m roadside fence batch!
+  assert(!carview::Showroom::is_smashable_prop_draw(1u, 0u, 22.0f, 14.0f, 18.0f));  // tall building protected
+  assert(!carview::Showroom::is_smashable_prop_draw(2u, 0u, 5.0f, 2.0f, 5.0f));     // sky protected
+  assert(!carview::Showroom::is_smashable_prop_draw(1048576u, 0u, 10.0f, 1.0f, 10.0f));  // road protected
+  assert(!carview::Showroom::is_smashable_prop_draw(8u, 0u, 10.0f, 1.0f, 10.0f));        // splat terrain protected
+  assert(!carview::Showroom::is_smashable_prop_draw(1u, 1u, 6.0f, 0.1f, 6.0f));          // decal protected
+
+  // P1: Showroom::Instance defaults fade_alpha = 1.0f and stores smooth fade values.
+  carview::Showroom::Instance inst{};
+  assert(inst.fade_alpha == 1.0f);
+  inst.fade_alpha = 0.35f;
+  assert(std::fabs(inst.fade_alpha - 0.35f) < 1e-6f);
+
+  std::printf("  [ok] Android lifecycle, touch coords, >12m fence hiding & smooth traffic fade\n");
+}
+
 }  // namespace
 
 int main() {
@@ -202,6 +247,7 @@ int main() {
   test_touch_thumbstick_tilt_and_overlay();
   test_android_presets_and_turnip();
   test_macos_shortcuts_and_portable();
+  test_android_lifecycle_and_world_polish();
   std::printf("platform_touch_tests: all passed.\n");
   return 0;
 }
