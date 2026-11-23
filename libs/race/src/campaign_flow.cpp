@@ -1081,6 +1081,12 @@ CampaignAction CampaignFlow::skip_onboarding_all() {
   out.swap_car = true;
   out.car_media = kCorradoMedia;
   out.car_id = kCorradoCarId;
+  out.teleport = true;
+  out.pos = festival_gate_;
+  out.heading = 3.14159265358979323846;
+  out.set_gps = true;
+  out.gps_label = "RACE CENTRAL  •  YELLOW WRISTBAND EVENTS";
+  out.gps_xz = {festival_gate_[0], festival_gate_[2]};
   out.grant_starter = true;
   out.collect_yellow_wristband = true;
   out.intro_completed = true;
@@ -1350,7 +1356,7 @@ bool CampaignFlow::jump_to_cli_stage(std::string_view cli_stage, CampaignAction&
   if (k == "viper_drive" || k == "viper" || k == "m0_intro") {
     out_action = enter_stage(CampaignStage::kViperIntroDrive, TransitionKind::kNone);
     stage_time_ = 2.4;  // HUD fully revealed + first Scott Tyler / Alice Hart call-in active
-    dist_to_festival_ = 2480.0;
+    dist_to_festival_ = std::hypot(festival_gate_[0] - viper_spawn_[0], festival_gate_[2] - viper_spawn_[2]);
     viper_beat_idx_ = 1;
     dialogs_.enqueue(
         {"cli_viper", CharacterId::kScottTyler, "", "", "AllComersEventActivated", "AliceOpeningInterview1",

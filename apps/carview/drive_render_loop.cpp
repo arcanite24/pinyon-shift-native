@@ -12,6 +12,8 @@
 
 namespace carview {
 
+void prime_world_and_snap_vehicle(DriveSession& s, std::array<double, 3> target_pos, double target_heading);
+
 void DriveSession::apply_story_action(const StoryAction& sa) {
             if (sa.play_fmv) {
               const auto mp = carview::FmvPlayer::resolve_movie(app.game_root_of(), sa.fmv_id);
@@ -24,12 +26,26 @@ void DriveSession::apply_story_action(const StoryAction& sa) {
             if (sa.enter_title_screen && !app.no_title) app.show_title = true;
             if (sa.swap_car && !sa.car_media.empty() && sa.car_media != app.car) {
               if (std::find(app.baked_cars.begin(), app.baked_cars.end(), sa.car_media) != app.baked_cars.end()) {
+                if (sa.teleport) {
+                  app.spawn[0] = sa.pos[0];
+                  app.spawn[1] = sa.pos[1];
+                  app.spawn[2] = sa.pos[2];
+                  app.spawn[3] = sa.heading;
+                  app.have_spawn = true;
+                  app.fast_travel = true;
+                }
                 app.next_car = sa.car_media;
                 running = false;
+                return;
               }
             }
             if (sa.teleport) {
-              vehicle.reset(drive::Vec3{sa.pos[0], sa.pos[1], sa.pos[2]}, sa.heading);
+              prime_world_and_snap_vehicle(*this, sa.pos, sa.heading);
+            }
+            if (sa.set_gps_target && app.gps_solver.ready()) {
+              const drive::Vec3 at = vehicle.position();
+              fire_satnav_event(app.gps_nav.set_destination(sa.gps_xz[0], sa.gps_xz[1], traffic::GpsDestKind::kFestival,
+                                                        "HORIZON FESTIVAL MAIN GATE", at.x, at.z));
             }
             if (sa.launch_qualify_race) {
               app.next_event = std::to_string(sa.qualify_route_id);
@@ -85,6 +101,7 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
                 app.spawn[2] = ca.pos[2];
                 app.spawn[3] = ca.heading;
                 app.have_spawn = true;
+                app.fast_travel = true;
               }
               if (ca.set_gps) {
                 app.pending_handoff.has_gps = true;
@@ -105,7 +122,7 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
             }
 
             if (ca.teleport) {
-              vehicle.reset(drive::Vec3{ca.pos[0], ca.pos[1], ca.pos[2]}, ca.heading);
+              prime_world_and_snap_vehicle(*this, ca.pos, ca.heading);
             }
             if (ca.set_gps && app.gps_solver.ready()) {
               const drive::Vec3 at = vehicle.position();
@@ -125,6 +142,19 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
               app.audio_host.radio_trigger_immediate("AliceOpeningInterview1");
             }
             if (ca.open_autoshow) app.pending_autoshow_open = true;
+            if (ca.enter_free_roam && app.race) {
+              app.campaign_owns_post_race = false;
+              results_page = 0;
+              if (!app.race->post_race_spawn(app.spawn)) {
+                const drive::Vec3 at = vehicle.position();
+                const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
+                app.spawn[0] = at.x, app.spawn[1] = at.y, app.spawn[2] = at.z, app.spawn[3] = std::atan2(f.x, f.z);
+              }
+              app.have_spawn = true;
+              app.fast_travel = true;
+              app.leave_race = true;
+              running = false;
+            }
 }
 
 void DriveSession::run_window_loop() {
@@ -179,18 +209,12 @@ void DriveSession::run_window_loop() {
             const DriveApp::PendingCampaignHandoff h = app.pending_handoff;
             app.pending_handoff = {};
             if (h.has_teleport) {
-              vehicle.reset(drive::Vec3{h.pos[0], h.pos[1], h.pos[2]}, h.heading);
+              prime_world_and_snap_vehicle(*this, h.pos, h.heading);
             }
             if (h.has_gps && app.gps_solver.ready()) {
               const drive::Vec3 at = vehicle.position();
               fire_satnav_event(app.gps_nav.set_destination(h.gps_xz[0], h.gps_xz[1], traffic::GpsDestKind::kFestival,
                                                         h.gps_label, at.x, at.z));
-            }
-            if (h.has_event && (!h.event_id.empty() || h.route_id > 0)) {
-              app.next_event = !h.event_id.empty() ? h.event_id : std::to_string(h.route_id);
-              app.next_event_fallback =
-                  (!h.event_id.empty() && h.route_id > 0) ? std::to_string(h.route_id) : std::string{};
-              running = false;
             }
             if (h.lock_viper_radio) {
               if (!app.audio_host.radio_select_station_by_name("Bass Arena")) {
@@ -199,6 +223,13 @@ void DriveSession::run_window_loop() {
               app.audio_host.radio_trigger_immediate("AliceOpeningInterview1");
             }
             if (h.open_autoshow) app.pending_autoshow_open = true;
+            if (h.has_event && (!h.event_id.empty() || h.route_id > 0)) {
+              app.next_event = !h.event_id.empty() ? h.event_id : std::to_string(h.route_id);
+              app.next_event_fallback =
+                  (!h.event_id.empty() && h.route_id > 0) ? std::to_string(h.route_id) : std::string{};
+              running = false;
+              break;
+            }
           }
           if (!queued_campaign_actions.empty()) {
             auto batch = std::move(queued_campaign_actions);
@@ -231,7 +262,10 @@ void DriveSession::run_window_loop() {
             } else if (app.story_intro_cli) {
               app.show_title = false;
               app.story_intro.reset();
-              apply_campaign_action(app.campaign.start_new_career(app.fmv_player, &app.audio_host));
+              std::array<double, 3> gate = {-1360.0, 2.0, -210.0};
+              if (const auto* rc = app.have_career_catalog ? app.career_catalog.find_site(race::FestivalSite::kRaceCentral) : nullptr)
+                gate = rc->pos;
+              apply_campaign_action(app.campaign.start_new_career(app.fmv_player, &app.audio_host, gate));
             } else if (!app.skip_intro_movies && app.show_title) {
               // StoryIntro strictly owns pre-Title boot-splash FMV playback ONLY;
               // CampaignDirector owns 100% of Minute-0 -> Endgame career onboarding.

@@ -275,16 +275,15 @@ void DriveSession::start_new_career() {
           app.have_garage = true;
           app.award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
           app.garage_picker();
-          // Spawn inside the Horizon Festival grounds near Race Central & FESTIVAL_SECOND.
-          if (const auto* rc = app.have_career_catalog ? app.career_catalog.find_site(race::FestivalSite::kRaceCentral) : nullptr) {
-            app.spawn[0] = rc->pos[0] - 40.0;
-            app.spawn[1] = rc->pos[1];
-            app.spawn[2] = rc->pos[2] - 45.0;
-            app.spawn[3] = 3.14;
-          } else {
-            app.spawn[0] = -890.0, app.spawn[1] = -8.0, app.spawn[2] = -305.0, app.spawn[3] = 3.14;
-          }
+          // Spawn directly on the verified Colorado Viper highway asphalt spawn and force
+          // synchronous world-streamer regather on hot-reload before frame 1 renders.
+          app.spawn[0] = race::CampaignFlow::kViperSpawnPos[0];
+          app.spawn[1] = race::CampaignFlow::kViperSpawnPos[1];
+          app.spawn[2] = race::CampaignFlow::kViperSpawnPos[2];
+          app.spawn[3] = race::CampaignFlow::kViperSpawnHeading;
           app.have_spawn = true;
+          app.fast_travel = true;
+          app.saved.has_spawn = false;
           app.show_title = false;
           app.title_menu_phase = false;
           app.title_confirm_new = false;
