@@ -152,8 +152,8 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   pl_ci.pSetLayouts = &sky_set_layout_;
   VK_TRY(vkCreatePipelineLayout(r_.device_, &pl_ci, nullptr, &sky_pipe_layout_), "sky pipeline layout");
 
-  // Stars pipeline layout: push constants (mat4 + vec4 = 80 bytes).
-  VkPushConstantRange star_pc{VK_SHADER_STAGE_VERTEX_BIT, 0, 80};
+  // Stars pipeline layout: push constants (mat4 + 2*vec4 = 96 bytes).
+  VkPushConstantRange star_pc{VK_SHADER_STAGE_VERTEX_BIT, 0, 96};
   VkPipelineLayoutCreateInfo spl_ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   spl_ci.pushConstantRangeCount = 1;
   spl_ci.pPushConstantRanges = &star_pc;
@@ -214,7 +214,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
     }
   }
 
-  // Create sky pipelines (base opaque + layers premultiplied alpha) & starfield point-list pipeline.
+  // Create sky pipelines (base opaque + layers premultiplied alpha) & starfield instanced-quad pipeline.
   auto make_mod = [&](const uint32_t* code, size_t bytes, VkShaderModule& m) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = bytes;
@@ -376,16 +376,14 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
     }
   }
 
-  // Starfield pipeline (point list, premultiplied alpha over sky atmosphere).
-  VkVertexInputBindingDescription star_bind{0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
+  // Starfield pipeline (instanced 6-vertex quads, premultiplied alpha over sky atmosphere).
+  VkVertexInputBindingDescription star_bind{0, 16, VK_VERTEX_INPUT_RATE_INSTANCE};
   VkVertexInputAttributeDescription star_attr{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0};
   VkPipelineVertexInputStateCreateInfo star_vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   star_vi.vertexBindingDescriptionCount = 1;
   star_vi.pVertexBindingDescriptions = &star_bind;
   star_vi.vertexAttributeDescriptionCount = 1;
   star_vi.pVertexAttributeDescriptions = &star_attr;
-  VkPipelineInputAssemblyStateCreateInfo pt_ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-  pt_ia.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
   const VkPipelineShaderStageCreateInfo star_stages[2] = {
       {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, stv, "main",
        &spec_vert},
@@ -393,7 +391,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
        &spec_frag}};
   gp.pStages = star_stages;
   gp.pVertexInputState = &star_vi;
-  gp.pInputAssemblyState = &pt_ia;
+  gp.pInputAssemblyState = &tri_ia;
   gp.layout = stars_pipe_layout_;
   if (res == VK_SUCCESS)
     res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &stars_pipe_);
@@ -541,23 +539,29 @@ void Showroom::record_sky_draw(VkCommandBuffer cmd) {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[disc], 0, nullptr);
   vkCmdDraw(cmd, 3, 1, 0, 0);
 
-  // 2. Stars.bin starfield point sprites (drawn only when StarFade > 0.005).
+  // 2. Stars.bin starfield instanced quads (drawn only when StarFade > 0.005).
   if (star_count_ > 0 && tod_state_.star_fade > 0.005f) {
     struct {
       float view_proj_rot[16];
       float params[4];
+      float viewport_inv[4];
     } spc{};
+    static_assert(sizeof(spc) == 96);
     multiply(frame_.view_projection, world_transform_, spc.view_proj_rot);
     spc.params[0] = tod_state_.star_fade;
     // Slow sidereal rotation: 15 deg/hour = 2*pi / 24h.
     spc.params[1] = tod_state_.tod_sec * (6.2831853f / 86400.0f);
     spc.params[2] = 2.6f;
     spc.params[3] = 1.0f;
+    const uint32_t vp_w = std::max(1u, r_.render_width());
+    const uint32_t vp_h = std::max(1u, r_.render_height());
+    spc.viewport_inv[0] = 1.0f / float(vp_w);
+    spc.viewport_inv[1] = 1.0f / float(vp_h);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, stars_pipe_);
     vkCmdPushConstants(cmd, stars_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(spc), &spc);
     VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &star_vertices_.buffer, &zero);
-    vkCmdDraw(cmd, star_count_, 1, 0, 0);
+    vkCmdDraw(cmd, 6, star_count_, 0, 0);
   }
 
   // 3. Sun/Moon disc + Far clouds (2 layers) + Close lit clouds (2 layers) + Horizon fog skirt.
