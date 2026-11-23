@@ -114,12 +114,21 @@ if(NOT WIN32)
   target_link_libraries(carview_render PUBLIC Threads::Threads)
 endif()
 
+add_library(carview_hud STATIC
+  game_hud_core.cpp
+  game_hud_race.cpp
+  game_hud_freeroam.cpp
+  game_hud_menus.cpp
+  hud_scene.cpp
+  rally_hub.cpp)
+set_target_properties(carview_hud PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(carview_hud PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(carview_hud PUBLIC fh1data shift_freeroam shift_race shift_garage shift_drive)
+
 set(carview_sources
   main.cpp
   car_model.cpp
   hud.cpp
-  game_hud.cpp
-  hud_scene.cpp
   process_time.cpp
   reference.cpp
   showroom_main.cpp
@@ -136,7 +145,6 @@ set(carview_sources
   career_page.cpp
   club_view.cpp
   events_page.cpp
-  rally_hub.cpp
   settings.cpp
   settings_page.cpp
   camera_editor.cpp
@@ -168,7 +176,7 @@ else()
       INSTALL_RPATH "@executable_path/../Frameworks")
   endif()
 endif()
-target_link_libraries(carview PRIVATE carview_render shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb shift_sqlite3)
+target_link_libraries(carview PRIVATE carview_render carview_hud shift_drive shift_world shift_audio shift_traffic shift_freeroam shift_race shift_profile shift_garage shift_stb shift_sqlite3)
 if(EXISTS "${PROJECT_SOURCE_DIR}/config/gamecontrollerdb.txt" AND NOT (ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE))
   add_custom_command(TARGET carview POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -239,6 +239,7 @@ struct DriveHud {
   double sponsor_at = -1e9;
   std::vector<NameTagHud> name_tags;
   double kmh = 0, rpm = 0, redline_rpm = 7000;
+  double rpm_rate = 0.0;  // smoothed RPM/s acceleration rate for the Horizon pink needle trail
   int gear = 1;
   bool abs = false;
   bool tcs = false;
