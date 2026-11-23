@@ -587,7 +587,10 @@ bool DriveApp::init(int& exit_code) {
       st.menu_selected = sel;
       const std::string f = career_png.string() + "_" + std::to_string(n) + ".png";
       const carview::CareerBoard board = career_board(page);
-      if (!write_menu_png(st, f, &board)) exit_code = 1; return false;
+      if (!write_menu_png(st, f, &board)) {
+        exit_code = 1;
+        return false;
+      }
       std::printf("career: %s\n", f.c_str());
       if (n == 0)
         std::printf("career:   %s  %d points (next %d)  %lld CR  winnings %lld CR  races %d wins %d podiums %d  "
@@ -807,46 +810,52 @@ bool DriveApp::init(int& exit_code) {
     tod_clock.set_hour(hour);
   }
   tod_clock.speed_scale = day_length_scale;
-  world::ParticleLibrary vfx_lib;
-  world::SmashableWorld smashables;
-  world::AnimatedWorldSystem world_anim;
-  {
-    const auto groot = game_root_of();
-    std::future<bool> fut_vfx, fut_sm;
-    std::string vfx_err, sm_err, tod_err, anim_err;
-    if (!groot.empty()) {
-      const auto media = groot / "media";
-      fut_vfx = std::async(std::launch::async, [&, media]() { return vfx_lib.load(media, world_dir, &vfx_err); });
-      fut_sm = std::async(std::launch::async, [&, media]() { return smashables.load(media, world_dir, &sm_err); });
+  colorado_world_dir = world_dir;
+  reload_world_assets(true);
+
+  return true;
+}
+
+void DriveApp::reload_world_assets(bool init_anim) {
+  const auto groot = game_root_of();
+  std::future<bool> fut_vfx, fut_sm;
+  std::string vfx_err, sm_err, tod_err, anim_err;
+  if (!groot.empty()) {
+    const auto media = groot / "media";
+    fut_vfx = std::async(std::launch::async, [&, media]() { return vfx_lib.load(media, world_dir, &vfx_err); });
+    fut_sm = std::async(std::launch::async, [&, media]() { return smashables.load(media, world_dir, &sm_err); });
+  }
+  tod_system = world::TodSystem{};
+  if (!world_dir.empty()) {
+    bool tod_ok = tod_system.load(world_dir, &tod_err);
+    if (!tod_ok && !colorado_world_dir.empty() && world_dir != colorado_world_dir) {
+      tod_ok = tod_system.load(colorado_world_dir, &tod_err);
     }
-    if (!world_dir.empty() && tod_system.load(world_dir, &tod_err)) {
+    if (tod_ok) {
       std::printf("tod: TimeOfDayA (%zu curves), zones %zu, LUTs %zu, sky %s (%zu stars)\n",
                   tod_system.preset_a.curves.size(), tod_system.zones.zones.size(), tod_system.zones.luts.size(),
                   tod_system.loaded_sky ? "realtimesky.zip" : "procedural", tod_system.sky_assets.stars.size());
     }
-    if (!groot.empty()) {
-      if (world_anim.init(groot / "media", tod_system.post_config, &anim_err)) {
-        const auto& cat = world_anim.catalog();
-        std::printf("world_anim: %zu spectator models (%d angles), %zu crowdclasses, %zu animated pgeo / %zu xds\n",
-                    cat.models.size(), cat.num_sprite_angles, cat.crowdclasses.size(), cat.animated_pgeos,
-                    cat.animated_xds);
-      }
-      if (fut_vfx.valid() && fut_vfx.get()) {
-        std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
-                    vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
-                    vfx_lib.smashable_effects().size());
-      }
-      if (fut_sm.valid() && fut_sm.get()) {
-        const auto c = smashables.definitions().counts();
-        std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
-                    c.top_level, c.total_children, smashables.coll_object_types().size(),
-                    smashables.placed_prop_count());
-      }
+  }
+  if (!groot.empty()) {
+    if (init_anim && world_anim.init(groot / "media", tod_system.post_config, &anim_err)) {
+      const auto& cat = world_anim.catalog();
+      std::printf("world_anim: %zu spectator models (%d angles), %zu crowdclasses, %zu animated pgeo / %zu xds\n",
+                  cat.models.size(), cat.num_sprite_angles, cat.crowdclasses.size(), cat.animated_pgeos,
+                  cat.animated_xds);
+    }
+    if (fut_vfx.valid() && fut_vfx.get()) {
+      std::printf("vfx: %zu effects, %zu xds textures, %zu world emitters, %zu smashable effects\n",
+                  vfx_lib.effects().size(), vfx_lib.xds_count(), vfx_lib.world_emitters().size(),
+                  vfx_lib.smashable_effects().size());
+    }
+    if (fut_sm.valid() && fut_sm.get()) {
+      const auto c = smashables.definitions().counts();
+      std::printf("smashables: %zu defs (%zu children), %zu CollObjects types, %zu placed props\n",
+                  c.top_level, c.total_children, smashables.coll_object_types().size(),
+                  smashables.placed_prop_count());
     }
   }
-  colorado_world_dir = world_dir;
-
-  return true;
 }
 
 bool DriveApp::handle_rally_world_switch() {
@@ -855,6 +864,7 @@ bool DriveApp::handle_rally_world_switch() {
     rally_world_switch = 0;
     race.reset();
     race_event.clear();
+    bool world_changed = false;
     if (dir > 0 && !rally_catalog.package_dir.empty()) {
       world_dir = rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "Tracks" / "ColoradoDirt";
       race_options.stage_world = world_dir;
@@ -864,6 +874,7 @@ bool DriveApp::handle_rally_world_switch() {
       rally_hub_open = true;
       rally_hub_selected = 0;
       rally_notice.clear();
+      world_changed = true;
       std::printf("rally: switched world to ColoradoDirt (%s)\n", world_dir.string().c_str());
     } else if (dir < 0 && !colorado_world_dir.empty()) {
       world_dir = colorado_world_dir;
@@ -880,7 +891,11 @@ bool DriveApp::handle_rally_world_switch() {
       rally_hub_open = false;
       rally_service_open = false;
       rally_results_open = false;
+      world_changed = true;
       std::printf("rally: returned to Colorado (%s)\n", world_dir.string().c_str());
+    }
+    if (world_changed) {
+      reload_world_assets(false);
     }
     return true;
   }

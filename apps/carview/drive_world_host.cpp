@@ -74,6 +74,7 @@ bool DriveWorldHost::open_world_and_car() {
     render_options.backface_cull = app.backface_cull;
     render_options.z_prepass = app.z_prepass;
     app.cli_graphics = carview::modern::clamp_graphics(app.cli_graphics);
+    active_graphics = app.cli_graphics;
     render_options.graphics = app.cli_graphics;
     render_options.vsync = app.cli_graphics.vsync;
     if (const char* pc_env = std::getenv("SHIFT_PIPELINE_CACHE"); pc_env && *pc_env) {

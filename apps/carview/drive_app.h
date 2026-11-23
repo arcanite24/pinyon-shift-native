@@ -165,6 +165,7 @@ struct DriveApp : DriveConfig {
   std::map<std::string, std::string> event_names;
   size_t event_pick = 0;
   std::string next_event;
+  std::string next_event_fallback;
   bool leave_race = false;
 
   freeroam::Collectibles collectibles;
@@ -231,6 +232,7 @@ struct DriveApp : DriveConfig {
   CareerSummary career_summary(std::vector<cars::PackInfo>& packs);
   CareerBoard career_board(const CareerPage& page);
   size_t garage_picker();
+  void reload_world_assets(bool init_anim);
   bool handle_rally_world_switch();
   void shutdown();
 };

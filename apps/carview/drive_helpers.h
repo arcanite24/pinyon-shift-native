@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -95,6 +96,17 @@ inline size_t sync_picker_index(const std::vector<std::string>& baked_cars,
   for (size_t k = 0; k < baked_cars.size(); ++k)
     if (baked_cars[k] == active_car_lower) return k;
   return 0;
+}
+
+// Parses "--size WxH" arguments strictly (rejecting zero dimensions or trailing junk).
+inline bool parse_size_arg(const char* arg, uint32_t& width, uint32_t& height) {
+  if (!arg || !*arg) return false;
+  uint32_t w = 0, h = 0;
+  char extra = 0;
+  if (std::sscanf(arg, "%ux%u%c", &w, &h, &extra) != 2 || w == 0 || h == 0) return false;
+  width = w;
+  height = h;
+  return true;
 }
 
 }  // namespace carview

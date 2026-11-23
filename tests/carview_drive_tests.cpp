@@ -146,6 +146,26 @@ void test_sync_picker_index() {
   CHECK(carview::sync_picker_index({}, {}, 1, "nis_skylinegtrvspecii_02") == 0);
 }
 
+void test_cli_size_parsing() {
+  uint32_t w = 960, h = 540;
+  CHECK(carview::parse_size_arg("1920x1080", w, h));
+  CHECK(w == 1920 && h == 1080);
+  CHECK(carview::parse_size_arg("1280x720", w, h));
+  CHECK(w == 1280 && h == 720);
+  CHECK(carview::parse_size_arg("3840x2160", w, h));
+  CHECK(w == 3840 && h == 2160);
+
+  // Invalid inputs must fail without corrupting previous dimensions.
+  CHECK(!carview::parse_size_arg("0x1080", w, h));
+  CHECK(!carview::parse_size_arg("1920x0", w, h));
+  CHECK(!carview::parse_size_arg("1920", w, h));
+  CHECK(!carview::parse_size_arg("bad", w, h));
+  CHECK(!carview::parse_size_arg("1920x1080px", w, h));
+  CHECK(!carview::parse_size_arg("", w, h));
+  CHECK(!carview::parse_size_arg(nullptr, w, h));
+  CHECK(w == 3840 && h == 2160);
+}
+
 }  // namespace
 
 int main() {
@@ -154,6 +174,7 @@ int main() {
   test_engine_audio_view();
   test_blend_traffic_pose();
   test_sync_picker_index();
+  test_cli_size_parsing();
   std::printf("carview_drive_tests: %d failure(s)\n", failures);
   return failures ? 1 : 0;
 }

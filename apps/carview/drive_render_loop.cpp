@@ -32,11 +32,9 @@ void DriveSession::apply_story_action(const StoryAction& sa) {
               vehicle.reset(drive::Vec3{sa.pos[0], sa.pos[1], sa.pos[2]}, sa.heading);
             }
             if (sa.launch_qualify_race) {
-              std::string why;
-              if (app.start_race(std::to_string(sa.qualify_route_id), why)) {
-                grid_menu_open = true;
-                grid_menu_selected = 0;
-              }
+              app.next_event = std::to_string(sa.qualify_route_id);
+              app.next_event_fallback.clear();
+              running = false;
             }
             if (sa.grant_starter) {
               app.award_garage_car(race::kStarterCarId, race::kStarterCarColour, true);
@@ -93,7 +91,7 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
                 app.pending_handoff.gps_label = ca.gps_label;
                 app.pending_handoff.gps_xz = ca.gps_xz;
               }
-              if (ca.launch_event && !ca.event_id.empty()) {
+              if (ca.launch_event && (!ca.event_id.empty() || ca.route_id > 0)) {
                 app.pending_handoff.has_event = true;
                 app.pending_handoff.event_id = ca.event_id;
                 app.pending_handoff.route_id = ca.route_id;
@@ -114,12 +112,11 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
               fire_satnav_event(app.gps_nav.set_destination(ca.gps_xz[0], ca.gps_xz[1], traffic::GpsDestKind::kFestival,
                                                         ca.gps_label, at.x, at.z));
             }
-            if (ca.launch_event && !ca.event_id.empty()) {
-              std::string why;
-              if (app.start_race(ca.event_id, why) || (ca.route_id > 0 && app.start_race(std::to_string(ca.route_id), why))) {
-                grid_menu_open = true;
-                grid_menu_selected = 0;
-              }
+            if (ca.launch_event && (!ca.event_id.empty() || ca.route_id > 0)) {
+              app.next_event = !ca.event_id.empty() ? ca.event_id : std::to_string(ca.route_id);
+              app.next_event_fallback =
+                  (!ca.event_id.empty() && ca.route_id > 0) ? std::to_string(ca.route_id) : std::string{};
+              running = false;
             }
             if (ca.lock_viper_radio) {
               if (!app.audio_host.radio_select_station_by_name("Bass Arena")) {
@@ -189,12 +186,11 @@ void DriveSession::run_window_loop() {
               fire_satnav_event(app.gps_nav.set_destination(h.gps_xz[0], h.gps_xz[1], traffic::GpsDestKind::kFestival,
                                                         h.gps_label, at.x, at.z));
             }
-            if (h.has_event && !h.event_id.empty()) {
-              std::string why;
-              if (app.start_race(h.event_id, why) || (h.route_id > 0 && app.start_race(std::to_string(h.route_id), why))) {
-                grid_menu_open = true;
-                grid_menu_selected = 0;
-              }
+            if (h.has_event && (!h.event_id.empty() || h.route_id > 0)) {
+              app.next_event = !h.event_id.empty() ? h.event_id : std::to_string(h.route_id);
+              app.next_event_fallback =
+                  (!h.event_id.empty() && h.route_id > 0) ? std::to_string(h.route_id) : std::string{};
+              running = false;
             }
             if (h.lock_viper_radio) {
               if (!app.audio_host.radio_select_station_by_name("Bass Arena")) {
@@ -631,7 +627,21 @@ void DriveSession::run_window_loop() {
                 car_damage.record_impact(0.0f, 0.5f, 1.5f, float(dv_car));
               }
               const auto& ws = vehicle.wheels();
-              const bool offroad = (ws[0].surface >= 2 || ws[2].surface >= 2);
+              const auto& col_surfs = host.collision.surfaces();
+              bool offroad = false;
+              for (int wi = 0; wi < drive::kWheels; ++wi) {
+                if (!ws[size_t(wi)].contact) continue;
+                const int si = ws[size_t(wi)].surface;
+                if (si >= 0 && size_t(si) < col_surfs.size()) {
+                  if (col_surfs[size_t(si)].off_roadness >= 0.5f) {
+                    offroad = true;
+                    break;
+                  }
+                } else if (si >= 2) {
+                  offroad = true;
+                  break;
+                }
+              }
               const std::array<double, 4> slips = {ws[0].slip_ratio, ws[1].slip_ratio, ws[2].slip_ratio, ws[3].slip_ratio};
               const double rpm_n = vehicle.rpm() / std::max(1000.0, vehicle.params().redline_rpm);
               car_damage.step(drive::Vehicle::kStep, vehicle.speed(), offroad, step_in.throttle, rpm_n, slips);

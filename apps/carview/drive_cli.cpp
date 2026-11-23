@@ -303,7 +303,10 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       career_png = next();
     }
     else if (a == "--size") {
-      if (std::sscanf(next(), "%ux%u", &width, &height) != 2 || !width || !height) exit_code = 2; return false;
+      if (!parse_size_arg(next(), width, height)) {
+        exit_code = 2;
+        return false;
+      }
       size_given = true;
     } else if (carview::modern::apply_graphics_option(cli_graphics, args, i)) {
       if (a == "--ssao") cli_ssao_explicit = true;

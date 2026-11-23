@@ -122,7 +122,7 @@ void DriveSession::init_session() {
         app.audio_host.clear_car();
       }
       if (app.skill_tracker) app.skill_tracker->reset_session_clock();
-      std::unique_ptr<TrafficView> traffic;
+      traffic.reset();
       if (app.status == 0 && app.race) {
         std::string e;
         if (!host.streamer || !app.race->load_cars(host.renderer, *host.ground, e)) {
@@ -205,7 +205,7 @@ void DriveSession::init_session() {
       app.new_career_save_pending = false;
       settings_page.set_available_luts(scan_lut_files(carview::settings_path().parent_path()));
       slice12.save_tree_label = (app.slice12_modded_save || app.mods_session.isolation().isolated) ? "user-modded" : "user";
-      LiveSettings boot_live_settings{};
+      boot_live_settings = {};
       {
         SettingsPage boot_sp;
         boot_sp.load(read_settings(settings_path(), nullptr));
@@ -267,7 +267,7 @@ void DriveSession::init_session() {
       cockpit_dial_max_speed = drive::CockpitAnimState::estimate_dial_max_speed_mps(vehicle.params());
       cockpit_dial_max_boost = drive::CockpitAnimState::gauge_max_boost_psi(vehicle.params());
       cockpit_has_fi = vehicle.params().has_turbo || vehicle.params().has_supercharger;
-      int light_override = 0;  // 0 auto, 1 low beam, 2 full beam, 3 fog
+      light_override = 0;  // 0 auto, 1 low beam, 2 full beam, 3 fog
       host.showroom.set_wind(app.tod_system.post_config.wind_speed, app.tod_system.post_config.wind_amplitude);
       if (app.have_saved && app.saved.has_controls) live_controls = app.saved.controls;
       {
@@ -490,12 +490,20 @@ void DriveSession::finalize_session(bool& session_again) {
         if (!app.next_event.empty()) {
           std::string why;
           const std::string id = app.next_event;
+          const std::string fallback_id = app.next_event_fallback;
           app.next_event.clear();
+          app.next_event_fallback.clear();
           if (app.race) app.race->release_models();
           app.race.reset();
+          std::string opened_id;
           if (app.start_race(id, why)) {
-            app.race_event = id;
-            std::printf("race: %s from the pause menu\n", id.c_str());
+            opened_id = id;
+          } else if (!fallback_id.empty() && fallback_id != id && app.start_race(fallback_id, why)) {
+            opened_id = fallback_id;
+          }
+          if (!opened_id.empty()) {
+            app.race_event = opened_id;
+            std::printf("race: %s via session hot-reload\n", opened_id.c_str());
           } else {
             std::fprintf(stderr, "carview: event %s: %s\n", id.c_str(), why.c_str());
             app.race_event.clear();
@@ -507,7 +515,7 @@ void DriveSession::finalize_session(bool& session_again) {
             }
           }
           session_again = true;
-          SDL_SetWindowTitle(app.window, ("carview drive - loading " + id).c_str());
+          SDL_SetWindowTitle(app.window, ("carview drive - loading " + (!opened_id.empty() ? opened_id : id)).c_str());
         }
         if (!app.next_car.empty()) {
           if (app.race) {
