@@ -183,7 +183,7 @@ static void test_synthetic_pi_and_tuning() {
 
 static void test_disc_pi_conversions_and_auto_upgrade() {
   using namespace garage;
-  const fs::path game_root = R"(C:\Users\neri\code\horizon1-recomp\.local\game\base)";
+  const fs::path game_root = R"(../horizon1-recomp/.local\game\base)";
   if (!fs::exists(game_root / "media" / "physics.zip")) {
     std::printf("pi_tuning_tests: skipping disc oracle checks (no game root)\n");
     return;
@@ -267,7 +267,7 @@ static void test_disc_pi_conversions_and_auto_upgrade() {
   }
 
   // Oracle check against user-modded PlayerDatabase.sqlite upgraded cars (if present).
-  const fs::path oracle_db = R"(C:\Users\neri\code\shift-engine\out\profile\user-modded\PlayerDatabase.sqlite)";
+  const fs::path oracle_db = R"(out\profile\user-modded\PlayerDatabase.sqlite)";
   if (fs::exists(oracle_db)) {
     sqlite3* odb = nullptr;
     if (sqlite3_open_v2(oracle_db.string().c_str(), &odb, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK) {

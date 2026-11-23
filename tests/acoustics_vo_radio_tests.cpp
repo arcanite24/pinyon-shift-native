@@ -242,7 +242,7 @@ void test_world_acoustics_and_reverb() {
   check(tail_e > 1e-4, "EnvironmentalReverb produces audible tunnel reverb tail");
 
   // Verify real disc files if available (24 reverb templates, 6 ambience templates, real RadioSystem + DialogueScript).
-  const std::filesystem::path game_root = "C:/Users/neri/code/horizon1-recomp/.local/game/base";
+  const std::filesystem::path game_root = "../horizon1-recomp/.local/game/base";
   std::error_code ec;
   if (std::filesystem::exists(game_root / "media/tracks/colorado/colorado_reverb.xml", ec)) {
     audio::WorldAcousticsData disc_ac;

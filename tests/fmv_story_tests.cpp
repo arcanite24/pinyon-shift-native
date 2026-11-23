@@ -97,7 +97,7 @@ void test_fmv_synthetic_and_audio_mix() {
 
 void test_fmv_real_wmv_if_available() {
   const std::filesystem::path sample =
-      "C:/Users/neri/code/horizon1-recomp/.local/game/base/media/ui/videos/splash_intros/Dolby_Corona_Intro.wmv";
+      "../horizon1-recomp/.local/game/base/media/ui/videos/splash_intros/Dolby_Corona_Intro.wmv";
   std::error_code ec;
   if (!std::filesystem::exists(sample, ec)) return;  // optional on machines without disc
   carview::FmvProbeInfo info;

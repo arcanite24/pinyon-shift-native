@@ -164,7 +164,7 @@ void test_disc_lamp_points_if_available() {
   std::filesystem::path game_root;
   if (env_root && *env_root) game_root = env_root;
   else {
-    const std::filesystem::path local_default = R"(c:\Users\neri\code\horizon1-recomp\.local\game\base)";
+    const std::filesystem::path local_default = R"(../horizon1-recomp/.local\game\base)";
     if (std::filesystem::exists(local_default / "media/cars/NIS_SkylineGTRVSpecII_02.zip")) game_root = local_default;
   }
   if (game_root.empty()) return;

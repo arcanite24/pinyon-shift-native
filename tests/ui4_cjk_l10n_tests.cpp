@@ -534,7 +534,7 @@ int main() {
   const char* env_root = std::getenv("SHIFT_GAME_ROOT");
   std::filesystem::path game_root =
       env_root && *env_root ? std::filesystem::path(env_root)
-                            : std::filesystem::path("C:/Users/neri/code/horizon1-recomp/.local/game/base");
+                            : std::filesystem::path("../horizon1-recomp/.local/game/base");
   const char* env_shot = std::getenv("SHIFT_SLICE9_SCREENSHOT_DIR");
   std::filesystem::path shot_dir = env_shot && *env_shot ? std::filesystem::path(env_shot) : std::filesystem::path{};
 

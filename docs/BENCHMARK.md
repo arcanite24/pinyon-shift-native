@@ -71,11 +71,11 @@ python tools/benchmark.py run \
 Each run writes individual `<scenario>_<preset>_<res>.{json,csv}` files, a
 combined `suite.json` bundle, `report.md`, and `report.html`.
 
-### Remote SSH Run (macOS `minivac`, Steam Deck, Linux hosts)
+### Remote SSH Run (macOS `mac-mini`, Steam Deck, Linux hosts)
 
 ```bash
 python tools/benchmark.py run \
-  --remote minivac \
+  --remote mac-mini \
   --bin ~/shift-engine/build/apps/carview/carview \
   --play ~/shift-play \
   --suite standard \
@@ -108,7 +108,7 @@ delta percentages:
 ```bash
 python tools/benchmark.py compare \
   out/benchmarks/desktop_rtx/suite.json \
-  out/benchmarks/m4_minivac/suite.json \
+  out/benchmarks/m4_mac_mini/suite.json \
   out/benchmarks/steam_deck/suite.json \
   --out out/benchmarks/comparison.md \
   --html out/benchmarks/comparison.html

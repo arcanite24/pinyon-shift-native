@@ -393,7 +393,7 @@ void test_achievements_system_and_persistence() {
 
 void test_optional_real_spa() {
   const std::filesystem::path state_root =
-      std::filesystem::path("c:/Users/neri/code/horizon1-recomp/.local/android/astra-state-20261008");
+      std::filesystem::path("../horizon1-recomp/.local/android/astra-state-20261008");
   if (!std::filesystem::exists(state_root)) return;
   fh1::SpaDatabase real_db;
   std::string note;

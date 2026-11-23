@@ -174,7 +174,7 @@ void test_disc_assets_if_available() {
   if (env_root && *env_root) {
     game_root = env_root;
   } else {
-    const std::filesystem::path local_default = R"(c:\Users\neri\code\horizon1-recomp\.local\game\base)";
+    const std::filesystem::path local_default = R"(../horizon1-recomp/.local\game\base)";
     if (std::filesystem::exists(local_default / "media/tracks/colorado/Ribbon_00/TimeOfDayA.xml"))
       game_root = local_default;
   }

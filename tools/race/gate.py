@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-GAME = os.environ.get("SHIFT_GAME_ROOT", "C:/Users/neri/code/horizon1-recomp/.local/game/base")
+GAME = os.environ.get("SHIFT_GAME_ROOT", "")
 RESULT = re.compile(r"^\s+P(\d+)\s+(\S+)\s+best\s+\S+\s+slot (\d+)\s+(\d+) m\s+(player|AI)")
 
 

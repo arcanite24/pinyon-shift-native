@@ -190,7 +190,7 @@ std::vector<uint8_t> backdrop(const std::vector<fs::path>& candidates) {
 
 fs::path find_game_root() {
   if (const char* g = std::getenv("SHIFT_GAME_ROOT")) return g;
-  for (const char* p : {R"(C:\Users\neri\code\horizon1-recomp\.local\game\base)", "../horizon1-recomp/.local/game/base"})
+  for (const char* p : {R"(../horizon1-recomp/.local\game\base)", "../horizon1-recomp/.local/game/base"})
     if (fs::exists(fs::path(p) / "media" / "UI.zip")) return p;
   return {};
 }
@@ -370,8 +370,8 @@ int main() {
     const fs::path out(shots);
     fs::create_directories(out, ec);
     load_game_ui(game);
-    const std::vector<fs::path> bgs = {R"(C:\Users\neri\code\shift-engine\out\play\r34_00000.png)",
-                                       R"(C:\Users\neri\code\shift-engine\out\play\h_00000.png)"};
+    const std::vector<fs::path> bgs = {R"(out\play\r34_00000.png)",
+                                       R"(out\play\h_00000.png)"};
     carview::ui::List l;
     // Select the Skyline mod so its details (database patch, save copy) show.
     while (mods_page.selected() != 0) mods_page.nav(carview::Nav::kUp);

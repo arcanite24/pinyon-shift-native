@@ -47,15 +47,15 @@ int g_failed = 0;
 namespace fs = std::filesystem;
 
 fs::path find_game_root() {
-  for (const char* p : {R"(C:\Users\neri\code\horizon1-recomp\.local\game\base)",
-                        R"(C:\Users\neri\code\shift-engine\.local\game\base)"}) {
+  for (const char* p : {R"(../horizon1-recomp/.local\game\base)",
+                        R"(.local\game\base)"}) {
     if (fs::exists(fs::path(p) / "media" / "db" / "gamedb.slt")) return p;
   }
   return {};
 }
 
 fs::path find_bake_dir() {
-  for (const char* p : {R"(C:\Users\neri\code\shift-engine\out\bake)"}) {
+  for (const char* p : {R"(out\bake)"}) {
     if (fs::exists(fs::path(p) / "shared.shiftbake")) return p;
   }
   return {};

@@ -8,8 +8,8 @@ Usage:
   python tools/benchmark.py run --bin build-bench/apps/carview/carview.exe \\
       --play out/play --suite quick --device-label "Desktop RTX" --out out/benchmarks
 
-  # Run remotely over SSH (e.g. macOS minivac or Steam Deck) and pull back JSON/CSV:
-  python tools/benchmark.py run --remote minivac --bin ~/shift-engine/build/apps/carview/carview \\
+  # Run remotely over SSH (e.g. macOS host or Steam Deck) and pull back JSON/CSV:
+  python tools/benchmark.py run --remote mac-mini --bin ~/shift-engine/build/apps/carview/carview \\
       --play ~/shift-play --suite standard --device-label "M4 Mac mini" --out out/benchmarks
 
   # Compare two or more benchmark runs or suites (Markdown + dark-mode HTML dashboard):
@@ -1292,8 +1292,8 @@ def run_self_test() -> int:
     )
     assert "--bench-scenario" in cmd and "noon_cruise" in cmd
     assert "--bench-full-fx" in cmd and "--bench-audio" in cmd
-    ssh_cmd = build_remote_ssh_command("minivac", cmd, ["-p", "2222"])
-    assert ssh_cmd[:4] == ["ssh", "-p", "2222", "minivac"]
+    ssh_cmd = build_remote_ssh_command("mac-mini", cmd, ["-p", "2222"])
+    assert ssh_cmd[:4] == ["ssh", "-p", "2222", "mac-mini"]
     assert "'M4 Mac mini'" in ssh_cmd[4]
 
     # 3. Single-run & suite-bundle loading + Markdown & HTML generation

@@ -345,8 +345,8 @@ void test_hidden_cars_unlock_and_exclusions() {
 
 fs::path find_game_root() {
   if (const char* e = std::getenv("SHIFT_GAME_ROOT"); e && *e && fs::exists(fs::path(e) / "media")) return e;
-  for (const char* p : {R"(C:\Users\neri\code\horizon1-recomp\.local\game\base)",
-                        R"(C:\Users\neri\code\shift-engine\.local\game\base)"}) {
+  for (const char* p : {R"(../horizon1-recomp/.local\game\base)",
+                        R"(.local\game\base)"}) {
     if (fs::exists(fs::path(p) / "media")) return p;
   }
   return {};

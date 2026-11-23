@@ -329,7 +329,7 @@ void test_db_patches() {
 
 fs::path find_game_root() {
   if (const char* g = std::getenv("SHIFT_GAME_ROOT")) return g;
-  for (const char* p : {R"(C:\Users\neri\code\horizon1-recomp\.local\game\base)", "../horizon1-recomp/.local/game/base"})
+  for (const char* p : {R"(../horizon1-recomp/.local\game\base)", "../horizon1-recomp/.local/game/base"})
     if (fs::exists(fs::path(p) / "media" / "db" / "gamedb.slt")) return p;
   return {};
 }
