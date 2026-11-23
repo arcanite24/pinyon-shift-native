@@ -26,8 +26,7 @@ float linear_depth(vec2 uv) {
   return (near_p * far_p) / max(far_p - z * (far_p - near_p), 1e-4);
 }
 
-vec3 view_pos(vec2 uv) {
-  float d = linear_depth(uv);
+vec3 view_pos_from_depth(vec2 uv, float d) {
   vec2 ndc = uv * 2.0 - 1.0;
   float p00 = abs(pc.proj_params.x) > 1e-4 ? pc.proj_params.x : 1.0;
   float p11 = abs(pc.proj_params.y) > 1e-4 ? pc.proj_params.y : -1.0;
@@ -45,7 +44,7 @@ float compute_sao(vec2 uv) {
   float center_d = linear_depth(uv);
   if (center_d > 500.0) return 1.0;
 
-  vec3 P = view_pos(uv);
+  vec3 P = view_pos_from_depth(uv, center_d);
   vec3 dPdx = dFdx(P);
   vec3 dPdy = dFdy(P);
   vec3 N = cross(dPdy, dPdx);
@@ -74,7 +73,7 @@ float compute_sao(vec2 uv) {
     vec2 suv = clamp(uv + dir * (screen_r * alpha), vec2(0.002), vec2(0.998));
     float sd = linear_depth(suv);
     if (sd > 500.0) continue;
-    vec3 Q = view_pos(suv);
+    vec3 Q = view_pos_from_depth(suv, sd);
     vec3 V = Q - P;
     float vv = dot(V, V);
     float vn = dot(V, N);

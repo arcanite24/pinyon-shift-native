@@ -189,4 +189,25 @@ bool apply_graphics_option(GraphicsSettings& s, const std::vector<std::string>& 
 const std::vector<std::string>& graphics_option_names();
 GraphicsSettings clamp_graphics(GraphicsSettings s);
 
+// ---- Persistent VkPipelineCache file envelope (vendor/device/UUID validated) ----------------
+struct PipelineCacheKey {
+  uint32_t vendor_id = 0;
+  uint32_t device_id = 0;
+  std::array<uint8_t, 16> uuid{};
+  bool operator==(const PipelineCacheKey&) const = default;
+};
+std::vector<uint8_t> encode_pipeline_cache_file(const PipelineCacheKey& key, const uint8_t* payload, size_t size);
+bool decode_pipeline_cache_file(const uint8_t* file_data, size_t file_size, const PipelineCacheKey& expected,
+                                std::vector<uint8_t>& payload_out);
+
+// ---- Split bindless descriptor limits (1x SAMPLER + SAMPLED_IMAGE[N]) -----------------------
+// Replaces the old COMBINED_IMAGE_SAMPLER[4096] check so MoltenVK (Apple Silicon)
+// and Android Turnip/Adreno GPUs with 16..2048 per-stage samplers qualify for WorldGpu.
+struct SplitBindlessLimits {
+  uint32_t max_per_stage_samplers = 0;
+  uint32_t max_per_stage_sampled_images = 0;
+  uint32_t max_set_sampled_images = 0;
+};
+bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t texture_slots = 4096);
+
 }  // namespace carview::modern

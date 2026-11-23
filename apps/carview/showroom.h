@@ -545,18 +545,20 @@ class Showroom {
   void stop_reaper();
   bool upload_environment(std::string& error);
   bool create_pipelines(std::string& error);
-  void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass);
+  void record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass, int pass_mode = 0);
   void record_z_prepass(VkCommandBuffer cmd);
-  void record_all_instances(VkCommandBuffer cmd, bool depth_equal);
+  void record_all_instances(VkCommandBuffer cmd, bool depth_equal, int pass_mode = 0);
   void record_world(VkCommandBuffer cmd);
+  void record_world_opaque(VkCommandBuffer cmd);
+  void record_world_blended(VkCommandBuffer cmd);
   // The eye in a scenery's frame, and whether a cell of LOD00 copies lies
   // wholly past the LOD band (showroom.cpp).
   std::array<float, 3> eye_in_scenery(const float transform[16]) const;
   bool near_lod_beyond(const WorldGeometry::Draw& d, const std::array<float, 3>& eye) const;
   // One scenery's textured draws; swap: world.frag's dither (2 none, t in
-  // 0-1 the incoming scenery, 3 + t the outgoing one).
+  // 0-1 the incoming scenery, 3 + t the outgoing one). pass_mode: 0 all, 1 opaque/cutout, 2 blended.
   void record_world_textured(VkCommandBuffer cmd, const std::vector<WorldGeometry::Draw>& draws,
-                             const float transform[16], float swap, bool outgoing);
+                             const float transform[16], float swap, bool outgoing, int pass_mode = 0);
   void drop_fading_world(bool now);
   // Uploads the textures not in the cache and gives each a material set.
   bool upload_world_textures(const std::vector<std::shared_ptr<const WorldTextureData>>& textures,
@@ -690,8 +692,9 @@ class Showroom {
   bool world_textured_ = false;
   bool draw_car_ = true;
   VkPipeline world_opaque_ = VK_NULL_HANDLE, world_opaque_after_z_ = VK_NULL_HANDLE,
-             world_z_prepass_ = VK_NULL_HANDLE, world_coverage_ = VK_NULL_HANDLE,
-             world_alpha_ = VK_NULL_HANDLE;
+             world_opaque_dither_ = VK_NULL_HANDLE, world_z_prepass_ = VK_NULL_HANDLE,
+             world_coverage_ = VK_NULL_HANDLE, world_alpha_ = VK_NULL_HANDLE;
+  float current_world_swap_ = 2.0f;
   std::map<uint32_t, GpuTexture> world_textures_;     // by texture record
   // Held for writes to world_textures_ and for the worker's reads.
   mutable std::mutex world_textures_mutex_;

@@ -12,6 +12,7 @@
 #include "tree_cull_comp_spv.h"
 #include "world_cull_comp_spv.h"
 #include "world_gpu_frag_spv.h"
+#include "world_gpu_opaque_frag_spv.h"
 #include "world_gpu_vert_spv.h"
 #include "world_tree_gpu_vert_spv.h"
 
@@ -95,7 +96,8 @@ WorldGpu::~WorldGpu() {
   }
   if (hiz_sampler_) vkDestroySampler(d, hiz_sampler_, nullptr);
   r_.destroy_image(hiz_image_);
-  for (VkPipeline p : {opaque_, opaque_after_z_, z_prepass_, coverage_, tree_coverage_, cull_, tree_cull_, hiz_gen_}) {
+  for (VkPipeline p :
+       {opaque_, opaque_after_z_, opaque_dither_, z_prepass_, coverage_, tree_coverage_, cull_, tree_cull_, hiz_gen_}) {
     if (p) vkDestroyPipeline(d, p, nullptr);
   }
   if (layout_) vkDestroyPipelineLayout(d, layout_, nullptr);
@@ -130,28 +132,37 @@ bool WorldGpu::init(const Setup& setup, std::string& error) {
     error = "world arena buffers";
     return false;
   }
-  // Bindless array (set 1).
+  // Split bindless array (set 1): binding 0 = 1x immutable SAMPLER,
+  // binding 1 = SAMPLED_IMAGE[kMaxTextures] (keeps per-stage sampler count = 1
+  // for Apple Silicon MoltenVK and Android Turnip/Adreno GPUs).
   {
-    VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures,
-                                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    const VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-                                           VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
-                                           VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+    const VkDescriptorSetLayoutBinding bindings[2] = {
+        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &setup.sampler},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxTextures, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    };
+    const VkDescriptorBindingFlags flags[2] = {
+        0,
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+            VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT,
+    };
     VkDescriptorSetLayoutBindingFlagsCreateInfo bf{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
-    bf.bindingCount = 1;
-    bf.pBindingFlags = &flags;
+    bf.bindingCount = 2;
+    bf.pBindingFlags = flags;
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.pNext = &bf;
     li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    li.bindingCount = 1;
-    li.pBindings = &b;
+    li.bindingCount = 2;
+    li.pBindings = bindings;
     WG_TRY(vkCreateDescriptorSetLayout(d, &li, nullptr, &bindless_layout_), "bindless layout");
-    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures};
+    const VkDescriptorPoolSize sizes[2] = {
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxTextures},
+    };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pi.maxSets = 1;
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &size;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = sizes;
     WG_TRY(vkCreateDescriptorPool(d, &pi, nullptr, &bindless_pool_), "bindless pool");
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = bindless_pool_;
@@ -159,14 +170,14 @@ bool WorldGpu::init(const Setup& setup, std::string& error) {
     ai.pSetLayouts = &bindless_layout_;
     WG_TRY(vkAllocateDescriptorSets(d, &ai, &bindless_set_), "bindless set");
     std::vector<VkDescriptorImageInfo> infos(kMaxTextures,
-                                             {setup.sampler, setup.white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+                                             {VK_NULL_HANDLE, setup.white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
     infos[kDefaultBlack].imageView = setup.black;
     infos[kDefaultFlatNormal].imageView = setup.flat_normal ? setup.flat_normal : setup.white;
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = bindless_set_;
-    w.dstBinding = 0;
+    w.dstBinding = 1;
     w.descriptorCount = kMaxTextures;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     w.pImageInfo = infos.data();
     vkUpdateDescriptorSets(d, 1, &w, 0, nullptr);
   }
@@ -295,10 +306,12 @@ bool WorldGpu::create_pipelines(std::string& error) {
     return vkCreateShaderModule(d, &info, nullptr, &out);
   };
   VkShaderModule vert = VK_NULL_HANDLE, tree_vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE,
-                 cull_comp = VK_NULL_HANDLE, tree_comp = VK_NULL_HANDLE, hiz_comp = VK_NULL_HANDLE;
+                 frag_opaque = VK_NULL_HANDLE, cull_comp = VK_NULL_HANDLE, tree_comp = VK_NULL_HANDLE,
+                 hiz_comp = VK_NULL_HANDLE;
   WG_TRY(module(kWorld_gpu_vert_spv, sizeof(kWorld_gpu_vert_spv), vert), "world_gpu.vert");
   WG_TRY(module(kWorld_tree_gpu_vert_spv, sizeof(kWorld_tree_gpu_vert_spv), tree_vert), "world_tree_gpu.vert");
   WG_TRY(module(kWorld_gpu_frag_spv, sizeof(kWorld_gpu_frag_spv), frag), "world_gpu.frag");
+  WG_TRY(module(kWorld_gpu_opaque_frag_spv, sizeof(kWorld_gpu_opaque_frag_spv), frag_opaque), "world_gpu_opaque.frag");
   WG_TRY(module(kWorld_cull_comp_spv, sizeof(kWorld_cull_comp_spv), cull_comp), "world_cull.comp");
   WG_TRY(module(kTree_cull_comp_spv, sizeof(kTree_cull_comp_spv), tree_comp), "tree_cull.comp");
   WG_TRY(module(kHiz_gen_comp_spv, sizeof(kHiz_gen_comp_spv), hiz_comp), "hiz_gen.comp");
@@ -308,7 +321,7 @@ bool WorldGpu::create_pipelines(std::string& error) {
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
                 "main", nullptr};
     ci.layout = playout;
-    return vkCreateComputePipelines(d, VK_NULL_HANDLE, 1, &ci, nullptr, &out);
+    return vkCreateComputePipelines(d, r_.pipeline_cache(), 1, &ci, nullptr, &out);
   };
   VkResult result = make_comp(cull_comp, cull_pipeline_layout_, cull_);
   if (result == VK_SUCCESS) result = make_comp(tree_comp, cull_pipeline_layout_, tree_cull_);
@@ -393,14 +406,15 @@ bool WorldGpu::create_pipelines(std::string& error) {
     info.pColorBlendState = &cblend;
     info.pDynamicState = &dynamic;
     info.layout = layout_;
-    return vkCreateGraphicsPipelines(d, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+    return vkCreateGraphicsPipelines(d, r_.pipeline_cache(), 1, &info, nullptr, &out);
   };
 
   const VkCullModeFlags opaque_cull = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
   const VkCompareOp less_eq = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
-  if (result == VK_SUCCESS) result = build(vert, frag, input, opaque_cull, false, true, less_eq, true, opaque_);
+  if (result == VK_SUCCESS) result = build(vert, frag_opaque, input, opaque_cull, false, true, less_eq, true, opaque_);
   if (result == VK_SUCCESS)
-    result = build(vert, frag, input, opaque_cull, false, false, VK_COMPARE_OP_EQUAL, true, opaque_after_z_);
+    result = build(vert, frag_opaque, input, opaque_cull, false, false, VK_COMPARE_OP_EQUAL, true, opaque_after_z_);
+  if (result == VK_SUCCESS) result = build(vert, frag, input, opaque_cull, false, true, less_eq, true, opaque_dither_);
   if (result == VK_SUCCESS)
     result = build(vert, VK_NULL_HANDLE, input, opaque_cull, false, true, less_eq, false, z_prepass_);
   if (result == VK_SUCCESS)
@@ -411,6 +425,7 @@ bool WorldGpu::create_pipelines(std::string& error) {
   vkDestroyShaderModule(d, vert, nullptr);
   vkDestroyShaderModule(d, tree_vert, nullptr);
   vkDestroyShaderModule(d, frag, nullptr);
+  vkDestroyShaderModule(d, frag_opaque, nullptr);
   vkDestroyShaderModule(d, cull_comp, nullptr);
   vkDestroyShaderModule(d, tree_comp, nullptr);
   vkDestroyShaderModule(d, hiz_comp, nullptr);
@@ -520,13 +535,13 @@ uint32_t WorldGpu::add_texture(uint32_t record, VkImageView view) {
   } else {
     return kDefaultWhite;
   }
-  VkDescriptorImageInfo info{setup_.sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo info{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
   w.dstSet = bindless_set_;
-  w.dstBinding = 0;
+  w.dstBinding = 1;
   w.dstArrayElement = slot;
   w.descriptorCount = 1;
-  w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
   w.pImageInfo = &info;
   vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
   texture_slots_[record] = slot;
@@ -544,13 +559,13 @@ void WorldGpu::remove_texture(uint32_t record) {
   }
   setup_.retire([this, slot] {
     std::lock_guard<std::mutex> lock(mutex_);
-    VkDescriptorImageInfo info{setup_.sampler, setup_.white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo info{VK_NULL_HANDLE, setup_.white, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = bindless_set_;
-    w.dstBinding = 0;
+    w.dstBinding = 1;
     w.dstArrayElement = slot;
     w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     w.pImageInfo = &info;
     vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
     free_slots_.push_back(slot);
@@ -803,7 +818,9 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
   VkPipeline bound = VK_NULL_HANDLE;
-  const VkPipeline op_pipe = (p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_;
+  const VkPipeline op_pipe = (p.swap < 1.5f && opaque_dither_)
+                                 ? opaque_dither_
+                                 : ((p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_);
   for (uint32_t b = 0; b < gpuworld::kBatchCount; ++b) {
     const VkPipeline pipeline = b >= gpuworld::kCutout ? coverage_ : op_pipe;
     if (pipeline != bound) {

@@ -2,6 +2,9 @@
 #ifdef GPU_DRIVEN
 #extension GL_EXT_nonuniform_qualifier : require
 #endif
+#ifdef OPAQUE_NO_DISCARD
+layout(early_fragment_tests) in;
+#endif
 // carview: Colorado's first-pass shading (WORLD-MATERIALS, "Minimal
 // recipe"): slot 0's texture (sRGB when its format word says gamma) lit by
 // the frame's sun and two-colour sky. Not the game's shading: no layer
@@ -56,9 +59,10 @@ layout(set = 0, binding = 4) uniform Headlights {
 } headlights;
 
 #ifdef GPU_DRIVEN
-// Bindless (world_gpu.cpp): the world's textures in one array, picked by the
-// draw's table row; the names below keep the code that samples them as it was.
-layout(set = 1, binding = 0) uniform sampler2D textures[];
+// Bindless (world_gpu.cpp): one shared sampler + array of sampled images
+// (split descriptors keep per-stage sampler count at 1 for MoltenVK/Android).
+layout(set = 1, binding = 0) uniform sampler world_sampler;
+layout(set = 1, binding = 1) uniform texture2D textures[];
 struct DrawGpu {
   vec4 tint;
   vec4 params;
@@ -86,14 +90,14 @@ struct DrawView {
 };
 DrawView draw;
 uvec4 g_tex0, g_tex1;
-#define albedo textures[nonuniformEXT(g_tex0.x)]
-#define layer_b textures[nonuniformEXT(g_tex0.y)]
-#define splat_map textures[nonuniformEXT(g_tex0.z)]
-#define light_map textures[nonuniformEXT(g_tex0.w)]
-#define normal_map textures[nonuniformEXT(g_tex1.x)]
-#define ao_map textures[nonuniformEXT(g_tex1.y)]
-#define layer_c textures[nonuniformEXT(g_tex1.z)]
-#define spec_map textures[nonuniformEXT(g_tex1.w >> 1u)]
+#define albedo sampler2D(textures[nonuniformEXT(g_tex0.x)], world_sampler)
+#define layer_b sampler2D(textures[nonuniformEXT(g_tex0.y)], world_sampler)
+#define splat_map sampler2D(textures[nonuniformEXT(g_tex0.z)], world_sampler)
+#define light_map sampler2D(textures[nonuniformEXT(g_tex0.w)], world_sampler)
+#define normal_map sampler2D(textures[nonuniformEXT(g_tex1.x)], world_sampler)
+#define ao_map sampler2D(textures[nonuniformEXT(g_tex1.y)], world_sampler)
+#define layer_c sampler2D(textures[nonuniformEXT(g_tex1.z)], world_sampler)
+#define spec_map sampler2D(textures[nonuniformEXT(g_tex1.w >> 1u)], world_sampler)
 layout(location = 6) flat in uint v_draw;
 #else
 layout(set = 1, binding = 0) uniform sampler2D albedo;
@@ -325,6 +329,7 @@ void main() {
     out_color = vec4(out_rgb(sky_grade(sky_colour(normalize(v_position), normalize(draw.up.xyz), normalize(draw.sun.xyz)))), 1.0);
     return;
   }
+#ifndef OPAQUE_NO_DISCARD
   // Cross-fades by the screen door (ours). A swapped-in scenery takes the
   // pixels under t, the one it replaces the rest (sun.w: 2 none, t, 3 + t).
   // A prop's LOD00 gives way to its LOD02 over the LOD band, and the far
@@ -336,6 +341,7 @@ void main() {
     float s = v_fade.x, e = v_fade.y;
     if ((flags & kFlagLodNear) != 0u ? door < s : door < e || ((flags & kFlagLodFar) != 0u && door >= s)) discard;
   }
+#endif
   // Terrain layers (WORLD-MATERIALS, Terrain shading): tint holds the
   // tilings, Blend_A's in xy and Blend_B's in zw; the weight is the vertex
   // colour's R (H_VBLND, baked from c4) or Splat's R (H_BLND2/3, uv1
@@ -438,6 +444,10 @@ void main() {
     out_color = vec4(out_rgb(t.rgb * draw.up.w), 0.0);
     return;
   }
+#ifndef OPAQUE_NO_DISCARD
+  // Execute cutout alpha-test before normal mapping, shadows, specular, and headlights.
+  if (blend == kCoverage && (flags & kFlagAlphaTest) != 0u && t.a < 0.5) discard;
+#endif
   // Tree sprites: linearize sRGB vertex tint before multiplying linear atlas albedo (2x RGB).
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * pow(v_colour.rgb, vec3(2.2));
 
@@ -522,10 +532,9 @@ void main() {
   colour = apply_haze(colour, v_position, up, sun);
 
   float alpha = 1.0;
+#ifndef OPAQUE_NO_DISCARD
   if (blend == kCoverage) {
-    // Without MSAA there is no alpha to coverage: an alpha test at one half.
-    if ((flags & kFlagAlphaTest) != 0u && t.a < 0.5) discard;
-    // Alpha to coverage, sharpened to the texel edge.
+    // Alpha to coverage, sharpened to the texel edge (alpha-test discard ran early above).
     alpha = clamp((t.a - 0.5) / max(fwidth(t.a), 1e-4) + 0.5, 0.0, 1.0);
   } else if (blend == kAlpha) {
     // H_VBLND_DECAL with Noise_Sampler (WORLD_MATERIALS.md:632-640):
@@ -539,6 +548,7 @@ void main() {
       alpha = t.a * ((flags & kFlagVertexFade) != 0u ? v_colour.r : v_colour.a);
     }
   }
+#endif
   vec3 encoded = out_rgb(colour);
   // Blended draws are premultiplied (ONE, ONE_MINUS_SRC_ALPHA).
   out_color = blend == kAlpha ? vec4(encoded * alpha, alpha) : vec4(encoded, alpha);

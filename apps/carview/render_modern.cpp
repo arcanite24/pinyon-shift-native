@@ -527,4 +527,56 @@ GraphicsSettings clamp_graphics(GraphicsSettings s) {
   return s;
 }
 
+namespace {
+struct PipelineCacheHeader {
+  char magic[4];
+  uint32_t version;
+  uint32_t vendor_id;
+  uint32_t device_id;
+  uint8_t uuid[16];
+  uint64_t payload_size;
+};
+static_assert(sizeof(PipelineCacheHeader) == 40);
+}  // namespace
+
+std::vector<uint8_t> encode_pipeline_cache_file(const PipelineCacheKey& key, const uint8_t* payload, size_t size) {
+  PipelineCacheHeader hdr{};
+  hdr.magic[0] = 'S', hdr.magic[1] = 'H', hdr.magic[2] = 'P', hdr.magic[3] = 'C';
+  hdr.version = 1u;
+  hdr.vendor_id = key.vendor_id;
+  hdr.device_id = key.device_id;
+  std::memcpy(hdr.uuid, key.uuid.data(), sizeof(hdr.uuid));
+  hdr.payload_size = uint64_t(size);
+  std::vector<uint8_t> out(sizeof(hdr) + size);
+  std::memcpy(out.data(), &hdr, sizeof(hdr));
+  if (size > 0 && payload) std::memcpy(out.data() + sizeof(hdr), payload, size);
+  return out;
+}
+
+bool decode_pipeline_cache_file(const uint8_t* file_data, size_t file_size, const PipelineCacheKey& expected,
+                                std::vector<uint8_t>& payload_out) {
+  payload_out.clear();
+  if (!file_data || file_size < sizeof(PipelineCacheHeader)) return false;
+  PipelineCacheHeader hdr{};
+  std::memcpy(&hdr, file_data, sizeof(hdr));
+  if (hdr.magic[0] != 'S' || hdr.magic[1] != 'H' || hdr.magic[2] != 'P' || hdr.magic[3] != 'C') return false;
+  if (hdr.version != 1u) return false;
+  if (hdr.vendor_id != expected.vendor_id || hdr.device_id != expected.device_id) return false;
+  if (std::memcmp(hdr.uuid, expected.uuid.data(), sizeof(hdr.uuid)) != 0) return false;
+  if (hdr.payload_size != uint64_t(file_size - sizeof(hdr))) return false;
+  if (hdr.payload_size == 0) return false;
+  payload_out.resize(size_t(hdr.payload_size));
+  std::memcpy(payload_out.data(), file_data + sizeof(hdr), size_t(hdr.payload_size));
+  return true;
+}
+
+bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t texture_slots) {
+  constexpr uint32_t kMinSamplers = 16u;
+  constexpr uint32_t kHeadroom = 64u;
+  const uint64_t need_images = uint64_t(texture_slots) + kHeadroom;
+  return limits.max_per_stage_samplers >= kMinSamplers &&
+         limits.max_per_stage_sampled_images >= need_images &&
+         limits.max_set_sampled_images >= need_images;
+}
+
 }  // namespace carview::modern

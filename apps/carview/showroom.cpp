@@ -55,6 +55,7 @@
 #include "stars_vert_spv.h"
 #include "world_frag_spv.h"
 #include "world_gpu_logic.h"
+#include "world_opaque_frag_spv.h"
 #include "world_vert_spv.h"
 
 namespace carview {
@@ -374,9 +375,9 @@ Showroom::~Showroom() {
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
   for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
-                       contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_z_prepass_, world_coverage_,
-                       world_alpha_, shadow_world_, shadow_cutout_, shadow_car_, sky_pipe_base_, sky_pipe_layers_,
-                       stars_pipe_})
+                       contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_opaque_dither_,
+                       world_z_prepass_, world_coverage_, world_alpha_, shadow_world_, shadow_cutout_, shadow_car_,
+                       sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
     if (p) vkDestroyPipeline(d, p, nullptr);
   if (contact_shadow_pipe_layout_) vkDestroyPipelineLayout(d, contact_shadow_pipe_layout_, nullptr);
   if (sky_pipe_layout_) vkDestroyPipelineLayout(d, sky_pipe_layout_, nullptr);
@@ -2024,7 +2025,7 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pDynamicState = vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
                                 : (use_vrs ? &dynamic_vrs : &dynamic);
     info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
-    return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+    return vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &info, nullptr, &out);
   };
   const VkCullModeFlags cull_back = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
   VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, 0, opaque_,
@@ -2100,17 +2101,19 @@ bool Showroom::create_pipelines(std::string& error) {
         pci.pColorBlendState = &bl;
         pci.pDynamicState = &dynamic_bias;
         pci.layout = contact_shadow_pipe_layout_;
-        result = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &pci, nullptr, &contact_shadow_pipe_);
+        result = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &pci, nullptr, &contact_shadow_pipe_);
       }
       if (cs_v) vkDestroyShaderModule(r_.device_, cs_v, nullptr);
       if (cs_f) vkDestroyShaderModule(r_.device_, cs_f, nullptr);
     }
   }
-  // The textured world (world.vert / world.frag): opaque, opaque with alpha
-  // to coverage, and blended with depth writes off.
-  VkShaderModule world_vert = VK_NULL_HANDLE, world_frag = VK_NULL_HANDLE;
+  // The textured world (world.vert / world.frag + discard-free world_opaque.frag):
+  // opaque (Early-Z), dithered opaque, alpha to coverage, and blended with depth writes off.
+  VkShaderModule world_vert = VK_NULL_HANDLE, world_frag = VK_NULL_HANDLE, world_opaque_frag = VK_NULL_HANDLE;
   if (result == VK_SUCCESS) result = make_module(kWorld_vert_spv, sizeof(kWorld_vert_spv), world_vert, "world.vert");
   if (result == VK_SUCCESS) result = make_module(kWorld_frag_spv, sizeof(kWorld_frag_spv), world_frag, "world.frag");
+  if (result == VK_SUCCESS)
+    result = make_module(kWorld_opaque_frag_spv, sizeof(kWorld_opaque_frag_spv), world_opaque_frag, "world_opaque.frag");
   VkVertexInputBindingDescription world_binding{0, sizeof(WorldVertex), VK_VERTEX_INPUT_RATE_VERTEX};
   const VkVertexInputAttributeDescription world_attributes[7] = {
       {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(WorldVertex, position)},
@@ -2126,11 +2129,14 @@ bool Showroom::create_pipelines(std::string& error) {
   world_input.vertexAttributeDescriptionCount = 7;
   world_input.pVertexAttributeDescriptions = world_attributes;
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_, world_vert,
+    result = build(world_opaque_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_, world_vert,
                    &world_input, false, world_pipeline_layout_, cull_back);
   if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 0, world_opaque_after_z_, world_vert,
+    result = build(world_opaque_frag, r_.scene_format(), r_.samples_, true, false, 0, world_opaque_after_z_, world_vert,
                    &world_input, false, world_pipeline_layout_, cull_back, true);
+  if (result == VK_SUCCESS)
+    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_dither_, world_vert,
+                   &world_input, false, world_pipeline_layout_, cull_back);
   if (result == VK_SUCCESS)
     result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, world_z_prepass_, world_vert,
                    &world_input, false, world_pipeline_layout_, cull_back, false, false);
@@ -2141,7 +2147,7 @@ bool Showroom::create_pipelines(std::string& error) {
     result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 1, world_alpha_, world_vert,
                    &world_input, false, world_pipeline_layout_);
   if (result == VK_SUCCESS && !guest_)
-    result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
+    result = build(world_opaque_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
                    env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
   if (result == VK_SUCCESS && !guest_)
     result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
@@ -2185,7 +2191,7 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic;
     info.layout = pipe_layout;
-    return vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &info, nullptr, &out);
+    return vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &info, nullptr, &out);
   };
   if (result == VK_SUCCESS && r_.options_.shadow.size > 0) {
     result = make_module(kShadow_frag_spv, sizeof(kShadow_frag_spv), shadow_frag, "shadow.frag");
@@ -2199,6 +2205,7 @@ bool Showroom::create_pipelines(std::string& error) {
   if (shadow_frag) vkDestroyShaderModule(r_.device_, shadow_frag, nullptr);
   if (world_vert) vkDestroyShaderModule(r_.device_, world_vert, nullptr);
   if (world_frag) vkDestroyShaderModule(r_.device_, world_frag, nullptr);
+  if (world_opaque_frag) vkDestroyShaderModule(r_.device_, world_opaque_frag, nullptr);
   vkDestroyShaderModule(r_.device_, vert, nullptr);
   vkDestroyShaderModule(r_.device_, frag, nullptr);
   vkDestroyShaderModule(r_.device_, mask, nullptr);
@@ -2672,17 +2679,27 @@ bool Showroom::upload(std::string& error) {
   hooks.draw = [this](VkCommandBuffer cmd) {
     car_draws_ = 0;
     r_.mark(cmd, "setup");
-    record_world(cmd);
+    record_world_opaque(cmd);
     record_skidmarks_draw(cmd);
     record_contact_shadows(cmd);
     r_.mark(cmd, "contact_shadow");
     record_debris_draw(cmd);
     if (draw_car_ && !cockpit_camera_active_) record_driver_draw(cmd);
     const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
-    if (draw_car_) record_draws(cmd, car_op, glass_);
-    record_all_instances(cmd, r_.z_prepass());
+    if (draw_car_) record_draws(cmd, car_op, glass_, 1);
+    record_all_instances(cmd, r_.z_prepass(), 1);
+    if (world_textured_ && sky_ready_) {
+      record_sky_draw(cmd);
+      r_.mark(cmd, "sky");
+    }
+    record_world_blended(cmd);
+    if (draw_car_) record_draws(cmd, car_op, glass_, 2);
+    record_all_instances(cmd, r_.z_prepass(), 2);
     record_glows_draw(cmd);
     r_.mark(cmd, "car_glass");
+  };
+  hooks.has_particles = [this]() -> bool {
+    return vfx_ready_ && (particle_alpha_count_ > 0 || particle_add_count_ > 0);
   };
   hooks.draw_particles = [this](VkCommandBuffer cmd) {
     record_particles_draw(cmd);
@@ -2887,15 +2904,19 @@ void Showroom::set_damage_state(const drive::CarDamageState& dmg) {
   }
 }
 
-void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass) {
+void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline glass, int pass_mode) {
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0,
                           nullptr);
+  uint32_t bound_desc = UINT32_MAX;
   auto draw = [&](const Draw& d) {
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
-                            &material_sets_[d.descriptor], 0, nullptr);
+    if (d.descriptor != bound_desc) {
+      bound_desc = d.descriptor;
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                              &material_sets_[d.descriptor], 0, nullptr);
+    }
     ShowroomPush push = d.push;
     if (d.lamp_channel != drive::LampChannel::kNone && opaque != glass) {
       const auto rgb = drive::evaluate_lamp_emission(d.lamp_channel, lamp_vectors_, lamp_colors_);
@@ -2910,15 +2931,20 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
                        sizeof(ShowroomPush), &push);
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
   };
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
-  r_.apply_vrs(cmd);
-  for (const auto& d : draws_)
-    if (!d.glass || opaque == glass) {
-      draw(d);
-      ++car_draws_;
-    }
-  if (opaque == glass) return;
-  if (!guest_) r_.mark(cmd, "car_opaque");
+  if (pass_mode != 2) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
+    r_.apply_vrs(cmd);
+    for (const auto& d : draws_)
+      if (!d.glass || opaque == glass) {
+        draw(d);
+        ++car_draws_;
+      }
+    if (opaque == glass) return;
+    if (!guest_) r_.mark(cmd, "car_opaque");
+    if (pass_mode == 1) return;
+  } else if (opaque == glass) {
+    return;
+  }
   // Glass last, far to near from the eye.
   std::vector<const Draw*> sorted;
   for (const auto& d : draws_)
@@ -2939,8 +2965,11 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
       // FH1 two-pass detail_glass_red/amber/clear lamp cover (SHOWROOM_LIGHTING.md:187):
       // Pass 1 Multiply transmittance with LightsSampler + GlassColor,
       // Pass 2 Additive Fresnel env reflection + sun specular.
-      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
-                              &material_sets_[d->descriptor], 0, nullptr);
+      if (d->descriptor != bound_desc) {
+        bound_desc = d->descriptor;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                &material_sets_[d->descriptor], 0, nullptr);
+      }
       ShowroomPush push = d->push;
       if (bound_glass != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_glass = glass_mul_);
       push.params[2] = 7.0f;
@@ -3084,9 +3113,10 @@ void Showroom::record_z_prepass(VkCommandBuffer cmd) {
   }
 }
 
-void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal) {
+void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int pass_mode) {
   if (instances_.empty()) return;
   if (!car_inst_buf_.ready() || !frame_set_) {
+    if (pass_mode == 2) return;
     for (const auto& in : instances_)
       if (in.car) in.car->record_instance(cmd, in.model, in.has_lamps ? &in.lamps : nullptr);
     return;
@@ -3099,6 +3129,8 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal) {
   uint32_t offset = 0;
   const VkPipeline op_pipe = (depth_equal && opaque_after_z_) ? opaque_after_z_ : opaque_;
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+  const int pass_begin = (pass_mode == 2) ? 1 : 0;
+  const int pass_end = (pass_mode == 1) ? 1 : 2;
   for (Showroom* g : groups) {
     uint32_t count = 0;
     for (const auto& in : instances_)
@@ -3107,16 +3139,20 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal) {
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
-    for (int pass = 0; pass < 2; ++pass) {
+    for (int pass = pass_begin; pass < pass_end; ++pass) {
       VkPipeline bound_p = VK_NULL_HANDLE;
+      uint32_t bound_desc = UINT32_MAX;
       for (const auto& d : g->draws_) {
         if (d.glass != (pass == 1)) continue;
         ShowroomPush push = d.push;
         uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
         flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
         push.params[1] = float(flags);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
-                                &g->material_sets_[d.descriptor], 0, nullptr);
+        if (d.descriptor != bound_desc) {
+          bound_desc = d.descriptor;
+          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                  &g->material_sets_[d.descriptor], 0, nullptr);
+        }
         if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
           if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
           push.params[2] = 7.0f;
@@ -4678,11 +4714,17 @@ VkDescriptorSet Showroom::world_set(uint32_t record) const {
 }
 
 void Showroom::record_world(VkCommandBuffer cmd) {
-  if (world_draws_.empty() || material_sets_.empty()) return;
+  record_world_opaque(cmd);
   if (world_textured_ && sky_ready_) {
     record_sky_draw(cmd);
     r_.mark(cmd, "sky");
   }
+  record_world_blended(cmd);
+}
+
+void Showroom::record_world_opaque(VkCommandBuffer cmd) {
+  current_world_swap_ = 2.0f;
+  if (world_draws_.empty() || material_sets_.empty()) return;
   world_bind_buffers(cmd, false);
   if (world_textured_) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
@@ -4694,6 +4736,7 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       if (t >= 1.0) drop_fading_world(false);
       else swap = float(std::max(t, 0.0));
     }
+    current_world_swap_ = swap;
     if (arena_on() && gpu_world_->table_rows() > 0) {
       // The opaque and cut-out draws, culled on the GPU into indirect batches.
       WorldGpu::DrawParams dp;
@@ -4716,38 +4759,14 @@ void Showroom::record_world(VkCommandBuffer cmd) {
       world_stats_.layer_fallback += gpu_table_layer_fallback_;
       r_.mark(cmd, "world gpu");
     }
-    record_world_textured(cmd, world_draws_, world_transform_, swap, false);
+    record_world_textured(cmd, world_draws_, world_transform_, swap, false, 1);
     if (fading_on_) {
-      // The outgoing scenery's positions are relative to its own origin:
-      // shifted by the origins' difference into the transform.
       const float dx = float(fading_.origin[0] - world_origin_[0]), dz = float(fading_.origin[1] - world_origin_[1]);
       float m[16];
       std::memcpy(m, world_transform_, sizeof m);
       for (int r = 0; r < 4; ++r) m[12 + r] += world_transform_[r] * dx + world_transform_[8 + r] * dz;
       world_bind_buffers(cmd, true);
-      record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true);
-    }
-    if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
-      VkDeviceSize off = 0;
-      vkCmdBindVertexBuffers(cmd, 0, 1, &overlay_vertices_.buffer, &off);
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_alpha_);
-      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &world_white_set_, 0,
-                              nullptr);
-      const float sign = r_.reverse_z() ? 1.0f : -1.0f;
-      vkCmdSetDepthBias(cmd, sign * kDecalBiasConstant, 0.0f, sign * kDecalBiasSlope);
-      ShowroomPush push{};
-      std::memcpy(push.model, world_transform_, sizeof push.model);
-      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
-      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
-      push.tint[0] = push.tint[1] = push.tint[2] = push.tint[3] = 1.0f;
-      push.params[0] = 2.0f;     // kAlpha
-      push.params[1] = 1024.0f;  // kFlagUnlitVertexColor
-      push.params[2] = 2.0f;     // no swap dither
-      push.params[3] = 1.0f;
-      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                         sizeof(ShowroomPush), &push);
-      vkCmdDraw(cmd, overlay_count_, 1, 0, 0);
-      vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+      record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true, 1);
     }
     return;
   }
@@ -4762,6 +4781,44 @@ void Showroom::record_world(VkCommandBuffer cmd) {
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(ShowroomPush), &push);
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, 0, 0);
+  }
+}
+
+void Showroom::record_world_blended(VkCommandBuffer cmd) {
+  if (!world_textured_ || world_draws_.empty() || material_sets_.empty()) return;
+  const float swap = current_world_swap_;
+  world_bind_buffers(cmd, false);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
+  record_world_textured(cmd, world_draws_, world_transform_, swap, false, 2);
+  if (fading_on_) {
+    const float dx = float(fading_.origin[0] - world_origin_[0]), dz = float(fading_.origin[1] - world_origin_[1]);
+    float m[16];
+    std::memcpy(m, world_transform_, sizeof m);
+    for (int r = 0; r < 4; ++r) m[12 + r] += world_transform_[r] * dx + world_transform_[8 + r] * dz;
+    world_bind_buffers(cmd, true);
+    record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true, 2);
+  }
+  if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &overlay_vertices_.buffer, &off);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_alpha_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &world_white_set_, 0,
+                            nullptr);
+    const float sign = r_.reverse_z() ? 1.0f : -1.0f;
+    vkCmdSetDepthBias(cmd, sign * kDecalBiasConstant, 0.0f, sign * kDecalBiasSlope);
+    ShowroomPush push{};
+    std::memcpy(push.model, world_transform_, sizeof push.model);
+    std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+    std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+    push.tint[0] = push.tint[1] = push.tint[2] = push.tint[3] = 1.0f;
+    push.params[0] = 2.0f;     // kAlpha
+    push.params[1] = 1024.0f;  // kFlagUnlitVertexColor
+    push.params[2] = 2.0f;     // no swap dither
+    push.params[3] = 1.0f;
+    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(ShowroomPush), &push);
+    vkCmdDraw(cmd, overlay_count_, 1, 0, 0);
+    vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   }
 }
 
@@ -4788,7 +4845,7 @@ bool Showroom::near_lod_beyond(const WorldGeometry::Draw& d, const std::array<fl
 }
 
 void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<WorldGeometry::Draw>& draws,
-                                     const float transform[16], float swap, bool outgoing) {
+                                     const float transform[16], float swap, bool outgoing, int pass_mode) {
   {
     VkPipeline bound = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
@@ -4824,6 +4881,8 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
     int bias = -1;  // the depth bias set: -1 none yet, else the decal flag
     const auto eye = eye_in_scenery(transform);
     for (const auto& d : draws) {
+      if (pass_mode == 1 && d.blend >= 2) continue;
+      if (pass_mode == 2 && d.blend < 2) continue;
       if (!outgoing && d.gpu) continue;  // drawn by the culling pass
       if (outgoing && !d.cull) continue;  // the sky: the incoming one's is drawn whole
       if (d.cull && ((world_cull_ && outside(d)) || near_lod_beyond(d, eye))) {
@@ -4832,18 +4891,23 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       }
       ++world_stats_.drawn;
       world_stats_.indices += d.index_count;
-      const bool sky = uint32_t(d.push.params[1] + 0.5f) == 2;
+      const uint32_t draw_fl = uint32_t(d.push.params[1] + 0.5f);
+      const bool sky = draw_fl == 2;
       if (sky && sky_ready_) continue;
       if (group < 0 && !sky) {
         if (!sky_ready_) r_.mark(cmd, "sky");
-        group = 0;
+        group = d.blend;
       }
       if (group >= 0 && group < 99 && d.blend != group) {
         r_.mark(cmd, kGroup[std::min(group, 2)]);
         group = d.blend;
       }
       // Additive (3) shares the blended pipeline: its fragments carry alpha 0.
-      const VkPipeline op_pipe = (r_.z_prepass() && world_opaque_after_z_) ? world_opaque_after_z_ : world_opaque_;
+      const bool needs_dither =
+          (swap < 1.5f || swap > 2.5f) || ((draw_fl & (128u | 256u | 512u)) != 0u) || sky;
+      const VkPipeline op_pipe = (needs_dither && world_opaque_dither_)
+                                     ? world_opaque_dither_
+                                     : ((r_.z_prepass() && world_opaque_after_z_) ? world_opaque_after_z_ : world_opaque_);
       const VkPipeline pipeline = d.blend >= 2 ? world_alpha_ : d.blend == 1 ? world_coverage_ : op_pipe;
       if (pipeline != bound) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
@@ -5254,8 +5318,11 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   ms.rasterizationSamples = r_.samples_;
   VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-  ds.depthTestEnable = VK_FALSE;
+  // Sky & stars run AFTER opaque geometry at far depth (0.0 reverse-Z, 1.0 forward-Z)
+  // so Hardware Early-Z rejects all occluded pixels before sky.frag executes.
+  ds.depthTestEnable = VK_TRUE;
   ds.depthWriteEnable = VK_FALSE;
+  ds.depthCompareOp = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
   const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
   VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dyn.dynamicStateCount = 2;
@@ -5287,7 +5354,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   gp.pColorBlendState = &cb;
   gp.pDynamicState = &dyn;
   gp.layout = sky_pipe_layout_;
-  VkResult res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &sky_pipe_base_);
+  VkResult res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &sky_pipe_base_);
 
   att.blendEnable = VK_TRUE;
   att.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -5297,7 +5364,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
   att.alphaBlendOp = VK_BLEND_OP_ADD;
   if (res == VK_SUCCESS)
-    res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &sky_pipe_layers_);
+    res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &sky_pipe_layers_);
 
   // 1-sample HDR sky pipelines & descriptor sets for dynamic cubemap and rearview mirror passes.
   if (res == VK_SUCCESS && dyn_env_ready_) {
@@ -5315,10 +5382,10 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
     ecb.attachmentCount = 1;
     ecb.pAttachments = &eatt;
     egp.pColorBlendState = &ecb;
-    res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &egp, nullptr, &env_sky_pipe_base_);
+    res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &egp, nullptr, &env_sky_pipe_base_);
     if (res == VK_SUCCESS) {
       eatt = att;
-      res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &egp, nullptr, &env_sky_pipe_layers_);
+      res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &egp, nullptr, &env_sky_pipe_layers_);
     }
     if (res == VK_SUCCESS) {
       const VkDescriptorPoolSize eps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 12},
@@ -5395,7 +5462,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   gp.pInputAssemblyState = &pt_ia;
   gp.layout = stars_pipe_layout_;
   if (res == VK_SUCCESS)
-    res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &stars_pipe_);
+    res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &stars_pipe_);
 
   vkDestroyShaderModule(r_.device_, sv, nullptr);
   vkDestroyShaderModule(r_.device_, sf, nullptr);
@@ -5829,7 +5896,7 @@ bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::str
   gp.pColorBlendState = &cb;
   gp.pDynamicState = &dyn;
   gp.layout = glow_pipe_layout_;
-  const VkResult res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &glow_pipe_);
+  const VkResult res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &glow_pipe_);
   vkDestroyShaderModule(r_.device_, gv, nullptr);
   vkDestroyShaderModule(r_.device_, gf, nullptr);
   VK_TRY(res, "glow pipeline");
@@ -6231,14 +6298,16 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     pci.pColorBlendState = &bl;
     pci.pDynamicState = &dyn;
     pci.layout = env_prefilter_pipe_layout_;
-    VkResult pr_res = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &pci, nullptr, &env_prefilter_pipe_);
+    VkResult pr_res =
+        vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &pci, nullptr, &env_prefilter_pipe_);
     vkDestroyShaderModule(r_.device_, pv, nullptr);
     vkDestroyShaderModule(r_.device_, pf, nullptr);
     VK_TRY(pr_res, "prefilter pipeline");
   }
 
   if (!r_.create_image(kDynEnvSize, kDynEnvSize, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, dyn_env_depth_)) {
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT, dyn_env_depth_)) {
     error = "dynamic env depth";
     return false;
   }
@@ -6249,7 +6318,8 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
                            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, mirror_tex_) ||
       !r_.create_image(kMirrorWidth, kMirrorHeight, 1, r_.depth_format_, VK_SAMPLE_COUNT_1_BIT,
-                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, mirror_depth_)) {
+                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT, mirror_depth_)) {
     error = "mirror render targets";
     return false;
   }
@@ -6360,8 +6430,8 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
   VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   depth.imageView = depth_view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  depth.loadOp = clear_target ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-  depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.clearValue.depthStencil = {r_.reverse_z() ? 0.0f : 1.0f, 0};
   VkRenderingInfo rend{VK_STRUCTURE_TYPE_RENDERING_INFO};
   rend.renderArea = {{int32_t(vx), int32_t(vy)}, {vw, vh}};
@@ -6375,21 +6445,8 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
   vkCmdSetViewport(cmd, 0, 1, &vp);
   vkCmdSetScissor(cmd, 0, 1, &sc);
 
-  // 1. Real-time sky (atmosphere + clouds + sun/moon + horizon fog).
-  if (sky_ready_ && env_sky_pipe_base_ && env_sky_pipe_layers_ && env_sky_sets_[0]) {
-    const int disc = tod_state_.is_moon ? (1 + tod_moon_phase_) : 0;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_sky_pipe_base_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[disc], 0,
-                            nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_sky_pipe_layers_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[6 + disc], 0,
-                            nullptr);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-  }
-
-  // 2. Opaque AND alpha-tested (blend 0 + blend 1) world terrain, roads, mountains, trees,
-  //    buildings, signs, banners, and barriers (frustum culled, preserving multi-layer terrain).
+  // 1. Opaque AND alpha-tested (blend 0 + blend 1) world terrain, roads, mountains, trees,
+  //    buildings, signs, banners, and barriers (drawn BEFORE sky for Early-Z rejection).
   if (world_textured_ && !world_draws_.empty() && env_world_opaque_ && env_frame_set_) {
     float clip[16];
     multiply(view_frame.view_projection, world_transform_, clip);
@@ -6457,7 +6514,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       if (draw_counter) ++(*draw_counter);
     }
   }
-  // 3. Trailing AI / traffic cars in cockpit mirrors (when include_cars is set).
+  // 2. Trailing AI / traffic cars in cockpit mirrors (when include_cars is set).
   if (include_cars && env_car_opaque_ && env_frame_set_) {
     for (const auto& in : instances_) {
       if (!in.car) continue;
@@ -6469,6 +6526,18 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
                                         in.has_lamps ? &in.lamps : nullptr);
       if (draw_counter) *draw_counter += uint32_t(in.car->draw_count());
     }
+  }
+  // 3. Real-time sky AFTER opaque world & cars (Early-Z rejects occluded pixels).
+  if (sky_ready_ && env_sky_pipe_base_ && env_sky_pipe_layers_ && env_sky_sets_[0]) {
+    const int disc = tod_state_.is_moon ? (1 + tod_moon_phase_) : 0;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_sky_pipe_base_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[disc], 0,
+                            nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, env_sky_pipe_layers_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &env_sky_sets_[6 + disc], 0,
+                            nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
   }
   vkCmdEndRendering(cmd);
 }
@@ -7078,10 +7147,11 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     gp.pColorBlendState = &cb;
     gp.pDynamicState = &dyn;
     gp.layout = particle_pipe_layout_;
-    VkResult r1 = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &particle_alpha_pipe_);
+    VkResult r1 =
+        vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &particle_alpha_pipe_);
     ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
     ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    VkResult r2 = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &particle_add_pipe_);
+    VkResult r2 = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &particle_add_pipe_);
     vkDestroyShaderModule(r_.device_, pv, nullptr);
     vkDestroyShaderModule(r_.device_, pf, nullptr);
     VK_TRY(r1, "particle alpha pipeline");
@@ -7143,7 +7213,7 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     gp.pColorBlendState = &cb;
     gp.pDynamicState = &dyn;
     gp.layout = skid_pipe_layout_;
-    VkResult sr = vkCreateGraphicsPipelines(r_.device_, VK_NULL_HANDLE, 1, &gp, nullptr, &skid_pipe_);
+    VkResult sr = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &skid_pipe_);
     vkDestroyShaderModule(r_.device_, sv, nullptr);
     vkDestroyShaderModule(r_.device_, sf, nullptr);
     VK_TRY(sr, "skid pipeline");
@@ -7713,7 +7783,10 @@ bool Showroom::build_gpu_table(std::string& error) {
       d.gpu = true;  // drawn via single hardware-instanced tree pass
       continue;
     }
-    const gpuworld::Batch batch = gpuworld::batch_of(d.blend, d.decal != 0);
+    // Route LOD-dithered opaque props to the coverage batch (keeping params[0]=0) so
+    // kOpaque/kOpaqueDecal run 100% discard-free with Hardware Early-Z enabled.
+    const bool lod_dither = (flags & (128u | 256u | 512u)) != 0u;
+    const gpuworld::Batch batch = gpuworld::batch_of((d.blend == 0 && lod_dither) ? 1 : d.blend, d.decal != 0);
     if (per_batch[batch] >= WorldGpu::kMaxPerBatch) continue;  // left to the CPU loop
     // A texture that did not upload: the draw falls back as the per-draw sets did.
     if (!have(d.texture)) {

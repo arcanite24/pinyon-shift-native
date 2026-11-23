@@ -32,7 +32,7 @@ void main() {
     v_alpha = 0.0;
     return;
   }
-  clip.z = kReverseZ ? 0.0 : clip.w * 0.9999999;
+  clip.z = kReverseZ ? 0.0 : clip.w;
   gl_Position = clip;
   gl_PointSize = mix(1.2, pc.params.z, t);
 }

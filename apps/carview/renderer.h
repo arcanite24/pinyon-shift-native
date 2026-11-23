@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -47,6 +48,9 @@ struct SceneHooks {
   // Optional depth-only prepass before the main colour pass (reduces fragment overdraw).
   std::function<void(VkCommandBuffer)> draw_z_prepass;
   std::function<void(VkCommandBuffer)> draw;
+  // Optional predicate: when set and returning false, skips the second MSAA
+  // particle pass so color/depth resolve in a single pass with DONT_CARE stores.
+  std::function<bool()> has_particles;
   // Optional second subpass after opaque depth has been resolved into
   // `depth_resolved_view()` (for soft depth-faded particles & glows).
   std::function<void(VkCommandBuffer)> draw_particles;
@@ -144,6 +148,8 @@ class Renderer {
     bool backface_cull = true;
     bool z_prepass = false;
     modern::GraphicsSettings graphics;
+    // Optional on-disk VkPipelineCache path (e.g. <play>/cache/vk_pipeline_cache.bin).
+    std::filesystem::path pipeline_cache_path;
   };
 
   Renderer() = default;
@@ -181,6 +187,9 @@ class Renderer {
   uint32_t frames_in_flight() const { return frames_in_flight_; }
   // The device offers what the GPU-driven world needs (see create_device).
   bool gpu_driven_supported() const { return gpu_driven_; }
+  VkPipelineCache pipeline_cache() const { return pipeline_cache_; }
+  bool pipeline_cache_loaded() const { return pipeline_cache_loaded_; }
+  void save_pipeline_cache() const;
   // V-sync (live): FIFO, MAILBOX or IMMEDIATE; takes effect on the next frame
   // (the swapchain is rebuilt) and falls back to what the surface offers.
   void set_vsync(modern::VSync v) {
@@ -403,6 +412,11 @@ class Renderer {
   VkSurfaceKHR surface_ = VK_NULL_HANDLE;
   VkPhysicalDevice physical_ = VK_NULL_HANDLE;
   VkDevice device_ = VK_NULL_HANDLE;
+  VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
+  modern::PipelineCacheKey pipeline_cache_key_{};
+  bool pipeline_cache_loaded_ = false;
+  size_t pipeline_cache_loaded_bytes_ = 0;
+  bool lazy_memory_supported_ = false;
   VmaAllocator allocator_ = VK_NULL_HANDLE;
   uint32_t queue_family_ = 0;
   VkQueue queue_ = VK_NULL_HANDLE;

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 #if defined(__APPLE__) || defined(__ANDROID__)
 #include <dlfcn.h>
@@ -204,6 +205,11 @@ Renderer::~Renderer() {
     if (set_layout_) vkDestroyDescriptorSetLayout(device_, set_layout_, nullptr);
     if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
     for (VkCommandPool p : all_pools_) vkDestroyCommandPool(device_, p, nullptr);
+    save_pipeline_cache();
+    if (pipeline_cache_) {
+      vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+      pipeline_cache_ = VK_NULL_HANDLE;
+    }
     if (allocator_) {
       vmaDestroyAllocator(allocator_);
       allocator_ = VK_NULL_HANDLE;
@@ -463,8 +469,18 @@ bool Renderer::pick_device(std::string& error) {
     return false;
   }
   vkGetPhysicalDeviceMemoryProperties(physical_, &memory_properties_);
+  lazy_memory_supported_ = false;
+  for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
+    if (memory_properties_.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) {
+      lazy_memory_supported_ = true;
+      break;
+    }
+  }
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(physical_, &props);
+  pipeline_cache_key_.vendor_id = props.vendorID;
+  pipeline_cache_key_.device_id = props.deviceID;
+  std::memcpy(pipeline_cache_key_.uuid.data(), props.pipelineCacheUUID, sizeof(pipeline_cache_key_.uuid));
   const VkSampleCountFlags counts =
       props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
   samples_ = VK_SAMPLE_COUNT_1_BIT;
@@ -575,12 +591,16 @@ bool Renderer::create_device(std::string& error) {
       const char* e = std::getenv("SHIFT_GPU_WORLD");
       return e && *e == '0';
     }();
+    const modern::SplitBindlessLimits bl_limits{
+        di.maxPerStageDescriptorUpdateAfterBindSamplers,
+        di.maxPerStageDescriptorUpdateAfterBindSampledImages,
+        di.maxDescriptorSetUpdateAfterBindSampledImages,
+    };
     gpu_driven_ = !env_off && o12.drawIndirectCount && o12.descriptorIndexing && o12.runtimeDescriptorArray &&
                   o12.shaderSampledImageArrayNonUniformIndexing && o12.descriptorBindingPartiallyBound &&
                   o12.descriptorBindingSampledImageUpdateAfterBind && o12.descriptorBindingUpdateUnusedWhilePending &&
                   offered2.features.multiDrawIndirect && offered2.features.drawIndirectFirstInstance &&
-                  di.maxPerStageDescriptorUpdateAfterBindSamplers >= 4096 + 64 &&
-                  di.maxDescriptorSetUpdateAfterBindSampledImages >= 4096 + 64;
+                  modern::split_bindless_supported(bl_limits, 4096);
     if (gpu_driven_) {
       f12.drawIndirectCount = VK_TRUE;
       f12.descriptorIndexing = VK_TRUE;
@@ -654,6 +674,42 @@ bool Renderer::create_device(std::string& error) {
   VK_TRY(vkCreateDevice(physical_, &info, nullptr, &device_), "vkCreateDevice");
   volkLoadDevice(device_);
   {
+    std::vector<uint8_t> initial_cache;
+    pipeline_cache_loaded_ = false;
+    pipeline_cache_loaded_bytes_ = 0;
+    const char* no_pc = std::getenv("SHIFT_NO_PIPELINE_CACHE");
+    const bool cache_disabled = no_pc && *no_pc == '1';
+    if (!cache_disabled && !options_.pipeline_cache_path.empty()) {
+      std::error_code ec;
+      if (std::filesystem::is_regular_file(options_.pipeline_cache_path, ec)) {
+        std::ifstream in(options_.pipeline_cache_path, std::ios::binary | std::ios::ate);
+        if (in) {
+          const auto sz = in.tellg();
+          if (sz > 0 && sz < (128LL << 20)) {
+            std::vector<uint8_t> raw(static_cast<size_t>(sz));
+            in.seekg(0);
+            if (in.read(reinterpret_cast<char*>(raw.data()), sz)) {
+              if (modern::decode_pipeline_cache_file(raw.data(), raw.size(), pipeline_cache_key_, initial_cache)) {
+                pipeline_cache_loaded_ = true;
+                pipeline_cache_loaded_bytes_ = initial_cache.size();
+              }
+            }
+          }
+        }
+      }
+    }
+    VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    pci.initialDataSize = initial_cache.size();
+    pci.pInitialData = initial_cache.empty() ? nullptr : initial_cache.data();
+    if (vkCreatePipelineCache(device_, &pci, nullptr, &pipeline_cache_) != VK_SUCCESS && !initial_cache.empty()) {
+      pipeline_cache_loaded_ = false;
+      pipeline_cache_loaded_bytes_ = 0;
+      pci.initialDataSize = 0;
+      pci.pInitialData = nullptr;
+      vkCreatePipelineCache(device_, &pci, nullptr, &pipeline_cache_);
+    }
+  }
+  {
     VmaVulkanFunctions funcs{};
     funcs.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     funcs.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
@@ -676,6 +732,38 @@ bool Renderer::create_device(std::string& error) {
   pool.queueFamilyIndex = queue_family_;
   VK_TRY(vkCreateCommandPool(device_, &pool, nullptr, &pool_), "vkCreateCommandPool");
   return true;
+}
+
+void Renderer::save_pipeline_cache() const {
+  if (!device_ || !pipeline_cache_ || options_.pipeline_cache_path.empty()) return;
+  const char* no_pc = std::getenv("SHIFT_NO_PIPELINE_CACHE");
+  if (no_pc && *no_pc == '1') return;
+  size_t sz = 0;
+  if (vkGetPipelineCacheData(device_, pipeline_cache_, &sz, nullptr) != VK_SUCCESS || sz == 0) return;
+  if (pipeline_cache_loaded_ && sz == pipeline_cache_loaded_bytes_) return;
+  std::vector<uint8_t> data(sz);
+  if (vkGetPipelineCacheData(device_, pipeline_cache_, &sz, data.data()) != VK_SUCCESS || sz == 0) return;
+  data.resize(sz);
+  const auto encoded = modern::encode_pipeline_cache_file(pipeline_cache_key_, data.data(), data.size());
+  std::error_code ec;
+  if (options_.pipeline_cache_path.has_parent_path()) {
+    std::filesystem::create_directories(options_.pipeline_cache_path.parent_path(), ec);
+  }
+  const auto tmp_path = options_.pipeline_cache_path.string() + ".tmp";
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out.write(reinterpret_cast<const char*>(encoded.data()), std::streamsize(encoded.size()));
+    if (!out.good()) return;
+  }
+  std::filesystem::rename(tmp_path, options_.pipeline_cache_path, ec);
+  if (ec) {
+    // Windows rename fails if target exists; replace via remove + rename.
+    std::error_code ec2;
+    std::filesystem::remove(options_.pipeline_cache_path, ec2);
+    std::filesystem::rename(tmp_path, options_.pipeline_cache_path, ec2);
+    if (ec2) std::filesystem::remove(tmp_path, ec2);
+  }
 }
 
 VkDeviceSize Renderer::device_local_bytes() const {
@@ -761,6 +849,9 @@ bool Renderer::create_image(uint32_t width, uint32_t height, uint32_t levels, Vk
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VmaAllocationCreateInfo alloc{};
   alloc.usage = VMA_MEMORY_USAGE_AUTO;
+  if ((usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) && lazy_memory_supported_) {
+    alloc.preferredFlags |= VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+  }
   VmaAllocationInfo alloc_info{};
   if (vmaCreateImage(allocator_, &info, &alloc, &out.image, &out.allocation, &alloc_info) != VK_SUCCESS) {
     out = Image{};
@@ -1090,7 +1181,7 @@ bool Renderer::create_pipeline(VkFormat color_format, std::string& error) {
   info.pDynamicState = &dynamic;
   info.layout = pipeline_layout_;
   const VkResult result =
-      vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline_);
+      vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &pipeline_);
   vkDestroyShaderModule(device_, vert, nullptr);
   vkDestroyShaderModule(device_, frag, nullptr);
   VK_TRY(result, "vkCreateGraphicsPipelines");
@@ -1105,12 +1196,16 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
   const uint32_t rw = re.w ? re.w : width;
   const uint32_t rh = re.h ? re.h : height;
   if (samples_ != VK_SAMPLE_COUNT_1_BIT &&
-      !create_image(rw, rh, 1, scene_format(), samples_, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      !create_image(rw, rh, 1, scene_format(), samples_,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, msaa_color_)) {
     error = "MSAA colour target";
     return false;
   }
-  const VkImageUsageFlags depth_usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  const VkImageUsageFlags depth_usage =
+      samples_ != VK_SAMPLE_COUNT_1_BIT
+          ? (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)
+          : (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   if (!create_image(rw, rh, 1, depth_format_, samples_, depth_usage,
                     VK_IMAGE_ASPECT_DEPTH_BIT, depth_)) {
     error = "depth target";
@@ -1668,7 +1763,7 @@ bool Renderer::create_post(std::string& error) {
     info.pDynamicState = &dynamic;
     info.layout = post_layout_;
     VkPipeline* dst = k == 0 ? &post_quarter_ : (k == 1 ? &post_final_ : &post_final_sdr_);
-    result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, dst);
+    result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, dst);
   }
   vkDestroyShaderModule(device_, vert, nullptr);
   vkDestroyShaderModule(device_, frag, nullptr);
@@ -1844,7 +1939,7 @@ bool Renderer::create_modern_passes(std::string& error) {
     pi.pColorBlendState = &bl;
     pi.pDynamicState = &dy;
     pi.layout = layout;
-    const VkResult res = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pi, nullptr, &out);
+    const VkResult res = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pi, nullptr, &out);
     vkDestroyShaderModule(device_, vert, nullptr);
     vkDestroyShaderModule(device_, frag, nullptr);
     VK_TRY(res, what);
@@ -2643,7 +2738,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                 VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
-  const bool two_pass = bool(scene_.draw_particles) && depth_resolved_.view != VK_NULL_HANDLE;
+  const bool two_pass = bool(scene_.draw_particles) && depth_resolved_.view != VK_NULL_HANDLE &&
+                        (!scene_.has_particles || scene_.has_particles());
   const bool need_hiz = bool(scene_.build_hiz) && depth_resolved_.view != VK_NULL_HANDLE;
   const bool can_msaa_depth_resolve = msaa && depth_resolve_supported_ && depth_resolved_.view != VK_NULL_HANDLE;
   if (two_pass || post || need_hiz) {
@@ -2712,8 +2808,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   depth.imageView = depth_.view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
   depth.loadOp = run_z_prepass ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-  depth.storeOp = (depth_readable_ || two_pass || !msaa || need_hiz) ? VK_ATTACHMENT_STORE_OP_STORE
-                                                                     : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  const bool need_depth_store = depth_readable_ || two_pass || (!msaa && (post || need_hiz));
+  depth.storeOp = need_depth_store ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
   depth.clearValue.depthStencil = {options_.reverse_z ? 0.0f : 1.0f, 0};
   if (can_msaa_depth_resolve && (two_pass || post || need_hiz)) {
     depth.resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
@@ -3135,14 +3231,14 @@ bool Renderer::create_ui(std::string& error) {
   info.pColorBlendState = &blend;
   info.pDynamicState = &dynamic;
   info.layout = ui_layout_;
-  VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &ui_pipeline_);
+  VkResult result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &ui_pipeline_);
   if (result == VK_SUCCESS) {
     if (ui_format_ == VK_FORMAT_R8G8B8A8_UNORM) {
       ui_pipeline_sdr_ = ui_pipeline_;
     } else {
       const VkFormat sdr_fmt = VK_FORMAT_R8G8B8A8_UNORM;
       rendering.pColorAttachmentFormats = &sdr_fmt;
-      result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &ui_pipeline_sdr_);
+      result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &ui_pipeline_sdr_);
     }
   }
   vkDestroyShaderModule(device_, vert, nullptr);

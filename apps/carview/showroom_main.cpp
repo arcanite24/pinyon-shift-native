@@ -3171,6 +3171,15 @@ int run_drive(int argc, char** argv) {
     cli_graphics = carview::modern::clamp_graphics(cli_graphics);
     render_options.graphics = cli_graphics;
     render_options.vsync = cli_graphics.vsync;
+    if (const char* pc_env = std::getenv("SHIFT_PIPELINE_CACHE"); pc_env && *pc_env) {
+      render_options.pipeline_cache_path = pc_env;
+    } else if (!play_dir.empty()) {
+      render_options.pipeline_cache_path = play_dir / "cache" / "vk_pipeline_cache.bin";
+    } else if (!cache_path.empty() && cache_path.has_parent_path()) {
+      render_options.pipeline_cache_path = cache_path.parent_path() / "vk_pipeline_cache.bin";
+    } else if (!bake_dir.empty() && bake_dir.has_parent_path()) {
+      render_options.pipeline_cache_path = bake_dir.parent_path() / "cache" / "vk_pipeline_cache.bin";
+    }
     showroom.set_texture_cap(cli_graphics.texture_cap);
     if (cli_graphics.auto_hdr && !headless) {
       const auto st_dir = carview::settings_path().parent_path();

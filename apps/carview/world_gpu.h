@@ -133,8 +133,8 @@ class WorldGpu {
   uint32_t next_slot_ = 3;
   VkPipelineLayout layout_ = VK_NULL_HANDLE, cull_pipeline_layout_ = VK_NULL_HANDLE,
                    hiz_pipeline_layout_ = VK_NULL_HANDLE;
-  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, z_prepass_ = VK_NULL_HANDLE,
-             coverage_ = VK_NULL_HANDLE, tree_coverage_ = VK_NULL_HANDLE,
+  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, opaque_dither_ = VK_NULL_HANDLE,
+             z_prepass_ = VK_NULL_HANDLE, coverage_ = VK_NULL_HANDLE, tree_coverage_ = VK_NULL_HANDLE,
              cull_ = VK_NULL_HANDLE, tree_cull_ = VK_NULL_HANDLE, hiz_gen_ = VK_NULL_HANDLE;
   Renderer::Image hiz_image_;
   std::array<VkImageView, kHizMips> hiz_mip_views_{};
