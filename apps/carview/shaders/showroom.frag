@@ -41,6 +41,7 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 shadow_matrix_mid;  // Mid cascade orthographic sun shadow matrix (~90m)
   vec4 shadow_mid_bias;    // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
   vec4 phase_b_params;     // x car_detail, y rotor_glow, z frame_jitter, w ssr_active
+  vec4 ambient_color;      // rgb TimeOfDayA AmbientColour, w ibl_ambient_scale
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -817,9 +818,9 @@ void main() {
     float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : 1.0;
     float raw_lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
     lit = mix(1.0, raw_lit, shadow_scale);
-    // Removed ad-hoc * 1.4 ambient boost so clearcoat reflections contrast cleanly against diffuse paint.
+    float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
     diffuse_light = sun_col * ndl * lit * mix(0.6, 1.0, occlusion) +
-                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * occlusion;
+                    mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb * occlusion;
     direct_col = sun_col;
     // DynamicEnvLightmapDampner = 0.30 (0.50 for chrome per Normal.xml).
     float damp = (klass == kChrome) ? 0.50 : 0.35;

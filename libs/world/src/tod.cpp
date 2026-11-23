@@ -472,6 +472,8 @@ TodState evaluate_tod(const TodPreset& p, double tod_sec) {
   s.bloom_upper_grad_mult = p.scalar("BloomUpperGradientMultiplier", m, 1.0f);
   s.bloom_persist_mult = p.scalar("BloomPersistMultiplier", m, 1.0f);
   s.desat_amount_mult = p.scalar("DesatAmountMultiplier", m, 1.0f);
+  s.desat_luminosity_mult = p.vec3("DesatLuminosityMultiplier", m, {1.0f, 1.0f, 1.0f});
+  s.desat_post_mod_mult = p.vec3("DesatPostModMultiplier", m, {1.0f, 1.0f, 1.0f});
   s.contrast_mult = p.scalar("ContrastMultiplier", m, 1.0f);
 
   return s;

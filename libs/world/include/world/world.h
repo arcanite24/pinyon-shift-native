@@ -105,7 +105,8 @@ struct MeshMaterial {
   uint32_t layer_c = kNoTexture;
   uint32_t spec_map = kNoTexture;
   std::array<float, 2> tiling_c{1, 1};  // pixel constant 1 xy (Blend_C tiling)
-  float emissive_force = 0.0f;          // pixel constant 3 w on _LM effects
+  float emissive_force = 0.0f;          // pixel constant 3 w on _LM / _EMIS effects
+  uint8_t is_emissive_map = 0;          // EmissiveMapSampler (slot 3) staggered dusk/dawn prop windows
   uint8_t is_water = 0;                 // LAKE_* water effect
   uint8_t anim_flag = 0;                // ANIM_FLAG* waving cloth flag effect
   uint8_t is_grass = 0;                 // _0x00005007 grass quad / grass shell effect
@@ -127,7 +128,8 @@ struct MeshMaterial {
   std::array<int32_t, 3> slot_types{-1, -1, -1};
   auto key() const {
     return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade, light_map, ao_map, normal_map, layer_c,
-                           spec_map, tiling_c, is_water, anim_flag, is_grass, is_road, decal_noise_c4);
+                           spec_map, tiling_c, emissive_force, is_emissive_map, is_water, anim_flag, is_grass, is_road,
+                           decal_noise_c4);
   }
 };
 

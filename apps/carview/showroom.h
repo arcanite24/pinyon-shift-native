@@ -105,8 +105,10 @@ struct ShowroomFrame {
   float shadow_matrix_mid[16] = {};
   float shadow_mid_bias[4] = {0.0f, 0.0f, 0.0f, 2.0f};  // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
   float phase_b_params[4] = {0.0f, 0.0f, 0.0f, 0.0f};   // x car_detail (>0.5), y rotor_glow [0..1], z frame_jitter, w ssr_active
+  // World prop AmbientColour from TimeOfDayA.xml (SKY_AND_TOD §2.4).
+  float ambient_color[4] = {0.1717f, 0.2079f, 0.2229f, 1.0f};
 };
-static_assert(sizeof(ShowroomFrame) == 800);
+static_assert(sizeof(ShowroomFrame) == 816);
 
 // Per-draw push constants.
 struct ShowroomPush {
@@ -158,6 +160,7 @@ struct WorldTriangles {
     std::array<float, 2> tiling_c{1, 1};      // Blend_C's UV tiling
     std::array<float, 2> decal_noise_c4{3.5f, 8.0f};  // H_VBLND_DECAL pixel constant 4 xy
     float emissive_force = 0.0f;
+    uint8_t is_emissive_map = 0;
     uint8_t is_water = 0;
     uint8_t anim_flag = 0;               // world::MeshMaterial::anim_flag (ANIM_FLAG*)
     uint8_t is_grass = 0;                // world::MeshMaterial::is_grass (_0x00005007)

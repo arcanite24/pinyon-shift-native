@@ -140,8 +140,9 @@ vec3 gtao_multi_bounce(float visibility, vec3 albedo_approx) {
 float eval_auto_exposure() {
   uint flags = uint(p.bloom_p.z + 0.5);
   if ((flags & 4u) == 0u) return p.def.w;
-  // Adapted luminance scaled into TrackSettings.xml key domain (~0..65).
-  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 64.0;
+  // Adapted luminance mapped into TrackSettings.xml key domain (0..65) so sunlit Colorado
+  // asphalt and blue sky preserve highlight headroom without crushing shadowed hillsides.
+  float L = max(texture(lum_adapt, vec2(0.5)).r, 0.0) * 80.0;
   float ev_curve = p.exp_ev.x;
   if (L <= p.exp_keys.x) {
     ev_curve = p.exp_ev.x;
@@ -157,8 +158,9 @@ float eval_auto_exposure() {
   } else {
     ev_curve = p.exp_ev.w;
   }
-  float base_exp = max(p.def.w, 0.05);
-  return clamp(base_exp * exp2(clamp(ev_curve, -2.0, 4.0)), 0.05, 8.0);
+  // Exact SKY_AND_TOD §5.2 EV formula: exp2(clamp(ev_curve + filmic_exposure, -2.0, 6.0)).
+  float ev_total = clamp(ev_curve + p.def.w, -2.0, 6.0);
+  return exp2(ev_total);
 }
 
 vec3 raw_scene(vec2 uv) { return min(max(texture(src, clamp(uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0)), vec3(64.0)); }
@@ -199,9 +201,9 @@ float eval_rotated_vignette(vec2 uv, vec4 geom, vec4 rot) {
   vec2 d = uv - geom.xy;
   vec2 r = vec2(rot.x * d.x + rot.y * d.y, -rot.y * d.x + rot.x * d.y);
   vec2 rad = max(geom.zw, vec2(0.05));
-  float e = length(r / rad);
-  float feather = max(rot.z, 0.05);
-  return smoothstep(1.0 - feather, 1.0 + feather * 0.6, e);
+  vec2 vp = r / rad;
+  float vig_power = max(rot.z, 0.25);
+  return clamp(pow(max(dot(vp, vp), 0.0), vig_power), 0.0, 1.0);
 }
 
 float hash12(vec2 q) {
@@ -537,17 +539,17 @@ void main() {
   // Paired rotated elliptical VignetteTop + VignetteBottom (SKY_AND_TOD.md §5.5 step 4):
   // evaluated in sqrt (gamma-2) space with FH1's subtractive sky-tinting formula.
   float vig_scale = clamp(p.mode.w, 0.0, 1.0);
-  if ((oflags & 32u) != 0u) {
+  if ((oflags & 32u) != 0u && vig_scale > 0.001) {
     vec3 s = sqrt(max(t, vec3(0.0)));
     if (opt.vig_top_col.w > 0.001) {
       float m_top = eval_rotated_vignette(v_uv, opt.vig_top_geom, opt.vig_top_rot);
-      float a_top = clamp(m_top * opt.vig_top_col.w * max(vig_scale, 0.35), 0.0, 1.0);
+      float a_top = clamp(m_top * opt.vig_top_col.w * vig_scale, 0.0, 1.0);
       vec3 target_top = clamp(s - vec3(1.0) + opt.vig_top_col.rgb, vec3(0.0), vec3(1.0));
       s = mix(s, target_top, a_top);
     }
     if (opt.vig_bot_col.w > 0.001) {
       float m_bot = eval_rotated_vignette(v_uv, opt.vig_bot_geom, opt.vig_bot_rot);
-      float a_bot = clamp(m_bot * opt.vig_bot_col.w * max(vig_scale, 0.35), 0.0, 1.0);
+      float a_bot = clamp(m_bot * opt.vig_bot_col.w * vig_scale, 0.0, 1.0);
       vec3 target_bot = clamp(s - vec3(1.0) + opt.vig_bot_col.rgb, vec3(0.0), vec3(1.0));
       s = mix(s, target_bot, a_bot);
     }

@@ -188,6 +188,13 @@ int main() {
       }
     }
     CHECK(moved);
+    // Verify synthetic procedural windmills/flags/box-crowds are NOT emitted near ground level
+    // when grass is disabled (only high-altitude hot-air balloons remain).
+    std::vector<world::DebrisVertex> v_no_grass;
+    anim.build_mesh(2005.0, 146.5, 955.0, 0.0f, &grass_ground, v_no_grass, false);
+    for (const auto& v : v_no_grass) {
+      CHECK(v.pos[1] > 165.0f);
+    }
   }
 
   // 5. SettingsPage motion blur & depth of field toggles.
@@ -224,6 +231,14 @@ int main() {
     c.decal_noise_c4 = {3.5f, 8.0f};
     d.decal_noise_c4 = {2.0f, 6.0f};
     CHECK(c.key() != d.key());
+    world::MeshMaterial e1 = a, e2 = a;
+    e1.emissive_force = 0.0f;
+    e2.emissive_force = 0.8f;
+    CHECK(e1.key() != e2.key());
+    world::MeshMaterial em1 = a, em2 = a;
+    em1.is_emissive_map = 0;
+    em2.is_emissive_map = 1;
+    CHECK(em1.key() != em2.key());
     world::GatherOptions go;
     CHECK(go.far_inner_uberlod >= 800.0);
   }

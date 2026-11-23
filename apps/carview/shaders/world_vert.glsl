@@ -110,6 +110,7 @@ layout(location = 4) out vec4 v_colour;
 // and 1.
 layout(location = 5) flat out vec2 v_fade;
 layout(location = 7) out vec2 v_uv2;
+layout(location = 8) flat out float v_emissive_thresh;
 
 void main() {
 #ifdef GPU_DRIVEN
@@ -128,6 +129,10 @@ void main() {
 #endif
   uint flags = uint(draw.params.y + 0.5);
   v_fade = vec2(0.0);
+  // Deterministic per-instance dusk/dawn switch-on threshold (ModelData.x in [0.06, 0.94])
+  // derived from the prop's stable world-space centre so buildings illuminate staggered.
+  vec3 prop_cell = floor((in_pos + vec3(in_centre.xyz) * 0.1) * 0.25);
+  v_emissive_thresh = 0.06 + 0.88 * fract(sin(dot(prop_cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
   // A prop's level, picked per instance: its LOD00 inside the LOD band,
   // its LOD02 outside it, both dithered only across the band; the far
   // levels fade out at the gather's edge. An instance wholly hidden goes
@@ -181,7 +186,7 @@ void main() {
     r = len > 1e-4 ? r / len : vec3(1.0, 0.0, 0.0);
     world.xyz += r * in_uv1.x + u * in_uv1.y;
     v_position = world.xyz;
-    v_normal = u;
+    v_normal = normalize(u * 0.65 + normalize(to_eye + vec3(0.0, 0.001, 0.0)) * 0.35);
     v_uv0 = in_uv0;
     v_uv1 = in_uv1;
     v_uv2 = vec2(0.0);

@@ -1399,6 +1399,7 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
       wm.tiling_c = m.tiling_c;
       wm.decal_noise_c4 = m.decal_noise_c4;
       wm.emissive_force = m.emissive_force;
+      wm.is_emissive_map = m.is_emissive_map;
       wm.is_water = m.is_water;
       wm.anim_flag = m.anim_flag;
       wm.is_grass = m.is_grass;
@@ -5673,8 +5674,8 @@ int run_drive(int argc, char** argv) {
             ps.white = cfg.white_day + dn * (cfg.white_night - cfg.white_day);
             ps.desaturate = std::clamp(cfg.desat_amount * tod.desat_amount_mult, 0.0f, 1.5f);
             for (int k = 0; k < 3; ++k) {
-              ps.luminance[k] = cfg.desat_luminosity[k];
-              ps.balance[k] = cfg.desat_post_mod[k];
+              ps.luminance[k] = cfg.desat_luminosity[k] * tod.desat_luminosity_mult[k];
+              ps.balance[k] = cfg.desat_post_mod[k] * tod.desat_post_mod_mult[k];
             }
             if (const char* b = std::getenv("SHIFT_BALANCE"))
               std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
@@ -5708,14 +5709,14 @@ int run_drive(int argc, char** argv) {
             ps.vig_top_radius[0] = std::max(vt.scale_x, 0.25f);
             ps.vig_top_radius[1] = std::max(vt.scale_y, 0.25f);
             ps.vig_top_rot = vt.angle_deg * kDegToRad;
-            ps.vig_top_feather = std::clamp(1.0f / std::max(vt.power, 0.5f), 0.15f, 0.85f);
+            ps.vig_top_feather = std::clamp(vt.power, 0.25f, 8.0f);
             ps.vig_bot_opacity = vb.color[3];
             ps.vig_bot_center[0] = 0.5f + vb.pos_x * 0.5f;
             ps.vig_bot_center[1] = 0.5f - vb.pos_y * 0.5f;
             ps.vig_bot_radius[0] = std::max(vb.scale_x, 0.25f);
             ps.vig_bot_radius[1] = std::max(vb.scale_y, 0.25f);
             ps.vig_bot_rot = vb.angle_deg * kDegToRad;
-            ps.vig_bot_feather = std::clamp(1.0f / std::max(vb.power, 0.5f), 0.15f, 0.85f);
+            ps.vig_bot_feather = std::clamp(vb.power, 0.25f, 8.0f);
             // Optical post-FX: speed/camera radial motion blur, DoF, god rays & lens flare/dirt.
             const float mph = float(std::max(0.0, vehicle.speed()) * 2.23693629);
             const float mph_max = std::max(cfg.detail_blur_mph_max, 40.0f);
@@ -5746,11 +5747,9 @@ int run_drive(int argc, char** argv) {
               const float* keys = cockpit ? cfg.cockpit_keys : cfg.exterior_keys;
               const float* evs = cockpit ? cfg.cockpit_ev : cfg.exterior_ev;
               for (int k = 0; k < 4; ++k) ps.exp_keys[k] = keys[k], ps.exp_ev[k] = evs[k];
-              // Linear base exposure from TrackSettings.xml (filmicTone.exposure = 0.31),
-              // calibrated with a 1.18x daytime match to FH1 freeroam.png while keeping
-              // midnight deep navy via the 4-key adaptive EV curve in post.frag.
-              const float day_lift = 1.0f + 0.18f * (1.0f - std::clamp(tod.day_night_post, 0.0f, 1.0f));
-              ps.exposure = std::max(cfg.filmic_exposure, 0.05f) * day_lift;
+              // Exact TrackSettings.xml filmicTone.exposure EV offset (SKY_AND_TOD §5.2):
+              // post.frag evaluates exp2(clamp(ev_curve + filmic_exposure, -2.0, 6.0)).
+              ps.exposure = cfg.filmic_exposure;
               const float tau = std::max(cfg.tonemap_delay * 10.0f, 0.05f);
               ps.adapt_alpha = (headless || tod_frame_dt <= 0.0)
                                    ? 1.0f

@@ -498,6 +498,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             const bool has_norm = mm.effect.find("_NORM") != std::string::npos;
             const bool has_ao = mm.effect.find("_AO") != std::string::npos;
             const bool has_lm = mm.effect.ends_with("_LM");
+            const bool has_emis = !has_lm && mm.effect.find("EMIS") != std::string::npos;
             const bool has_spec = mm.effect.find("_SPEC") != std::string::npos;
             if (vblend) weight_gain = constant(4)[0];
             if ((vblend && !decal) || splat || mm.effect.rfind("H_BLND1", 0) == 0) mm.tiling = constant(0);
@@ -551,6 +552,14 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             if (has_lm) {
               mm.light_map = file_slot(7);
               if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
+            } else if (has_emis) {
+              // Staggered dusk/dawn EmissiveMapSampler (slot 3 on prop emissive shaders, SKY_AND_TOD §6.2).
+              const uint32_t em = file_slot(3);
+              if (em != kNoTexture) {
+                mm.light_map = em;
+                mm.is_emissive_map = 1;
+                if (m.pixel_constants.size() > 3) mm.emissive_force = std::clamp(m.pixel_constants[3][3], 0.0f, 1.0f);
+              }
             }
             if (has_spec && (prop_diff || road)) {
               mm.spec_map = file_slot(has_norm ? 2 : 1);

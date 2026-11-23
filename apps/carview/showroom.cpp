@@ -3002,7 +3002,7 @@ bool Showroom::upload(std::string& error) {
     record_contact_shadows(cmd);
     r_.mark(cmd, "contact_shadow");
     record_debris_draw(cmd);
-    if (draw_car_ && !cockpit_camera_active_) record_driver_draw(cmd);
+    record_driver_draw(cmd);
     const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
     if (draw_car_) record_draws(cmd, car_op, glass_, 1);
     record_all_instances(cmd, r_.z_prepass(), 1);
@@ -4327,7 +4327,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     if (flags && mat.layers == 4) flags |= 32;  // tree sprite: turned to the camera in world.vert
     if (mat.light_map != kNoWorldTexture) {
       d.light_map = mat.light_map;
-      flags |= 2048u;  // world.frag kFlagLightMap
+      flags |= mat.is_emissive_map ? 8388608u : 2048u;  // kFlagEmissiveMap (slot 3) vs kFlagLightMap (slot 7)
     }
     if (mat.normal_map != kNoWorldTexture) {
       d.normal_map = mat.normal_map;
@@ -4366,7 +4366,9 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     // LOD02, 512 a prop of one level.
     if (mat.fade >= 1 && mat.fade <= 3) flags |= 64u << mat.fade;
     d.push.params[1] = float(flags);
-    d.push.params[2] = float(mat.far);  // world.vert's depth push
+    // Encode integer far-ring level (0, 1, 2) plus c3.w emissive_force in [0, 0.45] so
+    // world_cull.comp (params.z < 0.5) and world_vert.glsl (> 0.5 / > 1.5) stay exact.
+    d.push.params[2] = float(mat.far) + std::clamp(mat.emissive_force, 0.0f, 1.0f) * 0.45f;
     // params[3] carries packed half2x16: tiling_c for H_BLND3 (kFlagLayerC),
     // or decal_noise_c4 for H_VBLND_DECAL (kFlagDecalNoise); 1.0 otherwise
     // (the obsolete 2.5x H_VBLND light gain hack is removed).
@@ -5776,6 +5778,11 @@ void Showroom::apply_tod_to_frame() {
   frame_.car_light_bot[1] = t.car_hl_bottom[1];
   frame_.car_light_bot[2] = t.car_hl_bottom[2];
   frame_.car_light_bot[3] = tod_eye_game_y_;
+
+  frame_.ambient_color[0] = t.ambient_color[0];
+  frame_.ambient_color[1] = t.ambient_color[1];
+  frame_.ambient_color[2] = t.ambient_color[2];
+  frame_.ambient_color[3] = t.ibl_ambient_scale;
 }
 
 bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& error) {
@@ -8134,8 +8141,10 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   auto push_tri = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c,
                       const std::array<uint8_t, 4>& col) {
     if (count + 3 > kMaxDriverVerts) return;
+    // world_opaque_ uses VK_FRONT_FACE_CLOCKWISE (for det=-1 world_transform_); emit CW order
+    // (a, c, b) while keeping the outward CCW geometric normal so car-space det=+1 faces draw.
     const auto n = vnorm(vcross(vsub(b, a), vsub(c, a)));
-    const std::array<float, 3>* pts[3] = {&a, &b, &c};
+    const std::array<float, 3>* pts[3] = {&a, &c, &b};
     for (int k = 0; k < 3; ++k) {
       WorldVertex& o = dst[count++];
       o = WorldVertex{};
@@ -8219,35 +8228,38 @@ void Showroom::update_driver_mesh(float wheel_rad) {
     }
   };
 
-  // Seated driver body behind steering wheel (+Z rearward in model space, lowered inside cabin).
+  // Seated festival driver behind steering wheel (+Z rearward in model space, visible through
+  // rear and side glass in chase/external cameras, hidden in cockpit/hood/bumper views).
   const float lean = std::clamp(wheel_rad * 0.03f, -0.045f, 0.045f);
-  const std::array<float, 3> chest{pivot[0] + lean * 0.4f, pivot[1] - 0.12f, pivot[2] + 0.38f};
-  const std::array<float, 3> head{pivot[0] + lean, pivot[1] + 0.15f, pivot[2] + 0.40f};
+  const std::array<float, 3> chest{pivot[0] + lean * 0.4f, pivot[1] - 0.06f, pivot[2] + 0.36f};
+  const std::array<float, 3> head{pivot[0] + lean, pivot[1] + 0.21f, pivot[2] + 0.38f};
 
-  const std::array<uint8_t, 4> suit{34, 38, 46, 255};
-  const std::array<uint8_t, 4> stripe{120, 32, 46, 255};
-  const std::array<uint8_t, 4> helmet{64, 68, 76, 255};
-  const std::array<uint8_t, 4> visor{16, 18, 24, 255};
-  const std::array<uint8_t, 4> glove{22, 24, 28, 255};
+  const std::array<uint8_t, 4> jacket{56, 66, 82, 255};
+  const std::array<uint8_t, 4> collar{168, 52, 68, 255};
+  const std::array<uint8_t, 4> skin{184, 140, 114, 255};
+  const std::array<uint8_t, 4> hair{48, 38, 32, 255};
+  const std::array<uint8_t, 4> shades{22, 24, 30, 255};
+  const std::array<uint8_t, 4> glove{42, 44, 50, 255};
 
-  // Sculpted torso, collar, neck, rounded dark racing helmet + smoked forward visor.
-  push_box(chest, {0.18f, 0, 0}, {0, 0.20f, 0}, {0, 0, 0.10f}, suit);
-  push_box({chest[0], chest[1] + 0.15f, chest[2] - 0.02f}, {0.195f, 0, 0}, {0, 0.045f, 0}, {0, 0, 0.105f}, stripe);
-  push_box({head[0], head[1] - 0.10f, head[2]}, {0.050f, 0, 0}, {0, 0.055f, 0}, {0, 0, 0.050f}, suit);
-  push_ellipsoid(head, 0.108f, 0.118f, 0.128f, helmet, 5, 10);
-  push_ellipsoid({head[0], head[1] + 0.008f, head[2] - 0.088f}, 0.086f, 0.040f, 0.045f, visor, 3, 8);
+  // Sculpted festival driver torso, collar, neck, head, hair cap, sunglasses & arms.
+  push_box(chest, {0.19f, 0, 0}, {0, 0.21f, 0}, {0, 0, 0.105f}, jacket);
+  push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.205f, 0, 0}, {0, 0.048f, 0}, {0, 0, 0.11f}, collar);
+  push_box({head[0], head[1] - 0.11f, head[2]}, {0.052f, 0, 0}, {0, 0.060f, 0}, {0, 0, 0.052f}, skin);
+  push_ellipsoid(head, 0.098f, 0.115f, 0.112f, skin, 5, 10);
+  push_ellipsoid({head[0], head[1] + 0.042f, head[2] + 0.015f}, 0.104f, 0.088f, 0.114f, hair, 5, 10);
+  push_ellipsoid({head[0], head[1] + 0.008f, head[2] - 0.084f}, 0.078f, 0.028f, 0.032f, shades, 3, 8);
 
-  // Left & right shoulders -> elbows -> gloved hands gripping the rotating wheel rim.
-  const std::array<float, 3> l_sh{chest[0] - 0.20f, chest[1] + 0.13f, chest[2] - 0.02f};
-  const std::array<float, 3> r_sh{chest[0] + 0.20f, chest[1] + 0.13f, chest[2] - 0.02f};
+  // Left & right shoulders -> elbows -> hands gripping the rotating steering wheel rim.
+  const std::array<float, 3> l_sh{chest[0] - 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
+  const std::array<float, 3> r_sh{chest[0] + 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
   const std::array<float, 3> l_el{(l_sh[0] + l_hand[0]) * 0.5f - 0.06f, (l_sh[1] + l_hand[1]) * 0.5f - 0.08f,
                                   (l_sh[2] + l_hand[2]) * 0.5f + 0.04f};
   const std::array<float, 3> r_el{(r_sh[0] + r_hand[0]) * 0.5f + 0.06f, (r_sh[1] + r_hand[1]) * 0.5f - 0.08f,
                                   (r_sh[2] + r_hand[2]) * 0.5f + 0.04f};
-  push_limb(l_sh, l_el, 0.046f, suit);
-  push_limb(r_sh, r_el, 0.046f, suit);
-  push_limb(l_el, l_hand, 0.038f, suit);
-  push_limb(r_el, r_hand, 0.038f, suit);
+  push_limb(l_sh, l_el, 0.048f, jacket);
+  push_limb(r_sh, r_el, 0.048f, jacket);
+  push_limb(l_el, l_hand, 0.040f, jacket);
+  push_limb(r_el, r_hand, 0.040f, jacket);
   push_box(l_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
   push_box(r_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
 
@@ -8257,29 +8269,47 @@ void Showroom::update_driver_mesh(float wheel_rad) {
 
 void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   if (!vfx_ready_ || driver_count_ == 0 || !world_opaque_ || !world_white_set_) return;
+  const bool draw_player = draw_car_ && !cockpit_camera_active_;
+  if (!draw_player && instances_.empty()) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
   r_.apply_vrs(cmd);
   const VkDescriptorSet sets[2] = {frame_set_, world_white_set_};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+  VkDeviceSize at = dyn_sync(driver_buf_, VkDeviceSize(driver_count_) * sizeof(WorldVertex));
+  vkCmdBindVertexBuffers(cmd, 0, 1, &driver_buf_.buf.buffer, &at);
+
   ShowroomPush pc{};
-  identity(pc.model);  // driver vertices are already in car model space
   for (int i = 0; i < 3; ++i) {
     pc.uv0[i] = world_sun_[i];
     pc.uv1[i] = world_up_[i];
   }
   pc.uv0[3] = 2.0f;  // swap = none
-  pc.uv1[3] = world_up_[3] * 0.42f;  // cabin-occluded lighting so driver doesn't glow inside roofed interior
+  pc.uv1[3] = world_up_[3] * 0.78f;  // balanced cabin-shaded lighting visible through rear/side glass
   pc.tint[0] = pc.tint[1] = pc.tint[2] = pc.tint[3] = 1.0f;
   pc.params[0] = 0.0f;      // kOpaque
   pc.params[1] = 65536.0f;  // kFlagVertexLit
   pc.params[2] = 0.0f;
   pc.params[3] = 1.0f;
-  vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                     sizeof pc, &pc);
-  VkDeviceSize at = dyn_sync(driver_buf_, VkDeviceSize(driver_count_) * sizeof(WorldVertex));
-  vkCmdBindVertexBuffers(cmd, 0, 1, &driver_buf_.buf.buffer, &at);
-  vkCmdDraw(cmd, driver_count_, 1, 0, 0);
+
+  if (draw_player) {
+    identity(pc.model);  // player driver vertices are in car model space
+    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof pc, &pc);
+    vkCmdDraw(cmd, driver_count_, 1, 0, 0);
+  }
+  // Also render seated drivers inside nearby AI race / festival / traffic cars.
+  for (const auto& in : instances_) {
+    if (!in.car) continue;
+    const float dx = in.model[12] - frame_.eye[0];
+    const float dy = in.model[13] - frame_.eye[1];
+    const float dz = in.model[14] - frame_.eye[2];
+    if (dx * dx + dy * dy + dz * dz > 95.0f * 95.0f) continue;
+    std::memcpy(pc.model, in.model, sizeof pc.model);
+    vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof pc, &pc);
+    vkCmdDraw(cmd, driver_count_, 1, 0, 0);
+  }
 }
 
 void Showroom::record_debris_draw(VkCommandBuffer cmd) {

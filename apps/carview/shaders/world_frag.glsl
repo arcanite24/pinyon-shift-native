@@ -50,6 +50,7 @@ layout(set = 0, binding = 0) uniform Frame {
   mat4 shadow_matrix_mid;  // Mid cascade orthographic sun shadow matrix (~90m)
   vec4 shadow_mid_bias;    // x mid bias, y 3-cascade (>0.5), z pcss (0/1/2), w cascades (2/3)
   vec4 phase_b_params;     // x car_detail, y rotor_glow, z frame_jitter, w ssr_active
+  vec4 ambient_color;      // rgb TimeOfDayA AmbientColour (prop ambient), w ibl_ambient_scale
 } frame;
 layout(set = 0, binding = 1) uniform samplerCube environment;
 layout(set = 0, binding = 2) uniform sampler2DShadow shadow_map;
@@ -134,6 +135,7 @@ layout(location = 3) in vec2 v_uv1;
 layout(location = 4) in vec4 v_colour;
 layout(location = 5) flat in vec2 v_fade;  // the instance's fade weights (world.vert)
 layout(location = 7) in vec2 v_uv2;        // TEXCOORD2 lightmap / AO UV
+layout(location = 8) flat in float v_emissive_thresh;
 
 layout(location = 0) out vec4 out_color;
 
@@ -142,7 +144,8 @@ const uint kFlagTextured = 1u, kFlagSky = 2u, kFlagVertexBlend = 4u, kFlagSplat 
            kFlagBillboard = 32u, kFlagAlphaTest = 64u, kFlagLodNear = 128u, kFlagLodFar = 256u, kFlagLodOne = 512u,
            kFlagUnlitVertexColor = 1024u, kFlagLightMap = 2048u, kFlagNormalMap = 4096u, kFlagAoMap = 8192u,
            kFlagLayerC = 16384u, kFlagWater = 32768u, kFlagVertexLit = 65536u, kFlagSpecMap = 524288u,
-           kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u, kFlagWaterNormalB = 4194304u;
+           kFlagRoad = 1048576u, kFlagDecalNoise = 2097152u, kFlagWaterNormalB = 4194304u,
+           kFlagEmissiveMap = 8388608u;
 
 // The screen-door threshold of this pixel (interleaved gradient noise): one
 // pattern shared by every draw, so fades that split a pixel between two
@@ -759,8 +762,8 @@ void main() {
   // Execute cutout alpha-test before normal mapping, shadows, specular, and headlights.
   if (blend == kCoverage && (flags & kFlagAlphaTest) != 0u && t.a < 0.5) discard;
 #endif
-  // Tree sprites: linearize sRGB vertex tint before multiplying linear atlas albedo (2x RGB).
-  if ((flags & kFlagBillboard) != 0u) t.rgb *= 2.0 * pow(v_colour.rgb, vec3(2.2));
+  // Tree sprites: soft linearize vertex tint without crushing distant conifers to black silhouettes.
+  if ((flags & kFlagBillboard) != 0u) t.rgb *= 1.85 * pow(max(v_colour.rgb, vec3(0.0)), vec3(1.35));
 
   vec3 n = n_geom;
   if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u && eye_dist < 140.0) {
@@ -781,7 +784,13 @@ void main() {
   float ndl = max(dot(n, sun), 0.0);
   float raw_shade = ndl > 0.0 && (flags & kFlagBillboard) == 0u ? sun_shadow(v_position, n_geom) : 1.0;
   float shade = mix(1.0, raw_shade, shadow_scale);
-  vec3 light = (sun_col * ndl * shade + mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up))) * ao;
+  float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
+  vec3 hemi_amb = mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb;
+  if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && frame.sun_color.w >= 0.0) {
+    // SKY_AND_TOD §2.4: AmbientColour lifts shadowed world props cleanly in daylight.
+    hemi_amb += frame.ambient_color.rgb * 0.35 * ibl_amb;
+  }
+  vec3 light = (sun_col * ndl * shade + hemi_amb) * ao;
   vec3 colour = t.rgb * light * draw.up.w;
 
   // Per-material Blinn-Phong sun specular: H_ROAD asphalt glossiness & SpecularMap modulation.
@@ -842,11 +851,22 @@ void main() {
     colour += t.rgb * hl_sum * hl_night * draw.up.w;
   }
 
-  // World night Light_Map emissive spill at TEXCOORD2 (SPEC-SKY-AND-TOD §6.1): added in linear HDR
-  // before fog, driven by SwitchOnLights (frame.sky_color.w).
-  if ((flags & kFlagLightMap) != 0u && frame.sky_color.w > 0.002) {
-    vec3 lm = texture(light_map, v_uv2).rgb;
-    colour += lm * frame.sky_color.w * 1.4 * draw.up.w;
+  // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):
+  // c3.w (emissive_force) encoded in fractional part of draw.params.z enables daytime interior/sign glow.
+  float emissive_force = clamp((draw.params.z - floor(draw.params.z + 0.01)) / 0.45, 0.0, 1.0);
+  if ((flags & kFlagLightMap) != 0u) {
+    float lm_gain = max(frame.sky_color.w, emissive_force);
+    if (lm_gain > 0.002) {
+      vec3 lm = texture(light_map, v_uv2).rgb;
+      colour += lm * lm_gain * 1.4 * draw.up.w;
+    }
+  } else if ((flags & kFlagEmissiveMap) != 0u) {
+    float lit_flag = step(v_emissive_thresh, frame.sky_color.w);
+    float em_gain = max(lit_flag * frame.sky_color.w, emissive_force);
+    if (em_gain > 0.002) {
+      vec3 em = texture(light_map, v_uv0 * draw.tint.xy).rgb;
+      colour += em * em_gain * 1.6 * draw.up.w;
+    }
   }
 
   colour = apply_haze(colour, v_position, up, sun);

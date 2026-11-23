@@ -149,6 +149,8 @@ struct TodState {
   float bloom_upper_grad_mult = 1.0f;
   float bloom_persist_mult = 1.0f;
   float desat_amount_mult = 1.0f;
+  std::array<float, 3> desat_luminosity_mult{1.0f, 1.0f, 1.0f};
+  std::array<float, 3> desat_post_mod_mult{1.0f, 1.0f, 1.0f};
   float contrast_mult = 1.0f;
 };
 
