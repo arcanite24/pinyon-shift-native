@@ -224,10 +224,15 @@ void main() {
   v_colour = in_colour;
   vec4 placed = world;
   if (draw.params.z > 0.5) {
-    // Push MIDDIST (1) +3.5% and UberLOD (2) +16% along the eye ray so near and
-    // mid-distance hills always win depth cleanly without coarse UberLOD bleed-through.
-    float far_push = draw.params.z > 1.5 ? 0.16 : 0.035;
-    placed.xyz = frame.eye.xyz + (world.xyz - frame.eye.xyz) * (1.0 + far_push);
+    // Push MIDDIST (1) +4% (min 180m) and UberLOD (2) +18% (min 550m) along the
+    // eye ray so coarse far terrain never bleeds above or swallows near road/car
+    // geometry even when approaching far_inner before an async regather swaps.
+    vec3 ray = world.xyz - frame.eye.xyz;
+    float dist = length(ray);
+    float far_push = draw.params.z > 1.5 ? 0.18 : 0.04;
+    float min_dist = draw.params.z > 1.5 ? 550.0 : 180.0;
+    float scale = max(1.0 + far_push, min_dist / max(dist, 0.5));
+    placed.xyz = frame.eye.xyz + ray * scale;
   }
   gl_Position = frame.view_projection * placed;
 }
