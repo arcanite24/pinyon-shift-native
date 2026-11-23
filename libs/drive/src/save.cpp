@@ -68,6 +68,28 @@ std::string save_to_text(const DriveSave& s) {
   if (s.treasure_map) out += "treasure_map 1\n";
   if (s.tod_sec >= 0.0 && std::isfinite(s.tod_sec)) out += "tod_sec " + num(std::fmod(s.tod_sec, 86400.0)) + "\n";
   if (!s.intro_completed) out += "intro_completed 0\n";
+  if (!s.campaign_stage.empty()) out += "campaign_stage " + s.campaign_stage + "\n";
+  if (!s.completed_cutscenes.empty()) {
+    out += "completed_cutscenes";
+    for (const auto& id : s.completed_cutscenes) out += " " + id;
+    out += "\n";
+  }
+  if (!s.heard_dialogs.empty()) {
+    out += "heard_dialogs";
+    for (const auto& id : s.heard_dialogs) out += " " + id;
+    out += "\n";
+  }
+  if (!s.unlocked_bosses.empty()) {
+    out += "unlocked_bosses";
+    for (const auto& id : s.unlocked_bosses) out += " " + id;
+    out += "\n";
+  }
+  if (!s.unlocked_showcases.empty()) {
+    out += "unlocked_showcases";
+    for (const auto& id : s.unlocked_showcases) out += " " + id;
+    out += "\n";
+  }
+  if (s.finale_complete) out += "finale_complete 1\n";
   if (s.road_discovery_nodes > 0 && !s.road_discovery_words.empty()) {
     size_t last = s.road_discovery_words.size();
     while (last > 0 && s.road_discovery_words[last - 1] == 0u) --last;
@@ -263,6 +285,19 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "intro_completed") {
       int v = 1;
       if (l >> v) out.intro_completed = (v != 0);
+    } else if (key == "campaign_stage") {
+      l >> out.campaign_stage;
+    } else if (key == "completed_cutscenes") {
+      for (std::string id; l >> id;) out.completed_cutscenes.push_back(id);
+    } else if (key == "heard_dialogs") {
+      for (std::string id; l >> id;) out.heard_dialogs.push_back(id);
+    } else if (key == "unlocked_bosses") {
+      for (std::string id; l >> id;) out.unlocked_bosses.push_back(id);
+    } else if (key == "unlocked_showcases") {
+      for (std::string id; l >> id;) out.unlocked_showcases.push_back(id);
+    } else if (key == "finale_complete") {
+      int v = 0;
+      if (l >> v) out.finale_complete = (v != 0);
     } else if (key == "roads_discovered") {
       uint32_t n_nodes = 0;
       std::string hex;

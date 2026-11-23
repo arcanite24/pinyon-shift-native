@@ -84,6 +84,13 @@ struct DriveSave {
   // The career.
   bool career_started = false;
   bool intro_completed = true;  // false on brand-new career until Viper->Corrado opening finishes
+  // Campaign progression state (Minute-0 -> Horizon Festival Finale & Credits).
+  std::string campaign_stage;  // empty: legacy/inferred; else canonical stage key
+  std::vector<std::string> completed_cutscenes;
+  std::vector<std::string> heard_dialogs;
+  std::vector<std::string> unlocked_bosses;
+  std::vector<std::string> unlocked_showcases;
+  bool finale_complete = false;
   int64_t credits = 0, total_winnings = 0;
   int wristband_points = 0;
   int collected_wristband = -1;  // -1: legacy/imported (inferred from wristband_points); 0..6: collected at Race Central
