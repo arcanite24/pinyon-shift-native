@@ -582,116 +582,127 @@ bool Showroom::create_pipelines(std::string& error) {
   VkPipelineDynamicStateCreateInfo dynamic_bias_vrs{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dynamic_bias_vrs.dynamicStateCount = 4;
   dynamic_bias_vrs.pDynamicStates = vrs_bias_states;
-  auto build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
-                   bool depth_attachment, bool depth_write, int blend_mode, VkPipeline& out,
-                   VkShaderModule vertex = VK_NULL_HANDLE, const VkPipelineVertexInputStateCreateInfo* input = nullptr,
-                   bool coverage = false, VkPipelineLayout pipe_layout = VK_NULL_HANDLE,
-                   VkCullModeFlags cull_mode = VK_CULL_MODE_NONE, bool depth_equal = false, bool color_out = true) {
-    const VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
-         vertex ? vertex : vert, "main", vertex ? &spec : nullptr},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
-         fragment, "main", fragment == mask ? nullptr : &spec}};
-    VkPipelineRasterizationStateCreateInfo rstate = vertex ? raster_bias : raster;
-    rstate.cullMode = cull_mode;
-    if (vertex) rstate.frontFace = VK_FRONT_FACE_CLOCKWISE;  // world_transform_ flips det = -1
-    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = samples;
-    multisample.alphaToCoverageEnable = coverage && samples != VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth.depthTestEnable = depth_attachment;
-    depth.depthWriteEnable = depth_write;
-    depth.depthCompareOp = depth_equal ? VK_COMPARE_OP_EQUAL
-                                       : (r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL);
-    VkPipelineColorBlendAttachmentState attachment{};
-    attachment.colorWriteMask = (coverage && r_.post())
-                                    ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT)
-                                    : (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                                       VK_COLOR_COMPONENT_A_BIT);
-    if (blend_mode == 1 || blend_mode == 4) {
-      // Premultiplied colour over what is behind; blend_mode == 4 (water) also writes surface gloss alpha for SSR.
-      attachment.blendEnable = VK_TRUE;
-      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-      attachment.colorBlendOp = VK_BLEND_OP_ADD;
-      attachment.srcAlphaBlendFactor = (blend_mode == 4) ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
-      attachment.dstAlphaBlendFactor = (blend_mode == 4) ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE;
-      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    } else if (blend_mode == 2) {
-      // Multiply blend (dst = src * dst): FH1 detail_glass_* Pass 1 & under-car contact shadow.
-      attachment.blendEnable = VK_TRUE;
-      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
-      attachment.colorBlendOp = VK_BLEND_OP_ADD;
-      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    } else if (blend_mode == 3) {
-      // Additive blend (dst = src + dst): FH1 detail_glass_* Pass 2 reflection + sun glint.
-      attachment.blendEnable = VK_TRUE;
-      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-      attachment.colorBlendOp = VK_BLEND_OP_ADD;
-      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    } else if (blend_mode == 5) {
-      // Constant-alpha fade blend (smooth traffic spawn/despawn fade-in/out without shader edits).
-      attachment.blendEnable = VK_TRUE;
-      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
-      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
-      attachment.colorBlendOp = VK_BLEND_OP_ADD;
-      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    }
-    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    blend.attachmentCount = color_out ? 1u : 0u;
-    blend.pAttachments = color_out ? &attachment : nullptr;
-    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = color_out ? 1u : 0u;
-    rendering.pColorAttachmentFormats = color_out ? &color_format : nullptr;
-    rendering.depthAttachmentFormat = depth_attachment ? r_.depth_format_ : VK_FORMAT_UNDEFINED;
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    info.pNext = &rendering;
-    info.stageCount = fragment ? 2u : 1u;
-    info.pStages = stages;
-    info.pVertexInputState = input ? input : &vertex_input;
-    info.pInputAssemblyState = &assembly;
-    info.pViewportState = &viewport;
-    info.pRasterizationState = &rstate;
-    info.pMultisampleState = &multisample;
-    info.pDepthStencilState = &depth;
-    info.pColorBlendState = &blend;
-    const bool use_vrs = r_.vrs_supported() && color_out && (blend_mode == 0) && samples == r_.samples_ &&
-                         (&out != &env_world_opaque_) && (&out != &env_world_coverage_) && (&out != &env_car_opaque_);
-    info.pDynamicState = (blend_mode == 5) ? &dynamic_blend_const
-                                           : (vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
-                                                     : (use_vrs ? &dynamic_vrs : &dynamic));
-    info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
-    return vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &info, nullptr, &out);
+  std::vector<std::function<VkResult(VkPipelineCache)>> tasks;
+  tasks.reserve(24);
+  auto queue_build = [&](VkShaderModule fragment, VkFormat color_format, VkSampleCountFlagBits samples,
+                         bool depth_attachment, bool depth_write, int blend_mode, VkPipeline& out,
+                         VkShaderModule vertex = VK_NULL_HANDLE,
+                         const VkPipelineVertexInputStateCreateInfo* input = nullptr, bool coverage = false,
+                         VkPipelineLayout pipe_layout = VK_NULL_HANDLE,
+                         VkCullModeFlags cull_mode = VK_CULL_MODE_NONE, bool depth_equal = false,
+                         bool color_out = true) {
+    VkPipeline* dst = &out;
+    tasks.emplace_back([&, fragment, color_format, samples, depth_attachment, depth_write, blend_mode, dst, vertex,
+                        input, coverage, pipe_layout, cull_mode, depth_equal,
+                        color_out](VkPipelineCache cache) -> VkResult {
+      const VkPipelineShaderStageCreateInfo stages[2] = {
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT,
+           vertex ? vertex : vert, "main", vertex ? &spec : nullptr},
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
+           fragment, "main", fragment == mask ? nullptr : &spec}};
+      VkPipelineRasterizationStateCreateInfo rstate = vertex ? raster_bias : raster;
+      rstate.cullMode = cull_mode;
+      if (vertex) rstate.frontFace = VK_FRONT_FACE_CLOCKWISE;  // world_transform_ flips det = -1
+      VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+      multisample.rasterizationSamples = samples;
+      multisample.alphaToCoverageEnable = coverage && samples != VK_SAMPLE_COUNT_1_BIT;
+      VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+      depth.depthTestEnable = depth_attachment;
+      depth.depthWriteEnable = depth_write;
+      depth.depthCompareOp =
+          depth_equal ? VK_COMPARE_OP_EQUAL
+                      : (r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL);
+      VkPipelineColorBlendAttachmentState attachment{};
+      attachment.colorWriteMask = (coverage && r_.post())
+                                      ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT)
+                                      : (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+      if (blend_mode == 1 || blend_mode == 4) {
+        // Premultiplied colour over what is behind; blend_mode == 4 (water) also writes surface gloss alpha for SSR.
+        attachment.blendEnable = VK_TRUE;
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = (blend_mode == 4) ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+        attachment.dstAlphaBlendFactor =
+            (blend_mode == 4) ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA : VK_BLEND_FACTOR_ONE;
+        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+      } else if (blend_mode == 2) {
+        // Multiply blend (dst = src * dst): FH1 detail_glass_* Pass 1 & under-car contact shadow.
+        attachment.blendEnable = VK_TRUE;
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
+        attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+      } else if (blend_mode == 3) {
+        // Additive blend (dst = src + dst): FH1 detail_glass_* Pass 2 reflection + sun glint.
+        attachment.blendEnable = VK_TRUE;
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+      } else if (blend_mode == 5) {
+        // Constant-alpha fade blend (smooth traffic spawn/despawn fade-in/out without shader edits).
+        attachment.blendEnable = VK_TRUE;
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+      }
+      VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+      blend.attachmentCount = color_out ? 1u : 0u;
+      blend.pAttachments = color_out ? &attachment : nullptr;
+      const VkFormat cf = color_format;
+      VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+      rendering.colorAttachmentCount = color_out ? 1u : 0u;
+      rendering.pColorAttachmentFormats = color_out ? &cf : nullptr;
+      rendering.depthAttachmentFormat = depth_attachment ? r_.depth_format_ : VK_FORMAT_UNDEFINED;
+      VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+      info.pNext = &rendering;
+      info.stageCount = fragment ? 2u : 1u;
+      info.pStages = stages;
+      info.pVertexInputState = input ? input : &vertex_input;
+      info.pInputAssemblyState = &assembly;
+      info.pViewportState = &viewport;
+      info.pRasterizationState = &rstate;
+      info.pMultisampleState = &multisample;
+      info.pDepthStencilState = &depth;
+      info.pColorBlendState = &blend;
+      const bool use_vrs = r_.vrs_supported() && color_out && (blend_mode == 0) && samples == r_.samples_ &&
+                           (dst != &env_world_opaque_) && (dst != &env_world_coverage_) && (dst != &env_car_opaque_);
+      info.pDynamicState = (blend_mode == 5) ? &dynamic_blend_const
+                                             : (vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
+                                                       : (use_vrs ? &dynamic_vrs : &dynamic));
+      info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
+      return vkCreateGraphicsPipelines(r_.device_, cache, 1, &info, nullptr, dst);
+    });
   };
+
   const VkCullModeFlags cull_back = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-  VkResult result = build(frag, r_.scene_format(), r_.samples_, true, true, 0, opaque_,
-                          VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back);
-  if (result == VK_SUCCESS)
-    result = build(frag, r_.scene_format(), r_.samples_, true, false, 0, opaque_after_z_,
-                   VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, true);
-  if (result == VK_SUCCESS)
-    result = build(frag, r_.scene_format(), r_.samples_, true, false, 5, opaque_fade_,
-                   VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back);
-  if (result == VK_SUCCESS)
-    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, car_z_prepass_,
-                   VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, false, false);
-  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 1, glass_);
-  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
-  if (result == VK_SUCCESS) result = build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
-  if (result == VK_SUCCESS && !guest_)
-    result = build(frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
-  if (result == VK_SUCCESS)
-    result = build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, true, 0, opaque_, VK_NULL_HANDLE, nullptr, false,
+              VK_NULL_HANDLE, cull_back);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 0, opaque_after_z_, VK_NULL_HANDLE, nullptr, false,
+              VK_NULL_HANDLE, cull_back, true);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 5, opaque_fade_, VK_NULL_HANDLE, nullptr, false,
+              VK_NULL_HANDLE, cull_back);
+  queue_build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, car_z_prepass_, VK_NULL_HANDLE, nullptr,
+              false, VK_NULL_HANDLE, cull_back, false, false);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 1, glass_);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
+  if (!guest_) queue_build(frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
+  queue_build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
+
   // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).
-  if (result == VK_SUCCESS && !guest_) {
+  VkResult result = VK_SUCCESS;
+  VkShaderModule cs_v = VK_NULL_HANDLE, cs_f = VK_NULL_HANDLE;
+  if (!guest_) {
     VkPushConstantRange cs_push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96};
     VkPipelineLayoutCreateInfo cs_pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     cs_pl.setLayoutCount = 1;
@@ -699,18 +710,18 @@ bool Showroom::create_pipelines(std::string& error) {
     cs_pl.pushConstantRangeCount = 1;
     cs_pl.pPushConstantRanges = &cs_push;
     result = vkCreatePipelineLayout(r_.device_, &cs_pl, nullptr, &contact_shadow_pipe_layout_);
-    if (result == VK_SUCCESS) {
-      VkShaderModule cs_v = VK_NULL_HANDLE, cs_f = VK_NULL_HANDLE;
+    if (result == VK_SUCCESS)
       result = make_module(kContact_shadow_vert_spv, sizeof(kContact_shadow_vert_spv), cs_v, "contact_shadow.vert");
-      if (result == VK_SUCCESS)
-        result = make_module(kContact_shadow_frag_spv, sizeof(kContact_shadow_frag_spv), cs_f, "contact_shadow.frag");
-      if (result == VK_SUCCESS) {
+    if (result == VK_SUCCESS)
+      result = make_module(kContact_shadow_frag_spv, sizeof(kContact_shadow_frag_spv), cs_f, "contact_shadow.frag");
+    if (result == VK_SUCCESS) {
+      tasks.emplace_back([&, cs_v, cs_f](VkPipelineCache cache) -> VkResult {
         VkPipelineVertexInputStateCreateInfo empty_vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         const VkPipelineShaderStageCreateInfo stages[2] = {
             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, cs_v, "main",
              nullptr},
-            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, cs_f, "main",
-             nullptr}};
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, cs_f,
+             "main", nullptr}};
         VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         ms.rasterizationSamples = r_.samples_;
         VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -718,8 +729,8 @@ bool Showroom::create_pipelines(std::string& error) {
         ds.depthWriteEnable = VK_FALSE;
         ds.depthCompareOp = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
         VkPipelineColorBlendAttachmentState att{};
-        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                             VK_COLOR_COMPONENT_A_BIT;
         att.blendEnable = VK_TRUE;
         att.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
         att.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
@@ -748,10 +759,8 @@ bool Showroom::create_pipelines(std::string& error) {
         pci.pColorBlendState = &bl;
         pci.pDynamicState = &dynamic_bias;
         pci.layout = contact_shadow_pipe_layout_;
-        result = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &pci, nullptr, &contact_shadow_pipe_);
-      }
-      if (cs_v) vkDestroyShaderModule(r_.device_, cs_v, nullptr);
-      if (cs_f) vkDestroyShaderModule(r_.device_, cs_f, nullptr);
+        return vkCreateGraphicsPipelines(r_.device_, cache, 1, &pci, nullptr, &contact_shadow_pipe_);
+      });
     }
   }
   // The textured world (world.vert / world.frag + discard-free world_opaque.frag):
@@ -775,83 +784,86 @@ bool Showroom::create_pipelines(std::string& error) {
   world_input.pVertexBindingDescriptions = &world_binding;
   world_input.vertexAttributeDescriptionCount = 7;
   world_input.pVertexAttributeDescriptions = world_attributes;
-  if (result == VK_SUCCESS)
-    result = build(world_opaque_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_, world_vert,
-                   &world_input, false, world_pipeline_layout_, cull_back);
-  if (result == VK_SUCCESS)
-    result = build(world_opaque_frag, r_.scene_format(), r_.samples_, true, false, 0, world_opaque_after_z_, world_vert,
-                   &world_input, false, world_pipeline_layout_, cull_back, true);
-  if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_dither_, world_vert,
-                   &world_input, false, world_pipeline_layout_, cull_back);
-  if (result == VK_SUCCESS)
-    result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, world_z_prepass_, world_vert,
-                   &world_input, false, world_pipeline_layout_, cull_back, false, false);
-  if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_coverage_, world_vert,
-                   &world_input, true, world_pipeline_layout_);
-  if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 1, world_alpha_, world_vert,
-                   &world_input, false, world_pipeline_layout_);
-  if (result == VK_SUCCESS)
-    result = build(world_frag, r_.scene_format(), r_.samples_, true, false, 4, world_water_, world_vert,
-                   &world_input, false, world_pipeline_layout_);
-  if (result == VK_SUCCESS && !guest_)
-    result = build(world_opaque_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
-                   env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
-  if (result == VK_SUCCESS && !guest_)
-    result = build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
-                   env_world_coverage_, world_vert, &world_input, true, world_pipeline_layout_);
+  if (result == VK_SUCCESS) {
+    queue_build(world_opaque_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_, world_vert,
+                &world_input, false, world_pipeline_layout_, cull_back);
+    queue_build(world_opaque_frag, r_.scene_format(), r_.samples_, true, false, 0, world_opaque_after_z_, world_vert,
+                &world_input, false, world_pipeline_layout_, cull_back, true);
+    queue_build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_opaque_dither_, world_vert,
+                &world_input, false, world_pipeline_layout_, cull_back);
+    queue_build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, world_z_prepass_, world_vert,
+                &world_input, false, world_pipeline_layout_, cull_back, false, false);
+    queue_build(world_frag, r_.scene_format(), r_.samples_, true, true, 0, world_coverage_, world_vert, &world_input,
+                true, world_pipeline_layout_);
+    queue_build(world_frag, r_.scene_format(), r_.samples_, true, false, 1, world_alpha_, world_vert, &world_input,
+                false, world_pipeline_layout_);
+    queue_build(world_frag, r_.scene_format(), r_.samples_, true, false, 4, world_water_, world_vert, &world_input,
+                false, world_pipeline_layout_);
+    if (!guest_) {
+      queue_build(world_opaque_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
+                  env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
+      queue_build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
+                  env_world_coverage_, world_vert, &world_input, true, world_pipeline_layout_);
+    }
+  }
   // The sun shadow pass (ours): depth only into the shadow map, biased;
   // opaque casters with no fragment shader, cut-outs alpha-tested.
   VkShaderModule shadow_frag = VK_NULL_HANDLE;
-  auto build_shadow = [&](VkShaderModule vertex, VkShaderModule fragment,
+  auto queue_shadow = [&](VkShaderModule vertex, VkShaderModule fragment,
                           const VkPipelineVertexInputStateCreateInfo* input, VkPipelineLayout pipe_layout,
                           VkCullModeFlags cull_mode, VkPipeline& out) {
-    const VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex, "main",
-         nullptr},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
-         "main", nullptr}};
-    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = VK_TRUE;
-    depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    VkPipelineRasterizationStateCreateInfo biased = raster;
-    biased.cullMode = cull_mode;
-    if (vertex == world_vert) biased.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    biased.depthBiasEnable = VK_TRUE;
-    biased.depthBiasConstantFactor = 2.0f;
-    biased.depthBiasSlopeFactor = 2.5f;
-    VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.depthAttachmentFormat = Renderer::kShadowFormat;
-    VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    info.pNext = &rendering;
-    info.stageCount = fragment ? 2 : 1;
-    info.pStages = stages;
-    info.pVertexInputState = input;
-    info.pInputAssemblyState = &assembly;
-    info.pViewportState = &viewport;
-    info.pRasterizationState = &biased;
-    info.pMultisampleState = &multisample;
-    info.pDepthStencilState = &depth;
-    info.pColorBlendState = &blend;
-    info.pDynamicState = &dynamic;
-    info.layout = pipe_layout;
-    return vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &info, nullptr, &out);
+    VkPipeline* dst = &out;
+    tasks.emplace_back([&, vertex, fragment, input, pipe_layout, cull_mode, dst](VkPipelineCache cache) -> VkResult {
+      const VkPipelineShaderStageCreateInfo stages[2] = {
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex, "main",
+           nullptr},
+          {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
+           "main", nullptr}};
+      VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+      multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+      VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+      depth.depthTestEnable = VK_TRUE;
+      depth.depthWriteEnable = VK_TRUE;
+      depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+      VkPipelineRasterizationStateCreateInfo biased = raster;
+      biased.cullMode = cull_mode;
+      if (vertex == world_vert) biased.frontFace = VK_FRONT_FACE_CLOCKWISE;
+      biased.depthBiasEnable = VK_TRUE;
+      biased.depthBiasConstantFactor = 2.0f;
+      biased.depthBiasSlopeFactor = 2.5f;
+      VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+      VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+      rendering.depthAttachmentFormat = Renderer::kShadowFormat;
+      VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+      info.pNext = &rendering;
+      info.stageCount = fragment ? 2 : 1;
+      info.pStages = stages;
+      info.pVertexInputState = input;
+      info.pInputAssemblyState = &assembly;
+      info.pViewportState = &viewport;
+      info.pRasterizationState = &biased;
+      info.pMultisampleState = &multisample;
+      info.pDepthStencilState = &depth;
+      info.pColorBlendState = &blend;
+      info.pDynamicState = &dynamic;
+      info.layout = pipe_layout;
+      return vkCreateGraphicsPipelines(r_.device_, cache, 1, &info, nullptr, dst);
+    });
   };
   if (result == VK_SUCCESS && r_.options_.shadow.size > 0) {
     result = make_module(kShadow_frag_spv, sizeof(kShadow_frag_spv), shadow_frag, "shadow.frag");
-    if (result == VK_SUCCESS)
-      result = build_shadow(world_vert, VK_NULL_HANDLE, &world_input, world_pipeline_layout_, cull_back, shadow_world_);
-    if (result == VK_SUCCESS)
-      result = build_shadow(world_vert, shadow_frag, &world_input, world_pipeline_layout_, VK_CULL_MODE_NONE, shadow_cutout_);
-    if (result == VK_SUCCESS)
-      result = build_shadow(vert, VK_NULL_HANDLE, &vertex_input, pipeline_layout_, cull_back, shadow_car_);
+    if (result == VK_SUCCESS) {
+      queue_shadow(world_vert, VK_NULL_HANDLE, &world_input, world_pipeline_layout_, cull_back, shadow_world_);
+      queue_shadow(world_vert, shadow_frag, &world_input, world_pipeline_layout_, VK_CULL_MODE_NONE, shadow_cutout_);
+      queue_shadow(vert, VK_NULL_HANDLE, &vertex_input, pipeline_layout_, cull_back, shadow_car_);
+    }
   }
+  bool pipes_ok = true;
+  if (result == VK_SUCCESS) {
+    pipes_ok = r_.compile_pipelines_parallel(tasks, error);
+  }
+  if (cs_v) vkDestroyShaderModule(r_.device_, cs_v, nullptr);
+  if (cs_f) vkDestroyShaderModule(r_.device_, cs_f, nullptr);
   if (shadow_frag) vkDestroyShaderModule(r_.device_, shadow_frag, nullptr);
   if (world_vert) vkDestroyShaderModule(r_.device_, world_vert, nullptr);
   if (world_frag) vkDestroyShaderModule(r_.device_, world_frag, nullptr);
@@ -860,7 +872,7 @@ bool Showroom::create_pipelines(std::string& error) {
   vkDestroyShaderModule(r_.device_, frag, nullptr);
   vkDestroyShaderModule(r_.device_, mask, nullptr);
   VK_TRY(result, "showroom pipelines");
-  return true;
+  return pipes_ok;
 }
 
 int run_precompile_shaders(int argc, char** argv) {

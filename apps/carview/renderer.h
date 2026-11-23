@@ -206,6 +206,12 @@ class Renderer {
   bool pipeline_cache_loaded() const { return pipeline_cache_loaded_; }
   size_t pipeline_cache_bytes() const { return pipeline_cache_loaded_bytes_; }
   void save_pipeline_cache() const;
+  // Compiles independent Vulkan pipelines concurrently across CPU cores.
+  // Cold compiles give each worker a private VkPipelineCache (zero driver mutex
+  // contention) and merge into pipeline_cache_ after joining; warm compiles
+  // share pipeline_cache_ directly for instant cache hits.
+  bool compile_pipelines_parallel(const std::vector<std::function<VkResult(VkPipelineCache)>>& tasks,
+                                  std::string& error);
   // Pre-allocates offscreen/scene render targets ahead of Frame 0 so the first
   // render_timed() / render_offscreen() call incurs zero target-creation hitch.
   bool prewarm_targets(uint32_t width, uint32_t height, std::string& error);

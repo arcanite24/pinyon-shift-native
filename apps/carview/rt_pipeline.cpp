@@ -351,16 +351,40 @@ bool RtPipeline::init(VkDescriptorSetLayout world_bindless_layout, VkSampler wor
     }
   }
 
-  if (!create_compute_pipeline(kRt_reflections_comp_spv, sizeof(kRt_reflections_comp_spv), refl_pipe_, error) ||
-      !create_compute_pipeline(kRt_shadows_comp_spv, sizeof(kRt_shadows_comp_spv), shad_pipe_, error) ||
-      !create_compute_pipeline(kRt_ao_comp_spv, sizeof(kRt_ao_comp_spv), ao_pipe_, error) ||
-      !create_compute_pipeline(kRt_pathtrace_comp_spv, sizeof(kRt_pathtrace_comp_spv), pt_pipe_, error) ||
-      !create_compute_pipeline(kRt_svgf_temporal_comp_spv, sizeof(kRt_svgf_temporal_comp_spv), svgf_temp_pipe_,
-                               error) ||
-      !create_compute_pipeline(kRt_svgf_atrous_comp_spv, sizeof(kRt_svgf_atrous_comp_spv), svgf_atrous_pipe_, error) ||
-      !create_compute_pipeline(kRt_composite_comp_spv, sizeof(kRt_composite_comp_spv), comp_pipe_, error)) {
-    shutdown();
-    return false;
+  {
+    std::vector<std::function<VkResult(VkPipelineCache)>> tasks;
+    tasks.reserve(7);
+    auto queue_comp = [&](const uint32_t* spv, size_t spv_bytes, VkPipeline& out) {
+      VkPipeline* dst = &out;
+      tasks.emplace_back([d, layout = pipe_layout_, spv, spv_bytes, dst](VkPipelineCache cache) -> VkResult {
+        VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        smi.codeSize = spv_bytes;
+        smi.pCode = spv;
+        VkShaderModule mod = VK_NULL_HANDLE;
+        VkResult res = vkCreateShaderModule(d, &smi, nullptr, &mod);
+        if (res != VK_SUCCESS) return res;
+        VkComputePipelineCreateInfo pci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pci.stage.module = mod;
+        pci.stage.pName = "main";
+        pci.layout = layout;
+        res = vkCreateComputePipelines(d, cache, 1, &pci, nullptr, dst);
+        vkDestroyShaderModule(d, mod, nullptr);
+        return res;
+      });
+    };
+    queue_comp(kRt_reflections_comp_spv, sizeof(kRt_reflections_comp_spv), refl_pipe_);
+    queue_comp(kRt_shadows_comp_spv, sizeof(kRt_shadows_comp_spv), shad_pipe_);
+    queue_comp(kRt_ao_comp_spv, sizeof(kRt_ao_comp_spv), ao_pipe_);
+    queue_comp(kRt_pathtrace_comp_spv, sizeof(kRt_pathtrace_comp_spv), pt_pipe_);
+    queue_comp(kRt_svgf_temporal_comp_spv, sizeof(kRt_svgf_temporal_comp_spv), svgf_temp_pipe_);
+    queue_comp(kRt_svgf_atrous_comp_spv, sizeof(kRt_svgf_atrous_comp_spv), svgf_atrous_pipe_);
+    queue_comp(kRt_composite_comp_spv, sizeof(kRt_composite_comp_spv), comp_pipe_);
+    if (!r_.compile_pipelines_parallel(tasks, error)) {
+      shutdown();
+      return false;
+    }
   }
 
   ready_ = true;
