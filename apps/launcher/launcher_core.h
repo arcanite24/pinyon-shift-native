@@ -77,6 +77,10 @@ struct DiscCheckItem {
 struct DiscVerification {
   bool valid = false;
   bool looks_like_iso = false;
+  std::string iso_format;              // "XISO", "XGD3", "XGD2", "XGD1" when looks_like_iso
+  int iso_file_count = 0;              // files to extract from ISO (media/ tree)
+  uint64_t iso_extract_bytes = 0;      // total bytes to extract from ISO
+  uint64_t required_space_bytes = 0;   // free space required for extraction + bake
   std::filesystem::path resolved_root;
   int car_archive_count = 0;
   uint64_t free_space_bytes = 0;
@@ -86,15 +90,45 @@ struct DiscVerification {
   std::vector<DiscCheckItem> items;
 };
 
+// Returns true if the path has an Xbox 360 disc image extension (.iso / .xiso).
+bool is_iso_image_path(const std::filesystem::path& path);
+
 DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
                                     const std::filesystem::path& target_play_dir = {});
 
+struct IsoExtractProgress {
+  uint64_t bytes_done = 0;
+  uint64_t bytes_total = 0;
+  size_t files_done = 0;
+  size_t files_total = 0;
+  std::string current_file;
+};
+
+struct IsoExtractResult {
+  bool ok = false;
+  bool cancelled = false;
+  std::string format_label;
+  size_t files_extracted = 0;
+  size_t files_skipped = 0;
+  uint64_t bytes_written = 0;
+  std::filesystem::path extracted_game_root;
+  std::string error;
+};
+
+// Extracts media/ from an Xbox 360 GDFX/XISO/XGD2/XGD3 .iso image into `target_game_dir`.
+IsoExtractResult extract_disc_iso(
+    const std::filesystem::path& iso_path,
+    const std::filesystem::path& target_game_dir,
+    const std::function<void(const IsoExtractProgress&)>& progress_cb = {},
+    const std::atomic<bool>* cancel = nullptr);
+
 struct SetupOptions {
-  std::filesystem::path game_root;
+  std::filesystem::path game_root;  // extracted disc folder OR .iso/.xiso image
   std::filesystem::path state_root;
   std::filesystem::path play_dir;
   bool all_sounds = false;
   bool build_index = true;
+  bool skip_bake = false;  // extract + verify + write play.txt only (for unit tests)
   std::string cars_filter;  // optional comma-separated car media names
 };
 
@@ -238,11 +272,49 @@ struct ContentStatus {
 // Checks if a file begins with Xbox 360 STFS container magic ("CON ", "LIVE", "PIRS").
 bool is_stfs_package_file(const std::filesystem::path& file);
 ContentStatus scan_content_packages(const std::filesystem::path& state_root,
-                                    const std::filesystem::path& mods_root);
-bool import_content_package(const std::filesystem::path& source_path,
-                            const std::filesystem::path& state_root,
-                            const std::filesystem::path& mods_root,
-                            std::string& out_message);
+                                    const std::filesystem::path& mods_root,
+                                    const std::filesystem::path& play_root = {});
+bool import_content_package(
+    const std::filesystem::path& source_path,
+    const std::filesystem::path& state_root,
+    const std::filesystem::path& mods_root,
+    std::string& out_message,
+    const std::filesystem::path& play_root = {},
+    const std::function<void(uint64_t bytes_done, uint64_t bytes_total, const std::string& current_file)>& progress_cb =
+        {},
+    const std::atomic<bool>* cancel = nullptr);
+
+struct ContentInstallProgress {
+  bool running = false;
+  bool finished = false;
+  bool success = false;
+  int packages_done = 0;
+  int packages_total = 0;
+  float fraction = 0.0f;
+  std::string status_label;
+  std::string summary;
+};
+
+class ContentInstallRunner {
+ public:
+  ContentInstallRunner() = default;
+  ~ContentInstallRunner();
+  ContentInstallRunner(const ContentInstallRunner&) = delete;
+  ContentInstallRunner& operator=(const ContentInstallRunner&) = delete;
+
+  bool start(const std::vector<std::filesystem::path>& sources,
+             const std::filesystem::path& state_root,
+             const std::filesystem::path& mods_root,
+             const std::filesystem::path& play_root = {});
+  void cancel();
+  ContentInstallProgress snapshot() const;
+
+ private:
+  mutable std::mutex mu_;
+  ContentInstallProgress state_;
+  std::atomic<bool> cancel_{false};
+  std::thread worker_;
+};
 
 // ---- 6. Mod Manager (mod.toml + mod.txt compatible with Slice 13A) ---------
 

@@ -507,35 +507,58 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
   draw_page_header(l, x0, x1, y0, "Setup", d);
   const float top_y = y0 + 50.0f * d;
 
-  // Step 1: Disc Folder
-  const float c1_h = 128.0f * d;
+  // Step 1: Disc Source (.iso or Extracted Folder)
+  const float c1_h = 138.0f * d;
   draw_card(l, x0, top_y, x1, top_y + c1_h, d);
-  draw_text(l, x0 + 20.0f * d, top_y + 16.0f * d, "1. Game Disc Folder", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
-  draw_text(l, x0 + 20.0f * d, top_y + 38.0f * d,
-            "Drop your extracted Forza Horizon disc folder (containing media/) onto this window.",
+  draw_text(l, x0 + 20.0f * d, top_y + 16.0f * d, "1. Game Disc (.iso or Folder)", FontFace::kSemiBold, 14.0f * d,
+            kTextPrimary);
+
+  const float br_fold_w = 118.0f * d;
+  const float br_iso_w = 104.0f * d;
+  draw_button(l, hits, st, "setup:browse_iso", x1 - 20.0f * d - br_fold_w - 8.0f * d - br_iso_w, top_y + 10.0f * d,
+              x1 - 20.0f * d - br_fold_w - 8.0f * d, top_y + 38.0f * d, "Browse .iso", d);
+  draw_button(l, hits, st, "setup:browse_folder", x1 - 20.0f * d - br_fold_w, top_y + 10.0f * d, x1 - 20.0f * d,
+              top_y + 38.0f * d, "Browse Folder", d);
+
+  draw_text(l, x0 + 20.0f * d, top_y + 42.0f * d,
+            "Drop a Forza Horizon .iso image or extracted disc folder onto this window, or paste a path.",
             FontFace::kRegular, 12.5f * d, kTextSecondary, ui::Align::kLeft, cw - 40.0f * d);
 
-  const float row_y = top_y + 62.0f * d;
+  const float row_y = top_y + 66.0f * d;
   const float row_h = 34.0f * d;
   const float btn_run_w = 122.0f * d;
-  const float btn_ver_w = 96.0f * d;
+  const float btn_ver_w = 92.0f * d;
   const float box_x1 = x1 - 20.0f * d - btn_run_w - btn_ver_w - 18.0f * d;
 
-  draw_inset_box(l, x0 + 20.0f * d, row_y, box_x1, row_y + row_h, d,
-                 st.disc_check.valid ? kGreen : kBorderSubtle);
+  const bool path_focused = st.focused_id == "setup:path";
+  hits.push_back({"setup:path", x0 + 20.0f * d, row_y, box_x1, row_y + row_h, true});
+  const uint32_t box_border =
+      path_focused ? kAccent : (st.disc_check.valid ? kGreen : (st.hovered_id == "setup:path" ? kBorderHover : kBorderSubtle));
+  draw_inset_box(l, x0 + 20.0f * d, row_y, box_x1, row_y + row_h, d, box_border);
+
+  std::string path_disp = st.disc_path_input;
+  if (path_focused) path_disp.push_back('|');
+  const bool empty_disp = st.disc_path_input.empty() && !path_focused;
   draw_text(l, x0 + 32.0f * d, text_y_center(row_y, row_y + row_h, 12.5f * d),
-            st.disc_path_input.empty() ? "Drop extracted disc folder here..." : st.disc_path_input,
-            st.disc_path_input.empty() ? FontFace::kRegular : FontFace::kMono, 12.5f * d,
-            st.disc_path_input.empty() ? kTextMuted : kTextPrimary,
+            empty_disp ? "Drop .iso image or disc folder, or click to type/paste path..." : path_disp,
+            empty_disp ? FontFace::kRegular : FontFace::kMono, 12.5f * d,
+            empty_disp ? kTextMuted : kTextPrimary,
             ui::Align::kLeft, std::max(40.0f, box_x1 - x0 - 44.0f * d));
 
   draw_button(l, hits, st, "setup:verify", box_x1 + 9.0f * d, row_y, box_x1 + 9.0f * d + btn_ver_w, row_y + row_h,
               "Verify", d);
-  draw_button(l, hits, st, "setup:run", box_x1 + 18.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
-              st.setup_progress.running ? "Running..." : "Run Setup", d, {.primary = true});
+  if (st.setup_progress.running) {
+    draw_button(l, hits, st, "setup:cancel", box_x1 + 18.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
+                "Cancel", d);
+  } else {
+    draw_button(l, hits, st, "setup:run", box_x1 + 18.0f * d + btn_ver_w, row_y, x1 - 20.0f * d, row_y + row_h,
+                "Run Setup", d, {.primary = true});
+  }
 
-  draw_text(l, x0 + 20.0f * d, row_y + row_h + 10.0f * d, st.disc_check.summary, FontFace::kRegular, 12.0f * d,
-            st.disc_check.valid ? kGreen : kAmber, ui::Align::kLeft, cw - 40.0f * d);
+  const uint32_t sum_col = st.disc_check.valid ? (st.disc_check.sufficient_space ? kGreen : kAmber) : kAmber;
+  l.circle(x0 + 26.0f * d, row_y + row_h + 18.5f * d, 3.8f * d, sum_col);
+  draw_text(l, x0 + 38.0f * d, row_y + row_h + 11.0f * d, st.disc_check.summary, FontFace::kRegular, 12.0f * d,
+            sum_col, ui::Align::kLeft, cw - 58.0f * d);
 
   // Step 2: Validation Checklist
   const float c2_y = top_y + c1_h + 14.0f * d;
@@ -543,6 +566,14 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
   draw_card(l, x0, c2_y, x1, c2_y + c2_h, d);
   draw_text(l, x0 + 20.0f * d, c2_y + 16.0f * d, "2. Verification Checklist", FontFace::kSemiBold, 14.0f * d,
             kTextPrimary);
+  if (st.disc_check.looks_like_iso && !st.disc_check.iso_format.empty()) {
+    const std::string iso_meta =
+        "Format: " + st.disc_check.iso_format + "  \xC2\xB7  " + std::to_string(st.disc_check.iso_file_count) +
+        " files  \xC2\xB7  " + fmt_size(st.disc_check.required_space_bytes) + " space req.";
+    draw_text(l, x1 - 20.0f * d, c2_y + 18.0f * d, iso_meta, FontFace::kMono, 11.5f * d,
+              st.disc_check.valid && st.disc_check.sufficient_space ? kGreen : kAmber, ui::Align::kRight,
+              cw * 0.62f);
+  }
 
   const float col_w = (cw - 60.0f * d) * 0.5f;
   for (size_t i = 0; i < st.disc_check.items.size() && i < 6; ++i) {
@@ -555,6 +586,8 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
     std::string right_meta;
     if (!it.sha256_prefix.empty()) right_meta = "SHA-256 " + it.sha256_prefix;
     else if (it.present && it.bytes > 0) right_meta = fmt_size(it.bytes);
+    else if (it.present && it.relative_path == "media/cars" && st.disc_check.car_archive_count > 0)
+      right_meta = std::to_string(st.disc_check.car_archive_count) + " archives";
     else if (it.present) right_meta = "Found";
     else right_meta = it.required ? "Missing" : "Optional";
 
@@ -565,7 +598,7 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
               it.present ? kTextMuted : (it.required ? kRed : kTextMuted), ui::Align::kRight);
   }
   if (st.disc_check.items.empty()) {
-    draw_text(l, x0 + 20.0f * d, c2_y + 52.0f * d, "Verify a disc folder to inspect required files.",
+    draw_text(l, x0 + 20.0f * d, c2_y + 52.0f * d, "Select a .iso image or disc folder to inspect required files.",
               FontFace::kRegular, 12.5f * d, kTextMuted);
   }
 
@@ -626,17 +659,39 @@ void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, fl
                   std::vector<HitBox>& hits) {
   const float cw = x1 - x0;
   draw_page_header(l, x0, x1, y0, "Content", d);
-  draw_button(l, hits, st, "dlc:rescan", x1 - 224.0f * d, y0 - 2.0f * d, x1 - 126.0f * d, y0 + 28.0f * d, "Rescan", d);
-  draw_button(l, hits, st, "dlc:import", x1 - 116.0f * d, y0 - 2.0f * d, x1, y0 + 28.0f * d, "Import", d,
+  const float btn_stfs_w = 116.0f * d;
+  const float btn_fold_w = 116.0f * d;
+  const float btn_scan_w = 84.0f * d;
+  const float btn_gap = 8.0f * d;
+  draw_button(l, hits, st, "dlc:rescan", x1 - btn_stfs_w - btn_fold_w - btn_scan_w - 2.0f * btn_gap, y0 - 2.0f * d,
+              x1 - btn_stfs_w - btn_fold_w - 2.0f * btn_gap, y0 + 28.0f * d, "Rescan", d);
+  draw_button(l, hits, st, "dlc:import_folder", x1 - btn_stfs_w - btn_fold_w - btn_gap, y0 - 2.0f * d,
+              x1 - btn_stfs_w - btn_gap, y0 + 28.0f * d, "Import Folder", d);
+  draw_button(l, hits, st, "dlc:import", x1 - btn_stfs_w, y0 - 2.0f * d, x1, y0 + 28.0f * d, "Import STFS", d,
               {.primary = true});
 
   const float top_y = y0 + 50.0f * d;
 
-  // Summary banner
-  const float ban_h = 44.0f * d;
+  // Summary / Live STFS Install Banner
+  const float ban_h = st.content_install.running ? 66.0f * d : 44.0f * d;
   draw_card(l, x0, top_y, x1, top_y + ban_h, d);
-  draw_text(l, x0 + 18.0f * d, text_y_center(top_y, top_y + ban_h, 13.0f * d), st.content_status.notice,
-            FontFace::kRegular, 13.0f * d, kTextPrimary, ui::Align::kLeft, cw - 36.0f * d);
+  if (st.content_install.running) {
+    const float cancel_w = 88.0f * d;
+    draw_text(l, x0 + 18.0f * d, top_y + 12.0f * d, st.content_install.status_label, FontFace::kRegular, 12.5f * d,
+              kTextPrimary, ui::Align::kLeft, cw - cancel_w - 92.0f * d);
+    char pct[16];
+    std::snprintf(pct, sizeof pct, "%d%%",
+                  int(std::lround(std::clamp(st.content_install.fraction, 0.0f, 1.0f) * 100.0f)));
+    draw_text(l, x1 - cancel_w - 28.0f * d, top_y + 12.0f * d, pct, FontFace::kMono, 12.0f * d, kTextSecondary,
+              ui::Align::kRight);
+    draw_progress_bar(l, x0 + 18.0f * d, top_y + 38.0f * d, cw - cancel_w - 46.0f * d, 8.0f * d,
+                      st.content_install.fraction, kAccent, d);
+    draw_button(l, hits, st, "dlc:cancel", x1 - 18.0f * d - cancel_w, top_y + 17.0f * d, x1 - 18.0f * d,
+                top_y + 49.0f * d, "Cancel", d);
+  } else {
+    draw_text(l, x0 + 18.0f * d, text_y_center(top_y, top_y + ban_h, 13.0f * d), st.content_status.notice,
+              FontFace::kRegular, 13.0f * d, kTextPrimary, ui::Align::kLeft, cw - 36.0f * d);
+  }
 
   // Tabular package list
   const float tbl_y = top_y + ban_h + 14.0f * d;
@@ -682,7 +737,7 @@ void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, fl
 
   draw_divider(l, x0 + 1.0f * d, rows_y1 + 2.0f * d, x1 - 1.0f * d, d);
   draw_text(l, x0 + 20.0f * d, text_y_center(rows_y1 + 2.0f * d, tbl_y + tbl_h, 12.0f * d),
-            "Drag and drop an STFS package (CON / LIVE / PIRS) or extracted DLC, Title Update v4, UDLC, or XE folder onto this window.",
+            "Drag and drop Xbox 360 STFS packages (CON / LIVE / PIRS) for Title Update v4, Rally, 1000 Club, or DLC — or click Import STFS.",
             FontFace::kRegular, 12.0f * d, kTextMuted, ui::Align::kLeft, cw - 40.0f * d);
 }
 
@@ -1354,15 +1409,21 @@ void populate_demo_state(LauncherUiState& st) {
   st.hw_info.refresh_hz = 120;
   st.hw_rec = recommend_preset(st.hw_info);
 
-  // Demo disc check
-  st.disc_path_input = "D:/ForzaHorizon/disc";
+  // Demo verified Xbox 360 XGD3 .iso disc check
+  st.disc_path_input = "D:/ForzaHorizon/Forza_Horizon.iso";
   st.disc_check.valid = true;
+  st.disc_check.looks_like_iso = true;
+  st.disc_check.iso_format = "XGD3";
+  st.disc_check.iso_file_count = 312;
+  st.disc_check.iso_extract_bytes = 7420000000ull;
+  st.disc_check.required_space_bytes = st.disc_check.iso_extract_bytes + (4ull << 30);
   st.disc_check.car_archive_count = 240;
   st.disc_check.free_space_bytes = 128ull << 30;
-  st.disc_check.summary = "Disc folder verified (240 cars, 128.0 GB free).";
+  st.disc_check.sufficient_space = true;
+  st.disc_check.summary = "XGD3 ISO verified (312 files, 240 cars, 6.9 GB extract, 10.9 GB req., 128.0 GB free).";
   st.disc_check.items = {
       {"Colorado World Archive", "media/tracks/colorado/bin.zip", true, true, 1200000000ull, ""},
-      {"Game Database (gamedb.slt)", "media/db/gamedb.slt", true, true, 18400000ull, "9f42c1a8d0b3e712"},
+      {"Game Database (gamedb.slt)", "media/db/gamedb.slt", true, true, 18400000ull, ""},
       {"Radio Music Bank", "media/audio/radio/Radio_Music.fsb", false, true, 310000000ull, ""},
       {"UI4 Scenes Archive", "media/ui/UI.zip", false, true, 48000000ull, ""},
       {"Retail Executable (default.xex)", "default.xex", false, true, 14000000ull, ""},
@@ -1370,10 +1431,11 @@ void populate_demo_state(LauncherUiState& st) {
   };
   st.setup_progress.fraction = 1.0f;
   st.setup_progress.success = true;
-  st.setup_progress.stage_label = "Complete (240 cars and Colorado index built)";
+  st.setup_progress.stage_label = "Complete (XGD3 ISO extracted, 240 cars and Colorado index built)";
   st.setup_progress.log_lines = {
-      "Disc verified: D:/ForzaHorizon/disc",
-      "gamedb.slt SHA-256: 9f42c1a8d0b3e712...",
+      "ISO verified (XGD3): D:/ForzaHorizon/Forza_Horizon.iso",
+      "[ISO] 7076.3 / 7076.3 MB (312/312) media/tracks/colorado/bin.zip",
+      "Disc verified: D:/ShiftEngine/data/play/game",
       "carbake: 240 cars written to play/bake/cars",
       "soundbake: engine loops written (48 kHz stereo)",
       "colorado.index written (3,201 collision tiles)",

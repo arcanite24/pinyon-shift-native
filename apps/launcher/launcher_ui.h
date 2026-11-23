@@ -75,6 +75,7 @@ struct LauncherUiState {
 
   // Content (DLC & TU) tab state
   ContentStatus content_status;
+  ContentInstallProgress content_install;
   int content_scroll = 0;
 
   // Mods tab state

@@ -1,9 +1,13 @@
+#include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -20,9 +24,236 @@
 #endif
 
 #include "launcher_core.h"
+#include "setup/stfs.h"
+#include "setup/xiso.h"
 #include "sha256.h"
 
 namespace {
+
+void put_le16(std::vector<uint8_t>& buf, size_t off, uint16_t v) {
+  buf[off] = uint8_t(v & 0xFFu);
+  buf[off + 1] = uint8_t((v >> 8) & 0xFFu);
+}
+
+void put_le24(std::vector<uint8_t>& buf, size_t off, uint32_t v) {
+  buf[off] = uint8_t(v & 0xFFu);
+  buf[off + 1] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 2] = uint8_t((v >> 16) & 0xFFu);
+}
+
+void put_le32(std::vector<uint8_t>& buf, size_t off, uint32_t v) {
+  buf[off] = uint8_t(v & 0xFFu);
+  buf[off + 1] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 2] = uint8_t((v >> 16) & 0xFFu);
+  buf[off + 3] = uint8_t((v >> 24) & 0xFFu);
+}
+
+void put_be16(std::vector<uint8_t>& buf, size_t off, uint16_t v) {
+  buf[off] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 1] = uint8_t(v & 0xFFu);
+}
+
+void put_be24(std::vector<uint8_t>& buf, size_t off, uint32_t v) {
+  buf[off] = uint8_t((v >> 16) & 0xFFu);
+  buf[off + 1] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 2] = uint8_t(v & 0xFFu);
+}
+
+void put_be32(std::vector<uint8_t>& buf, size_t off, uint32_t v) {
+  buf[off] = uint8_t((v >> 24) & 0xFFu);
+  buf[off + 1] = uint8_t((v >> 16) & 0xFFu);
+  buf[off + 2] = uint8_t((v >> 8) & 0xFFu);
+  buf[off + 3] = uint8_t(v & 0xFFu);
+}
+
+struct GdfxNodeSpec {
+  std::string name;
+  uint32_t sector = 0;
+  uint32_t size = 0;
+  bool is_dir = false;
+  int left = -1;
+  int right = -1;
+};
+
+std::vector<uint8_t> build_gdfx_dir_table(const std::vector<GdfxNodeSpec>& nodes) {
+  std::vector<uint32_t> offsets(nodes.size(), 0);
+  uint32_t cursor = 0;
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    offsets[i] = cursor;
+    cursor += uint32_t(14 + nodes[i].name.size());
+    cursor = (cursor + 3u) & ~3u;
+  }
+  std::vector<uint8_t> buf(cursor, 0xFFu);
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    const uint32_t off = offsets[i];
+    put_le16(buf, off + 0, nodes[i].left >= 0 ? uint16_t(offsets[size_t(nodes[i].left)] / 4u) : 0xFFFFu);
+    put_le16(buf, off + 2, nodes[i].right >= 0 ? uint16_t(offsets[size_t(nodes[i].right)] / 4u) : 0xFFFFu);
+    put_le32(buf, off + 4, nodes[i].sector);
+    put_le32(buf, off + 8, nodes[i].size);
+    buf[off + 12] = nodes[i].is_dir ? 0x10u : 0x20u;
+    buf[off + 13] = uint8_t(nodes[i].name.size());
+    std::memcpy(buf.data() + off + 14, nodes[i].name.data(), nodes[i].name.size());
+  }
+  return buf;
+}
+
+std::vector<uint8_t> build_synthetic_xiso_image() {
+  using setup::xiso::kSectorSize;
+  const std::string car_data = "CARZIP-LAUNCHER-TEST-PAYLOAD";
+  const std::string db_data = "SQLITE-LAUNCHER-DB-PAYLOAD";
+  const std::string col_data = "COLORADO-BIN-ZIP-PAYLOAD";
+  const std::string radio_data = "FSB4-RADIO-PAYLOAD";
+  const std::string xex_data = "XEX2-SKIP-ME";
+
+  const auto cars_dir = build_gdfx_dir_table({
+      {"test_car.zip", 40, uint32_t(car_data.size()), false, -1, -1},
+  });
+  const auto db_dir = build_gdfx_dir_table({
+      {"gamedb.slt", 41, uint32_t(db_data.size()), false, -1, -1},
+  });
+  const auto colorado_dir = build_gdfx_dir_table({
+      {"bin.zip", 42, uint32_t(col_data.size()), false, -1, -1},
+  });
+  const auto tracks_dir = build_gdfx_dir_table({
+      {"colorado", 38, uint32_t(colorado_dir.size()), true, -1, -1},
+  });
+  const auto radio_dir = build_gdfx_dir_table({
+      {"Radio_Music.fsb", 44, uint32_t(radio_data.size()), false, -1, -1},
+  });
+  const auto audio_dir = build_gdfx_dir_table({
+      {"radio", 45, uint32_t(radio_dir.size()), true, -1, -1},
+  });
+  const auto media_dir = build_gdfx_dir_table({
+      {"db", 36, uint32_t(db_dir.size()), true, 1, 2},
+      {"cars", 35, uint32_t(cars_dir.size()), true, 3, -1},
+      {"tracks", 37, uint32_t(tracks_dir.size()), true, -1, -1},
+      {"audio", 39, uint32_t(audio_dir.size()), true, -1, -1},
+  });
+  const auto root_dir = build_gdfx_dir_table({
+      {"media", 34, uint32_t(media_dir.size()), true, 1, -1},
+      {"default.xex", 43, uint32_t(xex_data.size()), false, -1, -1},
+  });
+
+  std::vector<uint8_t> img(47u * kSectorSize, 0);
+  auto write_sec = [&](uint32_t sec, const void* src, size_t len) {
+    std::memcpy(img.data() + size_t(sec) * kSectorSize, src, len);
+  };
+
+  std::vector<uint8_t> vd(kSectorSize, 0);
+  std::memcpy(vd.data(), setup::xiso::kGdfxMagic, 20);
+  put_le32(vd, 0x14, 33u);
+  put_le32(vd, 0x18, uint32_t(root_dir.size()));
+  std::memcpy(vd.data() + kSectorSize - 20, setup::xiso::kGdfxMagic, 20);
+  write_sec(32, vd.data(), vd.size());
+
+  write_sec(33, root_dir.data(), root_dir.size());
+  write_sec(34, media_dir.data(), media_dir.size());
+  write_sec(35, cars_dir.data(), cars_dir.size());
+  write_sec(36, db_dir.data(), db_dir.size());
+  write_sec(37, tracks_dir.data(), tracks_dir.size());
+  write_sec(38, colorado_dir.data(), colorado_dir.size());
+  write_sec(39, audio_dir.data(), audio_dir.size());
+  write_sec(40, car_data.data(), car_data.size());
+  write_sec(41, db_data.data(), db_data.size());
+  write_sec(42, col_data.data(), col_data.size());
+  write_sec(43, xex_data.data(), xex_data.size());
+  write_sec(44, radio_data.data(), radio_data.size());
+  write_sec(45, radio_dir.data(), radio_dir.size());
+  return img;
+}
+
+struct StfsBuildFile {
+  std::string name;
+  int16_t parent = -1;
+  bool is_dir = false;
+  bool contiguous = true;
+  std::vector<uint32_t> blocks;
+  std::vector<uint8_t> payload;
+};
+
+std::vector<uint8_t> build_synthetic_stfs(const char magic[4], uint32_t content_type, const std::string& display_name,
+                                          uint8_t content_id_byte, bool read_only,
+                                          const std::vector<StfsBuildFile>& files) {
+  constexpr uint32_t kDataOffset = 0xA000u;
+  constexpr uint32_t kBlock = 0x1000u;
+  const uint32_t hash_blocks = read_only ? 1u : 2u;
+
+  uint32_t max_data_block = 0;
+  for (const auto& f : files) {
+    for (uint32_t b : f.blocks) max_data_block = std::max(max_data_block, b);
+  }
+  const uint32_t allocated = max_data_block + 1u;
+  const uint32_t total_backing = hash_blocks + allocated;
+  std::vector<uint8_t> buf(kDataOffset + size_t(total_backing) * kBlock, 0);
+
+  std::memcpy(buf.data(), magic, 4);
+  for (size_t i = 0; i < 20; ++i) buf[0x032C + i] = uint8_t(content_id_byte + i);
+  put_be32(buf, 0x0340, 0x971Au);
+  put_be32(buf, 0x0344, content_type);
+  put_be32(buf, 0x0348, 2u);
+  put_be32(buf, 0x0360, setup::stfs::kFh1TitleId);
+
+  buf[0x0379] = 0x24u;
+  buf[0x037B] = read_only ? 0x01u : 0x00u;
+  put_le16(buf, 0x037C, 1u);
+  put_le24(buf, 0x037E, 0u);
+  put_be32(buf, 0x0395, allocated);
+  put_be32(buf, 0x03A9, 0u);
+
+  for (size_t i = 0; i < display_name.size() && i < 60; ++i) {
+    put_be16(buf, 0x0411 + i * 2, uint16_t(static_cast<unsigned char>(display_name[i])));
+  }
+
+  auto data_block_offset = [&](uint32_t logical_block) -> size_t {
+    return kDataOffset + size_t(hash_blocks + logical_block) * kBlock;
+  };
+  auto set_l0_next = [&](uint32_t logical_block, uint32_t next_block) {
+    const size_t entry_off = kDataOffset + size_t(logical_block) * 24u;
+    buf[entry_off + 20] = 0x80u;
+    put_be24(buf, entry_off + 21, next_block);
+  };
+  set_l0_next(0, 0xFFFFFFu);
+
+  const size_t ft_off = data_block_offset(0);
+  for (size_t i = 0; i < files.size(); ++i) {
+    const auto& f = files[i];
+    const size_t eoff = ft_off + i * 64u;
+    std::memcpy(buf.data() + eoff, f.name.data(), f.name.size());
+    uint8_t flags = uint8_t(f.name.size() & 0x3Fu);
+    if (f.contiguous) flags |= 0x40u;
+    if (f.is_dir) flags |= 0x80u;
+    buf[eoff + 0x28] = flags;
+    put_le24(buf, eoff + 0x29, uint32_t(f.blocks.size()));
+    put_le24(buf, eoff + 0x2C, uint32_t(f.blocks.size()));
+    put_le24(buf, eoff + 0x2F, f.blocks.empty() ? 0u : f.blocks[0]);
+    put_be16(buf, eoff + 0x32, uint16_t(f.parent));
+    put_be32(buf, eoff + 0x34, uint32_t(f.payload.size()));
+
+    for (size_t bi = 0; bi < f.blocks.size(); ++bi) {
+      const uint32_t blk = f.blocks[bi];
+      const uint32_t next_blk = (bi + 1 < f.blocks.size()) ? f.blocks[bi + 1] : 0xFFFFFFu;
+      set_l0_next(blk, next_blk);
+      const size_t start = bi * kBlock;
+      if (start < f.payload.size()) {
+        const size_t len = std::min<size_t>(kBlock, f.payload.size() - start);
+        std::memcpy(buf.data() + data_block_offset(blk), f.payload.data() + start, len);
+      }
+    }
+  }
+  return buf;
+}
+
+void write_binary_file(const std::filesystem::path& p, const std::vector<uint8_t>& bytes) {
+  std::error_code ec;
+  std::filesystem::create_directories(p.parent_path(), ec);
+  std::ofstream f(p, std::ios::binary | std::ios::trunc);
+  f.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+}
+
+std::string read_binary_string(const std::filesystem::path& p) {
+  std::ifstream f(p, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
 
 std::filesystem::path make_temp_dir(const char* name) {
   const auto p = std::filesystem::temp_directory_path() / name;
@@ -280,15 +511,26 @@ void test_mods_and_dlc() {
   assert(reloaded[0].name == "alpha_tex");
   assert(reloaded[0].priority > reloaded[1].priority);
 
-  // STFS DLC & v4 + UDLC/XE detection
-  const auto stfs_src = root / "dlcpak_rally";
+  // STFS DLC & v4 + UDLC/XE detection (rejects truncated container, installs real STFS package)
+  const auto bad_stfs = root / "corrupt_stfs";
   {
-    std::ofstream f(stfs_src, std::ios::binary);
+    std::ofstream f(bad_stfs, std::ios::binary);
     f.write("LIVE", 4);
     f << "payload";
   }
-  assert(launcher::is_stfs_package_file(stfs_src));
+  assert(launcher::is_stfs_package_file(bad_stfs));
   std::string imp_msg;
+  assert(!launcher::import_content_package(bad_stfs, state_dir, mods_dir, imp_msg));
+
+  const auto rally_img = build_synthetic_stfs(
+      "LIVE", setup::stfs::kContentTypeMarketplace, "Horizon Rally Expansion Pack", 0xB2, true,
+      {
+          {"Media", -1, true, true, {}, {}},
+          {"1600.puboffer", 0, false, true, {1}, {0x01, 0x02, 0x03}},
+      });
+  const auto stfs_src = root / "dlcpak_rally";
+  write_binary_file(stfs_src, rally_img);
+  assert(launcher::is_stfs_package_file(stfs_src));
   assert(launcher::import_content_package(stfs_src, state_dir, mods_dir, imp_msg));
   std::filesystem::create_directories(state_dir / "title-update-v4");
   std::filesystem::create_directories(mods_dir / "forza_horizon_xe");
@@ -487,6 +729,175 @@ void test_graphics_backend_selector() {
   std::printf("  [ok] graphics backend selector (Windows/macOS/Linux + settings.txt round-trip)\n");
 }
 
+void test_iso_probe_and_setup_extraction() {
+  const auto root = make_temp_dir("shift_launcher_iso_test");
+  const auto play_dir = root / "play";
+  const auto iso_path = root / "Forza_Horizon.iso";
+
+  assert(launcher::is_iso_image_path(iso_path));
+  assert(launcher::is_iso_image_path(root / "DISC.ISO"));
+  assert(launcher::is_iso_image_path(root / "game.xiso"));
+  assert(!launcher::is_iso_image_path(root / "disc_folder"));
+
+  // Write valid synthetic GDFX/XISO image
+  const auto iso_bytes = build_synthetic_xiso_image();
+  write_binary_file(iso_path, iso_bytes);
+
+  const auto probed = launcher::verify_disc_folder(iso_path, play_dir);
+  assert(probed.valid);
+  assert(probed.looks_like_iso);
+  assert(probed.iso_format == "XISO");
+  assert(probed.iso_file_count == 4);  // 4 files under media/, skipping default.xex
+  assert(probed.car_archive_count == 1);
+  assert(probed.iso_extract_bytes > 0);
+  assert(probed.required_space_bytes > probed.iso_extract_bytes);
+  assert(probed.items.size() == 6);
+  assert(probed.summary.find("XISO ISO verified") != std::string::npos);
+
+  // Direct extract_disc_iso with progress & cancellation check
+  int progress_events = 0;
+  const auto direct_out = root / "direct_game";
+  const auto xres = launcher::extract_disc_iso(
+      iso_path, direct_out, [&](const launcher::IsoExtractProgress&) { ++progress_events; });
+  assert(xres.ok);
+  assert(!xres.cancelled);
+  assert(xres.format_label == "XISO");
+  assert(xres.files_extracted == 4);
+  assert(progress_events >= 4);
+  assert(read_binary_string(direct_out / "media" / "cars" / "test_car.zip") == "CARZIP-LAUNCHER-TEST-PAYLOAD");
+  assert(read_binary_string(direct_out / "media" / "db" / "gamedb.slt") == "SQLITE-LAUNCHER-DB-PAYLOAD");
+  assert(read_binary_string(direct_out / "media" / "tracks" / "colorado" / "bin.zip") == "COLORADO-BIN-ZIP-PAYLOAD");
+  assert(!std::filesystem::exists(direct_out / "default.xex"));
+
+  std::atomic<bool> cancel_flag{true};
+  const auto cancel_res = launcher::extract_disc_iso(iso_path, root / "cancelled_game", {}, &cancel_flag);
+  assert(!cancel_res.ok);
+  assert(cancel_res.cancelled);
+
+  // Async SetupRunner extraction into <play_dir>/game/media/ + play.txt persistence
+  launcher::LauncherPaths paths = launcher::resolve_launcher_paths(root, true, "windows");
+  launcher::SetupOptions sopts;
+  sopts.game_root = iso_path;
+  sopts.state_root = paths.state_dir;
+  sopts.play_dir = play_dir;
+  sopts.build_index = false;
+  sopts.skip_bake = true;
+
+  launcher::SetupRunner runner;
+  assert(runner.start(paths, sopts));
+  launcher::SetupProgress prog;
+  for (int i = 0; i < 400; ++i) {
+    prog = runner.snapshot();
+    if (prog.finished) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  assert(prog.finished);
+  assert(prog.success);
+  assert(prog.stage_count == 5);
+  assert(prog.fraction == 1.0f);
+  bool saw_iso_log = false;
+  for (const auto& line : prog.log_lines) {
+    if (line.find("[ISO]") != std::string::npos) saw_iso_log = true;
+  }
+  assert(saw_iso_log);
+  assert(read_binary_string(play_dir / "game" / "media" / "db" / "gamedb.slt") == "SQLITE-LAUNCHER-DB-PAYLOAD");
+  launcher::PlayConfig pc;
+  assert(launcher::read_play_config(play_dir, pc));
+  assert(pc.game_root == play_dir / "game");
+
+  std::filesystem::remove_all(root);
+  std::printf("  [ok] XISO/GDFX probe, direct extract, cancel & SetupRunner worker\n");
+}
+
+void test_stfs_tu_v4_and_dlc_install() {
+  const auto root = make_temp_dir("shift_launcher_stfs_test");
+  const auto state_dir = root / "state";
+  const auto mods_dir = root / "mods";
+  const auto play_dir = root / "play";
+
+  // 1. PIRS Title Update v4 via import_content_package
+  const std::string tu_payload = "TITLE-UPDATE-V4-SYNTHETIC-ZIP";
+  const auto tu_img = build_synthetic_stfs(
+      "PIRS", setup::stfs::kContentTypeTitleUpdate, "Forza Horizon Title Update 4", 0xA1, true,
+      {
+          {"media.zip", -1, false, true, {1}, {tu_payload.begin(), tu_payload.end()}},
+      });
+  const auto tu_path = root / "TU_v4.pirs";
+  write_binary_file(tu_path, tu_img);
+
+  std::string msg;
+  assert(launcher::import_content_package(tu_path, state_dir, mods_dir, msg, play_dir));
+  assert(read_binary_string(state_dir / "title-update-v4" / "media.zip") == tu_payload);
+
+  // 2. LIVE Rally Expansion (non-contiguous 3-block file), LIVE 1000 Club & CON Car Pack via ContentInstallRunner
+  std::vector<uint8_t> rally_zip(9000);
+  for (size_t i = 0; i < rally_zip.size(); ++i) rally_zip[i] = uint8_t((i * 29u + 7u) & 0xFFu);
+
+  const auto rally_img = build_synthetic_stfs(
+      "LIVE", setup::stfs::kContentTypeMarketplace, "Horizon Rally Expansion Pack", 0xB2, true,
+      {
+          {"Media", -1, true, true, {}, {}},
+          {"DLCZips", 0, true, true, {}, {}},
+          {"1600.puboffer", 0, false, true, {1}, {0x01, 0x02, 0x03}},
+          {"1600_pri_65.zip", 1, false, false, {4, 2, 5}, rally_zip},
+      });
+  const auto club_img = build_synthetic_stfs(
+      "LIVE", setup::stfs::kContentTypeMarketplace, "1000 Club Expansion Pack", 0xC4, true,
+      {
+          {"Media", -1, true, true, {}, {}},
+          {"ClubChallenges.xml", 0, false, true, {1}, {'<', 'c', '/', '>'}},
+      });
+  const std::string car_pack_data = "NOVEMBER-BONDURANT-DLC";
+  const auto con_img = build_synthetic_stfs(
+      "CON ", setup::stfs::kContentTypeMarketplace, "November Bondurant Car Pack", 0xD5, false,
+      {
+          {"Media", -1, true, true, {}, {}},
+          {"1200.puboffer", 0, false, true, {1}, {0x00, 0x00, 0x00}},
+          {"pack.bin", 0, false, true, {2}, {car_pack_data.begin(), car_pack_data.end()}},
+      });
+
+  const auto rally_path = root / "RallyExpansion.live";
+  const auto club_path = root / "Club1000.live";
+  const auto con_path = root / "Bondurant.con";
+  write_binary_file(rally_path, rally_img);
+  write_binary_file(club_path, club_img);
+  write_binary_file(con_path, con_img);
+
+  launcher::ContentInstallRunner installer;
+  assert(installer.start({rally_path, club_path, con_path}, state_dir, mods_dir, play_dir));
+  launcher::ContentInstallProgress cprog;
+  for (int i = 0; i < 400; ++i) {
+    cprog = installer.snapshot();
+    if (cprog.finished) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  assert(cprog.finished);
+  assert(cprog.success);
+  assert(cprog.packages_done == 3);
+  assert(cprog.packages_total == 3);
+
+  const auto status = launcher::scan_content_packages(state_dir, mods_dir, play_dir);
+  assert(status.has_v4);
+  assert(status.has_rally);
+  assert(status.has_1000_club);
+  assert(status.dlc_installed_count == 3);
+
+  // Confirm non-contiguous multi-block file extracted byte-for-byte
+  bool verified_rally_bytes = false;
+  for (const auto& pkg : status.packages) {
+    if (pkg.kind == launcher::ContentKind::kRallyExpansion && pkg.installed) {
+      const auto got = read_binary_string(pkg.path / "Media" / "DLCZips" / "1600_pri_65.zip");
+      assert(got.size() == rally_zip.size());
+      assert(std::memcmp(got.data(), rally_zip.data(), rally_zip.size()) == 0);
+      verified_rally_bytes = true;
+    }
+  }
+  assert(verified_rally_bytes);
+
+  std::filesystem::remove_all(root);
+  std::printf("  [ok] STFS Title Update v4 + Rally/1000 Club/DLC install & scan\n");
+}
+
 }  // namespace
 
 int main() {
@@ -494,11 +905,13 @@ int main() {
   test_sha256_and_crc32();
   test_portable_paths();
   test_disc_verifier();
+  test_iso_probe_and_setup_extraction();
   test_hardware_advisor();
   test_preset_mapping_and_cores();
   test_graphics_backend_selector();
   test_steam_vdf();
   test_mods_and_dlc();
+  test_stfs_tu_v4_and_dlc_install();
   test_radio_wheel_updater();
   test_wifi_sync_server_and_qr();
   std::printf("launcher_tests: all passed.\n");

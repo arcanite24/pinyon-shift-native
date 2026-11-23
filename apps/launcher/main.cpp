@@ -5,12 +5,14 @@
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -77,13 +79,70 @@ void open_folder_in_shell(const std::filesystem::path& dir, std::string& notice)
   notice = "Opened " + dir.string();
 }
 
+std::string clean_pasted_path(std::string_view raw) {
+  size_t a = 0;
+  while (a < raw.size() && std::isspace(static_cast<unsigned char>(raw[a]))) ++a;
+  size_t b = raw.size();
+  while (b > a && std::isspace(static_cast<unsigned char>(raw[b - 1]))) --b;
+  std::string out(raw.substr(a, b - a));
+  if (out.size() >= 2 && ((out.front() == '"' && out.back() == '"') || (out.front() == '\'' && out.back() == '\''))) {
+    out = out.substr(1, out.size() - 2);
+  }
+  out.erase(std::remove(out.begin(), out.end(), '\r'), out.end());
+  out.erase(std::remove(out.begin(), out.end(), '\n'), out.end());
+  return out;
+}
+
+void pop_utf8_char(std::string& s) {
+  if (s.empty()) return;
+  while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0u) == 0x80u) s.pop_back();
+  if (!s.empty()) s.pop_back();
+}
+
+enum class DialogKind { kBrowseIso, kBrowseFolder, kImportStfs, kImportContentFolder };
+
+struct PendingDialogResult {
+  DialogKind kind = DialogKind::kBrowseIso;
+  std::vector<std::filesystem::path> paths;
+  std::string error;
+  bool cancelled = false;
+};
+
+struct DialogQueue {
+  std::mutex mu;
+  std::vector<PendingDialogResult> items;
+};
+
+struct DialogContext {
+  DialogQueue* queue = nullptr;
+  DialogKind kind = DialogKind::kBrowseIso;
+};
+
+void SDLCALL on_file_dialog_complete(void* userdata, const char* const* filelist, int /*filter*/) {
+  std::unique_ptr<DialogContext> ctx(static_cast<DialogContext*>(userdata));
+  if (!ctx || !ctx->queue) return;
+  PendingDialogResult res;
+  res.kind = ctx->kind;
+  if (!filelist) {
+    res.error = SDL_GetError() ? SDL_GetError() : "File dialog failed";
+  } else if (!filelist[0]) {
+    res.cancelled = true;
+  } else {
+    for (int i = 0; filelist[i] != nullptr; ++i) {
+      if (*filelist[i]) res.paths.emplace_back(filelist[i]);
+    }
+  }
+  std::lock_guard<std::mutex> lk(ctx->queue->mu);
+  ctx->queue->items.push_back(std::move(res));
+}
+
 void refresh_all(launcher::LauncherUiState& st) {
   launcher::read_play_config(st.paths.play_dir, st.play_cfg);
   if (!st.play_cfg.game_root.empty() && st.disc_path_input.empty()) {
     st.disc_path_input = st.play_cfg.game_root.string();
   }
   st.disc_check = launcher::verify_disc_folder(st.disc_path_input, st.paths.play_dir);
-  st.content_status = launcher::scan_content_packages(st.paths.state_dir, st.paths.mods_dir);
+  st.content_status = launcher::scan_content_packages(st.paths.state_dir, st.paths.mods_dir, st.paths.play_dir);
   st.mods = launcher::scan_mods(st.paths.mods_dir);
   st.save_iso = launcher::evaluate_save_isolation(st.mods);
   if (st.selected_mod >= int(st.mods.size())) st.selected_mod = std::max(0, int(st.mods.size()) - 1);
@@ -236,6 +295,11 @@ int main(int argc, char** argv) {
   state.hw_rec = launcher::recommend_preset(state.hw_info);
   refresh_all(state);
   if (demo_mode) launcher::populate_demo_state(state);
+  if (!game_root_override.empty()) {
+    state.disc_path_input = game_root_override.string();
+    state.disc_check = launcher::verify_disc_folder(game_root_override, state.paths.play_dir);
+    state.banner_notice = state.disc_check.summary;
+  }
 
   // Initialize native system TrueType fonts first; fall back to FH1 Fonts.zip if unavailable.
   if (!launcher::init_launcher_fonts()) {
@@ -333,9 +397,50 @@ int main(int argc, char** argv) {
   rescan_joys();
 
   launcher::SetupRunner setup_runner;
+  launcher::ContentInstallRunner content_runner;
   launcher::WifiSyncServer wifi_server;
+  DialogQueue dialog_queue;
+  bool was_setup_running = false;
+  bool was_content_running = false;
+  bool text_input_active = false;
   carview::ui::List ui_list;
   std::vector<launcher::HitBox> hitboxes;
+
+  auto sync_text_input = [&]() {
+    const bool want = (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path");
+    if (want && !text_input_active) {
+      SDL_StartTextInput(window);
+      text_input_active = true;
+    } else if (!want && text_input_active) {
+      SDL_StopTextInput(window);
+      text_input_active = false;
+    }
+  };
+
+  auto apply_disc_source = [&](const std::filesystem::path& p) {
+    state.disc_path_input = clean_pasted_path(p.string());
+    state.disc_check = launcher::verify_disc_folder(state.disc_path_input, state.paths.play_dir);
+    state.banner_notice = state.disc_check.summary;
+    state.active_tab = launcher::LauncherTab::kSetup;
+  };
+
+  auto start_content_import = [&](const std::vector<std::filesystem::path>& items) {
+    if (items.empty()) return;
+    state.active_tab = launcher::LauncherTab::kDlc;
+    if (!content_runner.start(items, state.paths.state_dir, state.paths.mods_dir, state.paths.play_dir)) {
+      state.banner_notice = "Content installation is already running.";
+    } else {
+      state.banner_notice = "Installing " + std::to_string(items.size()) + " content package(s)...";
+    }
+  };
+
+  static constexpr SDL_DialogFileFilter kIsoFilters[2] = {
+      {"Xbox 360 ISO Images", "iso;xiso"},
+      {"All Files", "*"},
+  };
+  static constexpr SDL_DialogFileFilter kStfsFilters[1] = {
+      {"Xbox 360 STFS Packages", "*"},
+  };
 
   auto handle_click = [&](const std::string& id) {
     if (id.rfind("tab:", 0) == 0) {
@@ -382,7 +487,16 @@ int main(int argc, char** argv) {
     } else if (id == "act:apply_rec") {
       state.selected_preset = launcher::preset_index_for_name(state.hw_rec.carview_preset);
       state.banner_notice = "Selected recommended preset: " + state.hw_rec.label;
+    } else if (id == "setup:path") {
+      state.focused_id = "setup:path";
+    } else if (id == "setup:browse_iso") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseIso};
+      SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kIsoFilters, 2, nullptr, false);
+    } else if (id == "setup:browse_folder") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowseFolder};
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, nullptr, false);
     } else if (id == "setup:verify") {
+      state.disc_path_input = clean_pasted_path(state.disc_path_input);
       state.disc_check = launcher::verify_disc_folder(state.disc_path_input, state.paths.play_dir);
       state.banner_notice = state.disc_check.summary;
     } else if (id == "setup:toggle_sounds") {
@@ -391,7 +505,11 @@ int main(int argc, char** argv) {
       state.setup_build_index = !state.setup_build_index;
     } else if (id == "setup:toggle_log") {
       state.setup_log_expanded = !state.setup_log_expanded;
+    } else if (id == "setup:cancel") {
+      setup_runner.cancel();
+      state.banner_notice = "Cancelling setup...";
     } else if (id == "setup:run") {
+      state.disc_path_input = clean_pasted_path(state.disc_path_input);
       launcher::SetupOptions sopts;
       sopts.game_root = state.disc_path_input;
       sopts.state_root = state.paths.state_dir;
@@ -400,10 +518,17 @@ int main(int argc, char** argv) {
       sopts.build_index = state.setup_build_index;
       if (!setup_runner.start(state.paths, sopts)) state.banner_notice = "Setup is already running.";
     } else if (id == "dlc:rescan") {
-      state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir);
+      state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir, state.paths.play_dir);
       state.banner_notice = "Rescanned content packages.";
     } else if (id == "dlc:import") {
-      state.banner_notice = "Drag and drop an STFS package or extracted DLC/v4/UDLC/XE folder onto the window.";
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kImportStfs};
+      SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kStfsFilters, 1, nullptr, true);
+    } else if (id == "dlc:import_folder") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kImportContentFolder};
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, nullptr, true);
+    } else if (id == "dlc:cancel") {
+      content_runner.cancel();
+      state.banner_notice = "Cancelling content installation...";
     } else if (id == "mods:rescan") {
       state.mods = launcher::scan_mods(state.paths.mods_dir);
       state.save_iso = launcher::evaluate_save_isolation(state.mods);
@@ -545,10 +670,37 @@ int main(int argc, char** argv) {
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_EVENT_QUIT) {
         running = false;
+      } else if (e.type == SDL_EVENT_TEXT_INPUT) {
+        if (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path" && e.text.text) {
+          for (const char* p = e.text.text; *p; ++p) {
+            if (*p != '\r' && *p != '\n') state.disc_path_input.push_back(*p);
+          }
+        }
       } else if (e.type == SDL_EVENT_KEY_DOWN) {
         const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
-        const bool ctrl = (e.key.mod & SDL_KMOD_CTRL) != 0;
-        if (e.key.key == SDLK_ESCAPE) {
+        const bool ctrl = (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+        const bool editing_path = (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path");
+        if (ctrl && e.key.key == SDLK_V && state.active_tab == launcher::LauncherTab::kSetup) {
+          if (char* clip = SDL_GetClipboardText()) {
+            const std::string pasted = clean_pasted_path(clip);
+            SDL_free(clip);
+            if (!pasted.empty()) apply_disc_source(pasted);
+          }
+        } else if (editing_path) {
+          if (e.key.key == SDLK_ESCAPE) {
+            state.focused_id.clear();
+          } else if (e.key.key == SDLK_BACKSPACE) {
+            if (ctrl) state.disc_path_input.clear();
+            else pop_utf8_char(state.disc_path_input);
+          } else if (e.key.key == SDLK_DELETE) {
+            state.disc_path_input.clear();
+          } else if (e.key.key == SDLK_RETURN) {
+            apply_disc_source(state.disc_path_input);
+            state.focused_id.clear();
+          } else if (e.key.key == SDLK_TAB) {
+            cycle_focus(state, hitboxes, shift ? -1 : 1);
+          }
+        } else if (e.key.key == SDLK_ESCAPE) {
           if (!state.focused_id.empty()) state.focused_id.clear();
           else running = false;
         } else if (e.key.key >= SDLK_1 && e.key.key <= SDLK_8) {
@@ -602,13 +754,16 @@ int main(int argc, char** argv) {
         const float px = e.button.x * scale_x;
         const float py = e.button.y * scale_y;
         state.pressed_id.clear();
+        bool hit_any = false;
         for (const auto& hb : hitboxes) {
           if (hb.contains(px, py)) {
             state.pressed_id = hb.id;
             state.focused_id = hb.id;
+            hit_any = true;
             break;
           }
         }
+        if (!hit_any) state.focused_id.clear();
       } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
         const float px = e.button.x * scale_x;
         const float py = e.button.y * scale_y;
@@ -627,13 +782,18 @@ int main(int argc, char** argv) {
         else if (e.wheel.y < 0.0f) scroll_active_tab(state, -2);
       } else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) {
         const std::filesystem::path dropped(e.drop.data);
-        if (state.active_tab == launcher::LauncherTab::kMods) {
+        std::error_code drop_ec;
+        const bool is_file = std::filesystem::is_regular_file(dropped, drop_ec);
+        if (is_file && launcher::is_stfs_package_file(dropped)) {
+          start_content_import({dropped});
+        } else if (is_file && launcher::is_iso_image_path(dropped)) {
+          apply_disc_source(dropped);
+        } else if (state.active_tab == launcher::LauncherTab::kMods) {
           launcher::install_mod_source(dropped, state.paths.mods_dir, state.banner_notice);
           state.mods = launcher::scan_mods(state.paths.mods_dir);
           state.save_iso = launcher::evaluate_save_isolation(state.mods);
         } else if (state.active_tab == launcher::LauncherTab::kDlc) {
-          launcher::import_content_package(dropped, state.paths.state_dir, state.paths.mods_dir, state.banner_notice);
-          state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir);
+          start_content_import({dropped});
         } else if (state.active_tab == launcher::LauncherTab::kRadio) {
           if (dropped.extension() == ".png" || dropped.extension() == ".PNG") {
             state.radio_cfg.logo_png_path = dropped;
@@ -643,18 +803,52 @@ int main(int argc, char** argv) {
             state.radio_tracks = launcher::scan_radio_music_folder(dropped);
           }
         } else {
-          state.disc_path_input = dropped.string();
-          state.disc_check = launcher::verify_disc_folder(dropped, state.paths.play_dir);
-          state.banner_notice = state.disc_check.summary;
-          state.active_tab = launcher::LauncherTab::kSetup;
+          apply_disc_source(dropped);
         }
       } else if (e.type == SDL_EVENT_JOYSTICK_ADDED || e.type == SDL_EVENT_JOYSTICK_REMOVED) {
         rescan_joys();
       }
     }
 
-    // Poll async setup runner & Wi-Fi sync activity + live wheel axes
+    sync_text_input();
+
+    // Drain native OS file/folder picker callbacks safely on the main thread
+    std::vector<PendingDialogResult> dialog_results;
+    {
+      std::lock_guard<std::mutex> lk(dialog_queue.mu);
+      dialog_results.swap(dialog_queue.items);
+    }
+    for (const auto& dr : dialog_results) {
+      if (!dr.error.empty()) {
+        state.banner_notice = "File picker unavailable (" + dr.error + ") - drag and drop or paste path (Ctrl+V).";
+        continue;
+      }
+      if (dr.cancelled || dr.paths.empty()) continue;
+      if (dr.kind == DialogKind::kBrowseIso || dr.kind == DialogKind::kBrowseFolder) {
+        apply_disc_source(dr.paths.front());
+      } else if (dr.kind == DialogKind::kImportStfs || dr.kind == DialogKind::kImportContentFolder) {
+        start_content_import(dr.paths);
+      }
+    }
+
+    // Poll async setup runner, content STFS installer & Wi-Fi sync activity + live wheel axes
     state.setup_progress = setup_runner.snapshot();
+    if (was_setup_running && !state.setup_progress.running && state.setup_progress.finished) {
+      if (state.setup_progress.success) {
+        launcher::read_play_config(state.paths.play_dir, state.play_cfg);
+        state.banner_notice = "Setup complete.";
+      } else if (!state.setup_progress.error_text.empty()) {
+        state.banner_notice = state.setup_progress.error_text;
+      }
+    }
+    was_setup_running = state.setup_progress.running;
+
+    state.content_install = content_runner.snapshot();
+    if (was_content_running && !state.content_install.running && state.content_install.finished) {
+      state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir, state.paths.play_dir);
+      if (!state.content_install.summary.empty()) state.banner_notice = state.content_install.summary;
+    }
+    was_content_running = state.content_install.running;
     if (wifi_server.running()) state.sync_activity = wifi_server.recent_activity();
     if (!open_joys.empty() && state.selected_device >= 0 && size_t(state.selected_device) < open_joys.size()) {
       SDL_Joystick* j = open_joys[size_t(state.selected_device)];
@@ -681,6 +875,8 @@ int main(int argc, char** argv) {
     SDL_Delay(16);
   }
 
+  setup_runner.cancel();
+  content_runner.cancel();
   wifi_server.stop();
   for (SDL_Joystick* j : open_joys) SDL_CloseJoystick(j);
   SDL_DestroyWindow(window);

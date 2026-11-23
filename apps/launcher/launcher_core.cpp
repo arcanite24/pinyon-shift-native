@@ -31,6 +31,9 @@
 #include <volk.h>
 #endif
 
+#include "setup/stfs.h"
+#include "setup/stream_reader.h"
+#include "setup/xiso.h"
 #include "sha256.h"
 
 namespace launcher {
@@ -467,25 +470,74 @@ bool write_play_config(const std::filesystem::path& play_dir, const std::filesys
 
 // ---- 2. Setup & Disc Verification ------------------------------------------
 
+namespace {
+
+std::filesystem::path find_existing_space_root(const std::filesystem::path& preferred,
+                                               const std::filesystem::path& fallback) {
+  std::error_code ec;
+  auto walk_up = [&](std::filesystem::path p) -> std::filesystem::path {
+    while (!p.empty()) {
+      if (std::filesystem::exists(p, ec)) return p;
+      const auto parent = p.parent_path();
+      if (parent == p) break;
+      p = parent;
+    }
+    return {};
+  };
+  if (!preferred.empty()) {
+    if (auto p = walk_up(preferred); !p.empty()) return p;
+  }
+  if (!fallback.empty()) {
+    if (auto p = walk_up(fallback); !p.empty()) return p;
+  }
+  return std::filesystem::current_path(ec);
+}
+
+std::string format_mb(uint64_t bytes) {
+  char buf[48];
+  std::snprintf(buf, sizeof buf, "%.1f MB", double(bytes) / double(1ull << 20));
+  return buf;
+}
+
+bool ends_with_ci(std::string_view s, std::string_view suffix) {
+  if (s.size() < suffix.size()) return false;
+  const size_t off = s.size() - suffix.size();
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(s[off + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool starts_with_ci(std::string_view s, std::string_view prefix) {
+  if (s.size() < prefix.size()) return false;
+  for (size_t i = 0; i < prefix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(s[i])) !=
+        std::tolower(static_cast<unsigned char>(prefix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+bool is_iso_image_path(const std::filesystem::path& path) {
+  if (path.empty()) return false;
+  const std::string ext = lower_ascii(path.extension().string());
+  return ext == ".iso" || ext == ".xiso";
+}
+
 DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
                                     const std::filesystem::path& target_play_dir) {
   DiscVerification res;
   std::error_code ec;
   if (selected_path.empty()) {
-    res.summary = "Select an extracted Forza Horizon disc folder containing media/.";
+    res.summary = "Select a Forza Horizon .iso image or extracted disc folder containing media/.";
     return res;
   }
-
-  if (std::filesystem::is_regular_file(selected_path, ec) &&
-      lower_ascii(selected_path.extension().string()) == ".iso") {
-    res.looks_like_iso = true;
-    res.summary = "ISO image selected. Extract the Xbox 360 ISO into a folder containing media/, then select that folder.";
-    return res;
-  }
-
-  std::filesystem::path root = selected_path;
-  if (lower_ascii(root.filename().string()) == "media") root = root.parent_path();
-  res.resolved_root = root;
 
   struct Spec {
     const char* label;
@@ -500,6 +552,104 @@ DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
       {"UI4 Scenes Archive", "media/ui/UI.zip", false, false},
       {"Retail Executable (default.xex)", "default.xex", false, false},
   };
+
+  if (std::filesystem::is_regular_file(selected_path, ec) && is_iso_image_path(selected_path)) {
+    res.looks_like_iso = true;
+    res.resolved_root = selected_path;
+
+    std::string err;
+    auto reader = setup::StreamReader::open_path(selected_path, &err);
+    if (!reader) {
+      res.summary = "Cannot open ISO image: " + err;
+      return res;
+    }
+
+    setup::xiso::PartitionInfo part;
+    if (!setup::xiso::detect_partition(*reader, part, &err)) {
+      res.summary = "Invalid Xbox 360 ISO: " + err;
+      return res;
+    }
+
+    std::vector<setup::xiso::Entry> entries;
+    if (!setup::xiso::list_entries(*reader, part, entries, &err)) {
+      res.summary = "Could not read ISO directory tree: " + err;
+      return res;
+    }
+
+    res.iso_format = part.format_label;
+    bool has_media_dir = false;
+    for (const auto& e : entries) {
+      if (starts_with_ci(e.path, "media/")) {
+        has_media_dir = true;
+        break;
+      }
+    }
+
+    std::map<std::string, uint64_t> file_sizes_ci;
+    for (const auto& e : entries) {
+      if (e.is_directory) continue;
+      const std::string lp = lower_ascii(e.path);
+      file_sizes_ci[lp] = e.size;
+      if (lp.rfind("media/cars/", 0) == 0) {
+        const std::string rest = lp.substr(11);
+        if (!rest.empty() && rest.find('/') == std::string::npos) {
+          ++res.car_archive_count;
+        }
+      }
+      if (ends_with_ci(e.path, ".xex") || ends_with_ci(e.path, ".xexp")) continue;
+      if (has_media_dir && !starts_with_ci(e.path, "media/")) continue;
+      ++res.iso_file_count;
+      res.iso_extract_bytes += e.size;
+    }
+
+    bool all_required = true;
+    for (const auto& sp : kSpecs) {
+      DiscCheckItem item;
+      item.label = sp.label;
+      item.relative_path = sp.rel;
+      item.required = sp.required;
+      const auto it = file_sizes_ci.find(lower_ascii(sp.rel));
+      if (it != file_sizes_ci.end()) {
+        item.present = true;
+        item.bytes = it->second;
+      } else if (sp.required) {
+        all_required = false;
+      }
+      res.items.push_back(std::move(item));
+    }
+
+    DiscCheckItem cars_item;
+    cars_item.label = "Vehicle Archives (media/cars/)";
+    cars_item.relative_path = "media/cars";
+    cars_item.required = true;
+    cars_item.present = res.car_archive_count > 0;
+    if (!cars_item.present) all_required = false;
+    res.items.push_back(std::move(cars_item));
+
+    res.required_space_bytes = res.iso_extract_bytes + (4ull << 30);
+    const auto space_target = find_existing_space_root(target_play_dir, selected_path.parent_path());
+    const auto sp_info = std::filesystem::space(space_target, ec);
+    if (!ec) {
+      res.free_space_bytes = sp_info.available;
+      res.sufficient_space = res.free_space_bytes >= res.required_space_bytes;
+    }
+
+    res.valid = all_required;
+    if (res.valid) {
+      res.summary = res.iso_format + " ISO verified (" + std::to_string(res.iso_file_count) + " files, " +
+                    std::to_string(res.car_archive_count) + " cars, " + format_bytes(res.iso_extract_bytes) +
+                    " extract, " + format_bytes(res.required_space_bytes) + " req., " +
+                    format_bytes(res.free_space_bytes) + " free).";
+    } else {
+      res.summary = res.iso_format + " ISO is missing required Forza Horizon files (need media/tracks/colorado/bin.zip, "
+                    "media/db/gamedb.slt, media/cars/).";
+    }
+    return res;
+  }
+
+  std::filesystem::path root = selected_path;
+  if (lower_ascii(root.filename().string()) == "media") root = root.parent_path();
+  res.resolved_root = root;
 
   bool all_required = true;
   for (const auto& sp : kSpecs) {
@@ -538,13 +688,12 @@ DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
   if (!cars_item.present) all_required = false;
   res.items.push_back(std::move(cars_item));
 
-  const auto space_target = !target_play_dir.empty() && std::filesystem::exists(target_play_dir, ec)
-                                ? target_play_dir
-                                : (std::filesystem::exists(root, ec) ? root : std::filesystem::current_path(ec));
+  res.required_space_bytes = 8ull << 30;
+  const auto space_target = find_existing_space_root(target_play_dir, root);
   const auto sp_info = std::filesystem::space(space_target, ec);
   if (!ec) {
     res.free_space_bytes = sp_info.available;
-    res.sufficient_space = res.free_space_bytes >= (8ull << 30);
+    res.sufficient_space = res.free_space_bytes >= res.required_space_bytes;
   }
 
   res.valid = all_required;
@@ -555,6 +704,35 @@ DiscVerification verify_disc_folder(const std::filesystem::path& selected_path,
     res.summary = "Missing required files under " + root.string() + " (need media/tracks/colorado/bin.zip, media/db/gamedb.slt, media/cars/).";
   }
   return res;
+}
+
+IsoExtractResult extract_disc_iso(
+    const std::filesystem::path& iso_path,
+    const std::filesystem::path& target_game_dir,
+    const std::function<void(const IsoExtractProgress&)>& progress_cb,
+    const std::atomic<bool>* cancel) {
+  IsoExtractResult out;
+  setup::xiso::ExtractOptions xopts;
+  xopts.media_only = true;
+  xopts.skip_xex = true;
+  xopts.overwrite_existing = false;
+
+  setup::xiso::ExtractReport rep;
+  auto cb = [&](const setup::xiso::Progress& p) {
+    if (progress_cb) {
+      progress_cb({p.bytes_done, p.bytes_total, p.files_done, p.files_total, p.current_file});
+    }
+  };
+  setup::xiso::extract_iso_path(iso_path, target_game_dir, xopts, cb, cancel, rep);
+  out.ok = rep.ok;
+  out.cancelled = rep.cancelled;
+  out.format_label = rep.partition.format_label;
+  out.files_extracted = rep.files_extracted;
+  out.files_skipped = rep.files_skipped;
+  out.bytes_written = rep.bytes_written;
+  out.extracted_game_root = target_game_dir;
+  out.error = rep.error;
+  return out;
 }
 
 SetupRunner::~SetupRunner() {
@@ -612,19 +790,21 @@ int SetupRunner::run_subprocess_logged(const std::vector<std::string>& args) {
 }
 
 bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
+  std::error_code pre_ec;
+  const bool is_iso = std::filesystem::is_regular_file(opts.game_root, pre_ec) && is_iso_image_path(opts.game_root);
   {
     std::lock_guard<std::mutex> lk(mu_);
     if (state_.running) return false;
     state_ = SetupProgress{};
     state_.running = true;
-    state_.stage_count = 4;
-    state_.stage_label = "Verifying disc files...";
+    state_.stage_count = is_iso ? 5 : 4;
+    state_.stage_label = is_iso ? "Probing Xbox 360 ISO image..." : "Verifying disc files...";
     state_.fraction = 0.02f;
   }
   cancel_.store(false);
   if (worker_.joinable()) worker_.join();
 
-  worker_ = std::thread([this, paths, opts]() {
+  worker_ = std::thread([this, paths, opts, is_iso]() {
     auto fail = [&](const std::string& msg) {
       append_log("SETUP FAILED: " + msg);
       std::lock_guard<std::mutex> lk(mu_);
@@ -632,10 +812,73 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       state_.finished = true;
       state_.success = false;
       state_.error_text = msg;
-      state_.stage_label = "Failed";
+      state_.stage_label = cancel_.load() ? "Cancelled" : "Failed";
     };
 
-    const auto check = verify_disc_folder(opts.game_root, opts.play_dir);
+    std::filesystem::path effective_game_root = opts.game_root;
+    int stage_offset = 0;
+
+    if (is_iso) {
+      stage_offset = 1;
+      const auto iso_probe = verify_disc_folder(opts.game_root, opts.play_dir);
+      if (!iso_probe.valid) {
+        fail(iso_probe.summary);
+        return;
+      }
+      append_log("ISO verified (" + iso_probe.iso_format + "): " + opts.game_root.string());
+      append_log("Extracting " + std::to_string(iso_probe.iso_file_count) + " media files (" +
+                 format_bytes(iso_probe.iso_extract_bytes) + ") -> " + (opts.play_dir / "game").string());
+
+      const std::filesystem::path extracted_dir = opts.play_dir / "game";
+      uint64_t last_logged_bytes = 0;
+      size_t last_logged_files = 0;
+      std::string last_logged_file;
+
+      const auto xres = extract_disc_iso(
+          opts.game_root, extracted_dir,
+          [&](const IsoExtractProgress& p) {
+            const float iso_frac = p.bytes_total > 0
+                                       ? float(double(p.bytes_done) / double(p.bytes_total))
+                                       : (p.files_total > 0 ? float(double(p.files_done) / double(p.files_total)) : 1.0f);
+            const float overall = opts.skip_bake ? (0.04f + 0.86f * iso_frac) : (0.04f + 0.41f * iso_frac);
+            std::string short_file = p.current_file;
+            if (const auto slash = short_file.find_last_of('/'); slash != std::string::npos) {
+              short_file = short_file.substr(slash + 1);
+            }
+            set_stage(1,
+                      "Extracting " + iso_probe.iso_format + " ISO (" + format_mb(p.bytes_done) + " / " +
+                          format_mb(p.bytes_total) + ") \xC2\xB7 " + short_file,
+                      overall);
+
+            const bool small_set = p.files_total <= 40;
+            const bool file_changed = p.current_file != last_logged_file;
+            const bool byte_milestone = (p.bytes_done >= last_logged_bytes + (16ull << 20));
+            const bool file_milestone = (p.files_done >= last_logged_files + 10) || (p.files_done == p.files_total);
+            if ((small_set && file_changed) || byte_milestone || (file_changed && file_milestone)) {
+              last_logged_bytes = p.bytes_done;
+              last_logged_files = p.files_done;
+              last_logged_file = p.current_file;
+              append_log("[ISO] " + format_mb(p.bytes_done) + " / " + format_mb(p.bytes_total) + " (" +
+                         std::to_string(p.files_done) + "/" + std::to_string(p.files_total) + ") " + p.current_file);
+            }
+          },
+          &cancel_);
+
+      if (xres.cancelled || cancel_.load()) {
+        fail("Cancelled by user.");
+        return;
+      }
+      if (!xres.ok) {
+        fail("ISO extraction failed: " + xres.error);
+        return;
+      }
+      append_log("ISO extraction complete (" + xres.format_label + "): " + std::to_string(xres.files_extracted) +
+                 " extracted, " + std::to_string(xres.files_skipped) + " skipped (" +
+                 format_bytes(xres.bytes_written) + ").");
+      effective_game_root = extracted_dir;
+    }
+
+    const auto check = verify_disc_folder(effective_game_root, opts.play_dir);
     if (!check.valid) {
       fail(check.summary);
       return;
@@ -645,13 +888,32 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
 
     std::error_code ec;
     std::filesystem::create_directories(opts.play_dir / "world", ec);
+
+    if (opts.skip_bake) {
+      set_stage(stage_offset + 1, "Persisting play.txt...", 0.95f);
+      std::string werr;
+      if (!write_play_config(opts.play_dir, check.resolved_root, opts.state_root, &werr)) {
+        fail(werr);
+        return;
+      }
+      append_log("Wrote " + (opts.play_dir / "play.txt").string());
+      append_log("Setup complete.");
+      std::lock_guard<std::mutex> lk(mu_);
+      state_.running = false;
+      state_.finished = true;
+      state_.success = true;
+      state_.fraction = 1.0f;
+      state_.stage_label = "Complete";
+      return;
+    }
+
     if (paths.carbake_bin.empty()) {
       fail("carbake binary not found beside launcher.");
       return;
     }
 
-    // Stage 1: carbake
-    set_stage(1, "Baking cars with carbake...", 0.15f);
+    // Stage 1 (+offset): carbake
+    set_stage(1 + stage_offset, "Baking cars with carbake...", is_iso ? 0.50f : 0.15f);
     std::vector<std::string> cb_cmd = {
         paths.carbake_bin.string(), "--game-root", check.resolved_root.string(),
         "--out", (opts.play_dir / "bake").string()};
@@ -672,8 +934,8 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       return;
     }
 
-    // Stage 2: play.txt
-    set_stage(2, "Persisting play.txt...", 0.55f);
+    // Stage 2 (+offset): play.txt
+    set_stage(2 + stage_offset, "Persisting play.txt...", is_iso ? 0.72f : 0.55f);
     std::string werr;
     if (!write_play_config(opts.play_dir, check.resolved_root, opts.state_root, &werr)) {
       fail(werr);
@@ -681,8 +943,8 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
     }
     append_log("Wrote " + (opts.play_dir / "play.txt").string());
 
-    // Stage 3: soundbake (optional if FFmpeg is missing)
-    set_stage(3, "Baking engine sounds (soundbake)...", 0.70f);
+    // Stage 3 (+offset): soundbake (optional if FFmpeg is missing)
+    set_stage(3 + stage_offset, "Baking engine sounds (soundbake)...", is_iso ? 0.80f : 0.70f);
     if (!paths.soundbake_bin.empty()) {
       std::vector<std::string> sb_cmd = {
           paths.soundbake_bin.string(), "--game-root", check.resolved_root.string(),
@@ -708,9 +970,9 @@ bool SetupRunner::start(const LauncherPaths& paths, const SetupOptions& opts) {
       return;
     }
 
-    // Stage 4: Colorado index
+    // Stage 4 (+offset): Colorado index
     if (opts.build_index && !paths.carview_bin.empty()) {
-      set_stage(4, "Building Colorado world index...", 0.88f);
+      set_stage(4 + stage_offset, "Building Colorado world index...", is_iso ? 0.90f : 0.88f);
       const auto probe_png = opts.play_dir / "world" / "setup-check.png";
       std::vector<std::string> idx_cmd = {
           paths.carview_bin.string(), "--drive", "--headless", "--play", opts.play_dir.string(),
@@ -1197,15 +1459,15 @@ SteamInstallResult add_to_steam(const LauncherPaths& paths, const std::string& a
 bool is_stfs_package_file(const std::filesystem::path& file) {
   std::ifstream in(file, std::ios::binary);
   if (!in) return false;
-  char magic[4]{};
-  in.read(magic, 4);
+  uint8_t magic[4]{};
+  in.read(reinterpret_cast<char*>(magic), 4);
   if (in.gcount() != 4) return false;
-  return std::memcmp(magic, "CON ", 4) == 0 || std::memcmp(magic, "LIVE", 4) == 0 ||
-         std::memcmp(magic, "PIRS", 4) == 0;
+  return setup::stfs::is_stfs_magic(magic);
 }
 
 ContentStatus scan_content_packages(const std::filesystem::path& state_root,
-                                    const std::filesystem::path& mods_root) {
+                                    const std::filesystem::path& mods_root,
+                                    const std::filesystem::path& play_root) {
   ContentStatus st;
   std::error_code ec;
 
@@ -1224,7 +1486,13 @@ ContentStatus scan_content_packages(const std::filesystem::path& state_root,
       v4.enabled = !std::filesystem::exists(state_root / "v4.disabled", ec);
       v4.verified = true;
       v4.path = c;
-      v4.detail = "Installed under " + c.filename().string();
+      const auto media_zip = c / "media.zip";
+      if (std::filesystem::is_regular_file(media_zip, ec)) {
+        v4.bytes = std::filesystem::file_size(media_zip, ec);
+        v4.detail = "STFS installed (media.zip verified)";
+      } else {
+        v4.detail = "Installed under " + c.filename().string();
+      }
       break;
     }
   }
@@ -1232,20 +1500,58 @@ ContentStatus scan_content_packages(const std::filesystem::path& state_root,
   st.v4_enabled = v4.enabled;
   st.packages.push_back(v4);
 
-  // 2. Installed Xbox 360 DLC packages under 00000002 / dlc/
+  // 2. Installed Xbox 360 DLC packages via setup::stfs (100% parity with runtime cars::list_packs)
+  std::set<std::string> seen_ids;
+  if (!state_root.empty()) {
+    for (const auto& ip : setup::stfs::list_installed_packages(state_root, play_root)) {
+      if (ip.kind == setup::stfs::PackageKind::kTitleUpdate) continue;
+      if (!seen_ids.insert(lower_ascii(ip.package_id)).second) continue;
+
+      ContentPackage pkg;
+      pkg.id = ip.package_id;
+      pkg.title = ip.display_name.empty() ? ip.package_id : ip.display_name;
+      pkg.path = ip.path;
+      pkg.installed = true;
+      pkg.enabled = ip.enabled;
+      pkg.verified = ip.has_header;
+      if (ip.kind == setup::stfs::PackageKind::kRallyExpansion) {
+        pkg.kind = ContentKind::kRallyExpansion;
+        if (pkg.title == pkg.id) pkg.title = "Horizon Rally Expansion Pack";
+        st.has_rally = true;
+      } else if (ip.kind == setup::stfs::PackageKind::kClub1000) {
+        pkg.kind = ContentKind::kClub1000;
+        if (pkg.title == pkg.id) pkg.title = "1000 Club Expansion Pack";
+        st.has_1000_club = true;
+      } else {
+        pkg.kind = ContentKind::kDlcPack;
+      }
+
+      if (ip.puboffer > 0) {
+        pkg.detail = "STFS installed (puboffer " + std::to_string(ip.puboffer) + ")";
+      } else if (ip.has_header) {
+        pkg.detail = "STFS installed (header verified)";
+      } else {
+        pkg.detail = "Extracted offer package";
+      }
+      ++st.dlc_installed_count;
+      st.packages.push_back(std::move(pkg));
+    }
+  }
+
+  // Fallback scan for any manually dropped raw STFS containers or folders under 00000002/ or dlc/
   const std::filesystem::path dlc_dirs[] = {
       state_root / "user" / "0000000000000000" / "4D5309C9" / "00000002",
       state_root / "dlc",
   };
-  std::set<std::string> seen_ids;
   for (const auto& d : dlc_dirs) {
     if (!std::filesystem::is_directory(d, ec)) continue;
     for (const auto& e : std::filesystem::directory_iterator(d, ec)) {
       const std::string fname = e.path().filename().string();
-      if (!seen_ids.insert(lower_ascii(fname)).second) continue;
       const bool stfs = e.is_regular_file(ec) && is_stfs_package_file(e.path());
       const bool dir_pkg = e.is_directory(ec);
       if (!stfs && !dir_pkg) continue;
+      if (!seen_ids.insert(lower_ascii(fname)).second) continue;
+
       ContentPackage pkg;
       pkg.id = fname;
       pkg.title = fname;
@@ -1319,10 +1625,14 @@ ContentStatus scan_content_packages(const std::filesystem::path& state_root,
   return st;
 }
 
-bool import_content_package(const std::filesystem::path& source_path,
-                            const std::filesystem::path& state_root,
-                            const std::filesystem::path& mods_root,
-                            std::string& out_message) {
+bool import_content_package(
+    const std::filesystem::path& source_path,
+    const std::filesystem::path& state_root,
+    const std::filesystem::path& mods_root,
+    std::string& out_message,
+    const std::filesystem::path& play_root,
+    const std::function<void(uint64_t bytes_done, uint64_t bytes_total, const std::string& current_file)>& progress_cb,
+    const std::atomic<bool>* cancel) {
   std::error_code ec;
   if (!std::filesystem::exists(source_path, ec)) {
     out_message = "Source path does not exist: " + source_path.string();
@@ -1333,20 +1643,25 @@ bool import_content_package(const std::filesystem::path& source_path,
 
   if (std::filesystem::is_regular_file(source_path, ec)) {
     if (is_stfs_package_file(source_path)) {
-      const bool is_tu = lf.rfind("tu", 0) == 0 || lf.find("update") != std::string::npos;
-      const auto dest_dir = is_tu ? (state_root / "user" / "0000000000000000" / "4D5309C9" / "000B0000")
-                                  : (state_root / "user" / "0000000000000000" / "4D5309C9" / "00000002");
-      std::filesystem::create_directories(dest_dir, ec);
-      std::filesystem::copy_file(source_path, dest_dir / fname,
-                                 std::filesystem::copy_options::overwrite_existing, ec);
-      if (ec) {
-        out_message = "Failed to copy STFS package: " + ec.message();
+      setup::stfs::InstallTargets targets;
+      targets.play_dir = play_root;
+      targets.state_dir = state_root;
+      targets.suggested_name = source_path.stem().string();
+
+      setup::stfs::InstallReport rep;
+      auto cb = [&](const setup::stfs::Progress& p) {
+        if (progress_cb) progress_cb(p.bytes_done, p.bytes_total, p.current_file);
+      };
+      if (!setup::stfs::install_package_path(source_path, targets, cb, cancel, rep)) {
+        out_message = rep.cancelled ? "STFS installation cancelled."
+                                    : ("STFS install failed: " + rep.error);
         return false;
       }
-      out_message = "Imported verified STFS package " + fname + " into " + dest_dir.string();
+      out_message = "Installed " + rep.display_name + " (" + std::to_string(rep.files_extracted) + " files, " +
+                    format_bytes(rep.bytes_written) + ") -> " + rep.installed_dir.string();
       return true;
     }
-    out_message = "File is not a recognized STFS package (expected CON/LIVE/PIRS header) or folder.";
+    out_message = "File is not a recognized STFS package (expected CON / LIVE / PIRS header) or folder.";
     return false;
   }
 
@@ -1369,6 +1684,91 @@ bool import_content_package(const std::filesystem::path& source_path,
   }
   out_message = "Imported package folder into " + dest.string();
   return true;
+}
+
+ContentInstallRunner::~ContentInstallRunner() {
+  cancel();
+  if (worker_.joinable()) worker_.join();
+}
+
+bool ContentInstallRunner::start(const std::vector<std::filesystem::path>& sources,
+                                 const std::filesystem::path& state_root,
+                                 const std::filesystem::path& mods_root,
+                                 const std::filesystem::path& play_root) {
+  if (sources.empty()) return false;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (state_.running) return false;
+    state_ = ContentInstallProgress{};
+    state_.running = true;
+    state_.packages_total = int(sources.size());
+    state_.status_label = "Installing " + sources.front().filename().string() + "...";
+    state_.fraction = 0.02f;
+  }
+  cancel_.store(false);
+  if (worker_.joinable()) worker_.join();
+
+  worker_ = std::thread([this, sources, state_root, mods_root, play_root]() {
+    int ok_count = 0;
+    std::string last_msg;
+    for (size_t i = 0; i < sources.size(); ++i) {
+      if (cancel_.load()) {
+        last_msg = "Content installation cancelled.";
+        break;
+      }
+      const auto& src = sources[i];
+      const std::string name = src.filename().string();
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        state_.packages_done = int(i);
+        state_.status_label = "Installing " + name + " (" + std::to_string(i + 1) + "/" +
+                              std::to_string(sources.size()) + ")...";
+        state_.fraction = float(i) / float(sources.size());
+      }
+
+      std::string msg;
+      const bool ok = import_content_package(
+          src, state_root, mods_root, msg, play_root,
+          [&](uint64_t bytes_done, uint64_t bytes_total, const std::string& cur_file) {
+            const float pkg_frac = bytes_total > 0 ? float(double(bytes_done) / double(bytes_total)) : 1.0f;
+            std::string short_f = cur_file;
+            if (const auto sl = short_f.find_last_of('/'); sl != std::string::npos) short_f = short_f.substr(sl + 1);
+            std::lock_guard<std::mutex> lk(mu_);
+            state_.fraction = std::clamp((float(i) + pkg_frac) / float(sources.size()), 0.0f, 1.0f);
+            state_.status_label = "Installing " + name + " (" + format_mb(bytes_done) + " / " +
+                                  format_mb(bytes_total) + ") \xC2\xB7 " + short_f;
+          },
+          &cancel_);
+      last_msg = msg;
+      if (ok) ++ok_count;
+      if (cancel_.load()) break;
+    }
+
+    std::lock_guard<std::mutex> lk(mu_);
+    state_.running = false;
+    state_.finished = true;
+    state_.packages_done = ok_count;
+    state_.success = (!cancel_.load() && ok_count == int(sources.size()));
+    state_.fraction = state_.success ? 1.0f : state_.fraction;
+    if (sources.size() == 1) {
+      state_.summary = last_msg;
+    } else if (cancel_.load()) {
+      state_.summary = "Cancelled after installing " + std::to_string(ok_count) + " of " +
+                       std::to_string(sources.size()) + " package(s).";
+    } else {
+      state_.summary = "Installed " + std::to_string(ok_count) + " of " + std::to_string(sources.size()) +
+                       " package(s). " + (ok_count < int(sources.size()) ? last_msg : "");
+    }
+    state_.status_label = state_.success ? "Complete" : (cancel_.load() ? "Cancelled" : "Finished with errors");
+  });
+  return true;
+}
+
+void ContentInstallRunner::cancel() { cancel_.store(true); }
+
+ContentInstallProgress ContentInstallRunner::snapshot() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return state_;
 }
 
 // ---- 6. Mod Manager (mod.toml + mod.txt compatible with Slice 13A) ---------
