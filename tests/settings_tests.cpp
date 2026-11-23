@@ -80,23 +80,27 @@ int main() {
   CHECK(has(t, {"--preset", "low"}) && has(t, {"--no-traffic"}) && has(t, {"--difficulty", "hard"}));
   CHECK(has(t, {"--no-rumble"}) && has(t, {"--controller-layout", "2"}) && has(t, {"--no-camera-effects"}));
 
-  // Rows: preset, shadows, bloom, difficulty, rubber-banding, traffic, ...
+  // Tab-scoped navigation: Display tab starts on preset, Gameplay tab holds difficulty & traffic.
   page.open();
   page.step(1);  // preset low -> high
   CHECK(page.value("preset") == "high");
-  page.move(5);  // traffic
+  page.select_tab(int(carview::SettingsPage::Tab::kGameplay));
+  CHECK(page.active_tab() == carview::SettingsPage::Tab::kGameplay);
+  page.move(2);  // difficulty -> rubber-banding -> traffic
   page.step(1);  // off -> on
   CHECK(page.value("traffic") == "on");
-  page.move(-2);  // difficulty
+  page.move(-2);  // back to difficulty
   page.step(1);   // hard -> pro
   CHECK(page.value("difficulty") == "pro");
   t = page.tokens();
   CHECK(has(t, {"--preset", "high"}) && !has(t, {"--no-traffic"}) && has(t, {"--difficulty", "pro"}));
   CHECK(has(t, {"--size", "1280x720"}) && has(t, {"--hour", "18"}) && has(t, {"--language", "FR"}));
 
-  // Rebind row capture and commit.
+  // Rebind row capture and commit (Controls tab, one before save line -> "key rewind").
   page.open();
+  page.select_tab(int(carview::SettingsPage::Tab::kControls));
   page.move(-2);  // one before save line -> last rebind row ("key rewind")
+  CHECK(page.active_tab() == carview::SettingsPage::Tab::kControls);
   CHECK(page.on_rebind_row());
   page.begin_rebind();
   CHECK(page.capturing_key());
@@ -105,12 +109,15 @@ int main() {
   CHECK(page.value("key rewind") == "Backspace");
   CHECK(page.live_settings().controls.keys.matches(drive::ControlAction::kRewind, "Backspace"));
 
-  // The save line follows the last row and wraps.
+  // The save line follows the last row of each tab and wraps within that tab.
   page.open();
+  CHECK(page.active_tab() == carview::SettingsPage::Tab::kDisplay);
   page.move(-1);
   CHECK(page.on_save_line());
+  CHECK(page.active_tab() == carview::SettingsPage::Tab::kDisplay);
   page.move(1);
   CHECK(!page.on_save_line());
+  CHECK(page.active_tab() == carview::SettingsPage::Tab::kDisplay);
   std::string title;
   std::vector<std::string> lines;
   int selected = -1;

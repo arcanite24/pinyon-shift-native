@@ -1,12 +1,14 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "audio/audio_engine.h"
 #include "drive/save.h"
 #include "fmv_player.h"
+#include "hud.h"
 #include "settings.h"
 #include "settings_page.h"
 #include "story_intro.h"
@@ -187,6 +189,129 @@ void test_pinyon_boot_switches_and_save() {
   check(!s2.intro_completed, "intro_completed=false preserved in DriveSave");
 }
 
+void test_menu_and_settings_pad_navigation() {
+  // 1. SettingsPage: Up/Down 25+ times on EVERY tab never switches tab, and every item is reachable.
+  carview::SettingsPage sp;
+  sp.load({});
+  sp.open();
+  check(sp.active_tab() == carview::SettingsPage::Tab::kDisplay, "Settings opens on Display tab");
+  check(sp.selected_in_tab() == 0, "Settings opens on row 0 of Display tab");
+
+  for (int t = 0; t < int(carview::SettingsPage::Tab::kCount); ++t) {
+    sp.select_tab(t);
+    const auto expected_tab = carview::SettingsPage::Tab(t);
+    check(sp.active_tab() == expected_tab, "select_tab activates target tab");
+    check(sp.selected_in_tab() == 0, "select_tab resets row selection to 0");
+
+    const int tab_count = sp.tab_row_count();
+    check(tab_count >= 2, "every Settings tab has at least 1 setting plus Save & Apply");
+
+    // Pressing Down 25 times (and full cycle through tab_count) never changes active_tab.
+    std::set<int> visited_down;
+    visited_down.insert(sp.selected());
+    const int steps = std::max(25, tab_count + 5);
+    for (int i = 0; i < steps; ++i) {
+      sp.move(+1);
+      check(sp.active_tab() == expected_tab, "Down never jumps to another Settings tab");
+      visited_down.insert(sp.selected());
+    }
+    check(int(visited_down.size()) == tab_count, "Down reaches every item in the current Settings tab");
+
+    // Pressing Up 25 times (and full cycle through tab_count) never changes active_tab.
+    std::set<int> visited_up;
+    visited_up.insert(sp.selected());
+    for (int i = 0; i < steps; ++i) {
+      sp.move(-1);
+      check(sp.active_tab() == expected_tab, "Up never jumps to another Settings tab");
+      visited_up.insert(sp.selected());
+    }
+    check(int(visited_up.size()) == tab_count, "Up reaches every item in the current Settings tab");
+
+    // Pressing Left/Right on every item in the tab never changes active_tab or selected row.
+    sp.select_tab(t);
+    for (int i = 0; i < tab_count; ++i) {
+      const int row_before = sp.selected();
+      sp.step(+1);
+      check(sp.active_tab() == expected_tab && sp.selected() == row_before,
+            "Right step adjusts value without changing tab or row");
+      sp.step(-1);
+      check(sp.active_tab() == expected_tab && sp.selected() == row_before,
+            "Left step adjusts value without changing tab or row");
+      sp.move(+1);
+    }
+  }
+
+  // 2. LB/RB (switch_tab) switches tabs cleanly and resets selection to row 0.
+  sp.open();
+  for (int i = 0; i < int(carview::SettingsPage::Tab::kCount) * 2; ++i) {
+    sp.move(+3);  // move away from row 0 before switching
+    const auto prev_tab = sp.active_tab();
+    sp.switch_tab(+1);
+    const int expected_next = (int(prev_tab) + 1) % int(carview::SettingsPage::Tab::kCount);
+    check(int(sp.active_tab()) == expected_next, "RB switches to next tab cleanly");
+    check(sp.selected_in_tab() == 0, "RB resets selection to row 0");
+  }
+  for (int i = 0; i < int(carview::SettingsPage::Tab::kCount) * 2; ++i) {
+    sp.move(+2);
+    const auto prev_tab = sp.active_tab();
+    sp.switch_tab(-1);
+    const int count = int(carview::SettingsPage::Tab::kCount);
+    const int expected_prev = ((int(prev_tab) - 1) % count + count) % count;
+    check(int(sp.active_tab()) == expected_prev, "LB switches to previous tab cleanly");
+    check(sp.selected_in_tab() == 0, "LB resets selection to row 0");
+  }
+
+  // 3. PauseMenu: Down 25 times and Up 25 times visit every item cleanly in Free Roam and In-Race.
+  for (bool racing : {false, true}) {
+    carview::PauseMenu pm;
+    pm.show(racing);
+    const int n = int(pm.items().size());
+    check(n > 0 && pm.selected == 0, "PauseMenu opens on item 0");
+    std::set<int> visited_down, visited_up;
+    visited_down.insert(pm.selected);
+    for (int i = 0; i < 25; ++i) {
+      pm.move(+1);
+      check(pm.selected >= 0 && pm.selected < n, "PauseMenu Down stays in valid range");
+      visited_down.insert(pm.selected);
+    }
+    check(int(visited_down.size()) == n, "PauseMenu Down reaches every item");
+    visited_up.insert(pm.selected);
+    for (int i = 0; i < 25; ++i) {
+      pm.move(-1);
+      check(pm.selected >= 0 && pm.selected < n, "PauseMenu Up stays in valid range");
+      visited_up.insert(pm.selected);
+    }
+    check(int(visited_up.size()) == n, "PauseMenu Up reaches every item");
+  }
+
+  // 4. MenuStickNav: deadzone, no diagonal bleed, no double-fire, clean repeat, latch on open.
+  {
+    carview::MenuStickNav nav;
+    // Inside deadzone -> kNone.
+    check(nav.update(0.20, 0.30, 0.0) == carview::MenuStickNav::Dir::kNone, "stick inside deadzone produces kNone");
+    // Ambiguous 45-deg diagonal -> kNone.
+    check(nav.update(0.70, 0.70, 0.05) == carview::MenuStickNav::Dir::kNone, "45-deg diagonal does not misfire");
+    // Clean Down tilt fires once immediately.
+    check(nav.update(0.15, 0.85, 0.10) == carview::MenuStickNav::Dir::kDown, "clean Down tilt fires kDown");
+    // Next frames before initial_delay_s do NOT double-fire, even if horizontal axis drifts!
+    check(nav.update(0.65, 0.75, 0.12) == carview::MenuStickNav::Dir::kNone,
+          "Down hold with horizontal drift does not double-fire or leak into Right");
+    check(nav.update(0.75, 0.50, 0.30) == carview::MenuStickNav::Dir::kNone,
+          "Down hold stays locked vertically before initial delay");
+    // After initial delay (0.10 + 0.38 = 0.48), repeats kDown (not kRight!).
+    check(nav.update(0.75, 0.50, 0.50) == carview::MenuStickNav::Dir::kDown,
+          "Down hold repeats kDown after initial delay without leaking horizontally");
+    // Return to neutral clears hold; immediate re-tilt fires without waiting.
+    check(nav.update(0.0, 0.10, 0.52) == carview::MenuStickNav::Dir::kNone, "neutral release produces kNone");
+    check(nav.update(0.0, 0.80, 0.54) == carview::MenuStickNav::Dir::kDown, "fresh Down tap fires immediately");
+    // Latch on menu open ignores already-tilted stick until neutral.
+    nav.latch_until_neutral();
+    check(nav.update(-0.95, 0.0, 1.00) == carview::MenuStickNav::Dir::kNone, "latched stick ignores pre-held steering");
+    check(nav.update(0.0, 0.0, 1.05) == carview::MenuStickNav::Dir::kNone, "neutral clears latch");
+    check(nav.update(-0.90, 0.0, 1.07) == carview::MenuStickNav::Dir::kLeft, "Left fires after latch cleared");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -195,6 +320,7 @@ int main() {
   test_fmv_real_wmv_if_available();
   test_story_intro_state_machine();
   test_pinyon_boot_switches_and_save();
+  test_menu_and_settings_pad_navigation();
   if (g_failures > 0) {
     std::fprintf(stderr, "fmv_story_tests: %d failure(s)\n", g_failures);
     return 1;
