@@ -323,7 +323,7 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   const float top_y = y0 + 50.0f * d;
 
   // 1. Hero Card: Game status, profile, car, and 1-click Play button
-  const float hero_h = 136.0f * d;
+  const float hero_h = 124.0f * d;
   draw_card(l, x0, top_y, x1, top_y + hero_h, d);
 
   const bool ready = st.play_cfg.baked_car_count > 0;
@@ -362,11 +362,11 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
               {.primary = true});
 
   // 2. Display & Performance Card
-  const float cfg_y = top_y + hero_h + 16.0f * d;
-  const float cfg_h = 212.0f * d;
+  const float cfg_y = top_y + hero_h + 14.0f * d;
+  const float cfg_h = 240.0f * d;
   draw_card(l, x0, cfg_y, x1, cfg_y + cfg_h, d);
 
-  draw_text(l, x0 + 24.0f * d, cfg_y + 18.0f * d, "Graphics & Display", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_text(l, x0 + 24.0f * d, cfg_y + 16.0f * d, "Graphics & Display", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
 
   const float lbl_w = 104.0f * d;
   const float right_btn_w = 156.0f * d;
@@ -374,8 +374,8 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   const float seg_x1 = x1 - 24.0f * d - right_btn_w - 12.0f * d;
 
   // Row 1: Graphics Preset
-  const float r1_y = cfg_y + 50.0f * d;
-  const float row_h = 34.0f * d;
+  const float r1_y = cfg_y + 44.0f * d;
+  const float row_h = 32.0f * d;
   draw_text(l, x0 + 24.0f * d, text_y_center(r1_y, r1_y + row_h, 13.0f * d), "Preset", FontFace::kRegular,
             13.0f * d, kTextSecondary);
   static constexpr const char* kPresetLabels[5] = {"High", "Low-Spec", "Smooth 60", "Quality 30", "Low Power"};
@@ -386,7 +386,7 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
               "Use Recommended", d);
 
   // Row 2: Resolution & Window mode
-  const float r2_y = r1_y + row_h + 12.0f * d;
+  const float r2_y = r1_y + row_h + 10.0f * d;
   draw_text(l, x0 + 24.0f * d, text_y_center(r2_y, r2_y + row_h, 13.0f * d), "Resolution", FontFace::kRegular,
             13.0f * d, kTextSecondary);
   const char* res_labels[5] = {kResolutionPresets[0].label, kResolutionPresets[1].label, kResolutionPresets[2].label,
@@ -398,9 +398,25 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
               st.launch_fullscreen ? "Mode: Fullscreen" : "Mode: Windowed", d,
               {.selected = st.launch_fullscreen});
 
+  // Row 3: Graphics Backend (Auto / Vulkan / DirectX 12 on Windows; Auto / Metal 3 / Vulkan on macOS)
+  const float r3_y = r2_y + row_h + 10.0f * d;
+  draw_text(l, x0 + 24.0f * d, text_y_center(r3_y, r3_y + row_h, 13.0f * d), "Backend", FontFace::kRegular,
+            13.0f * d, kTextSecondary);
+  const auto backends = available_backend_choices();
+  const char* be_labels[4] = {};
+  static constexpr const char* kBeIds[4] = {"backend:0", "backend:1", "backend:2", "backend:3"};
+  const int be_count = std::min(int(backends.size()), 4);
+  for (int bi = 0; bi < be_count; ++bi) be_labels[bi] = backends[size_t(bi)].label;
+  draw_segmented(l, hits, st, seg_x0, r3_y, seg_x1, r3_y + row_h, be_labels, kBeIds, be_count,
+                 std::clamp(st.selected_backend, 0, std::max(0, be_count - 1)), d);
+  draw_text(l, seg_x1 + 12.0f * d, text_y_center(r3_y, r3_y + row_h, 12.0f * d),
+            be_count > 0 ? (std::string("RHI: ") + backends[size_t(std::clamp(st.selected_backend, 0, be_count - 1))].label)
+                         : "RHI: Auto",
+            FontFace::kMono, 12.0f * d, kTextMuted, ui::Align::kLeft, right_btn_w);
+
   // Hardware 1-line summary bar
-  const float hw_y = r2_y + row_h + 18.0f * d;
-  const float hw_h = 44.0f * d;
+  const float hw_y = r3_y + row_h + 14.0f * d;
+  const float hw_h = 38.0f * d;
   draw_inset_box(l, x0 + 24.0f * d, hw_y, x1 - 24.0f * d, hw_y + hw_h, d,
                  st.hw_rec.warning.empty() ? kBorderSubtle : kAmber);
   const std::string hw_line = describe_hardware(st.hw_info);

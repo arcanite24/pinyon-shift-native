@@ -70,6 +70,7 @@ bool DriveWorldHost::open_world_and_car() {
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options = build_car_options();
     Renderer::Options render_options{app.window, app.validation, app.msaa};
+    render_options.requested_backend = shift::rhi::parse_backend_kind(app.graphics_backend);
     render_options.reverse_z = app.reverse_z;
     render_options.backface_cull = app.backface_cull;
     render_options.z_prepass = app.z_prepass;

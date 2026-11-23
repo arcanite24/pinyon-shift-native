@@ -343,7 +343,7 @@ add_executable(photo_mode_tests photo_mode_tests.cpp ../apps/carview/photo_mode.
                ../apps/carview/ui4_chrome.cpp ../apps/carview/settings_page.cpp
                ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(photo_mode_tests PRIVATE ../apps/carview)
-target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk)
+target_link_libraries(photo_mode_tests PRIVATE shift_drive shift_stb fh1data shift_volk shift_rhi)
 add_test(NAME photo_mode_tests COMMAND photo_mode_tests)
 
 add_executable(replay_tests replay_tests.cpp ../apps/carview/replay_view.cpp ../apps/carview/ui.cpp

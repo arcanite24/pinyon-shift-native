@@ -168,6 +168,16 @@ HardwareRecommendation recommend_preset(const HardwareInfo& info);
 std::string describe_hardware(const HardwareInfo& info);
 std::string vendor_driver_url(uint32_t vendor_id);
 
+struct BackendChoice {
+  const char* id;     // "auto", "vulkan", "dx12", "metal"
+  const char* label;  // "Auto", "Vulkan", "DirectX 12", "Metal 3"
+};
+std::vector<BackendChoice> available_backend_choices(const std::string& os_override = {});
+std::string load_graphics_backend_setting(const std::filesystem::path& settings_file);
+bool save_graphics_backend_setting(const std::filesystem::path& settings_file,
+                                   std::string_view backend_id,
+                                   std::string* error = nullptr);
+
 // ---- 4. Add to Steam Shortcut Generator (Binary VDF) -----------------------
 
 struct SteamShortcutEntry {

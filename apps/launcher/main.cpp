@@ -88,6 +88,17 @@ void refresh_all(launcher::LauncherUiState& st) {
   st.save_iso = launcher::evaluate_save_isolation(st.mods);
   if (st.selected_mod >= int(st.mods.size())) st.selected_mod = std::max(0, int(st.mods.size()) - 1);
   st.wheel_cfg = launcher::load_wheel_settings(st.paths.settings_file);
+  {
+    const std::string be = launcher::load_graphics_backend_setting(st.paths.settings_file);
+    const auto choices = launcher::available_backend_choices();
+    st.selected_backend = 0;
+    for (int i = 0; i < int(choices.size()); ++i) {
+      if (be == choices[size_t(i)].id) {
+        st.selected_backend = i;
+        break;
+      }
+    }
+  }
   const auto ips = launcher::discover_local_lan_ips();
   if (!ips.empty()) st.sync_lan_ip = ips.front();
   st.sync_manifest = launcher::build_wifi_sync_manifest(
@@ -110,6 +121,15 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
     cmd += " --width " + std::to_string(res.width) + " --height " + std::to_string(res.height);
   }
   if (st.launch_fullscreen) cmd += " --fullscreen";
+  {
+    const auto backends = launcher::available_backend_choices();
+    if (!backends.empty()) {
+      const auto& choice = backends[size_t(std::clamp(st.selected_backend, 0, int(backends.size()) - 1))];
+      if (std::strcmp(choice.id, "auto") != 0) {
+        cmd += std::string(" --backend ") + choice.id;
+      }
+    }
+  }
   if (!st.launch_car.empty()) cmd += " --car " + st.launch_car;
   if (!st.extra_args.empty()) cmd += " " + st.extra_args;
 #ifdef _WIN32
@@ -328,6 +348,14 @@ int main(int argc, char** argv) {
       state.selected_preset = std::clamp(std::atoi(id.c_str() + 7), 0, 4);
     } else if (id.rfind("res:", 0) == 0) {
       state.selected_resolution = std::clamp(std::atoi(id.c_str() + 4), 0, 4);
+    } else if (id.rfind("backend:", 0) == 0) {
+      const auto backends = launcher::available_backend_choices();
+      if (!backends.empty()) {
+        state.selected_backend = std::clamp(std::atoi(id.c_str() + 8), 0, int(backends.size()) - 1);
+        const auto& choice = backends[size_t(state.selected_backend)];
+        launcher::save_graphics_backend_setting(state.paths.settings_file, choice.id);
+        state.banner_notice = std::string("Graphics backend set to ") + choice.label + ".";
+      }
     } else if (id == "act:fullscreen") {
       state.launch_fullscreen = !state.launch_fullscreen;
     } else if (id == "act:play") {

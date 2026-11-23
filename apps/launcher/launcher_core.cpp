@@ -2486,4 +2486,83 @@ UpdateCheckResult check_github_updates(std::string_view current_version, std::st
   return res;
 }
 
+std::vector<BackendChoice> available_backend_choices(const std::string& os_override) {
+  std::string os = lower_ascii(os_override);
+  if (os.empty()) {
+#if defined(_WIN32)
+    os = "windows";
+#elif defined(__APPLE__)
+    os = "macos";
+#else
+    os = "linux";
+#endif
+  }
+  if (os == "windows") {
+    return {{"auto", "Auto"}, {"vulkan", "Vulkan"}, {"dx12", "DirectX 12"}};
+  }
+  if (os == "macos") {
+    return {{"auto", "Auto"}, {"metal", "Metal 3"}, {"vulkan", "Vulkan"}};
+  }
+  return {{"auto", "Auto"}, {"vulkan", "Vulkan"}};
+}
+
+std::string load_graphics_backend_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return "auto";
+  std::string found = "auto";
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    const std::string key = lower_ascii(line.substr(0, sp));
+    if (key != "graphics_backend" && key != "backend") continue;
+    const std::string val = lower_ascii(trim(line.substr(sp + 1)));
+    if (val == "vulkan" || val == "vk") found = "vulkan";
+    else if (val == "dx12" || val == "d3d12" || val == "directx12") found = "dx12";
+    else if (val == "metal" || val == "mtl") found = "metal";
+    else found = "auto";
+  }
+  return found;
+}
+
+bool save_graphics_backend_setting(const std::filesystem::path& settings_file,
+                                   std::string_view backend_id,
+                                   std::string* error) {
+  std::string val = lower_ascii(trim(backend_id));
+  if (val == "vk") val = "vulkan";
+  else if (val == "d3d12" || val == "directx12") val = "dx12";
+  else if (val == "mtl") val = "metal";
+  else if (val != "vulkan" && val != "dx12" && val != "metal") val = "auto";
+
+  std::vector<std::string> lines;
+  if (std::ifstream in(settings_file); in) {
+    for (std::string line; std::getline(in, line);) {
+      std::string t = trim(line);
+      if (t.rfind("--", 0) == 0) t = t.substr(2);
+      const size_t sp = t.find(' ');
+      const std::string key = lower_ascii(sp == std::string::npos ? t : t.substr(0, sp));
+      if (key == "graphics_backend" || key == "backend") continue;
+      lines.push_back(line);
+    }
+  }
+  if (val != "auto") {
+    lines.push_back("graphics_backend " + val);
+  }
+  std::error_code ec;
+  if (settings_file.has_parent_path()) std::filesystem::create_directories(settings_file.parent_path(), ec);
+  std::ofstream out(settings_file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    if (error) *error = "Cannot write " + settings_file.string();
+    return false;
+  }
+  if (lines.empty()) {
+    out << "# shift-engine settings\n";
+  } else {
+    for (const auto& l : lines) out << l << "\n";
+  }
+  return bool(out);
+}
+
 }  // namespace launcher

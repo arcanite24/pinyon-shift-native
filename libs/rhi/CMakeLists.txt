@@ -43,6 +43,7 @@ target_include_directories(shift_rhi PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include
 if(SHIFT_RHI_USE_VK)
   target_link_libraries(shift_rhi PRIVATE shift_volk shift_vma)
   target_compile_definitions(shift_rhi PRIVATE SHIFT_RHI_VULKAN=1)
+  target_compile_definitions(shift_rhi PUBLIC SHIFT_RHI_PROVIDES_VMA=1)
   if(SHIFT_ENABLE_RAY_TRACING)
     target_compile_definitions(shift_rhi PRIVATE SHIFT_ENABLE_RAY_TRACING=1)
   endif()

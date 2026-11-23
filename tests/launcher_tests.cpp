@@ -463,6 +463,30 @@ void test_preset_mapping_and_cores() {
               hw.logical_threads);
 }
 
+void test_graphics_backend_selector() {
+  const auto win = launcher::available_backend_choices("windows");
+  assert(win.size() == 3);
+  assert(std::string(win[0].id) == "auto" && std::string(win[1].id) == "vulkan" && std::string(win[2].id) == "dx12");
+  const auto mac = launcher::available_backend_choices("macos");
+  assert(mac.size() == 3);
+  assert(std::string(mac[0].id) == "auto" && std::string(mac[1].id) == "metal" && std::string(mac[2].id) == "vulkan");
+  const auto lin = launcher::available_backend_choices("linux");
+  assert(lin.size() == 2);
+  assert(std::string(lin[0].id) == "auto" && std::string(lin[1].id) == "vulkan");
+
+  const auto root = make_temp_dir("shift_launcher_backend_test");
+  const auto sf = root / "settings.txt";
+  assert(launcher::load_graphics_backend_setting(sf) == "auto");
+  assert(launcher::save_graphics_backend_setting(sf, "dx12"));
+  assert(launcher::load_graphics_backend_setting(sf) == "dx12");
+  assert(launcher::save_graphics_backend_setting(sf, "metal"));
+  assert(launcher::load_graphics_backend_setting(sf) == "metal");
+  assert(launcher::save_graphics_backend_setting(sf, "auto"));
+  assert(launcher::load_graphics_backend_setting(sf) == "auto");
+  std::filesystem::remove_all(root);
+  std::printf("  [ok] graphics backend selector (Windows/macOS/Linux + settings.txt round-trip)\n");
+}
+
 }  // namespace
 
 int main() {
@@ -472,6 +496,7 @@ int main() {
   test_disc_verifier();
   test_hardware_advisor();
   test_preset_mapping_and_cores();
+  test_graphics_backend_selector();
   test_steam_vdf();
   test_mods_and_dlc();
   test_radio_wheel_updater();

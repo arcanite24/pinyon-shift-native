@@ -54,6 +54,7 @@ struct LiveSettings {
   std::optional<std::array<double, 3>> trainer_saved_road;
   drive::FestivalPacingConfig festival_pacing;
   bool hidden_cars = false;
+  std::string graphics_backend = "auto";
   modern::GraphicsSettings graphics;
 };
 

@@ -199,6 +199,9 @@ constexpr Kept kKept[] = {
     {"rt-spp", true, "rt-spp"},
     {"rt-denoise", false, "rt-denoise"},
     {"no-rt-denoise", false, "rt-denoise"},
+    // Multi-backend RHI selection (auto|vulkan|metal|dx12).
+    {"graphics_backend", true, "graphics_backend"},
+    {"backend", true, "graphics_backend"},
 };
 
 const Kept* kept(const std::string& key) {
@@ -294,7 +297,7 @@ bool write_settings(const std::filesystem::path& file, const std::vector<std::st
     if (args[i].rfind("--", 0) != 0) continue;
     const Kept* k = kept(args[i].substr(2));
     if (!k) continue;
-    std::string l = k->key;
+    std::string l = (std::string(k->group) == "graphics_backend") ? std::string("graphics_backend") : std::string(k->key);
     if (k->value) {
       if (i + 1 >= args.size()) break;
       l += " " + args[++i];

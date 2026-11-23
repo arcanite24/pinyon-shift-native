@@ -19,6 +19,7 @@ VK_DEFINE_HANDLE(VmaAllocator);
 VK_DEFINE_HANDLE(VmaAllocation);
 
 #include "render_modern.h"
+#include "rhi/rhi_types.h"
 #include "frame_inspector.h"
 #include "upscaler.h"
 #include "ui.h"
@@ -162,6 +163,8 @@ class Renderer {
     std::filesystem::path pipeline_cache_path;
     // UI atlas side in pixels (default 4096; 2048 on low-memory presets saves 48 MiB VRAM).
     uint32_t ui_atlas_size = kUiAtlas;
+    // Requested RHI graphics backend (Auto, Vulkan, Metal, D3D12).
+    shift::rhi::BackendKind requested_backend = shift::rhi::BackendKind::Auto;
   };
 
   Renderer() = default;
@@ -288,6 +291,12 @@ class Renderer {
   // Modern graphics pipeline controls (render scale, SSAO, FXAA, VRS, HDR10/scRGB, HUD layout).
   void set_graphics_settings(const modern::GraphicsSettings& g);
   const modern::GraphicsSettings& graphics_settings() const { return graphics_; }
+
+  // Multi-backend RHI startup diagnostic info (for F3 overlay & logs).
+  shift::rhi::BackendKind requested_backend() const { return requested_backend_; }
+  shift::rhi::BackendKind probed_rhi_backend() const { return probed_rhi_backend_; }
+  const std::string& active_backend_label() const { return active_backend_label_; }
+  const std::string& probed_rhi_device_name() const { return probed_rhi_device_name_; }
   void set_camera_projection(float near_plane, float far_plane, float proj00, float proj11);
   void set_camera_vp(const float vp[16], float jitter_uv_x = 0.0f, float jitter_uv_y = 0.0f);
   // Phase B Volumetric Sun Shafts / Aerial Perspective / Night Headlight Cones UBO state.
@@ -493,6 +502,10 @@ class Renderer {
   bool stage_overlay(VkFormat final_format = VK_FORMAT_UNDEFINED);
 
   Options options_;
+  shift::rhi::BackendKind requested_backend_ = shift::rhi::BackendKind::Auto;
+  shift::rhi::BackendKind probed_rhi_backend_ = shift::rhi::BackendKind::Vulkan;
+  std::string active_backend_label_ = "Vulkan 1.3";
+  std::string probed_rhi_device_name_;
   std::string device_name_;
   uint32_t device_vendor_id_ = 0;
   DeviceInfo device_info_;

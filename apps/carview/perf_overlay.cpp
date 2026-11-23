@@ -187,7 +187,14 @@ std::vector<std::string> perf_overlay_lines(const PerfInfo& p) {
     if (!p.frame_generation.empty() && p.frame_generation != "OFF") line += "  FG " + p.frame_generation;
     out.push_back(line);
   }
-  if (!p.device.empty()) out.push_back(p.device);
+  if (!p.backend.empty() || !p.device.empty()) {
+    std::string dev_line = p.backend;
+    if (!p.device.empty()) {
+      if (!dev_line.empty()) dev_line += "  |  ";
+      dev_line += p.device;
+    }
+    out.push_back(dev_line);
+  }
   if (!p.build.empty()) out.push_back(p.build);
   return out;
 }
@@ -206,7 +213,7 @@ std::array<float, 4> perf_overlay_rect(const PerfInfo& info, float width, float 
   if (info.vram_budget > 0 || info.vram_used > 0 || info.rss_mib > 0.5) ++main_rows;
   if (info.resident_cells || info.resident_draws) ++main_rows;
   ++main_rows;  // VSync/HDR/Upscaler
-  if (!info.device.empty() || !info.build.empty()) ++main_rows;
+  if (!info.backend.empty() || !info.device.empty() || !info.build.empty()) ++main_rows;
 
   const float panel_w = std::min(392.0f * k, std::max(240.0f * k, width * 0.36f));
   const float panel_h =
@@ -359,9 +366,13 @@ void build_perf_overlay(ui::List& list, const PerfInfo& info, float width, float
     y += row_h;
   }
 
-  // Footer: GPU Device + Real Build Version
-  if (!info.device.empty() || !info.build.empty()) {
-    std::string foot = info.device;
+  // Footer: Active Backend + GPU Device + Real Build Version
+  if (!info.backend.empty() || !info.device.empty() || !info.build.empty()) {
+    std::string foot = info.backend;
+    if (!info.device.empty()) {
+      if (!foot.empty()) foot += "  |  ";
+      foot += info.device;
+    }
     if (!info.build.empty()) {
       if (!foot.empty()) foot += "  |  ";
       foot += info.build;

@@ -38,6 +38,7 @@
 #include <stb_image_write.h>
 
 #include "car_model.h"
+#include "drive_cli.h"
 #include "fh1data/archive.h"
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
@@ -318,6 +319,12 @@ static int carview_main(int argc, char** argv) {
   if (argc == 1) {
     SDL_SetMainReady();
     return carview::run_drive(argc, argv);
+  }
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--list-backends") == 0) {
+      carview::print_rhi_backends();
+      return 0;
+    }
   }
   if (argc >= 5 && std::strcmp(argv[1], "--xds-png") == 0) return xds_png(argc, argv);
   if (argc >= 4 && std::strcmp(argv[1], "--ui-scene") == 0) return ui_scene_dump(argc, argv);

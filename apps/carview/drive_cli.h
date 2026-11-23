@@ -127,6 +127,8 @@ struct DriveConfig {
   std::filesystem::path demo_upgrade_shop_png;
   TouchControls touch_controls;
   std::string android_gpu_driver = "auto";
+  std::string graphics_backend = "auto";
+  bool list_backends = false;
   bool save_settings = false;
   bool no_title = false;
   bool skip_intro_movies = false;
@@ -149,6 +151,7 @@ struct DriveConfig {
 };
 
 void drive_usage();
+void print_rhi_backends();
 
 // Handles `--menu-png` headless UI audit image dumps. Returns exit status (0 ok, 1 error).
 int run_headless_menu_dumps(const DriveConfig& cfg, UiFontCache& font_cache);

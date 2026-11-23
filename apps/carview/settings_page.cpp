@@ -1,6 +1,7 @@
 #include "settings_page.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 
 namespace carview {
@@ -266,6 +267,11 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"4 spp", {"--rt-spp", "4"}},
         {"8 spp", {"--rt-spp", "8"}}}},
       {"rt denoiser", {{"on (svgf)", {}}, {"off", {"--no-rt-denoise"}}}},
+      {"graphics backend",
+       {{"auto", {}},
+        {"vulkan 1.3", {"--backend", "vulkan"}},
+        {"directx 12", {"--backend", "dx12"}},
+        {"metal 3", {"--backend", "metal"}}}},
       {"colour lut", {{"none", {}}}},
       {"lut strength",
        {{"100%", {}},
@@ -475,6 +481,22 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
       ++i;
       continue;
     }
+    if ((t == "--backend" || t == "--graphics_backend") && has_value) {
+      std::string v = tokens[i + 1];
+      for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      size_t pick = 0;
+      if (v == "vulkan" || v == "vk") pick = 1;
+      else if (v == "dx12" || v == "d3d12" || v == "directx12" || v == "direct3d12") pick = 2;
+      else if (v == "metal" || v == "mtl") pick = 3;
+      for (Row& r : rows_) {
+        if (std::string(r.name) == "graphics backend" && pick < r.choices.size()) {
+          r.pick = pick;
+          break;
+        }
+      }
+      ++i;
+      continue;
+    }
     if (t == "--scene-540p") {
       seen_540p = true;
       for (Row& r : rows_) {
@@ -552,7 +574,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--lut-strength" || t == "--texture-cap" || t == "--vsync" || t == "--fps-cap" ||
                       t == "--output" || t == "--sharpening" || t == "--frame-gen" || t == "--hdr-paper-white" ||
                       t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone" ||
-                      t == "--rt" || t == "--rt-bounces" || t == "--rt-spp" || t == "--units");
+                      t == "--rt" || t == "--rt-bounces" || t == "--rt-spp" || t == "--units" ||
+                      t == "--backend" || t == "--graphics_backend");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -583,6 +606,7 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "ambient occlusion" || name == "contact shadows" || name == "tonemapper" ||
       name == "terrain hex-tiling" || name == "velocity motion blur" ||
       name == "ray tracing" || name == "rt bounces" || name == "rt samples" || name == "rt denoiser" ||
+      name == "graphics backend" ||
       name == "colour lut" || name == "lut strength" || name == "vrs shading" ||
       name == "texture size" || name == "vsync" || name == "frame rate" || name == "frame gen" ||
       name == "hdr" || name == "windows auto-hdr" || name == "hdr paper white" || name == "hdr highlights" ||
@@ -825,6 +849,10 @@ LiveSettings SettingsPage::live_settings() const {
   ls.festival_pacing.price_multiplier = num_or("pacing prices", 0.5);
   ls.festival_pacing.reward_multiplier = num_or("pacing rewards", 2.0);
   ls.hidden_cars = pick_label("hidden cars (autoshow)") != "off";
+  {
+    const std::string gb = pick_val("graphics backend");
+    ls.graphics_backend = gb.empty() ? "auto" : gb;
+  }
   // Apply fine-grained overrides written by Camera Editor / Trainer overlays in settings.txt.
   {
     const std::vector<std::string> toks = tokens();

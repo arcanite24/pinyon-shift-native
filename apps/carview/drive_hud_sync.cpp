@@ -867,6 +867,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                                                                        : "FIFO";
             pinfo.upscaler = up.label;
             pinfo.frame_generation = carview::modern::frame_gen_name(fg);
+            pinfo.backend = host.renderer.active_backend_label();
             pinfo.device = host.renderer.device_name();
             pinfo.build = std::string("shift-engine ") + SHIFT_GIT_COMMIT + " (" + SHIFT_BUILD_CONFIG + ")";
             carview::build_perf_overlay(target_list, pinfo, float(width), float(height), 1.0f);

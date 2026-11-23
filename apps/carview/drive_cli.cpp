@@ -15,6 +15,7 @@
 #include "game_hud.h"
 #include "hud.h"
 #include "platform_support.h"
+#include "rhi/rhi.h"
 #include "settings.h"
 #include "ui.h"
 
@@ -51,8 +52,40 @@ void drive_usage() {
                "           --bench-json file.json --bench-csv file.csv --bench-full-fx --bench-audio --bench-warmup sec\n"
                "           --menu-png file.png --map-png prefix (the pause map and the minimap at the end)\n"
                "  ray tracing: --rt off|hybrid|pt|photo-pt --rt-bounces 1..4 --rt-spp 1..16 --rt-denoise|--no-rt-denoise\n"
+               "  graphics api: --backend auto|vulkan|metal|dx12 --list-backends\n"
                "  other modes: carview --bake <dir> --car <media> (showroom), carview --game-root <dir> (disc viewer),\n"
                "           carview --world ... (world viewer), carview --xds-png ...\n");
+}
+
+void print_rhi_backends() {
+  auto display_name = [](shift::rhi::BackendKind k) -> const char* {
+    switch (k) {
+      case shift::rhi::BackendKind::Vulkan: return "Vulkan 1.3";
+      case shift::rhi::BackendKind::Metal: return "Metal 3";
+      case shift::rhi::BackendKind::D3D12: return "DirectX 12";
+      case shift::rhi::BackendKind::Auto: return "Auto";
+    }
+    return "Auto";
+  };
+
+  std::string compiled;
+  for (shift::rhi::BackendKind k :
+       {shift::rhi::BackendKind::Vulkan, shift::rhi::BackendKind::Metal, shift::rhi::BackendKind::D3D12}) {
+    if (shift::rhi::is_backend_compiled(k)) {
+      if (!compiled.empty()) compiled += ", ";
+      compiled += display_name(k);
+    }
+  }
+  std::printf("RHI backends compiled: %s\n", compiled.empty() ? "(none)" : compiled.c_str());
+
+  const auto adapters = shift::rhi::enumerate_adapters(shift::rhi::BackendKind::Auto);
+  std::printf("Available RHI adapters (%zu):\n", adapters.size());
+  for (const auto& a : adapters) {
+    const char* kind = a.is_discrete ? "discrete" : (a.is_integrated ? "integrated" : (a.is_software ? "software" : "other"));
+    const double vram_gib = double(a.device_local_bytes) / (1024.0 * 1024.0 * 1024.0);
+    std::printf("  [%s] %s (%s, VRAM %.1f GiB, RT=%s)\n",
+                display_name(a.backend), a.name.c_str(), kind, vram_gib, a.supports_ray_query ? "yes" : "no");
+  }
 }
 
 bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
@@ -61,7 +94,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     bool window = true, use_settings = true;
     for (int i = 1; i < argc; ++i) {
       const std::string a = argv[i];
-      if (a == "--headless" || a == "--bench" || a == "--bench-scenario" || a == "--menu-png" || a == "--help" || a == "-h") window = false;
+      if (a == "--headless" || a == "--bench" || a == "--bench-scenario" || a == "--menu-png" || a == "--help" || a == "-h" || a == "--list-backends") window = false;
       if (a == "--no-settings") use_settings = false;
     }
     if ((window || std::getenv("SHIFT_SETTINGS")) && use_settings) {
@@ -168,6 +201,22 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     else if (a == "--android-gpu-driver") {
       android_gpu_driver = next();
+    }
+    else if (a == "--backend" || a == "--graphics_backend") {
+      const std::string raw = next();
+      shift::rhi::BackendKind parsed = shift::rhi::BackendKind::Auto;
+      if (!shift::rhi::try_parse_backend_kind(raw, parsed)) {
+        std::fprintf(stderr, "carview: --backend takes auto, vulkan, metal or dx12 (got '%s')\n", raw.c_str());
+        exit_code = 2;
+        return false;
+      }
+      graphics_backend = (parsed == shift::rhi::BackendKind::D3D12) ? "dx12" : shift::rhi::backend_kind_name(parsed);
+    }
+    else if (a == "--list-backends") {
+      list_backends = true;
+      print_rhi_backends();
+      exit_code = 0;
+      return false;
     }
     else if (a == "--no-post") post_on = false;
     else if (a == "--shadows") {

@@ -1,4 +1,6 @@
+#if !defined(SHIFT_RHI_PROVIDES_VMA)
 #define VMA_IMPLEMENTATION
+#endif
 #include "renderer_internal.h"
 
 #include <algorithm>
@@ -17,8 +19,23 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include "platform_support.h"
+#include "rhi/rhi.h"
 
 namespace carview {
+
+namespace {
+
+const char* backend_display_name(shift::rhi::BackendKind k) {
+  switch (k) {
+    case shift::rhi::BackendKind::Vulkan: return "Vulkan 1.3";
+    case shift::rhi::BackendKind::Metal: return "Metal 3";
+    case shift::rhi::BackendKind::D3D12: return "DirectX 12";
+    case shift::rhi::BackendKind::Auto: return "Auto";
+  }
+  return "Vulkan 1.3";
+}
+
+}  // namespace
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                               VkDebugUtilsMessageTypeFlagsEXT,
@@ -124,6 +141,54 @@ bool Renderer::init(const Options& options, std::string& error) {
              : std::string(e) == "mailbox" ? modern::VSync::kMailbox : modern::VSync::kFifo;
   if (const char* e = std::getenv("SHIFT_FRAMES_IN_FLIGHT"); e && *e)
     frames_in_flight_ = std::clamp<uint32_t>(uint32_t(std::atoi(e)), 1, kFramesInFlight);
+
+  // Resolve requested RHI backend (CLI / settings / SHIFT_BACKEND env) and probe native
+  // RHI device availability for startup diagnostics with clean Vulkan 1.3 frame-graph fallback.
+  requested_backend_ = options.requested_backend;
+  if (requested_backend_ == shift::rhi::BackendKind::Auto) {
+    if (const char* env_be = std::getenv("SHIFT_BACKEND"); env_be && *env_be) {
+      requested_backend_ = shift::rhi::parse_backend_kind(env_be, shift::rhi::BackendKind::Auto);
+    }
+  }
+  probed_rhi_backend_ = shift::rhi::BackendKind::Vulkan;
+  probed_rhi_device_name_.clear();
+  active_backend_label_ = "Vulkan 1.3";
+  {
+    const auto order = shift::rhi::resolve_backend_order(requested_backend_);
+    const shift::rhi::BackendKind target_probe =
+        (requested_backend_ != shift::rhi::BackendKind::Auto)
+            ? requested_backend_
+            : (!order.empty() ? order.front() : shift::rhi::BackendKind::Vulkan);
+    if (target_probe == shift::rhi::BackendKind::D3D12 || target_probe == shift::rhi::BackendKind::Metal) {
+      const auto adapters = shift::rhi::enumerate_adapters(target_probe);
+      std::string probe_err;
+      shift::rhi::DeviceDesc probe_desc{};
+      probe_desc.backend = target_probe;
+      probe_desc.enable_validation = false;
+      probe_desc.enable_ray_tracing = true;
+      probe_desc.enable_bindless = true;
+      probe_desc.app_name = "carview";
+      if (auto rhi_dev = shift::rhi::create_device(probe_desc, probe_err)) {
+        probed_rhi_backend_ = rhi_dev->backend();
+        probed_rhi_device_name_ = rhi_dev->caps().device_name;
+        const bool rt_ok = rhi_dev->caps().ray_query;
+        const bool bl_ok = rhi_dev->caps().bindless;
+        if (requested_backend_ == shift::rhi::BackendKind::D3D12 ||
+            requested_backend_ == shift::rhi::BackendKind::Metal) {
+          active_backend_label_ = std::string(backend_display_name(probed_rhi_backend_)) + " (RHI) / Vulkan 1.3";
+        } else {
+          active_backend_label_ = std::string("Vulkan 1.3 (") + backend_display_name(probed_rhi_backend_) + " ready)";
+        }
+        std::fprintf(stderr, "[rhi] probed %s on %s (%zu adapter(s), RT=%s, bindless=%s); active frame graph: Vulkan 1.3\n",
+                     backend_display_name(probed_rhi_backend_), probed_rhi_device_name_.c_str(), adapters.size(),
+                     rt_ok ? "yes" : "no", bl_ok ? "yes" : "no");
+      } else if (requested_backend_ != shift::rhi::BackendKind::Auto) {
+        std::fprintf(stderr, "[rhi] requested %s unavailable (%s); falling back to Vulkan 1.3\n",
+                     backend_display_name(requested_backend_), probe_err.c_str());
+      }
+    }
+  }
+
   render_thread_ = std::this_thread::get_id();
   bool volk_ok = false;
 #if defined(__ANDROID__)

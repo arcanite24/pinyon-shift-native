@@ -261,6 +261,37 @@ int main() {
     CHECK(units_imp.selected() == tab_rows.back().flat_index);
   }
 
+  // Multi-backend RHI Display setting (--backend / --graphics_backend).
+  {
+    carview::SettingsPage be_def;
+    be_def.load({});
+    CHECK(be_def.value("graphics backend") == "auto");
+    CHECK(be_def.live_settings().graphics_backend == "auto");
+
+    carview::SettingsPage be_dx12;
+    be_dx12.load({"--backend", "dx12"});
+    CHECK(be_dx12.value("graphics backend") == "directx 12");
+    CHECK(be_dx12.live_settings().graphics_backend == "dx12");
+    CHECK(has(be_dx12.tokens(), {"--backend", "dx12"}));
+
+    carview::SettingsPage be_mtl;
+    be_mtl.load({"--graphics_backend", "metal"});
+    CHECK(be_mtl.value("graphics backend") == "metal 3");
+    CHECK(be_mtl.live_settings().graphics_backend == "metal");
+    CHECK(has(be_mtl.tokens(), {"--backend", "metal"}));
+
+    carview::SettingsPage be_vk;
+    be_vk.load({"--graphics_backend", "vulkan"});
+    CHECK(be_vk.value("graphics backend") == "vulkan 1.3");
+    CHECK(be_vk.live_settings().graphics_backend == "vulkan");
+    const auto drows = be_vk.display_rows();
+    bool found_display = false;
+    for (const auto& dr : drows) {
+      if (dr.name == "graphics backend" && dr.tab == carview::SettingsPage::Tab::kDisplay) found_display = true;
+    }
+    CHECK(found_display);
+  }
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

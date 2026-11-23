@@ -59,6 +59,7 @@ struct LauncherUiState {
   // Play tab state
   int selected_preset = 0;      // 0: high, 1: low, 2: smooth-60, 3: quality-30, 4: low-power
   int selected_resolution = 0;  // 0..4 into kResolutionPresets
+  int selected_backend = 0;     // 0..N into available_backend_choices()
   bool launch_fullscreen = false;
   std::string launch_car = "NIS_SkylineGTRVSpecII_02";
   std::string extra_args;
