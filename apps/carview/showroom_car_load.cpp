@@ -1,0 +1,953 @@
+#include "showroom_internal.h"
+
+#include "cars/bake.h"
+#include "cars/mods.h"
+#include "cars/texture_mods.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <regex>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace carview {
+
+// The model's own name for a sheet, e.g. "tyre:sidewall" with tyre textures
+// "tirea" (or a car's own "tireatoy_fjcruiser_12") -> "sidewalla_clr.xds",
+// and "tyre:sidewall_nrm" -> "sidewalla_nrm.xds".
+std::string tyre_texture_member(const std::string& sheet, const std::string& tyre_media) {
+  const char letter = tyre_media.size() > 4 ? tyre_media[4] : 'a';
+  if (ends_with(sheet, "_nrm")) return sheet.substr(0, sheet.size() - 4) + letter + "_nrm.xds";
+  return sheet + letter + "_clr.xds";
+}
+
+// Upgrade parts ("bumperFrace", "wingrace", "cagerace") are not drawn, and
+// of a variant set ("bumperFa".."bumperFd") only the first real one, where
+// `real` holds the lower-case names of parts that are not stand-ins (spec
+// question Q4).
+bool hidden_variant(const std::string& name, const std::set<std::string>& real) {
+  const std::string n = lower(name);
+  if (ends_with(n, "race")) return true;
+  if (n.size() > 1) {
+    const char last = n.back();
+    if (last >= 'b' && last <= 'h') {
+      const std::string stem = n.substr(0, n.size() - 1);
+      for (char c = 'a'; c < last; ++c)
+        if (real.count(stem + c)) return true;
+    }
+  }
+  return false;
+}
+
+// FORMAT-CARS, Stock parts: the upgrade-family member a part name is or
+// extends ("winga_arm1" follows "winga"), or "" when it is in no family
+// (bumpers, skirts, hood and wing by letter or race, the race hoods, the
+// roll cage, and the exhausts, which no table names).
+std::string family_member(const std::string& name) {
+  static const std::regex kVariant(
+      "(bumperf|bumperr|skirtl|skirtr|hood|wing)([a-z]|race)|hood(ps|ci)race|cagerace|exhaust[lr]?[a-z]");
+  const std::string n = lower(name);
+  const std::string base = n.substr(0, n.find('_'));
+  return std::regex_match(base, kVariant) ? base : std::string();
+}
+
+// Whether a family member is drawn for a stock row: exhausts by letter a,
+// the rest when a stock row names it.
+bool stock_hidden(const std::string& member, const cars::bake::StockRow& stock) {
+  static const std::regex kExhaust("exhaust[lr]?([a-z])");
+  std::smatch m;
+  if (std::regex_match(member, m, kExhaust)) return m[1].str() != "a";
+  return !std::binary_search(stock.parts.begin(), stock.parts.end(), member);
+}
+
+// Some LOD0, cockpit, brake and rim models hold stand-ins instead of
+// geometry: a cube of exactly 17 vertices (0 to 0.2 m across; 506 such
+// pools over the 240 cars and their wheels, while every real 17-vertex pool
+// is a flat pane), a quad or triangle pair of at most 6 vertices, or a box
+// of at most 24 vertices all on its bounding box's corners (one car's whole
+// LOD0 body). Such pools are not drawn.
+bool stub_pool(const std::vector<bake::Vertex>& pool) {
+  if (pool.size() <= 6) return true;
+  if (pool.size() > 24) return false;
+  std::array<float, 3> lo = pool[0].position, hi = lo;
+  for (const auto& v : pool)
+    for (size_t k = 0; k < 3; ++k) {
+      lo[k] = std::min(lo[k], v.position[k]);
+      hi[k] = std::max(hi[k], v.position[k]);
+    }
+  const float x = hi[0] - lo[0], y = hi[1] - lo[1], z = hi[2] - lo[2];
+  if (pool.size() == 17 && std::max({x, y, z}) - std::min({x, y, z}) <= 0.02f) return true;
+  for (const auto& v : pool)
+    for (size_t k = 0; k < 3; ++k)
+      if (std::fabs(v.position[k] - lo[k]) > 0.001f && std::fabs(v.position[k] - hi[k]) > 0.001f) return false;
+  return true;
+}
+
+// The part's best drawable LOD: the lowest whose pool is not a stand-in,
+// or -1.
+int32_t best_lod(const bake::Part& part) {
+  std::set<int32_t> lods;
+  for (const auto& s : part.subsections)
+    if (s.material != MaterialClass::kHidden && !s.indices.empty()) lods.insert(s.lod);
+  // A LOD0 pool with under a quarter of the LOD1-5 pool's vertices is a
+  // stand-in too (some rims: 74 against about 2,300).
+  const bool lod0_coarse = lods.count(0) && lods.size() > 1 &&
+                           part.lod0_vertices.size() * 4 < part.lod_vertices.size();
+  for (int32_t lod : lods) {
+    if (lod == 0 && lod0_coarse) continue;
+    if (!stub_pool(lod == 0 ? part.lod0_vertices : part.lod_vertices)) return lod;
+  }
+  return -1;
+}
+
+bool placeholder(const bake::Part& part) { return best_lod(part) < 0; }
+
+Showroom::~Showroom() {
+  VkDevice d = r_.device_;
+  if (!d) return;
+  if (!skip_wait_idle_on_destroy_) r_.wait_idle();
+  rt_pipeline_.reset();
+  rt_scene_.reset();
+  drop_pending_world();
+  drop_fading_world(true);
+  stop_reaper();
+  gpu_world_.reset();
+  if (!guest_) r_.set_scene({});
+  for (auto& t : gpu_textures_) r_.destroy_image(t);
+  r_.destroy_image(custom_livery_img_);
+  r_.destroy_image(environment_);
+  r_.destroy_image(shared_dirt_pattern_);
+  r_.destroy_image(shared_dirt_mask_);
+  r_.destroy_image(shared_glass_crack_);
+  r_.destroy_buffer(vertex_buffer_);
+  r_.destroy_buffer(index_buffer_);
+  r_.destroy_buffer(frame_buffer_);
+  r_.destroy_buffer(shadow_frame_buffer_);
+  r_.destroy_buffer(shadow_frame_mid_buffer_);
+  r_.destroy_buffer(shadow_frame_far_buffer_);
+  r_.destroy_buffer(env_frame_buffer_);
+  r_.destroy_buffer(env_sky_ubo_[0]);
+  r_.destroy_buffer(env_sky_ubo_[1]);
+  if (env_world_opaque_) vkDestroyPipeline(d, env_world_opaque_, nullptr);
+  if (env_world_coverage_) vkDestroyPipeline(d, env_world_coverage_, nullptr);
+  if (env_car_opaque_) vkDestroyPipeline(d, env_car_opaque_, nullptr);
+  if (env_sky_pipe_base_) vkDestroyPipeline(d, env_sky_pipe_base_, nullptr);
+  if (env_sky_pipe_layers_) vkDestroyPipeline(d, env_sky_pipe_layers_, nullptr);
+  if (env_prefilter_pipe_) vkDestroyPipeline(d, env_prefilter_pipe_, nullptr);
+  if (env_prefilter_pipe_layout_) vkDestroyPipelineLayout(d, env_prefilter_pipe_layout_, nullptr);
+  if (env_prefilter_set_layout_) vkDestroyDescriptorSetLayout(d, env_prefilter_set_layout_, nullptr);
+  if (env_pool_) vkDestroyDescriptorPool(d, env_pool_, nullptr);
+  if (dyn_env_mip0_cube_) vkDestroyImageView(d, dyn_env_mip0_cube_, nullptr);
+  for (uint32_t m = 0; m < kDynEnvMips; ++m)
+    for (int i = 0; i < 6; ++i)
+      if (dyn_env_mip_faces_[m][i]) vkDestroyImageView(d, dyn_env_mip_faces_[m][i], nullptr);
+  for (int i = 0; i < 6; ++i)
+    if (dyn_env_faces_[i]) vkDestroyImageView(d, dyn_env_faces_[i], nullptr);
+  r_.destroy_image(dyn_env_);
+  r_.destroy_image(dyn_env_depth_);
+  r_.destroy_image(mirror_tex_);
+  r_.destroy_image(mirror_depth_);
+  r_.destroy_buffer(world_vertices_);
+  r_.destroy_buffer(world_indices_);
+  r_.destroy_buffer(overlay_vertices_);
+  for (auto& [record, t] : world_textures_) r_.destroy_image(t);
+  for (VkDescriptorPool p : world_pools_) vkDestroyDescriptorPool(d, p, nullptr);
+  if (sampler_) vkDestroySampler(d, sampler_, nullptr);
+  if (material_pool_) vkDestroyDescriptorPool(d, material_pool_, nullptr);
+  if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
+  for (VkPipeline p : {opaque_, opaque_after_z_, opaque_fade_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
+                       contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_opaque_dither_,
+                       world_z_prepass_, world_coverage_, world_alpha_, world_water_, shadow_world_, shadow_cutout_, shadow_car_,
+                       sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
+    if (p) vkDestroyPipeline(d, p, nullptr);
+  if (contact_shadow_pipe_layout_) vkDestroyPipelineLayout(d, contact_shadow_pipe_layout_, nullptr);
+  if (sky_pipe_layout_) vkDestroyPipelineLayout(d, sky_pipe_layout_, nullptr);
+  if (stars_pipe_layout_) vkDestroyPipelineLayout(d, stars_pipe_layout_, nullptr);
+  if (sky_set_layout_) vkDestroyDescriptorSetLayout(d, sky_set_layout_, nullptr);
+  if (sky_pool_) vkDestroyDescriptorPool(d, sky_pool_, nullptr);
+  r_.destroy_buffer(sky_ubo_[0]);
+  r_.destroy_buffer(sky_ubo_[1]);
+  r_.destroy_buffer(star_vertices_);
+  r_.destroy_image(sky_sun_);
+  for (auto& m : sky_moons_) r_.destroy_image(m);
+  r_.destroy_image(sky_dither_);
+  r_.destroy_image(sky_far_f_);
+  r_.destroy_image(sky_far_b_);
+  r_.destroy_image(sky_far_mask_);
+  r_.destroy_image(sky_close_ad_f_);
+  r_.destroy_image(sky_close_ad_b_);
+  r_.destroy_image(sky_close_am_f_);
+  r_.destroy_image(sky_close_am_b_);
+  r_.destroy_image(sky_close_tb_f_);
+  r_.destroy_image(sky_close_tb_b_);
+  if (glow_pipe_) vkDestroyPipeline(d, glow_pipe_, nullptr);
+  if (glow_pipe_layout_) vkDestroyPipelineLayout(d, glow_pipe_layout_, nullptr);
+  if (glow_set_layout_) vkDestroyDescriptorSetLayout(d, glow_set_layout_, nullptr);
+  if (glow_pool_) vkDestroyDescriptorPool(d, glow_pool_, nullptr);
+  r_.destroy_buffer(glow_buffer_);
+  for (auto& g : glow_tex_) r_.destroy_image(g);
+  r_.destroy_image(headlight_cookie_);
+  r_.destroy_buffer(headlights_ubo_);
+  destroy_dyn_buffer(car_inst_buf_);
+  r_.destroy_buffer(empty_inst_ssbo_);
+  destroy_dyn_buffer(particle_buf_);
+  destroy_dyn_buffer(skid_asphalt_buf_);
+  destroy_dyn_buffer(skid_rut_buf_);
+  destroy_dyn_buffer(debris_buf_);
+  destroy_dyn_buffer(spectator_buf_);
+  r_.destroy_image(spectator_atlas_);
+  spectator_set_ = VK_NULL_HANDLE;
+  destroy_dyn_buffer(showcase_buf_);
+  destroy_dyn_buffer(driver_buf_);
+  r_.destroy_image(showcase_tex_);
+  r_.destroy_image(particle_atlas_);
+  r_.destroy_image(skid_asphalt_tex_);
+  r_.destroy_image(skid_rut_tex_);
+  if (particle_alpha_pipe_) vkDestroyPipeline(d, particle_alpha_pipe_, nullptr);
+  if (particle_add_pipe_) vkDestroyPipeline(d, particle_add_pipe_, nullptr);
+  if (particle_pipe_layout_) vkDestroyPipelineLayout(d, particle_pipe_layout_, nullptr);
+  if (particle_set_layout_) vkDestroyDescriptorSetLayout(d, particle_set_layout_, nullptr);
+  if (particle_pool_) vkDestroyDescriptorPool(d, particle_pool_, nullptr);
+  if (particle_sampler_) vkDestroySampler(d, particle_sampler_, nullptr);
+  if (skid_pipe_) vkDestroyPipeline(d, skid_pipe_, nullptr);
+  if (skid_pipe_layout_) vkDestroyPipelineLayout(d, skid_pipe_layout_, nullptr);
+  if (skid_set_layout_) vkDestroyDescriptorSetLayout(d, skid_set_layout_, nullptr);
+  if (skid_pool_) vkDestroyDescriptorPool(d, skid_pool_, nullptr);
+  if (skid_sampler_) vkDestroySampler(d, skid_sampler_, nullptr);
+  r_.destroy_image(flat_normal_tex_);
+  if (world_pipeline_layout_) vkDestroyPipelineLayout(d, world_pipeline_layout_, nullptr);
+  if (pipeline_layout_) vkDestroyPipelineLayout(d, pipeline_layout_, nullptr);
+  if (frame_layout_) vkDestroyDescriptorSetLayout(d, frame_layout_, nullptr);
+  if (world_material_layout_) vkDestroyDescriptorSetLayout(d, world_material_layout_, nullptr);
+  if (material_layout_) vkDestroyDescriptorSetLayout(d, material_layout_, nullptr);
+}
+
+bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& car,
+                    const ShowroomOptions& options, std::string& error) {
+  car_ = {};
+  wheel_ = {};
+  tyre_ = {};
+  tyre_textures_ = {};
+  // Keep shared_ loaded across hot car reloads when bake_dir hasn't changed.
+  if (shared_bake_dir_ != bake_dir) {
+    shared_ = {};
+    shared_bake_dir_.clear();
+  }
+  vertices_.clear();
+  indices_.clear();
+  draws_.clear();
+  textures_.clear();
+  texture_by_key_.clear();
+  descriptor_by_textures_.clear();
+  drawn_parts_.clear();
+  skipped_parts_.clear();
+  notes_.clear();
+  have_bounds_ = false;
+  bounds_min_ = {};
+  bounds_max_ = {};
+  for (auto& rig : cockpit_rigs_) rig = {};
+  stock_ = nullptr;
+  pending_wheel_ = -1;
+  pending_spins_ = false;
+  for (int i = 0; i < 4; ++i) {
+    stripe_[i] = 1.0f;
+    paint_two_tone_[i] = 0.0f;
+    damage_dirt_[i] = 0.0f;
+    damage_zones_[i] = 0.0f;
+  }
+  paint_finish_[0] = 0.0f;
+  paint_finish_[1] = 0.25f;
+  paint_finish_[2] = 0.0f;
+  paint_finish_[3] = 0.0f;
+  options_ = options;
+  std::string err;
+  const std::string car_name = lower(car);
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "cars" / (car_name + ".shiftbake")), car_, &err)) {
+    error = car_name + ": " + err;
+    return false;
+  }
+  bake::CarInfo& info = car_.car;
+  if (options_.match_rgb >= 0) {
+    bool found = false;
+    for (size_t i = 0; i < info.colours.size() && !found; ++i)
+      if (int64_t(info.colours[i].rgb) == options_.match_rgb) {
+        options_.colour = i;
+        found = true;
+      }
+    if (!found) notes_.push_back("no colour row with the requested sRGB: drawing colour " +
+                                 std::to_string(options_.colour));
+  }
+  if (options_.match_sequence >= 0) {
+    bool found = false;
+    for (size_t i = 0; i < info.colours.size() && !found; ++i)
+      if (info.colours[i].sequence == options_.match_sequence) {
+        options_.colour = i;
+        found = true;
+      }
+    if (!found) {
+      options_.colour = 0;
+      notes_.push_back("no colour with Sequence " + std::to_string(options_.match_sequence) + ": the lowest");
+    }
+  }
+
+  // Apply fitted visual overrides (tyre widths, rim diameters, ride height,
+  // CarTrackOffsets, caliper angles, aftermarket rim, per-car tyre).
+  const cars::VisualSetup& vis = options_.visual;
+  if (vis.active) {
+    for (size_t a = 0; a < 2; ++a) {
+      if (vis.tyre_width_mm[a] > 0) info.tyre_width_mm[a] = vis.tyre_width_mm[a];
+      if (vis.rim_inches[a] > 0) info.rim_inches[a] = vis.rim_inches[a];
+      if (vis.ride_height_m[a] >= 0.0f) info.ride_height[a] = vis.ride_height_m[a];
+      if (vis.has_caliper_angle_override) info.caliper_angle[a] = vis.caliper_angle_deg[a];
+    }
+    if (!vis.wheel_media.empty()) info.wheel_media = lower(vis.wheel_media);
+    // Recompute lift, pitch, and wheel centres for upgraded stance / track offsets.
+    if (info.has_body && info.wheelbase > 0.0f) {
+      info.lift = (info.ride_height[0] + info.ride_height[1]) * 0.5f - info.body_bottom_y;
+      info.pitch = std::atan((info.ride_height[1] - info.ride_height[0]) / info.wheelbase);
+      const float cs = std::cos(info.pitch), sn = std::sin(info.pitch);
+      const size_t wheel_rows[4] = {5, 6, 8, 7};
+      for (size_t w = 0; w < 4; ++w) {
+        const size_t axle = w < 2 ? 0 : 1;
+        const float rim_r = float(info.rim_inches[axle]) * 0.0254f * 0.5f;
+        const float width = float(info.tyre_width_mm[axle]) / 1000.0f;
+        const float outer = rim_r + width * float(info.tyre_aspect[axle]) / 100.0f;
+        const float side = (w % 2 == 0) ? -1.0f : 1.0f;
+        const float track_x = (info.track_outer[axle] - width) * 0.5f + vis.track_offset_m[axle];
+        const float bx = side * track_x;
+        const float by = outer;
+        const float bz = info.part_positions[wheel_rows[w]][2];
+        info.wheel_centres_body[w] = {bx, by, bz};
+        const float y = by - info.lift;
+        info.wheel_centres[w] = {bx, cs * y + sn * bz, sn * y - cs * bz};
+      }
+    }
+  }
+
+  // Per-car tyre check (FJ Cruiser TOY_FJCruiser_12, Raptor, Wrangler, H1):
+  // prefer the car's own TireA<MediaName> archive if available in bake or disc.
+  std::string want_tyre = vis.active && !vis.tyre_media_override.empty()
+                              ? lower(vis.tyre_media_override)
+                              : cars::per_car_tyre_media(info.media_name);
+  if (!want_tyre.empty() && info.tyre_media == cars::kTyreModel) {
+    if (std::filesystem::exists(cars::mods::resolve(bake_dir / "wheels" / (want_tyre + ".shiftbake")))) {
+      info.tyre_media = want_tyre;
+      info.tyre_texture_media = want_tyre;
+    } else if (!options_.game_root.empty() &&
+               cars::load_wheel_from_disc(options_.game_root, want_tyre, true, tyre_, nullptr)) {
+      info.tyre_media = want_tyre;
+      info.tyre_texture_media = want_tyre;
+      tyre_textures_ = tyre_;
+    }
+  }
+
+  // Load rim: pre-baked .shiftbake first, then on-demand from media/wheels/<MediaName>.zip
+  // (covers all 285+ aftermarket rims in List_Wheels without requiring pre-baking).
+  if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.wheel_media + ".shiftbake")), wheel_, &err)) {
+    std::string disc_err;
+    if (options_.game_root.empty() ||
+        !cars::load_wheel_from_disc(options_.game_root, info.wheel_media, false, wheel_, &disc_err)) {
+      error = "wheel " + info.wheel_media + ": " + err + (disc_err.empty() ? "" : " (" + disc_err + ")");
+      return false;
+    }
+  }
+  if (tyre_.models.empty()) {
+    if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_media + ".shiftbake")), tyre_, &err)) {
+      std::string disc_err;
+      if (options_.game_root.empty() ||
+          !cars::load_wheel_from_disc(options_.game_root, info.tyre_media, true, tyre_, &disc_err)) {
+        error = err;
+        return false;
+      }
+    }
+  }
+  if (tyre_textures_.textures.empty()) {
+    if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (info.tyre_texture_media + ".shiftbake")),
+                         tyre_textures_, &err)) {
+      if (!bake::read_file(cars::mods::resolve(bake_dir / "wheels" / (std::string(cars::kTyreTextures) + ".shiftbake")),
+                           tyre_textures_, &err)) {
+        error = err;
+        return false;
+      }
+    }
+  }
+  if (shared_.textures.empty()) {
+    if (!bake::read_file(cars::mods::resolve(bake_dir / "shared.shiftbake"), shared_, &err)) {
+      error = err;
+      return false;
+    }
+    shared_bake_dir_ = bake_dir;
+  }
+
+  // On-demand load of car interior_emissive_LOD0.xds (real backlit speedometer/tachometer dials)
+  // when not already stored in pre-baked .shiftbake packs.
+  {
+    bool has_emissive = false;
+    for (const auto& tx : car_.textures) {
+      if (lower(tx.name) == "interior_emissive_lod0.xds") {
+        has_emissive = true;
+        break;
+      }
+    }
+    if (!has_emissive && !options_.game_root.empty()) {
+      const std::filesystem::path cars_dir = options_.game_root / "media" / "cars";
+      std::filesystem::path zip_path;
+      std::error_code ec;
+      const std::string want_zip = lower(info.media_name) + ".zip";
+      if (std::filesystem::is_directory(cars_dir, ec)) {
+        for (const auto& ent : std::filesystem::directory_iterator(cars_dir, ec)) {
+          if (ent.is_regular_file(ec) && lower(ent.path().filename().string()) == want_zip) {
+            zip_path = ent.path();
+            break;
+          }
+        }
+      }
+      if (!zip_path.empty()) {
+        if (auto arch = fh1::Archive::open(zip_path, nullptr)) {
+          auto rd = arch->read("interior_emissive_lod0.xds");
+          if (rd.ok()) {
+            auto xds = fh1::decode_xds(rd.data);
+            if (!xds.levels.empty() && !xds.levels[0].rgba.empty()) {
+              bake::Texture bt;
+              bt.name = "interior_emissive_lod0.xds";
+              bt.format = bake::TextureFormat::kRgba8;
+              bt.levels.push_back({xds.levels[0].width, xds.levels[0].height, std::move(xds.levels[0].rgba)});
+              car_.textures.push_back(std::move(bt));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  textures_.push_back({nullptr, "@white"});
+  textures_.push_back({nullptr, "@black"});
+
+  // The row shown: the requested car id, else the baked row.
+  stock_ = nullptr;
+  for (const auto& s : info.stock_rows)
+    if (s.known && (options_.car_id == 0 ? s.car_id == info.car_id : s.car_id == options_.car_id)) stock_ = &s;
+  if (options_.car_id != 0 && !stock_)
+    notes_.push_back("no stock row for car " + std::to_string(options_.car_id) + " in the bake");
+  if (!stock_ && !vis.active) notes_.push_back("no stock parts baked: hiding variants by letter (first real letter)");
+  // FORMAT-CARS, Stock & fitted parts: family members by fitted VisualSetup
+  // (when active) else the stock rows, seats a weight row removes, and
+  // other lettered names by the first real letter.
+  auto hidden = [&](const std::string& name, const std::set<std::string>& real) {
+    if (options_.all_variants) return false;
+    const std::string n = lower(name);
+    if (vis.active) {
+      const std::string member = family_member(n);
+      if (!member.empty()) {
+        static const std::regex kExhaust("exhaust[lr]?([a-z])");
+        std::smatch m;
+        if (std::regex_match(member, m, kExhaust)) {
+          if (vis.has_exhaust_override) {
+            return !std::binary_search(vis.shown_parts.begin(), vis.shown_parts.end(), member);
+          }
+          return m[1].str() != "a";
+        }
+        return !std::binary_search(vis.shown_parts.begin(), vis.shown_parts.end(), member);
+      }
+      if (std::binary_search(vis.removed_parts.begin(), vis.removed_parts.end(), n)) return true;
+      return hidden_variant(n, real);
+    }
+    if (stock_) {
+      const std::string member = family_member(n);
+      if (!member.empty()) return stock_hidden(member, *stock_);
+      if (std::binary_search(stock_->removed.begin(), stock_->removed.end(), n)) return true;
+    }
+    return hidden_variant(n, real);
+  };
+
+  // Which body: LOD0 when it has geometry, else the LOD1-5 model.
+  const bake::Model* body = nullptr;
+  const bake::Model* exterior = nullptr;
+  const bake::Model* cockpit = nullptr;
+  for (const auto& m : car_.models) {
+    bool real = false;
+    for (const auto& p : m.parts) real |= !placeholder(p);
+    if (m.role == Role::kLod0 && real) body = &m;
+    if (m.role == Role::kExterior) exterior = &m;
+    if (m.role == Role::kCockpit) cockpit = &m;
+  }
+  if (!body) {
+    body = exterior;
+    notes_.push_back("no LOD0 geometry (or only stand-in boxes): drawing the LOD1-5 model");
+  }
+  if (!body) {
+    error = car_name + ": no exterior model";
+    return false;
+  }
+
+  float identity_m[16];
+  identity(identity_m);
+  std::set<std::string> body_names, body_real;
+  for (const auto& p : body->parts) {
+    body_names.insert(lower(p.name));
+    if (!placeholder(p)) body_real.insert(lower(p.name));
+  }
+  std::vector<std::string> body_parts;
+  for (const auto& p : body->parts) {
+    const std::string n = lower(p.name);
+    // The LOD0 model carries a rim ("wheel") at the origin; the wheels are
+    // drawn from the wheel model at each centre instead.
+    if (n == "wheel" || placeholder(p) || hidden(n, body_real)) {
+      skipped_parts_.push_back(body->name + "/" + p.name);
+      continue;
+    }
+    body_parts.push_back(p.name);
+  }
+  add_model(*body, body_parts, identity_m, car_, 0);
+  // The cockpit model: the parts the body does not have (hood, windscreen,
+  // headlights, cabin); the gauge needles at their minimum.
+  std::set<std::string> cockpit_real;
+  if (cockpit)
+    for (const auto& p : cockpit->parts)
+      if (!placeholder(p)) cockpit_real.insert(lower(p.name));
+  if (!cockpit_real.empty()) {
+    // Extract living-cockpit rotation rigs for steering_wheel and analog gauge needles (_min/_mid/_max).
+    auto pool_of = [&](const bake::Part& p) -> const std::vector<bake::Vertex>* {
+      const int32_t b = best_lod(p);
+      if (b < 0) return nullptr;
+      return b == 0 ? &p.lod0_vertices : &p.lod_vertices;
+    };
+    auto find_part = [&](const std::string& lname) -> const bake::Part* {
+      for (const auto& p : cockpit->parts)
+        if (lower(p.name) == lname && !placeholder(p)) return &p;
+      return nullptr;
+    };
+    auto vsub = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+      return std::array<float, 3>{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    };
+    auto vdot = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+      return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    };
+    auto vcross = [](const std::array<float, 3>& a, const std::array<float, 3>& b) {
+      return std::array<float, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    };
+    auto vnorm = [&](const std::array<float, 3>& a) -> std::array<float, 3> {
+      const float l = std::sqrt(vdot(a, a));
+      return l > 1e-6f ? std::array<float, 3>{a[0] / l, a[1] / l, a[2] / l} : std::array<float, 3>{0, 0, -1};
+    };
+    if (const bake::Part* sw = find_part("steering_wheel")) {
+      if (const auto* pool = pool_of(*sw); pool && pool->size() >= 3) {
+        std::array<double, 3> mean{0, 0, 0};
+        for (const auto& v : *pool)
+          for (int k = 0; k < 3; ++k) mean[k] += v.position[k];
+        for (int k = 0; k < 3; ++k) mean[k] /= double(pool->size());
+        // Steering column axis: normal to wheel rim plane (smallest-variance axis in YZ plane).
+        double syy = 0, syz = 0, szz = 0;
+        for (const auto& v : *pool) {
+          const double dy = v.position[1] - mean[1], dz = v.position[2] - mean[2];
+          syy += dy * dy, syz += dy * dz, szz += dz * dz;
+        }
+        const double theta = 0.5 * std::atan2(2.0 * syz, syy - szz);
+        // Eigenvector with smaller variance in YZ plane.
+        const double ay1 = std::cos(theta), az1 = std::sin(theta);
+        const double ay2 = -az1, az2 = ay1;
+        const double v1 = ay1 * ay1 * syy + 2.0 * ay1 * az1 * syz + az1 * az1 * szz;
+        const double v2 = ay2 * ay2 * syy + 2.0 * ay2 * az2 * syz + az2 * az2 * szz;
+        float ay = float(v1 < v2 ? ay1 : ay2), az = float(v1 < v2 ? az1 : az2);
+        // Orient forward (-Z in model space) so +wheel_rad rotates top of wheel toward +X (right).
+        if (az > 0.0f) ay = -ay, az = -az;
+        cockpit_rigs_[0].valid = true;
+        cockpit_rigs_[0].pivot = {float(mean[0]), float(mean[1]), float(mean[2])};
+        cockpit_rigs_[0].axis = vnorm({0.0f, ay, az});
+      }
+    }
+    static const char* const kGauges[5] = {"speed", "tach", "fuel", "boost", "power"};
+    for (int g = 0; g < 5; ++g) {
+      const bake::Part* pmin = find_part(std::string(kGauges[g]) + "_min");
+      const bake::Part* pmid = find_part(std::string(kGauges[g]) + "_mid");
+      const bake::Part* pmax = find_part(std::string(kGauges[g]) + "_max");
+      if (!pmin || !pmax) continue;
+      const auto* v0 = pool_of(*pmin);
+      const auto* v1 = pmid ? pool_of(*pmid) : nullptr;
+      const auto* v2 = pool_of(*pmax);
+      if (!v0 || !v2 || v0->empty() || v2->empty()) continue;
+      auto& rig = cockpit_rigs_[g + 1];
+      if (v0->size() == v2->size()) {
+        size_t i_piv = 0, i_tip = 0;
+        float d_min = 1e30f, d_max = -1.0f;
+        for (size_t i = 0; i < v0->size(); ++i) {
+          const auto diff = vsub((*v2)[i].position, (*v0)[i].position);
+          const float d2 = vdot(diff, diff);
+          if (d2 < d_min) d_min = d2, i_piv = i;
+          if (d2 > d_max) d_max = d2, i_tip = i;
+        }
+        if (d_max > 1e-6f) {
+          const auto piv = (*v0)[i_piv].position;
+          const auto u0 = vnorm(vsub((*v0)[i_tip].position, piv));
+          const auto u2 = vnorm(vsub((*v2)[i_tip].position, piv));
+          if (v1 && v1->size() == v0->size()) {
+            const auto u1 = vnorm(vsub((*v1)[i_tip].position, piv));
+            auto ax = vcross(u0, u1);
+            if (vdot(ax, ax) < 1e-6f) ax = vcross(u0, u2);
+            if (vdot(ax, ax) > 1e-6f) {
+              ax = vnorm(ax);
+              float a1 = std::atan2(vdot(vcross(u0, u1), ax), vdot(u0, u1));
+              if (a1 < 0.0f) a1 += 6.2831853f;
+              float a2 = std::atan2(vdot(vcross(u1, u2), ax), vdot(u1, u2));
+              if (a2 < 0.0f) a2 += 6.2831853f;
+              rig.valid = true;
+              rig.pivot = piv;
+              rig.axis = ax;
+              rig.ang_mid = a1;
+              rig.ang_max = a1 + a2;
+            }
+          } else {
+            auto ax = vcross(u0, u2);
+            if (vdot(ax, ax) > 1e-6f) {
+              ax = vnorm(ax);
+              float am = std::atan2(vdot(vcross(u0, u2), ax), vdot(u0, u2));
+              if (am < 0.0f) am += 6.2831853f;
+              rig.valid = true;
+              rig.pivot = piv;
+              rig.axis = ax;
+              rig.ang_mid = am * 0.5f;
+              rig.ang_max = am;
+            }
+          }
+        }
+      }
+    }
+
+    std::vector<std::string> cockpit_parts;
+    for (const auto& p : cockpit->parts) {
+      const std::string n = lower(p.name);
+      const bool needle = ends_with(n, "_mid") || ends_with(n, "_max");
+      if (body_names.count(n) || needle || placeholder(p) || hidden(n, cockpit_real)) {
+        skipped_parts_.push_back(cockpit->name + "/" + p.name);
+        continue;
+      }
+      cockpit_parts.push_back(p.name);
+    }
+    add_model(*cockpit, cockpit_parts, identity_m, car_, 0);
+  } else {
+    notes_.push_back("no cockpit geometry: interior from the body model only");
+  }
+
+  // Stand-in parts of LOD0 and the cockpit come from the LOD1-5 model,
+  // unless their variant set has a real part already.
+  if (exterior && body != exterior) {
+    std::set<std::string> stand_ins;
+    for (const auto& p : body->parts)
+      if (placeholder(p)) stand_ins.insert(lower(p.name));
+    if (cockpit)
+      for (const auto& p : cockpit->parts)
+        if (placeholder(p) && !body_names.count(lower(p.name))) stand_ins.insert(lower(p.name));
+    std::set<std::string> real = body_real;
+    real.insert(cockpit_real.begin(), cockpit_real.end());
+    auto stem_of = [](const std::string& n) {
+      return n.size() > 1 && n.back() >= 'a' && n.back() <= 'h' ? n.substr(0, n.size() - 1) : std::string();
+    };
+    std::set<std::string> stems_drawn;
+    for (const auto& n : real)
+      if (!stem_of(n).empty()) stems_drawn.insert(stem_of(n));
+    std::vector<std::string> fill;
+    for (const auto& n : stand_ins) {  // sorted: "bumperfa" before "bumperfb"
+      if (n == "wheel" || ends_with(n, "_mid") || ends_with(n, "_max")) continue;
+      // A stock/fitted family member is filled from its LOD1-5 twin; another
+      // member never stands in for it (no promotion).
+      const bool by_stock = (stock_ || vis.active) && !family_member(n).empty();
+      if (by_stock && hidden(n, real)) continue;
+      if (!by_stock && ends_with(n, "race")) continue;
+      if (!by_stock && (stock_ || vis.active) && hidden(n, real)) continue;  // a removed seat
+      const std::string stem = by_stock ? std::string() : stem_of(n);
+      if (!options_.all_variants && !stem.empty() && stems_drawn.count(stem)) continue;
+      for (const auto& e : exterior->parts)
+        if (lower(e.name) == n && !placeholder(e)) {
+          fill.push_back(e.name);
+          if (!stem.empty()) stems_drawn.insert(stem);
+        }
+    }
+    if (!fill.empty()) {
+      notes_.push_back(std::to_string(fill.size()) + " stand-in parts drawn from the LOD1-5 model");
+      add_model(*exterior, fill, identity_m, car_, 0);
+    }
+  }
+
+  // The inverse pose: model = R (body - (0, lift, 0)); R is its own inverse.
+  const float cp = std::cos(info.pitch), sp = std::sin(info.pitch);
+  const float pose[16] = {1, 0, 0, 0, 0, cp, sp, 0, 0, sp, -cp, 0, 0, -cp * info.lift, -sp * info.lift, 1};
+  std::memcpy(body_to_model_, pose, sizeof pose);
+  const float* body_to_model = body_to_model_;
+
+  // Brakes: each corner's rotor and calliper, centred on the hub, rotated by
+  // CaliperAngleFront/Rear and laterally offset by List_Wheels.BrakeDrawOffset.
+  // When upgraded brakes (Level >= 1) are fitted and game_root is set, load
+  // the upgraded rotor & caliper models from media/brakes/.
+  static constexpr bake::Corner kCorners[4] = {bake::Corner::kLF, bake::Corner::kRF, bake::Corner::kLR,
+                                               bake::Corner::kRR};
+  constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+  std::array<bake::Model, 2> upg_rotor, upg_caliper;
+  std::array<bool, 2> has_upg_rotor{false, false}, has_upg_caliper{false, false};
+  if (vis.active && !options_.game_root.empty()) {
+    for (int a = 0; a < 2; ++a) {
+      if (vis.brakes[size_t(a)].level >= 1 && vis.brakes[size_t(a)].size_in > 0) {
+        has_upg_rotor[size_t(a)] =
+            cars::load_brake_model(options_.game_root, vis.brakes[size_t(a)].size_in, vis.brakes[size_t(a)].type_id,
+                                   vis.brakes[size_t(a)].pistons, true, upg_rotor[size_t(a)], nullptr);
+        has_upg_caliper[size_t(a)] =
+            cars::load_brake_model(options_.game_root, vis.brakes[size_t(a)].size_in, vis.brakes[size_t(a)].type_id,
+                                   vis.brakes[size_t(a)].pistons, false, upg_caliper[size_t(a)], nullptr);
+      }
+    }
+  }
+  auto add_brake_at = [&](const bake::Model& m, int corner, bool is_rotor, bool mirror_right,
+                          const bake::Bake& tex_pack) {
+    const int axle = corner < 2 ? 0 : 1;
+    const bool right = (corner % 2) == 1;
+    const float side = right ? 1.0f : -1.0f;
+    const float brake_dx = vis.active ? (side * vis.brake_draw_offset) : 0.0f;
+    const float cal_rad = is_rotor ? 0.0f : (info.caliper_angle[size_t(axle)] * kDegToRad);
+    const float ca = std::cos(cal_rad), sa = std::sin(cal_rad);
+    // Local transform about hub in body frame: optional half-turn for loose
+    // right-side models, caliper angle rotation around axle X, lateral offset.
+    float rot_x[16];
+    identity(rot_x);
+    rot_x[5] = ca;
+    rot_x[6] = sa;
+    rot_x[9] = -sa;
+    rot_x[10] = ca;
+    float local_body[16];
+    if (mirror_right) {
+      float flip[16];
+      identity(flip);
+      flip[0] = right ? -1.0f : 1.0f;
+      flip[10] = right ? -1.0f : 1.0f;
+      multiply(rot_x, flip, local_body);
+    } else {
+      // Stock brake models are authored in model frame: convert linear part via pose.
+      float lin_pose[16];
+      std::memcpy(lin_pose, pose, sizeof lin_pose);
+      lin_pose[13] = lin_pose[14] = 0;
+      multiply(rot_x, lin_pose, local_body);
+    }
+    local_body[12] += brake_dx;
+    std::memcpy(pending_local_, local_body, sizeof local_body);
+    pending_wheel_ = corner;
+    pending_spins_ = is_rotor;
+    const auto& cb = info.wheel_centres_body[size_t(corner)];
+    local_body[12] += cb[0];
+    local_body[13] = cb[1];
+    local_body[14] = cb[2];
+    float m4[16];
+    multiply(body_to_model, local_body, m4);
+    std::vector<std::string> parts;
+    for (const auto& p : m.parts) parts.push_back(p.name);
+    add_model(m, parts, m4, tex_pack, axle);
+  };
+  for (int c = 0; c < 4; ++c) {
+    const size_t axle = c < 2 ? 0 : 1;
+    if (has_upg_rotor[axle]) add_brake_at(upg_rotor[axle], c, true, true, car_);
+    if (has_upg_caliper[axle]) add_brake_at(upg_caliper[axle], c, false, true, car_);
+  }
+  for (const auto& m : car_.models) {
+    if (m.role != Role::kCaliper && m.role != Role::kRotor) continue;
+    int corner = -1;
+    for (int c = 0; c < 4; ++c)
+      if (m.corner == kCorners[c]) corner = c;
+    if (corner < 0) {
+      notes_.push_back(m.name + ": no corner");
+      continue;
+    }
+    const size_t axle = corner < 2 ? 0 : 1;
+    if (m.role == Role::kRotor && has_upg_rotor[axle]) continue;
+    if (m.role == Role::kCaliper && has_upg_caliper[axle]) continue;
+    add_brake_at(m, corner, m.role == Role::kRotor, false, car_);
+  }
+  pending_wheel_ = -1;
+
+  // Wheels (FORMAT-CARS, Wheels): built in the body frame at each centre and
+  // mapped to the model frame by the inverse of the model-to-body pose.
+  // Rims are sized by their morph target, never scaled radially; tyres by
+  // their two targets; both are scaled across from the rim header's design
+  // width. Right wheels are the same models turned half a turn about y.
+  const bake::Model* rim = nullptr;
+  for (const auto& m : wheel_.models)
+    if (m.role == Role::kWheel) rim = &m;
+  const bake::Model* tyre = nullptr;
+  for (const auto& m : tyre_.models)
+    if (m.role == Role::kTyre) tyre = &m;
+  // A model's own tyre set (FORMAT-CARS, Wheels) is one unit wide like
+  // the shared tyre and carries the same two targets (on the FJ Cruiser and
+  // the Raptor-sized sets target A is the modelled radius, on the Wrangler
+  // it grows the tyre): ours, until its sizing is settled, it is sized as
+  // the shared tyre is (spec question Q39).
+  if (info.tyre_media.size() > 5) notes_.push_back("own tyre set " + info.tyre_media + ": sized as the shared tyre");
+  bool header_ok = false, extent_ok = false;
+  if (rim) {
+    const auto& hb = rim->header_bounds;
+    auto finite = [](float f) { return std::isfinite(f) && std::fabs(f) < 1e3f; };
+    header_ok = rim->header_kind == 3 && finite(hb[1]) && finite(hb[3]) && hb[1] - hb[3] > 0.01f;
+    extent_ok = header_ok && finite(hb[0]) && finite(hb[2]) && hb[0] - hb[2] > 0.01f;
+    if (!header_ok) notes_.push_back("rim header design width not finite: rim drawn unscaled across");
+    else if (!extent_ok)
+      notes_.push_back("rim header x extent not finite: tyre fitted to the design width (spec question Q13)");
+    bool morph = false, lod0 = false;
+    for (const auto& p : rim->parts) {
+      const int32_t lod = best_lod(p);
+      if (lod == 0) lod0 = true;
+      if (!(lod == 0 ? p.lod0_morphs : p.lod_morphs).empty()) morph = true;
+    }
+    if (!morph) notes_.push_back("rim has no morph target: drawn as authored");
+    if (!lod0) notes_.push_back("rim drawn from LOD1 (its LOD0 pool is missing or a stand-in)");
+  }
+  // Morph a copy of a wheel model: each drawn pool's targets at the weights.
+  auto morphed = [](const bake::Model& model, const std::array<float, 2>& weights) {
+    bake::Model out = model;
+    for (auto& p : out.parts) {
+      for (int lod = 0; lod < 2; ++lod) {
+        auto& pool = lod == 0 ? p.lod0_vertices : p.lod_vertices;
+        const auto& targets = lod == 0 ? p.lod0_morphs : p.lod_morphs;
+        std::vector<std::array<float, 3>> base(pool.size());
+        for (size_t i = 0; i < pool.size(); ++i) base[i] = pool[i].position;
+        for (size_t t = 0; t < targets.size() && t < 2; ++t) {
+          if (weights[t] == 0 || targets[t].size() != pool.size()) continue;
+          for (size_t i = 0; i < pool.size(); ++i)
+            for (size_t k = 0; k < 3; ++k)
+              pool[i].position[k] += weights[t] * (targets[t][i][k] - base[i][k]);
+        }
+      }
+      p.lod0_morphs.clear();
+      p.lod_morphs.clear();
+    }
+    return out;
+  };
+  for (int c = 0; c < 4; ++c) {
+    const int axle = c < 2 ? 0 : 1;
+    const bool right = c % 2 == 1;
+    const float inches = info.rim_inches[size_t(axle)] > 0 ? float(info.rim_inches[size_t(axle)]) : 14.0f;
+    const float rim_radius = inches * 0.0254f / 2;
+    const float width_m = info.tyre_width_mm[size_t(axle)] > 0
+                              ? float(info.tyre_width_mm[size_t(axle)]) / 1000.0f
+                              : 0.2f;
+    const float aspect = info.tyre_aspect[size_t(axle)] > 0 ? float(info.tyre_aspect[size_t(axle)]) / 100.0f
+                                                           : 0.5f;
+    const float outer = rim_radius + width_m * aspect;
+    const float w_rim = (inches - 14.0f) / 10.0f;
+    const float rim_scale = rim && header_ok ? width_m / (rim->header_bounds[1] - rim->header_bounds[3]) : 1.0f;
+    // Body-frame wheel matrix: centre, static alignment camber about Z, the
+    // half turn for right wheels, then the lateral scale (and the tyre's
+    // lateral offset in the rim's x).
+    const float cam = vis.active ? (right ? -vis.camber_rad[size_t(axle)] : vis.camber_rad[size_t(axle)]) : 0.0f;
+    const float cc = std::cos(cam), sc = std::sin(cam);
+    auto wheel_matrix = [&](float sx, float dx, float* m4) {
+      float base_m[16];
+      identity(base_m);
+      const float turn = right ? -1.0f : 1.0f;
+      base_m[0] = turn * sx;
+      base_m[10] = turn;
+      base_m[12] = turn * dx;
+      float local[16];
+      if (cam != 0.0f) {
+        float rz[16];
+        identity(rz);
+        rz[0] = cc;
+        rz[1] = sc;
+        rz[4] = -sc;
+        rz[5] = cc;
+        multiply(rz, base_m, local);
+      } else {
+        std::memcpy(local, base_m, sizeof local);
+      }
+      const auto& cb = info.wheel_centres_body[size_t(c)];
+      std::memcpy(pending_local_, local, sizeof local);  // about the centre (set_wheel_poses)
+      pending_wheel_ = c;
+      pending_spins_ = true;
+      local[12] += cb[0];
+      local[13] += cb[1];
+      local[14] += cb[2];
+      multiply(body_to_model, local, m4);
+    };
+    if (rim) {
+      float m4[16];
+      wheel_matrix(rim_scale, 0, m4);
+      const bake::Model sized = morphed(*rim, {w_rim, 0});
+      std::vector<std::string> parts;
+      for (const auto& p : sized.parts) parts.push_back(p.name);
+      add_model(sized, parts, m4, wheel_, axle);
+    }
+    if (tyre) {
+      // Target A raises the outer radius, target B the inner one.
+      const float w_outer = (outer - 0.2850f) / 0.1301f;
+      // The rim's x extent (bytes 32 and 40), or its design faces (36 and 44)
+      // where the extent is empty.
+      const auto& hb = rim ? rim->header_bounds : std::array<float, 4>{};
+      const float extent = extent_ok ? hb[0] - hb[2] : header_ok ? hb[1] - hb[3] : width_m;
+      const float centre = extent_ok ? (hb[0] + hb[2]) / 2 : header_ok ? (hb[1] + hb[3]) / 2 : 0.0f;
+      float m4[16];
+      wheel_matrix(rim_scale * extent, rim_scale * centre, m4);
+      const bake::Model sized = morphed(*tyre, {w_outer, w_rim});
+      std::vector<std::string> parts;
+      for (const auto& p : sized.parts) parts.push_back(p.name);
+      add_model(sized, parts, m4, tyre_, axle);
+    }
+  }
+  pending_wheel_ = -1;
+  if (!rim) notes_.push_back("no rim model in " + info.wheel_media);
+  if (!tyre) notes_.push_back("no tyre model in " + info.tyre_media);
+  if (draws_.empty()) {
+    error = car_name + ": nothing to draw";
+    return false;
+  }
+  return true;
+}
+
+uint32_t Showroom::texture_index(const std::string& slot, const bake::Bake& pack, bool lod0) {
+  if (slot.empty()) return UINT32_MAX;
+  const bake::Bake* source = nullptr;
+  std::string member, key;
+  if (slot == "@atlas") {
+    const auto& colours = car_.car.colours;
+    if (colours.empty()) return UINT32_MAX;
+    const auto& colour = colours[std::min(options_.colour, colours.size() - 1)];
+    member = lod0 && !colour.atlas_lod0.empty() ? colour.atlas_lod0 : colour.atlas_lod;
+    if (member.empty()) member = colour.atlas_lod0;
+    source = &car_;
+    key = "car:" + member;
+  } else if (slot.rfind("car:", 0) == 0) {
+    member = slot.substr(4);
+    source = &car_;
+    key = slot;
+  } else if (slot.rfind("wheel:", 0) == 0) {
+    member = slot.substr(6);
+    source = &pack;
+    key = (&pack == &wheel_ ? "wheel:" : "tyre-model:") + member;
+  } else if (slot.rfind("tyre:", 0) == 0) {
+    member = tyre_texture_member(slot.substr(5), car_.car.tyre_texture_media);
+    source = &tyre_textures_;
+    key = "tyre:" + member;
+  } else if (slot.rfind("shared:", 0) == 0) {
+    member = slot.substr(7);
+    source = &shared_;
+    key = slot;
+  } else if (slot == "livery_mask") {
+    member = slot;
+    source = &car_;
+    key = "car:livery_mask";
+  }
+  if (!source) return UINT32_MAX;
+  if (auto it = texture_by_key_.find(key); it != texture_by_key_.end()) return it->second;
+  const bake::Texture* found = nullptr;
+  for (const auto& t : source->textures)
+    if (t.name == member) found = &t;
+  if (!found) {
+    notes_.push_back("missing texture " + key);
+    texture_by_key_[key] = UINT32_MAX;
+    return UINT32_MAX;
+  }
+  const uint32_t index = uint32_t(textures_.size());
+  textures_.push_back({found, key});
+  texture_by_key_[key] = index;
+  return index;
+}
+
+
+}  // namespace carview

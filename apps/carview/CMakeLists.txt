@@ -74,7 +74,19 @@ add_library(carview_render STATIC
   renderer_frame.cpp
   renderer_ui.cpp
   renderer_swapchain.cpp
-  showroom.cpp
+  showroom_car_load.cpp
+  showroom_car_state.cpp
+  showroom_pipelines.cpp
+  showroom_upload.cpp
+  showroom_draw.cpp
+  showroom_shadows.cpp
+  showroom_env.cpp
+  showroom_sky.cpp
+  showroom_lights.cpp
+  showroom_world_stream.cpp
+  showroom_world_gpu.cpp
+  showroom_vfx.cpp
+  showroom_actors.cpp
   ui.cpp
   ui4_chrome.cpp
   platform_support.cpp
