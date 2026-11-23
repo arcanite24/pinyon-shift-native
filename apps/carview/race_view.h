@@ -33,6 +33,13 @@
 
 namespace cars {
 class PartsDb;
+struct PhysicsSettings;
+}
+
+namespace garage {
+struct Car;
+struct ClassBand;
+struct PiConfig;
 }
 
 namespace world {
@@ -42,6 +49,14 @@ class Collision;
 namespace carview {
 
 class TrafficView;
+
+// Resolves the raw PerformanceIndex (0..1] for the active player car so Race AI
+// scales to the player's fitted garage upgrades (P0-7). Returns < 0 when the
+// driven car is a loaner / non-garage override so RaceView uses stock PI.
+double resolve_player_race_pi(const garage::Car* selected_garage_car, const std::string& active_car_media,
+                              const std::map<int64_t, std::string>& baked_ids, const cars::PartsDb* db,
+                              const cars::PhysicsSettings* phys_settings, const garage::PiConfig* pi_cfg,
+                              const std::vector<garage::ClassBand>* bands);
 
 class RaceView {
  public:
@@ -127,9 +142,10 @@ class RaceView {
     double vx = 0, vy = 0, vz = 0;
     double rpm = 1000;
   };
-  // Airborne Showcase support (PLANE_RACE_001..007): 3D aircraft mesh & sky tag.
+  // Airborne Showcase support (PLANE_RACE_001..007): textured 3D aircraft mesh & sky tag.
   bool is_showcase() const { return showcase_.active(); }
   const race::ShowcaseOpponent& showcase() const { return showcase_; }
+  void build_showcase_mesh(std::vector<Showroom::ShowcaseVertex>& out) const;
   void append_showcase_mesh(std::vector<world::DebrisVertex>& out) const;
   bool showcase_tag(OpponentTag& out) const;
   const race::EventData& event() const { return event_; }
@@ -173,6 +189,37 @@ class RaceView {
   race::RallyPaceNoteTracker& codriver() { return codriver_; }
   const race::RallyPaceNoteTracker& codriver() const { return codriver_; }
   std::string summary() const;
+
+  // Full race-world rewind snapshot & restore (P0-4): captures every AI rival
+  // vehicle & controller, race/rally clock & Session state, AiField progress,
+  // checkpoints, splits, showcase aircraft, and restores them atomically.
+  struct RewindSnapshot {
+    struct AiCarState {
+      drive::Vehicle body;
+      drive::Vehicle::Pose before{};
+      race::DriverAi ai{};
+      double start_progress = 0.0;
+      double px = 0.0, pz = 0.0;
+      bool far = false;
+      float traction_cap = 1.0f;
+      AiCarState(const drive::Vehicle& v) : body(v) {}
+    };
+    race::Session::Snapshot session;
+    drive::AiField::Snapshot field;
+    std::vector<AiCarState> cars;
+    race::DriverAi player_ai{};
+    std::vector<size_t> next_checkpoint;
+    std::vector<float> lanes;
+    double ppx = 0.0, ppz = 0.0, wrong_way = 0.0;
+    std::vector<double> split_times;
+    double last_split_delta = 0.0, last_split_at = -1e9;
+    int stage_place = 0;
+    bool has_showcase = false;
+    race::ShowcaseOpponent::Snapshot showcase{};
+    std::optional<race::RaceAward> award;
+  };
+  RewindSnapshot capture_rewind() const;
+  void restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirty);
 
  private:
   struct Car {

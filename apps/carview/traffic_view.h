@@ -57,6 +57,15 @@ class TrafficView {
   // traffic and with the player is resolved in step()).
   void contact_bodies(std::vector<drive::ContactBody>& out, int group);
 
+  // Full traffic rewind snapshot & restore (population + physics bodies).
+  struct RewindSnapshot {
+    traffic::Population::Snapshot population;
+    traffic::Bodies::Snapshot bodies;
+    std::map<uint32_t, TrafficPose> before;
+  };
+  RewindSnapshot capture_rewind() const;
+  void restore_rewind(const RewindSnapshot& s);
+
  private:
   // What a loading worker returns: the model, and (in the window) its GPU
   // upload too, done on the worker through the renderer's second queue so

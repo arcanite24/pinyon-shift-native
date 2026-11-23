@@ -18,6 +18,7 @@
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
 #include "garage/tuning.h"
+#include "race/player_pi.h"
 
 namespace fs = std::filesystem;
 
@@ -179,6 +180,17 @@ static void test_synthetic_pi_and_tuning() {
   CHECK(std::fabs(rt.cars[0].tune.front_camber_deg - (-2.0)) < 1e-4);
   CHECK(std::fabs(rt.cars[0].tune.center_diff_split - 0.75) < 1e-4);
   CHECK(rt.cars[0].livery_file == "liveries/1.liv");
+
+  // P0-7 synthetic player_pi propagation: upgraded garage car returns upgraded raw PI,
+  // case-insensitive media matching succeeds, loaner override returns < 0, null returns < 0.
+  rt.cars[0].performance_index = 0.725;
+  std::map<int64_t, std::string> baked_ids{{rt.cars[0].car_id, "VW_CorradoVR6_95"}};
+  CHECK(std::fabs(race::resolve_player_race_pi(&rt.cars[0], "vw_corradovr6_95", baked_ids, nullptr, nullptr, nullptr,
+                                               nullptr) -
+                  0.725) < 1e-6);
+  CHECK(race::resolve_player_race_pi(&rt.cars[0], "FOR_FocusRS_09", baked_ids, nullptr, nullptr, nullptr, nullptr) <
+        0.0);
+  CHECK(race::resolve_player_race_pi(nullptr, "VW_CorradoVR6_95", baked_ids, nullptr, nullptr, nullptr, nullptr) < 0.0);
 }
 
 static void test_disc_pi_conversions_and_auto_upgrade() {
@@ -258,6 +270,17 @@ static void test_disc_pi_conversions_and_auto_upgrade() {
     std::string msg;
     CHECK(apply_auto_upgrade(g2, db, gid2, plan, 0, credits, phys_settings, pi_cfg, bands, &msg));
     CHECK(g2.find(gid2)->class_id == 5);
+
+    // P0-7: resolve_player_race_pi must return upgraded raw PI for the fitted garage car,
+    // not stock PI, and return < 0 for a non-matching loaner/override car.
+    std::map<int64_t, std::string> baked_ids{{309, "VW_CorradoVR6_95"}};
+    const double upgraded_pi = race::resolve_player_race_pi(
+        g2.find(gid2), "VW_CorradoVR6_95", baked_ids, &db, &phys_settings, &pi_cfg, &bands);
+    CHECK(upgraded_pi > pi0.raw_pi + 0.10);
+    CHECK(std::fabs(upgraded_pi - plan.result.raw_pi) < 1e-4);
+    const double loaner_pi = race::resolve_player_race_pi(
+        g2.find(gid2), "NIS_SkylineGTR_02", baked_ids, &db, &phys_settings, &pi_cfg, &bands);
+    CHECK(loaner_pi < 0.0);
 
     // Auto Downgrade Corrado back down to C class (class_id = 3, ceiling 0.5975 = C 400).
     auto down = plan_auto_upgrade(g2, db, gid2, 3, 0, phys_settings, pi_cfg, bands);

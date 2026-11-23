@@ -15,6 +15,7 @@
 
 #include "drive/from_physics.h"
 #include "garage/garage.h"
+#include "race/player_pi.h"
 #include "race/street_line.h"
 #include "race/rally_championship.h"
 #include "fh1data/archive.h"
@@ -23,6 +24,15 @@
 #include "world/collision.h"
 
 namespace carview {
+
+double resolve_player_race_pi(const garage::Car* selected_garage_car, const std::string& active_car_media,
+                              const std::map<int64_t, std::string>& baked_ids, const cars::PartsDb* db,
+                              const cars::PhysicsSettings* phys_settings, const garage::PiConfig* pi_cfg,
+                              const std::vector<garage::ClassBand>* bands) {
+  return race::resolve_player_race_pi(selected_garage_car, active_car_media, baked_ids, db, phys_settings, pi_cfg,
+                                      bands);
+}
+
 namespace {
 
 void clock_text(double t, char* out, size_t n) {
@@ -1290,7 +1300,7 @@ bool RaceView::showcase_tag(OpponentTag& out) const {
   return true;
 }
 
-void RaceView::append_showcase_mesh(std::vector<world::DebrisVertex>& out) const {
+void RaceView::build_showcase_mesh(std::vector<Showroom::ShowcaseVertex>& out) const {
   if (!showcase_.active()) return;
   const auto& sp = showcase_.spec();
   const auto& pose = showcase_.pose();
@@ -1298,162 +1308,272 @@ void RaceView::append_showcase_mesh(std::vector<world::DebrisVertex>& out) const
   const double cy = std::cos(pose.heading), sy = std::sin(pose.heading);
   const double cp = std::cos(pose.pitch), sp_p = std::sin(pose.pitch);
   const double cr = std::cos(pose.roll), sr = std::sin(pose.roll);
+  constexpr double kPi = 3.14159265358979323846;
 
   // Local (+X right, +Y up, +Z forward) -> game world rotation (roll, pitch, yaw).
   auto xform_dir = [&](double lx, double ly, double lz) -> std::array<float, 3> {
-    // Roll about +Z
     const double x1 = lx * cr - ly * sr;
     const double y1 = lx * sr + ly * cr;
     const double z1 = lz;
-    // Pitch about +X (positive nose up -> +Z tilts toward +Y)
     const double x2 = x1;
     const double y2 = y1 * cp + z1 * sp_p;
     const double z2 = -y1 * sp_p + z1 * cp;
-    // Yaw about +Y (heading 0 -> +Z, +pi/2 -> +X)
     const double wx = x2 * cy + z2 * sy;
     const double wy = y2;
     const double wz = -x2 * sy + z2 * cy;
     return {float(wx), float(wy), float(wz)};
   };
+  auto norm3 = [](std::array<float, 3> v) -> std::array<float, 3> {
+    const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return l > 1e-6f ? std::array<float, 3>{v[0] / l, v[1] / l, v[2] / l} : std::array<float, 3>{0, 1, 0};
+  };
   auto xform_pt = [&](double lx, double ly, double lz) -> std::array<float, 3> {
     const auto d = xform_dir(lx * sc, ly * sc, lz * sc);
     return {float(pose.position[0]) + d[0], float(pose.position[1]) + d[1], float(pose.position[2]) + d[2]};
   };
-  auto push_tri = [&](const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c,
-                      std::array<uint8_t, 4> col) {
+  auto push_uv_tri = [&](const std::array<float, 3>& a, const std::array<float, 3>& na, const std::array<float, 2>& ua,
+                         const std::array<float, 3>& b, const std::array<float, 3>& nb, const std::array<float, 2>& ub,
+                         const std::array<float, 3>& c, const std::array<float, 3>& nc, const std::array<float, 2>& uc,
+                         std::array<uint8_t, 4> col) {
+    out.push_back({a, na, ua, col});
+    out.push_back({b, nb, ub, col});
+    out.push_back({c, nc, uc, col});
+    out.push_back({a, {-na[0], -na[1], -na[2]}, ua, col});
+    out.push_back({c, {-nc[0], -nc[1], -nc[2]}, uc, col});
+    out.push_back({b, {-nb[0], -nb[1], -nb[2]}, ub, col});
+  };
+  auto push_flat_tri = [&](const std::array<float, 3>& a, const std::array<float, 2>& ua,
+                           const std::array<float, 3>& b, const std::array<float, 2>& ub,
+                           const std::array<float, 3>& c, const std::array<float, 2>& uc,
+                           std::array<uint8_t, 4> col) {
     const float ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
     const float vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-    float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    const float nl = std::sqrt(nx * nx + ny * ny + nz * nz);
-    if (nl > 1e-6f) nx /= nl, ny /= nl, nz /= nl;
-    else nx = 0, ny = 1, nz = 0;
-    out.push_back({a, {nx, ny, nz}, col});
-    out.push_back({b, {nx, ny, nz}, col});
-    out.push_back({c, {nx, ny, nz}, col});
-    out.push_back({a, {-nx, -ny, -nz}, col});
-    out.push_back({c, {-nx, -ny, -nz}, col});
-    out.push_back({b, {-nx, -ny, -nz}, col});
+    const auto n = norm3({uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx});
+    push_uv_tri(a, n, ua, b, n, ub, c, n, uc, col);
   };
-  auto add_box = [&](double cx, double cy0, double cz, double hx, double hy, double hz, std::array<uint8_t, 4> col) {
-    const std::array<float, 3> v[8] = {
-        xform_pt(cx - hx, cy0 - hy, cz - hz), xform_pt(cx + hx, cy0 - hy, cz - hz),
-        xform_pt(cx + hx, cy0 + hy, cz - hz), xform_pt(cx - hx, cy0 + hy, cz - hz),
-        xform_pt(cx - hx, cy0 - hy, cz + hz), xform_pt(cx + hx, cy0 - hy, cz + hz),
-        xform_pt(cx + hx, cy0 + hy, cz + hz), xform_pt(cx - hx, cy0 + hy, cz + hz),
+  // Smooth lofted fuselage/nacelle tube along +Z with elliptical cross-sections and proper cylindrical UVs.
+  struct LoftRing {
+    double z, yc, rx, ry, v;
+  };
+  auto add_loft = [&](const std::vector<LoftRing>& rings, int segs, std::array<uint8_t, 4> col) {
+    for (size_t r = 0; r + 1 < rings.size(); ++r) {
+      const auto& a = rings[r];
+      const auto& b = rings[r + 1];
+      for (int s = 0; s < segs; ++s) {
+        const double th0 = 2.0 * kPi * double(s) / double(segs);
+        const double th1 = 2.0 * kPi * double(s + 1) / double(segs);
+        const float u0 = float(s) / float(segs), u1 = float(s + 1) / float(segs);
+        const double c0 = std::cos(th0), s0 = std::sin(th0), c1 = std::cos(th1), s1 = std::sin(th1);
+        const auto p00 = xform_pt(a.rx * c0, a.yc + a.ry * s0, a.z);
+        const auto p10 = xform_pt(a.rx * c1, a.yc + a.ry * s1, a.z);
+        const auto p11 = xform_pt(b.rx * c1, b.yc + b.ry * s1, b.z);
+        const auto p01 = xform_pt(b.rx * c0, b.yc + b.ry * s0, b.z);
+        const auto n0 = norm3(xform_dir(c0, s0, 0.0));
+        const auto n1 = norm3(xform_dir(c1, s1, 0.0));
+        push_uv_tri(p00, n0, {u0, float(a.v)}, p10, n1, {u1, float(a.v)}, p11, n1, {u1, float(b.v)}, col);
+        push_uv_tri(p00, n0, {u0, float(a.v)}, p11, n1, {u1, float(b.v)}, p01, n0, {u0, float(b.v)}, col);
+      }
+    }
+  };
+  // Tapered swept airfoil wing / stabilizer panel (upper + lower cambered surfaces, UV mapped).
+  auto add_wing = [&](double x_root, double x_tip, double y_root, double y_tip, double z_root_le, double z_root_te,
+                      double z_tip_le, double z_tip_te, double thick_root, double thick_tip,
+                      std::array<uint8_t, 4> col) {
+    const auto r_le = xform_pt(x_root, y_root, z_root_le);
+    const auto r_te = xform_pt(x_root, y_root, z_root_te);
+    const auto r_top = xform_pt(x_root, y_root + thick_root, z_root_le * 0.65 + z_root_te * 0.35);
+    const auto r_bot = xform_pt(x_root, y_root - thick_root * 0.55, z_root_le * 0.65 + z_root_te * 0.35);
+    const auto t_le = xform_pt(x_tip, y_tip, z_tip_le);
+    const auto t_te = xform_pt(x_tip, y_tip, z_tip_te);
+    const auto t_top = xform_pt(x_tip, y_tip + thick_tip, z_tip_le * 0.65 + z_tip_te * 0.35);
+    const auto t_bot = xform_pt(x_tip, y_tip - thick_tip * 0.55, z_tip_le * 0.65 + z_tip_te * 0.35);
+    auto quad = [&](const std::array<float, 3>& p0, const std::array<float, 2>& u0,
+                    const std::array<float, 3>& p1, const std::array<float, 2>& u1,
+                    const std::array<float, 3>& p2, const std::array<float, 2>& u2,
+                    const std::array<float, 3>& p3, const std::array<float, 2>& u3) {
+      push_flat_tri(p0, u0, p1, u1, p2, u2, col);
+      push_flat_tri(p0, u0, p2, u2, p3, u3, col);
     };
-    const int f[12][3] = {
-        {0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7}, {0, 1, 5}, {0, 5, 4},
-        {2, 3, 7}, {2, 7, 6}, {0, 4, 7}, {0, 7, 3}, {1, 2, 6}, {1, 6, 5},
-    };
-    for (const auto& t : f) push_tri(v[t[0]], v[t[1]], v[t[2]], col);
+    quad(r_le, {0.1f, 0.1f}, t_le, {0.9f, 0.1f}, t_top, {0.9f, 0.5f}, r_top, {0.1f, 0.5f});
+    quad(r_top, {0.1f, 0.5f}, t_top, {0.9f, 0.5f}, t_te, {0.9f, 0.9f}, r_te, {0.1f, 0.9f});
+    quad(r_le, {0.1f, 0.1f}, r_bot, {0.1f, 0.5f}, t_bot, {0.9f, 0.5f}, t_le, {0.9f, 0.1f});
+    quad(r_bot, {0.1f, 0.5f}, r_te, {0.1f, 0.9f}, t_te, {0.9f, 0.9f}, t_bot, {0.9f, 0.5f});
+    push_flat_tri(t_le, {0.8f, 0.2f}, t_top, {0.9f, 0.5f}, t_te, {0.8f, 0.8f}, col);
+    push_flat_tri(t_le, {0.8f, 0.2f}, t_te, {0.8f, 0.8f}, t_bot, {0.9f, 0.5f}, col);
+  };
+  auto add_fin = [&](double x0, double y_bot, double y_top, double z_bot_le, double z_bot_te, double z_top_le,
+                     double z_top_te, double half_t, std::array<uint8_t, 4> col) {
+    const auto bl = xform_pt(x0 - half_t, y_bot, z_bot_le), br = xform_pt(x0 + half_t, y_bot, z_bot_le);
+    const auto bt = xform_pt(x0, y_bot, z_bot_te);
+    const auto tl = xform_pt(x0 - half_t * 0.5, y_top, z_top_le), tr = xform_pt(x0 + half_t * 0.5, y_top, z_top_le);
+    const auto tt = xform_pt(x0, y_top, z_top_te);
+    push_flat_tri(bl, {0.1f, 0.9f}, bt, {0.9f, 0.9f}, tt, {0.9f, 0.1f}, col);
+    push_flat_tri(bl, {0.1f, 0.9f}, tt, {0.9f, 0.1f}, tl, {0.1f, 0.1f}, col);
+    push_flat_tri(br, {0.1f, 0.9f}, tr, {0.1f, 0.1f}, tt, {0.9f, 0.1f}, col);
+    push_flat_tri(br, {0.1f, 0.9f}, tt, {0.9f, 0.1f}, bt, {0.9f, 0.9f}, col);
+    push_flat_tri(bl, {0.05f, 0.9f}, tl, {0.05f, 0.1f}, tr, {0.15f, 0.1f}, col);
+    push_flat_tri(bl, {0.05f, 0.9f}, tr, {0.15f, 0.1f}, br, {0.15f, 0.9f}, col);
+  };
+  auto add_strut = [&](double x0, double y0, double z0, double x1, double y1, double z1, double r,
+                       std::array<uint8_t, 4> col) {
+    const auto p0 = xform_pt(x0 - r, y0, z0), p1 = xform_pt(x0 + r, y0, z0);
+    const auto p2 = xform_pt(x1 + r, y1, z1), p3 = xform_pt(x1 - r, y1, z1);
+    push_flat_tri(p0, {0.05f, 0.05f}, p1, {0.1f, 0.05f}, p2, {0.1f, 0.95f}, col);
+    push_flat_tri(p0, {0.05f, 0.05f}, p2, {0.1f, 0.95f}, p3, {0.05f, 0.95f}, col);
   };
 
   if (sp.kind == race::ShowcaseAircraftKind::kHotAirBalloon) {
-    // Horizon Festival Hot-Air Balloon: vibrant multi-panel envelope + rigging + wicker basket.
-    constexpr int kSegs = 14, kRings = 8;
-    constexpr double kPi = 3.14159265358979323846;
+    // Horizon Festival Hot-Air Balloon: smooth 20x12 UV-mapped envelope, rigging cables, burner & gondola.
+    constexpr int kSegs = 20, kRings = 12;
     const std::array<uint8_t, 4> palette[4] = {
-        {240, 25, 105, 255},   // Horizon pink
-        {255, 195, 20, 255},   // Festival yellow
-        {255, 105, 15, 255},   // Sunset orange
-        {245, 245, 250, 255},  // Crisp white
+        {240, 25, 105, 255}, {255, 195, 20, 255}, {255, 105, 15, 255}, {245, 245, 250, 255},
     };
     auto env_r = [&](int r) {
-      const double u = double(r) / kRings;  // 0 bottom throat -> 1 top crown
-      return u < 0.2 ? 1.2 + u * 16.0 : 5.4 * std::sin(u * kPi * 0.92 + 0.15);
+      const double u = double(r) / kRings;
+      return u < 0.18 ? 1.15 + u * 16.5 : 5.75 * std::sin(u * kPi * 0.90 + 0.22);
     };
-    auto env_y = [&](int r) { return 3.0 + double(r) * 1.45; };
+    auto env_y = [&](int r) { return 3.0 + double(r) * 1.12; };
     for (int r = 0; r < kRings; ++r) {
       const double r0 = env_r(r), r1 = env_r(r + 1);
       const double y0 = env_y(r), y1 = env_y(r + 1);
+      const float v0 = float(r) / float(kRings), v1 = float(r + 1) / float(kRings);
       for (int s = 0; s < kSegs; ++s) {
         const double a0 = 2.0 * kPi * s / kSegs, a1 = 2.0 * kPi * (s + 1) / kSegs;
-        const auto p00 = xform_pt(r0 * std::cos(a0), y0, r0 * std::sin(a0));
-        const auto p10 = xform_pt(r0 * std::cos(a1), y0, r0 * std::sin(a1));
-        const auto p11 = xform_pt(r1 * std::cos(a1), y1, r1 * std::sin(a1));
-        const auto p01 = xform_pt(r1 * std::cos(a0), y1, r1 * std::sin(a0));
-        const auto col = palette[(s + r / 2) % 4];
-        push_tri(p00, p10, p11, col);
-        push_tri(p00, p11, p01, col);
+        const float u0 = float(s) / float(kSegs), u1 = float(s + 1) / float(kSegs);
+        const double c0 = std::cos(a0), s0 = std::sin(a0), c1 = std::cos(a1), s1 = std::sin(a1);
+        const auto p00 = xform_pt(r0 * c0, y0, r0 * s0);
+        const auto p10 = xform_pt(r0 * c1, y0, r0 * s1);
+        const auto p11 = xform_pt(r1 * c1, y1, r1 * s1);
+        const auto p01 = xform_pt(r1 * c0, y1, r1 * s0);
+        const auto n0 = norm3(xform_dir(c0, 0.18, s0));
+        const auto n1 = norm3(xform_dir(c1, 0.18, s1));
+        const auto col = palette[(s + r / 3) % 4];
+        push_uv_tri(p00, n0, {u0, v0}, p10, n1, {u1, v0}, p11, n1, {u1, v1}, col);
+        push_uv_tri(p00, n0, {u0, v0}, p11, n1, {u1, v1}, p01, n0, {u0, v1}, col);
       }
     }
-    add_box(0, 0.7, 0, 0.95, 0.75, 0.95, {140, 95, 50, 255});    // wicker basket
-    add_box(0, 2.4, 0, 0.35, 0.5, 0.35, {255, 190, 60, 255});    // burner glow
-    for (double sx : {-0.8, 0.8})
-      for (double sz : {-0.8, 0.8}) add_box(sx, 2.1, sz, 0.06, 1.0, 0.06, {70, 70, 75, 255});
+    // Wicker gondola & burner glow + 8 suspension cables.
+    add_loft({{-0.95, 0.7, 0.95, 0.72, 0.85}, {0.95, 0.7, 0.95, 0.72, 0.98}}, 8, {150, 102, 54, 255});
+    add_loft({{-0.32, 2.35, 0.32, 0.42, 0.5}, {0.32, 2.35, 0.32, 0.42, 0.6}}, 8, {255, 196, 62, 255});
+    for (int k = 0; k < 8; ++k) {
+      const double a = 2.0 * kPi * k / 8.0;
+      add_strut(0.88 * std::cos(a), 1.35, 0.88 * std::sin(a), 1.15 * std::cos(a), 3.05, 1.15 * std::sin(a), 0.04,
+                {64, 66, 72, 255});
+    }
     return;
   }
 
   if (sp.kind == race::ShowcaseAircraftKind::kHelicopter) {
-    // Attack Helicopter: dark tactical fuselage, canopy, tail boom, skids, spinning main + tail rotors.
-    const std::array<uint8_t, 4> body{48, 56, 62, 255}, accent{235, 65, 35, 255}, glass{25, 45, 68, 255},
-        rotor{32, 34, 38, 255};
-    add_box(0, 0.0, 0.6, 1.15, 0.95, 2.8, body);      // main cabin
-    add_box(0, 0.25, 2.6, 0.9, 0.65, 1.1, glass);     // cockpit glass
-    add_box(0, 0.2, -3.6, 0.35, 0.42, 3.2, body);     // tail boom
-    add_box(0, 1.05, -6.5, 0.12, 0.95, 0.55, accent); // tail fin
-    add_box(0, -0.3, 0.4, 2.4, 0.14, 0.55, accent);   // stub wings
-    for (double sx : {-1.1, 1.1}) add_box(sx, -1.25, 0.5, 0.10, 0.08, 2.4, rotor);  // skids
-    // Spinning 4-blade main rotor
-    for (int b = 0; b < 2; ++b) {
-      const double a = pose.rotor_angle + b * 1.5707963;
-      const double bx = std::cos(a) * 5.8, bz = std::sin(a) * 5.8;
+    // Sculpted Attack Helicopter: tapered gunship hull, stepped tandem canopy, tail boom, skids & 4-blade rotor.
+    const std::array<uint8_t, 4> body{56, 64, 72, 255}, accent{225, 68, 36, 255}, glass{28, 52, 78, 255},
+        rotor{36, 38, 44, 255};
+    add_loft({{-6.6, 0.35, 0.14, 0.18, 0.02},
+              {-2.4, 0.25, 0.38, 0.42, 0.30},
+              {-1.0, 0.15, 1.05, 0.92, 0.46},
+              {1.4, 0.08, 1.12, 0.96, 0.68},
+              {3.1, -0.05, 0.82, 0.62, 0.86},
+              {4.2, -0.22, 0.26, 0.24, 0.98}},
+             10, body);
+    // Stepped cockpit canopy dome
+    add_loft({{0.2, 0.72, 0.56, 0.38, 0.15}, {1.8, 0.68, 0.68, 0.44, 0.50}, {3.2, 0.32, 0.38, 0.24, 0.85}}, 8, glass);
+    // Tail fin & stub weapon wings
+    add_fin(0.0, 0.35, 1.95, -5.8, -6.9, -6.2, -7.1, 0.10, accent);
+    add_wing(0.95, 2.85, -0.15, -0.30, 0.95, -0.15, 0.55, -0.25, 0.16, 0.09, accent);
+    add_wing(-0.95, -2.85, -0.15, -0.30, 0.95, -0.15, 0.55, -0.25, 0.16, 0.09, accent);
+    for (double sx : {-1.15, 1.15}) {
+      add_strut(sx, -1.25, -1.6, sx, -1.25, 2.5, 0.09, rotor);
+      add_strut(sx, -1.25, -0.5, sx * 0.75, -0.45, -0.3, 0.06, rotor);
+      add_strut(sx, -1.25, 1.4, sx * 0.75, -0.45, 1.2, 0.06, rotor);
+    }
+    // Spinning 4-blade main rotor + rotor mast + tail rotor.
+    add_strut(0.0, 0.95, 0.35, 0.0, 1.55, 0.35, 0.14, rotor);
+    for (int b = 0; b < 4; ++b) {
+      const double a = pose.rotor_angle + b * 0.5 * kPi;
+      const double bx = std::cos(a) * 6.0, bz = std::sin(a) * 6.0;
       const double px = -std::sin(a) * 0.22, pz = std::cos(a) * 0.22;
-      const auto p0 = xform_pt(-bx - px, 1.45, 0.3 - bz - pz);
-      const auto p1 = xform_pt(bx - px, 1.45, 0.3 + bz - pz);
-      const auto p2 = xform_pt(bx + px, 1.45, 0.3 + bz + pz);
-      const auto p3 = xform_pt(-bx + px, 1.45, 0.3 - bz + pz);
-      push_tri(p0, p1, p2, rotor);
-      push_tri(p0, p2, p3, rotor);
-      push_tri(p0, p2, p1, rotor);
-      push_tri(p0, p3, p2, rotor);
+      const auto p0 = xform_pt(px, 1.55, 0.35 + pz);
+      const auto p1 = xform_pt(bx + px * 0.7, 1.55, 0.35 + bz + pz * 0.7);
+      const auto p2 = xform_pt(bx - px * 0.7, 1.55, 0.35 + bz - pz * 0.7);
+      const auto p3 = xform_pt(-px, 1.55, 0.35 - pz);
+      push_flat_tri(p0, {0.05f, 0.1f}, p1, {0.95f, 0.1f}, p2, {0.95f, 0.9f}, rotor);
+      push_flat_tri(p0, {0.05f, 0.1f}, p2, {0.95f, 0.9f}, p3, {0.05f, 0.9f}, rotor);
+    }
+    for (int b = 0; b < 2; ++b) {
+      const double a = pose.rotor_angle * 2.4 + b * kPi;
+      const double by = std::cos(a) * 0.95, bz = std::sin(a) * 0.95;
+      add_strut(0.22, 1.25 - by, -6.65 - bz, 0.22, 1.25 + by, -6.65 + bz, 0.08, rotor);
     }
     return;
   }
 
-  // Fixed-wing aircraft: P-51 Mustang, Stunt Jet, or Biplane.
+  // Sculpted fixed-wing aircraft: P-51 Mustang, Stunt Jet, or Biplane.
   const bool is_jet = sp.kind == race::ShowcaseAircraftKind::kStuntJet;
   const bool is_biplane = sp.kind == race::ShowcaseAircraftKind::kBiplane;
-  const std::array<uint8_t, 4> fuse = is_jet ? std::array<uint8_t, 4>{230, 234, 240, 255}
-                                             : (is_biplane ? std::array<uint8_t, 4>{210, 34, 34, 255}
-                                                           : std::array<uint8_t, 4>{214, 220, 228, 255});
-  const std::array<uint8_t, 4> trim = is_jet ? std::array<uint8_t, 4>{245, 0, 96, 255}
-                                             : (is_biplane ? std::array<uint8_t, 4>{245, 236, 212, 255}
-                                                           : std::array<uint8_t, 4>{215, 28, 32, 255});
-  const std::array<uint8_t, 4> canopy{30, 52, 78, 255};
+  const std::array<uint8_t, 4> fuse = is_jet ? std::array<uint8_t, 4>{228, 232, 240, 255}
+                                             : (is_biplane ? std::array<uint8_t, 4>{212, 36, 36, 255}
+                                                           : std::array<uint8_t, 4>{216, 222, 230, 255});
+  const std::array<uint8_t, 4> trim = is_jet ? std::array<uint8_t, 4>{245, 16, 98, 255}
+                                             : (is_biplane ? std::array<uint8_t, 4>{246, 238, 214, 255}
+                                                           : std::array<uint8_t, 4>{218, 30, 34, 255});
+  const std::array<uint8_t, 4> canopy{32, 56, 84, 255};
 
-  add_box(0, 0.0, 0.0, 0.72, 0.75, 4.6, fuse);       // fuselage
-  add_box(0, 0.0, 4.9, 0.45, 0.45, 0.85, trim);      // nose cowling / spinner
-  add_box(0, 0.78, 0.4, 0.42, 0.36, 1.35, canopy);   // cockpit canopy
-  // Main wing(s)
-  add_box(0, -0.15, 0.7, is_jet ? 5.6 : 6.4, 0.14, is_jet ? 1.45 : 1.15, fuse);
-  add_box(0, -0.13, 0.7, is_jet ? 5.8 : 6.6, 0.15, 0.32, trim);  // wing stripe
+  // Multi-ring tapered aerodynamic fuselage with proper UV wrap.
+  add_loft({{-4.9, 0.12, 0.16, 0.28, 0.02},
+            {-2.8, 0.05, 0.44, 0.56, 0.22},
+            {-0.6, 0.00, 0.70, 0.78, 0.46},
+            {1.8, 0.00, 0.72, 0.76, 0.68},
+            {4.2, 0.00, 0.56, 0.58, 0.86},
+            {5.3, 0.00, is_jet ? 0.06 : 0.34, is_jet ? 0.06 : 0.34, 0.96},
+            {5.9, 0.00, 0.04, 0.04, 1.00}},
+           12, fuse);
+  // Sculpted bubble / teardrop canopy
+  add_loft({{-0.7, 0.66, 0.32, 0.24, 0.15}, {0.4, 0.78, 0.44, 0.40, 0.50}, {1.6, 0.64, 0.28, 0.22, 0.85}}, 8, canopy);
+
+  // Swept tapered cambered main wings (left & right).
+  const double span = is_jet ? 5.9 : 6.7;
+  const double z_tip_le = is_jet ? -1.4 : 0.95;
+  const double z_tip_te = is_jet ? -3.2 : -0.15;
+  add_wing(0.55, span, -0.16, is_jet ? -0.18 : 0.18, 1.9, -0.45, z_tip_le, z_tip_te, 0.24, 0.10, fuse);
+  add_wing(-0.55, -span, -0.16, is_jet ? -0.18 : 0.18, 1.9, -0.45, z_tip_le, z_tip_te, 0.24, 0.10, fuse);
   if (is_biplane) {
-    add_box(0, 1.35, 0.9, 6.2, 0.12, 1.05, trim);  // upper biplane wing
-    for (double sx : {-3.6, -1.6, 1.6, 3.6}) add_box(sx, 0.6, 0.8, 0.06, 0.75, 0.06, {65, 65, 70, 255});
-  }
-  // Tailplane & vertical stabilizer(s)
-  add_box(0, 0.12, -4.1, 2.25, 0.10, 0.65, trim);
-  if (is_jet) {
-    add_box(-0.75, 0.95, -4.2, 0.10, 0.95, 0.75, trim);
-    add_box(0.75, 0.95, -4.2, 0.10, 0.95, 0.75, trim);
-    add_box(0, 0.0, -5.2, 0.45, 0.45, 0.65, {255, 145, 25, 255});  // afterburner glow
-  } else {
-    add_box(0, 1.05, -4.1, 0.12, 1.05, 0.80, trim);
-    // Spinning propeller blades
-    for (int b = 0; b < 2; ++b) {
-      const double a = pose.rotor_angle + b * 1.5707963;
-      const double bx = std::cos(a) * 1.85, by = std::sin(a) * 1.85;
-      const double px = -std::sin(a) * 0.12, py = std::cos(a) * 0.12;
-      const auto p0 = xform_pt(-bx - px, -by - py, 5.75);
-      const auto p1 = xform_pt(bx - px, by - py, 5.75);
-      const auto p2 = xform_pt(bx + px, by + py, 5.75);
-      const auto p3 = xform_pt(-bx + px, -by + py, 5.75);
-      const std::array<uint8_t, 4> prop{40, 42, 46, 255};
-      push_tri(p0, p1, p2, prop);
-      push_tri(p0, p2, p3, prop);
+    add_wing(0.0, 6.4, 1.38, 1.48, 1.95, 0.05, 1.55, 0.15, 0.18, 0.10, trim);
+    add_wing(0.0, -6.4, 1.38, 1.48, 1.95, 0.05, 1.55, 0.15, 0.18, 0.10, trim);
+    for (double sx : {-4.2, -2.0, 2.0, 4.2}) {
+      add_strut(sx, -0.05, 1.25, sx, 1.42, 1.45, 0.06, {64, 66, 72, 255});
+      add_strut(sx, -0.05, 0.35, sx, 1.42, 0.55, 0.06, {64, 66, 72, 255});
     }
   }
+  // Tapered tailplane & vertical stabilizer(s)
+  add_wing(0.18, 2.45, 0.14, 0.18, -3.5, -4.65, -4.05, -4.85, 0.12, 0.06, trim);
+  add_wing(-0.18, -2.45, 0.14, 0.18, -3.5, -4.65, -4.05, -4.85, 0.12, 0.06, trim);
+  if (is_jet) {
+    add_fin(-0.78, 0.18, 1.95, -3.3, -4.8, -4.2, -5.0, 0.09, trim);
+    add_fin(0.78, 0.18, 1.95, -3.3, -4.8, -4.2, -5.0, 0.09, trim);
+    add_loft({{-5.4, 0.0, 0.36, 0.36, 0.1}, {-4.7, 0.0, 0.44, 0.44, 0.9}}, 10, {255, 148, 28, 255});
+  } else {
+    add_fin(0.0, 0.22, 2.15, -3.2, -4.75, -4.15, -4.95, 0.11, trim);
+    // Spinning 4-blade (P-51) or 2-blade (Biplane) propeller.
+    const int blades = is_biplane ? 2 : 4;
+    for (int b = 0; b < blades; ++b) {
+      const double a = pose.rotor_angle + b * (2.0 * kPi / double(blades));
+      const double bx = std::cos(a) * 1.90, by = std::sin(a) * 1.90;
+      const double px = -std::sin(a) * 0.13, py = std::cos(a) * 0.13;
+      const auto p0 = xform_pt(px, py, 5.55);
+      const auto p1 = xform_pt(bx + px * 0.7, by + py * 0.7, 5.55);
+      const auto p2 = xform_pt(bx - px * 0.7, by - py * 0.7, 5.55);
+      const auto p3 = xform_pt(-px, -py, 5.55);
+      const std::array<uint8_t, 4> prop{36, 38, 44, 255};
+      push_flat_tri(p0, {0.05f, 0.1f}, p1, {0.95f, 0.1f}, p2, {0.95f, 0.9f}, prop);
+      push_flat_tri(p0, {0.05f, 0.1f}, p2, {0.95f, 0.9f}, p3, {0.05f, 0.9f}, prop);
+    }
+  }
+}
+
+void RaceView::append_showcase_mesh(std::vector<world::DebrisVertex>& out) const {
+  std::vector<Showroom::ShowcaseVertex> sv;
+  build_showcase_mesh(sv);
+  out.reserve(out.size() + sv.size());
+  for (const auto& v : sv) out.push_back({v.pos, v.normal, v.rgba});
 }
 
 void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
@@ -1526,6 +1646,74 @@ std::string RaceView::summary() const {
   std::string s = b;
   for (size_t k = 0; k <= cars_.size(); ++k) s += " " + std::to_string(int(field_->progress(k)));
   return s;
+}
+
+RaceView::RewindSnapshot RaceView::capture_rewind() const {
+  RewindSnapshot snap;
+  if (session_) snap.session = session_->snapshot();
+  if (field_) snap.field = field_->snapshot();
+  snap.cars.reserve(cars_.size());
+  for (const auto& c : cars_) {
+    if (!c.body) continue;
+    RewindSnapshot::AiCarState st(*c.body);
+    st.before = c.before;
+    st.ai = c.ai;
+    st.start_progress = c.start_progress;
+    st.px = c.px;
+    st.pz = c.pz;
+    st.far = c.far;
+    st.traction_cap = c.traction_cap;
+    snap.cars.push_back(std::move(st));
+  }
+  snap.player_ai = player_ai_;
+  snap.next_checkpoint = next_checkpoint_;
+  snap.lanes = lanes_;
+  snap.ppx = ppx_;
+  snap.ppz = ppz_;
+  snap.wrong_way = wrong_way_;
+  snap.split_times = split_times_;
+  snap.last_split_delta = last_split_delta_;
+  snap.last_split_at = last_split_at_;
+  snap.stage_place = stage_place_;
+  snap.has_showcase = showcase_.active();
+  if (snap.has_showcase) snap.showcase = showcase_.snapshot();
+  snap.award = award_;
+  return snap;
+}
+
+void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirty) {
+  if (session_) {
+    session_->restore(s.session);
+    if (mark_player_lap_dirty) session_->mark_lap_dirty(player_index());
+  }
+  if (field_) field_->restore(s.field);
+  size_t si = 0;
+  for (auto& c : cars_) {
+    if (!c.body) continue;
+    if (si >= s.cars.size()) break;
+    const auto& st = s.cars[si++];
+    *c.body = st.body;
+    c.before = st.before;
+    c.ai = st.ai;
+    c.start_progress = st.start_progress;
+    c.px = st.px;
+    c.pz = st.pz;
+    c.far = st.far;
+    c.traction_cap = st.traction_cap;
+  }
+  player_ai_ = s.player_ai;
+  next_checkpoint_ = s.next_checkpoint;
+  lanes_ = s.lanes;
+  ppx_ = s.ppx;
+  ppz_ = s.ppz;
+  wrong_way_ = s.wrong_way;
+  split_times_ = s.split_times;
+  last_split_delta_ = s.last_split_delta;
+  last_split_at_ = s.last_split_at;
+  stage_place_ = s.stage_place;
+  if (s.has_showcase && showcase_.active()) showcase_.restore(s.showcase);
+  award_ = s.award;
+  if (session_) codriver_.rewind_to(session_->clock());
 }
 
 }  // namespace carview

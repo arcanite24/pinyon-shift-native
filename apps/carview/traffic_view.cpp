@@ -249,7 +249,8 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
   std::vector<Showroom::Instance> list;
   for (const auto& c : population_->cars()) {
-    if (c.alpha <= 0.02f) continue;
+    const float alpha = std::clamp(c.alpha, 0.0f, 1.0f);
+    if (alpha <= 0.005f) continue;
     const auto it = guests_.find(c.model);
     if (it == guests_.end() || !it->second.showroom) continue;
     const drive::Vehicle* body = bodies_->body(c.id);
@@ -274,6 +275,7 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     Showroom::Instance in;
     in.car = it->second.showroom.get();
     multiply(world_to_player, gmd, in.model);
+    in.fade_alpha = alpha;
     const bool is_new = !lamps_.count(c.id);
     drive::CarLampState& lstate = lamps_[c.id];
     drive::LampInputs lin;
@@ -299,6 +301,21 @@ void TrafficView::contact_bodies(std::vector<drive::ContactBody>& out, int group
   if (!bodies_) return;
   const double scale = bodies_->torque_scale();
   bodies_->for_each([&](drive::Vehicle& v) { out.push_back({&v, scale, group, drive::ContactRole::kTraffic}); });
+}
+
+TrafficView::RewindSnapshot TrafficView::capture_rewind() const {
+  RewindSnapshot snap;
+  if (population_) snap.population = population_->snapshot();
+  if (bodies_) snap.bodies = bodies_->snapshot();
+  snap.before = before_;
+  return snap;
+}
+
+void TrafficView::restore_rewind(const RewindSnapshot& s) {
+  if (population_) population_->restore(s.population);
+  if (bodies_) bodies_->restore(s.bodies);
+  before_ = s.before;
+  lamps_at_ = population_ ? population_->time() : -1.0;
 }
 
 Showroom::Instance guest_instance(const cars::bake::CarInfo& player_info, const drive::Vehicle& player, Showroom& guest,

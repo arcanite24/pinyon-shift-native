@@ -378,7 +378,7 @@ Showroom::~Showroom() {
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (material_pool_) vkDestroyDescriptorPool(d, material_pool_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
-  for (VkPipeline p : {opaque_, opaque_after_z_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
+  for (VkPipeline p : {opaque_, opaque_after_z_, opaque_fade_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
                        contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_opaque_dither_,
                        world_z_prepass_, world_coverage_, world_alpha_, world_water_, shadow_world_, shadow_cutout_, shadow_car_,
                        sky_pipe_base_, sky_pipe_layers_, stars_pipe_})
@@ -420,7 +420,9 @@ Showroom::~Showroom() {
   destroy_dyn_buffer(spectator_buf_);
   r_.destroy_image(spectator_atlas_);
   spectator_set_ = VK_NULL_HANDLE;
+  destroy_dyn_buffer(showcase_buf_);
   destroy_dyn_buffer(driver_buf_);
+  r_.destroy_image(showcase_tex_);
   r_.destroy_image(particle_atlas_);
   r_.destroy_image(skid_asphalt_tex_);
   r_.destroy_image(skid_rut_tex_);
@@ -2172,6 +2174,11 @@ bool Showroom::create_pipelines(std::string& error) {
   VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dynamic.dynamicStateCount = 2;
   dynamic.pDynamicStates = dynamic_states;
+  const VkDynamicState blend_const_states[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                                VK_DYNAMIC_STATE_BLEND_CONSTANTS};
+  VkPipelineDynamicStateCreateInfo dynamic_blend_const{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dynamic_blend_const.dynamicStateCount = 3;
+  dynamic_blend_const.pDynamicStates = blend_const_states;
 
   // Under the drive's post chain the scene shaders write linear HDR
   // (constant 0 of showroom.frag and world.frag).
@@ -2252,6 +2259,15 @@ bool Showroom::create_pipelines(std::string& error) {
       attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
       attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
       attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    } else if (blend_mode == 5) {
+      // Constant-alpha fade blend (smooth traffic spawn/despawn fade-in/out without shader edits).
+      attachment.blendEnable = VK_TRUE;
+      attachment.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+      attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+      attachment.colorBlendOp = VK_BLEND_OP_ADD;
+      attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+      attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+      attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     }
     VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = color_out ? 1u : 0u;
@@ -2273,8 +2289,9 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pColorBlendState = &blend;
     const bool use_vrs = r_.vrs_supported() && color_out && (blend_mode == 0) && samples == r_.samples_ &&
                          (&out != &env_world_opaque_) && (&out != &env_world_coverage_) && (&out != &env_car_opaque_);
-    info.pDynamicState = vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
-                                : (use_vrs ? &dynamic_vrs : &dynamic);
+    info.pDynamicState = (blend_mode == 5) ? &dynamic_blend_const
+                                           : (vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
+                                                     : (use_vrs ? &dynamic_vrs : &dynamic));
     info.layout = pipe_layout ? pipe_layout : pipeline_layout_;
     return vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &info, nullptr, &out);
   };
@@ -2284,6 +2301,9 @@ bool Showroom::create_pipelines(std::string& error) {
   if (result == VK_SUCCESS)
     result = build(frag, r_.scene_format(), r_.samples_, true, false, 0, opaque_after_z_,
                    VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, true);
+  if (result == VK_SUCCESS)
+    result = build(frag, r_.scene_format(), r_.samples_, true, false, 5, opaque_fade_,
+                   VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back);
   if (result == VK_SUCCESS)
     result = build(VK_NULL_HANDLE, r_.scene_format(), r_.samples_, true, true, 0, car_z_prepass_,
                    VK_NULL_HANDLE, nullptr, false, VK_NULL_HANDLE, cull_back, false, false);
@@ -2949,11 +2969,14 @@ bool Showroom::upload(std::string& error) {
       }
       uint32_t written = 0;
       for (Showroom* g : groups) {
-        for (const auto& in : instances_) {
-          if (in.car != g || written >= kMaxCarInstances) continue;
+        auto write_one = [&](const Instance& in) {
+          if (written >= kMaxCarInstances) return;
           CarInstanceGpu& ci = dst[written++];
           std::memcpy(ci.model, in.model, sizeof ci.model);
           for (int k = 0; k < 4; ++k) ci.stripe[k] = g->stripe_[k];
+          const float fa = std::clamp(in.fade_alpha, 0.0f, 1.0f);
+          ci.pad[0] = fa;
+          ci.pad[1] = ci.pad[2] = ci.pad[3] = 0.0f;
           const drive::LampShaderVectors& active_lamps = in.has_lamps ? in.lamps : g->lamp_vectors_;
           for (uint32_t ch = 0; ch < 30; ++ch) {
             if (ch == 0) {
@@ -2961,11 +2984,16 @@ bool Showroom::upload(std::string& error) {
             } else {
               const auto rgb = drive::evaluate_lamp_emission(static_cast<drive::LampChannel>(ch), active_lamps,
                                                              g->lamp_colors_);
-              ci.lamp_rgb[ch][0] = rgb[0], ci.lamp_rgb[ch][1] = rgb[1], ci.lamp_rgb[ch][2] = rgb[2],
+              ci.lamp_rgb[ch][0] = rgb[0] * fa, ci.lamp_rgb[ch][1] = rgb[1] * fa, ci.lamp_rgb[ch][2] = rgb[2] * fa,
               ci.lamp_rgb[ch][3] = 1.0f;
             }
           }
-        }
+        };
+        // Pack fully opaque instances first (fast batched draw), then fading instances.
+        for (const auto& in : instances_)
+          if (in.car == g && in.fade_alpha >= 0.99f) write_one(in);
+        for (const auto& in : instances_)
+          if (in.car == g && in.fade_alpha < 0.99f) write_one(in);
       }
       ++car_inst_buf_.ver;
       dyn_sync(car_inst_buf_, VkDeviceSize(written) * sizeof(CarInstanceGpu));
@@ -3045,6 +3073,7 @@ bool Showroom::upload(std::string& error) {
     record_contact_shadows(cmd);
     r_.mark(cmd, "contact_shadow");
     record_debris_draw(cmd);
+    record_showcase_draw(cmd);
     record_driver_draw(cmd);
     const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
     if (draw_car_) record_draws(cmd, car_op, glass_, 1);
@@ -3689,7 +3718,9 @@ void Showroom::record_contact_shadows(VkCommandBuffer cmd) {
   }
   for (const auto& in : instances_) {
     if (!in.car || !in.car->have_bounds_) continue;
-    draw_one(in.car, in.model, in.car->bounds_min_, in.car->bounds_max_, 0.88f);
+    const float fa = std::clamp(in.fade_alpha, 0.0f, 1.0f);
+    if (fa <= 0.01f) continue;
+    draw_one(in.car, in.model, in.car->bounds_min_, in.car->bounds_max_, 0.88f * fa);
   }
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
 }
@@ -3754,51 +3785,85 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
   const int pass_begin = (pass_mode == 2) ? 1 : 0;
   const int pass_end = (pass_mode == 1) ? 1 : 2;
   for (Showroom* g : groups) {
-    uint32_t count = 0;
+    uint32_t solid_count = 0;
+    std::vector<float> fade_alphas;
     for (const auto& in : instances_)
-      if (in.car == g && offset + count < kMaxCarInstances) ++count;
-    if (count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
+      if (in.car == g && in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
+    for (const auto& in : instances_)
+      if (in.car == g && in.fade_alpha < 0.99f && offset + solid_count + uint32_t(fade_alphas.size()) < kMaxCarInstances)
+        fade_alphas.push_back(std::clamp(in.fade_alpha, 0.0f, 1.0f));
+    const uint32_t total_count = solid_count + uint32_t(fade_alphas.size());
+    if (total_count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
-    for (int pass = pass_begin; pass < pass_end; ++pass) {
-      VkPipeline bound_p = VK_NULL_HANDLE;
-      uint32_t bound_desc = UINT32_MAX;
-      for (const auto& d : g->draws_) {
-        if (d.glass != (pass == 1)) continue;
-        ShowroomPush push = d.push;
-        uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
-        flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
-        push.params[1] = float(flags);
-        if (d.descriptor != bound_desc) {
-          bound_desc = d.descriptor;
-          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
-                                  &g->material_sets_[d.descriptor], 0, nullptr);
-        }
-        if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
-          if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
-          push.params[2] = 7.0f;
-          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                             sizeof(ShowroomPush), &push);
-          vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
-          if (bound_p != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_add_);
-          push.params[2] = 8.0f;
-          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                             sizeof(ShowroomPush), &push);
-          vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
-        } else {
-          VkPipeline want = pass ? g->glass_ : op_pipe;
-          if (bound_p != want) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
-            if (!pass) r_.apply_vrs(cmd);
+    if (solid_count > 0) {
+      for (int pass = pass_begin; pass < pass_end; ++pass) {
+        VkPipeline bound_p = VK_NULL_HANDLE;
+        uint32_t bound_desc = UINT32_MAX;
+        for (const auto& d : g->draws_) {
+          if (d.glass != (pass == 1)) continue;
+          ShowroomPush push = d.push;
+          uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
+          flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
+          push.params[1] = float(flags);
+          if (d.descriptor != bound_desc) {
+            bound_desc = d.descriptor;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                    &g->material_sets_[d.descriptor], 0, nullptr);
           }
-          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                             sizeof(ShowroomPush), &push);
-          vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+          if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
+            if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
+            push.params[2] = 7.0f;
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(ShowroomPush), &push);
+            vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+            if (bound_p != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_add_);
+            push.params[2] = 8.0f;
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(ShowroomPush), &push);
+            vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+          } else {
+            VkPipeline want = pass ? g->glass_ : op_pipe;
+            if (bound_p != want) {
+              vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
+              if (!pass) r_.apply_vrs(cmd);
+            }
+            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(ShowroomPush), &push);
+            vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+          }
         }
       }
     }
-    offset += count;
+    // Smooth alpha fade-in/out for spawning/despawning traffic cars (pass_mode == 2 blended pass).
+    if (!fade_alphas.empty() && pass_mode != 1 && opaque_fade_) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque_fade_);
+      uint32_t bound_desc = UINT32_MAX;
+      for (uint32_t fi = 0; fi < uint32_t(fade_alphas.size()); ++fi) {
+        const float a = fade_alphas[fi];
+        if (a <= 0.005f) continue;
+        const float bc[4] = {a, a, a, a};
+        vkCmdSetBlendConstants(cmd, bc);
+        const uint32_t inst_slot = slot_base + offset + solid_count + fi;
+        for (const auto& d : g->draws_) {
+          if (d.glass && d.is_cover) continue;
+          ShowroomPush push = d.push;
+          uint32_t flags = uint32_t(push.params[1] + 0.5f) | kFlagInstanced;
+          flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
+          push.params[1] = float(flags);
+          if (d.descriptor != bound_desc) {
+            bound_desc = d.descriptor;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                    &g->material_sets_[d.descriptor], 0, nullptr);
+          }
+          vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                             sizeof(ShowroomPush), &push);
+          vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, inst_slot);
+        }
+      }
+    }
+    offset += total_count;
   }
 }
 
@@ -4033,10 +4098,13 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_car_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &cascade_set, 0, nullptr);
         for (Showroom* g : groups) {
-          uint32_t count = 0;
+          uint32_t solid_count = 0, fade_count = 0;
           for (const auto& in : instances_)
-            if (in.car == g && offset + count < kMaxCarInstances) ++count;
-          if (count > 0 && !g->draws_.empty()) {
+            if (in.car == g && in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
+          for (const auto& in : instances_)
+            if (in.car == g && in.fade_alpha < 0.99f && offset + solid_count + fade_count < kMaxCarInstances)
+              ++fade_count;
+          if (solid_count > 0 && !g->draws_.empty()) {
             const VkDeviceSize zero = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
             vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -4046,11 +4114,11 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
               push.params[1] = float(uint32_t(push.params[1] + 0.5f) | 8192u);
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);
-              vkCmdDrawIndexed(cmd, d.index_count, count, d.first_index, d.vertex_offset, slot_base + offset);
+              vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
             }
-            shadow_cars_ += count;
-            offset += count;
+            shadow_cars_ += solid_count;
           }
+          offset += solid_count + fade_count;
         }
       }
     }
@@ -7739,6 +7807,7 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
   if (!create_dyn_buffer(skid_asphalt_buf_, VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), error) ||
       !create_dyn_buffer(skid_rut_buf_, VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), error) ||
       !create_dyn_buffer(debris_buf_, VkDeviceSize(kMaxDebrisVerts) * sizeof(WorldVertex), error) ||
+      !create_dyn_buffer(showcase_buf_, VkDeviceSize(kMaxShowcaseVerts) * sizeof(WorldVertex), error) ||
       !create_dyn_buffer(driver_buf_, VkDeviceSize(kMaxDriverVerts) * sizeof(WorldVertex), error)) {
     error = "skidmark/debris/driver vertex buffers";
     return false;
@@ -8162,6 +8231,140 @@ void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
   ++debris_buf_.ver;
 }
 
+bool Showroom::load_showcase_texture(const std::filesystem::path& game_root, int aircraft_kind, std::string& error) {
+  if (guest_ || !r_.device_) return true;
+  if (showcase_tex_kind_ == aircraft_kind && showcase_tex_set_ != VK_NULL_HANDLE) return true;
+
+  bake::Texture tex;
+  tex.format = bake::TextureFormat::kRgba8;
+  bool decoded = false;
+  if (!game_root.empty()) {
+    const auto zip_path = cars::mods::resolve(game_root / "media" / "animatedobjects.zip");
+    std::error_code ec;
+    if (std::filesystem::exists(zip_path, ec)) {
+      std::string aerr;
+      if (auto arc = fh1::Archive::open(zip_path, &aerr)) {
+        std::vector<const char*> candidates;
+        switch (aircraft_kind) {
+          case 1:  // Hot-Air Balloon
+            candidates = {"Textures/FEST_AUTOSHOW_HotAirBalloon_DIFF.xds",
+                          "Textures/FEST_AUTOSHOW_HotAirBalloon_2_DIFF.xds"};
+            break;
+          case 2:  // Stunt Jet
+            candidates = {"Textures/ANIM_P-51_Mustang2_DIFF.xds", "Textures/ANIM_P-51_Mustang_DIFF.xds"};
+            break;
+          case 3:  // Biplane
+            candidates = {"Textures/ANIM_BiplaneStearmanHRZN_Diff.xds",
+                          "Textures/ANIM_BiplaneStearmanCropduster_Diff.xds"};
+            break;
+          case 4:  // Attack Helicopter
+            candidates = {"Textures/GR_Heli_Blade_DIFF.xds", "Textures/ANIM_P-51_Mustang2_DIFF.xds"};
+            break;
+          default:  // P-51 Mustang
+            candidates = {"Textures/ANIM_P-51_Mustang_DIFF.xds", "Textures/ANIM_P-51_Mustang2_DIFF.xds"};
+            break;
+        }
+        for (const char* member : candidates) {
+          const auto rd = arc->read(member);
+          if (!rd.ok() || rd.data.empty()) continue;
+          auto xr = fh1::decode_xds(rd.data, false);
+          if (!xr.levels.empty() && xr.levels[0].width > 0 && xr.levels[0].height > 0 &&
+              xr.levels[0].rgba.size() == size_t(xr.levels[0].width) * xr.levels[0].height * 4) {
+            tex.levels.push_back({xr.levels[0].width, xr.levels[0].height, std::move(xr.levels[0].rgba)});
+            decoded = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (!decoded) {
+    // Crisp procedural livery fallback (riveted metallic panels / festival gores / tactical steel).
+    constexpr uint32_t kS = 128;
+    std::vector<uint8_t> px(kS * kS * 4, 255);
+    for (uint32_t y = 0; y < kS; ++y) {
+      for (uint32_t x = 0; x < kS; ++x) {
+        const size_t idx = (size_t(y) * kS + x) * 4;
+        const bool seam = (x % 32 == 0) || (y % 32 == 0);
+        const bool stripe = (y >= 54 && y <= 74);
+        uint8_t r = 210, g = 216, b = 224;
+        if (aircraft_kind == 1) {
+          const int gore = int(x / 16) % 4;
+          static constexpr uint8_t kPal[4][3] = {{238, 28, 108}, {252, 198, 26}, {252, 108, 22}, {244, 246, 252}};
+          r = kPal[gore][0], g = kPal[gore][1], b = kPal[gore][2];
+        } else if (aircraft_kind == 4) {
+          r = stripe ? 215 : 58;
+          g = stripe ? 64 : 66;
+          b = stripe ? 38 : 72;
+        } else if (aircraft_kind == 3) {
+          r = stripe ? 245 : 206;
+          g = stripe ? 236 : 36;
+          b = stripe ? 210 : 34;
+        } else if (aircraft_kind == 2) {
+          r = stripe ? 242 : 226;
+          g = stripe ? 20 : 230;
+          b = stripe ? 98 : 238;
+        } else {
+          r = stripe ? 215 : 212;
+          g = stripe ? 32 : 218;
+          b = stripe ? 34 : 226;
+        }
+        const float shade = seam ? 0.78f : 1.0f;
+        px[idx + 0] = uint8_t(float(r) * shade);
+        px[idx + 1] = uint8_t(float(g) * shade);
+        px[idx + 2] = uint8_t(float(b) * shade);
+        px[idx + 3] = 255;
+      }
+    }
+    tex.levels.push_back({kS, kS, std::move(px)});
+  }
+
+  r_.wait_idle();
+  r_.destroy_image(showcase_tex_);
+  if (!upload_texture(&tex, true, showcase_tex_, error)) return false;
+  if (showcase_tex_set_ == VK_NULL_HANDLE) {
+    if (!create_world_single_set(showcase_tex_.view, showcase_tex_set_, error)) return false;
+  } else {
+    VkDescriptorImageInfo di{sampler_, showcase_tex_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet wd{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    wd.dstSet = showcase_tex_set_;
+    wd.dstBinding = 0;
+    wd.descriptorCount = 1;
+    wd.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wd.pImageInfo = &di;
+    vkUpdateDescriptorSets(r_.device_, 1, &wd, 0, nullptr);
+  }
+  showcase_tex_kind_ = aircraft_kind;
+  return true;
+}
+
+void Showroom::set_showcase_mesh(const std::vector<ShowcaseVertex>& tris) {
+  showcase_count_ = 0;
+  if (!vfx_ready_ || !showcase_buf_.ready() || tris.empty()) return;
+  const uint32_t n = uint32_t(std::min(tris.size(), size_t(kMaxShowcaseVerts)));
+  auto* dst = static_cast<WorldVertex*>(showcase_buf_.data());
+  auto snorm8 = [](float x) -> int8_t {
+    return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
+  };
+  for (uint32_t i = 0; i < n; ++i) {
+    const auto& v = tris[i];
+    WorldVertex& o = dst[i];
+    o = WorldVertex{};
+    o.position[0] = float(double(v.pos[0]) - world_origin_[0]);
+    o.position[1] = v.pos[1];
+    o.position[2] = float(double(v.pos[2]) - world_origin_[1]);
+    o.normal[0] = snorm8(v.normal[0]);
+    o.normal[1] = snorm8(v.normal[1]);
+    o.normal[2] = snorm8(v.normal[2]);
+    o.normal[3] = 0;
+    o.uv0[0] = v.uv[0];
+    o.uv0[1] = v.uv[1];
+    for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+  }
+  showcase_count_ = n;
+  ++showcase_buf_.ver;
+}
+
 void Showroom::update_driver_mesh(float wheel_rad) {
   driver_count_ = 0;
   if (!driver_buf_.ready()) return;
@@ -8358,7 +8561,7 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   }
   // Also render seated drivers inside nearby AI race / festival / traffic cars.
   for (const auto& in : instances_) {
-    if (!in.car) continue;
+    if (!in.car || in.fade_alpha < 0.5f) continue;
     const float dx = in.model[12] - frame_.eye[0];
     const float dy = in.model[13] - frame_.eye[1];
     const float dz = in.model[14] - frame_.eye[2];
@@ -8445,6 +8648,35 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
       vkCmdDraw(cmd, n, 1, 0, 0);
     }
   }
+}
+
+void Showroom::record_showcase_draw(VkCommandBuffer cmd) {
+  if (!vfx_ready_ || showcase_count_ == 0 || !world_opaque_) return;
+  VkDescriptorSet mat_set = showcase_tex_set_ ? showcase_tex_set_ : world_white_set_;
+  if (!mat_set) return;
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
+  vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
+  r_.apply_vrs(cmd);
+  const VkDescriptorSet sets[2] = {frame_set_, mat_set};
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 0, 2, sets, 0, nullptr);
+  ShowroomPush pc{};
+  std::memcpy(pc.model, world_transform_, sizeof pc.model);
+  for (int i = 0; i < 3; ++i) {
+    pc.uv0[i] = world_sun_[i];
+    pc.uv1[i] = world_up_[i];
+  }
+  pc.uv0[3] = 2.0f;  // swap = none
+  pc.uv1[3] = world_up_[3];
+  pc.tint[0] = pc.tint[1] = pc.tint[2] = pc.tint[3] = 1.0f;  // UV tiling 1x1
+  pc.params[0] = 0.0f;  // kOpaque
+  pc.params[1] = showcase_tex_set_ ? 1.0f : 65536.0f;  // kFlagTextured when showcase texture loaded
+  pc.params[2] = 0.0f;
+  pc.params[3] = 1.0f;
+  vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                     sizeof pc, &pc);
+  VkDeviceSize at = dyn_sync(showcase_buf_, VkDeviceSize(showcase_count_) * sizeof(WorldVertex));
+  vkCmdBindVertexBuffers(cmd, 0, 1, &showcase_buf_.buf.buffer, &at);
+  vkCmdDraw(cmd, showcase_count_, 1, 0, 0);
 }
 
 void Showroom::record_skidmarks_draw(VkCommandBuffer cmd) {
@@ -8628,6 +8860,19 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
 
 // The table the culling pass reads: one row per resident opaque or cut-out draw,
 // plus template rows for hardware-instanced tree sprites.
+bool Showroom::is_smashable_prop_draw(uint32_t flags, uint8_t decal, float ex, float ey, float ez) {
+  // Never hide sky dome (2), terrain layers (4 vertex-blend, 8 splat, 16384 layer-C),
+  // roads (1048576), or projected road decals.
+  constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 16384u | 1048576u;
+  if ((flags & kNonPropMask) != 0u || decal != 0u) return false;
+  // Compact individual props (signs, bollards, mailboxes, bushes, small fence posts).
+  if (ex <= 12.0f && ey <= 12.0f && ez <= 12.0f) return true;
+  // Merged roadside wooden/wire fence & barrier batches: low vertical profile
+  // (<= 4.5 m) extending up to 64 m along the roadside (buildings are taller).
+  if (ey <= 4.5f && std::max(ex, ez) <= 64.0f) return true;
+  return false;
+}
+
 size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
   if (world_draws_.empty() || radius_m <= 0.0f) return 0;
   // World draw AABBs live in the scenery-relative frame (shifted by world_origin_).
@@ -8638,19 +8883,18 @@ size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, flo
   size_t hidden = 0;
   for (auto& d : world_draws_) {
     if (d.index_count == 0 || !d.cull) continue;
-    // Skip sky dome, terrain, roads, and large buildings (> 12 m extent).
     const uint32_t flags = uint32_t(d.push.params[1] + 0.5f);
-    if ((flags & 2u) != 0) continue;
     const float ex = d.box_max[0] - d.box_min[0];
     const float ey = d.box_max[1] - d.box_min[1];
     const float ez = d.box_max[2] - d.box_min[2];
-    if (ex > 12.0f || ey > 12.0f || ez > 12.0f) continue;
+    if (!is_smashable_prop_draw(flags, d.decal, ex, ey, ez)) continue;
     // Closest point on draw AABB to smashed prop sphere.
     const float cx = std::clamp(sx, d.box_min[0], d.box_max[0]);
     const float cy = std::clamp(sy, d.box_min[1], d.box_max[1]);
     const float cz = std::clamp(sz, d.box_min[2], d.box_max[2]);
     const float dx = sx - cx, dy = sy - cy, dz = sz - cz;
     if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
+      d.hidden_index_count = d.index_count;
       d.index_count = 0;
       ++hidden;
     }
@@ -8660,6 +8904,32 @@ size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, flo
     (void)build_gpu_table(table_err);
   }
   return hidden;
+}
+
+size_t Showroom::unhide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
+  if (world_draws_.empty() || radius_m <= 0.0f) return 0;
+  const float sx = float(double(game_pos[0]) - world_origin_[0]);
+  const float sy = game_pos[1];
+  const float sz = float(double(game_pos[2]) - world_origin_[1]);
+  const float r = std::max(0.5f, radius_m);
+  size_t restored = 0;
+  for (auto& d : world_draws_) {
+    if (d.index_count != 0 || d.hidden_index_count == 0 || !d.cull) continue;
+    const float cx = std::clamp(sx, d.box_min[0], d.box_max[0]);
+    const float cy = std::clamp(sy, d.box_min[1], d.box_max[1]);
+    const float cz = std::clamp(sz, d.box_min[2], d.box_max[2]);
+    const float dx = sx - cx, dy = sy - cy, dz = sz - cz;
+    if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
+      d.index_count = d.hidden_index_count;
+      d.hidden_index_count = 0;
+      ++restored;
+    }
+  }
+  if (restored > 0 && arena_on()) {
+    std::string table_err;
+    (void)build_gpu_table(table_err);
+  }
+  return restored;
 }
 
 bool Showroom::build_gpu_table(std::string& error) {

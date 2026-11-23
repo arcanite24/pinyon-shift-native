@@ -230,6 +230,7 @@ target_link_libraries(outpost_tests PRIVATE shift_freeroam shift_drive fh1data s
 add_test(NAME outpost_tests COMMAND outpost_tests)
 
 add_executable(pi_tuning_tests pi_tuning_tests.cpp)
+target_include_directories(pi_tuning_tests PRIVATE ../libs/race/include)
 target_link_libraries(pi_tuning_tests PRIVATE shift_garage shift_drive shift_cars shift_sqlite3)
 add_test(NAME pi_tuning_tests COMMAND pi_tuning_tests)
 

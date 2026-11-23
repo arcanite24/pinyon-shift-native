@@ -202,6 +202,7 @@ static_assert(sizeof(WorldVertex) == 48);
 struct WorldGeometry {
   struct Draw {
     uint32_t first_index = 0, index_count = 0;
+    uint32_t hidden_index_count = 0;  // saved index_count while masked by smashables (restorable on Rewind)
     ShowroomPush push{};
     uint32_t texture = kNoWorldTexture;  // textured: the texture record drawn
     uint32_t texture_b = kNoWorldTexture, splat = kNoWorldTexture;  // terrain layers / decal noise
@@ -455,9 +456,25 @@ class Showroom {
                      const std::vector<world::SkidVertex>& rut_tris);
   // Dynamic lit 3D smashable debris mesh (game frame, rendered via world_opaque_).
   void set_debris_mesh(const std::vector<world::DebrisVertex>& tris);
+  // Textured, smoothly shaded 3D Airborne Showcase aircraft mesh (P0-6).
+  struct ShowcaseVertex {
+    std::array<float, 3> pos{};
+    std::array<float, 3> normal{0, 1, 0};
+    std::array<float, 2> uv{0, 0};
+    std::array<uint8_t, 4> rgba{255, 255, 255, 255};
+  };
+  bool load_showcase_texture(const std::filesystem::path& game_root, int aircraft_kind, std::string& error);
+  void set_showcase_mesh(const std::vector<ShowcaseVertex>& tris);
+  bool has_showcase_texture() const { return showcase_tex_set_ != VK_NULL_HANDLE; }
   // Immediately hides intact static world prop draws overlapping a smashed prop's
   // sphere (game frame) without waiting for the next world regather.
   size_t hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m);
+  // Restores previously hidden static world prop draws overlapping `game_pos`
+  // (used when Rewind rolls back a smashed prop).
+  size_t unhide_world_props_near(const std::array<float, 3>& game_pos, float radius_m);
+  // True when a world draw's material flags & AABB extents match a smashable
+  // prop (compact props <= 12 m or low-profile roadside fence batches <= 64 m).
+  static bool is_smashable_prop_draw(uint32_t flags, uint8_t decal, float ex, float ey, float ez);
 
   // Other cars drawn with this one's camera and light (traffic): each is a
   // Showroom loaded and uploaded as a guest (set_guest before upload: no
@@ -478,6 +495,7 @@ class Showroom {
     float model[16];
     drive::LampShaderVectors lamps{};
     bool has_lamps = false;
+    float fade_alpha = 1.0f;  // smooth traffic spawn/despawn fade [0..1]
   };
   void set_instances(std::vector<Instance> list);
   void add_instances(const std::vector<Instance>& more);
@@ -664,9 +682,9 @@ class Showroom {
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout world_pipeline_layout_ = VK_NULL_HANDLE;
   GpuTexture flat_normal_tex_;  // 1x1 (128, 128, 255, 255) fallback normal map
-  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, car_z_prepass_ = VK_NULL_HANDLE,
-             glass_ = VK_NULL_HANDLE, glass_mul_ = VK_NULL_HANDLE, glass_add_ = VK_NULL_HANDLE,
-             mask_ = VK_NULL_HANDLE;
+  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, opaque_fade_ = VK_NULL_HANDLE,
+             car_z_prepass_ = VK_NULL_HANDLE, glass_ = VK_NULL_HANDLE, glass_mul_ = VK_NULL_HANDLE,
+             glass_add_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
   VkPipelineLayout contact_shadow_pipe_layout_ = VK_NULL_HANDLE;
   VkPipeline contact_shadow_pipe_ = VK_NULL_HANDLE;
   void record_contact_shadows(VkCommandBuffer cmd);
@@ -996,6 +1014,12 @@ class Showroom {
   VkDescriptorSet spectator_set_ = VK_NULL_HANDLE;
   DynBuffer spectator_buf_;
   uint32_t spectator_count_ = 0;
+  static constexpr uint32_t kMaxShowcaseVerts = 16384;  // textured 3D showcase aircraft/balloon/chopper
+  DynBuffer showcase_buf_;
+  uint32_t showcase_count_ = 0;
+  GpuTexture showcase_tex_;
+  VkDescriptorSet showcase_tex_set_ = VK_NULL_HANDLE;
+  int showcase_tex_kind_ = -1;
   static constexpr uint32_t kMaxDriverVerts = 2048;   // animated 3D seated driver + steering hands
   DynBuffer driver_buf_;
   uint32_t driver_count_ = 0;
@@ -1007,6 +1031,7 @@ class Showroom {
   void record_driver_draw(VkCommandBuffer cmd);
   void record_skidmarks_draw(VkCommandBuffer cmd);
   void record_debris_draw(VkCommandBuffer cmd);
+  void record_showcase_draw(VkCommandBuffer cmd);
   void record_particles_draw(VkCommandBuffer cmd);
   // Living cockpit animation rigs (steering wheel + 5 analog gauge needles).
   struct CockpitRig {
