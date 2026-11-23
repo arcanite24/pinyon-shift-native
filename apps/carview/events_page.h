@@ -41,6 +41,15 @@ class EventsPage {
 
   void move(int by);
   void switch_tab(int by);
+  void select_index(size_t idx) {
+    if (idx < entries_.size()) selected_ = idx;
+  }
+  void set_tab(int t) {
+    if (t >= 0 && t < kTabCount && int(tab_) != t) {
+      tab_ = Tab(t);
+      rebuild();
+    }
+  }
   const Entry* selected_entry() const;
   const std::vector<Entry>& entries() const { return entries_; }
   size_t selected_index() const { return selected_; }

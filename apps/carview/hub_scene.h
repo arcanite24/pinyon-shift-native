@@ -101,6 +101,9 @@ class GarageBrowser {
  public:
   void refresh(const garage::Garage& g, const cars::PartsDb* db, const std::vector<garage::ClassBand>& bands);
   void move(int by);
+  void select_index(size_t idx) {
+    if (idx < visible_.size()) selected_ = idx;
+  }
   void cycle_sort(int by = 1);
   void cycle_class_filter(int by = 1);  // -1 = All, 1..9 = E..R1
   GarageSort sort_mode() const { return sort_; }

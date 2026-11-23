@@ -160,9 +160,23 @@ struct TextStyle {
   float stretch = 1;       // vector fonts: the glyphs' width scale (a scene text's x over y scale)
 };
 
+struct HitZone {
+  float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // screen-space AABB (accounts for active turn())
+  uint32_t group = 0;
+  int index = -1;
+};
+inline constexpr uint32_t kHitRow = 1;
+inline constexpr uint32_t kHitTab = 2;
+inline constexpr uint32_t kHitStepLeft = 3;
+inline constexpr uint32_t kHitStepRight = 4;
+inline constexpr uint32_t kHitConfirm = 5;
+inline constexpr uint32_t kHitCancel = 6;
+
+bool hit_test_zones(std::span<const HitZone> zones, float mx, float my, HitZone& out);
+
 class List {
  public:
-  void clear() { items_.clear(), turn_a_ = 0; }
+  void clear() { items_.clear(), hits_.clear(), turn_a_ = 0; }
   // Turns what follows `angle` radians clockwise about (cx, cy) until
   // unturn(): images and the game fonts' glyphs turn; flat rects (radius 0)
   // turn as quads; other shapes only move with the turn.
@@ -171,6 +185,10 @@ class List {
   bool turned() const { return turn_a_ != 0; }
   std::span<const Instance> items() const { return items_; }
   bool empty() const { return items_.empty(); }
+
+  void add_hit(float x0, float y0, float x1, float y1, uint32_t group, int index);
+  std::span<const HitZone> hits() const { return hits_; }
+  bool hit_test(float mx, float my, HitZone& out) const { return hit_test_zones(hits_, mx, my, out); }
 
   void rect(float x0, float y0, float x1, float y1, uint32_t color, float radius = 0, uint32_t color2 = 0);
   void frame(float x0, float y0, float x1, float y1, uint32_t color, float width, float radius = 0);
@@ -204,6 +222,7 @@ class List {
 
  private:
   std::vector<Instance> items_;
+  std::vector<HitZone> hits_;
   float turn_x_ = 0, turn_y_ = 0, turn_a_ = 0;
   // A point under the turn.
   void turned(float& x, float& y) const;

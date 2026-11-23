@@ -25,6 +25,9 @@ struct DrawContext {
   int collected_wristband = 0;
   int popularity_rank = 250;
   bool skip_vo_with_a = true;
+  bool metric_units = true;
+  bool suppress_subtitle = false;
+  bool suppress_callin = false;
   const race::CareerCatalog* catalog = nullptr;
 };
 

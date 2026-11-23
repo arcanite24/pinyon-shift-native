@@ -51,6 +51,10 @@ class UpgradeShop {
   // Navigation within the active category (slots/parts, auto-upgrade class, or tuning slider).
   void move_slot(int by);
   void move_part(int by);
+  void select_row(size_t idx) {
+    const size_t cur = selected_row();
+    if (idx != cur) move_slot(int(idx) - int(cur));
+  }
 
   // Fits the shown part / conversion, applies Auto Upgrade, or resets Tuning slider.
   bool fit(int discount_percent, int64_t& credits, std::string& message);

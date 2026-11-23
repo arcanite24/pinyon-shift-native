@@ -57,10 +57,16 @@ std::string upper_ascii(std::string_view s) {
   return out;
 }
 
-std::string format_dist(double m) {
+std::string format_dist(double m, bool metric) {
   char buf[48];
-  if (m >= 1000.0) std::snprintf(buf, sizeof buf, "%.1f KM", m / 1000.0);
-  else std::snprintf(buf, sizeof buf, "%d M", std::max(0, int(std::lround(m))));
+  if (metric) {
+    if (m >= 1000.0) std::snprintf(buf, sizeof buf, "%.1f KM", m / 1000.0);
+    else std::snprintf(buf, sizeof buf, "%d M", std::max(0, int(std::lround(m))));
+  } else {
+    const double mi = m / 1609.344;
+    if (mi >= 0.1) std::snprintf(buf, sizeof buf, "%.1f MI", mi);
+    else std::snprintf(buf, sizeof buf, "%d FT", std::max(0, int(std::lround(m * 3.28084))));
+  }
   return buf;
 }
 
@@ -79,7 +85,7 @@ void draw_objective_tracker(ui::List& l, const race::CampaignFlow& flow, const D
 
   std::string sub = obj.detail;
   if (flow.stage() == race::CampaignStage::kViperIntroDrive) {
-    sub = "HORIZON FESTIVAL  •  " + format_dist(flow.distance_to_festival()) + " REMAINING";
+    sub = "HORIZON FESTIVAL  •  " + format_dist(flow.distance_to_festival(), ctx.metric_units) + " REMAINING";
   }
 
   ui::TextStyle title_ts = ui4::style(ui::Font::kE, 18.0f * s, with_alpha(ui4::kWhite, alpha));
@@ -124,7 +130,7 @@ void draw_dialog_and_subtitles(ui::List& l, const race::DialogQueue& dialogs, co
   const float s = ctx.screen_h / 720.0f;
 
   // 1. Top-Right Non-Blocking FH1 Character Call-In Banner (speaker + role + live animated audio waveform).
-  {
+  if (!ctx.suppress_callin) {
     const float bw = 348.0f * s;
     const float bh = 74.0f * s;
     const float slide_offset = (1.0f - slide) * (bw + 48.0f * s);
@@ -167,8 +173,9 @@ void draw_dialog_and_subtitles(ui::List& l, const race::DialogQueue& dialogs, co
     }
   }
 
-  // 2. Crisp Bottom-Center Localized Subtitle Strip (cleanly clear of minimap & tach).
-  if (!cue.subtitle.empty()) {
+  // 2. Crisp Bottom-Center Localized Subtitle Strip (cleanly clear of minimap & tach;
+  //    suppressed during full-card ceremonies so it never duplicates ceremony card text).
+  if (!ctx.suppress_subtitle && !cue.subtitle.empty()) {
     const float max_box_w = std::min(ctx.screen_w - 460.0f * s, 720.0f * s);
     ui::TextStyle sub_ts = ui4::style(ui::Font::kA, 15.5f * s, with_alpha(ui4::kWhite, slide), ui::Align::kLeft, true);
     const std::string wrapped = wrap_lines(cue.subtitle, sub_ts, std::max(240.0f * s, max_box_w - 36.0f * s));
@@ -290,50 +297,54 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
   }
 
   // Boss Rival / Star Showdown & Darius Flynt Finale Hero Dossier Card.
+  // Anchored tightly to the far-left margin (460px wide) so the rival hero car is framed
+  // cleanly unobstructed on the right half of the screen.
   if (st == race::CampaignStage::kBossIntro || st == race::CampaignStage::kBossVictory ||
       st == race::CampaignStage::kFinaleIntro || st == race::CampaignStage::kFinaleVictory) {
-    ui4::subtle_vignette(l, w, h, 0.28f * enter);
-    const float x0 = 64.0f * s + (1.0f - enter) * (-90.0f * s);
+    ui4::subtle_vignette(l, w, h, 0.24f * enter);
+    const float x0 = 40.0f * s + (1.0f - enter) * (-90.0f * s);
     const float y0 = 96.0f * s;
-    const float card_w = 620.0f * s;
+    const float card_w = 460.0f * s;
 
     {
       ui4::TiltScope tilt(l, x0 + 0.5f * card_w, y0 + 120.0f * s, ui4::kTiltRad * 0.55f);
       // Eyebrow on black brush.
-      ui::TextStyle eye_ts = ui4::style(ui::Font::kB, 14.0f * s, ui4::kYellow);
-      const float ew = std::max(320.0f * s, ui::List::measure(cin.eyebrow, eye_ts) + 38.0f * s);
+      ui::TextStyle eye_ts = ui4::style(ui::Font::kB, 13.5f * s, ui4::kYellow);
+      const float ew = std::clamp(ui::List::measure(cin.eyebrow, eye_ts) + 34.0f * s, 260.0f * s, card_w);
       ui4::brush(l, x0 - 6.0f * s, y0, x0 + ew, y0 + 28.0f * s, ui4::kBrushBlack, false);
       l.text(x0 + 12.0f * s, y0 + 7.0f * s, cin.eyebrow, eye_ts);
 
       // Giant Boss / Champion Name on accent brush.
-      ui::TextStyle name_ts = ui4::style(ui::Font::kE, 42.0f * s,
+      ui::TextStyle name_ts = ui4::style(ui::Font::kE, 36.0f * s,
                                          is_bright_accent(cin.accent_rgba) ? ui4::kInk : ui4::kWhite);
-      const float nw = std::clamp(ui::List::measure(cin.headline, name_ts) + 64.0f * s, 360.0f * s, 680.0f * s);
-      ui4::brush(l, x0 - 10.0f * s, y0 + 30.0f * s, x0 + nw, y0 + 94.0f * s, cin.accent_rgba, true, enter);
-      l.text(x0 + 16.0f * s, y0 + 44.0f * s, cin.headline, name_ts);
+      ui4::fit_text(cin.headline, name_ts, card_w - 28.0f * s, 20.0f * s);
+      const float nw = std::clamp(ui::List::measure(cin.headline, name_ts) + 52.0f * s, 300.0f * s, card_w + 24.0f * s);
+      ui4::brush(l, x0 - 10.0f * s, y0 + 30.0f * s, x0 + nw, y0 + 88.0f * s, cin.accent_rgba, true, enter);
+      l.text(x0 + 14.0f * s, y0 + 42.0f * s, cin.headline, name_ts);
 
       // Distressed rival dossier card (vehicle, stakes, wristband tier) with strict fit_text bounds.
-      const float py0 = y0 + 104.0f * s;
-      const float py1 = py0 + 148.0f * s;
+      const float py0 = y0 + 98.0f * s;
+      const float py1 = py0 + 152.0f * s;
       ui4::panel(l, x0, py0, x0 + card_w, py1, s, ui4::kCharcoalDark, 0, cin.accent_rgba, true);
-      ui::TextStyle sub_ts = ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite);
-      ui4::fit_text(cin.subheadline, sub_ts, card_w - 40.0f * s, 12.0f * s);
-      l.text(x0 + 20.0f * s, py0 + 16.0f * s, cin.subheadline, sub_ts);
+      ui::TextStyle sub_ts = ui4::style(ui::Font::kE, 15.0f * s, ui4::kWhite);
+      ui4::fit_text(cin.subheadline, sub_ts, card_w - 36.0f * s, 11.5f * s);
+      l.text(x0 + 18.0f * s, py0 + 16.0f * s, cin.subheadline, sub_ts);
 
       // Stakes strip (off-white FH1 paper tape).
-      ui4::offwhite_strip(l, x0 + 20.0f * s, py0 + 48.0f * s, x0 + card_w - 20.0f * s, py0 + 80.0f * s, s, false);
+      ui4::offwhite_strip(l, x0 + 18.0f * s, py0 + 48.0f * s, x0 + card_w - 18.0f * s, py0 + 80.0f * s, s, false);
       const std::string stakes =
           (st == race::CampaignStage::kFinaleVictory || st == race::CampaignStage::kBossVictory)
               ? ("PRIZE CLAIMED: " + upper_ascii(cin.reward_car))
-              : (st == race::CampaignStage::kFinaleIntro ? "STAKES: HORIZON CROWN  •  5,000,000 CR + FERRARI 599XX"
-                                                         : "STAKES: 1-ON-1 PINK SLIP  •  RIVAL CAR KEYS");
-      ui::TextStyle st_ts = ui4::style(ui::Font::kE, 14.0f * s, ui4::kInk);
-      ui4::fit_text(stakes, st_ts, card_w - 64.0f * s, 11.0f * s);
-      l.text(x0 + 32.0f * s, py0 + 57.0f * s, stakes, st_ts);
+              : (st == race::CampaignStage::kFinaleIntro
+                     ? "STAKES: HORIZON CROWN  •  50,000 CR + FERRARI 599XX"
+                     : "STAKES: 1-ON-1 PINK SLIP  •  RIVAL CAR KEYS");
+      ui::TextStyle st_ts = ui4::style(ui::Font::kE, 13.5f * s, ui4::kInk);
+      ui4::fit_text(stakes, st_ts, card_w - 54.0f * s, 10.5f * s);
+      l.text(x0 + 28.0f * s, py0 + 57.0f * s, stakes, st_ts);
 
       if (!cin.detail_line.empty()) {
-        ui::TextStyle dt = ui4::style(ui::Font::kA, 13.5f * s, ui4::kDim, ui::Align::kLeft, true);
-        l.text(x0 + 20.0f * s, py0 + 92.0f * s, wrap_lines(cin.detail_line, dt, card_w - 40.0f * s), dt);
+        ui::TextStyle dt = ui4::style(ui::Font::kA, 13.0f * s, ui4::kDim, ui::Align::kLeft, true);
+        l.text(x0 + 18.0f * s, py0 + 90.0f * s, wrap_lines(cin.detail_line, dt, card_w - 36.0f * s), dt);
       }
     }
 
@@ -576,14 +587,23 @@ void draw_transition(ui::List& l, const race::TransitionState& trans, float scre
 }
 
 void draw(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
-  if (flow.stage() == race::CampaignStage::kRewardTally && flow.reward_tally().active) {
+  const auto st = flow.stage();
+  const bool full_ceremony =
+      (st == race::CampaignStage::kWristbandCeremony || st == race::CampaignStage::kFestivalRegistration);
+  if (st == race::CampaignStage::kRewardTally && flow.reward_tally().active) {
     draw_reward_tally(l, flow.reward_tally(), ctx.screen_w, ctx.screen_h);
   } else if (flow.is_cinematic_active()) {
     draw_cinematic_overlay(l, flow, ctx);
   } else {
     draw_objective_tracker(l, flow, ctx);
   }
-  draw_dialog_and_subtitles(l, flow.dialogs(), ctx);
+  DrawContext dctx = ctx;
+  if (full_ceremony) {
+    // Prevent top-right call-in from colliding with centered ceremony banner & suppress duplicate subtitle text.
+    dctx.suppress_callin = true;
+    dctx.suppress_subtitle = true;
+  }
+  draw_dialog_and_subtitles(l, flow.dialogs(), dctx);
   draw_transition(l, flow.transition(), ctx.screen_w, ctx.screen_h);
 }
 

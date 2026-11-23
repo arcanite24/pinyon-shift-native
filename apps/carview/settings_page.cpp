@@ -411,6 +411,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"3.0x", {"--pacing-rewards", "3.0"}},
         {"5.0x", {"--pacing-rewards", "5.0"}}}},
       {"hidden cars (autoshow)", {{"off", {}}, {"unlocked (4 cars)", {"--hidden-cars"}}}},
+      {"units", {{"metric (km/h)", {}}, {"imperial (mph)", {"--units", "imperial"}}}},
   };
 }
 
@@ -551,7 +552,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
                       t == "--lut-strength" || t == "--texture-cap" || t == "--vsync" || t == "--fps-cap" ||
                       t == "--output" || t == "--sharpening" || t == "--frame-gen" || t == "--hdr-paper-white" ||
                       t == "--hdr-highlights" || t == "--hdr-peak" || t == "--hud-scale" || t == "--safe-zone" ||
-                      t == "--rt" || t == "--rt-bounces" || t == "--rt-spp");
+                      t == "--rt" || t == "--rt-bounces" || t == "--rt-spp" || t == "--units");
     if (!owned) {
       other_.push_back(t);
       if (takes_value) other_.push_back(tokens[i + 1]);
@@ -597,7 +598,7 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
   if (name == "difficulty" || name == "rubber-banding" || name == "traffic" || name == "collectibles" ||
       name == "treasure map" || name == "braking" || name == "steering" || name == "traction control" ||
       name == "stability control" || name == "shifting" || name == "driving line" || name == "rewind" ||
-      name == "damage" || name == "ai opponents" || name.rfind("telemetry", 0) == 0) {
+      name == "damage" || name == "ai opponents" || name == "units" || name.rfind("telemetry", 0) == 0) {
     return SettingsPage::Tab::kGameplay;
   }
   if (name == "rumble" || name == "rumble scale" || name == "controller layout" ||
@@ -620,6 +621,26 @@ void SettingsPage::switch_tab(int by) {
   const int count = int(Tab::kCount);
   const int next = ((int(active_tab()) + by) % count + count) % count;
   const Tab target = Tab(next);
+  for (size_t i = 0; i < rows_.size(); ++i) {
+    if (classify_setting_row(rows_[i].name) == target) {
+      row_ = int(i);
+      return;
+    }
+  }
+  if (target == Tab::kControls && !rebinds_.empty()) row_ = int(rows_.size());
+}
+
+void SettingsPage::select_row(int flat_idx) {
+  if (capturing_) return;
+  const int n = int(rows_.size() + rebinds_.size()) + 1;
+  if (flat_idx >= 0 && flat_idx < n) row_ = flat_idx;
+}
+
+void SettingsPage::select_tab(int tab_idx) {
+  if (capturing_) return;
+  const int count = int(Tab::kCount);
+  if (tab_idx < 0 || tab_idx >= count) return;
+  const Tab target = Tab(tab_idx);
   for (size_t i = 0; i < rows_.size(); ++i) {
     if (classify_setting_row(rows_[i].name) == target) {
       row_ = int(i);
@@ -719,6 +740,7 @@ LiveSettings SettingsPage::live_settings() const {
   ls.skip_intro_movies = pick_label("skip intro movies") == "on";
   ls.start_in_single_player = pick_label("start in single player") == "on";
   ls.skip_vo_with_a = pick_label("skip vo with a") != "off";
+  ls.metric_units = pick_val("units") != "imperial";
   {
     const std::string lg = pick_val("language");
     ls.language = lg.empty() ? "EN" : lg;

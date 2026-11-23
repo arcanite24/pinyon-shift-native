@@ -775,6 +775,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
           const auto& mk = makes[size_t(i)];
           const bool act = (i == sel);
           const float lift = 0.0f;
+          list.add_hit(bx, strip_y - lift, bx + cw, strip_y + card_h - lift, ui::kHitRow, i);
           draw_bigpane_card(list, bx, strip_y - lift, bx + cw, strip_y + card_h - lift, s, act);
 
           const float lh = 64.0f * s;
@@ -988,6 +989,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
           const auto& c = vis[size_t(i)];
           const bool act = (i == sel);
           const float lift = 0.0f;
+          list.add_hit(bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, ui::kHitRow, i);
           draw_bigpane_card(list, bx, bot_y - lift, bx + cw, bot_y + card_ch - lift, s, act);
 
           const float th_h = 60.0f * s;
@@ -1172,6 +1174,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         const auto& sl = sliders[size_t(i)];
         const bool act = (i == sel);
         const float lift = 0.0f;
+        list.add_hit(bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, ui::kHitRow, i);
         draw_bigpane_card(list, bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, s, act);
 
         // Real UI4/Tuning/I_TUN_* icon top-left of card
@@ -1236,6 +1239,7 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         const auto& r = rows[size_t(i)];
         const bool act = (i == sel);
         const float lift = 0.0f;
+        list.add_hit(bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, ui::kHitRow, i);
         draw_bigpane_card(list, bx, blade_y - lift, bx + cw, blade_y + blade_h - lift, s, act);
 
         // Real UI4/Upgrades/* part icon centred in upper half of card!
@@ -1409,6 +1413,7 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
         const auto& e = vis[size_t(i)];
         const bool act = (i == sel);
         const float lift = 0.0f;
+        list.add_hit(bx, bot_y - lift, bx + cw, bot_y + card_h - lift, ui::kHitRow, i);
         draw_bigpane_card(list, bx, bot_y - lift, bx + cw, bot_y + card_h - lift, s, act);
 
         const float th_h = 62.0f * s;

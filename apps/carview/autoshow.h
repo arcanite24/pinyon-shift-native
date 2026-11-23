@@ -85,6 +85,12 @@ class Autoshow {
 
   // Car list navigation within the active make / filter.
   void move(int by);
+  void select_index(size_t idx) {
+    if (idx < visible_.size()) {
+      selected_ = idx;
+      colour_index_ = 0;
+    }
+  }
   void jump_class(int by);
   const std::vector<AutoshowCar>& visible_cars() const { return visible_; }
   size_t selected_index() const { return selected_; }

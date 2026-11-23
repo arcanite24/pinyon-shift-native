@@ -154,6 +154,39 @@ void List::turned(float& x, float& y) const {
   x = turn_x_ + c * dx - s * dy, y = turn_y_ + s * dx + c * dy;
 }
 
+void List::add_hit(float x0, float y0, float x1, float y1, uint32_t group, int index) {
+  if (x1 < x0) std::swap(x0, x1);
+  if (y1 < y0) std::swap(y0, y1);
+  if (turn_a_ != 0.0f) {
+    float xs[4] = {x0, x1, x1, x0};
+    float ys[4] = {y0, y0, y1, y1};
+    float min_x = 1e30f, min_y = 1e30f, max_x = -1e30f, max_y = -1e30f;
+    for (int k = 0; k < 4; ++k) {
+      turned(xs[k], ys[k]);
+      min_x = std::min(min_x, xs[k]);
+      min_y = std::min(min_y, ys[k]);
+      max_x = std::max(max_x, xs[k]);
+      max_y = std::max(max_y, ys[k]);
+    }
+    x0 = min_x;
+    y0 = min_y;
+    x1 = max_x;
+    y1 = max_y;
+  }
+  hits_.push_back({x0, y0, x1, y1, group, index});
+}
+
+bool hit_test_zones(std::span<const HitZone> zones, float mx, float my, HitZone& out) {
+  for (size_t i = zones.size(); i > 0; --i) {
+    const auto& z = zones[i - 1];
+    if (mx >= z.x0 && mx <= z.x1 && my >= z.y0 && my <= z.y1) {
+      out = z;
+      return true;
+    }
+  }
+  return false;
+}
+
 void List::rect(float x0, float y0, float x1, float y1, uint32_t color, float radius, uint32_t color2) {
   if (turn_a_ != 0) {
     std::array<float, 4> white;

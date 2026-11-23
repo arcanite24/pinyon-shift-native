@@ -541,11 +541,15 @@ void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, 
     return;
   }
   const uint32_t col = ui::fade(fallback_button_colour(b), alpha);
-  const bool multi = b.size() > 1;
-  if (multi) {
-    const float hw = std::max(r * 1.3f, float(b.size()) * r * 0.45f + 4.0f);
-    l.rect(cx - hw, cy - r * 0.85f, cx + hw, cy + r * 0.85f, ui::fade(ui::rgba(225, 228, 236), alpha));
-    ui::TextStyle ts = style(ui::Font::kB, r * 0.95f, ui::fade(kInk, alpha), ui::Align::kCenter);
+  const bool is_face_btn = (b == "A" || b == "B" || b == "X" || b == "Y");
+  if (!is_face_btn) {
+    // Styled rectangular keyboard keycap (zero pink circles for single-letter keys like G/M/R!).
+    const float hw = std::max(r * 1.15f, float(b.size()) * r * 0.45f + 5.0f);
+    const float hh = r * 0.88f;
+    l.rect(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(28, 30, 36, 240), alpha), 3.0f);
+    l.frame(cx - hw, cy - hh, cx + hw, cy + hh, ui::fade(ui::rgba(222, 226, 234, 225), alpha), 1.4f, 3.0f);
+    ui::TextStyle ts = style(ui::Font::kB, r * (b.size() > 1 ? 0.90f : 1.05f), ui::fade(kWhite, alpha),
+                             ui::Align::kCenter);
     l.text(cx, cy - 0.5f * ts.size, b, ts);
   } else {
     l.circle(cx, cy, r, col);
@@ -581,6 +585,7 @@ void tab_strip(ui::List& l, float s, float x0, float y0, float max_x, const std:
   for (int i = 0; i < n; ++i) {
     const float tw = widths[size_t(i)] * compress;
     const bool act = (i == active_idx);
+    l.add_hit(cx, y0, cx + tw, y0 + h, ui::kHitTab, i);
     if (act) {
       brush(l, cx, y0, cx + tw, y0 + h, active_colour);
     } else {
@@ -1305,6 +1310,7 @@ void tilted_blade_screen(ui::List& l, float w, float h, const TiltedBladeSpec& s
       for (int i = first; i < std::min(n, first + max_vis); ++i) {
         const auto& r = spec.rows[size_t(i)];
         const bool act = r.selected || (i == sel);
+        l.add_hit(lx0, ry, lx0 + lw, ry + row_h, ui::kHitRow, i);
         const uint32_t bg_col = act ? (r.row_accent != 0 ? r.row_accent : kPink)
                                     : ((i % 2 == 0) ? kPillGrey : ui::rgba(0x18, 0x18, 0x1C, 236));
         pill(l, lx0, ry, lx0 + lw, ry + row_h, bg_col, (i % 2 == 0) ? PillKind::kPill02 : PillKind::kPill03, false,

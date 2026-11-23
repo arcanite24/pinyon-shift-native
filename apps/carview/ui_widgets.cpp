@@ -162,6 +162,7 @@ void draw_events_ui4(ui::List& l, float screen_w, float screen_h, const EventsPa
         const float cy0 = card_y0 - lift;
         const float cx1 = cx0 + cw;
         const float cy1 = cy0 + ch;
+        l.add_hit(cx0, cy0, cx1, cy1, ui::kHitRow, i);
 
         // 1. KITPARTS/DROPSHADOW behind ticket
         if (has_drop) {
@@ -368,6 +369,7 @@ void draw_outpost_hub_ui4(ui::List& l, float screen_w, float screen_h, std::stri
         const float cy0 = card_y0 - lift;
         const float cx1 = cx0 + cw;
         const float cy1 = cy0 + ch;
+        l.add_hit(cx0, cy0, cx1, cy1, ui::kHitRow, i);
 
         if (has_drop) {
           l.image(cx0 - 8.0f * s, cy0 + 8.0f * s, cx1 + 14.0f * s, cy1 + 16.0f * s, drop_uv,
@@ -502,7 +504,7 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
     }
   }
 
-  static const std::vector<std::string> kTabs = {"DISPLAY", "AUDIO", "GAMEPLAY", "CONTROLS", "PINYON SHIFT"};
+  static const std::vector<std::string> kTabs = {"VIDEO", "AUDIO", "HUD & GAMEPLAY", "CONTROLS", "ENGINE"};
   const auto all_rows = page.display_rows();
   std::vector<SettingsPage::DisplayRow> tab_rows;
   int sel_in_tab = 0;
@@ -567,6 +569,7 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
       const bool act = r.selected;
       const uint32_t row_col = act ? (r.is_save ? ui4::kGreen : ui4::kPink)
                                    : ((i % 2 == 0) ? ui4::kPillGrey : ui::rgba(0x18, 0x18, 0x1C, 236));
+      l.add_hit(lx0, ry, lx0 + lw, ry + row_h, ui::kHitRow, r.flat_index);
       ui4::pill(l, lx0, ry, lx0 + lw, ry + row_h, row_col,
                 (i % 2 == 0) ? ui4::PillKind::kPill02 : ui4::PillKind::kPill03, false, act);
 
@@ -601,6 +604,8 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
         const uint32_t arr_col = act ? ui4::kWhite : ui::rgba(190, 196, 208, 175);
         ui4::opt_arrow(l, vx0 + 10.0f * s, vcy, 15.0f * s, -1, arr_col);
         ui4::opt_arrow(l, vx1 - 10.0f * s, vcy, 15.0f * s, +1, arr_col);
+        l.add_hit(vx0 - 4.0f * s, ry, vx0 + 32.0f * s, ry + row_h, ui::kHitStepLeft, r.flat_index);
+        l.add_hit(vx1 - 32.0f * s, ry, vx1 + 4.0f * s, ry + row_h, ui::kHitStepRight, r.flat_index);
         ui::TextStyle vs = ui4::style(ui::Font::kB, 14.0f * s,
                                       act ? ui4::kYellow : ui4::kWhite, ui::Align::kCenter);
         ui4::fit_text(r.value, vs, (vx1 - vx0) - 44.0f * s, 9.0f * s);
@@ -667,6 +672,8 @@ void draw_settings_ui4(ui::List& l, float screen_w, float screen_h, const Settin
         hint = "Tunes force feedback, wheel angle, rumble & DualSense gyro.";
       else if (nm_up.find("DEADZONE") != std::string::npos || nm_up.find("SENSITIV") != std::string::npos)
         hint = "Shapes analog stick, wheel and pedal deadzones & linearity.";
+      else if (nm_up.find("UNITS") != std::string::npos)
+        hint = "Switches Speedometer, Speed Traps/Zones, PR Stunts & GPS between km/h and MPH.";
       else if (nm_up.find("LANGUAGE") != std::string::npos)
         hint = "Switches UI text & localization pack (17 FH1 languages).";
       else

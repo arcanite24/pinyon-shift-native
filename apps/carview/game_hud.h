@@ -243,6 +243,8 @@ struct DriveHud {
   bool tcs = false;
   bool driving = true;
   bool touch_hud_active = false;  // compacts & lifts tach above Android touch pedals
+  bool metric_units = true;       // true: km/h & km/m, false: MPH & mi/ft (global Units setting)
+  bool subtitle_active = false;   // true when bottom-center campaign subtitles are visible (lifts bottom banners)
   const RaceHud* race = nullptr;
   std::string toast;
   std::string menu_title;
@@ -280,5 +282,8 @@ bool ui_texture(const std::string& path, std::array<float, 4>& uv);
 std::string thousands(int64_t v);
 const char* place_suffix(int place);
 std::string race_clock(double seconds);
+std::string format_speed_unit(double mph, bool metric, bool decimals = true);
+std::string format_distance_unit(double meters, bool metric);
+std::string format_gap_unit(double meters, bool metric);
 
 }  // namespace carview

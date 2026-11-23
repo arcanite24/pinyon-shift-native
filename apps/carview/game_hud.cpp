@@ -296,13 +296,16 @@ void render_fh1_dial(ui::List& l, const DriveHud& st, float cx, float cy, float 
   l.line(cx + 61.5f * s * sa, cy - 61.5f * s * ca, cx + 87.0f * s * sa, cy - 87.0f * s * ca, 2.8f * s, kNeedleHot);
   l.line(cx + 63.0f * s * sa, cy - 63.0f * s * ca, cx + 86.5f * s * sa, cy - 86.5f * s * ca, 1.25f * s, kNeedleCore);
 
-  // 6. Unit label ("km/h"), sleek italicized 3-digit speedo (faint translucent leading zeros),
+  // 6. Unit label ("km/h" or "MPH" per global Units setting), sleek italicized 3-digit speedo,
   //    gear digit, and etched ABS / TCS indicators matching race-hud.png & hud-freeroam-event-marker.png.
   TextStyle unit_ts = font(ui::Font::kA, 9.5f * s, rgba(218, 222, 230, 175), Align::kCenter);
   unit_ts.keep_case = true;
-  l.text(cx, cy - 31.5f * s, str("UnitStrings", "IDS_Units_KMH", "km/h"), unit_ts);
+  const std::string unit_lbl = st.metric_units ? str("UnitStrings", "IDS_Units_KMH", "km/h")
+                                               : str("UnitStrings", "IDS_Units_MPH", "MPH");
+  l.text(cx, cy - 31.5f * s, unit_lbl, unit_ts);
 
-  const int v = std::min(999, int(std::lround(std::fabs(st.kmh))));
+  const double disp_spd = st.metric_units ? std::fabs(st.kmh) : (std::fabs(st.kmh) * 0.62137119);
+  const int v = std::min(999, int(std::lround(disp_spd)));
   char digits[8];
   std::snprintf(digits, sizeof digits, "%03d", v);
   const size_t lead = v >= 100 ? 0 : v >= 10 ? 1 : 2;
@@ -391,23 +394,18 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
 
 // The discovery card (the interim of SPEC-UI-LAYOUTS: an E line on a pink
 // brush, a B line under it, top centre): drops in, holds, fades.
-void popup_card_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
+void popup_card_drawn(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const double age = st.time - st.popup_at;
   if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
   const float s = g.s;
   const float in = ease_in_time(age, 0, 0.3);
   const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
-  // H_BARN_FIND_HUD's CombinedNotification (DoubleTape), bottom centre:
-  // the HUDPANEL02 panel tinted 0.13 grey from x 450 (the pill in rows 4-58
-  // of 64, so 603-657 here), the notification icon at 473-537 x 598-662,
-  // TEXT2 (B 16) over TEXT1 (B 12) from x 532. The text boxes' anchor is
-  // taken as their centre (ours); the meter under the text is ours.
   TextStyle ts = font(ui::Font::kB, 16 * s, ui::fade(kText, a));
   TextStyle body = font(ui::Font::kB, 12 * s, ui::fade(kText, a));
   fit(st.popup_title, ts, g.w - g.C(560) - 40 * s, 9 * s);
   const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, body));
   const float x0 = g.C(450), x1 = std::max(g.C(917), g.C(532) + tw + 30 * s);
-  const float dy = (1 - in) * 20 * s;
+  const float dy = ((1 - in) * 20 - lift_canvas) * s;
   const float y0 = g.B(599) + dy, y1 = g.B(663) + dy;
   std::array<float, 4> uv;
   if (ui_texture("DIRTMASKS/HUD/HUDPANEL02", uv)) {
@@ -432,25 +430,22 @@ void popup_card_drawn(ui::List& l, const DriveHud& st, const Layout& g) {
   }
 }
 
-// The notification from the scene itself (H_BARN_FIND_HUD,
-// CombinedNotification/State/DoubleTape): Panel and Panel2 (HUDPANEL02 crops
-// tinted 0.13), the MiscIcon, TEXT2 over TEXT1. The panels' visible width
-// follows the text out to RightAnchor at least (ours: the scene's crop is
-// the width for its sample strings); the slide, fade and meter are ours.
-// Without the scene: the drawn version above.
-void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
+bool popup_card(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const double age = st.time - st.popup_at;
-  if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return;
+  if (st.popup_title.empty() || age < 0 || age > kPopupSeconds) return false;
   static const SceneDraw sc(ui_scene("H_BARN_FIND_HUD"));
   const int tape = sc.find("DoubleTape");
   const int panel = sc.find("Panel", tape), panel2 = sc.find("Panel2", tape);
   const int title = sc.find("TEXT2", tape), body = sc.find("TEXT1", tape), icon = sc.find("MiscIcon", tape);
-  if (panel < 0 || panel2 < 0 || title < 0 || body < 0) return popup_card_drawn(l, st, g);
+  if (panel < 0 || panel2 < 0 || title < 0 || body < 0) {
+    popup_card_drawn(l, st, g, lift_canvas);
+    return true;
+  }
   const float in = ease_in_time(age, 0, 0.3);
   const float a = in * (1 - clamp01((age - (kPopupSeconds - 0.5)) / 0.5));
-  // Bottom-centre anchored.
+  // Bottom-centre anchored, lifted cleanly above active subtitles / stacked banners.
   const SceneFrame f{0.5f * g.w - 640 * g.s, g.h - 720 * g.s, g.s};
-  const float dy = (1 - in) * 20;
+  const float dy = (1 - in) * 20 - lift_canvas;
   const float tx = sc.at(title)[0];
   ui::TextStyle ts = sc.style(title, f, kText), bs = sc.style(body, f, kText);
   const float tw = std::max(ui::List::measure(st.popup_title, ts), ui::List::measure(st.popup_text, bs)) / g.s;
@@ -469,6 +464,7 @@ void popup_card(ui::List& l, const DriveHud& st, const Layout& g) {
     l.rect(f.x(bx0), f.y(by), f.x(bx1), f.y(by + 3), ui::fade(rgba(255, 255, 255, 50), a));
     l.rect(f.x(bx0), f.y(by), f.x(bx0 + (bx1 - bx0) * k), f.y(by + 3), ui::fade(st.popup_colour ? st.popup_colour : kPink, a));
   }
+  return true;
 }
 
 // (b1) The event's title card & pre-race grid menu (PRE_AND_POST_RACE / race-grid.png).
@@ -519,6 +515,7 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
     const float by0 = bottom - it.size - 7 * s;
     const float bx1 = std::max(g.L(340), g.L(184) + tw + 32 * s);
     const float by1 = bottom + 6 * s;
+    l.add_hit(bx0, by0, bx1, by1, ui::kHitRow, int(i));
     if (sel) {
       std::array<float, 4> clip_uv{};
       if (ui_texture("DIRTMASKS/TAPECLIPON02", clip_uv)) {
@@ -531,7 +528,8 @@ void event_card(ui::List& l, const RaceHud& r, const Layout& g) {
     l.text(g.L(184), bottom - it.size, item, it);
   }
   l.unturn();
-  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_Select", "SELECT")}, {"B", "QUIT RACE"}}, g.w, g.h);
+  // Match retail race-grid.png: only A SELECT on Grid Menu (prevents accidental race quits).
+  ui4::button_bar(l, {{"A", str("HelpButtons", "IDS_Select", "SELECT")}}, g.w, g.h);
 }
 
 // (b2) The race HUD: laps (or the distance), the timers, place, standings.
@@ -1109,6 +1107,7 @@ void menu_panel(ui::List& l, const DriveHud& st, const Layout& g) {
     const float by0 = bottom - it.size - 7 * s;
     const float bx1 = std::max(g.L(300) + left_shift, tx + tw + 30 * s);
     const float by1 = bottom + 6 * s;
+    l.add_hit(bx0, by0, bx1, by1, ui::kHitRow, i);
 
     if (sel) {
       // 925_PAUSE_MENU active item: 4 deg Smudge_Tape + 3 deg Crisp_Tape + Dirt_Tile + Clipon_2.
@@ -1244,6 +1243,7 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
     else
       l.circle(px0 + 25 * s, cy, 9.5f * s, ui::fade(kGreen, pulse));
     l.text(px0 + 44 * s, cy - 8.0f * s, prompt, ps);
+    l.add_hit(px0, py0, px1, py1, ui::kHitConfirm, 0);
     l.text(g.R(1210), g.B(672), "FORZA HORIZON  //  COLORADO FESTIVAL",
            font(ui::Font::kB, 12 * s, rgba(220, 224, 232, 190), Align::kRight));
     return;
@@ -1274,6 +1274,7 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
     const float by0 = bottom - 34 * s - 6 * s;
     const float bx1 = std::max(g.L(340), g.L(184) + tw + 30 * s);
     const float by1 = bottom + 6 * s;
+    if (!ts.confirm_new_career) l.add_hit(bx0, by0, bx1, by1, ui::kHitRow, int(i));
     brush(l, bx0, by0, bx1, by1, sel ? kPink : kBrush);
     l.text(g.L(184), bottom - it.size, item, it);
   }
@@ -1297,6 +1298,7 @@ void title_screen_hud(ui::List& l, const TitleScreenHud& ts, const Layout& g, do
     for (int i = 0; i < 2; ++i) {
       const bool sel = ts.confirm_selected == i;
       const float by = y0 + 126 * s + float(i) * 46 * s;
+      l.add_hit(x0 + 22 * s, by, x1 - 22 * s, by + 36 * s, i == 0 ? ui::kHitConfirm : ui::kHitCancel, i);
       ui4::brush(l, x0 + 22 * s, by, x1 - 22 * s, by + 36 * s, sel ? ui4::kPink : ui4::kBrushBlack);
       l.text(x0 + 38 * s, by + 7 * s, opts[i], font(ui::Font::kE, 20 * s, kText));
     }
@@ -1608,7 +1610,7 @@ void ceremony_overlay(ui::List& l, const CeremonyHud& c, const Layout& g) {
 // compact non-intrusive top-left filter bar & roads counter (NEVER a giant
 // permanent list blocking the right third of Colorado!), PlayerBar top-right,
 // and BUTTON_BAR_SCENE + road legend at bottom.
-void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool has_player_bar) {
+void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool has_player_bar, bool metric_units) {
   const float s = g.s;
   constexpr uint32_t kMapPink = rgba(0xCF, 0x21, 0x69);
   const bool hovering_marker = !mo.title.empty() && mo.title != "COLORADO MAP";
@@ -1642,9 +1644,7 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
       l.text(hx0 + 12 * s, hy0 + 0.5f * (30 * s - hts.size), mo.title, hts);
     } else if (mo.distance_m >= 0.0) {
       // Subtle compact distance pill beside crosshair when panning over open road.
-      char db[32];
-      if (mo.distance_m >= 1000.0) std::snprintf(db, sizeof db, "%.1f KM", mo.distance_m / 1000.0);
-      else std::snprintf(db, sizeof db, "%.0f M", mo.distance_m);
+      const std::string db = format_distance_unit(mo.distance_m, metric_units);
       TextStyle dts = font(ui::Font::kB, 11.5f * s, ui4::kWhite);
       const float dw = ui::List::measure(db, dts) + 22 * s;
       const float dx0 = cx + 36 * s, dy0 = cy - 12 * s;
@@ -1722,9 +1722,7 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
     if (mo.distance_m >= 0.0 || mo.gps_active) {
       draw_map_row(ry, 26 * s, ui4::kPillGrey);
       if (mo.distance_m >= 0.0) {
-        char db[48];
-        if (mo.distance_m >= 1000.0) std::snprintf(db, sizeof db, "DISTANCE  %.1f KM", mo.distance_m / 1000.0);
-        else std::snprintf(db, sizeof db, "DISTANCE  %.0f M", mo.distance_m);
+        const std::string db = "DISTANCE  " + format_distance_unit(mo.distance_m, metric_units);
         l.text(px0 + 12 * s, ry + 6.5f * s, db, font(ui::Font::kB, 12.0f * s, ui4::kYellow));
       }
       if (mo.gps_active) {
@@ -1753,7 +1751,7 @@ void map_overlay_hud(ui::List& l, const MapOverlayHud& mo, const Layout& g, bool
 }
 
 // (j2) 947_HUD/MiniMap/SatNavCommands: slim HUDPILL01 turn-by-turn strip above minimap.
-void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g) {
+void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_units) {
   if (!gps.active) return;
   const float s = g.s;
   const float x0 = g.L(64), y0 = g.B(376), x1 = g.L(296), y1 = g.B(408);
@@ -1773,9 +1771,8 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g) {
   }
   l.text(x0 + 14 * s, y0 + 6 * s, glyph, font(ui::Font::kE, 18 * s, ui4::kInk, Align::kCenter));
 
-  char dt_buf[32];
-  if (gps.dist_to_turn_m >= 1000.0) std::snprintf(dt_buf, sizeof dt_buf, "%.1f KM", gps.dist_to_turn_m / 1000.0);
-  else std::snprintf(dt_buf, sizeof dt_buf, "%d M", std::max(0, int(std::lround(gps.dist_to_turn_m / 10.0) * 10)));
+  const double rounded_m = gps.dist_to_turn_m >= 1000.0 ? gps.dist_to_turn_m : std::round(gps.dist_to_turn_m / 10.0) * 10.0;
+  const std::string dt_buf = format_distance_unit(rounded_m, metric_units);
 
   const std::string line1 = gps.turn_text.empty() ? std::string("FOLLOW ROUTE") : gps.turn_text;
   TextStyle ts = font(ui::Font::kE, 13.5f * s, ui4::kWhite);
@@ -2141,43 +2138,52 @@ void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g) {
   l.circle(px, ty + 6 * s, 5 * s, kText);
 }
 
-// 947_HUD/SpeedCamera: bottom-center Speed Trap & Speed Zone HUD (y=564..664).
-void speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, const Layout& g) {
+// 947_HUD/SpeedCamera: bottom-center Speed Trap & Speed Zone HUD (lifted cleanly above active subtitles).
+float speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, const Layout& g, bool metric_units,
+                         float lift_canvas) {
   const float s = g.s;
   if (sh.flash_alpha > 0.01f) {
     l.rect(0, 0, g.w, g.h, rgba(255, 255, 255, uint8_t(std::clamp(sh.flash_alpha * 255.0f, 0.0f, 220.0f))));
   }
   const float cx = 0.5f * g.w;
+  float used = 0.0f;
   if (sh.zone_active) {
-    const float x0 = cx - 180 * s, x1 = cx + 180 * s, y0 = g.B(584);
+    const float x0 = cx - 190 * s, x1 = cx + 190 * s, y0 = g.B(584 - lift_canvas);
     ui4::pill(l, x0, y0, x1, y0 + 24 * s, ui4::kBlue, ui4::PillKind::kHud01);
     l.text(cx, y0 + 5 * s, sh.active_zone_id + "  •  SPEED ZONE", font(ui::Font::kE, 12.5f * s, ui4::kWhite, Align::kCenter));
     ui4::pill(l, x0, y0 + 26 * s, x1, y0 + 56 * s, ui4::kPillGrey, ui4::PillKind::kHud02);
-    char avg[64];
-    std::snprintf(avg, sizeof avg, "AVG %.1f MPH   •   %.0f M", sh.live_avg_mph, sh.zone_distance_m);
+    const std::string avg =
+        "AVG " + format_speed_unit(sh.live_avg_mph, metric_units, true) + "   •   " +
+        format_distance_unit(sh.zone_distance_m, metric_units);
     l.text(cx, y0 + 33 * s, avg, font(ui::Font::kE, 17 * s, ui4::kWhite, Align::kCenter));
+    used = std::max(used, 66.0f);
   }
   if (sh.banner_active) {
-    const float x0 = cx - 220 * s, x1 = cx + 220 * s, y0 = g.B(564), y1 = g.B(656);
+    const float extra_lift = sh.zone_active ? 68.0f : 0.0f;
+    const float x0 = cx - 220 * s, x1 = cx + 220 * s, y0 = g.B(564 - lift_canvas - extra_lift),
+                y1 = g.B(656 - lift_canvas - extra_lift);
     Turn t(l, cx, 0.5f * (y0 + y1), ui4::kTiltRad * 0.5f);
     ui4::brush(l, x0, y0, x1, y0 + 28 * s, ui4::kBrushBlack);
     l.text(cx, y0 + 6 * s, sh.banner_title + (sh.banner_new_pb ? "  •  NEW PERSONAL BEST!" : ""),
            font(ui::Font::kB, 13.5f * s, sh.banner_new_pb ? ui4::kYellow : ui4::kWhite, Align::kCenter));
     ui4::brush(l, x0 + 14 * s, y0 + 28 * s, x1 - 14 * s, y1, sh.banner_is_zone ? ui4::kPink : ui4::kBlue, true);
-    char spd[64], best[48];
-    std::snprintf(spd, sizeof spd, "%.1f MPH%s", sh.banner_speed_mph, sh.banner_is_zone ? " AVG" : "");
-    std::snprintf(best, sizeof best, "PERSONAL BEST  %.1f MPH", sh.banner_best_mph);
+    const std::string spd =
+        format_speed_unit(sh.banner_speed_mph, metric_units, true) + (sh.banner_is_zone ? " AVG" : "");
+    const std::string best = "PERSONAL BEST  " + format_speed_unit(sh.banner_best_mph, metric_units, true);
     l.text(cx, y0 + 34 * s, spd, font(ui::Font::kE, 28 * s, ui4::kWhite, Align::kCenter));
     l.text(cx, y0 + 68 * s, best, font(ui::Font::kB, 11 * s, rgba(255, 255, 255, 230), Align::kCenter));
+    used = extra_lift + 100.0f;
   }
+  return used;
 }
 
 // 947_HUD/RaceEncounter: bottom-center Head-to-Head challenge prompt, live bar, and finish banner.
-void h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g) {
+float h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g, bool metric_units, float lift_canvas) {
   const float s = g.s;
   const float cx = 0.5f * g.w;
+  float used = 0.0f;
   if (hh.prompt_visible && !hh.active) {
-    const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(576);
+    const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(576 - lift_canvas);
     ui4::brush(l, x0 + 16 * s, y0, x1 - 16 * s, y0 + 26 * s, ui4::kPink);
     l.text(cx, y0 + 5 * s, "HEAD-TO-HEAD CHALLENGE  [X]", font(ui::Font::kE, 14.5f * s, ui4::kWhite, Align::kCenter));
     ui4::pill(l, x0, y0 + 28 * s, x1, y0 + 54 * s, ui4::kPillGrey, ui4::PillKind::kHud01);
@@ -2185,25 +2191,28 @@ void h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g) {
     std::snprintf(sub, sizeof sub, "VS %s [%s %d]  •  WAGER %s CR", hh.prompt_driver.c_str(),
                   hh.prompt_car_class.c_str(), hh.prompt_pi, thousands(hh.prompt_wager).c_str());
     l.text(cx, y0 + 34 * s, sub, font(ui::Font::kB, 12.5f * s, ui4::kYellow, Align::kCenter));
+    used = std::max(used, 64.0f);
   }
   if (hh.active) {
-    const float x0 = cx - 220 * s, x1 = cx + 220 * s, y0 = g.B(584);
+    const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(584 - lift_canvas);
     ui4::pill(l, x0, y0, x1, y0 + 26 * s, ui4::kPink, ui4::PillKind::kHud01);
-    char hdr[96], stats[128];
+    char hdr[96], stats[160];
     std::snprintf(hdr, sizeof hdr, "HEAD-TO-HEAD  VS  %s", hh.opponent_name.c_str());
     l.text(cx, y0 + 6 * s, hdr, font(ui::Font::kE, 14.5f * s, ui4::kWhite, Align::kCenter));
     ui4::pill(l, x0, y0 + 28 * s, x1, y0 + 60 * s, ui4::kPillGrey, ui4::PillKind::kHud02);
-    std::snprintf(stats, sizeof stats, "%d%s / 2  •  %.2f KM LEFT  •  GAP %+.0f M  •  %s CR", hh.place,
-                  place_suffix(hh.place), hh.player_remaining_m / 1000.0, hh.gap_m,
-                  thousands(hh.wager_credits).c_str());
+    const std::string rem_s = format_distance_unit(hh.player_remaining_m, metric_units);
+    const std::string gap_s = format_gap_unit(hh.gap_m, metric_units);
+    std::snprintf(stats, sizeof stats, "%d%s / 2  •  %s LEFT  •  GAP %s  •  %s CR", hh.place,
+                  place_suffix(hh.place), rem_s.c_str(), gap_s.c_str(), thousands(hh.wager_credits).c_str());
     l.text(cx, y0 + 34 * s, stats,
            font(ui::Font::kB, 12.5f * s, hh.place == 1 ? ui4::kGreen : ui4::kYellow, Align::kCenter));
     const float bx0 = x0 + 12 * s, bx1 = x1 - 12 * s, by = y0 + 52 * s;
     l.rect(bx0, by, bx1, by + 4 * s, rgba(255, 255, 255, 35));
     l.rect(bx0, by, bx0 + float(hh.progress) * (bx1 - bx0), by + 4 * s, ui4::kPink);
+    used = std::max(used, 68.0f);
   }
   if (hh.finish_banner) {
-    const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(564), y1 = g.B(638);
+    const float x0 = cx - 230 * s, x1 = cx + 230 * s, y0 = g.B(564 - lift_canvas), y1 = g.B(638 - lift_canvas);
     Turn t(l, cx, 0.5f * (y0 + y1), ui4::kTiltRad * 0.5f);
     ui4::brush(l, x0, y0, x1, y1, hh.finish_won ? ui4::kPink : ui4::kBrushBlack, true);
     l.text(cx, y0 + 10 * s, hh.finish_won ? "HEAD-TO-HEAD VICTORY!" : "HEAD-TO-HEAD DEFEAT",
@@ -2214,20 +2223,20 @@ void h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g) {
                     thousands(hh.finish_credits).c_str());
     else std::snprintf(detail, sizeof detail, "%s REACHED THE FINISH FIRST", hh.finish_opponent.c_str());
     l.text(cx, y0 + 44 * s, detail, font(ui::Font::kB, 13 * s, ui4::kYellow, Align::kCenter));
+    used = std::max(used, 84.0f);
   }
+  return used;
 }
 
-// 947_HUD/CombinedNotification: bottom-center Sponsor Notification with #DAFF00 tilted
-// unlock strip + dark HUDPANEL02 card + real white square SPONSORLOGOTILE/*.xds logo
-// (matching out/oracle/ui/race-hud-notification.png). Free roam top-left stays 100% clean!
-void progression_hud(ui::List& l, const DriveHud& st, const Layout& g) {
+// 947_HUD/CombinedNotification: bottom-center Sponsor Notification (lifted cleanly above active subtitles/banners).
+bool progression_hud(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const float s = g.s;
   const double age = st.time - st.sponsor_at;
-  if (st.sponsor_title.empty() || age < 0.0 || age >= 5.5) return;
+  if (st.sponsor_title.empty() || age < 0.0 || age >= 5.5) return false;
 
   const float fade_a = ease_in_time(age, 0.0, 0.25) * (1.0f - clamp01((age - 4.9) / 0.6));
   const float cx = 0.5f * g.w;
-  const float x0 = cx - 196 * s, x1 = cx + 196 * s, y0 = g.B(570), y1 = g.B(656);
+  const float x0 = cx - 196 * s, x1 = cx + 196 * s, y0 = g.B(570 - lift_canvas), y1 = g.B(656 - lift_canvas);
 
   // Pick matching SPONSORLOGOTILE/*.xds by brand substring, else HorizonLogo/RedBull.
   std::string up = st.sponsor_title;
@@ -2284,6 +2293,7 @@ void progression_hud(ui::List& l, const DriveHud& st, const Layout& g) {
   fit(st.sponsor_detail, stdt, x1 - tx - 14 * s, 9 * s);
   l.text(tx, y0 + 34 * s, st.sponsor_title, stt);
   l.text(tx, y0 + 56 * s, st.sponsor_detail, stdt);
+  return true;
 }
 
 }  // namespace
@@ -2351,6 +2361,42 @@ std::string race_clock(double t) {
   return b;
 }
 
+std::string format_speed_unit(double mph, bool metric, bool decimals) {
+  char buf[48];
+  const double v = metric ? (mph * 1.609344) : mph;
+  const char* u = metric ? "KM/H" : "MPH";
+  if (decimals) std::snprintf(buf, sizeof buf, "%.1f %s", v, u);
+  else std::snprintf(buf, sizeof buf, "%d %s", int(std::lround(v)), u);
+  return buf;
+}
+
+std::string format_distance_unit(double meters, bool metric) {
+  char buf[48];
+  const double m = std::max(0.0, meters);
+  if (metric) {
+    if (m >= 1000.0) std::snprintf(buf, sizeof buf, "%.1f KM", m / 1000.0);
+    else std::snprintf(buf, sizeof buf, "%d M", int(std::lround(m)));
+  } else {
+    const double mi = m / 1609.344;
+    if (mi >= 0.1) std::snprintf(buf, sizeof buf, "%.2f MI", mi);
+    else std::snprintf(buf, sizeof buf, "%d FT", int(std::lround(m * 3.28084)));
+  }
+  return buf;
+}
+
+std::string format_gap_unit(double meters, bool metric) {
+  char buf[48];
+  if (metric) {
+    if (std::fabs(meters) >= 1000.0) std::snprintf(buf, sizeof buf, "%+.2f KM", meters / 1000.0);
+    else std::snprintf(buf, sizeof buf, "%+.0f M", meters);
+  } else {
+    const double ft = meters * 3.28084;
+    if (std::fabs(meters) >= 160.9344) std::snprintf(buf, sizeof buf, "%+.2f MI", meters / 1609.344);
+    else std::snprintf(buf, sizeof buf, "%+.0f FT", ft);
+  }
+  return buf;
+}
+
 float drive_hud_dial_height(float h) { return (720 - 587 + 88) * (h / 720.0f); }
 
 void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
@@ -2366,7 +2412,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   }
   if (st.map_overlay && st.map_overlay->active) {
     const bool has_bar = st.credits >= 0 || !st.car_name.empty();
-    map_overlay_hud(l, *st.map_overlay, g, has_bar);
+    map_overlay_hud(l, *st.map_overlay, g, has_bar, st.metric_units);
     if (has_bar) draw_career_header(l, st, g);
     return;
   }
@@ -2383,15 +2429,25 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   const bool menu = !st.menu_title.empty() || !st.menu.empty();
+  // Bottom-center HUD stack allocator (720p canvas units): when campaign subtitles are
+  // active, lift bottom-center cards cleanly above the subtitle bar + speaker pill, and
+  // stack concurrent cards upward so zero banners ever overlap!
+  float bottom_lift = st.subtitle_active ? 96.0f : 0.0f;
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu) {
     if (!st.name_tags.empty() && (!st.race || st.race->phase == RaceHud::kRacing))
       opponent_name_tags(l, st.name_tags, g);
     if (st.world_marker && !st.race) world_marker_hud(l, *st.world_marker, g);
-    if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g);
+    if (st.gps && st.gps->active && !st.race) gps_turn_hud(l, *st.gps, g, st.metric_units);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
-    if (st.h2h && !st.race) h2h_hud(l, *st.h2h, g);
-    if (st.speed_hud && !st.race) speed_activity_hud(l, *st.speed_hud, g);
+    if (st.h2h && !st.race) {
+      const float used = h2h_hud(l, *st.h2h, g, st.metric_units, bottom_lift);
+      if (used > 0.0f) bottom_lift += used + 8.0f;
+    }
+    if (st.speed_hud && !st.race) {
+      const float used = speed_activity_hud(l, *st.speed_hud, g, st.metric_units, bottom_lift);
+      if (used > 0.0f) bottom_lift += used + 8.0f;
+    }
     if (st.skills && !(st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open)))
       skill_chain_hud(l, *st.skills, g, st.time);
     if (st.race) {
@@ -2404,8 +2460,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       }
     }
     if (st.rally_stage && st.rally_stage->active) build_rally_pace_notes_hud(l, *st.rally_stage, w, h);
-    progression_hud(l, st, g);
-    popup_card(l, st, g);
+    if (progression_hud(l, st, g, bottom_lift)) bottom_lift += 94.0f;
+    if (popup_card(l, st, g, bottom_lift)) bottom_lift += 72.0f;
     const bool hide_dial = st.race && (st.race->phase == RaceHud::kFinished || st.race->grid_menu_open);
     if (!hide_dial) dial(l, st, g);
   }
@@ -2413,7 +2469,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     TextStyle ts = font(ui::Font::kB, 14 * s, kText, Align::kCenter);
     fit(st.toast, ts, w - 120 * s, 8 * s);
     const float tw = ui::List::measure(st.toast, ts);
-    const float y = g.B(653);
+    const float y = g.B(653 - bottom_lift);
     l.rect(0.5f * w - 0.5f * tw - 14 * s, y, 0.5f * w + 0.5f * tw + 14 * s, y + 28 * s, kBlack60);
     l.text(0.5f * w, y + 7 * s, st.toast, ts);
   }

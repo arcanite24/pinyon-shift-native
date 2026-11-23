@@ -486,12 +486,12 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
           driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) ||
                    scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
         }
-        const Rgba undriven_col{std::max(138.0f, ls.edge.r), std::max(144.0f, ls.edge.g),
-                                std::max(156.0f, ls.edge.b), std::max(210.0f, ls.edge.a)};
+        const Rgba undriven_col{std::max(182.0f, ls.edge.r), std::max(186.0f, ls.edge.g),
+                                std::max(194.0f, ls.edge.b), std::max(220.0f, ls.edge.a)};
         const Rgba road_col = driven ? ls.core : undriven_col;
-        const float under_a = std::max(170.0f, ls.under.a);
-        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(2.8, px + 3.2), Rgba{8, 10, 14, under_a});
-        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.5, px), road_col);
+        const float under_a = std::max(185.0f, ls.under.a);
+        if (pass == 0) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(3.0, px + 3.4), Rgba{10, 12, 16, under_a});
+        if (pass == 1) cv.line(pa.x, pa.y, pb.x, pb.y, std::max(1.8, px), road_col);
       }
     }
 
@@ -543,10 +543,33 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       top_y = std::min(top_y, iy - ic.size * unit * 0.45);
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, ic.size * unit, 0, tint);
     }
-    // Pink NEW dot/tag above uncompleted events (hud-freeroam-event-marker.png).
+    // Crisp FH1 pink "NEW" text badge above uncompleted events (SPEC-UI-LAYOUTS:69 — never a blank line!).
     if (m.is_new) {
-      const double bw = 14 * unit, bh = 5 * unit;
-      cv.line(p.x - bw * 0.5, top_y - bh * 0.5, p.x + bw * 0.5, top_y - bh * 0.5, bh, Rgba{245, 4, 92, 245});
+      const double sc = std::max(0.85, unit * 1.15);
+      const double bw = 20.0 * sc, bh = 8.5 * sc;
+      const double by = top_y - bh * 0.65;
+      cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220});
+      cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh, Rgba{249, 0, 100, 250});
+      // Crisp micro-stroke "N E W" letters inside the pink badge.
+      const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
+      const Rgba wh{255, 255, 255, 255};
+      // N
+      const double nx = p.x - 6.6 * sc;
+      cv.line(nx, by + h2, nx, by - h2, st, wh);
+      cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
+      cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
+      // E
+      const double ex = p.x - 1.6 * sc;
+      cv.line(ex, by - h2, ex, by + h2, st, wh);
+      cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
+      cv.line(ex, by, ex + gw * 0.85, by, st, wh);
+      cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
+      // W
+      const double wx = p.x + 3.4 * sc;
+      cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
+      cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
+      cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
+      cv.line(wx + gw, by + h2, wx + gw * 1.3, by - h2, st, wh);
     }
   }
   // Free-roam traffic vehicles: compact grey-white car dots on the minimap.

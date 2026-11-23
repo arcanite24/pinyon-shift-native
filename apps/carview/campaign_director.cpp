@@ -253,15 +253,16 @@ bool CampaignDirector::compute_camera(const std::array<double, 3>& car_pos, doub
     case race::CampaignStage::kBossIntro:
     case race::CampaignStage::kFinaleIntro:
     case race::CampaignStage::kFinaleVictory:
-      // Dramatic low-angle Boss / Darius Flynt hero sweep.
-      p0 = local_to_world(car_pos, car_heading, 4.8, 0.95, 5.8);
-      p1 = local_to_world(car_pos, car_heading, 2.2, 0.80, 4.4);
-      p2 = local_to_world(car_pos, car_heading, -2.6, 1.15, 4.2);
-      p3 = local_to_world(car_pos, car_heading, -5.2, 1.55, 2.0);
-      l0 = local_to_world(car_pos, car_heading, 0.0, 0.62, 0.8);
-      l1 = local_to_world(car_pos, car_heading, 0.0, 0.68, 0.4);
-      l2 = local_to_world(car_pos, car_heading, 0.0, 0.74, 0.0);
-      l3 = local_to_world(car_pos, car_heading, 0.0, 0.82, -0.4);
+      // Dramatic low-angle Boss / Darius Flynt hero sweep with target offset so the
+      // hero car sits cleanly on the right half of the frame, clear of the left dossier card.
+      p0 = local_to_world(car_pos, car_heading, 5.2, 0.95, 5.8);
+      p1 = local_to_world(car_pos, car_heading, 2.6, 0.85, 4.6);
+      p2 = local_to_world(car_pos, car_heading, -2.0, 1.15, 4.4);
+      p3 = local_to_world(car_pos, car_heading, -4.8, 1.50, 2.2);
+      l0 = local_to_world(car_pos, car_heading, 1.2, 0.62, 0.6);
+      l1 = local_to_world(car_pos, car_heading, 1.2, 0.68, 0.2);
+      l2 = local_to_world(car_pos, car_heading, -1.2, 0.74, -0.2);
+      l3 = local_to_world(car_pos, car_heading, -1.2, 0.82, -0.5);
       fov = 40.0;
       break;
 

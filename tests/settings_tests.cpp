@@ -240,6 +240,27 @@ int main() {
   CHECK(pb_high.live_settings().graphics.ssr == carview::modern::SsrQuality::kHalf);
   CHECK(pb_high.live_settings().graphics.volumetric_fog == carview::modern::VolumetricFog::kQuarter);
 
+  // Pillar 6: Global Units setting (Metric km/h vs Imperial MPH) & mouse select_tab / select_row.
+  carview::SettingsPage units_def;
+  units_def.load({});
+  CHECK(units_def.value("units") == "metric (km/h)");
+  CHECK(units_def.live_settings().metric_units == true);
+
+  carview::SettingsPage units_imp;
+  units_imp.load({"--units", "imperial"});
+  CHECK(units_imp.value("units") == "imperial (mph)");
+  CHECK(units_imp.live_settings().metric_units == false);
+  const auto ut = units_imp.tokens();
+  CHECK(has(ut, {"--units", "imperial"}));
+  units_imp.select_tab(2);  // HUD & Gameplay tab
+  CHECK(int(units_imp.active_tab()) == 2);
+  const auto tab_rows = units_imp.display_rows();
+  CHECK(!tab_rows.empty());
+  if (!tab_rows.empty()) {
+    units_imp.select_row(tab_rows.back().flat_index);
+    CHECK(units_imp.selected() == tab_rows.back().flat_index);
+  }
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

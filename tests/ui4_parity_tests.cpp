@@ -1671,11 +1671,93 @@ void test_map_camera_controller() {
   check(std::hypot(cam.cx() - mk.x, cam.cz() - mk.z) < 5.0, "map camera pulls smoothly onto marker center");
 }
 
+// Pillar 6: Units formatting (Metric vs Imperial), tilted mouse hit-testing, and HUD banner non-overlap.
+void test_units_mouse_and_banner_non_overlap() {
+  // 1. Units formatting consistency.
+  check(carview::format_speed_unit(100.0, false, false) == "100 MPH", "imperial speed formatting");
+  check(carview::format_speed_unit(100.0, true, false) == "161 KM/H", "metric speed formatting");
+  check(carview::format_speed_unit(100.0, true, true) == "160.9 KM/H", "metric decimal speed formatting");
+  check(carview::format_distance_unit(1609.344, false) == "1.00 MI", "imperial mile formatting");
+  check(carview::format_distance_unit(150.0, false).find("FT") != std::string::npos, "imperial feet formatting");
+  check(carview::format_distance_unit(1500.0, true) == "1.5 KM", "metric km formatting");
+  check(carview::format_distance_unit(250.0, true) == "250 M", "metric meter formatting");
+  check(carview::format_gap_unit(100.0, false) == "+328 FT", "imperial gap formatting");
+  check(carview::format_gap_unit(100.0, true) == "+100 M", "metric gap formatting");
+
+  // 2. Mouse hit-testing (axis-aligned, top-most precedence, and rotated/tilted zones).
+  carview::ui::List hit_list;
+  hit_list.add_hit(100.0f, 100.0f, 300.0f, 150.0f, carview::ui::kHitRow, 0);
+  hit_list.add_hit(260.0f, 100.0f, 300.0f, 150.0f, carview::ui::kHitStepRight, 0);
+  carview::ui::HitZone hz{};
+  check(hit_list.hit_test(150.0f, 125.0f, hz) && hz.group == carview::ui::kHitRow && hz.index == 0,
+        "axis-aligned row hit test");
+  check(hit_list.hit_test(280.0f, 125.0f, hz) && hz.group == carview::ui::kHitStepRight && hz.index == 0,
+        "top-most overlapping step-right hit test wins");
+  check(!hit_list.hit_test(50.0f, 50.0f, hz), "miss outside hit zone");
+
+  carview::ui::List rot_list;
+  rot_list.turn(200.0f, 200.0f, 0.05236f);  // +3 deg UI4 tilt
+  rot_list.add_hit(100.0f, 180.0f, 300.0f, 220.0f, carview::ui::kHitRow, 3);
+  rot_list.unturn();
+  check(rot_list.hit_test(200.0f, 200.0f, hz) && hz.index == 3, "rotated UI4 blade center hits");
+  check(!rot_list.hit_test(200.0f, 260.0f, hz), "rotated UI4 blade outside misses");
+
+  // 3. Real menu screens emit mouse hit zones (Settings tabs/rows/arrows & Pause Menu rows).
+  carview::SettingsPage sp;
+  sp.load({});
+  sp.open();
+  carview::ui::List sp_list;
+  carview::draw_settings_ui4(sp_list, 1280.0f, 720.0f, sp, false);
+  bool has_tab = false, has_row = false, has_left = false, has_right = false;
+  for (const auto& z : sp_list.hits()) {
+    if (z.group == carview::ui::kHitTab) has_tab = true;
+    if (z.group == carview::ui::kHitRow) has_row = true;
+    if (z.group == carview::ui::kHitStepLeft) has_left = true;
+    if (z.group == carview::ui::kHitStepRight) has_right = true;
+  }
+  check(has_tab && has_row && has_left && has_right, "Settings UI4 emits tab, row, and step hit zones");
+
+  // 4. Bottom-center HUD banner non-overlap when subtitle is active alongside popup & speed activity.
+  auto max_center_rect_bottom = [](const carview::ui::List& l) -> float {
+    float max_y = 0.0f;
+    for (const auto& it : l.items()) {
+      const float cx = 0.5f * (it.rect[0] + it.rect[2]);
+      const float w = it.rect[2] - it.rect[0];
+      const float h = it.rect[3] - it.rect[1];
+      if (cx > 420.0f && cx < 860.0f && w > 120.0f && h > 16.0f && it.rect[1] > 350.0f) {
+        max_y = std::max(max_y, it.rect[3]);
+      }
+    }
+    return max_y;
+  };
+  carview::DriveHud d_no_sub;
+  d_no_sub.driving = true;
+  d_no_sub.time = 10.0;
+  d_no_sub.metric_units = false;
+  d_no_sub.subtitle_active = false;
+  d_no_sub.popup_title = "ROAD DISCOVERED";
+  d_no_sub.popup_text = "142 / 216 ROADS";
+  d_no_sub.popup_at = 9.5;
+  carview::ui::List l_no_sub;
+  carview::build_drive_hud(l_no_sub, d_no_sub, 1280.0f, 720.0f);
+
+  carview::DriveHud d_with_sub = d_no_sub;
+  d_with_sub.subtitle_active = true;
+  carview::ui::List l_with_sub;
+  carview::build_drive_hud(l_with_sub, d_with_sub, 1280.0f, 720.0f);
+
+  const float bot_no_sub = max_center_rect_bottom(l_no_sub);
+  const float bot_with_sub = max_center_rect_bottom(l_with_sub);
+  check(bot_no_sub > 580.0f, "bottom popup sits in normal lower lane when no subtitle active");
+  check(bot_with_sub < bot_no_sub - 60.0f, "bottom popup lifts cleanly above active subtitle lane");
+}
+
 }  // namespace
 
 int main() {
   test_ui4_chrome_primitives();
   test_map_camera_controller();
+  test_units_mouse_and_banner_non_overlap();
 
   const char* root_env = std::getenv("SHIFT_GAME_ROOT");
   const char* shot_env = std::getenv("SHIFT_UI4_SCREENSHOT_DIR");

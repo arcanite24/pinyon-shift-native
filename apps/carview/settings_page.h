@@ -33,6 +33,7 @@ struct LiveSettings {
   bool skip_intro_movies = false;
   bool start_in_single_player = false;
   bool skip_vo_with_a = true;
+  bool metric_units = true;  // true: Metric (km/h, km/m), false: Imperial (MPH, mi/ft)
   std::string language = "EN";
   bool photo_through_walls = false;
   bool photo_wider_limits = false;
@@ -79,6 +80,9 @@ class SettingsPage {
   void move(int by);  // up and down, wrapping over the rows and the save line
   void step(int by);  // left and right on the selected row
   void switch_tab(int by);  // jumps selection to the first setting in the next/prev category tab
+  void select_row(int flat_idx);
+  void select_tab(int tab_idx);
+  int selected() const { return row_; }
   Tab active_tab() const;
   std::vector<DisplayRow> display_rows() const;
   bool on_save_line() const { return row_ == int(rows_.size() + rebinds_.size()); }
