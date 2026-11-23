@@ -22,6 +22,13 @@ if(SHIFT_BUILD_CARVIEW AND NOT ANDROID)
     launcher_ui.cpp)
   target_include_directories(shift-launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(shift-launcher PRIVATE shift_launcher_core carview_render shift_stb SDL3::SDL3-static)
+  if(WIN32)
+    set_target_properties(shift-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+      target_link_options(shift-launcher PRIVATE "/ENTRY:mainCRTStartup")
+    endif()
+    target_link_libraries(shift-launcher PRIVATE shell32)
+  endif()
   if(APPLE)
     set_target_properties(shift-launcher PROPERTIES
       BUILD_RPATH "@executable_path/../Frameworks"

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,17 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 #include <fh1data/archive.h>
 
@@ -69,13 +81,14 @@ void open_folder_in_shell(const std::filesystem::path& dir, std::string& notice)
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
 #ifdef _WIN32
-  std::string cmd = "explorer \"" + dir.string() + "\"";
+  ShellExecuteA(nullptr, "open", dir.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #elif defined(__APPLE__)
   std::string cmd = "open \"" + dir.string() + "\" &";
+  std::system(cmd.c_str());
 #else
   std::string cmd = "xdg-open \"" + dir.string() + "\" >/dev/null 2>&1 &";
-#endif
   std::system(cmd.c_str());
+#endif
   notice = "Opened " + dir.string();
 }
 
@@ -192,11 +205,21 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
   if (!st.launch_car.empty()) cmd += " --car " + st.launch_car;
   if (!st.extra_args.empty()) cmd += " " + st.extra_args;
 #ifdef _WIN32
-  cmd = "start \"\" " + cmd;
+  std::string cmd_line = cmd;
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE,
+                      CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    notice = "Failed to launch carview.";
+    return false;
+  }
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
 #else
   cmd += " &";
-#endif
   std::system(cmd.c_str());
+#endif
   notice = "Launched carview (" + std::string(kPresetArgs[std::clamp(st.selected_preset, 0, 4)]) + " preset).";
   return true;
 }
@@ -341,22 +364,46 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Query display refresh rate for hardware preset recommendation.
+  // Query display refresh rate and HiDPI content scale so 4K / high-DPI monitors
+  // open at a comfortable physical size with crisp scaled typography.
+  float init_content_scale = 1.0f;
+  int init_win_w = int(width);
+  int init_win_h = int(height);
   if (SDL_DisplayID disp = SDL_GetPrimaryDisplay()) {
     if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(disp); mode && mode->refresh_rate > 0) {
       state.hw_info.refresh_hz = int(mode->refresh_rate + 0.5f);
       state.hw_rec = launcher::recommend_preset(state.hw_info);
     }
+    const float cs = SDL_GetDisplayContentScale(disp);
+    if (cs > 1.0f) init_content_scale = std::clamp(cs, 1.0f, 3.0f);
+#if !defined(__APPLE__)
+    SDL_Rect usable{};
+    const bool has_usable = SDL_GetDisplayUsableBounds(disp, &usable) && usable.w > 0 && usable.h > 0;
+    float win_scale = init_content_scale;
+    if (has_usable && win_scale <= 1.01f && usable.w >= 2560 && usable.h >= 1440) {
+      win_scale = std::clamp(std::min(float(usable.w) / 1920.0f, float(usable.h) / 1080.0f), 1.0f, 2.5f);
+    }
+    if (win_scale > 1.0f) {
+      init_win_w = int(std::lround(float(width) * win_scale));
+      init_win_h = int(std::lround(float(height) * win_scale));
+    }
+    if (has_usable) {
+      init_win_w = std::min(init_win_w, std::max(960, usable.w - 64));
+      init_win_h = std::min(init_win_h, std::max(600, usable.h - 64));
+    }
+#endif
   }
 
-  SDL_Window* window = SDL_CreateWindow("Shift Engine", int(width), int(height),
+  SDL_Window* window = SDL_CreateWindow("Shift Engine", init_win_w, init_win_h,
                                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   if (!window) {
     std::fprintf(stderr, "shift-launcher: SDL_CreateWindow failed: %s\n", SDL_GetError());
     SDL_Quit();
     return 1;
   }
-  SDL_SetWindowMinimumSize(window, 960, 600);
+  const float min_scale = (SDL_GetWindowPixelDensity(window) <= 1.01f) ? std::max(1.0f, init_content_scale) : 1.0f;
+  SDL_SetWindowMinimumSize(window, std::min(init_win_w, int(std::lround(960.0f * min_scale))),
+                           std::min(init_win_h, int(std::lround(600.0f * min_scale))));
 
   carview::Renderer renderer;
   carview::Renderer::Options ropts;
@@ -662,6 +709,7 @@ int main(int argc, char** argv) {
     return {sx, sy};
   };
 
+  float user_zoom = 1.0f;
   bool running = true;
   while (running) {
     const auto [scale_x, scale_y] = current_pixel_scale();
@@ -680,7 +728,16 @@ int main(int argc, char** argv) {
         const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
         const bool ctrl = (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
         const bool editing_path = (state.active_tab == launcher::LauncherTab::kSetup && state.focused_id == "setup:path");
-        if (ctrl && e.key.key == SDLK_V && state.active_tab == launcher::LauncherTab::kSetup) {
+        if (ctrl && (e.key.key == SDLK_EQUALS || e.key.key == SDLK_PLUS || e.key.key == SDLK_KP_PLUS)) {
+          user_zoom = std::clamp(user_zoom + 0.15f, 0.75f, 2.0f);
+          state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
+        } else if (ctrl && (e.key.key == SDLK_MINUS || e.key.key == SDLK_KP_MINUS)) {
+          user_zoom = std::clamp(user_zoom - 0.15f, 0.75f, 2.0f);
+          state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
+        } else if (ctrl && (e.key.key == SDLK_0 || e.key.key == SDLK_KP_0)) {
+          user_zoom = 1.0f;
+          state.banner_notice = "UI zoom reset (100%).";
+        } else if (ctrl && e.key.key == SDLK_V && state.active_tab == launcher::LauncherTab::kSetup) {
           if (char* clip = SDL_GetClipboardText()) {
             const std::string pasted = clean_pasted_path(clip);
             SDL_free(clip);
@@ -864,7 +921,10 @@ int main(int argc, char** argv) {
     int px_w = int(width), px_h = int(height);
     SDL_GetWindowSize(window, &win_w, &win_h);
     SDL_GetWindowSizeInPixels(window, &px_w, &px_h);
-    const float dpi = win_w > 0 ? float(px_w) / float(win_w) : 1.0f;
+    const float pixel_density = win_w > 0 ? float(px_w) / float(win_w) : 1.0f;
+    const float display_scale = std::max(1.0f, SDL_GetWindowDisplayScale(window));
+    const float size_scale = std::min(float(px_w) / 1920.0f, float(px_h) / 1080.0f);
+    const float dpi = std::clamp(std::max({pixel_density, display_scale, size_scale}) * user_zoom, 0.75f, 3.0f);
     launcher::build_launcher_ui(ui_list, state, float(px_w), float(px_h), hitboxes, dpi);
     static bool atlas_synced = false;
     upload_launcher_ui_atlas(renderer, !atlas_synced);
