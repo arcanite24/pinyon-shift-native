@@ -53,6 +53,14 @@ bool DriveWorldHost::set_staged_world() {
         }
         follower.set_points(std::move(prepared->road));
         showroom.set_world_glows(std::move(prepared->glows));
+        // If an async GPU world upload is still in flight, never call begin_world() yet
+        // (which would stall on drop_pending_world -> vkWaitForFences). Queue the newest
+        // prepared world and hand it over on the first frame after the previous copy finishes.
+        if (streamer_async && streamer->gathers() > 1 && showroom.has_pending_world()) {
+          deferred_prepared_ = std::move(prepared);
+          return true;
+        }
+        deferred_prepared_.reset();
         auto staged = std::move(prepared->staged);
         if (!staged) {
           app.error = "world staging buffers";
@@ -63,6 +71,13 @@ bool DriveWorldHost::set_staged_world() {
         // done (poll_world, each step).
         return streamer_async && streamer->gathers() > 1 ? showroom.begin_world(std::move(*staged), app.error)
                                                          : showroom.set_world(std::move(*staged), app.error);
+}
+
+bool DriveWorldHost::pump_deferred_world() {
+  if (!deferred_prepared_ || showroom.has_pending_world()) return true;
+  auto prepared = std::move(deferred_prepared_);
+  if (!prepared || !prepared->staged) return true;
+  return showroom.begin_world(std::move(*prepared->staged), app.error);
 }
 
 bool DriveWorldHost::open_world_and_car() {
@@ -181,6 +196,18 @@ bool DriveWorldHost::open_world_and_car() {
         std::string vfx_gpu_err;
         if (!showroom.init_vfx(&app.vfx_lib, vfx_gpu_err))
           std::fprintf(stderr, "carview: vfx gpu init note: %s\n", vfx_gpu_err.c_str());
+      }
+      // Persist the VkPipelineCache immediately after startup AOT pre-compilation
+      // (not only on clean exit) so crashes or forced closes still retain warm caches.
+      renderer.save_pipeline_cache();
+      // Pre-warm offscreen/RT render targets before Frame 0 to eliminate first-frame stalls.
+      if (app.headless && app.width > 0 && app.height > 0) {
+        std::string tw_err;
+        if (!renderer.prewarm_targets(app.width, app.height, tw_err))
+          std::fprintf(stderr, "carview: target prewarm note: %s\n", tw_err.c_str());
+      }
+      if (renderer.active_rt_mode() != rt::RtMode::kOff && renderer.render_width() > 0 && renderer.render_height() > 0) {
+        showroom.prewarm_rt_targets(renderer.render_width(), renderer.render_height());
       }
   particle_sys.set_library(&app.vfx_lib);
       // SHIFT_PAINT_PREVIEW=i (debug): the paint page's live preview of

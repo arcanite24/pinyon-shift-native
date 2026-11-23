@@ -312,18 +312,38 @@ bool Showroom::upload(std::string& error) {
     gs.retire = [this](std::function<void()> f) { retire(std::move(f)); };
     auto gw = std::make_unique<WorldGpu>(r_);
     std::string gerr;
+    const auto wg_t0 = std::chrono::steady_clock::now();
     if (gw->init(gs, gerr)) {
       gpu_world_ = std::move(gw);
       if (auto hv = gpu_world_->hiz_raw_view()) r_.set_hiz_preview_view(hv);
     } else {
       notes_.push_back("GPU-driven world off: " + gerr);
     }
+    pipeline_compile_ms_ +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wg_t0).count();
   }
   if (guest_) return true;
+  upload_ring_.r = &r_;
+  if (const char* ub = std::getenv("SHIFT_UPLOAD_BUDGET_MS"); ub && *ub) {
+    const double v = std::atof(ub);
+    if (v >= 0.0 && v <= 50.0) upload_budget_ms_ = v;
+  }
+  // Eagerly pre-compile ALL RT/PT compute pipelines & RT scene during startup when RT is enabled
+  // (eliminates 100+ ms Frame 0 lazy shader compilation & seq_ib submit_once stall).
+  if (r_.rt_supported() && r_.active_rt_mode() != rt::RtMode::kOff) {
+    std::string rt_err;
+    const auto rt_t0 = std::chrono::steady_clock::now();
+    if (!precompile_rt_pipelines(rt_err)) {
+      notes_.push_back("RT startup pre-compile note: " + rt_err);
+    }
+    pipeline_compile_ms_ +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rt_t0).count();
+  }
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) {
     ++world_frame_;
     release_retired();
+    pump_deferred_uploads(cmd);
     if (world_lit_ && draw_car_) {
       // The drive: the car takes the world's sun and sky (showroom.frag).
       for (int k = 0; k < 3; ++k) frame_.key_light[k] = world_sun_[k], frame_.drive[k] = world_up_[k];
@@ -626,7 +646,8 @@ bool Showroom::upload(std::string& error) {
       VkDescriptorSetLayout bl_layout = gpu_world_ ? gpu_world_->bindless_layout() : VK_NULL_HANDLE;
       VkImageView fb_white = !gpu_textures_.empty() ? gpu_textures_[0].view : VK_NULL_HANDLE;
       std::string rt_err;
-      if (pipe->init(bl_layout, sampler_, fb_white, rt_err)) {
+      if (pipe->init(bl_layout, sampler_, fb_white, rt_err,
+                     [this](std::function<void()> fn) { retire(std::move(fn)); })) {
         rt_pipeline_ = std::move(pipe);
       } else {
         rt_init_failed_ = true;
@@ -676,6 +697,170 @@ VkDeviceSize Showroom::dyn_sync(DynBuffer& d, VkDeviceSize used_bytes) {
     d.slot_ver[slot] = d.ver;
   }
   return at;
+}
+
+Showroom::UploadRingGuard::~UploadRingGuard() {
+  if (!r || !r->allocator_) return;
+  for (auto& s : slots) {
+    if (s.mapped) {
+      vmaUnmapMemory(r->allocator_, s.staging.allocation);
+      s.mapped = nullptr;
+    }
+    r->destroy_buffer(s.staging);
+    s.capacity = 0;
+  }
+}
+
+bool Showroom::init_minimal_for_precompile() {
+  vertices_.assign(3, bake::Vertex{});
+  indices_ = {0, 1, 2};
+  textures_.clear();
+  textures_.push_back({nullptr});  // 0: built-in white
+  textures_.push_back({nullptr});  // 1: built-in black
+  draws_.clear();
+  Draw d{};
+  d.first_index = 0;
+  d.index_count = 3;
+  d.textures = {0, 0, 1, UINT32_MAX, UINT32_MAX};
+  draws_.push_back(d);
+  return true;
+}
+
+bool Showroom::precompile_rt_pipelines(std::string& error) {
+  if (!r_.rt_supported()) return true;
+  if (!rt_scene_ && !rt_init_failed_) {
+    auto sc = std::make_unique<RtScene>(r_);
+    if (sc->init([this](std::function<void()> fn) { retire(std::move(fn)); }, error)) {
+      rt_scene_ = std::move(sc);
+    } else {
+      rt_init_failed_ = true;
+      return false;
+    }
+  }
+  if (!rt_pipeline_ && !rt_init_failed_) {
+    auto pipe = std::make_unique<RtPipeline>(r_);
+    VkDescriptorSetLayout bl_layout = gpu_world_ ? gpu_world_->bindless_layout() : VK_NULL_HANDLE;
+    VkImageView fb_white = !gpu_textures_.empty() ? gpu_textures_[0].view : VK_NULL_HANDLE;
+    if (pipe->init(bl_layout, sampler_, fb_white, error,
+                   [this](std::function<void()> fn) { retire(std::move(fn)); })) {
+      rt_pipeline_ = std::move(pipe);
+    } else {
+      rt_init_failed_ = true;
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Showroom::prewarm_rt_targets(uint32_t width, uint32_t height) {
+  if (!rt_pipeline_ || !rt_pipeline_->ready()) return true;
+  return rt_pipeline_->prewarm_targets(width, height);
+}
+
+void Showroom::queue_deferred_world_texture(std::shared_ptr<const WorldTextureData> tex) {
+  if (!tex) return;
+  std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+  deferred_world_textures_.push_back(std::move(tex));
+}
+
+size_t Showroom::deferred_upload_queue_size() const {
+  std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+  return deferred_world_textures_.size();
+}
+
+void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
+  {
+    std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+    if (deferred_world_textures_.empty()) return;
+  }
+  constexpr VkDeviceSize kDefaultRingBytes = 4ull << 20;  // 4 MiB per frame-in-flight ring slot
+  const uint32_t slot_idx = r_.frame_slot() % Renderer::kFramesInFlight;
+  UploadRingSlot& ring = upload_ring_.slots[slot_idx];
+  if (!ring.mapped) {
+    if (!r_.create_buffer(kDefaultRingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ring.staging) ||
+        vmaMapMemory(r_.allocator_, ring.staging.allocation, &ring.mapped) != VK_SUCCESS) {
+      ring.mapped = nullptr;
+      r_.destroy_buffer(ring.staging);
+      return;
+    }
+    ring.capacity = kDefaultRingBytes;
+  }
+  const auto budget_t0 = std::chrono::steady_clock::now();
+  VkDeviceSize cursor = 0;
+  for (;;) {
+    if (upload_budget_ms_ > 0.0) {
+      const double elapsed_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - budget_t0).count();
+      if (elapsed_ms >= upload_budget_ms_) break;
+    }
+    std::shared_ptr<const WorldTextureData> item;
+    {
+      std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+      if (deferred_world_textures_.empty()) break;
+      item = deferred_world_textures_.front();
+    }
+    if (!item || item->texture.levels.empty()) {
+      std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+      if (!deferred_world_textures_.empty()) deferred_world_textures_.pop_front();
+      continue;
+    }
+    {
+      std::lock_guard<std::mutex> lock(world_textures_mutex_);
+      if (world_textures_.count(item->record)) {
+        std::lock_guard<std::mutex> qlock(deferred_uploads_mutex_);
+        if (!deferred_world_textures_.empty()) deferred_world_textures_.pop_front();
+        continue;
+      }
+    }
+    VkDeviceSize total = 0;
+    const uint32_t levels = texture_chain(item->texture, total);
+    if (!levels) {
+      std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+      if (!deferred_world_textures_.empty()) deferred_world_textures_.pop_front();
+      continue;
+    }
+    const uint32_t skip = modern::texture_levels_to_skip(item->texture.levels[0].width, item->texture.levels[0].height,
+                                                         levels, texture_cap_);
+    VkDeviceSize kept = 0;
+    for (uint32_t l = skip; l < levels; ++l) kept += item->texture.levels[l].data.size();
+    const VkDeviceSize aligned_cursor = (cursor + 15ull) & ~15ull;
+    if (aligned_cursor + kept > ring.capacity) {
+      if (cursor > 0) break;  // Defer to next frame so we never stall or exceed ring capacity.
+      // Single texture larger than 4 MiB: grow this slot's ring buffer cleanly (slot fence already signaled).
+      vmaUnmapMemory(r_.allocator_, ring.staging.allocation);
+      ring.mapped = nullptr;
+      r_.destroy_buffer(ring.staging);
+      ring.capacity = 0;
+      const VkDeviceSize new_cap = std::max(kDefaultRingBytes, (kept + 65535ull) & ~65535ull);
+      if (!r_.create_buffer(new_cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ring.staging) ||
+          vmaMapMemory(r_.allocator_, ring.staging.allocation, &ring.mapped) != VK_SUCCESS) {
+        ring.mapped = nullptr;
+        r_.destroy_buffer(ring.staging);
+        break;
+      }
+      ring.capacity = new_cap;
+    }
+    {
+      std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+      if (!deferred_world_textures_.empty()) deferred_world_textures_.pop_front();
+    }
+    VkDeviceSize write_at = aligned_cursor;
+    auto* dst = static_cast<uint8_t*>(ring.mapped);
+    for (uint32_t l = skip; l < levels; ++l) {
+      const auto& d = item->texture.levels[l].data;
+      std::memcpy(dst + write_at, d.data(), d.size());
+      write_at += d.size();
+    }
+    std::string why;
+    if (!begin_world_texture(*item, ring.staging.buffer, aligned_cursor, levels, skip, cmd, nullptr, why)) {
+      notes_.push_back("deferred world texture " + item->texture.name + ": " + why);
+    } else {
+      world_staging_bytes_.fetch_add(uint64_t(kept), std::memory_order_relaxed);
+    }
+    cursor = write_at;
+  }
 }
 
 

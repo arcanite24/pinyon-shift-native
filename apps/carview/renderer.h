@@ -204,7 +204,11 @@ class Renderer {
   bool gpu_driven_supported() const { return gpu_driven_; }
   VkPipelineCache pipeline_cache() const { return pipeline_cache_; }
   bool pipeline_cache_loaded() const { return pipeline_cache_loaded_; }
+  size_t pipeline_cache_bytes() const { return pipeline_cache_loaded_bytes_; }
   void save_pipeline_cache() const;
+  // Pre-allocates offscreen/scene render targets ahead of Frame 0 so the first
+  // render_timed() / render_offscreen() call incurs zero target-creation hitch.
+  bool prewarm_targets(uint32_t width, uint32_t height, std::string& error);
   // V-sync (live): FIFO, MAILBOX or IMMEDIATE; takes effect on the next frame
   // (the swapchain is rebuilt) and falls back to what the surface offers.
   void set_vsync(modern::VSync v) {
@@ -520,8 +524,8 @@ class Renderer {
   VkDevice device_ = VK_NULL_HANDLE;
   VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
   modern::PipelineCacheKey pipeline_cache_key_{};
-  bool pipeline_cache_loaded_ = false;
-  size_t pipeline_cache_loaded_bytes_ = 0;
+  mutable bool pipeline_cache_loaded_ = false;
+  mutable size_t pipeline_cache_loaded_bytes_ = 0;
   bool lazy_memory_supported_ = false;
   VmaAllocator allocator_ = VK_NULL_HANDLE;
   uint32_t queue_family_ = 0;

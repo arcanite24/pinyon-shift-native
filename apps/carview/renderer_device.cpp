@@ -276,7 +276,21 @@ bool Renderer::init(const Options& options, std::string& error) {
     color_format_ = VK_FORMAT_R8G8B8A8_UNORM;
   }
   const auto pipe_t0 = std::chrono::steady_clock::now();
-  const bool pipe_ok = create_pipeline(scene_format(), error);
+  bool pipe_ok = create_pipeline(scene_format(), error);
+  // Eagerly pre-compile ALL Renderer pipelines during startup (post, bloom, GTAO,
+  // SSCS, SSR, volumetrics, motion blur, FXAA, upscale, temporal, HDR, UI) so
+  // Frame 0 never stalls on lazy pipeline compilation or one-shot LUT/atlas init.
+  if (pipe_ok && options_.post.enabled) {
+    pipe_ok = create_post(error) && create_modern_passes(error);
+  }
+  if (pipe_ok && !ui_ready_) {
+    std::string ui_err;
+    if (create_ui(ui_err)) {
+      ui_ready_ = true;
+    } else {
+      std::fprintf(stderr, "carview: UI pre-compile note: %s\n", ui_err.c_str());
+    }
+  }
   pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipe_t0).count();
   return pipe_ok;
 }
@@ -891,8 +905,22 @@ void Renderer::save_pipeline_cache() const {
     std::error_code ec2;
     std::filesystem::remove(options_.pipeline_cache_path, ec2);
     std::filesystem::rename(tmp_path, options_.pipeline_cache_path, ec2);
-    if (ec2) std::filesystem::remove(tmp_path, ec2);
+    if (ec2) {
+      std::filesystem::remove(tmp_path, ec2);
+      return;
+    }
   }
+  pipeline_cache_loaded_ = true;
+  pipeline_cache_loaded_bytes_ = data.size();
+}
+
+bool Renderer::prewarm_targets(uint32_t width, uint32_t height, std::string& error) {
+  if (!device_ || width == 0 || height == 0) return true;
+  if (target_width_ == width && target_height_ == height && depth_.image != VK_NULL_HANDLE &&
+      (!options_.post.enabled || hdr_.image != VK_NULL_HANDLE)) {
+    return true;
+  }
+  return create_targets(width, height, error);
 }
 
 VkDeviceSize Renderer::device_local_bytes() const {

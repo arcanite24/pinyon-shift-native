@@ -346,7 +346,17 @@ class Showroom {
   // Swaps in a begun world once its copy is done (or waits, with `wait`).
   // `swapped`: whether it did.
   bool poll_world(bool wait, bool* swapped);
+  bool has_pending_world() const { return pending_world_ != nullptr; }
   bool set_world(StagedWorld staged, std::string& error);
+  // AOT shader/pipeline pre-compilation helpers (zero first-frame lazy compile).
+  bool init_minimal_for_precompile();
+  bool precompile_rt_pipelines(std::string& error);
+  bool prewarm_rt_targets(uint32_t width, uint32_t height);
+  // Per-frame ring-buffered async upload budget (default 2.5 ms, 0 = unbounded).
+  void set_upload_budget_ms(double ms) { upload_budget_ms_ = ms; }
+  double upload_budget_ms() const { return upload_budget_ms_; }
+  void queue_deferred_world_texture(std::shared_ptr<const WorldTextureData> tex);
+  size_t deferred_upload_queue_size() const;
   // The origin of the scenery being drawn (its StagedWorld's).
   double world_origin_x() const { return world_origin_[0]; }
   double world_origin_z() const { return world_origin_[1]; }
@@ -1071,12 +1081,31 @@ class Showroom {
   uint32_t mirror_draws_ = 0;
   uint32_t car_draws_ = 0;
   std::atomic<uint64_t> world_staging_bytes_{0};
-  // Hardware Ray Tracing / Path Tracing scene manager & pipeline (lazily created only when RT != kOff).
+  // Hardware Ray Tracing / Path Tracing scene manager & pipeline (eagerly pre-compiled at startup when RT != kOff).
   std::unique_ptr<RtScene> rt_scene_;
   std::unique_ptr<RtPipeline> rt_pipeline_;
   bool rt_init_failed_ = false;
+  // Ring-buffered per-frame budgeted async texture uploader (zero submit_once / wait_idle stalls).
+  struct UploadRingSlot {
+    Renderer::Buffer staging;
+    void* mapped = nullptr;
+    VkDeviceSize capacity = 0;
+  };
+  struct UploadRingGuard {
+    Renderer* r = nullptr;
+    UploadRingSlot slots[Renderer::kFramesInFlight]{};
+    ~UploadRingGuard();
+  };
+  UploadRingGuard upload_ring_;
+  double upload_budget_ms_ = 2.5;
+  mutable std::mutex deferred_uploads_mutex_;
+  std::deque<std::shared_ptr<const WorldTextureData>> deferred_world_textures_;
+  void pump_deferred_uploads(VkCommandBuffer cmd);
   friend class RtScene;
   friend class RtPipeline;
 };
+
+// Standalone AOT shader/pipeline pre-compilation entry point (`carview --precompile-shaders`).
+int run_precompile_shaders(int argc, char** argv);
 
 }  // namespace carview
