@@ -131,6 +131,28 @@ set(carview_sources
   hud.cpp
   process_time.cpp
   reference.cpp
+  showroom_mode.cpp
+  drive_helpers_runtime.cpp
+  drive_camera_input.cpp
+  drive_cli.cpp
+  drive_app.cpp
+  drive_world_host.cpp
+  drive_session.cpp
+  drive_club.cpp
+  drive_simulation.cpp
+  drive_world_sync.cpp
+  drive_hud_sync.cpp
+  drive_map_radio.cpp
+  drive_menus_dispatch.cpp
+  drive_benchmark_runner.cpp
+  drive_headless_runner.cpp
+  drive_input_world_screens.cpp
+  drive_input_hub_screens.cpp
+  drive_input_overlay_screens.cpp
+  drive_input_settings_media.cpp
+  drive_input_loop.cpp
+  drive_render_loop.cpp
+  drive_frame_render.cpp
   showroom_main.cpp
   contact_log.cpp
   safe_reset.cpp
