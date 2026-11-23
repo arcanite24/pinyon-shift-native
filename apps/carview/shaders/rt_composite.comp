@@ -16,19 +16,31 @@ void main() {
   bool denoise_on = (rt_pc.pc.x != 0);
 
   if (rt_mode == 3) {
-    // Photo Mode Progressive Convergent Path Tracing.
-    vec3 pt = imageLoad(rt_hist_curr, px).rgb;
+    // Photo Mode Progressive Convergent Path Tracing: apply atmospheric Colorado distance haze
+    // cleanly at composite time using stored primary TLAS hit distance (`pt_s.a`).
+    vec4 pt_s = imageLoad(rt_hist_curr, px);
+    vec3 pt = pt_s.rgb;
+    if (pt_s.a > 1.0 && pt_s.a < 1e4) {
+      vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+      pt = apply_rt_haze(pt, pt_s.a, primary_ray_dir(uv));
+    }
     vec4 hdr = imageLoad(hdr_img, px);
     imageStore(hdr_img, px, vec4(max(pt, vec3(0.0)), hdr.a));
     return;
   }
 
   if (rt_mode == 2) {
-    // Tier 2 Full Real-Time Path Tracing (SVGF denoised irradiance re-modulated with crisp primary albedo, or raw).
-    vec3 pt = denoise_on ? imageLoad(rt_hist_curr, px).rgb : imageLoad(rt_pt_img, px).rgb;
+    // Tier 2 Full Real-Time Path Tracing: re-modulate SVGF-denoised irradiance with crisp primary
+    // albedo FIRST, then apply atmospheric Colorado distance haze so texture detail stays razor-sharp!
+    vec4 raw_pt = imageLoad(rt_pt_img, px);
+    vec3 pt = denoise_on ? imageLoad(rt_hist_curr, px).rgb : raw_pt.rgb;
     if (denoise_on) {
       vec4 ga = imageLoad(rt_gbuf_albedo, px);
       if (ga.w > 0.5) pt *= max(ga.rgb, vec3(0.06));
+    }
+    if (raw_pt.a > 1.0 && raw_pt.a < 1e4) {
+      vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+      pt = apply_rt_haze(pt, raw_pt.a, primary_ray_dir(uv));
     }
     vec4 hdr = imageLoad(hdr_img, px);
     imageStore(hdr_img, px, vec4(max(pt, vec3(0.0)), hdr.a));

@@ -22,14 +22,24 @@ void main() {
   bool is_pt = (int(ubo.env_basis_y.w + 0.5) == 2);
   float center_demod = is_pt ? imageLoad(rt_gbuf_albedo, px).w : 0.0;
 
-  vec2 uv = (vec2(px) + 0.5) / vec2(sz);
-  float z_c = textureLod(depth_tex, uv, 0.0).r;
-  if (is_sky_depth_val(z_c) || dot(center_n, center_n) < 0.01) {
+  // In Path Tracing mode, edge-stop and sky-mask against TLAS primary hit distance (rt_pt_img.a)
+  // rather than raster billboard depth_tex so pine tree silhouettes stay razor-sharp with zero halos.
+  float d_c = 1e5;
+  bool center_sky = false;
+  if (is_pt) {
+    d_c = imageLoad(rt_pt_img, px).a;
+    center_sky = (d_c >= 1e4);
+  } else {
+    vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+    float z_c = textureLod(depth_tex, uv, 0.0).r;
+    center_sky = is_sky_depth_val(z_c);
+    d_c = linearize_depth(z_c);
+  }
+  if (center_sky || dot(center_n, center_n) < 0.01) {
     if (ping) imageStore(rt_svgf_tmp, px, center_val);
     else imageStore(rt_hist_curr, px, center_val);
     return;
   }
-  float d_c = linearize_depth(z_c);
 
   // 3x3 B3-spline wavelet kernel weights.
   const float kKern[3] = float[3](1.0, 2.0 / 3.0, 1.0 / 6.0);
@@ -51,8 +61,14 @@ void main() {
       if (dot(q_n, q_n) < 0.01) continue;
       if (is_pt && abs(center_demod - imageLoad(rt_gbuf_albedo, q).w) > 0.5) continue;
 
-      vec2 q_uv = (vec2(q) + 0.5) / vec2(sz);
-      float d_q = linearize_depth(textureLod(depth_tex, q_uv, 0.0).r);
+      float d_q;
+      if (is_pt) {
+        d_q = imageLoad(rt_pt_img, q).a;
+        if (d_q >= 1e4) continue;
+      } else {
+        vec2 q_uv = (vec2(q) + 0.5) / vec2(sz);
+        d_q = linearize_depth(textureLod(depth_tex, q_uv, 0.0).r);
+      }
 
       float w_n = pow(max(dot(center_n, q_n), 0.0), 48.0);
       float w_z = exp(-abs(d_c - d_q) / phi_z);

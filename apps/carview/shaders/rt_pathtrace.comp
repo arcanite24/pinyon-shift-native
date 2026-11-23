@@ -210,17 +210,19 @@ void main() {
 
       if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
         if (bounce == 0) {
-          // Primary sky miss: preserve raster real-time clouds/stars from hdr_img for seamless Colorado sky!
+          // Primary sky/far-ring miss: preserve rasterized sky, clouds, stars & distant foliage
+          // from hdr_img cleanly. Linear HDR shadows on conifers can be ~1e-5, so only fall back
+          // to analytical TOD sky when hdr_img is strictly unrendered black (never 1e-4!).
           vec3 raster_sky = imageLoad(hdr_img, px).rgb;
           vec3 ana_sky = eval_tod_sky(ray_dir, true);
-          L_path += dot(raster_sky, raster_sky) > 1e-4 ? raster_sky : ana_sky;
+          L_path += (raster_sky.r + raster_sky.g + raster_sky.b) > 1e-6 ? raster_sky : ana_sky;
         } else {
           L_path += throughput * eval_tod_sky(ray_dir, bounce == 1);
         }
         break;
       }
 
-      float cone_lod = (bounce == 0) ? 0.5 : clamp(1.5 + float(bounce), 1.5, 4.5);
+      float cone_lod = (bounce == 0) ? 0.0 : clamp(1.5 + float(bounce), 1.5, 4.5);
       RtSurface surf = unpack_hit_surface(rq, ray_origin, ray_dir, cone_lod);
       vec3 V = -ray_dir;
 
@@ -232,10 +234,11 @@ void main() {
           first_albedo = surf.albedo;
           first_rough = surf.roughness;
           first_hit_t = surf.hit_t;
-          // Demodulate matte/textured surfaces (roads, rocks, foliage, terrain) in SVGF so
+          // Demodulate matte/textured surfaces (roads, dirt, rocks, foliage, terrain) in SVGF so
           // high-frequency texture details stay pixel-sharp while GI/shadows denoise smoothly.
           demod_primary = (surf.clearcoat < 0.5 && surf.metallic < 0.5 &&
-                           (surf.flags & (kRtGeomFlagGlass | kRtGeomFlagWater | kRtGeomFlagEmissive)) == 0u &&
+                           (surf.flags & (kRtGeomFlagGlass | kRtGeomFlagWater)) == 0u &&
+                           dot(surf.emissive, surf.emissive) < 0.05 &&
                            surf.roughness > 0.14);
         }
       }
@@ -322,10 +325,8 @@ void main() {
       ray_origin = surf.pos + surf.geom_normal * max(0.015, 0.0005 * surf.hit_t);
     }
 
-    // Apply atmospheric Colorado distance haze on primary hit paths.
-    if (any_hit && primary_dist > 1.0) {
-      L_path = apply_rt_haze(L_path, primary_dist, primary_ray_dir(uv));
-    }
+    // Atmospheric Colorado distance haze is applied in rt_composite.comp AFTER SVGF
+    // albedo demodulation/remodulation so haze never distorts demodulated irradiance.
 
     // Soft firefly suppressor (keeps crisp sun reflections while preventing single-sample spikes).
     float lum = luma(L_path);

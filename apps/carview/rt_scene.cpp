@@ -152,25 +152,63 @@ void fill_car_geom_material_raw(const ShowroomPush& push, drive::LampChannel lam
   }
 }
 
-void fill_world_geom_material(const WorldGeometry::Draw& d, const WorldGpu* gpu_world, RtGeomInfoGpu& g) {
+struct WorldGeomTexRecordsLocal {
+  uint32_t albedo = kNoWorldTexture;
+  uint32_t aux = kNoWorldTexture;
+  uint32_t splat = kNoWorldTexture;
+  uint32_t layer_c = kNoWorldTexture;
+  uint32_t ao = kNoWorldTexture;
+  bool pending = false;
+};
+
+uint32_t resolve_world_tex_slot(const WorldGpu* gpu_world, uint32_t rec, bool& pending) {
+  if (!gpu_world || rec == kNoWorldTexture) return 0u;
+  if (!gpu_world->has_texture(rec)) {
+    pending = true;
+    return 0u;
+  }
+  const uint32_t slot = gpu_world->texture_slot(rec);
+  return (slot >= 3u) ? slot : 0u;
+}
+
+void fill_world_geom_material(const WorldGeometry::Draw& d, const WorldGpu* gpu_world, RtGeomInfoGpu& g,
+                              WorldGeomTexRecordsLocal& refs) {
   const uint32_t wflags = uint32_t(std::lround(d.push.params[1]));
   const bool is_textured = (wflags & 1u) != 0u;
   const bool is_vblend = (wflags & 4u) != 0u;
+  const bool is_splat = (wflags & 8u) != 0u;
+  const bool is_vfade = (wflags & 16u) != 0u;
+  const bool is_ao = (wflags & 8192u) != 0u;
+  const bool is_layer_c = (wflags & 16384u) != 0u;
   const bool is_water = (wflags & 32768u) != 0u;
-  const bool is_road = (wflags & 524288u) != 0u;
+  const bool is_road = (wflags & 1048576u) != 0u;  // kFlagRoad (world_frag.glsl:147)
+  const bool is_decal_noise = (wflags & 2097152u) != 0u;
+  const bool is_decal = (d.decal != 0u && d.blend >= 2u);
   const bool is_cutout = (d.blend == 1u);
-  const bool has_lm = (d.light_map != kNoWorldTexture);
+  // Only actual EmissiveMap props (neon signs, lit windows, festival screens) are emissive in PT;
+  // never flag roads, splat terrain, or foliage/cutout trees as emissive (breaks SVGF demodulation
+  // and turns daytime/sunset foliage lightmaps into nuclear-white crowns!).
+  const bool is_emissive_prop =
+      (d.light_map != kNoWorldTexture) && ((wflags & 8388608u) != 0u) && !is_cutout && !is_road && !is_splat &&
+      !is_vblend;
 
-  g.material_class = is_water ? 102u : (is_road ? 101u : (is_cutout ? 103u : (has_lm ? 104u : 100u)));
+  g.material_class =
+      is_water ? 102u : ((is_road || is_decal) ? 101u : (is_cutout ? 103u : (is_emissive_prop ? 104u : 100u)));
   g.flags = 0u;
   if (is_water) g.flags |= kRtGeomFlagWater;
   if (is_road) g.flags |= kRtGeomFlagRoad;
   if (is_cutout) g.flags |= kRtGeomFlagCutout;
-  if (has_lm) g.flags |= kRtGeomFlagEmissive;
+  if (is_emissive_prop) g.flags |= kRtGeomFlagEmissive;
   if (is_vblend) g.flags |= kRtGeomFlagVertexBlend;
+  if (is_splat) g.flags |= kRtGeomFlagSplat;
+  if (is_layer_c) g.flags |= kRtGeomFlagLayerC;
+  if (is_decal) g.flags |= kRtGeomFlagDecal;
+  if (is_vfade) g.flags |= kRtGeomFlagVertexFade;
+  if (is_decal_noise) g.flags |= kRtGeomFlagDecalNoise;
+  if (is_ao && d.ao_map != kNoWorldTexture) g.flags |= kRtGeomFlagAoMap;
 
   if (is_textured) {
-    // For textured world draws, push.tint holds UV tiling (Blend_A xy, Blend_B zw), not RGB tint!
+    // For textured world draws, push.tint holds UV tiling (Blend_A xy, Blend_B/decal_noise zw), not RGB tint!
     g.tint[0] = 1.0f;
     g.tint[1] = 1.0f;
     g.tint[2] = 1.0f;
@@ -191,20 +229,26 @@ void fill_world_geom_material(const WorldGeometry::Draw& d, const WorldGpu* gpu_
     g.uv0_xform[2] = 1.0f;
     g.uv0_xform[3] = 1.0f;
   }
-  g.tint[3] = is_water ? 0.04f : (is_road ? 0.34f : 0.80f);
+  g.tint[3] = is_water ? 0.04f : ((is_road || is_decal) ? 0.62f : 0.86f);
 
-  if (gpu_world && d.texture != kNoWorldTexture) {
-    const uint32_t slot = gpu_world->texture_slot(d.texture);
-    if (slot != 0u) {
-      g.flags |= kRtGeomFlagBindlessTex;
-      g.tex_albedo = slot;
-    }
-  }
-  if (gpu_world && is_vblend && d.texture_b != kNoWorldTexture) {
-    g.tex_aux = gpu_world->texture_slot(d.texture_b);
-  } else if (gpu_world && d.light_map != kNoWorldTexture) {
-    g.tex_aux = gpu_world->texture_slot(d.light_map);
-  }
+  uint32_t packed_p3 = 0u;
+  std::memcpy(&packed_p3, &d.push.params[3], sizeof(packed_p3));
+  g.extra_tex[2] = packed_p3;
+
+  refs = {};
+  refs.albedo = d.texture;
+  if (is_vblend || is_splat) refs.aux = d.texture_b;
+  else if (is_emissive_prop) refs.aux = d.light_map;
+  if (is_splat || is_decal_noise) refs.splat = d.splat;
+  if (is_layer_c) refs.layer_c = d.layer_c;
+  if (is_ao) refs.ao = d.ao_map;
+
+  g.tex_albedo = resolve_world_tex_slot(gpu_world, refs.albedo, refs.pending);
+  if (g.tex_albedo != 0u) g.flags |= kRtGeomFlagBindlessTex;
+  g.tex_aux = resolve_world_tex_slot(gpu_world, refs.aux, refs.pending);
+  g.extra_tex[0] = resolve_world_tex_slot(gpu_world, refs.splat, refs.pending);
+  g.extra_tex[1] = resolve_world_tex_slot(gpu_world, refs.layer_c, refs.pending);
+  g.extra_tex[3] = resolve_world_tex_slot(gpu_world, refs.ao, refs.pending);
 }
 
 }  // namespace
@@ -312,6 +356,8 @@ void RtScene::destroy_blas(BlasHandle& b, bool defer) {
   b.compacted = false;
   b.compaction_pending = false;
   b.geoms.clear();
+  b.tex_refs.clear();
+  b.any_tex_pending = false;
 
   if (defer && retire_fn_) {
     Renderer* rp = &r_;
@@ -343,6 +389,8 @@ void RtScene::invalidate_world() {
   pending_compactions_.clear();
   destroy_blas(tree_blas_, true);
   tree_world_gen_ = ~0ull;
+  tree_textures_pending_ = false;
+  tree_tex_count_ = 0;
 }
 
 bool RtScene::ensure_scratch(VkCommandBuffer cmd, VkDeviceSize needed, VkDeviceAddress& out_addr) {
@@ -700,7 +748,9 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
     if ((wflags & 32u) != 0u) continue;                  // legacy billboard trees (handled by cross-quad BLAS)
     if ((wflags & 256u) != 0u) continue;                 // far-LOD10 duplicate props (avoid doubling over LOD00)
     if (d.push.params[2] > 0.5f) continue;               // far-ring depth-pushed backdrop shell (causes near terrain overlap)
-    if (d.decal != 0u && d.blend >= 2u) continue;        // skip alpha decals to avoid z-fighting in BVH
+    if (d.blend == 3u) continue;                         // skip additive glow cards from BVH
+    const bool is_road_decal = (d.decal != 0u && d.blend >= 2u);
+    if (!is_road_decal && d.blend >= 2u && (wflags & 32768u) == 0u) continue;  // skip non-decal alpha overlays
 
     double draw_ox = wox, draw_oz = woz;
     if (arena && d.resident) {
@@ -713,7 +763,8 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
     const double mid_z = draw_oz + 0.5 * double(d.box_min[2] + d.box_max[2]);
     const int32_t cx = int32_t(std::floor(mid_x / 128.0));
     const int32_t cz = int32_t(std::floor(mid_z / 128.0));
-    const uint8_t op = ((wflags & 32768u) != 0u) ? 2u : (d.blend == 1u ? 1u : 0u);
+    // opacity_class: 0=opaque, 1=cutout/foliage, 2=water, 3=road decals (lifted +1.2cm, non-opaque alpha test)
+    const uint8_t op = ((wflags & 32768u) != 0u) ? 2u : (is_road_decal ? 3u : (d.blend == 1u ? 1u : 0u));
 
     GroupKey gk{gpuworld::quantize_mm(draw_ox), gpuworld::quantize_mm(draw_oz), cx, cz, op};
     CellGroup& cg = groups[gk];
@@ -750,10 +801,13 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
     std::vector<uint32_t> prims;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
     std::vector<RtGeomInfoGpu> meta;
+    std::vector<WorldGeomTexRecords> tex_refs;
+    bool any_pending = false;
     vk_geoms.reserve(cg.draws.size());
     prims.reserve(cg.draws.size());
     ranges.reserve(cg.draws.size());
     meta.reserve(cg.draws.size());
+    tex_refs.reserve(cg.draws.size());
 
     for (const WorldGeometry::Draw* dp : cg.draws) {
       const WorldGeometry::Draw& d = *dp;
@@ -778,8 +832,9 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
 
       VkAccelerationStructureGeometryKHR ag{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
       ag.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-      ag.flags = (cg.opacity_class == 0u) ? VK_GEOMETRY_OPAQUE_BIT_KHR
-                                          : VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
+      ag.flags = (cg.opacity_class == 0u || cg.opacity_class == 2u)
+                     ? VK_GEOMETRY_OPAQUE_BIT_KHR
+                     : VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
       auto& tri = ag.geometry.triangles;
       tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
       tri.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -795,8 +850,18 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
       RtGeomInfoGpu gm{};
       gm.vertex_bda = g_vb;
       gm.index_bda = g_ib;
-      fill_world_geom_material(d, host.gpu_world_.get(), gm);
+      WorldGeomTexRecordsLocal tr_loc{};
+      fill_world_geom_material(d, host.gpu_world_.get(), gm, tr_loc);
       meta.push_back(gm);
+      WorldGeomTexRecords tr{};
+      tr.albedo = tr_loc.albedo;
+      tr.aux = tr_loc.aux;
+      tr.splat = tr_loc.splat;
+      tr.layer_c = tr_loc.layer_c;
+      tr.ao = tr_loc.ao;
+      tr.pending = tr_loc.pending;
+      if (tr.pending) any_pending = true;
+      tex_refs.push_back(tr);
     }
 
     if (vk_geoms.empty()) continue;
@@ -809,6 +874,8 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
     uint32_t qidx = 0;
     if (build_blas_from_geoms(cmd, vk_geoms, prims, ranges, true, entry.blas, &qidx)) {
       entry.blas.geoms = std::move(meta);
+      entry.blas.tex_refs = std::move(tex_refs);
+      entry.blas.any_tex_pending = any_pending;
       world_lru_.insert(bkey, entry.blas.bytes, frame_counter_);
       if (entry.blas.compaction_pending) {
         pending_compactions_.push_back({bkey, qidx, submit_tag + 1u});
@@ -831,14 +898,21 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
 }
 
 void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {
-  if (host.world_trees_.empty() || host.world_generation_ == tree_world_gen_) return;
+  if (host.world_trees_.empty()) return;
+  const size_t cur_tex_count = host.gpu_world_ ? host.gpu_world_->texture_count() : 0u;
+  if (host.world_generation_ == tree_world_gen_ && (!tree_textures_pending_ || cur_tex_count == tree_tex_count_)) {
+    return;
+  }
   tree_world_gen_ = host.world_generation_;
+  tree_tex_count_ = cur_tex_count;
+  tree_textures_pending_ = false;
   tree_origin_x_ = host.world_origin_[0];
   tree_origin_z_ = host.world_origin_[1];
 
   // Expand nearby Colorado pine tree sprites into 2-quad orthogonal cross-cards so
   // reflections, shadows, and path-traced bounces see 3D foliage from any angle.
-  const size_t max_trees = std::min<size_t>(host.world_trees_.size(), 16384u);
+  // Never bake kDefaultWhite (slot 0) onto uncached trees; defer until WorldGpu uploads them.
+  const size_t max_trees = std::min<size_t>(host.world_trees_.size(), 49152u);
   std::vector<WorldVertex> verts;
   std::vector<uint32_t> idxs;
   verts.reserve(max_trees * 8u);
@@ -848,9 +922,17 @@ void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {
   uint32_t first_tex_slot = 0;
   for (size_t ti = 0; ti < host.world_trees_.size() && (verts.size() / 8u) < max_trees; ti += step) {
     const auto& tr = host.world_trees_[ti];
-    const uint32_t tree_slot =
-        (host.gpu_world_ && tr.texture != kNoWorldTexture) ? host.gpu_world_->texture_slot(tr.texture) : 0u;
-    if (first_tex_slot == 0 && tree_slot != 0u) first_tex_slot = tree_slot;
+    if (!host.gpu_world_ || tr.texture == kNoWorldTexture) continue;
+    if (!host.gpu_world_->has_texture(tr.texture)) {
+      tree_textures_pending_ = true;
+      continue;
+    }
+    const uint32_t tree_slot = host.gpu_world_->texture_slot(tr.texture);
+    if (tree_slot < 3u) {
+      tree_textures_pending_ = true;
+      continue;
+    }
+    if (first_tex_slot == 0) first_tex_slot = tree_slot;
     const float hw = std::max(tr.half_width, 0.5f);
     const float h = std::max(tr.height, 1.0f);
     // Deterministic azimuth hash from tree base XZ.
@@ -1068,21 +1150,46 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
   const float* wt = host.world_transform_;
   const double wox = host.world_origin_[0];
   const double woz = host.world_origin_[1];
+  const WorldGpu* gpu_w = host.gpu_world_.get();
   for (uint64_t bkey : active_world_keys_) {
     auto it = world_blases_.find(bkey);
     if (it == world_blases_.end() || !it->second.blas.handle) continue;
-    const WorldCellEntry& cell = it->second;
+    WorldCellEntry& cell = it->second;
+    // Refresh bindless texture slots for any geometry whose textures streamed in after BLAS build.
+    if (cell.blas.any_tex_pending && gpu_w && cell.blas.tex_refs.size() == cell.blas.geoms.size()) {
+      bool still_pending = false;
+      for (size_t gi = 0; gi < cell.blas.geoms.size(); ++gi) {
+        auto& tr = cell.blas.tex_refs[gi];
+        if (!tr.pending) continue;
+        auto& gm = cell.blas.geoms[gi];
+        bool g_pend = false;
+        gm.tex_albedo = resolve_world_tex_slot(gpu_w, tr.albedo, g_pend);
+        if (gm.tex_albedo != 0u) gm.flags |= kRtGeomFlagBindlessTex;
+        gm.tex_aux = resolve_world_tex_slot(gpu_w, tr.aux, g_pend);
+        gm.extra_tex[0] = resolve_world_tex_slot(gpu_w, tr.splat, g_pend);
+        gm.extra_tex[1] = resolve_world_tex_slot(gpu_w, tr.layer_c, g_pend);
+        gm.extra_tex[3] = resolve_world_tex_slot(gpu_w, tr.ao, g_pend);
+        tr.pending = g_pend;
+        if (g_pend) still_pending = true;
+      }
+      cell.blas.any_tex_pending = still_pending;
+    }
     const float sx = float(cell.origin_x - wox);
+    // Lift road decal cells +1.2 cm above the asphalt in Y so lane lines never z-fight in BVH.
+    const float sy = (cell.opacity_class == 3u) ? 0.012f : 0.0f;
     const float sz = float(cell.origin_z - woz);
-    float shift_m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, sx, 0, sz, 1};
+    float shift_m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, sx, sy, sz, 1};
     float cell_world[16];
     mat4_mul(wt, shift_m, cell_world);
+    // Road decals use kMaskEmissive (included in primary + reflection rays, excluded from shadow casters).
     const uint8_t mask = (cell.opacity_class == 2u)
                              ? rt::kMaskWater
-                             : (cell.opacity_class == 1u ? rt::kMaskFoliageAlpha : rt::kMaskWorldOpaque);
+                             : (cell.opacity_class == 3u
+                                    ? rt::kMaskEmissive
+                                    : (cell.opacity_class == 1u ? rt::kMaskFoliageAlpha : rt::kMaskWorldOpaque));
+    const bool force_opaque = (cell.opacity_class == 0u || cell.opacity_class == 2u);
     push_instance(cell.blas, cell_world, mask,
-                  cell.opacity_class == 1u ? rt::InstanceKind::kFoliage : rt::InstanceKind::kWorld, 0u,
-                  cell.opacity_class != 1u);
+                  cell.opacity_class == 1u ? rt::InstanceKind::kFoliage : rt::InstanceKind::kWorld, 0u, force_opaque);
   }
 
   // 4b. Colorado tree cross-quad BLAS.
@@ -1164,10 +1271,8 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
     lights.push_back(sun);
   }
   const float night_factor = (host.frame_.sun_color[3] >= 0.0f) ? host.frame_.sky_color[3] : 0.0f;
-  // Player car headlight beams + brake lights when dusk/night or braking.
-  const float player_brake = host.lamp_vectors_.dynamic_lights_amount[0];
-  if (host.draw_car_ && (night_factor > 0.05f || player_brake > 0.1f)) {
-    const float bm[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  // Helper: emits headlights + taillights for a car with live body matrix `bm`.
+  auto emit_car_lights = [&](const float bm[16], float owner_id, float brake_amt, float hl_scale, float hl_range) {
     auto xform_pt = [&](float x, float y, float z, float out[3]) {
       out[0] = bm[0] * x + bm[4] * y + bm[8] * z + bm[12];
       out[1] = bm[1] * x + bm[5] * y + bm[9] * z + bm[13];
@@ -1180,25 +1285,25 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
       const float l = std::max(std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]), 1e-4f);
       out[0] /= l; out[1] /= l; out[2] /= l;
     };
-    if (night_factor > 0.05f) {
+    if (night_factor > 0.05f && lights.size() + 2u < 192u) {
       for (int side = -1; side <= 1; side += 2) {
         RtLightGpu hl{};
         xform_pt(0.68f * float(side), 0.65f, -2.05f, hl.pos_type);
         hl.pos_type[3] = 1.0f;  // spotlight
         xform_dir(0.04f * float(side), -0.07f, -1.0f, hl.dir_range);
-        hl.dir_range[3] = 65.0f;
-        hl.color_power[0] = 5.5f * night_factor;
-        hl.color_power[1] = 5.2f * night_factor;
-        hl.color_power[2] = 4.6f * night_factor;
+        hl.dir_range[3] = hl_range;
+        hl.color_power[0] = 5.5f * hl_scale * night_factor;
+        hl.color_power[1] = 5.2f * hl_scale * night_factor;
+        hl.color_power[2] = 4.6f * hl_scale * night_factor;
         hl.color_power[3] = 0.72f;  // outer cone cos (~44 deg)
         hl.extra[0] = 0.92f;        // inner cone cos (~23 deg)
         hl.extra[1] = 0.10f;
-        hl.extra[2] = 0.0f;
+        hl.extra[2] = owner_id;
         lights.push_back(hl);
       }
     }
-    const float brake_glow = std::max(player_brake, night_factor * 0.45f);
-    if (brake_glow > 0.05f) {
+    const float brake_glow = std::max(brake_amt, night_factor * 0.45f);
+    if (brake_glow > 0.05f && lights.size() + 2u < 192u) {
       for (int side = -1; side <= 1; side += 2) {
         RtLightGpu tl{};
         xform_pt(0.65f * float(side), 0.76f, 2.08f, tl.pos_type);
@@ -1210,8 +1315,35 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
         tl.color_power[2] = 0.06f * brake_glow;
         tl.color_power[3] = 1.0f;
         tl.extra[1] = 0.08f;
+        tl.extra[2] = owner_id;
         lights.push_back(tl);
       }
+    }
+  };
+  // Player car headlight beams + brake lights transformed by live body_local matrix.
+  const float player_brake = host.lamp_vectors_.dynamic_lights_amount[0];
+  if (host.draw_car_ && (night_factor > 0.05f || player_brake > 0.1f)) {
+    const float kIdent[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const float* bm = kIdent;
+    if (auto it = car_blases_.find(&host); it != car_blases_.end() && it->second.body_draw >= 0 &&
+                                           size_t(it->second.body_draw) < host.draws_.size()) {
+      bm = host.draws_[size_t(it->second.body_draw)].push.model;
+    }
+    emit_car_lights(bm, 0.0f, player_brake, 1.0f, 65.0f);
+  }
+  // Traffic & AI guest car headlights + taillights (within 120 m of eye).
+  if (night_factor > 0.05f) {
+    uint32_t gid = 1u;
+    for (const Showroom::Instance& inst : host.instances_) {
+      if (!inst.car) continue;
+      const float dx = inst.model[12] - host.frame_.eye[0];
+      const float dy = inst.model[13] - host.frame_.eye[1];
+      const float dz = inst.model[14] - host.frame_.eye[2];
+      if (dx * dx + dy * dy + dz * dz <= 120.0f * 120.0f) {
+        const float gb = inst.has_lamps ? inst.lamps.dynamic_lights_amount[0] : 0.0f;
+        emit_car_lights(inst.model, float(gid), gb, 0.85f, 48.0f);
+      }
+      ++gid;
     }
   }
   // Colorado world streetlamps, outposts & Horizon Festival glows (within 180 m).

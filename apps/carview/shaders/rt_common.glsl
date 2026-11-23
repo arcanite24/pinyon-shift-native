@@ -37,6 +37,12 @@ const uint kRtGeomFlagCutout      = 1u << 8;
 const uint kRtGeomFlagChrome      = 1u << 9;
 const uint kRtGeomFlagVertexBlend = 1u << 10;
 const uint kRtGeomFlagTreeCross   = 1u << 11;
+const uint kRtGeomFlagSplat       = 1u << 12;
+const uint kRtGeomFlagLayerC      = 1u << 13;
+const uint kRtGeomFlagDecal       = 1u << 14;
+const uint kRtGeomFlagVertexFade  = 1u << 15;
+const uint kRtGeomFlagDecalNoise  = 1u << 16;
+const uint kRtGeomFlagAoMap       = 1u << 17;
 
 struct RtGeomInfo {
   uint64_t vertex_bda;
@@ -46,7 +52,8 @@ struct RtGeomInfo {
   uint tex_albedo;
   uint tex_aux;
   vec4 tint;       // rgb linear base color, a roughness
-  vec4 uv0_xform;  // offset_u, scale_u, offset_v, scale_v
+  vec4 uv0_xform;  // offset_u, scale_u, offset_v, scale_v (world: tiling_a.xy, tiling_b.zw)
+  uvec4 extra_tex; // x=tex_splat, y=tex_layer_c, z=tiling_c/decal_c4 half2x16, w=tex_ao
 };
 
 struct RtInstanceInfo {
@@ -373,6 +380,8 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
   vec3 p0, p1, p2;
   vec3 n_local = vec3(0.0, 1.0, 0.0);
   vec2 uv0 = vec2(0.0);
+  vec2 uv1 = vec2(0.0);
+  vec2 uv2 = vec2(0.0);
   vec3 vcol = vec3(1.0);
   float occ = 1.0;
 
@@ -415,12 +424,18 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
     vec3 ns = n0 * w.x + n1 * w.y + n2 * w.z;
     n_local = dot(ns, ns) > 0.01 ? normalize(ns) : safe_normalize(cross(p1 - p0, p2 - p0), vec3(0.0, 1.0, 0.0));
     uv0 = vec2(v0.u0, v0.v0) * w.x + vec2(v1.u0, v1.v0) * w.y + vec2(v2.u0, v2.v0) * w.z;
+    uv1 = vec2(v0.u1, v0.v1) * w.x + vec2(v1.u1, v1.v1) * w.y + vec2(v2.u1, v2.v1) * w.z;
     vec3 c0 = vec3(float(v0.cr), float(v0.cg), float(v0.cb)) * (1.0 / 255.0);
     vec3 c1 = vec3(float(v1.cr), float(v1.cg), float(v1.cb)) * (1.0 / 255.0);
     vec3 c2 = vec3(float(v2.cr), float(v2.cg), float(v2.cb)) * (1.0 / 255.0);
     vcol = c0 * w.x + c1 * w.y + c2 * w.z;
-    if ((g.flags & kRtGeomFlagTreeCross) != 0u && uint(v0.u2) > 0u) {
+    if ((g.flags & kRtGeomFlagTreeCross) != 0u) {
       tree_tex_slot = uint(v0.u2);
+    } else if ((g.flags & kRtGeomFlagAoMap) != 0u && g.extra_tex.w >= 3u) {
+      vec2 a0 = unpackHalf2x16(uint(v0.u2) | (uint(v0.v2) << 16u));
+      vec2 a1 = unpackHalf2x16(uint(v1.u2) | (uint(v1.v2) << 16u));
+      vec2 a2 = unpackHalf2x16(uint(v2.u2) | (uint(v2.v2) << 16u));
+      uv2 = a0 * w.x + a1 * w.y + a2 * w.z;
     }
   }
 
@@ -436,18 +451,36 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
   s.clearcoat = ((g.flags & kRtGeomFlagClearcoat) != 0u) ? 1.0 : 0.0;
   s.occlusion = occ;
 
-  if ((g.flags & kRtGeomFlagBindlessTex) != 0u && tree_tex_slot > 0u) {
+  if ((g.flags & kRtGeomFlagBindlessTex) != 0u && tree_tex_slot >= 3u) {
     vec2 uv_a = uv0 * g.uv0_xform.xy;
     vec4 tex = textureLod(sampler2D(world_textures[nonuniformEXT(tree_tex_slot)], world_sampler), uv_a, ray_cone_lod);
-    if ((g.flags & kRtGeomFlagVertexBlend) != 0u && g.tex_aux > 0u) {
+    if ((g.flags & kRtGeomFlagSplat) != 0u && g.tex_aux >= 3u && g.extra_tex.x >= 3u) {
+      vec2 uv_b = uv0 * g.uv0_xform.zw;
+      vec4 tex_b = textureLod(sampler2D(world_textures[nonuniformEXT(g.tex_aux)], world_sampler), uv_b, ray_cone_lod);
+      vec4 sp = textureLod(sampler2D(world_textures[nonuniformEXT(g.extra_tex.x)], world_sampler), uv1, ray_cone_lod);
+      tex.rgb = mix(tex.rgb, tex_b.rgb, sp.r);
+      if ((g.flags & kRtGeomFlagLayerC) != 0u && g.extra_tex.y >= 3u) {
+        vec2 tc = unpackHalf2x16(g.extra_tex.z);
+        if (abs(tc.x) < 1e-4) tc.x = g.uv0_xform.z;
+        if (abs(tc.y) < 1e-4) tc.y = g.uv0_xform.w;
+        vec2 uv_c = uv0 * tc;
+        vec4 tex_c = textureLod(sampler2D(world_textures[nonuniformEXT(g.extra_tex.y)], world_sampler), uv_c, ray_cone_lod);
+        float wc = clamp(sp.g * mix(0.45, 1.0, tex_c.a), 0.0, 1.0);
+        tex.rgb = mix(tex.rgb, tex_c.rgb, wc);
+      }
+    } else if ((g.flags & kRtGeomFlagVertexBlend) != 0u && g.tex_aux >= 3u) {
       vec2 uv_b = uv0 * g.uv0_xform.zw;
       vec4 tex_b = textureLod(sampler2D(world_textures[nonuniformEXT(g.tex_aux)], world_sampler), uv_b, ray_cone_lod);
       tex.rgb = mix(tex.rgb, tex_b.rgb, clamp(vcol.r, 0.0, 1.0));
     }
+    if ((g.flags & kRtGeomFlagAoMap) != 0u && g.extra_tex.w >= 3u && (g.flags & kRtGeomFlagTreeCross) == 0u) {
+      vec3 ao_s = textureLod(sampler2D(world_textures[nonuniformEXT(g.extra_tex.w)], world_sampler), uv2, ray_cone_lod).rgb;
+      s.occlusion *= (0.05 + 0.95 * dot(ao_s, vec3(0.3333)));
+    }
     if ((g.flags & kRtGeomFlagTreeCross) != 0u) {
-      s.albedo = tex.rgb * mix(vec3(1.0), pow(max(vcol, vec3(0.0)), vec3(1.8)), 0.5);
+      s.albedo = tex.rgb * pow(max(vcol, vec3(0.0)), vec3(1.35));
     } else {
-      // Textured FH1 roads & terrain use texture RGB directly (vcol holds blend/splat weights, matching world_frag.glsl!).
+      // Textured FH1 roads, decals & terrain use texture RGB directly (vcol holds blend/fade weights, matching world_frag.glsl!).
       s.albedo = tex.rgb;
     }
   } else if ((g.flags & kRtGeomFlagCarVertex) == 0u) {
@@ -488,23 +521,29 @@ RtSurface unpack_hit_surface(rayQueryEXT rq, vec3 ray_origin, vec3 ray_dir, floa
       } else if (g.tex_aux == 2u) {
         s.emissive = vec3(5.4, 5.1, 4.5) * max(night, 0.40);
       }
-    } else if (g.tex_aux > 0u && (g.flags & kRtGeomFlagVertexBlend) == 0u) {
-      vec3 lm = textureLod(sampler2D(world_textures[nonuniformEXT(g.tex_aux)], world_sampler), uv0, ray_cone_lod).rgb;
-      s.emissive = lm * (2.5 * night);
+    } else if (g.tex_aux >= 3u && (g.flags & (kRtGeomFlagVertexBlend | kRtGeomFlagSplat | kRtGeomFlagCutout)) == 0u) {
+      vec3 em = textureLod(sampler2D(world_textures[nonuniformEXT(g.tex_aux)], world_sampler),
+                           uv0 * g.uv0_xform.xy, ray_cone_lod).rgb;
+      s.emissive = em * (1.4 * night);
     }
   }
   return s;
 }
 
-// Evaluates alpha cutout for non-opaque candidate triangle hits (pine tree cross-cards & fences).
+// Evaluates alpha cutout for non-opaque candidate triangle hits (pine tree cross-cards, road decals & fences).
 bool candidate_passes_alpha(rayQueryEXT rq) {
   uint custom = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
   uint info_idx = custom & 0x000FFFFFu;
   uint geom_rel = uint(rayQueryGetIntersectionGeometryIndexEXT(rq, false));
   RtInstanceInfo inst = inst_infos[info_idx];
   RtGeomInfo g = geom_infos[inst.geom_offset + min(geom_rel, max(inst.geom_count, 1u) - 1u)];
-  if ((g.flags & kRtGeomFlagCutout) == 0u || (g.flags & kRtGeomFlagBindlessTex) == 0u) {
+  const bool is_cutout = (g.flags & kRtGeomFlagCutout) != 0u;
+  const bool is_decal = (g.flags & kRtGeomFlagDecal) != 0u;
+  if (!is_cutout && !is_decal) {
     return true;  // glass or opaque non-cutout
+  }
+  if ((g.flags & kRtGeomFlagBindlessTex) == 0u) {
+    return false;  // never confirm uncached/untextured alpha cards as solid white
   }
   uint prim_id = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
   vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, false);
@@ -515,22 +554,38 @@ bool candidate_passes_alpha(rayQueryEXT rq) {
   WorldVertRaw v1 = vb.v[ib.idx[prim_id * 3u + 1u]];
   WorldVertRaw v2 = vb.v[ib.idx[prim_id * 3u + 2u]];
   vec2 uv0 = vec2(v0.u0, v0.v0) * w.x + vec2(v1.u0, v1.v0) * w.y + vec2(v2.u0, v2.v0) * w.z;
-  uint slot = ((g.flags & kRtGeomFlagTreeCross) != 0u && uint(v0.u2) > 0u) ? uint(v0.u2) : g.tex_albedo;
-  if (slot == 0u) return false;
-  float alpha = textureLod(sampler2D(world_textures[nonuniformEXT(slot)], world_sampler), uv0 * g.uv0_xform.xy, 0.5).a;
-  return alpha >= 0.42;
+  uint slot = ((g.flags & kRtGeomFlagTreeCross) != 0u) ? uint(v0.u2) : g.tex_albedo;
+  if (slot < 3u) return false;
+  float alpha = textureLod(sampler2D(world_textures[nonuniformEXT(slot)], world_sampler), uv0 * g.uv0_xform.xy, 0.0).a;
+  if (is_decal) {
+    float vcol_r = (float(v0.cr) * w.x + float(v1.cr) * w.y + float(v2.cr) * w.z) * (1.0 / 255.0);
+    float vcol_a = (float(v0.ca) * w.x + float(v1.ca) * w.y + float(v2.ca) * w.z) * (1.0 / 255.0);
+    if ((g.flags & kRtGeomFlagDecalNoise) != 0u && g.extra_tex.x >= 3u) {
+      vec2 c4 = unpackHalf2x16(g.extra_tex.z);
+      float n_a = textureLod(sampler2D(world_textures[nonuniformEXT(g.extra_tex.x)], world_sampler),
+                             uv0 * g.uv0_xform.zw, 0.0).a;
+      float fade = clamp(0.5 + c4.x * (vcol_a - 0.5) - c4.y * (n_a - 0.5), 0.0, 1.0);
+      alpha *= fade;
+    } else {
+      alpha *= ((g.flags & kRtGeomFlagVertexFade) != 0u) ? vcol_r : vcol_a;
+    }
+    return alpha >= 0.24;
+  }
+  return alpha >= ((g.flags & kRtGeomFlagTreeCross) != 0u ? 0.50 : 0.48);
 }
 
-// Advances a rayQueryEXT with alpha-cutout testing on foliage/fences (capped at 12 alpha tests).
+// Advances a rayQueryEXT with alpha-cutout testing on foliage, road decals & fences.
+// Never force-confirms transparent texels on step cap so grazing pine forest rays pass cleanly to sky/terrain.
 #define PROCEED_ALPHA_TESTED(rq)                                                                        \
   do {                                                                                                  \
     int _alpha_steps = 0;                                                                               \
     while (rayQueryProceedEXT(rq)) {                                                                    \
       if (rayQueryGetIntersectionTypeEXT(rq, false) == gl_RayQueryCandidateIntersectionTriangleEXT) {   \
-        if (candidate_passes_alpha(rq) || _alpha_steps >= 12) {                                         \
+        if (candidate_passes_alpha(rq)) {                                                               \
           rayQueryConfirmIntersectionEXT(rq);                                                           \
         }                                                                                               \
         ++_alpha_steps;                                                                                 \
+        if (_alpha_steps >= 24) break;                                                                  \
       }                                                                                                 \
     }                                                                                                   \
   } while (false)

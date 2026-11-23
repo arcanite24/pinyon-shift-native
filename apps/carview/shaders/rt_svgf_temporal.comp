@@ -16,32 +16,42 @@ void main() {
 
   vec4 curr_sample = is_pt ? imageLoad(rt_pt_img, px) : imageLoad(rt_refl_img, px);
   vec3 curr_col = curr_sample.rgb;
+  float center_demod = 0.0;
   if (is_pt) {
     vec4 ga = imageLoad(rt_gbuf_albedo, px);
+    center_demod = ga.w;
     if (ga.w > 0.5) curr_col /= max(ga.rgb, vec3(0.06));
   }
   float curr_l = luma(curr_col);
 
   vec2 uv = (vec2(px) + 0.5) / vec2(sz);
+  // In Path Tracing mode, use TLAS primary hit distance (rt_pt_img.a) instead of raster
+  // billboard depth_tex so tree cross-quads and raster billboards never disagree at silhouettes!
   float z = textureLod(depth_tex, uv, 0.0).r;
-  float curr_d = linearize_depth(z);
+  float curr_d = is_pt ? curr_sample.a : linearize_depth(z);
+  bool is_sky = is_pt ? (curr_d >= 1e4) : is_sky_depth_val(z);
   vec4 mv = textureLod(motion_tex, uv, 0.0);
 
   vec2 prev_uv = uv - mv.xy;
-  bool valid = (ubo.eye_frame.w > 1.5) && !is_sky_depth_val(z) &&
+  bool valid = (ubo.eye_frame.w > 1.5) && !is_sky &&
                all(greaterThanEqual(prev_uv, vec2(0.001))) && all(lessThan(prev_uv, vec2(0.999))) &&
                (mv.b < 0.55);
 
   // 3x3 neighborhood mean & std-dev for anti-ghosting variance clamping (in demodulated irradiance space for PT).
-  vec3 m1_nb = vec3(0.0);
-  vec3 m2_nb = vec3(0.0);
-  float w_nb = 0.0;
+  // Skip sky / mismatched-demod neighbors so bright sky behind tree edges never bleeds into pine silhouettes.
+  vec3 m1_nb = curr_col;
+  vec3 m2_nb = curr_col * curr_col;
+  float w_nb = 1.0;
   for (int dy = -1; dy <= 1; ++dy) {
     for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) continue;
       ivec2 q = clamp(px + ivec2(dx, dy), ivec2(0), sz - ivec2(1));
-      vec3 c = is_pt ? imageLoad(rt_pt_img, q).rgb : imageLoad(rt_refl_img, q).rgb;
+      vec4 qs = is_pt ? imageLoad(rt_pt_img, q) : imageLoad(rt_refl_img, q);
+      vec3 c = qs.rgb;
       if (is_pt) {
+        if ((qs.a >= 1e4) != is_sky) continue;
         vec4 qga = imageLoad(rt_gbuf_albedo, q);
+        if (abs(qga.w - center_demod) > 0.5) continue;
         if (qga.w > 0.5) c /= max(qga.rgb, vec3(0.06));
       }
       m1_nb += c;

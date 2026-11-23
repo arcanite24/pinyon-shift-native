@@ -33,9 +33,10 @@ struct RtGeomInfoGpu {
   uint32_t tex_albedo = 0;      // WorldGpu bindless slot (or 0)
   uint32_t tex_aux = 0;         // WorldGpu lightmap/layer_b slot (or car paint finish)
   float tint[4] = {1, 1, 1, 0.5f};       // rgb linear base/paint color, a = perceptual roughness
-  float uv0_xform[4] = {0, 1, 0, 1};     // offset_u, scale_u, offset_v, scale_v
+  float uv0_xform[4] = {0, 1, 0, 1};     // offset_u, scale_u, offset_v, scale_v (world: tiling_a.xy, tiling_b.zw)
+  uint32_t extra_tex[4] = {0, 0, 0, 0};  // x=tex_splat, y=tex_layer_c, z=tiling_c/decal_c4 half2x16, w=tex_ao
 };
-static_assert(sizeof(RtGeomInfoGpu) == 64);
+static_assert(sizeof(RtGeomInfoGpu) == 80);
 
 // Per-TLAS-instance metadata indexed by unpack_instance_info_index(instanceCustomIndex).
 // Matches GLSL `struct RtInstanceInfo` in `shaders/rt_common.glsl`.
@@ -84,6 +85,12 @@ constexpr uint32_t kRtGeomFlagCutout = 1u << 8;
 constexpr uint32_t kRtGeomFlagChrome = 1u << 9;
 constexpr uint32_t kRtGeomFlagVertexBlend = 1u << 10;
 constexpr uint32_t kRtGeomFlagTreeCross = 1u << 11;
+constexpr uint32_t kRtGeomFlagSplat = 1u << 12;
+constexpr uint32_t kRtGeomFlagLayerC = 1u << 13;
+constexpr uint32_t kRtGeomFlagDecal = 1u << 14;
+constexpr uint32_t kRtGeomFlagVertexFade = 1u << 15;
+constexpr uint32_t kRtGeomFlagDecalNoise = 1u << 16;
+constexpr uint32_t kRtGeomFlagAoMap = 1u << 17;
 
 class RtScene {
  public:
@@ -117,6 +124,15 @@ class RtScene {
   const RtSceneStats& stats() const { return stats_; }
 
  private:
+  struct WorldGeomTexRecords {
+    uint32_t albedo = 0xFFFFFFFFu;
+    uint32_t aux = 0xFFFFFFFFu;
+    uint32_t splat = 0xFFFFFFFFu;
+    uint32_t layer_c = 0xFFFFFFFFu;
+    uint32_t ao = 0xFFFFFFFFu;
+    bool pending = false;
+  };
+
   struct BlasHandle {
     VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
     Renderer::Buffer buffer;
@@ -126,6 +142,8 @@ class RtScene {
     bool compacted = false;
     bool compaction_pending = false;
     std::vector<RtGeomInfoGpu> geoms;
+    std::vector<WorldGeomTexRecords> tex_refs;
+    bool any_tex_pending = false;
   };
 
   struct PendingCompaction {
@@ -216,8 +234,11 @@ class RtScene {
   std::unordered_map<uint64_t, WorldCellEntry> world_blases_;
   std::vector<uint64_t> active_world_keys_;
 
-  // Dynamic Colorado tree cross-quad BLAS (rebuilt only when world_trees_ generation changes).
+  // Dynamic Colorado tree cross-quad BLAS (rebuilt when world_trees_ generation changes
+  // or when pending tree atlas textures finish uploading to WorldGpu).
   uint64_t tree_world_gen_ = ~0ull;
+  bool tree_textures_pending_ = false;
+  size_t tree_tex_count_ = 0;
   Renderer::Buffer tree_vb_, tree_ib_;
   BlasHandle tree_blas_;
   double tree_origin_x_ = 0.0, tree_origin_z_ = 0.0;
