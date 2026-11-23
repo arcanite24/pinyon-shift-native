@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 
+#include "rt_logic.h"
+
 namespace carview::modern {
 
 struct Extent {
@@ -232,6 +234,11 @@ struct GraphicsSettings {
   float hud_scale = 100.0f;
   float safe_zone = 0.0f;
   bool hud_lock_16_9 = true;
+  // Hardware Ray Tracing & Path Tracing (RT-1..RT-4).
+  rt::RtMode rt_mode = rt::RtMode::kOff;
+  int rt_bounces = 2;
+  int rt_spp = 1;
+  bool rt_denoise = true;
   bool operator==(const GraphicsSettings&) const = default;
 };
 // Settings.txt tokens ("--render-scale", "2", ...) for the non-default values
@@ -280,6 +287,7 @@ struct ModernTargetPlan {
   bool motion_vec = false;
   bool temporal_hist = false;
   bool inspector = false;
+  bool rt_active = false;
   bool operator==(const ModernTargetPlan&) const = default;
 };
 ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,

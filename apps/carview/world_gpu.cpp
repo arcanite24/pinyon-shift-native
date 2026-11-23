@@ -122,11 +122,17 @@ bool WorldGpu::init(const Setup& setup, std::string& error) {
   setup_ = setup;
   VkDevice d = r_.device_;
   resident_.reset(setup.vertex_capacity, setup.index_capacity);
+  const VkBufferUsageFlags rt_geom_flags =
+      r_.rt_supported()
+          ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)
+          : 0u;
   if (!r_.create_buffer(VkDeviceSize(setup.vertex_capacity) * sizeof(WorldVertex),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | rt_geom_flags,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertices_) ||
       !r_.create_buffer(VkDeviceSize(setup.index_capacity) * sizeof(uint32_t),
-                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | rt_geom_flags,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indices_) ||
       !r_.create_buffer(64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, empty_ssbo_)) {
     error = "world arena buffers";
@@ -136,9 +142,11 @@ bool WorldGpu::init(const Setup& setup, std::string& error) {
   // binding 1 = SAMPLED_IMAGE[kMaxTextures] (keeps per-stage sampler count = 1
   // for Apple Silicon MoltenVK and Android Turnip/Adreno GPUs).
   {
+    const VkShaderStageFlags bindless_stages =
+        VK_SHADER_STAGE_FRAGMENT_BIT | (r_.rt_supported() ? VK_SHADER_STAGE_COMPUTE_BIT : 0u);
     const VkDescriptorSetLayoutBinding bindings[2] = {
-        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, &setup.sampler},
-        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxTextures, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, bindless_stages, &setup.sampler},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxTextures, bindless_stages, nullptr},
     };
     const VkDescriptorBindingFlags flags[2] = {
         0,

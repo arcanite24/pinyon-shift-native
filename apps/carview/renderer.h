@@ -39,6 +39,8 @@ static_assert(sizeof(FrameConstants) == 112);
 
 class Showroom;
 class WorldGpu;
+class RtScene;
+class RtPipeline;
 
 // Lets another scene (the showroom) record its own draws in place of the
 // single car pipeline: `before` runs outside rendering (buffer updates),
@@ -56,6 +58,11 @@ struct SceneHooks {
   std::function<void(VkCommandBuffer)> draw_particles;
   // Optional Hi-Z pyramid generation from resolved depth (`depth_resolved_view()`).
   std::function<void(VkCommandBuffer, VkImageView, uint32_t, uint32_t, bool)> build_hiz;
+  // Optional hardware Ray Tracing / Path Tracing pass running on HDR color + resolved depth + motion vectors
+  // right before record_post(). `hdr_img` enters and leaves in VK_IMAGE_LAYOUT_GENERAL.
+  std::function<void(VkCommandBuffer, VkImage hdr_img, VkImageView hdr_view, VkImageView depth_view,
+                     VkImageView motion_view, uint32_t width, uint32_t height)>
+      record_rt;
   float clear[4] = {0.16f, 0.18f, 0.21f, 1.0f};
 };
 
@@ -333,6 +340,23 @@ class Renderer {
   bool scrgb_supported() const { return scrgb_supported_; }
   modern::HdrMode hdr_active() const { return hdr_mode_; }
 
+  // Hardware Ray Tracing & Path Tracing capabilities (RT-1..RT-4).
+  bool rt_supported() const { return rt_caps_.supports_hybrid(); }
+  const rt::RtDeviceCaps& rt_caps() const { return rt_caps_; }
+  rt::RtDecision rt_decision() const { return rt::resolve_rt_mode(graphics_.rt_mode, rt_caps_); }
+  rt::RtMode active_rt_mode() const { return rt_decision().active_mode; }
+  VkDeviceAddress buffer_device_address(VkBuffer buffer) const;
+  void set_photo_pt_accumulate(bool active, bool reset = false) {
+    if (active != photo_pt_accum_ || reset) photo_pt_reset_ = true;
+    photo_pt_accum_ = active;
+  }
+  bool photo_pt_accumulate() const { return photo_pt_accum_; }
+  bool consume_photo_pt_reset() {
+    const bool r = photo_pt_reset_;
+    photo_pt_reset_ = false;
+    return r;
+  }
+
   // An opaque panel drawn on the CPU (RGBA8, already sRGB-encoded) and
   // copied over every following frame with its top-left corner at (x, y)
   // pixels; a negative x or y counts from the right or bottom edge. An
@@ -527,6 +551,9 @@ class Renderer {
   uint32_t hdr_pattern_ = 0;
   float hdr_pattern_nits_ = 1000.0f;
   bool vrs_supported_ = false;
+  rt::RtDeviceCaps rt_caps_{};
+  bool photo_pt_accum_ = false;
+  bool photo_pt_reset_ = true;
   bool hdr10_supported_ = false, scrgb_supported_ = false, hdr_colorspace_ext_ = false;
   modern::HdrMode hdr_mode_ = modern::HdrMode::kOff;
   VkColorSpaceKHR swapchain_colorspace_ = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
@@ -712,6 +739,8 @@ class Renderer {
   uint32_t validation_messages_ = 0;
   friend class Showroom;
   friend class WorldGpu;
+  friend class RtScene;
+  friend class RtPipeline;
   friend VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT,
                                                        VkDebugUtilsMessageTypeFlagsEXT,
                                                        const VkDebugUtilsMessengerCallbackDataEXT*,

@@ -49,6 +49,8 @@ class WorldGpu {
   // ---- the arenas (device-local, one buffer each) ----
   VkBuffer vertex_buffer() const { return vertices_.buffer; }
   VkBuffer index_buffer() const { return indices_.buffer; }
+  VkDescriptorSetLayout bindless_layout() const { return bindless_layout_; }
+  VkDescriptorSet bindless_set() const { return bindless_set_; }
   gpuworld::ResidentSet& resident() { return resident_; }
   struct Copy {
     VkDeviceSize src, dst, size;

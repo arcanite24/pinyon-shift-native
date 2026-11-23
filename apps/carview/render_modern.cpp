@@ -690,7 +690,8 @@ const std::vector<std::string>& graphics_option_names() {
       "--car-detail", "--no-car-detail", "--lut", "--lut-strength", "--vrs", "--no-vrs",
       "--texture-cap", "--vsync", "--fps-cap", "--output", "--sharpening", "--frame-gen", "--hdr", "--no-hdr",
       "--auto-hdr", "--no-auto-hdr", "--hdr-paper-white", "--hdr-highlights", "--hdr-peak", "--hdr-compare",
-      "--no-hdr-compare", "--hud-scale", "--safe-zone", "--hud-16-9", "--no-hud-16-9"};
+      "--no-hdr-compare", "--hud-scale", "--safe-zone", "--hud-16-9", "--no-hud-16-9",
+      "--rt", "--rt-bounces", "--rt-spp", "--rt-denoise", "--no-rt-denoise"};
   return names;
 }
 
@@ -731,6 +732,10 @@ std::vector<std::string> graphics_tokens(const GraphicsSettings& s) {
   if (s.hud_scale != d.hud_scale) add("--hud-scale", num(s.hud_scale));
   if (s.safe_zone != d.safe_zone) add("--safe-zone", num(s.safe_zone));
   if (!s.hud_lock_16_9) t.push_back("--no-hud-16-9");
+  if (s.rt_mode != d.rt_mode) add("--rt", rt::rt_mode_name(s.rt_mode));
+  if (s.rt_bounces != d.rt_bounces) add("--rt-bounces", std::to_string(rt::clamp_rt_bounces(s.rt_bounces)));
+  if (s.rt_spp != d.rt_spp) add("--rt-spp", std::to_string(rt::clamp_rt_spp(s.rt_spp)));
+  if (!s.rt_denoise) t.push_back("--no-rt-denoise");
   return t;
 }
 
@@ -809,6 +814,11 @@ bool apply_graphics_option(GraphicsSettings& s, const std::vector<std::string>& 
   else if (a == "--safe-zone") s.safe_zone = std::clamp(number(0), 0.0f, kMaxSafeZone);
   else if (a == "--hud-16-9") s.hud_lock_16_9 = true;
   else if (a == "--no-hud-16-9") s.hud_lock_16_9 = false;
+  else if (a == "--rt") s.rt_mode = rt::parse_rt_mode(value());
+  else if (a == "--rt-bounces") s.rt_bounces = rt::clamp_rt_bounces(int(number(2)));
+  else if (a == "--rt-spp") s.rt_spp = rt::clamp_rt_spp(int(number(1)));
+  else if (a == "--rt-denoise") s.rt_denoise = true;
+  else if (a == "--no-rt-denoise") s.rt_denoise = false;
   else return false;
   return true;
 }
@@ -823,6 +833,8 @@ GraphicsSettings clamp_graphics(GraphicsSettings s) {
   s.hud_scale = std::clamp(s.hud_scale, kMinHudScale, kMaxHudScale);
   s.safe_zone = std::clamp(s.safe_zone, 0.0f, kMaxSafeZone);
   if (s.fps_cap != 0 && std::find(kFpsCaps.begin(), kFpsCaps.end(), s.fps_cap) == kFpsCaps.end()) s.fps_cap = 60;
+  s.rt_bounces = rt::clamp_rt_bounces(s.rt_bounces);
+  s.rt_spp = rt::clamp_rt_spp(s.rt_spp);
   return s;
 }
 
@@ -897,7 +909,8 @@ ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, E
   p.modern_chain = need_upscaler || need_hdr_stage || p.fxaa_scene || p.fxaa_standin || inspector_active;
   p.upscale_tmp = p.modern_chain && !up_choice.temporal && up_choice.active == Upscaler::kFsr1;
   p.temporal_hist = p.modern_chain && up_choice.temporal;
-  p.motion_vec = p.temporal_hist || p.mblur_tiles || (inspector_active && inspector_needs_motion);
+  p.rt_active = (g.rt_mode != rt::RtMode::kOff);
+  p.motion_vec = p.temporal_hist || p.mblur_tiles || p.rt_active || (inspector_active && inspector_needs_motion);
   p.inspector = inspector_active;
   return p;
 }

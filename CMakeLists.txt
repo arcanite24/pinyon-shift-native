@@ -12,6 +12,7 @@ endif()
 
 option(SHIFT_BUILD_CARVIEW "Build the carview app (SDL3 + Vulkan)" ON)
 option(SHIFT_BUILD_LAUNCHER "Build the unified cross-platform GUI launcher" ON)
+option(SHIFT_ENABLE_RAY_TRACING "Compile Vulkan hardware ray tracing & path tracing backend" ON)
 option(SHIFT_STATIC_RUNTIME "Link libstdc++/libgcc statically on Linux" ON)
 
 if(MSVC)

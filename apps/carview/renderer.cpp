@@ -636,6 +636,26 @@ bool Renderer::create_device(std::string& error) {
   if (surface_) extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
   VkPhysicalDeviceFragmentShadingRateFeaturesKHR vrs_feat{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+#ifdef SHIFT_ENABLE_RAY_TRACING
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR as_feat{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+  VkPhysicalDeviceRayQueryFeaturesKHR rq_feat{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtp_feat{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+  VkPhysicalDeviceRayTracingMaintenance1FeaturesKHR rtm1_feat{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_MAINTENANCE_1_FEATURES_KHR};
+  VkPhysicalDeviceOpacityMicromapFeaturesEXT omm_feat{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
+#ifdef VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME
+  VkPhysicalDeviceRayTracingInvocationReorderFeaturesNV ser_nv_feat{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_NV};
+#endif
+#endif
+  rt_caps_ = {};
+  rt_caps_.is_moltenvk = device_info_.is_moltenvk;
+  rt_caps_.is_turnip = device_info_.is_turnip;
+  rt_caps_.device_local_bytes = uint64_t(device_local_bytes());
   bool has_portability_subset = false;
   {
     uint32_t dev_ext_count = 0;
@@ -643,6 +663,8 @@ bool Renderer::create_device(std::string& error) {
     std::vector<VkExtensionProperties> dev_exts(dev_ext_count);
     if (dev_ext_count > 0) vkEnumerateDeviceExtensionProperties(physical_, nullptr, &dev_ext_count, dev_exts.data());
     bool has_vrs_ext = false;
+    bool has_as_ext = false, has_rq_ext = false, has_rtp_ext = false, has_dho_ext = false;
+    bool has_rtm1_ext = false, has_omm_ext = false, has_ser_nv_ext = false, has_ser_ext = false;
     for (const auto& e : dev_exts) {
       if (std::strcmp(e.extensionName, "VK_KHR_portability_subset") == 0) {
         extensions.push_back("VK_KHR_portability_subset");
@@ -650,6 +672,26 @@ bool Renderer::create_device(std::string& error) {
         device_info_.portability_subset = true;
       } else if (std::strcmp(e.extensionName, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) == 0) {
         has_vrs_ext = true;
+      } else if (std::strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0) {
+        has_as_ext = true;
+      } else if (std::strcmp(e.extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME) == 0) {
+        has_rq_ext = true;
+      } else if (std::strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0) {
+        has_rtp_ext = true;
+      } else if (std::strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) {
+        has_dho_ext = true;
+      } else if (std::strcmp(e.extensionName, VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME) == 0) {
+        has_rtm1_ext = true;
+      } else if (std::strcmp(e.extensionName, VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME) == 0) {
+        has_omm_ext = true;
+#ifdef VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME
+      } else if (std::strcmp(e.extensionName, VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME) == 0) {
+        has_ser_nv_ext = true;
+#endif
+#ifdef VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME
+      } else if (std::strcmp(e.extensionName, VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME) == 0) {
+        has_ser_ext = true;
+#endif
       }
     }
     if (has_vrs_ext) {
@@ -666,6 +708,133 @@ bool Renderer::create_device(std::string& error) {
         vrs_supported_ = true;
       }
     }
+#ifdef SHIFT_ENABLE_RAY_TRACING
+    const char* rt_off_env = std::getenv("SHIFT_RT_FORCE_OFF");
+    const bool rt_force_off = rt_off_env && *rt_off_env == '1';
+    rt_caps_.compiled_in = true;
+    if (!rt_force_off && has_as_ext && has_rq_ext && has_dho_ext) {
+      VkPhysicalDeviceVulkan12Features o12_rt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+      VkPhysicalDeviceAccelerationStructureFeaturesKHR o_as{
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+      VkPhysicalDeviceRayQueryFeaturesKHR o_rq{
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+      VkPhysicalDeviceRayTracingPipelineFeaturesKHR o_rtp{
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+      VkPhysicalDeviceRayTracingMaintenance1FeaturesKHR o_rtm1{
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_MAINTENANCE_1_FEATURES_KHR};
+      VkPhysicalDeviceOpacityMicromapFeaturesEXT o_omm{
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
+#ifdef VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME
+      VkPhysicalDeviceRayTracingInvocationReorderFeaturesNV o_ser_nv{
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_NV};
+#endif
+      VkPhysicalDeviceFeatures2 qrt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+      qrt.pNext = &o12_rt;
+      void** tail = &o12_rt.pNext;
+      *tail = &o_as;
+      tail = &o_as.pNext;
+      *tail = &o_rq;
+      tail = &o_rq.pNext;
+      if (has_rtp_ext) {
+        *tail = &o_rtp;
+        tail = &o_rtp.pNext;
+      }
+      if (has_rtm1_ext) {
+        *tail = &o_rtm1;
+        tail = &o_rtm1.pNext;
+      }
+      if (has_omm_ext) {
+        *tail = &o_omm;
+        tail = &o_omm.pNext;
+      }
+#ifdef VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME
+      if (has_ser_nv_ext) {
+        *tail = &o_ser_nv;
+        tail = &o_ser_nv.pNext;
+      }
+#endif
+      vkGetPhysicalDeviceFeatures2(physical_, &qrt);
+
+      if (o12_rt.bufferDeviceAddress && o12_rt.scalarBlockLayout && qrt.features.shaderInt64 &&
+          o_as.accelerationStructure && o_rq.rayQuery) {
+        f12.bufferDeviceAddress = VK_TRUE;
+        f12.scalarBlockLayout = VK_TRUE;
+        f2.features.shaderInt64 = VK_TRUE;
+        as_feat.accelerationStructure = VK_TRUE;
+        as_feat.pNext = f2.pNext;
+        f2.pNext = &as_feat;
+        rq_feat.rayQuery = VK_TRUE;
+        rq_feat.pNext = f2.pNext;
+        f2.pNext = &rq_feat;
+        extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        rt_caps_.buffer_device_address = true;
+        rt_caps_.scalar_block_layout = true;
+        rt_caps_.shader_int64 = true;
+        rt_caps_.acceleration_structure = true;
+        rt_caps_.ray_query = true;
+        rt_caps_.deferred_host_operations = true;
+
+        if (has_rtp_ext && o_rtp.rayTracingPipeline && !device_info_.is_moltenvk && !device_info_.is_turnip) {
+          rtp_feat.rayTracingPipeline = VK_TRUE;
+          rtp_feat.pNext = f2.pNext;
+          f2.pNext = &rtp_feat;
+          extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+          rt_caps_.ray_tracing_pipeline = true;
+        }
+        if (has_rtm1_ext && o_rtm1.rayTracingMaintenance1) {
+          rtm1_feat.rayTracingMaintenance1 = VK_TRUE;
+          rtm1_feat.pNext = f2.pNext;
+          f2.pNext = &rtm1_feat;
+          extensions.push_back(VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME);
+          rt_caps_.rt_maintenance1 = true;
+        }
+        if (has_omm_ext && o_omm.micromap && !device_info_.is_moltenvk && !device_info_.is_turnip) {
+          omm_feat.micromap = VK_TRUE;
+          omm_feat.pNext = f2.pNext;
+          f2.pNext = &omm_feat;
+          extensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
+          rt_caps_.opacity_micromap = true;
+        }
+#ifdef VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME
+        if (has_ser_nv_ext && o_ser_nv.rayTracingInvocationReorder && rt_caps_.ray_tracing_pipeline) {
+          ser_nv_feat.rayTracingInvocationReorder = VK_TRUE;
+          ser_nv_feat.pNext = f2.pNext;
+          f2.pNext = &ser_nv_feat;
+          extensions.push_back(VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME);
+          rt_caps_.invocation_reorder_nv = true;
+        }
+#endif
+        rt_caps_.invocation_reorder_ext = has_ser_ext && rt_caps_.ray_tracing_pipeline;
+
+        // Query RT properties (scratch alignment, SBT handle sizes, recursion depth).
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+        VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtp_props{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+        VkPhysicalDeviceProperties2 prt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        prt.pNext = &as_props;
+        if (rt_caps_.ray_tracing_pipeline) as_props.pNext = &rtp_props;
+        vkGetPhysicalDeviceProperties2(physical_, &prt);
+        rt_caps_.min_as_scratch_alignment = std::max(as_props.minAccelerationStructureScratchOffsetAlignment, 256u);
+        if (rt_caps_.ray_tracing_pipeline) {
+          rt_caps_.max_ray_recursion_depth = rtp_props.maxRayRecursionDepth;
+          rt_caps_.shader_group_handle_size = rtp_props.shaderGroupHandleSize;
+          rt_caps_.shader_group_base_alignment = rtp_props.shaderGroupBaseAlignment;
+        }
+      }
+    }
+#else
+    (void)has_as_ext;
+    (void)has_rq_ext;
+    (void)has_rtp_ext;
+    (void)has_dho_ext;
+    (void)has_rtm1_ext;
+    (void)has_omm_ext;
+    (void)has_ser_nv_ext;
+    (void)has_ser_ext;
+#endif
   }
   if (std::getenv("SHIFT_VK_REPORT") != nullptr) {
     VkPhysicalDeviceProperties dp{};
@@ -723,8 +892,9 @@ bool Renderer::create_device(std::string& error) {
     funcs.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     funcs.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VmaAllocatorCreateInfo alloc_info{};
-    // Default locking (flags = 0): stage_world() and reaper_ run off the main thread.
-    alloc_info.flags = 0;
+    // Default locking: stage_world() and reaper_ run off the main thread.
+    // Enable BDA allocation flag whenever VK_KHR_buffer_device_address is active.
+    alloc_info.flags = rt_caps_.buffer_device_address ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0;
     alloc_info.physicalDevice = physical_;
     alloc_info.device = device_;
     alloc_info.pVulkanFunctions = &funcs;
@@ -954,6 +1124,13 @@ void Renderer::wait_idle() {
     vkDeviceWaitIdle(device_);
   }
   frames_done_ = frames_submitted_;
+}
+
+VkDeviceAddress Renderer::buffer_device_address(VkBuffer buffer) const {
+  if (!device_ || !buffer || !rt_caps_.buffer_device_address) return 0;
+  VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+  info.buffer = buffer;
+  return vkGetBufferDeviceAddress(device_, &info);
 }
 
 bool Renderer::upload_buffer(const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
@@ -1229,8 +1406,13 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
   }
   if (options_.post.enabled) {
     // Resolved HDR scene (always needed when post is on) + lazily allocated optional passes.
+    const bool rt_on = active_rt_mode() != rt::RtMode::kOff;
     const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!create_image(rw, rh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+    const VkImageUsageFlags hdr_usage =
+        usage | (rt_on ? (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+                       : 0u);
+    if (!create_image(rw, rh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, hdr_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                       hdr_)) {
       error = "post hdr target";
       return false;
@@ -1410,17 +1592,18 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     std::vector<VkDescriptorImageInfo> images(kPostSetCount * 11);
     std::vector<VkDescriptorBufferInfo> buf_infos(kPostSetCount);
     std::vector<VkWriteDescriptorSet> writes(kPostSetCount * 12);
-    const VkImageView ao_view = (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view
-                                                                                               : ao_white_.view;
+    const VkImageView ao_view =
+        (!rt_on && graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view : ao_white_.view;
     const VkImageView sscs_view =
-        (graphics_.contact_shadows != modern::ContactShadows::kOff && sscs_.view) ? sscs_.view : ao_white_.view;
+        (!rt_on && graphics_.contact_shadows != modern::ContactShadows::kOff && sscs_.view) ? sscs_.view
+                                                                                            : ao_white_.view;
     const VkImageView motion_view = motion_vec_.view ? motion_vec_.view : vel_fb;
     const VkImageView neighbor_view = mblur_neighbor_.view ? mblur_neighbor_.view : vel_fb;
     const VkImageView ssr_view =
-        (graphics_.ssr != modern::SsrQuality::kOff && ssr_blur_.view) ? ssr_blur_.view : ssr_zero_.view;
+        (!rt_on && graphics_.ssr != modern::SsrQuality::kOff && ssr_blur_.view) ? ssr_blur_.view : ssr_zero_.view;
     const VkImageView vol_view =
-        (graphics_.volumetric_fog != modern::VolumetricFog::kOff && vol_blur_.view) ? vol_blur_.view
-                                                                                    : vol_identity_.view;
+        (!rt_on && graphics_.volumetric_fog != modern::VolumetricFog::kOff && vol_blur_.view) ? vol_blur_.view
+                                                                                               : vol_identity_.view;
     for (uint32_t s = 0; s < kPostSetCount; ++s) {
       // Only the final composite (s == 13) samples lum_adapt_[0]; pass 1 renders into lum_adapt_[0],
       // so earlier sets bind lum_adapt_[1] (already SHADER_READ_ONLY_OPTIMAL) to avoid a layout conflict.
@@ -1575,7 +1758,8 @@ void Renderer::set_graphics_settings(const modern::GraphicsSettings& g) {
       clamped.ssr != graphics_.ssr || clamped.volumetric_fog != graphics_.volumetric_fog ||
       clamped.velocity_blur != graphics_.velocity_blur || clamped.hdr != graphics_.hdr ||
       clamped.hdr_compare != graphics_.hdr_compare ||
-      clamped.aa != graphics_.aa || clamped.upscaler != graphics_.upscaler;
+      clamped.aa != graphics_.aa || clamped.upscaler != graphics_.upscaler ||
+      clamped.rt_mode != graphics_.rt_mode;
   const bool hdr_changed = clamped.hdr != graphics_.hdr;
   graphics_ = clamped;
   lut_strength_ = graphics_.lut_strength / 100.0f;
@@ -2410,7 +2594,7 @@ void Renderer::record_ssao(VkCommandBuffer cmd) {
   if (!modern_ready_ || graphics_.ssao == modern::SsaoQuality::kOff || !ao_raw_.view || !ao_blur_.view) return;
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   const float frame_jitter = float(frames_submitted_ & 63u) / 64.0f;
   auto draw_ao = [&](const Image& dst, VkDescriptorSet set, float mode) {
@@ -2456,7 +2640,7 @@ void Renderer::record_sscs(VkCommandBuffer cmd) {
   if (!modern_ready_ || graphics_.contact_shadows == modern::ContactShadows::kOff || !sscs_pipe_ || !sscs_.view) return;
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   image_barrier(cmd, sscs_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
@@ -2616,7 +2800,7 @@ void Renderer::record_fxaa(VkCommandBuffer cmd, VkDescriptorSet set, VkImage dst
                            uint32_t h) {
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   image_barrier(cmd, dst_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
@@ -2651,7 +2835,7 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
   const uint32_t rw = render_width(), rh = render_height();
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 
   image_barrier(cmd, motion_vec_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -2706,7 +2890,7 @@ void Renderer::record_mblur_tiles(VkCommandBuffer cmd) {
   const uint32_t rw = render_width(), rh = render_height();
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 
   auto draw_tile = [&](const Image& dst, VkDescriptorSet set, float inv_w, float inv_h, float mode) {
@@ -2747,7 +2931,7 @@ void Renderer::record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_d
   const int idx = std::clamp(int(inspector_view_), 0, int(InspectorView::kCount) - 1);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   image_barrier(cmd, inspector_thumb_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
   VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -2798,7 +2982,7 @@ void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescri
                               uint32_t dst_h) {
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   const float sharp = graphics_.sharpening / 100.0f;
   auto draw_up = [&](VkDescriptorSet set, VkImage target_img, VkImageView target_view, uint32_t sw, uint32_t sh,
@@ -3101,7 +3285,7 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
   static_assert(sizeof(push) == 128);
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   auto to_read = [&](const Image& i) {
     image_barrier(cmd, i.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -3466,7 +3650,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     mark(cmd, "particles");
   }
 
-  if (post) {
+  const bool rt_active = post && (active_rt_mode() != rt::RtMode::kOff) && bool(scene_.record_rt);
+  if (post && !rt_active) {
     image_barrier(cmd, hdr_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -3479,14 +3664,27 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
       post && options_.post.motion_blur && graphics_.velocity_blur != modern::VelocityBlur::kOff &&
       mblur_tile_.view != VK_NULL_HANDLE && mblur_neighbor_.view != VK_NULL_HANDLE;
   const bool need_motion =
-      post && (active_upscaler().temporal || need_mblur_tiles ||
+      post && (active_upscaler().temporal || need_mblur_tiles || rt_active ||
                (inspector_active_ && inspector_view_ == InspectorView::kMotion));
-  if (need_motion) {
+  if (need_motion && motion_vec_.view != VK_NULL_HANDLE) {
     record_motion_vectors(cmd);
   } else if (post && motion_vec_.image) {
     image_barrier(cmd, motion_vec_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  }
+  if (rt_active) {
+    image_barrier(cmd, hdr_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_GENERAL, color_stage, color_write,
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    const VkImageView mv = motion_vec_.view ? motion_vec_.view : vel_zero_.view;
+    scene_.record_rt(cmd, hdr_.image, hdr_.view, depth_resolved_.view, mv, rw, rh);
+    image_barrier(cmd, hdr_.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
   }
   if (need_mblur_tiles) {
     record_mblur_tiles(cmd);
