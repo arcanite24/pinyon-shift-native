@@ -16,7 +16,7 @@ option(SHIFT_ENABLE_RAY_TRACING "Compile Vulkan hardware ray tracing & path trac
 option(SHIFT_STATIC_RUNTIME "Link libstdc++/libgcc statically on Linux" ON)
 
 if(MSVC)
-  add_compile_options(/utf-8 /permissive- /Zc:__cplusplus)
+  add_compile_options(/utf-8 /permissive- /Zc:__cplusplus $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SHIFT_STATIC_RUNTIME)
