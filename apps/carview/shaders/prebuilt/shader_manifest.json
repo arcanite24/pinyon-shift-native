@@ -34,7 +34,7 @@
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 939,
+      "lines": 999,
       "uses_bda": false,
       "notes": []
     },
@@ -3825,7 +3825,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 99232,
+      "spirv_bytes": 105028,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4123,7 +4123,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 104008,
+      "spirv_bytes": 109804,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4315,7 +4315,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 100380,
+      "spirv_bytes": 106176,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4423,7 +4423,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 95748,
+      "spirv_bytes": 101544,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

@@ -533,7 +533,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
       d.vertex_count = hi - lo + 1;
       for (uint32_t k = 0; k < d.index_count; ++k) geometry.indices[size_t(d.first_index) + k] -= lo;
       uint64_t h = 0x9e3779b97f4a7c15ull;
-      for (uint32_t t : {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c})
+      for (uint32_t t : {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map})
         h = gpuworld::hash_mix(h, t);
       h = gpuworld::hash_mix(h, uint64_t(d.blend) | uint64_t(d.decal) << 8 | uint64_t(d.cull) << 16);
       for (float f : d.push.params) {
@@ -768,6 +768,21 @@ bool Showroom::begin_world(StagedWorld staged, std::string& error) {
         return false;
       }
     }
+    if (arena) {
+      // build_textured_world() computes d.box_min/max in p->staged's own origin frame
+      // (game_pos - st.origin). place_world_arena() then adds d.shift (rd->origin - st.origin)
+      // to d.box_min/max, which double-shifts reused resident draws by rd->origin - st.origin
+      // (~200+ m after a streaming regather) and causes world_cull.comp & CPU frustum culling
+      // to drop road junctions and terrain chunks directly under the player's car.
+      // Undo that extra shift so d.box_min/max stay in p->staged's scenery frame.
+      for (auto& d : p->staged.draws) {
+        if (!d.resident) continue;
+        for (int k = 0; k < 3; k += 2) {
+          d.box_min[k] -= d.shift[k / 2];
+          d.box_max[k] -= d.shift[k / 2];
+        }
+      }
+    }
     const VkBufferUsageFlags world_rt_flags =
         r_.rt_supported()
             ? (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -896,6 +911,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
         if (d.normal_map != kNoWorldTexture) world_lru_.touch(d.normal_map, world_frame_);
         if (d.ao_map != kNoWorldTexture) world_lru_.touch(d.ao_map, world_frame_);
         if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
+        if (d.spec_map != kNoWorldTexture) world_lru_.touch(d.spec_map, world_frame_);
       }
     }
     const bool origin_changed = (world_origin_[0] != p.staged.origin_x || world_origin_[1] != p.staged.origin_z);
@@ -945,6 +961,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
       if (d.normal_map != kNoWorldTexture) world_lru_.touch(d.normal_map, world_frame_);
       if (d.ao_map != kNoWorldTexture) world_lru_.touch(d.ao_map, world_frame_);
       if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
+      if (d.spec_map != kNoWorldTexture) world_lru_.touch(d.spec_map, world_frame_);
     }
   } else {
     world_draws_.clear();

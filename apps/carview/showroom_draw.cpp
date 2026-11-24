@@ -6,8 +6,30 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 
 namespace carview {
+
+namespace {
+
+struct DrivingLineAnchor {
+  bool active = false;
+  bool has_anchor = false;
+  double prev_wx = 0.0;
+  double prev_wz = 0.0;
+  double base_s = 0.0;
+};
+
+std::unordered_map<const Showroom*, DrivingLineAnchor>& driving_line_anchors() {
+  static std::unordered_map<const Showroom*, DrivingLineAnchor> anchors;
+  return anchors;
+}
+
+bool same_pos3(const float a[3], const float b[3]) {
+  return std::fabs(a[0] - b[0]) < 1e-4f && std::fabs(a[1] - b[1]) < 1e-4f && std::fabs(a[2] - b[2]) < 1e-4f;
+}
+
+}  // namespace
 
 void Showroom::set_background(float r, float g, float b) {
   r_.scene_.clear[0] = r;
@@ -22,6 +44,143 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
   overlay_cpu_.assign(triangles.begin(), triangles.begin() + ptrdiff_t(tri_n));
   overlay_count_ = uint32_t(tri_n);
   overlay_dirty_ = true;
+
+  auto& anchor = driving_line_anchors()[this];
+  anchor.active = false;
+  if (tri_n < 6 || (tri_n % 6) != 0) {
+    anchor.has_anchor = false;
+    return;
+  }
+  // Detect driving/braking line quad strip emitted by drive::build_driving_line_mesh:
+  // each quad is (al, ar, br, al, br, bl) with unpopulated uv0 == (0, 0).
+  const auto& v0 = overlay_cpu_[0];
+  const auto& v2 = overlay_cpu_[2];
+  const auto& v3 = overlay_cpu_[3];
+  const auto& v4 = overlay_cpu_[4];
+  if (!same_pos3(v0.position, v3.position) || !same_pos3(v2.position, v4.position) ||
+      v0.uv0[0] != 0.0f || v0.uv0[1] != 0.0f) {
+    anchor.has_anchor = false;
+    return;
+  }
+
+  constexpr float kLiftDropM = 0.074f;      // 0.10 m -> ~0.026 m (~2.6 cm) clean hover above asphalt
+  constexpr float kTargetHalfW = 0.70f;     // sleek feathered-edge margin matching FH1 lane proportion
+  constexpr double kChevronPitchM = 3.4;    // matches world_frag.glsl kChevronPitch
+  constexpr double kWrapPeriodM = kChevronPitchM * 100.0;
+
+  const size_t quad_count = tri_n / 6;
+  const double m0_ax = 0.5 * (double(overlay_cpu_[0].position[0]) + double(overlay_cpu_[1].position[0]));
+  const double m0_az = 0.5 * (double(overlay_cpu_[0].position[2]) + double(overlay_cpu_[1].position[2]));
+  const double m0_bx = 0.5 * (double(overlay_cpu_[5].position[0]) + double(overlay_cpu_[2].position[0]));
+  const double m0_bz = 0.5 * (double(overlay_cpu_[5].position[2]) + double(overlay_cpu_[2].position[2]));
+  const double wx = m0_ax + world_origin_[0];
+  const double wz = m0_az + world_origin_[1];
+  const double fx = m0_bx - m0_ax;
+  const double fz = m0_bz - m0_az;
+  const double flen = std::hypot(fx, fz);
+
+  if (anchor.has_anchor && flen > 1e-4) {
+    const double dx = wx - anchor.prev_wx;
+    const double dz = wz - anchor.prev_wz;
+    const double step_dist = std::hypot(dx, dz);
+    if (step_dist < 40.0) {
+      const double ds = (dx * fx + dz * fz) / flen;
+      anchor.base_s = std::fmod(anchor.base_s + ds, kWrapPeriodM);
+      if (anchor.base_s < 0.0) anchor.base_s += kWrapPeriodM;
+    } else {
+      anchor.base_s = 0.0;
+    }
+  } else {
+    anchor.base_s = 0.0;
+  }
+  anchor.prev_wx = wx;
+  anchor.prev_wz = wz;
+  anchor.has_anchor = true;
+  anchor.active = true;
+
+  auto widen_edge = [&](WorldVertex& left, WorldVertex& right) {
+    const float mx = 0.5f * (left.position[0] + right.position[0]);
+    const float mz = 0.5f * (left.position[2] + right.position[2]);
+    const float rx = 0.5f * (right.position[0] - left.position[0]);
+    const float rz = 0.5f * (right.position[2] - left.position[2]);
+    const float hw = std::hypot(rx, rz);
+    if (hw > 0.05f && hw < kTargetHalfW) {
+      const float scale = std::clamp(kTargetHalfW / hw, 1.0f, 1.35f);
+      left.position[0] = mx - rx * scale;
+      left.position[2] = mz - rz * scale;
+      right.position[0] = mx + rx * scale;
+      right.position[2] = mz + rz * scale;
+    }
+    left.position[1] -= kLiftDropM;
+    right.position[1] -= kLiftDropM;
+  };
+
+  double s_world = anchor.base_s;
+  double s_local = 0.0;
+  double prev_bx = m0_ax;
+  double prev_bz = m0_az;
+  for (size_t q = 0; q < quad_count; ++q) {
+    const size_t base = q * 6;
+    WorldVertex al = overlay_cpu_[base + 0];
+    WorldVertex ar = overlay_cpu_[base + 1];
+    WorldVertex br = overlay_cpu_[base + 2];
+    WorldVertex bl = overlay_cpu_[base + 5];
+
+    const double ax = 0.5 * (double(al.position[0]) + double(ar.position[0]));
+    const double az = 0.5 * (double(al.position[2]) + double(ar.position[2]));
+    const double bx = 0.5 * (double(bl.position[0]) + double(br.position[0]));
+    const double bz = 0.5 * (double(bl.position[2]) + double(br.position[2]));
+    if (q > 0) {
+      const double gap = std::hypot(ax - prev_bx, az - prev_bz);
+      if (gap > 0.02) {
+        s_world += gap;
+        s_local += gap;
+      }
+    }
+    const double seg_len = std::hypot(bx - ax, bz - az);
+    const double s_a = s_world;
+    const double s_b = s_world + seg_len;
+    const double loc_a = s_local;
+    const double loc_b = s_local + seg_len;
+    s_world = s_b;
+    s_local = loc_b;
+    prev_bx = bx;
+    prev_bz = bz;
+
+    widen_edge(al, ar);
+    widen_edge(bl, br);
+
+    const float p_a = float(q) / float(quad_count);
+    const float p_b = float(q + 1) / float(quad_count);
+    al.uv0[0] = -1.0f;
+    al.uv0[1] = float(s_a);
+    al.uv1[0] = p_a;
+    al.uv1[1] = float(loc_a);
+    ar.uv0[0] = 1.0f;
+    ar.uv0[1] = float(s_a);
+    ar.uv1[0] = p_a;
+    ar.uv1[1] = float(loc_a);
+    bl.uv0[0] = -1.0f;
+    bl.uv0[1] = float(s_b);
+    bl.uv1[0] = p_b;
+    bl.uv1[1] = float(loc_b);
+    br.uv0[0] = 1.0f;
+    br.uv0[1] = float(s_b);
+    br.uv1[0] = p_b;
+    br.uv1[1] = float(loc_b);
+    for (WorldVertex* vert : {&al, &ar, &bl, &br}) {
+      vert->normal[0] = 0;
+      vert->normal[1] = 127;
+      vert->normal[2] = 0;
+    }
+
+    overlay_cpu_[base + 0] = al;
+    overlay_cpu_[base + 1] = ar;
+    overlay_cpu_[base + 2] = br;
+    overlay_cpu_[base + 3] = al;
+    overlay_cpu_[base + 4] = br;
+    overlay_cpu_[base + 5] = bl;
+  }
 }
 
 void Showroom::update_frame(VkCommandBuffer cmd) {
@@ -595,23 +754,26 @@ void Showroom::record_world_blended(VkCommandBuffer cmd) {
     }
   }
   if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
+    const auto it_anchor = driving_line_anchors().find(this);
+    const bool is_driving_line = it_anchor != driving_line_anchors().end() && it_anchor->second.active;
     VkDeviceSize off = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &overlay_vertices_.buffer, &off);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_alpha_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &world_white_set_, 0,
                             nullptr);
     const float sign = r_.reverse_z() ? 1.0f : -1.0f;
-    vkCmdSetDepthBias(cmd, sign * kDecalBiasConstant, 0.0f, sign * kDecalBiasSlope);
+    const float bias_scale = is_driving_line ? 1.5f : 1.0f;
+    vkCmdSetDepthBias(cmd, sign * kDecalBiasConstant * bias_scale, 0.0f, sign * kDecalBiasSlope * bias_scale);
     ShowroomPush push{};
     std::memcpy(push.model, world_transform_, sizeof push.model);
     std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
     push.uv0[3] = 2.0f;  // swap = none (world_frag.glsl reads draw.sun.w)
     std::memcpy(push.uv1, world_up_, sizeof push.uv1);
     push.tint[0] = push.tint[1] = push.tint[2] = push.tint[3] = 1.0f;
-    push.params[0] = 2.0f;     // kAlpha
-    push.params[1] = 1024.0f;  // kFlagUnlitVertexColor
-    push.params[2] = 0.0f;     // near world (must NOT be >0.5 or world_vert pushes >=550m as UberLOD)
-    push.params[3] = 1.0f;
+    push.params[0] = 2.0f;                           // kAlpha
+    push.params[1] = 1024.0f;                        // kFlagUnlitVertexColor
+    push.params[2] = 0.0f;                           // near world (must NOT be >0.5 or world_vert pushes >=550m as UberLOD)
+    push.params[3] = is_driving_line ? 2.0f : 1.0f;  // 2.0 enables FH1 3D chevron driving-line shader
     vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(ShowroomPush), &push);
     vkCmdDraw(cmd, overlay_count_, 1, 0, 0);
@@ -745,13 +907,35 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
           if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
           if (d.spec_map != kNoWorldTexture) world_lru_.touch(d.spec_map, world_frame_);
         } else if (d.texture_b != kNoWorldTexture) {
-          push.params[1] = 1, ++world_stats_.layer_fallback;  // a layer did not upload: slot 0 alone
+          // A blend/extra layer did not upload: keep slot 0 and surface flags, drop extra-map flags.
+          constexpr uint32_t kExtraTexMask = 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u | 4194304u |
+                                             8388608u;
+          const uint32_t fl = uint32_t(push.params[1] + 0.5f) & ~kExtraTexMask;
+          push.params[1] = float(fl);
+          ++world_stats_.layer_fallback;
         }
       }
       if (!set) {
         if (d.texture != kNoWorldTexture) ++world_stats_.white;
         set = world_white_set_;
-        if (push.params[1] == 1) push.params[1] = 0;  // the texture did not upload: flat
+        const uint32_t fl = uint32_t(push.params[1] + 0.5f);
+        if ((fl & 1u) != 0u) {
+          // Texture missing or evicted: clear textured flags and replace UV tiling in push.tint
+          // with a neutral road/terrain linear albedo instead of pure white (1, 1, 1).
+          constexpr uint32_t kAnyTexMask = 1u | 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u |
+                                           4194304u | 8388608u;
+          push.params[1] = float(fl & ~kAnyTexMask);
+          if ((fl & 1048576u) != 0u) {
+            push.tint[0] = 0.055f;
+            push.tint[1] = 0.054f;
+            push.tint[2] = 0.052f;
+          } else {
+            push.tint[0] = 0.13f;
+            push.tint[1] = 0.11f;
+            push.tint[2] = 0.085f;
+          }
+          push.tint[3] = 1.0f;
+        }
       }
       if (set != bound_set)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &(bound_set = set),

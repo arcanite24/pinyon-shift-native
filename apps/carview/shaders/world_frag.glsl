@@ -566,6 +566,66 @@ void main() {
   // pre-tiled). Blend_C is not drawn (its weight is not settled).
   // Unlit premultiplied-alpha vertex colour overlay (e.g. 3D driving/braking line ribbon).
   if ((flags & kFlagUnlitVertexColor) != 0u) {
+    if (draw.params.w > 1.5) {
+      // 1:1 Forza Horizon 1 3D chevron arrow ribbon (>>>):
+      // v_uv0.x = lateral coordinate u in [-1, 1], v_uv0.y = world-locked arc length s (meters).
+      // Recover smooth green -> yellow -> red driving-line weights from drive::driving_line_color().
+      float t_gy = clamp((v_colour.r - 0.173) / (0.753 - 0.173), 0.0, 1.0);
+      float t_yr = clamp((0.643 - v_colour.g) / (0.643 - 0.153), 0.0, 1.0) * smoothstep(0.55, 0.95, t_gy);
+
+      // Authentic FH1 luminous palette in linear space:
+      // full throttle = crisp teal-green / cyan-green, coast = warm golden-yellow, braking = vivid crimson-red.
+      vec3 col_green = vec3(0.004, 0.76, 0.25);
+      vec3 col_yellow = vec3(1.00, 0.56, 0.006);
+      vec3 col_red = vec3(1.00, 0.008, 0.012);
+      vec3 base_lin = mix(mix(col_green, col_yellow, t_gy), col_red, t_yr);
+
+      vec3 hi_green = vec3(0.16, 0.98, 0.54);
+      vec3 hi_yellow = vec3(1.00, 0.88, 0.22);
+      vec3 hi_red = vec3(1.00, 0.26, 0.16);
+      vec3 core_lin = mix(mix(hi_green, hi_yellow, t_gy), hi_red, t_yr);
+
+      const float kChevronPitch = 3.4;   // meters between successive chevron arrows (grazing-angle clarity)
+      const float kChevronSweep = 1.48;  // sleek forward-pointing V-wing rearward sweep from apex
+      float au = abs(v_uv0.x);
+      float chev_s = v_uv0.y + au * kChevronSweep;
+      float cell_u = chev_s / kChevronPitch;
+      float phase = fract(cell_u);
+
+      float aa_s = max(fwidth(cell_u), 0.010);
+      float aa_u = max(fwidth(v_uv0.x), 0.012);
+
+      // Forward-pointing V chevron with razor-crisp leading edge, clean asphalt gaps, and tapered wing tips.
+      float wing_taper = au * 0.075;
+      float back_edge = smoothstep(0.39 + wing_taper - aa_s * 1.1, 0.50 + wing_taper + aa_s * 0.6, phase);
+      float front_edge = 1.0 - smoothstep(0.84 - aa_s * 0.75, 0.88 + aa_s * 0.75, phase);
+      float chev_raw = back_edge * front_edge;
+      // Smoothly filter chevrons in the far distance so individual arrows never shimmer or moire.
+      float far_filter = smoothstep(0.20, 0.52, aa_s);
+      float chev_mask = mix(chev_raw, 0.42, far_filter);
+
+      // Sleek feathered translucent lateral boundaries (never a hard rectangular ribbon edge).
+      float lat_core = 1.0 - smoothstep(0.62 - aa_u, 0.80 + aa_u, au);
+      float lat_glow = 1.0 - smoothstep(0.64, 0.96, au);
+
+      // 3D beveled arrow core + luminous leading ridge + soft subtle trailing glow + faint spine sheen.
+      float lead_rim = smoothstep(0.64, 0.84, phase) * front_edge * (1.0 - far_filter);
+      float spine_bevel = (1.0 - smoothstep(0.0, 0.52, au)) * chev_mask;
+      float tail_glow = smoothstep(0.22, 0.48, phase) * front_edge * lat_glow * 0.13 * (1.0 - far_filter);
+      float guide_sheen = exp(-au * au * 6.0) * 0.055;
+
+      // Subtle forward-flowing energy pulse along the driving direction.
+      float t_sec = frame.env_basis_x.w;
+      float pulse = 0.93 + 0.12 * (0.5 + 0.5 * sin((cell_u - t_sec * 1.55) * 6.2831853 * 0.25));
+
+      float highlight = clamp(lead_rim * 0.42 + spine_bevel * 0.18, 0.0, 0.55);
+      vec3 col = mix(base_lin, core_lin, highlight) * (1.06 * pulse);
+      float shape_a = clamp(chev_mask * lat_core * 0.84 + tail_glow + guide_sheen, 0.0, 0.86);
+      float a = shape_a * v_colour.a;
+      vec3 encoded = a > 0.004 ? out_rgb(col * draw.up.w) : vec3(0.0);
+      out_color = vec4(encoded * a, a);
+      return;
+    }
     vec3 c = pow(v_colour.rgb, vec3(2.2));
     vec3 encoded = out_rgb(c * draw.up.w);
     float a = v_colour.a;
