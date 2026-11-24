@@ -538,10 +538,24 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
   //    Mip 0: 13-tap Karis-averaged anti-firefly prefilter -> Mips 1..5: 13-tap progressive downsample
   //    Mips 5->0: 9-tap 3x3 tent-filter progressive upsample combine (11 passes vs 19 Gaussian passes).
   if (s.bloom && bloom_a_[0].image && bloom_b_[0].image && post_bloom_down_ && post_bloom_up_) {
-    // Downsample mip 0 (Karis average + soft-knee prefilter from full HDR scene).
+    // On first bloom frame (or after resize), clear & transition bloom_b_[0] to SHADER_READ_ONLY_OPTIMAL
+    // so binding 1 (`aux`) in post_sets_[2] is always in a valid readable layout.
+    if (!bloom_prev_valid_) {
+      const VkClearColorValue zero_col{{0.0f, 0.0f, 0.0f, 0.0f}};
+      const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, read_stage, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+      vkCmdClearColorImage(cmd, bloom_b_[0].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero_col, 1, &range);
+      image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
+    }
+    // Downsample mip 0 (Karis average + soft-knee prefilter + temporal bloom_persist from previous bloom_b_[0]).
+    const float safe_persist = bloom_prev_valid_ ? std::clamp(finite_or(s.bloom_persist, 0.0f), 0.0f, 0.35f) : 0.0f;
     to_write(bloom_a_[0]);
     pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_bloom_down_, post_sets_[2], 0.0f,
-         1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)), 0.45f);
+         1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)), safe_persist);
     to_read(bloom_a_[0]);
 
     // Progressive 13-tap downsamples mips 1..5.
@@ -572,8 +586,10 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
            w_prev);
       to_read(bloom_b_[k]);
     }
+    bloom_prev_valid_ = true;
     mark(cmd, "bloom");
   } else if (bloom_b_[0].image) {
+    bloom_prev_valid_ = false;
     // Explicitly clear bloom_b_[0] to black when bloom is skipped so uninitialized VRAM
     // can never leak into the composite pass as a white flash.
     const VkClearColorValue zero_col{{0.0f, 0.0f, 0.0f, 0.0f}};

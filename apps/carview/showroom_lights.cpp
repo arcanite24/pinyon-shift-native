@@ -336,10 +336,19 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   const float night_factor = tod_active_ ? std::clamp(tod_state_.switch_on_lights, 0.0f, 1.0f) : 0.0f;
   int beam_count = 0;
   // Player headlight beam first (when car drawn and headlamps active).
+  // Heavy front corner damage dims/flickers or extinguishes the player's projected headlight beam.
   if (draw_car_ && world_lit_) {
     float ltm[16];
     lamp_to_model(body_to_model_, ltm);
-    if (build_beam(ltm, lamp_points_, lamp_vectors_, hl.beams[beam_count])) ++beam_count;
+    const float front_dmg = damage_zones_[0] * damage_dirt_[3];
+    if (front_dmg < 0.88f && build_beam(ltm, lamp_points_, lamp_vectors_, hl.beams[beam_count])) {
+      if (front_dmg > 0.58f) {
+        const float flicker = 0.5f + 0.5f * std::sin(tod_real_time_ * 27.0f + std::sin(tod_real_time_ * 7.0f) * 3.0f);
+        const float alive = std::clamp(1.0f - (front_dmg - 0.58f) / 0.30f, 0.08f, 1.0f);
+        hl.beams[beam_count].dir_power[3] *= alive * (0.45f + 0.55f * flicker);
+      }
+      ++beam_count;
+    }
   }
   // Nearest traffic / AI vehicles with headlamps on (up to 16 total beams).
   struct Cand {
@@ -428,11 +437,18 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   };
 
   auto push_car_glows = [&](const float render_from_body[16], const std::vector<fh1::CarbinLampPoint>& pts,
-                            const drive::LampShaderVectors& vecs, float max_dist) {
+                            const drive::LampShaderVectors& vecs, float max_dist, bool check_player_damage) {
     for (const auto& pt : pts) {
       if (sprites.size() >= kMaxGlowSprites) break;
-      const float amt = point_amt(pt, vecs);
+      float amt = point_amt(pt, vecs);
       if (amt <= 0.01f) continue;
+      if (check_player_damage && damage_dirt_[3] > 0.01f) {
+        // Body frame: +Z front, -Z rear, -X left, +X right.
+        const float z_dmg = (pt.position[2] >= 0.0f) ? damage_zones_[0] : damage_zones_[1];
+        const float x_dmg = (pt.position[0] < 0.0f) ? damage_zones_[2] : damage_zones_[3];
+        const float corner_dmg = (z_dmg * 0.75f + x_dmg * 0.30f) * damage_dirt_[3];
+        if (corner_dmg > 0.65f) continue;
+      }
       const auto g = drive::resolve_lamp_glow(pt);
       const auto p = transform_point(render_from_body, pt.position);
       const auto d = transform_dir(render_from_body, pt.direction);
@@ -468,7 +484,7 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   if (draw_car_ && world_lit_) {
     float ltm[16];
     lamp_to_model(body_to_model_, ltm);
-    push_car_glows(ltm, lamp_points_, lamp_vectors_, 250.0f);
+    push_car_glows(ltm, lamp_points_, lamp_vectors_, 250.0f, true);
   }
   for (const auto& in : instances_) {
     if (!in.car || !in.has_lamps || in.car->lamp_points_.empty()) continue;
@@ -479,7 +495,7 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     float ltm[16], rfb[16];
     lamp_to_model(in.car->body_to_model_, ltm);
     multiply(in.model, ltm, rfb);
-    push_car_glows(rfb, in.car->lamp_points_, in.lamps, 350.0f);
+    push_car_glows(rfb, in.car->lamp_points_, in.lamps, 350.0f, false);
   }
 
   // World streetlamp / outpost / festival glow sprites (gated by SwitchOnLights).

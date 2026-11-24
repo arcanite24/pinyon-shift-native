@@ -495,11 +495,21 @@ void ParticleLibrary::add_effect(ParticleEffectDef def) {
 void ParticleSystem::set_library(const ParticleLibrary* lib) {
   lib_ = lib;
   clear();
+  triggerable_by_name_.clear();
+  if (lib_) {
+    const auto& ems = lib_->world_emitters();
+    for (size_t i = 0; i < ems.size(); ++i) {
+      if (ems[i].kind != WorldEmitterKind::kTriggerable) continue;
+      if (!ems[i].name.empty()) triggerable_by_name_[to_lower(ems[i].name)] = i;
+      if (!ems[i].gameplay_id.empty()) triggerable_by_name_[to_lower(ems[i].gameplay_id)] = i;
+    }
+  }
 }
 
 void ParticleSystem::clear() {
   particles_.clear();
   accumulators_.clear();
+  trigger_cooldowns_.clear();
   fallback_backfire_cooldown_ = 0.0f;
 }
 
@@ -528,7 +538,7 @@ float ParticleSystem::rand_sym() { return rand01() * 2.0f - 1.0f; }
 
 void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,
                                const std::array<float, 3>& emit_dir, const std::array<float, 3>& emitter_vel,
-                               float intensity_scale) {
+                               float intensity_scale, uint8_t child_depth) {
   if (particles_.size() >= kMaxParticles) {
     // FIFO oldest eviction so bursts never stall.
     particles_.erase(particles_.begin());
@@ -536,6 +546,7 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
   LiveParticle p;
   p.def = &def;
   p.tex_slot = resolve_texture_slot(def.texture_name);
+  p.child_depth = child_depth;
   p.pos = pos;
   p.age = 0.0f;
   const float base_life = std::max(0.05f, def.life);
@@ -746,15 +757,46 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
   constexpr float kMaxDist2 = kMaxDist * kMaxDist;
   const auto& emitters = lib_->world_emitters();
 
+  // Advance TriggerZone cooldown timers.
+  for (auto it = trigger_cooldowns_.begin(); it != trigger_cooldowns_.end();) {
+    it->second -= dt;
+    if (it->second <= 0.0f) it = trigger_cooldowns_.erase(it);
+    else ++it;
+  }
+
   for (size_t i = 0; i < emitters.size(); ++i) {
     const auto& em = emitters[i];
-    if (em.kind == WorldEmitterKind::kTriggerZone) continue;
     if (em.effect.empty()) continue;
     // Speed-camera flashes are triggered by gameplay events, not ambiently.
     if (em.effect == "AMB_Camera_Flash") continue;
     const float dx = em.pos[0] - focus_pos[0];
     const float dz = em.pos[2] - focus_pos[2];
     const float d2 = dx * dx + dz * dz;
+    if (em.kind == WorldEmitterKind::kTriggerZone) {
+      const float trig_r = std::clamp(std::max({em.radius, em.width * 0.5f, em.length * 0.5f}), 4.0f, 90.0f);
+      if (d2 > trig_r * trig_r) continue;
+      if (trigger_cooldowns_.find(i) != trigger_cooldowns_.end()) continue;
+      trigger_cooldowns_[i] = std::max(em.retrigger_delay, 2.0f);
+      std::string target_eff = em.effect;
+      std::array<float, 3> spawn_p = em.pos;
+      std::array<float, 3> spawn_dir = em.y_axis;
+      if (const auto tit = triggerable_by_name_.find(to_lower(em.effect));
+          tit != triggerable_by_name_.end() && tit->second < emitters.size()) {
+        const auto& linked = emitters[tit->second];
+        if (!linked.effect.empty()) target_eff = linked.effect;
+        spawn_p = linked.pos;
+        spawn_dir = linked.y_axis;
+      }
+      const auto expanded = expand_composite_effect(target_eff);
+      for (const auto& ef_name : expanded) {
+        const auto* def = lib_->find_effect(ef_name);
+        if (!def || !def->active_at_hour(tod_hour)) continue;
+        const int burst_n = std::clamp(int(std::lround(std::max(4.0f, def->quantity * 0.4f))), 4, 18);
+        spawn_burst(ef_name, spawn_p, spawn_dir, {0, 0, 0}, burst_n, 1.0f);
+      }
+      continue;
+    }
+    if (em.kind == WorldEmitterKind::kTriggerable) continue;
     if (d2 > kMaxDist2) continue;
 
     const auto expanded = expand_composite_effect(em.effect);
@@ -786,11 +828,23 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
 void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float wind_speed) {
   if (dt <= 0.0f) return;
   const float step_dt = std::min(dt, 0.1f);
+  struct ChildSpawnReq {
+    std::string effect;
+    std::array<float, 3> pos;
+    std::array<float, 3> vel;
+    uint8_t depth;
+  };
+  std::vector<ChildSpawnReq> child_spawns;
   size_t write = 0;
   for (size_t i = 0; i < particles_.size(); ++i) {
     LiveParticle& p = particles_[i];
     p.age += step_dt;
-    if (!p.def || p.age >= p.life) continue;
+    if (!p.def || p.age >= p.life) {
+      if (p.def && !p.def->child_spawn.empty() && p.child_depth < 2 && child_spawns.size() < 24) {
+        child_spawns.push_back({p.def->child_spawn, p.pos, p.vel, uint8_t(p.child_depth + 1)});
+      }
+      continue;
+    }
 
     // Gravity scale: positive XML values (60..300) represent downward gravity (~2..10 m/s^2);
     // negative XML values (-0.5..-3.0) represent upward buoyancy for smoke/dust plumes.
@@ -822,6 +876,16 @@ void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float 
     ++write;
   }
   particles_.resize(write);
+  if (lib_ && !child_spawns.empty()) {
+    for (const auto& cs : child_spawns) {
+      const auto* cdef = lib_->find_effect(cs.effect);
+      if (!cdef) continue;
+      const int n = std::clamp(int(std::lround(std::max(3.0f, cdef->quantity * 0.25f))), 3, 12);
+      for (int k = 0; k < n && particles_.size() < kMaxParticles; ++k) {
+        spawn_one(*cdef, cs.pos, {0.0f, 1.0f, 0.0f}, cs.vel, 1.0f, cs.depth);
+      }
+    }
+  }
 }
 
 void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::vector<ParticleSprite>& alpha_out,

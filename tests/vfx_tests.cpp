@@ -310,6 +310,30 @@ void test_skidmarks() {
   CHECK(!asph_tris.empty());
   CHECK(asph_tris.front().rgba[3] < asph_tris.back().rgba[3]);
 
+  // Verify <ParticleSpawn> child burst fires automatically when parent particle expires.
+  {
+    world::ParticleLibrary clib;
+    world::ParticleEffectDef rocket{};
+    rocket.name = "fw_rocket";
+    rocket.life = 0.25f;
+    rocket.life_var = 0.0f;
+    rocket.child_spawn = "fw_spark";
+    rocket.quantity = 10.0f;
+    clib.add_effect(rocket);
+    world::ParticleEffectDef spark{};
+    spark.name = "fw_spark";
+    spark.life = 1.0f;
+    spark.life_var = 0.0f;
+    spark.quantity = 20.0f;
+    clib.add_effect(spark);
+    world::ParticleSystem csys;
+    csys.set_library(&clib);
+    csys.spawn_burst("fw_rocket", {0, 10, 0}, {0, 1, 0}, {0, 0, 0}, 1, 1.0f);
+    CHECK(csys.live_count() == 1);
+    for (int k = 0; k < 4; ++k) csys.step(0.08f);
+    CHECK(csys.live_count() >= 3);  // rocket expired and spawned child fw_spark burst
+  }
+
   skids.clear();
   CHECK(skids.segment_count() == 0);
 }

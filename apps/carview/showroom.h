@@ -483,6 +483,8 @@ class Showroom {
   // CameraOverrides CockpitWheelPositionOffset{X,Y,Z} (body frame, m) and
   // CockpitWheelRotationOffset (deg) applied to the drawn steering wheel.
   void set_cockpit_wheel_offsets(std::array<float, 3> pos_offset_m, float rot_offset_deg);
+  // Animates 3D active aero spoilers, pop-up headlights, and severely damaged loose bumper/mirror rattle.
+  void set_animated_car_parts(float aero_deploy, float popup_open, float time_sec, float dt = 1.0f / 60.0f);
   bool has_cockpit_mesh() const { return cockpit_rigs_[0].valid; }
   // Batched/instanced soft particle atlas & skidmark pipelines (SPEC-VFX-AND-PARTICLES).
   bool init_vfx(const world::ParticleLibrary* lib, std::string& error);
@@ -618,6 +620,8 @@ class Showroom {
     int wheel = -1;      // the corner a wheel, rotor or calliper draw follows
     bool spins = false;  // rims, tyres and rotors roll; callipers do not
     int8_t cockpit_role = -1;  // -1 none, 0 steering_wheel, 1 speed, 2 tach, 3 fuel, 4 boost, 5 power
+    int8_t anim_part = 0;      // 0 none, 1 active_spoiler, 2 popup_lamp, 3 front_bumper, 4 rear_bumper, 5 mirror_l, 6 mirror_r
+    float rest_model[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float local[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // about the hub, body frame
   };
   using GpuTexture = Renderer::Image;
@@ -868,11 +872,14 @@ class Showroom {
     float close_intens[4];
     float close_masks[4];
     float close_layers[4];
+    float close_back_dense_col[4];
+    float close_back_thin_col[4];
+    float close_back_bot_col[4];
     float fog_color[4];
     float fog_scatter[4];
     float fog_sky[4];
   };
-  static_assert(sizeof(SkyUniforms) == 28 * 16);
+  static_assert(sizeof(SkyUniforms) == 31 * 16);
   Renderer::Buffer sky_ubo_[2];  // mode 0 (atmosphere), mode 1 (disc+clouds+fog)
   Renderer::Buffer star_vertices_;
   uint32_t star_count_ = 0;
@@ -1081,7 +1088,10 @@ class Showroom {
   static constexpr uint32_t kMaxDriverVerts = 2048;   // animated 3D seated driver + steering hands
   DynBuffer driver_buf_;
   uint32_t driver_count_ = 0;
+  uint32_t driver_hands_count_ = 0;  // leading vertices for forearms + gloved hands (visible in cockpit view)
   float driver_wheel_rad_ = 0.0f;
+  float aero_deploy_smooth_ = 0.0f;
+  float popup_open_smooth_ = 0.0f;
   bool cockpit_camera_active_ = false;
   float wind_speed_ = 1.0f;
   float wind_amplitude_ = 0.15f;

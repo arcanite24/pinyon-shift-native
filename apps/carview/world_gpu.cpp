@@ -974,6 +974,9 @@ void WorldGpu::record_z_prepass(VkCommandBuffer cmd, const DrawParams& p) {
   for (int i = 0; i < 3; ++i) pc.sun[i] = p.sun[i];
   for (int i = 0; i < 4; ++i) pc.up[i] = p.up[i];
   pc.swap_pad[0] = p.swap;
+  pc.pad[0] = p.time_sec;
+  pc.pad[1] = p.wind_speed;
+  pc.pad[2] = p.wind_amplitude;
   vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
   const VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
@@ -1007,6 +1010,9 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   for (int i = 0; i < 3; ++i) pc.sun[i] = p.sun[i];
   for (int i = 0; i < 4; ++i) pc.up[i] = p.up[i];
   pc.swap_pad[0] = p.swap;
+  pc.pad[0] = p.time_sec;
+  pc.pad[1] = p.wind_speed;
+  pc.pad[2] = p.wind_amplitude;
   vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
   const VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);

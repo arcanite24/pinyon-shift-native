@@ -291,6 +291,7 @@ class AudioEngine {
   AmbienceBedPlayer ambience_bed_{48000};
   AcousticsSample last_acoustics_{};
   bool have_acoustics_ = false;
+  float tod_hour_ = 12.0f;
 
   EnginePlayer::Update last_engine_in_{};
   bool have_engine_in_ = false;

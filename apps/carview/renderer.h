@@ -82,6 +82,7 @@ struct PostSettings {
   float desaturate = 0.9f;  // the colour's share; the rest is its luminance
   float luminance[3] = {0.2126f, 0.7152f, 0.0722f};
   float bloom_cutoff = 1.0f, bloom_scale = 1.0f;
+  float bloom_persist = 0.001f;
   float bloom_lower_grad = 1.0f, bloom_upper_grad = 1.0f;
   float bloom_weights[5] = {0.30f, 0.40f, 0.48f, 0.60f, 0.66f};
   float balance[3] = {1.0f, 1.0f, 1.0f};
@@ -610,6 +611,7 @@ class Renderer {
   std::vector<uint8_t> lut_pending_;
   bool lut_dirty_ = false;
   bool lum_reset_ = true;
+  bool bloom_prev_valid_ = false;
   VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
   VkPipeline post_quarter_ = VK_NULL_HANDLE, post_bloom_down_ = VK_NULL_HANDLE, post_bloom_up_ = VK_NULL_HANDLE,

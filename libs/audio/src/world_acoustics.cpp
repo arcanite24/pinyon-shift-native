@@ -864,14 +864,25 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
   return queued;
 }
 
-void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames) {
+void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
+                               float tod_hour) {
   if (!out_stereo || frames <= 0) return;
   drain_loaded();
+
+  // Compute smooth night factor [0..1] from 24h ToD clock (dusk 19:30..21:00, dawn 05:00..06:30).
+  float h = std::fmod(tod_hour, 24.0f);
+  if (h < 0.0f) h += 24.0f;
+  float night_amt = 0.0f;
+  if (h >= 21.0f || h <= 5.0f) night_amt = 1.0f;
+  else if (h > 19.5f) night_amt = (h - 19.5f) / 1.5f;
+  else if (h < 6.5f) night_amt = (6.5f - h) / 1.5f;
 
   // Background ambient stream fades out smoothly above ~35-40 mph (colorado_ambience.xml).
   const float speed_target =
       speed_mph <= 35.0f ? 1.0f : speed_mph >= 55.0f ? 0.15f : 1.0f - 0.85f * ((speed_mph - 35.0f) / 20.0f);
-  const float fest_target = std::max(sample.festival_proximity, sample.crowd_proximity);
+  // Festival energy rises slightly at night; open countryside breeze calms slightly after dusk.
+  const float fest_target = std::max(sample.festival_proximity, sample.crowd_proximity) * (1.0f + 0.15f * night_amt);
+  const float nature_tod_scale = 1.0f - 0.25f * night_amt;
   const float sm = 1.0f - std::exp(-1.0f / (0.15f * float(rate_)));
 
   // Pick regional bed slot from active ambience snapshot.
@@ -900,7 +911,7 @@ void AmbienceBedPlayer::render(const AcousticsSample& sample, float speed_mph, f
       }
       const float target = (s == int(AmbienceBedSlot::kCrowd))
                                ? (0.28f * fest_target)
-                               : ((s == int(region)) ? (0.18f * speed_target) : 0.0f);
+                               : ((s == int(region)) ? (0.18f * speed_target * nature_tod_scale) : 0.0f);
       if (target < 1e-4f && bed_gain_[size_t(s)] < 1e-4f) {
         bed_gain_[size_t(s)] = 0.0f;
         continue;

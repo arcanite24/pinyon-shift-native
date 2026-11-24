@@ -853,6 +853,7 @@ void AudioEngine::drain_commands() {
         if (radio_player_) radio_player_->volume = double(c.f0);
         break;
       case Command::kRadioTod:
+        tod_hour_ = c.f0;
         if (radio_) radio_->set_time_of_day_hour(double(c.f0));
         break;
       case Command::kRadioSpecial:
@@ -1180,7 +1181,7 @@ void AudioEngine::render_block(float* out, int frames) {
       std::fill(abuf.begin(), abuf.begin() + ptrdiff_t(samples), 0.0f);
       buses[int(Bus::kAmbience)] = abuf.data();
     }
-    if (have_acoustics_) ambience_bed_.render(last_acoustics_, last_veh_state_.speed_mph, abuf.data(), frames);
+    if (have_acoustics_) ambience_bed_.render(last_acoustics_, last_veh_state_.speed_mph, abuf.data(), frames, tod_hour_);
     if (radio_player_ && !user_music_on) radio_player_->render_location_stations(abuf.data(), frames);
   }
 

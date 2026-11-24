@@ -828,6 +828,9 @@ void Showroom::record_world_opaque(VkCommandBuffer cmd) {
       dp.decal_bias_constant = kDecalBiasConstant;
       dp.decal_bias_slope = kDecalBiasSlope;
       dp.depth_prepass = r_.z_prepass();
+      dp.time_sec = tod_real_time_;
+      dp.wind_speed = wind_speed_;
+      dp.wind_amplitude = wind_amplitude_;
       gpu_world_->record_draw(cmd, dp);
       const size_t tested = gpu_world_->last_tested(), drawn = gpu_world_->last_drawn();
       const size_t trees_drawn = gpu_world_->last_trees_drawn();

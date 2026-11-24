@@ -1192,8 +1192,9 @@ void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioSta
   const float dx = hit.pos.x - st.listener_pos.x, dy = hit.pos.y - st.listener_pos.y, dz = hit.pos.z - st.listener_pos.z;
   const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
   const float atten = car_rolloff_.chassis_ambient.eval(dist, 1.0f);
+  const float pitch_var = 0.92f + 0.16f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
   if (hit.is_break) {
-    spawn_one_shot(SfxSoundId::kBreakProp, Bus::kCollision, 0.75f * intensity * atten, pl, pr);
+    spawn_one_shot(SfxSoundId::kBreakProp, Bus::kCollision, 0.75f * intensity * atten, pl, pr, pitch_var);
   } else {
     SfxSoundId imp_id = SfxSoundId::kImpact3d;
     if (hit.is_car_on_car || hit.surface_hint == 1) {
@@ -1205,10 +1206,11 @@ void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioSta
     } else if (hit.surface_hint == 4) {
       imp_id = resolve_fallback(SfxSoundId::kImpactWood, SfxSoundId::kImpact3d);
     }
-    spawn_one_shot(imp_id, Bus::kCollision, 0.85f * intensity * atten, pl, pr);
+    spawn_one_shot(imp_id, Bus::kCollision, 0.85f * intensity * atten, pl, pr, pitch_var);
     spawn_one_shot(SfxSoundId::kImpactLfe, Bus::kCollision, 0.65f * intensity, 0.707f, 0.707f);
     if (mph > 26.0f) {
-      spawn_one_shot(SfxSoundId::kGlassShatter, Bus::kCollision, 0.55f * intensity * atten, pl, pr);
+      spawn_one_shot(SfxSoundId::kGlassShatter, Bus::kCollision, 0.55f * intensity * atten, pl, pr,
+                     0.95f + 0.10f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_)));
     }
   }
 }
@@ -1619,6 +1621,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         } else {
           other_voices_[size_t(i)].gain = 0.0f;
         }
+        other_tire_voices_[size_t(i)].gain = 0.0f;
         continue;
       }
       const Vec3f lp = clamp_audio_position(st.listener_pos);
@@ -1630,11 +1633,26 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const float doppler = compute_doppler_pitch(st.listener_pos, st.listener_vel, car.pos, car.vel, 1.0f);
       float pl = 0.707f, pr = 0.707f;
       compute_stereo_pan(st.listener_pos, st.listener_right, car.pos, pl, pr);
-      const float base_pitch = std::clamp(car.rpm / 3000.0f, 0.4f, 2.8f);
+      const float p_scale = safe_clamp_f(car.pitch_scale, 0.70f, 1.40f, 1.0f);
+      const float base_pitch = std::clamp((car.rpm / 3000.0f) * p_scale, 0.4f, 2.8f);
       const SfxSoundId sid =
           car.is_traffic ? SfxSoundId::kTrafficCarLoop
                          : resolve_fallback(kOppBanks[car.variant & 3u], SfxSoundId::kOtherCarLoop);
       mix_loop(other_voices_[size_t(i)], sid, 0.55f * atten, base_pitch * doppler, pl, pr, other_bus, frames);
+
+      // LOD2 3D tyre roll & cornering skid layer for nearby AI & traffic cars (Tires.fev).
+      if (dist < 65.0f && car.speed_mph > 12.0f) {
+        const float tire_atten = std::clamp(1.0f - dist / 65.0f, 0.0f, 1.0f);
+        const float roll_amt = std::clamp((car.speed_mph - 12.0f) / 90.0f, 0.0f, 1.0f);
+        const float slip_amt = safe_clamp_f(car.slip, 0.0f, 1.0f, 0.0f);
+        const bool skidding = slip_amt > 0.35f;
+        const SfxSoundId t_sid = skidding ? SfxSoundId::kTireSkidOnRoad : SfxSoundId::kTireRollOnRoad;
+        const float t_gain = (skidding ? (0.30f * slip_amt) : (0.16f * roll_amt)) * tire_atten;
+        const float t_pitch = std::clamp((0.72f + 0.55f * roll_amt) * doppler, 0.45f, 2.1f);
+        mix_loop(other_tire_voices_[size_t(i)], t_sid, t_gain, t_pitch, pl, pr, other_bus, frames);
+      } else {
+        other_tire_voices_[size_t(i)].gain = 0.0f;
+      }
 
       // Near-miss Whoosh3D flyby when passing another car closely at high relative speed.
       const float rvx = car.vel.x - st.listener_vel.x;

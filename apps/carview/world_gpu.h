@@ -89,6 +89,9 @@ class WorldGpu {
     float bias_sign = 1.0f;
     float decal_bias_constant = 64.0f, decal_bias_slope = 1.0f;
     bool depth_prepass = false;
+    float time_sec = 0.0f;
+    float wind_speed = 1.45f;
+    float wind_amplitude = 0.20f;
   };
   void record_z_prepass(VkCommandBuffer cmd, const DrawParams& p);
   void record_draw(VkCommandBuffer cmd, const DrawParams& p);

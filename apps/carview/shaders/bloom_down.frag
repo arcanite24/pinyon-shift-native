@@ -9,10 +9,11 @@
 //   mode.w = soft_knee (default 0.5)
 
 layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1) uniform sampler2D aux;
 layout(set = 0, binding = 3) uniform sampler2D lum_adapt;
 
 layout(push_constant) uniform Post {
-  vec4 mode;     // x mip_index, yz src texel step, w soft_knee
+  vec4 mode;     // x mip_index, yz src texel step, w bloom_persist [0..0.35] on mip 0
   vec4 abc;
   vec4 def;      // w exposure
   vec4 desat;
@@ -64,7 +65,7 @@ vec3 soft_threshold(vec3 c, float exp_scale) {
   c = min(max(c, vec3(0.0)), vec3(64.0)) * exp_scale;
   float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
   float cutoff = max(p.bloom_p.x, 0.01);
-  float knee = cutoff * clamp(p.mode.w > 0.001 ? p.mode.w : 0.45, 0.05, 1.0);
+  float knee = cutoff * 0.45;
   float lo_g = max(p.bloom_p.w, 0.0);
   float hi_g = max(p.balance.w, 0.01);
   // Soft-knee quadratic curve honoring FH1 lower/upper bloom gradient while preventing shimmer.
@@ -139,7 +140,15 @@ void main() {
     float w3 = karis_weight(g3) * 0.125;
     float w4 = karis_weight(g4) * 0.125;
     float wsum = max(w0 + w1 + w2 + w3 + w4, 1e-5);
-    out_color = vec4((g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / wsum, 1.0);
+    vec3 bright = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / wsum;
+    float persist = clamp(p.mode.w, 0.0, 0.35);
+    if (persist > 0.0005) {
+      vec3 prev = texture(aux, clamp(v_uv, vec2(0.0005), vec2(0.9995))).rgb;
+      prev = mix(prev, vec3(0.0), isnan(prev));
+      prev = mix(prev, vec3(0.0), isinf(prev));
+      bright = max(vec3(0.0), bright + min(max(prev, vec3(0.0)), vec3(16.0)) * persist);
+    }
+    out_color = vec4(bright, 1.0);
     return;
   }
 

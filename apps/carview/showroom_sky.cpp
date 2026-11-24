@@ -496,6 +496,12 @@ void Showroom::fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u
   u.close_layers[0] = t.close_front_alpha; u.close_layers[1] = t.close_back_alpha;
   u.close_layers[2] = std::fmod(t.close_front_revs * day_frac + tod_real_time_ * 0.0005f, 1.0f);
   u.close_layers[3] = std::fmod(t.close_back_revs * day_frac - tod_real_time_ * 0.0003f, 1.0f);
+  u.close_back_dense_col[0] = t.close_back_dense_color[0]; u.close_back_dense_col[1] = t.close_back_dense_color[1];
+  u.close_back_dense_col[2] = t.close_back_dense_color[2]; u.close_back_dense_col[3] = t.close_dense_intensity;
+  u.close_back_thin_col[0] = t.close_back_thin_color[0]; u.close_back_thin_col[1] = t.close_back_thin_color[1];
+  u.close_back_thin_col[2] = t.close_back_thin_color[2]; u.close_back_thin_col[3] = t.close_thin_intensity;
+  u.close_back_bot_col[0] = t.close_back_bottom_color[0]; u.close_back_bot_col[1] = t.close_back_bottom_color[1];
+  u.close_back_bot_col[2] = t.close_back_bottom_color[2]; u.close_back_bot_col[3] = t.close_bottom_power;
 
   u.fog_color[0] = t.fog_color[0]; u.fog_color[1] = t.fog_color[1]; u.fog_color[2] = t.fog_color[2];
   u.fog_color[3] = std::clamp(t.fog_sky_height_fade_start / 15000.0f, 0.0f, 0.25f);

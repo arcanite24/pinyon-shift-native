@@ -1098,14 +1098,14 @@ void AnimatedWorldSystem::build_mesh(double eye_x, double eye_y, double eye_z, f
 
   // 2. Roadside wind-swaying grass quads (_0x00005007 / TrackSettings grass parameters).
   if (include_grass && ground && post_cfg_.grass_height_scale > 0.01f) {
-    const float max_r = std::clamp(post_cfg_.grass_fade_end, 14.0f, 34.0f);
-    const float fade_start = std::clamp(post_cfg_.grass_fade_start, 6.0f, max_r - 2.0f);
-    const float cell = 2.6f;
+    const float max_r = std::clamp(post_cfg_.grass_fade_end * 0.20f, 22.0f, 52.0f);
+    const float fade_start = std::clamp(post_cfg_.grass_fade_start * 0.14f, 10.0f, max_r - 4.0f);
+    const float cell = 2.8f;
     const int cx0 = int(std::floor((eye_x - max_r) / cell));
     const int cx1 = int(std::floor((eye_x + max_r) / cell));
     const int cz0 = int(std::floor((eye_z - max_r) / cell));
     const int cz1 = int(std::floor((eye_z + max_r) / cell));
-    constexpr size_t kMaxGrassVerts = 12000;
+    constexpr size_t kMaxGrassVerts = 18000;
     const size_t start_v = out.size();
 
     for (int gx = cx0; gx <= cx1 && (out.size() - start_v) < kMaxGrassVerts; ++gx) {

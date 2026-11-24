@@ -282,7 +282,23 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   const std::array<uint8_t, 4> shades{22, 24, 30, 255};
   const std::array<uint8_t, 4> glove{42, 44, 50, 255};
 
-  // Sculpted festival driver torso, collar, neck, head, hair cap, sunglasses & arms.
+  // Emit forearms & gloved steering hands FIRST so cockpit camera can draw [0..driver_hands_count_)
+  // cleanly gripping the rotating wheel without head/torso obstructing the windshield!
+  const std::array<float, 3> l_sh{chest[0] - 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
+  const std::array<float, 3> r_sh{chest[0] + 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
+  const std::array<float, 3> l_el{(l_sh[0] + l_hand[0]) * 0.5f - 0.06f, (l_sh[1] + l_hand[1]) * 0.5f - 0.08f,
+                                  (l_sh[2] + l_hand[2]) * 0.5f + 0.04f};
+  const std::array<float, 3> r_el{(r_sh[0] + r_hand[0]) * 0.5f + 0.06f, (r_sh[1] + r_hand[1]) * 0.5f - 0.08f,
+                                  (r_sh[2] + r_hand[2]) * 0.5f + 0.04f};
+  push_limb(l_el, l_hand, 0.040f, jacket);
+  push_limb(r_el, r_hand, 0.040f, jacket);
+  push_box(l_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
+  push_box(r_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
+  driver_hands_count_ = count;
+
+  // Sculpted festival driver upper arms, torso, collar, neck, head, hair cap & sunglasses (exterior views).
+  push_limb(l_sh, l_el, 0.048f, jacket);
+  push_limb(r_sh, r_el, 0.048f, jacket);
   push_box(chest, {0.19f, 0, 0}, {0, 0.21f, 0}, {0, 0, 0.105f}, jacket);
   push_box({chest[0], chest[1] + 0.16f, chest[2] - 0.02f}, {0.205f, 0, 0}, {0, 0.048f, 0}, {0, 0, 0.11f}, collar);
   push_box({head[0], head[1] - 0.11f, head[2]}, {0.052f, 0, 0}, {0, 0.060f, 0}, {0, 0, 0.052f}, skin);
@@ -290,27 +306,14 @@ void Showroom::update_driver_mesh(float wheel_rad) {
   push_ellipsoid({head[0], head[1] + 0.042f, head[2] + 0.015f}, 0.104f, 0.088f, 0.114f, hair, 5, 10);
   push_ellipsoid({head[0], head[1] + 0.008f, head[2] - 0.084f}, 0.078f, 0.028f, 0.032f, shades, 3, 8);
 
-  // Left & right shoulders -> elbows -> hands gripping the rotating steering wheel rim.
-  const std::array<float, 3> l_sh{chest[0] - 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
-  const std::array<float, 3> r_sh{chest[0] + 0.21f, chest[1] + 0.14f, chest[2] - 0.02f};
-  const std::array<float, 3> l_el{(l_sh[0] + l_hand[0]) * 0.5f - 0.06f, (l_sh[1] + l_hand[1]) * 0.5f - 0.08f,
-                                  (l_sh[2] + l_hand[2]) * 0.5f + 0.04f};
-  const std::array<float, 3> r_el{(r_sh[0] + r_hand[0]) * 0.5f + 0.06f, (r_sh[1] + r_hand[1]) * 0.5f - 0.08f,
-                                  (r_sh[2] + r_hand[2]) * 0.5f + 0.04f};
-  push_limb(l_sh, l_el, 0.048f, jacket);
-  push_limb(r_sh, r_el, 0.048f, jacket);
-  push_limb(l_el, l_hand, 0.040f, jacket);
-  push_limb(r_el, r_hand, 0.040f, jacket);
-  push_box(l_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
-  push_box(r_hand, {0.042f, 0, 0}, {0, 0.042f, 0}, {0, 0, 0.046f}, glove);
-
   driver_count_ = count;
   ++driver_buf_.ver;
 }
 
 void Showroom::record_driver_draw(VkCommandBuffer cmd) {
   if (!vfx_ready_ || driver_count_ == 0 || !world_opaque_ || !world_white_set_) return;
-  const bool draw_player = draw_car_ && !cockpit_camera_active_;
+  const uint32_t player_verts = cockpit_camera_active_ ? driver_hands_count_ : driver_count_;
+  const bool draw_player = draw_car_ && player_verts > 0;
   if (!draw_player && instances_.empty()) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_opaque_);
   vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
@@ -337,7 +340,7 @@ void Showroom::record_driver_draw(VkCommandBuffer cmd) {
     identity(pc.model);  // player driver vertices are in car model space
     vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof pc, &pc);
-    vkCmdDraw(cmd, driver_count_, 1, 0, 0);
+    vkCmdDraw(cmd, player_verts, 1, 0, 0);
   }
   // Also render seated drivers inside nearby AI race / festival / traffic cars.
   for (const auto& in : instances_) {

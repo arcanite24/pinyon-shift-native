@@ -53,7 +53,14 @@ void main() {
   vec3 r_axis = cross(u_axis, to_eye);
   const float len = length(r_axis);
   r_axis = len > 1e-4 ? (r_axis / len) : vec3(1.0, 0.0, 0.0);
-  world.xyz += r_axis * ox + u_axis * oy;
+  // Subtle wind sway on tree canopies (push.pad: x=time_sec, y=wind_speed, z=wind_amplitude).
+  float sway = 0.0;
+  if (oy > 0.01 && push.pad.z > 0.001) {
+    float phase = dot(t.base_hw.xz, vec2(0.19, 0.23)) + push.pad.x * max(push.pad.y, 0.4) * 1.15;
+    float gust = sin(phase) + 0.35 * sin(phase * 2.3 + 1.1);
+    sway = gust * min(push.pad.z, 0.85) * min(oy * 0.045, 0.42);
+  }
+  world.xyz += r_axis * (ox + sway) + u_axis * oy;
 
   v_position = world.xyz;
   v_normal = normalize(u_axis * 0.65 + normalize(to_eye + vec3(0.0, 0.001, 0.0)) * 0.35);

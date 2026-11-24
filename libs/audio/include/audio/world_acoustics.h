@@ -223,7 +223,8 @@ class AmbienceBedPlayer {
   void set_bed_sample(AmbienceBedSlot slot, PcmSample pcm);
   int loaded_bed_count() const;
 
-  void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames);
+  void render(const AcousticsSample& sample, float speed_mph, float* out_stereo, int frames,
+              float tod_hour = 12.0f);
 
  private:
   struct LoadedBed {

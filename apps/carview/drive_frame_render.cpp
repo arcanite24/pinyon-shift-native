@@ -216,6 +216,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 oc.vel = {float(ot.vx), float(ot.vy), float(ot.vz)};
                 oc.rpm = float(ot.rpm);
                 oc.speed_mph = float(std::fabs(ot.speed) * 2.2369363);
+                // Distinct per-opponent engine pitch/timbre identity + cornering tyre scrub.
+                uint32_t nh = 2166136261u ^ uint32_t(oi * 37u);
+                for (char ch : ot.name) nh = (nh ^ uint8_t(ch)) * 16777619u;
+                oc.pitch_scale = 0.84f + 0.36f * float(nh & 0xFFu) / 255.0f;
+                oc.slip = (oc.speed_mph > 25.0f && ot.rpm > 4500.0) ? 0.40f : 0.12f;
                 cands.push_back({d2, oc});
               }
             }
@@ -231,6 +236,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 oc.vel = {float(std::sin(tc.heading) * tc.speed), 0.0f, float(std::cos(tc.heading) * tc.speed)};
                 oc.rpm = float(1100.0 + std::fabs(tc.speed) * 90.0);
                 oc.speed_mph = float(std::fabs(tc.speed) * 2.2369363);
+                oc.pitch_scale = 0.82f + 0.30f * float((uint32_t(tc.model) * 73u) & 0xFFu) / 255.0f;
+                oc.slip = (tc.target < tc.speed - 2.0 || std::fabs(tc.steer_angle) > 0.12) ? 0.28f : 0.05f;
                 cands.push_back({d2, oc});
               }
             }
@@ -249,6 +256,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 oc.vel = {float(fc.vx), float(fc.vy), float(fc.vz)};
                 oc.rpm = float(fc.rpm);
                 oc.speed_mph = float(std::fabs(fc.speed) * 2.2369363);
+                oc.pitch_scale = 0.85f + 0.34f * float((uint32_t(fc.id) * 97u) & 0xFFu) / 255.0f;
+                oc.slip = fc.braking ? 0.38f : 0.10f;
                 cands.push_back({d2, oc});
               }
             }
@@ -292,6 +301,16 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           host.showroom.set_wheel_poses(poses);
           host.showroom.set_braking(brake_glow(vehicle));
           host.showroom.set_rotor_heat(rotor_heat);
+          {
+            const auto& vp = vehicle.params();
+            const float spd_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
+            const bool aero_car = (vp.aero_df_rear + vp.aero_part_df_rear) > 0.35;
+            const float aero_tgt =
+                aero_car ? ((spd_mph > 75.0f || (spd_mph > 55.0f && brake_glow(vehicle) > 0.5f)) ? 1.0f : 0.0f) : 0.0f;
+            const float popup_tgt = player_lamps.headlamps_on ? 1.0f : 0.0f;
+            host.showroom.set_animated_car_parts(aero_tgt, popup_tgt, float(vehicle.time()),
+                                                 float(std::clamp(frame_dt, 0.001, 0.1)));
+          }
           tod_cockpit_cam = have_rig && rig.mode() == drive::CameraMode::kCockpit;
           place_world();
           // 3D Driving / Braking Line ribbon on the road (SPEC-CAR-PHYSICS):

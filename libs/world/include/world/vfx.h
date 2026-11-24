@@ -290,6 +290,7 @@ class ParticleSystem {
   struct LiveParticle {
     const ParticleEffectDef* def = nullptr;
     uint16_t tex_slot = 0;
+    uint8_t child_depth = 0;
     std::array<float, 3> pos{};
     std::array<float, 3> vel{};
     float age = 0.0f;
@@ -304,13 +305,15 @@ class ParticleSystem {
 
   void spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,
                  const std::array<float, 3>& emit_dir, const std::array<float, 3>& emitter_vel,
-                 float intensity_scale);
+                 float intensity_scale, uint8_t child_depth = 0);
   float rand01();
   float rand_sym();
 
   const ParticleLibrary* lib_ = nullptr;
   std::vector<LiveParticle> particles_;
   std::unordered_map<uint64_t, float> accumulators_;
+  std::unordered_map<size_t, float> trigger_cooldowns_;
+  std::unordered_map<std::string, size_t> triggerable_by_name_;
   std::unordered_map<std::string, uint16_t> tex_slot_map_;
   std::vector<std::string> used_textures_;
   uint32_t rng_ = 0x51C4BEEFu;

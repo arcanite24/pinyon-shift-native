@@ -104,6 +104,9 @@ struct TodState {
   std::array<float, 3> close_back_color{0.865f, 0.50f, 0.045f};
   std::array<float, 3> close_dense_color{0.063f, 0.113f, 0.136f};
   std::array<float, 3> close_thin_color{0.35f, 0.544f, 0.742f};
+  std::array<float, 3> close_back_dense_color{0.063f, 0.113f, 0.136f};
+  std::array<float, 3> close_back_thin_color{0.35f, 0.544f, 0.742f};
+  std::array<float, 3> close_back_bottom_color{0.84f, 0.29f, 0.001f};
   float close_dense_intensity = 1.0f;
   float close_thin_intensity = 1.0f;
   float close_back_power = 8.0f;

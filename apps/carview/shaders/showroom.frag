@@ -808,13 +808,27 @@ void main() {
     reflectivity = 0.3;
     gloss = 0.85;
     metal = 0.5;
+    // Broken corner lamp check (player car): heavy corner impact cracks lens & extinguishes bulb.
+    float lamp_alive = 1.0;
+    if ((flags & kFlagInstanced) == 0u && frame.damage_dirt.w > 0.01) {
+      float lf = smoothstep(0.55, 1.75, -v_local_pos.z) * frame.damage_zones.x;
+      float lr = smoothstep(0.55, 1.75, v_local_pos.z) * frame.damage_zones.y;
+      float ll = smoothstep(0.35, 0.88, -v_local_pos.x) * frame.damage_zones.z;
+      float lri = smoothstep(0.35, 0.88, v_local_pos.x) * frame.damage_zones.w;
+      float corner_dmg = clamp(max(lf, lr) * 0.72 + max(ll, lri) * 0.35, 0.0, 1.0) * frame.damage_dirt.w;
+      if (corner_dmg > 0.52) {
+        lamp_alive = mix(1.0, 0.06, smoothstep(0.56, 0.82, corner_dmg));
+        base *= mix(1.0, 0.35, smoothstep(0.56, 0.85, corner_dmg));
+        gloss *= mix(1.0, 0.25, smoothstep(0.56, 0.85, corner_dmg));
+      }
+    }
     if ((flags & kFlagLampEmissive) != 0u) {
       // Modulate HDR lamp emission by lights_lod0.xds reflector detail and Fresnel angle so
       // individual rings, housings and bezels read clearly at night instead of flat solid discs.
       float luma = dot(base, vec3(0.299, 0.587, 0.114));
       float lens_detail = mix(0.14, 1.38, smoothstep(0.03, 0.72, luma));
       float ang = 0.36 + 0.64 * pow(nv, 1.15);
-      emissive = draw_tint.rgb * lens_detail * ang * (kLinearOut ? 1.85 : 0.95);
+      emissive = draw_tint.rgb * lens_detail * ang * (kLinearOut ? 1.85 : 0.95) * lamp_alive;
     }
   } else if (klass == kInterior || klass == kGauge) {
     if ((flags & kFlagCutout) != 0u && (flags & kFlagSlot1) != 0u && t1.a < 0.5) discard;

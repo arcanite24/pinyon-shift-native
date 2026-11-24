@@ -265,11 +265,20 @@ void test_world_acoustics_and_reverb() {
     amb.set_bed_sample(audio::AmbienceBedSlot::kMountains, make_tone(48000, 0.5, 310.0, 0.6f));
     amb.set_bed_sample(audio::AmbienceBedSlot::kCrowd, make_tone(48000, 0.5, 190.0, 0.6f));
     std::vector<float> abuf(4800 * 2, 0.0f);
-    amb.render(s_tun, 10.0f, abuf.data(), 4800);  // s_tun has Mountains ambience
+    amb.render(s_tun, 10.0f, abuf.data(), 4800, 12.0f);  // s_tun has Mountains ambience (day)
     check(amb.loaded_bed_count() == 2, "AmbienceBedPlayer drained 2 PCM beds");
-    double amb_e = 0.0;
-    for (float v : abuf) amb_e += double(v) * double(v);
-    check(amb_e > 0.5, "AmbienceBedPlayer renders strong real PCM regional bed");
+    double amb_day_e = 0.0;
+    for (float v : abuf) amb_day_e += double(v) * double(v);
+    check(amb_day_e > 0.5, "AmbienceBedPlayer renders strong real PCM regional bed");
+
+    // Verify ToD night ambience attenuates open-countryside daytime breeze bed cleanly.
+    audio::AmbienceBedPlayer amb_night(48000);
+    amb_night.set_bed_sample(audio::AmbienceBedSlot::kMountains, make_tone(48000, 0.5, 310.0, 0.6f));
+    std::vector<float> nbuf(4800 * 2, 0.0f);
+    amb_night.render(s_tun, 10.0f, nbuf.data(), 4800, 23.0f);
+    double amb_night_e = 0.0;
+    for (float v : nbuf) amb_night_e += double(v) * double(v);
+    check(amb_night_e > 0.1 && amb_night_e < amb_day_e, "Night ToD scales down daytime regional nature bed");
   }
 
   // P1: WorldAcousticsData::clear_soundscapes() cleanly swaps Colorado -> ColoradoDirt zones.

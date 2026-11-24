@@ -597,7 +597,8 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     VkImageView sources[kPostSetCount][2] = {};
     sources[0][0] = hdr_.view; sources[0][1] = hdr_.view;
     sources[1][0] = lum_16_.view; sources[1][1] = lum_adapt_[1].view;
-    sources[2][0] = hdr_.view; sources[2][1] = hdr_.view;
+    sources[2][0] = hdr_.view; sources[2][1] = bv(bloom_b_[0]);
+    bloom_prev_valid_ = false;
     for (uint32_t k = 1; k < kBloomLevels; ++k) {
       sources[2 + k][0] = bv(bloom_a_[k - 1]); sources[2 + k][1] = bv(bloom_a_[k - 1]);
     }

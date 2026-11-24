@@ -243,6 +243,7 @@ void DriveSession::place_world() {
             ps.bloom = (app.bloom_flag >= 0 ? app.bloom_flag == 1 : !app.low_preset) && slice12.trainer.config.debug_bloom;
             ps.bloom_cutoff = std::max(0.05f, bt.cutoff * tod.bloom_cutoff_mult);
             ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult);
+            ps.bloom_persist = std::clamp(bt.persist * tod.bloom_persist_mult, 0.0f, 0.35f);
             ps.bloom_lower_grad = std::max(0.0f, bt.lower_grad * tod.bloom_lower_grad_mult);
             ps.bloom_upper_grad = std::max(0.05f, bt.upper_grad * tod.bloom_upper_grad_mult);
             for (int k = 0; k < 5; ++k) ps.bloom_weights[k] = bt.weights[k];

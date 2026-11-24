@@ -54,7 +54,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 16572,
+      "spirv_bytes": 17164,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -65,6 +65,14 @@
           "type": "combined_image_sampler",
           "count": 1,
           "name": "src",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "aux",
           "dim": "2D"
         },
         {
@@ -2736,7 +2744,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 144360,
+      "spirv_bytes": 146168,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3108,7 +3116,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 25384,
+      "spirv_bytes": 26440,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -4585,7 +4593,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 7148,
+      "spirv_bytes": 8368,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],

@@ -31,6 +31,8 @@ struct OtherCarAudio {
   Vec3f vel{};
   float rpm = 1000.0f;
   float speed_mph = 0.0f;
+  float pitch_scale = 1.0f;  // per-car engine fundamental timbre offset [0.78..1.28]
+  float slip = 0.0f;         // 0..1 cornering/braking tyre scrub for LOD2 tyre audio
 };
 
 struct WheelAudio {
@@ -354,6 +356,7 @@ class SfxEngine {
   LoopVoice rewind_voice_{};
   LoopVoice hub_amb_voice_{};
   std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_voices_{};
+  std::array<LoopVoice, VehicleAudioState::kMaxOtherCars> other_tire_voices_{};
   std::array<double, VehicleAudioState::kMaxOtherCars> whoosh_cooldown_s_{-10.0, -10.0, -10.0, -10.0, -10.0, -10.0};
   LoopVoice showcase_voice_{};
   double showcase_synth_phase_ = 0.0;

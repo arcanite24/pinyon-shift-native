@@ -414,6 +414,23 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
                     livery == UINT32_MAX ? 1u : livery, t_nrm, t_dmg};
       d.glass = (klass == MaterialClass::kGlass);
       d.part_name = lower(part.name);
+      std::memcpy(d.rest_model, d.push.model, sizeof d.rest_model);
+      if (d.wheel < 0 && d.cockpit_role < 0) {
+        if (d.part_name == "winga" || d.part_name == "wing" || d.part_name.find("spoiler") != std::string::npos ||
+            d.part_name.find("aero") != std::string::npos) {
+          d.anim_part = 1;
+        } else if (d.part_name.find("popup") != std::string::npos || d.part_name.find("retract") != std::string::npos) {
+          d.anim_part = 2;
+        } else if (d.part_name.rfind("bumperf", 0) == 0) {
+          d.anim_part = 3;
+        } else if (d.part_name.rfind("bumperr", 0) == 0) {
+          d.anim_part = 4;
+        } else if (d.part_name == "mirrorl" || d.part_name.rfind("mirrorl", 0) == 0) {
+          d.anim_part = 5;
+        } else if (d.part_name == "mirrorr" || d.part_name.rfind("mirrorr", 0) == 0) {
+          d.anim_part = 6;
+        }
+      }
       draws_.push_back(d);
       drawn = true;
     }
@@ -454,6 +471,62 @@ void Showroom::set_braking(float glow) {
 
 void Showroom::set_rotor_heat(float heat) {
   rotor_glow_ = std::clamp(heat, 0.0f, 1.0f);
+}
+
+void Showroom::set_animated_car_parts(float aero_deploy, float popup_open, float time_sec, float dt) {
+  const float step = std::clamp(dt * 4.5f, 0.01f, 1.0f);
+  aero_deploy_smooth_ += (std::clamp(aero_deploy, 0.0f, 1.0f) - aero_deploy_smooth_) * step;
+  popup_open_smooth_ += (std::clamp(popup_open, 0.0f, 1.0f) - popup_open_smooth_) * step;
+  auto make_rot_x = [](const std::array<float, 3>& pivot, float angle, float dy, float out[16]) {
+    const float c = std::cos(angle), s = std::sin(angle);
+    identity(out);
+    out[5] = c;
+    out[6] = s;
+    out[9] = -s;
+    out[10] = c;
+    const float py = pivot[1], pz = pivot[2];
+    out[13] = py + dy - (c * py - s * pz);
+    out[14] = pz - (s * py + c * pz);
+  };
+  for (Draw& d : draws_) {
+    if (d.anim_part == 0 || d.wheel >= 0 || d.cockpit_role >= 0) continue;
+    if (d.anim_part == 1) {
+      // Active rear aero spoiler / airbrake: smoothly rises + pitches up at high speed or braking.
+      if (aero_deploy_smooth_ > 0.002f) {
+        float xform[16];
+        make_rot_x(d.centre, aero_deploy_smooth_ * 0.24f, aero_deploy_smooth_ * 0.085f, xform);
+        multiply(xform, d.rest_model, d.push.model);
+      } else {
+        std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      }
+    } else if (d.anim_part == 2) {
+      // Retractable pop-up headlights: hinge open when headlamps activate.
+      if (popup_open_smooth_ > 0.002f) {
+        float xform[16];
+        make_rot_x(d.centre, -popup_open_smooth_ * 0.65f, popup_open_smooth_ * 0.03f, xform);
+        multiply(xform, d.rest_model, d.push.model);
+      } else {
+        std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      }
+    } else if (d.anim_part >= 3 && d.anim_part <= 6) {
+      // Severely damaged loose bumpers / side mirrors droop slightly & rattle with chassis vibration.
+      const float zone_dmg =
+          (d.anim_part == 3) ? damage_zones_[0] :
+          (d.anim_part == 4) ? damage_zones_[1] :
+          (d.anim_part == 5) ? damage_zones_[2] : damage_zones_[3];
+      const float loose = std::clamp((zone_dmg * damage_dirt_[3] - 0.68f) / 0.32f, 0.0f, 1.0f);
+      if (loose > 0.01f) {
+        const float rattle = std::sin(time_sec * 33.0f + float(d.anim_part) * 1.7f) * 0.014f * loose;
+        const float droop = -0.055f * loose;
+        const float tilt = (d.anim_part == 3 ? 0.09f : (d.anim_part == 4 ? -0.09f : 0.14f)) * loose + rattle;
+        float xform[16];
+        make_rot_x(d.centre, tilt, droop + rattle * 0.4f, xform);
+        multiply(xform, d.rest_model, d.push.model);
+      } else {
+        std::memcpy(d.push.model, d.rest_model, sizeof d.push.model);
+      }
+    }
+  }
 }
 
 void Showroom::set_lamp_state(const drive::CarLampState& state) {

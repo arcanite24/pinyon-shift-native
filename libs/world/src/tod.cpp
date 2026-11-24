@@ -427,6 +427,9 @@ TodState evaluate_tod(const TodPreset& p, double tod_sec) {
   s.close_back_color = p.vec3("CloseCloudBackColour", m, {0.865f, 0.50f, 0.045f});
   s.close_dense_color = p.vec3("CloseCloudDenseColour", m, {0.063f, 0.113f, 0.136f});
   s.close_thin_color = p.vec3("CloseCloudThinColour", m, {0.35f, 0.544f, 0.742f});
+  s.close_back_dense_color = p.vec3("CloseCloudDenseColourBack", m, s.close_dense_color);
+  s.close_back_thin_color = p.vec3("CloseCloudThinColourBack", m, s.close_thin_color);
+  s.close_back_bottom_color = p.vec3("CloseCloudBottomColourBack", m, s.close_bottom_color);
   s.close_dense_intensity = p.scalar("CloseCloudDenseColourIntensity", m, 1.0f);
   s.close_thin_intensity = p.scalar("CloseCloudThinColourIntensity", m, 1.0f);
   s.close_back_power = p.scalar("CloseCloudBackPower", m, 8.0f);
